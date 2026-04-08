@@ -47,23 +47,36 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
     password: ''
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setIsLoading(true);
 
-    const emailLower = formData.email.toLowerCase();
-    const password = formData.password;
+    try {
+      const response = await fetch('/api/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          email: formData.email,
+          password: formData.password
+        })
+      });
 
-    setTimeout(() => {
-      // Check for Coach credentials (hardcoded)
-      if (emailLower === 'abel@gmail.com' && password === '1234') {
-        onLogin();
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error || localT('invalidCredentials'));
       } else {
-        setError(localT('invalidCredentials'));
+        onLogin();
       }
+    } catch (err) {
+      setError('Error de conexión. Por favor, inténtelo de nuevo.');
+      console.error('Error in login:', err);
+    } finally {
       setIsLoading(false);
-    }, 1000);
+    }
   };
 
   return (

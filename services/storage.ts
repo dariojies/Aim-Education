@@ -43,11 +43,21 @@ export const addWalletTransaction = async (tx: WalletTransaction): Promise<void>
 };
 
 // ALUMNOS
-export const getStudents = async (): Promise<Student[]> => getLocalData<Student>('students');
+export const getStudents = async (): Promise<Student[]> => {
+  try {
+    const res = await fetch('/api/users');
+    if (!res.ok) throw new Error('API failed');
+    const data = await res.json();
+    return data;
+  } catch (err) {
+    console.error('Error fetching students:', err);
+    return getLocalData<Student>('students'); // Fallback
+  }
+};
 export const addStudent = async (student: Student): Promise<Student> => {
   const students = getLocalData<Student>('students');
-  const newStudent = { 
-    ...student, 
+  const newStudent = {
+    ...student,
     id: student.id || generateId(),
     referralCode: student.referralCode || Math.random().toString(36).substring(2, 8).toUpperCase()
   };
@@ -58,14 +68,14 @@ export const addStudent = async (student: Student): Promise<Student> => {
   if (newStudent.referredById) {
     const bonus = (newStudent.monthlyFee || 0) * 0.01; // 1%
     if (bonus > 0) {
-        await addWalletTransaction({
-          id: generateId(),
-          studentId: newStudent.referredById,
-          type: 'CREDIT',
-          amount: bonus,
-          description: `Bono referido: ${newStudent.firstName}`,
-          date: new Date().toISOString()
-        });
+      await addWalletTransaction({
+        id: generateId(),
+        studentId: newStudent.referredById,
+        type: 'CREDIT',
+        amount: bonus,
+        description: `Bono referido: ${newStudent.firstName}`,
+        date: new Date().toISOString()
+      });
     }
   }
 
