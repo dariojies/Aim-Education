@@ -1,0 +1,7 @@
+Ôùç injected env (6) from .env // tip: Ôîÿ override existing { override: true }
+[
+  {
+    "email": "abel.coca@allegro.in-mae.es",
+    "password": "$2b$10$KZM5xMNmWCw4Sj2jvhdtBebOmuauzpyAG3cqV5xNy/JL11cGfvzZm"
+  }
+]

@@ -4,6 +4,7 @@ import pg from 'pg';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import bcrypt from 'bcryptjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -39,8 +40,8 @@ async function startServer() {
     try {
       // Find the user first
       const userRes = await pool.query(
-        'SELECT * FROM users WHERE email = $1 AND password = $2',
-        [email, password]
+        'SELECT * FROM users WHERE email = $1',
+        [email]
       );
 
       if (userRes.rowCount === 0) {
@@ -48,6 +49,12 @@ async function startServer() {
       }
 
       const user = userRes.rows[0];
+
+      // Compare password
+      const match = await bcrypt.compare(password, user.password);
+      if (!match) {
+        return res.status(401).json({ error: 'Credenciales incorrectas.' });
+      }
 
       // Check if user is superadmin directly in the users table
       const isSuperAdminDev = user.dev_role === 'superadmin';
@@ -76,6 +83,31 @@ async function startServer() {
     }
   });
 
+  // Set access rank
+  app.post('/api/access', async (req, res) => {
+    const { userId, rank } = req.body;
+    try {
+      // Upsert into aim_education_access
+      const current = await pool.query('SELECT * FROM aim_education_access WHERE user_id = $1', [userId]);
+
+      if (current.rowCount === 0) {
+        await pool.query(
+          'INSERT INTO aim_education_access (id, user_id, access_rank, created_at) VALUES (gen_random_uuid(), $1, $2, NOW())',
+          [userId, rank]
+        );
+      } else {
+        await pool.query(
+          'UPDATE aim_education_access SET access_rank = $1 WHERE user_id = $2',
+          [rank, userId]
+        );
+      }
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error(err);
+      res.status(500).json({ error: 'Error setting access rank.', details: err.message });
+    }
+  });
+
   // Get all users for the dashboard/students view
   app.get('/api/users', async (req, res) => {
     try {
@@ -86,9 +118,20 @@ async function startServer() {
         lastName: u.surname,
         email: u.email,
         belt: u.belt,
-        avatar: u.profile_picture
+        avatar: u.profile_picture,
+        isSuperAdmin: (u.dev_role === 'superadmin' || u.role === 'superadmin' || u.role === 'SuperAdmin')
       }));
-      res.json(mapped);
+
+      // Get all access ranks
+      const accessRes = await pool.query('SELECT user_id, access_rank FROM aim_education_access');
+      const accessMap = new Map(accessRes.rows.map(r => [r.user_id, r.access_rank]));
+
+      const studentsWithAccess = mapped.map(s => ({
+        ...s,
+        accessRank: accessMap.get(s.id) || null
+      }));
+
+      res.json(studentsWithAccess);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

@@ -1,0 +1,28 @@
+Ôùç injected env (6) from .env // tip: Ôîÿ multiple files { path: ['.env.local', '.env'] }
+[
+  {
+    "email": "daniel.campos@allegro.in-mae.es",
+    "dev_role": "superadmin",
+    "role": "instructor"
+  },
+  {
+    "email": "dario@allegro.in-mae.es",
+    "dev_role": "superadmin",
+    "role": "club_owner"
+  },
+  {
+    "email": "jmmarinborrego@gmail.com",
+    "dev_role": "superadmin",
+    "role": "instructor"
+  },
+  {
+    "email": "abel.coca@allegro.in-mae.es",
+    "dev_role": "superadmin",
+    "role": "instructor"
+  },
+  {
+    "email": "patricia.sabu@aimeducation.es",
+    "dev_role": "superadmin",
+    "role": "student"
+  }
+]

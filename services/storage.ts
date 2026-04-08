@@ -16,6 +16,21 @@ const saveLocalData = <T>(key: string, data: T[]) => {
   window.dispatchEvent(new Event('storage_updated'));
 };
 
+export const getCurrentUser = () => {
+  if (typeof localStorage === 'undefined') return null;
+  const data = localStorage.getItem('aim_current_user');
+  return data ? JSON.parse(data) : null;
+};
+
+export const saveCurrentUser = (user: any) => {
+  if (user) {
+    localStorage.setItem('aim_current_user', JSON.stringify(user));
+  } else {
+    localStorage.removeItem('aim_current_user');
+  }
+  window.dispatchEvent(new Event('storage_updated'));
+};
+
 // GRUPOS
 export const getGroups = async (): Promise<Group[]> => getLocalData<Group>('groups');
 export const addGroup = async (group: Group): Promise<Group> => {
@@ -84,6 +99,19 @@ export const addStudent = async (student: Student): Promise<Student> => {
 export const removeStudent = async (id: string): Promise<void> => {
   const students = getLocalData<Student>('students');
   saveLocalData('students', students.filter(s => s.id !== id));
+};
+
+export const setAccessRank = async (userId: string, rank: string) => {
+  try {
+    const res = await fetch('/api/access', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, rank })
+    });
+    if (!res.ok) throw new Error('API failed');
+  } catch (err) {
+    console.error('Error setting access rank:', err);
+  }
 };
 
 // Otros... (Games, Sessions, Attendance se mantienen igual)

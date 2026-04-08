@@ -1,0 +1,38 @@
+Ôùç injected env (6) from .env // tip: Ôîÿ override existing { override: true }
+--- USERS TABLE ---
+[
+  { column_name: 'user_id', data_type: 'uuid' },
+  { column_name: 'birthday', data_type: 'date' },
+  { column_name: 'media_consent', data_type: 'boolean' },
+  { column_name: 'ad_removal', data_type: 'boolean' },
+  { column_name: 'club_id', data_type: 'uuid' },
+  {
+    column_name: 'created_at',
+    data_type: 'timestamp without time zone'
+  },
+  { column_name: 'belt_level', data_type: 'integer' },
+  { column_name: 'dev_role', data_type: 'character varying' },
+  { column_name: 'profile_picture', data_type: 'text' },
+  { column_name: 'plan', data_type: 'character varying' },
+  { column_name: 'username', data_type: 'character varying' },
+  { column_name: 'role', data_type: 'character varying' },
+  { column_name: 'legacy_id', data_type: 'character varying' },
+  { column_name: 'name', data_type: 'character varying' },
+  { column_name: 'surname', data_type: 'character varying' },
+  { column_name: 'email', data_type: 'character varying' },
+  { column_name: 'password', data_type: 'character varying' },
+  { column_name: 'belt', data_type: 'character varying' },
+  { column_name: 'phone', data_type: 'character varying' }
+]
+--- ACCESS TABLE ---
+[
+  { column_name: 'id', data_type: 'uuid' },
+  { column_name: 'user_id', data_type: 'uuid' },
+  {
+    column_name: 'created_at',
+    data_type: 'timestamp without time zone'
+  },
+  { column_name: 'access_rank', data_type: 'character varying' }
+]
+--- SAMPLE USER ---
+[]

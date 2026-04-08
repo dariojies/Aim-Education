@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Trophy, Mail, Lock, ArrowRight, Loader2, AlertCircle } from 'lucide-react';
 import { useLanguage } from '../LanguageContext';
+import { saveCurrentUser } from '../services/storage';
 
 interface AuthProps {
   onLogin: () => void;
@@ -69,6 +70,7 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
       if (!response.ok) {
         setError(data.error || localT('invalidCredentials'));
       } else {
+        saveCurrentUser(data.user);
         onLogin();
       }
     } catch (err) {

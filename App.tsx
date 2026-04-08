@@ -8,13 +8,15 @@ import DashboardView from './components/DashboardView';
 import SettingsView from './components/SettingsView';
 import AICoachView from './components/AICoachView';
 import WalletView from './components/WalletView';
+import AccessManagementView from './components/AccessManagementView';
 import { Auth } from './components/Auth';
 import { ViewState } from './types';
 import { useLanguage } from './LanguageContext';
 import * as storage from './services/storage';
 
 const App: React.FC = () => {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const currentUser = storage.getCurrentUser();
+  const [isAuthenticated, setIsAuthenticated] = useState(!!currentUser);
   const [currentView, setCurrentView] = useState<ViewState>('DASHBOARD');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isPremium, setIsPremium] = useState(storage.getSportConfig().isPremium);
@@ -36,6 +38,10 @@ const App: React.FC = () => {
     { id: 'SETTINGS', label: t('nav.settings'), icon: <Settings size={20} /> },
   ];
 
+  if (currentUser?.isSuperAdmin) {
+    navItems.push({ id: 'ACCESS_MANAGEMENT', label: 'Gestión Accesos', icon: <ShieldCheck size={20} /> });
+  }
+
   const renderView = () => {
     switch (currentView) {
       case 'DASHBOARD': return <DashboardView onNavigate={(v) => setCurrentView(v)} />;
@@ -45,6 +51,7 @@ const App: React.FC = () => {
       case 'AI_COACH': return <AICoachView />;
       case 'SETTINGS': return <SettingsView />;
       case 'WALLET': return <WalletView />;
+      case 'ACCESS_MANAGEMENT': return <AccessManagementView />;
       default: return <DashboardView onNavigate={(v) => setCurrentView(v)} />;
     }
   };
@@ -62,7 +69,7 @@ const App: React.FC = () => {
       {/* Mobile Header */}
       <div className="md:hidden bg-white border-b border-slate-200 p-4 flex justify-between items-center sticky top-0 z-50">
         <h1 className="font-black text-xl flex items-center gap-2 text-slate-900 tracking-tighter">
-          <div className="bg-slate-900 text-white p-1 rounded-lg"><Trophy size={18} /></div> 
+          <div className="bg-slate-900 text-white p-1 rounded-lg"><Trophy size={18} /></div>
           {t('app.name')}
         </h1>
         <div className="flex items-center gap-2">
@@ -95,8 +102,8 @@ const App: React.FC = () => {
                 setMobileMenuOpen(false);
               }}
               className={`w-full flex items-center gap-4 px-6 py-4 rounded-[1.5rem] transition-all duration-300 group
-                ${currentView === item.id 
-                  ? 'bg-slate-900 text-white shadow-2xl shadow-slate-200' 
+                ${currentView === item.id
+                  ? 'bg-slate-900 text-white shadow-2xl shadow-slate-200'
                   : (item.special ? 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100' : 'hover:bg-slate-50 text-slate-400 hover:text-slate-900')
                 }`}
             >
@@ -108,28 +115,28 @@ const App: React.FC = () => {
             </button>
           ))}
         </nav>
-        
+
         <div className="absolute bottom-0 w-full p-8 hidden md:block">
           <div className={`rounded-[2rem] p-6 border transition-all duration-500
-            ${isPremium 
-              ? 'bg-gradient-to-br from-emerald-600 to-teal-600 text-white border-emerald-400' 
+            ${isPremium
+              ? 'bg-gradient-to-br from-emerald-600 to-teal-600 text-white border-emerald-400'
               : 'bg-slate-900 text-white border-slate-800'}`}>
             <div className="flex items-center justify-between mb-2">
-               <h4 className={`font-black text-xs uppercase tracking-widest ${isPremium ? 'text-white' : 'text-emerald-400'}`}>
-                 {isPremium ? 'PRO MEMBER' : 'FREE PLAN'}
-               </h4>
-               {isPremium && <ShieldCheck size={16} />}
+              <h4 className={`font-black text-xs uppercase tracking-widest ${isPremium ? 'text-white' : 'text-emerald-400'}`}>
+                {isPremium ? 'PRO MEMBER' : 'FREE PLAN'}
+              </h4>
+              {isPremium && <ShieldCheck size={16} />}
             </div>
             <p className="text-[10px] text-slate-300 font-bold mb-3">
               {isPremium ? 'Todos los servicios activos.' : 'Pásate a Pro para IA ilimitada.'}
             </p>
             {!isPremium && (
-               <button 
-                 onClick={() => { setCurrentView('AI_COACH'); setMobileMenuOpen(false); }}
-                 className="w-full bg-emerald-600 py-2 rounded-xl text-[10px] font-black hover:bg-emerald-500 transition"
-               >
-                  UPGRADE NOW
-               </button>
+              <button
+                onClick={() => { setCurrentView('AI_COACH'); setMobileMenuOpen(false); }}
+                className="w-full bg-emerald-600 py-2 rounded-xl text-[10px] font-black hover:bg-emerald-500 transition"
+              >
+                UPGRADE NOW
+              </button>
             )}
           </div>
         </div>
@@ -145,8 +152,11 @@ const App: React.FC = () => {
                 {navItems.find(i => i.id === currentView)?.label}
               </h2>
             </div>
-            <button 
-              onClick={() => setIsAuthenticated(false)}
+            <button
+              onClick={() => {
+                storage.saveCurrentUser(null);
+                setIsAuthenticated(false);
+              }}
               className="text-slate-400 hover:text-red-500 transition-colors flex items-center gap-2 text-xs font-black uppercase tracking-wider"
             >
               Logout <LogOut className="w-4 h-4" />

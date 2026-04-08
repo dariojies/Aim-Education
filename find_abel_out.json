@@ -1,0 +1,164 @@
+Ôùç injected env (6) from .env // tip: Ôùê encrypted .env [www.dotenvx.com]
+[
+  {
+    "email": "anabelen.saucedoca@hotmail.com",
+    "dev_role": null,
+    "role": "student",
+    "name": "Ana Bel├®n",
+    "surname": "Saucedo Casta├▒o"
+  },
+  {
+    "email": "isabeltenorio028@gmail.com",
+    "dev_role": null,
+    "role": "student",
+    "name": "Santiago",
+    "surname": "Fern├índez Mesa"
+  },
+  {
+    "email": "mariaisabel1945@outlook.es",
+    "dev_role": null,
+    "role": "student",
+    "name": "Mar├¡a Isabel",
+    "surname": "Leiva Arroyo"
+  },
+  {
+    "email": "ana_isabel_sevilla@hotmail.com",
+    "dev_role": null,
+    "role": "student",
+    "name": "Ana Isabel",
+    "surname": "Alcu├▒a Sevilla"
+  },
+  {
+    "email": "idiazbarrones@gmail.com",
+    "dev_role": null,
+    "role": "student",
+    "name": "Isabel",
+    "surname": "D├¡az Barrones"
+  },
+  {
+    "email": "isabelmariagarcialeon267@gmail.com",
+    "dev_role": null,
+    "role": "student",
+    "name": "Jos├® Manuel",
+    "surname": "Perez Garc├¡a"
+  },
+  {
+    "email": "isabelmariajimenezchico@gmail.com",
+    "dev_role": null,
+    "role": "student",
+    "name": "Isabel Maria",
+    "surname": "Jimenez Chico"
+  },
+  {
+    "email": "imsramirez74@gmail.com",
+    "dev_role": null,
+    "role": "student",
+    "name": "Carla Isabel",
+    "surname": "Vald├®s serrano"
+  },
+  {
+    "email": "lorcabello@gmail.com",
+    "dev_role": null,
+    "role": "student",
+    "name": "Lorena",
+    "surname": "Cabello Pi├▒a"
+  },
+  {
+    "email": "marybelsant@gmail.com",
+    "dev_role": null,
+    "role": "student",
+    "name": "M┬¬ Isabel",
+    "surname": "Santander Iglesias"
+  },
+  {
+    "email": "lauraabellanrodriguez@hotmail.com",
+    "dev_role": null,
+    "role": "student",
+    "name": "Laura",
+    "surname": "Abell├ín Rodr├¡guez"
+  },
+  {
+    "email": "jaime_corsino@hotmail.com",
+    "dev_role": null,
+    "role": "student",
+    "name": "Isabella",
+    "surname": "Corsino Collante"
+  },
+  {
+    "email": "isa.tarifa@gmail.com",
+    "dev_role": null,
+    "role": "student",
+    "name": "Isabel",
+    "surname": "L├│pez Lara"
+  },
+  {
+    "email": "anabelen_rb@hotmail.com",
+    "dev_role": null,
+    "role": "student",
+    "name": "Ana Bel├®n",
+    "surname": "Ruiz Barrios"
+  },
+  {
+    "email": "isabelfd_86@hotmail.com",
+    "dev_role": null,
+    "role": "student",
+    "name": "Martina",
+    "surname": "M├®ndez Funes"
+  },
+  {
+    "email": "rubencitoabellan@hotmail.com",
+    "dev_role": null,
+    "role": "student",
+    "name": "Daniel",
+    "surname": "Abell├ín Solino"
+  },
+  {
+    "email": "isabelmariariveraalvarez@gmail.com",
+    "dev_role": null,
+    "role": "student",
+    "name": "Isabel Mar├¡a",
+    "surname": "Rivera ├ülvarez"
+  },
+  {
+    "email": "isabeltorresmelendez@hotmail.com",
+    "dev_role": null,
+    "role": "student",
+    "name": "Isabel",
+    "surname": "Torres Mel├®ndez"
+  },
+  {
+    "email": "mariaisabel240689@gmail.com",
+    "dev_role": null,
+    "role": "student",
+    "name": "Alma (BORRAR)",
+    "surname": "Pozo Rguez"
+  },
+  {
+    "email": "isabellopezsiles@gmail.com",
+    "dev_role": null,
+    "role": "student",
+    "name": "Kilian",
+    "surname": "C├ínovas L├│pez"
+  },
+  {
+    "email": "abelrsc@gmail.com",
+    "dev_role": null,
+    "role": "student",
+    "name": "Abel",
+    "surname": "Ragel Carrillo"
+  },
+  {
+    "email": "imdelarubia@gmail.com",
+    "dev_role": null,
+    "role": "student",
+    "name": "Isabel",
+    "surname": "De la Rubia Guardia"
+  },
+  {
+    "email": "abel.coca@allegro.in-mae.es",
+    "dev_role": "superadmin",
+    "role": "instructor",
+    "name": "Abel",
+    "surname": "Coca G├│mez"
+  }
+]
