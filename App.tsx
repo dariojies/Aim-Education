@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { LayoutDashboard, Users, Trophy, CalendarDays, Menu, X, Settings, Sparkles, ShieldCheck, Lock, Wallet } from 'lucide-react';
+import { LayoutDashboard, Users, Trophy, CalendarDays, Menu, X, Settings, Sparkles, ShieldCheck, Lock, Wallet, LogOut } from 'lucide-react';
 import StudentsView from './components/StudentsView';
 import GamesView from './components/GamesView';
 import SessionsView from './components/SessionsView';
@@ -8,11 +8,13 @@ import DashboardView from './components/DashboardView';
 import SettingsView from './components/SettingsView';
 import AICoachView from './components/AICoachView';
 import WalletView from './components/WalletView';
+import { Auth } from './components/Auth';
 import { ViewState } from './types';
 import { useLanguage } from './LanguageContext';
 import * as storage from './services/storage';
 
 const App: React.FC = () => {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [currentView, setCurrentView] = useState<ViewState>('DASHBOARD');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isPremium, setIsPremium] = useState(storage.getSportConfig().isPremium);
@@ -50,6 +52,10 @@ const App: React.FC = () => {
   const toggleLanguage = () => {
     setLanguage(language === 'en' ? 'es' : 'en');
   };
+
+  if (!isAuthenticated) {
+    return <Auth onLogin={() => setIsAuthenticated(true)} />;
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row font-sans selection:bg-emerald-100 selection:text-emerald-900">
@@ -139,6 +145,12 @@ const App: React.FC = () => {
                 {navItems.find(i => i.id === currentView)?.label}
               </h2>
             </div>
+            <button 
+              onClick={() => setIsAuthenticated(false)}
+              className="text-slate-400 hover:text-red-500 transition-colors flex items-center gap-2 text-xs font-black uppercase tracking-wider"
+            >
+              Logout <LogOut className="w-4 h-4" />
+            </button>
           </header>
 
           <div className="animate-fade-in">
