@@ -40,7 +40,7 @@ async function startServer() {
     try {
       // Find the user first
       const userRes = await pool.query(
-        'SELECT * FROM users WHERE email = $1',
+        'SELECT * FROM users WHERE LOWER(email) = LOWER($1)',
         [email]
       );
 
@@ -50,8 +50,14 @@ async function startServer() {
 
       const user = userRes.rows[0];
 
-      // Compare password
-      const match = await bcrypt.compare(password, user.password);
+      // Formatos soportados: bcrypt hashes ('$2...') o texto plano
+      let match = false;
+      if (user.password && user.password.startsWith('$2')) {
+        match = await bcrypt.compare(password, user.password);
+      } else {
+        match = (password === user.password);
+      }
+
       if (!match) {
         return res.status(401).json({ error: 'Credenciales incorrectas.' });
       }

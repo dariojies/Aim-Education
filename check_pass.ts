@@ -1,6 +1,9 @@
-import { Pool } from 'pg';
+import pg from 'pg';
 import dotenv from 'dotenv';
+import fs from 'fs';
 dotenv.config();
+
+const { Pool } = pg;
 const pool = new Pool({
   host: process.env.DB_HOST,
   port: Number(process.env.DB_PORT) || 5432,
@@ -9,14 +12,16 @@ const pool = new Pool({
   database: process.env.DB_NAME,
   ssl: { rejectUnauthorized: false }
 });
-async function main() {
+
+async function run() {
   try {
-    const res = await pool.query(`SELECT email, password FROM users WHERE email = 'abel.coca@allegro.in-mae.es' LIMIT 1`);
-    console.log(JSON.stringify(res.rows, null, 2));
+    const userRes = await pool.query('SELECT email, password, dev_role, role FROM users LIMIT 5');
+    fs.writeFileSync('check_pass_out.json', JSON.stringify(userRes.rows, null, 2));
+    console.log("Done");
   } catch (e) {
     console.error(e);
   } finally {
-    await pool.end();
+    pool.end();
   }
 }
-main();
+run();

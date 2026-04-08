@@ -1,7 +1,32 @@
-Ôùç injected env (6) from .env // tip: Ôîÿ override existing { override: true }
 [
   {
-    "email": "abel.coca@allegro.in-mae.es",
-    "password": "$2b$10$KZM5xMNmWCw4Sj2jvhdtBebOmuauzpyAG3cqV5xNy/JL11cGfvzZm"
+    "email": "carmengonzalez@asesorialabor.es",
+    "password": "$2b$10$DBlm0qIOdkRL/ORDO/rODOCab8O4tBr/N772yJbKbmAVKL0sh0x.S",
+    "dev_role": null,
+    "role": "student"
+  },
+  {
+    "email": "bh@hubspot.com",
+    "password": "$2b$10$ULXXH8mGdcjIBOPijva33uW/NihbABrSvGprFDH7pz.6PYlRxLvJS",
+    "dev_role": null,
+    "role": "student"
+  },
+  {
+    "email": "secretaria@cevhuertadelacruzesur.es",
+    "password": "$2b$10$WPICl3sTVGrJ8.wiokMBpuYqhSNlPAw/eaqosbNOMF0TexCLbz8My",
+    "dev_role": null,
+    "role": "student"
+  },
+  {
+    "email": "soniasenor@asesorialabor.es",
+    "password": "$2b$10$WIFFfhbl52gjYZ5GYo1J6Onw5b5ky2AOHLcESjJfHnV6vY8pkypQW",
+    "dev_role": null,
+    "role": "student"
+  },
+  {
+    "email": "secretaria@englishacademylb.com",
+    "password": "$2b$10$QPxNE8nsghreonL/Q0SzCOjSwi8DRHosLIzdrtZMdcbsGHvxrdfyS",
+    "dev_role": null,
+    "role": "student"
   }
 ]
