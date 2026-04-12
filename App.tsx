@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { LayoutDashboard, Users, Trophy, CalendarDays, Menu, X, Settings, Sparkles, ShieldCheck, Lock, Wallet, LogOut } from 'lucide-react';
 import StudentsView from './components/StudentsView';
@@ -8,25 +7,36 @@ import DashboardView from './components/DashboardView';
 import SettingsView from './components/SettingsView';
 import AICoachView from './components/AICoachView';
 import WalletView from './components/WalletView';
-import AccessManagementView from './components/AccessManagementView';
-import { Auth } from './components/Auth';
+import LoginView from './components/LoginView';
 import { ViewState } from './types';
 import { useLanguage } from './LanguageContext';
 import * as storage from './services/storage';
 
 const App: React.FC = () => {
-  const currentUser = storage.getCurrentUser();
-  const [isAuthenticated, setIsAuthenticated] = useState(!!currentUser);
+  const [user, setUser] = useState<any>(null);
   const [currentView, setCurrentView] = useState<ViewState>('DASHBOARD');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isPremium, setIsPremium] = useState(storage.getSportConfig().isPremium);
   const { language, setLanguage, t } = useLanguage();
 
   useEffect(() => {
+    const savedUser = localStorage.getItem('aim_education_user');
+    if (savedUser) {
+      setUser(JSON.parse(savedUser));
+    }
     const handleStorageUpdate = () => setIsPremium(storage.getSportConfig().isPremium);
     window.addEventListener('storage_updated', handleStorageUpdate);
     return () => window.removeEventListener('storage_updated', handleStorageUpdate);
   }, []);
+
+  const handleLogout = () => {
+    localStorage.removeItem('aim_education_user');
+    setUser(null);
+  };
+
+  if (!user) {
+    return <LoginView onLoginSuccess={setUser} />;
+  }
 
   const navItems = [
     { id: 'DASHBOARD', label: t('nav.dashboard'), icon: <LayoutDashboard size={20} /> },
@@ -38,10 +48,6 @@ const App: React.FC = () => {
     { id: 'SETTINGS', label: t('nav.settings'), icon: <Settings size={20} /> },
   ];
 
-  if (currentUser?.isSuperAdmin) {
-    navItems.push({ id: 'ACCESS_MANAGEMENT', label: 'Gestión Accesos', icon: <ShieldCheck size={20} /> });
-  }
-
   const renderView = () => {
     switch (currentView) {
       case 'DASHBOARD': return <DashboardView onNavigate={(v) => setCurrentView(v)} />;
@@ -51,7 +57,6 @@ const App: React.FC = () => {
       case 'AI_COACH': return <AICoachView />;
       case 'SETTINGS': return <SettingsView />;
       case 'WALLET': return <WalletView />;
-      case 'ACCESS_MANAGEMENT': return <AccessManagementView />;
       default: return <DashboardView onNavigate={(v) => setCurrentView(v)} />;
     }
   };
@@ -59,10 +64,6 @@ const App: React.FC = () => {
   const toggleLanguage = () => {
     setLanguage(language === 'en' ? 'es' : 'en');
   };
-
-  if (!isAuthenticated) {
-    return <Auth onLogin={() => setIsAuthenticated(true)} />;
-  }
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row font-sans selection:bg-emerald-100 selection:text-emerald-900">
@@ -152,15 +153,15 @@ const App: React.FC = () => {
                 {navItems.find(i => i.id === currentView)?.label}
               </h2>
             </div>
-            <button
-              onClick={() => {
-                storage.saveCurrentUser(null);
-                setIsAuthenticated(false);
-              }}
-              className="text-slate-400 hover:text-red-500 transition-colors flex items-center gap-2 text-xs font-black uppercase tracking-wider"
-            >
-              Logout <LogOut className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-4">
+              <div className="text-right hidden md:block">
+                <div className="text-xs font-black text-slate-800">{user?.name}</div>
+                <div className="text-[10px] font-bold text-slate-400 capitalize">{user?.role}</div>
+              </div>
+              <button onClick={handleLogout} className="p-3 bg-white border border-slate-200 text-slate-400 rounded-xl hover:text-rose-500 hover:border-rose-100 hover:bg-rose-50 transition-colors">
+                <LogOut size={20} />
+              </button>
+            </div>
           </header>
 
           <div className="animate-fade-in">
