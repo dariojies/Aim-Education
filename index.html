@@ -1,29 +1,244 @@
 <!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AIM</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-      body { font-family: 'Inter', sans-serif; }
-    </style>
-  <script type="importmap">
-{
-  "imports": {
-    "react": "https://esm.sh/react@^19.2.4",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
-    "react/": "https://esm.sh/react@^19.2.4/",
-    "@google/genai": "https://esm.sh/@google/genai@^1.38.0",
-    "lucide-react": "https://esm.sh/lucide-react@^0.563.0"
-  }
-}
-</script>
-<link rel="stylesheet" href="/index.css">
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aim Education | Innovación Educativa y Pasión</title>
+    <meta name="description" content="Descubre Aim Education en Algeciras. Taekwondo, Ballet, Inglés, Robótica y mucho más. Una formación integral con valores.">
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;600;700&family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Custom Style -->
+    <link rel="stylesheet" href="src/style.css">
 </head>
-  <body class="bg-slate-50 text-slate-900">
-    <div id="root"></div>
-  <script type="module" src="/index.tsx"></script>
+<body>
+    <!-- Navbar -->
+    <nav class="navbar" id="navbar">
+        <div class="nav-container">
+            <div class="logo">
+                <img src="src/logo.png" alt="Aim Education Logo">
+                <span class="logo-text">AIM<span class="highlight">EDUCATION</span></span>
+            </div>
+            <div class="nav-links" id="navLinks">
+                <a href="#inicio" class="active">Inicio</a>
+                <a href="#actividades">Actividades</a>
+                <a href="#nosotros">Nosotros</a>
+                <a href="#noticias">Noticias</a>
+                <a href="#contacto">Contacto</a>
+            </div>
+            <button class="menu-toggle" id="menuToggle">
+                <i class="fas fa-bars"></i>
+            </button>
+            <div class="nav-actions">
+                <button class="btn btn-primary">Mi Usuario</button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero" id="inicio">
+        <div class="hero-overlay"></div>
+        <div class="hero-content">
+            <h1 class="fade-in">Innovación Educativa, <br><span class="gradient-text">Pasión por el Aprendizaje</span></h1>
+            <p class="fade-in delay-1">Explora un mundo de oportunidades en Algeciras: Taekwondo, Ballet, Inglés, Robótica y mucho más.</p>
+            <div class="hero-btns fade-in delay-2">
+                <a href="campus.php" class="btn btn-accent">Campamento de Verano</a>
+                <a href="#actividades" class="btn btn-outline">Ver Actividades</a>
+            </div>
+        </div>
+        <div class="scroll-indicator">
+            <div class="mouse"></div>
+        </div>
+    </section>
+
+    <!-- Stats Section -->
+    <section class="stats">
+        <div class="container">
+            <div class="stats-grid">
+                <div class="stat-item reveal">
+                    <i class="fas fa-lightbulb"></i>
+                    <h3>Innovación</h3>
+                    <p>Nuevas oportunidades</p>
+                </div>
+                <div class="stat-item reveal">
+                    <i class="fas fa-trophy"></i>
+                    <h3>Excelencia</h3>
+                    <p>Servicios de calidad</p>
+                </div>
+                <div class="stat-item reveal">
+                    <i class="fas fa-heart"></i>
+                    <h3>Pasión</h3>
+                    <p>Amamos lo que hacemos</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Activities Section -->
+    <section class="activities" id="actividades">
+        <div class="container">
+            <div class="section-header reveal">
+                <h2>Nuestras <span class="highlight">Actividades</span></h2>
+                <p>Descubre nuestra amplia variedad de programas para todas las edades.</p>
+            </div>
+            <div class="activities-grid">
+                <!-- Activity Cards -->
+                <div class="activity-card reveal bg-green">
+                    <div class="card-image">
+                        <img src="https://images.unsplash.com/photo-1555597673-b21d5c935865?auto=format&fit=crop&q=80&w=400" alt="Taekwondo">
+                        <div class="card-overlay">
+                            <i class="fas fa-fist-raised"></i>
+                        </div>
+                    </div>
+                    <div class="card-content">
+                        <h3>Taekwondo</h3>
+                        <p>Despierta tu fuerza interior y supera tus límites.</p>
+                        <a href="#" class="card-link">Saber más <i class="fas fa-arrow-right"></i></a>
+                    </div>
+                </div>
+
+                <div class="activity-card reveal bg-pink">
+                    <div class="card-image">
+                        <img src="https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?auto=format&fit=crop&q=80&w=400" alt="Ballet">
+                        <div class="card-overlay">
+                            <i class="fas fa-shoe-prints"></i>
+                        </div>
+                    </div>
+                    <div class="card-content">
+                        <h3>Ballet Clásico</h3>
+                        <p>Déjate llevar por la magia de la danza y la precisión.</p>
+                        <a href="#" class="card-link">Saber más <i class="fas fa-arrow-right"></i></a>
+                    </div>
+                </div>
+
+                <div class="activity-card reveal bg-blue">
+                    <div class="card-image">
+                        <img src="https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&q=80&w=400" alt="Inglés">
+                        <div class="card-overlay">
+                            <i class="fas fa-language"></i>
+                        </div>
+                    </div>
+                    <div class="card-content">
+                        <h3>Inglés</h3>
+                        <p>Aprende el idioma del mundo y comunica tus sueños.</p>
+                        <a href="#" class="card-link">Saber más <i class="fas fa-arrow-right"></i></a>
+                    </div>
+                </div>
+
+                <div class="activity-card reveal bg-yellow">
+                    <div class="card-image">
+                        <img src="https://images.unsplash.com/photo-1485827404703-89b55fcc595e?auto=format&fit=crop&q=80&w=400" alt="Robótica">
+                        <div class="card-overlay">
+                            <i class="fas fa-robot"></i>
+                        </div>
+                    </div>
+                    <div class="card-content">
+                        <h3>Robótica</h3>
+                        <p>Construye el futuro hoy con nuestras clases de tecnología.</p>
+                        <a href="#" class="card-link">Saber más <i class="fas fa-arrow-right"></i></a>
+                    </div>
+                </div>
+            </div>
+            <div class="center-btn">
+                <button class="btn btn-outline">Ver todas las actividades</button>
+            </div>
+        </div>
+    </section>
+
+    <!-- News & Calendar Section -->
+    <section class="news-calendar" id="noticias">
+        <div class="container">
+            <div class="news-grid">
+                <div class="news-section reveal">
+                    <h2>Últimas <span class="highlight">Noticias</span></h2>
+                    <div class="news-list">
+                        <div class="news-item">
+                            <div class="news-date">15 Abr</div>
+                            <div class="news-info">
+                                <h4>Exámenes de Cambridge</h4>
+                                <p>Abierto el plazo de inscripción para la convocatoria de Junio.</p>
+                            </div>
+                        </div>
+                        <div class="news-item">
+                            <div class="news-date">10 Abr</div>
+                            <div class="news-info">
+                                <h4>Campamento de Verano</h4>
+                                <p>¡Nuevas plazas disponibles para el mes de Julio!</p>
+                            </div>
+                        </div>
+                    </div>
+                    <a href="#" class="news-link">Más noticias</a>
+                </div>
+                
+                <div class="calendar-section reveal">
+                    <h2>Próximos <span class="highlight">Eventos</span></h2>
+                    <div class="calendar-list">
+                        <div class="calendar-item">
+                            <div class="event-icon"><i class="far fa-calendar-check"></i></div>
+                            <div class="event-info">
+                                <span class="event-date">24/04 - 26/04</span>
+                                <h4>Seminario de Taekwondo</h4>
+                                <p>Técnicas avanzadas con maestros invitados.</p>
+                            </div>
+                        </div>
+                        <div class="calendar-item">
+                            <div class="event-icon"><i class="far fa-calendar-check"></i></div>
+                            <div class="event-info">
+                                <span class="event-date">30/04</span>
+                                <h4>Gala de Primavera</h4>
+                                <p>Presentación de los grupos de Ballet y Baile Moderno.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <a href="#" class="news-link">Ver calendario completo</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-grid">
+                <div class="footer-info">
+                    <span class="logo-text">AIM<span class="highlight">EDUCATION</span></span>
+                    <p>Formación integral y valores en un entorno de respeto y tolerancia.</p>
+                    <div class="social-links">
+                        <a href="#"><i class="fab fa-facebook"></i></a>
+                        <a href="#"><i class="fab fa-instagram"></i></a>
+                        <a href="#"><i class="fab fa-youtube"></i></a>
+                        <a href="#"><i class="fab fa-twitter"></i></a>
+                    </div>
+                </div>
+                <div class="footer-links">
+                    <h4>Enlaces Rápidos</h4>
+                    <ul>
+                        <li><a href="#inicio">Inicio</a></li>
+                        <li><a href="#actividades">Actividades</a></li>
+                        <li><a href="#nosotros">Nosotros</a></li>
+                        <li><a href="privacidad.php">Privacidad</a></li>
+                    </ul>
+                </div>
+                <div class="footer-contact">
+                    <h4>Contacto</h4>
+                    <p><i class="fas fa-map-marker-alt"></i> Algeciras, Urbanización Doña Lola</p>
+                    <p><i class="fas fa-phone"></i> +34 956 00 00 00</p>
+                    <p><i class="fas fa-envelope"></i> info@aimeducation.es</p>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2026 Aim Education. Todos los derechos reservados.</p>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Scripts -->
+    <script src="src/main.js"></script>
 </body>
 </html>
