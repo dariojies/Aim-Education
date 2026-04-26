@@ -253,10 +253,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 // Show Admin panel button only for instructors or club_owners
                 if (user.role === 'instructor' || user.role === 'club_owner') {
-                    // Assuming the admin app runs on a different port (like 3001) or different path.
-                    // For now, it will open the admin app url (you can adjust this URL)
                     userHtml += `
-                        <a href="http://localhost:3001" target="_blank" class="btn btn-accent" style="padding: 0.5rem 1rem; font-size: 0.8rem;">Panel Admin</a>
+                        <a href="/admin" class="btn btn-accent" style="padding: 0.5rem 1rem; font-size: 0.8rem;">Panel Admin</a>
                     `;
                 }
                 
