@@ -35,8 +35,8 @@
             <button class="menu-toggle" id="menuToggle">
                 <i class="fas fa-bars"></i>
             </button>
-            <div class="nav-actions">
-                <button class="btn btn-primary">Mi Usuario</button>
+            <div class="nav-actions" id="navActions">
+                <button class="btn btn-primary" id="loginBtn">Mi Usuario</button>
             </div>
         </div>
     </nav>
@@ -388,6 +388,31 @@
             </div>
             <div class="modal-footer">
                 <button class="btn btn-primary" onclick="document.getElementById('activityModal').classList.remove('active'); window.location.hash='#contacto';">Solicitar Información</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Login Modal -->
+    <div class="modal-overlay" id="loginModal">
+        <div class="modal-content" style="max-width: 450px;">
+            <button class="modal-close" id="closeLoginModal"><i class="fas fa-times"></i></button>
+            <div class="modal-header">
+                <div class="modal-icon"><i class="fas fa-user-circle"></i></div>
+                <h2>Iniciar Sesión</h2>
+            </div>
+            <div class="modal-body" style="padding: 2rem;">
+                <form id="loginForm">
+                    <div class="form-group" style="margin-bottom: 1.5rem;">
+                        <label for="loginEmail" style="display: block; margin-bottom: 0.5rem; font-weight: 600;">Correo Electrónico</label>
+                        <input type="email" id="loginEmail" required style="width: 100%; padding: 0.75rem; border: 1px solid #cbd5e1; border-radius: 0.5rem; font-family: inherit;">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 1.5rem;">
+                        <label for="loginPassword" style="display: block; margin-bottom: 0.5rem; font-weight: 600;">Contraseña</label>
+                        <input type="password" id="loginPassword" required style="width: 100%; padding: 0.75rem; border: 1px solid #cbd5e1; border-radius: 0.5rem; font-family: inherit;">
+                    </div>
+                    <div id="loginError" style="color: var(--color-red); margin-bottom: 1rem; display: none; font-size: 0.9rem;"></div>
+                    <button type="submit" class="btn btn-primary" style="width: 100%;" id="submitLoginBtn">Entrar</button>
+                </form>
             </div>
         </div>
     </div>

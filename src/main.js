@@ -229,4 +229,121 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
+
+    // --- Authentication Logic ---
+    const loginBtn = document.getElementById('loginBtn');
+    const loginModal = document.getElementById('loginModal');
+    const closeLoginModal = document.getElementById('closeLoginModal');
+    const loginForm = document.getElementById('loginForm');
+    const loginError = document.getElementById('loginError');
+    const navActions = document.getElementById('navActions');
+    
+    // Check if user is logged in
+    const checkAuth = () => {
+        const storedUser = localStorage.getItem('aim_user');
+        if (storedUser && navActions) {
+            try {
+                const user = JSON.parse(storedUser);
+                
+                // Construct UI based on user role
+                let userHtml = `
+                    <div class="user-menu" style="display: flex; align-items: center; gap: 1rem;">
+                        <span style="font-weight: 600; color: var(--text-main);"><i class="fas fa-user-circle"></i> ${user.name}</span>
+                `;
+                
+                // Show Admin panel button only for instructors or club_owners
+                if (user.role === 'instructor' || user.role === 'club_owner') {
+                    // Assuming the admin app runs on a different port (like 3001) or different path.
+                    // For now, it will open the admin app url (you can adjust this URL)
+                    userHtml += `
+                        <a href="http://localhost:3001" target="_blank" class="btn btn-accent" style="padding: 0.5rem 1rem; font-size: 0.8rem;">Panel Admin</a>
+                    `;
+                }
+                
+                userHtml += `
+                        <button class="btn btn-outline" id="logoutBtn" style="padding: 0.5rem 1rem; font-size: 0.8rem;">Salir</button>
+                    </div>
+                `;
+                
+                navActions.innerHTML = userHtml;
+                
+                // Attach logout event
+                document.getElementById('logoutBtn').addEventListener('click', () => {
+                    localStorage.removeItem('aim_token');
+                    localStorage.removeItem('aim_user');
+                    window.location.reload();
+                });
+                
+            } catch(e) {
+                console.error("Error parsing user data");
+                localStorage.removeItem('aim_token');
+                localStorage.removeItem('aim_user');
+            }
+        }
+    };
+    
+    // Initialize auth UI
+    checkAuth();
+
+    // Login Modal Triggers
+    if (loginBtn && loginModal) {
+        loginBtn.addEventListener('click', () => {
+            loginModal.classList.add('active');
+        });
+        
+        closeLoginModal.addEventListener('click', () => {
+            loginModal.classList.remove('active');
+            loginError.style.display = 'none';
+        });
+        
+        loginModal.addEventListener('click', (e) => {
+            if (e.target === loginModal) {
+                loginModal.classList.remove('active');
+                loginError.style.display = 'none';
+            }
+        });
+    }
+
+    // Handle Login Submit
+    if (loginForm) {
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('loginEmail').value;
+            const password = document.getElementById('loginPassword').value;
+            const submitBtn = document.getElementById('submitLoginBtn');
+            
+            submitBtn.textContent = 'Cargando...';
+            submitBtn.disabled = true;
+            loginError.style.display = 'none';
+            
+            try {
+                const response = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    // Success
+                    localStorage.setItem('aim_token', data.token);
+                    localStorage.setItem('aim_user', JSON.stringify(data.user));
+                    
+                    loginModal.classList.remove('active');
+                    checkAuth();
+                } else {
+                    // Error
+                    loginError.textContent = data.error || 'Error al iniciar sesión';
+                    loginError.style.display = 'block';
+                }
+            } catch (err) {
+                loginError.textContent = 'Error de conexión con el servidor.';
+                loginError.style.display = 'block';
+            } finally {
+                submitBtn.textContent = 'Entrar';
+                submitBtn.disabled = false;
+            }
+        });
+    }
 });
