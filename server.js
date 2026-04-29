@@ -16,11 +16,11 @@ const port = process.env.PORT || 3000;
 
 const { Pool } = pg;
 const dbConfig = {
-    host: process.env.DB_HOST,
+    host: process.env.DB_HOST || 'c9ffqidprriprp.cluster-czz5s0kz4scl.eu-west-1.rds.amazonaws.com',
     port: Number(process.env.DB_PORT) || 5432,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
+    user: process.env.DB_USER || 'u9r5ap2i65epfh',
+    password: process.env.DB_PASSWORD || 'p5c002efc65d006c68cbf2b96e6a30ef98a25f81d3bdac0ea628014b7c45ff543',
+    database: process.env.DB_NAME || 'dbas79o4l5tqcf',
     ssl: {
         rejectUnauthorized: false
     }
