@@ -15,7 +15,7 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 const { Pool } = pg;
-const pool = new Pool({
+const dbConfig = {
     host: process.env.DB_HOST,
     port: Number(process.env.DB_PORT) || 5432,
     user: process.env.DB_USER,
@@ -24,6 +24,14 @@ const pool = new Pool({
     ssl: {
         rejectUnauthorized: false
     }
+};
+
+console.log(`Intentando conectar a la base de datos en ${dbConfig.host}:${dbConfig.port}...`);
+
+const pool = new Pool(dbConfig);
+
+pool.on('error', (err) => {
+    console.error('Error inesperado en el pool de Postgres:', err);
 });
 
 app.use(cors());
@@ -40,19 +48,34 @@ app.post('/api/login', async (req, res) => {
         }
         const user = userRes.rows[0];
         let match = false;
+
+        // Contraseña check
         if (user.password && user.password.startsWith('$2')) {
             match = await bcrypt.compare(password, user.password);
         } else {
             match = (password === user.password);
         }
+
         if (!match) {
             return res.status(401).json({ error: 'Credenciales incorrectas.' });
         }
-        const isSuperAdmin = user.dev_role === 'superadmin' || user.role === 'superadmin' || user.role === 'SuperAdmin';
+
+        // Role check: Solo instructor o club_owner (y superadmin por seguridad)
+        const userRole = (user.role || '').toLowerCase();
+        const devRole = (user.dev_role || '').toLowerCase();
+        const allowedRoles = ['instructor', 'club_owner', 'superadmin'];
+
+        const isAuthorized = allowedRoles.includes(userRole) || allowedRoles.includes(devRole);
+
+        if (!isAuthorized) {
+            return res.status(403).json({ error: 'Acceso denegado. Solo instructores y dueños de club pueden acceder.' });
+        }
+
+        const isSuperAdmin = devRole === 'superadmin' || userRole === 'superadmin';
         res.json({ success: true, user: { ...user, isSuperAdmin } });
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Error del servidor.' });
+        console.error('Login Error:', err);
+        res.status(500).json({ error: 'Error del servidor al intentar iniciar sesión.' });
     }
 });
 
