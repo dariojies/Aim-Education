@@ -64,6 +64,35 @@ const App: React.FC = () => {
     return <Auth onLogin={() => setIsAuthenticated(true)} />;
   }
 
+  // Si el usuario está autenticado pero NO tiene permisos de administrador
+  if (!currentUser?.canAccessAdmin) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
+        <div className="bg-white border border-slate-200 rounded-[2rem] p-8 shadow-xl max-w-md w-full text-center">
+          <div className="w-16 h-16 bg-slate-100 rounded-2xl flex items-center justify-center mx-auto mb-6">
+            <Lock className="text-slate-400 w-8 h-8" />
+          </div>
+          <h2 className="text-2xl font-black text-slate-900 mb-2 tracking-tight">Acceso Restringido</h2>
+          <p className="text-slate-500 mb-8 font-medium">
+            Hola {currentUser?.name || 'Usuario'}. Tu cuenta no tiene permisos para acceder al panel de administración.
+          </p>
+          <a 
+            href="/" 
+            className="block w-full bg-slate-900 text-white py-3.5 rounded-2xl font-black transition-all hover:bg-slate-800"
+          >
+            Volver a la Página Principal
+          </a>
+          <button 
+            onClick={() => { storage.saveCurrentUser(null); setIsAuthenticated(false); }}
+            className="mt-4 text-slate-400 hover:text-slate-600 font-bold text-sm"
+          >
+            Cerrar Sesión
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row font-sans selection:bg-emerald-100 selection:text-emerald-900">
       {/* Mobile Header */}

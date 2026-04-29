@@ -73,4 +73,41 @@ document.addEventListener('DOMContentLoaded', () => {
             hero.style.backgroundPositionY = `${scroll * 0.5}px`;
         }
     });
+
+    // --- User Session Logic ---
+    const loginBtn = document.getElementById('loginBtn');
+    const updateLoginButton = () => {
+        const userData = localStorage.getItem('aim_current_user');
+        if (userData && loginBtn) {
+            const user = JSON.parse(userData);
+            if (user.canAccessAdmin) {
+                loginBtn.textContent = 'Ir al Panel';
+                loginBtn.href = '/admin';
+            } else {
+                loginBtn.textContent = `Hola, ${user.firstName || 'Usuario'}`;
+                loginBtn.href = '#'; 
+                
+                if (!document.getElementById('logoutBtn')) {
+                    const logoutBtn = document.createElement('button');
+                    logoutBtn.id = 'logoutBtn';
+                    logoutBtn.innerHTML = '<i class="fas fa-sign-out-alt"></i>';
+                    logoutBtn.title = 'Cerrar Sesión';
+                    logoutBtn.style.marginLeft = '10px';
+                    logoutBtn.style.background = 'transparent';
+                    logoutBtn.style.border = 'none';
+                    logoutBtn.style.color = 'rgba(255,255,255,0.5)';
+                    logoutBtn.style.cursor = 'pointer';
+                    
+                    logoutBtn.onclick = () => {
+                        localStorage.removeItem('aim_current_user');
+                        window.location.reload();
+                    };
+                    loginBtn.parentNode.appendChild(logoutBtn);
+                }
+            }
+        }
+    };
+
+    updateLoginButton();
+    window.addEventListener('storage_updated', updateLoginButton);
 });

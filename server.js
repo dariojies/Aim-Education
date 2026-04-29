@@ -60,19 +60,22 @@ app.post('/api/login', async (req, res) => {
             return res.status(401).json({ error: 'Credenciales incorrectas.' });
         }
 
-        // Role check: Solo instructor o club_owner (y superadmin por seguridad)
+        // Role check: Identificar si es instructor o club_owner (o superadmin)
         const userRole = (user.role || '').toLowerCase();
         const devRole = (user.dev_role || '').toLowerCase();
         const allowedRoles = ['instructor', 'club_owner', 'superadmin'];
-
-        const isAuthorized = allowedRoles.includes(userRole) || allowedRoles.includes(devRole);
-
-        if (!isAuthorized) {
-            return res.status(403).json({ error: 'Acceso denegado. Solo instructores y dueños de club pueden acceder.' });
-        }
-
+        
+        const canAccessAdmin = allowedRoles.includes(userRole) || allowedRoles.includes(devRole);
         const isSuperAdmin = devRole === 'superadmin' || userRole === 'superadmin';
-        res.json({ success: true, user: { ...user, isSuperAdmin } });
+        
+        res.json({ 
+            success: true, 
+            user: { 
+                ...user, 
+                canAccessAdmin,
+                isSuperAdmin 
+            } 
+        });
     } catch (err) {
         console.error('Login Error:', err);
         res.status(500).json({ error: 'Error del servidor al intentar iniciar sesión.' });
