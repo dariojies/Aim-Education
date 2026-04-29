@@ -1,4 +1,4 @@
-function mu(e){return e&&e.__esModule&&Object.prototype.hasOwnProperty.call(e,"default")?e.default:e}var $p={exports:{}},Ps={};/**
+import"./modulepreload-polyfill-B5Qt9EMX.js";function mu(e){return e&&e.__esModule&&Object.prototype.hasOwnProperty.call(e,"default")?e.default:e}var $p={exports:{}},Ps={};/**
  * @license React
  * react-jsx-runtime.production.js
  *

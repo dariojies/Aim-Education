@@ -76,44 +76,44 @@ app.get('/api/users', async (req, res) => {
 
 // --- Vite / Static Files ---
 
-// Admin panel (Vite entry point)
-app.get('/admin*', (req, res, next) => {
-    if (process.env.NODE_ENV === 'production') {
-        res.sendFile(path.join(__dirname, 'dist/admin/index.html'));
-    } else {
-        next(); // Handled by Vite middleware or fallback
-    }
-});
-
 if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
         server: { middlewareMode: true },
-        appType: 'spa',
+        appType: 'custom', // We handle routes manually
     });
     app.use(vite.middlewares);
+
+    // Development fallback for /admin
+    app.get('/admin*', (req, res) => {
+        res.sendFile(path.join(__dirname, 'admin/index.html'));
+    });
 } else {
+    // Serve static files from dist
     app.use(express.static(path.join(__dirname, 'dist')));
-    app.use(express.static(path.join(__dirname)));
+
+    // Production fallback for /admin
+    app.get('/admin*', (req, res) => {
+        res.sendFile(path.join(__dirname, 'dist/admin/index.html'));
+    });
 }
 
-// Landing Page Fallback
+// Landing Page
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
-});
-
-// SPA Fallback for /admin
-app.get('/admin/*', (req, res) => {
     if (process.env.NODE_ENV === 'production') {
-        res.sendFile(path.join(__dirname, 'dist/admin/index.html'));
+        res.sendFile(path.join(__dirname, 'dist/index.html'));
     } else {
-        res.sendFile(path.join(__dirname, 'admin/index.html')); // We'll create this
+        res.sendFile(path.join(__dirname, 'index.html'));
     }
 });
 
-// General Fallback
+// General Fallback (Landing Page)
 app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
+    if (process.env.NODE_ENV === 'production') {
+        res.sendFile(path.join(__dirname, 'dist/index.html'));
+    } else {
+        res.sendFile(path.join(__dirname, 'index.html'));
+    }
 });
 
 app.listen(port, () => {
