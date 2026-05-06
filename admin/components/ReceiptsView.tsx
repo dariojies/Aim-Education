@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FileText, Plus, Search, Trash2, ExternalLink, Calendar, Building2, CreditCard, Banknote, Landmark } from 'lucide-react';
+import { FileText, Plus, Search, Trash2, ExternalLink, Calendar, Building2, CreditCard, Banknote, Landmark, X } from 'lucide-react';
 import { Receipt } from '../types';
 import * as storage from '../services/storage';
 import { useLanguage } from '../LanguageContext';
