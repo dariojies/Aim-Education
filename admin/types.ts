@@ -100,4 +100,13 @@ export interface WalletTransaction {
   date: string;
 }
 
-export type ViewState = 'DASHBOARD' | 'STUDENTS' | 'GAMES' | 'SESSIONS' | 'SETTINGS' | 'AI_COACH' | 'WALLET' | 'ACCESS_MANAGEMENT';
+export interface Receipt {
+  id: string;
+  date: string;
+  amount: number;
+  paymentMethod: 'Tarjeta' | 'Transferencia' | 'Efectivo';
+  company: string;
+  invoiceLink?: string;
+}
+
+export type ViewState = 'DASHBOARD' | 'STUDENTS' | 'GAMES' | 'SESSIONS' | 'SETTINGS' | 'AI_COACH' | 'WALLET' | 'ACCESS_MANAGEMENT' | 'RECEIPTS';

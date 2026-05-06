@@ -71,7 +71,7 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
         setError(data.error || localT('invalidCredentials'));
       } else {
         saveCurrentUser(data.user);
-        onLogin();
+        window.location.href = '/';
       }
     } catch (err) {
       setError('Error de conexión. Por favor, inténtelo de nuevo.');

@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { LayoutDashboard, Users, Trophy, CalendarDays, Menu, X, Settings, Sparkles, ShieldCheck, Lock, Wallet, LogOut } from 'lucide-react';
+import { LayoutDashboard, Users, Trophy, CalendarDays, Menu, X, Settings, Sparkles, ShieldCheck, Lock, Wallet, LogOut, FileText } from 'lucide-react';
 import StudentsView from './components/StudentsView';
 import GamesView from './components/GamesView';
 import SessionsView from './components/SessionsView';
@@ -9,6 +9,7 @@ import SettingsView from './components/SettingsView';
 import AICoachView from './components/AICoachView';
 import WalletView from './components/WalletView';
 import AccessManagementView from './components/AccessManagementView';
+import ReceiptsView from './components/ReceiptsView';
 import { Auth } from './components/Auth';
 import { ViewState } from './types';
 import { useLanguage } from './LanguageContext';
@@ -31,6 +32,7 @@ const App: React.FC = () => {
   const navItems = [
     { id: 'DASHBOARD', label: t('nav.dashboard'), icon: <LayoutDashboard size={20} /> },
     { id: 'STUDENTS', label: t('nav.students'), icon: <Users size={20} /> },
+    { id: 'RECEIPTS', label: 'Recibos', icon: <FileText size={20} /> },
     { id: 'WALLET', label: t('nav.wallet'), icon: <Wallet size={20} /> },
     { id: 'GAMES', label: t('nav.games'), icon: <Trophy size={20} /> },
     { id: 'SESSIONS', label: t('nav.sessions'), icon: <CalendarDays size={20} /> },
@@ -50,6 +52,7 @@ const App: React.FC = () => {
       case 'SESSIONS': return <SessionsView />;
       case 'AI_COACH': return <AICoachView />;
       case 'SETTINGS': return <SettingsView />;
+      case 'RECEIPTS': return <ReceiptsView />;
       case 'WALLET': return <WalletView />;
       case 'ACCESS_MANAGEMENT': return <AccessManagementView />;
       default: return <DashboardView onNavigate={(v) => setCurrentView(v)} />;
@@ -66,31 +69,8 @@ const App: React.FC = () => {
 
   // Si el usuario está autenticado pero NO tiene permisos de administrador
   if (!currentUser?.canAccessAdmin) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
-        <div className="bg-white border border-slate-200 rounded-[2rem] p-8 shadow-xl max-w-md w-full text-center">
-          <div className="w-16 h-16 bg-slate-100 rounded-2xl flex items-center justify-center mx-auto mb-6">
-            <Lock className="text-slate-400 w-8 h-8" />
-          </div>
-          <h2 className="text-2xl font-black text-slate-900 mb-2 tracking-tight">Acceso Restringido</h2>
-          <p className="text-slate-500 mb-8 font-medium">
-            Hola {currentUser?.name || 'Usuario'}. Tu cuenta no tiene permisos para acceder al panel de administración.
-          </p>
-          <a 
-            href="/" 
-            className="block w-full bg-slate-900 text-white py-3.5 rounded-2xl font-black transition-all hover:bg-slate-800"
-          >
-            Volver a la Página Principal
-          </a>
-          <button 
-            onClick={() => { storage.saveCurrentUser(null); setIsAuthenticated(false); }}
-            className="mt-4 text-slate-400 hover:text-slate-600 font-bold text-sm"
-          >
-            Cerrar Sesión
-          </button>
-        </div>
-      </div>
-    );
+    window.location.replace('/');
+    return null;
   }
 
   return (

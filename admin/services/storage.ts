@@ -156,3 +156,17 @@ export const saveSportConfig = (config: SportConfig) => {
   localStorage.setItem('sport_config', JSON.stringify(config));
   window.dispatchEvent(new Event('storage_updated'));
 };
+
+// RECIBOS
+import { Receipt } from '../types';
+export const getReceipts = async (): Promise<Receipt[]> => getLocalData<Receipt>('receipts');
+export const addReceipt = async (receipt: Receipt): Promise<Receipt> => {
+  const receipts = getLocalData<Receipt>('receipts');
+  const newReceipt = { ...receipt, id: receipt.id || generateId() };
+  saveLocalData('receipts', [...receipts.filter(r => r.id !== newReceipt.id), newReceipt]);
+  return newReceipt;
+};
+export const removeReceipt = async (id: string): Promise<void> => {
+  const receipts = getLocalData<Receipt>('receipts');
+  saveLocalData('receipts', receipts.filter(r => r.id !== id));
+};
