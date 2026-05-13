@@ -1,83 +1,85 @@
+
 import { Student, Game, Session, AttendanceRecord, DashboardStats, SportConfig, Group, WalletTransaction } from '../types';
 
 export const generateId = () => {
   return Date.now().toString(36) + Math.random().toString(36).substring(2);
 };
 
-const BASE_URL = '/api';
-
-const fetchData = async <T>(path: string): Promise<T[]> => {
-  try {
-    const response = await fetch(`${BASE_URL}${path}`);
-    if (!response.ok) return [];
-    return await response.json();
-  } catch (error) {
-    console.error(`Error fetching ${path}:`, error);
-    return [];
-  }
+const getLocalData = <T>(key: string): T[] => {
+  if (typeof localStorage === 'undefined') return [];
+  const data = localStorage.getItem(`aim_data_${key}`);
+  return data ? JSON.parse(data) : [];
 };
 
-const postData = async <T>(path: string, payload: any): Promise<T | null> => {
-  try {
-    const response = await fetch(`${BASE_URL}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    if (!response.ok) return null;
-    return await response.json();
-  } catch (error) {
-    console.error(`Error posting ${path}:`, error);
-    return null;
-  }
+const saveLocalData = <T>(key: string, data: T[]) => {
+  localStorage.setItem(`aim_data_${key}`, JSON.stringify(data));
+  window.dispatchEvent(new Event('storage_updated'));
 };
 
-const deleteData = async (path: string): Promise<boolean> => {
-  try {
-    const response = await fetch(`${BASE_URL}${path}`, { method: 'DELETE' });
-    return response.ok;
-  } catch (error) {
-    console.error(`Error deleting ${path}:`, error);
-    return false;
+export const getCurrentUser = () => {
+  if (typeof localStorage === 'undefined') return null;
+  const data = localStorage.getItem('aim_current_user');
+  return data ? JSON.parse(data) : null;
+};
+
+export const saveCurrentUser = (user: any) => {
+  if (user) {
+    localStorage.setItem('aim_current_user', JSON.stringify(user));
+  } else {
+    localStorage.removeItem('aim_current_user');
   }
+  window.dispatchEvent(new Event('storage_updated'));
 };
 
 // GRUPOS
-export const getGroups = async (): Promise<Group[]> => fetchData<Group>('/groups');
+export const getGroups = async (): Promise<Group[]> => getLocalData<Group>('groups');
 export const addGroup = async (group: Group): Promise<Group> => {
+  const groups = getLocalData<Group>('groups');
+  // Si el ID ya existe, lo actualiza (filtra el viejo y añade el nuevo)
   const newGroup = { ...group, id: group.id || generateId() };
-  await postData('/groups', newGroup);
+  const updated = [...groups.filter(g => g.id !== newGroup.id), newGroup];
+  saveLocalData('groups', updated);
   return newGroup;
 };
 export const removeGroup = async (id: string): Promise<void> => {
-  await deleteData(`/groups/${id}`);
+  const groups = getLocalData<Group>('groups');
+  saveLocalData('groups', groups.filter(g => g.id !== id));
 };
 
 // WALLET
 export const getWalletTransactions = async (studentId: string): Promise<WalletTransaction[]> => {
-  const all = await fetchData<WalletTransaction>('/wallet');
+  const all = getLocalData<WalletTransaction>('wallet_transactions');
   return all.filter(t => t.studentId === studentId);
 };
 
 export const addWalletTransaction = async (tx: WalletTransaction): Promise<void> => {
-  await postData('/wallet', tx);
+  const txs = getLocalData<WalletTransaction>('wallet_transactions');
+  saveLocalData('wallet_transactions', [...txs, tx]);
 };
 
 // ALUMNOS
-export const getStudents = async (): Promise<Student[]> => fetchData<Student>('/students');
+export const getStudents = async (): Promise<Student[]> => {
+  try {
+    const res = await fetch('/api/users');
+    if (!res.ok) throw new Error('API failed');
+    const data = await res.json();
+    return data;
+  } catch (err) {
+    console.error('Error fetching students:', err);
+    return getLocalData<Student>('students'); // Fallback
+  }
+};
 export const addStudent = async (student: Student): Promise<Student> => {
-  const students = await getStudents();
-  let referredById = student.referredById;
+  const students = getLocalData<Student>('students');
   const newStudent = {
     ...student,
     id: student.id || generateId(),
-    referralCode: student.referralCode || Math.random().toString(36).substring(2, 8).toUpperCase(),
-    referredById
+    referralCode: student.referralCode || Math.random().toString(36).substring(2, 8).toUpperCase()
   };
+  const updated = [...students.filter(s => s.id !== newStudent.id), newStudent];
+  saveLocalData('students', updated);
 
-  await postData('/students', newStudent);
-
-  // Bonus for referrer logic
+  // Si fue referido por alguien, creamos una transacción inicial
   if (newStudent.referredById) {
     const bonus = (newStudent.monthlyFee || 0) * 0.01; // 1%
     if (bonus > 0) {
@@ -95,51 +97,57 @@ export const addStudent = async (student: Student): Promise<Student> => {
   return newStudent;
 };
 export const removeStudent = async (id: string): Promise<void> => {
-  await deleteData(`/students/${id}`);
+  const students = getLocalData<Student>('students');
+  saveLocalData('students', students.filter(s => s.id !== id));
 };
 
-// GAMES
-export const getGames = async (): Promise<Game[]> => fetchData<Game>('/games');
+export const setAccessRank = async (userId: string, rank: string) => {
+  try {
+    const res = await fetch('/api/access', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, rank })
+    });
+    if (!res.ok) throw new Error('API failed');
+  } catch (err) {
+    console.error('Error setting access rank:', err);
+  }
+};
+
+// Otros... (Games, Sessions, Attendance se mantienen igual)
+export const getGames = async (): Promise<Game[]> => getLocalData<Game>('games');
 export const addGame = async (game: Game): Promise<Game> => {
+  const games = getLocalData<Game>('games');
   const newGame = { ...game, id: game.id || generateId() };
-  await postData('/games', newGame);
+  saveLocalData('games', [...games.filter(g => g.id !== newGame.id), newGame]);
   return newGame;
 };
 export const removeGame = async (id: string): Promise<void> => {
-  await deleteData(`/games/${id}`);
+  const games = getLocalData<Game>('games');
+  saveLocalData('games', games.filter(g => g.id !== id));
 };
-
-// SESSIONS
-export const getSessions = async (): Promise<Session[]> => fetchData<Session>('/sessions');
+export const getSessions = async (): Promise<Session[]> => getLocalData<Session>('sessions');
 export const addSession = async (session: Session): Promise<Session> => {
+  const sessions = getLocalData<Session>('sessions');
   const newSession = { ...session, id: session.id || generateId() };
-  await postData('/sessions', newSession);
+  saveLocalData('sessions', [...sessions.filter(s => s.id !== newSession.id), newSession]);
   return newSession;
 };
 export const removeSession = async (id: string): Promise<void> => {
-  await deleteData(`/sessions/${id}`);
+  const sessions = getLocalData<Session>('sessions');
+  saveLocalData('sessions', sessions.filter(s => s.id !== id));
 };
-
-// ATTENDANCE
-export const getAttendance = async (): Promise<AttendanceRecord[]> => fetchData<AttendanceRecord>('/attendance');
+export const getAttendance = async (): Promise<AttendanceRecord[]> => getLocalData<AttendanceRecord>('attendance');
 export const saveAttendance = async (record: AttendanceRecord): Promise<AttendanceRecord> => {
+  const records = getLocalData<AttendanceRecord>('attendance');
   const newRecord = { ...record, id: record.id || generateId() };
-  await postData('/attendance', newRecord);
+  saveLocalData('attendance', [...records, newRecord]);
   return newRecord;
 };
-
-// STATS
 export const getStats = async (): Promise<DashboardStats> => {
   const [students, groups, games, sessions] = await Promise.all([getStudents(), getGroups(), getGames(), getSessions()]);
-  return {
-    totalStudents: students.length,
-    totalGroups: groups.length,
-    totalGames: games.length,
-    sessionsThisMonth: sessions.length,
-    averageAttendance: 85 // Mock or calc from attendance if needed
-  };
+  return { totalStudents: students.length, totalGroups: groups.length, totalGames: games.length, sessionsThisMonth: sessions.length, averageAttendance: 85 };
 };
-
 export const getSportConfig = (): SportConfig => {
   const saved = localStorage.getItem('sport_config');
   return saved ? JSON.parse(saved) : { name: 'Fútbol', primaryColor: '#059669', isPremium: false };
@@ -148,3 +156,48 @@ export const saveSportConfig = (config: SportConfig) => {
   localStorage.setItem('sport_config', JSON.stringify(config));
   window.dispatchEvent(new Event('storage_updated'));
 };
+
+// RECIBOS
+import { Receipt } from '../types';
+export const getReceipts = async (): Promise<Receipt[]> => {
+  try {
+    const res = await fetch('/api/receipts');
+    if (!res.ok) throw new Error('API failed');
+    return await res.json();
+  } catch (err) {
+    console.error('Error fetching receipts:', err);
+    return getLocalData<Receipt>('receipts');
+  }
+};
+
+export const addReceipt = async (receipt: Receipt): Promise<Receipt> => {
+  const newReceipt = { ...receipt, id: receipt.id || generateId() };
+  try {
+    const res = await fetch('/api/receipts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newReceipt)
+    });
+    if (!res.ok) throw new Error('API failed');
+  } catch (err) {
+    console.error('Error saving receipt:', err);
+    // Fallback to local storage if API fails
+    const receipts = getLocalData<Receipt>('receipts');
+    saveLocalData('receipts', [...receipts.filter(r => r.id !== newReceipt.id), newReceipt]);
+  }
+  return newReceipt;
+};
+
+export const removeReceipt = async (id: string): Promise<void> => {
+  try {
+    const res = await fetch(`/api/receipts/${id}`, {
+      method: 'DELETE'
+    });
+    if (!res.ok) throw new Error('API failed');
+  } catch (err) {
+    console.error('Error removing receipt:', err);
+    const receipts = getLocalData<Receipt>('receipts');
+    saveLocalData('receipts', receipts.filter(r => r.id !== id));
+  }
+};
+

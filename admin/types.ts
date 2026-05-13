@@ -8,12 +8,12 @@ export enum SportCategory {
 }
 
 export enum DifficultyLevel {
-  U5 = 'U5',           
-  U7 = 'U7',           
-  U9 = 'U9',           
-  U12 = 'U12',         
-  U16 = 'U16',         
-  SENIOR = 'SENIOR',   
+  U5 = 'U5',
+  U7 = 'U7',
+  U9 = 'U9',
+  U12 = 'U12',
+  U16 = 'U16',
+  SENIOR = 'SENIOR',
   ALL_AGES = 'ALL_AGES'
 }
 
@@ -38,6 +38,9 @@ export interface Student {
   referralCode?: string;
   referredById?: string;
   monthlyFee: number;
+  accessRank?: string | null;
+  email?: string;
+  isSuperAdmin?: boolean;
 }
 
 export interface AttendanceRecord {
@@ -97,4 +100,13 @@ export interface WalletTransaction {
   date: string;
 }
 
-export type ViewState = 'DASHBOARD' | 'STUDENTS' | 'GAMES' | 'SESSIONS' | 'SETTINGS' | 'AI_COACH' | 'WALLET';
+export interface Receipt {
+  id: string;
+  date: string;
+  amount: number;
+  paymentMethod: 'Tarjeta' | 'Transferencia' | 'Efectivo';
+  company: string;
+  invoiceLink?: string;
+}
+
+export type ViewState = 'DASHBOARD' | 'STUDENTS' | 'GAMES' | 'SESSIONS' | 'SETTINGS' | 'AI_COACH' | 'WALLET' | 'ACCESS_MANAGEMENT' | 'RECEIPTS';

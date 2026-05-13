@@ -1,124 +1,195 @@
-const express = require('express');
-const path = require('path');
-const { Pool } = require('pg');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const cors = require('cors');
-const fs = require('fs');
+import express from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import pg from 'pg';
+import dotenv from 'dotenv';
+import cors from 'cors';
+import bcrypt from 'bcryptjs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3000;
 
+const { Pool } = pg;
+const dbConfig = {
+    host: process.env.DB_HOST || 'c9ffqidprriprp.cluster-czz5s0kz4scl.eu-west-1.rds.amazonaws.com',
+    port: Number(process.env.DB_PORT) || 5432,
+    user: process.env.DB_USER || 'u9r5ap2i65epfh',
+    password: process.env.DB_PASSWORD || 'p5c002efc65d006c68cbf2b96e6a30ef98a25f81d3bdac0ea628014b7c45ff543',
+    database: process.env.DB_NAME || 'dbas79o4l5tqcf',
+    ssl: {
+        rejectUnauthorized: false
+    }
+};
+
+console.log(`Intentando conectar a la base de datos en ${dbConfig.host}:${dbConfig.port}...`);
+
+const pool = new Pool(dbConfig);
+
+pool.on('error', (err) => {
+    console.error('Error inesperado en el pool de Postgres:', err);
+});
+
 app.use(cors());
 app.use(express.json());
 
-// Database connection
-const pool = new Pool({
-  connectionString: 'postgres://u9r5ap2i65epfh:p5c002efc65d006c68cbf2b96e6a30ef98a25f81d3bdac0ea628014b7c45ff543@c9ffqidprriprp.cluster-czz5s0kz4scl.eu-west-1.rds.amazonaws.com:5432/dbas79o4l5tqcf',
-  ssl: {
-    rejectUnauthorized: false
-  }
-});
+// --- API Routes ---
 
-const JWT_SECRET = 'aim_education_super_secret_key_2026';
-
-// --- DB INITIALIZATION (Create tables if missing) ---
-async function initDatabase() {
-    try {
-        console.log('Verificando tablas en la base de datos...');
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS aim_education_groups (id VARCHAR(255) PRIMARY KEY, name VARCHAR(255), description TEXT, level VARCHAR(50), created_at VARCHAR(255));
-            CREATE TABLE IF NOT EXISTS aim_education_games (id VARCHAR(255) PRIMARY KEY, title VARCHAR(255), description TEXT, category VARCHAR(50), difficulty VARCHAR(50), duration_min INTEGER, tags TEXT);
-            CREATE TABLE IF NOT EXISTS aim_education_sessions (id VARCHAR(255) PRIMARY KEY, group_id VARCHAR(255), title VARCHAR(255), date VARCHAR(255), items TEXT, total_duration INTEGER, description TEXT);
-            CREATE TABLE IF NOT EXISTS aim_education_attendance (id VARCHAR(255) PRIMARY KEY, date VARCHAR(255), group_id VARCHAR(255), present_student_ids TEXT, session_notes TEXT);
-            CREATE TABLE IF NOT EXISTS aim_education_wallet (id VARCHAR(255) PRIMARY KEY, student_id VARCHAR(255), type VARCHAR(50), amount NUMERIC, description TEXT, date VARCHAR(255));
-            CREATE TABLE IF NOT EXISTS aim_education_students_extra (id VARCHAR(255) PRIMARY KEY, group_id VARCHAR(255), position VARCHAR(255), emergency_contact VARCHAR(255), notes TEXT, active BOOLEAN, referral_code VARCHAR(255), referred_by_id VARCHAR(255), monthly_fee NUMERIC);
-        `);
-        console.log('✅ Tablas de Aim Education verificadas/creadas.');
-    } catch (err) {
-        console.error('❌ Error al inicializar tablas:', err.message);
-    }
-}
-initDatabase();
-
-// --- AUTH API ---
 app.post('/api/login', async (req, res) => {
-  const { email, password } = req.body;
-  try {
-    const result = await pool.query('SELECT * FROM users WHERE LOWER(email) = $1', [email.toLowerCase()]);
-    if (result.rows.length === 0) return res.status(401).json({ error: 'Credenciales inválidas.' });
-    const user = result.rows[0];
-    const dbHash = (user.password || '').trim();
-    let isValid = (dbHash === password);
-    if (!isValid) isValid = await bcrypt.compare(password, dbHash).catch(() => false);
-    if (!isValid) return res.status(401).json({ error: 'Credenciales inválidas.' });
-    const userName = [user.name, user.surname].filter(Boolean).join(' ') || user.username || 'Usuario';
-    const token = jwt.sign({ id: user.user_id, role: user.role, email: user.email, name: userName }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token, user: { id: user.user_id, name: userName, email: user.email, role: user.role } });
-  } catch (err) { res.status(500).json({ error: 'Error del servidor.' }); }
-});
-
-// --- ADMIN API ---
-app.get('/api/groups', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM aim_education_groups');
-    res.json(result.rows.map(r => ({ id: r.id, name: r.name, description: r.description, level: r.level, createdAt: r.created_at })));
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.get('/api/students', async (req, res) => {
-  try {
-    const usersRes = await pool.query('SELECT * FROM users');
-    const extraRes = await pool.query('SELECT * FROM aim_education_students_extra');
-    const extraMap = {};
-    extraRes.rows.forEach(e => { extraMap[e.id] = { groupId: e.group_id || '', position: e.position || '', emergencyContact: e.emergency_contact || '', monthlyFee: e.monthly_fee ? parseFloat(e.monthly_fee) : 0, active: e.active !== false }; });
-    const combined = usersRes.rows.map(u => ({ id: u.user_id, groupId: extraMap[u.user_id]?.groupId || '', firstName: u.name || u.username || 'Alumno', lastName: u.surname || '', position: extraMap[u.user_id]?.position || '', active: extraMap[u.user_id]?.active !== false, monthlyFee: extraMap[u.user_id]?.monthlyFee || 0 }));
-    res.json(combined);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.get('/api/games', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM aim_education_games');
-    res.json(result.rows.map(r => ({ id: r.id, title: r.title, description: r.description, category: r.category, difficulty: r.difficulty, durationMin: r.duration_min, tags: r.tags ? JSON.parse(r.tags) : [] })));
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// --- SERVING FRONTENDS ---
-
-async function setupVite() {
-    const adminPath = path.join(__dirname, 'admin');
-    
-    // Si la carpeta admin existe y tiene un index.html, intentamos usar Vite para procesar los archivos .tsx
-    if (fs.existsSync(adminPath) && fs.existsSync(path.join(adminPath, 'index.html'))) {
-        try {
-            const vite = await require('vite');
-            const viteServer = await vite.createServer({
-                root: adminPath,
-                server: { middlewareMode: true },
-                appType: 'spa',
-            });
-            app.use('/admin', viteServer.middlewares);
-            console.log('🚀 Modo Desarrollo: Vite habilitado para el Panel Admin en /admin');
-        } catch (e) {
-            console.log('⚠️ No se pudo cargar Vite, sirviendo /admin como estático (puede fallar si no está compilado).');
-            app.use('/admin', express.static(adminPath));
+    const { email, password } = req.body;
+    try {
+        const userRes = await pool.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [email]);
+        if (userRes.rowCount === 0) {
+            return res.status(401).json({ error: 'Credenciales incorrectas o usuario no encontrado.' });
         }
-    } else {
-        console.log('ℹ️ Carpeta /admin no encontrada o sin index.html. Ignorando.');
+        const user = userRes.rows[0];
+        let match = false;
+
+        // Contraseña check
+        if (user.password && user.password.startsWith('$2')) {
+            match = await bcrypt.compare(password, user.password);
+        } else {
+            match = (password === user.password);
+        }
+
+        if (!match) {
+            return res.status(401).json({ error: 'Credenciales incorrectas.' });
+        }
+
+        // Role check: Identificar si es instructor o club_owner (o superadmin)
+        const userRole = (user.role || '').toLowerCase();
+        const devRole = (user.dev_role || '').toLowerCase();
+        const allowedRoles = ['instructor', 'club_owner', 'superadmin'];
+        
+        const canAccessAdmin = allowedRoles.includes(userRole) || allowedRoles.includes(devRole);
+        const isSuperAdmin = devRole === 'superadmin' || userRole === 'superadmin';
+        
+        res.json({ 
+            success: true, 
+            user: { 
+                ...user, 
+                canAccessAdmin,
+                isSuperAdmin 
+            } 
+        });
+    } catch (err) {
+        console.error('Login Error:', err);
+        res.status(500).json({ error: 'Error del servidor al intentar iniciar sesión.' });
     }
+});
 
-    // Main App
-    app.use(express.static(path.join(__dirname)));
-    app.use('/src', express.static(path.join(__dirname, 'src')));
+app.get('/api/users', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT user_id, name, surname, email, belt, dev_role, role, profile_picture FROM users');
+        const mapped = result.rows.map(u => ({
+            id: u.user_id,
+            firstName: u.name,
+            lastName: u.surname,
+            email: u.email,
+            belt: u.belt,
+            avatar: u.profile_picture,
+            isSuperAdmin: (u.dev_role === 'superadmin' || u.role === 'superadmin' || u.role === 'SuperAdmin')
+        }));
+        res.json(mapped);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 
-    // Fallbacks
-    app.get('/admin/*', (req, res) => { res.sendFile(path.join(__dirname, 'admin', 'index.html')); });
-    app.get('*', (req, res) => { res.sendFile(path.join(__dirname, 'index.html')); });
+// RECEIPTS
+app.get('/api/receipts', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM education_recibos ORDER BY date DESC');
+        res.json(result.rows.map(r => ({
+            id: r.id,
+            date: r.date,
+            amount: parseFloat(r.amount),
+            paymentMethod: r.payment_method,
+            company: r.company,
+            invoiceLink: r.invoice_link
+        })));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 
-    app.listen(port, () => {
-        console.log(`✅ Servidor Super-Aim corriendo en http://localhost:${port}`);
+app.post('/api/receipts', async (req, res) => {
+    const { id, date, amount, paymentMethod, company, invoiceLink } = req.body;
+    try {
+        await pool.query(`
+            INSERT INTO education_recibos (id, date, amount, payment_method, company, invoice_link)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (id) DO UPDATE SET
+                date = EXCLUDED.date,
+                amount = EXCLUDED.amount,
+                payment_method = EXCLUDED.payment_method,
+                company = EXCLUDED.company,
+                invoice_link = EXCLUDED.invoice_link
+        `, [id, date, amount, paymentMethod, company, invoiceLink]);
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Save Receipt Error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/receipts/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        await pool.query('DELETE FROM education_recibos WHERE id = $1', [id]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+
+// --- Vite / Static Files ---
+
+if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
+    const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'custom', // We handle routes manually
+    });
+    app.use(vite.middlewares);
+
+    // Development fallback for /admin
+    app.get('/admin*', (req, res) => {
+        res.sendFile(path.join(__dirname, 'admin/index.html'));
+    });
+} else {
+    // Serve static files from dist
+    app.use(express.static(path.join(__dirname, 'dist')));
+
+    // Production fallback for /admin
+    app.get('/admin*', (req, res) => {
+        res.sendFile(path.join(__dirname, 'dist/admin/index.html'));
     });
 }
 
-setupVite();
+// Landing Page
+app.get('/', (req, res) => {
+    if (process.env.NODE_ENV === 'production') {
+        res.sendFile(path.join(__dirname, 'dist/index.html'));
+    } else {
+        res.sendFile(path.join(__dirname, 'index.html'));
+    }
+});
+
+// General Fallback (Landing Page)
+app.get('*', (req, res) => {
+    if (process.env.NODE_ENV === 'production') {
+        res.sendFile(path.join(__dirname, 'dist/index.html'));
+    } else {
+        res.sendFile(path.join(__dirname, 'index.html'));
+    }
+});
+
+app.listen(port, () => {
+    console.log(`Server is running at http://localhost:${port}`);
+});

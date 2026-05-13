@@ -4,7 +4,6 @@ import { Send, Sparkles, MessageSquare, TrendingUp, Calendar, Trash2, Lock, Chec
 import * as storage from '../services/storage';
 import { consultAICoach } from '../services/geminiService';
 import { useLanguage } from '../LanguageContext';
-import PaymentModal from './PaymentModal';
 
 interface Message {
   role: 'user' | 'ai';
@@ -12,8 +11,6 @@ interface Message {
 }
 
 const AICoachView: React.FC = () => {
-  const [isPremium, setIsPremium] = useState(storage.getSportConfig().isPremium);
-  const [showPayment, setShowPayment] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -21,14 +18,8 @@ const AICoachView: React.FC = () => {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (isPremium) {
-      setMessages([{ role: 'ai', text: t('ai.welcome') }]);
-    }
-    
-    const handleStorageUpdate = () => setIsPremium(storage.getSportConfig().isPremium);
-    window.addEventListener('storage_updated', handleStorageUpdate);
-    return () => window.removeEventListener('storage_updated', handleStorageUpdate);
-  }, [isPremium]);
+    setMessages([{ role: 'ai', text: t('ai.welcome') }]);
+  }, []);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -60,63 +51,7 @@ const AICoachView: React.FC = () => {
     }
   };
 
-  const handlePaymentSuccess = () => {
-    setShowPayment(false);
-    setIsPremium(true);
-  };
-
-  // VISTA DE PAGO (PAYWALL)
-  if (!isPremium) {
-    return (
-      <>
-        <div className="max-w-4xl mx-auto min-h-[500px] flex flex-col bg-white rounded-[2.5rem] shadow-xl border border-slate-100 overflow-hidden animate-fade-in relative">
-          <div className="absolute top-0 right-0 p-10 opacity-5 text-slate-900">
-             <Lock size={200} />
-          </div>
-          
-          <div className="p-12 text-center space-y-8 relative z-10 flex-1 flex flex-col justify-center">
-            <div className="flex justify-center">
-               <div className="bg-emerald-600 p-6 rounded-[2rem] shadow-2xl shadow-emerald-200">
-                  <Sparkles size={48} className="text-white" />
-               </div>
-            </div>
-            
-            <div className="space-y-4">
-               <h2 className="text-4xl font-black text-slate-900 tracking-tight">{t('premium.title')}</h2>
-               <p className="text-slate-500 max-w-lg mx-auto font-medium">{t('premium.desc')}</p>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl mx-auto text-left">
-               {[
-                 t('premium.feature.ai_chat'),
-                 t('premium.feature.ai_drills'),
-                 t('premium.feature.sync'),
-                 t('premium.feature.analytics')
-               ].map((f, i) => (
-                 <div key={i} className="flex items-center gap-3 p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                    <CheckCircle2 size={20} className="text-emerald-500 shrink-0" />
-                    <span className="text-sm font-bold text-slate-700">{f}</span>
-                 </div>
-               ))}
-            </div>
-
-            <div className="pt-6">
-               <button 
-                 onClick={() => setShowPayment(true)}
-                 className="bg-slate-900 text-white px-12 py-5 rounded-[1.5rem] font-black text-xl hover:bg-emerald-600 transition-all shadow-xl hover:scale-105"
-               >
-                  {t('premium.cta')} — {price}
-               </button>
-               <p className="mt-4 text-[10px] text-slate-400 font-bold uppercase tracking-widest">Cancela en cualquier momento</p>
-            </div>
-          </div>
-        </div>
-        {showPayment && <PaymentModal onClose={() => setShowPayment(false)} onSuccess={handlePaymentSuccess} />}
-      </>
-    );
-  }
-
-  // VISTA DE CHAT (PREMIUM)
+  // VISTA DE CHAT
   return (
     <div className="max-w-4xl mx-auto h-[calc(100vh-250px)] flex flex-col bg-white rounded-[2.5rem] shadow-xl border border-slate-100 overflow-hidden animate-fade-in">
       {/* Header con insignia PRO */}
