@@ -20,14 +20,7 @@ const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(!!currentUser);
   const [currentView, setCurrentView] = useState<ViewState>('DASHBOARD');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [isPremium, setIsPremium] = useState(storage.getSportConfig().isPremium);
   const { language, setLanguage, t } = useLanguage();
-
-  useEffect(() => {
-    const handleStorageUpdate = () => setIsPremium(storage.getSportConfig().isPremium);
-    window.addEventListener('storage_updated', handleStorageUpdate);
-    return () => window.removeEventListener('storage_updated', handleStorageUpdate);
-  }, []);
 
   const navItems = [
     { id: 'DASHBOARD', label: t('nav.dashboard'), icon: <LayoutDashboard size={20} /> },
@@ -82,7 +75,6 @@ const App: React.FC = () => {
           {t('app.name')}
         </h1>
         <div className="flex items-center gap-2">
-          {isPremium && <span className="text-[9px] font-black bg-emerald-600 px-2 py-1 rounded text-white uppercase tracking-tighter">PRO</span>}
           <button onClick={toggleLanguage} className="text-[10px] font-black bg-slate-100 px-2 py-1 rounded border border-slate-200 uppercase">
             {language}
           </button>
@@ -120,35 +112,11 @@ const App: React.FC = () => {
                 {item.icon}
               </div>
               <span className="font-black text-sm tracking-tight flex-1 text-left">{item.label}</span>
-              {item.special && !isPremium && <Lock size={12} className="text-emerald-300" />}
             </button>
           ))}
         </nav>
 
-        <div className="absolute bottom-0 w-full p-8 hidden md:block">
-          <div className={`rounded-[2rem] p-6 border transition-all duration-500
-            ${isPremium
-              ? 'bg-gradient-to-br from-emerald-600 to-teal-600 text-white border-emerald-400'
-              : 'bg-slate-900 text-white border-slate-800'}`}>
-            <div className="flex items-center justify-between mb-2">
-              <h4 className={`font-black text-xs uppercase tracking-widest ${isPremium ? 'text-white' : 'text-emerald-400'}`}>
-                {isPremium ? 'PRO MEMBER' : 'FREE PLAN'}
-              </h4>
-              {isPremium && <ShieldCheck size={16} />}
-            </div>
-            <p className="text-[10px] text-slate-300 font-bold mb-3">
-              {isPremium ? 'Todos los servicios activos.' : 'Pásate a Pro para IA ilimitada.'}
-            </p>
-            {!isPremium && (
-              <button
-                onClick={() => { setCurrentView('AI_COACH'); setMobileMenuOpen(false); }}
-                className="w-full bg-emerald-600 py-2 rounded-xl text-[10px] font-black hover:bg-emerald-500 transition"
-              >
-                UPGRADE NOW
-              </button>
-            )}
-          </div>
-        </div>
+
       </aside>
 
       {/* Main Content Area */}
