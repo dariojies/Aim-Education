@@ -103,7 +103,7 @@ app.get('/api/users', async (req, res) => {
 // RECEIPTS
 app.get('/api/receipts', async (req, res) => {
     try {
-        const result = await pool.query('SELECT * FROM education_recibos ORDER BY date DESC');
+        const result = await pool.query('SELECT * FROM Aim_education_recibos ORDER BY date DESC');
         res.json(result.rows.map(r => ({
             id: r.id,
             date: r.date,
@@ -121,7 +121,7 @@ app.post('/api/receipts', async (req, res) => {
     const { id, date, amount, paymentMethod, company, invoiceLink } = req.body;
     try {
         await pool.query(`
-            INSERT INTO education_recibos (id, date, amount, payment_method, company, invoice_link)
+            INSERT INTO Aim_education_recibos (id, date, amount, payment_method, company, invoice_link)
             VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (id) DO UPDATE SET
                 date = EXCLUDED.date,
@@ -140,7 +140,7 @@ app.post('/api/receipts', async (req, res) => {
 app.delete('/api/receipts/:id', async (req, res) => {
     const { id } = req.params;
     try {
-        await pool.query('DELETE FROM education_recibos WHERE id = $1', [id]);
+        await pool.query('DELETE FROM Aim_education_recibos WHERE id = $1', [id]);
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });

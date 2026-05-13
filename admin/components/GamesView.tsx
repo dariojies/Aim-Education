@@ -12,7 +12,6 @@ const GamesView: React.FC = () => {
   const [filterDifficulty, setFilterDifficulty] = useState<DifficultyLevel | 'ALL'>('ALL');
   const [refresh, setRefresh] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [isPremium, setIsPremium] = useState(storage.getSportConfig().isPremium);
   const { t, language } = useLanguage();
 
   const [isGenerating, setIsGenerating] = useState(false);
@@ -36,7 +35,6 @@ const GamesView: React.FC = () => {
       try {
         const data = await storage.getGames();
         setGames(data);
-        setIsPremium(storage.getSportConfig().isPremium);
       } catch (error) {
         console.error(error);
       } finally {
@@ -44,10 +42,6 @@ const GamesView: React.FC = () => {
       }
     };
     loadData();
-    
-    const handleStorageUpdate = () => setIsPremium(storage.getSportConfig().isPremium);
-    window.addEventListener('storage_updated', handleStorageUpdate);
-    return () => window.removeEventListener('storage_updated', handleStorageUpdate);
   }, [refresh]);
 
   const handleCreate = async (e: React.FormEvent) => {
@@ -83,10 +77,6 @@ const GamesView: React.FC = () => {
   };
 
   const handleGenerateAI = async () => {
-    if (!isPremium) {
-       alert(t('premium.locked') + ": " + t('premium.desc'));
-       return;
-    }
     if (!aiPrompt) return;
     setIsGenerating(true);
     try {
@@ -232,37 +222,28 @@ const GamesView: React.FC = () => {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
             <div className="lg:col-span-2 space-y-6">
               {!editingId && (
-                <div className={`p-8 rounded-[2.5rem] border transition shadow-xl relative overflow-hidden
-                  ${isPremium ? 'bg-gradient-to-r from-slate-900 to-emerald-900 border-emerald-500/20 text-white' : 'bg-white border-slate-100 shadow-sm'}`}>
-                  {!isPremium && <div className="absolute top-4 right-8 bg-emerald-600 text-white text-[9px] font-black px-2 py-1 rounded uppercase flex items-center gap-1"><Lock size={10} /> PRO FEATURE</div>}
+                <div className="p-8 rounded-[2.5rem] border transition shadow-xl relative overflow-hidden bg-gradient-to-r from-slate-900 to-emerald-900 border-emerald-500/20 text-white">
                   <div className="flex items-center gap-3 mb-4">
-                    <div className={`p-3 rounded-2xl ${isPremium ? 'bg-emerald-500' : 'bg-slate-100 text-slate-400'}`}>
+                    <div className="p-3 rounded-2xl bg-emerald-500">
                        <Sparkles size={24} />
                     </div>
                     <div>
-                       <h3 className={`text-xl font-black ${isPremium ? 'text-white' : 'text-slate-800'}`}>{t('games.ai.title')}</h3>
-                       <p className={`text-sm ${isPremium ? 'text-emerald-200' : 'text-slate-400'}`}>{t('games.ai.desc')}</p>
+                       <h3 className="text-xl font-black text-white">{t('games.ai.title')}</h3>
+                       <p className="text-sm text-emerald-200">{t('games.ai.desc')}</p>
                     </div>
                   </div>
                   <div className="flex flex-col sm:flex-row gap-3">
                     <input 
                       type="text" 
                       value={aiPrompt}
-                      disabled={!isPremium}
                       onChange={(e) => setAiPrompt(e.target.value)}
                       placeholder={t('games.ai.placeholder')}
-                      className={`flex-1 p-5 rounded-2xl outline-none border transition font-medium
-                        ${isPremium 
-                          ? 'bg-white/10 border-white/10 text-white placeholder-white/30 focus:bg-white/20' 
-                          : 'bg-slate-50 border-slate-100 text-slate-300'}`}
+                      className="flex-1 p-5 rounded-2xl outline-none border transition font-medium bg-white/10 border-white/10 text-white placeholder-white/30 focus:bg-white/20"
                     />
                     <button 
                       onClick={handleGenerateAI}
-                      disabled={isGenerating || !aiPrompt || !isPremium}
-                      className={`px-8 py-5 rounded-2xl font-black transition flex items-center justify-center gap-2 shadow-lg
-                        ${isPremium 
-                          ? 'bg-white text-emerald-600 hover:scale-105' 
-                          : 'bg-slate-100 text-slate-300 cursor-not-allowed'}`}
+                      disabled={isGenerating || !aiPrompt}
+                      className="px-8 py-5 rounded-2xl font-black transition flex items-center justify-center gap-2 shadow-lg bg-white text-emerald-600 hover:scale-105 disabled:opacity-50 disabled:hover:scale-100"
                     >
                       {isGenerating ? t('games.ai.thinking') : t('games.ai.btn')}
                       {!isGenerating && <Sparkles size={18} />}
