@@ -22,6 +22,12 @@ const translations: Record<string, Record<Language, string>> = {
   'nav.settings': { en: 'Settings', es: 'Ajustes' },
   'nav.aicoach': { en: 'AI Assistant', es: 'Asistente IA' },
   'nav.wallet': { en: 'Wallet', es: 'Monedero' },
+  'nav.apps': { en: 'Apps', es: 'Aplicaciones' },
+  
+  // Apps Ecosystem
+  'apps.title': { en: 'Apps Ecosystem', es: 'Ecosistema de Apps' },
+  'apps.desc': { en: 'Manage your connected platforms', es: 'Tus plataformas conectadas' },
+  'apps.open': { en: 'Open App', es: 'Abrir App' },
   
   // Premium
   'premium.title': { en: 'Upgrade to Coach Pro', es: 'Pásate a Coach Pro' },

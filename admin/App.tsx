@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { LayoutDashboard, Users, Trophy, CalendarDays, Menu, X, Settings, Sparkles, ShieldCheck, Lock, Wallet, LogOut, FileText } from 'lucide-react';
+import { LayoutDashboard, Users, Trophy, CalendarDays, Menu, X, Settings, Sparkles, ShieldCheck, Lock, Wallet, LogOut, FileText, AppWindow } from 'lucide-react';
 import StudentsView from './components/StudentsView';
 import GamesView from './components/GamesView';
 import SessionsView from './components/SessionsView';
@@ -10,6 +10,7 @@ import AICoachView from './components/AICoachView';
 import WalletView from './components/WalletView';
 import AccessManagementView from './components/AccessManagementView';
 import ReceiptsView from './components/ReceiptsView';
+import AppsView from './components/AppsView';
 import { Auth } from './components/Auth';
 import { ViewState } from './types';
 import { useLanguage } from './LanguageContext';
@@ -30,6 +31,7 @@ const App: React.FC = () => {
     { id: 'GAMES', label: t('nav.games'), icon: <Trophy size={20} /> },
     { id: 'SESSIONS', label: t('nav.sessions'), icon: <CalendarDays size={20} /> },
     { id: 'AI_COACH', label: t('nav.aicoach'), icon: <Sparkles size={20} />, special: true },
+    { id: 'APPS', label: t('nav.apps'), icon: <AppWindow size={20} /> },
     { id: 'SETTINGS', label: t('nav.settings'), icon: <Settings size={20} /> },
   ];
 
@@ -47,6 +49,7 @@ const App: React.FC = () => {
       case 'SETTINGS': return <SettingsView />;
       case 'RECEIPTS': return <ReceiptsView />;
       case 'WALLET': return <WalletView />;
+      case 'APPS': return <AppsView />;
       case 'ACCESS_MANAGEMENT': return <AccessManagementView />;
       default: return <DashboardView onNavigate={(v) => setCurrentView(v)} />;
     }

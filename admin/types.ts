@@ -109,4 +109,4 @@ export interface Receipt {
   invoiceLink?: string;
 }
 
-export type ViewState = 'DASHBOARD' | 'STUDENTS' | 'GAMES' | 'SESSIONS' | 'SETTINGS' | 'AI_COACH' | 'WALLET' | 'ACCESS_MANAGEMENT' | 'RECEIPTS';
+export type ViewState = 'DASHBOARD' | 'STUDENTS' | 'GAMES' | 'SESSIONS' | 'SETTINGS' | 'AI_COACH' | 'WALLET' | 'ACCESS_MANAGEMENT' | 'RECEIPTS' | 'APPS';
