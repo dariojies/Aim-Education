@@ -83,7 +83,6 @@ const SettingsView: React.FC = () => {
           {t('settings.backend_desc')} Esta arquitectura soporta escalado a miles de usuarios y procesamiento de pagos seguros.
         </p>
       </div>
-      </div>
     </div>
   );
 };
