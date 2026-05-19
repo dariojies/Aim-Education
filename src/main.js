@@ -15,18 +15,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const revealOnScroll = () => {
         const triggerBottom = window.innerHeight * 0.85;
-
         revealElements.forEach(el => {
-            const elementTop = el.getBoundingClientRect().top;
-
-            if (elementTop < triggerBottom) {
+            if (el.getBoundingClientRect().top < triggerBottom) {
                 el.classList.add('active');
             }
         });
     };
 
     window.addEventListener('scroll', revealOnScroll);
-    revealOnScroll(); // Initial check
+    revealOnScroll();
 
     // --- Mobile Menu Toggle ---
     const menuToggle = document.getElementById('menuToggle');
@@ -35,98 +32,134 @@ document.addEventListener('DOMContentLoaded', () => {
     if (menuToggle) {
         menuToggle.addEventListener('click', () => {
             navLinks.style.display = navLinks.style.display === 'flex' ? 'none' : 'flex';
-            // In a real modern app, we would use a more sophisticated transition here
-            // but for simplicity we toggle display.
         });
     }
 
-    // --- Smooth Scrolling for Navigation ---
+    // --- Smooth Scrolling ---
     document.querySelectorAll('.nav-links a').forEach(anchor => {
         anchor.addEventListener('click', function (e) {
             const href = this.getAttribute('href');
-
             if (href.startsWith('#')) {
                 e.preventDefault();
-
-                // Update active link
                 document.querySelectorAll('.nav-links a').forEach(a => a.classList.remove('active'));
                 this.classList.add('active');
-
-                const targetId = href.substring(1);
-                const targetElement = document.getElementById(targetId);
-
+                const targetElement = document.getElementById(href.substring(1));
                 if (targetElement) {
-                    window.scrollTo({
-                        top: targetElement.offsetTop - 80,
-                        behavior: 'smooth'
-                    });
+                    window.scrollTo({ top: targetElement.offsetTop - 80, behavior: 'smooth' });
                 }
             }
         });
     });
 
-    // --- Adding subtle parallax to Hero background ---
+    // --- Parallax Hero ---
     window.addEventListener('scroll', () => {
-        const scroll = window.scrollY;
         const hero = document.querySelector('.hero');
-        if (hero) {
-            hero.style.backgroundPositionY = `${scroll * 0.5}px`;
-        }
+        if (hero) hero.style.backgroundPositionY = `${window.scrollY * 0.5}px`;
     });
 
-    // --- User Session Logic ---
+    // --- User Session (via /api/me — reads httpOnly cookie, never localStorage) ---
     const loginBtn = document.getElementById('loginBtn');
-    const updateLoginButton = () => {
-        const userData = localStorage.getItem('aim_current_user');
-        if (userData && loginBtn) {
-            const user = JSON.parse(userData);
-            // Mostrar saludo para todos los usuarios logueados
-            loginBtn.textContent = `Hola, ${user.firstName || 'Usuario'}`;
-            loginBtn.href = '#';
-            loginBtn.style.pointerEvents = 'none'; // Hace que no parezca un enlace clickeable si no queremos que lo sea
 
-            // Botón de Panel Admin (solo si el usuario tiene permiso)
-            if (user.canAccessAdmin) {
-                if (!document.getElementById('adminPanelBtn')) {
-                    const adminBtn = document.createElement('a');
-                    adminBtn.id = 'adminPanelBtn';
-                    adminBtn.textContent = 'Panel Admin';
-                    adminBtn.href = '/admin';
-                    adminBtn.className = 'btn btn-outline';
-                    adminBtn.style.marginLeft = '15px';
-                    adminBtn.style.padding = '8px 15px';
-                    adminBtn.style.fontSize = '0.9rem';
+    const updateNavbar = async () => {
+        try {
+            const res = await fetch('/api/me');
+            if (!res.ok) return;
+            const user = await res.json();
 
-                    loginBtn.parentNode.appendChild(adminBtn);
-                }
+            if (loginBtn) {
+                loginBtn.textContent = `Hola, ${user.firstName || 'Usuario'}`;
+                loginBtn.href = '#';
+                loginBtn.style.pointerEvents = 'none';
             }
 
-            // Botón de Cerrar Sesión (para todos)
+            if (user.canAccessAdmin && !document.getElementById('adminPanelBtn')) {
+                const adminBtn = document.createElement('a');
+                adminBtn.id = 'adminPanelBtn';
+                adminBtn.textContent = 'Panel Admin';
+                adminBtn.href = '/admin';
+                adminBtn.className = 'btn btn-outline';
+                adminBtn.style.cssText = 'margin-left:15px;padding:8px 15px;font-size:0.9rem;';
+                loginBtn.parentNode.appendChild(adminBtn);
+            }
+
             if (!document.getElementById('logoutBtn')) {
                 const logoutBtn = document.createElement('button');
                 logoutBtn.id = 'logoutBtn';
                 logoutBtn.innerHTML = '<i class="fas fa-sign-out-alt"></i>';
                 logoutBtn.title = 'Cerrar Sesión';
-                logoutBtn.style.marginLeft = '15px';
-                logoutBtn.style.background = 'transparent';
-                logoutBtn.style.border = 'none';
-                logoutBtn.style.color = 'inherit';
-                logoutBtn.style.cursor = 'pointer';
-                logoutBtn.style.fontSize = '1.2rem';
-                logoutBtn.style.transition = 'color 0.3s ease';
-
+                logoutBtn.style.cssText = 'margin-left:15px;background:transparent;border:none;color:inherit;cursor:pointer;font-size:1.2rem;transition:color 0.3s ease;';
                 logoutBtn.addEventListener('mouseenter', () => logoutBtn.style.color = '#ff4d4d');
                 logoutBtn.addEventListener('mouseleave', () => logoutBtn.style.color = 'inherit');
-
-                logoutBtn.onclick = () => {
+                logoutBtn.onclick = async () => {
+                    await fetch('/api/logout', { method: 'POST' }).catch(() => {});
                     localStorage.removeItem('aim_current_user');
                     window.location.reload();
                 };
                 loginBtn.parentNode.appendChild(logoutBtn);
             }
+        } catch (e) {
+            // Not logged in or network error — show default button
         }
     };
 
-    updateLoginButton();
-    window.addEventListener('storage_updated', updateLoginButton);
+    updateNavbar();
+
+    // --- Latest News Section ---
+    const newsList = document.getElementById('newsDynamic');
+    const newsMoreLink = document.getElementById('newsMoreLink');
+
+    const loadNews = async () => {
+        if (!newsList) return;
+        try {
+            const res = await fetch('/api/posts?limit=4');
+            if (!res.ok) throw new Error();
+            const posts = await res.json();
+
+            if (posts.length === 0) {
+                newsList.innerHTML = '<p style="color:var(--text-muted);font-size:0.9rem;">No hay noticias publicadas aún.</p>';
+                return;
+            }
+
+            newsList.innerHTML = posts.map(post => {
+                const date = post.published_at
+                    ? new Date(post.published_at).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })
+                    : '';
+                return `
+                <div class="news-item">
+                    <div class="news-date">${date}</div>
+                    <div class="news-info">
+                        <h4>${escapeHtml(post.title)}</h4>
+                        ${post.excerpt ? `<p>${escapeHtml(post.excerpt)}</p>` : ''}
+                        <a href="/noticias/${post.slug}" data-post-id="${post.id}" class="news-read-more" style="font-size:0.8rem;color:var(--color-green);font-weight:600;text-decoration:none;margin-top:4px;display:inline-block;">Leer más →</a>
+                    </div>
+                </div>`;
+            }).join('');
+
+            // Track clicks
+            newsList.querySelectorAll('.news-read-more').forEach(link => {
+                link.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    const id = this.dataset.postId;
+                    const href = this.href;
+                    fetch('/api/posts/' + id + '/click', { method: 'POST' }).finally(() => {
+                        window.location.href = href;
+                    });
+                });
+            });
+
+            if (newsMoreLink) newsMoreLink.href = '/noticias';
+        } catch {
+            if (newsList) newsList.innerHTML = '';
+        }
+    };
+
+    loadNews();
 });
+
+function escapeHtml(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}

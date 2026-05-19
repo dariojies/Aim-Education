@@ -168,23 +168,16 @@
             <div class="news-grid">
                 <div class="news-section reveal">
                     <h2>Últimas <span class="highlight">Noticias</span></h2>
-                    <div class="news-list">
+                    <div class="news-list" id="newsDynamic">
                         <div class="news-item">
-                            <div class="news-date">15 Abr</div>
+                            <div class="news-date">...</div>
                             <div class="news-info">
-                                <h4>Exámenes de Cambridge</h4>
-                                <p>Abierto el plazo de inscripción para la convocatoria de Junio.</p>
-                            </div>
-                        </div>
-                        <div class="news-item">
-                            <div class="news-date">10 Abr</div>
-                            <div class="news-info">
-                                <h4>Campamento de Verano</h4>
-                                <p>¡Nuevas plazas disponibles para el mes de Julio!</p>
+                                <h4 style="background:#f1f5f9;color:transparent;border-radius:4px;width:80%">Cargando</h4>
+                                <p style="background:#f1f5f9;color:transparent;border-radius:4px;width:60%">...</p>
                             </div>
                         </div>
                     </div>
-                    <a href="#" class="news-link">Más noticias</a>
+                    <a href="/noticias" class="news-link" id="newsMoreLink">Más noticias</a>
                 </div>
 
                 <div class="calendar-section reveal">
@@ -233,6 +226,8 @@
                         <li><a href="#inicio">Inicio</a></li>
                         <li><a href="#actividades">Actividades</a></li>
                         <li><a href="#nosotros">Nosotros</a></li>
+                        <li><a href="/noticias">Noticias</a></li>
+                        <li><a href="/feed.xml">RSS Feed</a></li>
                         <li><a href="privacidad.php">Privacidad</a></li>
                     </ul>
                 </div>
