@@ -19,20 +19,26 @@ const port = process.env.PORT || 3000;
 // --- Database ---
 
 const { Pool } = pg;
-const pool = new Pool({
-    host: process.env.DB_HOST,
-    port: Number(process.env.DB_PORT) || 5432,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-    ssl: { rejectUnauthorized: false }
-});
+
+// Heroku Postgres provee DATABASE_URL automáticamente.
+// En local se usan las variables individuales del .env.
+const pool = process.env.DATABASE_URL
+    ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } })
+    : new Pool({
+        host: process.env.DB_HOST,
+        port: Number(process.env.DB_PORT) || 5432,
+        user: process.env.DB_USER,
+        password: process.env.DB_PASSWORD,
+        database: process.env.DB_NAME,
+        ssl: { rejectUnauthorized: false }
+    });
 
 pool.on('error', (err) => {
     console.error('Error inesperado en el pool de Postgres:', err);
 });
 
-console.log(`Intentando conectar a la base de datos en ${process.env.DB_HOST}:${process.env.DB_PORT || 5432}...`);
+const dbLabel = process.env.DATABASE_URL ? 'DATABASE_URL (Heroku)' : `${process.env.DB_HOST}:${process.env.DB_PORT || 5432}`;
+console.log(`Conectando a la base de datos: ${dbLabel}...`);
 
 async function initDb() {
     const client = await pool.connect();
