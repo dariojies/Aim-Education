@@ -204,14 +204,28 @@ const CATEGORY_LABELS = {
     shelfie: 'Shelfie'
 };
 
-function newsLayout(pageTitle, bodyContent, siteUrl) {
+function newsLayout(pageTitle, bodyContent, siteUrl, meta = {}) {
+    const canonical = meta.canonicalUrl || siteUrl;
+    const description = meta.description || 'Noticias y novedades de AIM Education Algeciras';
+    const ogImage = meta.ogImage || '';
     return `<!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>${escapeXml(pageTitle)} | AIM Education</title>
-    <meta name="description" content="Noticias y novedades de AIM Education Algeciras">
+    <meta name="description" content="${escapeXml(description)}">
+    <link rel="canonical" href="${escapeXml(canonical)}">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="${escapeXml(canonical)}">
+    <meta property="og:title" content="${escapeXml(pageTitle)} | AIM Education">
+    <meta property="og:description" content="${escapeXml(description)}">
+    <meta property="og:site_name" content="AIM Education">
+    ${ogImage ? `<meta property="og:image" content="${escapeXml(ogImage)}">` : ''}
+    <meta name="twitter:card" content="${ogImage ? 'summary_large_image' : 'summary'}">
+    <meta name="twitter:title" content="${escapeXml(pageTitle)} | AIM Education">
+    <meta name="twitter:description" content="${escapeXml(description)}">
+    ${ogImage ? `<meta name="twitter:image" content="${escapeXml(ogImage)}">` : ''}
     <link rel="alternate" type="application/rss+xml" title="AIM Education RSS" href="/feed.xml">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&family=Montserrat:wght@400;600&display=swap" rel="stylesheet">
@@ -875,7 +889,11 @@ document.querySelectorAll('.read-more').forEach(link => {
 });
 </script>`;
 
-        res.send(newsLayout('Noticias', body, `${req.get('x-forwarded-proto') || req.protocol}://${req.get('host')}`));
+        const siteUrlNews = `${req.get('x-forwarded-proto') || req.protocol}://${req.get('host')}`;
+        res.send(newsLayout('Noticias', body, siteUrlNews, {
+            canonicalUrl: `${siteUrlNews}/noticias`,
+            description: 'Últimas noticias y novedades de AIM Education Algeciras'
+        }));
     } catch (err) {
         console.error('News listing error:', err);
         res.status(500).send('Error cargando noticias');
@@ -928,7 +946,12 @@ app.get('/noticias/:slug', async (req, res) => {
   </div>
 </article>`;
 
-        res.send(newsLayout(post.title, body, `${req.get('x-forwarded-proto') || req.protocol}://${req.get('host')}`));
+        const siteUrlPost = `${req.get('x-forwarded-proto') || req.protocol}://${req.get('host')}`;
+        res.send(newsLayout(post.title, body, siteUrlPost, {
+            canonicalUrl: `${siteUrlPost}/noticias/${post.slug}`,
+            description: post.excerpt || post.title,
+            ogImage: post.cover_image_url || ''
+        }));
     } catch (err) {
         console.error('Post page error:', err);
         res.status(500).send('Error cargando la noticia');
