@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { Plus, Edit2, Trash2, Eye, MousePointer, BarChart2, Rss, FileText, Globe, Send, X, ChevronLeft, TrendingUp, Newspaper, ExternalLink } from 'lucide-react';
+import { Plus, Edit2, Trash2, Eye, MousePointer, BarChart2, Rss, FileText, Globe, Send, X, ChevronLeft, ChevronDown, TrendingUp, Newspaper, ExternalLink, Copy, Check } from 'lucide-react';
 import { Post } from '../types';
 
 type Mode = 'list' | 'editor' | 'stats';
@@ -63,6 +63,8 @@ const NewsView: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'published' | 'draft'>('all');
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [showFeeds, setShowFeeds] = useState(false);
+  const [copiedFeed, setCopiedFeed] = useState<string | null>(null);
 
   useEffect(() => { fetchPosts(); }, []);
 
@@ -153,6 +155,25 @@ const NewsView: React.FC = () => {
   const openStats = () => {
     fetchStats();
     setMode('stats');
+  };
+
+  const RSS_FEEDS = [
+    { path: '/feed.xml',            label: 'Anuncios generales', note: 'General + Club — todos los suscriptores' },
+    { path: '/feed/taekwondo.xml',  label: 'Taekwondo',          note: 'Solo categoría Taekwondo' },
+    { path: '/feed/ballet.xml',     label: 'Ballet',             note: 'Solo categoría Ballet' },
+    { path: '/feed/ingles.xml',     label: 'Inglés',             note: 'Solo categoría Inglés' },
+    { path: '/feed/robotica.xml',   label: 'Robótica',           note: 'Solo categoría Robótica' },
+    { path: '/feed/competicion.xml',label: 'Competición',        note: 'Solo categoría Competición' },
+    { path: '/feed/shelfie.xml',    label: 'Shelfie',            note: 'Solo categoría Shelfie' },
+    { path: '/feed/todo.xml',       label: 'Todo',               note: 'Todas las categorías' },
+  ];
+
+  const copyFeed = (path: string) => {
+    const url = window.location.origin + path;
+    navigator.clipboard.writeText(url).then(() => {
+      setCopiedFeed(path);
+      setTimeout(() => setCopiedFeed(null), 2000);
+    });
   };
 
   const filtered = posts.filter(p =>
@@ -419,10 +440,51 @@ const NewsView: React.FC = () => {
           ))}
         </div>
         <div className="flex items-center gap-2">
-          <a href="/feed/todo.xml" target="_blank" rel="noreferrer"
-            className="flex items-center gap-2 px-4 py-2 bg-orange-50 text-orange-600 rounded-xl text-xs font-black border border-orange-100 hover:bg-orange-100 transition">
-            <Rss size={14} /> RSS
-          </a>
+          {/* RSS feeds dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setShowFeeds(v => !v)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black border transition ${showFeeds ? 'bg-orange-100 text-orange-700 border-orange-300' : 'bg-orange-50 text-orange-600 border-orange-100 hover:bg-orange-100'}`}
+            >
+              <Rss size={14} /> Feeds RSS <ChevronDown size={12} className={`transition-transform duration-200 ${showFeeds ? 'rotate-180' : ''}`} />
+            </button>
+            {showFeeds && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setShowFeeds(false)} />
+                <div className="absolute right-0 top-full mt-2 w-80 bg-white rounded-2xl border border-slate-100 shadow-2xl z-50 overflow-hidden">
+                  <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-2">
+                    <Rss size={14} className="text-orange-500" />
+                    <p className="text-xs font-black text-slate-700 uppercase tracking-wider">Feeds RSS disponibles</p>
+                  </div>
+                  <div className="divide-y divide-slate-50">
+                    {RSS_FEEDS.map(feed => (
+                      <div key={feed.path} className="flex items-center justify-between px-4 py-3 hover:bg-slate-50 group">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-black text-slate-900">{feed.label}</p>
+                          <p className="text-[11px] text-slate-400 truncate">{feed.path}</p>
+                          <p className="text-[11px] text-slate-400">{feed.note}</p>
+                        </div>
+                        <div className="flex items-center gap-1 ml-3 shrink-0">
+                          <button
+                            onClick={() => copyFeed(feed.path)}
+                            title="Copiar URL"
+                            className="p-1.5 rounded-lg hover:bg-orange-50 text-slate-300 hover:text-orange-500 transition"
+                          >
+                            {copiedFeed === feed.path ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}
+                          </button>
+                          <a href={feed.path} target="_blank" rel="noreferrer"
+                            title="Abrir XML"
+                            className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-300 hover:text-emerald-500 transition">
+                            <ExternalLink size={13} />
+                          </a>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
           <button onClick={openStats}
             className="flex items-center gap-2 px-4 py-2 bg-slate-100 text-slate-700 rounded-xl text-xs font-black hover:bg-slate-200 transition">
             <BarChart2 size={14} /> Estadísticas
