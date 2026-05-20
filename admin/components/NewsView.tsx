@@ -240,17 +240,31 @@ const NewsView: React.FC = () => {
             )}
 
             {/* RSS info */}
-            <div className="bg-orange-50 border border-orange-100 rounded-2xl p-5 flex items-start gap-4">
-              <div className="w-10 h-10 bg-orange-100 rounded-xl flex items-center justify-center shrink-0">
-                <Rss size={20} className="text-orange-600" />
+            <div className="bg-orange-50 border border-orange-100 rounded-2xl p-5">
+              <div className="flex items-start gap-4 mb-4">
+                <div className="w-10 h-10 bg-orange-100 rounded-xl flex items-center justify-center shrink-0">
+                  <Rss size={20} className="text-orange-600" />
+                </div>
+                <div>
+                  <p className="font-black text-slate-900 text-sm">Feeds RSS activos</p>
+                  <p className="text-slate-500 text-xs mt-1">Los suscriptores reciben actualizaciones automáticamente por categoría. Comparte los enlaces correspondientes.</p>
+                </div>
               </div>
-              <div>
-                <p className="font-black text-slate-900 text-sm">Feed RSS activo</p>
-                <p className="text-slate-500 text-xs mt-1">Los suscriptores reciben actualizaciones automáticamente cuando publicas nuevas entradas.</p>
-                <a href="/feed.xml" target="_blank" rel="noreferrer"
-                  className="inline-flex items-center gap-1 mt-2 text-xs font-bold text-orange-600 hover:underline">
-                  Ver feed <ExternalLink size={11} />
-                </a>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { path: '/feed.xml', label: 'Anuncios generales' },
+                  { path: '/feed/taekwondo.xml', label: 'Taekwondo' },
+                  { path: '/feed/ballet.xml', label: 'Ballet' },
+                  { path: '/feed/ingles.xml', label: 'Inglés' },
+                  { path: '/feed/robotica.xml', label: 'Robótica' },
+                  { path: '/feed/competicion.xml', label: 'Competición' },
+                  { path: '/feed/todo.xml', label: 'Todo' },
+                ].map(({ path, label }) => (
+                  <a key={path} href={path} target="_blank" rel="noreferrer"
+                    className="inline-flex items-center gap-1 px-3 py-1.5 bg-white border border-orange-200 rounded-full text-xs font-bold text-orange-700 hover:bg-orange-100 transition-colors">
+                    {label} <ExternalLink size={10} />
+                  </a>
+                ))}
               </div>
             </div>
           </>
@@ -403,7 +417,7 @@ const NewsView: React.FC = () => {
           ))}
         </div>
         <div className="flex items-center gap-2">
-          <a href="/feed.xml" target="_blank" rel="noreferrer"
+          <a href="/feed/todo.xml" target="_blank" rel="noreferrer"
             className="flex items-center gap-2 px-4 py-2 bg-orange-50 text-orange-600 rounded-xl text-xs font-black border border-orange-100 hover:bg-orange-100 transition">
             <Rss size={14} /> RSS
           </a>

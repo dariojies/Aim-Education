@@ -646,39 +646,40 @@ app.post('/api/posts/:id/click', async (req, res) => {
 });
 
 // =============================================================================
-// RSS FEED
+// RSS FEEDS
 // =============================================================================
 
-app.get('/feed.xml', async (req, res) => {
-    try {
-        const siteUrl = `${req.protocol}://${req.get('host')}`;
+async function generateRssFeed(siteUrl, { categories, feedPath, feedTitle, feedDescription }) {
+    let whereClause = `WHERE status = 'published'`;
+    const params = [];
 
-        // Incluimos content y cover_image_url para el feed enriquecido
-        const result = await pool.query(`
-            SELECT id, title, slug, excerpt, content, cover_image_url,
-                   author_name, category, published_at, created_at
-            FROM aim_education_posts
-            WHERE status = 'published'
-            ORDER BY published_at DESC NULLS LAST
-            LIMIT 50
-        `);
+    if (categories && categories.length > 0) {
+        const placeholders = categories.map((_, i) => `$${i + 1}`).join(', ');
+        whereClause += ` AND category IN (${placeholders})`;
+        params.push(...categories);
+    }
 
-        const items = result.rows.map(post => {
-            const pubDate = new Date(post.published_at || post.created_at).toUTCString();
+    const result = await pool.query(`
+        SELECT id, title, slug, excerpt, content, cover_image_url,
+               author_name, category, published_at, created_at
+        FROM aim_education_posts
+        ${whereClause}
+        ORDER BY published_at DESC NULLS LAST
+        LIMIT 50
+    `, params);
 
-            // Enlace canónico (sin UTM) para el guid
-            const canonicalLink = `${siteUrl}/noticias/${post.slug}`;
-            // Enlace con UTM para HubSpot y Metricool — permite trackear el origen
-            const trackingLink = `${siteUrl}/noticias/${post.slug}?utm_source=rss&utm_medium=feed&utm_campaign=aim-education-noticias`;
+    const items = result.rows.map(post => {
+        const pubDate = new Date(post.published_at || post.created_at).toUTCString();
+        const canonicalLink = `${siteUrl}/noticias/${post.slug}`;
+        const trackingLink = `${siteUrl}/noticias/${post.slug}?utm_source=rss&utm_medium=feed&utm_campaign=aim-education-noticias`;
 
-            // HTML del contenido completo con estilos inline para email
-            const fullHtml = post.cover_image_url
-                ? `<img src="${escapeXml(post.cover_image_url)}" alt="${escapeXml(post.title)}" style="max-width:100%;height:auto;border-radius:8px;margin-bottom:20px">\n${renderMarkdownEmail(post.content)}`
-                : renderMarkdownEmail(post.content);
+        const fullHtml = post.cover_image_url
+            ? `<img src="${escapeXml(post.cover_image_url)}" alt="${escapeXml(post.title)}" style="max-width:100%;height:auto;border-radius:8px;margin-bottom:20px">\n${renderMarkdownEmail(post.content)}`
+            : renderMarkdownEmail(post.content);
 
-            const catLabel = CATEGORY_LABELS[post.category] || post.category;
+        const catLabel = CATEGORY_LABELS[post.category] || post.category;
 
-            return `
+        return `
     <item>
       <title>${escapeXml(post.title)}</title>
       <link>${trackingLink}</link>
@@ -694,19 +695,19 @@ app.get('/feed.xml', async (req, res) => {
       </media:content>
       <enclosure url="${escapeXml(post.cover_image_url)}" type="image/jpeg" length="0"/>` : ''}
     </item>`;
-        }).join('');
+    }).join('');
 
-        const xml = `<?xml version="1.0" encoding="UTF-8"?>
+    return `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"
      xmlns:atom="http://www.w3.org/2005/Atom"
      xmlns:content="http://purl.org/rss/1.0/modules/content/"
      xmlns:media="http://search.yahoo.com/mrss/">
   <channel>
-    <title>AIM Education — Noticias</title>
+    <title>${escapeXml(feedTitle)}</title>
     <link>${siteUrl}</link>
-    <description>Últimas noticias y novedades de AIM Education Algeciras</description>
+    <description>${escapeXml(feedDescription)}</description>
     <language>es-ES</language>
-    <atom:link href="${siteUrl}/feed.xml" rel="self" type="application/rss+xml"/>
+    <atom:link href="${siteUrl}${feedPath}" rel="self" type="application/rss+xml"/>
     <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
     <image>
       <url>${siteUrl}/src/logo.png</url>
@@ -716,12 +717,55 @@ app.get('/feed.xml', async (req, res) => {
     ${items}
   </channel>
 </rss>`;
+}
 
+// Feed principal — anuncios generales y noticias del club (para todos los suscriptores)
+app.get('/feed.xml', async (req, res) => {
+    try {
+        const siteUrl = `${req.protocol}://${req.get('host')}`;
+        const xml = await generateRssFeed(siteUrl, {
+            categories: ['general', 'club'],
+            feedPath: '/feed.xml',
+            feedTitle: 'AIM Education — Anuncios',
+            feedDescription: 'Anuncios generales y noticias del club AIM Education Algeciras'
+        });
         res.setHeader('Content-Type', 'application/rss+xml; charset=utf-8');
         res.setHeader('Cache-Control', 'public, max-age=1800');
         res.send(xml);
     } catch (err) {
         console.error('RSS error:', err);
+        res.status(500).send('Error generating RSS feed');
+    }
+});
+
+// Feeds por categoría: /feed/taekwondo.xml, /feed/ballet.xml, etc. + /feed/todo.xml
+const SUBSCRIBABLE_CATEGORIES = new Set(['taekwondo', 'ballet', 'ingles', 'robotica', 'competicion', 'todo']);
+
+app.get('/feed/:category.xml', async (req, res) => {
+    try {
+        const cat = req.params.category.toLowerCase();
+        if (!SUBSCRIBABLE_CATEGORIES.has(cat)) {
+            return res.status(404).send('Feed no encontrado');
+        }
+
+        const siteUrl = `${req.protocol}://${req.get('host')}`;
+        const isAll = cat === 'todo';
+        const catLabel = isAll ? 'Todo' : (CATEGORY_LABELS[cat] || cat);
+
+        const xml = await generateRssFeed(siteUrl, {
+            categories: isAll ? null : [cat],
+            feedPath: `/feed/${cat}.xml`,
+            feedTitle: `AIM Education — ${catLabel}`,
+            feedDescription: isAll
+                ? 'Todas las noticias de AIM Education Algeciras'
+                : `Noticias de ${catLabel} en AIM Education Algeciras`
+        });
+
+        res.setHeader('Content-Type', 'application/rss+xml; charset=utf-8');
+        res.setHeader('Cache-Control', 'public, max-age=1800');
+        res.send(xml);
+    } catch (err) {
+        console.error('RSS category error:', err);
         res.status(500).send('Error generating RSS feed');
     }
 });
@@ -783,17 +827,24 @@ app.get('/noticias', async (req, res) => {
             }).join('');
 
         const body = `
-<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
+<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
   <div>
     <h1 class="text-4xl font-extrabold text-slate-900 tracking-tight" style="font-family:'Outfit',sans-serif">Noticias</h1>
     <p class="text-slate-400 mt-1 text-sm">Últimas novedades de AIM Education</p>
   </div>
-  <a href="/feed.xml" class="self-start flex items-center gap-2 px-4 py-2 bg-orange-50 text-orange-600 rounded-xl text-sm font-bold border border-orange-100 hover:bg-orange-100 transition-colors">
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6.18 15.64a2.18 2.18 0 0 1 2.18 2.18C8.36 19.01 7.38 20 6.18 20C4.98 20 4 19.01 4 17.82a2.18 2.18 0 0 1 2.18-2.18M4 4.44A15.56 15.56 0 0 1 19.56 20h-2.83A12.73 12.73 0 0 0 4 7.27V4.44m0 5.66a9.9 9.9 0 0 1 9.9 9.9h-2.83A7.07 7.07 0 0 0 4 12.93V10.1z"/></svg>
-    Suscribirse por RSS
-  </a>
 </div>
-<div class="flex gap-2 flex-wrap mb-8">${categoryButtons}</div>
+<div class="flex gap-2 flex-wrap mb-4">${categoryButtons}</div>
+<div class="flex gap-2 flex-wrap items-center p-3 mb-8 bg-orange-50 rounded-xl border border-orange-100">
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" class="text-orange-500 shrink-0"><path d="M6.18 15.64a2.18 2.18 0 0 1 2.18 2.18C8.36 19.01 7.38 20 6.18 20C4.98 20 4 19.01 4 17.82a2.18 2.18 0 0 1 2.18-2.18M4 4.44A15.56 15.56 0 0 1 19.56 20h-2.83A12.73 12.73 0 0 0 4 7.27V4.44m0 5.66a9.9 9.9 0 0 1 9.9 9.9h-2.83A7.07 7.07 0 0 0 4 12.93V10.1z"/></svg>
+  <span class="text-xs font-bold text-orange-700 mr-1">Suscribirse por RSS:</span>
+  <a href="/feed.xml" class="text-xs px-3 py-1 rounded-full bg-white border border-orange-200 text-orange-700 hover:bg-orange-100 font-bold transition-colors">Anuncios generales</a>
+  <a href="/feed/taekwondo.xml" class="text-xs px-3 py-1 rounded-full bg-white border border-orange-200 text-orange-700 hover:bg-orange-100 font-bold transition-colors">Taekwondo</a>
+  <a href="/feed/ballet.xml" class="text-xs px-3 py-1 rounded-full bg-white border border-orange-200 text-orange-700 hover:bg-orange-100 font-bold transition-colors">Ballet</a>
+  <a href="/feed/ingles.xml" class="text-xs px-3 py-1 rounded-full bg-white border border-orange-200 text-orange-700 hover:bg-orange-100 font-bold transition-colors">Inglés</a>
+  <a href="/feed/robotica.xml" class="text-xs px-3 py-1 rounded-full bg-white border border-orange-200 text-orange-700 hover:bg-orange-100 font-bold transition-colors">Robótica</a>
+  <a href="/feed/competicion.xml" class="text-xs px-3 py-1 rounded-full bg-white border border-orange-200 text-orange-700 hover:bg-orange-100 font-bold transition-colors">Competición</a>
+  <a href="/feed/todo.xml" class="text-xs px-3 py-1 rounded-full bg-white border border-orange-200 text-orange-700 hover:bg-orange-100 font-bold transition-colors">Todo</a>
+</div>
 <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">${postCards}</div>
 <script>
 document.querySelectorAll('.read-more').forEach(link => {
@@ -851,9 +902,9 @@ app.get('/noticias/:slug', async (req, res) => {
     <span class="text-sm text-slate-400">${post.view_count + 1} visita${post.view_count + 1 !== 1 ? 's' : ''}</span>
     <div class="flex gap-3">
       <a href="/noticias" class="text-sm font-bold text-slate-500 hover:text-emerald-600 transition-colors">← Más noticias</a>
-      <a href="/feed.xml" class="flex items-center gap-1.5 text-sm font-bold text-orange-500 hover:text-orange-400 transition-colors">
+      <a href="${['general', 'club'].includes(post.category) ? '/feed.xml' : '/feed/' + post.category + '.xml'}" class="flex items-center gap-1.5 text-sm font-bold text-orange-500 hover:text-orange-400 transition-colors">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6.18 15.64a2.18 2.18 0 0 1 2.18 2.18C8.36 19.01 7.38 20 6.18 20C4.98 20 4 19.01 4 17.82a2.18 2.18 0 0 1 2.18-2.18M4 4.44A15.56 15.56 0 0 1 19.56 20h-2.83A12.73 12.73 0 0 0 4 7.27V4.44m0 5.66a9.9 9.9 0 0 1 9.9 9.9h-2.83A7.07 7.07 0 0 0 4 12.93V10.1z"/></svg>
-        Suscribirse RSS
+        RSS ${escapeXml(catLabel)}
       </a>
     </div>
   </div>
