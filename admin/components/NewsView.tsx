@@ -13,6 +13,7 @@ const CATEGORIES: Record<string, string> = {
   ingles: 'Inglés',
   robotica: 'Robótica',
   competicion: 'Competición',
+  shelfie: 'Shelfie',
 };
 
 const STATUS_BADGE: Record<string, string> = {
@@ -258,6 +259,7 @@ const NewsView: React.FC = () => {
                   { path: '/feed/ingles.xml', label: 'Inglés' },
                   { path: '/feed/robotica.xml', label: 'Robótica' },
                   { path: '/feed/competicion.xml', label: 'Competición' },
+                  { path: '/feed/shelfie.xml', label: 'Shelfie' },
                   { path: '/feed/todo.xml', label: 'Todo' },
                 ].map(({ path, label }) => (
                   <a key={path} href={path} target="_blank" rel="noreferrer"

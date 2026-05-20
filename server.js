@@ -200,7 +200,8 @@ const CATEGORY_LABELS = {
     ballet: 'Ballet',
     ingles: 'Inglés',
     robotica: 'Robótica',
-    competicion: 'Competición'
+    competicion: 'Competición',
+    shelfie: 'Shelfie'
 };
 
 function newsLayout(pageTitle, bodyContent, siteUrl) {
@@ -739,7 +740,7 @@ app.get('/feed.xml', async (req, res) => {
 });
 
 // Feeds por categoría: /feed/taekwondo.xml, /feed/ballet.xml, etc. + /feed/todo.xml
-const SUBSCRIBABLE_CATEGORIES = new Set(['taekwondo', 'ballet', 'ingles', 'robotica', 'competicion', 'todo']);
+const SUBSCRIBABLE_CATEGORIES = new Set(['taekwondo', 'ballet', 'ingles', 'robotica', 'competicion', 'shelfie', 'todo']);
 
 app.get('/feed/:category.xml', async (req, res) => {
     try {
@@ -843,6 +844,7 @@ app.get('/noticias', async (req, res) => {
   <a href="/feed/ingles.xml" class="text-xs px-3 py-1 rounded-full bg-white border border-orange-200 text-orange-700 hover:bg-orange-100 font-bold transition-colors">Inglés</a>
   <a href="/feed/robotica.xml" class="text-xs px-3 py-1 rounded-full bg-white border border-orange-200 text-orange-700 hover:bg-orange-100 font-bold transition-colors">Robótica</a>
   <a href="/feed/competicion.xml" class="text-xs px-3 py-1 rounded-full bg-white border border-orange-200 text-orange-700 hover:bg-orange-100 font-bold transition-colors">Competición</a>
+  <a href="/feed/shelfie.xml" class="text-xs px-3 py-1 rounded-full bg-white border border-orange-200 text-orange-700 hover:bg-orange-100 font-bold transition-colors">Shelfie</a>
   <a href="/feed/todo.xml" class="text-xs px-3 py-1 rounded-full bg-white border border-orange-200 text-orange-700 hover:bg-orange-100 font-bold transition-colors">Todo</a>
 </div>
 <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">${postCards}</div>
