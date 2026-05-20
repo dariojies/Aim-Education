@@ -740,7 +740,7 @@ async function generateRssFeed(siteUrl, { categories, feedPath, feedTitle, feedD
 
 function setFeedHeaders(res, req) {
     const origin = (req && req.get('Origin')) || '*';
-    res.setHeader('Content-Type', 'text/xml; charset=utf-8');
+    res.setHeader('Content-Type', 'application/rss+xml; charset=utf-8');
     res.setHeader('Cache-Control', 'public, max-age=1800');
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
