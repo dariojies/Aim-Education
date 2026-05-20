@@ -154,6 +154,26 @@ function escapeXml(str) {
         .replace(/"/g, '&quot;');
 }
 
+// Renderizado con estilos inline — para emails (HubSpot) y RSS readers
+function renderMarkdownEmail(text) {
+    if (!text) return '';
+    let html = text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    html = html
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.+?)\*/g, '<em>$1</em>')
+        .replace(/^### (.+)$/gm, '<h4 style="font-family:sans-serif;font-size:16px;font-weight:700;margin:20px 0 8px 0">$1</h4>')
+        .replace(/^## (.+)$/gm, '<h3 style="font-family:sans-serif;font-size:20px;font-weight:700;margin:24px 0 10px 0">$1</h3>')
+        .replace(/^# (.+)$/gm, '<h2 style="font-family:sans-serif;font-size:24px;font-weight:700;margin:28px 0 12px 0">$1</h2>');
+    const blocks = html.split(/\n\n+/);
+    return blocks.map(block => {
+        if (/^<h[2-4]/.test(block.trim())) return block;
+        return `<p style="font-family:sans-serif;font-size:15px;line-height:1.7;margin:0 0 16px 0;color:#374151">${block.replace(/\n/g, '<br>')}</p>`;
+    }).join('\n');
+}
+
 function renderMarkdown(text) {
     if (!text) return '';
     let html = text
@@ -632,8 +652,11 @@ app.post('/api/posts/:id/click', async (req, res) => {
 app.get('/feed.xml', async (req, res) => {
     try {
         const siteUrl = `${req.protocol}://${req.get('host')}`;
+
+        // Incluimos content y cover_image_url para el feed enriquecido
         const result = await pool.query(`
-            SELECT id, title, slug, excerpt, author_name, category, published_at, created_at
+            SELECT id, title, slug, excerpt, content, cover_image_url,
+                   author_name, category, published_at, created_at
             FROM aim_education_posts
             WHERE status = 'published'
             ORDER BY published_at DESC NULLS LAST
@@ -642,21 +665,42 @@ app.get('/feed.xml', async (req, res) => {
 
         const items = result.rows.map(post => {
             const pubDate = new Date(post.published_at || post.created_at).toUTCString();
-            const link = `${siteUrl}/noticias/${post.slug}`;
+
+            // Enlace canónico (sin UTM) para el guid
+            const canonicalLink = `${siteUrl}/noticias/${post.slug}`;
+            // Enlace con UTM para HubSpot y Metricool — permite trackear el origen
+            const trackingLink = `${siteUrl}/noticias/${post.slug}?utm_source=rss&utm_medium=feed&utm_campaign=aim-education-noticias`;
+
+            // HTML del contenido completo con estilos inline para email
+            const fullHtml = post.cover_image_url
+                ? `<img src="${escapeXml(post.cover_image_url)}" alt="${escapeXml(post.title)}" style="max-width:100%;height:auto;border-radius:8px;margin-bottom:20px">\n${renderMarkdownEmail(post.content)}`
+                : renderMarkdownEmail(post.content);
+
+            const catLabel = CATEGORY_LABELS[post.category] || post.category;
+
             return `
     <item>
       <title>${escapeXml(post.title)}</title>
-      <link>${link}</link>
+      <link>${trackingLink}</link>
       <description>${escapeXml(post.excerpt || post.title)}</description>
+      <content:encoded><![CDATA[${fullHtml}]]></content:encoded>
       <pubDate>${pubDate}</pubDate>
-      <guid isPermaLink="true">${link}</guid>
-      <category>${escapeXml(CATEGORY_LABELS[post.category] || post.category)}</category>
+      <guid isPermaLink="false">${canonicalLink}</guid>
+      <category>${escapeXml(catLabel)}</category>
       ${post.author_name ? `<author>${escapeXml(post.author_name)}</author>` : ''}
+      ${post.cover_image_url ? `
+      <media:content url="${escapeXml(post.cover_image_url)}" medium="image">
+        <media:title type="plain">${escapeXml(post.title)}</media:title>
+      </media:content>
+      <enclosure url="${escapeXml(post.cover_image_url)}" type="image/jpeg" length="0"/>` : ''}
     </item>`;
         }).join('');
 
         const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+<rss version="2.0"
+     xmlns:atom="http://www.w3.org/2005/Atom"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/"
+     xmlns:media="http://search.yahoo.com/mrss/">
   <channel>
     <title>AIM Education — Noticias</title>
     <link>${siteUrl}</link>
@@ -664,6 +708,11 @@ app.get('/feed.xml', async (req, res) => {
     <language>es-ES</language>
     <atom:link href="${siteUrl}/feed.xml" rel="self" type="application/rss+xml"/>
     <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
+    <image>
+      <url>${siteUrl}/src/logo.png</url>
+      <title>AIM Education</title>
+      <link>${siteUrl}</link>
+    </image>
     ${items}
   </channel>
 </rss>`;
