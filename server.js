@@ -266,7 +266,10 @@ function newsLayout(pageTitle, bodyContent, siteUrl, meta = {}) {
 
 // --- Middleware ---
 
-app.use(cors());
+app.use(cors({
+    origin: (origin, callback) => callback(null, origin || true),
+    credentials: true
+}));
 app.use(express.json());
 
 // =============================================================================
