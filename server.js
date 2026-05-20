@@ -689,7 +689,7 @@ async function generateRssFeed(siteUrl, { categories, feedPath, feedTitle, feedD
       <pubDate>${pubDate}</pubDate>
       <guid isPermaLink="false">${canonicalLink}</guid>
       <category>${escapeXml(catLabel)}</category>
-      ${post.author_name ? `<author>${escapeXml(post.author_name)}</author>` : ''}
+      ${post.author_name ? `<dc:creator>${escapeXml(post.author_name)}</dc:creator>` : ''}
       ${post.cover_image_url ? `
       <media:content url="${escapeXml(post.cover_image_url)}" medium="image">
         <media:title type="plain">${escapeXml(post.title)}</media:title>
@@ -702,7 +702,8 @@ async function generateRssFeed(siteUrl, { categories, feedPath, feedTitle, feedD
 <rss version="2.0"
      xmlns:atom="http://www.w3.org/2005/Atom"
      xmlns:content="http://purl.org/rss/1.0/modules/content/"
-     xmlns:media="http://search.yahoo.com/mrss/">
+     xmlns:media="http://search.yahoo.com/mrss/"
+     xmlns:dc="http://purl.org/dc/elements/1.1/">
   <channel>
     <title>${escapeXml(feedTitle)}</title>
     <link>${siteUrl}</link>
