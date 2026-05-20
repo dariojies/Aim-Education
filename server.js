@@ -721,6 +721,19 @@ async function generateRssFeed(siteUrl, { categories, feedPath, feedTitle, feedD
 </rss>`;
 }
 
+function setFeedHeaders(res) {
+    res.setHeader('Content-Type', 'application/rss+xml; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=1800');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+}
+
+// Preflight OPTIONS para todos los feeds
+app.options('/feed.xml', (req, res) => { setFeedHeaders(res); res.sendStatus(204); });
+app.options('/feed/:category.xml', (req, res) => { setFeedHeaders(res); res.sendStatus(204); });
+
 // Feed principal — anuncios generales y noticias del club (para todos los suscriptores)
 app.get('/feed.xml', async (req, res) => {
     try {
@@ -732,8 +745,7 @@ app.get('/feed.xml', async (req, res) => {
             feedTitle: 'AIM Education — Anuncios',
             feedDescription: 'Anuncios generales y noticias del club AIM Education Algeciras'
         });
-        res.setHeader('Content-Type', 'application/rss+xml; charset=utf-8');
-        res.setHeader('Cache-Control', 'public, max-age=1800');
+        setFeedHeaders(res);
         res.send(xml);
     } catch (err) {
         console.error('RSS error:', err);
@@ -765,8 +777,7 @@ app.get('/feed/:category.xml', async (req, res) => {
                 : `Noticias de ${catLabel} en AIM Education Algeciras`
         });
 
-        res.setHeader('Content-Type', 'application/rss+xml; charset=utf-8');
-        res.setHeader('Cache-Control', 'public, max-age=1800');
+        setFeedHeaders(res);
         res.send(xml);
     } catch (err) {
         console.error('RSS category error:', err);
