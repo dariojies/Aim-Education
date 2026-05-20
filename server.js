@@ -953,7 +953,7 @@ app.get('/noticias/:slug', async (req, res) => {
         res.send(newsLayout(post.title, body, siteUrlPost, {
             canonicalUrl: `${siteUrlPost}/noticias/${post.slug}`,
             description: post.excerpt || post.title,
-            ogImage: post.cover_image_url || ''
+            ogImage: post.cover_image_url || `${siteUrlPost}/src/logo.png`
         }));
     } catch (err) {
         console.error('Post page error:', err);
@@ -964,6 +964,9 @@ app.get('/noticias/:slug', async (req, res) => {
 // =============================================================================
 // VITE / STATIC FILES
 // =============================================================================
+
+// Serve src/ assets at /src/* in all environments (logo, images, etc.)
+app.use('/src', express.static(path.join(__dirname, 'src')));
 
 if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
