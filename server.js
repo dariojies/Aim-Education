@@ -672,7 +672,7 @@ async function generateRssFeed(siteUrl, { categories, feedPath, feedTitle, feedD
     const items = result.rows.map(post => {
         const pubDate = new Date(post.published_at || post.created_at).toUTCString();
         const canonicalLink = `${siteUrl}/noticias/${post.slug}`;
-        const trackingLink = `${siteUrl}/noticias/${post.slug}?utm_source=rss&utm_medium=feed&utm_campaign=aim-education-noticias`;
+        const trackingLink = `${siteUrl}/noticias/${post.slug}?utm_source=rss&amp;utm_medium=feed&amp;utm_campaign=aim-education-noticias`;
 
         const fullHtml = post.cover_image_url
             ? `<img src="${escapeXml(post.cover_image_url)}" alt="${escapeXml(post.title)}" style="max-width:100%;height:auto;border-radius:8px;margin-bottom:20px">\n${renderMarkdownEmail(post.content)}`
@@ -712,7 +712,7 @@ async function generateRssFeed(siteUrl, { categories, feedPath, feedTitle, feedD
     <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
     <image>
       <url>${siteUrl}/src/logo.png</url>
-      <title>AIM Education</title>
+      <title>${escapeXml(feedTitle)}</title>
       <link>${siteUrl}</link>
     </image>
     ${items}
@@ -723,7 +723,8 @@ async function generateRssFeed(siteUrl, { categories, feedPath, feedTitle, feedD
 // Feed principal — anuncios generales y noticias del club (para todos los suscriptores)
 app.get('/feed.xml', async (req, res) => {
     try {
-        const siteUrl = `${req.protocol}://${req.get('host')}`;
+        const proto = req.get('x-forwarded-proto') || req.protocol;
+        const siteUrl = `${proto}://${req.get('host')}`;
         const xml = await generateRssFeed(siteUrl, {
             categories: ['general', 'club'],
             feedPath: '/feed.xml',
@@ -749,7 +750,8 @@ app.get('/feed/:category.xml', async (req, res) => {
             return res.status(404).send('Feed no encontrado');
         }
 
-        const siteUrl = `${req.protocol}://${req.get('host')}`;
+        const proto = req.get('x-forwarded-proto') || req.protocol;
+        const siteUrl = `${proto}://${req.get('host')}`;
         const isAll = cat === 'todo';
         const catLabel = isAll ? 'Todo' : (CATEGORY_LABELS[cat] || cat);
 
@@ -859,7 +861,7 @@ document.querySelectorAll('.read-more').forEach(link => {
 });
 </script>`;
 
-        res.send(newsLayout('Noticias', body, `${req.protocol}://${req.get('host')}`));
+        res.send(newsLayout('Noticias', body, `${req.get('x-forwarded-proto') || req.protocol}://${req.get('host')}`));
     } catch (err) {
         console.error('News listing error:', err);
         res.status(500).send('Error cargando noticias');
@@ -912,7 +914,7 @@ app.get('/noticias/:slug', async (req, res) => {
   </div>
 </article>`;
 
-        res.send(newsLayout(post.title, body, `${req.protocol}://${req.get('host')}`));
+        res.send(newsLayout(post.title, body, `${req.get('x-forwarded-proto') || req.protocol}://${req.get('host')}`));
     } catch (err) {
         console.error('Post page error:', err);
         res.status(500).send('Error cargando la noticia');
