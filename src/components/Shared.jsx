@@ -136,6 +136,14 @@ function AimHeader({ route } = {}) {
     return () => window.removeEventListener('scroll', onScroll);
   }, []);
 
+  // Close mobile menu on resize above breakpoint or route change
+  useEffect(() => { setMenuOpen(false); }, [path]);
+  useEffect(() => {
+    const onResize = () => { if (window.innerWidth > 1024) setMenuOpen(false); };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
   // Determine active route from path if route prop not provided
   const activeRoute = route || (() => {
     if (path === '/' || path === '') return 'home';
