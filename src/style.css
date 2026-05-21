@@ -2067,7 +2067,6 @@ html[data-theme="dark"] .dash-nav button.is-active {
   border-top: 1px solid var(--line);
   background: var(--bg);
 }
-.mobile-nav.open { display: flex; }
 .mobile-nav a {
   padding: 10px 0;
   font-size: 15px;
@@ -2076,6 +2075,13 @@ html[data-theme="dark"] .dash-nav button.is-active {
   border-bottom: 1px solid var(--line-2);
 }
 .mobile-nav a:last-child { border-bottom: none; }
+@media (min-width: 1025px) {
+  .mobile-nav,
+  .mobile-nav.open { display: none !important; }
+}
+@media (max-width: 1024px) {
+  .mobile-nav.open { display: flex; }
+}
 
 /* =============================================================
    Responsive
