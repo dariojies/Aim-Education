@@ -569,7 +569,8 @@ app.get('/api/admin/posts', authenticateSession, async (req, res) => {
 });
 
 app.post('/api/admin/posts', authenticateSession, async (req, res) => {
-    const { title, excerpt, content, coverImageUrl, category, status, slug } = req.body;
+    const { title, excerpt, content, coverImageUrl, cover_image_url, category, status, slug } = req.body;
+    const imageUrl = coverImageUrl || cover_image_url;
     if (!title || !content) return res.status(400).json({ error: 'Título y contenido son obligatorios.' });
 
     const id = crypto.randomUUID();
@@ -581,7 +582,7 @@ app.post('/api/admin/posts', authenticateSession, async (req, res) => {
         await pool.query(`
             INSERT INTO aim_education_posts (id, title, slug, excerpt, content, cover_image_url, author_name, category, status, published_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        `, [id, title, finalSlug, excerpt || null, content, coverImageUrl || null, authorName || 'Admin', category || 'general', status || 'draft', publishedAt]);
+        `, [id, title, finalSlug, excerpt || null, content, imageUrl || null, authorName || 'Admin', category || 'general', status || 'draft', publishedAt]);
 
         const result = await pool.query('SELECT * FROM aim_education_posts WHERE id = $1', [id]);
         res.status(201).json(result.rows[0]);
@@ -592,7 +593,8 @@ app.post('/api/admin/posts', authenticateSession, async (req, res) => {
 });
 
 app.put('/api/admin/posts/:id', authenticateSession, async (req, res) => {
-    const { title, excerpt, content, coverImageUrl, category, status, slug } = req.body;
+    const { title, excerpt, content, coverImageUrl, cover_image_url, category, status, slug } = req.body;
+    const imageUrl = coverImageUrl || cover_image_url;
     try {
         const current = await pool.query('SELECT * FROM aim_education_posts WHERE id = $1', [req.params.id]);
         if (current.rowCount === 0) return res.status(404).json({ error: 'Entrada no encontrada.' });
@@ -607,7 +609,7 @@ app.put('/api/admin/posts/:id', authenticateSession, async (req, res) => {
             SET title = $1, slug = $2, excerpt = $3, content = $4, cover_image_url = $5,
                 category = $6, status = $7, published_at = $8, updated_at = NOW()
             WHERE id = $9
-        `, [title, finalSlug, excerpt || null, content, coverImageUrl || null, category || 'general', status || 'draft', publishedAt, req.params.id]);
+        `, [title, finalSlug, excerpt || null, content, imageUrl || null, category || 'general', status || 'draft', publishedAt, req.params.id]);
 
         const result = await pool.query('SELECT * FROM aim_education_posts WHERE id = $1', [req.params.id]);
         res.json(result.rows[0]);
