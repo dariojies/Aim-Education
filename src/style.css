@@ -105,16 +105,15 @@ button { font-family: inherit; cursor: pointer; }
 img { max-width: 100%; display: block; }
 
 /* =============================================================
-   PROTOTYPE SHELL — fixed top bar with screen switcher
-   (kept for reference, not used in production)
+   PROTOTYPE SHELL — hidden in production
    ============================================================= */
 .proto-bar {
+  display: none;
   position: fixed;
   top: 0; left: 0; right: 0;
   height: 38px;
   background: var(--navy);
   color: white;
-  display: flex;
   align-items: center;
   padding: 0 14px;
   font-size: 12px;
@@ -122,31 +121,6 @@ img { max-width: 100%; display: block; }
   gap: 12px;
   border-bottom: 1px solid rgba(255,255,255,.08);
 }
-.proto-bar .pill {
-  background: var(--grad-aim);
-  color: white;
-  padding: 3px 10px;
-  border-radius: 999px;
-  font-weight: 700;
-  letter-spacing: .04em;
-  font-size: 10px;
-  text-transform: uppercase;
-}
-.proto-bar .crumb { color: rgba(255,255,255,.65); }
-.proto-bar .crumb b { color: white; font-weight: 600; }
-.proto-bar .grow { flex: 1; }
-.proto-bar select {
-  background: rgba(255,255,255,.08);
-  color: white;
-  border: 1px solid rgba(255,255,255,.18);
-  border-radius: 8px;
-  padding: 4px 10px;
-  font-size: 12px;
-  font-family: inherit;
-  cursor: pointer;
-}
-.proto-bar select option { background: var(--navy); color: white; }
-.proto-bar .meta { color: rgba(255,255,255,.5); font-size: 11px; }
 
 .proto-stage {
   padding-top: 0;
@@ -210,23 +184,19 @@ img { max-width: 100%; display: block; }
   background: rgba(255,255,255,.5);
 }
 .aim-tiles span:nth-child(1)::after {
-  /* glove */
   inset: 22% 30% 22% 22%;
   border-radius: 50% 60% 30% 50%;
   background: rgba(255,255,255,.55);
 }
 .aim-tiles span:nth-child(2)::after {
-  /* chat */
   inset: 28%;
   border-radius: 3px 3px 1px 3px;
 }
 .aim-tiles span:nth-child(3)::after {
-  /* robot head */
   inset: 26% 28% 24% 28%;
   border-radius: 3px;
 }
 .aim-tiles span:nth-child(4)::after {
-  /* shoes */
   inset: 38% 26% 24% 26%;
   border-radius: 50% 50% 30% 30%;
 }
@@ -302,31 +272,6 @@ header.aim-header {
   display: flex;
   gap: 10px;
   align-items: center;
-}
-
-/* Mobile menu button */
-.mobile-menu-btn {
-  display: none;
-  background: transparent;
-  border: none;
-  padding: 6px;
-  color: var(--ink);
-  cursor: pointer;
-}
-.mobile-menu-btn svg { width: 24px; height: 24px; display: block; }
-.mobile-nav {
-  display: none;
-  flex-direction: column;
-  padding: 12px 24px 18px;
-  border-top: 1px solid var(--line);
-}
-.mobile-nav.open { display: flex; }
-.mobile-nav a {
-  padding: 10px 0;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--ink-2);
-  border-bottom: 1px solid var(--line-2);
 }
 
 /* Buttons */
@@ -2084,18 +2029,6 @@ html[data-theme="dark"] .dash-nav button.is-active {
 .week-card .spots { font-size: 11px; color: var(--teal); font-weight: 800; letter-spacing: .04em; margin-top: 10px; text-transform: uppercase; }
 .week-card.full .spots { color: var(--orange); }
 
-/* Dot loader for buttons */
-.dot-loader {
-  display: inline-block;
-  width: 18px;
-  height: 18px;
-  border: 2px solid rgba(255,255,255,.4);
-  border-top-color: white;
-  border-radius: 50%;
-  animation: spin .6s linear infinite;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
-
 /* =============================================================
    Animations
    ============================================================= */
@@ -2114,6 +2047,35 @@ html[data-theme="dark"] .dash-nav button.is-active {
   50% { transform: translateY(-8px); }
 }
 .float { animation: float-y 4s ease-in-out infinite; }
+
+/* =============================================================
+   Mobile menu button — hidden by default, shown at mobile breakpoints
+   ============================================================= */
+.mobile-menu-btn {
+  display: none;
+  background: transparent;
+  border: none;
+  padding: 8px;
+  color: var(--ink);
+  cursor: pointer;
+}
+.mobile-menu-btn svg { width: 24px; height: 24px; display: block; }
+.mobile-nav {
+  display: none;
+  flex-direction: column;
+  padding: 12px 24px 18px;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+.mobile-nav.open { display: flex; }
+.mobile-nav a {
+  padding: 10px 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink-2);
+  border-bottom: 1px solid var(--line-2);
+}
+.mobile-nav a:last-child { border-bottom: none; }
 
 /* =============================================================
    Responsive

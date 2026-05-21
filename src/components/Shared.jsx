@@ -126,7 +126,7 @@ function AimLogo({ size = "md", variant = "black", sub = false, onClick }) {
 
 // ---------- Top header ----------
 function AimHeader({ route } = {}) {
-  const { path, go, user } = useRouter();
+  const { path, go } = useRouter();
   const [scrolled, setScrolled] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -177,14 +177,8 @@ function AimHeader({ route } = {}) {
               : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
             }
           </button>
-          {user ? (
-            <button className="btn btn-gradient" onClick={() => go('/dashboard')}>Mi cuenta</button>
-          ) : (
-            <>
-              <button className="btn btn-ghost" onClick={() => go('/auth')}>Iniciar sesión</button>
-              <button className="btn btn-gradient" onClick={() => go('/auth?mode=register')}>Registrarme</button>
-            </>
-          )}
+          <button className="btn btn-ghost" onClick={() => go('/auth')}>Iniciar sesión</button>
+          <button className="btn btn-gradient" onClick={() => go('/dashboard')}>Mi cuenta</button>
         </div>
       </div>
       <nav className={`mobile-nav${menuOpen ? ' open' : ''}`}>
