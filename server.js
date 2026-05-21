@@ -369,6 +369,60 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
+app.post('/api/register', async (req, res) => {
+    const { firstName, lastName, email, phone, password, activities } = req.body;
+    if (!firstName || !email || !password) {
+        return res.status(400).json({ error: 'Nombre, email y contraseña son obligatorios.' });
+    }
+    if (password.length < 8) {
+        return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres.' });
+    }
+    const emailLower = email.toLowerCase().trim();
+    try {
+        const exists = await pool.query('SELECT user_id FROM users WHERE LOWER(email) = $1', [emailLower]);
+        if (exists.rowCount > 0) {
+            return res.status(409).json({ error: 'Ya existe una cuenta con ese email.' });
+        }
+        const hash = await bcrypt.hash(password, 12);
+        const result = await pool.query(
+            `INSERT INTO users (name, surname, email, password, role)
+             VALUES ($1, $2, $3, $4, 'student')
+             RETURNING user_id, name, surname, email`,
+            [firstName.trim(), (lastName || '').trim(), emailLower, hash]
+        );
+        const newUser = result.rows[0];
+        const now = Date.now();
+        const token = crypto.randomBytes(32).toString('hex');
+        sessions.set(token, {
+            userId: newUser.user_id,
+            email: newUser.email,
+            firstName: newUser.name,
+            lastName: newUser.surname,
+            avatar: null,
+            isSuperAdmin: false,
+            canAccessAdmin: false,
+            expiresAt: now + SESSION_DURATION_MS
+        });
+        res.cookie('aim_session', token, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict',
+            maxAge: SESSION_DURATION_MS,
+            path: '/'
+        });
+        res.status(201).json({
+            success: true,
+            user: { id: newUser.user_id, firstName: newUser.name, lastName: newUser.surname, email: newUser.email, canAccessAdmin: false, isSuperAdmin: false }
+        });
+    } catch (err) {
+        console.error('Register error:', err);
+        if (err.code === '42703') {
+            return res.status(500).json({ error: 'Error en la estructura de la base de datos. Contacta con soporte.' });
+        }
+        res.status(500).json({ error: 'Error al crear la cuenta. Inténtalo de nuevo.' });
+    }
+});
+
 app.get('/api/me', authenticateSession, (req, res) => {
     const s = req.userSession;
     res.json({
@@ -968,10 +1022,17 @@ app.get('/noticias/:slug', async (req, res) => {
 // VITE / STATIC FILES
 // =============================================================================
 
-// Serve src/ assets at /src/* in all environments (logo, images, etc.)
-app.use('/src', express.static(path.join(__dirname, 'src')));
-
 if (process.env.NODE_ENV !== 'production') {
+    // Serve image/binary assets directly (Vite transforms source files but not binaries)
+    app.use('/src', (req, res, next) => {
+        if (/\.(png|jpe?g|gif|svg|webp|ico|woff2?|ttf|otf|pdf)$/i.test(req.path)) {
+            express.static(path.join(__dirname, 'src'))(req, res, next);
+        } else {
+            next();
+        }
+    });
+
+    // Dev: Vite handles all source files (including JSX transforms) before static middleware
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
         server: { middlewareMode: true },
@@ -983,6 +1044,8 @@ if (process.env.NODE_ENV !== 'production') {
         res.sendFile(path.join(__dirname, 'admin/index.html'));
     });
 } else {
+    // Prod: serve src/ images and dist/ built files
+    app.use('/src', express.static(path.join(__dirname, 'src')));
     app.use(express.static(path.join(__dirname, 'dist')));
 
     app.get('/admin*', (req, res) => {
