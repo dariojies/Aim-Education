@@ -220,18 +220,29 @@ function DashAttendance() {
 }
 
 function DashPayments() {
+  const [receipts, setReceipts] = useState([]);
+
+  useEffect(() => {
+    fetch('/api/receipts', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : [])
+      .then(setReceipts)
+      .catch(() => {});
+  }, []);
+
+  const totalPaid = receipts.reduce((s, r) => s + (r.amount || 0), 0);
+
   return (
     <>
       <div className="dash-cards" style={{gridTemplateColumns: "repeat(3, 1fr)"}}>
-        <div className="stat-card warn">
-          <div className="l">Pendiente</div>
-          <div className="v">112€</div>
-          <div className="trend">vence en 4 días</div>
-        </div>
         <div className="stat-card">
           <div className="l">Pagado este año</div>
-          <div className="v">970€</div>
-          <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>9 recibos · IVA inc.</div>
+          <div className="v">{totalPaid > 0 ? `${totalPaid.toLocaleString("es-ES", {minimumFractionDigits: 0})}€` : "—"}</div>
+          <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>{receipts.length} recibo{receipts.length !== 1 ? "s" : ""} · IVA inc.</div>
+        </div>
+        <div className="stat-card warn">
+          <div className="l">Pendiente</div>
+          <div className="v">—</div>
+          <div className="trend">Contacta con el club</div>
         </div>
         <div className="stat-card">
           <div className="l">Próximo cargo</div>
@@ -241,67 +252,27 @@ function DashPayments() {
       </div>
 
       <div className="panel">
-        <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18}}>
-          <div>
-            <h2 style={{margin: 0}}><I.Wallet /> Pagos pendientes</h2>
-            <p className="sub" style={{margin: "4px 0 0"}}>Selecciona los conceptos a pagar.</p>
-          </div>
-          <button className="btn btn-gradient">Pagar todo ahora · 112€</button>
-        </div>
-
-        <div className="payment-row">
-          <div>
-            <div className="name">Mensualidad mayo · Lucía García</div>
-            <div className="date">Ballet Clásico Primary · vence 1 de mayo</div>
-          </div>
-          <span className="status-pill pending">Pendiente</span>
-          <span className="date">01/05/2026</span>
-          <span className="amount">42,00€</span>
-          <button className="btn btn-sm btn-primary">Pagar</button>
-        </div>
-        <div className="payment-row">
-          <div>
-            <div className="name">Mensualidad mayo · Mateo García</div>
-            <div className="date">Taekwondo Blancos · vence 1 de mayo</div>
-          </div>
-          <span className="status-pill pending">Pendiente</span>
-          <span className="date">01/05/2026</span>
-          <span className="amount">38,00€</span>
-          <button className="btn btn-sm btn-primary">Pagar</button>
-        </div>
-        <div className="payment-row">
-          <div>
-            <div className="name">Examen de cinturón · Mateo García</div>
-            <div className="date">Taekwondo · examen 28 de junio</div>
-          </div>
-          <span className="status-pill upcoming">Próximo</span>
-          <span className="date">28/06/2026</span>
-          <span className="amount">32,00€</span>
-          <button className="btn btn-sm btn-outline">Más info</button>
-        </div>
-      </div>
-
-      <div className="panel">
         <h2><I.Wallet /> Histórico de recibos</h2>
         <p className="sub">Descarga tus recibos para deducciones fiscales.</p>
-        {[
-          { d: "01/04/2026", desc: "Mensualidad abril · Familia García", a: "112,00€", method: "Domiciliación" },
-          { d: "01/03/2026", desc: "Mensualidad marzo · Familia García", a: "112,00€", method: "Domiciliación" },
-          { d: "15/02/2026", desc: "Festival ballet · entradas", a: "20,00€", method: "Tarjeta" },
-          { d: "01/02/2026", desc: "Mensualidad febrero · Familia García", a: "112,00€", method: "Domiciliación" },
-          { d: "15/01/2026", desc: "Examen Cambridge B2 · Ana", a: "180,00€", method: "Transferencia" },
-        ].map((r, i) => (
-          <div key={i} className="payment-row">
-            <div>
-              <div className="name">{r.desc}</div>
-              <div className="date">{r.method}</div>
+        {receipts.length === 0 && <p style={{color: "var(--ink-3)", fontSize: 14}}>No hay recibos disponibles.</p>}
+        {receipts.map((r, i) => {
+          const d = r.date ? new Date(r.date).toLocaleDateString("es-ES") : "—";
+          const amount = r.amount != null ? `${parseFloat(r.amount).toLocaleString("es-ES", {minimumFractionDigits: 2})}€` : "—";
+          return (
+            <div key={r.id || i} className="payment-row">
+              <div>
+                <div className="name">{r.company || "Recibo"}</div>
+                <div className="date">{r.paymentMethod || "—"}</div>
+              </div>
+              <span className="status-pill ok">Pagado</span>
+              <span className="date">{d}</span>
+              <span className="amount">{amount}</span>
+              {r.invoiceLink
+                ? <a href={r.invoiceLink} target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-outline">PDF</a>
+                : <button className="btn btn-sm btn-outline" disabled>PDF</button>}
             </div>
-            <span className="status-pill ok">Pagado</span>
-            <span className="date">{r.d}</span>
-            <span className="amount">{r.a}</span>
-            <button className="btn btn-sm btn-outline">PDF</button>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </>
   );
@@ -354,71 +325,75 @@ function DashWallet() {
   );
 }
 
+const CAT_COLOR = { ballet: "var(--pink)", taekwondo: "var(--teal)", ingles: "var(--blue)", robotica: "var(--yellow)", pintura: "var(--purple)", funcional: "var(--orange)", general: "var(--purple)", club: "var(--purple)", competicion: "var(--teal)" };
+
+function timeAgo(dateStr) {
+  if (!dateStr) return "";
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const h = Math.floor(diff / 3_600_000);
+  if (h < 1) return "Hace menos de 1h";
+  if (h < 24) return `Hace ${h}h`;
+  const d = Math.floor(h / 24);
+  if (d === 1) return "Ayer";
+  if (d < 7) return `Hace ${d} días`;
+  return `Hace ${Math.floor(d / 7)} semana${Math.floor(d / 7) > 1 ? "s" : ""}`;
+}
+
 function DashNews() {
+  const [posts, setPosts] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch('/api/posts?limit=10')
+      .then(r => r.ok ? r.json() : [])
+      .then(data => { setPosts(data); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
+
   return (
     <div className="panel">
       <h2><I.Bell /> Avisos del club</h2>
-      <p className="sub">Filtrado por las actividades de tu familia.</p>
-      {[
-        { tag: "Ballet", color: "var(--pink)", t: "Recordatorio uniforme festival", d: "Hace 2 horas", body: "El sábado 14 de junio, todos los grupos con leotardo rosa y zapatillas blancas. Recuerda llevar el moño hecho desde casa." },
-        { tag: "Aim", color: "var(--purple)", t: "Inscripciones campamento de verano abiertas", d: "Ayer", body: "Hasta el 30% de descuento para familias actuales del club hasta el 30 de abril. Las cuatro semanas están disponibles." },
-        { tag: "Taekwondo", color: "var(--teal)", t: "Examen de cambio de cinturón confirmado", d: "Hace 3 días", body: "Sábado 28 de junio a las 10:00. Confirma la asistencia de Mateo desde la sección de pagos para reservar el examen." },
-        { tag: "Inglés", color: "var(--blue)", t: "Resultados Cambridge — junio", d: "Hace 5 días", body: "Ya están publicados los resultados de los exámenes oficiales de B2 First. Ana puede consultar el suyo desde la app." },
-        { tag: "Aim", color: "var(--purple)", t: "Cambio de aula puntual", d: "Hace 1 semana", body: "La clase de funcional del viernes se traslada a la sala 2 por mantenimiento de la sala fit." },
-      ].map((n, i) => (
-        <div key={i} style={{display: "flex", gap: 14, padding: "18px 0", borderBottom: "1px solid var(--line-2)"}}>
-          <div style={{width: 8, height: 8, borderRadius: "50%", background: n.color, marginTop: 8, flexShrink: 0}} />
-          <div style={{flex: 1}}>
-            <div style={{display: "flex", justifyContent: "space-between", marginBottom: 6}}>
-              <span style={{fontSize: 10, fontWeight: 800, letterSpacing: ".12em", textTransform: "uppercase", color: n.color}}>{n.tag}</span>
-              <span style={{fontSize: 11, color: "var(--ink-3)"}}>{n.d}</span>
+      <p className="sub">Últimas noticias y comunicaciones del club.</p>
+      {loading && <p style={{color: "var(--ink-3)", fontSize: 14}}>Cargando...</p>}
+      {!loading && posts.length === 0 && <p style={{color: "var(--ink-3)", fontSize: 14}}>No hay noticias publicadas.</p>}
+      {posts.map((n, i) => {
+        const color = CAT_COLOR[n.category] || "var(--purple)";
+        return (
+          <div key={n.id} style={{display: "flex", gap: 14, padding: "18px 0", borderBottom: i < posts.length - 1 ? "1px solid var(--line-2)" : "0"}}>
+            <div style={{width: 8, height: 8, borderRadius: "50%", background: color, marginTop: 8, flexShrink: 0}} />
+            <div style={{flex: 1}}>
+              <div style={{display: "flex", justifyContent: "space-between", marginBottom: 6}}>
+                <span style={{fontSize: 10, fontWeight: 800, letterSpacing: ".12em", textTransform: "uppercase", color}}>{n.category || "Aim"}</span>
+                <span style={{fontSize: 11, color: "var(--ink-3)"}}>{timeAgo(n.published_at || n.created_at)}</span>
+              </div>
+              <h4 style={{margin: "0 0 4px", fontSize: 15, fontWeight: 700, color: "var(--ink)"}}>{n.title}</h4>
+              {n.excerpt && <p style={{margin: 0, fontSize: 14, color: "var(--ink-2)", lineHeight: 1.5}}>{n.excerpt}</p>}
             </div>
-            <h4 style={{margin: "0 0 4px", fontSize: 15, fontWeight: 700, color: "var(--ink)"}}>{n.t}</h4>
-            <p style={{margin: 0, fontSize: 14, color: "var(--ink-2)", lineHeight: 1.5}}>{n.body}</p>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
 
-function DashProfile() {
+function DashProfile({ user }) {
   return (
     <div className="panel">
       <h2><I.User /> Perfil de la familia</h2>
       <p className="sub">Tus datos personales y los de tus alumnos.</p>
 
       <div style={{display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 16}}>
-        <div className="field"><label>Nombre tutor/a</label><input defaultValue="Ana" /></div>
-        <div className="field"><label>Apellidos</label><input defaultValue="García López" /></div>
-        <div className="field"><label>Email</label><input type="email" defaultValue="ana.garcia@example.com" /></div>
-        <div className="field"><label>Teléfono</label><input defaultValue="+34 656 123 456" /></div>
-        <div className="field"><label>DNI</label><input defaultValue="44321987T" /></div>
-        <div className="field"><label>Dirección</label><input defaultValue="C/ Real, 42 · Algeciras" /></div>
+        <div className="field"><label>Nombre tutor/a</label><input defaultValue={user?.firstName || ""} /></div>
+        <div className="field"><label>Apellidos</label><input defaultValue={user?.lastName || ""} /></div>
+        <div className="field"><label>Email</label><input type="email" defaultValue={user?.email || ""} readOnly /></div>
+        <div className="field"><label>Teléfono</label><input defaultValue="" placeholder="+34 600 000 000" /></div>
+        <div className="field"><label>DNI</label><input defaultValue="" placeholder="00000000A" /></div>
+        <div className="field"><label>Dirección</label><input defaultValue="" placeholder="Calle, nº · Ciudad" /></div>
       </div>
 
-      <h3 style={{marginTop: 32, fontSize: 16, fontWeight: 700}}>Alumnos</h3>
-      <div style={{display: "grid", gap: 12, marginTop: 12}}>
-        {[
-          { n: "Lucía García", act: "Ballet Clásico", color: "var(--pink)" },
-          { n: "Mateo García", act: "Taekwondo · Robótica", color: "var(--teal)" },
-          { n: "Ana García", act: "Inglés B2", color: "var(--blue)" },
-          { n: "Carlos García", act: "Funcional", color: "var(--orange)" },
-        ].map((s, i) => (
-          <div key={i} style={{display: "flex", alignItems: "center", gap: 14, padding: 14, background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 14}}>
-            <div className="avatar" style={{background: s.color}}>{s.n[0]}</div>
-            <div style={{flex: 1}}>
-              <div style={{fontWeight: 700}}>{s.n}</div>
-              <div style={{fontSize: 12, color: "var(--ink-3)"}}>{s.act}</div>
-            </div>
-            <button className="btn btn-sm btn-outline">Editar</button>
-          </div>
-        ))}
-      </div>
-
-      <button className="btn btn-outline" style={{marginTop: 16}}>
-        <I.Plus /> Añadir alumno/a
-      </button>
+      <p style={{marginTop: 24, fontSize: 13, color: "var(--ink-3)"}}>
+        Para actualizar los datos de alumnos, contacta con el club en recepción o por email.
+      </p>
     </div>
   );
 }
@@ -449,10 +424,13 @@ function DashSettings() {
   );
 }
 
-export default function StudentDashboard({ subroute = "overview" }) {
+export default function StudentDashboard({ user, onLogout, subroute = "overview" }) {
   const { go } = useRouter();
   const [view, setView] = useState(subroute);
   useEffect(() => { setView(subroute); }, [subroute]);
+
+  const initials = `${user?.firstName?.[0] || ""}${user?.lastName?.[0] || ""}`.toUpperCase() || "?";
+  const familyLabel = user?.lastName ? `Familia ${user.lastName}` : (user?.firstName || "Mi familia");
 
   const navItems = [
     { id: "overview", label: "Resumen", icon: <I.Dashboard /> },
@@ -467,6 +445,11 @@ export default function StudentDashboard({ subroute = "overview" }) {
     { id: "settings", label: "Ajustes", icon: <I.Settings /> },
   ];
 
+  async function handleLogout() {
+    if (onLogout) await onLogout();
+    else go("/");
+  }
+
   return (
     <main style={{paddingTop: 0}}>
       <div className="dash-layout">
@@ -474,12 +457,11 @@ export default function StudentDashboard({ subroute = "overview" }) {
           <div className="brand"><AimLogo size="sm" sub /></div>
 
           <nav className="dash-nav">
-            <div className="heading">Familia García</div>
+            <div className="heading">{familyLabel}</div>
             {navItems.map(it => (
               <button key={it.id} className={view === it.id ? "is-active" : ""} onClick={() => setView(it.id)}>
                 <span className="ico">{it.icon}</span>
                 <span>{it.label}</span>
-                {it.id === "payments" && <span className="dot" style={{background: "var(--orange)"}}/>}
                 {it.id === "news" && <span className="dot" style={{background: "var(--teal)"}}/>}
               </button>
             ))}
@@ -490,9 +472,9 @@ export default function StudentDashboard({ subroute = "overview" }) {
                 <span>{it.label}</span>
               </button>
             ))}
-            <button onClick={() => go("/")} style={{marginTop: 8}}>
+            <button onClick={handleLogout} style={{marginTop: 8}}>
               <span className="ico"><I.LogOut /></span>
-              <span>Volver a la web</span>
+              <span>Cerrar sesión</span>
             </button>
           </nav>
         </aside>
@@ -503,12 +485,12 @@ export default function StudentDashboard({ subroute = "overview" }) {
               <p style={{margin: 0, fontSize: 13, color: "var(--ink-3)", fontWeight: 600, letterSpacing: ".06em", textTransform: "uppercase"}}>
                 {navItems.concat(settingsItems).find(i => i.id === view)?.label || "Resumen"}
               </p>
-              <h1>{view === "overview" ? "¡Hola Ana 👋!" : navItems.concat(settingsItems).find(i => i.id === view)?.label}</h1>
+              <h1>{view === "overview" ? `¡Hola ${user?.firstName || ""}!` : navItems.concat(settingsItems).find(i => i.id === view)?.label}</h1>
               {view === "overview" && <p style={{margin: "6px 0 0", color: "var(--ink-3)"}}>Este es el resumen de tu familia esta semana.</p>}
             </div>
             <div style={{display: "flex", gap: 12, alignItems: "center"}}>
               <button className="btn btn-icon" aria-label="Notificaciones"><I.Bell /></button>
-              <div className="avatar">AG</div>
+              <div className="avatar">{initials}</div>
             </div>
           </div>
 
@@ -518,7 +500,7 @@ export default function StudentDashboard({ subroute = "overview" }) {
           {view === "payments" && <DashPayments />}
           {view === "wallet" && <DashWallet />}
           {view === "news" && <DashNews />}
-          {view === "profile" && <DashProfile />}
+          {view === "profile" && <DashProfile user={user} />}
           {view === "settings" && <DashSettings />}
         </div>
       </div>

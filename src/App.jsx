@@ -74,13 +74,15 @@ export default function App() {
     screen = <PublicNews />;
   } else if (pathname === '/auth') {
     const mode = params.get('mode') || 'login';
-    screen = <AuthScreen mode={mode} />;
+    screen = <AuthScreen mode={mode} onLoginSuccess={handleLoginSuccess} />;
   } else if (pathname.startsWith('/dashboard')) {
     if (!userChecked) return null;
     if (!user) { go('/auth'); return null; }
     screen = <StudentDashboard user={user} onLogout={handleLogout} />;
   } else if (pathname.startsWith('/admin')) {
-    screen = <AdminApp />;
+    if (!userChecked) return null;
+    if (!user || !user.canAccessAdmin) { go('/auth'); return null; }
+    screen = <AdminApp user={user} onLogout={handleLogout} />;
   } else {
     screen = <PublicLanding />;
   }

@@ -26,15 +26,34 @@ function FamilyMember({ n, defaultName, defaultAge, defaultAct }) {
   );
 }
 
-function LoginForm({ go }) {
-  const [email, setEmail] = useState("ana.garcia@example.com");
-  const [pw, setPw] = useState("•••••••••");
+function LoginForm({ onLoginSuccess, go }) {
+  const [email, setEmail] = useState("");
+  const [pw, setPw] = useState("");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
-  function submit(e) {
+  async function submit(e) {
     e.preventDefault();
     setLoading(true);
-    setTimeout(() => { setLoading(false); go("/dashboard"); }, 700);
+    setError("");
+    try {
+      const r = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email, password: pw })
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        setError(data.error || "Error al iniciar sesión.");
+        setLoading(false);
+        return;
+      }
+      onLoginSuccess(data.user);
+    } catch {
+      setError("Error de conexión. Inténtalo de nuevo.");
+      setLoading(false);
+    }
   }
 
   return (
@@ -42,13 +61,19 @@ function LoginForm({ go }) {
       <h1>¡Hola de nuevo!</h1>
       <p className="hint">Bienvenido/a a Aim Education. Entra a tu panel.</p>
 
+      {error && (
+        <div style={{background: "color-mix(in oklab, var(--orange) 12%, var(--bg-2))", border: "1px solid color-mix(in oklab, var(--orange) 40%, transparent)", borderRadius: 10, padding: "10px 14px", marginBottom: 16, fontSize: 13, color: "var(--orange)", fontWeight: 600}}>
+          {error}
+        </div>
+      )}
+
       <div className="field">
         <label htmlFor="email">Correo electrónico</label>
-        <input id="email" type="email" placeholder="tu@email.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+        <input id="email" type="email" placeholder="tu@email.com" value={email} onChange={(e) => setEmail(e.target.value)} required />
       </div>
       <div className="field">
         <label htmlFor="pw">Contraseña</label>
-        <input id="pw" type="password" placeholder="••••••••" value={pw} onChange={(e) => setPw(e.target.value)} />
+        <input id="pw" type="password" placeholder="••••••••" value={pw} onChange={(e) => setPw(e.target.value)} required />
       </div>
       <div className="field-meta">
         <label style={{display: "inline-flex", gap: 8, alignItems: "center", color: "var(--ink-2)"}}>
@@ -67,10 +92,41 @@ function LoginForm({ go }) {
   );
 }
 
-function RegisterForm({ go }) {
+function RegisterForm({ onLoginSuccess }) {
   const [step, setStep] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [form, setForm] = useState({ firstName: "", lastName: "", email: "", phone: "", password: "" });
+
+  function upd(key) { return (e) => setForm(f => ({ ...f, [key]: e.target.value })); }
+
+  async function submit(e) {
+    e.preventDefault();
+    setError("");
+    if (step < 3) { setStep(step + 1); return; }
+    setLoading(true);
+    try {
+      const r = await fetch('/api/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ firstName: form.firstName, lastName: form.lastName, email: form.email, phone: form.phone, password: form.password })
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        setError(data.error || "Error al crear la cuenta.");
+        setLoading(false);
+        return;
+      }
+      onLoginSuccess(data.user);
+    } catch {
+      setError("Error de conexión. Inténtalo de nuevo.");
+      setLoading(false);
+    }
+  }
+
   return (
-    <form onSubmit={(e) => { e.preventDefault(); if (step < 3) setStep(step + 1); else go("/dashboard"); }}>
+    <form onSubmit={submit}>
       <h1>Crea tu cuenta</h1>
       <p className="hint">Un perfil familiar. Paso {step} de 3.</p>
 
@@ -85,18 +141,24 @@ function RegisterForm({ go }) {
         ))}
       </div>
 
+      {error && (
+        <div style={{background: "color-mix(in oklab, var(--orange) 12%, var(--bg-2))", border: "1px solid color-mix(in oklab, var(--orange) 40%, transparent)", borderRadius: 10, padding: "10px 14px", marginBottom: 16, fontSize: 13, color: "var(--orange)", fontWeight: 600}}>
+          {error}
+        </div>
+      )}
+
       {step === 1 && (
         <>
           <div className="field-row">
-            <div className="field"><label>Nombre</label><input placeholder="Ana" /></div>
-            <div className="field"><label>Apellidos</label><input placeholder="García López" /></div>
+            <div className="field"><label>Nombre</label><input placeholder="Ana" value={form.firstName} onChange={upd("firstName")} required /></div>
+            <div className="field"><label>Apellidos</label><input placeholder="García López" value={form.lastName} onChange={upd("lastName")} /></div>
           </div>
-          <div className="field"><label>Correo</label><input type="email" placeholder="ana@email.com" /></div>
+          <div className="field"><label>Correo</label><input type="email" placeholder="ana@email.com" value={form.email} onChange={upd("email")} required /></div>
           <div className="field-row">
-            <div className="field"><label>Teléfono</label><input placeholder="+34 600 000 000" /></div>
+            <div className="field"><label>Teléfono</label><input placeholder="+34 600 000 000" value={form.phone} onChange={upd("phone")} /></div>
             <div className="field"><label>DNI / NIE</label><input placeholder="00000000A" /></div>
           </div>
-          <div className="field"><label>Contraseña</label><input type="password" placeholder="Mín. 8 caracteres" /></div>
+          <div className="field"><label>Contraseña</label><input type="password" placeholder="Mín. 8 caracteres" value={form.password} onChange={upd("password")} required minLength={8} /></div>
         </>
       )}
 
@@ -105,8 +167,7 @@ function RegisterForm({ go }) {
           <div style={{padding: 14, background: "color-mix(in oklab, var(--purple) 8%, var(--bg-2))", border: "1px solid color-mix(in oklab, var(--purple) 30%, transparent)", borderRadius: 12, marginBottom: 16, fontSize: 13, color: "var(--ink-2)"}}>
             Añade los miembros de la familia que van a clase. Puedes añadir más después.
           </div>
-          <FamilyMember n={1} defaultName="Lucía" defaultAge="9" defaultAct="Ballet Clásico" />
-          <FamilyMember n={2} defaultName="Mateo" defaultAge="6" defaultAct="Taekwondo" />
+          <FamilyMember n={1} defaultName="" defaultAge="" defaultAct="Ballet Clásico" />
           <button type="button" className="btn btn-outline btn-block" style={{marginTop: 8}}>
             <I.Plus /> Añadir otro miembro
           </button>
@@ -130,7 +191,7 @@ function RegisterForm({ go }) {
             <input placeholder="AIM-XXXXX" />
           </div>
           <label style={{display: "flex", gap: 10, alignItems: "flex-start", fontSize: 13, color: "var(--ink-2)", marginTop: 8, lineHeight: 1.5}}>
-            <input type="checkbox" defaultChecked style={{marginTop: 3, accentColor: "var(--purple)"}} />
+            <input type="checkbox" required style={{marginTop: 3, accentColor: "var(--purple)"}} />
             <span>Acepto los términos y condiciones, el reglamento interno y la política de privacidad.</span>
           </label>
           <label style={{display: "flex", gap: 10, alignItems: "flex-start", fontSize: 13, color: "var(--ink-2)", marginTop: 10, lineHeight: 1.5}}>
@@ -146,17 +207,21 @@ function RegisterForm({ go }) {
             Anterior
           </button>
         )}
-        <button type="submit" className="btn btn-gradient" style={{flex: 1}}>
-          {step < 3 ? "Continuar" : "Crear mi cuenta"} <I.Arrow />
+        <button type="submit" className="btn btn-gradient" style={{flex: 1}} disabled={loading}>
+          {loading ? <span className="dot-loader" /> : <>{step < 3 ? "Continuar" : "Crear mi cuenta"} <I.Arrow /></>}
         </button>
       </div>
     </form>
   );
 }
 
-export default function AuthScreen({ mode = "login" }) {
+export default function AuthScreen({ mode = "login", onLoginSuccess }) {
   const { go } = useRouter();
   const [tab, setTab] = useState(mode === "register" ? "register" : "login");
+
+  function handleSuccess(user) {
+    if (onLoginSuccess) onLoginSuccess(user);
+  }
 
   return (
     <main style={{paddingTop: 0}}>
@@ -204,7 +269,7 @@ export default function AuthScreen({ mode = "login" }) {
             <button className={tab === "register" ? "is-active" : ""} onClick={() => setTab("register")}>Crear cuenta</button>
           </div>
 
-          {tab === "login" ? <LoginForm go={go} /> : <RegisterForm go={go} />}
+          {tab === "login" ? <LoginForm onLoginSuccess={handleSuccess} go={go} /> : <RegisterForm onLoginSuccess={handleSuccess} />}
 
           <div className="divider">o continúa con</div>
           <div className="oauth-row">

@@ -61,13 +61,27 @@ function QuickCard({ title, desc, act, icon, onClick }) {
 }
 
 function AdminOverview({ setView }) {
+  const [stats, setStats] = useState(null);
+  const [userCount, setUserCount] = useState(null);
+
+  useEffect(() => {
+    fetch('/api/admin/posts/stats', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null)
+      .then(setStats)
+      .catch(() => {});
+    fetch('/api/users', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : [])
+      .then(u => setUserCount(u.length))
+      .catch(() => {});
+  }, []);
+
   return (
     <>
       <div className="kpis">
-        <KPI label="Alumnos activos" value="184" trend="+12 este mes" act="taekwondo" icon={<I.Users />} />
-        <KPI label="Cuotas cobradas" value="6.420€" trend="91% del mes" act="funcional" icon={<I.Wallet />} />
-        <KPI label="Asistencia media" value="87%" trend="+3% vs mes pasado" act="ballet" icon={<I.Check />} />
-        <KPI label="Noticias publicadas" value="14" trend="2.341 visitas" act="pintura" icon={<I.Newspaper />} />
+        <KPI label="Alumnos registrados" value={userCount != null ? String(userCount) : "…"} trend="en la plataforma" act="taekwondo" icon={<I.Users />} />
+        <KPI label="Cuotas cobradas" value="—" trend="Sin datos aún" act="funcional" icon={<I.Wallet />} />
+        <KPI label="Posts publicados" value={stats ? String(stats.publishedPosts) : "…"} trend={stats ? `${stats.totalViews.toLocaleString("es-ES")} visitas` : "cargando..."} act="pintura" icon={<I.Newspaper />} />
+        <KPI label="Borradores" value={stats ? String(stats.draftPosts) : "…"} trend="sin publicar" act="ballet" icon={<I.Edit />} />
       </div>
 
       <div style={{display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 18}}>
@@ -153,105 +167,75 @@ function AdminOverview({ setView }) {
 }
 
 function AdminStudents() {
-  const [filter, setFilter] = useState("all");
-  const [selected, setSelected] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
 
-  const STUDENTS = [
-    { id: 1, name: "Lucía García López", age: 9, group: "Ballet · Primary", act: "ballet", contact: "ana.garcia@email.com", attendance: 95, fee: "ok", joined: "Sep 2024" },
-    { id: 2, name: "Mateo García López", age: 6, group: "Taekwondo · Blancos", act: "taekwondo", contact: "ana.garcia@email.com", attendance: 88, fee: "ok", joined: "Sep 2024" },
-    { id: 3, name: "Carmen Pérez Soto", age: 11, group: "Robótica · Builders", act: "robotica", contact: "j.perez@email.com", attendance: 100, fee: "pending", joined: "Oct 2024" },
-    { id: 4, name: "Adrián Martín Ruiz", age: 14, group: "Taekwondo · Avanzado", act: "taekwondo", contact: "padres.martin@email.com", attendance: 92, fee: "ok", joined: "Jun 2023" },
-    { id: 5, name: "Inés Romero Vázquez", age: 8, group: "Ballet · Primary", act: "ballet", contact: "p.romero@email.com", attendance: 76, fee: "pending", joined: "Sep 2025" },
-    { id: 6, name: "Pablo Soto Reyes", age: 10, group: "Inglés · A2 Movers", act: "ingles", contact: "soto.familia@email.com", attendance: 89, fee: "ok", joined: "Sep 2024" },
-    { id: 7, name: "Daniela Vázquez Cruz", age: 12, group: "Pintura · Estudio joven", act: "pintura", contact: "cruz.familia@email.com", attendance: 100, fee: "ok", joined: "Ene 2025" },
-    { id: 8, name: "Hugo Jiménez Quintana", age: 5, group: "Ballet · Pre-primary", act: "ballet", contact: "q.jimenez@email.com", attendance: 80, fee: "ok", joined: "Sep 2025" },
-  ];
+  useEffect(() => {
+    fetch('/api/users', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : [])
+      .then(u => { setUsers(u); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
 
-  const visible = filter === "all" ? STUDENTS : STUDENTS.filter(s => s.act === filter);
+  const visible = users.filter(u => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return `${u.firstName} ${u.lastName} ${u.email}`.toLowerCase().includes(q);
+  });
 
   return (
     <>
       <div className="toolbar">
         <div className="search-input">
           <I.Search />
-          <input placeholder="Buscar alumno, familia o grupo..." defaultValue="" />
+          <input placeholder="Buscar por nombre o email..." value={search} onChange={e => setSearch(e.target.value)} />
         </div>
-        <button className="filter-pill"><I.Filter /> Activos</button>
-        <button className="filter-pill">Edad</button>
-        <button className="filter-pill">Mes alta</button>
         <div style={{flex: 1}}/>
         <button className="btn btn-outline btn-sm">Exportar CSV</button>
-        <button className="btn btn-primary btn-sm"><I.Plus /> Nuevo alumno</button>
-      </div>
-
-      <div style={{display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap"}}>
-        {["all", "taekwondo", "ballet", "ingles", "robotica", "pintura", "funcional"].map(t => (
-          <button key={t}
-            className={`filter-pill ${filter === t ? "is-active" : ""}`}
-            onClick={() => setFilter(t)}>
-            {t === "all" ? `Todos · ${STUDENTS.length}` : `${ACT_BY_ID[t]?.name} · ${STUDENTS.filter(s => s.act === t).length}`}
-          </button>
-        ))}
       </div>
 
       <div className="data-table">
-        <div className="data-table-head" style={{gridTemplateColumns: "32px 2.4fr 1fr 1.6fr 1.2fr 1fr 0.6fr 100px"}}>
+        <div className="data-table-head" style={{gridTemplateColumns: "32px 2.4fr 2fr 1fr 1fr 100px"}}>
           <span></span>
-          <span>Alumno</span>
-          <span>Edad</span>
-          <span>Grupo</span>
-          <span>Contacto</span>
-          <span>Asistencia</span>
-          <span>Cuota</span>
+          <span>Nombre</span>
+          <span>Email</span>
+          <span>Cinturón</span>
+          <span>Rol</span>
           <span></span>
         </div>
-        {visible.map(s => {
-          const a = ACT_BY_ID[s.act];
-          return (
-            <div key={s.id} className={`data-table-row ${a?.className || ""}`} style={{gridTemplateColumns: "32px 2.4fr 1fr 1.6fr 1.2fr 1fr 0.6fr 100px"}}>
-              <input type="checkbox"
-                checked={selected.includes(s.id)}
-                onChange={(e) => setSelected(prev => e.target.checked ? [...prev, s.id] : prev.filter(x => x !== s.id))}
-                style={{accentColor: a?.color}}/>
-              <div className="cell-user">
-                <div className="avatar" style={{background: a?.color}}>{s.name[0]}</div>
-                <div>
-                  <div className="pri">{s.name}</div>
-                  <div className="sec">Alta {s.joined}</div>
-                </div>
-              </div>
-              <div>{s.age} años</div>
-              <div><span className="activity-pill">{s.group}</span></div>
-              <div className="sec">{s.contact}</div>
-              <div>
-                <div style={{display: "flex", alignItems: "center", gap: 8}}>
-                  <div style={{width: 60, height: 6, background: "var(--bg-3)", borderRadius: 99, overflow: "hidden"}}>
-                    <div style={{height: "100%", width: `${s.attendance}%`, background: s.attendance >= 90 ? "var(--teal)" : s.attendance >= 75 ? "var(--orange-soft)" : "var(--orange)"}}/>
-                  </div>
-                  <span style={{fontWeight: 700, fontSize: 12}}>{s.attendance}%</span>
-                </div>
+        {loading && (
+          <div style={{padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14}}>Cargando...</div>
+        )}
+        {!loading && visible.map(u => (
+          <div key={u.id} className="data-table-row" style={{gridTemplateColumns: "32px 2.4fr 2fr 1fr 1fr 100px"}}>
+            <input type="checkbox" style={{accentColor: "var(--purple)"}} />
+            <div className="cell-user">
+              <div className="avatar" style={{background: "var(--grad-aim)"}}>
+                {(u.firstName?.[0] || u.email?.[0] || "?").toUpperCase()}
               </div>
               <div>
-                <span className={`status-pill ${s.fee === "ok" ? "ok" : "pending"}`}>
-                  {s.fee === "ok" ? "Al día" : "Pendiente"}
-                </span>
-              </div>
-              <div className="row-actions">
-                <button className="icon-btn" aria-label="Ver"><I.Eye /></button>
-                <button className="icon-btn" aria-label="Editar"><I.Edit /></button>
-                <button className="icon-btn danger" aria-label="Eliminar"><I.Trash /></button>
+                <div className="pri">{u.firstName || ""} {u.lastName || ""}</div>
+                {u.isSuperAdmin && <div className="sec">Superadmin</div>}
               </div>
             </div>
-          );
-        })}
+            <div className="sec">{u.email}</div>
+            <div>{u.belt || <span style={{color: "var(--ink-3)"}}>—</span>}</div>
+            <div>
+              <span className={`status-pill ${u.isSuperAdmin ? "ok" : "upcoming"}`}>
+                {u.isSuperAdmin ? "Admin" : "Alumno"}
+              </span>
+            </div>
+            <div className="row-actions">
+              <button className="icon-btn" aria-label="Ver"><I.Eye /></button>
+              <button className="icon-btn" aria-label="Editar"><I.Edit /></button>
+            </div>
+          </div>
+        ))}
       </div>
 
-      <div style={{marginTop: 16, display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, color: "var(--ink-3)"}}>
-        <span>{visible.length} de {STUDENTS.length} alumnos</span>
-        <div style={{display: "flex", gap: 6}}>
-          <button className="btn btn-sm btn-outline">‹ Anterior</button>
-          <button className="btn btn-sm btn-outline">Siguiente ›</button>
-        </div>
+      <div style={{marginTop: 16, fontSize: 13, color: "var(--ink-3)"}}>
+        {visible.length} de {users.length} usuario{users.length !== 1 ? "s" : ""}
       </div>
     </>
   );
@@ -360,153 +344,141 @@ function AdminClasses() {
 }
 
 function AdminPayments() {
-  const [tab, setTab] = useState("pending");
+  const [receipts, setReceipts] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-  const PENDING = [
-    { family: "Familia Pérez", what: "Mensualidad mayo · 2 alumnos", amount: "84€", date: "01/05/2026", days: 4, method: "Domiciliación" },
-    { family: "Familia Romero", what: "Mensualidad + examen", amount: "120€", date: "01/05/2026", days: 6, method: "Domiciliación" },
-    { family: "Familia Martínez", what: "Mensualidad mayo", amount: "42€", date: "01/05/2026", days: 9, method: "Transferencia" },
-    { family: "Familia Soto", what: "Cuota campamento sem. 1", amount: "160€", date: "01/06/2026", days: 12, method: "Tarjeta" },
-  ];
-  const PAID = [
-    { family: "Familia García", what: "Mensualidad abril · 3 alumnos", amount: "112€", date: "01/04/2026", method: "Domiciliación" },
-    { family: "Familia Cruz", what: "Mensualidad abril", amount: "55€", date: "01/04/2026", method: "Domiciliación" },
-    { family: "Familia Quintana", what: "Festival ballet · 2 entradas", amount: "20€", date: "12/04/2026", method: "Tarjeta" },
-    { family: "Familia Reyes", what: "Examen Cambridge B2", amount: "180€", date: "15/03/2026", method: "Transferencia" },
-    { family: "Familia López", what: "Mensualidad abril · 2 alumnos", amount: "84€", date: "01/04/2026", method: "Domiciliación" },
-  ];
+  useEffect(() => {
+    fetch('/api/receipts', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : [])
+      .then(data => { setReceipts(data); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
+
+  const totalAmount = receipts.reduce((s, r) => s + (r.amount || 0), 0);
 
   return (
     <>
       <div className="kpis">
-        <KPI label="Cobrado este mes" value="6.420€" trend="91% del esperado" act="taekwondo" icon={<I.Wallet />} />
-        <KPI label="Pendiente" value="612€" trend="12 familias" act="funcional" icon={<I.Clock />} />
-        <KPI label="Cuotas previstas" value="7.032€" trend="184 alumnos" act="ballet" icon={<I.Trophy />} />
-        <KPI label="Tasa de cobro" value="94%" trend="+2% vs mes pasado" act="pintura" icon={<I.CreditCard />} />
+        <KPI label="Total en recibos" value={`${totalAmount.toLocaleString("es-ES", {minimumFractionDigits: 0})}€`} trend={`${receipts.length} registros`} act="taekwondo" icon={<I.Wallet />} />
+        <KPI label="Recibos con factura" value={String(receipts.filter(r => r.invoiceLink).length)} trend="con PDF adjunto" act="funcional" icon={<I.CreditCard />} />
+        <KPI label="Sin factura" value={String(receipts.filter(r => !r.invoiceLink).length)} trend="pendiente de adjuntar" act="ballet" icon={<I.Clock />} />
+        <KPI label="Empresas" value={String(new Set(receipts.map(r => r.company).filter(Boolean)).size)} trend="proveedores distintos" act="pintura" icon={<I.Trophy />} />
       </div>
 
-      <div className="toolbar">
-        <div style={{display: "flex", gap: 6}}>
-          <button className={`filter-pill ${tab === "pending" ? "is-active" : ""}`} onClick={() => setTab("pending")}>Pendientes · {PENDING.length}</button>
-          <button className={`filter-pill ${tab === "paid" ? "is-active" : ""}`} onClick={() => setTab("paid")}>Cobrados · {PAID.length}</button>
-          <button className={`filter-pill ${tab === "invoices" ? "is-active" : ""}`} onClick={() => setTab("invoices")}>Facturas</button>
+      <div className="data-table">
+        <div className="data-table-head" style={{gridTemplateColumns: "2fr 2fr 1fr 1fr 1fr 120px"}}>
+          <span>Empresa / Concepto</span><span>Método</span><span>Fecha</span><span>Importe</span><span>Factura</span><span></span>
         </div>
-        <div className="search-input" style={{maxWidth: 280}}>
-          <I.Search />
-          <input placeholder="Buscar familia o concepto" />
-        </div>
-        <div style={{flex: 1}} />
-        <button className="btn btn-outline btn-sm">Exportar</button>
-        <button className="btn btn-primary btn-sm"><I.Plus /> Nuevo cobro</button>
-      </div>
-
-      {tab !== "invoices" && (
-        <div className="data-table">
-          <div className="data-table-head" style={{gridTemplateColumns: "32px 2fr 2fr 1fr 1fr 1fr 180px"}}>
-            <span></span><span>Familia</span><span>Concepto</span><span>Fecha</span><span>Método</span><span>Importe</span><span></span>
-          </div>
-          {(tab === "pending" ? PENDING : PAID).map((r, i) => (
-            <div key={i} className="data-table-row" style={{gridTemplateColumns: "32px 2fr 2fr 1fr 1fr 1fr 180px"}}>
-              <input type="checkbox" style={{accentColor: "var(--purple)"}} />
+        {loading && <div style={{padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14}}>Cargando...</div>}
+        {!loading && receipts.length === 0 && <div style={{padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14}}>No hay recibos.</div>}
+        {receipts.map((r, i) => {
+          const d = r.date ? new Date(r.date).toLocaleDateString("es-ES") : "—";
+          const amount = r.amount != null ? `${parseFloat(r.amount).toLocaleString("es-ES", {minimumFractionDigits: 2})}€` : "—";
+          return (
+            <div key={r.id || i} className="data-table-row" style={{gridTemplateColumns: "2fr 2fr 1fr 1fr 1fr 120px"}}>
               <div className="cell-user">
-                <div className="avatar" style={{background: "var(--grad-aim)"}}>{r.family.split(" ")[1][0]}</div>
-                <div className="pri">{r.family}</div>
+                <div className="avatar" style={{background: "var(--grad-aim)"}}>{(r.company?.[0] || "R").toUpperCase()}</div>
+                <div className="pri">{r.company || "Sin empresa"}</div>
               </div>
-              <div>{r.what}</div>
-              <div>{r.date}</div>
-              <div className="sec">{r.method}</div>
-              <div className="pri" style={{fontFamily: "var(--font-display)", fontSize: 16}}>{r.amount}</div>
+              <div className="sec">{r.paymentMethod || "—"}</div>
+              <div>{d}</div>
+              <div className="pri" style={{fontFamily: "var(--font-display)", fontSize: 15}}>{amount}</div>
+              <div>
+                <span className={`status-pill ${r.invoiceLink ? "ok" : "pending"}`}>
+                  {r.invoiceLink ? "Con PDF" : "Sin PDF"}
+                </span>
+              </div>
               <div className="row-actions">
-                {tab === "pending" ? (
-                  <>
-                    <button className="btn btn-sm btn-outline">Recordar</button>
-                    <button className="btn btn-sm btn-primary">Cobrar</button>
-                  </>
-                ) : (
-                  <>
-                    <button className="icon-btn"><I.Eye /></button>
-                    <button className="btn btn-sm btn-outline">PDF</button>
-                  </>
-                )}
+                {r.invoiceLink
+                  ? <a href={r.invoiceLink} target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-outline">PDF</a>
+                  : <button className="icon-btn"><I.Eye /></button>}
               </div>
             </div>
-          ))}
-        </div>
-      )}
-
-      {tab === "invoices" && (
-        <div style={{background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 18, padding: 36, textAlign: "center"}}>
-          <I.Newspaper width={48} height={48} style={{color: "var(--ink-3)", margin: "0 auto 16px"}} />
-          <h3 style={{margin: 0, fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 800}}>Generador de facturas</h3>
-          <p style={{color: "var(--ink-3)", margin: "8px 0 22px", fontSize: 14}}>
-            Genera facturas masivas para cualquier rango de fechas. Incluye IVA, retenciones y exportación SII.
-          </p>
-          <button className="btn btn-gradient">Generar facturas del mes <I.Arrow /></button>
-        </div>
-      )}
+          );
+        })}
+      </div>
     </>
   );
 }
 
 function AdminNews() {
-  const POSTS = [
-    { title: "¡Se acerca nuestro Festival de Ballet Clásico y Baile Moderno!", status: "Publicado", date: "10/06/2026", views: 412, clicks: 38, act: "ballet" },
-    { title: "XVII Torneo Navideño Iván Navarrete", status: "Publicado", date: "01/12/2025", views: 1240, clicks: 192, act: "taekwondo" },
-    { title: "Convocatoria Cambridge English curso 2025-2026", status: "Publicado", date: "15/05/2026", views: 580, clicks: 74, act: "ingles" },
-    { title: "Campeonato Promoción Robótica Camaleón", status: "Publicado", date: "20/03/2026", views: 312, clicks: 28, act: "robotica" },
-    { title: "Inscripciones campamento verano 2026", status: "Publicado", date: "01/04/2026", views: 894, clicks: 156, act: "campamento" },
-    { title: "Exposición de fin de curso del Taller de Pintura", status: "Borrador", date: "—", views: 0, clicks: 0, act: "pintura" },
-    { title: "Cambio de aula puntual — sala fit", status: "Programado", date: "26/04/2026", views: 0, clicks: 0, act: "funcional" },
-  ];
+  const [posts, setPosts] = useState([]);
+  const [stats, setStats] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+
+  useEffect(() => {
+    Promise.all([
+      fetch('/api/admin/posts', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
+      fetch('/api/admin/posts/stats', { credentials: 'include' }).then(r => r.ok ? r.json() : null),
+    ]).then(([p, s]) => { setPosts(p); setStats(s); setLoading(false); }).catch(() => setLoading(false));
+  }, []);
+
+  async function deletePost(id) {
+    if (!window.confirm("¿Eliminar esta entrada?")) return;
+    await fetch(`/api/admin/posts/${id}`, { method: 'DELETE', credentials: 'include' });
+    setPosts(prev => prev.filter(p => p.id !== id));
+  }
+
+  const visible = posts.filter(p => {
+    if (statusFilter !== "all" && p.status !== statusFilter) return false;
+    if (search && !p.title.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  const published = posts.filter(p => p.status === "published").length;
+  const drafts = posts.filter(p => p.status === "draft").length;
 
   return (
     <>
       <div className="kpis">
-        <KPI label="Posts publicados" value="42" trend="14 este año" act="pintura" icon={<I.Newspaper />} />
-        <KPI label="Visitas totales" value="12.4K" trend="+18% mes" act="ingles" icon={<I.Eye />} />
-        <KPI label="Clicks a actividades" value="894" trend="7.2% CTR" act="taekwondo" icon={<I.Arrow />} />
-        <KPI label="Suscriptores RSS" value="68" trend="+4 este mes" act="ballet" icon={<I.Bell />} />
+        <KPI label="Posts publicados" value={String(published)} trend={`de ${posts.length} totales`} act="pintura" icon={<I.Newspaper />} />
+        <KPI label="Visitas totales" value={stats ? stats.totalViews.toLocaleString("es-ES") : "…"} trend="acumuladas" act="ingles" icon={<I.Eye />} />
+        <KPI label="Clicks" value={stats ? String(stats.totalClicks) : "…"} trend="en artículos" act="taekwondo" icon={<I.Arrow />} />
+        <KPI label="Borradores" value={String(drafts)} trend="sin publicar" act="ballet" icon={<I.Edit />} />
       </div>
 
       <div className="toolbar">
         <div className="search-input" style={{maxWidth: 320}}>
           <I.Search />
-          <input placeholder="Buscar título, autor o categoría" />
+          <input placeholder="Buscar título..." value={search} onChange={e => setSearch(e.target.value)} />
         </div>
-        <button className="filter-pill is-active">Todos</button>
-        <button className="filter-pill">Publicados</button>
-        <button className="filter-pill">Borradores</button>
-        <button className="filter-pill">Programados</button>
+        <button className={`filter-pill ${statusFilter === "all" ? "is-active" : ""}`} onClick={() => setStatusFilter("all")}>Todos · {posts.length}</button>
+        <button className={`filter-pill ${statusFilter === "published" ? "is-active" : ""}`} onClick={() => setStatusFilter("published")}>Publicados · {published}</button>
+        <button className={`filter-pill ${statusFilter === "draft" ? "is-active" : ""}`} onClick={() => setStatusFilter("draft")}>Borradores · {drafts}</button>
         <div style={{flex: 1}} />
-        <button className="btn btn-primary btn-sm"><I.Plus /> Nueva entrada</button>
       </div>
 
       <div className="data-table">
         <div className="data-table-head" style={{gridTemplateColumns: "2.4fr 1fr 0.9fr 0.7fr 0.7fr 130px"}}>
           <span>Título</span><span>Categoría</span><span>Estado</span><span>Visitas</span><span>Clicks</span><span></span>
         </div>
-        {POSTS.map((p, i) => {
-          const a = ACT_BY_ID[p.act];
+        {loading && <div style={{padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14}}>Cargando...</div>}
+        {!loading && visible.length === 0 && <div style={{padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14}}>No hay entradas.</div>}
+        {visible.map((p) => {
+          const a = ACT_BY_ID[p.category];
+          const statusLabel = p.status === "published" ? "Publicado" : p.status === "draft" ? "Borrador" : p.status;
+          const statusClass = p.status === "published" ? "ok" : p.status === "draft" ? "pending" : "upcoming";
+          const dateStr = p.published_at ? new Date(p.published_at).toLocaleDateString("es-ES") : (p.created_at ? new Date(p.created_at).toLocaleDateString("es-ES") : "—");
           return (
-            <div key={i} className={`data-table-row ${a?.className || ""}`} style={{gridTemplateColumns: "2.4fr 1fr 0.9fr 0.7fr 0.7fr 130px"}}>
+            <div key={p.id} className={`data-table-row ${a?.className || ""}`} style={{gridTemplateColumns: "2.4fr 1fr 0.9fr 0.7fr 0.7fr 130px"}}>
               <div>
                 <div className="pri">{p.title}</div>
-                <div className="sec">{p.date} · 850 palabras</div>
+                <div className="sec">{dateStr} · {p.author_name || "Admin"}</div>
               </div>
               <div>
-                <span className="activity-pill">{a?.name || "Aim"}</span>
+                <span className="activity-pill">{a?.name || p.category || "General"}</span>
               </div>
               <div>
-                <span className={`status-pill ${p.status === "Publicado" ? "ok" : p.status === "Borrador" ? "pending" : "upcoming"}`}>
-                  {p.status}
-                </span>
+                <span className={`status-pill ${statusClass}`}>{statusLabel}</span>
               </div>
-              <div className="pri">{p.views || "—"}</div>
-              <div className="pri" style={{color: p.clicks ? "var(--teal)" : "var(--ink-3)"}}>{p.clicks || "—"}</div>
+              <div className="pri">{p.view_count || "—"}</div>
+              <div className="pri" style={{color: p.click_count ? "var(--teal)" : "var(--ink-3)"}}>{p.click_count || "—"}</div>
               <div className="row-actions">
                 <button className="icon-btn"><I.Eye /></button>
                 <button className="icon-btn"><I.Edit /></button>
-                <button className="icon-btn danger"><I.Trash /></button>
+                <button className="icon-btn danger" onClick={() => deletePost(p.id)}><I.Trash /></button>
               </div>
             </div>
           );
@@ -538,17 +510,20 @@ function AdminSettings() {
   );
 }
 
-export default function AdminApp({ subroute = "overview" }) {
+export default function AdminApp({ user, onLogout, subroute = "overview" }) {
   const { go } = useRouter();
   const [view, setView] = useState(subroute);
   useEffect(() => { setView(subroute); }, [subroute]);
 
+  const adminInitials = `${user?.firstName?.[0] || ""}${user?.lastName?.[0] || ""}`.toUpperCase() || "A";
+  const adminName = user ? `${user.firstName || ""} ${user.lastName || ""}`.trim() : "Admin";
+
   const sections = [
     { heading: "Gestión", items: [
       { id: "overview", label: "Resumen", icon: <I.Dashboard /> },
-      { id: "students", label: "Alumnos", icon: <I.Users />, count: 184 },
+      { id: "students", label: "Alumnos", icon: <I.Users /> },
       { id: "classes", label: "Clases y horarios", icon: <I.Calendar /> },
-      { id: "payments", label: "Pagos y recibos", icon: <I.Wallet />, count: 12 },
+      { id: "payments", label: "Recibos", icon: <I.Wallet /> },
       { id: "news", label: "Noticias / Foro", icon: <I.Newspaper /> },
     ]},
     { heading: "Club", items: [
@@ -556,6 +531,11 @@ export default function AdminApp({ subroute = "overview" }) {
       { id: "settings", label: "Ajustes", icon: <I.Settings /> },
     ]},
   ];
+
+  async function handleLogout() {
+    if (onLogout) await onLogout();
+    else go("/");
+  }
 
   return (
     <main style={{paddingTop: 0}}>
@@ -580,20 +560,20 @@ export default function AdminApp({ subroute = "overview" }) {
           ))}
 
           <div className="me">
-            <div className="avatar" style={{width: 36, height: 36, fontSize: 13}}>DJ</div>
+            <div className="avatar" style={{width: 36, height: 36, fontSize: 13}}>{adminInitials}</div>
             <div>
-              <div className="name">Darío Jiménez</div>
-              <div className="role-tag">Director · superadmin</div>
+              <div className="name">{adminName}</div>
+              <div className="role-tag">{user?.isSuperAdmin ? "Superadmin" : "Admin"}</div>
             </div>
           </div>
 
-          <button onClick={() => go("/")} style={{
+          <button onClick={handleLogout} style={{
             marginTop: 12, width: "100%", padding: "10px 12px",
             background: "rgba(255,255,255,.06)", color: "rgba(255,255,255,.7)",
             border: 0, borderRadius: 10, cursor: "pointer", fontFamily: "inherit",
             fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 8,
           }}>
-            <I.LogOut /> Volver a la web
+            <I.LogOut /> Cerrar sesión
           </button>
         </aside>
 
