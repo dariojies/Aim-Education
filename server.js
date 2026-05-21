@@ -231,6 +231,7 @@ function newsLayout(pageTitle, bodyContent, siteUrl, meta = {}) {
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&family=Montserrat:wght@400;600&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
     <style>body { font-family: 'Montserrat', sans-serif; } h1,h2,h3,h4,h5 { font-family: 'Outfit', sans-serif; }</style>
+    <script>function loadScript(a){var b=document.getElementsByTagName("head")[0],c=document.createElement("script");c.type="text/javascript",c.src="https://tracker.metricool.com/resources/be.js",c.onreadystatechange=a,c.onload=a,b.appendChild(c)}loadScript(function(){beTracker.t({hash:"88da779c66723ada225db305a176e273"})});</script>
 </head>
 <body class="bg-slate-50 min-h-screen">
     <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 shadow-sm">
