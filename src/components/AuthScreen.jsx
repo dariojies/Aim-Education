@@ -1,257 +1,229 @@
 import React, { useState } from 'react';
-import { ACTIVITIES } from './Shared';
+import { I } from './Icons.jsx';
+import { AimLogo } from './Shared.jsx';
+import { useRouter } from '../App.jsx';
 
-function EyeIcon({ off }) {
-  return off
-    ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
-    : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>;
-}
-
-function ArrowRight() {
-  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>;
-}
-
-export default function AuthScreen({ onLogin }) {
-  const [tab, setTab] = useState('login'); // 'login' | 'register'
-  const [step, setStep] = useState(1); // for register: 1, 2, 3
-  const [showPass, setShowPass] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-
-  // Login fields
-  const [loginEmail, setLoginEmail] = useState('');
-  const [loginPassword, setLoginPassword] = useState('');
-
-  // Register fields
-  const [reg, setReg] = useState({
-    firstName: '', lastName: '', email: '', phone: '',
-    password: '', password2: '',
-    activities: [],
-  });
-
-  const regUpdate = (k, v) => setReg(r => ({ ...r, [k]: v }));
-  const toggleAct = (id) => regUpdate('activities', reg.activities.includes(id) ? reg.activities.filter(a => a !== id) : [...reg.activities, id]);
-
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    setError('');
-    setLoading(true);
-    try {
-      const res = await fetch('/api/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: loginEmail, password: loginPassword }),
-      });
-      const data = await res.json();
-      if (!res.ok) { setError(data.error || 'Credenciales incorrectas'); return; }
-      onLogin(data.user || data);
-    } catch {
-      setError('Error de conexión');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleRegister = async (e) => {
-    e.preventDefault();
-    if (step < 3) { setStep(s => s + 1); return; }
-    if (reg.password !== reg.password2) { setError('Las contraseñas no coinciden'); return; }
-    setError('');
-    setLoading(true);
-    try {
-      const res = await fetch('/api/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          firstName: reg.firstName,
-          lastName: reg.lastName,
-          email: reg.email,
-          phone: reg.phone,
-          password: reg.password,
-          activities: reg.activities,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) { setError(data.error || 'Error al registrarse'); return; }
-      onLogin(data.user || data);
-    } catch {
-      setError('Error de conexión');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const decorActivities = ACTIVITIES.slice(0, 6);
-
+function FamilyMember({ n, defaultName, defaultAge, defaultAct }) {
   return (
-    <div className="auth-page">
-      {/* Left panel */}
-      <div className="auth-left">
-        <div className="auth-left-inner">
-          <a href="/" onClick={(e) => { e.preventDefault(); window.history.pushState(null, '', '/'); window.dispatchEvent(new PopStateEvent('popstate')); }}>
-            <img src="/src/brand/Aim_White.png" alt="Aim Education" className="auth-logo" />
-          </a>
-          <div className="auth-left-tagline">
-            <h2>Una academia,<br /><span>mil maneras</span> de aprender.</h2>
-            <p>Taekwondo · Ballet · Inglés · Robótica · y más</p>
-          </div>
-          <div className="auth-left-tiles">
-            {decorActivities.map(act => (
-              <div key={act.id} className="auth-tile" style={{ background: `color-mix(in oklab, ${act.color} 25%, rgba(255,255,255,.05))`, borderColor: `color-mix(in oklab, ${act.color} 40%, transparent)` }}>
-                <img src={act.icon} alt={act.name} style={{ width: 32, height: 32, objectFit: 'contain', filter: 'brightness(0) invert(1)', opacity: .85 }} />
-                <span>{act.name}</span>
-              </div>
-            ))}
-          </div>
-        </div>
+    <div style={{background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 14, padding: 16, marginBottom: 12}}>
+      <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10}}>
+        <span style={{fontWeight: 700, fontSize: 13}}>Alumno/a #{n}</span>
+        <button type="button" style={{background: "transparent", border: 0, color: "var(--orange)", cursor: "pointer", fontSize: 12}}>Eliminar</button>
       </div>
-
-      {/* Right panel */}
-      <div className="auth-right">
-        <div className="auth-form-wrap">
-          {/* Tabs */}
-          <div className="auth-tabs">
-            <button className={`auth-tab${tab === 'login' ? ' active' : ''}`} onClick={() => { setTab('login'); setStep(1); setError(''); }}>
-              Iniciar sesión
-            </button>
-            <button className={`auth-tab${tab === 'register' ? ' active' : ''}`} onClick={() => { setTab('register'); setStep(1); setError(''); }}>
-              Registrarse
-            </button>
-          </div>
-
-          {tab === 'login' ? (
-            <form onSubmit={handleLogin} className="auth-form">
-              <h1>Bienvenido de nuevo</h1>
-              <p className="auth-sub">Accede a tu cuenta para ver tus clases y pagos.</p>
-
-              <div className="auth-field">
-                <label>Email</label>
-                <input type="email" placeholder="tu@email.com" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} required autoComplete="email" />
-              </div>
-
-              <div className="auth-field">
-                <label>Contraseña</label>
-                <div className="auth-pass-wrap">
-                  <input type={showPass ? 'text' : 'password'} placeholder="Tu contraseña" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} required autoComplete="current-password" />
-                  <button type="button" className="auth-eye" onClick={() => setShowPass(s => !s)}>
-                    <EyeIcon off={showPass} />
-                  </button>
-                </div>
-              </div>
-
-              {error && <div className="auth-error">{error}</div>}
-
-              <button type="submit" className="btn btn-gradient btn-lg auth-submit" disabled={loading}>
-                {loading ? 'Cargando...' : <><span>Entrar</span><ArrowRight /></>}
-              </button>
-
-              <p className="auth-switch">
-                ¿No tienes cuenta?{' '}
-                <button type="button" onClick={() => { setTab('register'); setError(''); }}>
-                  Regístrate gratis
-                </button>
-              </p>
-            </form>
-          ) : (
-            <form onSubmit={handleRegister} className="auth-form">
-              <h1>{step === 1 ? 'Crea tu cuenta' : step === 2 ? 'Elige contraseña' : 'Tus actividades'}</h1>
-              <p className="auth-sub">
-                {step === 1 && 'Tu primera clase es de prueba y sin compromiso.'}
-                {step === 2 && 'Usa al menos 8 caracteres con números y letras.'}
-                {step === 3 && 'Selecciona las actividades que te interesan (opcional).'}
-              </p>
-
-              {/* Step indicators */}
-              <div className="auth-steps">
-                {[1, 2, 3].map(s => (
-                  <React.Fragment key={s}>
-                    <div className={`auth-step${step >= s ? ' done' : ''}${step === s ? ' current' : ''}`}>{s}</div>
-                    {s < 3 && <div className={`auth-step-line${step > s ? ' done' : ''}`} />}
-                  </React.Fragment>
-                ))}
-              </div>
-
-              {step === 1 && (
-                <>
-                  <div className="auth-row">
-                    <div className="auth-field">
-                      <label>Nombre</label>
-                      <input type="text" placeholder="María" value={reg.firstName} onChange={e => regUpdate('firstName', e.target.value)} required />
-                    </div>
-                    <div className="auth-field">
-                      <label>Apellido</label>
-                      <input type="text" placeholder="García" value={reg.lastName} onChange={e => regUpdate('lastName', e.target.value)} required />
-                    </div>
-                  </div>
-                  <div className="auth-field">
-                    <label>Email</label>
-                    <input type="email" placeholder="tu@email.com" value={reg.email} onChange={e => regUpdate('email', e.target.value)} required />
-                  </div>
-                  <div className="auth-field">
-                    <label>Teléfono <span style={{ color: 'var(--ink-3)', fontWeight: 400 }}>(opcional)</span></label>
-                    <input type="tel" placeholder="+34 600 000 000" value={reg.phone} onChange={e => regUpdate('phone', e.target.value)} />
-                  </div>
-                </>
-              )}
-
-              {step === 2 && (
-                <>
-                  <div className="auth-field">
-                    <label>Contraseña</label>
-                    <div className="auth-pass-wrap">
-                      <input type={showPass ? 'text' : 'password'} placeholder="Mínimo 8 caracteres" value={reg.password} onChange={e => regUpdate('password', e.target.value)} required minLength={8} />
-                      <button type="button" className="auth-eye" onClick={() => setShowPass(s => !s)}>
-                        <EyeIcon off={showPass} />
-                      </button>
-                    </div>
-                  </div>
-                  <div className="auth-field">
-                    <label>Repite la contraseña</label>
-                    <input type={showPass ? 'text' : 'password'} placeholder="Repite la contraseña" value={reg.password2} onChange={e => regUpdate('password2', e.target.value)} required />
-                  </div>
-                </>
-              )}
-
-              {step === 3 && (
-                <div className="auth-activities-grid">
-                  {ACTIVITIES.map(act => (
-                    <button
-                      key={act.id}
-                      type="button"
-                      className={`auth-act-chip${reg.activities.includes(act.id) ? ' selected' : ''}`}
-                      style={{ '--act-color': act.color }}
-                      onClick={() => toggleAct(act.id)}
-                    >
-                      <img src={act.icon} alt={act.name} style={{ width: 24, height: 24, objectFit: 'contain' }} />
-                      <span>{act.name}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {error && <div className="auth-error">{error}</div>}
-
-              <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
-                {step > 1 && (
-                  <button type="button" className="btn btn-outline btn-lg" style={{ flex: '0 0 auto' }} onClick={() => setStep(s => s - 1)}>
-                    Atrás
-                  </button>
-                )}
-                <button type="submit" className="btn btn-gradient btn-lg auth-submit" disabled={loading} style={{ flex: 1 }}>
-                  {loading ? 'Cargando...' : step < 3 ? <><span>Siguiente</span><ArrowRight /></> : <><span>Crear cuenta</span><ArrowRight /></>}
-                </button>
-              </div>
-
-              <p className="auth-switch">
-                ¿Ya tienes cuenta?{' '}
-                <button type="button" onClick={() => { setTab('login'); setError(''); }}>
-                  Inicia sesión
-                </button>
-              </p>
-            </form>
-          )}
-        </div>
+      <div className="field-row">
+        <div className="field"><label>Nombre</label><input defaultValue={defaultName} /></div>
+        <div className="field"><label>Edad</label><input defaultValue={defaultAge} /></div>
+      </div>
+      <div className="field">
+        <label>Actividad principal</label>
+        <select defaultValue={defaultAct}>
+          <option>Taekwondo</option><option>Ballet Clásico</option><option>Inglés</option>
+          <option>Robótica</option><option>Pintura</option><option>Funcional</option>
+          <option>Baile Moderno</option><option>Gimnasia Rítmica</option>
+        </select>
       </div>
     </div>
+  );
+}
+
+function LoginForm({ go }) {
+  const [email, setEmail] = useState("ana.garcia@example.com");
+  const [pw, setPw] = useState("•••••••••");
+  const [loading, setLoading] = useState(false);
+
+  function submit(e) {
+    e.preventDefault();
+    setLoading(true);
+    setTimeout(() => { setLoading(false); go("/dashboard"); }, 700);
+  }
+
+  return (
+    <form onSubmit={submit}>
+      <h1>¡Hola de nuevo!</h1>
+      <p className="hint">Bienvenido/a a Aim Education. Entra a tu panel.</p>
+
+      <div className="field">
+        <label htmlFor="email">Correo electrónico</label>
+        <input id="email" type="email" placeholder="tu@email.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+      </div>
+      <div className="field">
+        <label htmlFor="pw">Contraseña</label>
+        <input id="pw" type="password" placeholder="••••••••" value={pw} onChange={(e) => setPw(e.target.value)} />
+      </div>
+      <div className="field-meta">
+        <label style={{display: "inline-flex", gap: 8, alignItems: "center", color: "var(--ink-2)"}}>
+          <input type="checkbox" defaultChecked style={{accentColor: "var(--purple)"}} /> Mantenerme conectado
+        </label>
+        <a href="#">¿Olvidaste tu contraseña?</a>
+      </div>
+      <button type="submit" className="btn btn-gradient btn-block btn-lg" disabled={loading}>
+        {loading ? <span className="dot-loader" /> : <>Entrar a mi cuenta <I.Arrow /></>}
+      </button>
+
+      <p style={{textAlign: "center", marginTop: 16, fontSize: 13, color: "var(--ink-2)"}}>
+        ¿Aún no tienes cuenta? <a href="#" onClick={(e) => { e.preventDefault(); go("/auth?mode=register"); }} style={{color: "var(--purple)", fontWeight: 700}}>Regístrate</a>
+      </p>
+    </form>
+  );
+}
+
+function RegisterForm({ go }) {
+  const [step, setStep] = useState(1);
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); if (step < 3) setStep(step + 1); else go("/dashboard"); }}>
+      <h1>Crea tu cuenta</h1>
+      <p className="hint">Un perfil familiar. Paso {step} de 3.</p>
+
+      <div style={{display: "flex", gap: 6, marginBottom: 22}}>
+        {[1, 2, 3].map(n => (
+          <div key={n} style={{
+            flex: 1,
+            height: 4,
+            borderRadius: 99,
+            background: n <= step ? "var(--grad-aim)" : "var(--line)"
+          }}/>
+        ))}
+      </div>
+
+      {step === 1 && (
+        <>
+          <div className="field-row">
+            <div className="field"><label>Nombre</label><input placeholder="Ana" /></div>
+            <div className="field"><label>Apellidos</label><input placeholder="García López" /></div>
+          </div>
+          <div className="field"><label>Correo</label><input type="email" placeholder="ana@email.com" /></div>
+          <div className="field-row">
+            <div className="field"><label>Teléfono</label><input placeholder="+34 600 000 000" /></div>
+            <div className="field"><label>DNI / NIE</label><input placeholder="00000000A" /></div>
+          </div>
+          <div className="field"><label>Contraseña</label><input type="password" placeholder="Mín. 8 caracteres" /></div>
+        </>
+      )}
+
+      {step === 2 && (
+        <>
+          <div style={{padding: 14, background: "color-mix(in oklab, var(--purple) 8%, var(--bg-2))", border: "1px solid color-mix(in oklab, var(--purple) 30%, transparent)", borderRadius: 12, marginBottom: 16, fontSize: 13, color: "var(--ink-2)"}}>
+            Añade los miembros de la familia que van a clase. Puedes añadir más después.
+          </div>
+          <FamilyMember n={1} defaultName="Lucía" defaultAge="9" defaultAct="Ballet Clásico" />
+          <FamilyMember n={2} defaultName="Mateo" defaultAge="6" defaultAct="Taekwondo" />
+          <button type="button" className="btn btn-outline btn-block" style={{marginTop: 8}}>
+            <I.Plus /> Añadir otro miembro
+          </button>
+        </>
+      )}
+
+      {step === 3 && (
+        <>
+          <div className="field">
+            <label>¿Cómo nos conociste?</label>
+            <select>
+              <option>Recomendación</option>
+              <option>Instagram</option>
+              <option>Google</option>
+              <option>Cartel / flyer</option>
+              <option>Otro</option>
+            </select>
+          </div>
+          <div className="field">
+            <label>Código de referido (opcional)</label>
+            <input placeholder="AIM-XXXXX" />
+          </div>
+          <label style={{display: "flex", gap: 10, alignItems: "flex-start", fontSize: 13, color: "var(--ink-2)", marginTop: 8, lineHeight: 1.5}}>
+            <input type="checkbox" defaultChecked style={{marginTop: 3, accentColor: "var(--purple)"}} />
+            <span>Acepto los términos y condiciones, el reglamento interno y la política de privacidad.</span>
+          </label>
+          <label style={{display: "flex", gap: 10, alignItems: "flex-start", fontSize: 13, color: "var(--ink-2)", marginTop: 10, lineHeight: 1.5}}>
+            <input type="checkbox" style={{marginTop: 3, accentColor: "var(--purple)"}} />
+            <span>Quiero recibir comunicaciones del club (noticias, eventos, descuentos).</span>
+          </label>
+        </>
+      )}
+
+      <div style={{display: "flex", gap: 8, marginTop: 22}}>
+        {step > 1 && (
+          <button type="button" className="btn btn-outline" onClick={() => setStep(step - 1)}>
+            Anterior
+          </button>
+        )}
+        <button type="submit" className="btn btn-gradient" style={{flex: 1}}>
+          {step < 3 ? "Continuar" : "Crear mi cuenta"} <I.Arrow />
+        </button>
+      </div>
+    </form>
+  );
+}
+
+export default function AuthScreen({ mode = "login" }) {
+  const { go } = useRouter();
+  const [tab, setTab] = useState(mode === "register" ? "register" : "login");
+
+  return (
+    <main style={{paddingTop: 0}}>
+      <div className="auth-shell">
+        <aside className="auth-side">
+          <div>
+            <AimLogo sub />
+            <h2 style={{marginTop: 48}}>
+              Innovación,<br/>excelencia y<br/>pasión.
+            </h2>
+            <p>
+              Desde un perfil único accedes a tus clases, horarios, pagos, asistencia,
+              torneos y novedades. Un solo lugar para tu familia entera.
+            </p>
+
+            <div className="auth-features">
+              <div className="auth-feature">
+                <span className="ico"><I.Calendar /></span>
+                <span>Tu horario completo siempre actualizado</span>
+              </div>
+              <div className="auth-feature">
+                <span className="ico"><I.CreditCard /></span>
+                <span>Pagos online y recibos descargables</span>
+              </div>
+              <div className="auth-feature">
+                <span className="ico"><I.Bell /></span>
+                <span>Avisos del club y de tu actividad</span>
+              </div>
+              <div className="auth-feature">
+                <span className="ico"><I.Users /></span>
+                <span>Una cuenta, todos tus hijos</span>
+              </div>
+            </div>
+          </div>
+
+          <div style={{display: "flex", gap: 14, alignItems: "center", color: "rgba(255,255,255,.78)", fontSize: 13}}>
+            <I.Shield />
+            <span>Tus datos están protegidos. Cookies seguras y RGPD.</span>
+          </div>
+        </aside>
+
+        <section className="auth-form">
+          <div className="auth-tabs">
+            <button className={tab === "login" ? "is-active" : ""} onClick={() => setTab("login")}>Iniciar sesión</button>
+            <button className={tab === "register" ? "is-active" : ""} onClick={() => setTab("register")}>Crear cuenta</button>
+          </div>
+
+          {tab === "login" ? <LoginForm go={go} /> : <RegisterForm go={go} />}
+
+          <div className="divider">o continúa con</div>
+          <div className="oauth-row">
+            <button className="btn btn-outline" style={{width: "100%"}}>
+              <svg width="16" height="16" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.47 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+              Google
+            </button>
+            <button className="btn btn-outline" style={{width: "100%"}}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M22 12.07C22 6.5 17.52 2 12 2S2 6.5 2 12.07C2 17.1 5.66 21.27 10.44 22v-7.03H7.9v-2.9h2.54V9.84c0-2.51 1.5-3.9 3.78-3.9 1.1 0 2.24.2 2.24.2v2.47h-1.26c-1.24 0-1.63.77-1.63 1.56v1.88h2.78l-.45 2.9h-2.34V22C18.34 21.27 22 17.1 22 12.07z"/></svg>
+              Facebook
+            </button>
+          </div>
+
+          <p style={{fontSize: 12, color: "var(--ink-3)", textAlign: "center", marginTop: 26, lineHeight: 1.6}}>
+            Al continuar aceptas nuestros <a href="#" style={{color: "var(--purple)", fontWeight: 600}}>Términos</a> y la{" "}
+            <a href="#" style={{color: "var(--purple)", fontWeight: 600}}>Política de privacidad</a>.
+          </p>
+        </section>
+      </div>
+    </main>
   );
 }

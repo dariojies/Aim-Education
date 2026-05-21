@@ -1,574 +1,527 @@
 import React, { useState, useEffect } from 'react';
-import { ACTIVITIES, ACT_BY_ID } from './Shared';
+import { I } from './Icons.jsx';
+import { AimLogo, ACT_BY_ID } from './Shared.jsx';
+import { useRouter } from '../App.jsx';
 
-// ── Icons ──────────────────────────────────────────────────────────────────
-const Icon = ({ d, size = 20 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d={d} />
-  </svg>
-);
-const Icons = {
-  home: 'M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
-  calendar: 'M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2z',
-  check: 'M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11',
-  credit: 'M3 9h18v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9zM3 9V7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2',
-  wallet: 'M20 12V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5h-4a2 2 0 0 0 0 4h4',
-  news: 'M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2zm20 0h-6a4 4 0 0 0-4 4v14a3 3 0 0 0 3-3h7z',
-  user: 'M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z',
-  settings: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z',
-  logout: 'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9',
-  menu: 'M3 12h18M3 6h18M3 18h18',
-  x: 'M18 6L6 18M6 6l12 12',
-  gift: 'M20 12v10H4V12M22 7H2v5h20V7zM12 22V7M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7zM12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z',
-  bell: 'M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0',
-};
-function NavIcon({ d }) {
-  return <Icon d={d} size={18} />;
-}
-
-// ── Mock data ──────────────────────────────────────────────────────────────
-const MOCK_CLASSES = [
-  { id: 1, activity: 'taekwondo', day: 'Lunes', time: '17:00', duration: 60, group: 'Junior A' },
-  { id: 2, activity: 'ingles', day: 'Martes', time: '16:00', duration: 60, group: 'Flyers B' },
-  { id: 3, activity: 'taekwondo', day: 'Miércoles', time: '17:00', duration: 60, group: 'Junior A' },
-  { id: 4, activity: 'ingles', day: 'Jueves', time: '16:00', duration: 60, group: 'Flyers B' },
-];
-const DAYS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
-const MONTHS = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
-const MOCK_PAYMENTS = [
-  { id: 1, date: '2025-05-01', concept: 'Taekwondo – Mayo 2025', amount: 42, status: 'paid' },
-  { id: 2, date: '2025-05-01', concept: 'Inglés – Mayo 2025', amount: 48, status: 'paid' },
-  { id: 3, date: '2025-04-01', concept: 'Taekwondo – Abril 2025', amount: 42, status: 'paid' },
-  { id: 4, date: '2025-04-01', concept: 'Inglés – Abril 2025', amount: 48, status: 'paid' },
-  { id: 5, date: '2025-06-01', concept: 'Taekwondo – Junio 2025', amount: 42, status: 'pending' },
-  { id: 6, date: '2025-06-01', concept: 'Inglés – Junio 2025', amount: 48, status: 'pending' },
-];
-const MOCK_ATTENDANCE = {
-  month: 4,
-  year: 2025,
-  records: [
-    { date: 1, status: 'present' }, { date: 3, status: 'present' }, { date: 7, status: 'present' },
-    { date: 8, status: 'present' }, { date: 10, status: 'absent' }, { date: 14, status: 'present' },
-    { date: 15, status: 'present' }, { date: 17, status: 'justified' }, { date: 21, status: 'present' },
-    { date: 22, status: 'present' }, { date: 24, status: 'present' }, { date: 28, status: 'present' },
-    { date: 29, status: 'present' },
-  ],
-};
-
-// ── Sub-views ──────────────────────────────────────────────────────────────
-function OverviewView({ user }) {
-  const totalPay = MOCK_PAYMENTS.filter(p => p.status === 'paid').reduce((s, p) => s + p.amount, 0);
-  const presentCount = MOCK_ATTENDANCE.records.filter(r => r.status === 'present').length;
-  const totalCount = MOCK_ATTENDANCE.records.length;
-  const attendPct = Math.round(presentCount / totalCount * 100);
-
+function ClassRow({ act, who, day, dnum, time, room }) {
+  const a = ACT_BY_ID[act];
   return (
-    <div>
-      <div className="dash-welcome">
-        <h2>Hola, {user.firstName || user.name || 'Alumno'} 👋</h2>
-        <p>Aquí tienes un resumen de tu actividad en Aim.</p>
+    <div className={`class-row ${a?.className || ""}`}>
+      <div className="day"><div className="d">{dnum}</div><div className="w">{day}</div></div>
+      <div className="info">
+        <h4>{who}</h4>
+        <p>{time} · {room}</p>
       </div>
-
-      <div className="dash-stats-grid">
-        <div className="dash-stat-card" style={{ '--sc': '#5233A8' }}>
-          <div className="dash-stat-icon"><NavIcon d={Icons.check} /></div>
-          <div className="dash-stat-val">{attendPct}%</div>
-          <div className="dash-stat-lbl">Asistencia este mes</div>
-        </div>
-        <div className="dash-stat-card" style={{ '--sc': '#21B668' }}>
-          <div className="dash-stat-icon"><NavIcon d={Icons.calendar} /></div>
-          <div className="dash-stat-val">{MOCK_CLASSES.length}</div>
-          <div className="dash-stat-lbl">Clases por semana</div>
-        </div>
-        <div className="dash-stat-card" style={{ '--sc': '#FF4F15' }}>
-          <div className="dash-stat-icon"><NavIcon d={Icons.credit} /></div>
-          <div className="dash-stat-val">{totalPay}€</div>
-          <div className="dash-stat-lbl">Pagado este curso</div>
-        </div>
-        <div className="dash-stat-card" style={{ '--sc': '#FFD526' }}>
-          <div className="dash-stat-icon"><NavIcon d={Icons.gift} /></div>
-          <div className="dash-stat-val">0€</div>
-          <div className="dash-stat-lbl">Saldo referidos</div>
-        </div>
-      </div>
-
-      <h3 className="dash-section-title">Esta semana</h3>
-      <div className="dash-week-list">
-        {MOCK_CLASSES.map(cls => {
-          const act = ACT_BY_ID[cls.activity];
-          return (
-            <div key={cls.id} className="dash-class-row" style={{ borderLeft: `3px solid ${act?.color || '#5233A8'}` }}>
-              <div className="dash-class-icon" style={{ background: act ? `color-mix(in oklab, ${act.color} 12%, white)` : '#f3f0ff' }}>
-                {act && <img src={act.icon} alt={act.name} style={{ width: 28, height: 28, objectFit: 'contain' }} />}
-              </div>
-              <div className="dash-class-info">
-                <strong>{act?.name || cls.activity}</strong>
-                <span>{cls.day} · {cls.time} · {cls.group}</span>
-              </div>
-              <span className="dash-class-dur">{cls.duration} min</span>
-            </div>
-          );
-        })}
-      </div>
+      <span className="badge">{a?.name || act}</span>
     </div>
   );
 }
 
-function ClassesView() {
-  const slots = ['09:00', '10:00', '11:00', '16:00', '17:00', '18:00', '19:00', '20:00'];
-  const getClass = (day, time) => MOCK_CLASSES.find(c => c.day === day && c.time === time);
-
+function SummaryRow({ label, value, tone }) {
   return (
-    <div>
-      <h3 className="dash-section-title">Horario semanal</h3>
-      <div style={{ overflowX: 'auto' }}>
-        <table className="dash-week-table">
-          <thead>
-            <tr>
-              <th></th>
-              {DAYS.map(d => <th key={d}>{d.slice(0, 3)}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {slots.map(slot => (
-              <tr key={slot}>
-                <td className="dash-week-time">{slot}</td>
-                {DAYS.map(day => {
-                  const cls = getClass(day, slot);
-                  const act = cls ? ACT_BY_ID[cls.activity] : null;
-                  return (
-                    <td key={day}>
-                      {cls && act && (
-                        <div className="dash-week-class" style={{ background: `color-mix(in oklab, ${act.color} 15%, white)`, borderColor: act.color, color: act.color }}>
-                          <img src={act.icon} alt={act.name} style={{ width: 18, height: 18, objectFit: 'contain' }} />
-                          <span>{act.name}</span>
-                        </div>
-                      )}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <p style={{ color: 'var(--ink-3)', fontSize: 13, marginTop: 16 }}>
-        Horario de {new Date().toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })}
-      </p>
+    <div style={{display: "flex", justifyContent: "space-between", paddingBottom: 8, borderBottom: "1px dashed var(--line)", fontSize: 13}}>
+      <span style={{color: "var(--ink-3)", fontWeight: 600}}>{label}</span>
+      <span style={{color: tone || "var(--ink)", fontWeight: 800, fontFamily: "var(--font-display)"}}>{value}</span>
     </div>
   );
 }
 
-function AttendanceView() {
-  const { month, year, records } = MOCK_ATTENDANCE;
-  const daysInMonth = new Date(year, month, 0).getDate();
-  const firstDow = new Date(year, month - 1, 1).getDay();
-  const offset = firstDow === 0 ? 6 : firstDow - 1;
-
-  const recMap = Object.fromEntries(records.map(r => [r.date, r.status]));
-  const present = records.filter(r => r.status === 'present').length;
-  const absent = records.filter(r => r.status === 'absent').length;
-  const justified = records.filter(r => r.status === 'justified').length;
-  const pct = Math.round(present / records.length * 100);
-
+function DashOverview({ go, setView }) {
   return (
-    <div>
-      <div className="dash-attend-stats">
-        <div className="dash-attend-stat ok"><span className="val">{present}</span><span className="lbl">Presencias</span></div>
-        <div className="dash-attend-stat warn"><span className="val">{absent}</span><span className="lbl">Ausencias</span></div>
-        <div className="dash-attend-stat info"><span className="val">{justified}</span><span className="lbl">Justificadas</span></div>
-        <div className="dash-attend-stat pct">
-          <span className="val" style={{ color: '#5233A8' }}>{pct}%</span>
-          <span className="lbl">Asistencia</span>
+    <>
+      <div className="dash-cards">
+        <div className="stat-card act-ballet">
+          <div className="corner"><I.Calendar /></div>
+          <div className="l">Próxima clase</div>
+          <div className="v">Hoy <small>18:00</small></div>
+          <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>Lucía · Ballet Primary</div>
+        </div>
+        <div className="stat-card warn act-funcional">
+          <div className="corner"><I.Wallet /></div>
+          <div className="l">Próximo pago</div>
+          <div className="v">112€</div>
+          <div className="trend">vence en 4 días</div>
+        </div>
+        <div className="stat-card act-taekwondo">
+          <div className="corner"><I.Check /></div>
+          <div className="l">Asistencia mes</div>
+          <div className="v">92%</div>
+          <div className="trend"><I.Arrow width={10} height={10}/> +6% vs mes pasado</div>
+        </div>
+        <div className="stat-card act-pintura">
+          <div className="corner"><I.Star /></div>
+          <div className="l">Próximo evento</div>
+          <div className="v">14 Jun</div>
+          <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>Festival Anual de Ballet</div>
         </div>
       </div>
 
-      <h3 className="dash-section-title">{MONTHS[month - 1]} {year}</h3>
-      <div className="dash-cal">
-        {['L', 'M', 'X', 'J', 'V', 'S', 'D'].map(d => (
-          <div key={d} className="dash-cal-dow">{d}</div>
-        ))}
-        {Array.from({ length: offset }).map((_, i) => <div key={`e${i}`} />)}
-        {Array.from({ length: daysInMonth }, (_, i) => i + 1).map(d => {
-          const status = recMap[d];
-          return (
-            <div key={d} className={`dash-cal-day${status ? ` ${status}` : ''}`}>
-              {d}
-              {status && <span className="dash-cal-dot" />}
-            </div>
-          );
-        })}
-      </div>
-      <div style={{ display: 'flex', gap: 16, marginTop: 20, flexWrap: 'wrap', fontSize: 13 }}>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 12, height: 12, borderRadius: '50%', background: '#21B668', display: 'inline-block' }} /> Presente</span>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 12, height: 12, borderRadius: '50%', background: '#FF4F15', display: 'inline-block' }} /> Ausente</span>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 12, height: 12, borderRadius: '50%', background: '#00BBF4', display: 'inline-block' }} /> Justificada</span>
-      </div>
-    </div>
-  );
-}
-
-function PaymentsView() {
-  const pending = MOCK_PAYMENTS.filter(p => p.status === 'pending');
-  const paid = MOCK_PAYMENTS.filter(p => p.status === 'paid');
-
-  return (
-    <div>
-      {pending.length > 0 && (
-        <>
-          <h3 className="dash-section-title" style={{ color: '#FF4F15' }}>Pendiente de pago</h3>
-          <div className="dash-payments-list">
-            {pending.map(p => (
-              <div key={p.id} className="dash-payment-row pending">
-                <div className="dash-pay-date">{new Date(p.date).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })}</div>
-                <div className="dash-pay-concept">{p.concept}</div>
-                <div className="dash-pay-amount">{p.amount}€</div>
-                <div className="dash-pay-status pending">Pendiente</div>
-              </div>
-            ))}
-          </div>
-          <div style={{ marginBottom: 32 }}>
-            <a href="https://wa.me/34956742216" target="_blank" rel="noopener" className="btn btn-gradient">
-              Pagar por WhatsApp →
-            </a>
-          </div>
-        </>
-      )}
-
-      <h3 className="dash-section-title">Historial de pagos</h3>
-      <div className="dash-payments-list">
-        {paid.map(p => (
-          <div key={p.id} className="dash-payment-row">
-            <div className="dash-pay-date">{new Date(p.date).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' })}</div>
-            <div className="dash-pay-concept">{p.concept}</div>
-            <div className="dash-pay-amount">{p.amount}€</div>
-            <div className="dash-pay-status paid">Pagado</div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function WalletView({ user }) {
-  const referralCode = (user.firstName || 'aim').toUpperCase().slice(0, 4) + Math.abs((user.id || 0) % 9999).toString().padStart(4, '0');
-  const [copied, setCopied] = useState(false);
-
-  const copy = () => {
-    navigator.clipboard.writeText(referralCode).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  };
-
-  return (
-    <div>
-      <div className="dash-wallet-hero">
-        <div className="dash-wallet-badge">
-          <NavIcon d={Icons.gift} />
-        </div>
-        <h3>Programa de referidos</h3>
-        <p>Comparte tu código y consigue <b>10€ de descuento</b> por cada amigo que se matricule.</p>
-      </div>
-
-      <div className="dash-wallet-code">
-        <span className="dash-wallet-label">Tu código de referido</span>
-        <div className="dash-wallet-code-box">
-          <span className="dash-wallet-code-text">{referralCode}</span>
-          <button className="dash-wallet-copy" onClick={copy}>
-            {copied ? '¡Copiado!' : 'Copiar'}
-          </button>
+      <div className="panel">
+        <h2><I.Calendar /> Esta semana</h2>
+        <p className="sub">Las clases programadas para tu familia.</p>
+        <div className="classes-grid">
+          <ClassRow act="ballet" name="Lucía" who="Lucía · Ballet Primary" day="Hoy" dnum="22" time="18:00 – 19:00" room="Sala 1" />
+          <ClassRow act="taekwondo" name="Mateo" who="Mateo · Cinturones blancos" day="Hoy" dnum="22" time="17:00 – 18:00" room="Tatami" />
+          <ClassRow act="ballet" name="Lucía" who="Lucía · Ballet Primary" day="Mañana" dnum="23" time="18:00 – 19:00" room="Sala 1" />
+          <ClassRow act="ingles" name="Ana" who="Ana · B2 First" day="Jue" dnum="24" time="19:00 – 20:30" room="Aula 3" />
+          <ClassRow act="funcional" name="Carlos" who="Carlos · Funcional tarde" day="Vie" dnum="25" time="19:00 – 20:00" room="Sala fit" />
+          <ClassRow act="taekwondo" name="Mateo" who="Mateo · Cinturones blancos" day="Vie" dnum="25" time="17:00 – 18:00" room="Tatami" />
         </div>
       </div>
 
-      <div className="dash-wallet-steps">
-        <h3>¿Cómo funciona?</h3>
-        <div className="dash-wallet-step">
-          <span className="dash-wallet-step-num">1</span>
-          <div><strong>Comparte tu código</strong><p>Envía tu código a amigos y familiares que quieran matricularse en Aim.</p></div>
-        </div>
-        <div className="dash-wallet-step">
-          <span className="dash-wallet-step-num">2</span>
-          <div><strong>Se matriculan</strong><p>Cuando un amigo se matricule usando tu código, ambos recibiréis el beneficio.</p></div>
-        </div>
-        <div className="dash-wallet-step">
-          <span className="dash-wallet-step-num">3</span>
-          <div><strong>Recibes tu descuento</strong><p>10€ de descuento en tu próxima cuota mensual por cada referido exitoso.</p></div>
-        </div>
-      </div>
-
-      <div className="dash-wallet-balance">
-        <span>Saldo actual</span>
-        <span className="dash-wallet-balance-amount">0€</span>
-        <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>Se aplicará en tu próxima factura</span>
-      </div>
-    </div>
-  );
-}
-
-function NewsView() {
-  const [posts, setPosts] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    fetch('/api/posts?limit=10')
-      .then(r => r.ok ? r.json() : [])
-      .then(data => { setPosts(data); setLoading(false); })
-      .catch(() => setLoading(false));
-  }, []);
-
-  if (loading) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--ink-3)' }}>Cargando noticias...</div>;
-
-  return (
-    <div>
-      <h3 className="dash-section-title">Noticias y avisos</h3>
-      {posts.length === 0 ? (
-        <p style={{ color: 'var(--ink-3)' }}>No hay noticias publicadas aún.</p>
-      ) : (
-        <div className="dash-news-list">
-          {posts.map(post => (
-            <a key={post.id} href={`/noticias/${post.slug}`} className="dash-news-item" target="_blank" rel="noopener">
-              {post.cover_image_url && (
-                <div className="dash-news-img">
-                  <img src={post.cover_image_url} alt={post.title} />
+      <div style={{display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 22}}>
+        <div className="panel">
+          <h2><I.Bell /> Avisos recientes</h2>
+          <p className="sub">Comunicaciones del club y de tus actividades.</p>
+          {[
+            { tag: "Ballet", color: "var(--pink)", t: "Recordatorio uniforme festival", d: "Hace 2 horas", body: "El sábado 14 de junio, todos los grupos con leotardo rosa y zapatillas blancas." },
+            { tag: "Aim", color: "var(--purple)", t: "Inscripciones campamento de verano abiertas", d: "Ayer", body: "Hasta el 30% de descuento para familias actuales del club hasta el 30 de abril." },
+            { tag: "Taekwondo", color: "var(--teal)", t: "Examen de cambio de cinturón confirmado", d: "Hace 3 días", body: "Sábado 28 de junio a las 10:00 — confirma la asistencia de Mateo en pagos." },
+          ].map((n, i) => (
+            <div key={i} style={{display: "flex", gap: 14, padding: "14px 0", borderBottom: i < 2 ? "1px solid var(--line-2)" : "0"}}>
+              <div style={{width: 8, height: 8, borderRadius: "50%", background: n.color, marginTop: 8, flexShrink: 0}} />
+              <div style={{flex: 1}}>
+                <div style={{display: "flex", justifyContent: "space-between", marginBottom: 4}}>
+                  <span style={{fontSize: 10, fontWeight: 800, letterSpacing: ".12em", textTransform: "uppercase", color: n.color}}>{n.tag}</span>
+                  <span style={{fontSize: 11, color: "var(--ink-3)"}}>{n.d}</span>
                 </div>
-              )}
-              <div className="dash-news-body">
-                <span className="dash-news-cat">{post.category || 'General'}</span>
-                <h4>{post.title}</h4>
-                {post.excerpt && <p>{post.excerpt}</p>}
-                <span className="dash-news-date">
-                  {new Date(post.published_at || post.created_at).toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })}
-                </span>
+                <h4 style={{margin: "0 0 4px", fontSize: 14, fontWeight: 700, color: "var(--ink)"}}>{n.t}</h4>
+                <p style={{margin: 0, fontSize: 13, color: "var(--ink-2)", lineHeight: 1.45}}>{n.body}</p>
               </div>
-            </a>
+            </div>
           ))}
         </div>
-      )}
-    </div>
-  );
-}
 
-function ProfileView({ user }) {
-  const [form, setForm] = useState({
-    firstName: user.firstName || '',
-    lastName: user.lastName || '',
-    email: user.email || '',
-    phone: user.phone || '',
-  });
-  const [saved, setSaved] = useState(false);
-
-  const handleSave = async (e) => {
-    e.preventDefault();
-    try {
-      await fetch('/api/me/profile', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
-      });
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2500);
-    } catch {}
-  };
-
-  return (
-    <div>
-      <h3 className="dash-section-title">Mi perfil</h3>
-      <form className="dash-profile-form" onSubmit={handleSave}>
-        <div className="dash-profile-avatar">
-          <div className="dash-avatar-circle" style={{ background: 'var(--grad-aim)' }}>
-            <span>{(user.firstName || 'A').charAt(0).toUpperCase()}</span>
-          </div>
-          <div>
-            <div style={{ fontWeight: 700, fontSize: 18 }}>{user.firstName} {user.lastName}</div>
-            <div style={{ color: 'var(--ink-3)', fontSize: 13 }}>{user.email}</div>
-          </div>
-        </div>
-
-        <div className="dash-form-row">
-          <div className="dash-form-field">
-            <label>Nombre</label>
-            <input type="text" value={form.firstName} onChange={e => setForm(f => ({ ...f, firstName: e.target.value }))} />
-          </div>
-          <div className="dash-form-field">
-            <label>Apellidos</label>
-            <input type="text" value={form.lastName} onChange={e => setForm(f => ({ ...f, lastName: e.target.value }))} />
-          </div>
-        </div>
-        <div className="dash-form-field">
-          <label>Email</label>
-          <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} />
-        </div>
-        <div className="dash-form-field">
-          <label>Teléfono</label>
-          <input type="tel" placeholder="+34 600 000 000" value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} />
-        </div>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-          <button type="submit" className="btn btn-gradient">Guardar cambios</button>
-          {saved && <span style={{ color: '#21B668', fontWeight: 600, fontSize: 14 }}>✓ Guardado</span>}
-        </div>
-      </form>
-    </div>
-  );
-}
-
-function SettingsView({ onLogout }) {
-  const [notif, setNotif] = useState({ email: true, news: true, payments: true });
-
-  return (
-    <div>
-      <h3 className="dash-section-title">Notificaciones</h3>
-      <div className="dash-settings-list">
-        {[
-          { key: 'email', label: 'Emails de la academia', desc: 'Recibe comunicados importantes por email' },
-          { key: 'news', label: 'Noticias y eventos', desc: 'Entérate de las novedades del club' },
-          { key: 'payments', label: 'Recordatorios de pago', desc: 'Aviso cuando vence tu cuota mensual' },
-        ].map(item => (
-          <div key={item.key} className="dash-settings-row">
-            <div>
-              <div style={{ fontWeight: 600 }}>{item.label}</div>
-              <div style={{ fontSize: 13, color: 'var(--ink-3)' }}>{item.desc}</div>
-            </div>
-            <button
-              className={`dash-toggle${notif[item.key] ? ' on' : ''}`}
-              onClick={() => setNotif(n => ({ ...n, [item.key]: !n[item.key] }))}
-              aria-label={item.label}
-            >
-              <span className="dash-toggle-knob" />
+        <div className="panel">
+          <h2><I.Wallet /> Resumen económico</h2>
+          <p className="sub">Estado de pagos del mes en curso.</p>
+          <div style={{
+            background: "var(--grad-aim)",
+            borderRadius: 14,
+            padding: 22,
+            color: "white",
+            marginBottom: 18,
+            position: "relative",
+            overflow: "hidden",
+          }}>
+            <div style={{fontSize: 12, opacity: .8, textTransform: "uppercase", letterSpacing: ".1em", fontWeight: 700}}>Pendiente</div>
+            <div style={{fontFamily: "var(--font-display)", fontSize: 42, fontWeight: 800, letterSpacing: "-.025em", marginTop: 6}}>112,00€</div>
+            <div style={{fontSize: 12, marginTop: 8, opacity: .9}}>Cuotas mayo · 3 alumnos</div>
+            <button className="btn" style={{background: "var(--ink)", color: "white", marginTop: 14}} onClick={() => setView("payments")}>
+              Pagar ahora <I.Arrow />
             </button>
+          </div>
+          <div style={{display: "grid", gap: 8}}>
+            <SummaryRow label="Total este mes" value="112€" />
+            <SummaryRow label="Pagado en el año" value="970€" />
+            <SummaryRow label="Cartera comisiones" value="42€" tone="var(--teal)" />
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function DashClasses() {
+  const days = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+  const slots = [
+    { d: 0, s: 16, h: 2, act: "ballet", title: "Lucía · Primary", room: "Sala 1" },
+    { d: 0, s: 17, h: 1, act: "taekwondo", title: "Mateo · Blancos", room: "Tatami" },
+    { d: 1, s: 16, h: 1, act: "ingles", title: "Lucía · Movers", room: "Aula 3" },
+    { d: 1, s: 18, h: 1.5, act: "ingles", title: "Ana · B2 First", room: "Aula 1" },
+    { d: 2, s: 16, h: 2, act: "ballet", title: "Lucía · Primary", room: "Sala 1" },
+    { d: 2, s: 18, h: 1, act: "robotica", title: "Mateo · Junior", room: "Lab" },
+    { d: 3, s: 18, h: 1.5, act: "ingles", title: "Ana · B2 First", room: "Aula 1" },
+    { d: 4, s: 17, h: 1, act: "taekwondo", title: "Mateo · Blancos", room: "Tatami" },
+    { d: 4, s: 18, h: 1, act: "funcional", title: "Carlos · Funcional", room: "Sala fit" },
+    { d: 5, s: 10, h: 2, act: "taekwondo", title: "Mateo · Competición", room: "Tatami" },
+  ];
+
+  const HOURS = Array.from({length: 13}, (_, i) => 9 + i);
+
+  return (
+    <div className="panel">
+      <h2><I.Calendar /> Horario semanal</h2>
+      <p className="sub">Todas las clases de tu familia en una sola vista.</p>
+      <div className="week-grid" style={{gridTemplateColumns: "80px repeat(6, 1fr)"}}>
+        <div className="hdr"></div>
+        {days.map(d => <div key={d} className="hdr">{d}</div>)}
+        {HOURS.map(h => (
+          <React.Fragment key={h}>
+            <div className="time">{h}:00</div>
+            {days.map((_, dIdx) => {
+              const slot = slots.find(s => s.d === dIdx && s.s === h);
+              return (
+                <div key={dIdx} style={{minHeight: 48, position: "relative"}}>
+                  {slot && (
+                    <button className={`slot ${ACT_BY_ID[slot.act].className}`}
+                      style={{
+                        background: ACT_BY_ID[slot.act].color,
+                        height: `calc(${slot.h} * 48px - 8px)`
+                      }}>
+                      <span className="t">{slot.title}</span>
+                      <span className="meta">{h}:00 · {slot.room}</span>
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DashAttendance() {
+  const students = [
+    { name: "Lucía García", act: "ballet", percent: 95, sessions: 24, attended: 23, missed: 1 },
+    { name: "Mateo García", act: "taekwondo", percent: 88, sessions: 32, attended: 28, missed: 4 },
+    { name: "Ana García", act: "ingles", percent: 75, sessions: 16, attended: 12, missed: 4 },
+    { name: "Carlos García", act: "funcional", percent: 100, sessions: 12, attended: 12, missed: 0 },
+  ];
+
+  return (
+    <div className="panel">
+      <h2><I.Check /> Asistencia del trimestre</h2>
+      <p className="sub">Histórico por miembro de la familia. Verde: asistió. Naranja: ausencia. Gris: clases futuras.</p>
+
+      <div style={{display: "grid", gap: 20, marginTop: 16}}>
+        {students.map((s, i) => {
+          const a = ACT_BY_ID[s.act];
+          return (
+            <div key={i} className={a.className}>
+              <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10}}>
+                <div style={{display: "flex", alignItems: "center", gap: 10}}>
+                  <div className="avatar" style={{background: a.color}}>{s.name[0]}</div>
+                  <div>
+                    <div style={{fontWeight: 700, fontSize: 15}}>{s.name}</div>
+                    <div style={{fontSize: 12, color: "var(--ink-3)"}}>{a.name} · {s.attended}/{s.sessions} sesiones</div>
+                  </div>
+                </div>
+                <div style={{textAlign: "right"}}>
+                  <div style={{fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 28, letterSpacing: "-.02em", lineHeight: 1, color: s.percent >= 90 ? "var(--teal)" : s.percent >= 75 ? "var(--orange-soft)" : "var(--orange)"}}>{s.percent}%</div>
+                  <div style={{fontSize: 11, color: "var(--ink-3)", fontWeight: 600, marginTop: 2}}>asistencia</div>
+                </div>
+              </div>
+              <div className="attendance-bar">
+                {Array.from({length: 32}).map((_, idx) => {
+                  if (idx < s.attended) return <div key={idx} className="ok" style={{flex: 1}} />;
+                  if (idx < s.attended + s.missed) return <div key={idx} className="miss" style={{flex: 1}} />;
+                  return <div key={idx} className="future" style={{flex: 1}} />;
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function DashPayments() {
+  return (
+    <>
+      <div className="dash-cards" style={{gridTemplateColumns: "repeat(3, 1fr)"}}>
+        <div className="stat-card warn">
+          <div className="l">Pendiente</div>
+          <div className="v">112€</div>
+          <div className="trend">vence en 4 días</div>
+        </div>
+        <div className="stat-card">
+          <div className="l">Pagado este año</div>
+          <div className="v">970€</div>
+          <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>9 recibos · IVA inc.</div>
+        </div>
+        <div className="stat-card">
+          <div className="l">Próximo cargo</div>
+          <div className="v">1 Jun</div>
+          <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>Domiciliación SEPA</div>
+        </div>
+      </div>
+
+      <div className="panel">
+        <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18}}>
+          <div>
+            <h2 style={{margin: 0}}><I.Wallet /> Pagos pendientes</h2>
+            <p className="sub" style={{margin: "4px 0 0"}}>Selecciona los conceptos a pagar.</p>
+          </div>
+          <button className="btn btn-gradient">Pagar todo ahora · 112€</button>
+        </div>
+
+        <div className="payment-row">
+          <div>
+            <div className="name">Mensualidad mayo · Lucía García</div>
+            <div className="date">Ballet Clásico Primary · vence 1 de mayo</div>
+          </div>
+          <span className="status-pill pending">Pendiente</span>
+          <span className="date">01/05/2026</span>
+          <span className="amount">42,00€</span>
+          <button className="btn btn-sm btn-primary">Pagar</button>
+        </div>
+        <div className="payment-row">
+          <div>
+            <div className="name">Mensualidad mayo · Mateo García</div>
+            <div className="date">Taekwondo Blancos · vence 1 de mayo</div>
+          </div>
+          <span className="status-pill pending">Pendiente</span>
+          <span className="date">01/05/2026</span>
+          <span className="amount">38,00€</span>
+          <button className="btn btn-sm btn-primary">Pagar</button>
+        </div>
+        <div className="payment-row">
+          <div>
+            <div className="name">Examen de cinturón · Mateo García</div>
+            <div className="date">Taekwondo · examen 28 de junio</div>
+          </div>
+          <span className="status-pill upcoming">Próximo</span>
+          <span className="date">28/06/2026</span>
+          <span className="amount">32,00€</span>
+          <button className="btn btn-sm btn-outline">Más info</button>
+        </div>
+      </div>
+
+      <div className="panel">
+        <h2><I.Wallet /> Histórico de recibos</h2>
+        <p className="sub">Descarga tus recibos para deducciones fiscales.</p>
+        {[
+          { d: "01/04/2026", desc: "Mensualidad abril · Familia García", a: "112,00€", method: "Domiciliación" },
+          { d: "01/03/2026", desc: "Mensualidad marzo · Familia García", a: "112,00€", method: "Domiciliación" },
+          { d: "15/02/2026", desc: "Festival ballet · entradas", a: "20,00€", method: "Tarjeta" },
+          { d: "01/02/2026", desc: "Mensualidad febrero · Familia García", a: "112,00€", method: "Domiciliación" },
+          { d: "15/01/2026", desc: "Examen Cambridge B2 · Ana", a: "180,00€", method: "Transferencia" },
+        ].map((r, i) => (
+          <div key={i} className="payment-row">
+            <div>
+              <div className="name">{r.desc}</div>
+              <div className="date">{r.method}</div>
+            </div>
+            <span className="status-pill ok">Pagado</span>
+            <span className="date">{r.d}</span>
+            <span className="amount">{r.a}</span>
+            <button className="btn btn-sm btn-outline">PDF</button>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function DashWallet() {
+  return (
+    <div className="panel">
+      <h2><I.CreditCard /> Tu cartera de comisiones</h2>
+      <p className="sub">Gana 10€ por cada familia que se inscriba con tu código. Sin límite.</p>
+
+      <div style={{display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginTop: 18}}>
+        <div style={{background: "var(--grad-aim)", borderRadius: 18, padding: 28, color: "white"}}>
+          <div style={{fontSize: 11, letterSpacing: ".15em", fontWeight: 800, textTransform: "uppercase", opacity: .9}}>Tu código</div>
+          <div style={{fontFamily: "var(--font-display)", fontSize: 42, fontWeight: 800, letterSpacing: "-.025em", marginTop: 10}}>AIM-A4G7K</div>
+          <button className="btn btn-sm" style={{marginTop: 14, background: "rgba(255,255,255,.22)", color: "white", border: "1px solid rgba(255,255,255,.4)"}}>Copiar enlace</button>
+        </div>
+        <div style={{background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 18, padding: 28}}>
+          <div style={{fontSize: 11, letterSpacing: ".15em", fontWeight: 800, textTransform: "uppercase", color: "var(--ink-3)"}}>Saldo disponible</div>
+          <div style={{fontFamily: "var(--font-display)", fontSize: 42, fontWeight: 800, letterSpacing: "-.025em", marginTop: 10, color: "var(--teal)"}}>42,00€</div>
+          <div style={{fontSize: 12, color: "var(--ink-3)", marginTop: 6}}>Se aplicará en tu próxima cuota.</div>
+        </div>
+      </div>
+
+      <h3 style={{marginTop: 32, fontSize: 16, fontWeight: 700}}>Movimientos</h3>
+      <div style={{marginTop: 12}}>
+        <div className="payment-row">
+          <div><div className="name">Referido: Familia Pérez</div><div className="date">Hace 2 semanas</div></div>
+          <span className="status-pill ok">Confirmado</span>
+          <span className="date">15/04/2026</span>
+          <span className="amount" style={{color: "var(--teal)"}}>+10,00€</span>
+          <span></span>
+        </div>
+        <div className="payment-row">
+          <div><div className="name">Aplicado a cuota mensual</div><div className="date">Marzo</div></div>
+          <span className="status-pill ok">Aplicado</span>
+          <span className="date">01/03/2026</span>
+          <span className="amount" style={{color: "var(--orange)"}}>-15,00€</span>
+          <span></span>
+        </div>
+        <div className="payment-row">
+          <div><div className="name">Referido: Familia Romero</div><div className="date">Hace 2 meses</div></div>
+          <span className="status-pill ok">Confirmado</span>
+          <span className="date">10/02/2026</span>
+          <span className="amount" style={{color: "var(--teal)"}}>+10,00€</span>
+          <span></span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DashNews() {
+  return (
+    <div className="panel">
+      <h2><I.Bell /> Avisos del club</h2>
+      <p className="sub">Filtrado por las actividades de tu familia.</p>
+      {[
+        { tag: "Ballet", color: "var(--pink)", t: "Recordatorio uniforme festival", d: "Hace 2 horas", body: "El sábado 14 de junio, todos los grupos con leotardo rosa y zapatillas blancas. Recuerda llevar el moño hecho desde casa." },
+        { tag: "Aim", color: "var(--purple)", t: "Inscripciones campamento de verano abiertas", d: "Ayer", body: "Hasta el 30% de descuento para familias actuales del club hasta el 30 de abril. Las cuatro semanas están disponibles." },
+        { tag: "Taekwondo", color: "var(--teal)", t: "Examen de cambio de cinturón confirmado", d: "Hace 3 días", body: "Sábado 28 de junio a las 10:00. Confirma la asistencia de Mateo desde la sección de pagos para reservar el examen." },
+        { tag: "Inglés", color: "var(--blue)", t: "Resultados Cambridge — junio", d: "Hace 5 días", body: "Ya están publicados los resultados de los exámenes oficiales de B2 First. Ana puede consultar el suyo desde la app." },
+        { tag: "Aim", color: "var(--purple)", t: "Cambio de aula puntual", d: "Hace 1 semana", body: "La clase de funcional del viernes se traslada a la sala 2 por mantenimiento de la sala fit." },
+      ].map((n, i) => (
+        <div key={i} style={{display: "flex", gap: 14, padding: "18px 0", borderBottom: "1px solid var(--line-2)"}}>
+          <div style={{width: 8, height: 8, borderRadius: "50%", background: n.color, marginTop: 8, flexShrink: 0}} />
+          <div style={{flex: 1}}>
+            <div style={{display: "flex", justifyContent: "space-between", marginBottom: 6}}>
+              <span style={{fontSize: 10, fontWeight: 800, letterSpacing: ".12em", textTransform: "uppercase", color: n.color}}>{n.tag}</span>
+              <span style={{fontSize: 11, color: "var(--ink-3)"}}>{n.d}</span>
+            </div>
+            <h4 style={{margin: "0 0 4px", fontSize: 15, fontWeight: 700, color: "var(--ink)"}}>{n.t}</h4>
+            <p style={{margin: 0, fontSize: 14, color: "var(--ink-2)", lineHeight: 1.5}}>{n.body}</p>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DashProfile() {
+  return (
+    <div className="panel">
+      <h2><I.User /> Perfil de la familia</h2>
+      <p className="sub">Tus datos personales y los de tus alumnos.</p>
+
+      <div style={{display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 16}}>
+        <div className="field"><label>Nombre tutor/a</label><input defaultValue="Ana" /></div>
+        <div className="field"><label>Apellidos</label><input defaultValue="García López" /></div>
+        <div className="field"><label>Email</label><input type="email" defaultValue="ana.garcia@example.com" /></div>
+        <div className="field"><label>Teléfono</label><input defaultValue="+34 656 123 456" /></div>
+        <div className="field"><label>DNI</label><input defaultValue="44321987T" /></div>
+        <div className="field"><label>Dirección</label><input defaultValue="C/ Real, 42 · Algeciras" /></div>
+      </div>
+
+      <h3 style={{marginTop: 32, fontSize: 16, fontWeight: 700}}>Alumnos</h3>
+      <div style={{display: "grid", gap: 12, marginTop: 12}}>
+        {[
+          { n: "Lucía García", act: "Ballet Clásico", color: "var(--pink)" },
+          { n: "Mateo García", act: "Taekwondo · Robótica", color: "var(--teal)" },
+          { n: "Ana García", act: "Inglés B2", color: "var(--blue)" },
+          { n: "Carlos García", act: "Funcional", color: "var(--orange)" },
+        ].map((s, i) => (
+          <div key={i} style={{display: "flex", alignItems: "center", gap: 14, padding: 14, background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 14}}>
+            <div className="avatar" style={{background: s.color}}>{s.n[0]}</div>
+            <div style={{flex: 1}}>
+              <div style={{fontWeight: 700}}>{s.n}</div>
+              <div style={{fontSize: 12, color: "var(--ink-3)"}}>{s.act}</div>
+            </div>
+            <button className="btn btn-sm btn-outline">Editar</button>
           </div>
         ))}
       </div>
 
-      <h3 className="dash-section-title" style={{ marginTop: 36 }}>Cuenta</h3>
-      <div className="dash-settings-list">
-        <div className="dash-settings-row">
-          <div>
-            <div style={{ fontWeight: 600 }}>Cambiar contraseña</div>
-            <div style={{ fontSize: 13, color: 'var(--ink-3)' }}>Actualiza tu contraseña de acceso</div>
-          </div>
-          <button className="btn btn-outline" style={{ fontSize: 13 }}>Cambiar</button>
-        </div>
-      </div>
+      <button className="btn btn-outline" style={{marginTop: 16}}>
+        <I.Plus /> Añadir alumno/a
+      </button>
+    </div>
+  );
+}
 
-      <div style={{ marginTop: 48, paddingTop: 24, borderTop: '1px solid var(--line)' }}>
-        <button className="btn" style={{ background: 'transparent', color: '#FF4F15', border: '1.5px solid #FF4F15', display: 'flex', alignItems: 'center', gap: 8 }} onClick={onLogout}>
-          <NavIcon d={Icons.logout} /> Cerrar sesión
-        </button>
+function DashSettings() {
+  return (
+    <div className="panel">
+      <h2><I.Settings /> Ajustes</h2>
+      <p className="sub">Notificaciones, idioma, seguridad y datos.</p>
+
+      <div style={{display: "grid", gap: 12, marginTop: 18}}>
+        {[
+          { t: "Avisos del club por email", desc: "Eventos, convocatorias y noticias." },
+          { t: "Avisos de mi actividad por email", desc: "Solo las clases que sigo." },
+          { t: "Recordatorios SMS", desc: "Avisos 24h antes de cada clase." },
+          { t: "Newsletter mensual", desc: "Lo más destacado del mes." },
+        ].map((s, i) => (
+          <label key={i} style={{display: "flex", justifyContent: "space-between", alignItems: "center", padding: 16, background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 14, cursor: "pointer"}}>
+            <div>
+              <div style={{fontWeight: 700}}>{s.t}</div>
+              <div style={{fontSize: 12, color: "var(--ink-3)", marginTop: 2}}>{s.desc}</div>
+            </div>
+            <input type="checkbox" defaultChecked={i < 2} style={{width: 36, height: 20, accentColor: "var(--teal)"}} />
+          </label>
+        ))}
       </div>
     </div>
   );
 }
 
-// ── Main Dashboard ─────────────────────────────────────────────────────────
-const NAV_ITEMS = [
-  { id: 'overview', label: 'Inicio', icon: Icons.home },
-  { id: 'classes', label: 'Mis clases', icon: Icons.calendar },
-  { id: 'attendance', label: 'Asistencia', icon: Icons.check },
-  { id: 'payments', label: 'Pagos', icon: Icons.credit },
-  { id: 'wallet', label: 'Referidos', icon: Icons.gift },
-  { id: 'news', label: 'Noticias', icon: Icons.news },
-  { id: 'profile', label: 'Mi perfil', icon: Icons.user },
-  { id: 'settings', label: 'Ajustes', icon: Icons.settings },
-];
+export default function StudentDashboard({ subroute = "overview" }) {
+  const { go } = useRouter();
+  const [view, setView] = useState(subroute);
+  useEffect(() => { setView(subroute); }, [subroute]);
 
-const VIEW_LABELS = {
-  overview: 'Inicio',
-  classes: 'Mis clases',
-  attendance: 'Asistencia',
-  payments: 'Pagos',
-  wallet: 'Referidos',
-  news: 'Noticias',
-  profile: 'Mi perfil',
-  settings: 'Ajustes',
-};
-
-export default function StudentDashboard({ user, onLogout }) {
-  const [view, setView] = useState('overview');
-  const [menuOpen, setMenuOpen] = useState(false);
-
-  const renderView = () => {
-    switch (view) {
-      case 'overview': return <OverviewView user={user} />;
-      case 'classes': return <ClassesView />;
-      case 'attendance': return <AttendanceView />;
-      case 'payments': return <PaymentsView />;
-      case 'wallet': return <WalletView user={user} />;
-      case 'news': return <NewsView />;
-      case 'profile': return <ProfileView user={user} />;
-      case 'settings': return <SettingsView onLogout={onLogout} />;
-      default: return <OverviewView user={user} />;
-    }
-  };
+  const navItems = [
+    { id: "overview", label: "Resumen", icon: <I.Dashboard /> },
+    { id: "classes", label: "Mis clases", icon: <I.Calendar /> },
+    { id: "attendance", label: "Asistencia", icon: <I.Check /> },
+    { id: "payments", label: "Pagos y recibos", icon: <I.Wallet /> },
+    { id: "wallet", label: "Mi cartera", icon: <I.CreditCard /> },
+    { id: "news", label: "Avisos del club", icon: <I.Bell /> },
+  ];
+  const settingsItems = [
+    { id: "profile", label: "Perfil", icon: <I.User /> },
+    { id: "settings", label: "Ajustes", icon: <I.Settings /> },
+  ];
 
   return (
-    <div className="dash-app">
-      {/* Sidebar */}
-      <aside className={`dash-sidebar${menuOpen ? ' open' : ''}`}>
-        <div className="dash-sidebar-top">
-          <a href="/" onClick={(e) => { e.preventDefault(); window.history.pushState(null,'','/'); window.dispatchEvent(new PopStateEvent('popstate')); }}>
-            <img src="/src/brand/Aim_Horizontal.png" alt="Aim Education" style={{ height: 28, width: 'auto' }} />
-          </a>
-          <button className="dash-close-btn" onClick={() => setMenuOpen(false)}>
-            <NavIcon d={Icons.x} />
-          </button>
-        </div>
+    <main style={{paddingTop: 0}}>
+      <div className="dash-layout">
+        <aside className="dash-side">
+          <div className="brand"><AimLogo size="sm" sub /></div>
 
-        <div className="dash-user-chip">
-          <div className="dash-user-avatar">{(user.firstName || 'A').charAt(0).toUpperCase()}</div>
-          <div>
-            <div className="dash-user-name">{user.firstName} {user.lastName || ''}</div>
-            <div className="dash-user-role">Alumno</div>
-          </div>
-        </div>
-
-        <nav className="dash-nav">
-          {NAV_ITEMS.map(item => (
-            <button
-              key={item.id}
-              className={`dash-nav-item${view === item.id ? ' active' : ''}`}
-              onClick={() => { setView(item.id); setMenuOpen(false); }}
-            >
-              <NavIcon d={item.icon} />
-              <span>{item.label}</span>
+          <nav className="dash-nav">
+            <div className="heading">Familia García</div>
+            {navItems.map(it => (
+              <button key={it.id} className={view === it.id ? "is-active" : ""} onClick={() => setView(it.id)}>
+                <span className="ico">{it.icon}</span>
+                <span>{it.label}</span>
+                {it.id === "payments" && <span className="dot" style={{background: "var(--orange)"}}/>}
+                {it.id === "news" && <span className="dot" style={{background: "var(--teal)"}}/>}
+              </button>
+            ))}
+            <div className="heading">Cuenta</div>
+            {settingsItems.map(it => (
+              <button key={it.id} className={view === it.id ? "is-active" : ""} onClick={() => setView(it.id)}>
+                <span className="ico">{it.icon}</span>
+                <span>{it.label}</span>
+              </button>
+            ))}
+            <button onClick={() => go("/")} style={{marginTop: 8}}>
+              <span className="ico"><I.LogOut /></span>
+              <span>Volver a la web</span>
             </button>
-          ))}
-        </nav>
+          </nav>
+        </aside>
 
-        <div style={{ marginTop: 'auto', padding: '16px 12px' }}>
-          <button className="dash-nav-item" onClick={onLogout} style={{ color: '#FF4F15' }}>
-            <NavIcon d={Icons.logout} />
-            <span>Cerrar sesión</span>
-          </button>
-        </div>
-      </aside>
-
-      {/* Mobile header */}
-      <div className="dash-mobile-header">
-        <button className="dash-menu-btn" onClick={() => setMenuOpen(true)}>
-          <NavIcon d={Icons.menu} />
-        </button>
-        <img src="/src/brand/Aim_Horizontal.png" alt="Aim Education" style={{ height: 24 }} />
-        <div className="dash-user-avatar sm">{(user.firstName || 'A').charAt(0).toUpperCase()}</div>
-      </div>
-
-      {/* Main content */}
-      <main className="dash-main">
-        <div className="dash-main-inner">
-          <div className="dash-header">
+        <div className="dash-main">
+          <div className="dash-topbar">
             <div>
-              <div className="dash-header-eyebrow">Mi panel · Aim Education</div>
-              <h1 className="dash-header-title">{VIEW_LABELS[view]}</h1>
+              <p style={{margin: 0, fontSize: 13, color: "var(--ink-3)", fontWeight: 600, letterSpacing: ".06em", textTransform: "uppercase"}}>
+                {navItems.concat(settingsItems).find(i => i.id === view)?.label || "Resumen"}
+              </p>
+              <h1>{view === "overview" ? "¡Hola Ana 👋!" : navItems.concat(settingsItems).find(i => i.id === view)?.label}</h1>
+              {view === "overview" && <p style={{margin: "6px 0 0", color: "var(--ink-3)"}}>Este es el resumen de tu familia esta semana.</p>}
+            </div>
+            <div style={{display: "flex", gap: 12, alignItems: "center"}}>
+              <button className="btn btn-icon" aria-label="Notificaciones"><I.Bell /></button>
+              <div className="avatar">AG</div>
             </div>
           </div>
-          <div className="dash-content">
-            {renderView()}
-          </div>
-        </div>
-      </main>
 
-      {/* Mobile overlay */}
-      {menuOpen && <div className="dash-overlay" onClick={() => setMenuOpen(false)} />}
-    </div>
+          {view === "overview" && <DashOverview go={go} setView={setView} />}
+          {view === "classes" && <DashClasses />}
+          {view === "attendance" && <DashAttendance />}
+          {view === "payments" && <DashPayments />}
+          {view === "wallet" && <DashWallet />}
+          {view === "news" && <DashNews />}
+          {view === "profile" && <DashProfile />}
+          {view === "settings" && <DashSettings />}
+        </div>
+      </div>
+    </main>
   );
 }

@@ -1,23 +1,24 @@
 import React, { useState, useEffect, useCallback, createContext, useContext } from 'react';
-import { AimHeader, AimFooter } from './components/Shared';
 import PublicLanding from './components/PublicLanding';
-import PublicActivities from './components/PublicActivities';
+import { PublicActivities, PublicNews } from './components/PublicActivities';
 import PublicActivity from './components/PublicActivity';
 import PublicCamp from './components/PublicCamp';
 import AuthScreen from './components/AuthScreen';
 import StudentDashboard from './components/StudentDashboard';
+import AdminApp from './components/AdminApp';
+import PublicCalendar from './components/PublicCalendar';
 
 export const RouterContext = createContext({ path: '/', go: () => {}, user: null });
 export const useRouter = () => useContext(RouterContext);
 
 export default function App() {
-  const [path, setPath] = useState(window.location.pathname);
+  const [path, setPath] = useState(window.location.pathname + window.location.search);
   const [user, setUser] = useState(null);
   const [userChecked, setUserChecked] = useState(false);
 
   useEffect(() => {
     const onPop = () => {
-      setPath(window.location.pathname);
+      setPath(window.location.pathname + window.location.search);
       window.scrollTo(0, 0);
     };
     window.addEventListener('popstate', onPop);
@@ -40,7 +41,7 @@ export default function App() {
   const handleLoginSuccess = (u) => {
     setUser(u);
     if (u?.canAccessAdmin) {
-      window.location.href = '/admin';
+      go('/admin');
     } else {
       go('/dashboard');
     }
@@ -52,40 +53,41 @@ export default function App() {
     go('/');
   };
 
-  const isDashboard = path.startsWith('/dashboard');
-  const isAuth = path === '/auth';
-  const isFullPage = isDashboard || isAuth;
+  const pathname = path.split('?')[0];
+  const search = path.includes('?') ? path.slice(path.indexOf('?')) : '';
+  const params = new URLSearchParams(search);
+  const seg = pathname.split('/').filter(Boolean);
 
   let screen;
-  const seg = path.split('/').filter(Boolean);
 
-  if (path === '/' || path === '') {
+  if (pathname === '/' || pathname === '') {
     screen = <PublicLanding />;
-  } else if (path === '/actividades') {
+  } else if (pathname === '/actividades') {
     screen = <PublicActivities />;
   } else if (seg[0] === 'actividades' && seg[1]) {
     screen = <PublicActivity id={seg[1]} />;
-  } else if (path === '/campamento') {
+  } else if (pathname === '/campamento') {
     screen = <PublicCamp />;
-  } else if (isAuth) {
-    screen = <AuthScreen onLogin={handleLoginSuccess} />;
-  } else if (isDashboard) {
+  } else if (pathname === '/calendario') {
+    screen = <PublicCalendar />;
+  } else if (pathname === '/noticias') {
+    screen = <PublicNews />;
+  } else if (pathname === '/auth') {
+    const mode = params.get('mode') || 'login';
+    screen = <AuthScreen mode={mode} />;
+  } else if (pathname.startsWith('/dashboard')) {
     if (!userChecked) return null;
     if (!user) { go('/auth'); return null; }
     screen = <StudentDashboard user={user} onLogout={handleLogout} />;
+  } else if (pathname.startsWith('/admin')) {
+    screen = <AdminApp />;
   } else {
     screen = <PublicLanding />;
   }
 
   return (
     <RouterContext.Provider value={{ path, go, user }}>
-      {isFullPage ? screen : (
-        <>
-          <AimHeader />
-          <main style={{ minHeight: '60vh' }}>{screen}</main>
-          <AimFooter />
-        </>
-      )}
+      {screen}
     </RouterContext.Provider>
   );
 }
