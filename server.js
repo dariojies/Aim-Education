@@ -542,6 +542,98 @@ app.delete('/api/users/:id', authenticateSession, async (req, res) => {
     }
 });
 
+app.get('/api/classes', authenticateSession, async (req, res) => {
+    try {
+        const groupsRes = await pool.query('SELECT * FROM tul_groups');
+        const activitiesRes = await pool.query('SELECT * FROM tul_activities');
+        
+        const actMap = {};
+        activitiesRes.rows.forEach(a => {
+            actMap[a.activity_id] = a;
+        });
+
+        const slots = [];
+        
+        groupsRes.rows.forEach(g => {
+            const act = actMap[g.activity_id];
+            let actId = 'taekwondo';
+            let monitor = 'Instructor AIM';
+            if (act) {
+                const name = act.name.toLowerCase();
+                if (name.includes('taekwon')) {
+                    actId = 'taekwondo';
+                    monitor = 'Darío Francisco';
+                } else if (name.includes('ballet')) {
+                    actId = 'ballet';
+                    monitor = 'Elena García';
+                } else if (name.includes('baile')) {
+                    actId = 'baile';
+                    monitor = 'Elena García';
+                } else if (name.includes('ingles') || name.includes('inglés')) {
+                    actId = 'ingles';
+                    monitor = 'James Smith';
+                } else if (name.includes('robótica') || name.includes('robot')) {
+                    actId = 'robotica';
+                    monitor = 'Mateo Ortiz';
+                } else if (name.includes('pilates')) {
+                    actId = 'pilates';
+                    monitor = 'Carlos Ruiz';
+                } else if (name.includes('funcional')) {
+                    actId = 'funcional';
+                    monitor = 'Carlos Ruiz';
+                } else if (name.includes('pintura')) {
+                    actId = 'pintura';
+                    monitor = 'Sara Moreno';
+                } else if (name.includes('kick')) {
+                    actId = 'taekwondo';
+                    monitor = 'Darío Francisco';
+                }
+            }
+
+            if (g.time) {
+                const lines = g.time.split('\n');
+                lines.forEach(line => {
+                    const match = line.match(/^\s*([LMXJVS])\s+(\d{2}):(\d{2})\s*[-–—]\s*(\d{2}):(\d{2})\s*(?:·\s*(.*))?$/i);
+                    if (match) {
+                        const dayChar = match[1].toUpperCase();
+                        const startHour = parseInt(match[2]);
+                        const startMin = parseInt(match[3]);
+                        const endHour = parseInt(match[4]);
+                        const endMin = parseInt(match[5]);
+                        const room = match[6] ? match[6].trim() : 'Sala 1';
+
+                        const dayMap = { 'L': 0, 'M': 1, 'X': 2, 'J': 3, 'V': 4, 'S': 5, 'D': 6 };
+                        const dayIdx = dayMap[dayChar] !== undefined ? dayMap[dayChar] : 0;
+
+                        const sVal = startHour + (startMin / 60);
+                        const eVal = endHour + (endMin / 60);
+                        let duration = eVal - sVal;
+                        if (duration <= 0 || duration > 6) {
+                            duration = 1;
+                        }
+
+                        slots.push({
+                            d: dayIdx,
+                            s: Math.floor(sVal),
+                            h: duration,
+                            act: actId,
+                            title: g.name,
+                            room: room,
+                            students: `${Math.floor(g.max_students * 0.7)}/${g.max_students || 15}`,
+                            monitor: monitor
+                        });
+                    }
+                });
+            }
+        });
+
+        res.json(slots);
+    } catch (err) {
+        console.error('Error fetching classes:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.get('/api/admin/groups', authenticateSession, async (req, res) => {
     try {
         const result = await pool.query('SELECT * FROM aim_education_groups');

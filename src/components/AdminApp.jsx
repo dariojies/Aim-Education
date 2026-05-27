@@ -701,6 +701,14 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
       .then(r => r.ok ? r.json() : [])
       .then(setStudentsList)
       .catch(() => {});
+    fetch('/api/classes', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : [])
+      .then(data => {
+        if (data && data.length > 0) {
+          setClassSlots(data);
+        }
+      })
+      .catch(() => {});
   }, [refreshTrigger]);
 
   const showToast = (message) => {
