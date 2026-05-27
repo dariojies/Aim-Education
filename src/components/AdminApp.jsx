@@ -567,8 +567,21 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
             </div>
           </div>
 
+          <button onClick={() => go("/")} style={{
+            marginTop: 16, width: "100%", padding: "10px 12px",
+            background: "rgba(255,255,255,.1)", color: "rgba(255,255,255,.9)",
+            border: 0, borderRadius: 10, cursor: "pointer", fontFamily: "inherit",
+            fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 8,
+            transition: "background 0.2s"
+          }}
+          onMouseEnter={(e) => e.currentTarget.style.background = "rgba(255,255,255,.16)"}
+          onMouseLeave={(e) => e.currentTarget.style.background = "rgba(255,255,255,.1)"}
+          >
+            <I.Globe width={16} height={16} /> Volver a la Web
+          </button>
+
           <button onClick={handleLogout} style={{
-            marginTop: 12, width: "100%", padding: "10px 12px",
+            marginTop: 8, width: "100%", padding: "10px 12px",
             background: "rgba(255,255,255,.06)", color: "rgba(255,255,255,.7)",
             border: 0, borderRadius: 10, cursor: "pointer", fontFamily: "inherit",
             fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 8,

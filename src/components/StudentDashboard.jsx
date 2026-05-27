@@ -472,6 +472,10 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
                 <span>{it.label}</span>
               </button>
             ))}
+            <button onClick={() => go("/")} style={{marginTop: 16, borderTop: "1px dashed var(--line-2)", paddingTop: 16}}>
+              <span className="ico"><I.Globe width={16} height={16} /></span>
+              <span>Volver a la Web</span>
+            </button>
             <button onClick={handleLogout} style={{marginTop: 8}}>
               <span className="ico"><I.LogOut /></span>
               <span>Cerrar sesión</span>
