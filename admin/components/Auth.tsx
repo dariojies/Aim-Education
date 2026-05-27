@@ -4,7 +4,7 @@ import { useLanguage } from '../LanguageContext';
 import { saveCurrentUser } from '../services/storage';
 
 interface AuthProps {
-  onLogin: () => void;
+  onLogin: (user: any) => void;
 }
 
 export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
@@ -71,7 +71,7 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
         setError(data.error || localT('invalidCredentials'));
       } else {
         saveCurrentUser(data.user);
-        window.location.href = '/';
+        onLogin(data.user);
       }
     } catch (err) {
       setError('Error de conexión. Por favor, inténtelo de nuevo.');

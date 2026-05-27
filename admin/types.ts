@@ -109,4 +109,22 @@ export interface Receipt {
   invoiceLink?: string;
 }
 
-export type ViewState = 'DASHBOARD' | 'STUDENTS' | 'GAMES' | 'SESSIONS' | 'SETTINGS' | 'AI_COACH' | 'WALLET' | 'ACCESS_MANAGEMENT' | 'RECEIPTS' | 'APPS';
+export interface Post {
+  id: string;
+  title: string;
+  slug: string;
+  excerpt?: string;
+  content: string;
+  cover_image_url?: string;
+  author_name?: string;
+  category: string;
+  status: 'draft' | 'published';
+  view_count: number;
+  click_count: number;
+  views_last_7d?: number;
+  published_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ViewState = 'DASHBOARD' | 'STUDENTS' | 'GAMES' | 'SESSIONS' | 'SETTINGS' | 'AI_COACH' | 'WALLET' | 'ACCESS_MANAGEMENT' | 'RECEIPTS' | 'APPS' | 'NEWS';

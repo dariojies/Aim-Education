@@ -1,132 +1,144 @@
-document.addEventListener('DOMContentLoaded', () => {
-    // --- Navbar Scroll Effect ---
-    const navbar = document.getElementById('navbar');
+// ── Scroll: header shadow + active nav ──────────────────────────────────────
+const navbar   = document.getElementById('navbar');
+const navLinks = document.querySelectorAll('#mainNav a');
+const sections = ['inicio', 'actividades', 'noticias', 'nosotros', 'contacto'];
 
-    window.addEventListener('scroll', () => {
-        if (window.scrollY > 50) {
-            navbar.classList.add('scrolled');
-        } else {
-            navbar.classList.remove('scrolled');
-        }
+window.addEventListener('scroll', () => {
+    navbar.classList.toggle('scrolled', window.scrollY > 50);
+    let current = '';
+    sections.forEach(id => {
+        const el = document.getElementById(id);
+        if (el && window.scrollY >= el.offsetTop - 120) current = id;
     });
-
-    // --- Reveal on Scroll ---
-    const revealElements = document.querySelectorAll('.reveal');
-
-    const revealOnScroll = () => {
-        const triggerBottom = window.innerHeight * 0.85;
-
-        revealElements.forEach(el => {
-            const elementTop = el.getBoundingClientRect().top;
-
-            if (elementTop < triggerBottom) {
-                el.classList.add('active');
-            }
-        });
-    };
-
-    window.addEventListener('scroll', revealOnScroll);
-    revealOnScroll(); // Initial check
-
-    // --- Mobile Menu Toggle ---
-    const menuToggle = document.getElementById('menuToggle');
-    const navLinks = document.getElementById('navLinks');
-
-    if (menuToggle) {
-        menuToggle.addEventListener('click', () => {
-            navLinks.style.display = navLinks.style.display === 'flex' ? 'none' : 'flex';
-            // In a real modern app, we would use a more sophisticated transition here
-            // but for simplicity we toggle display.
-        });
-    }
-
-    // --- Smooth Scrolling for Navigation ---
-    document.querySelectorAll('.nav-links a').forEach(anchor => {
-        anchor.addEventListener('click', function (e) {
-            const href = this.getAttribute('href');
-
-            if (href.startsWith('#')) {
-                e.preventDefault();
-
-                // Update active link
-                document.querySelectorAll('.nav-links a').forEach(a => a.classList.remove('active'));
-                this.classList.add('active');
-
-                const targetId = href.substring(1);
-                const targetElement = document.getElementById(targetId);
-
-                if (targetElement) {
-                    window.scrollTo({
-                        top: targetElement.offsetTop - 80,
-                        behavior: 'smooth'
-                    });
-                }
-            }
-        });
+    navLinks.forEach(a => {
+        a.classList.toggle('is-active', a.getAttribute('href') === `#${current}`);
     });
+}, { passive: true });
 
-    // --- Adding subtle parallax to Hero background ---
-    window.addEventListener('scroll', () => {
-        const scroll = window.scrollY;
-        const hero = document.querySelector('.hero');
-        if (hero) {
-            hero.style.backgroundPositionY = `${scroll * 0.5}px`;
-        }
+// ── Smooth scroll ────────────────────────────────────────────────────────────
+document.querySelectorAll('a[href^="#"]').forEach(a => {
+    a.addEventListener('click', e => {
+        const id = a.getAttribute('href').slice(1);
+        const target = document.getElementById(id);
+        if (!target) return;
+        e.preventDefault();
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        mobileNav.classList.remove('open');
     });
-
-    // --- User Session Logic ---
-    const loginBtn = document.getElementById('loginBtn');
-    const updateLoginButton = () => {
-        const userData = localStorage.getItem('aim_current_user');
-        if (userData && loginBtn) {
-            const user = JSON.parse(userData);
-            // Mostrar saludo para todos los usuarios logueados
-            loginBtn.textContent = `Hola, ${user.firstName || 'Usuario'}`;
-            loginBtn.href = '#';
-            loginBtn.style.pointerEvents = 'none'; // Hace que no parezca un enlace clickeable si no queremos que lo sea
-
-            // Botón de Panel Admin (solo si el usuario tiene permiso)
-            if (user.canAccessAdmin) {
-                if (!document.getElementById('adminPanelBtn')) {
-                    const adminBtn = document.createElement('a');
-                    adminBtn.id = 'adminPanelBtn';
-                    adminBtn.textContent = 'Panel Admin';
-                    adminBtn.href = '/admin';
-                    adminBtn.className = 'btn btn-outline';
-                    adminBtn.style.marginLeft = '15px';
-                    adminBtn.style.padding = '8px 15px';
-                    adminBtn.style.fontSize = '0.9rem';
-
-                    loginBtn.parentNode.appendChild(adminBtn);
-                }
-            }
-
-            // Botón de Cerrar Sesión (para todos)
-            if (!document.getElementById('logoutBtn')) {
-                const logoutBtn = document.createElement('button');
-                logoutBtn.id = 'logoutBtn';
-                logoutBtn.innerHTML = '<i class="fas fa-sign-out-alt"></i>';
-                logoutBtn.title = 'Cerrar Sesión';
-                logoutBtn.style.marginLeft = '15px';
-                logoutBtn.style.background = 'transparent';
-                logoutBtn.style.border = 'none';
-                logoutBtn.style.color = 'inherit';
-                logoutBtn.style.cursor = 'pointer';
-                logoutBtn.style.fontSize = '1.2rem';
-                logoutBtn.style.transition = 'color 0.3s ease';
-
-                logoutBtn.addEventListener('mouseenter', () => logoutBtn.style.color = '#ff4d4d');
-                logoutBtn.addEventListener('mouseleave', () => logoutBtn.style.color = 'inherit');
-
-                logoutBtn.onclick = () => {
-                    localStorage.removeItem('aim_current_user');
-                    window.location.reload();
-                };
-                loginBtn.parentNode.appendChild(logoutBtn);
-            }
-        }
-    };
-
-    updateLoginButton();
-    window.addEventListener('storage_updated', updateLoginButton);
 });
+
+// ── Mobile menu ──────────────────────────────────────────────────────────────
+const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+const mobileNav     = document.getElementById('mobileNav');
+mobileMenuBtn.addEventListener('click', () => mobileNav.classList.toggle('open'));
+
+// ── Fade-up on scroll ─────────────────────────────────────────────────────────
+const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+        if (entry.isIntersecting) {
+            entry.target.classList.add('visible');
+            observer.unobserve(entry.target);
+        }
+    });
+}, { threshold: 0.12 });
+
+document.querySelectorAll('.fade-up').forEach(el => observer.observe(el));
+
+// ── User session ─────────────────────────────────────────────────────────────
+const loginBtn = document.getElementById('loginBtn');
+
+(async () => {
+    try {
+        const res = await fetch('/api/me');
+        if (!res.ok) return;
+        const user = await res.json();
+        if (loginBtn) {
+            loginBtn.textContent = `Hola, ${user.firstName || 'Usuario'}`;
+            loginBtn.href = '/admin';
+        }
+    } catch { /* not logged in */ }
+})();
+
+// ── News loader ───────────────────────────────────────────────────────────────
+const CAT_BG = {
+    general: 'bg-general', club: 'bg-club',
+    taekwondo: 'bg-taekwondo', ballet: 'bg-ballet',
+    ingles: 'bg-ingles', robotica: 'bg-robotica',
+    funcional: 'bg-funcional', pintura: 'bg-pintura',
+    camaleon: 'bg-camaleon', shelfie: 'bg-shelfie',
+};
+const CAT_ACT = {
+    taekwondo: 'act-taekwondo', ballet: 'act-ballet',
+    ingles: 'act-ingles', robotica: 'act-robotica',
+    funcional: 'act-funcional', pintura: 'act-pintura',
+    camaleon: 'act-camaleon',
+};
+const CAT_LABEL = {
+    general: 'General', club: 'Club', taekwondo: 'Taekwondo',
+    ballet: 'Ballet', ingles: 'Inglés', robotica: 'Robótica',
+    funcional: 'Funcional', pintura: 'Pintura', camaleon: 'Camaleón', shelfie: 'Shelfie',
+};
+
+function esc(str) {
+    return String(str)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function fmtDate(iso) {
+    const d = new Date(iso);
+    return {
+        d: String(d.getDate()).padStart(2, '0'),
+        m: d.toLocaleDateString('es-ES', { month: 'short' }).slice(0, 3).toUpperCase(),
+    };
+}
+
+async function loadNews() {
+    const grid = document.getElementById('newsDynamic');
+    if (!grid) return;
+    try {
+        const res = await fetch('/api/posts?limit=3');
+        if (!res.ok) throw new Error();
+        const posts = await res.json();
+        if (!posts.length) {
+            grid.innerHTML = '<p style="color:var(--ink-3);font-size:14px;grid-column:1/-1;padding:12px 0;">No hay noticias publicadas aún.</p>';
+            return;
+        }
+        grid.innerHTML = posts.map(post => {
+            const cat    = post.category || 'general';
+            const bgCls  = CAT_BG[cat]  || 'bg-general';
+            const actCls = CAT_ACT[cat] || '';
+            const label  = CAT_LABEL[cat] || cat;
+            const { d, m } = fmtDate(post.published_at || post.created_at);
+            const img = post.cover_image_url
+                ? `<img src="${esc(post.cover_image_url)}" alt="${esc(post.title)}" loading="lazy">`
+                : '';
+            return `<a href="/noticias/${esc(post.slug)}" class="news-card ${actCls}" data-post-id="${esc(post.id)}">
+  <div class="img ${bgCls}">${img}<div class="badge-date"><div class="d">${d}</div><div class="m">${m}</div></div></div>
+  <div class="body">
+    <span class="cat">${esc(label)}</span>
+    <h4>${esc(post.title)}</h4>
+    ${post.excerpt ? `<p>${esc(post.excerpt)}</p>` : ''}
+  </div>
+</a>`;
+        }).join('');
+
+        // Track clicks
+        grid.querySelectorAll('.news-card[data-post-id]').forEach(card => {
+            card.addEventListener('click', e => {
+                e.preventDefault();
+                const href = card.href;
+                fetch(`/api/posts/${card.dataset.postId}/click`, { method: 'POST' })
+                    .finally(() => { window.location.href = href; });
+            });
+        });
+
+        // Animate new cards
+        grid.querySelectorAll('.news-card').forEach((el, i) => {
+            el.classList.add('fade-up', `d${(i % 3) + 1}`);
+            observer.observe(el);
+        });
+    } catch { /* silently clear skeletons */ }
+}
+
+loadNews();

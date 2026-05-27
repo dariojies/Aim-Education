@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { LayoutDashboard, Users, Trophy, CalendarDays, Menu, X, Settings, Sparkles, ShieldCheck, Lock, Wallet, LogOut, FileText, AppWindow } from 'lucide-react';
+import { LayoutDashboard, Users, Trophy, CalendarDays, Menu, X, Settings, Sparkles, ShieldCheck, Wallet, LogOut, FileText, AppWindow, Loader2, Newspaper } from 'lucide-react';
 import StudentsView from './components/StudentsView';
 import GamesView from './components/GamesView';
 import SessionsView from './components/SessionsView';
@@ -11,17 +11,53 @@ import WalletView from './components/WalletView';
 import AccessManagementView from './components/AccessManagementView';
 import ReceiptsView from './components/ReceiptsView';
 import AppsView from './components/AppsView';
+import NewsView from './components/NewsView';
 import { Auth } from './components/Auth';
 import { ViewState } from './types';
 import { useLanguage } from './LanguageContext';
 import * as storage from './services/storage';
 
 const App: React.FC = () => {
-  const currentUser = storage.getCurrentUser();
-  const [isAuthenticated, setIsAuthenticated] = useState(!!currentUser);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [currentUser, setCurrentUser] = useState<any>(null);
   const [currentView, setCurrentView] = useState<ViewState>('DASHBOARD');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const { language, setLanguage, t } = useLanguage();
+
+  // Validate session on mount — source of truth is /api/me, never localStorage
+  useEffect(() => {
+    fetch('/api/me')
+      .then(r => r.ok ? r.json() : null)
+      .then(user => {
+        if (user?.canAccessAdmin) {
+          setIsAuthenticated(true);
+          setCurrentUser(user);
+          storage.saveCurrentUser(user);
+        } else {
+          setIsAuthenticated(false);
+          setCurrentUser(null);
+          storage.saveCurrentUser(null);
+        }
+        setAuthChecked(true);
+      })
+      .catch(() => {
+        setIsAuthenticated(false);
+        setAuthChecked(true);
+      });
+  }, []);
+
+  const handleLoginSuccess = (user: any) => {
+    setCurrentUser(user);
+    setIsAuthenticated(true);
+  };
+
+  const handleLogout = async () => {
+    await fetch('/api/logout', { method: 'POST' }).catch(() => {});
+    storage.saveCurrentUser(null);
+    setIsAuthenticated(false);
+    setCurrentUser(null);
+  };
 
   const navItems = [
     { id: 'DASHBOARD', label: t('nav.dashboard'), icon: <LayoutDashboard size={20} /> },
@@ -32,6 +68,7 @@ const App: React.FC = () => {
     { id: 'SESSIONS', label: t('nav.sessions'), icon: <CalendarDays size={20} /> },
     { id: 'AI_COACH', label: t('nav.aicoach'), icon: <Sparkles size={20} />, special: true },
     { id: 'APPS', label: t('nav.apps'), icon: <AppWindow size={20} /> },
+    { id: 'NEWS', label: 'Noticias / Foro', icon: <Newspaper size={20} /> },
     { id: 'SETTINGS', label: t('nav.settings'), icon: <Settings size={20} /> },
   ];
 
@@ -50,6 +87,7 @@ const App: React.FC = () => {
       case 'RECEIPTS': return <ReceiptsView />;
       case 'WALLET': return <WalletView />;
       case 'APPS': return <AppsView />;
+      case 'NEWS': return <NewsView />;
       case 'ACCESS_MANAGEMENT': return <AccessManagementView />;
       default: return <DashboardView onNavigate={(v) => setCurrentView(v)} />;
     }
@@ -59,14 +97,17 @@ const App: React.FC = () => {
     setLanguage(language === 'en' ? 'es' : 'en');
   };
 
-  if (!isAuthenticated) {
-    return <Auth onLogin={() => setIsAuthenticated(true)} />;
+  // Brief loading state while validating session
+  if (!authChecked) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <Loader2 className="w-8 h-8 text-emerald-600 animate-spin" />
+      </div>
+    );
   }
 
-  // Si el usuario está autenticado pero NO tiene permisos de administrador
-  if (!currentUser?.canAccessAdmin) {
-    window.location.replace('/');
-    return null;
+  if (!isAuthenticated) {
+    return <Auth onLogin={handleLoginSuccess} />;
   }
 
   return (
@@ -118,8 +159,6 @@ const App: React.FC = () => {
             </button>
           ))}
         </nav>
-
-
       </aside>
 
       {/* Main Content Area */}
@@ -133,10 +172,7 @@ const App: React.FC = () => {
               </h2>
             </div>
             <button
-              onClick={() => {
-                storage.saveCurrentUser(null);
-                setIsAuthenticated(false);
-              }}
+              onClick={handleLogout}
               className="text-slate-400 hover:text-red-500 transition-colors flex items-center gap-2 text-xs font-black uppercase tracking-wider"
             >
               Logout <LogOut className="w-4 h-4" />

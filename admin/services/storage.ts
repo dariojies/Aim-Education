@@ -24,7 +24,15 @@ export const getCurrentUser = () => {
 
 export const saveCurrentUser = (user: any) => {
   if (user) {
-    localStorage.setItem('aim_current_user', JSON.stringify(user));
+    // Only store display data — roles and permissions are never persisted in localStorage
+    const displayData = {
+      id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      avatar: user.avatar
+    };
+    localStorage.setItem('aim_current_user', JSON.stringify(displayData));
   } else {
     localStorage.removeItem('aim_current_user');
   }
