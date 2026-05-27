@@ -124,51 +124,69 @@ function DashOverview({ go, setView }) {
 
 function DashClasses() {
   const days = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
-  const slots = [
-    { d: 0, s: 16, h: 2, act: "ballet", title: "Lucía · Primary", room: "Sala 1" },
-    { d: 0, s: 17, h: 1, act: "taekwondo", title: "Mateo · Blancos", room: "Tatami" },
-    { d: 1, s: 16, h: 1, act: "ingles", title: "Lucía · Movers", room: "Aula 3" },
-    { d: 1, s: 18, h: 1.5, act: "ingles", title: "Ana · B2 First", room: "Aula 1" },
-    { d: 2, s: 16, h: 2, act: "ballet", title: "Lucía · Primary", room: "Sala 1" },
-    { d: 2, s: 18, h: 1, act: "robotica", title: "Mateo · Junior", room: "Lab" },
-    { d: 3, s: 18, h: 1.5, act: "ingles", title: "Ana · B2 First", room: "Aula 1" },
-    { d: 4, s: 17, h: 1, act: "taekwondo", title: "Mateo · Blancos", room: "Tatami" },
-    { d: 4, s: 18, h: 1, act: "funcional", title: "Carlos · Funcional", room: "Sala fit" },
-    { d: 5, s: 10, h: 2, act: "taekwondo", title: "Mateo · Competición", room: "Tatami" },
-  ];
+  const [slots, setSlots] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-  const HOURS = Array.from({length: 13}, (_, i) => 9 + i);
+  useEffect(() => {
+    fetch('/api/classes', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : [])
+      .then(data => {
+        setSlots(data);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, []);
+
+  const HOURS = Array.from({length: 14}, (_, i) => 9 + i);
 
   return (
     <div className="panel">
       <h2><I.Calendar /> Horario semanal</h2>
-      <p className="sub">Todas las clases de tu familia en una sola vista.</p>
-      <div className="week-grid" style={{gridTemplateColumns: "80px repeat(6, 1fr)"}}>
-        <div className="hdr"></div>
-        {days.map(d => <div key={d} className="hdr">{d}</div>)}
-        {HOURS.map(h => (
-          <React.Fragment key={h}>
-            <div className="time">{h}:00</div>
-            {days.map((_, dIdx) => {
-              const slot = slots.find(s => s.d === dIdx && s.s === h);
-              return (
-                <div key={dIdx} style={{minHeight: 48, position: "relative"}}>
-                  {slot && (
-                    <button className={`slot ${ACT_BY_ID[slot.act].className}`}
-                      style={{
-                        background: ACT_BY_ID[slot.act].color,
-                        height: `calc(${slot.h} * 48px - 8px)`
-                      }}>
-                      <span className="t">{slot.title}</span>
-                      <span className="meta">{h}:00 · {slot.room}</span>
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-          </React.Fragment>
-        ))}
-      </div>
+      <p className="sub">Todas las clases de la academia en una sola vista semanal.</p>
+      {loading ? (
+        <p style={{color: "var(--ink-3)", fontSize: 14}}>Cargando horario...</p>
+      ) : (
+        <div className="week-grid" style={{gridTemplateColumns: "80px repeat(6, 1fr)"}}>
+          <div className="hdr"></div>
+          {days.map(d => <div key={d} className="hdr">{d}</div>)}
+          {HOURS.map(h => (
+            <React.Fragment key={h}>
+              <div className="time">{h}:00</div>
+              {days.map((_, dIdx) => {
+                const slotsInCell = slots.filter(s => s.d === dIdx && s.s === h);
+                return (
+                  <div key={dIdx} style={{
+                    minHeight: 52,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 4,
+                    padding: 4,
+                    position: "relative"
+                  }}>
+                    {slotsInCell.map((slot, sIdx) => (
+                      <button key={sIdx} className={`slot ${ACT_BY_ID[slot.act]?.className || ""}`}
+                        style={{
+                          position: "relative",
+                          inset: "auto",
+                          height: "auto",
+                          background: ACT_BY_ID[slot.act]?.color || "var(--ink)",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 2,
+                          width: "100%",
+                          boxSizing: "border-box"
+                        }}>
+                        <span className="t" style={{ fontSize: 12, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{slot.title}</span>
+                        <span className="meta" style={{ fontSize: 10, opacity: 0.9 }}>{slot.time || `${h}:00`} · {slot.room}</span>
+                      </button>
+                    ))}
+                  </div>
+                );
+              })}
+            </React.Fragment>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

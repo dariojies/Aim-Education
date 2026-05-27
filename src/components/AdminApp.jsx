@@ -313,31 +313,40 @@ function AdminClasses({ classSlots, setClassSlots, onAddClassClick }) {
               {h}:00
             </div>
             {days.map((_, dIdx) => {
-              const slot = filteredSlots.find(s => s.d === dIdx && s.s === h);
+              const slotsInCell = filteredSlots.filter(s => s.d === dIdx && s.s === h);
               return (
                 <div key={dIdx} style={{
                   borderTop: "1px solid var(--line-2)",
                   borderLeft: "1px solid var(--line-2)",
                   minHeight: 52,
-                  position: "relative",
-                  padding: 3,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 4,
+                  padding: 4,
+                  position: "relative"
                 }}>
-                  {slot && (
+                  {slotsInCell.map((slot, sIdx) => (
                     <button 
+                      key={sIdx}
                       className={`slot ${ACT_BY_ID[slot.act]?.className || ""}`} 
                       onClick={() => setSelectedSlot(slot)}
                       style={{
-                        position: "absolute",
-                        inset: 3,
-                        height: `calc(${slot.h} * 52px - 6px)`,
+                        position: "relative",
+                        inset: "auto",
+                        height: "auto",
                         background: ACT_BY_ID[slot.act]?.color || "var(--ink)",
                         zIndex: 1,
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 2,
+                        width: "100%",
+                        boxSizing: "border-box"
                       }}
                     >
-                      <span className="t">{slot.title}</span>
-                      <span className="meta">{slot.room} · {slot.students}</span>
+                      <span className="t" style={{ fontSize: 12, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{slot.title}</span>
+                      <span className="meta" style={{ fontSize: 10, opacity: 0.9 }}>{slot.room} · {slot.students}</span>
                     </button>
-                  )}
+                  ))}
                 </div>
               );
             })}
@@ -366,6 +375,7 @@ function AdminClasses({ classSlots, setClassSlots, onAddClassClick }) {
           }}>
             <h3 style={{ margin: '0 0 10px', fontSize: 18, fontWeight: 800, color: 'var(--ink)' }}>{selectedSlot.title}</h3>
             <p style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Actividad:</strong> {ACT_BY_ID[selectedSlot.act]?.name || selectedSlot.act}</p>
+            <p style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Horario:</strong> {selectedSlot.time || `${selectedSlot.s}:00`}</p>
             <p style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Sala:</strong> {selectedSlot.room}</p>
             <p style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Profesor/a:</strong> {selectedSlot.monitor || '—'}</p>
             <p style={{ margin: '0 0 16px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Alumnos:</strong> {selectedSlot.students}</p>

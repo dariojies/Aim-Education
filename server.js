@@ -542,7 +542,7 @@ app.delete('/api/users/:id', authenticateSession, async (req, res) => {
     }
 });
 
-app.get('/api/classes', authenticateSession, async (req, res) => {
+app.get('/api/classes', async (req, res) => {
     try {
         const groupsRes = await pool.query('SELECT * FROM tul_groups');
         const activitiesRes = await pool.query('SELECT * FROM tul_activities');
@@ -593,17 +593,41 @@ app.get('/api/classes', authenticateSession, async (req, res) => {
             if (g.time) {
                 const lines = g.time.split('\n');
                 lines.forEach(line => {
-                    const match = line.match(/^\s*([LMXJVS])\s+(\d{2}):(\d{2})\s*[-–—]\s*(\d{2}):(\d{2})\s*(?:·\s*(.*))?$/i);
+                    const match = line.match(/^\s*([LMXJVSD\-\s,]+)\s+(\d{2}):(\d{2})\s*[-–—]\s*(\d{2}):(\d{2})\s*(?:·\s*(.*))?$/i);
                     if (match) {
-                        const dayChar = match[1].toUpperCase();
-                        const startHour = parseInt(match[2]);
-                        const startMin = parseInt(match[3]);
-                        const endHour = parseInt(match[4]);
-                        const endMin = parseInt(match[5]);
+                        const dayStr = match[1].toUpperCase().trim();
+                        const startHour = parseInt(match[2], 10);
+                        const startMin = parseInt(match[3], 10);
+                        const endHour = parseInt(match[4], 10);
+                        const endMin = parseInt(match[5], 10);
                         const room = match[6] ? match[6].trim() : 'Sala 1';
 
                         const dayMap = { 'L': 0, 'M': 1, 'X': 2, 'J': 3, 'V': 4, 'S': 5, 'D': 6 };
-                        const dayIdx = dayMap[dayChar] !== undefined ? dayMap[dayChar] : 0;
+                        const daysFound = [];
+
+                        // Check for range pattern like "X-J"
+                        const rangeMatch = dayStr.match(/^([LMXJVSD])\s*-\s*([LMXJVSD])$/);
+                        if (rangeMatch) {
+                            const startIdx = dayMap[rangeMatch[1]];
+                            const endIdx = dayMap[rangeMatch[2]];
+                            if (startIdx !== undefined && endIdx !== undefined && startIdx <= endIdx) {
+                                for (let i = startIdx; i <= endIdx; i++) {
+                                    daysFound.push(i);
+                                }
+                            }
+                        } else {
+                            // Otherwise, extract all individual day characters
+                            for (let char of dayStr) {
+                                if (dayMap[char] !== undefined && !daysFound.includes(dayMap[char])) {
+                                    daysFound.push(dayMap[char]);
+                                }
+                            }
+                        }
+
+                        // Default to Monday if empty
+                        if (daysFound.length === 0) {
+                            daysFound.push(0);
+                        }
 
                         const sVal = startHour + (startMin / 60);
                         const eVal = endHour + (endMin / 60);
@@ -612,15 +636,20 @@ app.get('/api/classes', authenticateSession, async (req, res) => {
                             duration = 1;
                         }
 
-                        slots.push({
-                            d: dayIdx,
-                            s: Math.floor(sVal),
-                            h: duration,
-                            act: actId,
-                            title: g.name,
-                            room: room,
-                            students: `${Math.floor(g.max_students * 0.7)}/${g.max_students || 15}`,
-                            monitor: monitor
+                        const timeString = `${match[2]}:${match[3]} – ${match[4]}:${match[5]}`;
+
+                        daysFound.forEach(dayIdx => {
+                            slots.push({
+                                d: dayIdx,
+                                s: Math.floor(sVal),
+                                h: duration,
+                                act: actId,
+                                title: g.name,
+                                room: room,
+                                students: `${Math.floor(g.max_students * 0.7)}/${g.max_students || 15}`,
+                                monitor: monitor,
+                                time: timeString
+                            });
                         });
                     }
                 });
