@@ -8,6 +8,7 @@ export default function PublicCalendar() {
   const [filter, setFilter] = useState("all");
   const [slots, setSlots] = useState([]);
   const [loadingSlots, setLoadingSlots] = useState(true);
+  const [selectedRoom, setSelectedRoom] = useState("Todas");
 
   useEffect(() => {
     if (viewType === "schedule") {
@@ -100,6 +101,32 @@ export default function PublicCalendar() {
                 Horario semanal de clases
               </button>
             </div>
+
+            {/* Classroom filter tabs for schedule view */}
+            {viewType === "schedule" && !loadingSlots && (
+              <div style={{
+                display: "flex", 
+                gap: 8, 
+                marginTop: -10, 
+                marginBottom: 20, 
+                flexWrap: "wrap", 
+                alignItems: "center",
+                padding: "8px 12px",
+                background: "var(--bg-3)",
+                borderRadius: 12,
+                border: "1px solid var(--line)"
+              }}>
+                <span style={{fontSize: 12, fontWeight: 700, color: "var(--ink-3)", marginRight: 8}}>Aulas / Salas:</span>
+                {["Todas", "Sala 1", "Sala 2", "Sala 3", "Sala 4", "Sala 5", "Sala 6"].map(room => (
+                  <button key={room}
+                    className={`filter-pill ${selectedRoom === room ? "is-active" : ""}`}
+                    onClick={() => setSelectedRoom(room)}
+                    style={{padding: "5px 12px", borderRadius: 8, fontSize: 12}}>
+                    {room}
+                  </button>
+                ))}
+              </div>
+            )}
 
             {viewType === "events" ? (
               <>
@@ -247,27 +274,62 @@ export default function PublicCalendar() {
                                 padding: 6,
                                 position: "relative"
                               }}>
-                                {slotsInCell.map((slot, sIdx) => (
-                                  <div key={sIdx} className={`slot ${ACT_BY_ID[slot.act]?.className || ""}`}
-                                    style={{
-                                      position: "relative",
-                                      inset: "auto",
-                                      height: "auto",
-                                      background: ACT_BY_ID[slot.act]?.color || "var(--ink)",
-                                      display: "flex",
-                                      flexDirection: "column",
-                                      gap: 2,
-                                      width: "100%",
-                                      boxSizing: "border-box",
-                                      borderRadius: 8,
-                                      padding: "8px 10px",
-                                      color: "white"
-                                    }}>
-                                    <span className="t" style={{ fontSize: 12, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{slot.title}</span>
-                                    <span className="meta" style={{ fontSize: 10, opacity: 0.95, fontWeight: 600 }}>{slot.time || `${h}:00`} · {slot.room}</span>
-                                    <span className="meta" style={{ fontSize: 9, opacity: 0.85, marginTop: 2 }}>{slot.monitor}</span>
+                                {/* Full box classes for the selected room (or all if "Todas" is selected) */}
+                                {slotsInCell
+                                  .filter(slot => selectedRoom === "Todas" || slot.room === selectedRoom)
+                                  .map((slot, sIdx) => (
+                                    <div key={sIdx} className={`slot ${ACT_BY_ID[slot.act]?.className || ""}`}
+                                      style={{
+                                        position: "relative",
+                                        inset: "auto",
+                                        height: "auto",
+                                        background: ACT_BY_ID[slot.act]?.color || "var(--ink)",
+                                        display: "flex",
+                                        flexDirection: "column",
+                                        gap: 2,
+                                        width: "100%",
+                                        boxSizing: "border-box",
+                                        borderRadius: 8,
+                                        padding: "8px 10px",
+                                        color: "white"
+                                      }}>
+                                      <span className="t" style={{ fontSize: 12, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{slot.title}</span>
+                                      <span className="meta" style={{ fontSize: 10, opacity: 0.95, fontWeight: 600 }}>{slot.time || `${h}:00`} · {slot.room}</span>
+                                      <span className="meta" style={{ fontSize: 9, opacity: 0.85, marginTop: 2 }}>{slot.monitor}</span>
+                                    </div>
+                                  ))}
+
+                                {/* Little dots for classes NOT in the selected room */}
+                                {selectedRoom !== "Todas" && slotsInCell.some(slot => slot.room !== selectedRoom) && (
+                                  <div style={{
+                                    display: "flex",
+                                    gap: 6,
+                                    flexWrap: "wrap",
+                                    alignItems: "center",
+                                    marginTop: "auto",
+                                    padding: "4px 4px 2px",
+                                    borderTop: slotsInCell.some(slot => slot.room === selectedRoom) ? "1px dashed var(--line-2)" : "none"
+                                  }}>
+                                    {slotsInCell
+                                      .filter(slot => slot.room !== selectedRoom)
+                                      .map((slot, sIdx) => (
+                                        <div 
+                                          key={sIdx}
+                                          style={{
+                                            width: 10,
+                                            height: 10,
+                                            borderRadius: "50%",
+                                            background: ACT_BY_ID[slot.act]?.color || "var(--ink)",
+                                            transition: "transform 0.15s ease",
+                                            boxShadow: "0 1px 3px rgba(0,0,0,0.15)"
+                                          }}
+                                          onMouseEnter={e => e.currentTarget.style.transform = "scale(1.3)"}
+                                          onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
+                                          title={`${slot.title} (${slot.room}) · ${slot.monitor || ''}`}
+                                        />
+                                      ))}
                                   </div>
-                                ))}
+                                )}
                               </div>
                             );
                           })}
