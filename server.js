@@ -71,6 +71,24 @@ async function initDb() {
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_post_views_post_id ON aim_education_post_views(post_id)`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_post_views_created_at ON aim_education_post_views(created_at)`);
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_education_groups (
+                id TEXT PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                activity VARCHAR(100) NOT NULL,
+                student_ids TEXT
+            )
+        `);
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_education_recibos (
+                id TEXT PRIMARY KEY,
+                date DATE,
+                amount NUMERIC(10, 2),
+                payment_method VARCHAR(100),
+                company VARCHAR(255),
+                invoice_link TEXT
+            )
+        `);
     } finally {
         client.release();
     }
@@ -461,6 +479,125 @@ app.get('/api/users', authenticateSession, async (req, res) => {
             isSuperAdmin: (u.dev_role === 'superadmin' || u.role === 'superadmin' || u.role === 'SuperAdmin')
         }));
         res.json(mapped);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/users', authenticateSession, async (req, res) => {
+    const { firstName, lastName, email, belt, isSuperAdmin } = req.body;
+    if (!firstName || !email) {
+        return res.status(400).json({ error: 'Nombre y email son requeridos.' });
+    }
+    const emailLower = email.toLowerCase().trim();
+    try {
+        const exists = await pool.query('SELECT user_id FROM users WHERE LOWER(email) = $1', [emailLower]);
+        if (exists.rowCount > 0) {
+            return res.status(409).json({ error: 'Ya existe una cuenta con ese email.' });
+        }
+        const hash = await bcrypt.hash('aim123456', 12);
+        const user_id = crypto.randomUUID();
+        const role = isSuperAdmin ? 'superadmin' : 'student';
+        
+        await pool.query(
+            `INSERT INTO users (user_id, name, surname, email, password, belt, role)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [user_id, firstName.trim(), (lastName || '').trim(), emailLower, hash, belt || null, role]
+        );
+        res.status(201).json({ id: user_id, firstName, lastName, email, belt, isSuperAdmin });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/users/:id', authenticateSession, async (req, res) => {
+    const { firstName, lastName, email, belt, isSuperAdmin } = req.body;
+    const { id } = req.params;
+    if (!firstName || !email) {
+        return res.status(400).json({ error: 'Nombre y email son requeridos.' });
+    }
+    const emailLower = email.toLowerCase().trim();
+    try {
+        const role = isSuperAdmin ? 'superadmin' : 'student';
+        const dev_role = isSuperAdmin ? 'superadmin' : null;
+        await pool.query(
+            `UPDATE users
+             SET name = $1, surname = $2, email = $3, belt = $4, role = $5, dev_role = $6
+             WHERE user_id = $7`,
+            [firstName.trim(), (lastName || '').trim(), emailLower, belt || null, role, dev_role, id]
+        );
+        res.json({ id, firstName, lastName, email, belt, isSuperAdmin });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/users/:id', authenticateSession, async (req, res) => {
+    const { id } = req.params;
+    try {
+        await pool.query('DELETE FROM users WHERE user_id = $1', [id]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/admin/groups', authenticateSession, async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM aim_education_groups');
+        res.json(result.rows.map(g => ({
+            id: g.id,
+            name: g.name,
+            activity: g.activity,
+            studentIds: g.student_ids ? JSON.parse(g.student_ids) : []
+        })));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/admin/groups', authenticateSession, async (req, res) => {
+    const { name, activity, studentIds } = req.body;
+    if (!name || !activity) {
+        return res.status(400).json({ error: 'Nombre y actividad son obligatorios.' });
+    }
+    const id = crypto.randomUUID();
+    try {
+        await pool.query(
+            `INSERT INTO aim_education_groups (id, name, activity, student_ids)
+             VALUES ($1, $2, $3, $4)`,
+            [id, name, activity, JSON.stringify(studentIds || [])]
+        );
+        res.status(201).json({ id, name, activity, studentIds: studentIds || [] });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/admin/groups/:id', authenticateSession, async (req, res) => {
+    const { name, activity, studentIds } = req.body;
+    const { id } = req.params;
+    if (!name || !activity) {
+        return res.status(400).json({ error: 'Nombre y actividad son obligatorios.' });
+    }
+    try {
+        await pool.query(
+            `UPDATE aim_education_groups
+             SET name = $1, activity = $2, student_ids = $3
+             WHERE id = $4`,
+            [name, activity, JSON.stringify(studentIds || []), id]
+        );
+        res.json({ id, name, activity, studentIds });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/admin/groups/:id', authenticateSession, async (req, res) => {
+    const { id } = req.params;
+    try {
+        await pool.query('DELETE FROM aim_education_groups WHERE id = $1', [id]);
+        res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
