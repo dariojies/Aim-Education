@@ -7,6 +7,7 @@ import cors from 'cors';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { GoogleGenAI, Type } from '@google/genai';
+import nodemailer from 'nodemailer';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -71,6 +72,29 @@ async function initDb() {
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_post_views_post_id ON aim_education_post_views(post_id)`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_post_views_created_at ON aim_education_post_views(created_at)`);
+
+        // Support tickets
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS tickets_registrosoporte (
+                id SERIAL PRIMARY KEY,
+                user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+                subject VARCHAR(255) NOT NULL,
+                description TEXT NOT NULL,
+                status VARCHAR(50) DEFAULT 'open',
+                priority VARCHAR(20) DEFAULT 'low',
+                due_date TIMESTAMP,
+                assigned_to UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                app_label TEXT[] DEFAULT ARRAY['Aim Education'],
+                dev_response TEXT,
+                email_sent BOOLEAN DEFAULT false,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS priority VARCHAR(20) DEFAULT 'low'`);
+        await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS due_date TIMESTAMP`);
+        await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS assigned_to UUID REFERENCES users(user_id) ON DELETE SET NULL`);
+        await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS app_label TEXT[] DEFAULT ARRAY['Aim Education']`);
+        await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS dev_role VARCHAR(50) DEFAULT 'student'`);
     } finally {
         client.release();
     }
@@ -264,6 +288,17 @@ function newsLayout(pageTitle, bodyContent, siteUrl, meta = {}) {
 </body>
 </html>`;
 }
+
+// --- Nodemailer ---
+
+const mailTransporter = (process.env.EMAIL_USER && process.env.EMAIL_PASS)
+    ? nodemailer.createTransport({
+        host: 'smtp.gmail.com',
+        port: 465,
+        secure: true,
+        auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+    })
+    : null;
 
 // --- Middleware ---
 
@@ -1015,6 +1050,98 @@ app.get('/noticias/:slug', async (req, res) => {
     } catch (err) {
         console.error('Post page error:', err);
         res.status(500).send('Error cargando la noticia');
+    }
+});
+
+// =============================================================================
+// SUPPORT TICKET ROUTES
+// =============================================================================
+
+app.post('/api/support', authenticateSession, async (req, res) => {
+    const { subject, description } = req.body;
+    const userId = req.userSession.userId;
+    if (!subject || !description)
+        return res.status(400).json({ error: 'Asunto y descripción son obligatorios.' });
+    try {
+        const result = await pool.query(
+            `INSERT INTO tickets_registrosoporte (user_id, subject, description, app_label)
+             VALUES ($1, $2, $3, $4) RETURNING id`,
+            [userId, subject, description, ['Aim Education']]
+        );
+        const ticketId = result.rows[0].id;
+        if (mailTransporter) {
+            mailTransporter.sendMail({
+                from: process.env.EMAIL_USER,
+                to: process.env.EMAIL_USER,
+                subject: `[Soporte Aim Education] Ticket #${ticketId}: ${subject}`,
+                text: `Nuevo ticket de ${req.userSession.firstName} ${req.userSession.lastName || ''} (${req.userSession.email})\n\nAsunto: ${subject}\n\nDescripción:\n${description}`
+            }).then(() => {
+                pool.query('UPDATE tickets_registrosoporte SET email_sent = true WHERE id = $1', [ticketId]).catch(() => {});
+            }).catch(err => console.error('[SMTP ERROR]', err.message));
+        }
+        res.json({ success: true, ticketId });
+    } catch (err) {
+        console.error('[SUPPORT] Create error:', err);
+        res.status(500).json({ error: 'Error al crear el ticket.' });
+    }
+});
+
+app.get('/api/support', authenticateSession, async (req, res) => {
+    if (!req.userSession.isSuperAdmin && !req.userSession.canAccessAdmin)
+        return res.status(403).json({ error: 'Sin permisos.' });
+    try {
+        const result = await pool.query(`
+            SELECT s.*,
+                   COALESCE(u.name, 'Admin') as name,
+                   COALESCE(u.surname, '') as surname,
+                   COALESCE(u.email, '') as email,
+                   assignee.name as assignee_name,
+                   assignee.surname as assignee_surname
+            FROM tickets_registrosoporte s
+            LEFT JOIN users u ON s.user_id = u.user_id
+            LEFT JOIN users assignee ON s.assigned_to = assignee.user_id
+            ORDER BY s.created_at DESC
+        `);
+        res.json({ success: true, tickets: result.rows });
+    } catch (err) {
+        console.error('[SUPPORT] Fetch error:', err);
+        res.status(500).json({ error: 'Error al obtener tickets.' });
+    }
+});
+
+app.put('/api/support/:id', authenticateSession, async (req, res) => {
+    if (!req.userSession.isSuperAdmin && !req.userSession.canAccessAdmin)
+        return res.status(403).json({ error: 'Sin permisos.' });
+    const { status, devResponse, priority, dueDate, assignedTo, appLabel } = req.body;
+    const finalAppLabels = Array.isArray(appLabel) ? appLabel : (appLabel ? [appLabel] : ['Aim Education']);
+    try {
+        await pool.query(
+            `UPDATE tickets_registrosoporte
+             SET status = $1, dev_response = $2, priority = $3,
+                 due_date = $4, assigned_to = $5, app_label = $6::TEXT[]
+             WHERE id = $7`,
+            [status || 'open', devResponse || '', priority || 'low', dueDate || null, assignedTo || null, finalAppLabels, req.params.id]
+        );
+        res.json({ success: true });
+    } catch (err) {
+        console.error('[SUPPORT] Update error:', err);
+        res.status(500).json({ error: 'Error al actualizar el ticket.' });
+    }
+});
+
+app.get('/api/admin/superadmins', authenticateSession, async (req, res) => {
+    if (!req.userSession.isSuperAdmin && !req.userSession.canAccessAdmin)
+        return res.status(403).json({ error: 'Sin permisos.' });
+    try {
+        const result = await pool.query(`
+            SELECT user_id as id, name, surname, email
+            FROM users
+            WHERE role = 'superadmin' OR dev_role = 'superadmin' OR role = 'SuperAdmin'
+            ORDER BY name ASC
+        `);
+        res.json({ success: true, superadmins: result.rows });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
 });
 
