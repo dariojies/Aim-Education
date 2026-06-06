@@ -72,6 +72,116 @@ async function initDb() {
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_post_views_post_id ON aim_education_post_views(post_id)`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_post_views_created_at ON aim_education_post_views(created_at)`);
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_education_groups (
+                id TEXT PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                activity VARCHAR(100) NOT NULL,
+                student_ids TEXT
+            )
+        `);
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_education_recibos (
+                id TEXT PRIMARY KEY,
+                date DATE,
+                amount NUMERIC(10, 2),
+                payment_method VARCHAR(100),
+                company VARCHAR(255),
+                invoice_link TEXT
+            )
+        `);
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_education_activities (
+                id VARCHAR(100) PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                color VARCHAR(50) NOT NULL,
+                class_name VARCHAR(100)
+            )
+        `);
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_education_aulas (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL UNIQUE
+            )
+        `);
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_education_instructores (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL UNIQUE,
+                email VARCHAR(255),
+                phone VARCHAR(50),
+                specialty VARCHAR(255)
+            )
+        `);
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_education_clases (
+                id VARCHAR(100) PRIMARY KEY,
+                d INTEGER NOT NULL,
+                s NUMERIC(4,2) NOT NULL,
+                h NUMERIC(4,2) NOT NULL,
+                act VARCHAR(100) NOT NULL,
+                title VARCHAR(255) NOT NULL,
+                room VARCHAR(255) NOT NULL,
+                students VARCHAR(50) NOT NULL DEFAULT '0/15',
+                monitor VARCHAR(255) NOT NULL
+            )
+        `);
+
+        // Seeding de datos por defecto
+        const actCount = await client.query('SELECT COUNT(*) FROM aim_education_activities');
+        if (parseInt(actCount.rows[0].count) === 0) {
+            await client.query(`
+                INSERT INTO aim_education_activities (id, name, color, class_name) VALUES
+                ('taekwondo', 'Taekwondo', '#21B668', 'act-taekwondo'),
+                ('ballet', 'Ballet Clásico', '#FF99D3', 'act-ballet'),
+                ('baile', 'Baile Urbano', '#AF99FF', 'act-baile'),
+                ('ingles', 'Inglés', '#00BBF4', 'act-ingles'),
+                ('robotica', 'Robótica', '#FFD526', 'act-robotica'),
+                ('camaleon', 'Programa Camaleón', '#25D8BA', 'act-camaleon'),
+                ('funcional', 'Entrenamiento Funcional', '#FF4F15', 'act-funcional'),
+                ('pilates', 'Pilates', '#BFD300', 'act-pilates'),
+                ('pintura', 'Pintura', '#5233A8', 'act-pintura')
+            `);
+        }
+        const aulaCount = await client.query('SELECT COUNT(*) FROM aim_education_aulas');
+        if (parseInt(aulaCount.rows[0].count) === 0) {
+            await client.query(`
+                INSERT INTO aim_education_aulas (name) VALUES
+                ('Sala 1'), ('Sala 2'), ('Sala 3'), ('Sala 4'), ('Sala 5'), ('Sala 6'),
+                ('Tatami'), ('Lab'), ('Taller'), ('Sala fit'), ('Aula 1'), ('Aula 2'), ('Aula 3')
+            `);
+        }
+        const instCount = await client.query('SELECT COUNT(*) FROM aim_education_instructores');
+        if (parseInt(instCount.rows[0].count) === 0) {
+            await client.query(`
+                INSERT INTO aim_education_instructores (name) VALUES
+                ('Darío Francisco'), ('Elena García'), ('James Smith'), ('Mateo Ortiz'), ('Sara Moreno'), ('Carlos Ruiz')
+            `);
+        }
+        const claseCount = await client.query('SELECT COUNT(*) FROM aim_education_clases');
+        if (parseInt(claseCount.rows[0].count) === 0) {
+            await client.query(`
+                INSERT INTO aim_education_clases (id, d, s, h, act, title, room, students, monitor) VALUES
+                ('c1', 0, 17, 1, 'taekwondo', 'Taekwondo · Blancos', 'Tatami', '12/16', 'Darío Francisco'),
+                ('c2', 0, 18, 1, 'taekwondo', 'Taekwondo · Color', 'Tatami', '14/16', 'Darío Francisco'),
+                ('c3', 0, 19, 1.5, 'taekwondo', 'Taekwondo · Adultos', 'Tatami', '8/12', 'Darío Francisco'),
+                ('c4', 0, 16, 2, 'ballet', 'Ballet · Primary', 'Sala 1', '12/15', 'Elena García'),
+                ('c5', 1, 17, 1, 'ingles', 'Inglés · Movers', 'Aula 3', '9/12', 'James Smith'),
+                ('c6', 1, 18, 1.5, 'ingles', 'Inglés · B2 First', 'Aula 1', '7/10', 'James Smith'),
+                ('c7', 1, 17, 2.5, 'ballet', 'Ballet · Grades 1-3', 'Sala 1', '11/15', 'Elena García'),
+                ('c8', 2, 16, 2, 'ballet', 'Ballet · Pre-primary', 'Sala 2', '10/12', 'Elena García'),
+                ('c9', 2, 17, 1.5, 'robotica', 'Robótica · Builders', 'Lab', '8/10', 'Mateo Ortiz'),
+                ('c10', 3, 16, 1, 'ingles', 'Inglés · Starters', 'Aula 2', '10/12', 'James Smith'),
+                ('c11', 3, 18, 1.5, 'ingles', 'Inglés · B2 First', 'Aula 1', '7/10', 'James Smith'),
+                ('c12', 3, 17, 2.5, 'ballet', 'Ballet · Grades 1-3', 'Sala 1', '11/15', 'Elena García'),
+                ('c13', 3, 17, 1.5, 'pintura', 'Pintura · Estudio joven', 'Taller', '6/10', 'Sara Moreno'),
+                ('c14', 4, 17, 1, 'taekwondo', 'Taekwondo · Blancos', 'Tatami', '12/16', 'Darío Francisco'),
+                ('c15', 4, 18, 2, 'ballet', 'Ballet · Vocational', 'Sala 1', '9/12', 'Elena García'),
+                ('c16', 4, 19, 1, 'funcional', 'Funcional · Tarde', 'Sala fit', '11/14', 'Carlos Ruiz'),
+                ('c17', 5, 10, 2, 'taekwondo', 'Taekwondo · Competición', 'Tatami', '8/10', 'Darío Francisco'),
+                ('c18', 5, 11, 1.5, 'kickboxing', 'Kick Boxing · Sparring', 'Tatami', '9/12', 'Darío Francisco')
+            `);
+        }
 
         // Support tickets
         await client.query(`
@@ -496,6 +606,320 @@ app.get('/api/users', authenticateSession, async (req, res) => {
             isSuperAdmin: (u.dev_role === 'superadmin' || u.role === 'superadmin' || u.role === 'SuperAdmin')
         }));
         res.json(mapped);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/users', authenticateSession, async (req, res) => {
+    const { firstName, lastName, email, belt, isSuperAdmin } = req.body;
+    if (!firstName || !email) {
+        return res.status(400).json({ error: 'Nombre y email son requeridos.' });
+    }
+    const emailLower = email.toLowerCase().trim();
+    try {
+        const exists = await pool.query('SELECT user_id FROM users WHERE LOWER(email) = $1', [emailLower]);
+        if (exists.rowCount > 0) {
+            return res.status(409).json({ error: 'Ya existe una cuenta con ese email.' });
+        }
+        const hash = await bcrypt.hash('aim123456', 12);
+        const user_id = crypto.randomUUID();
+        const role = isSuperAdmin ? 'superadmin' : 'student';
+        
+        await pool.query(
+            `INSERT INTO users (user_id, name, surname, email, password, belt, role)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [user_id, firstName.trim(), (lastName || '').trim(), emailLower, hash, belt || null, role]
+        );
+        res.status(201).json({ id: user_id, firstName, lastName, email, belt, isSuperAdmin });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/users/:id', authenticateSession, async (req, res) => {
+    const { firstName, lastName, email, belt, isSuperAdmin } = req.body;
+    const { id } = req.params;
+    if (!firstName || !email) {
+        return res.status(400).json({ error: 'Nombre y email son requeridos.' });
+    }
+    const emailLower = email.toLowerCase().trim();
+    try {
+        const role = isSuperAdmin ? 'superadmin' : 'student';
+        const dev_role = isSuperAdmin ? 'superadmin' : null;
+        await pool.query(
+            `UPDATE users
+             SET name = $1, surname = $2, email = $3, belt = $4, role = $5, dev_role = $6
+             WHERE user_id = $7`,
+            [firstName.trim(), (lastName || '').trim(), emailLower, belt || null, role, dev_role, id]
+        );
+        res.json({ id, firstName, lastName, email, belt, isSuperAdmin });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/users/:id', authenticateSession, async (req, res) => {
+    const { id } = req.params;
+    try {
+        await pool.query('DELETE FROM users WHERE user_id = $1', [id]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/classes', async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT c.*, a.name as act_name, a.color as act_color, a.class_name as act_class_name
+            FROM aim_education_clases c
+            LEFT JOIN aim_education_activities a ON c.act = a.id
+            ORDER BY c.d, c.s
+        `);
+        const mapped = result.rows.map(r => ({
+            id: r.id,
+            d: r.d,
+            s: parseFloat(r.s),
+            h: parseFloat(r.h),
+            act: r.act,
+            title: r.title,
+            room: r.room,
+            students: r.students,
+            monitor: r.monitor,
+            actColor: r.act_color,
+            actName: r.act_name,
+            actClassName: r.act_class_name
+        }));
+        res.json(mapped);
+    } catch (err) {
+        console.error('Error fetching classes:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/classes', authenticateSession, async (req, res) => {
+    const { d, s, h, act, title, room, students, monitor } = req.body;
+    if (d === undefined || s === undefined || h === undefined || !act || !title || !room || !monitor) {
+        return res.status(400).json({ error: 'Todos los campos son obligatorios.' });
+    }
+    const id = crypto.randomUUID();
+    try {
+        await pool.query(
+            `INSERT INTO aim_education_clases (id, d, s, h, act, title, room, students, monitor)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            [id, d, s, h, act, title, room, students || '0/15', monitor]
+        );
+        res.status(201).json({ id, d, s, h, act, title, room, students, monitor });
+    } catch (err) {
+        console.error('Error creating class:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/classes/:id', authenticateSession, async (req, res) => {
+    const { id } = req.params;
+    try {
+        await pool.query('DELETE FROM aim_education_clases WHERE id = $1', [id]);
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Error deleting class:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/activities', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM aim_education_activities ORDER BY name');
+        res.json(result.rows.map(r => ({
+            id: r.id,
+            name: r.name,
+            color: r.color,
+            className: r.class_name
+        })));
+    } catch (err) {
+        console.error('Error fetching activities:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/admin/activities', authenticateSession, async (req, res) => {
+    const { name, color } = req.body;
+    if (!name || !color) {
+        return res.status(400).json({ error: 'Nombre y color son obligatorios.' });
+    }
+    const id = slugify(name);
+    const className = `act-${id}`;
+    try {
+        await pool.query(
+            `INSERT INTO aim_education_activities (id, name, color, class_name)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, color = EXCLUDED.color, class_name = EXCLUDED.class_name`,
+            [id, name, color, className]
+        );
+        res.status(201).json({ id, name, color, className });
+    } catch (err) {
+        console.error('Error creating activity:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/aulas', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM aim_education_aulas ORDER BY name');
+        res.json(result.rows);
+    } catch (err) {
+        console.error('Error fetching classrooms:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/admin/aulas', authenticateSession, async (req, res) => {
+    const { name } = req.body;
+    if (!name) {
+        return res.status(400).json({ error: 'El nombre del aula es obligatorio.' });
+    }
+    try {
+        const exists = await pool.query('SELECT id FROM aim_education_aulas WHERE name = $1', [name.trim()]);
+        if (exists.rowCount > 0) {
+            return res.status(409).json({ error: 'El aula ya existe.' });
+        }
+        const result = await pool.query(
+            `INSERT INTO aim_education_aulas (name) VALUES ($1) RETURNING *`,
+            [name.trim()]
+        );
+        res.status(201).json(result.rows[0]);
+    } catch (err) {
+        console.error('Error creating classroom:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/instructores', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM aim_education_instructores ORDER BY name');
+        res.json(result.rows);
+    } catch (err) {
+        console.error('Error fetching instructors:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/admin/instructores', authenticateSession, async (req, res) => {
+    const { name, email, phone, specialty } = req.body;
+    if (!name) {
+        return res.status(400).json({ error: 'El nombre del instructor es obligatorio.' });
+    }
+    try {
+        const exists = await pool.query('SELECT id FROM aim_education_instructores WHERE name = $1', [name.trim()]);
+        if (exists.rowCount > 0) {
+            return res.status(409).json({ error: 'El instructor ya existe.' });
+        }
+        const result = await pool.query(
+            `INSERT INTO aim_education_instructores (name, email, phone, specialty)
+             VALUES ($1, $2, $3, $4) RETURNING *`,
+            [name.trim(), email || null, phone || null, specialty || null]
+        );
+        res.status(201).json(result.rows[0]);
+    } catch (err) {
+        console.error('Error creating instructor:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/admin/instructores/:id', authenticateSession, async (req, res) => {
+    const { id } = req.params;
+    const { name, email, phone, specialty } = req.body;
+    if (!name) {
+        return res.status(400).json({ error: 'El nombre del instructor es obligatorio.' });
+    }
+    try {
+        const result = await pool.query(
+            `UPDATE aim_education_instructores
+             SET name = $1, email = $2, phone = $3, specialty = $4
+             WHERE id = $5 RETURNING *`,
+            [name.trim(), email || null, phone || null, specialty || null, id]
+        );
+        if (result.rowCount === 0) {
+            return res.status(404).json({ error: 'Instructor no encontrado.' });
+        }
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error('Error updating instructor:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/admin/instructores/:id', authenticateSession, async (req, res) => {
+    const { id } = req.params;
+    try {
+        const result = await pool.query('DELETE FROM aim_education_instructores WHERE id = $1 RETURNING *', [id]);
+        if (result.rowCount === 0) {
+            return res.status(404).json({ error: 'Instructor no encontrado.' });
+        }
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Error deleting instructor:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/admin/groups', authenticateSession, async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM aim_education_groups');
+        res.json(result.rows.map(g => ({
+            id: g.id,
+            name: g.name,
+            activity: g.activity,
+            studentIds: g.student_ids ? JSON.parse(g.student_ids) : []
+        })));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/admin/groups', authenticateSession, async (req, res) => {
+    const { name, activity, studentIds } = req.body;
+    if (!name || !activity) {
+        return res.status(400).json({ error: 'Nombre y actividad son obligatorios.' });
+    }
+    const id = crypto.randomUUID();
+    try {
+        await pool.query(
+            `INSERT INTO aim_education_groups (id, name, activity, student_ids)
+             VALUES ($1, $2, $3, $4)`,
+            [id, name, activity, JSON.stringify(studentIds || [])]
+        );
+        res.status(201).json({ id, name, activity, studentIds: studentIds || [] });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/admin/groups/:id', authenticateSession, async (req, res) => {
+    const { name, activity, studentIds } = req.body;
+    const { id } = req.params;
+    if (!name || !activity) {
+        return res.status(400).json({ error: 'Nombre y actividad son obligatorios.' });
+    }
+    try {
+        await pool.query(
+            `UPDATE aim_education_groups
+             SET name = $1, activity = $2, student_ids = $3
+             WHERE id = $4`,
+            [name, activity, JSON.stringify(studentIds || []), id]
+        );
+        res.json({ id, name, activity, studentIds });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/admin/groups/:id', authenticateSession, async (req, res) => {
+    const { id } = req.params;
+    try {
+        await pool.query('DELETE FROM aim_education_groups WHERE id = $1', [id]);
+        res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

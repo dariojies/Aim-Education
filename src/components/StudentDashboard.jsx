@@ -125,51 +125,160 @@ function DashOverview({ go, setView }) {
 
 function DashClasses() {
   const days = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
-  const slots = [
-    { d: 0, s: 16, h: 2, act: "ballet", title: "Lucía · Primary", room: "Sala 1" },
-    { d: 0, s: 17, h: 1, act: "taekwondo", title: "Mateo · Blancos", room: "Tatami" },
-    { d: 1, s: 16, h: 1, act: "ingles", title: "Lucía · Movers", room: "Aula 3" },
-    { d: 1, s: 18, h: 1.5, act: "ingles", title: "Ana · B2 First", room: "Aula 1" },
-    { d: 2, s: 16, h: 2, act: "ballet", title: "Lucía · Primary", room: "Sala 1" },
-    { d: 2, s: 18, h: 1, act: "robotica", title: "Mateo · Junior", room: "Lab" },
-    { d: 3, s: 18, h: 1.5, act: "ingles", title: "Ana · B2 First", room: "Aula 1" },
-    { d: 4, s: 17, h: 1, act: "taekwondo", title: "Mateo · Blancos", room: "Tatami" },
-    { d: 4, s: 18, h: 1, act: "funcional", title: "Carlos · Funcional", room: "Sala fit" },
-    { d: 5, s: 10, h: 2, act: "taekwondo", title: "Mateo · Competición", room: "Tatami" },
-  ];
+  const [slots, setSlots] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedRoom, setSelectedRoom] = useState("Todas");
+  const [selectedSlot, setSelectedSlot] = useState(null);
 
-  const HOURS = Array.from({length: 13}, (_, i) => 9 + i);
+  const classrooms = ["Todas", "Sala 1", "Sala 2", "Sala 3", "Sala 4", "Sala 5", "Sala 6"];
+
+  useEffect(() => {
+    fetch('/api/classes', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : [])
+      .then(data => {
+        setSlots(data);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, []);
+
+  const HOURS = Array.from({length: 14}, (_, i) => 9 + i);
 
   return (
     <div className="panel">
       <h2><I.Calendar /> Horario semanal</h2>
-      <p className="sub">Todas las clases de tu familia en una sola vista.</p>
-      <div className="week-grid" style={{gridTemplateColumns: "80px repeat(6, 1fr)"}}>
-        <div className="hdr"></div>
-        {days.map(d => <div key={d} className="hdr">{d}</div>)}
-        {HOURS.map(h => (
-          <React.Fragment key={h}>
-            <div className="time">{h}:00</div>
-            {days.map((_, dIdx) => {
-              const slot = slots.find(s => s.d === dIdx && s.s === h);
-              return (
-                <div key={dIdx} style={{minHeight: 48, position: "relative"}}>
-                  {slot && (
-                    <button className={`slot ${ACT_BY_ID[slot.act].className}`}
-                      style={{
-                        background: ACT_BY_ID[slot.act].color,
-                        height: `calc(${slot.h} * 48px - 8px)`
-                      }}>
-                      <span className="t">{slot.title}</span>
-                      <span className="meta">{h}:00 · {slot.room}</span>
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-          </React.Fragment>
+      <p className="sub">Todas las clases de la academia en una sola vista semanal.</p>
+      
+      {/* Classroom filter tabs */}
+      <div style={{
+        display: "flex", 
+        gap: 8, 
+        marginTop: 10, 
+        marginBottom: 16, 
+        flexWrap: "wrap", 
+        alignItems: "center",
+        padding: "8px 12px",
+        background: "var(--bg-3)",
+        borderRadius: 12,
+        border: "1px solid var(--line)"
+      }}>
+        <span style={{fontSize: 12, fontWeight: 700, color: "var(--ink-3)", marginRight: 8}}>Aulas / Salas:</span>
+        {classrooms.map(room => (
+          <button key={room}
+            className={`filter-pill ${selectedRoom === room ? "is-active" : ""}`}
+            onClick={() => setSelectedRoom(room)}
+            style={{padding: "5px 12px", borderRadius: 8, fontSize: 12}}>
+            {room}
+          </button>
         ))}
       </div>
+
+      {loading ? (
+        <p style={{color: "var(--ink-3)", fontSize: 14}}>Cargando horario...</p>
+      ) : (
+        <div className="week-grid" style={{gridTemplateColumns: "80px repeat(6, 1fr)"}}>
+          <div className="hdr"></div>
+          {days.map(d => <div key={d} className="hdr">{d}</div>)}
+          {HOURS.map(h => (
+            <React.Fragment key={h}>
+              <div className="time">{h}:00</div>
+              {days.map((_, dIdx) => {
+                const slotsInCell = slots.filter(s => s.d === dIdx && s.s === h);
+                return (
+                  <div key={dIdx} style={{
+                    minHeight: 52,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 4,
+                    padding: 4,
+                    position: "relative"
+                  }}>
+                    {/* Full box classes for the selected room (or all if "Todas" is selected) */}
+                    {slotsInCell
+                      .filter(slot => selectedRoom === "Todas" || slot.room === selectedRoom)
+                      .map((slot, sIdx) => (
+                        <button key={sIdx} className={`slot ${ACT_BY_ID[slot.act]?.className || ""}`}
+                          onClick={() => setSelectedSlot(slot)}
+                          style={{
+                            position: "relative",
+                            inset: "auto",
+                            height: "auto",
+                            background: ACT_BY_ID[slot.act]?.color || "var(--ink)",
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 2,
+                            width: "100%",
+                            boxSizing: "border-box"
+                          }}>
+                          <span className="t" style={{ fontSize: 12, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{slot.title}</span>
+                          <span className="meta" style={{ fontSize: 10, opacity: 0.9 }}>{slot.time || `${h}:00`} · {slot.room}</span>
+                        </button>
+                      ))}
+
+                    {/* Little dots for classes NOT in the selected room */}
+                    {selectedRoom !== "Todas" && slotsInCell.some(slot => slot.room !== selectedRoom) && (
+                      <div style={{
+                        display: "flex",
+                        gap: 6,
+                        flexWrap: "wrap",
+                        alignItems: "center",
+                        marginTop: "auto",
+                        padding: "4px 4px 2px",
+                        borderTop: slotsInCell.some(slot => slot.room === selectedRoom) ? "1px dashed var(--line-2)" : "none"
+                      }}>
+                        {slotsInCell
+                          .filter(slot => slot.room !== selectedRoom)
+                          .map((slot, sIdx) => (
+                            <div key={sIdx}
+                              onClick={() => setSelectedSlot(slot)}
+                              style={{
+                                width: 10,
+                                height: 10,
+                                borderRadius: "50%",
+                                background: ACT_BY_ID[slot.act]?.color || "var(--ink)",
+                                cursor: "pointer",
+                                transition: "transform 0.15s ease",
+                                boxShadow: "0 1px 3px rgba(0,0,0,0.15)"
+                              }}
+                              onMouseEnter={e => e.currentTarget.style.transform = "scale(1.3)"}
+                              onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
+                              title={`${slot.title} (${slot.room}) · ${slot.monitor || ''}`}
+                            />
+                          ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </React.Fragment>
+          ))}
+        </div>
+      )}
+
+      {/* Modal Detalles de Clase (Solo Info para Alumnos) */}
+      {selectedSlot && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(6px)',
+          display: 'grid', placeItems: 'center', zIndex: 1050
+        }}>
+          <div style={{
+            background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 20,
+            padding: 24, width: '100%', maxWidth: 400, position: 'relative'
+          }}>
+            <h3 style={{ margin: '0 0 10px', fontSize: 18, fontWeight: 800, color: 'var(--ink)' }}>{selectedSlot.title}</h3>
+            <p style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Actividad:</strong> {ACT_BY_ID[selectedSlot.act]?.name || selectedSlot.act}</p>
+            <p style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Horario:</strong> {selectedSlot.time || `${selectedSlot.s}:00`}</p>
+            <p style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Sala:</strong> {selectedSlot.room}</p>
+            <p style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Profesor/a:</strong> {selectedSlot.monitor || '—'}</p>
+            <p style={{ margin: '0 0 16px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Alumnos:</strong> {selectedSlot.students}</p>
+            
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button className="btn btn-outline btn-sm" onClick={() => setSelectedSlot(null)}>Cerrar</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -474,6 +583,10 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
                 <span>{it.label}</span>
               </button>
             ))}
+            <button onClick={() => go("/")} style={{marginTop: 16, borderTop: "1px dashed var(--line-2)", paddingTop: 16}}>
+              <span className="ico"><I.Globe width={16} height={16} /></span>
+              <span>Volver a la Web</span>
+            </button>
             <button onClick={handleLogout} style={{marginTop: 8}}>
               <span className="ico"><I.LogOut /></span>
               <span>Cerrar sesión</span>

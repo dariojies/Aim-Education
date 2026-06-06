@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { I } from './Icons.jsx';
 import { AimHeader, AimFooter, ACT_BY_ID } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
@@ -81,9 +81,31 @@ const LEARN = {
   ],
 };
 
+const DAY_NAMES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
+
 export default function PublicActivity({ id }) {
   const { go } = useRouter();
   const act = ACT_BY_ID[id] || ACT_BY_ID["taekwondo"];
+
+  const [classes, setClasses] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    fetch('/api/classes')
+      .then(r => r.ok ? r.json() : [])
+      .then(data => {
+        const filtered = data.filter(c => c.act === id);
+        // Sort by day index, then by start hour
+        filtered.sort((a, b) => {
+          if (a.d !== b.d) return a.d - b.d;
+          return a.s - b.s;
+        });
+        setClasses(filtered);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, [id]);
 
   return (
     <>
@@ -187,36 +209,61 @@ export default function PublicActivity({ id }) {
               por orden de inscripción.
             </p>
 
-            <table className={`schedule-table ${act.className}`}>
-              <thead>
-                <tr>
-                  <th>Día</th>
-                  <th>Horario</th>
-                  <th>Grupo</th>
-                  <th>Nivel</th>
-                  <th style={{textAlign: "right"}}>Plazas</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {act.levels.map((lv, i) => (
-                  <tr key={i}>
-                    <td style={{fontWeight: 700}}>{lv.day}</td>
-                    <td><span style={{display: "inline-flex", gap: 6, alignItems: "center"}}><I.Clock width={14} height={14}/> {lv.time}</span></td>
-                    <td>{lv.group}</td>
-                    <td><span className="level-tag">{lv.level}</span></td>
-                    <td style={{textAlign: "right", fontWeight: 700, color: i % 3 === 1 ? "var(--orange)" : "var(--teal)"}}>
-                      {i % 3 === 1 ? "2 plazas" : i % 3 === 2 ? "5 plazas" : "Disponible"}
-                    </td>
-                    <td>
-                      <button className={`btn btn-sm ${act.className}`} style={{background: "var(--act)", color: "white"}} onClick={() => go("/auth?mode=register")}>
-                        Reservar
-                      </button>
-                    </td>
+            {loading ? (
+              <div style={{padding: 40, textAlign: "center", color: "var(--ink-3)", fontSize: 16}}>
+                Cargando horarios de la base de datos...
+              </div>
+            ) : classes.length === 0 ? (
+              <div style={{padding: 40, textAlign: "center", background: "var(--bg-2)", border: "1px dashed var(--line)", borderRadius: 14, color: "var(--ink-3)"}}>
+                No hay horarios disponibles para esta actividad actualmente.
+              </div>
+            ) : (
+              <table className={`schedule-table ${act.className}`}>
+                <thead>
+                  <tr>
+                    <th>Día</th>
+                    <th>Horario</th>
+                    <th>Grupo</th>
+                    <th>Sala</th>
+                    <th>Profesor/a</th>
+                    <th style={{textAlign: "right"}}>Plazas</th>
+                    <th></th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {classes.map((c, i) => {
+                    const parts = c.students.split('/');
+                    const current = parseInt(parts[0], 10);
+                    const max = parseInt(parts[1], 10);
+                    const left = max - current;
+                    const spotsText = left <= 0 ? "Completo" : left <= 3 ? `${left} plazas libres` : "Disponible";
+                    const spotsColor = left <= 0 ? "var(--orange)" : left <= 3 ? "var(--orange-soft)" : "var(--teal)";
+
+                    return (
+                      <tr key={i}>
+                        <td style={{fontWeight: 700}}>{DAY_NAMES[c.d] || "—"}</td>
+                        <td>
+                          <span style={{display: "inline-flex", gap: 6, alignItems: "center"}}>
+                            <I.Clock width={14} height={14}/> {c.time || `${c.s}:00`}
+                          </span>
+                        </td>
+                        <td>{c.title}</td>
+                        <td><span className="level-tag">{c.room}</span></td>
+                        <td style={{color: "var(--ink-2)"}}>{c.monitor || "—"}</td>
+                        <td style={{textAlign: "right", fontWeight: 700, color: spotsColor}}>
+                          {spotsText}
+                        </td>
+                        <td>
+                          <button className={`btn btn-sm ${act.className}`} style={{background: "var(--act)", color: "white"}} onClick={() => go("/auth?mode=register")}>
+                            Reservar
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
           </div>
         </section>
 
