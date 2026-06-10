@@ -4,6 +4,7 @@ node_modules/
 # Build output (generated, never commit)
 dist/
 project/
+_support-kit/
 
 # Environment variables (secrets)
 .env
