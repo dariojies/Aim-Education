@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { I } from './Icons.jsx';
 import { AimHeader, AimFooter, ACTIVITIES, ACT_BY_ID } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
@@ -86,16 +86,70 @@ export function PublicActivities() {
   );
 }
 
+const CAT_ACT = {
+  taekwondo: 'act-taekwondo', ballet: 'act-ballet', ingles: 'act-ingles',
+  robotica: 'act-robotica', funcional: 'act-funcional', pintura: 'act-pintura',
+  camaleon: 'act-camaleon',
+};
+const CAT_BG = {
+  general: 'bg-general', club: 'bg-club', taekwondo: 'bg-taekwondo', ballet: 'bg-ballet',
+  ingles: 'bg-ingles', robotica: 'bg-robotica', funcional: 'bg-funcional',
+  pintura: 'bg-pintura', camaleon: 'bg-camaleon',
+};
+const CAT_LABEL = {
+  general: 'General', club: 'Noticias del Club', taekwondo: 'Taekwondo',
+  ballet: 'Ballet', ingles: 'Inglés', robotica: 'Robótica',
+  funcional: 'Funcional', pintura: 'Pintura', camaleon: 'Camaleón',
+  competicion: 'Competición',
+};
+
+function fmtDate(iso) {
+  const d = new Date(iso);
+  return {
+    d: String(d.getDate()).padStart(2, '0'),
+    m: d.toLocaleDateString('es-ES', { month: 'short' }).slice(0, 3).toUpperCase(),
+  };
+}
+
+function ApiNewsCard({ post, onClick }) {
+  const cat = post.category || 'general';
+  const actCls = CAT_ACT[cat] || '';
+  const bgCls = CAT_BG[cat] || 'bg-general';
+  const label = CAT_LABEL[cat] || cat;
+  const { d, m } = fmtDate(post.published_at || post.created_at);
+
+  return (
+    <div
+      className={`news-card ${actCls}`}
+      onClick={onClick}
+      style={{ cursor: 'pointer' }}
+    >
+      <div className={`img ${bgCls}`}>
+        {post.cover_image_url && (
+          <img src={post.cover_image_url} alt={post.title} loading="lazy" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
+        )}
+        <div className="badge-date"><div className="d">{d}</div><div className="m">{m}</div></div>
+      </div>
+      <div className="body">
+        <span className="cat">{label}</span>
+        <h4>{post.title}</h4>
+        {post.excerpt && <p>{post.excerpt}</p>}
+      </div>
+    </div>
+  );
+}
+
 export function PublicNews() {
   const { go } = useRouter();
-  const NEWS = [
-    { cat: "Ballet", className: "act-ballet", imgClass: "bg-ballet", ph: "festival ballet", title: "¡Se acerca nuestro Festival de Ballet Clásico y Baile Moderno!", date: {d: "14", m: "Jun"}, body: "Nos vemos en el escenario. Inscripciones de público abiertas a partir del 1 de junio." },
-    { cat: "Taekwondo", className: "act-taekwondo", imgClass: "bg-taekwondo", ph: "torneo navideño", title: "XVII Torneo Navideño Iván Navarrete", date: {d: "07", m: "Dic"}, body: "Inscripciones abiertas para nuestros cinturones de competición. ¡Animaros a participar!" },
-    { cat: "Robótica", className: "act-robotica", imgClass: "bg-robotica", ph: "campeonato", title: "Campeonato Promoción Robótica Camaleón", date: {d: "22", m: "Mar"}, body: "Nuestros equipos junior compiten en Málaga." },
-    { cat: "Inglés", className: "act-ingles", imgClass: "bg-taekwondo", ph: "cambridge 2026", title: "Convocatoria Cambridge English curso 2025-2026", date: {d: "15", m: "May"}, body: "Plazas abiertas para A2, B1, B2 y C1. Plazas limitadas." },
-    { cat: "Aim", className: "act-funcional", imgClass: "bg-robotica", ph: "campamento verano", title: "Abrimos inscripciones del campamento de verano 2026", date: {d: "01", m: "Abr"}, body: "Cuatro semanas, edades de 4 a 14 años. Hasta el 30% de descuento para hermanos." },
-    { cat: "Pintura", className: "act-pintura", imgClass: "bg-ballet", ph: "exposición", title: "Exposición de fin de curso del Taller de Pintura", date: {d: "05", m: "Jun"}, body: "Más de 60 obras de nuestros alumnos en la sala municipal de Algeciras." },
-  ];
+  const [posts, setPosts] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch('/api/posts?limit=20')
+      .then(r => r.ok ? r.json() : [])
+      .then(data => { setPosts(data); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
 
   return (
     <>
@@ -112,9 +166,17 @@ export function PublicNews() {
               </p>
             </div>
 
-            <div style={{display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginTop: 40}}>
-              {NEWS.map((n, i) => <NewsCard key={i} {...n} />)}
-            </div>
+            {loading ? (
+              <div style={{padding: '48px 0', color: 'var(--ink-3)', textAlign: 'center'}}>Cargando noticias...</div>
+            ) : posts.length === 0 ? (
+              <div style={{padding: '48px 0', color: 'var(--ink-3)', textAlign: 'center'}}>No hay noticias publicadas aún.</div>
+            ) : (
+              <div style={{display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16, marginTop: 40}}>
+                {posts.map(post => (
+                  <ApiNewsCard key={post.id} post={post} onClick={() => go(`/noticias/${post.slug}`)} />
+                ))}
+              </div>
+            )}
           </div>
         </section>
 

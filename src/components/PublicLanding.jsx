@@ -110,7 +110,7 @@ export default function PublicLanding() {
                 </div>
                 <BrandTile actId="taekwondo" cls="tile-2" label="Taekwondo" />
                 <BrandTile actId="ballet" cls="tile-3" label="Ballet" />
-                <BrandTile actId="robotica" cls="tile-4" textColor="#6A4A0F" />
+                <BrandTile actId="robotica" cls="tile-4" label="Robótica" textColor="#6A4A0F" />
                 <BrandTile actId="funcional" cls="tile-5" label="Funcional" />
                 <BrandTile actId="camaleon" cls="tile-6" label="Camaleón" />
                 <BrandTile actId="pintura" cls="tile-7" label="Pintura" />
@@ -164,7 +164,7 @@ export default function PublicLanding() {
                   background: "var(--ink)",
                 }}>
                   <iframe
-                    src="https://www.youtube.com/embed/M7lc1UVf-VE?rel=0&modestbranding=1"
+                    src="https://www.youtube.com/embed/_roTJYMv1R4?rel=0&modestbranding=1"
                     title="Aim Education — vídeo de presentación"
                     style={{position: "absolute", inset: 0, width: "100%", height: "100%", border: 0}}
                     allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"

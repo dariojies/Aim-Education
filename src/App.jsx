@@ -7,6 +7,7 @@ import AuthScreen from './components/AuthScreen';
 import StudentDashboard from './components/StudentDashboard';
 import AdminApp from './components/AdminApp';
 import PublicCalendar from './components/PublicCalendar';
+import PublicNewsArticle from './components/PublicNewsArticle';
 
 export const RouterContext = createContext({ path: '/', go: () => {}, user: null });
 export const useRouter = () => useContext(RouterContext);
@@ -72,6 +73,8 @@ export default function App() {
     screen = <PublicCalendar />;
   } else if (pathname === '/noticias') {
     screen = <PublicNews />;
+  } else if (seg[0] === 'noticias' && seg[1]) {
+    screen = <PublicNewsArticle slug={seg[1]} />;
   } else if (pathname === '/auth') {
     const mode = params.get('mode') || 'login';
     screen = <AuthScreen mode={mode} onLoginSuccess={handleLoginSuccess} />;

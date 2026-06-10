@@ -132,7 +132,7 @@ export default function PublicActivity({ id }) {
                   <button className="btn btn-lg" style={{background: "var(--ink)", color: "white"}} onClick={() => go("/auth?mode=register")}>
                     Reservar plaza <I.Arrow />
                   </button>
-                  <button className="btn btn-lg" style={{background: "rgba(255,255,255,.18)", color: "white", border: "1px solid rgba(255,255,255,.4)"}}>
+                  <button className="btn btn-lg" style={{background: "rgba(255,255,255,.18)", color: "white", border: "1px solid rgba(255,255,255,.4)"}} onClick={() => go("/auth?mode=register")}>
                     Clase de prueba gratis
                   </button>
                 </div>
@@ -211,8 +211,35 @@ export default function PublicActivity({ id }) {
 
             {loading ? (
               <div style={{padding: 40, textAlign: "center", color: "var(--ink-3)", fontSize: 16}}>
-                Cargando horarios de la base de datos...
+                Cargando horarios...
               </div>
+            ) : classes.length === 0 && act.levels?.length > 0 ? (
+              <table className={`schedule-table ${act.className}`}>
+                <thead>
+                  <tr>
+                    <th>Día</th>
+                    <th>Horario</th>
+                    <th>Grupo</th>
+                    <th>Nivel</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {act.levels.map((lv, i) => (
+                    <tr key={i}>
+                      <td style={{fontWeight: 700}}>{lv.day}</td>
+                      <td>{lv.time}</td>
+                      <td>{lv.group}</td>
+                      <td><span className="level-tag">{lv.level}</span></td>
+                      <td>
+                        <button className={`btn btn-sm ${act.className}`} style={{background: "var(--act)", color: "white"}} onClick={() => go("/auth?mode=register")}>
+                          Reservar
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             ) : classes.length === 0 ? (
               <div style={{padding: 40, textAlign: "center", background: "var(--bg-2)", border: "1px dashed var(--line)", borderRadius: 14, color: "var(--ink-3)"}}>
                 No hay horarios disponibles para esta actividad actualmente.

@@ -89,6 +89,11 @@ async function initDb() {
                 invoice_link TEXT
             )
         `);
+        await client.query(`ALTER TABLE aim_education_recibos ADD COLUMN IF NOT EXISTS cif VARCHAR(20)`);
+        await client.query(`ALTER TABLE aim_education_recibos ADD COLUMN IF NOT EXISTS invoice_number VARCHAR(100)`);
+        await client.query(`ALTER TABLE aim_education_recibos ADD COLUMN IF NOT EXISTS expense_type VARCHAR(50)`);
+        await client.query(`ALTER TABLE aim_education_recibos ADD COLUMN IF NOT EXISTS is_paid BOOLEAN DEFAULT FALSE`);
+        await client.query(`ALTER TABLE aim_education_recibos ADD COLUMN IF NOT EXISTS concept TEXT`);
     } finally {
         client.release();
     }
@@ -733,7 +738,12 @@ app.get('/api/receipts', authenticateSession, async (req, res) => {
             amount: parseFloat(r.amount),
             paymentMethod: r.payment_method,
             company: r.company,
-            invoiceLink: r.invoice_link
+            cif: r.cif || '',
+            invoiceNumber: r.invoice_number || '',
+            expenseType: r.expense_type || 'Común',
+            isPaid: r.is_paid || false,
+            concept: r.concept || '',
+            invoiceLink: r.invoice_link || ''
         })));
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -741,16 +751,18 @@ app.get('/api/receipts', authenticateSession, async (req, res) => {
 });
 
 app.post('/api/receipts', authenticateSession, async (req, res) => {
-    const { id, date, amount, paymentMethod, company, invoiceLink } = req.body;
+    const { id, date, amount, paymentMethod, company, cif, invoiceNumber, expenseType, isPaid, concept, invoiceLink } = req.body;
     try {
         await pool.query(`
-            INSERT INTO Aim_education_recibos (id, date, amount, payment_method, company, invoice_link)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO Aim_education_recibos (id, date, amount, payment_method, company, invoice_link, cif, invoice_number, expense_type, is_paid, concept)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (id) DO UPDATE SET
                 date = EXCLUDED.date, amount = EXCLUDED.amount,
                 payment_method = EXCLUDED.payment_method, company = EXCLUDED.company,
-                invoice_link = EXCLUDED.invoice_link
-        `, [id, date, amount, paymentMethod, company, invoiceLink]);
+                invoice_link = EXCLUDED.invoice_link, cif = EXCLUDED.cif,
+                invoice_number = EXCLUDED.invoice_number, expense_type = EXCLUDED.expense_type,
+                is_paid = EXCLUDED.is_paid, concept = EXCLUDED.concept
+        `, [id, date, amount, paymentMethod, company, invoiceLink || null, cif || null, invoiceNumber || null, expenseType || 'Común', isPaid || false, concept || null]);
         res.json({ success: true });
     } catch (err) {
         console.error('Save Receipt Error:', err);
@@ -963,6 +975,21 @@ app.get('/api/posts', async (req, res) => {
             params
         );
         res.json(result.rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/posts/slug/:slug', async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT id, title, slug, excerpt, content, cover_image_url, author_name, category, published_at, created_at
+             FROM aim_education_posts WHERE slug = $1 AND status = 'published'`,
+            [req.params.slug]
+        );
+        if (result.rowCount === 0) return res.status(404).json({ error: 'No encontrado' });
+        pool.query(`UPDATE aim_education_posts SET view_count = view_count + 1 WHERE id = $1`, [result.rows[0].id]).catch(() => {});
+        res.json(result.rows[0]);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -1297,18 +1324,13 @@ if (process.env.NODE_ENV !== 'production') {
         appType: 'custom',
     });
     app.use(vite.middlewares);
-
-    app.get('/admin*', (req, res) => {
-        res.sendFile(path.join(__dirname, 'admin/index.html'));
-    });
 } else {
-    // Prod: serve src/ images and dist/ built files
+    // Prod: /admin* must be caught BEFORE express.static so dist/admin/ is never served directly
+    app.get('/admin*', (req, res) => {
+        res.sendFile(path.join(__dirname, 'dist/index.html'));
+    });
     app.use('/src', express.static(path.join(__dirname, 'src')));
     app.use(express.static(path.join(__dirname, 'dist')));
-
-    app.get('/admin*', (req, res) => {
-        res.sendFile(path.join(__dirname, 'dist/admin/index.html'));
-    });
 }
 
 app.get('/', (req, res) => {
