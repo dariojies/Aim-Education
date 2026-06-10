@@ -106,11 +106,6 @@ export interface Receipt {
   amount: number;
   paymentMethod: 'Tarjeta' | 'Transferencia' | 'Efectivo';
   company: string;
-  cif?: string;
-  invoiceNumber?: string;
-  expenseType?: 'Común' | 'Específico de actividad';
-  isPaid?: boolean;
-  concept?: string;
   invoiceLink?: string;
 }
 

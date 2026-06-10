@@ -1419,9 +1419,6 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
                   <option value="ballet">Ballet</option>
                   <option value="ingles">Inglés</option>
                   <option value="robotica">Robótica</option>
-                  <option value="camaleon">Camaleón (STEM)</option>
-                  <option value="funcional">Funcional</option>
-                  <option value="pintura">Pintura</option>
                   <option value="competicion">Competición</option>
                 </select>
               </div>

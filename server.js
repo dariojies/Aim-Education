@@ -7,6 +7,7 @@ import cors from 'cors';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { GoogleGenAI, Type } from '@google/genai';
+import nodemailer from 'nodemailer';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -89,11 +90,121 @@ async function initDb() {
                 invoice_link TEXT
             )
         `);
-        await client.query(`ALTER TABLE aim_education_recibos ADD COLUMN IF NOT EXISTS cif VARCHAR(20)`);
-        await client.query(`ALTER TABLE aim_education_recibos ADD COLUMN IF NOT EXISTS invoice_number VARCHAR(100)`);
-        await client.query(`ALTER TABLE aim_education_recibos ADD COLUMN IF NOT EXISTS expense_type VARCHAR(50)`);
-        await client.query(`ALTER TABLE aim_education_recibos ADD COLUMN IF NOT EXISTS is_paid BOOLEAN DEFAULT FALSE`);
-        await client.query(`ALTER TABLE aim_education_recibos ADD COLUMN IF NOT EXISTS concept TEXT`);
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_education_activities (
+                id VARCHAR(100) PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                color VARCHAR(50) NOT NULL,
+                class_name VARCHAR(100)
+            )
+        `);
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_education_aulas (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL UNIQUE
+            )
+        `);
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_education_instructores (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL UNIQUE,
+                email VARCHAR(255),
+                phone VARCHAR(50),
+                specialty VARCHAR(255)
+            )
+        `);
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_education_clases (
+                id VARCHAR(100) PRIMARY KEY,
+                d INTEGER NOT NULL,
+                s NUMERIC(4,2) NOT NULL,
+                h NUMERIC(4,2) NOT NULL,
+                act VARCHAR(100) NOT NULL,
+                title VARCHAR(255) NOT NULL,
+                room VARCHAR(255) NOT NULL,
+                students VARCHAR(50) NOT NULL DEFAULT '0/15',
+                monitor VARCHAR(255) NOT NULL
+            )
+        `);
+
+        // Seeding de datos por defecto
+        const actCount = await client.query('SELECT COUNT(*) FROM aim_education_activities');
+        if (parseInt(actCount.rows[0].count) === 0) {
+            await client.query(`
+                INSERT INTO aim_education_activities (id, name, color, class_name) VALUES
+                ('taekwondo', 'Taekwondo', '#21B668', 'act-taekwondo'),
+                ('ballet', 'Ballet Clásico', '#FF99D3', 'act-ballet'),
+                ('baile', 'Baile Urbano', '#AF99FF', 'act-baile'),
+                ('ingles', 'Inglés', '#00BBF4', 'act-ingles'),
+                ('robotica', 'Robótica', '#FFD526', 'act-robotica'),
+                ('camaleon', 'Programa Camaleón', '#25D8BA', 'act-camaleon'),
+                ('funcional', 'Entrenamiento Funcional', '#FF4F15', 'act-funcional'),
+                ('pilates', 'Pilates', '#BFD300', 'act-pilates'),
+                ('pintura', 'Pintura', '#5233A8', 'act-pintura')
+            `);
+        }
+        const aulaCount = await client.query('SELECT COUNT(*) FROM aim_education_aulas');
+        if (parseInt(aulaCount.rows[0].count) === 0) {
+            await client.query(`
+                INSERT INTO aim_education_aulas (name) VALUES
+                ('Sala 1'), ('Sala 2'), ('Sala 3'), ('Sala 4'), ('Sala 5'), ('Sala 6'),
+                ('Tatami'), ('Lab'), ('Taller'), ('Sala fit'), ('Aula 1'), ('Aula 2'), ('Aula 3')
+            `);
+        }
+        const instCount = await client.query('SELECT COUNT(*) FROM aim_education_instructores');
+        if (parseInt(instCount.rows[0].count) === 0) {
+            await client.query(`
+                INSERT INTO aim_education_instructores (name) VALUES
+                ('Darío Francisco'), ('Elena García'), ('James Smith'), ('Mateo Ortiz'), ('Sara Moreno'), ('Carlos Ruiz')
+            `);
+        }
+        const claseCount = await client.query('SELECT COUNT(*) FROM aim_education_clases');
+        if (parseInt(claseCount.rows[0].count) === 0) {
+            await client.query(`
+                INSERT INTO aim_education_clases (id, d, s, h, act, title, room, students, monitor) VALUES
+                ('c1', 0, 17, 1, 'taekwondo', 'Taekwondo · Blancos', 'Tatami', '12/16', 'Darío Francisco'),
+                ('c2', 0, 18, 1, 'taekwondo', 'Taekwondo · Color', 'Tatami', '14/16', 'Darío Francisco'),
+                ('c3', 0, 19, 1.5, 'taekwondo', 'Taekwondo · Adultos', 'Tatami', '8/12', 'Darío Francisco'),
+                ('c4', 0, 16, 2, 'ballet', 'Ballet · Primary', 'Sala 1', '12/15', 'Elena García'),
+                ('c5', 1, 17, 1, 'ingles', 'Inglés · Movers', 'Aula 3', '9/12', 'James Smith'),
+                ('c6', 1, 18, 1.5, 'ingles', 'Inglés · B2 First', 'Aula 1', '7/10', 'James Smith'),
+                ('c7', 1, 17, 2.5, 'ballet', 'Ballet · Grades 1-3', 'Sala 1', '11/15', 'Elena García'),
+                ('c8', 2, 16, 2, 'ballet', 'Ballet · Pre-primary', 'Sala 2', '10/12', 'Elena García'),
+                ('c9', 2, 17, 1.5, 'robotica', 'Robótica · Builders', 'Lab', '8/10', 'Mateo Ortiz'),
+                ('c10', 3, 16, 1, 'ingles', 'Inglés · Starters', 'Aula 2', '10/12', 'James Smith'),
+                ('c11', 3, 18, 1.5, 'ingles', 'Inglés · B2 First', 'Aula 1', '7/10', 'James Smith'),
+                ('c12', 3, 17, 2.5, 'ballet', 'Ballet · Grades 1-3', 'Sala 1', '11/15', 'Elena García'),
+                ('c13', 3, 17, 1.5, 'pintura', 'Pintura · Estudio joven', 'Taller', '6/10', 'Sara Moreno'),
+                ('c14', 4, 17, 1, 'taekwondo', 'Taekwondo · Blancos', 'Tatami', '12/16', 'Darío Francisco'),
+                ('c15', 4, 18, 2, 'ballet', 'Ballet · Vocational', 'Sala 1', '9/12', 'Elena García'),
+                ('c16', 4, 19, 1, 'funcional', 'Funcional · Tarde', 'Sala fit', '11/14', 'Carlos Ruiz'),
+                ('c17', 5, 10, 2, 'taekwondo', 'Taekwondo · Competición', 'Tatami', '8/10', 'Darío Francisco'),
+                ('c18', 5, 11, 1.5, 'kickboxing', 'Kick Boxing · Sparring', 'Tatami', '9/12', 'Darío Francisco')
+            `);
+        }
+
+        // Support tickets
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS tickets_registrosoporte (
+                id SERIAL PRIMARY KEY,
+                user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+                subject VARCHAR(255) NOT NULL,
+                description TEXT NOT NULL,
+                status VARCHAR(50) DEFAULT 'open',
+                priority VARCHAR(20) DEFAULT 'low',
+                due_date TIMESTAMP,
+                assigned_to UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                app_label TEXT[] DEFAULT ARRAY['Aim Education'],
+                dev_response TEXT,
+                email_sent BOOLEAN DEFAULT false,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS priority VARCHAR(20) DEFAULT 'low'`);
+        await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS due_date TIMESTAMP`);
+        await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS assigned_to UUID REFERENCES users(user_id) ON DELETE SET NULL`);
+        await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS app_label TEXT[] DEFAULT ARRAY['Aim Education']`);
+        await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS dev_role VARCHAR(50) DEFAULT 'student'`);
     } finally {
         client.release();
     }
@@ -287,6 +398,17 @@ function newsLayout(pageTitle, bodyContent, siteUrl, meta = {}) {
 </body>
 </html>`;
 }
+
+// --- Nodemailer ---
+
+const mailTransporter = (process.env.EMAIL_USER && process.env.EMAIL_PASS)
+    ? nodemailer.createTransport({
+        host: 'smtp.gmail.com',
+        port: 465,
+        secure: true,
+        auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+    })
+    : null;
 
 // --- Middleware ---
 
@@ -549,121 +671,195 @@ app.delete('/api/users/:id', authenticateSession, async (req, res) => {
 
 app.get('/api/classes', async (req, res) => {
     try {
-        const groupsRes = await pool.query('SELECT * FROM tul_groups');
-        const activitiesRes = await pool.query('SELECT * FROM tul_activities');
-        
-        const actMap = {};
-        activitiesRes.rows.forEach(a => {
-            actMap[a.activity_id] = a;
-        });
-
-        const slots = [];
-        
-        groupsRes.rows.forEach(g => {
-            const act = actMap[g.activity_id];
-            let actId = 'taekwondo';
-            let monitor = 'Instructor AIM';
-            if (act) {
-                const name = act.name.toLowerCase();
-                if (name.includes('taekwon')) {
-                    actId = 'taekwondo';
-                    monitor = 'Darío Francisco';
-                } else if (name.includes('ballet')) {
-                    actId = 'ballet';
-                    monitor = 'Elena García';
-                } else if (name.includes('baile')) {
-                    actId = 'baile';
-                    monitor = 'Elena García';
-                } else if (name.includes('ingles') || name.includes('inglés')) {
-                    actId = 'ingles';
-                    monitor = 'James Smith';
-                } else if (name.includes('robótica') || name.includes('robot')) {
-                    actId = 'robotica';
-                    monitor = 'Mateo Ortiz';
-                } else if (name.includes('pilates')) {
-                    actId = 'pilates';
-                    monitor = 'Carlos Ruiz';
-                } else if (name.includes('funcional')) {
-                    actId = 'funcional';
-                    monitor = 'Carlos Ruiz';
-                } else if (name.includes('pintura')) {
-                    actId = 'pintura';
-                    monitor = 'Sara Moreno';
-                } else if (name.includes('kick')) {
-                    actId = 'taekwondo';
-                    monitor = 'Darío Francisco';
-                }
-            }
-
-            if (g.time) {
-                const lines = g.time.split('\n');
-                lines.forEach(line => {
-                    const match = line.match(/^\s*([LMXJVSD\-\s,]+)\s+(\d{2}):(\d{2})\s*[-–—]\s*(\d{2}):(\d{2})\s*(?:·\s*(.*))?$/i);
-                    if (match) {
-                        const dayStr = match[1].toUpperCase().trim();
-                        const startHour = parseInt(match[2], 10);
-                        const startMin = parseInt(match[3], 10);
-                        const endHour = parseInt(match[4], 10);
-                        const endMin = parseInt(match[5], 10);
-                        const room = match[6] ? match[6].trim() : 'Sala 1';
-
-                        const dayMap = { 'L': 0, 'M': 1, 'X': 2, 'J': 3, 'V': 4, 'S': 5, 'D': 6 };
-                        const daysFound = [];
-
-                        // Check for range pattern like "X-J"
-                        const rangeMatch = dayStr.match(/^([LMXJVSD])\s*-\s*([LMXJVSD])$/);
-                        if (rangeMatch) {
-                            const startIdx = dayMap[rangeMatch[1]];
-                            const endIdx = dayMap[rangeMatch[2]];
-                            if (startIdx !== undefined && endIdx !== undefined && startIdx <= endIdx) {
-                                for (let i = startIdx; i <= endIdx; i++) {
-                                    daysFound.push(i);
-                                }
-                            }
-                        } else {
-                            // Otherwise, extract all individual day characters
-                            for (let char of dayStr) {
-                                if (dayMap[char] !== undefined && !daysFound.includes(dayMap[char])) {
-                                    daysFound.push(dayMap[char]);
-                                }
-                            }
-                        }
-
-                        // Default to Monday if empty
-                        if (daysFound.length === 0) {
-                            daysFound.push(0);
-                        }
-
-                        const sVal = startHour + (startMin / 60);
-                        const eVal = endHour + (endMin / 60);
-                        let duration = eVal - sVal;
-                        if (duration <= 0 || duration > 6) {
-                            duration = 1;
-                        }
-
-                        const timeString = `${match[2]}:${match[3]} – ${match[4]}:${match[5]}`;
-
-                        daysFound.forEach(dayIdx => {
-                            slots.push({
-                                d: dayIdx,
-                                s: Math.floor(sVal),
-                                h: duration,
-                                act: actId,
-                                title: g.name,
-                                room: room,
-                                students: `${Math.floor(g.max_students * 0.7)}/${g.max_students || 15}`,
-                                monitor: monitor,
-                                time: timeString
-                            });
-                        });
-                    }
-                });
-            }
-        });
-
-        res.json(slots);
+        const result = await pool.query(`
+            SELECT c.*, a.name as act_name, a.color as act_color, a.class_name as act_class_name
+            FROM aim_education_clases c
+            LEFT JOIN aim_education_activities a ON c.act = a.id
+            ORDER BY c.d, c.s
+        `);
+        const mapped = result.rows.map(r => ({
+            id: r.id,
+            d: r.d,
+            s: parseFloat(r.s),
+            h: parseFloat(r.h),
+            act: r.act,
+            title: r.title,
+            room: r.room,
+            students: r.students,
+            monitor: r.monitor,
+            actColor: r.act_color,
+            actName: r.act_name,
+            actClassName: r.act_class_name
+        }));
+        res.json(mapped);
     } catch (err) {
         console.error('Error fetching classes:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/classes', authenticateSession, async (req, res) => {
+    const { d, s, h, act, title, room, students, monitor } = req.body;
+    if (d === undefined || s === undefined || h === undefined || !act || !title || !room || !monitor) {
+        return res.status(400).json({ error: 'Todos los campos son obligatorios.' });
+    }
+    const id = crypto.randomUUID();
+    try {
+        await pool.query(
+            `INSERT INTO aim_education_clases (id, d, s, h, act, title, room, students, monitor)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            [id, d, s, h, act, title, room, students || '0/15', monitor]
+        );
+        res.status(201).json({ id, d, s, h, act, title, room, students, monitor });
+    } catch (err) {
+        console.error('Error creating class:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/classes/:id', authenticateSession, async (req, res) => {
+    const { id } = req.params;
+    try {
+        await pool.query('DELETE FROM aim_education_clases WHERE id = $1', [id]);
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Error deleting class:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/activities', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM aim_education_activities ORDER BY name');
+        res.json(result.rows.map(r => ({
+            id: r.id,
+            name: r.name,
+            color: r.color,
+            className: r.class_name
+        })));
+    } catch (err) {
+        console.error('Error fetching activities:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/admin/activities', authenticateSession, async (req, res) => {
+    const { name, color } = req.body;
+    if (!name || !color) {
+        return res.status(400).json({ error: 'Nombre y color son obligatorios.' });
+    }
+    const id = slugify(name);
+    const className = `act-${id}`;
+    try {
+        await pool.query(
+            `INSERT INTO aim_education_activities (id, name, color, class_name)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, color = EXCLUDED.color, class_name = EXCLUDED.class_name`,
+            [id, name, color, className]
+        );
+        res.status(201).json({ id, name, color, className });
+    } catch (err) {
+        console.error('Error creating activity:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/aulas', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM aim_education_aulas ORDER BY name');
+        res.json(result.rows);
+    } catch (err) {
+        console.error('Error fetching classrooms:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/admin/aulas', authenticateSession, async (req, res) => {
+    const { name } = req.body;
+    if (!name) {
+        return res.status(400).json({ error: 'El nombre del aula es obligatorio.' });
+    }
+    try {
+        const exists = await pool.query('SELECT id FROM aim_education_aulas WHERE name = $1', [name.trim()]);
+        if (exists.rowCount > 0) {
+            return res.status(409).json({ error: 'El aula ya existe.' });
+        }
+        const result = await pool.query(
+            `INSERT INTO aim_education_aulas (name) VALUES ($1) RETURNING *`,
+            [name.trim()]
+        );
+        res.status(201).json(result.rows[0]);
+    } catch (err) {
+        console.error('Error creating classroom:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/instructores', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM aim_education_instructores ORDER BY name');
+        res.json(result.rows);
+    } catch (err) {
+        console.error('Error fetching instructors:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/admin/instructores', authenticateSession, async (req, res) => {
+    const { name, email, phone, specialty } = req.body;
+    if (!name) {
+        return res.status(400).json({ error: 'El nombre del instructor es obligatorio.' });
+    }
+    try {
+        const exists = await pool.query('SELECT id FROM aim_education_instructores WHERE name = $1', [name.trim()]);
+        if (exists.rowCount > 0) {
+            return res.status(409).json({ error: 'El instructor ya existe.' });
+        }
+        const result = await pool.query(
+            `INSERT INTO aim_education_instructores (name, email, phone, specialty)
+             VALUES ($1, $2, $3, $4) RETURNING *`,
+            [name.trim(), email || null, phone || null, specialty || null]
+        );
+        res.status(201).json(result.rows[0]);
+    } catch (err) {
+        console.error('Error creating instructor:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/admin/instructores/:id', authenticateSession, async (req, res) => {
+    const { id } = req.params;
+    const { name, email, phone, specialty } = req.body;
+    if (!name) {
+        return res.status(400).json({ error: 'El nombre del instructor es obligatorio.' });
+    }
+    try {
+        const result = await pool.query(
+            `UPDATE aim_education_instructores
+             SET name = $1, email = $2, phone = $3, specialty = $4
+             WHERE id = $5 RETURNING *`,
+            [name.trim(), email || null, phone || null, specialty || null, id]
+        );
+        if (result.rowCount === 0) {
+            return res.status(404).json({ error: 'Instructor no encontrado.' });
+        }
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error('Error updating instructor:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/admin/instructores/:id', authenticateSession, async (req, res) => {
+    const { id } = req.params;
+    try {
+        const result = await pool.query('DELETE FROM aim_education_instructores WHERE id = $1 RETURNING *', [id]);
+        if (result.rowCount === 0) {
+            return res.status(404).json({ error: 'Instructor no encontrado.' });
+        }
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Error deleting instructor:', err);
         res.status(500).json({ error: err.message });
     }
 });
@@ -738,12 +934,7 @@ app.get('/api/receipts', authenticateSession, async (req, res) => {
             amount: parseFloat(r.amount),
             paymentMethod: r.payment_method,
             company: r.company,
-            cif: r.cif || '',
-            invoiceNumber: r.invoice_number || '',
-            expenseType: r.expense_type || 'Común',
-            isPaid: r.is_paid || false,
-            concept: r.concept || '',
-            invoiceLink: r.invoice_link || ''
+            invoiceLink: r.invoice_link
         })));
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -751,18 +942,16 @@ app.get('/api/receipts', authenticateSession, async (req, res) => {
 });
 
 app.post('/api/receipts', authenticateSession, async (req, res) => {
-    const { id, date, amount, paymentMethod, company, cif, invoiceNumber, expenseType, isPaid, concept, invoiceLink } = req.body;
+    const { id, date, amount, paymentMethod, company, invoiceLink } = req.body;
     try {
         await pool.query(`
-            INSERT INTO Aim_education_recibos (id, date, amount, payment_method, company, invoice_link, cif, invoice_number, expense_type, is_paid, concept)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            INSERT INTO Aim_education_recibos (id, date, amount, payment_method, company, invoice_link)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (id) DO UPDATE SET
                 date = EXCLUDED.date, amount = EXCLUDED.amount,
                 payment_method = EXCLUDED.payment_method, company = EXCLUDED.company,
-                invoice_link = EXCLUDED.invoice_link, cif = EXCLUDED.cif,
-                invoice_number = EXCLUDED.invoice_number, expense_type = EXCLUDED.expense_type,
-                is_paid = EXCLUDED.is_paid, concept = EXCLUDED.concept
-        `, [id, date, amount, paymentMethod, company, invoiceLink || null, cif || null, invoiceNumber || null, expenseType || 'Común', isPaid || false, concept || null]);
+                invoice_link = EXCLUDED.invoice_link
+        `, [id, date, amount, paymentMethod, company, invoiceLink]);
         res.json({ success: true });
     } catch (err) {
         console.error('Save Receipt Error:', err);
@@ -975,21 +1164,6 @@ app.get('/api/posts', async (req, res) => {
             params
         );
         res.json(result.rows);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-app.get('/api/posts/slug/:slug', async (req, res) => {
-    try {
-        const result = await pool.query(
-            `SELECT id, title, slug, excerpt, content, cover_image_url, author_name, category, published_at, created_at
-             FROM aim_education_posts WHERE slug = $1 AND status = 'published'`,
-            [req.params.slug]
-        );
-        if (result.rowCount === 0) return res.status(404).json({ error: 'No encontrado' });
-        pool.query(`UPDATE aim_education_posts SET view_count = view_count + 1 WHERE id = $1`, [result.rows[0].id]).catch(() => {});
-        res.json(result.rows[0]);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -1304,6 +1478,98 @@ app.get('/noticias/:slug', async (req, res) => {
 });
 
 // =============================================================================
+// SUPPORT TICKET ROUTES
+// =============================================================================
+
+app.post('/api/support', authenticateSession, async (req, res) => {
+    const { subject, description } = req.body;
+    const userId = req.userSession.userId;
+    if (!subject || !description)
+        return res.status(400).json({ error: 'Asunto y descripción son obligatorios.' });
+    try {
+        const result = await pool.query(
+            `INSERT INTO tickets_registrosoporte (user_id, subject, description, app_label)
+             VALUES ($1, $2, $3, $4) RETURNING id`,
+            [userId, subject, description, ['Aim Education']]
+        );
+        const ticketId = result.rows[0].id;
+        if (mailTransporter) {
+            mailTransporter.sendMail({
+                from: process.env.EMAIL_USER,
+                to: process.env.EMAIL_USER,
+                subject: `[Soporte Aim Education] Ticket #${ticketId}: ${subject}`,
+                text: `Nuevo ticket de ${req.userSession.firstName} ${req.userSession.lastName || ''} (${req.userSession.email})\n\nAsunto: ${subject}\n\nDescripción:\n${description}`
+            }).then(() => {
+                pool.query('UPDATE tickets_registrosoporte SET email_sent = true WHERE id = $1', [ticketId]).catch(() => {});
+            }).catch(err => console.error('[SMTP ERROR]', err.message));
+        }
+        res.json({ success: true, ticketId });
+    } catch (err) {
+        console.error('[SUPPORT] Create error:', err);
+        res.status(500).json({ error: 'Error al crear el ticket.' });
+    }
+});
+
+app.get('/api/support', authenticateSession, async (req, res) => {
+    if (!req.userSession.isSuperAdmin && !req.userSession.canAccessAdmin)
+        return res.status(403).json({ error: 'Sin permisos.' });
+    try {
+        const result = await pool.query(`
+            SELECT s.*,
+                   COALESCE(u.name, 'Admin') as name,
+                   COALESCE(u.surname, '') as surname,
+                   COALESCE(u.email, '') as email,
+                   assignee.name as assignee_name,
+                   assignee.surname as assignee_surname
+            FROM tickets_registrosoporte s
+            LEFT JOIN users u ON s.user_id = u.user_id
+            LEFT JOIN users assignee ON s.assigned_to = assignee.user_id
+            ORDER BY s.created_at DESC
+        `);
+        res.json({ success: true, tickets: result.rows });
+    } catch (err) {
+        console.error('[SUPPORT] Fetch error:', err);
+        res.status(500).json({ error: 'Error al obtener tickets.' });
+    }
+});
+
+app.put('/api/support/:id', authenticateSession, async (req, res) => {
+    if (!req.userSession.isSuperAdmin && !req.userSession.canAccessAdmin)
+        return res.status(403).json({ error: 'Sin permisos.' });
+    const { status, devResponse, priority, dueDate, assignedTo, appLabel } = req.body;
+    const finalAppLabels = Array.isArray(appLabel) ? appLabel : (appLabel ? [appLabel] : ['Aim Education']);
+    try {
+        await pool.query(
+            `UPDATE tickets_registrosoporte
+             SET status = $1, dev_response = $2, priority = $3,
+                 due_date = $4, assigned_to = $5, app_label = $6::TEXT[]
+             WHERE id = $7`,
+            [status || 'open', devResponse || '', priority || 'low', dueDate || null, assignedTo || null, finalAppLabels, req.params.id]
+        );
+        res.json({ success: true });
+    } catch (err) {
+        console.error('[SUPPORT] Update error:', err);
+        res.status(500).json({ error: 'Error al actualizar el ticket.' });
+    }
+});
+
+app.get('/api/admin/superadmins', authenticateSession, async (req, res) => {
+    if (!req.userSession.isSuperAdmin && !req.userSession.canAccessAdmin)
+        return res.status(403).json({ error: 'Sin permisos.' });
+    try {
+        const result = await pool.query(`
+            SELECT user_id as id, name, surname, email
+            FROM users
+            WHERE role = 'superadmin' OR dev_role = 'superadmin' OR role = 'SuperAdmin'
+            ORDER BY name ASC
+        `);
+        res.json({ success: true, superadmins: result.rows });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// =============================================================================
 // VITE / STATIC FILES
 // =============================================================================
 
@@ -1324,13 +1590,18 @@ if (process.env.NODE_ENV !== 'production') {
         appType: 'custom',
     });
     app.use(vite.middlewares);
-} else {
-    // Prod: /admin* must be caught BEFORE express.static so dist/admin/ is never served directly
+
     app.get('/admin*', (req, res) => {
-        res.sendFile(path.join(__dirname, 'dist/index.html'));
+        res.sendFile(path.join(__dirname, 'admin/index.html'));
     });
+} else {
+    // Prod: serve src/ images and dist/ built files
     app.use('/src', express.static(path.join(__dirname, 'src')));
     app.use(express.static(path.join(__dirname, 'dist')));
+
+    app.get('/admin*', (req, res) => {
+        res.sendFile(path.join(__dirname, 'dist/admin/index.html'));
+    });
 }
 
 app.get('/', (req, res) => {
