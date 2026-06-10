@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { I } from './Icons.jsx';
 import { AimLogo, ACTIVITIES, ACT_BY_ID } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
+import { AdminSupport } from './AdminSupport.jsx';
 
 function sectionLabel(id) {
   return ({
@@ -12,6 +13,7 @@ function sectionLabel(id) {
     news: "Noticias y foro",
     groups: "Grupos",
     settings: "Ajustes del club",
+    support: "Panel de soporte",
   })[id] || "Panel";
 }
 
@@ -921,6 +923,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
     { heading: "Club", items: [
       { id: "groups", label: "Grupos", icon: <I.Trophy /> },
       { id: "settings", label: "Ajustes", icon: <I.Settings /> },
+      { id: "support", label: "Soporte", icon: <I.Bell /> },
     ]},
   ];
 
@@ -1026,6 +1029,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
           {view === "news" && <AdminNews refreshTrigger={refreshTrigger} onEditPost={(p) => { setEditingItem({ ...p, coverImageUrl: p.cover_image_url }); setActiveModal('edit-post'); }} />}
           {view === "groups" && <AdminGroups refreshTrigger={refreshTrigger} onEditGroup={(g) => { setEditingItem(g); setActiveModal('edit-group'); }} />}
           {view === "settings" && <AdminSettings />}
+          {view === "support" && <AdminSupport user={user} />}
         </div>
       </div>
 

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { I } from './Icons.jsx';
 import { AimLogo, ACT_BY_ID } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
+import { UserSupport } from './AdminSupport.jsx';
 
 function ClassRow({ act, who, day, dnum, time, room }) {
   const a = ACT_BY_ID[act];
@@ -552,6 +553,7 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
   const settingsItems = [
     { id: "profile", label: "Perfil", icon: <I.User /> },
     { id: "settings", label: "Ajustes", icon: <I.Settings /> },
+    { id: "support", label: "Soporte", icon: <I.Shield /> },
   ];
 
   async function handleLogout() {
@@ -615,6 +617,7 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
           {view === "news" && <DashNews />}
           {view === "profile" && <DashProfile user={user} />}
           {view === "settings" && <DashSettings />}
+          {view === "support" && <UserSupport user={user} />}
         </div>
       </div>
     </main>
