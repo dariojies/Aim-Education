@@ -5,8 +5,8 @@ import PublicActivity from './components/PublicActivity';
 import PublicCamp from './components/PublicCamp';
 import AuthScreen from './components/AuthScreen';
 import StudentDashboard from './components/StudentDashboard';
+import AdminApp from './components/AdminApp';
 import PublicCalendar from './components/PublicCalendar';
-import PublicNewsArticle from './components/PublicNewsArticle';
 
 export const RouterContext = createContext({ path: '/', go: () => {}, user: null });
 export const useRouter = () => useContext(RouterContext);
@@ -41,7 +41,7 @@ export default function App() {
   const handleLoginSuccess = (u) => {
     setUser(u);
     if (u?.canAccessAdmin) {
-      window.location.href = '/admin';
+      go('/admin');
     } else {
       go('/dashboard');
     }
@@ -72,8 +72,6 @@ export default function App() {
     screen = <PublicCalendar />;
   } else if (pathname === '/noticias') {
     screen = <PublicNews />;
-  } else if (seg[0] === 'noticias' && seg[1]) {
-    screen = <PublicNewsArticle slug={seg[1]} />;
   } else if (pathname === '/auth') {
     const mode = params.get('mode') || 'login';
     screen = <AuthScreen mode={mode} onLoginSuccess={handleLoginSuccess} />;
@@ -82,8 +80,9 @@ export default function App() {
     if (!user) { go('/auth'); return null; }
     screen = <StudentDashboard user={user} onLogout={handleLogout} />;
   } else if (pathname.startsWith('/admin')) {
-    window.location.replace('/admin');
-    return null;
+    if (!userChecked) return null;
+    if (!user || !user.canAccessAdmin) { go('/auth'); return null; }
+    screen = <AdminApp user={user} onLogout={handleLogout} />;
   } else {
     screen = <PublicLanding />;
   }

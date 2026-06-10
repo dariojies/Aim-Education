@@ -12,6 +12,7 @@ function sectionLabel(id) {
     payments: "Pagos y facturación",
     news: "Noticias y foro",
     groups: "Grupos",
+    instructors: "Instructores",
     settings: "Ajustes del club",
     support: "Panel de soporte",
   })[id] || "Panel";
@@ -265,7 +266,7 @@ function AdminStudents({ refreshTrigger, onEditUser }) {
   );
 }
 
-function AdminClasses({ classSlots, setClassSlots, onAddClassClick }) {
+function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms = [], actById = {}, showToast, onAddClassClick, onAddActivityOrAulaClick }) {
   const days = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
   const HOURS = Array.from({length: 14}, (_, i) => 9 + i);
 
@@ -273,7 +274,7 @@ function AdminClasses({ classSlots, setClassSlots, onAddClassClick }) {
   const [selectedSlot, setSelectedSlot] = useState(null);
   const [selectedRoom, setSelectedRoom] = useState("Todas");
 
-  const classrooms = ["Todas", "Sala 1", "Sala 2", "Sala 3", "Sala 4", "Sala 5", "Sala 6"];
+  const roomsList = ["Todas", ...classrooms.map(r => r.name)];
 
   const filteredSlots = classSlots.filter(s => {
     if (!search) return true;
@@ -311,7 +312,7 @@ function AdminClasses({ classSlots, setClassSlots, onAddClassClick }) {
         border: "1px solid var(--line)"
       }}>
         <span style={{fontSize: 12, fontWeight: 700, color: "var(--ink-3)", marginRight: 8}}>Aulas / Salas:</span>
-        {classrooms.map(room => (
+        {roomsList.map(room => (
           <button key={room}
             className={`filter-pill ${selectedRoom === room ? "is-active" : ""}`}
             onClick={() => setSelectedRoom(room)}
@@ -342,7 +343,7 @@ function AdminClasses({ classSlots, setClassSlots, onAddClassClick }) {
               {h}:00
             </div>
             {days.map((_, dIdx) => {
-              const slotsInCell = filteredSlots.filter(s => s.d === dIdx && s.s === h);
+              const slotsInCell = filteredSlots.filter(s => s.d === dIdx && Math.floor(s.s) === h);
               return (
                 <div key={dIdx} style={{
                   borderTop: "1px solid var(--line-2)",
@@ -357,28 +358,33 @@ function AdminClasses({ classSlots, setClassSlots, onAddClassClick }) {
                   {/* Full box classes for the selected room (or all if "Todas" is selected) */}
                   {slotsInCell
                     .filter(slot => selectedRoom === "Todas" || slot.room === selectedRoom)
-                    .map((slot, sIdx) => (
-                      <button 
-                        key={sIdx}
-                        className={`slot ${ACT_BY_ID[slot.act]?.className || ""}`} 
-                        onClick={() => setSelectedSlot(slot)}
-                        style={{
-                          position: "relative",
-                          inset: "auto",
-                          height: "auto",
-                          background: ACT_BY_ID[slot.act]?.color || "var(--ink)",
-                          zIndex: 1,
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 2,
-                          width: "100%",
-                          boxSizing: "border-box"
-                        }}
-                      >
-                        <span className="t" style={{ fontSize: 12, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{slot.title}</span>
-                        <span className="meta" style={{ fontSize: 10, opacity: 0.9 }}>{slot.room} · {slot.students}</span>
-                      </button>
-                    ))}
+                    .map((slot, sIdx) => {
+                      const color = slot.actColor || actById[slot.act]?.color || "var(--ink)";
+                      const startMinutes = (slot.s % 1) * 60;
+                      const timeLabel = `${Math.floor(slot.s)}:${String(startMinutes).padStart(2, '0')}`;
+                      return (
+                        <button 
+                          key={sIdx}
+                          className={`slot ${slot.actClassName || actById[slot.act]?.className || ""}`} 
+                          onClick={() => setSelectedSlot(slot)}
+                          style={{
+                            position: "relative",
+                            inset: "auto",
+                            height: "auto",
+                            background: color,
+                            zIndex: 1,
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 2,
+                            width: "100%",
+                            boxSizing: "border-box"
+                          }}
+                        >
+                          <span className="t" style={{ fontSize: 12, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{slot.title}</span>
+                          <span className="meta" style={{ fontSize: 10, opacity: 0.9 }}>{slot.room} · {timeLabel}</span>
+                        </button>
+                      );
+                    })}
 
                   {/* Little dots for classes NOT in the selected room */}
                   {selectedRoom !== "Todas" && slotsInCell.some(slot => slot.room !== selectedRoom) && (
@@ -393,24 +399,27 @@ function AdminClasses({ classSlots, setClassSlots, onAddClassClick }) {
                     }}>
                       {slotsInCell
                         .filter(slot => slot.room !== selectedRoom)
-                        .map((slot, sIdx) => (
-                          <div 
-                            key={sIdx}
-                            onClick={() => setSelectedSlot(slot)}
-                            style={{
-                              width: 10,
-                              height: 10,
-                              borderRadius: "50%",
-                              background: ACT_BY_ID[slot.act]?.color || "var(--ink)",
-                              cursor: "pointer",
-                              transition: "transform 0.15s ease",
-                              boxShadow: "0 1px 3px rgba(0,0,0,0.15)"
-                            }}
-                            onMouseEnter={e => e.currentTarget.style.transform = "scale(1.3)"}
-                            onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
-                            title={`${slot.title} (${slot.room}) · ${slot.monitor || ''}`}
-                          />
-                        ))}
+                        .map((slot, sIdx) => {
+                          const color = slot.actColor || actById[slot.act]?.color || "var(--ink)";
+                          return (
+                            <div 
+                              key={sIdx}
+                              onClick={() => setSelectedSlot(slot)}
+                              style={{
+                                width: 10,
+                                height: 10,
+                                borderRadius: "50%",
+                                background: color,
+                                cursor: "pointer",
+                                transition: "transform 0.15s ease",
+                                boxShadow: "0 1px 3px rgba(0,0,0,0.15)"
+                              }}
+                              onMouseEnter={e => e.currentTarget.style.transform = "scale(1.3)"}
+                              onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
+                              title={`${slot.title} (${slot.room}) · ${slot.monitor || ''}`}
+                            />
+                          );
+                        })}
                     </div>
                   )}
                 </div>
@@ -420,12 +429,28 @@ function AdminClasses({ classSlots, setClassSlots, onAddClassClick }) {
         ))}
       </div>
 
-      <div style={{marginTop: 22, display: "flex", gap: 8, flexWrap: "wrap"}}>
-        {ACTIVITIES.slice(0, 8).map(a => (
+      {/* Legend list of activities by color with '+' button */}
+      <div style={{marginTop: 22, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center"}}>
+        {activities.map(a => (
           <span key={a.id} style={{display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 12px", background: `color-mix(in oklab, ${a.color} 14%, var(--bg-2))`, color: a.color, border: `1px solid color-mix(in oklab, ${a.color} 30%, transparent)`, borderRadius: 999, fontSize: 12, fontWeight: 700}}>
             <span style={{width: 8, height: 8, borderRadius: "50%", background: a.color}}/> {a.name}
           </span>
         ))}
+        <button 
+          onClick={onAddActivityOrAulaClick}
+          title="Añadir aula o categoría"
+          style={{
+            display: "inline-flex", alignItems: "center", justifyCenter: "center",
+            width: 28, height: 28, borderRadius: "50%", background: "var(--bg-3)",
+            border: "1px solid var(--line)", cursor: "pointer", color: "var(--ink)",
+            fontSize: 16, fontWeight: "bold", transition: "all 0.2s",
+            padding: 0, justifyContent: "center", width: 28, height: 28
+          }}
+          onMouseEnter={e => e.currentTarget.style.background = "var(--line)"}
+          onMouseLeave={e => e.currentTarget.style.background = "var(--bg-3)"}
+        >
+          +
+        </button>
       </div>
 
       {/* Modal Detalles de Clase */}
@@ -440,16 +465,30 @@ function AdminClasses({ classSlots, setClassSlots, onAddClassClick }) {
             padding: 24, width: '100%', maxWidth: 400, position: 'relative'
           }}>
             <h3 style={{ margin: '0 0 10px', fontSize: 18, fontWeight: 800, color: 'var(--ink)' }}>{selectedSlot.title}</h3>
-            <p style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Actividad:</strong> {ACT_BY_ID[selectedSlot.act]?.name || selectedSlot.act}</p>
-            <p style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Horario:</strong> {selectedSlot.time || `${selectedSlot.s}:00`}</p>
+            <p style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Actividad:</strong> {slotName(selectedSlot)}</p>
+            <p style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Horario:</strong> {selectedSlot.time || formatTime(selectedSlot.s, selectedSlot.h)}</p>
             <p style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Sala:</strong> {selectedSlot.room}</p>
             <p style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Profesor/a:</strong> {selectedSlot.monitor || '—'}</p>
             <p style={{ margin: '0 0 16px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Alumnos:</strong> {selectedSlot.students}</p>
             
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
               <button className="btn btn-outline btn-sm" onClick={() => setSelectedSlot(null)}>Cerrar</button>
-              <button className="btn btn-sm" style={{ background: 'var(--orange)', color: 'white' }} onClick={() => {
-                setClassSlots(prev => prev.filter(s => !(s.d === selectedSlot.d && s.s === selectedSlot.s && s.act === selectedSlot.act)));
+              <button className="btn btn-sm" style={{ background: 'var(--orange)', color: 'white' }} onClick={async () => {
+                if (selectedSlot.id) {
+                  try {
+                    const res = await fetch(`/api/classes/${selectedSlot.id}`, { method: 'DELETE', credentials: 'include' });
+                    if (res.ok) {
+                      setClassSlots(prev => prev.filter(s => s.id !== selectedSlot.id));
+                      showToast("Clase eliminada correctamente.");
+                    } else {
+                      alert("Error al eliminar la clase de la base de datos.");
+                    }
+                  } catch (e) {
+                    console.error(e);
+                  }
+                } else {
+                  setClassSlots(prev => prev.filter(s => !(s.d === selectedSlot.d && s.s === selectedSlot.s && s.act === selectedSlot.act)));
+                }
                 setSelectedSlot(null);
               }}>Eliminar clase</button>
             </div>
@@ -458,6 +497,19 @@ function AdminClasses({ classSlots, setClassSlots, onAddClassClick }) {
       )}
     </>
   );
+
+  function slotName(slot) {
+    return slot.actName || actById[slot.act]?.name || slot.act;
+  }
+
+  function formatTime(s, h) {
+    const startHour = Math.floor(s);
+    const startMin = (s % 1) * 60;
+    const end = s + h;
+    const endHour = Math.floor(end);
+    const endMin = (end % 1) * 60;
+    return `${String(startHour).padStart(2, '0')}:${String(startMin).padStart(2, '0')} – ${String(endHour).padStart(2, '0')}:${String(endMin).padStart(2, '0')}`;
+  }
 }
 
 function AdminPayments({ refreshTrigger }) {
@@ -732,6 +784,165 @@ function AdminSettings() {
   );
 }
 
+function AdminInstructores({ refreshTrigger, showToast }) {
+  const [instructors, setInstructors] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [activeInstModal, setActiveInstModal] = useState(null); // 'new' | 'edit'
+  const [editingInst, setEditingInst] = useState(null);
+
+  const fetchInstructors = () => {
+    fetch('/api/instructores')
+      .then(r => r.ok ? r.json() : [])
+      .then(data => {
+        setInstructors(data);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    fetchInstructors();
+  }, [refreshTrigger]);
+
+  const handleSub = async (e) => {
+    e.preventDefault();
+    const isEdit = activeInstModal === 'edit';
+    const url = isEdit ? `/api/admin/instructores/${editingInst.id}` : '/api/admin/instructores';
+    const method = isEdit ? 'PUT' : 'POST';
+
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(editingInst),
+        credentials: 'include'
+      });
+      if (res.ok) {
+        showToast(isEdit ? "Instructor modificado con éxito." : "Instructor registrado con éxito.");
+        fetchInstructors();
+        setActiveInstModal(null);
+      } else {
+        const err = await res.json();
+        alert(err.error || "Ocurrió un error.");
+      }
+    } catch (err) {
+      alert("Error al guardar instructor.");
+    }
+  };
+
+  const handleDel = async (id) => {
+    if (!window.confirm("¿Seguro que deseas eliminar este instructor?")) return;
+    try {
+      const res = await fetch(`/api/admin/instructores/${id}`, { method: 'DELETE', credentials: 'include' });
+      if (res.ok) {
+        showToast("Instructor eliminado.");
+        fetchInstructors();
+      } else {
+        alert("Error al eliminar instructor.");
+      }
+    } catch(err) {
+      alert("Error al eliminar instructor.");
+    }
+  };
+
+  const visible = instructors.filter(i => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return `${i.name} ${i.email || ''} ${i.specialty || ''}`.toLowerCase().includes(q);
+  });
+
+  return (
+    <>
+      <div className="toolbar">
+        <div className="search-input">
+          <I.Search />
+          <input placeholder="Buscar por nombre o especialidad..." value={search} onChange={e => setSearch(e.target.value)} />
+        </div>
+        <div style={{flex: 1}}/>
+        <button className="btn btn-primary btn-sm" onClick={() => { setEditingInst({ name: '', email: '', phone: '', specialty: '' }); setActiveInstModal('new'); }}><I.Plus /> Nuevo Instructor</button>
+      </div>
+
+      <div className="data-table">
+        <div className="data-table-head" style={{gridTemplateColumns: "2.4fr 2fr 1.5fr 1.5fr 100px"}}>
+          <span>Nombre</span>
+          <span>Email</span>
+          <span>Teléfono</span>
+          <span>Especialidad</span>
+          <span></span>
+        </div>
+        {loading && (
+          <div style={{padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14}}>Cargando...</div>
+        )}
+        {!loading && visible.length === 0 && (
+          <div style={{padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14}}>No hay instructores.</div>
+        )}
+        {!loading && visible.map(inst => (
+          <div key={inst.id} className="data-table-row" style={{gridTemplateColumns: "2.4fr 2fr 1.5fr 1.5fr 100px"}}>
+            <div className="cell-user">
+              <div className="avatar" style={{background: "var(--grad-aim)"}}>
+                {(inst.name?.[0] || "?").toUpperCase()}
+              </div>
+              <div className="pri">{inst.name}</div>
+            </div>
+            <div className="sec">{inst.email || <span style={{color: "var(--ink-3)"}}>—</span>}</div>
+            <div>{inst.phone || <span style={{color: "var(--ink-3)"}}>—</span>}</div>
+            <div>
+              <span className="activity-pill">{inst.specialty || <span style={{color: "var(--ink-3)"}}>—</span>}</span>
+            </div>
+            <div className="row-actions">
+              <button className="icon-btn" aria-label="Editar" onClick={() => { setEditingInst(inst); setActiveInstModal('edit'); }}><I.Edit /></button>
+              <button className="icon-btn danger" aria-label="Eliminar" onClick={() => handleDel(inst.id)}><I.Trash /></button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {activeInstModal && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(8px)',
+          display: 'grid', placeItems: 'center', zIndex: 1100, padding: 20
+        }}>
+          <form onSubmit={handleSub} style={{
+            backgroundColor: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 24,
+            width: '100%', maxWidth: 450, padding: 32, display: 'grid', gap: 16
+          }}>
+            <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: 'var(--ink)' }}>
+              {activeInstModal === 'edit' ? 'Editar Instructor' : 'Registrar Nuevo Instructor'}
+            </h3>
+
+            <div className="field">
+              <label>Nombre Completo</label>
+              <input value={editingInst.name || ''} onChange={e => setEditingInst({ ...editingInst, name: e.target.value })} required placeholder="Ej. Carlos Ruiz" />
+            </div>
+
+            <div className="field">
+              <label>Correo Electrónico</label>
+              <input type="email" value={editingInst.email || ''} onChange={e => setEditingInst({ ...editingInst, email: e.target.value })} placeholder="Ej. carlos@aimeducation.es" />
+            </div>
+
+            <div className="field">
+              <label>Teléfono</label>
+              <input value={editingInst.phone || ''} onChange={e => setEditingInst({ ...editingInst, phone: e.target.value })} placeholder="Ej. +34 600 000 000" />
+            </div>
+
+            <div className="field">
+              <label>Especialidad / Rol</label>
+              <input value={editingInst.specialty || ''} onChange={e => setEditingInst({ ...editingInst, specialty: e.target.value })} placeholder="Ej. Taekwondo, Pilates, Inglés" />
+            </div>
+
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10 }}>
+              <button type="button" className="btn btn-outline btn-sm" onClick={() => setActiveInstModal(null)}>Cancelar</button>
+              <button type="submit" className="btn btn-primary btn-sm">Guardar</button>
+            </div>
+          </form>
+        </div>
+      )}
+    </>
+  );
+}
+
 export default function AdminApp({ user, onLogout, subroute = "overview" }) {
   const { go } = useRouter();
   const [view, setView] = useState(subroute);
@@ -739,39 +950,16 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
 
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [notification, setNotification] = useState(null);
-  const [activeModal, setActiveModal] = useState(null); // 'new-student' | 'edit-student' | 'new-receipt' | 'new-post' | 'edit-post' | 'new-group' | 'edit-group' | 'new-class'
+  const [activeModal, setActiveModal] = useState(null); // 'new-student' | 'edit-student' | 'new-receipt' | 'new-post' | 'edit-post' | 'new-group' | 'edit-group' | 'new-class' | 'add-activity-or-aula' | 'new-aula' | 'new-activity'
   const [editingItem, setEditingItem] = useState(null);
   
   const [studentsList, setStudentsList] = useState([]);
+  const [classSlots, setClassSlots] = useState([]);
+  const [activities, setActivities] = useState([]);
+  const [aulas, setAulas] = useState([]);
+  const [instructores, setInstructores] = useState([]);
+  const [actById, setActById] = useState({});
 
-  const [classSlots, setClassSlots] = useState(() => {
-    const saved = localStorage.getItem('aim_education_classes');
-    return saved ? JSON.parse(saved) : [
-      { d: 0, s: 17, h: 1, act: "taekwondo", title: "Taekwondo · Blancos", room: "Tatami", students: "12/16", monitor: "Darío Francisco" },
-      { d: 0, s: 18, h: 1, act: "taekwondo", title: "Taekwondo · Color", room: "Tatami", students: "14/16", monitor: "Darío Francisco" },
-      { d: 0, s: 19, h: 1.5, act: "taekwondo", title: "Taekwondo · Adultos", room: "Tatami", students: "8/12", monitor: "Darío Francisco" },
-      { d: 0, s: 16, h: 2, act: "ballet", title: "Ballet · Primary", room: "Sala 1", students: "12/15", monitor: "Elena García" },
-      { d: 1, s: 17, h: 1, act: "ingles", title: "Inglés · Movers", room: "Aula 3", students: "9/12", monitor: "James Smith" },
-      { d: 1, s: 18, h: 1.5, act: "ingles", title: "Inglés · B2 First", room: "Aula 1", students: "7/10", monitor: "James Smith" },
-      { d: 1, s: 17, h: 2.5, act: "ballet", title: "Ballet · Grades 1-3", room: "Sala 1", students: "11/15", monitor: "Elena García" },
-      { d: 2, s: 16, h: 2, act: "ballet", title: "Ballet · Pre-primary", room: "Sala 2", students: "10/12", monitor: "Elena García" },
-      { d: 2, s: 17, h: 1.5, act: "robotica", title: "Robótica · Builders", room: "Lab", students: "8/10", monitor: "Mateo Ortiz" },
-      { d: 3, s: 16, h: 1, act: "ingles", title: "Inglés · Starters", room: "Aula 2", students: "10/12", monitor: "James Smith" },
-      { d: 3, s: 18, h: 1.5, act: "ingles", title: "Inglés · B2 First", room: "Aula 1", students: "7/10", monitor: "James Smith" },
-      { d: 3, s: 17, h: 2.5, act: "ballet", title: "Ballet · Grades 1-3", room: "Sala 1", students: "11/15", monitor: "Elena García" },
-      { d: 3, s: 17, h: 1.5, act: "pintura", title: "Pintura · Estudio joven", room: "Taller", students: "6/10", monitor: "Sara Moreno" },
-      { d: 4, s: 17, h: 1, act: "taekwondo", title: "Taekwondo · Blancos", room: "Tatami", students: "12/16", monitor: "Darío Francisco" },
-      { d: 4, s: 18, h: 2, act: "ballet", title: "Ballet · Vocational", room: "Sala 1", students: "9/12", monitor: "Elena García" },
-      { d: 4, s: 19, h: 1, act: "funcional", title: "Funcional · Tarde", room: "Sala fit", students: "11/14", monitor: "Carlos Ruiz" },
-      { d: 5, s: 10, h: 2, act: "taekwondo", title: "Taekwondo · Competición", room: "Tatami", students: "8/10", monitor: "Darío Francisco" },
-      { d: 5, s: 11, h: 1.5, act: "kickboxing", title: "Kick Boxing · Sparring", room: "Tatami", students: "9/12", monitor: "Darío Francisco" },
-    ];
-  });
-
-  useEffect(() => {
-    localStorage.setItem('aim_education_classes', JSON.stringify(classSlots));
-  }, [classSlots]);
-  
   useEffect(() => {
     fetch('/api/users', { credentials: 'include' })
       .then(r => r.ok ? r.json() : [])
@@ -780,10 +968,23 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
     fetch('/api/classes', { credentials: 'include' })
       .then(r => r.ok ? r.json() : [])
       .then(data => {
-        if (data && data.length > 0) {
-          setClassSlots(data);
-        }
+        setClassSlots(data);
       })
+      .catch(() => {});
+    fetch('/api/activities', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : [])
+      .then(data => {
+        setActivities(data);
+        setActById(Object.fromEntries(data.map(a => [a.id, a])));
+      })
+      .catch(() => {});
+    fetch('/api/aulas', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : [])
+      .then(setAulas)
+      .catch(() => {});
+    fetch('/api/instructores', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : [])
+      .then(setInstructores)
       .catch(() => {});
   }, [refreshTrigger]);
 
@@ -902,11 +1103,26 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
     }
   };
 
-  const handleClassSubmit = (e) => {
+  const handleClassSubmit = async (e) => {
     e.preventDefault();
-    setClassSlots(prev => [...prev, editingItem]);
-    showToast("Clase programada con éxito.");
-    setActiveModal(null);
+    try {
+      const res = await fetch('/api/classes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(editingItem),
+        credentials: 'include'
+      });
+      if (res.ok) {
+        showToast("Clase programada con éxito.");
+        setRefreshTrigger(p => p + 1);
+        setActiveModal(null);
+      } else {
+        const err = await res.json();
+        alert(err.error || "Error al programar la clase.");
+      }
+    } catch (err) {
+      alert("Error de conexión al guardar la clase.");
+    }
   };
 
   const adminInitials = `${user?.firstName?.[0] || ""}${user?.lastName?.[0] || ""}`.toUpperCase() || "A";
@@ -922,6 +1138,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
     ]},
     { heading: "Club", items: [
       { id: "groups", label: "Grupos", icon: <I.Trophy /> },
+      { id: "instructors", label: "Instructores", icon: <I.Users /> },
       { id: "settings", label: "Ajustes", icon: <I.Settings /> },
       { id: "support", label: "Soporte", icon: <I.Bell /> },
     ]},
@@ -995,39 +1212,59 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
             <div style={{display: "flex", gap: 10, alignItems: "center"}}>
               <button className="btn btn-icon"><I.Bell /></button>
               <button className="btn btn-icon" onClick={() => alert("Función de búsqueda global disponible próximamente.")}><I.Search /></button>
-              <button 
-                className="btn btn-primary"
-                onClick={() => {
-                  if (view === 'students') {
-                    setEditingItem({ firstName: '', lastName: '', email: '', belt: '', isSuperAdmin: false });
-                    setActiveModal('new-student');
-                  } else if (view === 'classes') {
-                    setEditingItem({ d: 0, s: 17, h: 1, act: 'taekwondo', title: '', room: '', students: '0/15', monitor: '' });
-                    setActiveModal('new-class');
-                  } else if (view === 'payments') {
-                    setEditingItem({ date: new Date().toISOString().split('T')[0], amount: 0, paymentMethod: 'Domiciliación SEPA', company: '', invoiceLink: '' });
-                    setActiveModal('new-receipt');
-                  } else if (view === 'news') {
-                    setEditingItem({ title: '', slug: '', excerpt: '', content: '', coverImageUrl: '', category: 'general', status: 'draft' });
-                    setActiveModal('new-post');
-                  } else if (view === 'groups') {
-                    setEditingItem({ name: '', activity: 'taekwondo', studentIds: [] });
-                    setActiveModal('new-group');
-                  }
-                }}
-                disabled={['overview', 'settings'].includes(view)}
-              >
-                <I.Plus /> Nuevo
-              </button>
+              {view !== 'classes' && (
+                <button 
+                  className="btn btn-primary"
+                  onClick={() => {
+                    if (view === 'students') {
+                      setEditingItem({ firstName: '', lastName: '', email: '', belt: '', isSuperAdmin: false });
+                      setActiveModal('new-student');
+                    } else if (view === 'payments') {
+                      setEditingItem({ date: new Date().toISOString().split('T')[0], amount: 0, paymentMethod: 'Domiciliación SEPA', company: '', invoiceLink: '' });
+                      setActiveModal('new-receipt');
+                    } else if (view === 'news') {
+                      setEditingItem({ title: '', slug: '', excerpt: '', content: '', coverImageUrl: '', category: 'general', status: 'draft' });
+                      setActiveModal('new-post');
+                    } else if (view === 'groups') {
+                      setEditingItem({ name: '', activity: 'taekwondo', studentIds: [] });
+                      setActiveModal('new-group');
+                    }
+                  }}
+                  disabled={['overview', 'settings'].includes(view)}
+                >
+                  <I.Plus /> Nuevo
+                </button>
+              )}
             </div>
           </div>
 
           {view === "overview" && <AdminOverview setView={setView} refreshTrigger={refreshTrigger} showToast={showToast} />}
           {view === "students" && <AdminStudents refreshTrigger={refreshTrigger} onEditUser={(u) => { setEditingItem(u); setActiveModal('edit-student'); }} />}
-          {view === "classes" && <AdminClasses classSlots={classSlots} setClassSlots={setClassSlots} onAddClassClick={() => { setEditingItem({ d: 0, s: 17, h: 1, act: 'taekwondo', title: '', room: '', students: '0/15', monitor: '' }); setActiveModal('new-class'); }} />}
+          {view === "classes" && (
+            <AdminClasses 
+              classSlots={classSlots} 
+              setClassSlots={setClassSlots} 
+              activities={activities}
+              classrooms={aulas}
+              actById={actById}
+              showToast={showToast}
+              onAddClassClick={() => { 
+                const defaultRoom = aulas[0]?.name || '';
+                const defaultMonitor = instructores[0]?.name || '';
+                const defaultAct = activities[0]?.id || 'taekwondo';
+                setEditingItem({ d: 0, s: 17, h: 1, act: defaultAct, title: '', room: defaultRoom, students: '0/15', monitor: defaultMonitor }); 
+                setActiveModal('new-class'); 
+              }} 
+              onAddActivityOrAulaClick={() => {
+                setEditingItem({ name: '' });
+                setActiveModal('add-activity-or-aula');
+              }}
+            />
+          )}
           {view === "payments" && <AdminPayments refreshTrigger={refreshTrigger} />}
           {view === "news" && <AdminNews refreshTrigger={refreshTrigger} onEditPost={(p) => { setEditingItem({ ...p, coverImageUrl: p.cover_image_url }); setActiveModal('edit-post'); }} />}
           {view === "groups" && <AdminGroups refreshTrigger={refreshTrigger} onEditGroup={(g) => { setEditingItem(g); setActiveModal('edit-group'); }} />}
+          {view === "instructors" && <AdminInstructores refreshTrigger={refreshTrigger} showToast={showToast} />}
           {view === "settings" && <AdminSettings />}
           {view === "support" && <AdminSupport user={user} />}
         </div>
@@ -1182,9 +1419,6 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
                   <option value="ballet">Ballet</option>
                   <option value="ingles">Inglés</option>
                   <option value="robotica">Robótica</option>
-                  <option value="camaleon">Camaleón (STEM)</option>
-                  <option value="funcional">Funcional</option>
-                  <option value="pintura">Pintura</option>
                   <option value="competicion">Competición</option>
                 </select>
               </div>
@@ -1308,12 +1542,14 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
               <div className="field">
                 <label>Actividad</label>
                 <select value={editingItem.act || 'taekwondo'} onChange={e => setEditingItem({...editingItem, act: e.target.value})} style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }}>
-                  {ACTIVITIES.slice(0, 8).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  {activities.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                 </select>
               </div>
               <div className="field">
                 <label>Sala / Aula</label>
-                <input value={editingItem.room || ''} onChange={e => setEditingItem({...editingItem, room: e.target.value})} required placeholder="Ej. Tatami / Aula 2" />
+                <select value={editingItem.room || ''} onChange={e => setEditingItem({...editingItem, room: e.target.value})} required style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }}>
+                  {aulas.map(a => <option key={a.id} value={a.name}>{a.name}</option>)}
+                </select>
               </div>
             </div>
 
@@ -1326,9 +1562,52 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
               </div>
               <div className="field">
                 <label>Hora de inicio</label>
-                <select value={editingItem.s || 9} onChange={e => setEditingItem({...editingItem, s: parseInt(e.target.value)})} style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }}>
-                  {Array.from({length: 14}, (_, i) => 9 + i).map(h => <option key={h} value={h}>{h}:00</option>)}
-                </select>
+                <div style={{
+                  maxHeight: '120px',
+                  overflowY: 'auto',
+                  border: '1px solid var(--line)',
+                  borderRadius: '10px',
+                  background: 'var(--bg-3)',
+                  display: 'grid',
+                  gap: '4px',
+                  padding: '6px',
+                  scrollbarWidth: 'thin'
+                }}>
+                  {(() => {
+                    const timeSlots = [];
+                    for (let h = 8; h <= 21; h++) {
+                      timeSlots.push({ val: h, label: `${String(h).padStart(2, '0')}:00` });
+                      timeSlots.push({ val: h + 0.5, label: `${String(h).padStart(2, '0')}:30` });
+                    }
+                    timeSlots.push({ val: 22, label: '22:00' });
+                    return timeSlots.map(slot => {
+                      const isSelected = editingItem.s === slot.val;
+                      return (
+                        <button
+                          type="button"
+                          key={slot.label}
+                          onClick={() => setEditingItem({ ...editingItem, s: slot.val })}
+                          style={{
+                            padding: '6px 12px',
+                            borderRadius: '6px',
+                            border: 'none',
+                            background: isSelected ? 'var(--purple)' : 'transparent',
+                            color: isSelected ? 'white' : 'var(--ink)',
+                            cursor: 'pointer',
+                            fontWeight: isSelected ? '800' : 'normal',
+                            textAlign: 'center',
+                            fontSize: '13px',
+                            transition: 'background 0.2s, color 0.2s'
+                          }}
+                          onMouseEnter={e => { if(!isSelected) e.currentTarget.style.background = 'var(--line)'; }}
+                          onMouseLeave={e => { if(!isSelected) e.currentTarget.style.background = 'transparent'; }}
+                        >
+                          {slot.label}
+                        </button>
+                      );
+                    });
+                  })()}
+                </div>
               </div>
             </div>
 
@@ -1339,13 +1618,153 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
               </div>
               <div className="field">
                 <label>Monitor / Profesor</label>
-                <input value={editingItem.monitor || ''} onChange={e => setEditingItem({...editingItem, monitor: e.target.value})} placeholder="Ej. Darío Francisco" />
+                <select value={editingItem.monitor || ''} onChange={e => setEditingItem({...editingItem, monitor: e.target.value})} required style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }}>
+                  {instructores.map(ins => <option key={ins.id} value={ins.name}>{ins.name}</option>)}
+                </select>
               </div>
             </div>
 
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10 }}>
               <button type="button" className="btn btn-outline btn-sm" onClick={() => setActiveModal(null)}>Cancelar</button>
               <button type="submit" className="btn btn-primary btn-sm">Guardar clase</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* --- MODAL AÑADIR AULA O CATEGORÍA --- */}
+      {activeModal === 'add-activity-or-aula' && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(8px)',
+          display: 'grid', placeItems: 'center', zIndex: 1000, padding: 20
+        }}>
+          <div style={{
+            backgroundColor: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 24,
+            width: '100%', maxWidth: 450, padding: 32, display: 'grid', gap: 20
+          }}>
+            <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: 'var(--ink)', textAlign: 'center' }}>¿Qué deseas crear?</h3>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <button 
+                className="btn btn-outline" 
+                onClick={() => {
+                  setEditingItem({ name: '' });
+                  setActiveModal('new-aula');
+                }}
+                style={{ padding: '20px 10px', height: 'auto', display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center' }}
+              >
+                <I.Dashboard style={{ width: 24, height: 24 }} />
+                <span>Nueva Aula / Sala</span>
+              </button>
+              <button 
+                className="btn btn-outline" 
+                onClick={() => {
+                  setEditingItem({ name: '', color: '#21B668' });
+                  setActiveModal('new-activity');
+                }}
+                style={{ padding: '20px 10px', height: 'auto', display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center' }}
+              >
+                <I.Trophy style={{ width: 24, height: 24 }} />
+                <span>Nueva Categoría</span>
+              </button>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
+              <button className="btn btn-outline btn-sm" onClick={() => setActiveModal(null)}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- MODAL NUEVA AULA --- */}
+      {activeModal === 'new-aula' && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(8px)',
+          display: 'grid', placeItems: 'center', zIndex: 1000, padding: 20
+        }}>
+          <form onSubmit={async (e) => {
+            e.preventDefault();
+            try {
+              const res = await fetch('/api/admin/aulas', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(editingItem),
+                credentials: 'include'
+              });
+              if (res.ok) {
+                showToast("Aula creada con éxito.");
+                setRefreshTrigger(p => p + 1);
+                setActiveModal(null);
+              } else {
+                const err = await res.json();
+                alert(err.error || "Error al crear aula.");
+              }
+            } catch (err) {
+              alert("Error de conexión.");
+            }
+          }} style={{
+            backgroundColor: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 24,
+            width: '100%', maxWidth: 400, padding: 32, display: 'grid', gap: 16
+          }}>
+            <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: 'var(--ink)' }}>Crear Nueva Aula</h3>
+            <div className="field">
+              <label>Nombre del Aula / Sala</label>
+              <input value={editingItem.name || ''} onChange={e => setEditingItem({ name: e.target.value })} required placeholder="Ej. Sala 7 o Tatami 2" />
+            </div>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10 }}>
+              <button type="button" className="btn btn-outline btn-sm" onClick={() => setActiveModal('add-activity-or-aula')}>Atrás</button>
+              <button type="submit" className="btn btn-primary btn-sm">Crear Aula</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* --- MODAL NUEVA ACTIVIDAD / CATEGORÍA --- */}
+      {activeModal === 'new-activity' && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(8px)',
+          display: 'grid', placeItems: 'center', zIndex: 1000, padding: 20
+        }}>
+          <form onSubmit={async (e) => {
+            e.preventDefault();
+            try {
+              const res = await fetch('/api/admin/activities', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(editingItem),
+                credentials: 'include'
+              });
+              if (res.ok) {
+                showToast("Categoría creada con éxito.");
+                setRefreshTrigger(p => p + 1);
+                setActiveModal(null);
+              } else {
+                const err = await res.json();
+                alert(err.error || "Error al crear categoría.");
+              }
+            } catch (err) {
+              alert("Error de conexión.");
+            }
+          }} style={{
+            backgroundColor: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 24,
+            width: '100%', maxWidth: 400, padding: 32, display: 'grid', gap: 16
+          }}>
+            <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: 'var(--ink)' }}>Crear Nueva Categoría</h3>
+            <div className="field">
+              <label>Nombre de la Categoría</label>
+              <input value={editingItem.name || ''} onChange={e => setEditingItem({ ...editingItem, name: e.target.value })} required placeholder="Ej. Kick Boxing o Yoga" />
+            </div>
+            <div className="field">
+              <label>Color representativo</label>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                <input type="color" value={editingItem.color || '#21B668'} onChange={e => setEditingItem({ ...editingItem, color: e.target.value })} style={{ border: 0, padding: 0, width: 44, height: 44, borderRadius: 8, cursor: 'pointer', background: 'none' }} />
+                <span style={{ fontSize: 13, color: 'var(--ink-3)', fontWeight: 600 }}>{editingItem.color || '#21B668'}</span>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10 }}>
+              <button type="button" className="btn btn-outline btn-sm" onClick={() => setActiveModal('add-activity-or-aula')}>Atrás</button>
+              <button type="submit" className="btn btn-primary btn-sm">Crear Categoría</button>
             </div>
           </form>
         </div>

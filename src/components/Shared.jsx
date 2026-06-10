@@ -186,7 +186,7 @@ function AimHeader({ route } = {}) {
             }
           </button>
           {user ? (
-            <button className="btn btn-gradient" onClick={() => user.canAccessAdmin ? (window.location.href = '/admin') : go('/dashboard')}>
+            <button className="btn btn-gradient" onClick={() => go(user.canAccessAdmin ? '/admin' : '/dashboard')}>
               {user.canAccessAdmin ? 'Panel Admin' : 'Mi cuenta'}
             </button>
           ) : (
