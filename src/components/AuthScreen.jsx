@@ -26,9 +26,16 @@ function FamilyMember({ n, defaultName, defaultAge, defaultAct }) {
   );
 }
 
+function EyeIcon({ open }) {
+  return open
+    ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+    : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>;
+}
+
 function LoginForm({ onLoginSuccess, go }) {
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
+  const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -73,7 +80,12 @@ function LoginForm({ onLoginSuccess, go }) {
       </div>
       <div className="field">
         <label htmlFor="pw">Contraseña</label>
-        <input id="pw" type="password" placeholder="••••••••" value={pw} onChange={(e) => setPw(e.target.value)} required />
+        <div style={{position: "relative"}}>
+          <input id="pw" type={showPw ? "text" : "password"} placeholder="••••••••" value={pw} onChange={(e) => setPw(e.target.value)} required style={{paddingRight: 44}} />
+          <button type="button" onClick={() => setShowPw(v => !v)} style={{position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "var(--ink-3)", display: "flex", alignItems: "center", padding: 4}}>
+            <EyeIcon open={showPw} />
+          </button>
+        </div>
       </div>
       <div className="field-meta">
         <label style={{display: "inline-flex", gap: 8, alignItems: "center", color: "var(--ink-2)"}}>
@@ -96,6 +108,7 @@ function RegisterForm({ onLoginSuccess }) {
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [showPw, setShowPw] = useState(false);
   const [form, setForm] = useState({ firstName: "", lastName: "", email: "", phone: "", password: "" });
 
   function upd(key) { return (e) => setForm(f => ({ ...f, [key]: e.target.value })); }
@@ -158,7 +171,15 @@ function RegisterForm({ onLoginSuccess }) {
             <div className="field"><label>Teléfono</label><input placeholder="+34 600 000 000" value={form.phone} onChange={upd("phone")} /></div>
             <div className="field"><label>DNI / NIE</label><input placeholder="00000000A" /></div>
           </div>
-          <div className="field"><label>Contraseña</label><input type="password" placeholder="Mín. 8 caracteres" value={form.password} onChange={upd("password")} required minLength={8} /></div>
+          <div className="field">
+            <label>Contraseña</label>
+            <div style={{position: "relative"}}>
+              <input type={showPw ? "text" : "password"} placeholder="Mín. 8 caracteres" value={form.password} onChange={upd("password")} required minLength={8} style={{paddingRight: 44}} />
+              <button type="button" onClick={() => setShowPw(v => !v)} style={{position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "var(--ink-3)", display: "flex", alignItems: "center", padding: 4}}>
+                <EyeIcon open={showPw} />
+              </button>
+            </div>
+          </div>
         </>
       )}
 
