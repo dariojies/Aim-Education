@@ -193,6 +193,22 @@ function renderMd(text) {
 
 const MONTH_LONG = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
 
+function useShare(title, slug) {
+  const [copied, setCopied] = useState(false);
+  function share() {
+    const url = window.location.origin + '/noticias/' + slug;
+    if (navigator.share) {
+      navigator.share({ title, text: title + ' — AIM Education', url }).catch(() => {});
+    } else {
+      navigator.clipboard.writeText(url).then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2200);
+      });
+    }
+  }
+  return { share, copied };
+}
+
 export function PublicNewsDetail({ slug }) {
   const { go } = useRouter();
   const [post, setPost] = useState(null);
@@ -234,6 +250,7 @@ export function PublicNewsDetail({ slug }) {
     </>
   );
 
+  const { share, copied } = useShare(post.title, slug);
   const d = new Date(post.published_at || post.created_at);
   const dateStr = `${d.getDate()} de ${MONTH_LONG[d.getMonth()]} de ${d.getFullYear()}`;
   const color = catColor(post.category);
@@ -278,7 +295,18 @@ export function PublicNewsDetail({ slug }) {
 
               <div style={{marginTop: 48, paddingTop: 24, borderTop: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12}}>
                 <span style={{fontSize: 13, color: "var(--ink-3)"}}>{(post.view_count || 0) + 1} visita{(post.view_count || 0) + 1 !== 1 ? 's' : ''}</span>
-                <button className="btn btn-outline" onClick={() => go("/noticias")}>← Más noticias</button>
+                <div style={{display: "flex", gap: 10}}>
+                  <button
+                    onClick={share}
+                    style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "9px 16px", borderRadius: 10, border: "1px solid var(--line)", background: "var(--bg-3)", color: "var(--ink-2)", fontSize: 14, fontWeight: 600, cursor: "pointer" }}
+                    onMouseEnter={e => e.currentTarget.style.background = "var(--line)"}
+                    onMouseLeave={e => e.currentTarget.style.background = "var(--bg-3)"}
+                  >
+                    <I.Share />
+                    {copied ? "¡Copiado!" : "Compartir"}
+                  </button>
+                  <button className="btn btn-outline" onClick={() => go("/noticias")}>← Más noticias</button>
+                </div>
               </div>
             </div>
           </div>

@@ -6,7 +6,9 @@ export default function PublicCalendar() {
   const today = new Date();
   const [viewType, setViewType] = useState("events"); // "events" or "schedule"
   const [month, setMonth] = useState(today.getMonth());
+  const [year, setYear] = useState(today.getFullYear());
   const [filter, setFilter] = useState("all");
+  const [shareToast, setShareToast] = useState(false);
   const [slots, setSlots] = useState([]);
   const [loadingSlots, setLoadingSlots] = useState(true);
   const [selectedRoom, setSelectedRoom] = useState("Todas");
@@ -54,12 +56,14 @@ export default function PublicCalendar() {
 
   const visibleEvents = EVENTS.filter(e => {
     const d = new Date(e.date);
-    if (d.getMonth() !== month && (!e.end || new Date(e.end).getMonth() !== month)) return false;
+    const dEnd = e.end ? new Date(e.end) : null;
+    const inMonth = (d.getFullYear() === year && d.getMonth() === month)
+      || (dEnd && dEnd.getFullYear() === year && dEnd.getMonth() === month);
+    if (!inMonth) return false;
     if (filter !== "all" && e.act !== filter) return false;
     return true;
   }).sort((a, b) => a.date.localeCompare(b.date));
 
-  const year = today.getFullYear();
   const firstDay = new Date(year, month, 1);
   const lastDay = new Date(year, month + 1, 0);
   let startOffset = firstDay.getDay() - 1;
@@ -89,13 +93,13 @@ export default function PublicCalendar() {
               
               {viewType === "events" && (
                 <div style={{display: "flex", gap: 8, alignItems: "center"}}>
-                  <button className="btn btn-icon" onClick={() => setMonth(Math.max(0, month - 1))} aria-label="Mes anterior">
+                  <button className="btn btn-icon" onClick={() => { if (month === 0) { setYear(y => y - 1); setMonth(11); } else { setMonth(m => m - 1); } }} aria-label="Mes anterior">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
                   </button>
-                  <div style={{fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 24, letterSpacing: "-.02em", minWidth: 180, textAlign: "center"}}>
+                  <div style={{fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 22, letterSpacing: "-.02em", minWidth: 200, textAlign: "center"}}>
                     {MONTHS[month]} {year}
                   </div>
-                  <button className="btn btn-icon" onClick={() => setMonth(Math.min(11, month + 1))} aria-label="Mes siguiente">
+                  <button className="btn btn-icon" onClick={() => { if (month === 11) { setYear(y => y + 1); setMonth(0); } else { setMonth(m => m + 1); } }} aria-label="Mes siguiente">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>
                   </button>
                 </div>
@@ -162,7 +166,7 @@ export default function PublicCalendar() {
                       {cells.map((day, i) => {
                         const dayEvents = day ? EVENTS.filter(e => {
                           const d = new Date(e.date);
-                          return d.getMonth() === month && d.getDate() === day && (filter === "all" || e.act === filter);
+                          return d.getFullYear() === year && d.getMonth() === month && d.getDate() === day && (filter === "all" || e.act === filter);
                         }) : [];
                         const isToday = day === today.getDate() && month === today.getMonth() && year === today.getFullYear();
                         return (
@@ -416,8 +420,29 @@ export default function PublicCalendar() {
                   </div>
 
                   {selectedEvent.desc && (
-                    <p style={{ margin: 0, fontSize: 15, lineHeight: 1.6, color: "var(--ink-2)", whiteSpace: "pre-wrap" }}>{selectedEvent.desc}</p>
+                    <p style={{ margin: "0 0 20px", fontSize: 15, lineHeight: 1.6, color: "var(--ink-2)", whiteSpace: "pre-wrap" }}>{selectedEvent.desc}</p>
                   )}
+
+                  <button
+                    onClick={() => {
+                      const url = window.location.origin + '/calendario';
+                      const shareData = { title: selectedEvent.title, text: `${selectedEvent.title} — AIM Education`, url };
+                      if (navigator.share) {
+                        navigator.share(shareData).catch(() => {});
+                      } else {
+                        navigator.clipboard.writeText(url).then(() => {
+                          setShareToast(true);
+                          setTimeout(() => setShareToast(false), 2200);
+                        });
+                      }
+                    }}
+                    style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 18px", borderRadius: 10, border: "1px solid var(--line)", background: "var(--bg-3)", color: "var(--ink-2)", fontSize: 14, fontWeight: 600, cursor: "pointer", transition: "background var(--tx-fast)" }}
+                    onMouseEnter={e => e.currentTarget.style.background = "var(--line)"}
+                    onMouseLeave={e => e.currentTarget.style.background = "var(--bg-3)"}
+                  >
+                    <I.Share />
+                    {shareToast ? "¡Enlace copiado!" : "Compartir"}
+                  </button>
                 </div>
               </div>
             </div>
