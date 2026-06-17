@@ -16,35 +16,50 @@ function EmptyState({ icon, text }) {
 const DAY_NAMES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
 
 function DashOverview({ go, setView }) {
-  const [classes, setClasses] = useState([]);
+  const [slots, setSlots] = useState([]);
+  const [groups, setGroups] = useState([]);
+  const [attendance, setAttendance] = useState([]);
   const [posts, setPosts] = useState([]);
   const [receipts, setReceipts] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     Promise.all([
-      fetch('/api/classes', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
+      fetch('/api/me/groups', { credentials: 'include' }).then(r => r.ok ? r.json() : { groups: [], slots: [] }),
+      fetch('/api/me/attendance', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
       fetch('/api/posts?limit=3').then(r => r.ok ? r.json() : []),
       fetch('/api/receipts', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
-    ]).then(([c, p, rec]) => {
-      setClasses(Array.isArray(c) ? c : []);
+    ]).then(([g, at, p, rec]) => {
+      setGroups(g.groups || []);
+      setSlots(g.slots || []);
+      setAttendance(Array.isArray(at) ? at : []);
       setPosts(Array.isArray(p) ? p : []);
       setReceipts(Array.isArray(rec) ? rec : []);
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
 
-  const weekClasses = [...classes].sort((a, b) => (a.d - b.d) || (a.s - b.s)).slice(0, 6);
+  const weekClasses = [...slots].sort((a, b) => (a.d - b.d) || (a.s - b.s)).slice(0, 6);
   const totalPaid = receipts.reduce((s, r) => s + (r.amount || 0), 0);
+  const attWithRecords = attendance.filter(a => a.total > 0);
+  const totAttended = attWithRecords.reduce((s, a) => s + a.attended, 0);
+  const totSessions = attWithRecords.reduce((s, a) => s + a.total, 0);
+  const attPct = totSessions > 0 ? Math.round((totAttended / totSessions) * 100) : null;
 
   return (
     <>
       <div className="dash-cards" style={{gridTemplateColumns: "repeat(3, 1fr)"}}>
         <div className="stat-card act-taekwondo">
           <div className="corner"><I.Calendar /></div>
-          <div className="l">Clases en horario</div>
-          <div className="v">{classes.length}</div>
-          <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>en la academia</div>
+          <div className="l">Mis clases</div>
+          <div className="v">{groups.length}</div>
+          <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>{groups.length === 1 ? "grupo matriculado" : "grupos matriculados"}</div>
+        </div>
+        <div className="stat-card act-ballet">
+          <div className="corner"><I.Check /></div>
+          <div className="l">Mi asistencia</div>
+          <div className="v">{attPct != null ? `${attPct}%` : "—"}</div>
+          <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>{attPct != null ? "del trimestre" : "sin registros aún"}</div>
         </div>
         <div className="stat-card act-funcional">
           <div className="corner"><I.Wallet /></div>
@@ -52,21 +67,15 @@ function DashOverview({ go, setView }) {
           <div className="v">{receipts.length}</div>
           <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>{totalPaid > 0 ? `${totalPaid.toLocaleString("es-ES")}€ registrados` : "sin recibos"}</div>
         </div>
-        <div className="stat-card act-pintura">
-          <div className="corner"><I.Bell /></div>
-          <div className="l">Avisos del club</div>
-          <div className="v">{posts.length}</div>
-          <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>noticias recientes</div>
-        </div>
       </div>
 
       <div className="panel">
-        <h2><I.Calendar /> Horario de esta semana</h2>
-        <p className="sub">Clases programadas en la academia.</p>
+        <h2><I.Calendar /> Mi horario de esta semana</h2>
+        <p className="sub">Tus clases programadas.</p>
         {loading ? (
           <EmptyState text="Cargando horario..." />
         ) : weekClasses.length === 0 ? (
-          <EmptyState icon={<I.Calendar />} text="No hay clases programadas todavía." />
+          <EmptyState icon={<I.Calendar />} text="No estás matriculado/a en ninguna clase todavía." />
         ) : (
           <div className="classes-grid">
             {weekClasses.map((c) => {
@@ -142,18 +151,17 @@ function DashOverview({ go, setView }) {
 
 function DashClasses() {
   const days = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+  const [groups, setGroups] = useState([]);
   const [slots, setSlots] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selectedRoom, setSelectedRoom] = useState("Todas");
   const [selectedSlot, setSelectedSlot] = useState(null);
 
-  const classrooms = ["Todas", "Sala 1", "Sala 2", "Sala 3", "Sala 4", "Sala 5", "Sala 6"];
-
   useEffect(() => {
-    fetch('/api/classes', { credentials: 'include' })
-      .then(r => r.ok ? r.json() : [])
+    fetch('/api/me/groups', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : { groups: [], slots: [] })
       .then(data => {
-        setSlots(data);
+        setGroups(data.groups || []);
+        setSlots(data.slots || []);
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -161,38 +169,41 @@ function DashClasses() {
 
   const HOURS = Array.from({length: 14}, (_, i) => 9 + i);
 
+  if (loading) {
+    return <div className="panel"><h2><I.Calendar /> Mis clases</h2><EmptyState text="Cargando tus clases..." /></div>;
+  }
+  if (groups.length === 0) {
+    return (
+      <div className="panel">
+        <h2><I.Calendar /> Mis clases</h2>
+        <p className="sub">Tus grupos y tu horario.</p>
+        <EmptyState icon={<I.Calendar />} text="No estás matriculado/a en ninguna clase todavía. Habla con el club para apuntarte y aquí verás tu horario." />
+      </div>
+    );
+  }
+
   return (
-    <div className="panel">
-      <h2><I.Calendar /> Horario semanal</h2>
-      <p className="sub">Todas las clases de la academia en una sola vista semanal.</p>
-      
-      {/* Classroom filter tabs */}
-      <div style={{
-        display: "flex", 
-        gap: 8, 
-        marginTop: 10, 
-        marginBottom: 16, 
-        flexWrap: "wrap", 
-        alignItems: "center",
-        padding: "8px 12px",
-        background: "var(--bg-3)",
-        borderRadius: 12,
-        border: "1px solid var(--line)"
-      }}>
-        <span style={{fontSize: 12, fontWeight: 700, color: "var(--ink-3)", marginRight: 8}}>Aulas / Salas:</span>
-        {classrooms.map(room => (
-          <button key={room}
-            className={`filter-pill ${selectedRoom === room ? "is-active" : ""}`}
-            onClick={() => setSelectedRoom(room)}
-            style={{padding: "5px 12px", borderRadius: 8, fontSize: 12}}>
-            {room}
-          </button>
-        ))}
+    <>
+      <div className="panel">
+        <h2><I.Calendar /> Mis grupos</h2>
+        <p className="sub">Las clases en las que estás matriculado/a.</p>
+        <div style={{display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12, marginTop: 14}}>
+          {groups.map(g => {
+            const a = ACT_BY_ID[g.act];
+            return (
+              <div key={g.id} style={{background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 14, padding: 16, borderLeft: `4px solid ${a?.color || "var(--ink)"}`}}>
+                <div style={{fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".08em", color: a?.color || "var(--ink-3)"}}>{g.activityName}</div>
+                <div style={{fontWeight: 700, fontSize: 15, margin: "4px 0"}}>{g.name}</div>
+                {g.level && <span style={{display: "inline-block", fontSize: 11, fontWeight: 700, background: "color-mix(in oklab, var(--purple) 12%, var(--bg-2))", color: "var(--purple)", padding: "2px 8px", borderRadius: 6}}>Nivel: {g.level}</span>}
+              </div>
+            );
+          })}
+        </div>
       </div>
 
-      {loading ? (
-        <p style={{color: "var(--ink-3)", fontSize: 14}}>Cargando horario...</p>
-      ) : (
+      <div className="panel">
+        <h2><I.Calendar /> Mi horario semanal</h2>
+        <p className="sub">Tus clases distribuidas en la semana.</p>
         <div className="week-grid" style={{gridTemplateColumns: "80px repeat(6, 1fr)"}}>
           <div className="hdr"></div>
           {days.map(d => <div key={d} className="hdr">{d}</div>)}
@@ -202,75 +213,26 @@ function DashClasses() {
               {days.map((_, dIdx) => {
                 const slotsInCell = slots.filter(s => s.d === dIdx && s.s === h);
                 return (
-                  <div key={dIdx} style={{
-                    minHeight: 52,
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 4,
-                    padding: 4,
-                    position: "relative"
-                  }}>
-                    {/* Full box classes for the selected room (or all if "Todas" is selected) */}
-                    {slotsInCell
-                      .filter(slot => selectedRoom === "Todas" || slot.room === selectedRoom)
-                      .map((slot, sIdx) => (
-                        <button key={sIdx} className={`slot ${ACT_BY_ID[slot.act]?.className || ""}`}
-                          onClick={() => setSelectedSlot(slot)}
-                          style={{
-                            position: "relative",
-                            inset: "auto",
-                            height: "auto",
-                            background: ACT_BY_ID[slot.act]?.color || "var(--ink)",
-                            display: "flex",
-                            flexDirection: "column",
-                            gap: 2,
-                            width: "100%",
-                            boxSizing: "border-box"
-                          }}>
-                          <span className="t" style={{ fontSize: 12, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{slot.title}</span>
-                          <span className="meta" style={{ fontSize: 10, opacity: 0.9 }}>{slot.time || `${h}:00`} · {slot.room}</span>
-                        </button>
-                      ))}
-
-                    {/* Little dots for classes NOT in the selected room */}
-                    {selectedRoom !== "Todas" && slotsInCell.some(slot => slot.room !== selectedRoom) && (
-                      <div style={{
-                        display: "flex",
-                        gap: 6,
-                        flexWrap: "wrap",
-                        alignItems: "center",
-                        marginTop: "auto",
-                        padding: "4px 4px 2px",
-                        borderTop: slotsInCell.some(slot => slot.room === selectedRoom) ? "1px dashed var(--line-2)" : "none"
-                      }}>
-                        {slotsInCell
-                          .filter(slot => slot.room !== selectedRoom)
-                          .map((slot, sIdx) => (
-                            <div key={sIdx}
-                              onClick={() => setSelectedSlot(slot)}
-                              style={{
-                                width: 10,
-                                height: 10,
-                                borderRadius: "50%",
-                                background: ACT_BY_ID[slot.act]?.color || "var(--ink)",
-                                cursor: "pointer",
-                                transition: "transform 0.15s ease",
-                                boxShadow: "0 1px 3px rgba(0,0,0,0.15)"
-                              }}
-                              onMouseEnter={e => e.currentTarget.style.transform = "scale(1.3)"}
-                              onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
-                              title={`${slot.title} (${slot.room}) · ${slot.monitor || ''}`}
-                            />
-                          ))}
-                      </div>
-                    )}
+                  <div key={dIdx} style={{minHeight: 52, display: "flex", flexDirection: "column", gap: 4, padding: 4, position: "relative"}}>
+                    {slotsInCell.map((slot, sIdx) => (
+                      <button key={sIdx} className={`slot ${ACT_BY_ID[slot.act]?.className || ""}`}
+                        onClick={() => setSelectedSlot(slot)}
+                        style={{
+                          position: "relative", inset: "auto", height: "auto",
+                          background: ACT_BY_ID[slot.act]?.color || "var(--ink)",
+                          display: "flex", flexDirection: "column", gap: 2, width: "100%", boxSizing: "border-box"
+                        }}>
+                        <span className="t" style={{ fontSize: 12, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{slot.title}</span>
+                        <span className="meta" style={{ fontSize: 10, opacity: 0.9 }}>{slot.time || `${h}:00`} · {slot.room}</span>
+                      </button>
+                    ))}
                   </div>
                 );
               })}
             </React.Fragment>
           ))}
         </div>
-      )}
+      </div>
 
       {/* Modal Detalles de Clase (Solo Info para Alumnos) */}
       {selectedSlot && (
@@ -296,16 +258,64 @@ function DashClasses() {
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 }
 
 function DashAttendance() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch('/api/me/attendance', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : [])
+      .then(data => { setRows(Array.isArray(data) ? data : []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
+
+  const withRecords = rows.filter(r => r.total > 0);
+
   return (
     <div className="panel">
-      <h2><I.Check /> Asistencia del trimestre</h2>
-      <p className="sub">Histórico de asistencia por alumno.</p>
-      <EmptyState icon={<I.Check />} text="El registro de asistencia aún no está disponible. Aparecerá aquí cuando el club empiece a registrar las sesiones." />
+      <h2><I.Check /> Mi asistencia</h2>
+      <p className="sub">Tu asistencia por grupo. Verde: asististe. Naranja: ausencia.</p>
+      {loading ? (
+        <EmptyState text="Cargando asistencia..." />
+      ) : withRecords.length === 0 ? (
+        <EmptyState icon={<I.Check />} text="Aún no hay asistencia registrada. Aparecerá aquí cuando el club empiece a pasar lista en tus clases." />
+      ) : (
+        <div style={{display: "grid", gap: 20, marginTop: 16}}>
+          {withRecords.map((s) => {
+            const a = ACT_BY_ID[s.act];
+            const color = s.percent >= 90 ? "var(--teal)" : s.percent >= 75 ? "var(--orange-soft)" : "var(--orange)";
+            const cells = Math.max(s.total, 1);
+            return (
+              <div key={s.groupId} className={a?.className || ""}>
+                <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10}}>
+                  <div style={{display: "flex", alignItems: "center", gap: 10}}>
+                    <div className="avatar" style={{background: a?.color || "var(--ink)"}}>{(s.activityName || "?")[0]}</div>
+                    <div>
+                      <div style={{fontWeight: 700, fontSize: 15}}>{s.groupName}</div>
+                      <div style={{fontSize: 12, color: "var(--ink-3)"}}>{s.activityName} · {s.attended}/{s.total} sesiones</div>
+                    </div>
+                  </div>
+                  <div style={{textAlign: "right"}}>
+                    <div style={{fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 28, letterSpacing: "-.02em", lineHeight: 1, color}}>{s.percent}%</div>
+                    <div style={{fontSize: 11, color: "var(--ink-3)", fontWeight: 600, marginTop: 2}}>asistencia</div>
+                  </div>
+                </div>
+                <div className="attendance-bar">
+                  {Array.from({length: cells}).map((_, idx) => {
+                    if (idx < s.attended) return <div key={idx} className="ok" style={{flex: 1}} />;
+                    if (idx < s.attended + s.missed) return <div key={idx} className="miss" style={{flex: 1}} />;
+                    return <div key={idx} className="future" style={{flex: 1}} />;
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

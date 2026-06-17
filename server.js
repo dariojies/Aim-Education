@@ -703,8 +703,44 @@ function hourFloat(hhmm) {
     return (h || 0) + (m || 0) / 60;
 }
 
-// Devuelve el horario del club como "slots" (un bloque por día/sesión), construido a
-// partir de tul_groups.sessions, en el formato que ya consume el frontend.
+// Convierte filas de grupos (con sessions JSONB) en "slots" de horario (un bloque por
+// día/sesión) en el formato que consume el frontend. Reutilizado por el horario del club
+// y por el horario personal del alumno.
+function buildSlotsFromGroups(rows) {
+    const slots = [];
+    for (const g of rows) {
+        const sessions = Array.isArray(g.sessions) ? g.sessions : [];
+        const aimId = mapActivityId(g.activity_name, g.activity_type);
+        sessions.forEach((sess, si) => {
+            const days = Array.isArray(sess.days) ? sess.days : [];
+            const start = hourFloat(sess.startTime);
+            const end = hourFloat(sess.endTime);
+            const dur = end > start ? Number((end - start).toFixed(2)) : 1;
+            for (const rawDay of days) {
+                const d = Number(rawDay);
+                if (isNaN(d) || d < 0 || d > 5) continue; // rejilla Lunes-Sábado
+                slots.push({
+                    id: `${g.group_id}-${si}-${d}`,
+                    d,
+                    s: Math.floor(start),
+                    h: dur,
+                    act: aimId,
+                    title: g.name,
+                    room: sess.aulaName || '',
+                    monitor: sess.instructorName || '',
+                    students: `${g.student_count}/${g.max_students ?? '∞'}`,
+                    time: `${sess.startTime || ''}–${sess.endTime || ''}`,
+                    actColor: ACT_COLORS[aimId],
+                    actName: g.activity_name,
+                });
+            }
+        });
+    }
+    slots.sort((a, b) => (a.d - b.d) || (a.s - b.s));
+    return slots;
+}
+
+// Horario completo del club (todas las clases de la academia).
 app.get('/api/classes', async (req, res) => {
     try {
         const result = await pool.query(`
@@ -715,40 +751,76 @@ app.get('/api/classes', async (req, res) => {
             JOIN tul_activities act ON g.activity_id = act.activity_id
             WHERE act.club_id = $1
         `, [AIM_CLUB_ID]);
-
-        const slots = [];
-        for (const g of result.rows) {
-            const sessions = Array.isArray(g.sessions) ? g.sessions : [];
-            const aimId = mapActivityId(g.activity_name, g.activity_type);
-            sessions.forEach((sess, si) => {
-                const days = Array.isArray(sess.days) ? sess.days : [];
-                const start = hourFloat(sess.startTime);
-                const end = hourFloat(sess.endTime);
-                const dur = end > start ? Number((end - start).toFixed(2)) : 1;
-                for (const rawDay of days) {
-                    const d = Number(rawDay);
-                    if (isNaN(d) || d < 0 || d > 5) continue; // rejilla Lunes-Sábado
-                    slots.push({
-                        id: `${g.group_id}-${si}-${d}`,
-                        d,
-                        s: Math.floor(start),
-                        h: dur,
-                        act: aimId,
-                        title: g.name,
-                        room: sess.aulaName || '',
-                        monitor: sess.instructorName || '',
-                        students: `${g.student_count}/${g.max_students ?? '∞'}`,
-                        time: `${sess.startTime || ''}–${sess.endTime || ''}`,
-                        actColor: ACT_COLORS[aimId],
-                        actName: g.activity_name,
-                    });
-                }
-            });
-        }
-        slots.sort((a, b) => (a.d - b.d) || (a.s - b.s));
-        res.json(slots);
+        res.json(buildSlotsFromGroups(result.rows));
     } catch (err) {
         console.error('Error fetching classes:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Clases del alumno que ha iniciado sesión: sus grupos matriculados + su horario + su nivel.
+app.get('/api/me/groups', authenticateSession, async (req, res) => {
+    try {
+        const userId = req.userSession.userId;
+        const result = await pool.query(`
+            SELECT g.group_id, g.name, g.sessions, g.max_students,
+                   act.name AS activity_name, act.activity_type,
+                   up.level_name AS level_name, up.level_order AS level_order,
+                   (SELECT COUNT(*) FROM tul_group_students gs2 WHERE gs2.group_id = g.group_id) AS student_count
+            FROM tul_groups g
+            JOIN tul_group_students gs ON gs.group_id = g.group_id
+            JOIN tul_activities act ON g.activity_id = act.activity_id
+            LEFT JOIN tul_user_progression up ON up.user_id = gs.student_id AND up.activity_id = g.activity_id
+            WHERE gs.student_id = $1 AND act.club_id = $2
+            ORDER BY act.name, g.name
+        `, [userId, AIM_CLUB_ID]);
+
+        const groups = result.rows.map(g => ({
+            id: g.group_id,
+            name: g.name,
+            act: mapActivityId(g.activity_name, g.activity_type),
+            activityName: g.activity_name,
+            level: g.level_name || null,
+            time: g.sessions,
+            studentCount: Number(g.student_count),
+        }));
+        res.json({ groups, slots: buildSlotsFromGroups(result.rows) });
+    } catch (err) {
+        console.error('Error fetching my groups:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Asistencia del alumno que ha iniciado sesión, agregada por grupo.
+app.get('/api/me/attendance', authenticateSession, async (req, res) => {
+    try {
+        const userId = req.userSession.userId;
+        const result = await pool.query(`
+            SELECT g.group_id, g.name AS group_name,
+                   act.name AS activity_name, act.activity_type,
+                   COUNT(*) FILTER (WHERE at.status IN ('present', 'late'))::int AS attended,
+                   COUNT(*) FILTER (WHERE at.status = 'absent')::int AS missed,
+                   COUNT(*)::int AS total
+            FROM tul_attendance at
+            JOIN tul_groups g ON at.group_id = g.group_id
+            JOIN tul_activities act ON g.activity_id = act.activity_id
+            WHERE at.student_id = $1 AND act.club_id = $2
+            GROUP BY g.group_id, g.name, act.name, act.activity_type
+            ORDER BY act.name, g.name
+        `, [userId, AIM_CLUB_ID]);
+
+        res.json(result.rows.map(r => ({
+            groupId: r.group_id,
+            groupName: r.group_name,
+            activityName: r.activity_name,
+            act: mapActivityId(r.activity_name, r.activity_type),
+            attended: r.attended,
+            missed: r.missed,
+            total: r.total,
+            percent: r.total > 0 ? Math.round((r.attended / r.total) * 100) : 0,
+        })));
+    } catch (err) {
+        console.error('Error fetching my attendance:', err);
         res.status(500).json({ error: err.message });
     }
 });
