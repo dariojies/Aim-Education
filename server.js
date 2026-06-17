@@ -669,104 +669,123 @@ app.delete('/api/users/:id', authenticateSession, async (req, res) => {
     }
 });
 
+// =============================================================================
+// CLUB AIM EDUCATION — integración con las tablas compartidas tul_* (aim-tul).
+// aim-education es de un solo club: todo se filtra por este club_id. Lo que se
+// edita en aim-tul se refleja aquí automáticamente (misma base de datos).
+// =============================================================================
+const AIM_CLUB_ID = 'b68ca873-5086-474f-a296-fe60b149b8a2';
+
+// Colores/ids estáticos del frontend (ACT_BY_ID) para pintar el horario.
+const ACT_COLORS = {
+    taekwondo: '#21B668', ballet: '#FF99D3', baile: '#AF99FF', ingles: '#00BBF4',
+    robotica: '#FFD526', camaleon: '#25D8BA', funcional: '#FF4F15', pilates: '#BFD300', pintura: '#5233A8',
+};
+
+// Mapea una actividad real del club a la id estática del frontend (para color/clase CSS).
+function mapActivityId(name = '', type = '') {
+    const n = (name || '').toLowerCase();
+    const t = (type || '').toLowerCase();
+    if (t === 'taekwondo_itf' || n.includes('taekwon')) return 'taekwondo';
+    if (t === 'ballet' || n.includes('ballet')) return 'ballet';
+    if (t === 'ingles' || n.includes('inglé') || n.includes('ingles') || n.includes('english')) return 'ingles';
+    if (n.includes('baile') || n.includes('danza')) return 'baile';
+    if (n.includes('robót') || n.includes('robot')) return 'robotica';
+    if (n.includes('pilates')) return 'pilates';
+    if (n.includes('pintura')) return 'pintura';
+    if (n.includes('defensa')) return 'taekwondo';
+    if (n.includes('kick') || n.includes('box')) return 'funcional';
+    return 'funcional';
+}
+
+function hourFloat(hhmm) {
+    const [h, m] = String(hhmm || '0:0').split(':').map(Number);
+    return (h || 0) + (m || 0) / 60;
+}
+
+// Devuelve el horario del club como "slots" (un bloque por día/sesión), construido a
+// partir de tul_groups.sessions, en el formato que ya consume el frontend.
 app.get('/api/classes', async (req, res) => {
     try {
         const result = await pool.query(`
-            SELECT c.*, a.name as act_name, a.color as act_color, a.class_name as act_class_name
-            FROM aim_education_clases c
-            LEFT JOIN aim_education_activities a ON c.act = a.id
-            ORDER BY c.d, c.s
-        `);
-        const mapped = result.rows.map(r => ({
-            id: r.id,
-            d: r.d,
-            s: parseFloat(r.s),
-            h: parseFloat(r.h),
-            act: r.act,
-            title: r.title,
-            room: r.room,
-            students: r.students,
-            monitor: r.monitor,
-            actColor: r.act_color,
-            actName: r.act_name,
-            actClassName: r.act_class_name
-        }));
-        res.json(mapped);
+            SELECT g.group_id, g.name, g.sessions, g.max_students,
+                   act.name AS activity_name, act.activity_type,
+                   (SELECT COUNT(*) FROM tul_group_students gs WHERE gs.group_id = g.group_id) AS student_count
+            FROM tul_groups g
+            JOIN tul_activities act ON g.activity_id = act.activity_id
+            WHERE act.club_id = $1
+        `, [AIM_CLUB_ID]);
+
+        const slots = [];
+        for (const g of result.rows) {
+            const sessions = Array.isArray(g.sessions) ? g.sessions : [];
+            const aimId = mapActivityId(g.activity_name, g.activity_type);
+            sessions.forEach((sess, si) => {
+                const days = Array.isArray(sess.days) ? sess.days : [];
+                const start = hourFloat(sess.startTime);
+                const end = hourFloat(sess.endTime);
+                const dur = end > start ? Number((end - start).toFixed(2)) : 1;
+                for (const rawDay of days) {
+                    const d = Number(rawDay);
+                    if (isNaN(d) || d < 0 || d > 5) continue; // rejilla Lunes-Sábado
+                    slots.push({
+                        id: `${g.group_id}-${si}-${d}`,
+                        d,
+                        s: Math.floor(start),
+                        h: dur,
+                        act: aimId,
+                        title: g.name,
+                        room: sess.aulaName || '',
+                        monitor: sess.instructorName || '',
+                        students: `${g.student_count}/${g.max_students ?? '∞'}`,
+                        time: `${sess.startTime || ''}–${sess.endTime || ''}`,
+                        actColor: ACT_COLORS[aimId],
+                        actName: g.activity_name,
+                    });
+                }
+            });
+        }
+        slots.sort((a, b) => (a.d - b.d) || (a.s - b.s));
+        res.json(slots);
     } catch (err) {
         console.error('Error fetching classes:', err);
         res.status(500).json({ error: err.message });
     }
 });
 
-app.post('/api/classes', authenticateSession, async (req, res) => {
-    const { d, s, h, act, title, room, students, monitor } = req.body;
-    if (d === undefined || s === undefined || h === undefined || !act || !title || !room || !monitor) {
-        return res.status(400).json({ error: 'Todos los campos son obligatorios.' });
-    }
-    const id = crypto.randomUUID();
-    try {
-        await pool.query(
-            `INSERT INTO aim_education_clases (id, d, s, h, act, title, room, students, monitor)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-            [id, d, s, h, act, title, room, students || '0/15', monitor]
-        );
-        res.status(201).json({ id, d, s, h, act, title, room, students, monitor });
-    } catch (err) {
-        console.error('Error creating class:', err);
-        res.status(500).json({ error: err.message });
-    }
-});
+// El horario, actividades y aulas se gestionan desde la app Aim-Tul (fuente única
+// de verdad sobre las tablas tul_*). En la web son de solo lectura.
+const MANAGE_IN_AIMTUL = { error: 'El horario, las actividades y las aulas se gestionan desde la app Aim-Tul. Aquí se muestran en tiempo real.' };
 
-app.delete('/api/classes/:id', authenticateSession, async (req, res) => {
-    const { id } = req.params;
-    try {
-        await pool.query('DELETE FROM aim_education_clases WHERE id = $1', [id]);
-        res.json({ success: true });
-    } catch (err) {
-        console.error('Error deleting class:', err);
-        res.status(500).json({ error: err.message });
-    }
-});
+app.post('/api/classes', authenticateSession, (req, res) => res.status(400).json(MANAGE_IN_AIMTUL));
+app.delete('/api/classes/:id', authenticateSession, (req, res) => res.status(400).json(MANAGE_IN_AIMTUL));
+app.post('/api/admin/activities', authenticateSession, (req, res) => res.status(400).json(MANAGE_IN_AIMTUL));
+app.post('/api/admin/aulas', authenticateSession, (req, res) => res.status(400).json(MANAGE_IN_AIMTUL));
 
+// Actividades reales del club (tul_activities), mapeadas a id/color del frontend.
 app.get('/api/activities', async (req, res) => {
     try {
-        const result = await pool.query('SELECT * FROM aim_education_activities ORDER BY name');
-        res.json(result.rows.map(r => ({
-            id: r.id,
-            name: r.name,
-            color: r.color,
-            className: r.class_name
-        })));
+        const result = await pool.query(
+            'SELECT activity_id, name, activity_type, icon FROM tul_activities WHERE club_id = $1 ORDER BY name',
+            [AIM_CLUB_ID]
+        );
+        res.json(result.rows.map(r => {
+            const id = mapActivityId(r.name, r.activity_type);
+            return { id, activityId: r.activity_id, name: r.name, color: ACT_COLORS[id], className: `act-${id}` };
+        }));
     } catch (err) {
         console.error('Error fetching activities:', err);
         res.status(500).json({ error: err.message });
     }
 });
 
-app.post('/api/admin/activities', authenticateSession, async (req, res) => {
-    const { name, color } = req.body;
-    if (!name || !color) {
-        return res.status(400).json({ error: 'Nombre y color son obligatorios.' });
-    }
-    const id = slugify(name);
-    const className = `act-${id}`;
-    try {
-        await pool.query(
-            `INSERT INTO aim_education_activities (id, name, color, class_name)
-             VALUES ($1, $2, $3, $4)
-             ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, color = EXCLUDED.color, class_name = EXCLUDED.class_name`,
-            [id, name, color, className]
-        );
-        res.status(201).json({ id, name, color, className });
-    } catch (err) {
-        console.error('Error creating activity:', err);
-        res.status(500).json({ error: err.message });
-    }
-});
-
+// Aulas reales del club (tul_aulas), con su color y capacidad.
 app.get('/api/aulas', async (req, res) => {
     try {
-        const result = await pool.query('SELECT * FROM aim_education_aulas ORDER BY name');
+        const result = await pool.query(
+            'SELECT aula_id AS id, name, capacity, color FROM tul_aulas WHERE club_id = $1 ORDER BY name',
+            [AIM_CLUB_ID]
+        );
         res.json(result.rows);
     } catch (err) {
         console.error('Error fetching classrooms:', err);
@@ -774,30 +793,15 @@ app.get('/api/aulas', async (req, res) => {
     }
 });
 
-app.post('/api/admin/aulas', authenticateSession, async (req, res) => {
-    const { name } = req.body;
-    if (!name) {
-        return res.status(400).json({ error: 'El nombre del aula es obligatorio.' });
-    }
-    try {
-        const exists = await pool.query('SELECT id FROM aim_education_aulas WHERE name = $1', [name.trim()]);
-        if (exists.rowCount > 0) {
-            return res.status(409).json({ error: 'El aula ya existe.' });
-        }
-        const result = await pool.query(
-            `INSERT INTO aim_education_aulas (name) VALUES ($1) RETURNING *`,
-            [name.trim()]
-        );
-        res.status(201).json(result.rows[0]);
-    } catch (err) {
-        console.error('Error creating classroom:', err);
-        res.status(500).json({ error: err.message });
-    }
-});
-
+// Instructores reales del club (usuarios con rol instructor/club_owner). Se gestionan en aim-tul.
 app.get('/api/instructores', async (req, res) => {
     try {
-        const result = await pool.query('SELECT * FROM aim_education_instructores ORDER BY name');
+        const result = await pool.query(`
+            SELECT user_id AS id, TRIM(name || ' ' || COALESCE(surname, '')) AS name, email, role
+            FROM users
+            WHERE club_id = $1 AND (role = 'instructor' OR role = 'club_owner')
+            ORDER BY role DESC, name ASC
+        `, [AIM_CLUB_ID]);
         res.json(result.rows);
     } catch (err) {
         console.error('Error fetching instructors:', err);
@@ -805,125 +809,50 @@ app.get('/api/instructores', async (req, res) => {
     }
 });
 
-app.post('/api/admin/instructores', authenticateSession, async (req, res) => {
-    const { name, email, phone, specialty } = req.body;
-    if (!name) {
-        return res.status(400).json({ error: 'El nombre del instructor es obligatorio.' });
-    }
-    try {
-        const exists = await pool.query('SELECT id FROM aim_education_instructores WHERE name = $1', [name.trim()]);
-        if (exists.rowCount > 0) {
-            return res.status(409).json({ error: 'El instructor ya existe.' });
-        }
-        const result = await pool.query(
-            `INSERT INTO aim_education_instructores (name, email, phone, specialty)
-             VALUES ($1, $2, $3, $4) RETURNING *`,
-            [name.trim(), email || null, phone || null, specialty || null]
-        );
-        res.status(201).json(result.rows[0]);
-    } catch (err) {
-        console.error('Error creating instructor:', err);
-        res.status(500).json({ error: err.message });
-    }
-});
+app.post('/api/admin/instructores', authenticateSession, (req, res) => res.status(400).json(MANAGE_IN_AIMTUL));
+app.put('/api/admin/instructores/:id', authenticateSession, (req, res) => res.status(400).json(MANAGE_IN_AIMTUL));
+app.delete('/api/admin/instructores/:id', authenticateSession, (req, res) => res.status(400).json(MANAGE_IN_AIMTUL));
 
-app.put('/api/admin/instructores/:id', authenticateSession, async (req, res) => {
-    const { id } = req.params;
-    const { name, email, phone, specialty } = req.body;
-    if (!name) {
-        return res.status(400).json({ error: 'El nombre del instructor es obligatorio.' });
-    }
-    try {
-        const result = await pool.query(
-            `UPDATE aim_education_instructores
-             SET name = $1, email = $2, phone = $3, specialty = $4
-             WHERE id = $5 RETURNING *`,
-            [name.trim(), email || null, phone || null, specialty || null, id]
-        );
-        if (result.rowCount === 0) {
-            return res.status(404).json({ error: 'Instructor no encontrado.' });
-        }
-        res.json(result.rows[0]);
-    } catch (err) {
-        console.error('Error updating instructor:', err);
-        res.status(500).json({ error: err.message });
-    }
-});
-
-app.delete('/api/admin/instructores/:id', authenticateSession, async (req, res) => {
-    const { id } = req.params;
-    try {
-        const result = await pool.query('DELETE FROM aim_education_instructores WHERE id = $1 RETURNING *', [id]);
-        if (result.rowCount === 0) {
-            return res.status(404).json({ error: 'Instructor no encontrado.' });
-        }
-        res.json({ success: true });
-    } catch (err) {
-        console.error('Error deleting instructor:', err);
-        res.status(500).json({ error: err.message });
-    }
-});
-
+// Grupos/clases reales del club (tul_groups) con sus alumnos matriculados (tul_group_students).
 app.get('/api/admin/groups', authenticateSession, async (req, res) => {
     try {
-        const result = await pool.query('SELECT * FROM aim_education_groups');
+        const result = await pool.query(`
+            SELECT g.group_id AS id, g.name, g.time, g.max_students AS "maxStudents",
+                   g.min_age AS "minAge", g.max_age AS "maxAge",
+                   a.name AS activity_name, a.activity_type,
+                   COALESCE(
+                     json_agg(json_build_object('id', u.user_id, 'name', TRIM(u.name || ' ' || COALESCE(u.surname, ''))))
+                     FILTER (WHERE u.user_id IS NOT NULL), '[]'
+                   ) AS students
+            FROM tul_groups g
+            JOIN tul_activities a ON g.activity_id = a.activity_id
+            LEFT JOIN tul_group_students gs ON gs.group_id = g.group_id
+            LEFT JOIN users u ON u.user_id = gs.student_id
+            WHERE a.club_id = $1
+            GROUP BY g.group_id, g.name, g.time, g.max_students, g.min_age, g.max_age, a.name, a.activity_type
+            ORDER BY a.name, g.name
+        `, [AIM_CLUB_ID]);
         res.json(result.rows.map(g => ({
             id: g.id,
             name: g.name,
-            activity: g.activity,
-            studentIds: g.student_ids ? JSON.parse(g.student_ids) : []
+            time: g.time,
+            activity: mapActivityId(g.activity_name, g.activity_type),
+            activityName: g.activity_name,
+            maxStudents: g.maxStudents,
+            minAge: g.minAge,
+            maxAge: g.maxAge,
+            students: g.students,
+            studentIds: g.students.map(s => s.id),
+            studentCount: g.students.length,
         })));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-app.post('/api/admin/groups', authenticateSession, async (req, res) => {
-    const { name, activity, studentIds } = req.body;
-    if (!name || !activity) {
-        return res.status(400).json({ error: 'Nombre y actividad son obligatorios.' });
-    }
-    const id = crypto.randomUUID();
-    try {
-        await pool.query(
-            `INSERT INTO aim_education_groups (id, name, activity, student_ids)
-             VALUES ($1, $2, $3, $4)`,
-            [id, name, activity, JSON.stringify(studentIds || [])]
-        );
-        res.status(201).json({ id, name, activity, studentIds: studentIds || [] });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-app.put('/api/admin/groups/:id', authenticateSession, async (req, res) => {
-    const { name, activity, studentIds } = req.body;
-    const { id } = req.params;
-    if (!name || !activity) {
-        return res.status(400).json({ error: 'Nombre y actividad son obligatorios.' });
-    }
-    try {
-        await pool.query(
-            `UPDATE aim_education_groups
-             SET name = $1, activity = $2, student_ids = $3
-             WHERE id = $4`,
-            [name, activity, JSON.stringify(studentIds || []), id]
-        );
-        res.json({ id, name, activity, studentIds });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-app.delete('/api/admin/groups/:id', authenticateSession, async (req, res) => {
-    const { id } = req.params;
-    try {
-        await pool.query('DELETE FROM aim_education_groups WHERE id = $1', [id]);
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
+app.post('/api/admin/groups', authenticateSession, (req, res) => res.status(400).json(MANAGE_IN_AIMTUL));
+app.put('/api/admin/groups/:id', authenticateSession, (req, res) => res.status(400).json(MANAGE_IN_AIMTUL));
+app.delete('/api/admin/groups/:id', authenticateSession, (req, res) => res.status(400).json(MANAGE_IN_AIMTUL));
 
 app.get('/api/receipts', authenticateSession, async (req, res) => {
     try {
