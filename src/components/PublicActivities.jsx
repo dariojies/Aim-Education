@@ -25,7 +25,8 @@ function ActivityCard({ act, go, delay = 0 }) {
 function NewsCard({ cat, color = '#5233A8', img, ph, title, date, body, href }) {
   const inner = (
     <div className="news-card" style={{ height: "100%" }}>
-      <div className="img" style={{ background: img ? `center/cover no-repeat url(${img})` : `linear-gradient(135deg, ${color}, color-mix(in oklab, ${color} 55%, #000))` }}>
+      <div className="img" style={img ? { aspectRatio: 'auto', background: 'var(--bg-3)' } : { background: `linear-gradient(135deg, ${color}, color-mix(in oklab, ${color} 55%, #000))` }}>
+        {img && <img src={img} alt="" style={{ width: "100%", height: "auto", display: "block" }} />}
         <div className="badge-date">
           <div className="d">{date.d}</div>
           <div className="m">{date.m}</div>
@@ -252,7 +253,7 @@ export function PublicNewsDetail({ slug }) {
                 <img
                   src={post.cover_image_url}
                   alt={post.title}
-                  style={{width: "100%", height: 320, objectFit: "cover", borderRadius: 18, marginBottom: 32, display: "block", boxShadow: "var(--shadow)"}}
+                  style={{width: "100%", height: "auto", display: "block", borderRadius: 18, marginBottom: 32, boxShadow: "var(--shadow)"}}
                 />
               )}
 

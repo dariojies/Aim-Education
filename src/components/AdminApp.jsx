@@ -1063,9 +1063,10 @@ function AdminEvents({ showToast }) {
           const color = a?.color || 'var(--ink)';
           return (
             <div key={ev.id} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 18, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-              <div style={{ height: 150, background: ev.posterUrl ? `center/cover no-repeat url(${ev.posterUrl})` : `color-mix(in oklab, ${color} 20%, var(--bg-3))`, position: 'relative' }}>
-                {!ev.posterUrl && <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color }}><I.Star /></div>}
-              </div>
+              {ev.posterUrl
+                ? <img src={ev.posterUrl} alt={ev.title} style={{ width: '100%', height: 'auto', display: 'block' }} />
+                : <div style={{ height: 120, background: `color-mix(in oklab, ${color} 20%, var(--bg-3))`, display: 'grid', placeItems: 'center', color }}><I.Star /></div>
+              }
               <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
                 <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color }}>{a?.name || ev.activity}</span>
                 <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: 'var(--ink)' }}>{ev.title}</h3>
