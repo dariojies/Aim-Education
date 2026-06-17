@@ -673,62 +673,97 @@ function AdminNews({ refreshTrigger, onEditPost }) {
   );
 }
 
-function AdminGroups({ refreshTrigger, onEditGroup }) {
+function AdminGroups({ refreshTrigger }) {
   const [groups, setGroups] = useState([]);
-  const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState("all");
 
   useEffect(() => {
-    Promise.all([
-      fetch('/api/admin/groups', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
-      fetch('/api/users', { credentials: 'include' }).then(r => r.ok ? r.json() : [])
-    ]).then(([g, s]) => {
-      setGroups(g);
-      setStudents(s);
-      setLoading(false);
-    }).catch(() => setLoading(false));
+    fetch('/api/admin/groups', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : [])
+      .then(g => { setGroups(Array.isArray(g) ? g : []); setLoading(false); })
+      .catch(() => setLoading(false));
   }, [refreshTrigger]);
 
-  async function deleteGroup(id) {
-    if (!window.confirm("¿Eliminar este grupo?")) return;
-    await fetch(`/api/admin/groups/${id}`, { method: 'DELETE', credentials: 'include' });
-    setGroups(prev => prev.filter(g => g.id !== id));
+  // Actividades presentes en los grupos (para el filtro), con su color.
+  const activities = [];
+  const seen = new Set();
+  for (const g of groups) {
+    if (!seen.has(g.activity)) {
+      seen.add(g.activity);
+      activities.push({ id: g.activity, name: g.activityName, color: ACT_BY_ID[g.activity]?.color || 'var(--ink)' });
+    }
   }
+  activities.sort((a, b) => a.name.localeCompare(b.name));
+
+  const visible = filter === "all" ? groups : groups.filter(g => g.activity === filter);
 
   return (
-    <div className="groups-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 20 }}>
+    <>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20 }}>
+        <button className={`filter-pill ${filter === "all" ? "is-active" : ""}`} onClick={() => setFilter("all")}>
+          Todas · {groups.length}
+        </button>
+        {activities.map(a => {
+          const count = groups.filter(g => g.activity === a.id).length;
+          const active = filter === a.id;
+          return (
+            <button key={a.id} className={`filter-pill ${active ? "is-active" : ""}`} onClick={() => setFilter(a.id)}
+              style={active ? { background: a.color, borderColor: a.color, color: '#fff' } : {}}>
+              <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: active ? '#fff' : a.color, marginRight: 6, verticalAlign: 'middle' }} />
+              {a.name} · {count}
+            </button>
+          );
+        })}
+      </div>
+
       {loading && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando grupos...</p>}
-      {!loading && groups.length === 0 && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>No hay grupos creados aún.</p>}
-      {!loading && groups.map(g => {
-        const groupStudents = students.filter(s => g.studentIds.includes(s.id));
-        return (
-          <div key={g.id} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 18, padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+      {!loading && visible.length === 0 && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>No hay grupos.</p>}
+
+      <div className="groups-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 20 }}>
+        {!loading && visible.map(g => {
+          const color = ACT_BY_ID[g.activity]?.color || 'var(--ink)';
+          const ageLabel = (g.minAge || g.maxAge)
+            ? `${g.minAge || ''}${g.maxAge ? `–${g.maxAge}` : '+'} años`
+            : null;
+          return (
+            <div key={g.id} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderLeft: `5px solid ${color}`, borderRadius: 18, padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
               <div>
                 <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: 'var(--ink)' }}>{g.name}</h3>
-                <span className="activity-pill" style={{ display: 'inline-block', marginTop: 4 }}>{ACT_BY_ID[g.activity]?.name || g.activity}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', background: `color-mix(in oklab, ${color} 16%, var(--bg-2))`, color, padding: '3px 10px', borderRadius: 99 }}>{g.activityName}</span>
+                  {ageLabel && <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>{ageLabel}</span>}
+                </div>
               </div>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <button className="icon-btn" onClick={() => onEditGroup(g)}><I.Edit /></button>
-                <button className="icon-btn danger" onClick={() => deleteGroup(g.id)}><I.Trash /></button>
-              </div>
-            </div>
-            
-            <div style={{ marginTop: 'auto', borderTop: '1px solid var(--line-2)', paddingTop: 12 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-3)', marginBottom: 8 }}>Alumnos ({groupStudents.length})</div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {groupStudents.map(s => (
-                  <span key={s.id} style={{ fontSize: 11, background: 'var(--bg-3)', border: '1px solid var(--line)', padding: '2px 8px', borderRadius: 6, color: 'var(--ink-2)' }}>
-                    {s.firstName} {s.lastName?.[0] || ""}.
-                  </span>
+
+              <div style={{ display: 'grid', gap: 6 }}>
+                {g.schedule.length === 0 && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Sin horario asignado</span>}
+                {g.schedule.map((s, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: 'var(--ink-2)', flexWrap: 'wrap' }}>
+                    <span style={{ fontWeight: 800, color: 'var(--ink)', minWidth: 32 }}>{s.day}</span>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><I.Clock width={13} height={13} /> {s.time}</span>
+                    {s.room && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><I.MapPin width={13} height={13} /> {s.room}</span>}
+                    {s.instructor && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><I.User width={13} height={13} /> {s.instructor}</span>}
+                  </div>
                 ))}
-                {groupStudents.length === 0 && <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Sin alumnos</span>}
+              </div>
+
+              <div style={{ marginTop: 'auto', borderTop: '1px solid var(--line-2)', paddingTop: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-3)', marginBottom: 8 }}>Alumnos ({g.studentCount})</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {g.students.map(s => (
+                    <span key={s.id} style={{ fontSize: 11, background: 'var(--bg-3)', border: '1px solid var(--line)', padding: '2px 8px', borderRadius: 6, color: 'var(--ink-2)' }}>
+                      {s.name}
+                    </span>
+                  ))}
+                  {g.studentCount === 0 && <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Sin alumnos</span>}
+                </div>
               </div>
             </div>
-          </div>
-        );
-      })}
-    </div>
+          );
+        })}
+      </div>
+    </>
   );
 }
 

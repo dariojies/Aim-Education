@@ -593,8 +593,12 @@ app.post('/api/logout', authenticateSession, (req, res) => {
 
 app.get('/api/users', authenticateSession, async (req, res) => {
     try {
+        // Solo alumnos del club Aim Education (no todos los usuarios de la plataforma).
         const result = await pool.query(
-            'SELECT user_id, name, surname, email, belt, dev_role, role, profile_picture FROM users'
+            `SELECT user_id, name, surname, email, belt, dev_role, role, profile_picture
+             FROM users WHERE club_id = $1 AND role = 'student'
+             ORDER BY name, surname`,
+            [AIM_CLUB_ID]
         );
         const mapped = result.rows.map(u => ({
             id: u.user_id,
@@ -889,7 +893,7 @@ app.delete('/api/admin/instructores/:id', authenticateSession, (req, res) => res
 app.get('/api/admin/groups', authenticateSession, async (req, res) => {
     try {
         const result = await pool.query(`
-            SELECT g.group_id AS id, g.name, g.time, g.max_students AS "maxStudents",
+            SELECT g.group_id AS id, g.name, g.time, g.sessions, g.max_students AS "maxStudents",
                    g.min_age AS "minAge", g.max_age AS "maxAge",
                    a.name AS activity_name, a.activity_type,
                    COALESCE(
@@ -901,22 +905,43 @@ app.get('/api/admin/groups', authenticateSession, async (req, res) => {
             LEFT JOIN tul_group_students gs ON gs.group_id = g.group_id
             LEFT JOIN users u ON u.user_id = gs.student_id
             WHERE a.club_id = $1
-            GROUP BY g.group_id, g.name, g.time, g.max_students, g.min_age, g.max_age, a.name, a.activity_type
+            GROUP BY g.group_id, g.name, g.time, g.sessions, g.max_students, g.min_age, g.max_age, a.name, a.activity_type
             ORDER BY a.name, g.name
         `, [AIM_CLUB_ID]);
-        res.json(result.rows.map(g => ({
-            id: g.id,
-            name: g.name,
-            time: g.time,
-            activity: mapActivityId(g.activity_name, g.activity_type),
-            activityName: g.activity_name,
-            maxStudents: g.maxStudents,
-            minAge: g.minAge,
-            maxAge: g.maxAge,
-            students: g.students,
-            studentIds: g.students.map(s => s.id),
-            studentCount: g.students.length,
-        })));
+        const DAYS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+        res.json(result.rows.map(g => {
+            const sessions = Array.isArray(g.sessions) ? g.sessions : [];
+            const rooms = [...new Set(sessions.map(s => s.aulaName).filter(Boolean))];
+            const instructors = [...new Set(sessions.map(s => s.instructorName).filter(Boolean))];
+            const schedule = [];
+            for (const s of sessions) {
+                for (const d of (Array.isArray(s.days) ? s.days : [])) {
+                    schedule.push({
+                        day: DAYS[Number(d)] || '',
+                        dayNum: Number(d),
+                        time: `${s.startTime || ''}–${s.endTime || ''}`,
+                        room: s.aulaName || '',
+                        instructor: s.instructorName || '',
+                    });
+                }
+            }
+            schedule.sort((x, y) => (x.dayNum - y.dayNum) || x.time.localeCompare(y.time));
+            return {
+                id: g.id,
+                name: g.name,
+                activity: mapActivityId(g.activity_name, g.activity_type),
+                activityName: g.activity_name,
+                maxStudents: g.maxStudents,
+                minAge: g.minAge,
+                maxAge: g.maxAge,
+                rooms,
+                instructors,
+                schedule,
+                students: g.students,
+                studentIds: g.students.map(s => s.id),
+                studentCount: g.students.length,
+            };
+        }));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
