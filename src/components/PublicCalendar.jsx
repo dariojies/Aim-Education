@@ -11,6 +11,7 @@ export default function PublicCalendar() {
   const [loadingSlots, setLoadingSlots] = useState(true);
   const [selectedRoom, setSelectedRoom] = useState("Todas");
   const [eventsRaw, setEventsRaw] = useState([]);
+  const [selectedEvent, setSelectedEvent] = useState(null);
 
   useEffect(() => {
     fetch('/api/events?all=1')
@@ -163,7 +164,9 @@ export default function PublicCalendar() {
                         }) : [];
                         const isToday = day === today.getDate() && month === today.getMonth() && year === today.getFullYear();
                         return (
-                          <div key={i} style={{
+                          <div key={i}
+                            onClick={() => dayEvents.length && setSelectedEvent(dayEvents[0])}
+                            style={{
                             aspectRatio: "1/1",
                             background: day ? (isToday ? "var(--bg-3)" : "transparent") : "transparent",
                             border: day ? `1px solid ${isToday ? "var(--ink)" : "var(--line-2)"}` : "none",
@@ -213,7 +216,9 @@ export default function PublicCalendar() {
                         const a = ACT_BY_ID[e.act];
                         const date = new Date(e.date);
                         return (
-                          <div key={i} className={a?.className || ""} style={{
+                          <div key={i} className={a?.className || ""}
+                          onClick={() => setSelectedEvent(e)}
+                          style={{
                             background: "var(--bg-2)",
                             border: "1px solid var(--line)",
                             borderRadius: 14,
@@ -352,6 +357,62 @@ export default function PublicCalendar() {
             )}
           </div>
         </section>
+
+        {selectedEvent && (() => {
+          const a = ACT_BY_ID[selectedEvent.act];
+          const color = a?.color || "var(--ink)";
+          const start = new Date(selectedEvent.date);
+          const end = selectedEvent.end ? new Date(selectedEvent.end) : null;
+          const fmt = (dt) => dt.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+          const dateText = end && end.getTime() !== start.getTime()
+            ? `${fmt(start)} — ${fmt(end)}`
+            : fmt(start);
+          return (
+            <div
+              onClick={(ev) => { if (ev.target === ev.currentTarget) setSelectedEvent(null); }}
+              style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", backdropFilter: "blur(4px)", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+              <div style={{ background: "var(--bg-2)", borderRadius: 20, width: "100%", maxWidth: 560, maxHeight: "92vh", overflowY: "auto", position: "relative" }}>
+                <button onClick={() => setSelectedEvent(null)} aria-label="Cerrar"
+                  style={{ position: "absolute", top: 14, right: 14, zIndex: 2, background: "rgba(0,0,0,.45)", color: "white", border: 0, borderRadius: 10, width: 34, height: 34, cursor: "pointer", display: "grid", placeItems: "center" }}>
+                  <I.X />
+                </button>
+
+                {selectedEvent.posterUrl ? (
+                  <img src={selectedEvent.posterUrl} alt={selectedEvent.title}
+                    style={{ width: "100%", maxHeight: 420, objectFit: "contain", background: "var(--ink)", borderRadius: "20px 20px 0 0", display: "block" }} />
+                ) : (
+                  <div style={{ height: 140, borderRadius: "20px 20px 0 0", background: `linear-gradient(135deg, ${color}, color-mix(in oklab, ${color} 55%, #000))` }} />
+                )}
+
+                <div style={{ padding: 24 }}>
+                  <span style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".12em", color }}>{a?.name || selectedEvent.act}</span>
+                  <h2 style={{ margin: "6px 0 16px", fontFamily: "var(--font-display)", fontSize: 26, fontWeight: 800, letterSpacing: "-.02em", color: "var(--ink)" }}>{selectedEvent.title}</h2>
+
+                  <div style={{ display: "grid", gap: 10, marginBottom: selectedEvent.desc ? 20 : 0 }}>
+                    <div style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 14, color: "var(--ink-2)" }}>
+                      <I.Calendar width={16} height={16} style={{ color, flexShrink: 0 }} />
+                      <span style={{ textTransform: "capitalize" }}>{dateText}</span>
+                    </div>
+                    <div style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 14, color: "var(--ink-2)" }}>
+                      <I.Clock width={16} height={16} style={{ color, flexShrink: 0 }} />
+                      <span>{selectedEvent.time}</span>
+                    </div>
+                    {selectedEvent.venue && (
+                      <div style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 14, color: "var(--ink-2)" }}>
+                        <I.MapPin width={16} height={16} style={{ color, flexShrink: 0 }} />
+                        <span>{selectedEvent.venue}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {selectedEvent.desc && (
+                    <p style={{ margin: 0, fontSize: 15, lineHeight: 1.6, color: "var(--ink-2)", whiteSpace: "pre-wrap" }}>{selectedEvent.desc}</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         <AimFooter />
       </main>
