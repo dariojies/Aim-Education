@@ -999,14 +999,14 @@ function AdminEvents({ showToast }) {
   }
   useEffect(() => { load(); }, []);
 
-  const blank = { title: '', description: '', date: '', endDate: '', time: '', venue: '', activity: 'taekwondo', posterUrl: '' };
+  const blank = { title: '', description: '', date: '', endDate: '', time: '', endTime: '', venue: '', price: '', activity: 'taekwondo', posterUrl: '' };
 
   function startEdit(ev) {
     setEditing({
       id: ev.id, title: ev.title || '', description: ev.description || '',
       date: ev.date ? String(ev.date).slice(0, 10) : '',
       endDate: ev.endDate ? String(ev.endDate).slice(0, 10) : '',
-      time: ev.time || '', venue: ev.venue || '', activity: ev.activity || 'taekwondo', posterUrl: ev.posterUrl || '',
+      time: ev.time || '', endTime: ev.endTime || '', venue: ev.venue || '', price: ev.price || '', activity: ev.activity || 'taekwondo', posterUrl: ev.posterUrl || '',
     });
   }
 
@@ -1071,8 +1071,9 @@ function AdminEvents({ showToast }) {
                 <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color }}>{a?.name || ev.activity}</span>
                 <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: 'var(--ink)' }}>{ev.title}</h3>
                 <div style={{ fontSize: 13, color: 'var(--ink-2)', display: 'grid', gap: 4 }}>
-                  <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}><I.Calendar width={13} height={13} /> {fmt(ev.date)}{ev.endDate ? ` – ${fmt(ev.endDate)}` : ''}{ev.time ? ` · ${ev.time}` : ''}</span>
+                  <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}><I.Calendar width={13} height={13} /> {fmt(ev.date)}{ev.endDate ? ` – ${fmt(ev.endDate)}` : ''}{ev.time ? ` · ${ev.time}${ev.endTime ? `–${ev.endTime}` : ''}` : ''}</span>
                   {ev.venue && <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}><I.MapPin width={13} height={13} /> {ev.venue}</span>}
+                  {ev.price && <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontWeight: 700, color }}>{ev.price}</span>}
                 </div>
                 {ev.description && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.4 }}>{ev.description}</p>}
                 <div style={{ marginTop: 'auto', display: 'flex', gap: 8, paddingTop: 10 }}>
@@ -1096,10 +1097,12 @@ function AdminEvents({ showToast }) {
                 <div className="field"><label>Fecha</label><input type="date" value={editing.date} onChange={e => setEditing({ ...editing, date: e.target.value })} required /></div>
                 <div className="field"><label>Fecha fin (opcional)</label><input type="date" value={editing.endDate} onChange={e => setEditing({ ...editing, endDate: e.target.value })} /></div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                <div className="field"><label>Hora</label><input value={editing.time} onChange={e => setEditing({ ...editing, time: e.target.value })} placeholder="Ej. 19:00" /></div>
-                <div className="field"><label>Lugar</label><input value={editing.venue} onChange={e => setEditing({ ...editing, venue: e.target.value })} placeholder="Ej. Teatro Municipal" /></div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+                <div className="field"><label>Hora inicio</label><input value={editing.time} onChange={e => setEditing({ ...editing, time: e.target.value })} placeholder="Ej. 19:00" /></div>
+                <div className="field"><label>Hora fin</label><input value={editing.endTime} onChange={e => setEditing({ ...editing, endTime: e.target.value })} placeholder="Ej. 21:00" /></div>
+                <div className="field"><label>Precio</label><input value={editing.price} onChange={e => setEditing({ ...editing, price: e.target.value })} placeholder="Ej. 5€ / Gratis" /></div>
               </div>
+              <div className="field"><label>Lugar</label><input value={editing.venue} onChange={e => setEditing({ ...editing, venue: e.target.value })} placeholder="Ej. Teatro Municipal" /></div>
               <div className="field">
                 <label>Actividad (color)</label>
                 <select value={editing.activity} onChange={e => setEditing({ ...editing, activity: e.target.value })}>

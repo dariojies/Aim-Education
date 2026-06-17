@@ -40,7 +40,9 @@ export default function PublicCalendar() {
     title: e.title,
     act: e.activity,
     time: e.time || "Todo el día",
+    endTime: e.endTime || null,
     venue: e.venue || "",
+    price: e.price || null,
     desc: e.description || "",
     posterUrl: e.posterUrl || null,
   }));
@@ -393,14 +395,22 @@ export default function PublicCalendar() {
                       <I.Calendar width={16} height={16} style={{ color, flexShrink: 0 }} />
                       <span style={{ textTransform: "capitalize" }}>{dateText}</span>
                     </div>
-                    <div style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 14, color: "var(--ink-2)" }}>
-                      <I.Clock width={16} height={16} style={{ color, flexShrink: 0 }} />
-                      <span>{selectedEvent.time}</span>
-                    </div>
+                    {(selectedEvent.time || selectedEvent.endTime) && (
+                      <div style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 14, color: "var(--ink-2)" }}>
+                        <I.Clock width={16} height={16} style={{ color, flexShrink: 0 }} />
+                        <span>{selectedEvent.time}{selectedEvent.endTime ? ` – ${selectedEvent.endTime}` : ''}</span>
+                      </div>
+                    )}
                     {selectedEvent.venue && (
                       <div style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 14, color: "var(--ink-2)" }}>
                         <I.MapPin width={16} height={16} style={{ color, flexShrink: 0 }} />
                         <span>{selectedEvent.venue}</span>
+                      </div>
+                    )}
+                    {selectedEvent.price && (
+                      <div style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 14, color: "var(--ink-2)" }}>
+                        <I.CreditCard width={16} height={16} style={{ color, flexShrink: 0 }} />
+                        <span style={{ fontWeight: 700 }}>{selectedEvent.price}</span>
                       </div>
                     )}
                   </div>

@@ -223,6 +223,8 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_eventos_date ON aim_eventos(event_date)`);
+        await client.query(`ALTER TABLE aim_eventos ADD COLUMN IF NOT EXISTS end_time VARCHAR(100)`);
+        await client.query(`ALTER TABLE aim_eventos ADD COLUMN IF NOT EXISTS price VARCHAR(100)`);
     } finally {
         client.release();
     }
@@ -982,7 +984,9 @@ function mapEvent(r) {
         date: r.event_date,
         endDate: r.end_date,
         time: r.time,
+        endTime: r.end_time,
         venue: r.venue,
+        price: r.price,
         activity: r.activity || 'taekwondo',
         posterUrl: r.poster_url,
     };
@@ -1005,14 +1009,14 @@ app.get('/api/events', async (req, res) => {
 });
 
 app.post('/api/admin/events', authenticateSession, async (req, res) => {
-    const { title, description, date, endDate, time, venue, activity, posterUrl } = req.body;
+    const { title, description, date, endDate, time, endTime, venue, price, activity, posterUrl } = req.body;
     if (!title || !date) return res.status(400).json({ error: 'Título y fecha son obligatorios.' });
     const id = crypto.randomUUID();
     try {
         await pool.query(
-            `INSERT INTO aim_eventos (id, title, description, event_date, end_date, time, venue, activity, poster_url)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-            [id, title, description || null, date, endDate || null, time || null, venue || null, activity || 'taekwondo', posterUrl || null]
+            `INSERT INTO aim_eventos (id, title, description, event_date, end_date, time, end_time, venue, price, activity, poster_url)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+            [id, title, description || null, date, endDate || null, time || null, endTime || null, venue || null, price || null, activity || 'taekwondo', posterUrl || null]
         );
         const result = await pool.query('SELECT * FROM aim_eventos WHERE id = $1', [id]);
         res.status(201).json(mapEvent(result.rows[0]));
@@ -1023,14 +1027,14 @@ app.post('/api/admin/events', authenticateSession, async (req, res) => {
 });
 
 app.put('/api/admin/events/:id', authenticateSession, async (req, res) => {
-    const { title, description, date, endDate, time, venue, activity, posterUrl } = req.body;
+    const { title, description, date, endDate, time, endTime, venue, price, activity, posterUrl } = req.body;
     if (!title || !date) return res.status(400).json({ error: 'Título y fecha son obligatorios.' });
     try {
         const result = await pool.query(
             `UPDATE aim_eventos
-             SET title=$1, description=$2, event_date=$3, end_date=$4, time=$5, venue=$6, activity=$7, poster_url=$8, updated_at=NOW()
-             WHERE id=$9 RETURNING *`,
-            [title, description || null, date, endDate || null, time || null, venue || null, activity || 'taekwondo', posterUrl || null, req.params.id]
+             SET title=$1, description=$2, event_date=$3, end_date=$4, time=$5, end_time=$6, venue=$7, price=$8, activity=$9, poster_url=$10, updated_at=NOW()
+             WHERE id=$11 RETURNING *`,
+            [title, description || null, date, endDate || null, time || null, endTime || null, venue || null, price || null, activity || 'taekwondo', posterUrl || null, req.params.id]
         );
         if (result.rowCount === 0) return res.status(404).json({ error: 'Evento no encontrado.' });
         res.json(mapEvent(result.rows[0]));
