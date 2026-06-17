@@ -1591,17 +1591,21 @@ if (process.env.NODE_ENV !== 'production') {
     });
     app.use(vite.middlewares);
 
+    // /admin lo gestiona la SPA principal (interfaz nueva), no la app antigua de admin/
     app.get('/admin*', (req, res) => {
-        res.sendFile(path.join(__dirname, 'admin/index.html'));
+        res.sendFile(path.join(__dirname, 'index.html'));
     });
 } else {
     // Prod: serve src/ images and dist/ built files
     app.use('/src', express.static(path.join(__dirname, 'src')));
-    app.use(express.static(path.join(__dirname, 'dist')));
 
+    // /admin lo gestiona la SPA principal (interfaz nueva). Debe ir ANTES del
+    // express.static para que no sirva el index del antiguo dist/admin/ por indexado.
     app.get('/admin*', (req, res) => {
-        res.sendFile(path.join(__dirname, 'dist/admin/index.html'));
+        res.sendFile(path.join(__dirname, 'dist/index.html'));
     });
+
+    app.use(express.static(path.join(__dirname, 'dist')));
 }
 
 app.get('/', (req, res) => {
