@@ -4,119 +4,136 @@ import { AimLogo, ACT_BY_ID } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 import { UserSupport } from './AdminSupport.jsx';
 
-function ClassRow({ act, who, day, dnum, time, room }) {
-  const a = ACT_BY_ID[act];
+function EmptyState({ icon, text }) {
   return (
-    <div className={`class-row ${a?.className || ""}`}>
-      <div className="day"><div className="d">{dnum}</div><div className="w">{day}</div></div>
-      <div className="info">
-        <h4>{who}</h4>
-        <p>{time} · {room}</p>
-      </div>
-      <span className="badge">{a?.name || act}</span>
+    <div style={{display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, padding: "44px 20px", color: "var(--ink-3)", textAlign: "center"}}>
+      {icon && <div style={{opacity: .45, transform: "scale(1.5)"}}>{icon}</div>}
+      <p style={{margin: 0, fontSize: 14, maxWidth: 360, lineHeight: 1.5}}>{text}</p>
     </div>
   );
 }
 
-function SummaryRow({ label, value, tone }) {
-  return (
-    <div style={{display: "flex", justifyContent: "space-between", paddingBottom: 8, borderBottom: "1px dashed var(--line)", fontSize: 13}}>
-      <span style={{color: "var(--ink-3)", fontWeight: 600}}>{label}</span>
-      <span style={{color: tone || "var(--ink)", fontWeight: 800, fontFamily: "var(--font-display)"}}>{value}</span>
-    </div>
-  );
-}
+const DAY_NAMES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
 
 function DashOverview({ go, setView }) {
+  const [classes, setClasses] = useState([]);
+  const [posts, setPosts] = useState([]);
+  const [receipts, setReceipts] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    Promise.all([
+      fetch('/api/classes', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
+      fetch('/api/posts?limit=3').then(r => r.ok ? r.json() : []),
+      fetch('/api/receipts', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
+    ]).then(([c, p, rec]) => {
+      setClasses(Array.isArray(c) ? c : []);
+      setPosts(Array.isArray(p) ? p : []);
+      setReceipts(Array.isArray(rec) ? rec : []);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, []);
+
+  const weekClasses = [...classes].sort((a, b) => (a.d - b.d) || (a.s - b.s)).slice(0, 6);
+  const totalPaid = receipts.reduce((s, r) => s + (r.amount || 0), 0);
+
   return (
     <>
-      <div className="dash-cards">
-        <div className="stat-card act-ballet">
-          <div className="corner"><I.Calendar /></div>
-          <div className="l">Próxima clase</div>
-          <div className="v">Hoy <small>18:00</small></div>
-          <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>Lucía · Ballet Primary</div>
-        </div>
-        <div className="stat-card warn act-funcional">
-          <div className="corner"><I.Wallet /></div>
-          <div className="l">Próximo pago</div>
-          <div className="v">112€</div>
-          <div className="trend">vence en 4 días</div>
-        </div>
+      <div className="dash-cards" style={{gridTemplateColumns: "repeat(3, 1fr)"}}>
         <div className="stat-card act-taekwondo">
-          <div className="corner"><I.Check /></div>
-          <div className="l">Asistencia mes</div>
-          <div className="v">92%</div>
-          <div className="trend"><I.Arrow width={10} height={10}/> +6% vs mes pasado</div>
+          <div className="corner"><I.Calendar /></div>
+          <div className="l">Clases en horario</div>
+          <div className="v">{classes.length}</div>
+          <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>en la academia</div>
+        </div>
+        <div className="stat-card act-funcional">
+          <div className="corner"><I.Wallet /></div>
+          <div className="l">Recibos</div>
+          <div className="v">{receipts.length}</div>
+          <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>{totalPaid > 0 ? `${totalPaid.toLocaleString("es-ES")}€ registrados` : "sin recibos"}</div>
         </div>
         <div className="stat-card act-pintura">
-          <div className="corner"><I.Star /></div>
-          <div className="l">Próximo evento</div>
-          <div className="v">14 Jun</div>
-          <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>Festival Anual de Ballet</div>
+          <div className="corner"><I.Bell /></div>
+          <div className="l">Avisos del club</div>
+          <div className="v">{posts.length}</div>
+          <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>noticias recientes</div>
         </div>
       </div>
 
       <div className="panel">
-        <h2><I.Calendar /> Esta semana</h2>
-        <p className="sub">Las clases programadas para tu familia.</p>
-        <div className="classes-grid">
-          <ClassRow act="ballet" name="Lucía" who="Lucía · Ballet Primary" day="Hoy" dnum="22" time="18:00 – 19:00" room="Sala 1" />
-          <ClassRow act="taekwondo" name="Mateo" who="Mateo · Cinturones blancos" day="Hoy" dnum="22" time="17:00 – 18:00" room="Tatami" />
-          <ClassRow act="ballet" name="Lucía" who="Lucía · Ballet Primary" day="Mañana" dnum="23" time="18:00 – 19:00" room="Sala 1" />
-          <ClassRow act="ingles" name="Ana" who="Ana · B2 First" day="Jue" dnum="24" time="19:00 – 20:30" room="Aula 3" />
-          <ClassRow act="funcional" name="Carlos" who="Carlos · Funcional tarde" day="Vie" dnum="25" time="19:00 – 20:00" room="Sala fit" />
-          <ClassRow act="taekwondo" name="Mateo" who="Mateo · Cinturones blancos" day="Vie" dnum="25" time="17:00 – 18:00" room="Tatami" />
-        </div>
+        <h2><I.Calendar /> Horario de esta semana</h2>
+        <p className="sub">Clases programadas en la academia.</p>
+        {loading ? (
+          <EmptyState text="Cargando horario..." />
+        ) : weekClasses.length === 0 ? (
+          <EmptyState icon={<I.Calendar />} text="No hay clases programadas todavía." />
+        ) : (
+          <div className="classes-grid">
+            {weekClasses.map((c) => {
+              const a = ACT_BY_ID[c.act];
+              return (
+                <div key={c.id} className={`class-row ${a?.className || ""}`}>
+                  <div className="day"><div className="d">{(DAY_NAMES[c.d] || "").slice(0, 3)}</div><div className="w">{a?.name || c.act}</div></div>
+                  <div className="info">
+                    <h4>{c.title}</h4>
+                    <p>{c.time || `${c.s}:00`} · {c.room}</p>
+                  </div>
+                  <span className="badge">{a?.name || c.act}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div style={{display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 22}}>
         <div className="panel">
           <h2><I.Bell /> Avisos recientes</h2>
-          <p className="sub">Comunicaciones del club y de tus actividades.</p>
-          {[
-            { tag: "Ballet", color: "var(--pink)", t: "Recordatorio uniforme festival", d: "Hace 2 horas", body: "El sábado 14 de junio, todos los grupos con leotardo rosa y zapatillas blancas." },
-            { tag: "Aim", color: "var(--purple)", t: "Inscripciones campamento de verano abiertas", d: "Ayer", body: "Hasta el 30% de descuento para familias actuales del club hasta el 30 de abril." },
-            { tag: "Taekwondo", color: "var(--teal)", t: "Examen de cambio de cinturón confirmado", d: "Hace 3 días", body: "Sábado 28 de junio a las 10:00 — confirma la asistencia de Mateo en pagos." },
-          ].map((n, i) => (
-            <div key={i} style={{display: "flex", gap: 14, padding: "14px 0", borderBottom: i < 2 ? "1px solid var(--line-2)" : "0"}}>
-              <div style={{width: 8, height: 8, borderRadius: "50%", background: n.color, marginTop: 8, flexShrink: 0}} />
-              <div style={{flex: 1}}>
-                <div style={{display: "flex", justifyContent: "space-between", marginBottom: 4}}>
-                  <span style={{fontSize: 10, fontWeight: 800, letterSpacing: ".12em", textTransform: "uppercase", color: n.color}}>{n.tag}</span>
-                  <span style={{fontSize: 11, color: "var(--ink-3)"}}>{n.d}</span>
+          <p className="sub">Comunicaciones del club.</p>
+          {loading ? (
+            <EmptyState text="Cargando avisos..." />
+          ) : posts.length === 0 ? (
+            <EmptyState icon={<I.Bell />} text="No hay avisos publicados." />
+          ) : posts.map((n, i) => {
+            const color = CAT_COLOR[n.category] || "var(--purple)";
+            return (
+              <div key={n.id} style={{display: "flex", gap: 14, padding: "14px 0", borderBottom: i < posts.length - 1 ? "1px solid var(--line-2)" : "0"}}>
+                <div style={{width: 8, height: 8, borderRadius: "50%", background: color, marginTop: 8, flexShrink: 0}} />
+                <div style={{flex: 1}}>
+                  <div style={{display: "flex", justifyContent: "space-between", marginBottom: 4}}>
+                    <span style={{fontSize: 10, fontWeight: 800, letterSpacing: ".12em", textTransform: "uppercase", color}}>{n.category || "Aim"}</span>
+                    <span style={{fontSize: 11, color: "var(--ink-3)"}}>{timeAgo(n.published_at || n.created_at)}</span>
+                  </div>
+                  <h4 style={{margin: "0 0 4px", fontSize: 14, fontWeight: 700, color: "var(--ink)"}}>{n.title}</h4>
+                  {n.excerpt && <p style={{margin: 0, fontSize: 13, color: "var(--ink-2)", lineHeight: 1.45}}>{n.excerpt}</p>}
                 </div>
-                <h4 style={{margin: "0 0 4px", fontSize: 14, fontWeight: 700, color: "var(--ink)"}}>{n.t}</h4>
-                <p style={{margin: 0, fontSize: 13, color: "var(--ink-2)", lineHeight: 1.45}}>{n.body}</p>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         <div className="panel">
           <h2><I.Wallet /> Resumen económico</h2>
-          <p className="sub">Estado de pagos del mes en curso.</p>
-          <div style={{
-            background: "var(--grad-aim)",
-            borderRadius: 14,
-            padding: 22,
-            color: "white",
-            marginBottom: 18,
-            position: "relative",
-            overflow: "hidden",
-          }}>
-            <div style={{fontSize: 12, opacity: .8, textTransform: "uppercase", letterSpacing: ".1em", fontWeight: 700}}>Pendiente</div>
-            <div style={{fontFamily: "var(--font-display)", fontSize: 42, fontWeight: 800, letterSpacing: "-.025em", marginTop: 6}}>112,00€</div>
-            <div style={{fontSize: 12, marginTop: 8, opacity: .9}}>Cuotas mayo · 3 alumnos</div>
-            <button className="btn" style={{background: "var(--ink)", color: "white", marginTop: 14}} onClick={() => setView("payments")}>
-              Pagar ahora <I.Arrow />
-            </button>
-          </div>
-          <div style={{display: "grid", gap: 8}}>
-            <SummaryRow label="Total este mes" value="112€" />
-            <SummaryRow label="Pagado en el año" value="970€" />
-            <SummaryRow label="Cartera comisiones" value="42€" tone="var(--teal)" />
-          </div>
+          <p className="sub">Tus recibos registrados.</p>
+          {receipts.length === 0 ? (
+            <EmptyState icon={<I.Wallet />} text="No hay recibos disponibles." />
+          ) : (
+            <div style={{
+              background: "var(--grad-aim)",
+              borderRadius: 14,
+              padding: 22,
+              color: "white",
+              position: "relative",
+              overflow: "hidden",
+            }}>
+              <div style={{fontSize: 12, opacity: .8, textTransform: "uppercase", letterSpacing: ".1em", fontWeight: 700}}>Total registrado</div>
+              <div style={{fontFamily: "var(--font-display)", fontSize: 42, fontWeight: 800, letterSpacing: "-.025em", marginTop: 6}}>{totalPaid.toLocaleString("es-ES", {minimumFractionDigits: 2})}€</div>
+              <div style={{fontSize: 12, marginTop: 8, opacity: .9}}>{receipts.length} recibo{receipts.length !== 1 ? "s" : ""}</div>
+              <button className="btn" style={{background: "var(--ink)", color: "white", marginTop: 14}} onClick={() => setView("payments")}>
+                Ver recibos <I.Arrow />
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </>
@@ -284,47 +301,11 @@ function DashClasses() {
 }
 
 function DashAttendance() {
-  const students = [
-    { name: "Lucía García", act: "ballet", percent: 95, sessions: 24, attended: 23, missed: 1 },
-    { name: "Mateo García", act: "taekwondo", percent: 88, sessions: 32, attended: 28, missed: 4 },
-    { name: "Ana García", act: "ingles", percent: 75, sessions: 16, attended: 12, missed: 4 },
-    { name: "Carlos García", act: "funcional", percent: 100, sessions: 12, attended: 12, missed: 0 },
-  ];
-
   return (
     <div className="panel">
       <h2><I.Check /> Asistencia del trimestre</h2>
-      <p className="sub">Histórico por miembro de la familia. Verde: asistió. Naranja: ausencia. Gris: clases futuras.</p>
-
-      <div style={{display: "grid", gap: 20, marginTop: 16}}>
-        {students.map((s, i) => {
-          const a = ACT_BY_ID[s.act];
-          return (
-            <div key={i} className={a.className}>
-              <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10}}>
-                <div style={{display: "flex", alignItems: "center", gap: 10}}>
-                  <div className="avatar" style={{background: a.color}}>{s.name[0]}</div>
-                  <div>
-                    <div style={{fontWeight: 700, fontSize: 15}}>{s.name}</div>
-                    <div style={{fontSize: 12, color: "var(--ink-3)"}}>{a.name} · {s.attended}/{s.sessions} sesiones</div>
-                  </div>
-                </div>
-                <div style={{textAlign: "right"}}>
-                  <div style={{fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 28, letterSpacing: "-.02em", lineHeight: 1, color: s.percent >= 90 ? "var(--teal)" : s.percent >= 75 ? "var(--orange-soft)" : "var(--orange)"}}>{s.percent}%</div>
-                  <div style={{fontSize: 11, color: "var(--ink-3)", fontWeight: 600, marginTop: 2}}>asistencia</div>
-                </div>
-              </div>
-              <div className="attendance-bar">
-                {Array.from({length: 32}).map((_, idx) => {
-                  if (idx < s.attended) return <div key={idx} className="ok" style={{flex: 1}} />;
-                  if (idx < s.attended + s.missed) return <div key={idx} className="miss" style={{flex: 1}} />;
-                  return <div key={idx} className="future" style={{flex: 1}} />;
-                })}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      <p className="sub">Histórico de asistencia por alumno.</p>
+      <EmptyState icon={<I.Check />} text="El registro de asistencia aún no está disponible. Aparecerá aquí cuando el club empiece a registrar las sesiones." />
     </div>
   );
 }
@@ -392,45 +373,8 @@ function DashWallet() {
   return (
     <div className="panel">
       <h2><I.CreditCard /> Tu cartera de comisiones</h2>
-      <p className="sub">Gana 10€ por cada familia que se inscriba con tu código. Sin límite.</p>
-
-      <div style={{display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginTop: 18}}>
-        <div style={{background: "var(--grad-aim)", borderRadius: 18, padding: 28, color: "white"}}>
-          <div style={{fontSize: 11, letterSpacing: ".15em", fontWeight: 800, textTransform: "uppercase", opacity: .9}}>Tu código</div>
-          <div style={{fontFamily: "var(--font-display)", fontSize: 42, fontWeight: 800, letterSpacing: "-.025em", marginTop: 10}}>AIM-A4G7K</div>
-          <button className="btn btn-sm" style={{marginTop: 14, background: "rgba(255,255,255,.22)", color: "white", border: "1px solid rgba(255,255,255,.4)"}}>Copiar enlace</button>
-        </div>
-        <div style={{background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 18, padding: 28}}>
-          <div style={{fontSize: 11, letterSpacing: ".15em", fontWeight: 800, textTransform: "uppercase", color: "var(--ink-3)"}}>Saldo disponible</div>
-          <div style={{fontFamily: "var(--font-display)", fontSize: 42, fontWeight: 800, letterSpacing: "-.025em", marginTop: 10, color: "var(--teal)"}}>42,00€</div>
-          <div style={{fontSize: 12, color: "var(--ink-3)", marginTop: 6}}>Se aplicará en tu próxima cuota.</div>
-        </div>
-      </div>
-
-      <h3 style={{marginTop: 32, fontSize: 16, fontWeight: 700}}>Movimientos</h3>
-      <div style={{marginTop: 12}}>
-        <div className="payment-row">
-          <div><div className="name">Referido: Familia Pérez</div><div className="date">Hace 2 semanas</div></div>
-          <span className="status-pill ok">Confirmado</span>
-          <span className="date">15/04/2026</span>
-          <span className="amount" style={{color: "var(--teal)"}}>+10,00€</span>
-          <span></span>
-        </div>
-        <div className="payment-row">
-          <div><div className="name">Aplicado a cuota mensual</div><div className="date">Marzo</div></div>
-          <span className="status-pill ok">Aplicado</span>
-          <span className="date">01/03/2026</span>
-          <span className="amount" style={{color: "var(--orange)"}}>-15,00€</span>
-          <span></span>
-        </div>
-        <div className="payment-row">
-          <div><div className="name">Referido: Familia Romero</div><div className="date">Hace 2 meses</div></div>
-          <span className="status-pill ok">Confirmado</span>
-          <span className="date">10/02/2026</span>
-          <span className="amount" style={{color: "var(--teal)"}}>+10,00€</span>
-          <span></span>
-        </div>
-      </div>
+      <p className="sub">Gana recompensas por cada familia que se inscriba con tu código.</p>
+      <EmptyState icon={<I.CreditCard />} text="La cartera de comisiones aún no está disponible. Pronto podrás ver tu código de referido y tu saldo aquí." />
     </div>
   );
 }

@@ -66,7 +66,8 @@ function QuickCard({ title, desc, act, icon, onClick }) {
 function AdminOverview({ setView, refreshTrigger, showToast }) {
   const [stats, setStats] = useState(null);
   const [userCount, setUserCount] = useState(null);
-  const [receiptsTotal, setReceiptsTotal] = useState(0);
+  const [receipts, setReceipts] = useState([]);
+  const [classes, setClasses] = useState([]);
 
   useEffect(() => {
     fetch('/api/admin/posts/stats', { credentials: 'include' })
@@ -79,18 +80,28 @@ function AdminOverview({ setView, refreshTrigger, showToast }) {
       .catch(() => {});
     fetch('/api/receipts', { credentials: 'include' })
       .then(r => r.ok ? r.json() : [])
-      .then(data => {
-        const total = data.reduce((sum, r) => sum + (r.amount || 0), 0);
-        setReceiptsTotal(total);
-      })
+      .then(data => setReceipts(Array.isArray(data) ? data : []))
+      .catch(() => {});
+    fetch('/api/classes', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : [])
+      .then(data => setClasses(Array.isArray(data) ? data : []))
       .catch(() => {});
   }, [refreshTrigger]);
+
+  const receiptsTotal = receipts.reduce((sum, r) => sum + (r.amount || 0), 0);
+
+  const classCounts = {};
+  classes.forEach(c => { classCounts[c.act] = (classCounts[c.act] || 0) + 1; });
+  const actBars = Object.entries(classCounts)
+    .map(([act, count]) => ({ count, name: ACT_BY_ID[act]?.name || act, color: ACT_BY_ID[act]?.color || "var(--ink)" }))
+    .sort((a, b) => b.count - a.count);
+  const maxCount = Math.max(1, ...actBars.map(b => b.count));
 
   return (
     <>
       <div className="kpis">
         <KPI label="Alumnos registrados" value={userCount != null ? String(userCount) : "…"} trend="en la plataforma" act="taekwondo" icon={<I.Users />} />
-        <KPI label="Cuotas cobradas" value={receiptsTotal > 0 ? `${receiptsTotal.toLocaleString("es-ES")}€` : "0€"} trend="Ingresos registrados" act="funcional" icon={<I.Wallet />} />
+        <KPI label="Ingresos registrados" value={receiptsTotal > 0 ? `${receiptsTotal.toLocaleString("es-ES")}€` : "0€"} trend={`${receipts.length} recibo${receipts.length !== 1 ? "s" : ""}`} act="funcional" icon={<I.Wallet />} />
         <KPI label="Posts publicados" value={stats ? String(stats.publishedPosts) : "…"} trend={stats ? `${stats.totalViews.toLocaleString("es-ES")} visitas` : "cargando..."} act="pintura" icon={<I.Newspaper />} />
         <KPI label="Borradores" value={stats ? String(stats.draftPosts) : "…"} trend="sin publicar" act="ballet" icon={<I.Edit />} />
       </div>
@@ -99,61 +110,53 @@ function AdminOverview({ setView, refreshTrigger, showToast }) {
         <div style={{background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 18, padding: 24}}>
           <div style={{display: "flex", justifyContent: "space-between", marginBottom: 18}}>
             <h2 style={{fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 800, letterSpacing: "-.015em", margin: 0}}>
-              Cuotas pendientes
+              Últimos recibos
             </h2>
-            <button className="btn btn-sm btn-outline" onClick={() => setView("payments")}>Ver todas</button>
+            <button className="btn btn-sm btn-outline" onClick={() => setView("payments")}>Ver todos</button>
           </div>
-          {[
-            { name: "Familia Pérez", what: "Mensualidad mayo · 2 alumnos", amount: "84€", days: 4 },
-            { name: "Familia Romero", what: "Mensualidad mayo + examen", amount: "120€", days: 6 },
-            { name: "Familia Martínez", what: "Mensualidad mayo · 1 alumno", amount: "42€", days: 9 },
-            { name: "Familia Soto", what: "Cuota campamento", amount: "160€", days: 12 },
-          ].map((r, i) => (
-            <div key={i} className="payment-row">
+          {receipts.length === 0 ? (
+            <div style={{padding: "32px 0", textAlign: "center", color: "var(--ink-3)", fontSize: 14}}>No hay recibos registrados todavía.</div>
+          ) : receipts.slice(0, 5).map((r, i) => (
+            <div key={r.id || i} className="payment-row">
               <div>
-                <div className="name">{r.name}</div>
-                <div className="date">{r.what}</div>
+                <div className="name">{r.company || "Recibo"}</div>
+                <div className="date">{r.paymentMethod || "—"}</div>
               </div>
-              <span className="status-pill pending">{r.days}d</span>
-              <span className="amount">{r.amount}</span>
-              <button className="btn btn-sm btn-outline" onClick={() => showToast(`Recordatorio enviado a ${r.name}`)}>Recordar</button>
-              <button className="btn btn-sm btn-primary" onClick={() => showToast(`Pago de ${r.amount} registrado para ${r.name}`)}>Cobrar</button>
+              <span className="date">{r.date ? new Date(r.date).toLocaleDateString("es-ES") : "—"}</span>
+              <span className="amount">{r.amount != null ? `${parseFloat(r.amount).toLocaleString("es-ES", {minimumFractionDigits: 2})}€` : "—"}</span>
             </div>
           ))}
         </div>
 
         <div style={{background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 18, padding: 24}}>
           <h2 style={{fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 800, letterSpacing: "-.015em", margin: 0, marginBottom: 4}}>
-            Inscripciones por actividad
+            Clases por actividad
           </h2>
-          <p style={{fontSize: 13, color: "var(--ink-3)", margin: "0 0 18px"}}>Curso 2025-2026</p>
-          <div style={{display: "grid", gap: 12}}>
-            {[
-              { name: "Taekwondo", v: 62, c: "var(--teal)" },
-              { name: "Ballet Clásico", v: 38, c: "var(--pink)" },
-              { name: "Inglés", v: 34, c: "var(--blue)" },
-              { name: "Funcional", v: 22, c: "var(--orange)" },
-              { name: "Robótica", v: 18, c: "var(--yellow)" },
-              { name: "Pintura", v: 10, c: "var(--purple)" },
-            ].map((a, i) => (
-              <div key={i}>
-                <div style={{display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: 13, fontWeight: 600}}>
-                  <span>{a.name}</span>
-                  <span style={{color: "var(--ink-3)"}}>{a.v} alumnos</span>
+          <p style={{fontSize: 13, color: "var(--ink-3)", margin: "0 0 18px"}}>Según el horario semanal</p>
+          {actBars.length === 0 ? (
+            <div style={{padding: "32px 0", textAlign: "center", color: "var(--ink-3)", fontSize: 14}}>No hay clases en el horario.</div>
+          ) : (
+            <div style={{display: "grid", gap: 12}}>
+              {actBars.map((a, i) => (
+                <div key={i}>
+                  <div style={{display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: 13, fontWeight: 600}}>
+                    <span>{a.name}</span>
+                    <span style={{color: "var(--ink-3)"}}>{a.count} clase{a.count !== 1 ? "s" : ""}</span>
+                  </div>
+                  <div style={{height: 8, background: "var(--bg-3)", borderRadius: 99, overflow: "hidden"}}>
+                    <div style={{height: "100%", width: `${(a.count / maxCount) * 100}%`, background: a.color, transition: "width var(--tx-slow) ease"}} />
+                  </div>
                 </div>
-                <div style={{height: 8, background: "var(--bg-3)", borderRadius: 99, overflow: "hidden"}}>
-                  <div style={{height: "100%", width: `${a.v}%`, background: a.c, transition: "width var(--tx-slow) ease"}} />
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
       <div style={{marginTop: 18, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 18}}>
         <QuickCard
           title="Pasar lista de hoy"
-          desc="3 clases programadas."
+          desc={`${classes.length} clase${classes.length !== 1 ? "s" : ""} en el horario.`}
           act="taekwondo"
           icon={<I.Check />}
           onClick={() => setView("classes")}

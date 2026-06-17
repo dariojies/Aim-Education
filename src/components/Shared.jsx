@@ -53,7 +53,7 @@ const ACTIVITIES = [
   { id: "robotica", name: "Robótica", color: "#FFD526", className: "act-robotica", icon: "Robot",
     iconAsset: "/src/submarcas/simple/Robotica.png",
     fullAsset: "/src/submarcas/Robotica.png",
-    tag: "STEM", lede: "Construye el futuro hoy con nuestras clases de tecnología.",
+    tag: "STEAM", lede: "Construye el futuro hoy con nuestras clases de tecnología.",
     long: "Construcción, programación y pensamiento computacional con LEGO Education y mBot. Forma parte del Programa Camaleón.",
     ages: "Desde 6 años · Programa Camaleón",
     levels: [
@@ -64,8 +64,8 @@ const ACTIVITIES = [
   { id: "camaleon", name: "Programa Camaleón", color: "#25D8BA", className: "act-camaleon", icon: "Star",
     iconAsset: "/src/submarcas/simple/Camaleon.png",
     fullAsset: "/src/submarcas/Camaleon.png",
-    tag: "STEM", lede: "Aprende a aprender. Nuestra metodología educativa.",
-    long: "Programa transversal que combina pensamiento computacional, creatividad y trabajo cooperativo. Es el hilo conductor de las actividades STEM del club.",
+    tag: "Artes marciales", lede: "Aprende a aprender. Nuestra metodología educativa.",
+    long: "Programa transversal que combina pensamiento computacional, creatividad y trabajo cooperativo. Es el hilo conductor de las actividades STEAM del club.",
     ages: "Integrado en robótica e inglés",
     levels: [
       { day: "Integrado", time: "—", group: "Aplicado en clases de robótica", level: "Metodología" },
@@ -223,7 +223,7 @@ function AimFooter() {
               <a href="https://www.facebook.com/aimeducation.es" target="_blank" rel="noopener" aria-label="Facebook">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"/></svg>
               </a>
-              <a href="https://www.youtube.com/@aimeducation" target="_blank" rel="noopener" aria-label="YouTube">
+              <a href="https://www.youtube.com/@aimeducationesp" target="_blank" rel="noopener" aria-label="YouTube">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-2C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 2A29 29 0 0 0 1 11.75a29 29 0 0 0 .46 5.33A2.78 2.78 0 0 0 3.4 19c1.72.46 8.6.46 8.6.46s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-2 29 29 0 0 0 .46-5.25 29 29 0 0 0-.46-5.33z"/><polygon points="9.75 15.02 15.5 11.75 9.75 8.48 9.75 15.02"/></svg>
               </a>
               <a href="https://wa.me/34956742216" target="_blank" rel="noopener" aria-label="WhatsApp">
