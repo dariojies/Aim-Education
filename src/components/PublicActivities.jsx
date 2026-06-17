@@ -1,7 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { I } from './Icons.jsx';
 import { AimHeader, AimFooter, ACTIVITIES, ACT_BY_ID } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
+
+const CAT_COLOR = { taekwondo: '#21B668', ballet: '#FF99D3', ingles: '#00BBF4', robotica: '#FFD526', baile: '#AF99FF', pintura: '#5233A8', funcional: '#FF4F15', pilates: '#BFD300', camaleon: '#25D8BA', competicion: '#21B668', club: '#5233A8', general: '#5233A8', shelfie: '#FF99D3' };
+const catColor = c => CAT_COLOR[c] || '#5233A8';
+const MONTH_ABBR = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 
 function ActivityCard({ act, go, delay = 0 }) {
   return (
@@ -18,23 +22,26 @@ function ActivityCard({ act, go, delay = 0 }) {
   );
 }
 
-function NewsCard({ cat, className, imgClass, ph, title, date, body }) {
-  return (
-    <div className={`news-card ${className}`}>
-      <div className={`img ${imgClass}`}>
+function NewsCard({ cat, color = '#5233A8', img, ph, title, date, body, href }) {
+  const inner = (
+    <div className="news-card" style={{ height: "100%" }}>
+      <div className="img" style={{ background: img ? `center/cover no-repeat url(${img})` : `linear-gradient(135deg, ${color}, color-mix(in oklab, ${color} 55%, #000))` }}>
         <div className="badge-date">
           <div className="d">{date.d}</div>
           <div className="m">{date.m}</div>
         </div>
-        <div className="ph-watermark">{ph}</div>
+        {!img && <div className="ph-watermark">{ph}</div>}
       </div>
       <div className="body">
-        <span className="cat">{cat}</span>
+        <span className="cat" style={{ color }}>{cat}</span>
         <h4>{title}</h4>
         <p>{body}</p>
       </div>
     </div>
   );
+  return href
+    ? <a href={href} style={{ textDecoration: "none", color: "inherit", display: "block", height: "100%" }}>{inner}</a>
+    : inner;
 }
 
 export function PublicActivities() {
@@ -88,14 +95,19 @@ export function PublicActivities() {
 
 export function PublicNews() {
   const { go } = useRouter();
-  const NEWS = [
-    { cat: "Ballet", className: "act-ballet", imgClass: "bg-ballet", ph: "festival ballet", title: "¡Se acerca nuestro Festival de Ballet Clásico y Baile Moderno!", date: {d: "14", m: "Jun"}, body: "Nos vemos en el escenario. Inscripciones de público abiertas a partir del 1 de junio." },
-    { cat: "Taekwondo", className: "act-taekwondo", imgClass: "bg-taekwondo", ph: "torneo navideño", title: "XVII Torneo Navideño Iván Navarrete", date: {d: "07", m: "Dic"}, body: "Inscripciones abiertas para nuestros cinturones de competición. ¡Animaros a participar!" },
-    { cat: "Robótica", className: "act-robotica", imgClass: "bg-robotica", ph: "campeonato", title: "Campeonato Promoción Robótica Camaleón", date: {d: "22", m: "Mar"}, body: "Nuestros equipos junior compiten en Málaga." },
-    { cat: "Inglés", className: "act-ingles", imgClass: "bg-taekwondo", ph: "cambridge 2026", title: "Convocatoria Cambridge English curso 2025-2026", date: {d: "15", m: "May"}, body: "Plazas abiertas para A2, B1, B2 y C1. Plazas limitadas." },
-    { cat: "Aim", className: "act-funcional", imgClass: "bg-robotica", ph: "campamento verano", title: "Abrimos inscripciones del campamento de verano 2026", date: {d: "01", m: "Abr"}, body: "Cuatro semanas, edades de 4 a 14 años. Hasta el 30% de descuento para hermanos." },
-    { cat: "Pintura", className: "act-pintura", imgClass: "bg-ballet", ph: "exposición", title: "Exposición de fin de curso del Taller de Pintura", date: {d: "05", m: "Jun"}, body: "Más de 60 obras de nuestros alumnos en la sala municipal de Algeciras." },
-  ];
+  const [posts, setPosts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState("all");
+
+  useEffect(() => {
+    fetch('/api/posts?limit=50')
+      .then(r => r.ok ? r.json() : [])
+      .then(d => { setPosts(Array.isArray(d) ? d : []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
+
+  const cats = ["all", ...Array.from(new Set(posts.map(p => p.category).filter(Boolean)))];
+  const visible = filter === "all" ? posts : posts.filter(p => p.category === filter);
 
   return (
     <>
@@ -108,13 +120,52 @@ export function PublicNews() {
               <h1 className="title-display">Todo lo que pasa en <span className="grad">Aim Education.</span></h1>
               <p className="section-lede" style={{marginTop: 18}}>
                 Noticias, eventos, convocatorias y novedades del club — directamente desde
-                el equipo. También disponible vía RSS.
+                el equipo.
               </p>
             </div>
 
-            <div style={{display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginTop: 40}}>
-              {NEWS.map((n, i) => <NewsCard key={i} {...n} />)}
-            </div>
+            {cats.length > 1 && (
+              <div style={{display: "flex", gap: 8, flexWrap: "wrap", marginTop: 32}}>
+                {cats.map(c => (
+                  <button key={c} className={`filter-pill ${filter === c ? "is-active" : ""}`} onClick={() => setFilter(c)}>
+                    {c === "all" ? "Todas" : c}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {loading && (
+              <p style={{marginTop: 40, color: "var(--ink-3)"}}>Cargando noticias…</p>
+            )}
+
+            {!loading && visible.length === 0 && (
+              <div style={{marginTop: 48, textAlign: "center", color: "var(--ink-3)"}}>
+                <p style={{fontSize: 18, fontWeight: 600}}>Aún no hay noticias publicadas.</p>
+                <p style={{fontSize: 14, marginTop: 8}}>Vuelve pronto — el equipo publicará novedades aquí.</p>
+              </div>
+            )}
+
+            {!loading && visible.length > 0 && (
+              <div style={{display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16, marginTop: 40}}>
+                {visible.map(p => {
+                  const d = new Date(p.published_at || p.created_at);
+                  const color = catColor(p.category);
+                  return (
+                    <NewsCard
+                      key={p.id}
+                      cat={p.category || "Aim"}
+                      color={color}
+                      img={p.cover_image_url || null}
+                      ph={p.category || "aim"}
+                      title={p.title}
+                      date={{ d: String(d.getDate()).padStart(2, "0"), m: MONTH_ABBR[d.getMonth()] }}
+                      body={p.excerpt || ""}
+                      href={`/noticias/${p.slug}`}
+                    />
+                  );
+                })}
+              </div>
+            )}
           </div>
         </section>
 
