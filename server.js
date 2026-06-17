@@ -895,7 +895,7 @@ app.get('/api/admin/groups', authenticateSession, async (req, res) => {
         const result = await pool.query(`
             SELECT g.group_id AS id, g.name, g.time, g.sessions, g.max_students AS "maxStudents",
                    g.min_age AS "minAge", g.max_age AS "maxAge",
-                   a.name AS activity_name, a.activity_type,
+                   a.activity_id AS "activityId", a.name AS activity_name, a.activity_type,
                    COALESCE(
                      json_agg(json_build_object('id', u.user_id, 'name', TRIM(u.name || ' ' || COALESCE(u.surname, ''))))
                      FILTER (WHERE u.user_id IS NOT NULL), '[]'
@@ -905,7 +905,7 @@ app.get('/api/admin/groups', authenticateSession, async (req, res) => {
             LEFT JOIN tul_group_students gs ON gs.group_id = g.group_id
             LEFT JOIN users u ON u.user_id = gs.student_id
             WHERE a.club_id = $1
-            GROUP BY g.group_id, g.name, g.time, g.sessions, g.max_students, g.min_age, g.max_age, a.name, a.activity_type
+            GROUP BY g.group_id, g.name, g.time, g.sessions, g.max_students, g.min_age, g.max_age, a.activity_id, a.name, a.activity_type
             ORDER BY a.name, g.name
         `, [AIM_CLUB_ID]);
         const DAYS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
@@ -929,6 +929,7 @@ app.get('/api/admin/groups', authenticateSession, async (req, res) => {
             return {
                 id: g.id,
                 name: g.name,
+                activityId: g.activityId,
                 activity: mapActivityId(g.activity_name, g.activity_type),
                 activityName: g.activity_name,
                 maxStudents: g.maxStudents,

@@ -685,18 +685,20 @@ function AdminGroups({ refreshTrigger }) {
       .catch(() => setLoading(false));
   }, [refreshTrigger]);
 
-  // Actividades presentes en los grupos (para el filtro), con su color.
+  // Actividades reales presentes en los grupos (para el filtro), con su color.
+  // Se agrupan por la actividad real (activityId), no por el id de color, para que
+  // "Taekwon-Do ITF" y "Defensa Personal" sean filtros distintos aunque compartan color.
   const activities = [];
   const seen = new Set();
   for (const g of groups) {
-    if (!seen.has(g.activity)) {
-      seen.add(g.activity);
-      activities.push({ id: g.activity, name: g.activityName, color: ACT_BY_ID[g.activity]?.color || 'var(--ink)' });
+    if (!seen.has(g.activityId)) {
+      seen.add(g.activityId);
+      activities.push({ id: g.activityId, name: g.activityName, color: ACT_BY_ID[g.activity]?.color || 'var(--ink)' });
     }
   }
   activities.sort((a, b) => a.name.localeCompare(b.name));
 
-  const visible = filter === "all" ? groups : groups.filter(g => g.activity === filter);
+  const visible = filter === "all" ? groups : groups.filter(g => g.activityId === filter);
 
   return (
     <>
@@ -705,7 +707,7 @@ function AdminGroups({ refreshTrigger }) {
           Todas · {groups.length}
         </button>
         {activities.map(a => {
-          const count = groups.filter(g => g.activity === a.id).length;
+          const count = groups.filter(g => g.activityId === a.id).length;
           const active = filter === a.id;
           return (
             <button key={a.id} className={`filter-pill ${active ? "is-active" : ""}`} onClick={() => setFilter(a.id)}
