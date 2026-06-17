@@ -1,7 +1,11 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { I } from './Icons.jsx';
 import { AimHeader, AimFooter, ACTIVITIES, ACT_BY_ID } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
+
+const CAT_COLOR = { taekwondo: '#21B668', ballet: '#FF99D3', ingles: '#00BBF4', robotica: '#FFD526', baile: '#AF99FF', pintura: '#5233A8', funcional: '#FF4F15', pilates: '#BFD300', camaleon: '#25D8BA', competicion: '#21B668', club: '#5233A8', general: '#5233A8', shelfie: '#FF99D3' };
+const catColor = c => CAT_COLOR[c] || '#5233A8';
+const MONTH_ABBR = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 
 function BrandTile({ actId, cls, label, textColor }) {
   const a = ACT_BY_ID[actId];
@@ -29,18 +33,18 @@ function ActivityCard({ act, go, delay = 0 }) {
   );
 }
 
-function NewsCard({ cat, className, imgClass, ph, title, date, body }) {
+function NewsCard({ cat, color, img, ph, title, date, body }) {
   return (
-    <div className={`news-card ${className}`}>
-      <div className={`img ${imgClass}`}>
+    <div className="news-card">
+      <div className="img" style={{ background: img ? `center/cover no-repeat url(${img})` : `linear-gradient(135deg, ${color}, color-mix(in oklab, ${color} 55%, #000))` }}>
         <div className="badge-date">
           <div className="d">{date.d}</div>
           <div className="m">{date.m}</div>
         </div>
-        <div className="ph-watermark">{ph}</div>
+        {!img && <div className="ph-watermark">{ph}</div>}
       </div>
       <div className="body">
-        <span className="cat">{cat}</span>
+        <span className="cat" style={{ color }}>{cat}</span>
         <h4>{title}</h4>
         <p>{body}</p>
       </div>
@@ -50,6 +54,13 @@ function NewsCard({ cat, className, imgClass, ph, title, date, body }) {
 
 export default function PublicLanding() {
   const { go } = useRouter();
+  const [posts, setPosts] = useState([]);
+  const [events, setEvents] = useState([]);
+
+  useEffect(() => {
+    fetch('/api/posts?limit=3').then(r => r.ok ? r.json() : []).then(d => setPosts(Array.isArray(d) ? d : [])).catch(() => {});
+    fetch('/api/events').then(r => r.ok ? r.json() : []).then(d => setEvents(Array.isArray(d) ? d : [])).catch(() => {});
+  }, []);
 
   return (
     <>
@@ -205,55 +216,45 @@ export default function PublicLanding() {
 
             <div className="news-grid">
               <div className="news-list">
-                <NewsCard
-                  cat="Ballet · 14 Junio"
-                  className="act-ballet"
-                  imgClass="bg-ballet"
-                  ph="festival ballet"
-                  title="¡Se acerca nuestro Festival de Ballet Clásico y Baile Moderno!"
-                  date={{d: "14", m: "Jun"}}
-                  body="Nos vemos en el escenario. Inscripciones de público abiertas a partir del 1 de junio." />
-                <NewsCard
-                  cat="Taekwondo · 7 Diciembre"
-                  className="act-taekwondo"
-                  imgClass="bg-taekwondo"
-                  ph="torneo navideño"
-                  title="XVII Torneo Navideño Iván Navarrete"
-                  date={{d: "07", m: "Dic"}}
-                  body="Inscripciones abiertas para nuestros cinturones de competición. ¡Animaros a participar!" />
-                <NewsCard
-                  cat="Robótica · 22 Marzo"
-                  className="act-robotica"
-                  imgClass="bg-robotica"
-                  ph="campeonato robótica"
-                  title="Campeonato Promoción Robótica Camaleón"
-                  date={{d: "22", m: "Mar"}}
-                  body="Nuestros equipos junior compiten en Málaga. Apoya al equipo de Aim Algeciras." />
+                {posts.length === 0 && (
+                  <p style={{color: "var(--ink-3)", fontSize: 14}}>Aún no hay noticias publicadas.</p>
+                )}
+                {posts.map(p => {
+                  const d = new Date(p.published_at || p.created_at);
+                  const color = catColor(p.category);
+                  return (
+                    <div key={p.id} onClick={() => go("/noticias")} style={{cursor: "pointer"}}>
+                      <NewsCard
+                        cat={`${p.category || "Aim"} · ${d.getDate()} ${MONTH_ABBR[d.getMonth()]}`}
+                        color={color}
+                        img={p.cover_image_url || null}
+                        ph={p.category || "aim"}
+                        title={p.title}
+                        date={{ d: String(d.getDate()).padStart(2, "0"), m: MONTH_ABBR[d.getMonth()] }}
+                        body={p.excerpt || ""} />
+                    </div>
+                  );
+                })}
               </div>
 
               <div className="calendar-card">
                 <h3>Próximos eventos</h3>
-                <div className="cal-event" onClick={() => go("/calendario")}>
-                  <div className="date"><div className="d">24</div><div className="m">Abr</div></div>
-                  <div className="info">
-                    <h5>Seminario Taekwondo Avanzado</h5>
-                    <p>24-26 abril · maestros invitados</p>
-                  </div>
-                </div>
-                <div className="cal-event" onClick={() => go("/calendario")}>
-                  <div className="date"><div className="d">30</div><div className="m">Abr</div></div>
-                  <div className="info">
-                    <h5>Gala de Primavera</h5>
-                    <p>Ballet y Baile Moderno — escenario Aim</p>
-                  </div>
-                </div>
-                <div className="cal-event" onClick={() => go("/calendario")}>
-                  <div className="date"><div className="d">14</div><div className="m">Jun</div></div>
-                  <div className="info">
-                    <h5>Festival Anual de Ballet</h5>
-                    <p>Cierre de curso · entradas abiertas</p>
-                  </div>
-                </div>
+                {events.length === 0 && (
+                  <p style={{fontSize: 13, opacity: .85, marginBottom: 12}}>No hay eventos próximos publicados.</p>
+                )}
+                {events.slice(0, 3).map(ev => {
+                  const d = new Date(ev.date);
+                  const sub = [ev.time, ev.venue].filter(Boolean).join(" · ");
+                  return (
+                    <div key={ev.id} className="cal-event" onClick={() => go("/calendario")}>
+                      <div className="date"><div className="d">{d.getDate()}</div><div className="m">{MONTH_ABBR[d.getMonth()]}</div></div>
+                      <div className="info">
+                        <h5>{ev.title}</h5>
+                        <p>{sub || "Evento del club"}</p>
+                      </div>
+                    </div>
+                  );
+                })}
                 <button className="btn btn-primary btn-block" onClick={() => go("/calendario")} style={{background: "white", color: "var(--ink)"}}>
                   Ver calendario completo
                 </button>

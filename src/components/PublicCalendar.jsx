@@ -3,12 +3,21 @@ import { I } from './Icons.jsx';
 import { AimHeader, AimFooter, ACT_BY_ID } from './Shared.jsx';
 
 export default function PublicCalendar() {
+  const today = new Date();
   const [viewType, setViewType] = useState("events"); // "events" or "schedule"
-  const [month, setMonth] = useState(5); // June (0-indexed)
+  const [month, setMonth] = useState(today.getMonth());
   const [filter, setFilter] = useState("all");
   const [slots, setSlots] = useState([]);
   const [loadingSlots, setLoadingSlots] = useState(true);
   const [selectedRoom, setSelectedRoom] = useState("Todas");
+  const [eventsRaw, setEventsRaw] = useState([]);
+
+  useEffect(() => {
+    fetch('/api/events?all=1')
+      .then(r => r.ok ? r.json() : [])
+      .then(d => setEventsRaw(Array.isArray(d) ? d : []))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (viewType === "schedule") {
@@ -23,19 +32,17 @@ export default function PublicCalendar() {
     }
   }, [viewType]);
 
-  const EVENTS = [
-    { date: "2026-04-24", end: "2026-04-26", title: "Seminario Taekwondo Avanzado", act: "taekwondo", time: "Todo el día", venue: "Tatami principal", desc: "Tres días intensivos con maestros invitados ITF." },
-    { date: "2026-04-30", title: "Gala de Primavera", act: "ballet", time: "19:00", venue: "Teatro Municipal", desc: "Presentación de los grupos de Ballet y Baile Moderno." },
-    { date: "2026-05-10", title: "Examen Cambridge B2 First", act: "ingles", time: "10:00 – 14:00", venue: "Aula 1", desc: "Examen oficial — solo alumnos inscritos." },
-    { date: "2026-05-17", title: "Open Day Robótica", act: "robotica", time: "11:00 – 13:00", venue: "Lab Camaleón", desc: "Jornada de puertas abiertas para nuevos alumnos." },
-    { date: "2026-05-22", title: "Torneo de Promoción Fuengirola", act: "taekwondo", time: "09:00", venue: "Polideportivo Fuengirola", desc: "Competición autonómica — inscripciones abiertas." },
-    { date: "2026-06-05", title: "Exposición Taller de Pintura", act: "pintura", time: "18:00", venue: "Sala Municipal", desc: "Más de 60 obras de nuestros alumnos." },
-    { date: "2026-06-14", title: "Festival Anual de Ballet Clásico y Baile Moderno", act: "ballet", time: "19:30", venue: "Teatro Florida", desc: "Cierre de curso — entradas a la venta a partir del 1 de junio." },
-    { date: "2026-06-21", title: "Demostración Aim — Plaza Alta", act: "taekwondo", time: "12:00", venue: "Plaza Alta · Algeciras", desc: "Exhibición pública con todos los grupos de Taekwondo y Baile." },
-    { date: "2026-06-28", title: "Examen de cinturones", act: "taekwondo", time: "10:00", venue: "Tatami principal", desc: "Cambio de cinturón para grupos de iniciación e intermedio." },
-    { date: "2026-06-30", title: "Última clase del curso", act: "ingles", time: "Varios", venue: "Todo el centro", desc: "Cierre del curso 2025-2026. Reuniones con tutores." },
-    { date: "2026-07-01", title: "Apertura Campamento de Verano", act: "campamento", time: "09:00 – 14:00", venue: "Aim Education", desc: "Primera semana del campamento — actividades, talleres y excursiones." },
-  ];
+  // Eventos reales del club (tabla aim_eventos, gestionados desde el panel admin).
+  const EVENTS = eventsRaw.map(e => ({
+    date: String(e.date).slice(0, 10),
+    end: e.endDate ? String(e.endDate).slice(0, 10) : undefined,
+    title: e.title,
+    act: e.activity,
+    time: e.time || "Todo el día",
+    venue: e.venue || "",
+    desc: e.description || "",
+    posterUrl: e.posterUrl || null,
+  }));
 
   const MONTHS = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
   const DAY_LABELS = ["L", "M", "X", "J", "V", "S", "D"];
@@ -49,7 +56,7 @@ export default function PublicCalendar() {
     return true;
   }).sort((a, b) => a.date.localeCompare(b.date));
 
-  const year = 2026;
+  const year = today.getFullYear();
   const firstDay = new Date(year, month, 1);
   const lastDay = new Date(year, month + 1, 0);
   let startOffset = firstDay.getDay() - 1;
@@ -60,7 +67,7 @@ export default function PublicCalendar() {
   for (let i = 1; i <= totalDays; i++) cells.push(i);
   while (cells.length % 7 !== 0) cells.push(null);
 
-  const filters = ["all", "taekwondo", "ballet", "ingles", "robotica", "pintura", "campamento"];
+  const filters = ["all", ...Array.from(new Set(EVENTS.map(e => e.act)))];
 
   return (
     <>
@@ -154,7 +161,7 @@ export default function PublicCalendar() {
                           const d = new Date(e.date);
                           return d.getMonth() === month && d.getDate() === day && (filter === "all" || e.act === filter);
                         }) : [];
-                        const isToday = day === 22 && month === 5;
+                        const isToday = day === today.getDate() && month === today.getMonth() && year === today.getFullYear();
                         return (
                           <div key={i} style={{
                             aspectRatio: "1/1",
@@ -236,9 +243,12 @@ export default function PublicCalendar() {
                               <h4 style={{margin: "4px 0 6px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 16, letterSpacing: "-.015em", color: "var(--ink)"}}>{e.title}</h4>
                               <div style={{display: "flex", gap: 12, flexWrap: "wrap", fontSize: 12, color: "var(--ink-3)"}}>
                                 <span style={{display: "inline-flex", gap: 4, alignItems: "center"}}><I.Clock width={12} height={12} /> {e.time}</span>
-                                <span style={{display: "inline-flex", gap: 4, alignItems: "center"}}><I.MapPin width={12} height={12} /> {e.venue}</span>
+                                {e.venue && <span style={{display: "inline-flex", gap: 4, alignItems: "center"}}><I.MapPin width={12} height={12} /> {e.venue}</span>}
                               </div>
                             </div>
+                            {e.posterUrl && (
+                              <img src={e.posterUrl} alt="" style={{width: 56, height: 56, objectFit: "cover", borderRadius: 10, flexShrink: 0, alignSelf: "flex-start"}} />
+                            )}
                           </div>
                         );
                       })}

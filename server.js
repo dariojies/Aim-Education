@@ -205,6 +205,24 @@ async function initDb() {
         await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS assigned_to UUID REFERENCES users(user_id) ON DELETE SET NULL`);
         await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS app_label TEXT[] DEFAULT ARRAY['Aim Education']`);
         await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS dev_role VARCHAR(50) DEFAULT 'student'`);
+
+        // Eventos y talleres del club (propio de aim-education).
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_eventos (
+                id TEXT PRIMARY KEY,
+                title VARCHAR(255) NOT NULL,
+                description TEXT,
+                event_date DATE NOT NULL,
+                end_date DATE,
+                time VARCHAR(100),
+                venue VARCHAR(255),
+                activity VARCHAR(100) DEFAULT 'taekwondo',
+                poster_url TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_eventos_date ON aim_eventos(event_date)`);
     } finally {
         client.release();
     }
@@ -416,7 +434,7 @@ app.use(cors({
     origin: (origin, callback) => callback(null, origin || true),
     credentials: true
 }));
-app.use(express.json());
+app.use(express.json({ limit: '6mb' })); // 6mb para permitir subir el cartel de eventos (base64)
 
 // =============================================================================
 // AUTH ROUTES
@@ -951,6 +969,86 @@ app.get('/api/admin/groups', authenticateSession, async (req, res) => {
 app.post('/api/admin/groups', authenticateSession, (req, res) => res.status(400).json(MANAGE_IN_AIMTUL));
 app.put('/api/admin/groups/:id', authenticateSession, (req, res) => res.status(400).json(MANAGE_IN_AIMTUL));
 app.delete('/api/admin/groups/:id', authenticateSession, (req, res) => res.status(400).json(MANAGE_IN_AIMTUL));
+
+// =============================================================================
+// EVENTOS Y TALLERES (aim_eventos) — propios de aim-education
+// =============================================================================
+
+function mapEvent(r) {
+    return {
+        id: r.id,
+        title: r.title,
+        description: r.description,
+        date: r.event_date,
+        endDate: r.end_date,
+        time: r.time,
+        venue: r.venue,
+        activity: r.activity || 'taekwondo',
+        posterUrl: r.poster_url,
+    };
+}
+
+// Público: lista de eventos (por defecto próximos; ?all=1 para todos).
+app.get('/api/events', async (req, res) => {
+    try {
+        const all = req.query.all === '1';
+        const result = await pool.query(
+            all
+                ? `SELECT * FROM aim_eventos ORDER BY event_date ASC`
+                : `SELECT * FROM aim_eventos WHERE COALESCE(end_date, event_date) >= CURRENT_DATE ORDER BY event_date ASC`
+        );
+        res.json(result.rows.map(mapEvent));
+    } catch (err) {
+        console.error('Error fetching events:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/admin/events', authenticateSession, async (req, res) => {
+    const { title, description, date, endDate, time, venue, activity, posterUrl } = req.body;
+    if (!title || !date) return res.status(400).json({ error: 'Título y fecha son obligatorios.' });
+    const id = crypto.randomUUID();
+    try {
+        await pool.query(
+            `INSERT INTO aim_eventos (id, title, description, event_date, end_date, time, venue, activity, poster_url)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            [id, title, description || null, date, endDate || null, time || null, venue || null, activity || 'taekwondo', posterUrl || null]
+        );
+        const result = await pool.query('SELECT * FROM aim_eventos WHERE id = $1', [id]);
+        res.status(201).json(mapEvent(result.rows[0]));
+    } catch (err) {
+        console.error('Error creating event:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/admin/events/:id', authenticateSession, async (req, res) => {
+    const { title, description, date, endDate, time, venue, activity, posterUrl } = req.body;
+    if (!title || !date) return res.status(400).json({ error: 'Título y fecha son obligatorios.' });
+    try {
+        const result = await pool.query(
+            `UPDATE aim_eventos
+             SET title=$1, description=$2, event_date=$3, end_date=$4, time=$5, venue=$6, activity=$7, poster_url=$8, updated_at=NOW()
+             WHERE id=$9 RETURNING *`,
+            [title, description || null, date, endDate || null, time || null, venue || null, activity || 'taekwondo', posterUrl || null, req.params.id]
+        );
+        if (result.rowCount === 0) return res.status(404).json({ error: 'Evento no encontrado.' });
+        res.json(mapEvent(result.rows[0]));
+    } catch (err) {
+        console.error('Error updating event:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/admin/events/:id', authenticateSession, async (req, res) => {
+    try {
+        await pool.query('DELETE FROM aim_eventos WHERE id = $1', [req.params.id]);
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Error deleting event:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
 
 app.get('/api/receipts', authenticateSession, async (req, res) => {
     try {

@@ -11,6 +11,7 @@ function sectionLabel(id) {
     classes: "Clases y horarios",
     payments: "Pagos y facturación",
     news: "Noticias y foro",
+    events: "Eventos y talleres",
     groups: "Grupos",
     instructors: "Instructores",
     settings: "Ajustes del club",
@@ -983,6 +984,144 @@ function AdminInstructores({ refreshTrigger, showToast }) {
   );
 }
 
+function AdminEvents({ showToast }) {
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  function load() {
+    setLoading(true);
+    fetch('/api/events?all=1', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : [])
+      .then(d => { setEvents(Array.isArray(d) ? d : []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }
+  useEffect(() => { load(); }, []);
+
+  const blank = { title: '', description: '', date: '', endDate: '', time: '', venue: '', activity: 'taekwondo', posterUrl: '' };
+
+  function startEdit(ev) {
+    setEditing({
+      id: ev.id, title: ev.title || '', description: ev.description || '',
+      date: ev.date ? String(ev.date).slice(0, 10) : '',
+      endDate: ev.endDate ? String(ev.endDate).slice(0, 10) : '',
+      time: ev.time || '', venue: ev.venue || '', activity: ev.activity || 'taekwondo', posterUrl: ev.posterUrl || '',
+    });
+  }
+
+  function handlePoster(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 4 * 1024 * 1024) { alert('El cartel no puede superar 4 MB.'); return; }
+    const reader = new FileReader();
+    reader.onload = () => setEditing(prev => ({ ...prev, posterUrl: reader.result }));
+    reader.readAsDataURL(file);
+  }
+
+  async function save(e) {
+    e.preventDefault();
+    setSaving(true);
+    const isEdit = !!editing.id;
+    try {
+      const r = await fetch(isEdit ? `/api/admin/events/${editing.id}` : '/api/admin/events', {
+        method: isEdit ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(editing),
+      });
+      const d = await r.json();
+      if (!r.ok) { alert(d.error || 'Error al guardar el evento.'); setSaving(false); return; }
+      setEditing(null);
+      load();
+      showToast?.(isEdit ? 'Evento actualizado.' : 'Evento creado.');
+    } catch { alert('Error de conexión.'); }
+    finally { setSaving(false); }
+  }
+
+  async function del(ev) {
+    if (!window.confirm(`¿Eliminar el evento "${ev.title}"?`)) return;
+    await fetch(`/api/admin/events/${ev.id}`, { method: 'DELETE', credentials: 'include' });
+    setEvents(prev => prev.filter(x => x.id !== ev.id));
+    showToast?.('Evento eliminado.');
+  }
+
+  const fmt = (d) => d ? new Date(d).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
+
+  return (
+    <>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 18 }}>
+        <button className="btn btn-primary" onClick={() => setEditing({ ...blank })}><I.Plus /> Nuevo evento</button>
+      </div>
+
+      {loading && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando eventos...</p>}
+      {!loading && events.length === 0 && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>No hay eventos creados. Crea el primero con "Nuevo evento".</p>}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 20 }}>
+        {events.map(ev => {
+          const a = ACT_BY_ID[ev.activity];
+          const color = a?.color || 'var(--ink)';
+          return (
+            <div key={ev.id} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 18, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+              <div style={{ height: 150, background: ev.posterUrl ? `center/cover no-repeat url(${ev.posterUrl})` : `color-mix(in oklab, ${color} 20%, var(--bg-3))`, position: 'relative' }}>
+                {!ev.posterUrl && <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color }}><I.Star /></div>}
+              </div>
+              <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
+                <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color }}>{a?.name || ev.activity}</span>
+                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: 'var(--ink)' }}>{ev.title}</h3>
+                <div style={{ fontSize: 13, color: 'var(--ink-2)', display: 'grid', gap: 4 }}>
+                  <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}><I.Calendar width={13} height={13} /> {fmt(ev.date)}{ev.endDate ? ` – ${fmt(ev.endDate)}` : ''}{ev.time ? ` · ${ev.time}` : ''}</span>
+                  {ev.venue && <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}><I.MapPin width={13} height={13} /> {ev.venue}</span>}
+                </div>
+                {ev.description && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.4 }}>{ev.description}</p>}
+                <div style={{ marginTop: 'auto', display: 'flex', gap: 8, paddingTop: 10 }}>
+                  <button className="btn btn-sm btn-outline" onClick={() => startEdit(ev)}><I.Edit /> Editar</button>
+                  <button className="icon-btn danger" onClick={() => del(ev)}><I.Trash /></button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {editing && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }} onClick={e => { if (e.target === e.currentTarget) setEditing(null); }}>
+          <div style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 560, maxHeight: '90vh', overflowY: 'auto', padding: 24 }}>
+            <h3 style={{ margin: '0 0 16px', fontSize: 18, fontWeight: 800 }}>{editing.id ? 'Editar evento' : 'Nuevo evento'}</h3>
+            <form onSubmit={save} style={{ display: 'grid', gap: 14 }}>
+              <div className="field"><label>Título</label><input value={editing.title} onChange={e => setEditing({ ...editing, title: e.target.value })} required /></div>
+              <div className="field"><label>Descripción</label><textarea rows={3} value={editing.description} onChange={e => setEditing({ ...editing, description: e.target.value })} style={{ width: '100%', fontFamily: 'inherit', fontSize: 14, padding: 12, background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 10, color: 'var(--ink)', resize: 'vertical' }} /></div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div className="field"><label>Fecha</label><input type="date" value={editing.date} onChange={e => setEditing({ ...editing, date: e.target.value })} required /></div>
+                <div className="field"><label>Fecha fin (opcional)</label><input type="date" value={editing.endDate} onChange={e => setEditing({ ...editing, endDate: e.target.value })} /></div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div className="field"><label>Hora</label><input value={editing.time} onChange={e => setEditing({ ...editing, time: e.target.value })} placeholder="Ej. 19:00" /></div>
+                <div className="field"><label>Lugar</label><input value={editing.venue} onChange={e => setEditing({ ...editing, venue: e.target.value })} placeholder="Ej. Teatro Municipal" /></div>
+              </div>
+              <div className="field">
+                <label>Actividad (color)</label>
+                <select value={editing.activity} onChange={e => setEditing({ ...editing, activity: e.target.value })}>
+                  {ACTIVITIES.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+              </div>
+              <div className="field">
+                <label>Cartel (imagen, máx. 4 MB)</label>
+                <input type="file" accept="image/*" onChange={handlePoster} />
+                {editing.posterUrl && <img src={editing.posterUrl} alt="cartel" style={{ marginTop: 10, maxHeight: 180, borderRadius: 10, border: '1px solid var(--line)' }} />}
+              </div>
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 6 }}>
+                <button type="button" className="btn btn-outline" onClick={() => setEditing(null)}>Cancelar</button>
+                <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Guardando...' : (editing.id ? 'Guardar cambios' : 'Crear evento')}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 export default function AdminApp({ user, onLogout, subroute = "overview" }) {
   const { go } = useRouter();
   const [view, setView] = useState(subroute);
@@ -1175,6 +1314,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
       { id: "classes", label: "Clases y horarios", icon: <I.Calendar /> },
       { id: "payments", label: "Recibos", icon: <I.Wallet /> },
       { id: "news", label: "Noticias / Foro", icon: <I.Newspaper /> },
+      { id: "events", label: "Eventos", icon: <I.Star /> },
     ]},
     { heading: "Club", items: [
       { id: "groups", label: "Grupos", icon: <I.Trophy /> },
@@ -1252,8 +1392,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
             <div style={{display: "flex", gap: 10, alignItems: "center"}}>
               <button className="btn btn-icon"><I.Bell /></button>
               <button className="btn btn-icon" onClick={() => alert("Función de búsqueda global disponible próximamente.")}><I.Search /></button>
-              {view !== 'classes' && (
-                <button 
+              {!['classes', 'events', 'support'].includes(view) && (
+                <button
                   className="btn btn-primary"
                   onClick={() => {
                     if (view === 'students') {
@@ -1303,6 +1443,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
           )}
           {view === "payments" && <AdminPayments refreshTrigger={refreshTrigger} />}
           {view === "news" && <AdminNews refreshTrigger={refreshTrigger} onEditPost={(p) => { setEditingItem({ ...p, coverImageUrl: p.cover_image_url }); setActiveModal('edit-post'); }} />}
+          {view === "events" && <AdminEvents showToast={showToast} />}
           {view === "groups" && <AdminGroups refreshTrigger={refreshTrigger} onEditGroup={(g) => { setEditingItem(g); setActiveModal('edit-group'); }} />}
           {view === "instructors" && <AdminInstructores refreshTrigger={refreshTrigger} showToast={showToast} />}
           {view === "settings" && <AdminSettings />}
