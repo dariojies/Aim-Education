@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, createContext, useContext } from 'react';
 import PublicLanding from './components/PublicLanding';
-import { PublicActivities, PublicNews } from './components/PublicActivities';
+import { PublicActivities, PublicNews, PublicNewsDetail } from './components/PublicActivities';
 import PublicActivity from './components/PublicActivity';
 import PublicCamp from './components/PublicCamp';
 import AuthScreen from './components/AuthScreen';
@@ -72,6 +72,8 @@ export default function App() {
     screen = <PublicCalendar />;
   } else if (pathname === '/noticias') {
     screen = <PublicNews />;
+  } else if (seg[0] === 'noticias' && seg[1]) {
+    screen = <PublicNewsDetail slug={seg[1]} />;
   } else if (pathname === '/auth') {
     const mode = params.get('mode') || 'login';
     screen = <AuthScreen mode={mode} onLoginSuccess={handleLoginSuccess} />;

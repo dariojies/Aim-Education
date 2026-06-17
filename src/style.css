@@ -2116,3 +2116,11 @@ html[data-theme="dark"] .dash-nav button.is-active {
   .data-table-head { display: none; }
   .week-grid { grid-template-columns: 50px repeat(6, 1fr); font-size: 10px; }
 }
+
+/* Post detail content */
+.post-content { font-size: 17px; line-height: 1.75; color: var(--ink-2); }
+.post-content p { margin: 0 0 20px; }
+.post-content h2 { font-family: var(--font-display); font-size: 26px; font-weight: 800; letter-spacing: -.025em; color: var(--ink); margin: 40px 0 12px; }
+.post-content h3 { font-family: var(--font-display); font-size: 21px; font-weight: 700; color: var(--ink); margin: 32px 0 10px; }
+.post-content h4 { font-size: 17px; font-weight: 700; color: var(--ink); margin: 24px 0 8px; }
+.post-content strong { font-weight: 700; color: var(--ink); }

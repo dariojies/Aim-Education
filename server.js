@@ -1304,6 +1304,23 @@ app.post('/api/posts/:id/click', async (req, res) => {
     }
 });
 
+app.get('/api/posts/:slug', async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT id, title, slug, excerpt, content, cover_image_url, author_name, category, view_count, published_at
+             FROM aim_education_posts WHERE slug = $1 AND status = 'published'`,
+            [req.params.slug]
+        );
+        if (result.rowCount === 0) return res.status(404).json({ error: 'Not found' });
+        const post = result.rows[0];
+        await pool.query(`UPDATE aim_education_posts SET view_count = view_count + 1 WHERE id = $1`, [post.id]);
+        await pool.query(`INSERT INTO aim_education_post_views (post_id, event_type) VALUES ($1, 'view')`, [post.id]);
+        res.json(post);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // =============================================================================
 // RSS FEEDS
 // =============================================================================
@@ -1446,160 +1463,15 @@ app.get('/feed/:category.xml', async (req, res) => {
 });
 
 // =============================================================================
-// PUBLIC NEWS HTML PAGES
+// PUBLIC NEWS PAGES — served by the SPA (dist/index.html)
 // =============================================================================
 
-app.get('/noticias', async (req, res) => {
-    try {
-        const { category } = req.query;
-        const params = [];
-        let where = `WHERE status = 'published'`;
-        if (category) {
-            params.push(category);
-            where += ` AND category = $1`;
-        }
-
-        const result = await pool.query(
-            `SELECT id, title, slug, excerpt, cover_image_url, author_name, category, view_count, published_at
-             FROM aim_education_posts ${where}
-             ORDER BY published_at DESC NULLS LAST`,
-            params
-        );
-
-        const categoryButtons = ['', ...Object.keys(CATEGORY_LABELS)].map(cat => {
-            const isActive = category === cat || (!category && cat === '');
-            const label = cat === '' ? 'Todas' : CATEGORY_LABELS[cat];
-            const href = cat === '' ? '/noticias' : `/noticias?category=${cat}`;
-            return `<a href="${href}" class="px-4 py-2 rounded-full text-sm font-bold border transition-all ${isActive ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200 hover:border-emerald-400 hover:text-emerald-600'}">${label}</a>`;
-        }).join('');
-
-        const postCards = result.rows.length === 0
-            ? `<div class="col-span-3 text-center py-20 text-slate-400">No hay noticias publicadas aún.</div>`
-            : result.rows.map(post => {
-                const dateStr = post.published_at
-                    ? new Date(post.published_at).toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })
-                    : '';
-                const catLabel = CATEGORY_LABELS[post.category] || post.category;
-                const cover = post.cover_image_url
-                    ? `<img src="${escapeXml(post.cover_image_url)}" alt="" class="w-full h-44 object-cover">`
-                    : `<div class="w-full h-32 bg-gradient-to-br from-emerald-500 to-teal-600"></div>`;
-                return `
-<article class="bg-white rounded-2xl border border-slate-100 overflow-hidden shadow-sm hover:shadow-md transition-all group">
-  ${cover}
-  <div class="p-5">
-    <div class="flex items-center gap-2 mb-3">
-      <span class="text-xs font-bold bg-emerald-50 text-emerald-700 px-3 py-1 rounded-full">${escapeXml(catLabel)}</span>
-      ${dateStr ? `<span class="text-xs text-slate-400">${dateStr}</span>` : ''}
-    </div>
-    <h2 class="text-lg font-extrabold text-slate-900 tracking-tight mb-2 group-hover:text-emerald-600 transition-colors leading-snug" style="font-family:'Outfit',sans-serif">${escapeXml(post.title)}</h2>
-    ${post.excerpt ? `<p class="text-slate-500 text-sm leading-relaxed line-clamp-3">${escapeXml(post.excerpt)}</p>` : ''}
-    <a href="/noticias/${escapeXml(post.slug)}" data-post-id="${post.id}"
-       class="read-more inline-flex items-center gap-1 mt-4 text-sm font-bold text-emerald-600 hover:text-emerald-500 transition-colors">
-      Leer más <span>→</span>
-    </a>
-  </div>
-</article>`;
-            }).join('');
-
-        const body = `
-<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-  <div>
-    <h1 class="text-4xl font-extrabold text-slate-900 tracking-tight" style="font-family:'Outfit',sans-serif">Noticias</h1>
-    <p class="text-slate-400 mt-1 text-sm">Últimas novedades de AIM Education</p>
-  </div>
-</div>
-<div class="flex gap-2 flex-wrap mb-4">${categoryButtons}</div>
-<div class="flex gap-2 flex-wrap items-center p-3 mb-8 bg-orange-50 rounded-xl border border-orange-100">
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" class="text-orange-500 shrink-0"><path d="M6.18 15.64a2.18 2.18 0 0 1 2.18 2.18C8.36 19.01 7.38 20 6.18 20C4.98 20 4 19.01 4 17.82a2.18 2.18 0 0 1 2.18-2.18M4 4.44A15.56 15.56 0 0 1 19.56 20h-2.83A12.73 12.73 0 0 0 4 7.27V4.44m0 5.66a9.9 9.9 0 0 1 9.9 9.9h-2.83A7.07 7.07 0 0 0 4 12.93V10.1z"/></svg>
-  <span class="text-xs font-bold text-orange-700 mr-1">Suscribirse por RSS:</span>
-  <a href="/feed.xml" class="text-xs px-3 py-1 rounded-full bg-white border border-orange-200 text-orange-700 hover:bg-orange-100 font-bold transition-colors">Anuncios generales</a>
-  <a href="/feed/taekwondo.xml" class="text-xs px-3 py-1 rounded-full bg-white border border-orange-200 text-orange-700 hover:bg-orange-100 font-bold transition-colors">Taekwondo</a>
-  <a href="/feed/ballet.xml" class="text-xs px-3 py-1 rounded-full bg-white border border-orange-200 text-orange-700 hover:bg-orange-100 font-bold transition-colors">Ballet</a>
-  <a href="/feed/ingles.xml" class="text-xs px-3 py-1 rounded-full bg-white border border-orange-200 text-orange-700 hover:bg-orange-100 font-bold transition-colors">Inglés</a>
-  <a href="/feed/robotica.xml" class="text-xs px-3 py-1 rounded-full bg-white border border-orange-200 text-orange-700 hover:bg-orange-100 font-bold transition-colors">Robótica</a>
-  <a href="/feed/competicion.xml" class="text-xs px-3 py-1 rounded-full bg-white border border-orange-200 text-orange-700 hover:bg-orange-100 font-bold transition-colors">Competición</a>
-  <a href="/feed/shelfie.xml" class="text-xs px-3 py-1 rounded-full bg-white border border-orange-200 text-orange-700 hover:bg-orange-100 font-bold transition-colors">Shelfie</a>
-  <a href="/feed/todo.xml" class="text-xs px-3 py-1 rounded-full bg-white border border-orange-200 text-orange-700 hover:bg-orange-100 font-bold transition-colors">Todo</a>
-</div>
-<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">${postCards}</div>
-<script>
-document.querySelectorAll('.read-more').forEach(link => {
-  link.addEventListener('click', function(e) {
-    e.preventDefault();
-    const id = this.dataset.postId;
-    const href = this.href;
-    fetch('/api/posts/' + id + '/click', { method: 'POST' }).finally(() => { window.location.href = href; });
-  });
-});
-</script>`;
-
-        const siteUrlNews = `${req.get('x-forwarded-proto') || req.protocol}://${req.get('host')}`;
-        res.send(newsLayout('Noticias', body, siteUrlNews, {
-            canonicalUrl: `${siteUrlNews}/noticias`,
-            description: 'Últimas noticias y novedades de AIM Education Algeciras'
-        }));
-    } catch (err) {
-        console.error('News listing error:', err);
-        res.status(500).send('Error cargando noticias');
-    }
+app.get('/noticias', (req, res) => {
+    res.sendFile(path.join(__dirname, 'dist/index.html'));
 });
 
-app.get('/noticias/:slug', async (req, res) => {
-    try {
-        const result = await pool.query(
-            `SELECT * FROM aim_education_posts WHERE slug = $1 AND status = 'published'`,
-            [req.params.slug]
-        );
-
-        if (result.rowCount === 0) {
-            const body = `<div class="text-center py-24"><p class="text-6xl mb-4">📰</p><h1 class="text-3xl font-extrabold text-slate-900 mb-2" style="font-family:'Outfit',sans-serif">Noticia no encontrada</h1><p class="text-slate-400 mb-6">Esta entrada no existe o ha sido eliminada.</p><a href="/noticias" class="text-emerald-600 font-bold hover:underline">← Volver a noticias</a></div>`;
-            return res.status(404).send(newsLayout('No encontrado', body, ''));
-        }
-
-        const post = result.rows[0];
-        await pool.query(`UPDATE aim_education_posts SET view_count = view_count + 1 WHERE id = $1`, [post.id]);
-        await pool.query(`INSERT INTO aim_education_post_views (post_id, event_type) VALUES ($1, 'view')`, [post.id]);
-
-        const dateStr = post.published_at
-            ? new Date(post.published_at).toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })
-            : '';
-        const catLabel = CATEGORY_LABELS[post.category] || post.category;
-
-        const body = `
-<article class="max-w-3xl mx-auto">
-  <div class="mb-6">
-    <a href="/noticias" class="text-sm text-slate-400 hover:text-emerald-600 font-semibold transition-colors">← Volver a noticias</a>
-  </div>
-  ${post.cover_image_url ? `<img src="${escapeXml(post.cover_image_url)}" alt="${escapeXml(post.title)}" class="w-full h-72 object-cover rounded-2xl mb-8 shadow-sm">` : ''}
-  <div class="flex flex-wrap items-center gap-3 mb-4">
-    <span class="text-xs font-bold bg-emerald-50 text-emerald-700 px-3 py-1 rounded-full">${escapeXml(catLabel)}</span>
-    ${dateStr ? `<span class="text-sm text-slate-400">${dateStr}</span>` : ''}
-    ${post.author_name ? `<span class="text-sm text-slate-400">por <strong>${escapeXml(post.author_name)}</strong></span>` : ''}
-  </div>
-  <h1 class="text-4xl font-extrabold text-slate-900 tracking-tight mb-8 leading-tight" style="font-family:'Outfit',sans-serif">${escapeXml(post.title)}</h1>
-  <div class="text-slate-600">${renderMarkdown(post.content)}</div>
-  <div class="mt-12 pt-8 border-t border-slate-100 flex flex-wrap items-center justify-between gap-4">
-    <span class="text-sm text-slate-400">${post.view_count + 1} visita${post.view_count + 1 !== 1 ? 's' : ''}</span>
-    <div class="flex gap-3">
-      <a href="/noticias" class="text-sm font-bold text-slate-500 hover:text-emerald-600 transition-colors">← Más noticias</a>
-      <a href="${['general', 'club'].includes(post.category) ? '/feed.xml' : '/feed/' + post.category + '.xml'}" class="flex items-center gap-1.5 text-sm font-bold text-orange-500 hover:text-orange-400 transition-colors">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6.18 15.64a2.18 2.18 0 0 1 2.18 2.18C8.36 19.01 7.38 20 6.18 20C4.98 20 4 19.01 4 17.82a2.18 2.18 0 0 1 2.18-2.18M4 4.44A15.56 15.56 0 0 1 19.56 20h-2.83A12.73 12.73 0 0 0 4 7.27V4.44m0 5.66a9.9 9.9 0 0 1 9.9 9.9h-2.83A7.07 7.07 0 0 0 4 12.93V10.1z"/></svg>
-        RSS ${escapeXml(catLabel)}
-      </a>
-    </div>
-  </div>
-</article>`;
-
-        const siteUrlPost = `${req.get('x-forwarded-proto') || req.protocol}://${req.get('host')}`;
-        res.send(newsLayout(post.title, body, siteUrlPost, {
-            canonicalUrl: `${siteUrlPost}/noticias/${post.slug}`,
-            description: post.excerpt || post.title,
-            ogImage: post.cover_image_url || `${siteUrlPost}/src/logo.png`
-        }));
-    } catch (err) {
-        console.error('Post page error:', err);
-        res.status(500).send('Error cargando la noticia');
-    }
+app.get('/noticias/:slug', (req, res) => {
+    res.sendFile(path.join(__dirname, 'dist/index.html'));
 });
 
 // =============================================================================

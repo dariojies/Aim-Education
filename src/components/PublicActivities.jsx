@@ -151,17 +151,17 @@ export function PublicNews() {
                   const d = new Date(p.published_at || p.created_at);
                   const color = catColor(p.category);
                   return (
-                    <NewsCard
-                      key={p.id}
-                      cat={p.category || "Aim"}
-                      color={color}
-                      img={p.cover_image_url || null}
-                      ph={p.category || "aim"}
-                      title={p.title}
-                      date={{ d: String(d.getDate()).padStart(2, "0"), m: MONTH_ABBR[d.getMonth()] }}
-                      body={p.excerpt || ""}
-                      href={`/noticias/${p.slug}`}
-                    />
+                    <div key={p.id} style={{cursor: "pointer"}} onClick={() => go(`/noticias/${p.slug}`)}>
+                      <NewsCard
+                        cat={p.category || "Aim"}
+                        color={color}
+                        img={p.cover_image_url || null}
+                        ph={p.category || "aim"}
+                        title={p.title}
+                        date={{ d: String(d.getDate()).padStart(2, "0"), m: MONTH_ABBR[d.getMonth()] }}
+                        body={p.excerpt || ""}
+                      />
+                    </div>
                   );
                 })}
               </div>
@@ -169,6 +169,119 @@ export function PublicNews() {
           </div>
         </section>
 
+        <AimFooter />
+      </main>
+    </>
+  );
+}
+
+function renderMd(text) {
+  if (!text) return '';
+  let html = text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/^### (.+)$/gm, '<h4>$1</h4>')
+    .replace(/^## (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^# (.+)$/gm, '<h2>$1</h2>');
+  return html.split(/\n\n+/).map(block => {
+    if (/^<h[2-4]/.test(block.trim())) return block;
+    return `<p>${block.replace(/\n/g, '<br>')}</p>`;
+  }).join('\n');
+}
+
+const MONTH_LONG = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+
+export function PublicNewsDetail({ slug }) {
+  const { go } = useRouter();
+  const [post, setPost] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
+
+  useEffect(() => {
+    setLoading(true); setNotFound(false); setPost(null);
+    fetch(`/api/posts/${slug}`)
+      .then(r => { if (r.status === 404) { setNotFound(true); setLoading(false); return null; } return r.json(); })
+      .then(d => { if (d) { setPost(d); } setLoading(false); })
+      .catch(() => setLoading(false));
+  }, [slug]);
+
+  if (loading) return (
+    <>
+      <AimHeader route="news" />
+      <main style={{paddingTop: 0}}>
+        <section className="block tight"><div className="container"><p style={{color: "var(--ink-3)"}}>Cargando…</p></div></section>
+        <AimFooter />
+      </main>
+    </>
+  );
+
+  if (notFound || !post) return (
+    <>
+      <AimHeader route="news" />
+      <main style={{paddingTop: 0}}>
+        <section className="block tight">
+          <div className="container" style={{textAlign: "center", padding: "80px 0"}}>
+            <div style={{fontSize: 64, marginBottom: 16}}>📰</div>
+            <h1 className="title-display">Noticia no encontrada</h1>
+            <p style={{color: "var(--ink-3)", marginTop: 12}}>Esta entrada no existe o ha sido eliminada.</p>
+            <button className="btn btn-outline" style={{marginTop: 28}} onClick={() => go("/noticias")}>← Volver a noticias</button>
+          </div>
+        </section>
+        <AimFooter />
+      </main>
+    </>
+  );
+
+  const d = new Date(post.published_at || post.created_at);
+  const dateStr = `${d.getDate()} de ${MONTH_LONG[d.getMonth()]} de ${d.getFullYear()}`;
+  const color = catColor(post.category);
+
+  return (
+    <>
+      <AimHeader route="news" />
+      <main style={{paddingTop: 0}}>
+        <section className="block tight">
+          <div className="container">
+            <div style={{maxWidth: 760, margin: "0 auto"}}>
+              <button className="btn btn-ghost" style={{marginBottom: 28, padding: "6px 0", fontSize: 14, fontWeight: 600}} onClick={() => go("/noticias")}>
+                ← Volver a noticias
+              </button>
+
+              {post.cover_image_url && (
+                <img
+                  src={post.cover_image_url}
+                  alt={post.title}
+                  style={{width: "100%", height: 320, objectFit: "cover", borderRadius: 18, marginBottom: 32, display: "block", boxShadow: "var(--shadow)"}}
+                />
+              )}
+
+              <div style={{display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 20}}>
+                <span className="filter-pill is-active" style={{background: color, borderColor: color, color: "white", pointerEvents: "none"}}>
+                  {post.category || "Aim"}
+                </span>
+                <span style={{fontSize: 14, color: "var(--ink-3)"}}>{dateStr}</span>
+                {post.author_name && (
+                  <span style={{fontSize: 14, color: "var(--ink-3)"}}>por <strong style={{color: "var(--ink-2)"}}>{post.author_name}</strong></span>
+                )}
+              </div>
+
+              <h1 style={{fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "clamp(28px, 4vw, 44px)", letterSpacing: "-.035em", lineHeight: 1.1, marginBottom: 32, color: "var(--ink)"}}>
+                {post.title}
+              </h1>
+
+              <div
+                className="post-content"
+                dangerouslySetInnerHTML={{ __html: renderMd(post.content) }}
+              />
+
+              <div style={{marginTop: 48, paddingTop: 24, borderTop: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12}}>
+                <span style={{fontSize: 13, color: "var(--ink-3)"}}>{(post.view_count || 0) + 1} visita{(post.view_count || 0) + 1 !== 1 ? 's' : ''}</span>
+                <button className="btn btn-outline" onClick={() => go("/noticias")}>← Más noticias</button>
+              </div>
+            </div>
+          </div>
+        </section>
         <AimFooter />
       </main>
     </>
