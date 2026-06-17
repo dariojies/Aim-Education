@@ -193,12 +193,12 @@ function renderMd(text) {
 
 const MONTH_LONG = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
 
-function useShare(title, slug) {
+function useShare(slug, title) {
   const [copied, setCopied] = useState(false);
   function share() {
     const url = window.location.origin + '/noticias/' + slug;
     if (navigator.share) {
-      navigator.share({ title, text: title + ' — AIM Education', url }).catch(() => {});
+      navigator.share({ title: title || 'AIM Education', text: (title || 'AIM Education') + ' — AIM Education', url }).catch(() => {});
     } else {
       navigator.clipboard.writeText(url).then(() => {
         setCopied(true);
@@ -214,6 +214,8 @@ export function PublicNewsDetail({ slug }) {
   const [post, setPost] = useState(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  // useShare must be called unconditionally before any early returns (Rules of Hooks)
+  const { share, copied } = useShare(slug, post?.title || '');
 
   useEffect(() => {
     setLoading(true); setNotFound(false); setPost(null);
@@ -250,7 +252,6 @@ export function PublicNewsDetail({ slug }) {
     </>
   );
 
-  const { share, copied } = useShare(post.title, slug);
   const d = new Date(post.published_at || post.created_at);
   const dateStr = `${d.getDate()} de ${MONTH_LONG[d.getMonth()]} de ${d.getFullYear()}`;
   const color = catColor(post.category);

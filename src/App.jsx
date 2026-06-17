@@ -40,6 +40,7 @@ export default function App() {
 
   const handleLoginSuccess = (u) => {
     setUser(u);
+    setUserChecked(true); // mark checked so dashboard/admin don't block on the /api/me race
     if (u?.canAccessAdmin) {
       go('/admin');
     } else {

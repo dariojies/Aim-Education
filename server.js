@@ -775,6 +775,7 @@ app.get('/api/classes', async (req, res) => {
             JOIN tul_activities act ON g.activity_id = act.activity_id
             WHERE act.club_id = $1
         `, [AIM_CLUB_ID]);
+        res.set('Cache-Control', 'public, max-age=300, stale-while-revalidate=60');
         res.json(buildSlotsFromGroups(result.rows));
     } catch (err) {
         console.error('Error fetching classes:', err);
@@ -1001,6 +1002,7 @@ app.get('/api/events', async (req, res) => {
                 ? `SELECT * FROM aim_eventos ORDER BY event_date ASC`
                 : `SELECT * FROM aim_eventos WHERE COALESCE(end_date, event_date) >= CURRENT_DATE ORDER BY event_date ASC`
         );
+        res.set('Cache-Control', 'public, max-age=120, stale-while-revalidate=30');
         res.json(result.rows.map(mapEvent));
     } catch (err) {
         console.error('Error fetching events:', err);
@@ -1292,6 +1294,7 @@ app.get('/api/posts', async (req, res) => {
              LIMIT $${params.length}`,
             params
         );
+        res.set('Cache-Control', 'public, max-age=120, stale-while-revalidate=30');
         res.json(result.rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
