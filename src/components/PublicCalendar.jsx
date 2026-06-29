@@ -12,6 +12,7 @@ export default function PublicCalendar() {
   const [slots, setSlots] = useState([]);
   const [loadingSlots, setLoadingSlots] = useState(true);
   const [selectedRoom, setSelectedRoom] = useState("Todas");
+  const [ageFilter, setAgeFilter] = useState('');
   const [eventsRaw, setEventsRaw] = useState([]);
   const [selectedEvent, setSelectedEvent] = useState(null);
 
@@ -118,28 +119,53 @@ export default function PublicCalendar() {
 
             {/* Classroom filter tabs for schedule view */}
             {viewType === "schedule" && !loadingSlots && (
-              <div style={{
-                display: "flex", 
-                gap: 8, 
-                marginTop: -10, 
-                marginBottom: 20, 
-                flexWrap: "wrap", 
-                alignItems: "center",
-                padding: "8px 12px",
-                background: "var(--bg-3)",
-                borderRadius: 12,
-                border: "1px solid var(--line)"
-              }}>
-                <span style={{fontSize: 12, fontWeight: 700, color: "var(--ink-3)", marginRight: 8}}>Aulas / Salas:</span>
-                {["Todas", "Sala 1", "Sala 2", "Sala 3", "Sala 4", "Sala 5", "Sala 6"].map(room => (
-                  <button key={room}
-                    className={`filter-pill ${selectedRoom === room ? "is-active" : ""}`}
-                    onClick={() => setSelectedRoom(room)}
-                    style={{padding: "5px 12px", borderRadius: 8, fontSize: 12}}>
-                    {room}
-                  </button>
-                ))}
-              </div>
+              <>
+                <div style={{
+                  display: "flex",
+                  gap: 8,
+                  marginTop: -10,
+                  marginBottom: 10,
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                  padding: "8px 12px",
+                  background: "var(--bg-3)",
+                  borderRadius: 12,
+                  border: "1px solid var(--line)"
+                }}>
+                  <span style={{fontSize: 12, fontWeight: 700, color: "var(--ink-3)", marginRight: 8}}>Aulas / Salas:</span>
+                  {["Todas", "Sala 1", "Sala 2", "Sala 3", "Sala 4", "Sala 5", "Sala 6"].map(room => (
+                    <button key={room}
+                      className={`filter-pill ${selectedRoom === room ? "is-active" : ""}`}
+                      onClick={() => setSelectedRoom(room)}
+                      style={{padding: "5px 12px", borderRadius: 8, fontSize: 12}}>
+                      {room}
+                    </button>
+                  ))}
+                </div>
+                <div style={{display: "flex", gap: 10, marginBottom: 20, alignItems: "center", flexWrap: "wrap"}}>
+                  <span style={{fontSize: 12, fontWeight: 700, color: "var(--ink-3)"}}>Edad del niño/a:</span>
+                  <div style={{display: "flex", alignItems: "center", gap: 6, background: "var(--bg-3)", borderRadius: 10, border: `1px solid ${ageFilter ? "var(--ink)" : "var(--line)"}`, padding: "3px 10px", transition: "border-color 0.15s"}}>
+                    <input
+                      type="number"
+                      min="2"
+                      max="18"
+                      placeholder="—"
+                      value={ageFilter}
+                      onChange={e => setAgeFilter(e.target.value)}
+                      style={{width: 44, border: "none", background: "transparent", fontSize: 14, fontWeight: 700, color: "var(--ink)", textAlign: "center", outline: "none"}}
+                    />
+                    <span style={{fontSize: 12, color: "var(--ink-3)"}}>años</span>
+                  </div>
+                  {ageFilter && (
+                    <button onClick={() => setAgeFilter('')} style={{fontSize: 12, color: "var(--ink-3)", background: "none", border: "1px solid var(--line)", borderRadius: 8, cursor: "pointer", padding: "4px 10px", lineHeight: 1}}>
+                      × Quitar
+                    </button>
+                  )}
+                  {ageFilter && (
+                    <span style={{fontSize: 12, color: "var(--ink-3)"}}>Las clases atenuadas no son para {ageFilter} años.</span>
+                  )}
+                </div>
+              </>
             )}
 
             {viewType === "events" ? (
@@ -295,62 +321,67 @@ export default function PublicCalendar() {
                                 padding: 6,
                                 position: "relative"
                               }}>
-                                {/* Full box classes for the selected room (or all if "Todas" is selected) */}
-                                {slotsInCell
-                                  .filter(slot => selectedRoom === "Todas" || slot.room === selectedRoom)
-                                  .map((slot, sIdx) => (
-                                    <div key={sIdx} className={`slot ${ACT_BY_ID[slot.act]?.className || ""}`}
-                                      style={{
-                                        position: "relative",
-                                        inset: "auto",
-                                        height: "auto",
-                                        background: ACT_BY_ID[slot.act]?.color || "var(--ink)",
-                                        display: "flex",
-                                        flexDirection: "column",
-                                        gap: 2,
-                                        width: "100%",
-                                        boxSizing: "border-box",
-                                        borderRadius: 8,
-                                        padding: "8px 10px",
-                                        color: "white"
-                                      }}>
-                                      <span className="t" style={{ fontSize: 12, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{slot.title}</span>
-                                      <span className="meta" style={{ fontSize: 10, opacity: 0.95, fontWeight: 600 }}>{slot.time || `${h}:00`} · {slot.room}</span>
-                                      <span className="meta" style={{ fontSize: 9, opacity: 0.85, marginTop: 2 }}>{slot.monitor}</span>
-                                    </div>
-                                  ))}
-
-                                {/* Little dots for classes NOT in the selected room */}
-                                {selectedRoom !== "Todas" && slotsInCell.some(slot => slot.room !== selectedRoom) && (
-                                  <div style={{
-                                    display: "flex",
-                                    gap: 6,
-                                    flexWrap: "wrap",
-                                    alignItems: "center",
-                                    marginTop: "auto",
-                                    padding: "4px 4px 2px",
-                                    borderTop: slotsInCell.some(slot => slot.room === selectedRoom) ? "1px dashed var(--line-2)" : "none"
-                                  }}>
-                                    {slotsInCell
-                                      .filter(slot => slot.room !== selectedRoom)
-                                      .map((slot, sIdx) => (
-                                        <div 
-                                          key={sIdx}
+                                {(() => {
+                                  const age = ageFilter ? Number(ageFilter) : null;
+                                  const ageOk = s => !age || ((!s.minAge || age >= s.minAge) && (!s.maxAge || age <= s.maxAge));
+                                  const roomOk = s => selectedRoom === "Todas" || s.room === selectedRoom;
+                                  const fullSlots = slotsInCell.filter(s => roomOk(s) && ageOk(s));
+                                  const dotSlots = slotsInCell.filter(s => !roomOk(s) || !ageOk(s));
+                                  return (
+                                    <>
+                                      {fullSlots.map((slot, sIdx) => (
+                                        <div key={sIdx} className={`slot ${ACT_BY_ID[slot.act]?.className || ""}`}
                                           style={{
-                                            width: 10,
-                                            height: 10,
-                                            borderRadius: "50%",
+                                            position: "relative",
+                                            inset: "auto",
+                                            height: "auto",
                                             background: ACT_BY_ID[slot.act]?.color || "var(--ink)",
-                                            transition: "transform 0.15s ease",
-                                            boxShadow: "0 1px 3px rgba(0,0,0,0.15)"
-                                          }}
-                                          onMouseEnter={e => e.currentTarget.style.transform = "scale(1.3)"}
-                                          onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
-                                          title={`${slot.title} (${slot.room}) · ${slot.monitor || ''}`}
-                                        />
+                                            display: "flex",
+                                            flexDirection: "column",
+                                            gap: 2,
+                                            width: "100%",
+                                            boxSizing: "border-box",
+                                            borderRadius: 8,
+                                            padding: "8px 10px",
+                                            color: "white"
+                                          }}>
+                                          <span className="t" style={{ fontSize: 12, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{slot.title}</span>
+                                          <span className="meta" style={{ fontSize: 10, opacity: 0.95, fontWeight: 600 }}>{slot.time || `${h}:00`} · {slot.room}</span>
+                                          <span className="meta" style={{ fontSize: 9, opacity: 0.85, marginTop: 2 }}>{slot.monitor}</span>
+                                        </div>
                                       ))}
-                                  </div>
-                                )}
+                                      {dotSlots.length > 0 && (
+                                        <div style={{
+                                          display: "flex",
+                                          gap: 6,
+                                          flexWrap: "wrap",
+                                          alignItems: "center",
+                                          marginTop: "auto",
+                                          padding: "4px 4px 2px",
+                                          borderTop: fullSlots.length > 0 ? "1px dashed var(--line-2)" : "none"
+                                        }}>
+                                          {dotSlots.map((slot, sIdx) => (
+                                            <div
+                                              key={sIdx}
+                                              style={{
+                                                width: 10,
+                                                height: 10,
+                                                borderRadius: "50%",
+                                                background: ACT_BY_ID[slot.act]?.color || "var(--ink)",
+                                                opacity: !ageOk(slot) ? 0.35 : 1,
+                                                transition: "transform 0.15s ease",
+                                                boxShadow: "0 1px 3px rgba(0,0,0,0.15)"
+                                              }}
+                                              onMouseEnter={e => e.currentTarget.style.transform = "scale(1.3)"}
+                                              onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
+                                              title={`${slot.title}${slot.minAge || slot.maxAge ? ` · ${slot.minAge || ''}–${slot.maxAge || ''} años` : ''} (${slot.room})`}
+                                            />
+                                          ))}
+                                        </div>
+                                      )}
+                                    </>
+                                  );
+                                })()}
                               </div>
                             );
                           })}

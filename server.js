@@ -756,6 +756,8 @@ function buildSlotsFromGroups(rows) {
                     time: `${sess.startTime || ''}–${sess.endTime || ''}`,
                     actColor: ACT_COLORS[aimId],
                     actName: g.activity_name,
+                    minAge: g.min_age ?? null,
+                    maxAge: g.max_age ?? null,
                 });
             }
         });
@@ -768,7 +770,7 @@ function buildSlotsFromGroups(rows) {
 app.get('/api/classes', async (req, res) => {
     try {
         const result = await pool.query(`
-            SELECT g.group_id, g.name, g.sessions, g.max_students,
+            SELECT g.group_id, g.name, g.sessions, g.max_students, g.min_age, g.max_age,
                    act.name AS activity_name, act.activity_type,
                    (SELECT COUNT(*) FROM tul_group_students gs WHERE gs.group_id = g.group_id) AS student_count
             FROM tul_groups g
