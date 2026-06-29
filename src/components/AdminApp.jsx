@@ -992,7 +992,7 @@ function AdminEvents({ showToast }) {
 
   function load() {
     setLoading(true);
-    fetch('/api/events?all=1', { credentials: 'include' })
+    fetch('/api/admin/events', { credentials: 'include' })
       .then(r => r.ok ? r.json() : [])
       .then(d => { setEvents(Array.isArray(d) ? d : []); setLoading(false); })
       .catch(() => setLoading(false));

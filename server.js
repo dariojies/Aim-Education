@@ -1010,6 +1010,17 @@ app.get('/api/events', async (req, res) => {
     }
 });
 
+// Admin: lista completa de eventos sin caché (para el panel de gestión).
+app.get('/api/admin/events', authenticateSession, async (req, res) => {
+    try {
+        const result = await pool.query(`SELECT * FROM aim_eventos ORDER BY event_date ASC`);
+        res.set('Cache-Control', 'no-store');
+        res.json(result.rows.map(mapEvent));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.post('/api/admin/events', authenticateSession, async (req, res) => {
     const { title, description, date, endDate, time, endTime, venue, price, activity, posterUrl } = req.body;
     if (!title || !date) return res.status(400).json({ error: 'Título y fecha son obligatorios.' });
