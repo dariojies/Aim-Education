@@ -149,7 +149,7 @@ export default function PublicCalendar() {
                     <button key={f}
                       className={`filter-pill ${filter === f ? "is-active" : ""}`}
                       onClick={() => setFilter(f)}>
-                      {f === "all" ? "Todos los eventos" : ACT_BY_ID[f]?.name || f}
+                      {f === "all" ? "Todos los eventos" : ACT_BY_ID[f]?.name || (f === "general" ? "General" : f)}
                     </button>
                   ))}
                 </div>
@@ -239,7 +239,7 @@ export default function PublicCalendar() {
                             <div style={{
                               width: 60,
                               textAlign: "center",
-                              background: a?.color || "var(--ink)",
+                              background: a?.color || "#5233A8",
                               color: "white",
                               borderRadius: 10,
                               padding: "10px 6px",

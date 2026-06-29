@@ -999,14 +999,14 @@ function AdminEvents({ showToast }) {
   }
   useEffect(() => { load(); }, []);
 
-  const blank = { title: '', description: '', date: '', endDate: '', time: '', endTime: '', venue: '', price: '', activity: 'taekwondo', posterUrl: '' };
+  const blank = { title: '', description: '', date: '', endDate: '', time: '', endTime: '', venue: '', price: '', activity: 'general', posterUrl: '' };
 
   function startEdit(ev) {
     setEditing({
       id: ev.id, title: ev.title || '', description: ev.description || '',
       date: ev.date ? String(ev.date).slice(0, 10) : '',
       endDate: ev.endDate ? String(ev.endDate).slice(0, 10) : '',
-      time: ev.time || '', endTime: ev.endTime || '', venue: ev.venue || '', price: ev.price || '', activity: ev.activity || 'taekwondo', posterUrl: ev.posterUrl || '',
+      time: ev.time || '', endTime: ev.endTime || '', venue: ev.venue || '', price: ev.price || '', activity: ev.activity || 'general', posterUrl: ev.posterUrl || '',
     });
   }
 
@@ -1068,7 +1068,7 @@ function AdminEvents({ showToast }) {
                 : <div style={{ height: 120, background: `color-mix(in oklab, ${color} 20%, var(--bg-3))`, display: 'grid', placeItems: 'center', color }}><I.Star /></div>
               }
               <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
-                <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color }}>{a?.name || ev.activity}</span>
+                <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color }}>{a?.name || 'General'}</span>
                 <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: 'var(--ink)' }}>{ev.title}</h3>
                 <div style={{ fontSize: 13, color: 'var(--ink-2)', display: 'grid', gap: 4 }}>
                   <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}><I.Calendar width={13} height={13} /> {fmt(ev.date)}{ev.endDate ? ` – ${fmt(ev.endDate)}` : ''}{ev.time ? ` · ${ev.time}${ev.endTime ? `–${ev.endTime}` : ''}` : ''}</span>
@@ -1106,6 +1106,7 @@ function AdminEvents({ showToast }) {
               <div className="field">
                 <label>Actividad (color)</label>
                 <select value={editing.activity} onChange={e => setEditing({ ...editing, activity: e.target.value })}>
+                  <option value="general">General / Club</option>
                   {ACTIVITIES.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                 </select>
               </div>
