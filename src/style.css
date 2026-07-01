@@ -444,6 +444,7 @@ html[data-theme="dark"] .pill-badge.purple { color: #B6A0F0; }
 .act-robotica { --act: var(--c-robotica); }
 .act-funcional { --act: var(--c-funcional); }
 .act-pintura { --act: var(--c-pintura); }
+.act-camaleon { --act: var(--c-camaleon); }
 .act-kickboxing { --act: var(--c-kickboxing); }
 .act-pilates { --act: var(--c-pilates); }
 .act-baile { --act: var(--c-baile); }
@@ -459,7 +460,7 @@ html[data-actaccents="off"] [class*="act-"] { --act: var(--ink); }
    ============================================================= */
 .hero {
   position: relative;
-  padding: 64px 0 90px;
+  padding: 28px 0 90px;
   overflow: hidden;
 }
 .hero::before {
@@ -490,7 +491,7 @@ html[data-actaccents="off"] [class*="act-"] { --act: var(--ink); }
   display: grid;
   grid-template-columns: 1.05fr 1fr;
   gap: 60px;
-  align-items: center;
+  align-items: start;
 }
 .hero h1 {
   font-family: var(--font-display);
