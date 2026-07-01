@@ -994,6 +994,7 @@ function AdminEvents({ showToast }) {
   const [managingEvent, setManagingEvent] = useState(null);
   const [regList, setRegList] = useState([]);
   const [regLoading, setRegLoading] = useState(false);
+  const [regNameFilter, setRegNameFilter] = useState('');
   const [regAgeFilter, setRegAgeFilter] = useState('');
   const [regPagadoFilter, setRegPagadoFilter] = useState('all');
   const [addingReg, setAddingReg] = useState(false);
@@ -1149,7 +1150,7 @@ function AdminEvents({ showToast }) {
 
       {/* ── Modal Gestionar Evento ── */}
       {managingEvent && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }} onClick={e => { if (e.target === e.currentTarget) { setManagingEvent(null); setAddingReg(false); } }}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }} onClick={e => { if (e.target === e.currentTarget) { setManagingEvent(null); setAddingReg(false); setRegNameFilter(''); setRegAgeFilter(''); setRegPagadoFilter('all'); } }}>
           <div style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 820, maxHeight: '90vh', overflowY: 'auto', padding: 28, display: 'grid', gap: 20 }}>
 
             {/* Header */}
@@ -1158,7 +1159,7 @@ function AdminEvents({ showToast }) {
                 <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: 'var(--ink)' }}>{managingEvent.title}</h3>
                 <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--ink-3)' }}>Gestión de inscripciones</p>
               </div>
-              <button className="icon-btn" onClick={() => { setManagingEvent(null); setAddingReg(false); }}><I.X /></button>
+              <button className="icon-btn" onClick={() => { setManagingEvent(null); setAddingReg(false); setRegNameFilter(''); setRegAgeFilter(''); setRegPagadoFilter('all'); }}><I.X /></button>
             </div>
 
             {/* Stats bar */}
@@ -1169,24 +1170,57 @@ function AdminEvents({ showToast }) {
               const priceNum = managingEvent.price ? parseFloat(managingEvent.price.replace(/[^\d.,]/g, '').replace(',', '.')) : NaN;
               const hasPrice = !isNaN(priceNum) && priceNum > 0;
               const fmtEur = n => `${n.toLocaleString('es-ES', { minimumFractionDigits: 0 })}€`;
-              const stats = [
-                { label: 'Inscritos', value: total, color: 'var(--purple)' },
-                { label: 'Han asistido', value: `${asistieron}/${total}`, color: 'var(--orange)' },
-                { label: 'Pagado', value: `${pagados}/${total}`, color: 'var(--teal)' },
-                ...(hasPrice ? [
-                  { label: 'Recaudado', value: fmtEur(pagados * priceNum), color: 'var(--teal)', sub: `de ${fmtEur(total * priceNum)} esperados` },
-                  { label: 'Pendiente de cobro', value: fmtEur((total - pagados) * priceNum), color: 'var(--orange)' },
-                ] : []),
-              ];
               return (
-                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                  {stats.map(s => (
-                    <div key={s.label} style={{ flex: 1, minWidth: 120, background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 12, padding: '12px 16px' }}>
-                      <div style={{ fontSize: 22, fontWeight: 800, color: s.color, fontFamily: 'var(--font-display)' }}>{s.value}</div>
-                      <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2, fontWeight: 600 }}>{s.label}</div>
-                      {s.sub && <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{s.sub}</div>}
+                <div style={{ display: 'grid', gridTemplateColumns: hasPrice ? '1fr 1fr 1fr' : '1fr 1fr', gap: 12 }}>
+
+                  {/* Inscritos */}
+                  <div style={{ background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 14, padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 16 }}>
+                    <div style={{ fontSize: 40, fontWeight: 800, color: 'var(--purple)', fontFamily: 'var(--font-display)', lineHeight: 1 }}>{total}</div>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--ink)' }}>Inscritos</div>
+                      <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>{asistieron} han asistido</div>
                     </div>
-                  ))}
+                  </div>
+
+                  {/* Asistencia + Pago */}
+                  <div style={{ background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 14, padding: '14px 18px', display: 'grid', gap: 10 }}>
+                    {[
+                      { label: 'Pagado', n: pagados, color: 'var(--teal)' },
+                      { label: 'Asistencia', n: asistieron, color: 'var(--orange)' },
+                    ].map(({ label, n, color }) => (
+                      <div key={label}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, fontWeight: 700, marginBottom: 5 }}>
+                          <span style={{ color: 'var(--ink-2)' }}>{label}</span>
+                          <span style={{ color }}>{n}/{total}</span>
+                        </div>
+                        <div style={{ height: 6, background: 'var(--line)', borderRadius: 99, overflow: 'hidden' }}>
+                          <div style={{ height: '100%', width: total ? `${(n / total) * 100}%` : '0%', background: color, borderRadius: 99, transition: 'width .3s ease' }} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Dinero (solo si hay precio) */}
+                  {hasPrice && (
+                    <div style={{ background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 14, padding: '14px 18px', display: 'grid', gap: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 2 }}>
+                        Precio unitario · {managingEvent.price}
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                        <span style={{ fontSize: 12, color: 'var(--ink-2)' }}>Recaudado</span>
+                        <span style={{ fontSize: 18, fontWeight: 800, color: 'var(--teal)', fontFamily: 'var(--font-display)' }}>{fmtEur(pagados * priceNum)}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                        <span style={{ fontSize: 12, color: 'var(--ink-2)' }}>Pendiente</span>
+                        <span style={{ fontSize: 18, fontWeight: 800, color: (total - pagados) > 0 ? 'var(--orange)' : 'var(--ink-3)', fontFamily: 'var(--font-display)' }}>{fmtEur((total - pagados) * priceNum)}</span>
+                      </div>
+                      <div style={{ borderTop: '1px solid var(--line-2)', paddingTop: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                        <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Total esperado</span>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-3)' }}>{fmtEur(total * priceNum)}</span>
+                      </div>
+                    </div>
+                  )}
+
                 </div>
               );
             })()}
@@ -1240,15 +1274,21 @@ function AdminEvents({ showToast }) {
 
             {/* Filters */}
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-              <div className="search-input" style={{ maxWidth: 160 }}>
+              <div className="search-input" style={{ flex: '1 1 200px', maxWidth: 280 }}>
                 <I.Search />
-                <input placeholder="Edad..." value={regAgeFilter} onChange={e => setRegAgeFilter(e.target.value)} type="number" min="1" max="99" />
+                <input placeholder="Buscar por nombre o apellidos..." value={regNameFilter} onChange={e => setRegNameFilter(e.target.value)} />
               </div>
-              {['all', 'pagado', 'pendiente'].map(f => (
-                <button key={f} className={`filter-pill ${regPagadoFilter === f ? 'is-active' : ''}`} onClick={() => setRegPagadoFilter(f)}>
-                  {{ all: 'Todos', pagado: 'Pagados', pendiente: 'Pendientes' }[f]}
-                </button>
-              ))}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 10, padding: '0 10px', height: 38 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-3)', whiteSpace: 'nowrap' }}>Edad</span>
+                <input type="number" min="1" max="99" value={regAgeFilter} onChange={e => setRegAgeFilter(e.target.value)} placeholder="—" style={{ width: 44, border: 'none', background: 'transparent', fontSize: 14, fontWeight: 700, color: 'var(--ink)', textAlign: 'center', outline: 'none' }} />
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {['all', 'pagado', 'pendiente'].map(f => (
+                  <button key={f} className={`filter-pill ${regPagadoFilter === f ? 'is-active' : ''}`} onClick={() => setRegPagadoFilter(f)}>
+                    {{ all: 'Todos', pagado: 'Pagados', pendiente: 'Pendientes' }[f]}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* List */}
@@ -1256,7 +1296,9 @@ function AdminEvents({ showToast }) {
             {!regLoading && regList.length === 0 && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>No hay inscripciones todavía.</p>}
             {!regLoading && regList.length > 0 && (() => {
               const ageF = regAgeFilter ? Number(regAgeFilter) : null;
+              const nameQ = regNameFilter.trim().toLowerCase();
               const visible = regList.filter(r => {
+                if (nameQ && !`${r.nombre} ${r.apellidos}`.toLowerCase().includes(nameQ)) return false;
                 if (ageF && Number(r.edad) !== ageF) return false;
                 if (regPagadoFilter === 'pagado' && !r.pagado) return false;
                 if (regPagadoFilter === 'pendiente' && r.pagado) return false;
