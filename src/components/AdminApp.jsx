@@ -996,6 +996,36 @@ function AdminEvents({ showToast }) {
   const [regLoading, setRegLoading] = useState(false);
   const [regAgeFilter, setRegAgeFilter] = useState('');
   const [regPagadoFilter, setRegPagadoFilter] = useState('all');
+  const [addingReg, setAddingReg] = useState(false);
+  const [newReg, setNewReg] = useState({ nombre: '', apellidos: '', edad: '', datos: '', fotosRrss: false, pagado: false });
+  const [addingRegSaving, setAddingRegSaving] = useState(false);
+
+  async function submitNewReg(e) {
+    e.preventDefault();
+    setAddingRegSaving(true);
+    try {
+      const r = await fetch(`/api/events/${managingEvent.id}/register`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ ...newReg, fotosRrss: newReg.fotosRrss }),
+      });
+      if (r.ok) {
+        const created = await r.json();
+        if (newReg.pagado) {
+          await fetch(`/api/admin/events/${managingEvent.id}/registrations/${created.id}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+            body: JSON.stringify({ pagado: true }),
+          });
+        }
+        await loadRegs(managingEvent.id);
+        setAddingReg(false);
+        setNewReg({ nombre: '', apellidos: '', edad: '', datos: '', fotosRrss: false, pagado: false });
+        showToast?.('Inscripción añadida manualmente.');
+      } else {
+        const d = await r.json(); alert(d.error || 'Error al añadir inscripción.');
+      }
+    } catch { alert('Error de conexión.'); }
+    finally { setAddingRegSaving(false); }
+  }
 
   async function loadRegs(eventId) {
     setRegLoading(true);
@@ -1119,7 +1149,7 @@ function AdminEvents({ showToast }) {
 
       {/* ── Modal Gestionar Evento ── */}
       {managingEvent && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }} onClick={e => { if (e.target === e.currentTarget) setManagingEvent(null); }}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }} onClick={e => { if (e.target === e.currentTarget) { setManagingEvent(null); setAddingReg(false); } }}>
           <div style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 820, maxHeight: '90vh', overflowY: 'auto', padding: 28, display: 'grid', gap: 20 }}>
 
             {/* Header */}
@@ -1128,7 +1158,7 @@ function AdminEvents({ showToast }) {
                 <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: 'var(--ink)' }}>{managingEvent.title}</h3>
                 <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--ink-3)' }}>Gestión de inscripciones</p>
               </div>
-              <button className="icon-btn" onClick={() => setManagingEvent(null)}><I.X /></button>
+              <button className="icon-btn" onClick={() => { setManagingEvent(null); setAddingReg(false); }}><I.X /></button>
             </div>
 
             {/* Stats bar */}
@@ -1160,6 +1190,53 @@ function AdminEvents({ showToast }) {
                 </div>
               );
             })()}
+
+            {/* Add manual registration */}
+            {!addingReg ? (
+              <div>
+                <button className="btn btn-sm btn-outline" onClick={() => setAddingReg(true)}>
+                  <I.Plus /> Añadir inscrito manualmente
+                </button>
+              </div>
+            ) : (
+              <form onSubmit={submitNewReg} style={{ background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 14, padding: 18, display: 'grid', gap: 12 }}>
+                <div style={{ fontWeight: 800, fontSize: 14, color: 'var(--ink)', marginBottom: 2 }}>Nueva inscripción manual</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <div className="field">
+                    <label>Nombre</label>
+                    <input value={newReg.nombre} onChange={e => setNewReg(d => ({ ...d, nombre: e.target.value }))} required placeholder="Nombre" />
+                  </div>
+                  <div className="field">
+                    <label>Apellidos</label>
+                    <input value={newReg.apellidos} onChange={e => setNewReg(d => ({ ...d, apellidos: e.target.value }))} required placeholder="Apellidos" />
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr', gap: 10 }}>
+                  <div className="field">
+                    <label>Edad</label>
+                    <input type="number" min="1" max="99" value={newReg.edad} onChange={e => setNewReg(d => ({ ...d, edad: e.target.value }))} placeholder="—" />
+                  </div>
+                  <div className="field">
+                    <label>Datos a tener en cuenta</label>
+                    <input value={newReg.datos} onChange={e => setNewReg(d => ({ ...d, datos: e.target.value }))} placeholder="Alergias, necesidades especiales..." />
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 20, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={newReg.fotosRrss} onChange={e => setNewReg(d => ({ ...d, fotosRrss: e.target.checked }))} />
+                    Autoriza fotos RRSS
+                  </label>
+                  <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, cursor: 'pointer', color: 'var(--teal)', fontWeight: 700 }}>
+                    <input type="checkbox" checked={newReg.pagado} onChange={e => setNewReg(d => ({ ...d, pagado: e.target.checked }))} style={{ accentColor: 'var(--teal)' }} />
+                    Marcar como pagado
+                  </label>
+                </div>
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button type="button" className="btn btn-sm btn-outline" onClick={() => setAddingReg(false)}>Cancelar</button>
+                  <button type="submit" className="btn btn-sm btn-primary" disabled={addingRegSaving}>{addingRegSaving ? 'Guardando...' : 'Añadir inscrito'}</button>
+                </div>
+              </form>
+            )}
 
             {/* Filters */}
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
