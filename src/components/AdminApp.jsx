@@ -1136,16 +1136,25 @@ function AdminEvents({ showToast }) {
               const total = regList.length;
               const pagados = regList.filter(r => r.pagado).length;
               const asistieron = regList.filter(r => r.asistio).length;
+              const priceNum = managingEvent.price ? parseFloat(managingEvent.price.replace(/[^\d.,]/g, '').replace(',', '.')) : NaN;
+              const hasPrice = !isNaN(priceNum) && priceNum > 0;
+              const fmtEur = n => `${n.toLocaleString('es-ES', { minimumFractionDigits: 0 })}€`;
+              const stats = [
+                { label: 'Inscritos', value: total, color: 'var(--purple)' },
+                { label: 'Han asistido', value: `${asistieron}/${total}`, color: 'var(--orange)' },
+                { label: 'Pagado', value: `${pagados}/${total}`, color: 'var(--teal)' },
+                ...(hasPrice ? [
+                  { label: 'Recaudado', value: fmtEur(pagados * priceNum), color: 'var(--teal)', sub: `de ${fmtEur(total * priceNum)} esperados` },
+                  { label: 'Pendiente de cobro', value: fmtEur((total - pagados) * priceNum), color: 'var(--orange)' },
+                ] : []),
+              ];
               return (
-                <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-                  {[
-                    { label: 'Inscritos', value: total, color: 'var(--purple)' },
-                    { label: 'Pagado', value: `${pagados}/${total}`, color: 'var(--teal)' },
-                    { label: 'Han asistido', value: `${asistieron}/${total}`, color: 'var(--orange)' },
-                  ].map(s => (
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                  {stats.map(s => (
                     <div key={s.label} style={{ flex: 1, minWidth: 120, background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 12, padding: '12px 16px' }}>
                       <div style={{ fontSize: 22, fontWeight: 800, color: s.color, fontFamily: 'var(--font-display)' }}>{s.value}</div>
                       <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2, fontWeight: 600 }}>{s.label}</div>
+                      {s.sub && <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{s.sub}</div>}
                     </div>
                   ))}
                 </div>
