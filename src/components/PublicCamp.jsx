@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { I } from './Icons.jsx';
-import { AimHeader, AimFooter } from './Shared.jsx';
+import { AimHeader, AimFooter, MagicText } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 
 function PriceCard({ tag, price, discount, desc, features, featured }) {
@@ -146,7 +146,7 @@ export default function PublicCamp() {
             <div style={{display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 16, marginBottom: 28}}>
               <div>
                 <span className="eyebrow orange">Elige tu semana</span>
-                <h2 className="section-title">Cuatro semanas, <span className="grad">cuatro temas.</span></h2>
+                <h2 className="section-title">Cuatro semanas, <MagicText>cuatro temas.</MagicText></h2>
               </div>
               <p style={{fontSize: 14, color: "var(--ink-3)", maxWidth: 320}}>
                 Puedes inscribirte a una, varias o las cuatro. Cada semana es independiente.
@@ -191,7 +191,7 @@ export default function PublicCamp() {
         <section className="block tight" style={{background: "var(--bg-3)"}}>
           <div className="container">
             <span className="eyebrow orange">Un día en el campamento</span>
-            <h2 className="section-title">Equilibrio entre <span className="grad">deporte</span>, <span className="grad">creatividad</span> e <span className="grad">inglés</span>.</h2>
+            <h2 className="section-title">Equilibrio entre <MagicText>deporte</MagicText>, <MagicText>creatividad</MagicText> e <MagicText>inglés</MagicText>.</h2>
 
             <div style={{marginTop: 32, display: "grid", gap: 12}}>
               {DAY_PLAN.map((d, i) => (
@@ -225,7 +225,7 @@ export default function PublicCamp() {
         <section className="block tight">
           <div className="container">
             <span className="eyebrow orange">Precios y descuentos</span>
-            <h2 className="section-title">Una tarifa <span className="grad">clara</span>, sin sorpresas.</h2>
+            <h2 className="section-title">Una tarifa <MagicText>clara</MagicText>, sin sorpresas.</h2>
 
             <div style={{display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 20, marginTop: 32}}>
               <PriceCard

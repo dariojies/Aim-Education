@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { I } from './Icons.jsx';
-import { AimHeader, AimFooter, ACTIVITIES, ACT_BY_ID } from './Shared.jsx';
+import { AimHeader, AimFooter, ACTIVITIES, ACT_BY_ID, MagicText } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 
 const CAT_COLOR = { taekwondo: '#21B668', ballet: '#FF99D3', ingles: '#00BBF4', robotica: '#FFD526', baile: '#AF99FF', pintura: '#5233A8', funcional: '#FF4F15', pilates: '#BFD300', camaleon: '#25D8BA', competicion: '#21B668', club: '#5233A8', general: '#5233A8', shelfie: '#FF99D3' };
@@ -61,7 +61,7 @@ export function PublicActivities() {
               <span className="eyebrow purple">Catálogo completo</span>
               <h1 className="title-display">
                 Descubre nuestra amplia<br/>
-                variedad de <span className="grad">actividades.</span>
+                variedad de <MagicText>actividades.</MagicText>
               </h1>
               <p className="section-lede" style={{margin: "20px auto 0"}}>
                 Únete a nosotros y descubre un mundo de diversión y aprendizaje en clases
@@ -118,7 +118,7 @@ export function PublicNews() {
           <div className="container">
             <div style={{maxWidth: 720}}>
               <span className="eyebrow purple">Foro y noticias</span>
-              <h1 className="title-display">Todo lo que pasa en <span className="grad">Aim Education.</span></h1>
+              <h1 className="title-display">Todo lo que pasa en <MagicText>Aim Education.</MagicText></h1>
               <p className="section-lede" style={{marginTop: 18}}>
                 Noticias, eventos, convocatorias y novedades del club — directamente desde
                 el equipo.

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { I } from './Icons.jsx';
-import { AimHeader, AimFooter, ACTIVITIES, ACT_BY_ID } from './Shared.jsx';
+import { AimHeader, AimFooter, ACTIVITIES, ACT_BY_ID, MagicText } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 
 const CAT_COLOR = { taekwondo: '#21B668', ballet: '#FF99D3', ingles: '#00BBF4', robotica: '#FFD526', baile: '#AF99FF', pintura: '#5233A8', funcional: '#FF4F15', pilates: '#BFD300', camaleon: '#25D8BA', competicion: '#21B668', club: '#5233A8', general: '#5233A8', shelfie: '#FF99D3' };
@@ -75,7 +75,7 @@ export default function PublicLanding() {
                 <span className="pill-badge purple">Algeciras · Desde 2018</span>
                 <h1>
                   Innovación educativa,<br/>
-                  <span className="grad">pasión por el aprendizaje.</span>
+                  <MagicText>pasión por el aprendizaje.</MagicText>
                 </h1>
                 <p className="lede">
                   Taekwondo, Ballet, Inglés, Robótica y mucho más.
@@ -159,7 +159,7 @@ export default function PublicLanding() {
             <div className="section-head" style={{alignItems: "stretch", gap: 40}}>
               <div style={{flex: "1 1 460px", display: "flex", flexDirection: "column", justifyContent: "center"}}>
                 <span className="eyebrow">Nuestras actividades</span>
-                <h2 className="section-title">Una academia, <span className="grad">mil maneras</span> de aprender.</h2>
+                <h2 className="section-title">Una academia, <MagicText>mil maneras</MagicText> de aprender.</h2>
                 <p className="section-lede" style={{marginTop: 12}}>
                   Cada actividad la dirigen profesionales cualificados con su propia metodología.
                   Grupos reducidos por edades — desde los 3 años hasta la edad adulta.
@@ -210,7 +210,7 @@ export default function PublicLanding() {
             <div className="section-head">
               <div>
                 <span className="eyebrow purple">Últimas noticias</span>
-                <h2 className="section-title">Lo que está pasando en <span className="grad">Aim</span></h2>
+                <h2 className="section-title">Lo que está pasando en <MagicText>Aim</MagicText></h2>
               </div>
               <button className="btn btn-outline" onClick={() => go("/noticias")}>Más noticias <I.Arrow /></button>
             </div>
@@ -270,7 +270,7 @@ export default function PublicLanding() {
             <div className="section-head">
               <div>
                 <span className="eyebrow pink">Sobre nosotros</span>
-                <h2 className="section-title">Una formación <span className="grad">integral</span> y con valores.</h2>
+                <h2 className="section-title">Una formación <MagicText>integral</MagicText> y con valores.</h2>
               </div>
             </div>
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { I } from './Icons.jsx';
-import { AimHeader, AimFooter, ACT_BY_ID } from './Shared.jsx';
+import { AimHeader, AimFooter, ACT_BY_ID, MagicText } from './Shared.jsx';
 
 export default function PublicCalendar() {
   const today = new Date();
@@ -86,7 +86,7 @@ export default function PublicCalendar() {
             <div style={{display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 24, flexWrap: "wrap", marginBottom: 32}}>
               <div>
                 <span className="eyebrow purple">Calendario público</span>
-                <h1 className="title-display">Todo lo que pasa en <span className="grad">Aim.</span></h1>
+                <h1 className="title-display">Todo lo que pasa en <MagicText>Aim.</MagicText></h1>
                 <p className="section-lede" style={{marginTop: 14}}>
                   Eventos, exámenes, torneos, festivales y exhibiciones. Consulta los horarios de las clases regulares.
                 </p>

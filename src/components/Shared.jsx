@@ -321,4 +321,21 @@ function Placeholder({ aspect = "4/3", label = "imagen", tone = "var(--ink-3)" }
   );
 }
 
-export { AimLogo, AimHeader, AimFooter, ACTIVITIES, ACT_BY_ID, ActIcon, Placeholder };
+const STAR_SVG = (
+  <svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+    <path d="M512 255.1c0 11.34-7.406 20.86-18.44 23.64l-171.3 42.78l-42.78 171.1C276.7 504.6 267.2 512 255.9 512s-20.84-7.406-23.62-18.44l-42.66-171.2L18.47 279.6C7.406 276.8 0 267.3 0 255.1c0-11.34 7.406-20.86 18.44-23.64l171.2-42.78l42.78-171.1C235.2 7.406 244.7 0 256 0s20.84 7.406 23.62 18.44l42.78 171.2l171.2 42.78C504.6 235.2 512 244.6 512 255.1z"/>
+  </svg>
+);
+
+function MagicText({ children }) {
+  return (
+    <span className="magic">
+      <span className="magic-star" style={{ "--star-left": "8%",  "--star-top": "-40%", "--delay": "0ms" }}>{STAR_SVG}</span>
+      <span className="magic-star" style={{ "--star-left": "82%", "--star-top": "-28%", "--delay": "800ms" }}>{STAR_SVG}</span>
+      <span className="magic-star" style={{ "--star-left": "48%", "--star-top": "82%",  "--delay": "1600ms" }}>{STAR_SVG}</span>
+      <span className="magic-text">{children}</span>
+    </span>
+  );
+}
+
+export { AimLogo, AimHeader, AimFooter, ACTIVITIES, ACT_BY_ID, ActIcon, Placeholder, MagicText };
