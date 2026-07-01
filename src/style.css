@@ -2145,7 +2145,7 @@ html[data-theme="dark"] .dash-nav button.is-active {
 }
 .magic-star {
   --size: clamp(14px, 1.1vw, 22px);
-  animation: magic-scale 2.4s ease infinite;
+  animation: magic-scale 3.6s ease infinite;
   animation-delay: var(--delay, 0ms);
   display: block;
   height: var(--size);
@@ -2157,7 +2157,7 @@ html[data-theme="dark"] .dash-nav button.is-active {
   z-index: 1;
 }
 .magic-star > svg {
-  animation: magic-rotate 2.4s linear infinite;
+  animation: magic-rotate 3.6s linear infinite;
   animation-delay: var(--delay, 0ms);
   display: block;
   opacity: 0.75;
@@ -2166,7 +2166,7 @@ html[data-theme="dark"] .dash-nav button.is-active {
   fill: #FF99D3;
 }
 .magic-text {
-  animation: background-pan 3s linear infinite;
+  animation: background-pan 5s linear infinite;
   background: linear-gradient(to right, #5233A8, #FF99D3, #FFD526, #21B668, #00BBF4, #5233A8);
   background-size: 200%;
   -webkit-background-clip: text;
