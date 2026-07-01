@@ -990,6 +990,36 @@ function AdminEvents({ showToast }) {
   const [editing, setEditing] = useState(null);
   const [saving, setSaving] = useState(false);
 
+  // ── Gestionar Evento (inscripciones) ──
+  const [managingEvent, setManagingEvent] = useState(null);
+  const [regList, setRegList] = useState([]);
+  const [regLoading, setRegLoading] = useState(false);
+  const [regAgeFilter, setRegAgeFilter] = useState('');
+  const [regPagadoFilter, setRegPagadoFilter] = useState('all');
+
+  async function loadRegs(eventId) {
+    setRegLoading(true);
+    try {
+      const r = await fetch(`/api/admin/events/${eventId}/registrations`, { credentials: 'include' });
+      setRegList(r.ok ? await r.json() : []);
+    } catch { setRegList([]); }
+    setRegLoading(false);
+  }
+
+  async function patchReg(regId, patch) {
+    const r = await fetch(`/api/admin/events/${managingEvent.id}/registrations/${regId}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      credentials: 'include', body: JSON.stringify(patch),
+    });
+    if (r.ok) setRegList(prev => prev.map(x => x.id === regId ? { ...x, ...patch } : x));
+  }
+
+  async function deleteReg(regId) {
+    if (!window.confirm('¿Eliminar esta inscripción?')) return;
+    const r = await fetch(`/api/admin/events/${managingEvent.id}/registrations/${regId}`, { method: 'DELETE', credentials: 'include' });
+    if (r.ok) { setRegList(prev => prev.filter(x => x.id !== regId)); showToast?.('Inscripción eliminada.'); }
+  }
+
   function load() {
     setLoading(true);
     fetch('/api/admin/events', { credentials: 'include' })
@@ -1076,8 +1106,9 @@ function AdminEvents({ showToast }) {
                   {ev.price && <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontWeight: 700, color }}>{ev.price}</span>}
                 </div>
                 {ev.description && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.4 }}>{ev.description}</p>}
-                <div style={{ marginTop: 'auto', display: 'flex', gap: 8, paddingTop: 10 }}>
-                  <button className="btn btn-sm btn-outline" onClick={() => startEdit(ev)}><I.Edit /> Editar</button>
+                <div style={{ marginTop: 'auto', display: 'flex', gap: 8, paddingTop: 10, flexWrap: 'wrap' }}>
+                  <button className="btn btn-sm btn-primary" style={{ flex: 1 }} onClick={() => { setManagingEvent(ev); loadRegs(ev.id); }}>Gestionar Evento</button>
+                  <button className="btn btn-sm btn-outline" onClick={() => startEdit(ev)}><I.Edit /></button>
                   <button className="icon-btn danger" onClick={() => del(ev)}><I.Trash /></button>
                 </div>
               </div>
@@ -1085,6 +1116,98 @@ function AdminEvents({ showToast }) {
           );
         })}
       </div>
+
+      {/* ── Modal Gestionar Evento ── */}
+      {managingEvent && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }} onClick={e => { if (e.target === e.currentTarget) setManagingEvent(null); }}>
+          <div style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 820, maxHeight: '90vh', overflowY: 'auto', padding: 28, display: 'grid', gap: 20 }}>
+
+            {/* Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: 'var(--ink)' }}>{managingEvent.title}</h3>
+                <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--ink-3)' }}>Gestión de inscripciones</p>
+              </div>
+              <button className="icon-btn" onClick={() => setManagingEvent(null)}><I.X /></button>
+            </div>
+
+            {/* Stats bar */}
+            {!regLoading && (() => {
+              const total = regList.length;
+              const pagados = regList.filter(r => r.pagado).length;
+              const asistieron = regList.filter(r => r.asistio).length;
+              return (
+                <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                  {[
+                    { label: 'Inscritos', value: total, color: 'var(--purple)' },
+                    { label: 'Pagado', value: `${pagados}/${total}`, color: 'var(--teal)' },
+                    { label: 'Han asistido', value: `${asistieron}/${total}`, color: 'var(--orange)' },
+                  ].map(s => (
+                    <div key={s.label} style={{ flex: 1, minWidth: 120, background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 12, padding: '12px 16px' }}>
+                      <div style={{ fontSize: 22, fontWeight: 800, color: s.color, fontFamily: 'var(--font-display)' }}>{s.value}</div>
+                      <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2, fontWeight: 600 }}>{s.label}</div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+
+            {/* Filters */}
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+              <div className="search-input" style={{ maxWidth: 160 }}>
+                <I.Search />
+                <input placeholder="Edad..." value={regAgeFilter} onChange={e => setRegAgeFilter(e.target.value)} type="number" min="1" max="99" />
+              </div>
+              {['all', 'pagado', 'pendiente'].map(f => (
+                <button key={f} className={`filter-pill ${regPagadoFilter === f ? 'is-active' : ''}`} onClick={() => setRegPagadoFilter(f)}>
+                  {{ all: 'Todos', pagado: 'Pagados', pendiente: 'Pendientes' }[f]}
+                </button>
+              ))}
+            </div>
+
+            {/* List */}
+            {regLoading && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
+            {!regLoading && regList.length === 0 && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>No hay inscripciones todavía.</p>}
+            {!regLoading && regList.length > 0 && (() => {
+              const ageF = regAgeFilter ? Number(regAgeFilter) : null;
+              const visible = regList.filter(r => {
+                if (ageF && Number(r.edad) !== ageF) return false;
+                if (regPagadoFilter === 'pagado' && !r.pagado) return false;
+                if (regPagadoFilter === 'pendiente' && r.pagado) return false;
+                return true;
+              });
+              return (
+                <div style={{ display: 'grid', gap: 8 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1.5fr 60px 1fr auto auto auto', gap: 10, padding: '8px 12px', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--ink-3)', borderBottom: '1px solid var(--line)' }}>
+                    <span>Nombre</span><span>Apellidos</span><span>Edad</span><span>Datos</span>
+                    <span>Fotos</span><span>Pagado</span><span>Asistió</span>
+                  </div>
+                  {visible.map(reg => (
+                    <div key={reg.id} style={{ display: 'grid', gridTemplateColumns: '1.5fr 1.5fr 60px 1fr auto auto auto', gap: 10, padding: '10px 12px', background: 'var(--bg-3)', borderRadius: 10, alignItems: 'center', fontSize: 13 }}>
+                      <span style={{ fontWeight: 700, color: 'var(--ink)' }}>{reg.nombre}</span>
+                      <span style={{ color: 'var(--ink-2)' }}>{reg.apellidos}</span>
+                      <span style={{ color: 'var(--ink-3)' }}>{reg.edad || '—'}</span>
+                      <span style={{ color: 'var(--ink-3)', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={reg.datos || ''}>{reg.datos || '—'}</span>
+                      <span style={{ textAlign: 'center', fontSize: 14 }}>{reg.fotos_rrss ? '✓' : '—'}</span>
+                      <label style={{ display: 'grid', placeItems: 'center', cursor: 'pointer' }}>
+                        <input type="checkbox" checked={!!reg.pagado} onChange={e => patchReg(reg.id, { pagado: e.target.checked })} style={{ width: 16, height: 16, accentColor: 'var(--teal)' }} />
+                      </label>
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <label style={{ display: 'grid', placeItems: 'center', cursor: 'pointer' }}>
+                          <input type="checkbox" checked={!!reg.asistio} onChange={e => patchReg(reg.id, { asistio: e.target.checked })} style={{ width: 16, height: 16, accentColor: 'var(--orange)' }} />
+                        </label>
+                        <button className="icon-btn danger" style={{ width: 26, height: 26 }} onClick={() => deleteReg(reg.id)}><I.Trash /></button>
+                      </div>
+                    </div>
+                  ))}
+                  {visible.length === 0 && <p style={{ color: 'var(--ink-3)', fontSize: 13, padding: '8px 0' }}>Ninguna inscripción coincide con el filtro.</p>}
+                </div>
+              );
+            })()}
+
+          </div>
+        </div>
+      )}
 
       {editing && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }} onClick={e => { if (e.target === e.currentTarget) setEditing(null); }}>

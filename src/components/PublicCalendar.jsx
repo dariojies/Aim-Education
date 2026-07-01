@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { I } from './Icons.jsx';
 import { AimHeader, AimFooter, ACT_BY_ID, MagicText } from './Shared.jsx';
+import { useRouter } from '../App.jsx';
 
 export default function PublicCalendar() {
+  const { user } = useRouter();
   const today = new Date();
   const [viewType, setViewType] = useState("events"); // "events" or "schedule"
   const [month, setMonth] = useState(today.getMonth());
@@ -15,6 +17,28 @@ export default function PublicCalendar() {
   const [ageFilter, setAgeFilter] = useState('');
   const [eventsRaw, setEventsRaw] = useState([]);
   const [selectedEvent, setSelectedEvent] = useState(null);
+  const [regStep, setRegStep] = useState(null); // null | 'choose' | 'form' | 'success'
+  const [regData, setRegData] = useState({ nombre: '', apellidos: '', edad: '', datos: '', fotosRrss: false });
+  const [regSubmitting, setRegSubmitting] = useState(false);
+
+  function openEvent(e) { setSelectedEvent(e); setRegStep(null); setRegData({ nombre: '', apellidos: '', edad: '', datos: '', fotosRrss: false }); }
+  function closeEvent() { setSelectedEvent(null); setRegStep(null); }
+
+  async function submitReg(e) {
+    e.preventDefault();
+    setRegSubmitting(true);
+    try {
+      const r = await fetch(`/api/events/${selectedEvent.id}/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(regData),
+      });
+      if (r.ok) { setRegStep('success'); }
+      else { const d = await r.json(); alert(d.error || 'Error al inscribirse.'); }
+    } catch { alert('Error de conexión.'); }
+    finally { setRegSubmitting(false); }
+  }
 
   useEffect(() => {
     fetch('/api/events?all=1')
@@ -181,7 +205,7 @@ export default function PublicCalendar() {
                         const isToday = day === today.getDate() && month === today.getMonth() && year === today.getFullYear();
                         return (
                           <div key={i}
-                            onClick={() => dayEvents.length && setSelectedEvent(dayEvents[0])}
+                            onClick={() => dayEvents.length && openEvent(dayEvents[0])}
                             style={{
                             aspectRatio: "1/1",
                             background: day ? (isToday ? "var(--bg-3)" : "transparent") : "transparent",
@@ -243,7 +267,7 @@ export default function PublicCalendar() {
                         const date = new Date(e.date);
                         return (
                           <div key={i} className={a?.className || ""}
-                          onClick={() => setSelectedEvent(e)}
+                          onClick={() => openEvent(e)}
                           style={{
                             background: "var(--bg-2)",
                             border: "1px solid var(--line)",
@@ -400,10 +424,10 @@ export default function PublicCalendar() {
             : fmt(start);
           return (
             <div
-              onClick={(ev) => { if (ev.target === ev.currentTarget) setSelectedEvent(null); }}
+              onClick={(ev) => { if (ev.target === ev.currentTarget) closeEvent(); }}
               style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", backdropFilter: "blur(4px)", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
               <div style={{ background: "var(--bg-2)", borderRadius: 20, width: "100%", maxWidth: 560, maxHeight: "92vh", overflowY: "auto", position: "relative" }}>
-                <button onClick={() => setSelectedEvent(null)} aria-label="Cerrar"
+                <button onClick={closeEvent} aria-label="Cerrar"
                   style={{ position: "absolute", top: 14, right: 14, zIndex: 2, background: "rgba(0,0,0,.45)", color: "white", border: 0, borderRadius: 10, width: 34, height: 34, cursor: "pointer", display: "grid", placeItems: "center" }}>
                   <I.X />
                 </button>
@@ -448,26 +472,107 @@ export default function PublicCalendar() {
                     <p style={{ margin: "0 0 20px", fontSize: 15, lineHeight: 1.6, color: "var(--ink-2)", whiteSpace: "pre-wrap" }}>{selectedEvent.desc}</p>
                   )}
 
-                  <button
-                    onClick={() => {
-                      const url = window.location.origin + '/calendario';
-                      const shareData = { title: selectedEvent.title, text: `${selectedEvent.title} — AIM Education`, url };
-                      if (navigator.share) {
-                        navigator.share(shareData).catch(() => {});
-                      } else {
-                        navigator.clipboard.writeText(url).then(() => {
-                          setShareToast(true);
-                          setTimeout(() => setShareToast(false), 2200);
-                        });
-                      }
-                    }}
-                    style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 18px", borderRadius: 10, border: "1px solid var(--line)", background: "var(--bg-3)", color: "var(--ink-2)", fontSize: 14, fontWeight: 600, cursor: "pointer", transition: "background var(--tx-fast)" }}
-                    onMouseEnter={e => e.currentTarget.style.background = "var(--line)"}
-                    onMouseLeave={e => e.currentTarget.style.background = "var(--bg-3)"}
-                  >
-                    <I.Share />
-                    {shareToast ? "¡Enlace copiado!" : "Compartir"}
-                  </button>
+                  {/* ── Inscripción ── */}
+                  <div style={{ borderTop: "1px solid var(--line)", paddingTop: 20, marginTop: 4 }}>
+
+                    {regStep === null && (
+                      <button
+                        onClick={() => {
+                          if (user) setRegStep('choose');
+                          else setRegStep('form');
+                        }}
+                        style={{ width: "100%", padding: "13px 0", borderRadius: 12, border: "none", background: color, color: "white", fontSize: 16, fontWeight: 800, cursor: "pointer", letterSpacing: "-.01em" }}
+                      >
+                        ¡Apúntate!
+                      </button>
+                    )}
+
+                    {regStep === 'choose' && (
+                      <div style={{ textAlign: "center" }}>
+                        <p style={{ fontSize: 15, fontWeight: 700, color: "var(--ink)", marginBottom: 14 }}>
+                          Hola, {user?.firstName} — ¿para quién es la inscripción?
+                        </p>
+                        <div style={{ display: "flex", gap: 10 }}>
+                          <button
+                            onClick={() => {
+                              setRegData(d => ({ ...d, nombre: user.firstName || '', apellidos: user.lastName || '' }));
+                              setRegStep('form');
+                            }}
+                            style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: `2px solid ${color}`, background: color, color: "white", fontWeight: 700, fontSize: 14, cursor: "pointer" }}
+                          >
+                            Para mí
+                          </button>
+                          <button
+                            onClick={() => { setRegData({ nombre: '', apellidos: '', edad: '', datos: '', fotosRrss: false }); setRegStep('form'); }}
+                            style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: "2px solid var(--line)", background: "var(--bg-3)", color: "var(--ink)", fontWeight: 700, fontSize: 14, cursor: "pointer" }}
+                          >
+                            Para otra persona
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {regStep === 'form' && (
+                      <form onSubmit={submitReg} style={{ display: "grid", gap: 12 }}>
+                        <p style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "var(--ink)" }}>Datos de la persona inscrita</p>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                          <div className="field">
+                            <label>Nombre</label>
+                            <input value={regData.nombre} onChange={e => setRegData(d => ({ ...d, nombre: e.target.value }))} required placeholder="Nombre" />
+                          </div>
+                          <div className="field">
+                            <label>Apellidos</label>
+                            <input value={regData.apellidos} onChange={e => setRegData(d => ({ ...d, apellidos: e.target.value }))} required placeholder="Apellidos" />
+                          </div>
+                        </div>
+                        <div className="field">
+                          <label>Edad</label>
+                          <input type="number" min="1" max="99" value={regData.edad} onChange={e => setRegData(d => ({ ...d, edad: e.target.value }))} placeholder="Ej. 8" />
+                        </div>
+                        <div className="field">
+                          <label>Datos a tener en cuenta <span style={{ fontWeight: 400, color: "var(--ink-3)" }}>(alergias, necesidades, etc.)</span></label>
+                          <textarea rows={3} value={regData.datos} onChange={e => setRegData(d => ({ ...d, datos: e.target.value }))} placeholder="Opcional..." style={{ width: "100%", fontFamily: "inherit", fontSize: 14, padding: 10, background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 10, color: "var(--ink)", resize: "vertical" }} />
+                        </div>
+                        <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 14, color: "var(--ink-2)", cursor: "pointer" }}>
+                          <input type="checkbox" checked={regData.fotosRrss} onChange={e => setRegData(d => ({ ...d, fotosRrss: e.target.checked }))} />
+                          Autorizo el uso de fotografías para redes sociales
+                        </label>
+                        <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+                          <button type="button" onClick={() => setRegStep(null)} style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: "1px solid var(--line)", background: "var(--bg-3)", color: "var(--ink)", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>
+                            Cancelar
+                          </button>
+                          <button type="submit" disabled={regSubmitting} style={{ flex: 2, padding: "11px 0", borderRadius: 10, border: "none", background: color, color: "white", fontWeight: 800, fontSize: 14, cursor: "pointer" }}>
+                            {regSubmitting ? "Enviando…" : "Confirmar inscripción"}
+                          </button>
+                        </div>
+                      </form>
+                    )}
+
+                    {regStep === 'success' && (
+                      <div style={{ textAlign: "center", padding: "12px 0" }}>
+                        <div style={{ fontSize: 40, marginBottom: 8 }}>🎉</div>
+                        <p style={{ fontWeight: 800, fontSize: 17, color: "var(--ink)", margin: "0 0 6px" }}>¡Inscripción confirmada!</p>
+                        <p style={{ fontSize: 14, color: "var(--ink-3)", margin: 0 }}>Te esperamos en el evento. ¡Hasta pronto!</p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--line-2)" }}>
+                    <button
+                      onClick={() => {
+                        const url = window.location.origin + '/calendario';
+                        const shareData = { title: selectedEvent.title, text: `${selectedEvent.title} — AIM Education`, url };
+                        if (navigator.share) { navigator.share(shareData).catch(() => {}); }
+                        else { navigator.clipboard.writeText(url).then(() => { setShareToast(true); setTimeout(() => setShareToast(false), 2200); }); }
+                      }}
+                      style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "8px 16px", borderRadius: 10, border: "1px solid var(--line)", background: "var(--bg-3)", color: "var(--ink-2)", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+                      onMouseEnter={e => e.currentTarget.style.background = "var(--line)"}
+                      onMouseLeave={e => e.currentTarget.style.background = "var(--bg-3)"}
+                    >
+                      <I.Share />
+                      {shareToast ? "¡Enlace copiado!" : "Compartir"}
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

@@ -225,6 +225,24 @@ async function initDb() {
         await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_eventos_date ON aim_eventos(event_date)`);
         await client.query(`ALTER TABLE aim_eventos ADD COLUMN IF NOT EXISTS end_time VARCHAR(100)`);
         await client.query(`ALTER TABLE aim_eventos ADD COLUMN IF NOT EXISTS price VARCHAR(100)`);
+
+        // Inscripciones a eventos.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_event_registrations (
+                id SERIAL PRIMARY KEY,
+                event_id TEXT NOT NULL REFERENCES aim_eventos(id) ON DELETE CASCADE,
+                nombre VARCHAR(200) NOT NULL,
+                apellidos VARCHAR(200) NOT NULL,
+                edad INTEGER,
+                datos TEXT,
+                fotos_rrss BOOLEAN DEFAULT false,
+                pagado BOOLEAN DEFAULT false,
+                asistio BOOLEAN DEFAULT false,
+                user_id TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_reg_event ON aim_event_registrations(event_id)`);
     } finally {
         client.release();
     }
@@ -1065,6 +1083,77 @@ app.delete('/api/admin/events/:id', authenticateSession, async (req, res) => {
         res.json({ success: true });
     } catch (err) {
         console.error('Error deleting event:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// =============================================================================
+// INSCRIPCIONES A EVENTOS
+// =============================================================================
+
+// Público: inscribirse a un evento.
+app.post('/api/events/:id/register', async (req, res) => {
+    const { nombre, apellidos, edad, datos, fotosRrss } = req.body;
+    if (!nombre?.trim() || !apellidos?.trim()) return res.status(400).json({ error: 'Nombre y apellidos son obligatorios.' });
+    const token = req.cookies?.aim_session;
+    const session = token ? sessions.get(token) : null;
+    try {
+        const result = await pool.query(
+            `INSERT INTO aim_event_registrations (event_id, nombre, apellidos, edad, datos, fotos_rrss, user_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+            [req.params.id, nombre.trim(), apellidos.trim(), edad || null, datos?.trim() || null, !!fotosRrss, session?.userId || null]
+        );
+        res.status(201).json({ id: result.rows[0].id });
+    } catch (err) {
+        console.error('Error registering:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Admin: listar inscritos de un evento.
+app.get('/api/admin/events/:id/registrations', authenticateSession, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT * FROM aim_event_registrations WHERE event_id = $1 ORDER BY created_at ASC`,
+            [req.params.id]
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json(result.rows.map(r => ({
+            id: r.id, nombre: r.nombre, apellidos: r.apellidos, edad: r.edad,
+            datos: r.datos, fotosRrss: r.fotos_rrss, pagado: r.pagado,
+            asistio: r.asistio, userId: r.user_id, createdAt: r.created_at,
+        })));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Admin: actualizar pagado/asistio de un inscrito.
+app.patch('/api/admin/events/:id/registrations/:regId', authenticateSession, async (req, res) => {
+    const { pagado, asistio } = req.body;
+    const fields = [];
+    const vals = [];
+    if (pagado !== undefined) { fields.push(`pagado = $${fields.length + 1}`); vals.push(!!pagado); }
+    if (asistio !== undefined) { fields.push(`asistio = $${fields.length + 1}`); vals.push(!!asistio); }
+    if (!fields.length) return res.status(400).json({ error: 'Nada que actualizar.' });
+    vals.push(req.params.regId, req.params.id);
+    try {
+        await pool.query(
+            `UPDATE aim_event_registrations SET ${fields.join(', ')} WHERE id = $${vals.length - 1} AND event_id = $${vals.length}`,
+            vals
+        );
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Admin: eliminar un inscrito.
+app.delete('/api/admin/events/:id/registrations/:regId', authenticateSession, async (req, res) => {
+    try {
+        await pool.query('DELETE FROM aim_event_registrations WHERE id = $1 AND event_id = $2', [req.params.regId, req.params.id]);
+        res.json({ success: true });
+    } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
