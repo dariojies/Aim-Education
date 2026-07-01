@@ -62,6 +62,7 @@ export default function PublicCalendar() {
 
   // Eventos reales del club (tabla aim_eventos, gestionados desde el panel admin).
   const EVENTS = eventsRaw.map(e => ({
+    id: e.id,
     date: String(e.date).slice(0, 10),
     end: e.endDate ? String(e.endDate).slice(0, 10) : undefined,
     title: e.title,
