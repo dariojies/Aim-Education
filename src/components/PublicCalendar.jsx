@@ -83,28 +83,12 @@ export default function PublicCalendar() {
       <main style={{paddingTop: 0}}>
         <section className="block tight">
           <div className="container">
-            <div style={{display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 24, flexWrap: "wrap", marginBottom: 32}}>
-              <div>
-                <span className="eyebrow purple">Calendario público</span>
-                <h1 className="title-display">Todo lo que pasa en <MagicText>Aim.</MagicText></h1>
-                <p className="section-lede" style={{marginTop: 14}}>
-                  Eventos, exámenes, torneos, festivales y exhibiciones. Consulta los horarios de las clases regulares.
-                </p>
-              </div>
-              
-              {viewType === "events" && (
-                <div style={{display: "flex", gap: 8, alignItems: "center"}}>
-                  <button className="btn btn-icon" onClick={() => { if (month === 0) { setYear(y => y - 1); setMonth(11); } else { setMonth(m => m - 1); } }} aria-label="Mes anterior">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
-                  </button>
-                  <div style={{fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 22, letterSpacing: "-.02em", minWidth: 200, textAlign: "center"}}>
-                    {MONTHS[month]} {year}
-                  </div>
-                  <button className="btn btn-icon" onClick={() => { if (month === 11) { setYear(y => y + 1); setMonth(0); } else { setMonth(m => m + 1); } }} aria-label="Mes siguiente">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>
-                  </button>
-                </div>
-              )}
+            <div style={{marginBottom: 32}}>
+              <span className="eyebrow purple">Calendario público</span>
+              <h1 className="title-display">Todo lo que pasa en <MagicText>Aim.</MagicText></h1>
+              <p className="section-lede" style={{marginTop: 14}}>
+                Eventos, exámenes, torneos, festivales y exhibiciones. Consulta los horarios de las clases regulares.
+              </p>
             </div>
 
             {/* Vista Toggle */}
@@ -235,9 +219,19 @@ export default function PublicCalendar() {
 
                   {/* Event list */}
                   <div>
-                    <h3 style={{fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 800, letterSpacing: "-.02em", margin: "0 0 14px"}}>
-                      Eventos de {MONTHS[month]}
-                    </h3>
+                    <div style={{display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14}}>
+                      <h3 style={{fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 800, letterSpacing: "-.02em", margin: 0}}>
+                        Eventos de {MONTHS[month]} {year !== today.getFullYear() ? year : ""}
+                      </h3>
+                      <div style={{display: "flex", gap: 6, alignItems: "center"}}>
+                        <button className="btn btn-icon" onClick={() => { if (month === 0) { setYear(y => y - 1); setMonth(11); } else { setMonth(m => m - 1); } }} aria-label="Mes anterior">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+                        </button>
+                        <button className="btn btn-icon" onClick={() => { if (month === 11) { setYear(y => y + 1); setMonth(0); } else { setMonth(m => m + 1); } }} aria-label="Mes siguiente">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+                        </button>
+                      </div>
+                    </div>
                     <div style={{display: "grid", gap: 12}}>
                       {visibleEvents.length === 0 && (
                         <div style={{padding: 24, textAlign: "center", background: "var(--bg-2)", border: "1px dashed var(--line)", borderRadius: 14, color: "var(--ink-3)"}}>
