@@ -29,6 +29,7 @@ function FamilyMember({ n, defaultName, defaultAge, defaultAct }) {
 function LoginForm({ onLoginSuccess, go }) {
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
+  const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -73,7 +74,12 @@ function LoginForm({ onLoginSuccess, go }) {
       </div>
       <div className="field">
         <label htmlFor="pw">Contraseña</label>
-        <input id="pw" type="password" placeholder="••••••••" value={pw} onChange={(e) => setPw(e.target.value)} required />
+        <div style={{ position: 'relative' }}>
+          <input id="pw" type={showPw ? 'text' : 'password'} placeholder="••••••••" value={pw} onChange={(e) => setPw(e.target.value)} required style={{ paddingRight: 44 }} />
+          <button type="button" onClick={() => setShowPw(v => !v)} tabIndex={-1} style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', padding: 0, display: 'flex', alignItems: 'center' }} aria-label={showPw ? 'Ocultar contraseña' : 'Mostrar contraseña'}>
+            {showPw ? <I.EyeOff /> : <I.Eye />}
+          </button>
+        </div>
       </div>
       <div className="field-meta">
         <label style={{display: "inline-flex", gap: 8, alignItems: "center", color: "var(--ink-2)"}}>
@@ -97,6 +103,7 @@ function RegisterForm({ onLoginSuccess }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [form, setForm] = useState({ firstName: "", lastName: "", email: "", phone: "", password: "" });
+  const [showPw, setShowPw] = useState(false);
 
   function upd(key) { return (e) => setForm(f => ({ ...f, [key]: e.target.value })); }
 
@@ -158,7 +165,15 @@ function RegisterForm({ onLoginSuccess }) {
             <div className="field"><label>Teléfono</label><input placeholder="+34 600 000 000" value={form.phone} onChange={upd("phone")} /></div>
             <div className="field"><label>DNI / NIE</label><input placeholder="00000000A" /></div>
           </div>
-          <div className="field"><label>Contraseña</label><input type="password" placeholder="Mín. 8 caracteres" value={form.password} onChange={upd("password")} required minLength={8} /></div>
+          <div className="field">
+            <label>Contraseña</label>
+            <div style={{ position: 'relative' }}>
+              <input type={showPw ? 'text' : 'password'} placeholder="Mín. 8 caracteres" value={form.password} onChange={upd("password")} required minLength={8} style={{ paddingRight: 44 }} />
+              <button type="button" onClick={() => setShowPw(v => !v)} tabIndex={-1} style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', padding: 0, display: 'flex', alignItems: 'center' }} aria-label={showPw ? 'Ocultar contraseña' : 'Mostrar contraseña'}>
+                {showPw ? <I.EyeOff /> : <I.Eye />}
+              </button>
+            </div>
+          </div>
         </>
       )}
 
