@@ -1051,6 +1051,48 @@ function AdminEvents({ showToast }) {
     if (r.ok) { setRegList(prev => prev.filter(x => x.id !== regId)); showToast?.('Inscripción eliminada.'); }
   }
 
+  function printRegs() {
+    const ev = managingEvent;
+    const rows = regList.map((r, i) => `
+      <tr>
+        <td>${i + 1}</td>
+        <td><strong>${r.nombre}</strong></td>
+        <td>${r.apellidos}</td>
+        <td>${r.edad || '—'}</td>
+        <td>${r.datos || '—'}</td>
+        <td style="text-align:center">${r.fotos_rrss ? '✓' : '—'}</td>
+        <td style="text-align:center">${r.pagado ? '✓' : '☐'}</td>
+        <td style="text-align:center">☐</td>
+      </tr>`).join('');
+    const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
+      <title>Inscripciones — ${ev.title}</title>
+      <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: Arial, sans-serif; font-size: 12px; color: #111; padding: 28px 32px; }
+        h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+        .meta { font-size: 11px; color: #666; margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; }
+        thead tr { background: #f0f0f0; }
+        th { padding: 8px 10px; text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; border-bottom: 2px solid #ccc; }
+        td { padding: 8px 10px; border-bottom: 1px solid #e0e0e0; vertical-align: top; }
+        tr:nth-child(even) td { background: #fafafa; }
+        .footer { margin-top: 24px; font-size: 10px; color: #999; border-top: 1px solid #ddd; padding-top: 10px; display: flex; justify-content: space-between; }
+        @media print { body { padding: 0; } }
+      </style></head><body>
+      <h1>${ev.title}</h1>
+      <div class="meta">${ev.date ? new Date(ev.date).toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) : ''}${ev.time ? ' · ' + ev.time : ''}${ev.venue ? ' · ' + ev.venue : ''} — ${regList.length} inscritos</div>
+      <table>
+        <thead><tr><th>#</th><th>Nombre</th><th>Apellidos</th><th>Edad</th><th>Datos / Obs.</th><th>Fotos</th><th>Pagado</th><th>Asistió</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="footer"><span>AIM Education · Panel de gestión</span><span>Impreso el ${new Date().toLocaleDateString('es-ES')}</span></div>
+      <script>window.onload = () => { window.print(); }<\/script>
+    </body></html>`;
+    const w = window.open('', '_blank', 'width=900,height=700');
+    w.document.write(html);
+    w.document.close();
+  }
+
   function load() {
     setLoading(true);
     fetch('/api/admin/events', { credentials: 'include' })
@@ -1159,7 +1201,12 @@ function AdminEvents({ showToast }) {
                 <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: 'var(--ink)' }}>{managingEvent.title}</h3>
                 <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--ink-3)' }}>Gestión de inscripciones</p>
               </div>
-              <button className="icon-btn" onClick={() => { setManagingEvent(null); setAddingReg(false); setRegNameFilter(''); setRegAgeFilter(''); setRegPagadoFilter('all'); }}><I.X /></button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn btn-sm btn-outline" onClick={printRegs} title="Imprimir listado">
+                  <I.Print /> Imprimir
+                </button>
+                <button className="icon-btn" onClick={() => { setManagingEvent(null); setAddingReg(false); setRegNameFilter(''); setRegAgeFilter(''); setRegPagadoFilter('all'); }}><I.X /></button>
+              </div>
             </div>
 
             {/* Stats bar */}
