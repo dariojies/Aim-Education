@@ -189,7 +189,7 @@ export default function PublicCalendar() {
                   ))}
                 </div>
 
-                <div style={{display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 24}}>
+                <div className="cal-main-grid" style={{display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 24}}>
                   {/* Calendar grid */}
                   <div style={{background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 18, padding: 22}}>
                     <div style={{display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8, marginBottom: 12}}>

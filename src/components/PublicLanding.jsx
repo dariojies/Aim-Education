@@ -316,7 +316,7 @@ export default function PublicLanding() {
         {/* ===== CTA ===== */}
         <section className="block tight">
           <div className="container">
-            <div style={{
+            <div className="cta-block" style={{
               background: "var(--grad-aim)",
               borderRadius: 36,
               padding: "64px 56px",
