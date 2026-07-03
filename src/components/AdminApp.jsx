@@ -1430,6 +1430,9 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
   const [view, setView] = useState(subroute);
   useEffect(() => { setView(subroute); }, [subroute]);
 
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  function navTo(id) { setView(id); setSidebarOpen(false); }
+
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [notification, setNotification] = useState(null);
   const [activeModal, setActiveModal] = useState(null); // 'new-student' | 'edit-student' | 'new-receipt' | 'new-post' | 'edit-post' | 'new-group' | 'edit-group' | 'new-class' | 'add-activity-or-aula' | 'new-aula' | 'new-activity'
@@ -1635,7 +1638,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
   return (
     <main style={{paddingTop: 0}}>
       <div className="admin-layout">
-        <aside className="admin-side">
+        {sidebarOpen && <div className="admin-overlay" onClick={() => setSidebarOpen(false)} />}
+        <aside className={`admin-side${sidebarOpen ? ' is-open' : ''}`}>
           <div className="brand">
             <AimLogo size="sm" />
             <span className="role">Panel admin</span>
@@ -1645,7 +1649,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
             <div key={i} className="admin-nav">
               <div className="heading">{s.heading}</div>
               {s.items.map(it => (
-                <button key={it.id} className={view === it.id ? "is-active" : ""} onClick={() => setView(it.id)}>
+                <button key={it.id} className={view === it.id ? "is-active" : ""} onClick={() => navTo(it.id)}>
                   {it.icon}
                   <span>{it.label}</span>
                 </button>
@@ -1686,11 +1690,14 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
 
         <div className="admin-main">
           <div className="admin-topbar">
-            <div>
-              <div className="crumb">
-                Admin · <b>{sectionLabel(view)}</b>
+            <div style={{display: "flex", alignItems: "center", gap: 12}}>
+              <button className="admin-hamburger btn btn-icon" onClick={() => setSidebarOpen(o => !o)} aria-label="Menú">
+                <I.Menu />
+              </button>
+              <div>
+                <div className="crumb">Admin · <b>{sectionLabel(view)}</b></div>
+                <h1>{sectionLabel(view)}</h1>
               </div>
-              <h1>{sectionLabel(view)}</h1>
             </div>
             <div style={{display: "flex", gap: 10, alignItems: "center"}}>
               <button className="btn btn-icon"><I.Bell /></button>

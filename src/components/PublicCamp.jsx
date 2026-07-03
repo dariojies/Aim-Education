@@ -80,7 +80,7 @@ export default function PublicCamp() {
         {/* Hero */}
         <section className="camp-hero">
           <div className="container">
-            <div style={{display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 48, alignItems: "center"}}>
+            <div className="camp-hero-grid" style={{display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 48, alignItems: "center"}}>
               <div className="fade-up">
                 <span className="pill-day">🌞 Verano 2026 · Algeciras</span>
                 <h1>Campamento<br/>de verano Aim.</h1>
@@ -117,7 +117,7 @@ export default function PublicCamp() {
                 </div>
               </div>
 
-              <div className="fade-up d2">
+              <div className="fade-up d2 camp-hero-img">
                 <div style={{
                   aspectRatio: "4/5",
                   background: "repeating-linear-gradient(45deg, rgba(255,255,255,.08) 0 12px, rgba(255,255,255,.16) 12px 24px)",
@@ -195,7 +195,7 @@ export default function PublicCamp() {
 
             <div style={{marginTop: 32, display: "grid", gap: 12}}>
               {DAY_PLAN.map((d, i) => (
-                <div key={i} style={{
+                <div key={i} className="camp-day-grid" style={{
                   display: "grid",
                   gridTemplateColumns: "100px 12px 1fr",
                   gap: 18,
@@ -227,7 +227,7 @@ export default function PublicCamp() {
             <span className="eyebrow orange">Precios y descuentos</span>
             <h2 className="section-title">Una tarifa <MagicText>clara</MagicText>, sin sorpresas.</h2>
 
-            <div style={{display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 20, marginTop: 32}}>
+            <div className="camp-pricing-grid" style={{display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 20, marginTop: 32}}>
               <PriceCard
                 tag="Una semana"
                 price="160€"

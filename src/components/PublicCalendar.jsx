@@ -323,6 +323,7 @@ export default function PublicCalendar() {
                     <p className="section-lede" style={{marginBottom: 20, fontSize: 15}}>
                       Visualiza todos los grupos y horarios de las diferentes disciplinas operativas en Aim Education.
                     </p>
+                    <div className="schedule-scroll-wrap">
                     <div className="week-grid" style={{gridTemplateColumns: "80px repeat(6, 1fr)"}}>
                       <div className="hdr"></div>
                       {DAYS.map(d => <div key={d} className="hdr">{d}</div>)}
@@ -407,6 +408,7 @@ export default function PublicCalendar() {
                         </React.Fragment>
                       ))}
                     </div>
+                    </div>{/* schedule-scroll-wrap */}
                   </>
                 )}
               </div>

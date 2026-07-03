@@ -2094,14 +2094,15 @@ html[data-theme="dark"] .dash-nav button.is-active {
    ============================================================= */
 @media (max-width: 1024px) {
   .hero-grid { grid-template-columns: 1fr; }
-  .hero-vis { min-height: 380px; }
+  .hero-vis { min-height: 320px; }
   .act-grid, .news-list { grid-template-columns: repeat(2, 1fr); }
   .news-grid { grid-template-columns: 1fr; }
   .badges-strip { grid-template-columns: repeat(2, 1fr); }
   .values-grid, .act-hero-grid { grid-template-columns: 1fr; }
+  /* Auth: hide decorative panel, keep form full-width */
   .auth-shell { grid-template-columns: 1fr; }
-  .auth-side { padding: 36px; }
-  .auth-form { padding: 40px 24px; }
+  .auth-side { display: none; }
+  .auth-form { padding: 40px 24px; max-width: 480px; margin: 0 auto; }
   .dash-cards { grid-template-columns: repeat(2, 1fr); }
   .classes-grid { grid-template-columns: 1fr; }
   .kpis { grid-template-columns: repeat(2, 1fr); }
@@ -2109,18 +2110,62 @@ html[data-theme="dark"] .dash-nav button.is-active {
   .foot-grid { grid-template-columns: 1fr 1fr; }
   .aim-header nav { display: none; }
   .mobile-menu-btn { display: flex; align-items: center; justify-content: center; }
-  .dash-layout, .admin-layout { grid-template-columns: 1fr; }
-  .dash-side, .admin-side { position: static; height: auto; }
+  /* Camp responsive */
+  .camp-hero-grid { grid-template-columns: 1fr !important; }
+  .camp-hero-img { display: none; }
+  .camp-pricing-grid { grid-template-columns: 1fr !important; }
+  .camp-day-grid { grid-template-columns: 70px 12px 1fr !important; }
+  /* Admin: sidebar becomes a slide-in drawer */
+  .admin-layout { grid-template-columns: 1fr; }
+  .admin-side {
+    position: fixed !important;
+    left: 0; top: 0; bottom: 0;
+    width: 240px;
+    z-index: 300;
+    transform: translateX(-100%);
+    transition: transform .25s ease;
+    height: 100vh !important;
+    overflow-y: auto;
+  }
+  .admin-side.is-open { transform: translateX(0); }
+  .admin-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.45);
+    z-index: 299;
+    backdrop-filter: blur(2px);
+  }
+  .admin-hamburger { display: flex !important; }
 }
+/* Admin overlay hidden on desktop */
+.admin-overlay { display: none; }
+.admin-hamburger { display: none; }
+
 @media (max-width: 640px) {
   .act-grid, .news-list, .dash-cards, .kpis, .weeks-grid { grid-template-columns: 1fr; }
-  section.block { padding: 60px 0; }
-  .hero { padding: 32px 0 60px; }
+  .badges-strip { grid-template-columns: 1fr; }
+  section.block { padding: 48px 0; }
+  .hero { padding: 24px 0 48px; }
   .foot-grid { grid-template-columns: 1fr; }
-  .container { padding: 0 18px; }
+  .container { padding: 0 16px; }
   .data-table-head, .data-table-row { grid-template-columns: 1fr !important; gap: 8px; }
   .data-table-head { display: none; }
-  .week-grid { grid-template-columns: 50px repeat(6, 1fr); font-size: 10px; }
+  /* Week schedule: horizontal scroll on mobile */
+  .schedule-scroll-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .week-grid { grid-template-columns: 44px repeat(6, minmax(72px, 1fr)); font-size: 10px; min-width: 520px; }
+  /* Hero mosaic: hide on very small screens, show plain gradient */
+  .hero-vis { display: none; }
+  /* Auth */
+  .auth-form { padding: 28px 18px; }
+  .field-row { grid-template-columns: 1fr !important; }
+  .oauth-row { grid-template-columns: 1fr 1fr; }
+  /* Section heads */
+  .section-head { flex-direction: column; align-items: flex-start; gap: 16px; }
+  .section-head > * { max-width: 100% !important; }
+  /* Admin topbar */
+  .admin-topbar { gap: 12px; }
+  .admin-topbar h1 { font-size: 20px; }
 }
 
 /* Post detail content */
