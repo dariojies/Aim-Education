@@ -74,9 +74,9 @@ function LoginForm({ onLoginSuccess, go }) {
       </div>
       <div className="field">
         <label htmlFor="pw">Contraseña</label>
-        <div style={{ position: 'relative' }}>
-          <input id="pw" type={showPw ? 'text' : 'password'} placeholder="••••••••" value={pw} onChange={(e) => setPw(e.target.value)} required style={{ paddingRight: 44 }} />
-          <button type="button" onClick={() => setShowPw(v => !v)} tabIndex={-1} style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', padding: 0, display: 'flex', alignItems: 'center' }} aria-label={showPw ? 'Ocultar contraseña' : 'Mostrar contraseña'}>
+        <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+          <input id="pw" type={showPw ? 'text' : 'password'} placeholder="••••••••" value={pw} onChange={(e) => setPw(e.target.value)} required style={{ width: '100%', paddingRight: 44 }} />
+          <button type="button" onClick={() => setShowPw(v => !v)} tabIndex={-1} style={{ position: 'absolute', right: 12, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', padding: 4, display: 'flex', alignItems: 'center', lineHeight: 1 }} aria-label={showPw ? 'Ocultar contraseña' : 'Mostrar contraseña'}>
             {showPw ? <I.EyeOff /> : <I.Eye />}
           </button>
         </div>
@@ -167,9 +167,9 @@ function RegisterForm({ onLoginSuccess }) {
           </div>
           <div className="field">
             <label>Contraseña</label>
-            <div style={{ position: 'relative' }}>
-              <input type={showPw ? 'text' : 'password'} placeholder="Mín. 8 caracteres" value={form.password} onChange={upd("password")} required minLength={8} style={{ paddingRight: 44 }} />
-              <button type="button" onClick={() => setShowPw(v => !v)} tabIndex={-1} style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', padding: 0, display: 'flex', alignItems: 'center' }} aria-label={showPw ? 'Ocultar contraseña' : 'Mostrar contraseña'}>
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+              <input type={showPw ? 'text' : 'password'} placeholder="Mín. 8 caracteres" value={form.password} onChange={upd("password")} required minLength={8} style={{ width: '100%', paddingRight: 44 }} />
+              <button type="button" onClick={() => setShowPw(v => !v)} tabIndex={-1} style={{ position: 'absolute', right: 12, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', padding: 4, display: 'flex', alignItems: 'center', lineHeight: 1 }} aria-label={showPw ? 'Ocultar contraseña' : 'Mostrar contraseña'}>
                 {showPw ? <I.EyeOff /> : <I.Eye />}
               </button>
             </div>
