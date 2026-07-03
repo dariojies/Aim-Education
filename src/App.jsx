@@ -81,11 +81,13 @@ export default function App() {
   } else if (pathname.startsWith('/dashboard')) {
     if (!userChecked) return null;
     if (!user) { go('/auth'); return null; }
-    screen = <StudentDashboard user={user} onLogout={handleLogout} />;
+    const dashSub = { campamento: 'camp', pagos: 'payments', clases: 'classes', asistencia: 'attendance' }[seg[1]] || 'overview';
+    screen = <StudentDashboard user={user} onLogout={handleLogout} subroute={dashSub} />;
   } else if (pathname.startsWith('/admin')) {
     if (!userChecked) return null;
     if (!user || !user.canAccessAdmin) { go('/auth'); return null; }
-    screen = <AdminApp user={user} onLogout={handleLogout} />;
+    const adminSub = { campamento: 'camp', alumnos: 'students', clases: 'classes', eventos: 'events', noticias: 'news', recibos: 'payments' }[seg[1]] || 'overview';
+    screen = <AdminApp user={user} onLogout={handleLogout} subroute={adminSub} />;
   } else {
     screen = <PublicLanding />;
   }

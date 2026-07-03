@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { I } from './Icons.jsx';
-import { AimLogo, ACTIVITIES, ACT_BY_ID } from './Shared.jsx';
+import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 import { AdminSupport } from './AdminSupport.jsx';
 
@@ -12,6 +12,7 @@ function sectionLabel(id) {
     payments: "Pagos y facturación",
     news: "Noticias y foro",
     events: "Eventos y talleres",
+    camp: "Campamento de verano",
     groups: "Grupos",
     instructors: "Instructores",
     settings: "Ajustes del club",
@@ -1282,7 +1283,7 @@ function AdminEvents({ showToast }) {
             ) : (
               <form onSubmit={submitNewReg} style={{ background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 14, padding: 18, display: 'grid', gap: 12 }}>
                 <div style={{ fontWeight: 800, fontSize: 14, color: 'var(--ink)', marginBottom: 2 }}>Nueva inscripción manual</div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <div className="field-row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                   <div className="field">
                     <label>Nombre</label>
                     <input value={newReg.nombre} onChange={e => setNewReg(d => ({ ...d, nombre: e.target.value }))} required placeholder="Nombre" />
@@ -1352,7 +1353,8 @@ function AdminEvents({ showToast }) {
                 return true;
               });
               return (
-                <div style={{ display: 'grid', gap: 8 }}>
+                <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+                <div style={{ display: 'grid', gap: 8, minWidth: 520 }}>
                   <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1.5fr 60px 1fr auto auto auto', gap: 10, padding: '8px 12px', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--ink-3)', borderBottom: '1px solid var(--line)' }}>
                     <span>Nombre</span><span>Apellidos</span><span>Edad</span><span>Datos</span>
                     <span>Fotos</span><span>Pagado</span><span>Asistió</span>
@@ -1377,6 +1379,7 @@ function AdminEvents({ showToast }) {
                   ))}
                   {visible.length === 0 && <p style={{ color: 'var(--ink-3)', fontSize: 13, padding: '8px 0' }}>Ninguna inscripción coincide con el filtro.</p>}
                 </div>
+                </div>
               );
             })()}
 
@@ -1391,11 +1394,11 @@ function AdminEvents({ showToast }) {
             <form onSubmit={save} style={{ display: 'grid', gap: 14 }}>
               <div className="field"><label>Título</label><input value={editing.title} onChange={e => setEditing({ ...editing, title: e.target.value })} required /></div>
               <div className="field"><label>Descripción</label><textarea rows={3} value={editing.description} onChange={e => setEditing({ ...editing, description: e.target.value })} style={{ width: '100%', fontFamily: 'inherit', fontSize: 14, padding: 12, background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 10, color: 'var(--ink)', resize: 'vertical' }} /></div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div className="field-row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                 <div className="field"><label>Fecha</label><input type="date" value={editing.date} onChange={e => setEditing({ ...editing, date: e.target.value })} required /></div>
                 <div className="field"><label>Fecha fin (opcional)</label><input type="date" value={editing.endDate} onChange={e => setEditing({ ...editing, endDate: e.target.value })} /></div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+              <div className="field-row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
                 <div className="field"><label>Hora inicio</label><input value={editing.time} onChange={e => setEditing({ ...editing, time: e.target.value })} placeholder="Ej. 19:00" /></div>
                 <div className="field"><label>Hora fin</label><input value={editing.endTime} onChange={e => setEditing({ ...editing, endTime: e.target.value })} placeholder="Ej. 21:00" /></div>
                 <div className="field"><label>Precio</label><input value={editing.price} onChange={e => setEditing({ ...editing, price: e.target.value })} placeholder="Ej. 5€ / Gratis" /></div>
@@ -1416,6 +1419,541 @@ function AdminEvents({ showToast }) {
               <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 6 }}>
                 <button type="button" className="btn btn-outline" onClick={() => setEditing(null)}>Cancelar</button>
                 <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Guardando...' : (editing.id ? 'Guardar cambios' : 'Crear evento')}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// =============================================================================
+// CAMPAMENTO DE VERANO
+// =============================================================================
+
+function todayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Fila de "pasar lista": asistencia + nota del profesor de un niño en un día.
+function CampRosterRow({ row, day, onSaved }) {
+  const [note, setNote] = useState(row.note || '');
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setNote(row.note || ''); }, [row.id, day, row.note]);
+
+  async function save(patch) {
+    setSaving(true);
+    try {
+      const r = await fetch('/api/admin/camp/attendance', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ childId: row.id, day, ...patch }),
+      });
+      if (r.ok) onSaved(row.id, patch);
+      else { const d = await r.json(); alert(d.error || 'Error al guardar.'); }
+    } catch { alert('Error de conexión.'); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <div style={{ background: 'var(--bg-3)', border: '1px solid var(--line-2)', borderRadius: 12, padding: '12px 14px', display: 'grid', gap: 10 }}>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer', flexShrink: 0, marginTop: 2 }}>
+          <input type="checkbox" checked={!!row.asistio}
+            onChange={e => save({ asistio: e.target.checked })}
+            style={{ width: 20, height: 20, accentColor: 'var(--teal)' }} />
+        </label>
+        <div style={{ flex: 1, minWidth: 160 }}>
+          <div style={{ fontWeight: 800, fontSize: 14, color: row.asistio ? 'var(--teal)' : 'var(--ink)' }}>
+            {row.nombre} {row.apellidos}
+            {row.edad ? <span style={{ fontWeight: 600, color: 'var(--ink-3)', marginLeft: 6, fontSize: 12 }}>{row.edad} años</span> : null}
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4, fontSize: 11 }}>
+            {row.alergias && (
+              <span style={{ background: 'color-mix(in oklab, var(--orange) 14%, var(--bg-2))', color: 'var(--orange)', fontWeight: 800, padding: '2px 8px', borderRadius: 999, border: '1px solid color-mix(in oklab, var(--orange) 30%, transparent)' }}>
+                ⚠ {row.alergias}
+              </span>
+            )}
+            {row.contacto && <span style={{ color: 'var(--ink-3)', fontWeight: 600 }}>📞 {row.contacto}</span>}
+            {row.recogida && <span style={{ color: 'var(--ink-3)', fontWeight: 600 }}>Recoge: {row.recogida}</span>}
+            {!row.pagado && <span style={{ color: 'var(--orange)', fontWeight: 800 }}>PAGO PENDIENTE</span>}
+          </div>
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+        <textarea
+          rows={1}
+          placeholder="Nota del día para la familia (comida, ánimo, incidencias...)"
+          value={note}
+          onChange={e => setNote(e.target.value)}
+          style={{ flex: 1, fontFamily: 'inherit', fontSize: 13, padding: '8px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)', resize: 'vertical', minHeight: 36 }}
+        />
+        <button className="btn btn-sm btn-outline" disabled={saving || note === (row.note || '')} onClick={() => save({ note })}>
+          {saving ? '...' : 'Guardar'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AdminCamp({ showToast }) {
+  const [tab, setTab] = useState('roster'); // 'roster' | 'children' | 'weeks'
+  const [weeks, setWeeks] = useState([]);
+  const [children, setChildren] = useState([]);
+  const [roster, setRoster] = useState([]);
+  const [rosterDay, setRosterDay] = useState(todayISO());
+  const [rosterLoading, setRosterLoading] = useState(false);
+  const [childrenLoading, setChildrenLoading] = useState(false);
+
+  // Filtros de inscritos
+  const [nameFilter, setNameFilter] = useState('');
+  const [pagadoFilter, setPagadoFilter] = useState('all');
+
+  // Modales
+  const [editingChild, setEditingChild] = useState(null);   // datos del niño (nuevo o existente)
+  const [editingDays, setEditingDays] = useState(null);     // { child, days: [] }
+  const [editingWeek, setEditingWeek] = useState(null);     // semana (nueva o existente)
+  const [savingModal, setSavingModal] = useState(false);
+
+  const emptyChild = { nombre: '', apellidos: '', edad: '', alergias: '', observaciones: '', contacto: '', recogida: '', fotosRrss: false, pagado: false, days: [] };
+
+  async function loadWeeks() {
+    try {
+      const r = await fetch('/api/camp/weeks', { credentials: 'include' });
+      if (r.ok) setWeeks(await r.json());
+    } catch { /* noop */ }
+  }
+  async function loadChildren() {
+    setChildrenLoading(true);
+    try {
+      const r = await fetch('/api/admin/camp/children', { credentials: 'include' });
+      if (r.ok) setChildren(await r.json());
+    } catch { /* noop */ }
+    finally { setChildrenLoading(false); }
+  }
+  async function loadRoster(day) {
+    setRosterLoading(true);
+    try {
+      const r = await fetch(`/api/admin/camp/roster?day=${day}`, { credentials: 'include' });
+      if (r.ok) setRoster(await r.json());
+    } catch { /* noop */ }
+    finally { setRosterLoading(false); }
+  }
+
+  useEffect(() => { loadWeeks(); loadChildren(); }, []);
+  useEffect(() => { loadRoster(rosterDay); }, [rosterDay]);
+
+  // Si hoy no cae dentro del campamento, saltar al primer día configurado.
+  useEffect(() => {
+    if (!weeks.length) return;
+    const t = todayISO();
+    const inCamp = weeks.some(w => t >= w.startDate && t <= w.endDate);
+    if (!inCamp && rosterDay === t) {
+      const future = weeks.find(w => w.startDate >= t);
+      setRosterDay((future || weeks[0]).days[0]?.day || t);
+    }
+  }, [weeks]);
+
+  function shiftDay(delta) {
+    const d = new Date(rosterDay + 'T12:00:00');
+    do { d.setDate(d.getDate() + delta); } while (d.getDay() === 0 || d.getDay() === 6);
+    setRosterDay(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+  }
+
+  function onAttendanceSaved(childId, patch) {
+    setRoster(prev => prev.map(r => r.id === childId ? { ...r, ...patch } : r));
+    showToast?.('Guardado.');
+  }
+
+  async function patchChild(id, patch) {
+    const r = await fetch(`/api/admin/camp/children/${id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+      body: JSON.stringify(patch),
+    });
+    if (r.ok) setChildren(prev => prev.map(c => c.id === id ? { ...c, ...patch } : c));
+  }
+
+  async function deleteChild(id) {
+    if (!window.confirm('¿Eliminar esta inscripción del campamento? Se borrarán también sus días, asistencia y notas.')) return;
+    const r = await fetch(`/api/admin/camp/children/${id}`, { method: 'DELETE', credentials: 'include' });
+    if (r.ok) { setChildren(prev => prev.filter(c => c.id !== id)); loadWeeks(); showToast?.('Inscripción eliminada.'); }
+  }
+
+  async function submitChild(e) {
+    e.preventDefault();
+    setSavingModal(true);
+    try {
+      const isEdit = !!editingChild.id;
+      const url = isEdit ? `/api/admin/camp/children/${editingChild.id}` : '/api/admin/camp/children';
+      const r = await fetch(url, {
+        method: isEdit ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ ...editingChild, edad: editingChild.edad || null }),
+      });
+      if (r.ok) {
+        await loadChildren(); await loadWeeks();
+        setEditingChild(null);
+        showToast?.(isEdit ? 'Datos actualizados.' : 'Niño/a inscrito/a en el campamento.');
+      } else { const d = await r.json(); alert(d.error || 'Error al guardar.'); }
+    } catch { alert('Error de conexión.'); }
+    finally { setSavingModal(false); }
+  }
+
+  async function submitDays() {
+    setSavingModal(true);
+    try {
+      const r = await fetch(`/api/admin/camp/children/${editingDays.child.id}/days`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ days: editingDays.days }),
+      });
+      if (r.ok) {
+        await loadChildren(); await loadWeeks(); loadRoster(rosterDay);
+        setEditingDays(null);
+        showToast?.('Días actualizados.');
+      } else { const d = await r.json(); alert(d.error || 'Error al guardar.'); }
+    } catch { alert('Error de conexión.'); }
+    finally { setSavingModal(false); }
+  }
+
+  async function submitWeek(e) {
+    e.preventDefault();
+    setSavingModal(true);
+    try {
+      const isEdit = !!editingWeek.id;
+      const url = isEdit ? `/api/admin/camp/weeks/${editingWeek.id}` : '/api/admin/camp/weeks';
+      const r = await fetch(url, {
+        method: isEdit ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify(editingWeek),
+      });
+      if (r.ok) { await loadWeeks(); setEditingWeek(null); showToast?.(isEdit ? 'Semana actualizada.' : 'Semana creada.'); }
+      else { const d = await r.json(); alert(d.error || 'Error al guardar.'); }
+    } catch { alert('Error de conexión.'); }
+    finally { setSavingModal(false); }
+  }
+
+  async function deleteWeek(id) {
+    if (!window.confirm('¿Eliminar esta semana del campamento?')) return;
+    const r = await fetch(`/api/admin/camp/weeks/${id}`, { method: 'DELETE', credentials: 'include' });
+    if (r.ok) { loadWeeks(); showToast?.('Semana eliminada.'); }
+  }
+
+  function printRoster() {
+    const rows = roster.map((r, i) => `
+      <tr>
+        <td>${i + 1}</td>
+        <td>${r.nombre || ''}</td>
+        <td>${r.apellidos || ''}</td>
+        <td>${r.edad ?? ''}</td>
+        <td>${r.alergias || ''}</td>
+        <td>${r.contacto || ''}</td>
+        <td>${r.recogida || ''}</td>
+        <td style="width:60px"></td>
+      </tr>`).join('');
+    const w = window.open('', '_blank');
+    w.document.write(`<!DOCTYPE html><html><head><title>Lista campamento — ${rosterDay}</title>
+      <style>
+        body { font-family: sans-serif; padding: 24px; color: #111; }
+        h1 { font-size: 20px; margin: 0 0 4px; }
+        .meta { color: #555; font-size: 13px; margin-bottom: 18px; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th, td { border: 1px solid #bbb; padding: 6px 8px; text-align: left; }
+        th { background: #f2f2f2; }
+      </style></head><body>
+      <h1>Campamento de verano — Pasar lista</h1>
+      <div class="meta">${campFmtLong(rosterDay)} — ${roster.length} niños/as apuntados</div>
+      <table>
+        <thead><tr><th>#</th><th>Nombre</th><th>Apellidos</th><th>Edad</th><th>Alergias</th><th>Contacto</th><th>Recogida</th><th>Asistió</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <script>window.onload = () => window.print();</script>
+      </body></html>`);
+    w.document.close();
+  }
+
+  function printChildren() {
+    const rows = visibleChildren.map((c, i) => `
+      <tr>
+        <td>${i + 1}</td>
+        <td>${c.nombre || ''}</td>
+        <td>${c.apellidos || ''}</td>
+        <td>${c.edad ?? ''}</td>
+        <td>${c.parentEmail || 'Alta manual'}</td>
+        <td>${c.contacto || ''}</td>
+        <td>${c.alergias || ''}</td>
+        <td>${(c.days || []).length}</td>
+        <td>${c.pagado ? 'Sí' : 'No'}</td>
+      </tr>`).join('');
+    const w = window.open('', '_blank');
+    w.document.write(`<!DOCTYPE html><html><head><title>Inscritos campamento</title>
+      <style>
+        body { font-family: sans-serif; padding: 24px; color: #111; }
+        h1 { font-size: 20px; margin: 0 0 4px; }
+        .meta { color: #555; font-size: 13px; margin-bottom: 18px; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th, td { border: 1px solid #bbb; padding: 6px 8px; text-align: left; }
+        th { background: #f2f2f2; }
+      </style></head><body>
+      <h1>Campamento de verano — Inscritos</h1>
+      <div class="meta">${visibleChildren.length} niños/as inscritos</div>
+      <table>
+        <thead><tr><th>#</th><th>Nombre</th><th>Apellidos</th><th>Edad</th><th>Familia</th><th>Contacto</th><th>Alergias</th><th>Días</th><th>Pagado</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <script>window.onload = () => window.print();</script>
+      </body></html>`);
+    w.document.close();
+  }
+
+  const nameQ = nameFilter.trim().toLowerCase();
+  const visibleChildren = children.filter(c => {
+    if (nameQ && !`${c.nombre} ${c.apellidos}`.toLowerCase().includes(nameQ)) return false;
+    if (pagadoFilter === 'pagado' && !c.pagado) return false;
+    if (pagadoFilter === 'pendiente' && c.pagado) return false;
+    return true;
+  });
+
+  const presentCount = roster.filter(r => r.asistio).length;
+
+  return (
+    <>
+      {/* Tabs */}
+      <div style={{ display: 'flex', gap: 10, marginBottom: 22, borderBottom: '1px solid var(--line-2)', paddingBottom: 14, flexWrap: 'wrap' }}>
+        {[['roster', 'Pasar lista'], ['children', `Inscritos (${children.length})`], ['weeks', 'Semanas y plazas']].map(([id, label]) => (
+          <button key={id} className={`filter-pill ${tab === id ? 'is-active' : ''}`} onClick={() => setTab(id)} style={{ borderRadius: 8, padding: '8px 16px' }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Pasar lista ── */}
+      {tab === 'roster' && (
+        <div style={{ display: 'grid', gap: 16 }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button className="btn btn-icon" onClick={() => shiftDay(-1)} aria-label="Día anterior">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+            </button>
+            <input type="date" value={rosterDay} onChange={e => e.target.value && setRosterDay(e.target.value)}
+              style={{ fontFamily: 'inherit', fontSize: 14, fontWeight: 700, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)' }} />
+            <button className="btn btn-icon" onClick={() => shiftDay(1)} aria-label="Día siguiente">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+            </button>
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-2)', textTransform: 'capitalize' }}>{campFmtLong(rosterDay)}</span>
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+              <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--teal)' }}>{presentCount}/{roster.length} presentes</span>
+              <button className="btn btn-sm btn-outline" onClick={printRoster} disabled={!roster.length}><I.Print /> Imprimir</button>
+            </div>
+          </div>
+
+          {rosterLoading && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
+          {!rosterLoading && roster.length === 0 && (
+            <div style={{ padding: 28, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>
+              No hay niños apuntados a este día.
+            </div>
+          )}
+          {!rosterLoading && roster.map(row => (
+            <CampRosterRow key={`${row.id}-${rosterDay}`} row={row} day={rosterDay} onSaved={onAttendanceSaved} />
+          ))}
+        </div>
+      )}
+
+      {/* ── Inscritos ── */}
+      {tab === 'children' && (
+        <div style={{ display: 'grid', gap: 16 }}>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            <button className="btn btn-sm btn-primary" onClick={() => setEditingChild({ ...emptyChild })}>
+              <I.Plus /> Inscribir niño/a
+            </button>
+            <div className="search-input" style={{ flex: '1 1 200px', maxWidth: 280 }}>
+              <I.Search />
+              <input placeholder="Buscar por nombre..." value={nameFilter} onChange={e => setNameFilter(e.target.value)} />
+            </div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {['all', 'pagado', 'pendiente'].map(f => (
+                <button key={f} className={`filter-pill ${pagadoFilter === f ? 'is-active' : ''}`} onClick={() => setPagadoFilter(f)}>
+                  {{ all: 'Todos', pagado: 'Pagados', pendiente: 'Pendientes' }[f]}
+                </button>
+              ))}
+            </div>
+            <button className="btn btn-sm btn-outline" style={{ marginLeft: 'auto' }} onClick={printChildren} disabled={!visibleChildren.length}>
+              <I.Print /> Imprimir
+            </button>
+          </div>
+
+          {childrenLoading && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
+          {!childrenLoading && children.length === 0 && (
+            <div style={{ padding: 28, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>
+              Todavía no hay niños inscritos en el campamento.
+            </div>
+          )}
+          {visibleChildren.map(c => (
+            <div key={c.id} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '14px 18px', display: 'grid', gap: 10 }}>
+              <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                <div style={{ flex: 1, minWidth: 180 }}>
+                  <div style={{ fontWeight: 800, fontSize: 15, color: 'var(--ink)' }}>
+                    {c.nombre} {c.apellidos}
+                    {c.edad ? <span style={{ fontWeight: 600, color: 'var(--ink-3)', marginLeft: 6, fontSize: 12 }}>{c.edad} años</span> : null}
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>
+                    {c.parentEmail ? `Familia: ${c.parentName || ''} · ${c.parentEmail}` : 'Alta manual (secretaría)'}
+                    {c.contacto ? ` · 📞 ${c.contacto}` : ''}
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+                    {c.alergias && (
+                      <span style={{ background: 'color-mix(in oklab, var(--orange) 14%, var(--bg-2))', color: 'var(--orange)', fontWeight: 800, padding: '2px 8px', borderRadius: 999, fontSize: 11, border: '1px solid color-mix(in oklab, var(--orange) 30%, transparent)' }}>
+                        ⚠ {c.alergias}
+                      </span>
+                    )}
+                    <span style={{ background: 'var(--bg-3)', color: 'var(--ink-2)', fontWeight: 700, padding: '2px 8px', borderRadius: 999, fontSize: 11, border: '1px solid var(--line-2)' }}>
+                      {(c.days || []).length} día{(c.days || []).length !== 1 ? 's' : ''}
+                    </span>
+                    {c.fotosRrss && <span style={{ color: 'var(--teal)', fontSize: 11, fontWeight: 700 }}>✓ Fotos RRSS</span>}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, fontWeight: 700, color: c.pagado ? 'var(--teal)' : 'var(--orange)', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={!!c.pagado} onChange={e => patchChild(c.id, { pagado: e.target.checked })} style={{ width: 16, height: 16, accentColor: 'var(--teal)' }} />
+                    {c.pagado ? 'Pagado' : 'Pendiente'}
+                  </label>
+                  <button className="btn btn-sm btn-outline" onClick={() => setEditingDays({ child: c, days: [...(c.days || [])] })}>
+                    <I.Calendar /> Días
+                  </button>
+                  <button className="icon-btn" onClick={() => setEditingChild({ ...c, edad: c.edad || '', alergias: c.alergias || '', observaciones: c.observaciones || '', contacto: c.contacto || '', recogida: c.recogida || '' })} aria-label="Editar"><I.Edit /></button>
+                  <button className="icon-btn danger" onClick={() => deleteChild(c.id)} aria-label="Eliminar"><I.Trash /></button>
+                </div>
+              </div>
+              {c.observaciones && <div style={{ fontSize: 12, color: 'var(--ink-3)', background: 'var(--bg-3)', borderRadius: 8, padding: '6px 10px' }}>{c.observaciones}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ── Semanas ── */}
+      {tab === 'weeks' && (
+        <div style={{ display: 'grid', gap: 16 }}>
+          <div>
+            <button className="btn btn-sm btn-primary" onClick={() => setEditingWeek({ label: '', startDate: '', endDate: '', capacity: 24 })}>
+              <I.Plus /> Añadir semana
+            </button>
+          </div>
+          {weeks.length === 0 && (
+            <div style={{ padding: 28, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>
+              Configura las semanas del campamento para que las familias puedan elegir días.
+            </div>
+          )}
+          {weeks.map(w => {
+            const totalSpots = w.days.reduce((s, d) => s + d.count, 0);
+            return (
+              <div key={w.id} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '16px 18px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 10 }}>
+                  <div>
+                    <div style={{ fontWeight: 800, fontSize: 15, color: 'var(--ink)' }}>{w.label}</div>
+                    <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>
+                      {w.startDate} → {w.endDate} · capacidad {w.capacity}/día · {totalSpots} plazas ocupadas en total
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button className="icon-btn" onClick={() => setEditingWeek({ id: w.id, label: w.label, startDate: w.startDate, endDate: w.endDate, capacity: w.capacity })} aria-label="Editar"><I.Edit /></button>
+                    <button className="icon-btn danger" onClick={() => deleteWeek(w.id)} aria-label="Eliminar"><I.Trash /></button>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {w.days.map(({ day, count }) => {
+                    const full = w.capacity != null && count >= w.capacity;
+                    return (
+                      <div key={day} style={{
+                        fontSize: 11, fontWeight: 700, padding: '4px 10px', borderRadius: 999,
+                        background: full ? 'color-mix(in oklab, var(--orange) 14%, var(--bg-2))' : 'var(--bg-3)',
+                        color: full ? 'var(--orange)' : 'var(--ink-2)',
+                        border: `1px solid ${full ? 'color-mix(in oklab, var(--orange) 30%, transparent)' : 'var(--line-2)'}`,
+                      }}>
+                        {day.slice(8)}/{day.slice(5, 7)} · {count}/{w.capacity}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Modal: datos del niño (nuevo / editar) ── */}
+      {editingChild && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+          onClick={e => { if (e.target === e.currentTarget) setEditingChild(null); }}>
+          <div style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 560, maxHeight: '90vh', overflowY: 'auto', padding: 24 }}>
+            <h3 style={{ margin: '0 0 16px', fontSize: 18, fontWeight: 800 }}>{editingChild.id ? 'Editar datos' : 'Inscribir niño/a'}</h3>
+            <form onSubmit={submitChild} style={{ display: 'grid', gap: 14 }}>
+              <div className="field-row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div className="field"><label>Nombre</label><input value={editingChild.nombre} onChange={e => setEditingChild(c => ({ ...c, nombre: e.target.value }))} required /></div>
+                <div className="field"><label>Apellidos</label><input value={editingChild.apellidos} onChange={e => setEditingChild(c => ({ ...c, apellidos: e.target.value }))} required /></div>
+              </div>
+              <div className="field-row" style={{ display: 'grid', gridTemplateColumns: '80px 1fr', gap: 12 }}>
+                <div className="field"><label>Edad</label><input type="number" min="2" max="17" value={editingChild.edad} onChange={e => setEditingChild(c => ({ ...c, edad: e.target.value }))} /></div>
+                <div className="field"><label>Teléfono de contacto</label><input value={editingChild.contacto} onChange={e => setEditingChild(c => ({ ...c, contacto: e.target.value }))} placeholder="+34 600 000 000" /></div>
+              </div>
+              <div className="field"><label>Alergias / intolerancias</label><input value={editingChild.alergias} onChange={e => setEditingChild(c => ({ ...c, alergias: e.target.value }))} placeholder="Ej. frutos secos, lactosa..." /></div>
+              <div className="field"><label>Personas autorizadas a recogerle</label><input value={editingChild.recogida} onChange={e => setEditingChild(c => ({ ...c, recogida: e.target.value }))} placeholder="Ej. madre, abuela Carmen..." /></div>
+              <div className="field"><label>Observaciones</label><textarea rows={2} value={editingChild.observaciones} onChange={e => setEditingChild(c => ({ ...c, observaciones: e.target.value }))} style={{ fontFamily: 'inherit', fontSize: 14, padding: 12, background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 10, color: 'var(--ink)', resize: 'vertical' }} placeholder="Medicación, necesidades especiales, miedos..." /></div>
+              <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={!!editingChild.fotosRrss} onChange={e => setEditingChild(c => ({ ...c, fotosRrss: e.target.checked }))} />
+                  Autoriza fotos RRSS
+                </label>
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, cursor: 'pointer', color: 'var(--teal)', fontWeight: 700 }}>
+                  <input type="checkbox" checked={!!editingChild.pagado} onChange={e => setEditingChild(c => ({ ...c, pagado: e.target.checked }))} style={{ accentColor: 'var(--teal)' }} />
+                  Pagado
+                </label>
+              </div>
+              {!editingChild.id && (
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--ink)', marginBottom: 8 }}>Días de asistencia</div>
+                  <CampDayPicker weeks={weeks} selected={editingChild.days} onChange={days => setEditingChild(c => ({ ...c, days }))} />
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button type="button" className="btn btn-outline" onClick={() => setEditingChild(null)}>Cancelar</button>
+                <button type="submit" className="btn btn-primary" disabled={savingModal}>{savingModal ? 'Guardando...' : (editingChild.id ? 'Guardar cambios' : 'Inscribir')}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: días del niño ── */}
+      {editingDays && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+          onClick={e => { if (e.target === e.currentTarget) setEditingDays(null); }}>
+          <div style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 560, maxHeight: '90vh', overflowY: 'auto', padding: 24 }}>
+            <h3 style={{ margin: '0 0 4px', fontSize: 18, fontWeight: 800 }}>Días de {editingDays.child.nombre}</h3>
+            <p style={{ margin: '0 0 16px', fontSize: 13, color: 'var(--ink-3)' }}>{editingDays.days.length} día{editingDays.days.length !== 1 ? 's' : ''} seleccionado{editingDays.days.length !== 1 ? 's' : ''}</p>
+            <CampDayPicker weeks={weeks} selected={editingDays.days} onChange={days => setEditingDays(d => ({ ...d, days }))} />
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 18 }}>
+              <button type="button" className="btn btn-outline" onClick={() => setEditingDays(null)}>Cancelar</button>
+              <button type="button" className="btn btn-primary" disabled={savingModal} onClick={submitDays}>{savingModal ? 'Guardando...' : 'Guardar días'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: semana ── */}
+      {editingWeek && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+          onClick={e => { if (e.target === e.currentTarget) setEditingWeek(null); }}>
+          <div style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 480, padding: 24 }}>
+            <h3 style={{ margin: '0 0 16px', fontSize: 18, fontWeight: 800 }}>{editingWeek.id ? 'Editar semana' : 'Nueva semana'}</h3>
+            <form onSubmit={submitWeek} style={{ display: 'grid', gap: 14 }}>
+              <div className="field"><label>Nombre</label><input value={editingWeek.label} onChange={e => setEditingWeek(w => ({ ...w, label: e.target.value }))} required placeholder="Ej. Semana 1 · Aventura y deportes" /></div>
+              <div className="field-row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div className="field"><label>Inicio</label><input type="date" value={editingWeek.startDate} onChange={e => setEditingWeek(w => ({ ...w, startDate: e.target.value }))} required /></div>
+                <div className="field"><label>Fin</label><input type="date" value={editingWeek.endDate} onChange={e => setEditingWeek(w => ({ ...w, endDate: e.target.value }))} required /></div>
+              </div>
+              <div className="field"><label>Plazas por día</label><input type="number" min="1" max="200" value={editingWeek.capacity} onChange={e => setEditingWeek(w => ({ ...w, capacity: Number(e.target.value) }))} required /></div>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button type="button" className="btn btn-outline" onClick={() => setEditingWeek(null)}>Cancelar</button>
+                <button type="submit" className="btn btn-primary" disabled={savingModal}>{savingModal ? 'Guardando...' : 'Guardar'}</button>
               </div>
             </form>
           </div>
@@ -1621,6 +2159,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
       { id: "payments", label: "Recibos", icon: <I.Wallet /> },
       { id: "news", label: "Noticias / Foro", icon: <I.Newspaper /> },
       { id: "events", label: "Eventos", icon: <I.Star /> },
+      { id: "camp", label: "Campamento", icon: <I.Sun /> },
     ]},
     { heading: "Club", items: [
       { id: "groups", label: "Grupos", icon: <I.Trophy /> },
@@ -1702,7 +2241,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
             <div style={{display: "flex", gap: 10, alignItems: "center"}}>
               <button className="btn btn-icon"><I.Bell /></button>
               <button className="btn btn-icon" onClick={() => alert("Función de búsqueda global disponible próximamente.")}><I.Search /></button>
-              {!['classes', 'events', 'support'].includes(view) && (
+              {!['classes', 'events', 'support', 'camp'].includes(view) && (
                 <button
                   className="btn btn-primary"
                   onClick={() => {
@@ -1754,6 +2293,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
           {view === "payments" && <AdminPayments refreshTrigger={refreshTrigger} />}
           {view === "news" && <AdminNews refreshTrigger={refreshTrigger} onEditPost={(p) => { setEditingItem({ ...p, coverImageUrl: p.cover_image_url }); setActiveModal('edit-post'); }} />}
           {view === "events" && <AdminEvents showToast={showToast} />}
+          {view === "camp" && <AdminCamp showToast={showToast} />}
           {view === "groups" && <AdminGroups refreshTrigger={refreshTrigger} onEditGroup={(g) => { setEditingItem(g); setActiveModal('edit-group'); }} />}
           {view === "instructors" && <AdminInstructores refreshTrigger={refreshTrigger} showToast={showToast} />}
           {view === "settings" && <AdminSettings />}

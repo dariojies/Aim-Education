@@ -243,6 +243,58 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_reg_event ON aim_event_registrations(event_id)`);
+
+        // ── Campamento de verano ──
+        // Semanas del campamento (las define el admin; los días disponibles son L-V de cada semana).
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_camp_weeks (
+                id SERIAL PRIMARY KEY,
+                label VARCHAR(200) NOT NULL,
+                start_date DATE NOT NULL,
+                end_date DATE NOT NULL,
+                capacity INTEGER DEFAULT 24,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        // Niños inscritos (por un usuario de la web o manualmente desde secretaría).
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_camp_children (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT,
+                nombre VARCHAR(200) NOT NULL,
+                apellidos VARCHAR(200) NOT NULL,
+                edad INTEGER,
+                alergias TEXT,
+                observaciones TEXT,
+                contacto VARCHAR(120),
+                recogida TEXT,
+                fotos_rrss BOOLEAN DEFAULT false,
+                pagado BOOLEAN DEFAULT false,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        // Días que asistirá cada niño.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_camp_child_days (
+                id SERIAL PRIMARY KEY,
+                child_id INTEGER NOT NULL REFERENCES aim_camp_children(id) ON DELETE CASCADE,
+                day DATE NOT NULL,
+                UNIQUE(child_id, day)
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_camp_days_day ON aim_camp_child_days(day)`);
+        // Asistencia + diario del profesor por niño y día.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_camp_attendance (
+                id SERIAL PRIMARY KEY,
+                child_id INTEGER NOT NULL REFERENCES aim_camp_children(id) ON DELETE CASCADE,
+                day DATE NOT NULL,
+                asistio BOOLEAN,
+                note TEXT,
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE(child_id, day)
+            )
+        `);
     } finally {
         client.release();
     }
@@ -1154,6 +1206,396 @@ app.delete('/api/admin/events/:id/registrations/:regId', authenticateSession, as
         await pool.query('DELETE FROM aim_event_registrations WHERE id = $1 AND event_id = $2', [req.params.regId, req.params.id]);
         res.json({ success: true });
     } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// =============================================================================
+// CAMPAMENTO DE VERANO
+// =============================================================================
+
+function requireAdmin(req, res, next) {
+    if (!req.userSession?.canAccessAdmin) return res.status(403).json({ error: 'Acceso solo para administradores.' });
+    next();
+}
+
+function mapCampChild(r) {
+    return {
+        id: r.id,
+        userId: r.user_id,
+        nombre: r.nombre,
+        apellidos: r.apellidos,
+        edad: r.edad,
+        alergias: r.alergias,
+        observaciones: r.observaciones,
+        contacto: r.contacto,
+        recogida: r.recogida,
+        fotosRrss: r.fotos_rrss,
+        pagado: r.pagado,
+        createdAt: r.created_at,
+        days: r.days || [],
+        parentName: r.parent_name || null,
+        parentEmail: r.parent_email || null,
+    };
+}
+
+// Días L-V (laborables) dentro de una semana del campamento.
+function weekDays(startStr, endStr) {
+    const days = [];
+    const d = new Date(startStr + 'T12:00:00Z');
+    const end = new Date(endStr + 'T12:00:00Z');
+    while (d <= end) {
+        const dow = d.getUTCDay();
+        if (dow >= 1 && dow <= 5) days.push(d.toISOString().slice(0, 10));
+        d.setUTCDate(d.getUTCDate() + 1);
+    }
+    return days;
+}
+
+// Comprueba capacidad: devuelve el primer día sin plaza de los solicitados (o null).
+async function findFullDay(daysToAdd, excludeChildId) {
+    if (!daysToAdd.length) return null;
+    const weeksRes = await pool.query(`SELECT *, to_char(start_date,'YYYY-MM-DD') AS s, to_char(end_date,'YYYY-MM-DD') AS e FROM aim_camp_weeks`);
+    const countsRes = await pool.query(
+        `SELECT to_char(day,'YYYY-MM-DD') AS day, COUNT(*)::int AS n
+         FROM aim_camp_child_days WHERE day = ANY($1::date[]) ${excludeChildId ? 'AND child_id <> $2' : ''}
+         GROUP BY day`,
+        excludeChildId ? [daysToAdd, excludeChildId] : [daysToAdd]
+    );
+    const counts = Object.fromEntries(countsRes.rows.map(r => [r.day, r.n]));
+    for (const day of daysToAdd) {
+        const week = weeksRes.rows.find(w => day >= w.s && day <= w.e);
+        const cap = week?.capacity ?? null;
+        if (cap != null && (counts[day] || 0) >= cap) return day;
+    }
+    return null;
+}
+
+// Público: semanas del campamento con ocupación por día.
+app.get('/api/camp/weeks', async (req, res) => {
+    try {
+        const weeks = await pool.query(`SELECT id, label, capacity, to_char(start_date,'YYYY-MM-DD') AS start_date, to_char(end_date,'YYYY-MM-DD') AS end_date FROM aim_camp_weeks ORDER BY start_date ASC`);
+        const counts = await pool.query(`SELECT to_char(day,'YYYY-MM-DD') AS day, COUNT(*)::int AS n FROM aim_camp_child_days GROUP BY day`);
+        const countByDay = Object.fromEntries(counts.rows.map(r => [r.day, r.n]));
+        res.set('Cache-Control', 'no-store');
+        res.json(weeks.rows.map(w => ({
+            id: w.id,
+            label: w.label,
+            startDate: w.start_date,
+            endDate: w.end_date,
+            capacity: w.capacity,
+            days: weekDays(w.start_date, w.end_date).map(day => ({ day, count: countByDay[day] || 0 })),
+        })));
+    } catch (err) {
+        console.error('Error fetching camp weeks:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Usuario: mis niños inscritos (con sus días).
+app.get('/api/camp/children', authenticateSession, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT c.*, COALESCE(json_agg(to_char(d.day,'YYYY-MM-DD') ORDER BY d.day) FILTER (WHERE d.id IS NOT NULL), '[]') AS days
+             FROM aim_camp_children c
+             LEFT JOIN aim_camp_child_days d ON d.child_id = c.id
+             WHERE c.user_id = $1
+             GROUP BY c.id ORDER BY c.created_at ASC`,
+            [String(req.userSession.userId)]
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json(result.rows.map(mapCampChild));
+    } catch (err) {
+        console.error('Error fetching camp children:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Usuario: inscribir a un niño (con días opcionales en la misma llamada).
+app.post('/api/camp/children', authenticateSession, async (req, res) => {
+    const { nombre, apellidos, edad, alergias, observaciones, contacto, recogida, fotosRrss, days } = req.body;
+    if (!nombre?.trim() || !apellidos?.trim()) return res.status(400).json({ error: 'Nombre y apellidos son obligatorios.' });
+    const dayList = Array.isArray(days) ? [...new Set(days)] : [];
+    try {
+        const fullDay = await findFullDay(dayList, null);
+        if (fullDay) return res.status(409).json({ error: `El día ${fullDay} ya no tiene plazas libres.` });
+        const result = await pool.query(
+            `INSERT INTO aim_camp_children (user_id, nombre, apellidos, edad, alergias, observaciones, contacto, recogida, fotos_rrss)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+            [String(req.userSession.userId), nombre.trim(), apellidos.trim(), edad || null, alergias?.trim() || null,
+             observaciones?.trim() || null, contacto?.trim() || null, recogida?.trim() || null, !!fotosRrss]
+        );
+        const childId = result.rows[0].id;
+        for (const day of dayList) {
+            await pool.query(`INSERT INTO aim_camp_child_days (child_id, day) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [childId, day]);
+        }
+        res.status(201).json({ id: childId });
+    } catch (err) {
+        console.error('Error enrolling camp child:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Usuario/Admin: comprobar propiedad del niño.
+async function getOwnedChild(req, res) {
+    const result = await pool.query('SELECT * FROM aim_camp_children WHERE id = $1', [req.params.id]);
+    if (result.rowCount === 0) { res.status(404).json({ error: 'Niño/a no encontrado/a.' }); return null; }
+    const child = result.rows[0];
+    if (!req.userSession.canAccessAdmin && String(child.user_id) !== String(req.userSession.userId)) {
+        res.status(403).json({ error: 'No autorizado.' });
+        return null;
+    }
+    return child;
+}
+
+// Usuario: editar datos del niño.
+app.put('/api/camp/children/:id', authenticateSession, async (req, res) => {
+    try {
+        const child = await getOwnedChild(req, res);
+        if (!child) return;
+        const { nombre, apellidos, edad, alergias, observaciones, contacto, recogida, fotosRrss } = req.body;
+        if (!nombre?.trim() || !apellidos?.trim()) return res.status(400).json({ error: 'Nombre y apellidos son obligatorios.' });
+        await pool.query(
+            `UPDATE aim_camp_children SET nombre=$1, apellidos=$2, edad=$3, alergias=$4, observaciones=$5, contacto=$6, recogida=$7, fotos_rrss=$8 WHERE id=$9`,
+            [nombre.trim(), apellidos.trim(), edad || null, alergias?.trim() || null, observaciones?.trim() || null,
+             contacto?.trim() || null, recogida?.trim() || null, !!fotosRrss, child.id]
+        );
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Usuario: dar de baja al niño del campamento.
+app.delete('/api/camp/children/:id', authenticateSession, async (req, res) => {
+    try {
+        const child = await getOwnedChild(req, res);
+        if (!child) return;
+        await pool.query('DELETE FROM aim_camp_children WHERE id = $1', [child.id]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Usuario: elegir los días que asistirá el niño (reemplaza la selección).
+app.put('/api/camp/children/:id/days', authenticateSession, async (req, res) => {
+    const { days } = req.body;
+    if (!Array.isArray(days)) return res.status(400).json({ error: 'days debe ser un array de fechas.' });
+    const dayList = [...new Set(days)];
+    try {
+        const child = await getOwnedChild(req, res);
+        if (!child) return;
+        const currentRes = await pool.query(`SELECT to_char(day,'YYYY-MM-DD') AS day FROM aim_camp_child_days WHERE child_id = $1`, [child.id]);
+        const current = new Set(currentRes.rows.map(r => r.day));
+        const toAdd = dayList.filter(d => !current.has(d));
+        const fullDay = await findFullDay(toAdd, child.id);
+        if (fullDay) return res.status(409).json({ error: `El día ${fullDay} ya no tiene plazas libres.` });
+        await pool.query('DELETE FROM aim_camp_child_days WHERE child_id = $1', [child.id]);
+        for (const day of dayList) {
+            await pool.query(`INSERT INTO aim_camp_child_days (child_id, day) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [child.id, day]);
+        }
+        res.json({ success: true, days: dayList.sort() });
+    } catch (err) {
+        console.error('Error setting camp days:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Usuario: diario del niño (asistencia + notas del profesor), visible para la familia.
+app.get('/api/camp/children/:id/diary', authenticateSession, async (req, res) => {
+    try {
+        const child = await getOwnedChild(req, res);
+        if (!child) return;
+        const result = await pool.query(
+            `SELECT to_char(day,'YYYY-MM-DD') AS day, asistio, note, updated_at FROM aim_camp_attendance WHERE child_id = $1 ORDER BY day ASC`,
+            [child.id]
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json(result.rows.map(r => ({ day: r.day, asistio: r.asistio, note: r.note, updatedAt: r.updated_at })));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ── Admin: semanas ──
+app.post('/api/admin/camp/weeks', authenticateSession, requireAdmin, async (req, res) => {
+    const { label, startDate, endDate, capacity } = req.body;
+    if (!label?.trim() || !startDate || !endDate) return res.status(400).json({ error: 'Nombre, fecha de inicio y fin son obligatorios.' });
+    if (endDate < startDate) return res.status(400).json({ error: 'La fecha de fin debe ser posterior a la de inicio.' });
+    try {
+        const result = await pool.query(
+            `INSERT INTO aim_camp_weeks (label, start_date, end_date, capacity) VALUES ($1,$2,$3,$4) RETURNING id`,
+            [label.trim(), startDate, endDate, capacity || 24]
+        );
+        res.status(201).json({ id: result.rows[0].id });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/admin/camp/weeks/:id', authenticateSession, requireAdmin, async (req, res) => {
+    const { label, startDate, endDate, capacity } = req.body;
+    if (!label?.trim() || !startDate || !endDate) return res.status(400).json({ error: 'Nombre, fecha de inicio y fin son obligatorios.' });
+    try {
+        await pool.query(
+            `UPDATE aim_camp_weeks SET label=$1, start_date=$2, end_date=$3, capacity=$4 WHERE id=$5`,
+            [label.trim(), startDate, endDate, capacity || 24, req.params.id]
+        );
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/admin/camp/weeks/:id', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        await pool.query('DELETE FROM aim_camp_weeks WHERE id = $1', [req.params.id]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ── Admin: niños inscritos (todos, con familia y días) ──
+app.get('/api/admin/camp/children', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT c.*,
+                    COALESCE(json_agg(to_char(d.day,'YYYY-MM-DD') ORDER BY d.day) FILTER (WHERE d.id IS NOT NULL), '[]') AS days,
+                    u.name || ' ' || COALESCE(u.surname,'') AS parent_name,
+                    u.email AS parent_email
+             FROM aim_camp_children c
+             LEFT JOIN aim_camp_child_days d ON d.child_id = c.id
+             LEFT JOIN users u ON u.user_id::text = c.user_id
+             GROUP BY c.id, u.name, u.surname, u.email
+             ORDER BY c.apellidos ASC, c.nombre ASC`
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json(result.rows.map(mapCampChild));
+    } catch (err) {
+        console.error('Error fetching admin camp children:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Admin: alta manual de un niño (secretaría).
+app.post('/api/admin/camp/children', authenticateSession, requireAdmin, async (req, res) => {
+    const { nombre, apellidos, edad, alergias, observaciones, contacto, recogida, fotosRrss, pagado, days } = req.body;
+    if (!nombre?.trim() || !apellidos?.trim()) return res.status(400).json({ error: 'Nombre y apellidos son obligatorios.' });
+    const dayList = Array.isArray(days) ? [...new Set(days)] : [];
+    try {
+        const result = await pool.query(
+            `INSERT INTO aim_camp_children (user_id, nombre, apellidos, edad, alergias, observaciones, contacto, recogida, fotos_rrss, pagado)
+             VALUES (NULL,$1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+            [nombre.trim(), apellidos.trim(), edad || null, alergias?.trim() || null, observaciones?.trim() || null,
+             contacto?.trim() || null, recogida?.trim() || null, !!fotosRrss, !!pagado]
+        );
+        const childId = result.rows[0].id;
+        for (const day of dayList) {
+            await pool.query(`INSERT INTO aim_camp_child_days (child_id, day) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [childId, day]);
+        }
+        res.status(201).json({ id: childId });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Admin: actualizar datos / pagado de un niño.
+app.patch('/api/admin/camp/children/:id', authenticateSession, requireAdmin, async (req, res) => {
+    const allowed = { nombre: 'nombre', apellidos: 'apellidos', edad: 'edad', alergias: 'alergias', observaciones: 'observaciones', contacto: 'contacto', recogida: 'recogida', fotosRrss: 'fotos_rrss', pagado: 'pagado' };
+    const fields = [];
+    const vals = [];
+    for (const [key, col] of Object.entries(allowed)) {
+        if (req.body[key] !== undefined) {
+            fields.push(`${col} = $${fields.length + 1}`);
+            vals.push(req.body[key]);
+        }
+    }
+    if (!fields.length) return res.status(400).json({ error: 'Nada que actualizar.' });
+    vals.push(req.params.id);
+    try {
+        await pool.query(`UPDATE aim_camp_children SET ${fields.join(', ')} WHERE id = $${vals.length}`, vals);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Admin: eliminar inscripción de un niño.
+app.delete('/api/admin/camp/children/:id', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        await pool.query('DELETE FROM aim_camp_children WHERE id = $1', [req.params.id]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Admin: modificar los días de un niño.
+app.put('/api/admin/camp/children/:id/days', authenticateSession, requireAdmin, async (req, res) => {
+    const { days } = req.body;
+    if (!Array.isArray(days)) return res.status(400).json({ error: 'days debe ser un array de fechas.' });
+    const dayList = [...new Set(days)];
+    try {
+        await pool.query('DELETE FROM aim_camp_child_days WHERE child_id = $1', [req.params.id]);
+        for (const day of dayList) {
+            await pool.query(`INSERT INTO aim_camp_child_days (child_id, day) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [req.params.id, day]);
+        }
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Admin: lista del día (pasar lista) — niños apuntados a esa fecha con su asistencia y nota.
+app.get('/api/admin/camp/roster', authenticateSession, requireAdmin, async (req, res) => {
+    const { day } = req.query;
+    if (!day) return res.status(400).json({ error: 'Falta el parámetro day (YYYY-MM-DD).' });
+    try {
+        const result = await pool.query(
+            `SELECT c.id, c.nombre, c.apellidos, c.edad, c.alergias, c.observaciones, c.contacto, c.recogida, c.fotos_rrss, c.pagado,
+                    a.asistio, a.note,
+                    u.name || ' ' || COALESCE(u.surname,'') AS parent_name, u.email AS parent_email
+             FROM aim_camp_child_days d
+             JOIN aim_camp_children c ON c.id = d.child_id
+             LEFT JOIN aim_camp_attendance a ON a.child_id = c.id AND a.day = d.day
+             LEFT JOIN users u ON u.user_id::text = c.user_id
+             WHERE d.day = $1
+             ORDER BY c.apellidos ASC, c.nombre ASC`,
+            [day]
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json(result.rows.map(r => ({
+            id: r.id, nombre: r.nombre, apellidos: r.apellidos, edad: r.edad,
+            alergias: r.alergias, observaciones: r.observaciones, contacto: r.contacto,
+            recogida: r.recogida, fotosRrss: r.fotos_rrss, pagado: r.pagado,
+            asistio: r.asistio, note: r.note,
+            parentName: r.parent_name, parentEmail: r.parent_email,
+        })));
+    } catch (err) {
+        console.error('Error fetching camp roster:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Admin: guardar asistencia y/o nota del profesor de un niño en un día.
+app.put('/api/admin/camp/attendance', authenticateSession, requireAdmin, async (req, res) => {
+    const { childId, day, asistio, note } = req.body;
+    if (!childId || !day) return res.status(400).json({ error: 'childId y day son obligatorios.' });
+    try {
+        await pool.query(
+            `INSERT INTO aim_camp_attendance (child_id, day, asistio, note, updated_at)
+             VALUES ($1, $2, $3, $4, NOW())
+             ON CONFLICT (child_id, day) DO UPDATE SET
+                asistio = COALESCE(EXCLUDED.asistio, aim_camp_attendance.asistio),
+                note = COALESCE(EXCLUDED.note, aim_camp_attendance.note),
+                updated_at = NOW()`,
+            [childId, day, asistio === undefined ? null : asistio, note === undefined ? null : note]
+        );
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Error saving camp attendance:', err);
         res.status(500).json({ error: err.message });
     }
 });

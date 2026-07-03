@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { I } from './Icons.jsx';
-import { AimLogo, ACT_BY_ID } from './Shared.jsx';
+import { AimLogo, ACT_BY_ID, CampDayPicker, campFmtLong } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 import { UserSupport } from './AdminSupport.jsx';
 
@@ -379,6 +379,228 @@ function DashPayments() {
   );
 }
 
+// ── Campamento de verano (vista familia) ──
+const EMPTY_KID = { nombre: '', apellidos: '', edad: '', alergias: '', observaciones: '', contacto: '', recogida: '', fotosRrss: false, days: [] };
+
+function DashCamp() {
+  const [weeks, setWeeks] = useState([]);
+  const [kids, setKids] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [form, setForm] = useState(null);        // datos del niño (nuevo si !form.id)
+  const [saving, setSaving] = useState(false);
+  const [daysOpenFor, setDaysOpenFor] = useState(null);  // kid.id con selector de días abierto
+  const [daysDraft, setDaysDraft] = useState([]);
+  const [diaryOpenFor, setDiaryOpenFor] = useState(null); // kid.id con diario abierto
+  const [diary, setDiary] = useState([]);
+  const [diaryLoading, setDiaryLoading] = useState(false);
+
+  async function loadAll() {
+    try {
+      const [wRes, kRes] = await Promise.all([
+        fetch('/api/camp/weeks', { credentials: 'include' }),
+        fetch('/api/camp/children', { credentials: 'include' }),
+      ]);
+      if (wRes.ok) setWeeks(await wRes.json());
+      if (kRes.ok) setKids(await kRes.json());
+    } catch { /* noop */ }
+    finally { setLoading(false); }
+  }
+  useEffect(() => { loadAll(); }, []);
+
+  async function submitKid(e) {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      const isEdit = !!form.id;
+      const r = await fetch(isEdit ? `/api/camp/children/${form.id}` : '/api/camp/children', {
+        method: isEdit ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ ...form, edad: form.edad || null }),
+      });
+      if (r.ok) { setForm(null); await loadAll(); }
+      else { const d = await r.json(); alert(d.error || 'Error al guardar.'); }
+    } catch { alert('Error de conexión.'); }
+    finally { setSaving(false); }
+  }
+
+  async function deleteKid(kid) {
+    if (!window.confirm(`¿Dar de baja a ${kid.nombre} del campamento?`)) return;
+    const r = await fetch(`/api/camp/children/${kid.id}`, { method: 'DELETE', credentials: 'include' });
+    if (r.ok) loadAll();
+  }
+
+  async function saveDays(kid) {
+    setSaving(true);
+    try {
+      const r = await fetch(`/api/camp/children/${kid.id}/days`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ days: daysDraft }),
+      });
+      if (r.ok) { setDaysOpenFor(null); await loadAll(); }
+      else { const d = await r.json(); alert(d.error || 'Error al guardar los días.'); }
+    } catch { alert('Error de conexión.'); }
+    finally { setSaving(false); }
+  }
+
+  async function openDiary(kid) {
+    if (diaryOpenFor === kid.id) { setDiaryOpenFor(null); return; }
+    setDiaryOpenFor(kid.id);
+    setDiaryLoading(true);
+    setDiary([]);
+    try {
+      const r = await fetch(`/api/camp/children/${kid.id}/diary`, { credentials: 'include' });
+      if (r.ok) setDiary(await r.json());
+    } catch { /* noop */ }
+    finally { setDiaryLoading(false); }
+  }
+
+  const kidFields = (
+    <>
+      <div className="field-row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div className="field"><label>Nombre</label><input value={form?.nombre || ''} onChange={e => setForm(f => ({ ...f, nombre: e.target.value }))} required /></div>
+        <div className="field"><label>Apellidos</label><input value={form?.apellidos || ''} onChange={e => setForm(f => ({ ...f, apellidos: e.target.value }))} required /></div>
+      </div>
+      <div className="field-row" style={{ display: 'grid', gridTemplateColumns: '80px 1fr', gap: 12 }}>
+        <div className="field"><label>Edad</label><input type="number" min="2" max="17" value={form?.edad || ''} onChange={e => setForm(f => ({ ...f, edad: e.target.value }))} /></div>
+        <div className="field"><label>Teléfono de contacto</label><input value={form?.contacto || ''} onChange={e => setForm(f => ({ ...f, contacto: e.target.value }))} placeholder="+34 600 000 000" /></div>
+      </div>
+      <div className="field"><label>Alergias / intolerancias</label><input value={form?.alergias || ''} onChange={e => setForm(f => ({ ...f, alergias: e.target.value }))} placeholder="Ej. frutos secos, lactosa..." /></div>
+      <div className="field"><label>Personas autorizadas a recogerle</label><input value={form?.recogida || ''} onChange={e => setForm(f => ({ ...f, recogida: e.target.value }))} placeholder="Ej. madre, abuela Carmen..." /></div>
+      <div className="field"><label>Observaciones para los monitores</label><textarea rows={2} value={form?.observaciones || ''} onChange={e => setForm(f => ({ ...f, observaciones: e.target.value }))} style={{ fontFamily: 'inherit', fontSize: 14, padding: 12, background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 10, color: 'var(--ink)', resize: 'vertical' }} placeholder="Medicación, necesidades especiales, miedos..." /></div>
+      <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, cursor: 'pointer' }}>
+        <input type="checkbox" checked={!!form?.fotosRrss} onChange={e => setForm(f => ({ ...f, fotosRrss: e.target.checked }))} />
+        Autorizo el uso de fotos en redes sociales del club
+      </label>
+    </>
+  );
+
+  return (
+    <>
+      <div className="panel">
+        <h2><I.Sun /> Campamento de verano</h2>
+        <p className="sub">Inscribe a tus hijos, elige los días que asistirán y sigue su día a día.</p>
+
+        {loading && <EmptyState text="Cargando campamento..." />}
+
+        {!loading && weeks.length === 0 && (
+          <EmptyState icon={<I.Sun />} text="El campamento aún no tiene fechas publicadas. Vuelve pronto." />
+        )}
+
+        {!loading && weeks.length > 0 && kids.length === 0 && !form && (
+          <div style={{ textAlign: 'center', padding: '28px 16px' }}>
+            <p style={{ fontSize: 14, color: 'var(--ink-2)', margin: '0 0 16px' }}>
+              Todavía no has inscrito a ningún niño/a.
+            </p>
+            <button className="btn btn-gradient" onClick={() => setForm({ ...EMPTY_KID })}>
+              <I.Plus /> Inscribir a mi hijo/a
+            </button>
+          </div>
+        )}
+
+        {!loading && kids.length > 0 && (
+          <div style={{ display: 'grid', gap: 14, marginTop: 8 }}>
+            {kids.map(kid => (
+              <div key={kid.id} style={{ background: 'var(--bg-3)', border: '1px solid var(--line-2)', borderRadius: 14, padding: '14px 16px', display: 'grid', gap: 10 }}>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                  <div style={{ flex: 1, minWidth: 160 }}>
+                    <div style={{ fontWeight: 800, fontSize: 15, color: 'var(--ink)' }}>
+                      {kid.nombre} {kid.apellidos}
+                      {kid.edad ? <span style={{ fontWeight: 600, color: 'var(--ink-3)', marginLeft: 6, fontSize: 12 }}>{kid.edad} años</span> : null}
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6, fontSize: 11 }}>
+                      <span style={{ background: 'var(--bg-2)', color: 'var(--ink-2)', fontWeight: 700, padding: '2px 8px', borderRadius: 999, border: '1px solid var(--line-2)' }}>
+                        {(kid.days || []).length} día{(kid.days || []).length !== 1 ? 's' : ''} elegido{(kid.days || []).length !== 1 ? 's' : ''}
+                      </span>
+                      <span style={{ fontWeight: 800, padding: '2px 8px', borderRadius: 999, color: kid.pagado ? 'var(--teal)' : 'var(--orange)', background: `color-mix(in oklab, ${kid.pagado ? 'var(--teal)' : 'var(--orange)'} 12%, var(--bg-2))` }}>
+                        {kid.pagado ? 'Pagado' : 'Pago pendiente'}
+                      </span>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    <button className="btn btn-sm btn-outline" onClick={() => {
+                      if (daysOpenFor === kid.id) { setDaysOpenFor(null); return; }
+                      setDaysOpenFor(kid.id); setDaysDraft([...(kid.days || [])]); setDiaryOpenFor(null);
+                    }}>
+                      <I.Calendar /> Días
+                    </button>
+                    <button className="btn btn-sm btn-outline" onClick={() => { openDiary(kid); setDaysOpenFor(null); }}>
+                      <I.Newspaper /> Diario
+                    </button>
+                    <button className="icon-btn" onClick={() => setForm({ id: kid.id, nombre: kid.nombre, apellidos: kid.apellidos, edad: kid.edad || '', alergias: kid.alergias || '', observaciones: kid.observaciones || '', contacto: kid.contacto || '', recogida: kid.recogida || '', fotosRrss: !!kid.fotosRrss })} aria-label="Editar datos"><I.Edit /></button>
+                    <button className="icon-btn danger" onClick={() => deleteKid(kid)} aria-label="Dar de baja"><I.Trash /></button>
+                  </div>
+                </div>
+
+                {daysOpenFor === kid.id && (
+                  <div style={{ borderTop: '1px dashed var(--line)', paddingTop: 12, display: 'grid', gap: 12 }}>
+                    <CampDayPicker weeks={weeks} selected={daysDraft} onChange={setDaysDraft} />
+                    <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                      <button className="btn btn-sm btn-outline" onClick={() => setDaysOpenFor(null)}>Cancelar</button>
+                      <button className="btn btn-sm btn-primary" disabled={saving} onClick={() => saveDays(kid)}>
+                        {saving ? 'Guardando...' : `Guardar (${daysDraft.length} días)`}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {diaryOpenFor === kid.id && (
+                  <div style={{ borderTop: '1px dashed var(--line)', paddingTop: 12 }}>
+                    {diaryLoading && <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>Cargando diario...</p>}
+                    {!diaryLoading && diary.length === 0 && <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>Aún no hay anotaciones de los monitores.</p>}
+                    {!diaryLoading && diary.map(d => (
+                      <div key={d.day} style={{ display: 'flex', gap: 10, padding: '10px 0', borderBottom: '1px solid var(--line-2)', alignItems: 'flex-start' }}>
+                        <span style={{
+                          flexShrink: 0, fontSize: 11, fontWeight: 800, padding: '3px 9px', borderRadius: 999,
+                          color: d.asistio ? 'var(--teal)' : d.asistio === false ? 'var(--orange)' : 'var(--ink-3)',
+                          background: `color-mix(in oklab, ${d.asistio ? 'var(--teal)' : d.asistio === false ? 'var(--orange)' : 'var(--ink-3)'} 12%, var(--bg-2))`,
+                        }}>
+                          {d.asistio ? '✓' : d.asistio === false ? '✗' : '·'}
+                        </span>
+                        <div>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink)', textTransform: 'capitalize' }}>{campFmtLong(d.day)}</div>
+                          {d.note
+                            ? <p style={{ margin: '3px 0 0', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.5 }}>{d.note}</p>
+                            : <p style={{ margin: '3px 0 0', fontSize: 12, color: 'var(--ink-3)' }}>{d.asistio ? 'Asistió — sin anotaciones.' : d.asistio === false ? 'No asistió.' : 'Sin registro.'}</p>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+
+            {!form && (
+              <div>
+                <button className="btn btn-sm btn-outline" onClick={() => setForm({ ...EMPTY_KID })}>
+                  <I.Plus /> Inscribir a otro hijo/a
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {form && (
+          <form onSubmit={submitKid} style={{ marginTop: 18, background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 14, padding: 18, display: 'grid', gap: 14 }}>
+            <div style={{ fontWeight: 800, fontSize: 15, color: 'var(--ink)' }}>{form.id ? `Editar datos de ${form.nombre}` : 'Inscribir niño/a al campamento'}</div>
+            {kidFields}
+            {!form.id && (
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--ink)', marginBottom: 8 }}>¿Qué días asistirá?</div>
+                <p style={{ fontSize: 12, color: 'var(--ink-3)', margin: '0 0 10px' }}>Puedes cambiarlos más adelante desde esta misma pantalla.</p>
+                <CampDayPicker weeks={weeks} selected={form.days || []} onChange={days => setForm(f => ({ ...f, days }))} />
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button type="button" className="btn btn-outline" onClick={() => setForm(null)}>Cancelar</button>
+              <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Guardando...' : (form.id ? 'Guardar cambios' : 'Inscribir')}</button>
+            </div>
+          </form>
+        )}
+      </div>
+    </>
+  );
+}
+
 function DashWallet() {
   return (
     <div className="panel">
@@ -491,6 +713,7 @@ function DashSettings() {
 export default function StudentDashboard({ user, onLogout, subroute = "overview" }) {
   const { go } = useRouter();
   const [view, setView] = useState(subroute);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   useEffect(() => { setView(subroute); }, [subroute]);
 
   const initials = `${user?.firstName?.[0] || ""}${user?.lastName?.[0] || ""}`.toUpperCase() || "?";
@@ -499,6 +722,7 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
   const navItems = [
     { id: "overview", label: "Resumen", icon: <I.Dashboard /> },
     { id: "classes", label: "Mis clases", icon: <I.Calendar /> },
+    { id: "camp", label: "Campamento", icon: <I.Sun /> },
     { id: "attendance", label: "Asistencia", icon: <I.Check /> },
     { id: "payments", label: "Pagos y recibos", icon: <I.Wallet /> },
     { id: "wallet", label: "Mi cartera", icon: <I.CreditCard /> },
@@ -515,16 +739,19 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
     else go("/");
   }
 
+  function navTo(id) { setView(id); setSidebarOpen(false); }
+
   return (
     <main style={{paddingTop: 0}}>
+      {sidebarOpen && <div className="dash-overlay" onClick={() => setSidebarOpen(false)} />}
       <div className="dash-layout">
-        <aside className="dash-side">
+        <aside className={`dash-side${sidebarOpen ? ' is-open' : ''}`}>
           <div className="brand"><AimLogo size="sm" sub /></div>
 
           <nav className="dash-nav">
             <div className="heading">{familyLabel}</div>
             {navItems.map(it => (
-              <button key={it.id} className={view === it.id ? "is-active" : ""} onClick={() => setView(it.id)}>
+              <button key={it.id} className={view === it.id ? "is-active" : ""} onClick={() => navTo(it.id)}>
                 <span className="ico">{it.icon}</span>
                 <span>{it.label}</span>
                 {it.id === "news" && <span className="dot" style={{background: "var(--teal)"}}/>}
@@ -532,12 +759,12 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
             ))}
             <div className="heading">Cuenta</div>
             {settingsItems.map(it => (
-              <button key={it.id} className={view === it.id ? "is-active" : ""} onClick={() => setView(it.id)}>
+              <button key={it.id} className={view === it.id ? "is-active" : ""} onClick={() => navTo(it.id)}>
                 <span className="ico">{it.icon}</span>
                 <span>{it.label}</span>
               </button>
             ))}
-            <button onClick={() => go("/")} style={{marginTop: 16, borderTop: "1px dashed var(--line-2)", paddingTop: 16}}>
+            <button onClick={() => { go("/"); setSidebarOpen(false); }} style={{marginTop: 16, borderTop: "1px dashed var(--line-2)", paddingTop: 16}}>
               <span className="ico"><I.Globe width={16} height={16} /></span>
               <span>Volver a la Web</span>
             </button>
@@ -550,12 +777,17 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
 
         <div className="dash-main">
           <div className="dash-topbar">
-            <div>
-              <p style={{margin: 0, fontSize: 13, color: "var(--ink-3)", fontWeight: 600, letterSpacing: ".06em", textTransform: "uppercase"}}>
-                {navItems.concat(settingsItems).find(i => i.id === view)?.label || "Resumen"}
-              </p>
-              <h1>{view === "overview" ? `¡Hola ${user?.firstName || ""}!` : navItems.concat(settingsItems).find(i => i.id === view)?.label}</h1>
-              {view === "overview" && <p style={{margin: "6px 0 0", color: "var(--ink-3)"}}>Este es el resumen de tu familia esta semana.</p>}
+            <div style={{display: "flex", gap: 12, alignItems: "center"}}>
+              <button className="btn btn-icon dash-hamburger" aria-label="Menú" onClick={() => setSidebarOpen(o => !o)}>
+                <I.Menu />
+              </button>
+              <div>
+                <p style={{margin: 0, fontSize: 13, color: "var(--ink-3)", fontWeight: 600, letterSpacing: ".06em", textTransform: "uppercase"}}>
+                  {navItems.concat(settingsItems).find(i => i.id === view)?.label || "Resumen"}
+                </p>
+                <h1>{view === "overview" ? `¡Hola ${user?.firstName || ""}!` : navItems.concat(settingsItems).find(i => i.id === view)?.label}</h1>
+                {view === "overview" && <p style={{margin: "6px 0 0", color: "var(--ink-3)"}}>Este es el resumen de tu familia esta semana.</p>}
+              </div>
             </div>
             <div style={{display: "flex", gap: 12, alignItems: "center"}}>
               <button className="btn btn-icon" aria-label="Notificaciones"><I.Bell /></button>
@@ -565,6 +797,7 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
 
           {view === "overview" && <DashOverview go={go} setView={setView} />}
           {view === "classes" && <DashClasses />}
+          {view === "camp" && <DashCamp />}
           {view === "attendance" && <DashAttendance />}
           {view === "payments" && <DashPayments />}
           {view === "wallet" && <DashWallet />}

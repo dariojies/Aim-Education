@@ -327,6 +327,99 @@ const STAR_SVG = (
   </svg>
 );
 
+// ---------- Campamento: helpers de fechas + selector de días ----------
+const CAMP_DOW = ["D", "L", "M", "X", "J", "V", "S"];
+const CAMP_MONTHS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+
+function campDayParts(iso) {
+  const d = new Date(iso + "T12:00:00");
+  return { dow: CAMP_DOW[d.getDay()], num: d.getDate(), month: CAMP_MONTHS[d.getMonth()] };
+}
+
+function campFmtLong(iso) {
+  return new Date(iso + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+}
+
+// Selector de días del campamento agrupado por semanas.
+// weeks: [{id,label,startDate,endDate,capacity,days:[{day,count}]}]
+// selected: array de fechas ISO seleccionadas; onChange(nextArray)
+function CampDayPicker({ weeks, selected, onChange, disabled = false }) {
+  const sel = new Set(selected);
+  const toggle = (day) => {
+    if (disabled) return;
+    const next = new Set(sel);
+    next.has(day) ? next.delete(day) : next.add(day);
+    onChange([...next].sort());
+  };
+  const toggleWeek = (w) => {
+    if (disabled) return;
+    const wDays = w.days.map(d => d.day);
+    const freeDays = w.days.filter(d => sel.has(d.day) || w.capacity == null || d.count < w.capacity).map(d => d.day);
+    const allSelected = freeDays.length > 0 && freeDays.every(d => sel.has(d));
+    const next = new Set(sel);
+    if (allSelected) wDays.forEach(d => next.delete(d));
+    else freeDays.forEach(d => next.add(d));
+    onChange([...next].sort());
+  };
+  if (!weeks.length) {
+    return <p style={{ fontSize: 13, color: "var(--ink-3)", margin: 0 }}>El campamento aún no tiene fechas publicadas.</p>;
+  }
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      {weeks.map(w => {
+        const startP = campDayParts(w.startDate);
+        const endP = campDayParts(w.endDate);
+        return (
+          <div key={w.id} style={{ background: "var(--bg-3)", border: "1px solid var(--line-2)", borderRadius: 14, padding: "12px 14px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: "var(--ink)" }}>
+                {w.label}
+                <span style={{ fontWeight: 600, color: "var(--ink-3)", marginLeft: 8, fontSize: 12 }}>
+                  {startP.num} {startP.month} – {endP.num} {endP.month}
+                </span>
+              </div>
+              {!disabled && (
+                <button type="button" onClick={() => toggleWeek(w)}
+                  style={{ fontSize: 11, fontWeight: 700, color: "var(--purple)", background: "none", border: "1px solid var(--line)", borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}>
+                  Semana completa
+                </button>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {w.days.map(({ day, count }) => {
+                const p = campDayParts(day);
+                const isSel = sel.has(day);
+                const isFull = !isSel && w.capacity != null && count >= w.capacity;
+                return (
+                  <button key={day} type="button"
+                    onClick={() => !isFull && toggle(day)}
+                    disabled={disabled || isFull}
+                    title={isFull ? "Sin plazas libres" : `${count}${w.capacity ? `/${w.capacity}` : ""} apuntados`}
+                    style={{
+                      display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
+                      minWidth: 52, padding: "8px 10px", borderRadius: 12,
+                      border: `1.5px solid ${isSel ? "var(--teal)" : "var(--line)"}`,
+                      background: isSel ? "var(--teal)" : "var(--bg-2)",
+                      color: isSel ? "white" : isFull ? "var(--ink-3)" : "var(--ink)",
+                      opacity: isFull ? .5 : 1,
+                      cursor: disabled || isFull ? "default" : "pointer",
+                      fontFamily: "inherit",
+                      transition: "background .15s ease, border-color .15s ease",
+                    }}>
+                    <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: ".08em", opacity: .8 }}>{p.dow}</span>
+                    <span style={{ fontSize: 16, fontWeight: 800, fontFamily: "var(--font-display)", lineHeight: 1 }}>{p.num}</span>
+                    <span style={{ fontSize: 9, fontWeight: 700, opacity: .75 }}>{isFull ? "Completo" : `${count}${w.capacity ? `/${w.capacity}` : ""}`}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function MagicText({ children }) {
   return (
     <span className="magic">
@@ -338,4 +431,4 @@ function MagicText({ children }) {
   );
 }
 
-export { AimLogo, AimHeader, AimFooter, ACTIVITIES, ACT_BY_ID, ActIcon, Placeholder, MagicText };
+export { AimLogo, AimHeader, AimFooter, ACTIVITIES, ACT_BY_ID, ActIcon, Placeholder, MagicText, CampDayPicker, campDayParts, campFmtLong };

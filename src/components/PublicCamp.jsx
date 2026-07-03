@@ -1,7 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { I } from './Icons.jsx';
 import { AimHeader, AimFooter, MagicText } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
+
+const CAMP_MONTH_ABBR = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+function fmtShort(iso) {
+  const d = new Date(iso + 'T12:00:00');
+  return `${d.getDate()} ${CAMP_MONTH_ABBR[d.getMonth()]}`;
+}
 
 function PriceCard({ tag, price, discount, desc, features, featured }) {
   return (
@@ -52,15 +58,41 @@ function PriceCard({ tag, price, discount, desc, features, featured }) {
 }
 
 export default function PublicCamp() {
-  const { go } = useRouter();
+  const { go, user } = useRouter();
   const [selectedWeek, setSelectedWeek] = useState(0);
+  const [apiWeeks, setApiWeeks] = useState([]);
 
-  const WEEKS = [
+  useEffect(() => {
+    fetch('/api/camp/weeks')
+      .then(r => r.ok ? r.json() : [])
+      .then(d => setApiWeeks(Array.isArray(d) ? d : []))
+      .catch(() => {});
+  }, []);
+
+  // Reservar: usuarios con sesión van directos a su panel de campamento.
+  const reserve = () => go(user ? "/dashboard/campamento" : "/auth?mode=register");
+
+  // Semanas reales publicadas por el club; si aún no hay, se muestra la previsión.
+  const FALLBACK_WEEKS = [
     { num: "01", range: "1 – 5 Jul", theme: "Aventura y deportes", spots: 8, total: 24 },
     { num: "02", range: "8 – 12 Jul", theme: "Robots, ciencia y código", spots: 4, total: 24 },
     { num: "03", range: "15 – 19 Jul", theme: "Cine, arte y baile", spots: 12, total: 24 },
     { num: "04", range: "22 – 26 Jul", theme: "Olimpiadas Aim", spots: 0, total: 24 },
   ];
+  const WEEKS = apiWeeks.length
+    ? apiWeeks.map((w, i) => {
+        const days = w.days || [];
+        const total = (w.capacity || 24) * Math.max(days.length, 1);
+        const occupied = days.reduce((s, d) => s + d.count, 0);
+        return {
+          num: String(i + 1).padStart(2, "0"),
+          range: `${fmtShort(w.startDate)} – ${fmtShort(w.endDate)}`,
+          theme: w.label,
+          spots: Math.max(total - occupied, 0),
+          total,
+        };
+      })
+    : FALLBACK_WEEKS;
 
   const DAY_PLAN = [
     { time: "09:00", title: "Acogida", desc: "Llegada escalonada, desayuno saludable.", color: "var(--orange-soft)" },
@@ -89,7 +121,7 @@ export default function PublicCamp() {
                   inglés y talleres creativos por la tarde. Para niños y niñas de <b>4 a 14 años</b>.
                 </p>
                 <div style={{display: "flex", gap: 12, marginTop: 32, flexWrap: "wrap"}}>
-                  <button className="btn btn-lg" style={{background: "var(--ink)", color: "white"}} onClick={() => go("/auth?mode=register")}>
+                  <button className="btn btn-lg" style={{background: "var(--ink)", color: "white"}} onClick={reserve}>
                     Reservar plaza <I.Arrow />
                   </button>
                   <button className="btn btn-lg" style={{background: "rgba(255,255,255,.22)", color: "white", border: "1px solid rgba(255,255,255,.4)"}}>
@@ -271,7 +303,7 @@ export default function PublicCamp() {
                   Paga el 20% ahora para fijar tu plaza. El resto el primer día del campamento.
                 </p>
               </div>
-              <button className="btn btn-gradient btn-lg" onClick={() => go("/auth?mode=register")}>
+              <button className="btn btn-gradient btn-lg" onClick={reserve}>
                 Reservar plaza <I.Arrow />
               </button>
             </div>
