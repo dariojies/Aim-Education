@@ -1811,7 +1811,12 @@ function AdminCamp({ showToast }) {
             </div>
           )}
           {visibleChildren.map(c => (
-            <div key={c.id} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '14px 18px', display: 'grid', gap: 10 }}>
+            <div key={c.id}
+              onClick={() => setEditingDays({ child: c, days: [...(c.days || [])] })}
+              title="Ver / editar días de asistencia"
+              style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '14px 18px', display: 'grid', gap: 10, cursor: 'pointer', transition: 'border-color var(--tx-fast) ease, box-shadow var(--tx-fast) ease' }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--ink-3)'; e.currentTarget.style.boxShadow = 'var(--shadow-sm)'; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--line)'; e.currentTarget.style.boxShadow = 'none'; }}>
               <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
                 <div style={{ flex: 1, minWidth: 180 }}>
                   <div style={{ fontWeight: 800, fontSize: 15, color: 'var(--ink)' }}>
@@ -1834,7 +1839,7 @@ function AdminCamp({ showToast }) {
                     {c.fotosRrss && <span style={{ color: 'var(--teal)', fontSize: 11, fontWeight: 700 }}>✓ Fotos RRSS</span>}
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }} onClick={e => e.stopPropagation()}>
                   <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, fontWeight: 700, color: c.pagado ? 'var(--teal)' : 'var(--orange)', cursor: 'pointer' }}>
                     <input type="checkbox" checked={!!c.pagado} onChange={e => patchChild(c.id, { pagado: e.target.checked })} style={{ width: 16, height: 16, accentColor: 'var(--teal)' }} />
                     {c.pagado ? 'Pagado' : 'Pendiente'}
