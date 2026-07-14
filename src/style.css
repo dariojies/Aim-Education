@@ -300,7 +300,10 @@ header.aim-header {
   background: var(--ink-2);
 }
 .btn-gradient {
-  background: var(--grad-aim);
+  /* PRUEBA: mismo efecto animado que los textos arcoíris (sin estrellas) */
+  background: linear-gradient(to right, #5233A8, #FF99D3, #FFD526, #21B668, #00BBF4, #5233A8);
+  background-size: 200%;
+  animation: background-pan 5s linear infinite;
   color: white;
   box-shadow: 0 10px 24px -10px rgba(110,63,217,.55);
 }
