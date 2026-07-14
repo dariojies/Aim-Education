@@ -408,7 +408,7 @@ header.aim-header {
   transform: translate(-50%, -50%) rotate(45deg);
   background: linear-gradient(to right,
       #5233A8, #FF99D3, #FFD526, #21B668, #00BBF4, #5233A8);
-  background-size: 420px 100%;
+  background-size: 840px 100%;
   background-repeat: repeat;
   animation: btn-pan-diagonal 8s linear infinite;
   z-index: -1;
@@ -2404,7 +2404,7 @@ html[data-theme="dark"] .dash-nav button.is-active {
   transform: translate(-50%, -50%) rotate(45deg);
   background: linear-gradient(to right,
       #5233A8, #FF99D3, #FFD526, #21B668, #00BBF4, #5233A8);
-  background-size: 420px 100%;
+  background-size: 840px 100%;
   background-repeat: repeat;
   animation: btn-pan-diagonal 12s linear infinite;
   z-index: -1;
@@ -3388,7 +3388,7 @@ html[data-theme="dark"] .dash-nav button.is-active {
 }
 
 /* Capa ::before rotada 45°: el degradado se desplaza en HORIZONTAL un periodo
-   exacto (420px = tamaño del azulejo) → bucle continuo sin costura. La rotación
+   exacto (840px = tamaño del azulejo) → bucle continuo sin costura. La rotación
    convierte ese movimiento horizontal en diagonal (sup-izq → inf-der). */
 @keyframes btn-pan-diagonal {
   from {
@@ -3396,7 +3396,7 @@ html[data-theme="dark"] .dash-nav button.is-active {
   }
 
   to {
-    background-position: 420px 0;
+    background-position: 840px 0;
   }
 }
 
