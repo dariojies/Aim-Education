@@ -2957,6 +2957,19 @@ html[data-theme="dark"] .dash-nav button.is-active {
   }
 }
 
+/* Rejilla de tarjetas del campamento (admin): 3 columnas, 2 en tablet, 1 en móvil */
+.camp-card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+@media (max-width: 1100px) {
+  .camp-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 680px) {
+  .camp-card-grid { grid-template-columns: 1fr; }
+}
+
 /* =============================================================
    Responsive
    ============================================================= */

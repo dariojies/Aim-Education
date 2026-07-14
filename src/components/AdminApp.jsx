@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { I } from './Icons.jsx';
 import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong, campDayParts } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
@@ -1535,34 +1535,6 @@ function SortToggle({ value, onChange }) {
   );
 }
 
-// Calcula cuántas columnas usar para que todas las tarjetas quepan en el alto
-// visible sin scroll, añadiendo columnas (más estrechas) cuando hace falta.
-function useFitColumns(count, active, { cardMin = 180, cardH = 84, gap = 10, bottomPad = 28 } = {}) {
-  const ref = useRef(null);
-  const [cols, setCols] = useState(3);
-  useEffect(() => {
-    if (!active) return;
-    const el = ref.current;
-    if (!el) return;
-    const recompute = () => {
-      const rect = el.getBoundingClientRect();
-      const availW = rect.width;
-      if (!availW) return;
-      const availH = Math.max(160, window.innerHeight - rect.top - bottomPad);
-      const rowsFit = Math.max(1, Math.floor((availH + gap) / (cardH + gap)));
-      const maxColsW = Math.max(1, Math.floor((availW + gap) / (cardMin + gap)));
-      const needed = Math.max(1, Math.ceil((count || 1) / rowsFit));
-      setCols(Math.max(1, Math.min(needed, maxColsW)));
-    };
-    recompute();
-    const ro = new ResizeObserver(recompute);
-    ro.observe(el);
-    window.addEventListener('resize', recompute);
-    return () => { ro.disconnect(); window.removeEventListener('resize', recompute); };
-  }, [count, active, cardMin, cardH, gap, bottomPad]);
-  return [ref, cols];
-}
-
 // Agenda del campamento: quién viene cada día (semanal / mensual / general).
 function CampAgenda({ weeks, children }) {
   const [view, setView] = useState('week'); // 'week' | 'month' | 'general'
@@ -1978,10 +1950,6 @@ function AdminCamp({ showToast }) {
   const sortedRoster = [...roster].sort(sorter);
   const presentCount = roster.filter(r => r.asistio).length;
 
-  // Columnas dinámicas: todo cabe en pantalla sin scroll (más columnas si hace falta).
-  const [childGridRef, childCols] = useFitColumns(visibleChildren.length, tab === 'children', { cardMin: 155, cardH: 80 });
-  const [rosterGridRef, rosterCols] = useFitColumns(sortedRoster.length, tab === 'roster', { cardMin: 320, cardH: 132 });
-
   return (
     <>
       {/* Tabs */}
@@ -2030,7 +1998,7 @@ function AdminCamp({ showToast }) {
             </div>
           )}
           {!rosterLoading && roster.length > 0 && (
-            <div ref={rosterGridRef} style={{ display: 'grid', gridTemplateColumns: `repeat(${rosterCols}, minmax(0, 1fr))`, gap: 12 }}>
+            <div className="camp-card-grid">
               {sortedRoster.map(row => (
                 <CampRosterRow key={`${row.id}-${rosterDay}`} row={row} day={rosterDay} onSaved={onAttendanceSaved} />
               ))}
@@ -2072,7 +2040,7 @@ function AdminCamp({ showToast }) {
           {!childrenLoading && children.length > 0 && visibleChildren.length === 0 && (
             <p style={{ color: 'var(--ink-3)', fontSize: 13 }}>Ningún inscrito coincide con el filtro.</p>
           )}
-          <div ref={childGridRef} style={{ display: 'grid', gridTemplateColumns: `repeat(${childCols}, minmax(0, 1fr))`, gap: 10 }}>
+          <div className="camp-card-grid">
             {visibleChildren.map(c => (
               <div key={c.id}
                 onClick={() => setEditingDays({ child: c, days: [...(c.days || [])] })}
@@ -2082,10 +2050,10 @@ function AdminCamp({ showToast }) {
                 onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--line)'; e.currentTarget.style.boxShadow = 'none'; }}>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 800, fontSize: 14, color: 'var(--ink)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    <div style={{ fontWeight: 800, fontSize: 14, color: 'var(--ink)', lineHeight: 1.2, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
                       {c.nombre} {c.apellidos}
                     </div>
-                    <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 1 }}>
+                    <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
                       {c.edad ? `${c.edad} años · ` : ''}{c.parentEmail ? 'Familia web' : 'Alta manual'}
                     </div>
                   </div>
