@@ -300,15 +300,31 @@ header.aim-header {
   background: var(--ink-2);
 }
 .btn-gradient {
-  /* Arcoíris fluyendo en diagonal (sup-izq → inf-der), sin estrellas.
-     Paleta en espejo → la pendiente del color coincide en el punto de repetición,
-     por eso NO hay corte visible; el desplazamiento es de un periodo exacto (bucle continuo). */
-  background: repeating-linear-gradient(135deg,
-    #5233A8 0px, #FF99D3 60px, #FFD526 120px, #21B668 180px, #00BBF4 240px,
-    #21B668 300px, #FFD526 360px, #FF99D3 420px, #5233A8 480px);
-  animation: btn-pan-diagonal 6s linear infinite;
+  /* Arcoíris animado fluyendo en diagonal (sup-izq → inf-der), sin estrellas.
+     El degradado se anima HORIZONTAL en una capa ::before (así se repite sin costura,
+     como el texto) y se ROTA 45° para verse en diagonal. Cero cortes. */
+  position: relative;
+  z-index: 0;
+  overflow: hidden;
+  background: #5233A8;
   color: white;
   box-shadow: 0 10px 24px -10px rgba(110,63,217,.55);
+}
+.btn-gradient::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 200%;
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%) rotate(45deg);
+  background: linear-gradient(to right,
+    #5233A8, #FF99D3, #FFD526, #21B668, #00BBF4, #5233A8);
+  background-size: 420px 100%;
+  background-repeat: repeat;
+  animation: btn-pan-diagonal 6s linear infinite;
+  z-index: -1;
+  pointer-events: none;
 }
 .btn-gradient:hover {
   box-shadow: 0 16px 32px -10px rgba(110,63,217,.7);
@@ -1720,12 +1736,28 @@ html[data-theme="dark"] .dash-nav button.is-active {
 }
 .admin-nav button:hover { background: rgba(255,255,255,.06); color: white; }
 .admin-nav button.is-active {
-  /* Mismo arcoíris animado en diagonal (paleta en espejo, sin corte) que los botones */
-  background: repeating-linear-gradient(135deg,
-    #5233A8 0px, #FF99D3 60px, #FFD526 120px, #21B668 180px, #00BBF4 240px,
-    #21B668 300px, #FFD526 360px, #FF99D3 420px, #5233A8 480px);
-  animation: btn-pan-diagonal 6s linear infinite;
+  /* Mismo arcoíris animado en diagonal (capa rotada, sin costura) que los botones */
+  position: relative;
+  z-index: 0;
+  overflow: hidden;
+  background: #5233A8;
   color: white;
+}
+.admin-nav button.is-active::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 200%;
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%) rotate(45deg);
+  background: linear-gradient(to right,
+    #5233A8, #FF99D3, #FFD526, #21B668, #00BBF4, #5233A8);
+  background-size: 420px 100%;
+  background-repeat: repeat;
+  animation: btn-pan-diagonal 6s linear infinite;
+  z-index: -1;
+  pointer-events: none;
 }
 .admin-nav button.is-active .count {
   background: rgba(0,0,0,.22);
@@ -2251,11 +2283,12 @@ html[data-theme="dark"] .dash-nav button.is-active {
   from { background-position: 0% center; }
   to   { background-position: -200% center; }
 }
-/* Desplaza el patrón exactamente un periodo (480px) a lo largo del eje 135°:
-   (339px, 339px) ≈ 480px de proyección diagonal → bucle continuo sin saltos */
+/* Capa ::before rotada 45°: el degradado se desplaza en HORIZONTAL un periodo
+   exacto (420px = tamaño del azulejo) → bucle continuo sin costura. La rotación
+   convierte ese movimiento horizontal en diagonal (sup-izq → inf-der). */
 @keyframes btn-pan-diagonal {
   from { background-position: 0 0; }
-  to   { background-position: 339px 339px; }
+  to   { background-position: 420px 0; }
 }
 @keyframes magic-scale {
   0%, 100% { transform: scale(0); }
