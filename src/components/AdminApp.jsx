@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { I } from './Icons.jsx';
-import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong } from './Shared.jsx';
+import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong, campDayParts } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 import { AdminSupport } from './AdminSupport.jsx';
 
@@ -1511,14 +1511,256 @@ function CampRosterRow({ row, day, onSaved }) {
   );
 }
 
+// Orden compartido: alfabético (nombre) o por edad (edad, luego nombre).
+function makeSorter(sortMode) {
+  return (a, b) => {
+    if (sortMode === 'age') {
+      const ea = a.edad == null ? 999 : Number(a.edad);
+      const eb = b.edad == null ? 999 : Number(b.edad);
+      if (ea !== eb) return ea - eb;
+    }
+    return `${a.nombre} ${a.apellidos}`.localeCompare(`${b.nombre} ${b.apellidos}`, 'es', { sensitivity: 'base' });
+  };
+}
+
+// Selector de orden (A–Z / por edad) reutilizable.
+function SortToggle({ value, onChange }) {
+  return (
+    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+      <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-3)' }}>Orden:</span>
+      {[['alpha', 'A–Z'], ['age', 'Por edad']].map(([id, label]) => (
+        <button key={id} className={`filter-pill ${value === id ? 'is-active' : ''}`} onClick={() => onChange(id)}>{label}</button>
+      ))}
+    </div>
+  );
+}
+
+// Calcula cuántas columnas usar para que todas las tarjetas quepan en el alto
+// visible sin scroll, añadiendo columnas (más estrechas) cuando hace falta.
+function useFitColumns(count, active, { cardMin = 180, cardH = 84, gap = 10, bottomPad = 28 } = {}) {
+  const ref = useRef(null);
+  const [cols, setCols] = useState(3);
+  useEffect(() => {
+    if (!active) return;
+    const el = ref.current;
+    if (!el) return;
+    const recompute = () => {
+      const rect = el.getBoundingClientRect();
+      const availW = rect.width;
+      if (!availW) return;
+      const availH = Math.max(160, window.innerHeight - rect.top - bottomPad);
+      const rowsFit = Math.max(1, Math.floor((availH + gap) / (cardH + gap)));
+      const maxColsW = Math.max(1, Math.floor((availW + gap) / (cardMin + gap)));
+      const needed = Math.max(1, Math.ceil((count || 1) / rowsFit));
+      setCols(Math.max(1, Math.min(needed, maxColsW)));
+    };
+    recompute();
+    const ro = new ResizeObserver(recompute);
+    ro.observe(el);
+    window.addEventListener('resize', recompute);
+    return () => { ro.disconnect(); window.removeEventListener('resize', recompute); };
+  }, [count, active, cardMin, cardH, gap, bottomPad]);
+  return [ref, cols];
+}
+
+// Agenda del campamento: quién viene cada día (semanal / mensual / general).
+function CampAgenda({ weeks, children }) {
+  const [view, setView] = useState('week'); // 'week' | 'month' | 'general'
+  const [weekIdx, setWeekIdx] = useState(0);
+  const [selDay, setSelDay] = useState(null);
+  const [ym, setYm] = useState(() => {
+    const base = weeks[0]?.startDate ? new Date(weeks[0].startDate + 'T12:00:00') : new Date();
+    return { y: base.getFullYear(), m: base.getMonth() };
+  });
+
+  const MONTHS = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+  const WD_HEAD = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+  const dowShort = (day) => ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'][new Date(day + 'T12:00:00').getDay()];
+
+  // Mapa día -> niños que asisten
+  const byDay = {};
+  children.forEach(c => (c.days || []).forEach(d => { (byDay[d] = byDay[d] || []).push(c); }));
+  const nameSort = (a, b) => `${a.nombre} ${a.apellidos}`.localeCompare(`${b.nombre} ${b.apellidos}`, 'es', { sensitivity: 'base' });
+  const kidsOn = (day) => (byDay[day] || []).slice().sort(nameSort);
+
+  const holidaySet = new Set(weeks.flatMap(w => w.holidays || []));
+  const campDaySet = new Set(weeks.flatMap(w => (w.days || []).map(d => d.day)));
+
+  if (!weeks.length) {
+    return (
+      <div style={{ padding: 28, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>
+        Configura primero las semanas del campamento para ver quién viene cada día.
+      </div>
+    );
+  }
+
+  const wk = weeks[Math.min(weekIdx, weeks.length - 1)];
+
+  const NameRow = ({ k }) => (
+    <div style={{ fontSize: 12, color: 'var(--ink)', display: 'flex', gap: 6, alignItems: 'center' }}>
+      <span title={k.pagado ? 'Pagado' : 'Pago pendiente'} style={{ width: 7, height: 7, borderRadius: '50%', background: k.pagado ? 'var(--teal)' : 'var(--orange)', flexShrink: 0 }} />
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{k.nombre} {k.apellidos}{k.edad ? <span style={{ color: 'var(--ink-3)' }}> · {k.edad}</span> : null}</span>
+    </div>
+  );
+
+  // Celdas del mes (lunes primero)
+  const firstOfMonth = new Date(ym.y, ym.m, 1);
+  const daysInMonth = new Date(ym.y, ym.m + 1, 0).getDate();
+  const startOffset = (firstOfMonth.getDay() + 6) % 7;
+  const cells = [];
+  for (let i = 0; i < startOffset; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(`${ym.y}-${String(ym.m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const jumpToDay = (day) => {
+    const d = new Date(day + 'T12:00:00');
+    setYm({ y: d.getFullYear(), m: d.getMonth() });
+    setSelDay(day);
+    setView('month');
+  };
+
+  const chevL = <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6" /></svg>;
+  const chevR = <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6" /></svg>;
+
+  return (
+    <div style={{ display: 'grid', gap: 16 }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {[['week', 'Semanal'], ['month', 'Mensual'], ['general', 'General']].map(([id, label]) => (
+          <button key={id} className={`filter-pill ${view === id ? 'is-active' : ''}`} onClick={() => { setView(id); setSelDay(null); }} style={{ borderRadius: 8, padding: '8px 16px' }}>{label}</button>
+        ))}
+      </div>
+
+      {/* ── Semanal ── */}
+      {view === 'week' && (
+        <div style={{ display: 'grid', gap: 14 }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button className="btn btn-icon" disabled={weekIdx <= 0} onClick={() => setWeekIdx(i => Math.max(0, i - 1))} aria-label="Semana anterior">{chevL}</button>
+            <select value={Math.min(weekIdx, weeks.length - 1)} onChange={e => setWeekIdx(Number(e.target.value))}
+              style={{ fontFamily: 'inherit', fontSize: 14, fontWeight: 700, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)', minWidth: 220 }}>
+              {weeks.map((w, i) => <option key={w.id} value={i}>{w.label}</option>)}
+            </select>
+            <button className="btn btn-icon" disabled={weekIdx >= weeks.length - 1} onClick={() => setWeekIdx(i => Math.min(weeks.length - 1, i + 1))} aria-label="Semana siguiente">{chevR}</button>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${wk.days.length || 1}, minmax(150px, 1fr))`, gap: 10, overflowX: 'auto' }}>
+            {wk.days.map(({ day, holiday }) => {
+              const p = campDayParts(day);
+              const list = kidsOn(day);
+              return (
+                <div key={day} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: '10px 12px', display: 'grid', gap: 8, alignContent: 'start' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderBottom: '1px solid var(--line-2)', paddingBottom: 6 }}>
+                    <div style={{ fontWeight: 800, fontSize: 13, color: 'var(--ink)' }}>{dowShort(day)} {p.num}</div>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: holiday ? 'var(--orange)' : 'var(--teal)' }}>{holiday ? 'Cerrado' : list.length}</div>
+                  </div>
+                  {holiday
+                    ? <div style={{ fontSize: 12, color: 'var(--orange)', fontWeight: 700 }}>Festivo</div>
+                    : list.length
+                      ? <div style={{ display: 'grid', gap: 4 }}>{list.map(k => <NameRow key={k.id} k={k} />)}</div>
+                      : <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>Nadie apuntado.</div>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── Mensual ── */}
+      {view === 'month' && (
+        <div style={{ display: 'grid', gap: 14 }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <button className="btn btn-icon" onClick={() => { setYm(v => v.m === 0 ? { y: v.y - 1, m: 11 } : { y: v.y, m: v.m - 1 }); setSelDay(null); }} aria-label="Mes anterior">{chevL}</button>
+            <span style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 800, minWidth: 160, textAlign: 'center' }}>{MONTHS[ym.m]} {ym.y}</span>
+            <button className="btn btn-icon" onClick={() => { setYm(v => v.m === 11 ? { y: v.y + 1, m: 0 } : { y: v.y, m: v.m + 1 }); setSelDay(null); }} aria-label="Mes siguiente">{chevR}</button>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 6 }}>
+            {WD_HEAD.map(d => <div key={d} style={{ textAlign: 'center', fontSize: 11, fontWeight: 800, letterSpacing: '.06em', color: 'var(--ink-3)', textTransform: 'uppercase' }}>{d}</div>)}
+            {cells.map((day, i) => {
+              if (!day) return <div key={i} />;
+              const isHol = holidaySet.has(day);
+              const isCamp = campDaySet.has(day) && !isHol;
+              const count = isCamp ? kidsOn(day).length : 0;
+              const sel = selDay === day;
+              return (
+                <button key={i} disabled={!isCamp} onClick={() => setSelDay(day)}
+                  style={{
+                    minHeight: 62, borderRadius: 10, padding: '6px 8px', textAlign: 'left', fontFamily: 'inherit',
+                    display: 'flex', flexDirection: 'column', justifyContent: 'space-between', alignItems: 'flex-start',
+                    cursor: isCamp ? 'pointer' : 'default',
+                    border: `1px solid ${sel ? 'var(--ink)' : 'var(--line-2)'}`,
+                    background: sel ? 'var(--bg-3)' : isCamp ? 'var(--bg-2)' : 'transparent',
+                    opacity: isCamp || isHol ? 1 : .4,
+                  }}>
+                  <span style={{ fontFamily: 'var(--font-display)', fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>{Number(day.slice(8))}</span>
+                  {isHol
+                    ? <span style={{ fontSize: 10, fontWeight: 800, color: 'var(--orange)' }}>Fiesta</span>
+                    : isCamp
+                      ? <span style={{ fontSize: 11, fontWeight: 800, padding: '1px 7px', borderRadius: 999, background: count ? 'color-mix(in oklab, var(--teal) 16%, var(--bg-2))' : 'var(--bg-3)', color: count ? 'var(--teal)' : 'var(--ink-3)' }}>{count}</span>
+                      : null}
+                </button>
+              );
+            })}
+          </div>
+          {selDay && (
+            <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: '14px 16px' }}>
+              <div style={{ fontWeight: 800, fontSize: 14, color: 'var(--ink)', textTransform: 'capitalize', marginBottom: 10 }}>
+                {campFmtLong(selDay)} — {kidsOn(selDay).length} niños/as
+              </div>
+              {kidsOn(selDay).length
+                ? <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 6 }}>{kidsOn(selDay).map(k => <NameRow key={k.id} k={k} />)}</div>
+                : <div style={{ fontSize: 13, color: 'var(--ink-3)' }}>Nadie apuntado este día.</div>}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── General ── */}
+      {view === 'general' && (
+        <div style={{ display: 'grid', gap: 12 }}>
+          {weeks.map(w => {
+            const total = (w.days || []).reduce((s, d) => s + (holidaySet.has(d.day) ? 0 : kidsOn(d.day).length), 0);
+            return (
+              <div key={w.id} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: '14px 16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'baseline', marginBottom: 10 }}>
+                  <div style={{ fontWeight: 800, fontSize: 15, color: 'var(--ink)' }}>{w.label}</div>
+                  <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{total} asistencias · capacidad {w.capacity}/día</div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {(w.days || []).map(({ day, holiday }) => {
+                    const count = kidsOn(day).length;
+                    const p = campDayParts(day);
+                    const full = !holiday && w.capacity != null && count >= w.capacity;
+                    return (
+                      <button key={day} onClick={() => jumpToDay(day)} title="Ver quién viene"
+                        style={{
+                          fontSize: 12, fontWeight: 700, padding: '6px 11px', borderRadius: 10, cursor: 'pointer',
+                          border: `1px ${holiday ? 'dashed' : 'solid'} ${holiday ? 'color-mix(in oklab, var(--orange) 35%, transparent)' : full ? 'color-mix(in oklab, var(--orange) 35%, transparent)' : 'var(--line)'}`,
+                          background: holiday ? 'color-mix(in oklab, var(--orange) 7%, var(--bg-2))' : 'var(--bg-3)',
+                          color: (holiday || full) ? 'var(--orange)' : 'var(--ink-2)',
+                        }}>
+                        {dowShort(day)} {p.num} · {holiday ? 'Fiesta' : `${count} niños`}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AdminCamp({ showToast }) {
-  const [tab, setTab] = useState('roster'); // 'roster' | 'children' | 'weeks'
+  const [tab, setTab] = useState('roster'); // 'roster' | 'children' | 'weeks' | 'agenda'
   const [weeks, setWeeks] = useState([]);
   const [children, setChildren] = useState([]);
   const [roster, setRoster] = useState([]);
   const [rosterDay, setRosterDay] = useState(todayISO());
   const [rosterLoading, setRosterLoading] = useState(false);
   const [childrenLoading, setChildrenLoading] = useState(false);
+
+  // Orden (compartido entre inscritos y pasar lista)
+  const [sortMode, setSortMode] = useState('alpha'); // 'alpha' | 'age'
 
   // Filtros de inscritos
   const [nameFilter, setNameFilter] = useState('');
@@ -1658,7 +1900,7 @@ function AdminCamp({ showToast }) {
   }
 
   function printRoster() {
-    const rows = roster.map((r, i) => `
+    const rows = sortedRoster.map((r, i) => `
       <tr>
         <td>${i + 1}</td>
         <td>${r.nombre || ''}</td>
@@ -1725,20 +1967,26 @@ function AdminCamp({ showToast }) {
   }
 
   const nameQ = nameFilter.trim().toLowerCase();
+  const sorter = makeSorter(sortMode);
   const visibleChildren = children.filter(c => {
     if (nameQ && !`${c.nombre} ${c.apellidos}`.toLowerCase().includes(nameQ)) return false;
     if (pagadoFilter === 'pagado' && !c.pagado) return false;
     if (pagadoFilter === 'pendiente' && c.pagado) return false;
     return true;
-  });
+  }).sort(sorter);
 
+  const sortedRoster = [...roster].sort(sorter);
   const presentCount = roster.filter(r => r.asistio).length;
+
+  // Columnas dinámicas: todo cabe en pantalla sin scroll (más columnas si hace falta).
+  const [childGridRef, childCols] = useFitColumns(visibleChildren.length, tab === 'children', { cardMin: 155, cardH: 80 });
+  const [rosterGridRef, rosterCols] = useFitColumns(sortedRoster.length, tab === 'roster', { cardMin: 320, cardH: 132 });
 
   return (
     <>
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 22, borderBottom: '1px solid var(--line-2)', paddingBottom: 14, flexWrap: 'wrap' }}>
-        {[['roster', 'Pasar lista'], ['children', `Inscritos (${children.length})`], ['weeks', 'Semanas y plazas']].map(([id, label]) => (
+        {[['roster', 'Pasar lista'], ['children', `Inscritos (${children.length})`], ['agenda', 'Agenda'], ['weeks', 'Semanas y plazas']].map(([id, label]) => (
           <button key={id} className={`filter-pill ${tab === id ? 'is-active' : ''}`} onClick={() => setTab(id)} style={{ borderRadius: 8, padding: '8px 16px' }}>
             {label}
           </button>
@@ -1769,15 +2017,25 @@ function AdminCamp({ showToast }) {
             </div>
           </div>
 
+          {roster.length > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <SortToggle value={sortMode} onChange={setSortMode} />
+            </div>
+          )}
+
           {rosterLoading && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
           {!rosterLoading && roster.length === 0 && (
             <div style={{ padding: 28, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>
               No hay niños apuntados a este día.
             </div>
           )}
-          {!rosterLoading && roster.map(row => (
-            <CampRosterRow key={`${row.id}-${rosterDay}`} row={row} day={rosterDay} onSaved={onAttendanceSaved} />
-          ))}
+          {!rosterLoading && roster.length > 0 && (
+            <div ref={rosterGridRef} style={{ display: 'grid', gridTemplateColumns: `repeat(${rosterCols}, minmax(0, 1fr))`, gap: 12 }}>
+              {sortedRoster.map(row => (
+                <CampRosterRow key={`${row.id}-${rosterDay}`} row={row} day={rosterDay} onSaved={onAttendanceSaved} />
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -1799,6 +2057,7 @@ function AdminCamp({ showToast }) {
                 </button>
               ))}
             </div>
+            <SortToggle value={sortMode} onChange={setSortMode} />
             <button className="btn btn-sm btn-outline" style={{ marginLeft: 'auto' }} onClick={printChildren} disabled={!visibleChildren.length}>
               <I.Print /> Imprimir
             </button>
@@ -1810,52 +2069,54 @@ function AdminCamp({ showToast }) {
               Todavía no hay niños inscritos en el campamento.
             </div>
           )}
-          {visibleChildren.map(c => (
-            <div key={c.id}
-              onClick={() => setEditingDays({ child: c, days: [...(c.days || [])] })}
-              title="Ver / editar días de asistencia"
-              style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '14px 18px', display: 'grid', gap: 10, cursor: 'pointer', transition: 'border-color var(--tx-fast) ease, box-shadow var(--tx-fast) ease' }}
-              onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--ink-3)'; e.currentTarget.style.boxShadow = 'var(--shadow-sm)'; }}
-              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--line)'; e.currentTarget.style.boxShadow = 'none'; }}>
-              <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-                <div style={{ flex: 1, minWidth: 180 }}>
-                  <div style={{ fontWeight: 800, fontSize: 15, color: 'var(--ink)' }}>
-                    {c.nombre} {c.apellidos}
-                    {c.edad ? <span style={{ fontWeight: 600, color: 'var(--ink-3)', marginLeft: 6, fontSize: 12 }}>{c.edad} años</span> : null}
+          {!childrenLoading && children.length > 0 && visibleChildren.length === 0 && (
+            <p style={{ color: 'var(--ink-3)', fontSize: 13 }}>Ningún inscrito coincide con el filtro.</p>
+          )}
+          <div ref={childGridRef} style={{ display: 'grid', gridTemplateColumns: `repeat(${childCols}, minmax(0, 1fr))`, gap: 10 }}>
+            {visibleChildren.map(c => (
+              <div key={c.id}
+                onClick={() => setEditingDays({ child: c, days: [...(c.days || [])] })}
+                title="Ver / editar días de asistencia"
+                style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: '10px 12px', display: 'grid', gap: 8, cursor: 'pointer', transition: 'border-color var(--tx-fast) ease, box-shadow var(--tx-fast) ease' }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--ink-3)'; e.currentTarget.style.boxShadow = 'var(--shadow-sm)'; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--line)'; e.currentTarget.style.boxShadow = 'none'; }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 800, fontSize: 14, color: 'var(--ink)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {c.nombre} {c.apellidos}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 1 }}>
+                      {c.edad ? `${c.edad} años · ` : ''}{c.parentEmail ? 'Familia web' : 'Alta manual'}
+                    </div>
                   </div>
-                  <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>
-                    {c.parentEmail ? `Familia: ${c.parentName || ''} · ${c.parentEmail}` : 'Alta manual (secretaría)'}
-                    {c.contacto ? ` · 📞 ${c.contacto}` : ''}
-                  </div>
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
-                    {c.alergias && (
-                      <span style={{ background: 'color-mix(in oklab, var(--orange) 14%, var(--bg-2))', color: 'var(--orange)', fontWeight: 800, padding: '2px 8px', borderRadius: 999, fontSize: 11, border: '1px solid color-mix(in oklab, var(--orange) 30%, transparent)' }}>
-                        ⚠ {c.alergias}
-                      </span>
-                    )}
-                    <span style={{ background: 'var(--bg-3)', color: 'var(--ink-2)', fontWeight: 700, padding: '2px 8px', borderRadius: 999, fontSize: 11, border: '1px solid var(--line-2)' }}>
-                      {(c.days || []).length} día{(c.days || []).length !== 1 ? 's' : ''}
-                    </span>
-                    {c.fotosRrss && <span style={{ color: 'var(--teal)', fontSize: 11, fontWeight: 700 }}>✓ Fotos RRSS</span>}
+                  <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+                    <button className="icon-btn" style={{ width: 28, height: 28 }} onClick={() => setEditingChild({ ...c, edad: c.edad || '', alergias: c.alergias || '', observaciones: c.observaciones || '', contacto: c.contacto || '', recogida: c.recogida || '' })} aria-label="Editar"><I.Edit /></button>
+                    <button className="icon-btn danger" style={{ width: 28, height: 28 }} onClick={() => deleteChild(c.id)} aria-label="Eliminar"><I.Trash /></button>
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }} onClick={e => e.stopPropagation()}>
-                  <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, fontWeight: 700, color: c.pagado ? 'var(--teal)' : 'var(--orange)', cursor: 'pointer' }}>
-                    <input type="checkbox" checked={!!c.pagado} onChange={e => patchChild(c.id, { pagado: e.target.checked })} style={{ width: 16, height: 16, accentColor: 'var(--teal)' }} />
-                    {c.pagado ? 'Pagado' : 'Pendiente'}
-                  </label>
-                  <button className="btn btn-sm btn-outline" onClick={() => setEditingDays({ child: c, days: [...(c.days || [])] })}>
-                    <I.Calendar /> Días
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }} onClick={e => e.stopPropagation()}>
+                  <button
+                    onClick={() => patchChild(c.id, { pagado: !c.pagado })}
+                    style={{ fontSize: 11, fontWeight: 800, padding: '2px 9px', borderRadius: 999, cursor: 'pointer', border: '1px solid', borderColor: c.pagado ? 'color-mix(in oklab, var(--teal) 40%, transparent)' : 'color-mix(in oklab, var(--orange) 40%, transparent)', color: c.pagado ? 'var(--teal)' : 'var(--orange)', background: `color-mix(in oklab, ${c.pagado ? 'var(--teal)' : 'var(--orange)'} 12%, var(--bg-2))` }}>
+                    {c.pagado ? '✓ Pagado' : 'Pendiente'}
                   </button>
-                  <button className="icon-btn" onClick={() => setEditingChild({ ...c, edad: c.edad || '', alergias: c.alergias || '', observaciones: c.observaciones || '', contacto: c.contacto || '', recogida: c.recogida || '' })} aria-label="Editar"><I.Edit /></button>
-                  <button className="icon-btn danger" onClick={() => deleteChild(c.id)} aria-label="Eliminar"><I.Trash /></button>
+                  <span style={{ background: 'var(--bg-3)', color: 'var(--ink-2)', fontWeight: 700, padding: '2px 8px', borderRadius: 999, fontSize: 11, border: '1px solid var(--line-2)' }}>
+                    {(c.days || []).length} día{(c.days || []).length !== 1 ? 's' : ''}
+                  </span>
+                  {c.alergias && (
+                    <span title={c.alergias} style={{ background: 'color-mix(in oklab, var(--orange) 14%, var(--bg-2))', color: 'var(--orange)', fontWeight: 800, padding: '2px 8px', borderRadius: 999, fontSize: 11, border: '1px solid color-mix(in oklab, var(--orange) 30%, transparent)', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      ⚠ {c.alergias}
+                    </span>
+                  )}
                 </div>
               </div>
-              {c.observaciones && <div style={{ fontSize: 12, color: 'var(--ink-3)', background: 'var(--bg-3)', borderRadius: 8, padding: '6px 10px' }}>{c.observaciones}</div>}
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       )}
+
+      {/* ── Agenda (quién viene cada día) ── */}
+      {tab === 'agenda' && <CampAgenda weeks={weeks} children={children} />}
 
       {/* ── Semanas ── */}
       {tab === 'weeks' && (
