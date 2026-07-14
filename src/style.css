@@ -300,10 +300,11 @@ header.aim-header {
   background: var(--ink-2);
 }
 .btn-gradient {
-  /* PRUEBA: mismo efecto animado que los textos arcoíris (sin estrellas) */
-  background: linear-gradient(to right, #5233A8, #FF99D3, #FFD526, #21B668, #00BBF4, #5233A8);
-  background-size: 200%;
-  animation: background-pan 5s linear infinite;
+  /* PRUEBA: colores arcoíris fluyendo en diagonal (sup-izq → inf-der), sin estrellas.
+     repeating-linear-gradient a 135° + desplazamiento de un periodo exacto = bucle sin costuras */
+  background: repeating-linear-gradient(135deg,
+    #5233A8 0px, #FF99D3 60px, #FFD526 120px, #21B668 180px, #00BBF4 240px, #5233A8 300px);
+  animation: btn-pan-diagonal 5s linear infinite;
   color: white;
   box-shadow: 0 10px 24px -10px rgba(110,63,217,.55);
 }
@@ -1717,7 +1718,10 @@ html[data-theme="dark"] .dash-nav button.is-active {
 }
 .admin-nav button:hover { background: rgba(255,255,255,.06); color: white; }
 .admin-nav button.is-active {
-  background: var(--grad-aim);
+  /* Mismo arcoíris animado en diagonal que los botones de gradiente */
+  background: repeating-linear-gradient(135deg,
+    #5233A8 0px, #FF99D3 60px, #FFD526 120px, #21B668 180px, #00BBF4 240px, #5233A8 300px);
+  animation: btn-pan-diagonal 5s linear infinite;
   color: white;
 }
 .admin-nav button.is-active .count {
@@ -2243,6 +2247,12 @@ html[data-theme="dark"] .dash-nav button.is-active {
 @keyframes background-pan {
   from { background-position: 0% center; }
   to   { background-position: -200% center; }
+}
+/* Desplaza el patrón exactamente un periodo (300px) a lo largo del eje 135°:
+   (212px, 212px) ≈ 300px de proyección diagonal → bucle continuo sin saltos */
+@keyframes btn-pan-diagonal {
+  from { background-position: 0 0; }
+  to   { background-position: 212px 212px; }
 }
 @keyframes magic-scale {
   0%, 100% { transform: scale(0); }
