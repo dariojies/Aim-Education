@@ -354,7 +354,7 @@ function CampDayPicker({ weeks, selected, onChange, disabled = false }) {
   const toggleWeek = (w) => {
     if (disabled) return;
     const wDays = w.days.map(d => d.day);
-    const freeDays = w.days.filter(d => sel.has(d.day) || w.capacity == null || d.count < w.capacity).map(d => d.day);
+    const freeDays = w.days.filter(d => !d.holiday && (sel.has(d.day) || w.capacity == null || d.count < w.capacity)).map(d => d.day);
     const allSelected = freeDays.length > 0 && freeDays.every(d => sel.has(d));
     const next = new Set(sel);
     if (allSelected) wDays.forEach(d => next.delete(d));
@@ -386,29 +386,33 @@ function CampDayPicker({ weeks, selected, onChange, disabled = false }) {
               )}
             </div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {w.days.map(({ day, count }) => {
+              {w.days.map(({ day, count, holiday }) => {
                 const p = campDayParts(day);
                 const isSel = sel.has(day);
-                const isFull = !isSel && w.capacity != null && count >= w.capacity;
+                const isHoliday = !!holiday && !isSel; // si quedó seleccionado antes de marcarse festivo, se permite quitarlo
+                const isFull = !isSel && !isHoliday && w.capacity != null && count >= w.capacity;
+                const isBlocked = isHoliday || isFull;
                 return (
                   <button key={day} type="button"
-                    onClick={() => !isFull && toggle(day)}
-                    disabled={disabled || isFull}
-                    title={isFull ? "Sin plazas libres" : `${count}${w.capacity ? `/${w.capacity}` : ""} apuntados`}
+                    onClick={() => !isBlocked && toggle(day)}
+                    disabled={disabled || isBlocked}
+                    title={isHoliday ? "Festivo — campamento cerrado" : isFull ? "Sin plazas libres" : `${count}${w.capacity ? `/${w.capacity}` : ""} apuntados`}
                     style={{
                       display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
                       minWidth: 52, padding: "8px 10px", borderRadius: 12,
-                      border: `1.5px solid ${isSel ? "var(--teal)" : "var(--line)"}`,
-                      background: isSel ? "var(--teal)" : "var(--bg-2)",
-                      color: isSel ? "white" : isFull ? "var(--ink-3)" : "var(--ink)",
-                      opacity: isFull ? .5 : 1,
-                      cursor: disabled || isFull ? "default" : "pointer",
+                      border: `1.5px ${isHoliday ? "dashed" : "solid"} ${isSel ? "var(--teal)" : isHoliday ? "color-mix(in oklab, var(--orange) 45%, var(--line))" : "var(--line)"}`,
+                      background: isSel ? "var(--teal)" : isHoliday ? "color-mix(in oklab, var(--orange) 7%, var(--bg-2))" : "var(--bg-2)",
+                      color: isSel ? "white" : isBlocked ? "var(--ink-3)" : "var(--ink)",
+                      opacity: isBlocked ? .55 : 1,
+                      cursor: disabled || isBlocked ? "default" : "pointer",
                       fontFamily: "inherit",
                       transition: "background .15s ease, border-color .15s ease",
                     }}>
                     <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: ".08em", opacity: .8 }}>{p.dow}</span>
-                    <span style={{ fontSize: 16, fontWeight: 800, fontFamily: "var(--font-display)", lineHeight: 1 }}>{p.num}</span>
-                    <span style={{ fontSize: 9, fontWeight: 700, opacity: .75 }}>{isFull ? "Completo" : `${count}${w.capacity ? `/${w.capacity}` : ""}`}</span>
+                    <span style={{ fontSize: 16, fontWeight: 800, fontFamily: "var(--font-display)", lineHeight: 1, textDecoration: isHoliday ? "line-through" : "none" }}>{p.num}</span>
+                    <span style={{ fontSize: 9, fontWeight: 700, opacity: .75, color: isHoliday ? "var(--orange)" : undefined }}>
+                      {isHoliday ? "Fiesta" : isFull ? "Completo" : `${count}${w.capacity ? `/${w.capacity}` : ""}`}
+                    </span>
                   </button>
                 );
               })}

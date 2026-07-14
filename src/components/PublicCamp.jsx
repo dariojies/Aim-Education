@@ -81,7 +81,7 @@ export default function PublicCamp() {
   ];
   const WEEKS = apiWeeks.length
     ? apiWeeks.map((w, i) => {
-        const days = w.days || [];
+        const days = (w.days || []).filter(d => !d.holiday);
         const total = (w.capacity || 24) * Math.max(days.length, 1);
         const occupied = days.reduce((s, d) => s + d.count, 0);
         return {

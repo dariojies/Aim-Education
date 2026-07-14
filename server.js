@@ -253,9 +253,11 @@ async function initDb() {
                 start_date DATE NOT NULL,
                 end_date DATE NOT NULL,
                 capacity INTEGER DEFAULT 24,
+                holidays TEXT,
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
+        await client.query(`ALTER TABLE aim_camp_weeks ADD COLUMN IF NOT EXISTS holidays TEXT`);
         // Niños inscritos (por un usuario de la web o manualmente desde secretaría).
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_camp_children (
@@ -1252,8 +1254,17 @@ function weekDays(startStr, endStr) {
     return days;
 }
 
-// Comprueba capacidad: devuelve el primer día sin plaza de los solicitados (o null).
-async function findFullDay(daysToAdd, excludeChildId) {
+// Festivos de una semana: columna TEXT con array JSON de fechas ISO.
+function parseHolidays(raw) {
+    if (!raw) return [];
+    try {
+        const arr = JSON.parse(raw);
+        return Array.isArray(arr) ? arr.filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)) : [];
+    } catch { return []; }
+}
+
+// Comprueba los días solicitados: devuelve { day, reason: 'full' | 'holiday' } o null.
+async function findBlockedDay(daysToAdd, excludeChildId) {
     if (!daysToAdd.length) return null;
     const weeksRes = await pool.query(`SELECT *, to_char(start_date,'YYYY-MM-DD') AS s, to_char(end_date,'YYYY-MM-DD') AS e FROM aim_camp_weeks`);
     const countsRes = await pool.query(
@@ -1264,28 +1275,40 @@ async function findFullDay(daysToAdd, excludeChildId) {
     );
     const counts = Object.fromEntries(countsRes.rows.map(r => [r.day, r.n]));
     for (const day of daysToAdd) {
-        const week = weeksRes.rows.find(w => day >= w.s && day <= w.e);
-        const cap = week?.capacity ?? null;
-        if (cap != null && (counts[day] || 0) >= cap) return day;
+        // Si varias semanas cubren la misma fecha, el festivo de cualquiera de ellas bloquea el día.
+        const containing = weeksRes.rows.filter(w => day >= w.s && day <= w.e);
+        if (containing.some(w => parseHolidays(w.holidays).includes(day))) return { day, reason: 'holiday' };
+        const cap = containing[0]?.capacity ?? null;
+        if (cap != null && (counts[day] || 0) >= cap) return { day, reason: 'full' };
     }
     return null;
+}
+
+function blockedDayError(blocked) {
+    return blocked.reason === 'holiday'
+        ? `El día ${blocked.day} es festivo y el campamento permanece cerrado.`
+        : `El día ${blocked.day} ya no tiene plazas libres.`;
 }
 
 // Público: semanas del campamento con ocupación por día.
 app.get('/api/camp/weeks', async (req, res) => {
     try {
-        const weeks = await pool.query(`SELECT id, label, capacity, to_char(start_date,'YYYY-MM-DD') AS start_date, to_char(end_date,'YYYY-MM-DD') AS end_date FROM aim_camp_weeks ORDER BY start_date ASC`);
+        const weeks = await pool.query(`SELECT id, label, capacity, holidays, to_char(start_date,'YYYY-MM-DD') AS start_date, to_char(end_date,'YYYY-MM-DD') AS end_date FROM aim_camp_weeks ORDER BY start_date ASC`);
         const counts = await pool.query(`SELECT to_char(day,'YYYY-MM-DD') AS day, COUNT(*)::int AS n FROM aim_camp_child_days GROUP BY day`);
         const countByDay = Object.fromEntries(counts.rows.map(r => [r.day, r.n]));
         res.set('Cache-Control', 'no-store');
-        res.json(weeks.rows.map(w => ({
-            id: w.id,
-            label: w.label,
-            startDate: w.start_date,
-            endDate: w.end_date,
-            capacity: w.capacity,
-            days: weekDays(w.start_date, w.end_date).map(day => ({ day, count: countByDay[day] || 0 })),
-        })));
+        res.json(weeks.rows.map(w => {
+            const hols = parseHolidays(w.holidays);
+            return {
+                id: w.id,
+                label: w.label,
+                startDate: w.start_date,
+                endDate: w.end_date,
+                capacity: w.capacity,
+                holidays: hols,
+                days: weekDays(w.start_date, w.end_date).map(day => ({ day, count: countByDay[day] || 0, holiday: hols.includes(day) })),
+            };
+        }));
     } catch (err) {
         console.error('Error fetching camp weeks:', err);
         res.status(500).json({ error: err.message });
@@ -1317,8 +1340,8 @@ app.post('/api/camp/children', authenticateSession, async (req, res) => {
     if (!nombre?.trim() || !apellidos?.trim()) return res.status(400).json({ error: 'Nombre y apellidos son obligatorios.' });
     const dayList = Array.isArray(days) ? [...new Set(days)] : [];
     try {
-        const fullDay = await findFullDay(dayList, null);
-        if (fullDay) return res.status(409).json({ error: `El día ${fullDay} ya no tiene plazas libres.` });
+        const blocked = await findBlockedDay(dayList, null);
+        if (blocked) return res.status(409).json({ error: blockedDayError(blocked) });
         const result = await pool.query(
             `INSERT INTO aim_camp_children (user_id, nombre, apellidos, edad, alergias, observaciones, contacto, recogida, fotos_rrss)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
@@ -1389,8 +1412,8 @@ app.put('/api/camp/children/:id/days', authenticateSession, async (req, res) => 
         const currentRes = await pool.query(`SELECT to_char(day,'YYYY-MM-DD') AS day FROM aim_camp_child_days WHERE child_id = $1`, [child.id]);
         const current = new Set(currentRes.rows.map(r => r.day));
         const toAdd = dayList.filter(d => !current.has(d));
-        const fullDay = await findFullDay(toAdd, child.id);
-        if (fullDay) return res.status(409).json({ error: `El día ${fullDay} ya no tiene plazas libres.` });
+        const blocked = await findBlockedDay(toAdd, child.id);
+        if (blocked) return res.status(409).json({ error: blockedDayError(blocked) });
         await pool.query('DELETE FROM aim_camp_child_days WHERE child_id = $1', [child.id]);
         for (const day of dayList) {
             await pool.query(`INSERT INTO aim_camp_child_days (child_id, day) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [child.id, day]);
@@ -1419,14 +1442,20 @@ app.get('/api/camp/children/:id/diary', authenticateSession, async (req, res) =>
 });
 
 // ── Admin: semanas ──
+// Festivos: solo fechas válidas dentro del rango de la semana.
+function cleanHolidays(holidays, startDate, endDate) {
+    if (!Array.isArray(holidays)) return [];
+    return [...new Set(holidays.filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d) && d >= startDate && d <= endDate))].sort();
+}
+
 app.post('/api/admin/camp/weeks', authenticateSession, requireAdmin, async (req, res) => {
-    const { label, startDate, endDate, capacity } = req.body;
+    const { label, startDate, endDate, capacity, holidays } = req.body;
     if (!label?.trim() || !startDate || !endDate) return res.status(400).json({ error: 'Nombre, fecha de inicio y fin son obligatorios.' });
     if (endDate < startDate) return res.status(400).json({ error: 'La fecha de fin debe ser posterior a la de inicio.' });
     try {
         const result = await pool.query(
-            `INSERT INTO aim_camp_weeks (label, start_date, end_date, capacity) VALUES ($1,$2,$3,$4) RETURNING id`,
-            [label.trim(), startDate, endDate, capacity || 24]
+            `INSERT INTO aim_camp_weeks (label, start_date, end_date, capacity, holidays) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+            [label.trim(), startDate, endDate, capacity || 24, JSON.stringify(cleanHolidays(holidays, startDate, endDate))]
         );
         res.status(201).json({ id: result.rows[0].id });
     } catch (err) {
@@ -1435,12 +1464,12 @@ app.post('/api/admin/camp/weeks', authenticateSession, requireAdmin, async (req,
 });
 
 app.put('/api/admin/camp/weeks/:id', authenticateSession, requireAdmin, async (req, res) => {
-    const { label, startDate, endDate, capacity } = req.body;
+    const { label, startDate, endDate, capacity, holidays } = req.body;
     if (!label?.trim() || !startDate || !endDate) return res.status(400).json({ error: 'Nombre, fecha de inicio y fin son obligatorios.' });
     try {
         await pool.query(
-            `UPDATE aim_camp_weeks SET label=$1, start_date=$2, end_date=$3, capacity=$4 WHERE id=$5`,
-            [label.trim(), startDate, endDate, capacity || 24, req.params.id]
+            `UPDATE aim_camp_weeks SET label=$1, start_date=$2, end_date=$3, capacity=$4, holidays=$5 WHERE id=$6`,
+            [label.trim(), startDate, endDate, capacity || 24, JSON.stringify(cleanHolidays(holidays, startDate, endDate)), req.params.id]
         );
         res.json({ success: true });
     } catch (err) {

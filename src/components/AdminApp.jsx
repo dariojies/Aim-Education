@@ -1437,6 +1437,20 @@ function todayISO() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+// Días laborables (L-V) entre dos fechas ISO, ambas incluidas.
+function weekdaysBetween(start, end) {
+  if (!start || !end || end < start) return [];
+  const out = [];
+  const d = new Date(start + 'T12:00:00');
+  const e = new Date(end + 'T12:00:00');
+  while (d <= e) {
+    const dow = d.getDay();
+    if (dow >= 1 && dow <= 5) out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+    d.setDate(d.getDate() + 1);
+  }
+  return out;
+}
+
 // Fila de "pasar lista": asistencia + nota del profesor de un niño en un día.
 function CampRosterRow({ row, day, onSaved }) {
   const [note, setNote] = useState(row.note || '');
@@ -1555,10 +1569,14 @@ function AdminCamp({ showToast }) {
     }
   }, [weeks]);
 
+  const holidaySet = new Set(weeks.flatMap(w => w.holidays || []));
+
   function shiftDay(delta) {
     const d = new Date(rosterDay + 'T12:00:00');
-    do { d.setDate(d.getDate() + delta); } while (d.getDay() === 0 || d.getDay() === 6);
-    setRosterDay(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+    let guard = 0;
+    const iso = () => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    do { d.setDate(d.getDate() + delta); guard++; } while (guard < 30 && (d.getDay() === 0 || d.getDay() === 6 || holidaySet.has(iso())));
+    setRosterDay(iso());
   }
 
   function onAttendanceSaved(childId, patch) {
@@ -1740,6 +1758,11 @@ function AdminCamp({ showToast }) {
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>
             </button>
             <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-2)', textTransform: 'capitalize' }}>{campFmtLong(rosterDay)}</span>
+            {holidaySet.has(rosterDay) && (
+              <span style={{ fontSize: 11, fontWeight: 800, padding: '3px 10px', borderRadius: 999, color: 'var(--orange)', background: 'color-mix(in oklab, var(--orange) 12%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--orange) 30%, transparent)' }}>
+                Festivo — campamento cerrado
+              </span>
+            )}
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
               <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--teal)' }}>{presentCount}/{roster.length} presentes</span>
               <button className="btn btn-sm btn-outline" onClick={printRoster} disabled={!roster.length}><I.Print /> Imprimir</button>
@@ -1833,7 +1856,7 @@ function AdminCamp({ showToast }) {
       {tab === 'weeks' && (
         <div style={{ display: 'grid', gap: 16 }}>
           <div>
-            <button className="btn btn-sm btn-primary" onClick={() => setEditingWeek({ label: '', startDate: '', endDate: '', capacity: 24 })}>
+            <button className="btn btn-sm btn-primary" onClick={() => setEditingWeek({ label: '', startDate: '', endDate: '', capacity: 24, holidays: [] })}>
               <I.Plus /> Añadir semana
             </button>
           </div>
@@ -1854,21 +1877,22 @@ function AdminCamp({ showToast }) {
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: 6 }}>
-                    <button className="icon-btn" onClick={() => setEditingWeek({ id: w.id, label: w.label, startDate: w.startDate, endDate: w.endDate, capacity: w.capacity })} aria-label="Editar"><I.Edit /></button>
+                    <button className="icon-btn" onClick={() => setEditingWeek({ id: w.id, label: w.label, startDate: w.startDate, endDate: w.endDate, capacity: w.capacity, holidays: [...(w.holidays || [])] })} aria-label="Editar"><I.Edit /></button>
                     <button className="icon-btn danger" onClick={() => deleteWeek(w.id)} aria-label="Eliminar"><I.Trash /></button>
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  {w.days.map(({ day, count }) => {
-                    const full = w.capacity != null && count >= w.capacity;
+                  {w.days.map(({ day, count, holiday }) => {
+                    const full = !holiday && w.capacity != null && count >= w.capacity;
                     return (
                       <div key={day} style={{
                         fontSize: 11, fontWeight: 700, padding: '4px 10px', borderRadius: 999,
-                        background: full ? 'color-mix(in oklab, var(--orange) 14%, var(--bg-2))' : 'var(--bg-3)',
-                        color: full ? 'var(--orange)' : 'var(--ink-2)',
-                        border: `1px solid ${full ? 'color-mix(in oklab, var(--orange) 30%, transparent)' : 'var(--line-2)'}`,
+                        background: full ? 'color-mix(in oklab, var(--orange) 14%, var(--bg-2))' : holiday ? 'color-mix(in oklab, var(--orange) 7%, var(--bg-2))' : 'var(--bg-3)',
+                        color: (full || holiday) ? 'var(--orange)' : 'var(--ink-2)',
+                        border: `1px ${holiday ? 'dashed' : 'solid'} ${(full || holiday) ? 'color-mix(in oklab, var(--orange) 30%, transparent)' : 'var(--line-2)'}`,
+                        textDecoration: holiday ? 'line-through' : 'none',
                       }}>
-                        {day.slice(8)}/{day.slice(5, 7)} · {count}/{w.capacity}
+                        {day.slice(8)}/{day.slice(5, 7)} · {holiday ? 'Fiesta' : `${count}/${w.capacity}`}
                       </div>
                     );
                   })}
@@ -1951,6 +1975,45 @@ function AdminCamp({ showToast }) {
                 <div className="field"><label>Fin</label><input type="date" value={editingWeek.endDate} onChange={e => setEditingWeek(w => ({ ...w, endDate: e.target.value }))} required /></div>
               </div>
               <div className="field"><label>Plazas por día</label><input type="number" min="1" max="200" value={editingWeek.capacity} onChange={e => setEditingWeek(w => ({ ...w, capacity: Number(e.target.value) }))} required /></div>
+              {(() => {
+                const daysInRange = weekdaysBetween(editingWeek.startDate, editingWeek.endDate);
+                if (!daysInRange.length) {
+                  return <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Elige las fechas de inicio y fin para poder marcar días festivos.</p>;
+                }
+                const hols = new Set((editingWeek.holidays || []).filter(h => daysInRange.includes(h)));
+                return (
+                  <div className="field">
+                    <label>Días festivos — haz clic para marcar (se cerrará el campamento ese día)</label>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '4px 0' }}>
+                      {daysInRange.map(day => {
+                        const isHol = hols.has(day);
+                        const d = new Date(day + 'T12:00:00');
+                        const dow = ['D', 'L', 'M', 'X', 'J', 'V', 'S'][d.getDay()];
+                        return (
+                          <button key={day} type="button"
+                            onClick={() => setEditingWeek(w => {
+                              const next = new Set((w.holidays || []).filter(h => daysInRange.includes(h)));
+                              next.has(day) ? next.delete(day) : next.add(day);
+                              return { ...w, holidays: [...next].sort() };
+                            })}
+                            style={{
+                              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+                              minWidth: 48, padding: '7px 10px', borderRadius: 10,
+                              border: `1.5px ${isHol ? 'dashed' : 'solid'} ${isHol ? 'var(--orange)' : 'var(--line)'}`,
+                              background: isHol ? 'color-mix(in oklab, var(--orange) 10%, var(--bg-2))' : 'var(--bg-2)',
+                              color: isHol ? 'var(--orange)' : 'var(--ink)',
+                              cursor: 'pointer', fontFamily: 'inherit',
+                            }}>
+                            <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.08em', opacity: .8 }}>{dow}</span>
+                            <span style={{ fontSize: 15, fontWeight: 800, fontFamily: 'var(--font-display)', lineHeight: 1, textDecoration: isHol ? 'line-through' : 'none' }}>{d.getDate()}</span>
+                            <span style={{ fontSize: 9, fontWeight: 700, opacity: .8 }}>{isHol ? 'Fiesta' : 'Abierto'}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                 <button type="button" className="btn btn-outline" onClick={() => setEditingWeek(null)}>Cancelar</button>
                 <button type="submit" className="btn btn-primary" disabled={savingModal}>{savingModal ? 'Guardando...' : 'Guardar'}</button>
