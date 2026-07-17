@@ -324,27 +324,46 @@ async function initDb() {
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
-        // Qué concepto se cobra a quien esté en cada hora de cada temporada.
+        // Migración pre-lanzamiento (tablas vacías): pasamos del modelo de
+        // 'hora' en texto libre a referenciar clases/actividades reales de
+        // aim-tul. Solo se ejecuta mientras exista aún la columna vieja.
+        const horaViejo = await client.query(
+            `SELECT 1 FROM information_schema.columns WHERE table_name='aim_matriculas' AND column_name='hora'`
+        );
+        if (horaViejo.rowCount > 0) {
+            await client.query(`DROP TABLE IF EXISTS aim_conceptos_temporada CASCADE`);
+            await client.query(`DROP TABLE IF EXISTS aim_matriculas CASCADE`);
+        }
+        // Qué concepto se cobra: se puede fijar a una ACTIVIDAD entera o a un
+        // GRUPO concreto de aim-tul (modelo mixto). Guardamos copia del nombre
+        // para no depender de aim-tul a la hora de facturar.
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_conceptos_temporada (
                 id SERIAL PRIMARY KEY,
                 concepto VARCHAR(100) NOT NULL REFERENCES aim_precios(concepto) ON DELETE CASCADE,
-                hora VARCHAR(100) NOT NULL,
+                target_tipo VARCHAR(20) NOT NULL,
+                target_id UUID NOT NULL,
+                target_nombre VARCHAR(255),
                 temporada_id INTEGER NOT NULL REFERENCES aim_temporadas(id) ON DELETE CASCADE,
-                UNIQUE (concepto, hora, temporada_id)
+                UNIQUE (concepto, target_tipo, target_id, temporada_id)
             )
         `);
-        // Fichas / matrículas: sustituye a horarios_seleccionados.
+        // Fichas / matrículas: el alumno está en un GRUPO concreto de aim-tul.
+        // Guardamos snapshots del grupo y su actividad para (a) no depender de
+        // aim-tul al facturar y (b) poder casar conceptos de nivel actividad.
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_matriculas (
                 id SERIAL PRIMARY KEY,
                 user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                hora VARCHAR(100) NOT NULL,
+                group_id UUID NOT NULL,
+                group_nombre VARCHAR(255),
+                activity_id UUID,
+                activity_nombre VARCHAR(255),
                 temporada_id INTEGER NOT NULL REFERENCES aim_temporadas(id) ON DELETE CASCADE,
                 descuento_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
                 alta DATE NOT NULL DEFAULT CURRENT_DATE,
                 baja DATE,
-                UNIQUE (user_id, hora, temporada_id)
+                UNIQUE (user_id, group_id, temporada_id)
             )
         `);
         // Parentescos por persona (mismo modelo que la tabla familias actual).
@@ -1842,37 +1861,62 @@ app.delete('/api/admin/billing/precios/:concepto', authenticateSession, requireA
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── Conceptos por temporada (qué se cobra a cada hora) ──
+// ── Clases reales de aim-tul (solo lectura) para las listas de facturación ──
+// Nunca escribimos en aim-tul; solo leemos actividades y grupos del club.
+app.get('/api/admin/billing/aimtul', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const acts = await pool.query(
+            `SELECT activity_id, name FROM tul_activities WHERE club_id = $1 ORDER BY name`, [AIM_CLUB_ID]
+        );
+        const groups = await pool.query(
+            `SELECT g.group_id, g.name, g.activity_id, a.name AS activity_name
+             FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE a.club_id = $1 ORDER BY a.name, g.name`, [AIM_CLUB_ID]
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            activities: acts.rows.map(a => ({ id: a.activity_id, name: a.name })),
+            groups: groups.rows.map(g => ({ id: g.group_id, name: g.name, activityId: g.activity_id, activityName: g.activity_name })),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Conceptos por temporada (qué se cobra a cada actividad/grupo) ──
 app.get('/api/admin/billing/conceptos', authenticateSession, requireAdmin, async (req, res) => {
     const { temporadaId } = req.query;
     try {
         const r = await pool.query(
-            `SELECT ct.id, ct.concepto, ct.hora, ct.temporada_id, p.descripcion, p.precio, p.tipo, p.iva_pct
+            `SELECT ct.id, ct.concepto, ct.target_tipo, ct.target_id, ct.target_nombre, ct.temporada_id,
+                    p.descripcion, p.precio, p.tipo, p.iva_pct
              FROM aim_conceptos_temporada ct
              JOIN aim_precios p ON p.concepto = ct.concepto
              ${temporadaId ? 'WHERE ct.temporada_id = $1' : ''}
-             ORDER BY ct.hora, p.descripcion`,
+             ORDER BY ct.target_tipo DESC, ct.target_nombre, p.descripcion`,
             temporadaId ? [temporadaId] : []
         );
         res.set('Cache-Control', 'no-store');
         res.json(r.rows.map(c => ({
-            id: c.id, concepto: c.concepto, hora: c.hora, temporadaId: c.temporada_id,
+            id: c.id, concepto: c.concepto, targetTipo: c.target_tipo, targetId: c.target_id,
+            targetNombre: c.target_nombre, temporadaId: c.temporada_id,
             descripcion: c.descripcion, precio: Number(c.precio), tipo: c.tipo, ivaPct: Number(c.iva_pct),
         })));
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/admin/billing/conceptos', authenticateSession, requireAdmin, async (req, res) => {
-    const { concepto, hora, temporadaId } = req.body;
-    if (!concepto || !hora?.trim() || !temporadaId) return res.status(400).json({ error: 'Concepto, hora y temporada son obligatorios.' });
+    const { concepto, targetTipo, targetId, targetNombre, temporadaId } = req.body;
+    if (!concepto || !targetId || !temporadaId) return res.status(400).json({ error: 'Concepto, destino y temporada son obligatorios.' });
+    if (!['activity', 'group'].includes(targetTipo)) return res.status(400).json({ error: 'El destino debe ser actividad o grupo.' });
     try {
         const r = await pool.query(
-            `INSERT INTO aim_conceptos_temporada (concepto, hora, temporada_id) VALUES ($1,$2,$3) RETURNING id`,
-            [concepto, hora.trim(), temporadaId]
+            `INSERT INTO aim_conceptos_temporada (concepto, target_tipo, target_id, target_nombre, temporada_id)
+             VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+            [concepto, targetTipo, targetId, targetNombre?.trim() || null, temporadaId]
         );
         res.status(201).json({ id: r.rows[0].id });
     } catch (err) {
-        if (err.code === '23505') return res.status(409).json({ error: 'Ese concepto ya está asignado a esa hora en esta temporada.' });
+        if (err.code === '23505') return res.status(409).json({ error: 'Ese concepto ya está asignado a ese destino en esta temporada.' });
+        if (err.code === '22P02') return res.status(400).json({ error: 'Destino no válido.' });
         res.status(500).json({ error: err.message });
     }
 });
@@ -1897,32 +1941,33 @@ app.get('/api/admin/billing/matriculas', authenticateSession, requireAdmin, asyn
              FROM aim_matriculas m
              JOIN users u ON u.user_id = m.user_id
              WHERE ${where.join(' AND ')}
-             ORDER BY u.name, u.surname, m.hora`,
+             ORDER BY u.name, u.surname, m.group_nombre`,
             vals
         );
         res.set('Cache-Control', 'no-store');
         res.json(r.rows.map(m => ({
             id: m.id, userId: m.user_id, nombre: m.name, apellidos: m.surname, email: m.email,
-            hora: m.hora, temporadaId: m.temporada_id, descuentoPct: Number(m.descuento_pct),
-            alta: m.alta, baja: m.baja,
+            groupId: m.group_id, groupNombre: m.group_nombre, activityId: m.activity_id, activityNombre: m.activity_nombre,
+            temporadaId: m.temporada_id, descuentoPct: Number(m.descuento_pct), alta: m.alta, baja: m.baja,
         })));
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/admin/billing/matriculas', authenticateSession, requireAdmin, async (req, res) => {
-    const { userId, hora, temporadaId, descuentoPct, alta } = req.body;
-    if (!userId || !hora?.trim() || !temporadaId) return res.status(400).json({ error: 'Alumno, hora y temporada son obligatorios.' });
+    const { userId, groupId, groupNombre, activityId, activityNombre, temporadaId, descuentoPct, alta } = req.body;
+    if (!userId || !groupId || !temporadaId) return res.status(400).json({ error: 'Alumno, clase y temporada son obligatorios.' });
     const dto = Number(descuentoPct) || 0;
     if (dto < 0 || dto > 100) return res.status(400).json({ error: 'El descuento debe estar entre 0 y 100.' });
     try {
         const r = await pool.query(
-            `INSERT INTO aim_matriculas (user_id, hora, temporada_id, descuento_pct, alta)
-             VALUES ($1,$2,$3,$4, COALESCE($5::date, CURRENT_DATE)) RETURNING id`,
-            [userId, hora.trim(), temporadaId, dto, alta || null]
+            `INSERT INTO aim_matriculas (user_id, group_id, group_nombre, activity_id, activity_nombre, temporada_id, descuento_pct, alta)
+             VALUES ($1,$2,$3,$4,$5,$6,$7, COALESCE($8::date, CURRENT_DATE)) RETURNING id`,
+            [userId, groupId, groupNombre?.trim() || null, activityId || null, activityNombre?.trim() || null, temporadaId, dto, alta || null]
         );
         res.status(201).json({ id: r.rows[0].id });
     } catch (err) {
-        if (err.code === '23505') return res.status(409).json({ error: 'Ese alumno ya tiene ficha en esa hora esta temporada.' });
+        if (err.code === '23505') return res.status(409).json({ error: 'Ese alumno ya tiene ficha en esa clase esta temporada.' });
+        if (err.code === '22P02') return res.status(400).json({ error: 'Clase no válida.' });
         res.status(500).json({ error: err.message });
     }
 });

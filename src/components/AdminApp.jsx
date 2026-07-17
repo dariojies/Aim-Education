@@ -1551,9 +1551,10 @@ function AdminBilling({ showToast }) {
   const [alumnos, setAlumnos] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  const [aimtul, setAimtul] = useState({ activities: [], groups: [] });
   const [editPrecio, setEditPrecio] = useState(null);
   const [nuevaTemporada, setNuevaTemporada] = useState('');
-  const [nuevoConcepto, setNuevoConcepto] = useState({ concepto: '', hora: '' });
+  const [nuevoConcepto, setNuevoConcepto] = useState({ concepto: '', destino: '' }); // destino = 'activity:id' | 'group:id'
   const [editFicha, setEditFicha] = useState(null);
   const [fichaQ, setFichaQ] = useState('');
   const [saving, setSaving] = useState(false);
@@ -1581,6 +1582,7 @@ function AdminBilling({ showToast }) {
   useEffect(() => { loadAll(); }, []);
   useEffect(() => {
     fetch('/api/users', { credentials: 'include' }).then(r => r.ok ? r.json() : []).then(u => setAlumnos(Array.isArray(u) ? u : [])).catch(() => {});
+    fetch('/api/admin/billing/aimtul', { credentials: 'include' }).then(r => r.ok ? r.json() : { activities: [], groups: [] }).then(setAimtul).catch(() => {});
   }, []);
 
   async function api(url, opts, okMsg) {
@@ -1597,12 +1599,21 @@ function AdminBilling({ showToast }) {
 
   const emptyPrecio = { concepto: '', descripcion: '', precio: 0, tipo: 'Mensualidad', ivaPct: 0, activo: true, esNuevo: true };
 
-  // Horas ya definidas en la temporada: sirven de sugerencia para las fichas.
-  const horasDefinidas = [...new Set(conceptos.map(c => c.hora))].sort();
+  // Grupos de aim-tul agrupados por actividad (para los <optgroup>).
+  const gruposPorActividad = {};
+  for (const g of aimtul.groups) (gruposPorActividad[g.activityName] = gruposPorActividad[g.activityName] || []).push(g);
+
+  // "Qué se cobra" agrupado por destino (actividad o grupo) para pintarlo.
+  const conceptosPorDestino = {};
+  for (const c of conceptos) {
+    const key = `${c.targetTipo}:${c.targetId}`;
+    (conceptosPorDestino[key] = conceptosPorDestino[key] || { tipo: c.targetTipo, nombre: c.targetNombre, items: [] }).items.push(c);
+  }
 
   const fichasVisibles = matriculas.filter(m => {
     const q = fichaQ.trim().toLowerCase();
-    return !q || `${m.nombre} ${m.apellidos}`.toLowerCase().includes(q) || (m.hora || '').toLowerCase().includes(q);
+    return !q || `${m.nombre} ${m.apellidos}`.toLowerCase().includes(q)
+      || (m.groupNombre || '').toLowerCase().includes(q) || (m.activityNombre || '').toLowerCase().includes(q);
   });
 
   return (
@@ -1693,37 +1704,63 @@ function AdminBilling({ showToast }) {
         </div>
       )}
 
-      {/* ── Qué se cobra a cada hora ── */}
+      {/* ── Qué se cobra a cada actividad / grupo ── */}
       {!loading && tab === 'conceptos' && activa && (
         <div style={{ display: 'grid', gap: 14 }}>
           <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>
-            Quien tenga ficha en una hora, paga los conceptos que aquí le asignes. Es lo que usará la generación mensual.
+            Asigna un concepto a una <b>actividad entera</b> (lo pagan todos sus grupos) o a un <b>grupo concreto</b>.
+            La lista viene de vuestras clases reales de Aim-Tul. Es lo que usará la generación mensual.
           </p>
           <form style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }} onSubmit={async e => {
             e.preventDefault();
-            if (!nuevoConcepto.concepto || !nuevoConcepto.hora.trim()) return;
-            if (await api('/api/admin/billing/conceptos', { method: 'POST', body: JSON.stringify({ ...nuevoConcepto, temporadaId: activa.id }) }, 'Asignado.')) setNuevoConcepto({ concepto: '', hora: '' });
+            if (!nuevoConcepto.concepto || !nuevoConcepto.destino) return;
+            const [targetTipo, targetId] = nuevoConcepto.destino.split(/:(.+)/);
+            const targetNombre = targetTipo === 'activity'
+              ? aimtul.activities.find(a => a.id === targetId)?.name
+              : aimtul.groups.find(g => g.id === targetId)?.name;
+            if (await api('/api/admin/billing/conceptos', { method: 'POST', body: JSON.stringify({ concepto: nuevoConcepto.concepto, targetTipo, targetId, targetNombre, temporadaId: activa.id }) }, 'Asignado.')) {
+              setNuevoConcepto({ concepto: '', destino: '' });
+            }
           }}>
             <select value={nuevoConcepto.concepto} onChange={e => setNuevoConcepto(c => ({ ...c, concepto: e.target.value }))}
               style={{ fontFamily: 'inherit', fontSize: 14, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)', minWidth: 220 }}>
               <option value="">Concepto...</option>
               {precios.filter(p => p.activo).map(p => <option key={p.concepto} value={p.concepto}>{p.descripcion} ({eur(p.precio)})</option>)}
             </select>
-            <input list="horas-sug" value={nuevoConcepto.hora} onChange={e => setNuevoConcepto(c => ({ ...c, hora: e.target.value }))} placeholder="Hora / clase (ej. L 17:00 TKD)"
-              style={{ fontFamily: 'inherit', fontSize: 14, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)', minWidth: 200 }} />
-            <datalist id="horas-sug">{horasDefinidas.map(h => <option key={h} value={h} />)}</datalist>
+            <select value={nuevoConcepto.destino} onChange={e => setNuevoConcepto(c => ({ ...c, destino: e.target.value }))}
+              style={{ fontFamily: 'inherit', fontSize: 14, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)', minWidth: 260 }}>
+              <option value="">¿A quién se le cobra?...</option>
+              <optgroup label="Actividad entera (todos sus grupos)">
+                {aimtul.activities.map(a => <option key={a.id} value={`activity:${a.id}`}>🎯 {a.name}</option>)}
+              </optgroup>
+              {Object.entries(gruposPorActividad).map(([actName, gs]) => (
+                <optgroup key={actName} label={`Grupos de ${actName}`}>
+                  {gs.map(g => <option key={g.id} value={`group:${g.id}`}>{g.name}</option>)}
+                </optgroup>
+              ))}
+            </select>
             <button className="btn btn-sm btn-primary" type="submit" disabled={saving}><I.Plus /> Asignar</button>
           </form>
+          {aimtul.activities.length === 0 && (
+            <div style={{ padding: 16, background: 'color-mix(in oklab, var(--orange) 8%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--orange) 30%, transparent)', borderRadius: 12, fontSize: 13, color: 'var(--ink-2)' }}>
+              No se han podido cargar las clases de Aim-Tul.
+            </div>
+          )}
           {conceptos.length === 0 && (
             <div style={{ padding: 28, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>
               Nada asignado todavía en {activa.nombre}.
             </div>
           )}
-          {horasDefinidas.map(h => (
-            <div key={h} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: '12px 16px' }}>
-              <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8 }}>{h}</div>
+          {Object.entries(conceptosPorDestino).map(([key, grupo]) => (
+            <div key={key} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: '12px 16px' }}>
+              <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+                <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.06em', textTransform: 'uppercase', padding: '2px 8px', borderRadius: 999, background: grupo.tipo === 'activity' ? 'color-mix(in oklab, var(--purple) 16%, var(--bg-2))' : 'var(--bg-3)', color: grupo.tipo === 'activity' ? 'var(--purple)' : 'var(--ink-3)', border: '1px solid var(--line-2)' }}>
+                  {grupo.tipo === 'activity' ? 'Actividad' : 'Grupo'}
+                </span>
+                {grupo.nombre || '(sin nombre)'}
+              </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {conceptos.filter(c => c.hora === h).map(c => (
+                {grupo.items.map(c => (
                   <span key={c.id} style={{ display: 'inline-flex', gap: 8, alignItems: 'center', background: 'var(--bg-3)', border: '1px solid var(--line-2)', borderRadius: 999, padding: '4px 6px 4px 12px', fontSize: 12, fontWeight: 700 }}>
                     {c.descripcion} · {eur(c.precio)}{c.ivaPct > 0 ? ` +${c.ivaPct}%` : ''}
                     <button className="icon-btn danger" style={{ width: 22, height: 22 }} onClick={() => api(`/api/admin/billing/conceptos/${c.id}`, { method: 'DELETE' }, 'Quitado.')} aria-label="Quitar"><I.X /></button>
@@ -1739,31 +1776,34 @@ function AdminBilling({ showToast }) {
       {!loading && tab === 'fichas' && activa && (
         <div style={{ display: 'grid', gap: 14 }}>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-            <button className="btn btn-sm btn-primary" onClick={() => setEditFicha({ userId: '', hora: '', descuentoPct: 0, alta: '', baja: '', esNueva: true })}>
+            <button className="btn btn-sm btn-primary" onClick={() => setEditFicha({ userId: '', groupId: '', descuentoPct: 0, alta: '', baja: '', esNueva: true })}>
               <I.Plus /> Nueva ficha
             </button>
             <div className="search-input" style={{ flex: '1 1 200px', maxWidth: 300 }}>
               <I.Search />
-              <input placeholder="Buscar por alumno u hora..." value={fichaQ} onChange={e => setFichaQ(e.target.value)} />
+              <input placeholder="Buscar por alumno o clase..." value={fichaQ} onChange={e => setFichaQ(e.target.value)} />
             </div>
           </div>
           {matriculas.length === 0 && (
             <div style={{ padding: 28, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>
-              Sin fichas en {activa.nombre}. La ficha dice que un alumno está apuntado a una hora — y con qué descuento.
+              Sin fichas en {activa.nombre}. La ficha dice que un alumno está en una clase — y con qué descuento.
             </div>
           )}
           {fichasVisibles.length > 0 && (
             <div className="data-table">
-              <div className="data-table-head" style={{ gridTemplateColumns: '1.6fr 1.2fr 90px 1fr 80px' }}>
-                <span>Alumno</span><span>Hora</span><span>Dto.</span><span>Alta / Baja</span><span></span>
+              <div className="data-table-head" style={{ gridTemplateColumns: '1.6fr 1.4fr 90px 1fr 80px' }}>
+                <span>Alumno</span><span>Clase</span><span>Dto.</span><span>Alta / Baja</span><span></span>
               </div>
               {fichasVisibles.map(m => (
-                <div key={m.id} className="data-table-row" style={{ gridTemplateColumns: '1.6fr 1.2fr 90px 1fr 80px', opacity: m.baja ? .5 : 1 }}>
+                <div key={m.id} className="data-table-row" style={{ gridTemplateColumns: '1.6fr 1.4fr 90px 1fr 80px', opacity: m.baja ? .5 : 1 }}>
                   <div>
                     <div className="pri">{m.nombre} {m.apellidos}</div>
                     <div className="sec">{m.email}</div>
                   </div>
-                  <span style={{ fontSize: 13 }}>{m.hora}</span>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>{m.groupNombre || '—'}</div>
+                    <div className="sec">{m.activityNombre || ''}</div>
+                  </div>
                   <span style={{ fontWeight: 700, color: m.descuentoPct > 0 ? 'var(--teal)' : 'var(--ink-3)' }}>{m.descuentoPct}%</span>
                   <span className="sec">
                     {m.alta ? String(m.alta).slice(0, 10) : '—'}{m.baja ? ` → baja ${String(m.baja).slice(0, 10)}` : ''}
@@ -1849,12 +1889,18 @@ function AdminBilling({ showToast }) {
             <p style={{ margin: '0 0 16px', fontSize: 13, color: 'var(--ink-3)' }}>Temporada {activa.nombre}</p>
             <form style={{ display: 'grid', gap: 14 }} onSubmit={async e => {
               e.preventDefault();
+              let body = { ...editFicha, temporadaId: activa.id };
+              if (editFicha.esNueva) {
+                const g = aimtul.groups.find(x => x.id === editFicha.groupId);
+                if (!g) { alert('Elige una clase.'); return; }
+                body = { ...body, groupNombre: g.name, activityId: g.activityId, activityNombre: g.activityName };
+              }
               const ok = editFicha.esNueva
-                ? await api('/api/admin/billing/matriculas', { method: 'POST', body: JSON.stringify({ ...editFicha, temporadaId: activa.id }) }, 'Ficha creada.')
+                ? await api('/api/admin/billing/matriculas', { method: 'POST', body: JSON.stringify(body) }, 'Ficha creada.')
                 : await api(`/api/admin/billing/matriculas/${editFicha.id}`, { method: 'PUT', body: JSON.stringify(editFicha) }, 'Ficha actualizada.');
               if (ok) setEditFicha(null);
             }}>
-              {editFicha.esNueva && (
+              {editFicha.esNueva ? (
                 <>
                   <div className="field">
                     <label>Alumno</label>
@@ -1865,11 +1911,21 @@ function AdminBilling({ showToast }) {
                     </select>
                   </div>
                   <div className="field">
-                    <label>Hora / clase</label>
-                    <input list="horas-sug2" value={editFicha.hora} onChange={e => setEditFicha(f => ({ ...f, hora: e.target.value }))} required placeholder="Ej. L 17:00 TKD" />
-                    <datalist id="horas-sug2">{horasDefinidas.map(h => <option key={h} value={h} />)}</datalist>
+                    <label>Clase (de Aim-Tul)</label>
+                    <select value={editFicha.groupId} onChange={e => setEditFicha(f => ({ ...f, groupId: e.target.value }))} required>
+                      <option value="">Elige clase...</option>
+                      {Object.entries(gruposPorActividad).map(([actName, gs]) => (
+                        <optgroup key={actName} label={actName}>
+                          {gs.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+                        </optgroup>
+                      ))}
+                    </select>
                   </div>
                 </>
+              ) : (
+                <div style={{ background: 'var(--bg-3)', border: '1px solid var(--line-2)', borderRadius: 10, padding: '10px 14px', fontSize: 13 }}>
+                  <b>{editFicha.groupNombre}</b>{editFicha.activityNombre ? ` · ${editFicha.activityNombre}` : ''}
+                </div>
               )}
               <div className="field">
                 <label>Descuento manual (%)</label>
