@@ -324,46 +324,58 @@ async function initDb() {
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
-        // Migración pre-lanzamiento (tablas vacías): pasamos del modelo de
-        // 'hora' en texto libre a referenciar clases/actividades reales de
-        // aim-tul. Solo se ejecuta mientras exista aún la columna vieja.
-        const horaViejo = await client.query(
-            `SELECT 1 FROM information_schema.columns WHERE table_name='aim_matriculas' AND column_name='hora'`
+        // Catálogo de clases PROPIAS (las que no están en aim-tul). Las de
+        // aim-tul NO se copian aquí: se leen en vivo, así siempre están al día.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_clases (
+                id UUID PRIMARY KEY,
+                nombre VARCHAR(255) NOT NULL,
+                actividad VARCHAR(255),
+                activa BOOLEAN DEFAULT true,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        // Migración pre-lanzamiento (tablas vacías): pasamos a referenciar una
+        // clase por su id + origen ('aimtul' | 'custom'), no por un id fijo de
+        // aim-tul. Solo se dispara mientras exista la columna vieja group_id.
+        const groupIdViejo = await client.query(
+            `SELECT 1 FROM information_schema.columns WHERE table_name='aim_matriculas' AND column_name='group_id'`
         );
-        if (horaViejo.rowCount > 0) {
+        if (groupIdViejo.rowCount > 0) {
             await client.query(`DROP TABLE IF EXISTS aim_conceptos_temporada CASCADE`);
             await client.query(`DROP TABLE IF EXISTS aim_matriculas CASCADE`);
         }
-        // Qué concepto se cobra: se puede fijar a una ACTIVIDAD entera o a un
-        // GRUPO concreto de aim-tul (modelo mixto). Guardamos copia del nombre
-        // para no depender de aim-tul a la hora de facturar.
+        // Qué concepto se cobra: a una ACTIVIDAD (por nombre) o a una CLASE
+        // concreta (de aim-tul en vivo o propia). Modelo mixto.
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_conceptos_temporada (
                 id SERIAL PRIMARY KEY,
                 concepto VARCHAR(100) NOT NULL REFERENCES aim_precios(concepto) ON DELETE CASCADE,
                 target_tipo VARCHAR(20) NOT NULL,
-                target_id UUID NOT NULL,
+                target_ref UUID,
+                target_origen VARCHAR(20),
+                target_actividad VARCHAR(255),
                 target_nombre VARCHAR(255),
-                temporada_id INTEGER NOT NULL REFERENCES aim_temporadas(id) ON DELETE CASCADE,
-                UNIQUE (concepto, target_tipo, target_id, temporada_id)
+                temporada_id INTEGER NOT NULL REFERENCES aim_temporadas(id) ON DELETE CASCADE
             )
         `);
-        // Fichas / matrículas: el alumno está en un GRUPO concreto de aim-tul.
-        // Guardamos snapshots del grupo y su actividad para (a) no depender de
-        // aim-tul al facturar y (b) poder casar conceptos de nivel actividad.
+        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_aim_concepto_target
+            ON aim_conceptos_temporada (concepto, temporada_id, target_tipo, COALESCE(target_ref::text, target_actividad))`);
+        // Fichas / matrículas: el alumno está en una CLASE (aim-tul o propia).
+        // Guardamos snapshot de nombre y actividad para no depender de aim-tul.
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_matriculas (
                 id SERIAL PRIMARY KEY,
                 user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                group_id UUID NOT NULL,
-                group_nombre VARCHAR(255),
-                activity_id UUID,
-                activity_nombre VARCHAR(255),
+                clase_ref UUID NOT NULL,
+                clase_origen VARCHAR(20) NOT NULL DEFAULT 'aimtul',
+                clase_nombre VARCHAR(255),
+                actividad VARCHAR(255),
                 temporada_id INTEGER NOT NULL REFERENCES aim_temporadas(id) ON DELETE CASCADE,
                 descuento_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
                 alta DATE NOT NULL DEFAULT CURRENT_DATE,
                 baja DATE,
-                UNIQUE (user_id, group_id, temporada_id)
+                UNIQUE (user_id, clase_ref, temporada_id)
             )
         `);
         // Parentescos por persona (mismo modelo que la tabla familias actual).
@@ -1881,37 +1893,129 @@ app.get('/api/admin/billing/aimtul', authenticateSession, requireAdmin, async (r
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── Conceptos por temporada (qué se cobra a cada actividad/grupo) ──
+// ── Catálogo de clases (propio) ──
+app.get('/api/admin/billing/clases', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const soloActivas = req.query.all !== '1';
+        const r = await pool.query(
+            `SELECT * FROM aim_clases ${soloActivas ? 'WHERE activa = true' : ''} ORDER BY actividad NULLS LAST, nombre`
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows.map(c => ({
+            id: c.id, nombre: c.nombre, actividad: c.actividad, origen: c.origen,
+            aimtulGroupId: c.aimtul_group_id, activa: c.activa,
+        })));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Actividades disponibles para "cobrar por actividad": las de las clases del
+// catálogo más las de aim-tul (por si aún no se ha importado ninguna).
+app.get('/api/admin/billing/actividades', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const cat = await pool.query(`SELECT DISTINCT actividad FROM aim_clases WHERE actividad IS NOT NULL AND activa = true`);
+        const tul = await pool.query(`SELECT name FROM tul_activities WHERE club_id = $1`, [AIM_CLUB_ID]);
+        const set = new Set([...cat.rows.map(r => r.actividad), ...tul.rows.map(r => r.name)].filter(Boolean));
+        res.set('Cache-Control', 'no-store');
+        res.json([...set].sort((a, b) => a.localeCompare(b, 'es')));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/billing/clases', authenticateSession, requireAdmin, async (req, res) => {
+    const { nombre, actividad } = req.body;
+    if (!nombre?.trim()) return res.status(400).json({ error: 'El nombre de la clase es obligatorio.' });
+    try {
+        const id = crypto.randomUUID();
+        await pool.query(
+            `INSERT INTO aim_clases (id, nombre, actividad) VALUES ($1,$2,$3)`,
+            [id, nombre.trim(), actividad?.trim() || null]
+        );
+        res.status(201).json({ id });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/admin/billing/clases/:id', authenticateSession, requireAdmin, async (req, res) => {
+    const { nombre, actividad, activa } = req.body;
+    if (!nombre?.trim()) return res.status(400).json({ error: 'El nombre de la clase es obligatorio.' });
+    try {
+        const r = await pool.query(
+            `UPDATE aim_clases SET nombre=$1, actividad=$2, activa=$3 WHERE id=$4 RETURNING id`,
+            [nombre.trim(), actividad?.trim() || null, activa !== false, req.params.id]
+        );
+        if (r.rowCount === 0) return res.status(404).json({ error: 'Clase no encontrada.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/admin/billing/clases/:id', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        // Si está en uso (fichas), se desactiva en vez de borrarse.
+        const usada = await pool.query(`SELECT 1 FROM aim_matriculas WHERE clase_ref = $1 AND clase_origen = 'custom' LIMIT 1`, [req.params.id]);
+        if (usada.rowCount > 0) {
+            await pool.query('UPDATE aim_clases SET activa = false WHERE id = $1', [req.params.id]);
+            return res.json({ success: true, desactivada: true });
+        }
+        await pool.query('DELETE FROM aim_clases WHERE id = $1', [req.params.id]);
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Resuelve nombre y actividad de una clase (aim-tul en vivo o propia).
+async function resolverClase(ref, origen) {
+    if (origen === 'custom') {
+        const r = await pool.query('SELECT nombre, actividad FROM aim_clases WHERE id = $1', [ref]);
+        return r.rows[0] ? { nombre: r.rows[0].nombre, actividad: r.rows[0].actividad } : null;
+    }
+    const r = await pool.query(
+        `SELECT g.name AS nombre, a.name AS actividad
+         FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+         WHERE g.group_id = $1 AND a.club_id = $2`, [ref, AIM_CLUB_ID]
+    );
+    return r.rows[0] || null;
+}
+
+// ── Conceptos por temporada (qué se cobra: por actividad o por clase) ──
 app.get('/api/admin/billing/conceptos', authenticateSession, requireAdmin, async (req, res) => {
     const { temporadaId } = req.query;
     try {
         const r = await pool.query(
-            `SELECT ct.id, ct.concepto, ct.target_tipo, ct.target_id, ct.target_nombre, ct.temporada_id,
+            `SELECT ct.id, ct.concepto, ct.target_tipo, ct.target_ref, ct.target_origen, ct.target_actividad, ct.target_nombre, ct.temporada_id,
                     p.descripcion, p.precio, p.tipo, p.iva_pct
              FROM aim_conceptos_temporada ct
              JOIN aim_precios p ON p.concepto = ct.concepto
              ${temporadaId ? 'WHERE ct.temporada_id = $1' : ''}
-             ORDER BY ct.target_tipo DESC, ct.target_nombre, p.descripcion`,
+             ORDER BY ct.target_tipo, ct.target_nombre, p.descripcion`,
             temporadaId ? [temporadaId] : []
         );
         res.set('Cache-Control', 'no-store');
         res.json(r.rows.map(c => ({
-            id: c.id, concepto: c.concepto, targetTipo: c.target_tipo, targetId: c.target_id,
-            targetNombre: c.target_nombre, temporadaId: c.temporada_id,
+            id: c.id, concepto: c.concepto, targetTipo: c.target_tipo,
+            targetRef: c.target_ref, targetOrigen: c.target_origen, targetActividad: c.target_actividad, targetNombre: c.target_nombre,
+            temporadaId: c.temporada_id,
             descripcion: c.descripcion, precio: Number(c.precio), tipo: c.tipo, ivaPct: Number(c.iva_pct),
         })));
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/admin/billing/conceptos', authenticateSession, requireAdmin, async (req, res) => {
-    const { concepto, targetTipo, targetId, targetNombre, temporadaId } = req.body;
-    if (!concepto || !targetId || !temporadaId) return res.status(400).json({ error: 'Concepto, destino y temporada son obligatorios.' });
-    if (!['activity', 'group'].includes(targetTipo)) return res.status(400).json({ error: 'El destino debe ser actividad o grupo.' });
+    const { concepto, targetTipo, targetRef, targetOrigen, targetActividad, temporadaId } = req.body;
+    if (!concepto || !temporadaId) return res.status(400).json({ error: 'Concepto y temporada son obligatorios.' });
+    if (!['actividad', 'clase'].includes(targetTipo)) return res.status(400).json({ error: 'El destino debe ser actividad o clase.' });
     try {
+        let targetNombre, origen = null;
+        if (targetTipo === 'clase') {
+            if (!targetRef || !['aimtul', 'custom'].includes(targetOrigen)) return res.status(400).json({ error: 'Falta la clase.' });
+            const cl = await resolverClase(targetRef, targetOrigen);
+            if (!cl) return res.status(400).json({ error: 'Clase no válida.' });
+            targetNombre = cl.nombre;
+            origen = targetOrigen;
+        } else {
+            if (!targetActividad?.trim()) return res.status(400).json({ error: 'Falta la actividad.' });
+            targetNombre = targetActividad.trim();
+        }
         const r = await pool.query(
-            `INSERT INTO aim_conceptos_temporada (concepto, target_tipo, target_id, target_nombre, temporada_id)
-             VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-            [concepto, targetTipo, targetId, targetNombre?.trim() || null, temporadaId]
+            `INSERT INTO aim_conceptos_temporada (concepto, target_tipo, target_ref, target_origen, target_actividad, target_nombre, temporada_id)
+             VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+            [concepto, targetTipo, targetTipo === 'clase' ? targetRef : null, origen, targetTipo === 'actividad' ? targetActividad.trim() : null, targetNombre, temporadaId]
         );
         res.status(201).json({ id: r.rows[0].id });
     } catch (err) {
@@ -1941,28 +2045,32 @@ app.get('/api/admin/billing/matriculas', authenticateSession, requireAdmin, asyn
              FROM aim_matriculas m
              JOIN users u ON u.user_id = m.user_id
              WHERE ${where.join(' AND ')}
-             ORDER BY u.name, u.surname, m.group_nombre`,
+             ORDER BY u.name, u.surname, m.clase_nombre`,
             vals
         );
         res.set('Cache-Control', 'no-store');
         res.json(r.rows.map(m => ({
             id: m.id, userId: m.user_id, nombre: m.name, apellidos: m.surname, email: m.email,
-            groupId: m.group_id, groupNombre: m.group_nombre, activityId: m.activity_id, activityNombre: m.activity_nombre,
+            claseRef: m.clase_ref, claseOrigen: m.clase_origen, claseNombre: m.clase_nombre, actividad: m.actividad,
             temporadaId: m.temporada_id, descuentoPct: Number(m.descuento_pct), alta: m.alta, baja: m.baja,
         })));
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/admin/billing/matriculas', authenticateSession, requireAdmin, async (req, res) => {
-    const { userId, groupId, groupNombre, activityId, activityNombre, temporadaId, descuentoPct, alta } = req.body;
-    if (!userId || !groupId || !temporadaId) return res.status(400).json({ error: 'Alumno, clase y temporada son obligatorios.' });
+    const { userId, claseRef, claseOrigen, temporadaId, descuentoPct, alta } = req.body;
+    if (!userId || !claseRef || !temporadaId) return res.status(400).json({ error: 'Alumno, clase y temporada son obligatorios.' });
+    if (!['aimtul', 'custom'].includes(claseOrigen)) return res.status(400).json({ error: 'Origen de clase no válido.' });
     const dto = Number(descuentoPct) || 0;
     if (dto < 0 || dto > 100) return res.status(400).json({ error: 'El descuento debe estar entre 0 y 100.' });
     try {
+        // Snapshot del nombre/actividad, para no depender de aim-tul al facturar.
+        const cl = await resolverClase(claseRef, claseOrigen);
+        if (!cl) return res.status(400).json({ error: 'Clase no válida.' });
         const r = await pool.query(
-            `INSERT INTO aim_matriculas (user_id, group_id, group_nombre, activity_id, activity_nombre, temporada_id, descuento_pct, alta)
+            `INSERT INTO aim_matriculas (user_id, clase_ref, clase_origen, clase_nombre, actividad, temporada_id, descuento_pct, alta)
              VALUES ($1,$2,$3,$4,$5,$6,$7, COALESCE($8::date, CURRENT_DATE)) RETURNING id`,
-            [userId, groupId, groupNombre?.trim() || null, activityId || null, activityNombre?.trim() || null, temporadaId, dto, alta || null]
+            [userId, claseRef, claseOrigen, cl.nombre, cl.actividad, temporadaId, dto, alta || null]
         );
         res.status(201).json({ id: r.rows[0].id });
     } catch (err) {

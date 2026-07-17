@@ -1543,18 +1543,22 @@ const TIPOS_CONCEPTO = ['Mensualidad', 'Material', 'Otros'];
 const eur = (n) => `${Number(n || 0).toFixed(2)} €`;
 
 function AdminBilling({ showToast }) {
-  const [tab, setTab] = useState('catalogo'); // 'catalogo' | 'temporadas' | 'conceptos' | 'fichas'
+  const [tab, setTab] = useState('catalogo'); // 'catalogo' | 'clases' | 'temporadas' | 'conceptos' | 'fichas'
   const [temporadas, setTemporadas] = useState([]);
   const [precios, setPrecios] = useState([]);
+  const [clases, setClases] = useState([]);       // clases propias
+  const [aimtul, setAimtul] = useState({ activities: [], groups: [] }); // aim-tul en vivo
+  const [actividades, setActividades] = useState([]);
   const [conceptos, setConceptos] = useState([]);
   const [matriculas, setMatriculas] = useState([]);
   const [alumnos, setAlumnos] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  const [aimtul, setAimtul] = useState({ activities: [], groups: [] });
   const [editPrecio, setEditPrecio] = useState(null);
+  const [editClase, setEditClase] = useState(null);
+  const [importing, setImporting] = useState(false);
   const [nuevaTemporada, setNuevaTemporada] = useState('');
-  const [nuevoConcepto, setNuevoConcepto] = useState({ concepto: '', destino: '' }); // destino = 'activity:id' | 'group:id'
+  const [nuevoConcepto, setNuevoConcepto] = useState({ concepto: '', destino: '' }); // destino = 'actividad:Nombre' | 'clase:id'
   const [editFicha, setEditFicha] = useState(null);
   const [fichaQ, setFichaQ] = useState('');
   const [saving, setSaving] = useState(false);
@@ -1563,11 +1567,13 @@ function AdminBilling({ showToast }) {
 
   async function loadAll() {
     try {
-      const [t, p] = await Promise.all([
+      const [t, p, cl, ac] = await Promise.all([
         fetch('/api/admin/billing/temporadas', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
         fetch('/api/admin/billing/precios?all=1', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
+        fetch('/api/admin/billing/clases?all=1', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
+        fetch('/api/admin/billing/actividades', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
       ]);
-      setTemporadas(t); setPrecios(p);
+      setTemporadas(t); setPrecios(p); setClases(cl); setActividades(ac);
       const act = t.find(x => x.activa);
       if (act) {
         const [c, m] = await Promise.all([
@@ -1599,27 +1605,32 @@ function AdminBilling({ showToast }) {
 
   const emptyPrecio = { concepto: '', descripcion: '', precio: 0, tipo: 'Mensualidad', ivaPct: 0, activo: true, esNuevo: true };
 
-  // Grupos de aim-tul agrupados por actividad (para los <optgroup>).
-  const gruposPorActividad = {};
-  for (const g of aimtul.groups) (gruposPorActividad[g.activityName] = gruposPorActividad[g.activityName] || []).push(g);
+  // Lista de clases MEZCLADA: aim-tul en vivo + propias. ref+origen la identifica.
+  const clasesMerged = [
+    ...aimtul.groups.map(g => ({ ref: g.id, origen: 'aimtul', nombre: g.name, actividad: g.activityName })),
+    ...clases.filter(c => c.activa).map(c => ({ ref: c.id, origen: 'custom', nombre: c.nombre, actividad: c.actividad || 'Otras (propias)' })),
+  ];
+  // Agrupadas por actividad para los <optgroup>.
+  const clasesPorActividad = {};
+  for (const c of clasesMerged) (clasesPorActividad[c.actividad] = clasesPorActividad[c.actividad] || []).push(c);
 
-  // "Qué se cobra" agrupado por destino (actividad o grupo) para pintarlo.
+  // "Qué se cobra" agrupado por destino (actividad o clase) para pintarlo.
   const conceptosPorDestino = {};
   for (const c of conceptos) {
-    const key = `${c.targetTipo}:${c.targetId}`;
+    const key = c.targetTipo === 'actividad' ? `actividad:${c.targetActividad}` : `clase:${c.targetRef}`;
     (conceptosPorDestino[key] = conceptosPorDestino[key] || { tipo: c.targetTipo, nombre: c.targetNombre, items: [] }).items.push(c);
   }
 
   const fichasVisibles = matriculas.filter(m => {
     const q = fichaQ.trim().toLowerCase();
     return !q || `${m.nombre} ${m.apellidos}`.toLowerCase().includes(q)
-      || (m.groupNombre || '').toLowerCase().includes(q) || (m.activityNombre || '').toLowerCase().includes(q);
+      || (m.claseNombre || '').toLowerCase().includes(q) || (m.actividad || '').toLowerCase().includes(q);
   });
 
   return (
     <>
       <div style={{ display: 'flex', gap: 10, marginBottom: 22, borderBottom: '1px solid var(--line-2)', paddingBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-        {[['catalogo', `Catálogo (${precios.length})`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra (${conceptos.length})`], ['fichas', `Fichas (${matriculas.length})`]].map(([id, label]) => (
+        {[['catalogo', `Catálogo (${precios.length})`], ['clases', `Clases (${clasesMerged.length})`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra (${conceptos.length})`], ['fichas', `Fichas (${matriculas.length})`]].map(([id, label]) => (
           <button key={id} className={`filter-pill ${tab === id ? 'is-active' : ''}`} onClick={() => setTab(id)} style={{ borderRadius: 8, padding: '8px 16px' }}>{label}</button>
         ))}
         <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: activa ? 'var(--teal)' : 'var(--orange)' }}>
@@ -1629,7 +1640,7 @@ function AdminBilling({ showToast }) {
 
       {loading && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
 
-      {!loading && !activa && tab !== 'temporadas' && (
+      {!loading && !activa && ['conceptos', 'fichas'].includes(tab) && (
         <div style={{ padding: 24, background: 'color-mix(in oklab, var(--orange) 8%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--orange) 30%, transparent)', borderRadius: 14, marginBottom: 16, fontSize: 14, color: 'var(--ink-2)' }}>
           No hay ninguna temporada activa. Crea una y actívala en <b>Temporadas</b> — sin eso no se puede cobrar nada.
         </div>
@@ -1675,6 +1686,44 @@ function AdminBilling({ showToast }) {
         </div>
       )}
 
+      {/* ── Clases ── */}
+      {!loading && tab === 'clases' && (
+        <div style={{ display: 'grid', gap: 14 }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button className="btn btn-sm btn-primary" onClick={() => setEditClase({ nombre: '', actividad: '', esNueva: true })}>
+              <I.Plus /> Nueva clase propia
+            </button>
+            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+              Las <b>{aimtul.groups.length}</b> clases de Aim-Tul aparecen aquí y en los desplegables <b>automáticamente y en tiempo real</b> — no hay que importarlas.
+            </span>
+          </div>
+          {Object.entries(clasesPorActividad).sort((a, b) => a[0].localeCompare(b[0], 'es')).map(([act, cs]) => (
+            <div key={act} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: '12px 16px' }}>
+              <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8 }}>{act}</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {cs.map(c => (
+                  <span key={`${c.origen}:${c.ref}`} style={{ display: 'inline-flex', gap: 8, alignItems: 'center', background: c.origen === 'custom' ? 'color-mix(in oklab, var(--teal) 10%, var(--bg-3))' : 'var(--bg-3)', border: '1px solid var(--line-2)', borderRadius: 999, padding: c.origen === 'custom' ? '4px 6px 4px 12px' : '5px 12px', fontSize: 12, fontWeight: 700 }}>
+                    {c.nombre}
+                    <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: c.origen === 'custom' ? 'var(--teal)' : 'var(--ink-3)' }}>
+                      {c.origen === 'custom' ? 'Propia' : 'Aim-Tul'}
+                    </span>
+                    {c.origen === 'custom' && (
+                      <>
+                        <button className="icon-btn" style={{ width: 22, height: 22 }} onClick={() => setEditClase({ id: c.ref, nombre: c.nombre, actividad: clases.find(x => x.id === c.ref)?.actividad || '' })} aria-label="Editar"><I.Edit /></button>
+                        <button className="icon-btn danger" style={{ width: 22, height: 22 }} onClick={async () => {
+                          if (!window.confirm(`¿Borrar la clase propia "${c.nombre}"? Si tiene fichas, se desactivará.`)) return;
+                          await api(`/api/admin/billing/clases/${c.ref}`, { method: 'DELETE' }, 'Clase eliminada.');
+                        }} aria-label="Borrar"><I.Trash /></button>
+                      </>
+                    )}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* ── Temporadas ── */}
       {!loading && tab === 'temporadas' && (
         <div style={{ display: 'grid', gap: 14 }}>
@@ -1708,17 +1757,20 @@ function AdminBilling({ showToast }) {
       {!loading && tab === 'conceptos' && activa && (
         <div style={{ display: 'grid', gap: 14 }}>
           <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>
-            Asigna un concepto a una <b>actividad entera</b> (lo pagan todos sus grupos) o a un <b>grupo concreto</b>.
-            La lista viene de vuestras clases reales de Aim-Tul. Es lo que usará la generación mensual.
+            Asigna un concepto a una <b>actividad entera</b> (lo pagan todas sus clases) o a una <b>clase concreta</b>.
+            La lista mezcla vuestras clases de Aim-Tul (en vivo) con las propias. Es lo que usará la generación mensual.
           </p>
           <form style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }} onSubmit={async e => {
             e.preventDefault();
             if (!nuevoConcepto.concepto || !nuevoConcepto.destino) return;
-            const [targetTipo, targetId] = nuevoConcepto.destino.split(/:(.+)/);
-            const targetNombre = targetTipo === 'activity'
-              ? aimtul.activities.find(a => a.id === targetId)?.name
-              : aimtul.groups.find(g => g.id === targetId)?.name;
-            if (await api('/api/admin/billing/conceptos', { method: 'POST', body: JSON.stringify({ concepto: nuevoConcepto.concepto, targetTipo, targetId, targetNombre, temporadaId: activa.id }) }, 'Asignado.')) {
+            let body = { concepto: nuevoConcepto.concepto, temporadaId: activa.id };
+            if (nuevoConcepto.destino.startsWith('actividad:')) {
+              body = { ...body, targetTipo: 'actividad', targetActividad: nuevoConcepto.destino.slice('actividad:'.length) };
+            } else {
+              const [, origen, ref] = nuevoConcepto.destino.split(':');
+              body = { ...body, targetTipo: 'clase', targetOrigen: origen, targetRef: ref };
+            }
+            if (await api('/api/admin/billing/conceptos', { method: 'POST', body: JSON.stringify(body) }, 'Asignado.')) {
               setNuevoConcepto({ concepto: '', destino: '' });
             }
           }}>
@@ -1730,22 +1782,17 @@ function AdminBilling({ showToast }) {
             <select value={nuevoConcepto.destino} onChange={e => setNuevoConcepto(c => ({ ...c, destino: e.target.value }))}
               style={{ fontFamily: 'inherit', fontSize: 14, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)', minWidth: 260 }}>
               <option value="">¿A quién se le cobra?...</option>
-              <optgroup label="Actividad entera (todos sus grupos)">
-                {aimtul.activities.map(a => <option key={a.id} value={`activity:${a.id}`}>🎯 {a.name}</option>)}
+              <optgroup label="Actividad entera (todas sus clases)">
+                {actividades.map(a => <option key={a} value={`actividad:${a}`}>🎯 {a}</option>)}
               </optgroup>
-              {Object.entries(gruposPorActividad).map(([actName, gs]) => (
-                <optgroup key={actName} label={`Grupos de ${actName}`}>
-                  {gs.map(g => <option key={g.id} value={`group:${g.id}`}>{g.name}</option>)}
+              {Object.entries(clasesPorActividad).map(([actName, cs]) => (
+                <optgroup key={actName} label={`Clases de ${actName}`}>
+                  {cs.map(c => <option key={`${c.origen}:${c.ref}`} value={`clase:${c.origen}:${c.ref}`}>{c.nombre}{c.origen === 'custom' ? ' (propia)' : ''}</option>)}
                 </optgroup>
               ))}
             </select>
             <button className="btn btn-sm btn-primary" type="submit" disabled={saving}><I.Plus /> Asignar</button>
           </form>
-          {aimtul.activities.length === 0 && (
-            <div style={{ padding: 16, background: 'color-mix(in oklab, var(--orange) 8%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--orange) 30%, transparent)', borderRadius: 12, fontSize: 13, color: 'var(--ink-2)' }}>
-              No se han podido cargar las clases de Aim-Tul.
-            </div>
-          )}
           {conceptos.length === 0 && (
             <div style={{ padding: 28, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>
               Nada asignado todavía en {activa.nombre}.
@@ -1754,8 +1801,8 @@ function AdminBilling({ showToast }) {
           {Object.entries(conceptosPorDestino).map(([key, grupo]) => (
             <div key={key} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: '12px 16px' }}>
               <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
-                <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.06em', textTransform: 'uppercase', padding: '2px 8px', borderRadius: 999, background: grupo.tipo === 'activity' ? 'color-mix(in oklab, var(--purple) 16%, var(--bg-2))' : 'var(--bg-3)', color: grupo.tipo === 'activity' ? 'var(--purple)' : 'var(--ink-3)', border: '1px solid var(--line-2)' }}>
-                  {grupo.tipo === 'activity' ? 'Actividad' : 'Grupo'}
+                <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.06em', textTransform: 'uppercase', padding: '2px 8px', borderRadius: 999, background: grupo.tipo === 'actividad' ? 'color-mix(in oklab, var(--purple) 16%, var(--bg-2))' : 'var(--bg-3)', color: grupo.tipo === 'actividad' ? 'var(--purple)' : 'var(--ink-3)', border: '1px solid var(--line-2)' }}>
+                  {grupo.tipo === 'actividad' ? 'Actividad' : 'Clase'}
                 </span>
                 {grupo.nombre || '(sin nombre)'}
               </div>
@@ -1776,7 +1823,7 @@ function AdminBilling({ showToast }) {
       {!loading && tab === 'fichas' && activa && (
         <div style={{ display: 'grid', gap: 14 }}>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-            <button className="btn btn-sm btn-primary" onClick={() => setEditFicha({ userId: '', groupId: '', descuentoPct: 0, alta: '', baja: '', esNueva: true })}>
+            <button className="btn btn-sm btn-primary" onClick={() => setEditFicha({ userId: '', clase: '', descuentoPct: 0, alta: '', baja: '', esNueva: true })}>
               <I.Plus /> Nueva ficha
             </button>
             <div className="search-input" style={{ flex: '1 1 200px', maxWidth: 300 }}>
@@ -1801,8 +1848,8 @@ function AdminBilling({ showToast }) {
                     <div className="sec">{m.email}</div>
                   </div>
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 700 }}>{m.groupNombre || '—'}</div>
-                    <div className="sec">{m.activityNombre || ''}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>{m.claseNombre || '—'}</div>
+                    <div className="sec">{m.actividad || ''}{m.claseOrigen === 'custom' ? ' · propia' : ''}</div>
                   </div>
                   <span style={{ fontWeight: 700, color: m.descuentoPct > 0 ? 'var(--teal)' : 'var(--ink-3)' }}>{m.descuentoPct}%</span>
                   <span className="sec">
@@ -1880,6 +1927,36 @@ function AdminBilling({ showToast }) {
         </div>
       )}
 
+      {/* ── Modal clase propia ── */}
+      {editClase && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+          onClick={e => { if (e.target === e.currentTarget) setEditClase(null); }}>
+          <div style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 460, padding: 24 }}>
+            <h3 style={{ margin: '0 0 16px', fontSize: 18, fontWeight: 800 }}>{editClase.esNueva ? 'Nueva clase propia' : 'Editar clase'}</h3>
+            <form style={{ display: 'grid', gap: 14 }} onSubmit={async e => {
+              e.preventDefault();
+              const body = JSON.stringify({ nombre: editClase.nombre, actividad: editClase.actividad });
+              const ok = editClase.esNueva
+                ? await api('/api/admin/billing/clases', { method: 'POST', body }, 'Clase creada.')
+                : await api(`/api/admin/billing/clases/${editClase.id}`, { method: 'PUT', body }, 'Clase actualizada.');
+              if (ok) setEditClase(null);
+            }}>
+              <div className="field"><label>Nombre de la clase</label><input value={editClase.nombre} onChange={e => setEditClase(c => ({ ...c, nombre: e.target.value }))} required placeholder="Ej. Refuerzo escolar" /></div>
+              <div className="field">
+                <label>Actividad (agrupador)</label>
+                <input list="actividades-sug" value={editClase.actividad} onChange={e => setEditClase(c => ({ ...c, actividad: e.target.value }))} placeholder="Ej. Apoyo, Campamento..." />
+                <datalist id="actividades-sug">{actividades.map(a => <option key={a} value={a} />)}</datalist>
+              </div>
+              <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>La actividad sirve para agrupar y para poder cobrar "por actividad entera".</p>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button type="button" className="btn btn-outline" onClick={() => setEditClase(null)}>Cancelar</button>
+                <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Guardando...' : 'Guardar'}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* ── Modal ficha ── */}
       {editFicha && activa && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
@@ -1889,16 +1966,14 @@ function AdminBilling({ showToast }) {
             <p style={{ margin: '0 0 16px', fontSize: 13, color: 'var(--ink-3)' }}>Temporada {activa.nombre}</p>
             <form style={{ display: 'grid', gap: 14 }} onSubmit={async e => {
               e.preventDefault();
-              let body = { ...editFicha, temporadaId: activa.id };
               if (editFicha.esNueva) {
-                const g = aimtul.groups.find(x => x.id === editFicha.groupId);
-                if (!g) { alert('Elige una clase.'); return; }
-                body = { ...body, groupNombre: g.name, activityId: g.activityId, activityNombre: g.activityName };
+                if (!editFicha.clase) { alert('Elige una clase.'); return; }
+                const [origen, ref] = editFicha.clase.split(/:(.+)/);
+                const body = { userId: editFicha.userId, claseRef: ref, claseOrigen: origen, descuentoPct: editFicha.descuentoPct, alta: editFicha.alta, temporadaId: activa.id };
+                if (await api('/api/admin/billing/matriculas', { method: 'POST', body: JSON.stringify(body) }, 'Ficha creada.')) setEditFicha(null);
+              } else {
+                if (await api(`/api/admin/billing/matriculas/${editFicha.id}`, { method: 'PUT', body: JSON.stringify(editFicha) }, 'Ficha actualizada.')) setEditFicha(null);
               }
-              const ok = editFicha.esNueva
-                ? await api('/api/admin/billing/matriculas', { method: 'POST', body: JSON.stringify(body) }, 'Ficha creada.')
-                : await api(`/api/admin/billing/matriculas/${editFicha.id}`, { method: 'PUT', body: JSON.stringify(editFicha) }, 'Ficha actualizada.');
-              if (ok) setEditFicha(null);
             }}>
               {editFicha.esNueva ? (
                 <>
@@ -1911,12 +1986,12 @@ function AdminBilling({ showToast }) {
                     </select>
                   </div>
                   <div className="field">
-                    <label>Clase (de Aim-Tul)</label>
-                    <select value={editFicha.groupId} onChange={e => setEditFicha(f => ({ ...f, groupId: e.target.value }))} required>
+                    <label>Clase (Aim-Tul o propia)</label>
+                    <select value={editFicha.clase} onChange={e => setEditFicha(f => ({ ...f, clase: e.target.value }))} required>
                       <option value="">Elige clase...</option>
-                      {Object.entries(gruposPorActividad).map(([actName, gs]) => (
+                      {Object.entries(clasesPorActividad).map(([actName, cs]) => (
                         <optgroup key={actName} label={actName}>
-                          {gs.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+                          {cs.map(c => <option key={`${c.origen}:${c.ref}`} value={`${c.origen}:${c.ref}`}>{c.nombre}{c.origen === 'custom' ? ' (propia)' : ''}</option>)}
                         </optgroup>
                       ))}
                     </select>
@@ -1924,7 +1999,7 @@ function AdminBilling({ showToast }) {
                 </>
               ) : (
                 <div style={{ background: 'var(--bg-3)', border: '1px solid var(--line-2)', borderRadius: 10, padding: '10px 14px', fontSize: 13 }}>
-                  <b>{editFicha.groupNombre}</b>{editFicha.activityNombre ? ` · ${editFicha.activityNombre}` : ''}
+                  <b>{editFicha.claseNombre}</b>{editFicha.actividad ? ` · ${editFicha.actividad}` : ''}
                 </div>
               )}
               <div className="field">
