@@ -8,6 +8,7 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { GoogleGenAI, Type } from '@google/genai';
 import nodemailer from 'nodemailer';
+import { calcularRecibo, mesAGenerar } from './billing.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -297,6 +298,110 @@ async function initDb() {
                 UNIQUE(child_id, day)
             )
         `);
+
+        // ── Facturación ──
+        // Temporadas del club (la marcada como activa manda en la generación).
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_temporadas (
+                id SERIAL PRIMARY KEY,
+                nombre VARCHAR(100) NOT NULL,
+                activa BOOLEAN DEFAULT false,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        // Catálogo de conceptos facturables. El IVA va POR CONCEPTO (antes se
+        // deducía comparando tipo == 'material', de donde salía el descuadre).
+        // 'precio' es SIEMPRE base imponible: el IVA se suma encima.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_precios (
+                concepto VARCHAR(100) PRIMARY KEY,
+                descripcion VARCHAR(255) NOT NULL,
+                precio NUMERIC(10,2) NOT NULL DEFAULT 0,
+                tipo VARCHAR(50) NOT NULL DEFAULT 'Otros',
+                iva_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
+                activo BOOLEAN DEFAULT true,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        // Qué concepto se cobra a quien esté en cada hora de cada temporada.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_conceptos_temporada (
+                id SERIAL PRIMARY KEY,
+                concepto VARCHAR(100) NOT NULL REFERENCES aim_precios(concepto) ON DELETE CASCADE,
+                hora VARCHAR(100) NOT NULL,
+                temporada_id INTEGER NOT NULL REFERENCES aim_temporadas(id) ON DELETE CASCADE,
+                UNIQUE (concepto, hora, temporada_id)
+            )
+        `);
+        // Fichas / matrículas: sustituye a horarios_seleccionados.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_matriculas (
+                id SERIAL PRIMARY KEY,
+                user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                hora VARCHAR(100) NOT NULL,
+                temporada_id INTEGER NOT NULL REFERENCES aim_temporadas(id) ON DELETE CASCADE,
+                descuento_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
+                alta DATE NOT NULL DEFAULT CURRENT_DATE,
+                baja DATE,
+                UNIQUE (user_id, hora, temporada_id)
+            )
+        `);
+        // Parentescos por persona (mismo modelo que la tabla familias actual).
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_familias (
+                id SERIAL PRIMARY KEY,
+                persona_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                familiar_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                tipo VARCHAR(50) NOT NULL,
+                UNIQUE (persona_id, familiar_id)
+            )
+        `);
+        // Recibos. El número sale de una secuencia: el max(numero)+1 del sistema
+        // viejo repetía número si dos personas cobraban a la vez.
+        await client.query(`CREATE SEQUENCE IF NOT EXISTS aim_recibos_numero_seq START 1`);
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_recibos (
+                id SERIAL PRIMARY KEY,
+                numero INTEGER UNIQUE NOT NULL,
+                pagador_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                fecha DATE NOT NULL DEFAULT CURRENT_DATE,
+                importe NUMERIC(10,2),
+                medio_pago VARCHAR(30),
+                entregado NUMERIC(10,2),
+                cambio NUMERIC(10,2),
+                estado VARCHAR(20) NOT NULL DEFAULT 'abierto',
+                cobrado_por UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                cobrado_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        // Cargos (los "pagos" de antes). precio/iva_pct/descripcion/tipo se
+        // CONGELAN al generar: si mañana cambia el precio, agosto sigue siendo
+        // el agosto de agosto aunque se pague con retraso.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_cargos (
+                id SERIAL PRIMARY KEY,
+                cliente_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                concepto VARCHAR(100) NOT NULL,
+                mes DATE NOT NULL,
+                descripcion VARCHAR(255) NOT NULL,
+                tipo VARCHAR(50) NOT NULL,
+                precio NUMERIC(10,2) NOT NULL,
+                iva_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
+                descuento_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
+                descuento_mens_pct NUMERIC(5,2),
+                importe NUMERIC(10,2),
+                recibo_id INTEGER REFERENCES aim_recibos(id) ON DELETE SET NULL,
+                estado VARCHAR(20) NOT NULL DEFAULT 'pendiente',
+                anulado_motivo TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE (cliente_id, concepto, mes)
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_cargos_cliente ON aim_cargos(cliente_id)`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_cargos_recibo ON aim_cargos(recibo_id)`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_cargos_estado ON aim_cargos(estado)`);
     } finally {
         client.release();
     }
@@ -1606,6 +1711,28 @@ app.get('/api/admin/camp/roster', authenticateSession, requireAdmin, async (req,
         console.error('Error fetching camp roster:', err);
         res.status(500).json({ error: err.message });
     }
+});
+
+// =============================================================================
+// FACTURACIÓN
+// =============================================================================
+
+// Admin: recalcular un recibo a partir de sus líneas, sin guardar nada.
+// Es lo que usará el TPV para refrescar totales según se añaden/quitan líneas.
+app.post('/api/admin/billing/simular', authenticateSession, requireAdmin, (req, res) => {
+    const { lineas } = req.body;
+    if (!Array.isArray(lineas)) return res.status(400).json({ error: 'lineas debe ser un array.' });
+    try {
+        res.json(calcularRecibo(lineas));
+    } catch (err) {
+        console.error('Error simulando recibo:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Admin: qué mes toca generar hoy (por adelantado, con corte el día 5).
+app.get('/api/admin/billing/mes-a-generar', authenticateSession, requireAdmin, (req, res) => {
+    res.json({ mes: mesAGenerar() });
 });
 
 // Admin: guardar asistencia y/o nota del profesor de un niño en un día.
