@@ -20,7 +20,6 @@ function DashOverview({ go, setView }) {
   const [groups, setGroups] = useState([]);
   const [attendance, setAttendance] = useState([]);
   const [posts, setPosts] = useState([]);
-  const [receipts, setReceipts] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -28,19 +27,16 @@ function DashOverview({ go, setView }) {
       fetch('/api/me/groups', { credentials: 'include' }).then(r => r.ok ? r.json() : { groups: [], slots: [] }),
       fetch('/api/me/attendance', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
       fetch('/api/posts?limit=3').then(r => r.ok ? r.json() : []),
-      fetch('/api/receipts', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
-    ]).then(([g, at, p, rec]) => {
+    ]).then(([g, at, p]) => {
       setGroups(g.groups || []);
       setSlots(g.slots || []);
       setAttendance(Array.isArray(at) ? at : []);
       setPosts(Array.isArray(p) ? p : []);
-      setReceipts(Array.isArray(rec) ? rec : []);
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
 
   const weekClasses = [...slots].sort((a, b) => (a.d - b.d) || (a.s - b.s)).slice(0, 6);
-  const totalPaid = receipts.reduce((s, r) => s + (r.amount || 0), 0);
   const attWithRecords = attendance.filter(a => a.total > 0);
   const totAttended = attWithRecords.reduce((s, a) => s + a.attended, 0);
   const totSessions = attWithRecords.reduce((s, a) => s + a.total, 0);
@@ -48,7 +44,7 @@ function DashOverview({ go, setView }) {
 
   return (
     <>
-      <div className="dash-cards" style={{gridTemplateColumns: "repeat(3, 1fr)"}}>
+      <div className="dash-cards" style={{gridTemplateColumns: "repeat(2, 1fr)"}}>
         <div className="stat-card act-taekwondo">
           <div className="corner"><I.Calendar /></div>
           <div className="l">Mis clases</div>
@@ -60,12 +56,6 @@ function DashOverview({ go, setView }) {
           <div className="l">Mi asistencia</div>
           <div className="v">{attPct != null ? `${attPct}%` : "—"}</div>
           <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>{attPct != null ? "del trimestre" : "sin registros aún"}</div>
-        </div>
-        <div className="stat-card act-funcional">
-          <div className="corner"><I.Wallet /></div>
-          <div className="l">Recibos</div>
-          <div className="v">{receipts.length}</div>
-          <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>{totalPaid > 0 ? `${totalPaid.toLocaleString("es-ES")}€ registrados` : "sin recibos"}</div>
         </div>
       </div>
 
@@ -320,62 +310,19 @@ function DashAttendance() {
   );
 }
 
+// Pagos de la familia. Todavía no existe facturación por familia: esta sección
+// mostraba los GASTOS del club (aim_education_recibos), que es información
+// interna. Queda vacía hasta que exista la facturación real.
 function DashPayments() {
-  const [receipts, setReceipts] = useState([]);
-
-  useEffect(() => {
-    fetch('/api/receipts', { credentials: 'include' })
-      .then(r => r.ok ? r.json() : [])
-      .then(setReceipts)
-      .catch(() => {});
-  }, []);
-
-  const totalPaid = receipts.reduce((s, r) => s + (r.amount || 0), 0);
-
   return (
-    <>
-      <div className="dash-cards" style={{gridTemplateColumns: "repeat(3, 1fr)"}}>
-        <div className="stat-card">
-          <div className="l">Pagado este año</div>
-          <div className="v">{totalPaid > 0 ? `${totalPaid.toLocaleString("es-ES", {minimumFractionDigits: 0})}€` : "—"}</div>
-          <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>{receipts.length} recibo{receipts.length !== 1 ? "s" : ""} · IVA inc.</div>
-        </div>
-        <div className="stat-card warn">
-          <div className="l">Pendiente</div>
-          <div className="v">—</div>
-          <div className="trend">Contacta con el club</div>
-        </div>
-        <div className="stat-card">
-          <div className="l">Próximo cargo</div>
-          <div className="v">1 Jun</div>
-          <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>Domiciliación SEPA</div>
-        </div>
-      </div>
-
-      <div className="panel">
-        <h2><I.Wallet /> Histórico de recibos</h2>
-        <p className="sub">Descarga tus recibos para deducciones fiscales.</p>
-        {receipts.length === 0 && <p style={{color: "var(--ink-3)", fontSize: 14}}>No hay recibos disponibles.</p>}
-        {receipts.map((r, i) => {
-          const d = r.date ? new Date(r.date).toLocaleDateString("es-ES") : "—";
-          const amount = r.amount != null ? `${parseFloat(r.amount).toLocaleString("es-ES", {minimumFractionDigits: 2})}€` : "—";
-          return (
-            <div key={r.id || i} className="payment-row">
-              <div>
-                <div className="name">{r.company || "Recibo"}</div>
-                <div className="date">{r.paymentMethod || "—"}</div>
-              </div>
-              <span className="status-pill ok">Pagado</span>
-              <span className="date">{d}</span>
-              <span className="amount">{amount}</span>
-              {r.invoiceLink
-                ? <a href={r.invoiceLink} target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-outline">PDF</a>
-                : <button className="btn btn-sm btn-outline" disabled>PDF</button>}
-            </div>
-          );
-        })}
-      </div>
-    </>
+    <div className="panel">
+      <h2><I.Wallet /> Pagos y recibos</h2>
+      <p className="sub">Tus recibos y el estado de tus pagos.</p>
+      <EmptyState
+        icon={<I.Wallet />}
+        text="Todavía no puedes consultar tus recibos online. Estamos preparando la facturación; mientras tanto, pregunta en recepción o escríbenos."
+      />
+    </div>
   );
 }
 

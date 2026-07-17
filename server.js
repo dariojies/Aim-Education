@@ -1629,7 +1629,9 @@ app.put('/api/admin/camp/attendance', authenticateSession, requireAdmin, async (
     }
 });
 
-app.get('/api/receipts', authenticateSession, async (req, res) => {
+// OJO: aim_education_recibos son GASTOS del club (proveedor + su factura), no
+// recibos de familias. Es información interna del negocio: solo admin.
+app.get('/api/receipts', authenticateSession, requireAdmin, async (req, res) => {
     try {
         const result = await pool.query('SELECT * FROM Aim_education_recibos ORDER BY date DESC');
         res.json(result.rows.map(r => ({
@@ -1645,7 +1647,7 @@ app.get('/api/receipts', authenticateSession, async (req, res) => {
     }
 });
 
-app.post('/api/receipts', authenticateSession, async (req, res) => {
+app.post('/api/receipts', authenticateSession, requireAdmin, async (req, res) => {
     const { id, date, amount, paymentMethod, company, invoiceLink } = req.body;
     try {
         await pool.query(`
@@ -1663,7 +1665,7 @@ app.post('/api/receipts', authenticateSession, async (req, res) => {
     }
 });
 
-app.delete('/api/receipts/:id', authenticateSession, async (req, res) => {
+app.delete('/api/receipts/:id', authenticateSession, requireAdmin, async (req, res) => {
     try {
         await pool.query('DELETE FROM Aim_education_recibos WHERE id = $1', [req.params.id]);
         res.json({ success: true });
