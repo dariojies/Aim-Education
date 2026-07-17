@@ -2058,7 +2058,7 @@ app.get('/api/admin/billing/matriculas', authenticateSession, requireAdmin, asyn
 });
 
 app.post('/api/admin/billing/matriculas', authenticateSession, requireAdmin, async (req, res) => {
-    const { userId, claseRef, claseOrigen, temporadaId, descuentoPct, alta } = req.body;
+    const { userId, claseRef, claseOrigen, temporadaId, descuentoPct, alta, baja } = req.body;
     if (!userId || !claseRef || !temporadaId) return res.status(400).json({ error: 'Alumno, clase y temporada son obligatorios.' });
     if (!['aimtul', 'custom'].includes(claseOrigen)) return res.status(400).json({ error: 'Origen de clase no válido.' });
     const dto = Number(descuentoPct) || 0;
@@ -2068,9 +2068,9 @@ app.post('/api/admin/billing/matriculas', authenticateSession, requireAdmin, asy
         const cl = await resolverClase(claseRef, claseOrigen);
         if (!cl) return res.status(400).json({ error: 'Clase no válida.' });
         const r = await pool.query(
-            `INSERT INTO aim_matriculas (user_id, clase_ref, clase_origen, clase_nombre, actividad, temporada_id, descuento_pct, alta)
-             VALUES ($1,$2,$3,$4,$5,$6,$7, COALESCE($8::date, CURRENT_DATE)) RETURNING id`,
-            [userId, claseRef, claseOrigen, cl.nombre, cl.actividad, temporadaId, dto, alta || null]
+            `INSERT INTO aim_matriculas (user_id, clase_ref, clase_origen, clase_nombre, actividad, temporada_id, descuento_pct, alta, baja)
+             VALUES ($1,$2,$3,$4,$5,$6,$7, COALESCE($8::date, CURRENT_DATE), $9::date) RETURNING id`,
+            [userId, claseRef, claseOrigen, cl.nombre, cl.actividad, temporadaId, dto, alta || null, baja || null]
         );
         res.status(201).json({ id: r.rows[0].id });
     } catch (err) {
@@ -2098,6 +2098,138 @@ app.put('/api/admin/billing/matriculas/:id', authenticateSession, requireAdmin, 
 app.delete('/api/admin/billing/matriculas/:id', authenticateSession, requireAdmin, async (req, res) => {
     try {
         await pool.query('DELETE FROM aim_matriculas WHERE id = $1', [req.params.id]);
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Generación mensual de cargos ──
+// Candidatos = (ficha × concepto que le aplica) de la temporada activa, con la
+// ficha vigente ese mes. Se congela precio/IVA/descripción/tipo del catálogo y
+// el descuento manual de la ficha. El descuento por nº de mensualidades NO se
+// congela: se calcula al cobrar (depende de la composición del recibo).
+function normalizaMes(mes) {
+    if (!mes) return mesAGenerar();
+    const s = String(mes).slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s.slice(0, 7)}-01` : mesAGenerar();
+}
+
+async function candidatosGeneracion(temporadaId, mes) {
+    // DISTINCT ON (alumno, concepto): si una ficha casa por varios destinos, un
+    // único cargo; nos quedamos con el mejor descuento para el alumno.
+    const r = await pool.query(
+        `SELECT DISTINCT ON (m.user_id, ct.concepto)
+                m.user_id, u.name, u.surname, ct.concepto,
+                p.descripcion, p.tipo, p.precio, p.iva_pct, m.descuento_pct,
+                EXISTS (SELECT 1 FROM aim_cargos c WHERE c.cliente_id = m.user_id AND c.concepto = ct.concepto AND c.mes = $2::date) AS ya_existe
+         FROM aim_conceptos_temporada ct
+         JOIN aim_precios p ON p.concepto = ct.concepto AND p.activo = true
+         JOIN aim_matriculas m ON m.temporada_id = ct.temporada_id AND (
+              (ct.target_tipo = 'clase' AND m.clase_ref = ct.target_ref)
+           OR (ct.target_tipo = 'actividad' AND m.actividad = ct.target_actividad)
+         )
+         JOIN users u ON u.user_id = m.user_id
+         WHERE ct.temporada_id = $1
+           AND m.alta <= ($2::date + INTERVAL '1 month - 1 day')
+           AND (m.baja IS NULL OR m.baja >= $2::date)
+         ORDER BY m.user_id, ct.concepto, m.descuento_pct DESC`,
+        [temporadaId, mes]
+    );
+    return r.rows;
+}
+
+// Previsualizar: cuántos cargos se crearían, sin insertar nada.
+app.get('/api/admin/billing/generar/preview', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const temp = await pool.query('SELECT id, nombre FROM aim_temporadas WHERE activa = true');
+        if (temp.rowCount === 0) return res.status(400).json({ error: 'No hay temporada activa.' });
+        const mes = normalizaMes(req.query.mes);
+        const rows = await candidatosGeneracion(temp.rows[0].id, mes);
+        const nuevos = rows.filter(r => !r.ya_existe);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            mes, temporada: temp.rows[0].nombre,
+            nuevos: nuevos.length,
+            yaExistian: rows.length - nuevos.length,
+            totalAlumnos: new Set(nuevos.map(r => r.user_id)).size,
+            importeBase: r2Server(nuevos.reduce((s, r) => s + Number(r.precio) * (1 - Number(r.descuento_pct) / 100), 0)),
+            detalle: nuevos.slice(0, 200).map(r => ({
+                nombre: `${r.name} ${r.surname}`, concepto: r.descripcion,
+                precio: Number(r.precio), descuentoPct: Number(r.descuento_pct),
+            })),
+        });
+    } catch (err) {
+        console.error('Error preview generación:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+function r2Server(n) { return Math.round((Number(n) + Number.EPSILON) * 100) / 100; }
+
+// Generar: inserta los cargos que falten (idempotente por (cliente, concepto, mes)).
+app.post('/api/admin/billing/generar', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const temp = await pool.query('SELECT id, nombre FROM aim_temporadas WHERE activa = true');
+        if (temp.rowCount === 0) return res.status(400).json({ error: 'No hay temporada activa.' });
+        const mes = normalizaMes(req.body.mes);
+        const r = await pool.query(
+            `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado)
+             SELECT DISTINCT ON (m.user_id, ct.concepto)
+                    m.user_id, ct.concepto, $2::date, p.descripcion, p.tipo, p.precio, p.iva_pct, m.descuento_pct, 'pendiente'
+             FROM aim_conceptos_temporada ct
+             JOIN aim_precios p ON p.concepto = ct.concepto AND p.activo = true
+             JOIN aim_matriculas m ON m.temporada_id = ct.temporada_id AND (
+                  (ct.target_tipo = 'clase' AND m.clase_ref = ct.target_ref)
+               OR (ct.target_tipo = 'actividad' AND m.actividad = ct.target_actividad)
+             )
+             WHERE ct.temporada_id = $1
+               AND m.alta <= ($2::date + INTERVAL '1 month - 1 day')
+               AND (m.baja IS NULL OR m.baja >= $2::date)
+             ORDER BY m.user_id, ct.concepto, m.descuento_pct DESC
+             ON CONFLICT (cliente_id, concepto, mes) DO NOTHING
+             RETURNING id`,
+            [temp.rows[0].id, mes]
+        );
+        res.json({ success: true, mes, creados: r.rowCount });
+    } catch (err) {
+        console.error('Error generando cargos:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Listar cargos (pendientes por defecto), opcionalmente por mes o alumno.
+app.get('/api/admin/billing/cargos', authenticateSession, requireAdmin, async (req, res) => {
+    const { mes, clienteId, estado } = req.query;
+    const where = [];
+    const vals = [];
+    if (mes) { vals.push(normalizaMes(mes)); where.push(`c.mes = $${vals.length}::date`); }
+    if (clienteId) { vals.push(clienteId); where.push(`c.cliente_id = $${vals.length}`); }
+    if (estado) { vals.push(estado); where.push(`c.estado = $${vals.length}`); }
+    try {
+        const r = await pool.query(
+            `SELECT c.*, u.name, u.surname
+             FROM aim_cargos c JOIN users u ON u.user_id = c.cliente_id
+             ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+             ORDER BY u.surname, u.name, c.mes DESC`,
+            vals
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows.map(c => ({
+            id: c.id, clienteId: c.cliente_id, nombre: c.name, apellidos: c.surname,
+            concepto: c.concepto, mes: c.mes, descripcion: c.descripcion, tipo: c.tipo,
+            precio: Number(c.precio), ivaPct: Number(c.iva_pct), descuentoPct: Number(c.descuento_pct),
+            importe: c.importe == null ? null : Number(c.importe), reciboId: c.recibo_id, estado: c.estado,
+        })));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Borrar un cargo pendiente (aún no cobrado / sin recibo).
+app.delete('/api/admin/billing/cargos/:id', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `DELETE FROM aim_cargos WHERE id = $1 AND estado = 'pendiente' AND recibo_id IS NULL RETURNING id`,
+            [req.params.id]
+        );
+        if (r.rowCount === 0) return res.status(409).json({ error: 'Solo se pueden borrar cargos pendientes sin recibo.' });
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });

@@ -1541,9 +1541,141 @@ function SortToggle({ value, onChange }) {
 // =============================================================================
 const TIPOS_CONCEPTO = ['Mensualidad', 'Material', 'Otros'];
 const eur = (n) => `${Number(n || 0).toFixed(2)} €`;
+const MESES_ES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+function mesLargo(iso) {
+  if (!iso) return '';
+  const [y, m] = String(iso).slice(0, 7).split('-');
+  return `${MESES_ES[Number(m) - 1]} de ${y}`;
+}
+
+// Generación mensual de cargos (previsualizar → generar → ver pendientes).
+function BillingGenerar({ activa, showToast }) {
+  const [mes, setMes] = useState('');
+  const [preview, setPreview] = useState(null);
+  const [cargos, setCargos] = useState([]);
+  const [loadingPv, setLoadingPv] = useState(false);
+  const [generating, setGenerating] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/admin/billing/mes-a-generar', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null).then(d => { if (d?.mes) setMes(d.mes.slice(0, 7)); }).catch(() => {});
+  }, []);
+
+  const mesIso = mes ? `${mes}-01` : '';
+
+  async function cargarPreview() {
+    if (!mesIso) return;
+    setLoadingPv(true); setPreview(null);
+    try {
+      const r = await fetch(`/api/admin/billing/generar/preview?mes=${mesIso}`, { credentials: 'include' });
+      if (r.ok) setPreview(await r.json());
+      else { const d = await r.json(); alert(d.error || 'Error.'); }
+    } catch { alert('Error de conexión.'); }
+    finally { setLoadingPv(false); }
+  }
+  async function cargarCargos() {
+    if (!mesIso) return;
+    try {
+      const r = await fetch(`/api/admin/billing/cargos?mes=${mesIso}&estado=pendiente`, { credentials: 'include' });
+      if (r.ok) setCargos(await r.json());
+    } catch { /* noop */ }
+  }
+  useEffect(() => { if (mesIso) { cargarPreview(); cargarCargos(); } }, [mesIso]);
+
+  async function generar() {
+    if (!window.confirm(`¿Generar los cargos de ${mesLargo(mesIso)}? Es seguro repetirlo: no duplica.`)) return;
+    setGenerating(true);
+    try {
+      const r = await fetch('/api/admin/billing/generar', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ mes: mesIso }),
+      });
+      if (r.ok) { const d = await r.json(); showToast?.(`${d.creados} cargo${d.creados !== 1 ? 's' : ''} generado${d.creados !== 1 ? 's' : ''}.`); await cargarPreview(); await cargarCargos(); }
+      else { const d = await r.json(); alert(d.error || 'Error al generar.'); }
+    } catch { alert('Error de conexión.'); }
+    finally { setGenerating(false); }
+  }
+
+  async function borrarCargo(id) {
+    if (!window.confirm('¿Borrar este cargo pendiente?')) return;
+    const r = await fetch(`/api/admin/billing/cargos/${id}`, { method: 'DELETE', credentials: 'include' });
+    if (r.ok) { await cargarPreview(); await cargarCargos(); showToast?.('Cargo borrado.'); }
+    else { const d = await r.json(); alert(d.error || 'No se pudo borrar.'); }
+  }
+
+  if (!activa) return null;
+  const totalPendiente = cargos.reduce((s, c) => s + c.precio * (1 - c.descuentoPct / 100), 0);
+
+  return (
+    <div style={{ display: 'grid', gap: 16 }}>
+      <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>
+        Genera los cargos del mes para todos los alumnos con ficha vigente, según lo definido en <b>Qué se cobra</b>.
+        Se cobra por adelantado (corte el día 5). Repetirlo es seguro: no duplica. El descuento por varias mensualidades se aplica al cobrar.
+      </p>
+
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '14px 16px' }}>
+        <label style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>Mes a generar</label>
+        <input type="month" value={mes} onChange={e => setMes(e.target.value)}
+          style={{ fontFamily: 'inherit', fontSize: 14, fontWeight: 700, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }} />
+        <span style={{ fontSize: 13, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{mesLargo(mesIso)}</span>
+        <button className="btn btn-sm btn-outline" onClick={cargarPreview} disabled={loadingPv}>Previsualizar</button>
+        <button className="btn btn-sm btn-primary" style={{ marginLeft: 'auto' }} onClick={generar} disabled={generating || !preview?.nuevos}>
+          {generating ? 'Generando...' : `Generar ${preview?.nuevos ? `(${preview.nuevos})` : ''}`}
+        </button>
+      </div>
+
+      {loadingPv && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Calculando...</p>}
+      {preview && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+          {[
+            { l: 'Cargos nuevos', v: preview.nuevos, c: 'var(--teal)' },
+            { l: 'Ya existían', v: preview.yaExistian, c: 'var(--ink-3)' },
+            { l: 'Alumnos', v: preview.totalAlumnos, c: 'var(--ink)' },
+            { l: 'Base (tras dto. manual)', v: eur(preview.importeBase), c: 'var(--purple)' },
+          ].map((k, i) => (
+            <div key={i} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '14px 16px' }}>
+              <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>{k.l}</div>
+              <div style={{ fontSize: 24, fontWeight: 800, fontFamily: 'var(--font-display)', color: k.c, marginTop: 4 }}>{k.v}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {preview && preview.nuevos > 0 && (
+        <p style={{ fontSize: 12, color: 'var(--ink-3)', margin: 0 }}>
+          Se crearán {preview.nuevos} cargos nuevos. (El descuento por nº de mensualidades y el IVA se calculan al cobrar en el TPV.)
+        </p>
+      )}
+
+      {cargos.length > 0 && (
+        <div style={{ display: 'grid', gap: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+            <h3 style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 800, margin: 0 }}>Cargos pendientes de {mesLargo(mesIso)}</h3>
+            <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--ink-2)' }}>{cargos.length} cargos · base {eur(totalPendiente)}</span>
+          </div>
+          <div className="data-table">
+            <div className="data-table-head" style={{ gridTemplateColumns: '1.6fr 1.6fr 90px 80px 60px' }}>
+              <span>Alumno</span><span>Concepto</span><span>Precio</span><span>Dto.</span><span></span>
+            </div>
+            {cargos.map(c => (
+              <div key={c.id} className="data-table-row" style={{ gridTemplateColumns: '1.6fr 1.6fr 90px 80px 60px' }}>
+                <div className="pri">{c.nombre} {c.apellidos}</div>
+                <span style={{ fontSize: 13 }}>{c.descripcion}</span>
+                <span style={{ fontWeight: 700 }}>{eur(c.precio)}</span>
+                <span style={{ color: c.descuentoPct > 0 ? 'var(--teal)' : 'var(--ink-3)', fontWeight: 700 }}>{c.descuentoPct}%</span>
+                <div className="row-actions">
+                  <button className="icon-btn danger" onClick={() => borrarCargo(c.id)} aria-label="Borrar"><I.Trash /></button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function AdminBilling({ showToast }) {
-  const [tab, setTab] = useState('catalogo'); // 'catalogo' | 'clases' | 'temporadas' | 'conceptos' | 'fichas'
+  const [tab, setTab] = useState('catalogo'); // 'catalogo' | 'clases' | 'temporadas' | 'conceptos' | 'fichas' | 'generar'
   const [temporadas, setTemporadas] = useState([]);
   const [precios, setPrecios] = useState([]);
   const [clases, setClases] = useState([]);       // clases propias
@@ -1630,7 +1762,7 @@ function AdminBilling({ showToast }) {
   return (
     <>
       <div style={{ display: 'flex', gap: 10, marginBottom: 22, borderBottom: '1px solid var(--line-2)', paddingBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-        {[['catalogo', `Catálogo (${precios.length})`], ['clases', `Clases (${clasesMerged.length})`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra (${conceptos.length})`], ['fichas', `Fichas (${matriculas.length})`]].map(([id, label]) => (
+        {[['catalogo', `Catálogo (${precios.length})`], ['clases', `Clases (${clasesMerged.length})`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra (${conceptos.length})`], ['fichas', `Fichas (${matriculas.length})`], ['generar', 'Generar cargos']].map(([id, label]) => (
           <button key={id} className={`filter-pill ${tab === id ? 'is-active' : ''}`} onClick={() => setTab(id)} style={{ borderRadius: 8, padding: '8px 16px' }}>{label}</button>
         ))}
         <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: activa ? 'var(--teal)' : 'var(--orange)' }}>
@@ -1868,6 +2000,9 @@ function AdminBilling({ showToast }) {
           )}
         </div>
       )}
+
+      {/* ── Generar cargos ── */}
+      {!loading && tab === 'generar' && <BillingGenerar activa={activa} showToast={showToast} />}
 
       {/* ── Modal concepto ── */}
       {editPrecio && (
