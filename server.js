@@ -407,9 +407,20 @@ async function initDb() {
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
+        // Migración pre-lanzamiento (tabla vacía): el cargo pasa a llevar el
+        // DESTINO (target_ref = clase concreta, NULL = por actividad) para poder
+        // cobrar una mensualidad por cada clase. Solo se dispara mientras no
+        // exista aún la columna target_ref.
+        const cargoDestino = await client.query(
+            `SELECT to_regclass('aim_cargos') AS t, (SELECT 1 FROM information_schema.columns WHERE table_name='aim_cargos' AND column_name='target_ref') AS c`
+        );
+        if (cargoDestino.rows[0].t && !cargoDestino.rows[0].c) {
+            await client.query(`DROP TABLE IF EXISTS aim_cargos CASCADE`);
+        }
         // Cargos (los "pagos" de antes). precio/iva_pct/descripcion/tipo se
         // CONGELAN al generar: si mañana cambia el precio, agosto sigue siendo
-        // el agosto de agosto aunque se pague con retraso.
+        // el agosto de agosto aunque se pague con retraso. target_ref = la clase
+        // concreta a la que corresponde el cargo (NULL = cobro por actividad).
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_cargos (
                 id SERIAL PRIMARY KEY,
@@ -423,13 +434,18 @@ async function initDb() {
                 descuento_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
                 descuento_mens_pct NUMERIC(5,2),
                 importe NUMERIC(10,2),
+                target_ref UUID,
+                target_nombre VARCHAR(255),
                 recibo_id INTEGER REFERENCES aim_recibos(id) ON DELETE SET NULL,
                 estado VARCHAR(20) NOT NULL DEFAULT 'pendiente',
                 anulado_motivo TEXT,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                UNIQUE (cliente_id, concepto, mes)
+                created_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
+        // Único por (cliente, concepto, mes, destino). El destino NULL (cobro por
+        // actividad) colapsa a uno; por clase, uno por cada clase.
+        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_aim_cargos_destino
+            ON aim_cargos (cliente_id, concepto, mes, COALESCE(target_ref, '00000000-0000-0000-0000-000000000000'::uuid))`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_cargos_cliente ON aim_cargos(cliente_id)`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_cargos_recibo ON aim_cargos(recibo_id)`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_cargos_estado ON aim_cargos(estado)`);
@@ -2113,25 +2129,30 @@ function normalizaMes(mes) {
     return /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s.slice(0, 7)}-01` : mesAGenerar();
 }
 
+// El destino del cargo: por clase → la clase concreta (un cargo por clase);
+// por actividad → NULL (un cargo por alumno aunque esté en varios grupos).
+const SQL_TARGET_REF = `(CASE WHEN ct.target_tipo = 'clase' THEN ct.target_ref ELSE NULL END)`;
+const SQL_JOIN_FICHA = `JOIN aim_matriculas m ON m.temporada_id = ct.temporada_id AND (
+      (ct.target_tipo = 'clase' AND m.clase_ref = ct.target_ref)
+   OR (ct.target_tipo = 'actividad' AND m.actividad = ct.target_actividad)
+ )`;
+const SQL_FILTRO_VIGENTE = `m.alta <= ($2::date + INTERVAL '1 month - 1 day') AND (m.baja IS NULL OR m.baja >= $2::date)`;
+
 async function candidatosGeneracion(temporadaId, mes) {
-    // DISTINCT ON (alumno, concepto): si una ficha casa por varios destinos, un
-    // único cargo; nos quedamos con el mejor descuento para el alumno.
+    // DISTINCT ON (alumno, concepto, destino): un cargo por cada destino; si una
+    // misma clase casa dos veces, el mejor descuento para el alumno.
     const r = await pool.query(
-        `SELECT DISTINCT ON (m.user_id, ct.concepto)
-                m.user_id, u.name, u.surname, ct.concepto,
+        `SELECT DISTINCT ON (m.user_id, ct.concepto, ${SQL_TARGET_REF})
+                m.user_id, u.name, u.surname, ct.concepto, ${SQL_TARGET_REF} AS target_ref,
                 p.descripcion, p.tipo, p.precio, p.iva_pct, m.descuento_pct,
-                EXISTS (SELECT 1 FROM aim_cargos c WHERE c.cliente_id = m.user_id AND c.concepto = ct.concepto AND c.mes = $2::date) AS ya_existe
+                EXISTS (SELECT 1 FROM aim_cargos c WHERE c.cliente_id = m.user_id AND c.concepto = ct.concepto
+                        AND c.mes = $2::date AND c.target_ref IS NOT DISTINCT FROM ${SQL_TARGET_REF}) AS ya_existe
          FROM aim_conceptos_temporada ct
          JOIN aim_precios p ON p.concepto = ct.concepto AND p.activo = true
-         JOIN aim_matriculas m ON m.temporada_id = ct.temporada_id AND (
-              (ct.target_tipo = 'clase' AND m.clase_ref = ct.target_ref)
-           OR (ct.target_tipo = 'actividad' AND m.actividad = ct.target_actividad)
-         )
+         ${SQL_JOIN_FICHA}
          JOIN users u ON u.user_id = m.user_id
-         WHERE ct.temporada_id = $1
-           AND m.alta <= ($2::date + INTERVAL '1 month - 1 day')
-           AND (m.baja IS NULL OR m.baja >= $2::date)
-         ORDER BY m.user_id, ct.concepto, m.descuento_pct DESC`,
+         WHERE ct.temporada_id = $1 AND ${SQL_FILTRO_VIGENTE}
+         ORDER BY m.user_id, ct.concepto, ${SQL_TARGET_REF}, m.descuento_pct DESC`,
         [temporadaId, mes]
     );
     return r.rows;
@@ -2172,20 +2193,16 @@ app.post('/api/admin/billing/generar', authenticateSession, requireAdmin, async 
         if (temp.rowCount === 0) return res.status(400).json({ error: 'No hay temporada activa.' });
         const mes = normalizaMes(req.body.mes);
         const r = await pool.query(
-            `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado)
-             SELECT DISTINCT ON (m.user_id, ct.concepto)
-                    m.user_id, ct.concepto, $2::date, p.descripcion, p.tipo, p.precio, p.iva_pct, m.descuento_pct, 'pendiente'
+            `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, target_ref, target_nombre, estado)
+             SELECT DISTINCT ON (m.user_id, ct.concepto, ${SQL_TARGET_REF})
+                    m.user_id, ct.concepto, $2::date, p.descripcion, p.tipo, p.precio, p.iva_pct, m.descuento_pct,
+                    ${SQL_TARGET_REF}, ct.target_nombre, 'pendiente'
              FROM aim_conceptos_temporada ct
              JOIN aim_precios p ON p.concepto = ct.concepto AND p.activo = true
-             JOIN aim_matriculas m ON m.temporada_id = ct.temporada_id AND (
-                  (ct.target_tipo = 'clase' AND m.clase_ref = ct.target_ref)
-               OR (ct.target_tipo = 'actividad' AND m.actividad = ct.target_actividad)
-             )
-             WHERE ct.temporada_id = $1
-               AND m.alta <= ($2::date + INTERVAL '1 month - 1 day')
-               AND (m.baja IS NULL OR m.baja >= $2::date)
-             ORDER BY m.user_id, ct.concepto, m.descuento_pct DESC
-             ON CONFLICT (cliente_id, concepto, mes) DO NOTHING
+             ${SQL_JOIN_FICHA}
+             WHERE ct.temporada_id = $1 AND ${SQL_FILTRO_VIGENTE}
+             ORDER BY m.user_id, ct.concepto, ${SQL_TARGET_REF}, m.descuento_pct DESC
+             ON CONFLICT DO NOTHING
              RETURNING id`,
             [temp.rows[0].id, mes]
         );
@@ -2232,6 +2249,194 @@ app.delete('/api/admin/billing/cargos/:id', authenticateSession, requireAdmin, a
         if (r.rowCount === 0) return res.status(409).json({ error: 'Solo se pueden borrar cargos pendientes sin recibo.' });
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── TPV / Cobro ──
+// Datos fiscales del emisor para el ticket (autónomo del club).
+const EMPRESA_TICKET = {
+    nombre: 'Darío Francisco Jiménez España',
+    nif: '75896712R',
+    direccion: 'Urb. Terrazas de Doña Lola, Local 1',
+    cp: '11203 Algeciras (Cádiz)',
+    web: 'www.aimeducation.es',
+    email: 'info@aimeducation.es',
+    tel: '956 742 216',
+};
+const MEDIOS_PAGO = ['tarjeta', 'bizum', 'efectivo', 'transferencia'];
+
+function edadDe(birthday) {
+    if (!birthday) return null;
+    const b = new Date(birthday);
+    const diff = Date.now() - b.getTime();
+    return Math.floor(diff / (365.25 * 24 * 3600 * 1000));
+}
+
+// Cluster familiar de una persona (ambos sentidos del parentesco) + ella misma.
+async function familiaIds(personaId) {
+    const r = await pool.query(
+        `SELECT familiar_id AS id FROM aim_familias WHERE persona_id = $1
+         UNION SELECT persona_id FROM aim_familias WHERE familiar_id = $1`,
+        [personaId]
+    );
+    return [personaId, ...r.rows.map(x => x.id)];
+}
+
+const cargoParaMotor = (c) => ({
+    id: c.id, concepto: c.concepto, descripcion: c.descripcion, tipo: c.tipo,
+    mes: c.mes, precio: Number(c.precio), ivaPct: Number(c.iva_pct), descuentoPct: Number(c.descuento_pct),
+});
+
+// Buscar personas del club por nombre/apellidos.
+app.get('/api/admin/billing/tpv/buscar', authenticateSession, requireAdmin, async (req, res) => {
+    const q = `%${(req.query.q || '').trim()}%`;
+    try {
+        const r = await pool.query(
+            `SELECT user_id, name, surname, birthday FROM users
+             WHERE club_id = $1 AND (name ILIKE $2 OR surname ILIKE $2 OR (name || ' ' || surname) ILIKE $2)
+             ORDER BY surname, name LIMIT 25`,
+            [AIM_CLUB_ID, q]
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows.map(u => {
+            const edad = edadDe(u.birthday);
+            return { id: u.user_id, nombre: u.name, apellidos: u.surname, edad, esMenor: edad != null && edad < 18 };
+        }));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Cesta: cargos pendientes de toda la familia del pagador + totales en vivo.
+app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async (req, res) => {
+    const { pagadorId } = req.query;
+    if (!pagadorId) return res.status(400).json({ error: 'Falta el pagador.' });
+    try {
+        const fam = await familiaIds(pagadorId);
+        const cargos = await pool.query(
+            `SELECT c.*, u.name, u.surname FROM aim_cargos c JOIN users u ON u.user_id = c.cliente_id
+             WHERE c.cliente_id = ANY($1::uuid[]) AND c.estado = 'pendiente' AND c.recibo_id IS NULL
+             ORDER BY u.surname, u.name, c.mes`,
+            [fam]
+        );
+        const familia = await pool.query(
+            `SELECT user_id, name, surname, birthday FROM users WHERE user_id = ANY($1::uuid[]) ORDER BY birthday NULLS FIRST`,
+            [fam]
+        );
+        const preview = calcularRecibo(cargos.rows.map(cargoParaMotor));
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            familia: familia.rows.map(u => {
+                const edad = edadDe(u.birthday);
+                return { id: u.user_id, nombre: u.name, apellidos: u.surname, edad, esMenor: edad != null && edad < 18 };
+            }),
+            cargos: cargos.rows.map(c => ({
+                id: c.id, clienteId: c.cliente_id, nombre: c.name, apellidos: c.surname,
+                concepto: c.concepto, descripcion: c.descripcion, tipo: c.tipo, mes: c.mes,
+                precio: Number(c.precio), ivaPct: Number(c.iva_pct), descuentoPct: Number(c.descuento_pct),
+            })),
+            preview,
+        });
+    } catch (err) {
+        console.error('Error cesta TPV:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Cobrar: crea el recibo, congela los cargos y devuelve el ticket. El importe
+// se calcula SIEMPRE en el servidor (nunca se confía en el cliente).
+app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, async (req, res) => {
+    const { pagadorId, lineas, extras, medioPago, entregado } = req.body;
+    if (!pagadorId) return res.status(400).json({ error: 'Falta el pagador.' });
+    if (!MEDIOS_PAGO.includes(medioPago)) return res.status(400).json({ error: 'Medio de pago no válido.' });
+    const idsSel = Array.isArray(lineas) ? lineas.map(l => l.cargoId).filter(Boolean) : [];
+    const extrasArr = Array.isArray(extras) ? extras : [];
+    if (idsSel.length === 0 && extrasArr.length === 0) return res.status(400).json({ error: 'No hay nada que cobrar.' });
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // 1) Overrides de descuento en líneas existentes.
+        for (const l of (lineas || [])) {
+            if (l.descuentoPct != null) {
+                const d = Number(l.descuentoPct);
+                if (d < 0 || d > 100) throw { httP: 400, msg: 'Descuento fuera de rango.' };
+                await client.query(`UPDATE aim_cargos SET descuento_pct = $1 WHERE id = $2 AND estado = 'pendiente' AND recibo_id IS NULL`, [d, l.cargoId]);
+            }
+        }
+
+        // 2) Crear cargos "extra" (venta al momento: material, etc.).
+        const mesActual = new Date().toISOString().slice(0, 7) + '-01';
+        const extraIds = [];
+        for (const ex of extrasArr) {
+            const pr = await client.query(`SELECT descripcion, tipo, precio, iva_pct FROM aim_precios WHERE concepto = $1 AND activo = true`, [ex.concepto]);
+            if (pr.rowCount === 0) throw { httP: 400, msg: `Concepto no válido: ${ex.concepto}` };
+            const p = pr.rows[0];
+            const d = Number(ex.descuentoPct) || 0;
+            const ins = await client.query(
+                `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado)
+                 VALUES ($1,$2,$3::date,$4,$5,$6,$7,$8,'pendiente') RETURNING id`,
+                [ex.clienteId || pagadorId, ex.concepto, mesActual, p.descripcion, p.tipo, p.precio, p.iva_pct, d]
+            );
+            extraIds.push(ins.rows[0].id);
+        }
+
+        // 3) Cargar todos los cargos a cobrar (bloqueados), validando estado.
+        const allIds = [...idsSel, ...extraIds];
+        const cs = await client.query(
+            `SELECT * FROM aim_cargos WHERE id = ANY($1::int[]) AND estado = 'pendiente' AND recibo_id IS NULL FOR UPDATE`,
+            [allIds]
+        );
+        if (cs.rowCount === 0) throw { httP: 409, msg: 'Los cargos ya no están disponibles.' };
+
+        // 4) Calcular importes (autoritativo).
+        const calc = calcularRecibo(cs.rows.map(cargoParaMotor));
+        const total = calc.total;
+        const entregadoNum = medioPago === 'efectivo' ? (Number(entregado) || total) : total;
+        const cambio = r2Server(entregadoNum - total);
+        if (cambio < 0) throw { httP: 400, msg: 'El importe entregado es menor que el total.' };
+
+        // 5) Número de recibo por secuencia (atómico).
+        const num = (await client.query(`SELECT nextval('aim_recibos_numero_seq') AS n`)).rows[0].n;
+        const rec = await client.query(
+            `INSERT INTO aim_recibos (numero, pagador_id, fecha, importe, medio_pago, entregado, cambio, estado, cobrado_por, cobrado_at)
+             VALUES ($1,$2,CURRENT_DATE,$3,$4,$5,$6,'cobrado',$7,NOW()) RETURNING id, numero, fecha`,
+            [num, pagadorId, total, medioPago, entregadoNum, cambio, req.userSession.userId]
+        );
+        const reciboId = rec.rows[0].id;
+
+        // 6) Congelar cada cargo en el recibo.
+        for (const d of calc.detalle) {
+            await client.query(
+                `UPDATE aim_cargos SET recibo_id = $1, descuento_mens_pct = $2, importe = $3, estado = 'cobrado' WHERE id = $4`,
+                [reciboId, d.descuentoMensPct, d.base, d.id]
+            );
+        }
+
+        // Datos del pagador para el ticket.
+        const pg = await client.query(`SELECT name, surname FROM users WHERE user_id = $1`, [pagadorId]);
+        await client.query('COMMIT');
+
+        res.json({
+            recibo: {
+                id: reciboId, numero: rec.rows[0].numero, fecha: rec.rows[0].fecha,
+                pagador: pg.rows[0] ? `${pg.rows[0].name} ${pg.rows[0].surname}` : '',
+                medioPago, entregado: entregadoNum, cambio, total,
+            },
+            detalle: calc.detalle.map(d => ({
+                descripcion: d.descripcion, mes: d.mes, precio: d.precio,
+                descuentoPct: d.descuentoPct, descuentoMensPct: d.descuentoMensPct,
+                ivaPct: d.ivaPct, base: d.base, total: d.total,
+            })),
+            basesPorIva: calc.basesPorIva, baseTotal: calc.baseTotal, ivaTotal: calc.ivaTotal, ahorro: calc.ahorro,
+            empresa: EMPRESA_TICKET,
+        });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        if (err && err.httP) return res.status(err.httP).json({ error: err.msg });
+        console.error('Error cobrando:', err);
+        res.status(500).json({ error: err.message });
+    } finally {
+        client.release();
+    }
 });
 
 // ── Familias (parentescos por persona, igual que la tabla familias antigua) ──

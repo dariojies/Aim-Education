@@ -1539,6 +1539,268 @@ function SortToggle({ value, onChange }) {
 // =============================================================================
 // FACTURACIÓN — catálogo, temporadas y fichas
 // =============================================================================
+
+// TPV / Cobro: buscar familia → cesta de cargos → cobrar → ticket.
+function BillingTPV({ showToast }) {
+  const [q, setQ] = useState('');
+  const [resultados, setResultados] = useState([]);
+  const [pagador, setPagador] = useState(null);
+  const [cesta, setCesta] = useState(null);            // { familia, cargos, preview }
+  const [sel, setSel] = useState({});                  // cargoId -> { on, descuentoPct }
+  const [extras, setExtras] = useState([]);            // { key, clienteId, nombre, concepto, descripcion, precio, ivaPct, tipo, descuentoPct }
+  const [totales, setTotales] = useState(null);
+  const [precios, setPrecios] = useState([]);
+  const [medioPago, setMedioPago] = useState('tarjeta');
+  const [entregado, setEntregado] = useState('');
+  const [cobrando, setCobrando] = useState(false);
+  const [ticket, setTicket] = useState(null);
+  const [addExtra, setAddExtra] = useState(null);      // { clienteId, concepto }
+
+  useEffect(() => {
+    fetch('/api/admin/billing/precios', { credentials: 'include' }).then(r => r.ok ? r.json() : []).then(setPrecios).catch(() => {});
+  }, []);
+
+  // Buscar personas (a partir de 2 letras).
+  useEffect(() => {
+    if (q.trim().length < 2) { setResultados([]); return; }
+    const t = setTimeout(() => {
+      fetch(`/api/admin/billing/tpv/buscar?q=${encodeURIComponent(q.trim())}`, { credentials: 'include' })
+        .then(r => r.ok ? r.json() : []).then(setResultados).catch(() => {});
+    }, 250);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  async function elegirPagador(p) {
+    setPagador(p); setResultados([]); setQ(''); setExtras([]); setTicket(null); setEntregado('');
+    const r = await fetch(`/api/admin/billing/tpv/cesta?pagadorId=${p.id}`, { credentials: 'include' });
+    if (r.ok) {
+      const c = await r.json();
+      setCesta(c);
+      const s = {};
+      c.cargos.forEach(cg => { s[cg.id] = { on: true, descuentoPct: cg.descuentoPct }; });
+      setSel(s);
+    }
+  }
+
+  // Líneas activas (cargos seleccionados + extras) para calcular y cobrar.
+  const lineasActivas = cesta ? cesta.cargos.filter(c => sel[c.id]?.on).map(c => ({
+    ...c, descuentoPct: Number(sel[c.id].descuentoPct) || 0,
+  })) : [];
+  const lineasMotor = [
+    ...lineasActivas.map(c => ({ concepto: c.concepto, descripcion: c.descripcion, tipo: c.tipo, mes: c.mes, precio: c.precio, ivaPct: c.ivaPct, descuentoPct: c.descuentoPct })),
+    ...extras.map(e => ({ concepto: e.concepto, descripcion: e.descripcion, tipo: e.tipo, mes: new Date().toISOString().slice(0, 7) + '-01', precio: e.precio, ivaPct: e.ivaPct, descuentoPct: Number(e.descuentoPct) || 0 })),
+  ];
+
+  // Recalcular totales en el servidor cuando cambian líneas/descuentos/extras.
+  useEffect(() => {
+    if (!lineasMotor.length) { setTotales(null); return; }
+    let cancel = false;
+    fetch('/api/admin/billing/simular', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+      body: JSON.stringify({ lineas: lineasMotor }),
+    }).then(r => r.ok ? r.json() : null).then(d => { if (!cancel) setTotales(d); }).catch(() => {});
+    return () => { cancel = true; };
+  }, [JSON.stringify(lineasMotor)]);
+
+  const total = totales?.total || 0;
+
+  async function cobrar() {
+    if (!total) return;
+    setCobrando(true);
+    try {
+      const r = await fetch('/api/admin/billing/tpv/cobrar', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({
+          pagadorId: pagador.id,
+          lineas: lineasActivas.map(c => ({ cargoId: c.id, descuentoPct: c.descuentoPct })),
+          extras: extras.map(e => ({ clienteId: e.clienteId, concepto: e.concepto, descuentoPct: Number(e.descuentoPct) || 0 })),
+          medioPago,
+          entregado: medioPago === 'efectivo' ? (Number(entregado) || total) : total,
+        }),
+      });
+      if (r.ok) { const d = await r.json(); setTicket(d); showToast?.(`Recibo #${d.recibo.numero} cobrado.`); setPagador(null); setCesta(null); setExtras([]); }
+      else { const d = await r.json(); alert(d.error || 'Error al cobrar.'); }
+    } catch { alert('Error de conexión.'); }
+    finally { setCobrando(false); }
+  }
+
+  function imprimirTicket() {
+    const t = ticket;
+    const filas = t.detalle.map(d => `<tr><td>${d.descripcion}${d.descuentoPct || d.descuentoMensPct ? `<br><small>dto ${(d.descuentoPct || 0)}%${d.descuentoMensPct ? ` +${d.descuentoMensPct}%` : ''}</small>` : ''}</td><td style="text-align:right">${d.ivaPct}%</td><td style="text-align:right">${d.total.toFixed(2)}</td></tr>`).join('');
+    const bases = t.basesPorIva.map(b => `<tr><td colspan="2">Base ${b.ivaPct}% IVA</td><td style="text-align:right">${b.base.toFixed(2)} (${b.iva.toFixed(2)})</td></tr>`).join('');
+    const w = window.open('', '_blank', 'width=380,height=640');
+    w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Recibo ${t.recibo.numero}</title>
+      <style>body{font-family:sans-serif;width:280px;margin:0 auto;padding:10px;color:#111;font-size:12px}
+      h2{text-align:center;font-size:14px;margin:2px 0}.c{text-align:center;color:#555;font-size:11px;line-height:1.4}
+      table{width:100%;border-collapse:collapse;margin-top:8px}td{padding:3px 0;border-bottom:1px solid #eee;vertical-align:top}
+      .tot{font-size:15px;font-weight:800;text-align:right;margin-top:6px}small{color:#777}</style></head><body>
+      <h2>${t.empresa.nombre}</h2>
+      <div class="c">${t.empresa.nif}<br>${t.empresa.direccion}<br>${t.empresa.cp}<br>${t.empresa.tel} · ${t.empresa.web}</div>
+      <hr>
+      <div>Recibo nº <b>${t.recibo.numero}</b><br>Fecha: ${new Date(t.recibo.fecha).toLocaleDateString('es-ES')}<br>Pagador: ${t.recibo.pagador}</div>
+      <table><thead><tr><td><b>Descripción</b></td><td style="text-align:right"><b>IVA</b></td><td style="text-align:right"><b>Importe</b></td></tr></thead>
+      <tbody>${filas}${bases}</tbody></table>
+      <div class="tot">TOTAL: ${t.recibo.total.toFixed(2)} €</div>
+      <div style="text-align:right">${t.recibo.medioPago}${t.recibo.medioPago === 'efectivo' ? ` · entregado ${Number(t.recibo.entregado).toFixed(2)} · cambio ${Number(t.recibo.cambio).toFixed(2)}` : ''}</div>
+      ${t.ahorro > 0 ? `<div style="text-align:right;color:#0a0">Ahorro: ${t.ahorro.toFixed(2)} €</div>` : ''}
+      <p style="text-align:center;margin-top:10px"><b>¡Gracias!</b></p>
+      <script>window.onload=()=>window.print()</script></body></html>`);
+    w.document.close();
+  }
+
+  const family = cesta?.familia || [];
+
+  return (
+    <div style={{ display: 'grid', gap: 16 }}>
+      {/* Ticket recién cobrado */}
+      {ticket && (
+        <div style={{ background: 'color-mix(in oklab, var(--teal) 10%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--teal) 35%, transparent)', borderRadius: 14, padding: '16px 18px', display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: 'var(--teal)' }}>Recibo #{ticket.recibo.numero} cobrado — {eur(ticket.recibo.total)}</div>
+            <div style={{ fontSize: 13, color: 'var(--ink-2)' }}>{ticket.recibo.pagador} · {ticket.recibo.medioPago}{ticket.recibo.medioPago === 'efectivo' ? ` · cambio ${eur(ticket.recibo.cambio)}` : ''}</div>
+          </div>
+          <button className="btn btn-sm btn-primary" onClick={imprimirTicket}><I.Print /> Imprimir ticket</button>
+          <button className="btn btn-sm btn-outline" onClick={() => setTicket(null)}>Nuevo cobro</button>
+        </div>
+      )}
+
+      {!pagador && !ticket && (
+        <div>
+          <div className="search-input" style={{ maxWidth: 420 }}>
+            <I.Search />
+            <input placeholder="Buscar alumno o pagador por nombre..." value={q} onChange={e => setQ(e.target.value)} autoFocus />
+          </div>
+          {resultados.length > 0 && (
+            <div style={{ marginTop: 8, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, overflow: 'hidden', maxWidth: 420 }}>
+              {resultados.map(p => (
+                <button key={p.id} onClick={() => elegirPagador(p)} style={{ display: 'flex', width: '100%', justifyContent: 'space-between', alignItems: 'center', gap: 10, padding: '10px 14px', background: 'transparent', border: 0, borderBottom: '1px solid var(--line-2)', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}>
+                  <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--ink)' }}>{p.nombre} {p.apellidos}</span>
+                  <span style={{ fontSize: 12, color: p.esMenor ? 'var(--orange)' : 'var(--ink-3)', fontWeight: 700 }}>{p.edad != null ? `${p.edad} años` : ''}{p.esMenor ? ' · menor' : ''}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {pagador && cesta && (
+        <>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 16 }}>Cobro a {pagador.nombre} {pagador.apellidos}</div>
+              <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                Familia: {family.map(f => `${f.nombre}`).join(', ')}
+                {pagador.esMenor && <span style={{ color: 'var(--orange)', fontWeight: 700 }}> · ⚠ el pagador es menor</span>}
+              </div>
+            </div>
+            <button className="btn btn-sm btn-outline" style={{ marginLeft: 'auto' }} onClick={() => { setPagador(null); setCesta(null); setExtras([]); }}>Cambiar</button>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.7fr) minmax(240px, 1fr)', gap: 16, alignItems: 'start' }}>
+            {/* Líneas */}
+            <div style={{ display: 'grid', gap: 8 }}>
+              {cesta.cargos.length === 0 && extras.length === 0 && (
+                <div style={{ padding: 24, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>
+                  Esta familia no tiene cargos pendientes. Puedes añadir un concepto manual abajo.
+                </div>
+              )}
+              {cesta.cargos.map(c => (
+                <div key={c.id} style={{ display: 'flex', gap: 10, alignItems: 'center', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: '10px 14px', opacity: sel[c.id]?.on ? 1 : .5 }}>
+                  <input type="checkbox" checked={!!sel[c.id]?.on} onChange={e => setSel(s => ({ ...s, [c.id]: { ...s[c.id], on: e.target.checked } }))} style={{ width: 18, height: 18, accentColor: 'var(--teal)' }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>{c.descripcion} <span style={{ color: 'var(--ink-3)', fontWeight: 500, fontSize: 12 }}>· {c.nombre}</span></div>
+                    <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{mesLargo(c.mes)}{c.tipo === 'Material' ? ` · +${c.ivaPct}% IVA` : ''}</div>
+                  </div>
+                  <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 12, color: 'var(--ink-3)' }}>
+                    dto
+                    <input type="number" min="0" max="100" value={sel[c.id]?.descuentoPct ?? 0} onChange={e => setSel(s => ({ ...s, [c.id]: { ...s[c.id], descuentoPct: e.target.value } }))} style={{ width: 48, padding: '4px 6px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontSize: 13, textAlign: 'center' }} />%
+                  </label>
+                  <div style={{ fontWeight: 800, fontFamily: 'var(--font-display)', minWidth: 66, textAlign: 'right' }}>{eur(c.precio)}</div>
+                </div>
+              ))}
+              {extras.map(e => (
+                <div key={e.key} style={{ display: 'flex', gap: 10, alignItems: 'center', background: 'color-mix(in oklab, var(--purple) 6%, var(--bg-2))', border: '1px solid var(--line)', borderRadius: 12, padding: '10px 14px' }}>
+                  <span style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', color: 'var(--purple)' }}>Extra</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>{e.descripcion} <span style={{ color: 'var(--ink-3)', fontWeight: 500, fontSize: 12 }}>· {e.nombre}</span></div>
+                    <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{e.tipo === 'Material' ? `+${e.ivaPct}% IVA` : ''}</div>
+                  </div>
+                  <div style={{ fontWeight: 800, fontFamily: 'var(--font-display)', minWidth: 66, textAlign: 'right' }}>{eur(e.precio)}</div>
+                  <button className="icon-btn danger" style={{ width: 26, height: 26 }} onClick={() => setExtras(x => x.filter(y => y.key !== e.key))} aria-label="Quitar"><I.X /></button>
+                </div>
+              ))}
+              {/* Añadir concepto manual */}
+              {addExtra ? (
+                <form style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 12, padding: 12 }}
+                  onSubmit={ev => {
+                    ev.preventDefault();
+                    const p = precios.find(x => x.concepto === addExtra.concepto);
+                    const persona = family.find(f => f.id === addExtra.clienteId) || pagador;
+                    if (!p || !persona) return;
+                    setExtras(x => [...x, { key: Math.random().toString(36).slice(2), clienteId: persona.id, nombre: persona.nombre, concepto: p.concepto, descripcion: p.descripcion, precio: p.precio, ivaPct: p.ivaPct, tipo: p.tipo, descuentoPct: 0 }]);
+                    setAddExtra(null);
+                  }}>
+                  <select value={addExtra.clienteId} onChange={e => setAddExtra(a => ({ ...a, clienteId: e.target.value }))} required style={{ fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
+                    <option value="">¿Para quién?...</option>
+                    {family.map(f => <option key={f.id} value={f.id}>{f.nombre} {f.apellidos}</option>)}
+                  </select>
+                  <select value={addExtra.concepto} onChange={e => setAddExtra(a => ({ ...a, concepto: e.target.value }))} required style={{ fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
+                    <option value="">Concepto...</option>
+                    {precios.map(p => <option key={p.concepto} value={p.concepto}>{p.descripcion} ({eur(p.precio)})</option>)}
+                  </select>
+                  <button className="btn btn-sm btn-primary" type="submit" disabled={!addExtra.concepto || !addExtra.clienteId}>Añadir</button>
+                  <button className="btn btn-sm btn-outline" type="button" onClick={() => setAddExtra(null)}>Cancelar</button>
+                </form>
+              ) : (
+                <button className="btn btn-sm btn-outline" style={{ justifySelf: 'start' }} onClick={() => setAddExtra({ clienteId: pagador.id, concepto: '' })}>
+                  <I.Plus /> Añadir concepto (material, etc.)
+                </button>
+              )}
+            </div>
+
+            {/* Resumen + cobro */}
+            <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 18, position: 'sticky', top: 16, display: 'grid', gap: 12 }}>
+              <div style={{ display: 'grid', gap: 6, fontSize: 13 }}>
+                {totales?.basesPorIva?.map(b => (
+                  <div key={b.ivaPct} style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--ink-2)' }}>
+                    <span>Base {b.ivaPct}% IVA{b.ivaPct > 0 ? ` (+${eur(b.iva)})` : ''}</span><span>{eur(b.base)}</span>
+                  </div>
+                ))}
+                {totales?.ahorro > 0 && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--teal)', fontWeight: 700 }}>
+                    <span>Ahorro descuentos</span><span>−{eur(totales.ahorro)}</span>
+                  </div>
+                )}
+              </div>
+              <div style={{ borderTop: '1px solid var(--line)', paddingTop: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                <span style={{ fontWeight: 800, fontSize: 15 }}>TOTAL</span>
+                <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 28, letterSpacing: '-.02em' }}>{eur(total)}</span>
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {['tarjeta', 'bizum', 'efectivo'].map(m => (
+                  <button key={m} onClick={() => setMedioPago(m)} className={`filter-pill ${medioPago === m ? 'is-active' : ''}`} style={{ flex: 1, justifyContent: 'center', textTransform: 'capitalize' }}>{m}</button>
+                ))}
+              </div>
+              {medioPago === 'efectivo' && (
+                <div>
+                  <input type="number" step="0.01" min="0" placeholder={`Entregado (${eur(total)})`} value={entregado} onChange={e => setEntregado(e.target.value)}
+                    style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', fontSize: 15, fontWeight: 700 }} />
+                  {Number(entregado) > 0 && Number(entregado) >= total && (
+                    <div style={{ textAlign: 'right', marginTop: 6, fontSize: 14, fontWeight: 700, color: 'var(--teal)' }}>Cambio: {eur(Number(entregado) - total)}</div>
+                  )}
+                </div>
+              )}
+              <button className="btn btn-primary btn-block" disabled={cobrando || !total} onClick={cobrar} style={{ fontSize: 15, padding: '13px 0' }}>
+                {cobrando ? 'Cobrando...' : `Cobrar ${eur(total)}`}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 const TIPOS_CONCEPTO = ['Mensualidad', 'Material', 'Otros'];
 const eur = (n) => `${Number(n || 0).toFixed(2)} €`;
 const MESES_ES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
@@ -1675,7 +1937,7 @@ function BillingGenerar({ activa, showToast }) {
 }
 
 function AdminBilling({ showToast }) {
-  const [tab, setTab] = useState('catalogo'); // 'catalogo' | 'clases' | 'temporadas' | 'conceptos' | 'fichas' | 'generar'
+  const [tab, setTab] = useState('cobrar'); // 'cobrar' | 'catalogo' | 'clases' | 'temporadas' | 'conceptos' | 'fichas' | 'generar'
   const [temporadas, setTemporadas] = useState([]);
   const [precios, setPrecios] = useState([]);
   const [clases, setClases] = useState([]);       // clases propias
@@ -1762,7 +2024,7 @@ function AdminBilling({ showToast }) {
   return (
     <>
       <div style={{ display: 'flex', gap: 10, marginBottom: 22, borderBottom: '1px solid var(--line-2)', paddingBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-        {[['catalogo', `Catálogo (${precios.length})`], ['clases', `Clases (${clasesMerged.length})`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra (${conceptos.length})`], ['fichas', `Fichas (${matriculas.length})`], ['generar', 'Generar cargos']].map(([id, label]) => (
+        {[['cobrar', '💳 Cobrar (TPV)'], ['catalogo', `Catálogo (${precios.length})`], ['clases', `Clases (${clasesMerged.length})`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra (${conceptos.length})`], ['fichas', `Fichas (${matriculas.length})`], ['generar', 'Generar cargos']].map(([id, label]) => (
           <button key={id} className={`filter-pill ${tab === id ? 'is-active' : ''}`} onClick={() => setTab(id)} style={{ borderRadius: 8, padding: '8px 16px' }}>{label}</button>
         ))}
         <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: activa ? 'var(--teal)' : 'var(--orange)' }}>
@@ -1777,6 +2039,9 @@ function AdminBilling({ showToast }) {
           No hay ninguna temporada activa. Crea una y actívala en <b>Temporadas</b> — sin eso no se puede cobrar nada.
         </div>
       )}
+
+      {/* ── Cobrar (TPV) ── */}
+      {!loading && tab === 'cobrar' && <BillingTPV showToast={showToast} />}
 
       {/* ── Catálogo ── */}
       {!loading && tab === 'catalogo' && (
