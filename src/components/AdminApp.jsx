@@ -25,10 +25,10 @@ function KPI({ label, value, trend, act, icon }) {
   const a = ACT_BY_ID[act];
   return (
     <div className={`stat-card ${a?.className || ""}`}>
-      <div className="corner" style={{color: a?.color}}>{icon}</div>
+      <div className="corner" style={{ color: a?.color }}>{icon}</div>
       <div className="l">{label}</div>
       <div className="v">{value}</div>
-      <div className="trend" style={{background: `color-mix(in oklab, ${a?.color || "var(--ink)"} 14%, var(--bg-2))`, color: a?.color || "var(--ink)"}}>{trend}</div>
+      <div className="trend" style={{ background: `color-mix(in oklab, ${a?.color || "var(--ink)"} 14%, var(--bg-2))`, color: a?.color || "var(--ink)" }}>{trend}</div>
     </div>
   );
 }
@@ -49,8 +49,8 @@ function QuickCard({ title, desc, act, icon, onClick }) {
       alignItems: "flex-start",
       transition: "transform var(--tx-base) ease, box-shadow var(--tx-base) ease, border-color var(--tx-base) ease",
     }}
-    onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-3px)"; e.currentTarget.style.boxShadow = "var(--shadow)"; e.currentTarget.style.borderColor = "transparent"; }}
-    onMouseLeave={(e) => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.borderColor = "var(--line)"; }}>
+      onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-3px)"; e.currentTarget.style.boxShadow = "var(--shadow)"; e.currentTarget.style.borderColor = "transparent"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.borderColor = "var(--line)"; }}>
       <div style={{
         width: 44, height: 44, borderRadius: 12,
         background: `color-mix(in oklab, ${a?.color || "var(--ink)"} 16%, var(--bg-2))`,
@@ -58,10 +58,10 @@ function QuickCard({ title, desc, act, icon, onClick }) {
         display: "grid", placeItems: "center", flexShrink: 0,
       }}>{icon}</div>
       <div>
-        <div style={{fontWeight: 800, fontSize: 15, color: "var(--ink)"}}>{title}</div>
-        <div style={{fontSize: 13, color: "var(--ink-3)", marginTop: 4, lineHeight: 1.45}}>{desc}</div>
+        <div style={{ fontWeight: 800, fontSize: 15, color: "var(--ink)" }}>{title}</div>
+        <div style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 4, lineHeight: 1.45 }}>{desc}</div>
       </div>
-      <I.Arrow style={{marginLeft: "auto", color: "var(--ink-3)", flexShrink: 0, marginTop: 4}} />
+      <I.Arrow style={{ marginLeft: "auto", color: "var(--ink-3)", flexShrink: 0, marginTop: 4 }} />
     </button>
   );
 }
@@ -76,19 +76,19 @@ function AdminOverview({ setView, refreshTrigger, showToast }) {
     fetch('/api/admin/posts/stats', { credentials: 'include' })
       .then(r => r.ok ? r.json() : null)
       .then(setStats)
-      .catch(() => {});
+      .catch(() => { });
     fetch('/api/users', { credentials: 'include' })
       .then(r => r.ok ? r.json() : [])
       .then(u => setUserCount(u.length))
-      .catch(() => {});
+      .catch(() => { });
     fetch('/api/receipts', { credentials: 'include' })
       .then(r => r.ok ? r.json() : [])
       .then(data => setReceipts(Array.isArray(data) ? data : []))
-      .catch(() => {});
+      .catch(() => { });
     fetch('/api/classes', { credentials: 'include' })
       .then(r => r.ok ? r.json() : [])
       .then(data => setClasses(Array.isArray(data) ? data : []))
-      .catch(() => {});
+      .catch(() => { });
   }, [refreshTrigger]);
 
   const receiptsTotal = receipts.reduce((sum, r) => sum + (r.amount || 0), 0);
@@ -109,16 +109,16 @@ function AdminOverview({ setView, refreshTrigger, showToast }) {
         <KPI label="Borradores" value={stats ? String(stats.draftPosts) : "…"} trend="sin publicar" act="ballet" icon={<I.Edit />} />
       </div>
 
-      <div style={{display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 18}}>
-        <div style={{background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 18, padding: 24}}>
-          <div style={{display: "flex", justifyContent: "space-between", marginBottom: 18}}>
-            <h2 style={{fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 800, letterSpacing: "-.015em", margin: 0}}>
+      <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 18 }}>
+        <div style={{ background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 18, padding: 24 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 18 }}>
+            <h2 style={{ fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 800, letterSpacing: "-.015em", margin: 0 }}>
               Últimos recibos
             </h2>
             <button className="btn btn-sm btn-outline" onClick={() => setView("payments")}>Ver todos</button>
           </div>
           {receipts.length === 0 ? (
-            <div style={{padding: "32px 0", textAlign: "center", color: "var(--ink-3)", fontSize: 14}}>No hay recibos registrados todavía.</div>
+            <div style={{ padding: "32px 0", textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>No hay recibos registrados todavía.</div>
           ) : receipts.slice(0, 5).map((r, i) => (
             <div key={r.id || i} className="payment-row">
               <div>
@@ -126,28 +126,28 @@ function AdminOverview({ setView, refreshTrigger, showToast }) {
                 <div className="date">{r.paymentMethod || "—"}</div>
               </div>
               <span className="date">{r.date ? new Date(r.date).toLocaleDateString("es-ES") : "—"}</span>
-              <span className="amount">{r.amount != null ? `${parseFloat(r.amount).toLocaleString("es-ES", {minimumFractionDigits: 2})}€` : "—"}</span>
+              <span className="amount">{r.amount != null ? `${parseFloat(r.amount).toLocaleString("es-ES", { minimumFractionDigits: 2 })}€` : "—"}</span>
             </div>
           ))}
         </div>
 
-        <div style={{background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 18, padding: 24}}>
-          <h2 style={{fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 800, letterSpacing: "-.015em", margin: 0, marginBottom: 4}}>
+        <div style={{ background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 18, padding: 24 }}>
+          <h2 style={{ fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 800, letterSpacing: "-.015em", margin: 0, marginBottom: 4 }}>
             Clases por actividad
           </h2>
-          <p style={{fontSize: 13, color: "var(--ink-3)", margin: "0 0 18px"}}>Según el horario semanal</p>
+          <p style={{ fontSize: 13, color: "var(--ink-3)", margin: "0 0 18px" }}>Según el horario semanal</p>
           {actBars.length === 0 ? (
-            <div style={{padding: "32px 0", textAlign: "center", color: "var(--ink-3)", fontSize: 14}}>No hay clases en el horario.</div>
+            <div style={{ padding: "32px 0", textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>No hay clases en el horario.</div>
           ) : (
-            <div style={{display: "grid", gap: 12}}>
+            <div style={{ display: "grid", gap: 12 }}>
               {actBars.map((a, i) => (
                 <div key={i}>
-                  <div style={{display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: 13, fontWeight: 600}}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: 13, fontWeight: 600 }}>
                     <span>{a.name}</span>
-                    <span style={{color: "var(--ink-3)"}}>{a.count} clase{a.count !== 1 ? "s" : ""}</span>
+                    <span style={{ color: "var(--ink-3)" }}>{a.count} clase{a.count !== 1 ? "s" : ""}</span>
                   </div>
-                  <div style={{height: 8, background: "var(--bg-3)", borderRadius: 99, overflow: "hidden"}}>
-                    <div style={{height: "100%", width: `${(a.count / maxCount) * 100}%`, background: a.color, transition: "width var(--tx-slow) ease"}} />
+                  <div style={{ height: 8, background: "var(--bg-3)", borderRadius: 99, overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: `${(a.count / maxCount) * 100}%`, background: a.color, transition: "width var(--tx-slow) ease" }} />
                   </div>
                 </div>
               ))}
@@ -156,7 +156,7 @@ function AdminOverview({ setView, refreshTrigger, showToast }) {
         </div>
       </div>
 
-      <div style={{marginTop: 18, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 18}}>
+      <div style={{ marginTop: 18, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 18 }}>
         <QuickCard
           title="Pasar lista de hoy"
           desc={`${classes.length} clase${classes.length !== 1 ? "s" : ""} en el horario.`}
@@ -204,7 +204,7 @@ function AdminStudents({ refreshTrigger, onEditUser }) {
   const handleExportCSV = () => {
     const headers = ['ID', 'Nombre', 'Apellidos', 'Email', 'Cinturon', 'Rol'];
     const rows = users.map(u => [u.id, u.firstName, u.lastName, u.email, u.belt || '', u.isSuperAdmin ? 'Admin' : 'Alumno']);
-    const csvContent = "data:text/csv;charset=utf-8,\uFEFF" 
+    const csvContent = "data:text/csv;charset=utf-8,\uFEFF"
       + [headers.join(','), ...rows.map(e => e.map(val => `"${val}"`).join(','))].join('\n');
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
@@ -222,12 +222,12 @@ function AdminStudents({ refreshTrigger, onEditUser }) {
           <I.Search />
           <input placeholder="Buscar por nombre o email..." value={search} onChange={e => setSearch(e.target.value)} />
         </div>
-        <div style={{flex: 1}}/>
+        <div style={{ flex: 1 }} />
         <button className="btn btn-outline btn-sm" onClick={handleExportCSV}>Exportar CSV</button>
       </div>
 
       <div className="data-table">
-        <div className="data-table-head" style={{gridTemplateColumns: "32px 2.4fr 2fr 1fr 1fr 100px"}}>
+        <div className="data-table-head" style={{ gridTemplateColumns: "32px 2.4fr 2fr 1fr 1fr 100px" }}>
           <span></span>
           <span>Nombre</span>
           <span>Email</span>
@@ -236,13 +236,13 @@ function AdminStudents({ refreshTrigger, onEditUser }) {
           <span></span>
         </div>
         {loading && (
-          <div style={{padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14}}>Cargando...</div>
+          <div style={{ padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>Cargando...</div>
         )}
         {!loading && visible.map(u => (
-          <div key={u.id} className="data-table-row" style={{gridTemplateColumns: "32px 2.4fr 2fr 1fr 1fr 100px"}}>
-            <input type="checkbox" style={{accentColor: "var(--purple)"}} />
+          <div key={u.id} className="data-table-row" style={{ gridTemplateColumns: "32px 2.4fr 2fr 1fr 1fr 100px" }}>
+            <input type="checkbox" style={{ accentColor: "var(--purple)" }} />
             <div className="cell-user">
-              <div className="avatar" style={{background: "var(--grad-aim)"}}>
+              <div className="avatar" style={{ background: "var(--grad-aim)" }}>
                 {(u.firstName?.[0] || u.email?.[0] || "?").toUpperCase()}
               </div>
               <div>
@@ -251,7 +251,7 @@ function AdminStudents({ refreshTrigger, onEditUser }) {
               </div>
             </div>
             <div className="sec">{u.email}</div>
-            <div>{u.belt || <span style={{color: "var(--ink-3)"}}>—</span>}</div>
+            <div>{u.belt || <span style={{ color: "var(--ink-3)" }}>—</span>}</div>
             <div>
               <span className={`status-pill ${u.isSuperAdmin ? "ok" : "upcoming"}`}>
                 {u.isSuperAdmin ? "Admin" : "Alumno"}
@@ -265,7 +265,7 @@ function AdminStudents({ refreshTrigger, onEditUser }) {
         ))}
       </div>
 
-      <div style={{marginTop: 16, fontSize: 13, color: "var(--ink-3)"}}>
+      <div style={{ marginTop: 16, fontSize: 13, color: "var(--ink-3)" }}>
         {visible.length} de {users.length} usuario{users.length !== 1 ? "s" : ""}
       </div>
     </>
@@ -274,7 +274,7 @@ function AdminStudents({ refreshTrigger, onEditUser }) {
 
 function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms = [], actById = {}, showToast, onAddClassClick, onAddActivityOrAulaClick }) {
   const days = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
-  const HOURS = Array.from({length: 14}, (_, i) => 9 + i);
+  const HOURS = Array.from({ length: 14 }, (_, i) => 9 + i);
 
   const [search, setSearch] = useState("");
   const [selectedSlot, setSelectedSlot] = useState(null);
@@ -291,38 +291,38 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
   return (
     <>
       <div className="toolbar">
-        <div style={{display: "flex", gap: 6}}>
+        <div style={{ display: "flex", gap: 6 }}>
           <button className="filter-pill is-active">Semana</button>
           <button className="filter-pill" onClick={() => alert("Vista mensual disponible en el siguiente pase.")}>Mes</button>
         </div>
-        <div className="search-input" style={{maxWidth: 280}}>
+        <div className="search-input" style={{ maxWidth: 280 }}>
           <I.Search />
           <input placeholder="Filtrar por sala, monitor..." value={search} onChange={e => setSearch(e.target.value)} />
         </div>
-        <div style={{flex: 1}}/>
+        <div style={{ flex: 1 }} />
         <button className="btn btn-outline btn-sm" onClick={() => alert("Listado exportado correctamente en formato PDF.")}>Exportar PDF</button>
         <button className="btn btn-primary btn-sm" onClick={onAddClassClick}><I.Plus /> Nueva clase</button>
       </div>
 
       {/* Classroom filter tabs */}
       <div style={{
-        display: "flex", 
-        gap: 8, 
-        marginTop: 10, 
-        marginBottom: 16, 
-        flexWrap: "wrap", 
+        display: "flex",
+        gap: 8,
+        marginTop: 10,
+        marginBottom: 16,
+        flexWrap: "wrap",
         alignItems: "center",
         padding: "8px 12px",
         background: "var(--bg-3)",
         borderRadius: 12,
         border: "1px solid var(--line)"
       }}>
-        <span style={{fontSize: 12, fontWeight: 700, color: "var(--ink-3)", marginRight: 8}}>Aulas / Salas:</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-3)", marginRight: 8 }}>Aulas / Salas:</span>
         {roomsList.map(room => (
           <button key={room}
             className={`filter-pill ${selectedRoom === room ? "is-active" : ""}`}
             onClick={() => setSelectedRoom(room)}
-            style={{padding: "5px 12px", borderRadius: 8, fontSize: 12}}>
+            style={{ padding: "5px 12px", borderRadius: 8, fontSize: 12 }}>
             {room}
           </button>
         ))}
@@ -337,15 +337,15 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
         borderRadius: 18,
         overflow: "hidden",
       }}>
-        <div className="hdr" style={{background: "var(--bg-3)", padding: "12px 8px"}}/>
+        <div className="hdr" style={{ background: "var(--bg-3)", padding: "12px 8px" }} />
         {days.map(d => (
-          <div key={d} style={{background: "var(--bg-3)", padding: "12px 8px", borderLeft: "1px solid var(--line-2)", textAlign: "center", fontSize: 12, fontWeight: 800, color: "var(--ink)", letterSpacing: ".08em", textTransform: "uppercase"}}>
+          <div key={d} style={{ background: "var(--bg-3)", padding: "12px 8px", borderLeft: "1px solid var(--line-2)", textAlign: "center", fontSize: 12, fontWeight: 800, color: "var(--ink)", letterSpacing: ".08em", textTransform: "uppercase" }}>
             {d}
           </div>
         ))}
         {HOURS.map(h => (
           <React.Fragment key={h}>
-            <div style={{background: "var(--bg-3)", padding: "8px 12px 8px 8px", borderTop: "1px solid var(--line-2)", textAlign: "right", fontSize: 11, fontWeight: 700, color: "var(--ink-3)"}}>
+            <div style={{ background: "var(--bg-3)", padding: "8px 12px 8px 8px", borderTop: "1px solid var(--line-2)", textAlign: "right", fontSize: 11, fontWeight: 700, color: "var(--ink-3)" }}>
               {h}:00
             </div>
             {days.map((_, dIdx) => {
@@ -369,9 +369,9 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
                       const startMinutes = (slot.s % 1) * 60;
                       const timeLabel = `${Math.floor(slot.s)}:${String(startMinutes).padStart(2, '0')}`;
                       return (
-                        <button 
+                        <button
                           key={sIdx}
-                          className={`slot ${slot.actClassName || actById[slot.act]?.className || ""}`} 
+                          className={`slot ${slot.actClassName || actById[slot.act]?.className || ""}`}
                           onClick={() => setSelectedSlot(slot)}
                           style={{
                             position: "relative",
@@ -408,7 +408,7 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
                         .map((slot, sIdx) => {
                           const color = slot.actColor || actById[slot.act]?.color || "var(--ink)";
                           return (
-                            <div 
+                            <div
                               key={sIdx}
                               onClick={() => setSelectedSlot(slot)}
                               style={{
@@ -436,13 +436,13 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
       </div>
 
       {/* Legend list of activities by color with '+' button */}
-      <div style={{marginTop: 22, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center"}}>
+      <div style={{ marginTop: 22, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         {activities.map(a => (
-          <span key={a.id} style={{display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 12px", background: `color-mix(in oklab, ${a.color} 14%, var(--bg-2))`, color: a.color, border: `1px solid color-mix(in oklab, ${a.color} 30%, transparent)`, borderRadius: 999, fontSize: 12, fontWeight: 700}}>
-            <span style={{width: 8, height: 8, borderRadius: "50%", background: a.color}}/> {a.name}
+          <span key={a.id} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 12px", background: `color-mix(in oklab, ${a.color} 14%, var(--bg-2))`, color: a.color, border: `1px solid color-mix(in oklab, ${a.color} 30%, transparent)`, borderRadius: 999, fontSize: 12, fontWeight: 700 }}>
+            <span style={{ width: 8, height: 8, borderRadius: "50%", background: a.color }} /> {a.name}
           </span>
         ))}
-        <button 
+        <button
           onClick={onAddActivityOrAulaClick}
           title="Añadir aula o categoría"
           style={{
@@ -476,7 +476,7 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
             <p style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Sala:</strong> {selectedSlot.room}</p>
             <p style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Profesor/a:</strong> {selectedSlot.monitor || '—'}</p>
             <p style={{ margin: '0 0 16px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Alumnos:</strong> {selectedSlot.students}</p>
-            
+
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
               <button className="btn btn-outline btn-sm" onClick={() => setSelectedSlot(null)}>Cerrar</button>
               <button className="btn btn-sm" style={{ background: 'var(--orange)', color: 'white' }} onClick={async () => {
@@ -538,7 +538,7 @@ function AdminPayments({ refreshTrigger }) {
       if (res.ok) {
         setReceipts(prev => prev.filter(r => r.id !== id));
       }
-    } catch(e) {
+    } catch (e) {
       console.error(e);
     }
   }
@@ -546,36 +546,36 @@ function AdminPayments({ refreshTrigger }) {
   return (
     <>
       <div className="kpis">
-        <KPI label="Total en recibos" value={`${totalAmount.toLocaleString("es-ES", {minimumFractionDigits: 0})}€`} trend={`${receipts.length} registros`} act="taekwondo" icon={<I.Wallet />} />
+        <KPI label="Total en recibos" value={`${totalAmount.toLocaleString("es-ES", { minimumFractionDigits: 0 })}€`} trend={`${receipts.length} registros`} act="taekwondo" icon={<I.Wallet />} />
         <KPI label="Recibos con factura" value={String(receipts.filter(r => r.invoiceLink).length)} trend="con PDF adjunto" act="funcional" icon={<I.CreditCard />} />
         <KPI label="Sin factura" value={String(receipts.filter(r => !r.invoiceLink).length)} trend="pendiente de adjuntar" act="ballet" icon={<I.Clock />} />
         <KPI label="Empresas" value={String(new Set(receipts.map(r => r.company).filter(Boolean)).size)} trend="proveedores distintos" act="pintura" icon={<I.Trophy />} />
       </div>
 
       <div className="data-table">
-        <div className="data-table-head" style={{gridTemplateColumns: "2fr 2fr 1fr 1fr 1fr 120px"}}>
+        <div className="data-table-head" style={{ gridTemplateColumns: "2fr 2fr 1fr 1fr 1fr 120px" }}>
           <span>Empresa / Concepto</span><span>Método</span><span>Fecha</span><span>Importe</span><span>Factura</span><span></span>
         </div>
-        {loading && <div style={{padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14}}>Cargando...</div>}
-        {!loading && receipts.length === 0 && <div style={{padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14}}>No hay recibos.</div>}
+        {loading && <div style={{ padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>Cargando...</div>}
+        {!loading && receipts.length === 0 && <div style={{ padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>No hay recibos.</div>}
         {receipts.map((r, i) => {
           const d = r.date ? new Date(r.date).toLocaleDateString("es-ES") : "—";
-          const amount = r.amount != null ? `${parseFloat(r.amount).toLocaleString("es-ES", {minimumFractionDigits: 2})}€` : "—";
+          const amount = r.amount != null ? `${parseFloat(r.amount).toLocaleString("es-ES", { minimumFractionDigits: 2 })}€` : "—";
           return (
-            <div key={r.id || i} className="data-table-row" style={{gridTemplateColumns: "2fr 2fr 1fr 1fr 1fr 120px"}}>
+            <div key={r.id || i} className="data-table-row" style={{ gridTemplateColumns: "2fr 2fr 1fr 1fr 1fr 120px" }}>
               <div className="cell-user">
-                <div className="avatar" style={{background: "var(--grad-aim)"}}>{(r.company?.[0] || "R").toUpperCase()}</div>
+                <div className="avatar" style={{ background: "var(--grad-aim)" }}>{(r.company?.[0] || "R").toUpperCase()}</div>
                 <div className="pri">{r.company || "Sin empresa"}</div>
               </div>
               <div className="sec">{r.paymentMethod || "—"}</div>
               <div>{d}</div>
-              <div className="pri" style={{fontFamily: "var(--font-display)", fontSize: 15}}>{amount}</div>
+              <div className="pri" style={{ fontFamily: "var(--font-display)", fontSize: 15 }}>{amount}</div>
               <div>
                 <span className={`status-pill ${r.invoiceLink ? "ok" : "pending"}`}>
                   {r.invoiceLink ? "Con PDF" : "Sin PDF"}
                 </span>
               </div>
-              <div className="row-actions" style={{display: 'flex', gap: 8}}>
+              <div className="row-actions" style={{ display: 'flex', gap: 8 }}>
                 {r.invoiceLink
                   ? <a href={r.invoiceLink} target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-outline">PDF</a>
                   : <button className="icon-btn" disabled><I.Eye /></button>}
@@ -628,29 +628,29 @@ function AdminNews({ refreshTrigger, onEditPost }) {
       </div>
 
       <div className="toolbar">
-        <div className="search-input" style={{maxWidth: 320}}>
+        <div className="search-input" style={{ maxWidth: 320 }}>
           <I.Search />
           <input placeholder="Buscar título..." value={search} onChange={e => setSearch(e.target.value)} />
         </div>
         <button className={`filter-pill ${statusFilter === "all" ? "is-active" : ""}`} onClick={() => setStatusFilter("all")}>Todos · {posts.length}</button>
         <button className={`filter-pill ${statusFilter === "published" ? "is-active" : ""}`} onClick={() => setStatusFilter("published")}>Publicados · {published}</button>
         <button className={`filter-pill ${statusFilter === "draft" ? "is-active" : ""}`} onClick={() => setStatusFilter("draft")}>Borradores · {drafts}</button>
-        <div style={{flex: 1}} />
+        <div style={{ flex: 1 }} />
       </div>
 
       <div className="data-table">
-        <div className="data-table-head" style={{gridTemplateColumns: "2.4fr 1fr 0.9fr 0.7fr 0.7fr 130px"}}>
+        <div className="data-table-head" style={{ gridTemplateColumns: "2.4fr 1fr 0.9fr 0.7fr 0.7fr 130px" }}>
           <span>Título</span><span>Categoría</span><span>Estado</span><span>Visitas</span><span>Clicks</span><span></span>
         </div>
-        {loading && <div style={{padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14}}>Cargando...</div>}
-        {!loading && visible.length === 0 && <div style={{padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14}}>No hay entradas.</div>}
+        {loading && <div style={{ padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>Cargando...</div>}
+        {!loading && visible.length === 0 && <div style={{ padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>No hay entradas.</div>}
         {visible.map((p) => {
           const a = ACT_BY_ID[p.category];
           const statusLabel = p.status === "published" ? "Publicado" : p.status === "draft" ? "Borrador" : p.status;
           const statusClass = p.status === "published" ? "ok" : p.status === "draft" ? "pending" : "upcoming";
           const dateStr = p.published_at ? new Date(p.published_at).toLocaleDateString("es-ES") : (p.created_at ? new Date(p.created_at).toLocaleDateString("es-ES") : "—");
           return (
-            <div key={p.id} className={`data-table-row ${a?.className || ""}`} style={{gridTemplateColumns: "2.4fr 1fr 0.9fr 0.7fr 0.7fr 130px"}}>
+            <div key={p.id} className={`data-table-row ${a?.className || ""}`} style={{ gridTemplateColumns: "2.4fr 1fr 0.9fr 0.7fr 0.7fr 130px" }}>
               <div>
                 <div className="pri">{p.title}</div>
                 <div className="sec">{dateStr} · {p.author_name || "Admin"}</div>
@@ -662,7 +662,7 @@ function AdminNews({ refreshTrigger, onEditPost }) {
                 <span className={`status-pill ${statusClass}`}>{statusLabel}</span>
               </div>
               <div className="pri">{p.view_count || "—"}</div>
-              <div className="pri" style={{color: p.click_count ? "var(--teal)" : "var(--ink-3)"}}>{p.click_count || "—"}</div>
+              <div className="pri" style={{ color: p.click_count ? "var(--teal)" : "var(--ink-3)" }}>{p.click_count || "—"}</div>
               <div className="row-actions">
                 <button className="icon-btn" title="Ver en web pública" onClick={() => window.open(`/noticias/${p.slug}`, '_blank')}><I.Eye /></button>
                 <button className="icon-btn" title="Editar entrada" onClick={() => onEditPost(p)}><I.Edit /></button>
@@ -782,7 +782,7 @@ function AdminSettings() {
       email: "info@aimeducation.es",
     };
   });
-  
+
   const [saved, setSaved] = useState(false);
 
   const handleSave = (e) => {
@@ -795,7 +795,7 @@ function AdminSettings() {
   return (
     <form onSubmit={handleSave} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 18, padding: 32, maxWidth: 600, display: 'grid', gap: 18 }}>
       <h2 style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 20, margin: 0, color: 'var(--ink)' }}>Ajustes del club</h2>
-      
+
       <div style={{ display: 'grid', gap: 16 }}>
         <div className="field">
           <label>Nombre de la academia</label>
@@ -814,7 +814,7 @@ function AdminSettings() {
           <input type="email" value={settings.email} onChange={e => setSettings({ ...settings, email: e.target.value })} required />
         </div>
       </div>
-      
+
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 6 }}>
         <button className="btn btn-primary" type="submit">Guardar cambios</button>
         {saved && (
@@ -884,7 +884,7 @@ function AdminInstructores({ refreshTrigger, showToast }) {
       } else {
         alert("Error al eliminar instructor.");
       }
-    } catch(err) {
+    } catch (err) {
       alert("Error al eliminar instructor.");
     }
   };
@@ -902,12 +902,12 @@ function AdminInstructores({ refreshTrigger, showToast }) {
           <I.Search />
           <input placeholder="Buscar por nombre o especialidad..." value={search} onChange={e => setSearch(e.target.value)} />
         </div>
-        <div style={{flex: 1}}/>
+        <div style={{ flex: 1 }} />
         <button className="btn btn-primary btn-sm" onClick={() => { setEditingInst({ name: '', email: '', phone: '', specialty: '' }); setActiveInstModal('new'); }}><I.Plus /> Nuevo Instructor</button>
       </div>
 
       <div className="data-table">
-        <div className="data-table-head" style={{gridTemplateColumns: "2.4fr 2fr 1.5fr 1.5fr 100px"}}>
+        <div className="data-table-head" style={{ gridTemplateColumns: "2.4fr 2fr 1.5fr 1.5fr 100px" }}>
           <span>Nombre</span>
           <span>Email</span>
           <span>Teléfono</span>
@@ -915,23 +915,23 @@ function AdminInstructores({ refreshTrigger, showToast }) {
           <span></span>
         </div>
         {loading && (
-          <div style={{padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14}}>Cargando...</div>
+          <div style={{ padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>Cargando...</div>
         )}
         {!loading && visible.length === 0 && (
-          <div style={{padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14}}>No hay instructores.</div>
+          <div style={{ padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>No hay instructores.</div>
         )}
         {!loading && visible.map(inst => (
-          <div key={inst.id} className="data-table-row" style={{gridTemplateColumns: "2.4fr 2fr 1.5fr 1.5fr 100px"}}>
+          <div key={inst.id} className="data-table-row" style={{ gridTemplateColumns: "2.4fr 2fr 1.5fr 1.5fr 100px" }}>
             <div className="cell-user">
-              <div className="avatar" style={{background: "var(--grad-aim)"}}>
+              <div className="avatar" style={{ background: "var(--grad-aim)" }}>
                 {(inst.name?.[0] || "?").toUpperCase()}
               </div>
               <div className="pri">{inst.name}</div>
             </div>
-            <div className="sec">{inst.email || <span style={{color: "var(--ink-3)"}}>—</span>}</div>
-            <div>{inst.phone || <span style={{color: "var(--ink-3)"}}>—</span>}</div>
+            <div className="sec">{inst.email || <span style={{ color: "var(--ink-3)" }}>—</span>}</div>
+            <div>{inst.phone || <span style={{ color: "var(--ink-3)" }}>—</span>}</div>
             <div>
-              <span className="activity-pill">{inst.specialty || <span style={{color: "var(--ink-3)"}}>—</span>}</span>
+              <span className="activity-pill">{inst.specialty || <span style={{ color: "var(--ink-3)" }}>—</span>}</span>
             </div>
             <div className="row-actions">
               <button className="icon-btn" aria-label="Editar" onClick={() => { setEditingInst(inst); setActiveInstModal('edit'); }}><I.Edit /></button>
@@ -1355,31 +1355,31 @@ function AdminEvents({ showToast }) {
               });
               return (
                 <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
-                <div style={{ display: 'grid', gap: 8, minWidth: 520 }}>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1.5fr 60px 1fr auto auto auto', gap: 10, padding: '8px 12px', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--ink-3)', borderBottom: '1px solid var(--line)' }}>
-                    <span>Nombre</span><span>Apellidos</span><span>Edad</span><span>Datos</span>
-                    <span>Fotos</span><span>Pagado</span><span>Asistió</span>
-                  </div>
-                  {visible.map(reg => (
-                    <div key={reg.id} style={{ display: 'grid', gridTemplateColumns: '1.5fr 1.5fr 60px 1fr auto auto auto', gap: 10, padding: '10px 12px', background: 'var(--bg-3)', borderRadius: 10, alignItems: 'center', fontSize: 13 }}>
-                      <span style={{ fontWeight: 700, color: 'var(--ink)' }}>{reg.nombre}</span>
-                      <span style={{ color: 'var(--ink-2)' }}>{reg.apellidos}</span>
-                      <span style={{ color: 'var(--ink-3)' }}>{reg.edad || '—'}</span>
-                      <span style={{ color: 'var(--ink-3)', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={reg.datos || ''}>{reg.datos || '—'}</span>
-                      <span style={{ textAlign: 'center', fontSize: 14 }}>{reg.fotos_rrss ? '✓' : '—'}</span>
-                      <label style={{ display: 'grid', placeItems: 'center', cursor: 'pointer' }}>
-                        <input type="checkbox" checked={!!reg.pagado} onChange={e => patchReg(reg.id, { pagado: e.target.checked })} style={{ width: 16, height: 16, accentColor: 'var(--teal)' }} />
-                      </label>
-                      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                        <label style={{ display: 'grid', placeItems: 'center', cursor: 'pointer' }}>
-                          <input type="checkbox" checked={!!reg.asistio} onChange={e => patchReg(reg.id, { asistio: e.target.checked })} style={{ width: 16, height: 16, accentColor: 'var(--orange)' }} />
-                        </label>
-                        <button className="icon-btn danger" style={{ width: 26, height: 26 }} onClick={() => deleteReg(reg.id)}><I.Trash /></button>
-                      </div>
+                  <div style={{ display: 'grid', gap: 8, minWidth: 520 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1.5fr 60px 1fr auto auto auto', gap: 10, padding: '8px 12px', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--ink-3)', borderBottom: '1px solid var(--line)' }}>
+                      <span>Nombre</span><span>Apellidos</span><span>Edad</span><span>Datos</span>
+                      <span>Fotos</span><span>Pagado</span><span>Asistió</span>
                     </div>
-                  ))}
-                  {visible.length === 0 && <p style={{ color: 'var(--ink-3)', fontSize: 13, padding: '8px 0' }}>Ninguna inscripción coincide con el filtro.</p>}
-                </div>
+                    {visible.map(reg => (
+                      <div key={reg.id} style={{ display: 'grid', gridTemplateColumns: '1.5fr 1.5fr 60px 1fr auto auto auto', gap: 10, padding: '10px 12px', background: 'var(--bg-3)', borderRadius: 10, alignItems: 'center', fontSize: 13 }}>
+                        <span style={{ fontWeight: 700, color: 'var(--ink)' }}>{reg.nombre}</span>
+                        <span style={{ color: 'var(--ink-2)' }}>{reg.apellidos}</span>
+                        <span style={{ color: 'var(--ink-3)' }}>{reg.edad || '—'}</span>
+                        <span style={{ color: 'var(--ink-3)', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={reg.datos || ''}>{reg.datos || '—'}</span>
+                        <span style={{ textAlign: 'center', fontSize: 14 }}>{reg.fotos_rrss ? '✓' : '—'}</span>
+                        <label style={{ display: 'grid', placeItems: 'center', cursor: 'pointer' }}>
+                          <input type="checkbox" checked={!!reg.pagado} onChange={e => patchReg(reg.id, { pagado: e.target.checked })} style={{ width: 16, height: 16, accentColor: 'var(--teal)' }} />
+                        </label>
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                          <label style={{ display: 'grid', placeItems: 'center', cursor: 'pointer' }}>
+                            <input type="checkbox" checked={!!reg.asistio} onChange={e => patchReg(reg.id, { asistio: e.target.checked })} style={{ width: 16, height: 16, accentColor: 'var(--orange)' }} />
+                          </label>
+                          <button className="icon-btn danger" style={{ width: 26, height: 26 }} onClick={() => deleteReg(reg.id)}><I.Trash /></button>
+                        </div>
+                      </div>
+                    ))}
+                    {visible.length === 0 && <p style={{ color: 'var(--ink-3)', fontSize: 13, padding: '8px 0' }}>Ninguna inscripción coincide con el filtro.</p>}
+                  </div>
                 </div>
               );
             })()}
@@ -1557,7 +1557,7 @@ function BillingTPV({ showToast }) {
   const [addExtra, setAddExtra] = useState(null);      // { clienteId, concepto }
 
   useEffect(() => {
-    fetch('/api/admin/billing/precios', { credentials: 'include' }).then(r => r.ok ? r.json() : []).then(setPrecios).catch(() => {});
+    fetch('/api/admin/billing/precios', { credentials: 'include' }).then(r => r.ok ? r.json() : []).then(setPrecios).catch(() => { });
   }, []);
 
   // Buscar personas (a partir de 2 letras).
@@ -1565,7 +1565,7 @@ function BillingTPV({ showToast }) {
     if (q.trim().length < 2) { setResultados([]); return; }
     const t = setTimeout(() => {
       fetch(`/api/admin/billing/tpv/buscar?q=${encodeURIComponent(q.trim())}`, { credentials: 'include' })
-        .then(r => r.ok ? r.json() : []).then(setResultados).catch(() => {});
+        .then(r => r.ok ? r.json() : []).then(setResultados).catch(() => { });
     }, 250);
     return () => clearTimeout(t);
   }, [q]);
@@ -1598,7 +1598,7 @@ function BillingTPV({ showToast }) {
     fetch('/api/admin/billing/simular', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
       body: JSON.stringify({ lineas: lineasMotor }),
-    }).then(r => r.ok ? r.json() : null).then(d => { if (!cancel) setTotales(d); }).catch(() => {});
+    }).then(r => r.ok ? r.json() : null).then(d => { if (!cancel) setTotales(d); }).catch(() => { });
     return () => { cancel = true; };
   }, [JSON.stringify(lineasMotor)]);
 
@@ -1820,7 +1820,7 @@ function BillingGenerar({ activa, showToast }) {
 
   useEffect(() => {
     fetch('/api/admin/billing/mes-a-generar', { credentials: 'include' })
-      .then(r => r.ok ? r.json() : null).then(d => { if (d?.mes) setMes(d.mes.slice(0, 7)); }).catch(() => {});
+      .then(r => r.ok ? r.json() : null).then(d => { if (d?.mes) setMes(d.mes.slice(0, 7)); }).catch(() => { });
   }, []);
 
   const mesIso = mes ? `${mes}-01` : '';
@@ -1981,8 +1981,8 @@ function AdminBilling({ showToast }) {
   }
   useEffect(() => { loadAll(); }, []);
   useEffect(() => {
-    fetch('/api/users', { credentials: 'include' }).then(r => r.ok ? r.json() : []).then(u => setAlumnos(Array.isArray(u) ? u : [])).catch(() => {});
-    fetch('/api/admin/billing/aimtul', { credentials: 'include' }).then(r => r.ok ? r.json() : { activities: [], groups: [] }).then(setAimtul).catch(() => {});
+    fetch('/api/users', { credentials: 'include' }).then(r => r.ok ? r.json() : []).then(u => setAlumnos(Array.isArray(u) ? u : [])).catch(() => { });
+    fetch('/api/admin/billing/aimtul', { credentials: 'include' }).then(r => r.ok ? r.json() : { activities: [], groups: [] }).then(setAimtul).catch(() => { });
   }, []);
 
   async function api(url, opts, okMsg) {
@@ -2856,12 +2856,12 @@ function AdminCamp({ showToast }) {
         <div style={{ display: 'grid', gap: 16 }}>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             <button className="btn btn-icon" onClick={() => shiftDay(-1)} aria-label="Día anterior">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6" /></svg>
             </button>
             <input type="date" value={rosterDay} onChange={e => e.target.value && setRosterDay(e.target.value)}
               style={{ fontFamily: 'inherit', fontSize: 14, fontWeight: 700, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)' }} />
             <button className="btn btn-icon" onClick={() => shiftDay(1)} aria-label="Día siguiente">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6" /></svg>
             </button>
             <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-2)', textTransform: 'capitalize' }}>{campFmtLong(rosterDay)}</span>
             {holidaySet.has(rosterDay) && (
@@ -3162,7 +3162,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
   const [notification, setNotification] = useState(null);
   const [activeModal, setActiveModal] = useState(null); // 'new-student' | 'edit-student' | 'new-receipt' | 'new-post' | 'edit-post' | 'new-group' | 'edit-group' | 'new-class' | 'add-activity-or-aula' | 'new-aula' | 'new-activity'
   const [editingItem, setEditingItem] = useState(null);
-  
+
   const [studentsList, setStudentsList] = useState([]);
   const [classSlots, setClassSlots] = useState([]);
   const [activities, setActivities] = useState([]);
@@ -3174,28 +3174,28 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
     fetch('/api/users', { credentials: 'include' })
       .then(r => r.ok ? r.json() : [])
       .then(setStudentsList)
-      .catch(() => {});
+      .catch(() => { });
     fetch('/api/classes', { credentials: 'include' })
       .then(r => r.ok ? r.json() : [])
       .then(data => {
         setClassSlots(data);
       })
-      .catch(() => {});
+      .catch(() => { });
     fetch('/api/activities', { credentials: 'include' })
       .then(r => r.ok ? r.json() : [])
       .then(data => {
         setActivities(data);
         setActById(Object.fromEntries(data.map(a => [a.id, a])));
       })
-      .catch(() => {});
+      .catch(() => { });
     fetch('/api/aulas', { credentials: 'include' })
       .then(r => r.ok ? r.json() : [])
       .then(setAulas)
-      .catch(() => {});
+      .catch(() => { });
     fetch('/api/instructores', { credentials: 'include' })
       .then(r => r.ok ? r.json() : [])
       .then(setInstructores)
-      .catch(() => {});
+      .catch(() => { });
   }, [refreshTrigger]);
 
   const showToast = (message) => {
@@ -3209,7 +3209,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
     const isEdit = activeModal === 'edit-student';
     const url = isEdit ? `/api/users/${editingItem.id}` : '/api/users';
     const method = isEdit ? 'PUT' : 'POST';
-    
+
     try {
       const res = await fetch(url, {
         method,
@@ -3239,7 +3239,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
         setRefreshTrigger(p => p + 1);
         setActiveModal(null);
       }
-    } catch(err) {
+    } catch (err) {
       alert("Error al eliminar alumno.");
     }
   };
@@ -3285,7 +3285,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
         const err = await res.json();
         alert(err.error || "Error al guardar noticia.");
       }
-    } catch(err) {
+    } catch (err) {
       alert("Error al conectar con la base de datos.");
     }
   };
@@ -3308,7 +3308,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
         setRefreshTrigger(p => p + 1);
         setActiveModal(null);
       }
-    } catch(err) {
+    } catch (err) {
       alert("Error al guardar grupo.");
     }
   };
@@ -3339,22 +3339,26 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
   const adminName = user ? `${user.firstName || ""} ${user.lastName || ""}`.trim() : "Admin";
 
   const sections = [
-    { heading: "Gestión", items: [
-      { id: "overview", label: "Resumen", icon: <I.Dashboard /> },
-      { id: "students", label: "Alumnos", icon: <I.Users /> },
-      { id: "classes", label: "Clases y horarios", icon: <I.Calendar /> },
-      { id: "payments", label: "Recibos", icon: <I.Wallet /> },
-      { id: "news", label: "Noticias / Foro", icon: <I.Newspaper /> },
-      { id: "events", label: "Eventos", icon: <I.Star /> },
-      { id: "camp", label: "Campamento", icon: <I.Sun /> },
-      { id: "billing", label: "Facturación", icon: <I.CreditCard /> },
-    ]},
-    { heading: "Club", items: [
-      { id: "groups", label: "Grupos", icon: <I.Trophy /> },
-      { id: "instructors", label: "Instructores", icon: <I.Users /> },
-      { id: "settings", label: "Ajustes", icon: <I.Settings /> },
-      { id: "support", label: "Soporte", icon: <I.Bell /> },
-    ]},
+    {
+      heading: "Gestión", items: [
+        { id: "overview", label: "Resumen", icon: <I.Dashboard /> },
+        { id: "students", label: "Alumnos", icon: <I.Users /> },
+        { id: "billing", label: "Facturación", icon: <I.CreditCard /> },
+        { id: "payments", label: "Gastos", icon: <I.Wallet /> },
+        { id: "classes", label: "Clases y horarios", icon: <I.Calendar /> },
+        { id: "camp", label: "Campamento", icon: <I.Sun /> },
+        { id: "events", label: "Eventos", icon: <I.Star /> },
+        { id: "news", label: "Noticias / Foro", icon: <I.Newspaper /> },
+      ]
+    },
+    {
+      heading: "Club", items: [
+        { id: "groups", label: "Grupos", icon: <I.Trophy /> },
+        { id: "instructors", label: "Instructores", icon: <I.Users /> },
+        { id: "settings", label: "Ajustes", icon: <I.Settings /> },
+        { id: "support", label: "Soporte", icon: <I.Bell /> },
+      ]
+    },
   ];
 
   async function handleLogout() {
@@ -3363,7 +3367,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
   }
 
   return (
-    <main style={{paddingTop: 0}}>
+    <main style={{ paddingTop: 0 }}>
       <div className="admin-layout">
         {sidebarOpen && <div className="admin-overlay" onClick={() => setSidebarOpen(false)} />}
         <aside className={`admin-side${sidebarOpen ? ' is-open' : ''}`}>
@@ -3385,7 +3389,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
           ))}
 
           <div className="me">
-            <div className="avatar" style={{width: 36, height: 36, fontSize: 13}}>{adminInitials}</div>
+            <div className="avatar" style={{ width: 36, height: 36, fontSize: 13 }}>{adminInitials}</div>
             <div>
               <div className="name">{adminName}</div>
               <div className="role-tag">{user?.isSuperAdmin ? "Superadmin" : "Admin"}</div>
@@ -3399,8 +3403,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
             fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 8,
             transition: "background 0.2s"
           }}
-          onMouseEnter={(e) => e.currentTarget.style.background = "rgba(255,255,255,.16)"}
-          onMouseLeave={(e) => e.currentTarget.style.background = "rgba(255,255,255,.1)"}
+            onMouseEnter={(e) => e.currentTarget.style.background = "rgba(255,255,255,.16)"}
+            onMouseLeave={(e) => e.currentTarget.style.background = "rgba(255,255,255,.1)"}
           >
             <I.Globe width={16} height={16} /> Volver a la Web
           </button>
@@ -3417,7 +3421,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
 
         <div className="admin-main">
           <div className="admin-topbar">
-            <div style={{display: "flex", alignItems: "center", gap: 12}}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <button className="admin-hamburger btn btn-icon" onClick={() => setSidebarOpen(o => !o)} aria-label="Menú">
                 <I.Menu />
               </button>
@@ -3426,7 +3430,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
                 <h1>{sectionLabel(view)}</h1>
               </div>
             </div>
-            <div style={{display: "flex", gap: 10, alignItems: "center"}}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
               <button className="btn btn-icon"><I.Bell /></button>
               <button className="btn btn-icon" onClick={() => alert("Función de búsqueda global disponible próximamente.")}><I.Search /></button>
               {!['classes', 'events', 'support', 'camp', 'billing'].includes(view) && (
@@ -3458,20 +3462,20 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
           {view === "overview" && <AdminOverview setView={setView} refreshTrigger={refreshTrigger} showToast={showToast} />}
           {view === "students" && <AdminStudents refreshTrigger={refreshTrigger} onEditUser={(u) => { setEditingItem(u); setActiveModal('edit-student'); }} />}
           {view === "classes" && (
-            <AdminClasses 
-              classSlots={classSlots} 
-              setClassSlots={setClassSlots} 
+            <AdminClasses
+              classSlots={classSlots}
+              setClassSlots={setClassSlots}
               activities={activities}
               classrooms={aulas}
               actById={actById}
               showToast={showToast}
-              onAddClassClick={() => { 
+              onAddClassClick={() => {
                 const defaultRoom = aulas[0]?.name || '';
                 const defaultMonitor = instructores[0]?.name || '';
                 const defaultAct = activities[0]?.id || 'taekwondo';
-                setEditingItem({ d: 0, s: 17, h: 1, act: defaultAct, title: '', room: defaultRoom, students: '0/15', monitor: defaultMonitor }); 
-                setActiveModal('new-class'); 
-              }} 
+                setEditingItem({ d: 0, s: 17, h: 1, act: defaultAct, title: '', room: defaultRoom, students: '0/15', monitor: defaultMonitor });
+                setActiveModal('new-class');
+              }}
               onAddActivityOrAulaClick={() => {
                 setEditingItem({ name: '' });
                 setActiveModal('add-activity-or-aula');
@@ -3712,14 +3716,14 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
                   const isChecked = editingItem.studentIds?.includes(st.id);
                   return (
                     <label key={st.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, color: 'var(--ink)', cursor: 'pointer' }}>
-                      <input 
-                        type="checkbox" 
-                        checked={isChecked} 
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
                         style={{ width: 16, height: 16 }}
                         onChange={e => {
                           const checked = e.target.checked;
                           const currentIds = editingItem.studentIds || [];
-                          const updated = checked 
+                          const updated = checked
                             ? [...currentIds, st.id]
                             : currentIds.filter(id => id !== st.id);
                           setEditingItem({ ...editingItem, studentIds: updated });
@@ -3752,22 +3756,22 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
             width: '100%', maxWidth: 450, padding: 32, display: 'grid', gap: 14
           }}>
             <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: 'var(--ink)' }}>Nueva clase programada</h3>
-            
+
             <div className="field">
               <label>Título del grupo</label>
-              <input value={editingItem.title || ''} onChange={e => setEditingItem({...editingItem, title: e.target.value})} required placeholder="Ej. Taekwondo Infantiles" />
+              <input value={editingItem.title || ''} onChange={e => setEditingItem({ ...editingItem, title: e.target.value })} required placeholder="Ej. Taekwondo Infantiles" />
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <div className="field">
                 <label>Actividad</label>
-                <select value={editingItem.act || 'taekwondo'} onChange={e => setEditingItem({...editingItem, act: e.target.value})} style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }}>
+                <select value={editingItem.act || 'taekwondo'} onChange={e => setEditingItem({ ...editingItem, act: e.target.value })} style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }}>
                   {activities.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                 </select>
               </div>
               <div className="field">
                 <label>Sala / Aula</label>
-                <select value={editingItem.room || ''} onChange={e => setEditingItem({...editingItem, room: e.target.value})} required style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }}>
+                <select value={editingItem.room || ''} onChange={e => setEditingItem({ ...editingItem, room: e.target.value })} required style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }}>
                   {aulas.map(a => <option key={a.id} value={a.name}>{a.name}</option>)}
                 </select>
               </div>
@@ -3776,7 +3780,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <div className="field">
                 <label>Día de la semana</label>
-                <select value={editingItem.d || 0} onChange={e => setEditingItem({...editingItem, d: parseInt(e.target.value)})} style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }}>
+                <select value={editingItem.d || 0} onChange={e => setEditingItem({ ...editingItem, d: parseInt(e.target.value) })} style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }}>
                   {["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"].map((day, idx) => <option key={idx} value={idx}>{day}</option>)}
                 </select>
               </div>
@@ -3819,8 +3823,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
                             fontSize: '13px',
                             transition: 'background 0.2s, color 0.2s'
                           }}
-                          onMouseEnter={e => { if(!isSelected) e.currentTarget.style.background = 'var(--line)'; }}
-                          onMouseLeave={e => { if(!isSelected) e.currentTarget.style.background = 'transparent'; }}
+                          onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = 'var(--line)'; }}
+                          onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = 'transparent'; }}
                         >
                           {slot.label}
                         </button>
@@ -3834,11 +3838,11 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <div className="field">
                 <label>Duración (Horas)</label>
-                <input type="number" step="0.5" min="0.5" max="4" value={editingItem.h || 1} onChange={e => setEditingItem({...editingItem, h: parseFloat(e.target.value)})} required />
+                <input type="number" step="0.5" min="0.5" max="4" value={editingItem.h || 1} onChange={e => setEditingItem({ ...editingItem, h: parseFloat(e.target.value) })} required />
               </div>
               <div className="field">
                 <label>Monitor / Profesor</label>
-                <select value={editingItem.monitor || ''} onChange={e => setEditingItem({...editingItem, monitor: e.target.value})} required style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }}>
+                <select value={editingItem.monitor || ''} onChange={e => setEditingItem({ ...editingItem, monitor: e.target.value })} required style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }}>
                   {instructores.map(ins => <option key={ins.id} value={ins.name}>{ins.name}</option>)}
                 </select>
               </div>
@@ -3865,8 +3869,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
           }}>
             <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: 'var(--ink)', textAlign: 'center' }}>¿Qué deseas crear?</h3>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              <button 
-                className="btn btn-outline" 
+              <button
+                className="btn btn-outline"
                 onClick={() => {
                   setEditingItem({ name: '' });
                   setActiveModal('new-aula');
@@ -3876,8 +3880,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
                 <I.Dashboard style={{ width: 24, height: 24 }} />
                 <span>Nueva Aula / Sala</span>
               </button>
-              <button 
-                className="btn btn-outline" 
+              <button
+                className="btn btn-outline"
                 onClick={() => {
                   setEditingItem({ name: '', color: '#21B668' });
                   setActiveModal('new-activity');
