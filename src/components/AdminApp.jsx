@@ -13,6 +13,7 @@ function sectionLabel(id) {
     news: "Noticias y foro",
     events: "Eventos y talleres",
     camp: "Campamento de verano",
+    billing: "Facturación",
     groups: "Grupos",
     instructors: "Instructores",
     settings: "Ajustes del club",
@@ -1535,6 +1536,364 @@ function SortToggle({ value, onChange }) {
   );
 }
 
+// =============================================================================
+// FACTURACIÓN — catálogo, temporadas y fichas
+// =============================================================================
+const TIPOS_CONCEPTO = ['Mensualidad', 'Material', 'Otros'];
+const eur = (n) => `${Number(n || 0).toFixed(2)} €`;
+
+function AdminBilling({ showToast }) {
+  const [tab, setTab] = useState('catalogo'); // 'catalogo' | 'temporadas' | 'conceptos' | 'fichas'
+  const [temporadas, setTemporadas] = useState([]);
+  const [precios, setPrecios] = useState([]);
+  const [conceptos, setConceptos] = useState([]);
+  const [matriculas, setMatriculas] = useState([]);
+  const [alumnos, setAlumnos] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const [editPrecio, setEditPrecio] = useState(null);
+  const [nuevaTemporada, setNuevaTemporada] = useState('');
+  const [nuevoConcepto, setNuevoConcepto] = useState({ concepto: '', hora: '' });
+  const [editFicha, setEditFicha] = useState(null);
+  const [fichaQ, setFichaQ] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const activa = temporadas.find(t => t.activa) || null;
+
+  async function loadAll() {
+    try {
+      const [t, p] = await Promise.all([
+        fetch('/api/admin/billing/temporadas', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
+        fetch('/api/admin/billing/precios?all=1', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
+      ]);
+      setTemporadas(t); setPrecios(p);
+      const act = t.find(x => x.activa);
+      if (act) {
+        const [c, m] = await Promise.all([
+          fetch(`/api/admin/billing/conceptos?temporadaId=${act.id}`, { credentials: 'include' }).then(r => r.ok ? r.json() : []),
+          fetch(`/api/admin/billing/matriculas?temporadaId=${act.id}`, { credentials: 'include' }).then(r => r.ok ? r.json() : []),
+        ]);
+        setConceptos(c); setMatriculas(m);
+      } else { setConceptos([]); setMatriculas([]); }
+    } catch { /* noop */ }
+    finally { setLoading(false); }
+  }
+  useEffect(() => { loadAll(); }, []);
+  useEffect(() => {
+    fetch('/api/users', { credentials: 'include' }).then(r => r.ok ? r.json() : []).then(u => setAlumnos(Array.isArray(u) ? u : [])).catch(() => {});
+  }, []);
+
+  async function api(url, opts, okMsg) {
+    setSaving(true);
+    try {
+      const r = await fetch(url, { credentials: 'include', headers: { 'Content-Type': 'application/json' }, ...opts });
+      if (r.ok) { await loadAll(); if (okMsg) showToast?.(okMsg); return true; }
+      const d = await r.json().catch(() => ({}));
+      alert(d.error || 'Error al guardar.');
+      return false;
+    } catch { alert('Error de conexión.'); return false; }
+    finally { setSaving(false); }
+  }
+
+  const emptyPrecio = { concepto: '', descripcion: '', precio: 0, tipo: 'Mensualidad', ivaPct: 0, activo: true, esNuevo: true };
+
+  // Horas ya definidas en la temporada: sirven de sugerencia para las fichas.
+  const horasDefinidas = [...new Set(conceptos.map(c => c.hora))].sort();
+
+  const fichasVisibles = matriculas.filter(m => {
+    const q = fichaQ.trim().toLowerCase();
+    return !q || `${m.nombre} ${m.apellidos}`.toLowerCase().includes(q) || (m.hora || '').toLowerCase().includes(q);
+  });
+
+  return (
+    <>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 22, borderBottom: '1px solid var(--line-2)', paddingBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+        {[['catalogo', `Catálogo (${precios.length})`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra (${conceptos.length})`], ['fichas', `Fichas (${matriculas.length})`]].map(([id, label]) => (
+          <button key={id} className={`filter-pill ${tab === id ? 'is-active' : ''}`} onClick={() => setTab(id)} style={{ borderRadius: 8, padding: '8px 16px' }}>{label}</button>
+        ))}
+        <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: activa ? 'var(--teal)' : 'var(--orange)' }}>
+          {activa ? `Temporada activa: ${activa.nombre}` : 'Sin temporada activa'}
+        </span>
+      </div>
+
+      {loading && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
+
+      {!loading && !activa && tab !== 'temporadas' && (
+        <div style={{ padding: 24, background: 'color-mix(in oklab, var(--orange) 8%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--orange) 30%, transparent)', borderRadius: 14, marginBottom: 16, fontSize: 14, color: 'var(--ink-2)' }}>
+          No hay ninguna temporada activa. Crea una y actívala en <b>Temporadas</b> — sin eso no se puede cobrar nada.
+        </div>
+      )}
+
+      {/* ── Catálogo ── */}
+      {!loading && tab === 'catalogo' && (
+        <div style={{ display: 'grid', gap: 14 }}>
+          <div>
+            <button className="btn btn-sm btn-primary" onClick={() => setEditPrecio({ ...emptyPrecio })}><I.Plus /> Nuevo concepto</button>
+          </div>
+          {precios.length === 0 && (
+            <div style={{ padding: 28, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>
+              El catálogo está vacío. Cada concepto es algo que cobráis: una mensualidad, un material, etc.
+            </div>
+          )}
+          {precios.length > 0 && (
+            <div className="data-table">
+              <div className="data-table-head" style={{ gridTemplateColumns: '1.6fr 100px 110px 90px 90px 80px' }}>
+                <span>Concepto</span><span>Tipo</span><span>Precio (base)</span><span>IVA</span><span>Estado</span><span></span>
+              </div>
+              {precios.map(p => (
+                <div key={p.concepto} className="data-table-row" style={{ gridTemplateColumns: '1.6fr 100px 110px 90px 90px 80px', opacity: p.activo ? 1 : .5 }}>
+                  <div>
+                    <div className="pri">{p.descripcion}</div>
+                    <div className="sec">{p.concepto}</div>
+                  </div>
+                  <span style={{ fontSize: 12 }}>{p.tipo}</span>
+                  <span style={{ fontWeight: 700 }}>{eur(p.precio)}</span>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: p.ivaPct > 0 ? 'var(--orange)' : 'var(--ink-3)' }}>{p.ivaPct}%</span>
+                  <span className={`status-pill ${p.activo ? 'ok' : 'pending'}`}>{p.activo ? 'Activo' : 'Inactivo'}</span>
+                  <div className="row-actions">
+                    <button className="icon-btn" onClick={() => setEditPrecio({ ...p })} aria-label="Editar"><I.Edit /></button>
+                    <button className="icon-btn danger" onClick={async () => {
+                      if (!window.confirm(`¿Borrar "${p.descripcion}"? Si ya se ha cobrado alguna vez, se desactivará en vez de borrarse.`)) return;
+                      await api(`/api/admin/billing/precios/${encodeURIComponent(p.concepto)}`, { method: 'DELETE' }, 'Concepto eliminado.');
+                    }} aria-label="Borrar"><I.Trash /></button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Temporadas ── */}
+      {!loading && tab === 'temporadas' && (
+        <div style={{ display: 'grid', gap: 14 }}>
+          <form style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }} onSubmit={async e => {
+            e.preventDefault();
+            if (!nuevaTemporada.trim()) return;
+            if (await api('/api/admin/billing/temporadas', { method: 'POST', body: JSON.stringify({ nombre: nuevaTemporada.trim() }) }, 'Temporada creada.')) setNuevaTemporada('');
+          }}>
+            <input value={nuevaTemporada} onChange={e => setNuevaTemporada(e.target.value)} placeholder="Ej. 2026/2027"
+              style={{ fontFamily: 'inherit', fontSize: 14, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)', minWidth: 200 }} />
+            <button className="btn btn-sm btn-primary" type="submit" disabled={saving}><I.Plus /> Crear temporada</button>
+          </form>
+          {temporadas.map(t => (
+            <div key={t.id} style={{ background: 'var(--bg-2)', border: `1px solid ${t.activa ? 'var(--teal)' : 'var(--line)'}`, borderRadius: 12, padding: '12px 16px', display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ fontWeight: 800, fontSize: 15 }}>{t.nombre}</div>
+              {t.activa
+                ? <span className="status-pill ok">Activa</span>
+                : <button className="btn btn-sm btn-outline" disabled={saving} onClick={() => api(`/api/admin/billing/temporadas/${t.id}/activar`, { method: 'PUT' }, `Temporada ${t.nombre} activada.`)}>Activar</button>}
+              {!t.activa && (
+                <button className="icon-btn danger" style={{ marginLeft: 'auto' }} onClick={async () => {
+                  if (!window.confirm(`¿Borrar la temporada ${t.nombre}?`)) return;
+                  await api(`/api/admin/billing/temporadas/${t.id}`, { method: 'DELETE' }, 'Temporada borrada.');
+                }} aria-label="Borrar"><I.Trash /></button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ── Qué se cobra a cada hora ── */}
+      {!loading && tab === 'conceptos' && activa && (
+        <div style={{ display: 'grid', gap: 14 }}>
+          <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>
+            Quien tenga ficha en una hora, paga los conceptos que aquí le asignes. Es lo que usará la generación mensual.
+          </p>
+          <form style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }} onSubmit={async e => {
+            e.preventDefault();
+            if (!nuevoConcepto.concepto || !nuevoConcepto.hora.trim()) return;
+            if (await api('/api/admin/billing/conceptos', { method: 'POST', body: JSON.stringify({ ...nuevoConcepto, temporadaId: activa.id }) }, 'Asignado.')) setNuevoConcepto({ concepto: '', hora: '' });
+          }}>
+            <select value={nuevoConcepto.concepto} onChange={e => setNuevoConcepto(c => ({ ...c, concepto: e.target.value }))}
+              style={{ fontFamily: 'inherit', fontSize: 14, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)', minWidth: 220 }}>
+              <option value="">Concepto...</option>
+              {precios.filter(p => p.activo).map(p => <option key={p.concepto} value={p.concepto}>{p.descripcion} ({eur(p.precio)})</option>)}
+            </select>
+            <input list="horas-sug" value={nuevoConcepto.hora} onChange={e => setNuevoConcepto(c => ({ ...c, hora: e.target.value }))} placeholder="Hora / clase (ej. L 17:00 TKD)"
+              style={{ fontFamily: 'inherit', fontSize: 14, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)', minWidth: 200 }} />
+            <datalist id="horas-sug">{horasDefinidas.map(h => <option key={h} value={h} />)}</datalist>
+            <button className="btn btn-sm btn-primary" type="submit" disabled={saving}><I.Plus /> Asignar</button>
+          </form>
+          {conceptos.length === 0 && (
+            <div style={{ padding: 28, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>
+              Nada asignado todavía en {activa.nombre}.
+            </div>
+          )}
+          {horasDefinidas.map(h => (
+            <div key={h} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: '12px 16px' }}>
+              <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8 }}>{h}</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {conceptos.filter(c => c.hora === h).map(c => (
+                  <span key={c.id} style={{ display: 'inline-flex', gap: 8, alignItems: 'center', background: 'var(--bg-3)', border: '1px solid var(--line-2)', borderRadius: 999, padding: '4px 6px 4px 12px', fontSize: 12, fontWeight: 700 }}>
+                    {c.descripcion} · {eur(c.precio)}{c.ivaPct > 0 ? ` +${c.ivaPct}%` : ''}
+                    <button className="icon-btn danger" style={{ width: 22, height: 22 }} onClick={() => api(`/api/admin/billing/conceptos/${c.id}`, { method: 'DELETE' }, 'Quitado.')} aria-label="Quitar"><I.X /></button>
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ── Fichas ── */}
+      {!loading && tab === 'fichas' && activa && (
+        <div style={{ display: 'grid', gap: 14 }}>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            <button className="btn btn-sm btn-primary" onClick={() => setEditFicha({ userId: '', hora: '', descuentoPct: 0, alta: '', baja: '', esNueva: true })}>
+              <I.Plus /> Nueva ficha
+            </button>
+            <div className="search-input" style={{ flex: '1 1 200px', maxWidth: 300 }}>
+              <I.Search />
+              <input placeholder="Buscar por alumno u hora..." value={fichaQ} onChange={e => setFichaQ(e.target.value)} />
+            </div>
+          </div>
+          {matriculas.length === 0 && (
+            <div style={{ padding: 28, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>
+              Sin fichas en {activa.nombre}. La ficha dice que un alumno está apuntado a una hora — y con qué descuento.
+            </div>
+          )}
+          {fichasVisibles.length > 0 && (
+            <div className="data-table">
+              <div className="data-table-head" style={{ gridTemplateColumns: '1.6fr 1.2fr 90px 1fr 80px' }}>
+                <span>Alumno</span><span>Hora</span><span>Dto.</span><span>Alta / Baja</span><span></span>
+              </div>
+              {fichasVisibles.map(m => (
+                <div key={m.id} className="data-table-row" style={{ gridTemplateColumns: '1.6fr 1.2fr 90px 1fr 80px', opacity: m.baja ? .5 : 1 }}>
+                  <div>
+                    <div className="pri">{m.nombre} {m.apellidos}</div>
+                    <div className="sec">{m.email}</div>
+                  </div>
+                  <span style={{ fontSize: 13 }}>{m.hora}</span>
+                  <span style={{ fontWeight: 700, color: m.descuentoPct > 0 ? 'var(--teal)' : 'var(--ink-3)' }}>{m.descuentoPct}%</span>
+                  <span className="sec">
+                    {m.alta ? String(m.alta).slice(0, 10) : '—'}{m.baja ? ` → baja ${String(m.baja).slice(0, 10)}` : ''}
+                  </span>
+                  <div className="row-actions">
+                    <button className="icon-btn" onClick={() => setEditFicha({ ...m, alta: m.alta ? String(m.alta).slice(0, 10) : '', baja: m.baja ? String(m.baja).slice(0, 10) : '' })} aria-label="Editar"><I.Edit /></button>
+                    <button className="icon-btn danger" onClick={async () => {
+                      if (!window.confirm(`¿Borrar la ficha de ${m.nombre}?`)) return;
+                      await api(`/api/admin/billing/matriculas/${m.id}`, { method: 'DELETE' }, 'Ficha borrada.');
+                    }} aria-label="Borrar"><I.Trash /></button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Modal concepto ── */}
+      {editPrecio && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+          onClick={e => { if (e.target === e.currentTarget) setEditPrecio(null); }}>
+          <div style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 520, padding: 24 }}>
+            <h3 style={{ margin: '0 0 16px', fontSize: 18, fontWeight: 800 }}>{editPrecio.esNuevo ? 'Nuevo concepto' : 'Editar concepto'}</h3>
+            <form style={{ display: 'grid', gap: 14 }} onSubmit={async e => {
+              e.preventDefault();
+              const body = JSON.stringify(editPrecio);
+              const ok = editPrecio.esNuevo
+                ? await api('/api/admin/billing/precios', { method: 'POST', body }, 'Concepto creado.')
+                : await api(`/api/admin/billing/precios/${encodeURIComponent(editPrecio.concepto)}`, { method: 'PUT', body }, 'Concepto actualizado.');
+              if (ok) setEditPrecio(null);
+            }}>
+              <div className="field-row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div className="field">
+                  <label>Código</label>
+                  <input value={editPrecio.concepto} onChange={e => setEditPrecio(p => ({ ...p, concepto: e.target.value }))} required disabled={!editPrecio.esNuevo} placeholder="tkd-mens" />
+                </div>
+                <div className="field">
+                  <label>Tipo</label>
+                  <select value={editPrecio.tipo} onChange={e => setEditPrecio(p => ({ ...p, tipo: e.target.value }))}>
+                    {TIPOS_CONCEPTO.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="field"><label>Descripción (la que sale en el ticket)</label><input value={editPrecio.descripcion} onChange={e => setEditPrecio(p => ({ ...p, descripcion: e.target.value }))} required /></div>
+              <div className="field-row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div className="field">
+                  <label>Precio sin IVA (base)</label>
+                  <input type="number" step="0.01" min="0" value={editPrecio.precio} onChange={e => setEditPrecio(p => ({ ...p, precio: e.target.value }))} required />
+                </div>
+                <div className="field">
+                  <label>IVA %</label>
+                  <select value={editPrecio.ivaPct} onChange={e => setEditPrecio(p => ({ ...p, ivaPct: Number(e.target.value) }))}>
+                    <option value={0}>0% (exento)</option>
+                    <option value={21}>21%</option>
+                  </select>
+                </div>
+              </div>
+              <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
+                El IVA se suma encima del precio. Cambiar el precio aquí <b>no</b> toca los cargos ya generados: cada uno guarda el suyo.
+              </p>
+              {!editPrecio.esNuevo && (
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={editPrecio.activo !== false} onChange={e => setEditPrecio(p => ({ ...p, activo: e.target.checked }))} />
+                  Activo (los inactivos no se pueden asignar ni cobrar)
+                </label>
+              )}
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button type="button" className="btn btn-outline" onClick={() => setEditPrecio(null)}>Cancelar</button>
+                <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Guardando...' : 'Guardar'}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal ficha ── */}
+      {editFicha && activa && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+          onClick={e => { if (e.target === e.currentTarget) setEditFicha(null); }}>
+          <div style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 520, padding: 24 }}>
+            <h3 style={{ margin: '0 0 4px', fontSize: 18, fontWeight: 800 }}>{editFicha.esNueva ? 'Nueva ficha' : `Ficha de ${editFicha.nombre}`}</h3>
+            <p style={{ margin: '0 0 16px', fontSize: 13, color: 'var(--ink-3)' }}>Temporada {activa.nombre}</p>
+            <form style={{ display: 'grid', gap: 14 }} onSubmit={async e => {
+              e.preventDefault();
+              const ok = editFicha.esNueva
+                ? await api('/api/admin/billing/matriculas', { method: 'POST', body: JSON.stringify({ ...editFicha, temporadaId: activa.id }) }, 'Ficha creada.')
+                : await api(`/api/admin/billing/matriculas/${editFicha.id}`, { method: 'PUT', body: JSON.stringify(editFicha) }, 'Ficha actualizada.');
+              if (ok) setEditFicha(null);
+            }}>
+              {editFicha.esNueva && (
+                <>
+                  <div className="field">
+                    <label>Alumno</label>
+                    <select value={editFicha.userId} onChange={e => setEditFicha(f => ({ ...f, userId: e.target.value }))} required>
+                      <option value="">Elige alumno...</option>
+                      {[...alumnos].sort((a, b) => `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`, 'es'))
+                        .map(a => <option key={a.id} value={a.id}>{a.firstName} {a.lastName}</option>)}
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>Hora / clase</label>
+                    <input list="horas-sug2" value={editFicha.hora} onChange={e => setEditFicha(f => ({ ...f, hora: e.target.value }))} required placeholder="Ej. L 17:00 TKD" />
+                    <datalist id="horas-sug2">{horasDefinidas.map(h => <option key={h} value={h} />)}</datalist>
+                  </div>
+                </>
+              )}
+              <div className="field">
+                <label>Descuento manual (%)</label>
+                <input type="number" step="0.01" min="0" max="100" value={editFicha.descuentoPct} onChange={e => setEditFicha(f => ({ ...f, descuentoPct: e.target.value }))} />
+              </div>
+              <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
+                Este descuento se congela en cada cargo al generarlo. El de hermanos/varias mensualidades se calcula solo al cobrar.
+              </p>
+              <div className="field-row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div className="field"><label>Alta</label><input type="date" value={editFicha.alta || ''} onChange={e => setEditFicha(f => ({ ...f, alta: e.target.value }))} /></div>
+                <div className="field"><label>Baja (vacío = activa)</label><input type="date" value={editFicha.baja || ''} onChange={e => setEditFicha(f => ({ ...f, baja: e.target.value }))} /></div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button type="button" className="btn btn-outline" onClick={() => setEditFicha(null)}>Cancelar</button>
+                <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Guardando...' : 'Guardar'}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 // Agenda del campamento: quién viene cada día (semanal / mensual / general).
 function CampAgenda({ weeks, children }) {
   const [view, setView] = useState('week'); // 'week' | 'month' | 'general'
@@ -2457,6 +2816,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
       { id: "news", label: "Noticias / Foro", icon: <I.Newspaper /> },
       { id: "events", label: "Eventos", icon: <I.Star /> },
       { id: "camp", label: "Campamento", icon: <I.Sun /> },
+      { id: "billing", label: "Facturación", icon: <I.CreditCard /> },
     ]},
     { heading: "Club", items: [
       { id: "groups", label: "Grupos", icon: <I.Trophy /> },
@@ -2538,7 +2898,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
             <div style={{display: "flex", gap: 10, alignItems: "center"}}>
               <button className="btn btn-icon"><I.Bell /></button>
               <button className="btn btn-icon" onClick={() => alert("Función de búsqueda global disponible próximamente.")}><I.Search /></button>
-              {!['classes', 'events', 'support', 'camp'].includes(view) && (
+              {!['classes', 'events', 'support', 'camp', 'billing'].includes(view) && (
                 <button
                   className="btn btn-primary"
                   onClick={() => {
@@ -2591,6 +2951,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
           {view === "news" && <AdminNews refreshTrigger={refreshTrigger} onEditPost={(p) => { setEditingItem({ ...p, coverImageUrl: p.cover_image_url }); setActiveModal('edit-post'); }} />}
           {view === "events" && <AdminEvents showToast={showToast} />}
           {view === "camp" && <AdminCamp showToast={showToast} />}
+          {view === "billing" && <AdminBilling showToast={showToast} />}
           {view === "groups" && <AdminGroups refreshTrigger={refreshTrigger} onEditGroup={(g) => { setEditingItem(g); setActiveModal('edit-group'); }} />}
           {view === "instructors" && <AdminInstructores refreshTrigger={refreshTrigger} showToast={showToast} />}
           {view === "settings" && <AdminSettings />}

@@ -86,7 +86,7 @@ export default function App() {
   } else if (pathname.startsWith('/admin')) {
     if (!userChecked) return null;
     if (!user || !user.canAccessAdmin) { go('/auth'); return null; }
-    const adminSub = { campamento: 'camp', alumnos: 'students', clases: 'classes', eventos: 'events', noticias: 'news', recibos: 'payments' }[seg[1]] || 'overview';
+    const adminSub = { campamento: 'camp', alumnos: 'students', clases: 'classes', eventos: 'events', noticias: 'news', recibos: 'payments', facturacion: 'billing' }[seg[1]] || 'overview';
     screen = <AdminApp user={user} onLogout={handleLogout} subroute={adminSub} />;
   } else {
     screen = <PublicLanding />;

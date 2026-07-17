@@ -1735,6 +1735,273 @@ app.get('/api/admin/billing/mes-a-generar', authenticateSession, requireAdmin, (
     res.json({ mes: mesAGenerar() });
 });
 
+// ── Temporadas ──
+app.get('/api/admin/billing/temporadas', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query('SELECT * FROM aim_temporadas ORDER BY activa DESC, nombre DESC');
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows.map(t => ({ id: t.id, nombre: t.nombre, activa: t.activa })));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/billing/temporadas', authenticateSession, requireAdmin, async (req, res) => {
+    const { nombre } = req.body;
+    if (!nombre?.trim()) return res.status(400).json({ error: 'El nombre es obligatorio.' });
+    try {
+        const r = await pool.query('INSERT INTO aim_temporadas (nombre) VALUES ($1) RETURNING id', [nombre.trim()]);
+        res.status(201).json({ id: r.rows[0].id });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Activar una temporada: solo puede haber una activa a la vez.
+app.put('/api/admin/billing/temporadas/:id/activar', authenticateSession, requireAdmin, async (req, res) => {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query('UPDATE aim_temporadas SET activa = false WHERE activa = true');
+        const r = await client.query('UPDATE aim_temporadas SET activa = true WHERE id = $1 RETURNING id', [req.params.id]);
+        if (r.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Temporada no encontrada.' }); }
+        await client.query('COMMIT');
+        res.json({ success: true });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+app.delete('/api/admin/billing/temporadas/:id', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        await pool.query('DELETE FROM aim_temporadas WHERE id = $1', [req.params.id]);
+        res.json({ success: true });
+    } catch (err) { res.status(409).json({ error: 'No se puede borrar: tiene conceptos o fichas asociadas.' }); }
+});
+
+// ── Catálogo de precios ──
+app.get('/api/admin/billing/precios', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const soloActivos = req.query.all !== '1';
+        const r = await pool.query(
+            `SELECT * FROM aim_precios ${soloActivos ? 'WHERE activo = true' : ''} ORDER BY tipo, descripcion`
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows.map(p => ({
+            concepto: p.concepto, descripcion: p.descripcion, precio: Number(p.precio),
+            tipo: p.tipo, ivaPct: Number(p.iva_pct), activo: p.activo,
+        })));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+const TIPOS_CONCEPTO = ['Mensualidad', 'Material', 'Otros'];
+
+app.post('/api/admin/billing/precios', authenticateSession, requireAdmin, async (req, res) => {
+    const { concepto, descripcion, precio, tipo, ivaPct } = req.body;
+    if (!concepto?.trim() || !descripcion?.trim()) return res.status(400).json({ error: 'Código y descripción son obligatorios.' });
+    if (!TIPOS_CONCEPTO.includes(tipo)) return res.status(400).json({ error: `Tipo no válido. Debe ser: ${TIPOS_CONCEPTO.join(', ')}.` });
+    if (Number(precio) < 0) return res.status(400).json({ error: 'El precio no puede ser negativo.' });
+    try {
+        await pool.query(
+            `INSERT INTO aim_precios (concepto, descripcion, precio, tipo, iva_pct) VALUES ($1,$2,$3,$4,$5)`,
+            [concepto.trim(), descripcion.trim(), Number(precio) || 0, tipo, Number(ivaPct) || 0]
+        );
+        res.status(201).json({ concepto: concepto.trim() });
+    } catch (err) {
+        if (err.code === '23505') return res.status(409).json({ error: 'Ya existe un concepto con ese código.' });
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/admin/billing/precios/:concepto', authenticateSession, requireAdmin, async (req, res) => {
+    const { descripcion, precio, tipo, ivaPct, activo } = req.body;
+    if (!descripcion?.trim()) return res.status(400).json({ error: 'La descripción es obligatoria.' });
+    if (!TIPOS_CONCEPTO.includes(tipo)) return res.status(400).json({ error: `Tipo no válido. Debe ser: ${TIPOS_CONCEPTO.join(', ')}.` });
+    if (Number(precio) < 0) return res.status(400).json({ error: 'El precio no puede ser negativo.' });
+    try {
+        // Cambiar el precio aquí NO altera los cargos ya generados: cada cargo
+        // guarda su propio precio congelado.
+        const r = await pool.query(
+            `UPDATE aim_precios SET descripcion=$1, precio=$2, tipo=$3, iva_pct=$4, activo=$5, updated_at=NOW()
+             WHERE concepto=$6 RETURNING concepto`,
+            [descripcion.trim(), Number(precio) || 0, tipo, Number(ivaPct) || 0, activo !== false, req.params.concepto]
+        );
+        if (r.rowCount === 0) return res.status(404).json({ error: 'Concepto no encontrado.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/admin/billing/precios/:concepto', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        // Si ya se ha usado en algún cargo, no se borra: se desactiva, para no
+        // perder el histórico.
+        const usado = await pool.query('SELECT 1 FROM aim_cargos WHERE concepto = $1 LIMIT 1', [req.params.concepto]);
+        if (usado.rowCount > 0) {
+            await pool.query('UPDATE aim_precios SET activo = false WHERE concepto = $1', [req.params.concepto]);
+            return res.json({ success: true, desactivado: true });
+        }
+        await pool.query('DELETE FROM aim_precios WHERE concepto = $1', [req.params.concepto]);
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Conceptos por temporada (qué se cobra a cada hora) ──
+app.get('/api/admin/billing/conceptos', authenticateSession, requireAdmin, async (req, res) => {
+    const { temporadaId } = req.query;
+    try {
+        const r = await pool.query(
+            `SELECT ct.id, ct.concepto, ct.hora, ct.temporada_id, p.descripcion, p.precio, p.tipo, p.iva_pct
+             FROM aim_conceptos_temporada ct
+             JOIN aim_precios p ON p.concepto = ct.concepto
+             ${temporadaId ? 'WHERE ct.temporada_id = $1' : ''}
+             ORDER BY ct.hora, p.descripcion`,
+            temporadaId ? [temporadaId] : []
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows.map(c => ({
+            id: c.id, concepto: c.concepto, hora: c.hora, temporadaId: c.temporada_id,
+            descripcion: c.descripcion, precio: Number(c.precio), tipo: c.tipo, ivaPct: Number(c.iva_pct),
+        })));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/billing/conceptos', authenticateSession, requireAdmin, async (req, res) => {
+    const { concepto, hora, temporadaId } = req.body;
+    if (!concepto || !hora?.trim() || !temporadaId) return res.status(400).json({ error: 'Concepto, hora y temporada son obligatorios.' });
+    try {
+        const r = await pool.query(
+            `INSERT INTO aim_conceptos_temporada (concepto, hora, temporada_id) VALUES ($1,$2,$3) RETURNING id`,
+            [concepto, hora.trim(), temporadaId]
+        );
+        res.status(201).json({ id: r.rows[0].id });
+    } catch (err) {
+        if (err.code === '23505') return res.status(409).json({ error: 'Ese concepto ya está asignado a esa hora en esta temporada.' });
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/admin/billing/conceptos/:id', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        await pool.query('DELETE FROM aim_conceptos_temporada WHERE id = $1', [req.params.id]);
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Fichas / matrículas ──
+app.get('/api/admin/billing/matriculas', authenticateSession, requireAdmin, async (req, res) => {
+    const { temporadaId, userId } = req.query;
+    const where = ['u.club_id = $1'];
+    const vals = [AIM_CLUB_ID];
+    if (temporadaId) { vals.push(temporadaId); where.push(`m.temporada_id = $${vals.length}`); }
+    if (userId) { vals.push(userId); where.push(`m.user_id = $${vals.length}`); }
+    try {
+        const r = await pool.query(
+            `SELECT m.*, u.name, u.surname, u.email
+             FROM aim_matriculas m
+             JOIN users u ON u.user_id = m.user_id
+             WHERE ${where.join(' AND ')}
+             ORDER BY u.name, u.surname, m.hora`,
+            vals
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows.map(m => ({
+            id: m.id, userId: m.user_id, nombre: m.name, apellidos: m.surname, email: m.email,
+            hora: m.hora, temporadaId: m.temporada_id, descuentoPct: Number(m.descuento_pct),
+            alta: m.alta, baja: m.baja,
+        })));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/billing/matriculas', authenticateSession, requireAdmin, async (req, res) => {
+    const { userId, hora, temporadaId, descuentoPct, alta } = req.body;
+    if (!userId || !hora?.trim() || !temporadaId) return res.status(400).json({ error: 'Alumno, hora y temporada son obligatorios.' });
+    const dto = Number(descuentoPct) || 0;
+    if (dto < 0 || dto > 100) return res.status(400).json({ error: 'El descuento debe estar entre 0 y 100.' });
+    try {
+        const r = await pool.query(
+            `INSERT INTO aim_matriculas (user_id, hora, temporada_id, descuento_pct, alta)
+             VALUES ($1,$2,$3,$4, COALESCE($5::date, CURRENT_DATE)) RETURNING id`,
+            [userId, hora.trim(), temporadaId, dto, alta || null]
+        );
+        res.status(201).json({ id: r.rows[0].id });
+    } catch (err) {
+        if (err.code === '23505') return res.status(409).json({ error: 'Ese alumno ya tiene ficha en esa hora esta temporada.' });
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/admin/billing/matriculas/:id', authenticateSession, requireAdmin, async (req, res) => {
+    const { descuentoPct, alta, baja } = req.body;
+    const dto = Number(descuentoPct) || 0;
+    if (dto < 0 || dto > 100) return res.status(400).json({ error: 'El descuento debe estar entre 0 y 100.' });
+    try {
+        const r = await pool.query(
+            `UPDATE aim_matriculas SET descuento_pct = $1, alta = COALESCE($2::date, alta), baja = $3::date
+             WHERE id = $4 RETURNING id`,
+            [dto, alta || null, baja || null, req.params.id]
+        );
+        if (r.rowCount === 0) return res.status(404).json({ error: 'Ficha no encontrada.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/admin/billing/matriculas/:id', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        await pool.query('DELETE FROM aim_matriculas WHERE id = $1', [req.params.id]);
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Familias (parentescos por persona, igual que la tabla familias antigua) ──
+app.get('/api/admin/billing/familias/:personaId', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT f.id, f.familiar_id, f.tipo, u.name, u.surname, u.email, u.birthday
+             FROM aim_familias f JOIN users u ON u.user_id = f.familiar_id
+             WHERE f.persona_id = $1 ORDER BY f.tipo, u.name`,
+            [req.params.personaId]
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows.map(f => ({
+            id: f.id, familiarId: f.familiar_id, tipo: f.tipo,
+            nombre: f.name, apellidos: f.surname, email: f.email, nacimiento: f.birthday,
+        })));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/billing/familias', authenticateSession, requireAdmin, async (req, res) => {
+    const { personaId, familiarId, tipo, tipoInverso } = req.body;
+    if (!personaId || !familiarId || !tipo?.trim()) return res.status(400).json({ error: 'Persona, familiar y tipo son obligatorios.' });
+    if (personaId === familiarId) return res.status(400).json({ error: 'Una persona no puede ser familiar de sí misma.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query(
+            `INSERT INTO aim_familias (persona_id, familiar_id, tipo) VALUES ($1,$2,$3)
+             ON CONFLICT (persona_id, familiar_id) DO UPDATE SET tipo = EXCLUDED.tipo`,
+            [personaId, familiarId, tipo.trim()]
+        );
+        // El parentesco es una lista por persona: guardamos también el reflejo,
+        // para que la relación se vea desde los dos lados.
+        if (tipoInverso?.trim()) {
+            await client.query(
+                `INSERT INTO aim_familias (persona_id, familiar_id, tipo) VALUES ($1,$2,$3)
+                 ON CONFLICT (persona_id, familiar_id) DO UPDATE SET tipo = EXCLUDED.tipo`,
+                [familiarId, personaId, tipoInverso.trim()]
+            );
+        }
+        await client.query('COMMIT');
+        res.status(201).json({ success: true });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+app.delete('/api/admin/billing/familias/:id', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        await pool.query('DELETE FROM aim_familias WHERE id = $1', [req.params.id]);
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Admin: guardar asistencia y/o nota del profesor de un niño en un día.
 app.put('/api/admin/camp/attendance', authenticateSession, requireAdmin, async (req, res) => {
     const { childId, day, asistio, note } = req.body;

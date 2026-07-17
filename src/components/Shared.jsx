@@ -282,31 +282,25 @@ function AimFooter() {
           </div>
         </div>
 
-        <div className="certs">
-          <span className="cert-chip">
-            <img src="/src/logos/camaleon.png" alt="Programa Camaleón" style={{ height: "20px", width: "auto" }} />
-            Programa Camaleón
+        <div className="certs" style={{ display: "flex", gap: "24px", flexWrap: "wrap", alignItems: "center" }}>
+          <a href="https://aim.aimeducation.es/actividades/camaleon" target="_blank" rel="noopener noreferrer" className="cert-chip" style={{ display: "inline-block", transition: "transform 0.2s", textDecoration: "none" }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.05)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}>
+            <img src="/src/logos/camaleon.png" alt="Programa Camaleón" style={{ height: "48px", width: "auto", objectFit: "contain", display: "block" }} />
+          </a>
+          <a href="https://www.taekwondoitf.es" target="_blank" rel="noopener noreferrer" className="cert-chip" style={{ display: "inline-block", transition: "transform 0.2s", textDecoration: "none" }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.05)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}>
+            <img src="/src/logos/itfespana.png" alt="Taekwon-Do ITF España" style={{ height: "48px", width: "auto", objectFit: "contain", display: "block" }} />
+          </a>
+          <a href="https://www.rad.org.es" target="_blank" rel="noopener noreferrer" className="cert-chip" style={{ display: "inline-block", transition: "transform 0.2s", textDecoration: "none" }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.05)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}>
+            <img src="/src/logos/RADRT.png" alt="Royal Academy of Dance" style={{ height: "48px", width: "auto", objectFit: "contain", display: "block" }} />
+          </a>
+          <a href="https://www.cambridgeenglish.org/es/" target="_blank" rel="noopener noreferrer" className="cert-chip" style={{ display: "inline-block", transition: "transform 0.2s", textDecoration: "none" }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.05)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}>
+            <img src="/src/logos/Cambridge.png" alt="Cambridge English 2025-2026" style={{ height: "48px", width: "auto", objectFit: "contain", display: "block" }} />
+          </a>
+          <span className="cert-chip" style={{ display: "inline-block", transition: "transform 0.2s" }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.05)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}>
+            <img src="/src/logos/palyandkick.png" alt="Play &amp; Kick" style={{ height: "48px", width: "auto", objectFit: "contain", display: "block" }} />
           </span>
-          <span className="cert-chip">
-            <img src="/src/logos/itfespana.png" alt="Taekwon-Do ITF España" style={{ height: "20px", width: "auto" }} />
-            Taekwon-Do ITF España
-          </span>
-          <span className="cert-chip">
-            <img src="/src/logos/RADRT.png" alt="Royal Academy of Dance" style={{ height: "20px", width: "auto" }} />
-            Royal Academy of Dance
-          </span>
-          <span className="cert-chip">
-            <img src="/src/logos/Cambridge.png" alt="Cambridge English 2025-2026" style={{ height: "20px", width: "auto" }} />
-            Cambridge English 2025-2026
-          </span>
-          <span className="cert-chip">
-            <img src="/src/logos/palyandkick.png" alt="Play &amp; Kick" style={{ height: "20px", width: "auto" }} />
-            Play &amp; Kick
-          </span>
-          <span className="cert-chip">
-            <img src="/src/logos/COLEF-Andalucia.png" alt="COLEF" style={{ height: "20px", width: "auto" }} />
-            COLEF
-          </span>
+          <a href="https://www.colefandalucia.com" target="_blank" rel="noopener noreferrer" className="cert-chip" style={{ display: "inline-block", transition: "transform 0.2s", textDecoration: "none" }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.05)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}>
+            <img src="/src/logos/COLEF-Andalucia.png" alt="COLEF Andalucía" style={{ height: "48px", width: "auto", objectFit: "contain", display: "block" }} />
+          </a>
         </div>
 
         <div className="foot-bottom">
