@@ -310,19 +310,101 @@ function DashAttendance() {
   );
 }
 
-// Pagos de la familia. Todavía no existe facturación por familia: esta sección
-// mostraba los GASTOS del club (aim_education_recibos), que es información
-// interna. Queda vacía hasta que exista la facturación real.
+// Recibos de la familia: solo los suyos (donde es pagador o tiene algún cargo).
+const MESES_REC = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+const mesRec = (iso) => {
+  if (!iso) return '';
+  const [y, m] = String(iso).slice(0, 7).split('-');
+  return `${MESES_REC[Number(m) - 1]} ${y}`;
+};
+const eurRec = (n) => `${Number(n || 0).toFixed(2)} €`;
+
 function DashPayments() {
+  const [recibos, setRecibos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [abierto, setAbierto] = useState(null);
+
+  useEffect(() => {
+    fetch('/api/me/recibos', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : [])
+      .then(d => { setRecibos(Array.isArray(d) ? d : []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
+
+  const validos = recibos.filter(r => r.estado !== 'anulado');
+  const totalPagado = validos.reduce((s, r) => s + (r.importe || 0), 0);
+
   return (
-    <div className="panel">
-      <h2><I.Wallet /> Pagos y recibos</h2>
-      <p className="sub">Tus recibos y el estado de tus pagos.</p>
-      <EmptyState
-        icon={<I.Wallet />}
-        text="Todavía no puedes consultar tus recibos online. Estamos preparando la facturación; mientras tanto, pregunta en recepción o escríbenos."
-      />
-    </div>
+    <>
+      {validos.length > 0 && (
+        <div className="dash-cards" style={{ gridTemplateColumns: 'repeat(2, 1fr)' }}>
+          <div className="stat-card">
+            <div className="l">Total pagado</div>
+            <div className="v">{eurRec(totalPagado)}</div>
+            <div style={{ marginTop: 8, fontSize: 13, color: 'var(--ink-2)' }}>{validos.length} recibo{validos.length !== 1 ? 's' : ''}</div>
+          </div>
+          <div className="stat-card">
+            <div className="l">Último pago</div>
+            <div className="v">{validos[0]?.fecha ? new Date(validos[0].fecha).toLocaleDateString('es-ES') : '—'}</div>
+            <div style={{ marginTop: 8, fontSize: 13, color: 'var(--ink-2)', textTransform: 'capitalize' }}>{validos[0]?.medioPago || ''}</div>
+          </div>
+        </div>
+      )}
+
+      <div className="panel">
+        <h2><I.Wallet /> Mis recibos</h2>
+        <p className="sub">Los pagos hechos en el club. Toca un recibo para ver el detalle.</p>
+
+        {loading && <EmptyState text="Cargando recibos..." />}
+        {!loading && recibos.length === 0 && (
+          <EmptyState icon={<I.Wallet />} text="Todavía no hay recibos a tu nombre. Aparecerán aquí en cuanto hagas un pago en el club." />
+        )}
+
+        {recibos.map(r => {
+          const anulado = r.estado === 'anulado';
+          const open = abierto === r.numero;
+          return (
+            <div key={r.numero} style={{ borderBottom: '1px solid var(--line-2)' }}>
+              <button
+                onClick={() => setAbierto(open ? null : r.numero)}
+                style={{ display: 'flex', width: '100%', gap: 12, alignItems: 'center', padding: '14px 0', background: 'none', border: 0, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', opacity: anulado ? .55 : 1 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--ink)' }}>
+                    Recibo #{r.numero}
+                    {anulado && <span className="status-pill pending" style={{ marginLeft: 8 }}>Anulado</span>}
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2, textTransform: 'capitalize' }}>
+                    {r.fecha ? new Date(r.fecha).toLocaleDateString('es-ES') : ''}{r.medioPago ? ` · ${r.medioPago}` : ''}
+                  </div>
+                </div>
+                <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 18, textDecoration: anulado ? 'line-through' : 'none' }}>
+                  {eurRec(r.importe)}
+                </div>
+              </button>
+              {open && (
+                <div style={{ padding: '0 0 14px', display: 'grid', gap: 6 }}>
+                  {r.lineas.length === 0 && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Sin detalle disponible.</p>}
+                  {r.lineas.map((l, i) => (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 13, background: 'var(--bg-3)', borderRadius: 8, padding: '8px 12px' }}>
+                      <div>
+                        <div style={{ fontWeight: 600, color: 'var(--ink)' }}>{l.descripcion}</div>
+                        <div style={{ fontSize: 11, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{l.alumno} · {mesRec(l.mes)}</div>
+                      </div>
+                      <div style={{ fontWeight: 700, whiteSpace: 'nowrap' }}>{eurRec(l.importe + l.importe * l.ivaPct / 100)}</div>
+                    </div>
+                  ))}
+                  {anulado && (
+                    <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--orange)' }}>
+                      Este recibo fue anulado por el club. Si tienes dudas, pregúntanos.
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </>
   );
 }
 

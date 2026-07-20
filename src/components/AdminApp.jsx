@@ -1624,29 +1624,7 @@ function BillingTPV({ showToast }) {
     finally { setCobrando(false); }
   }
 
-  function imprimirTicket() {
-    const t = ticket;
-    const filas = t.detalle.map(d => `<tr><td>${d.descripcion}${d.descuentoPct || d.descuentoMensPct ? `<br><small>dto ${(d.descuentoPct || 0)}%${d.descuentoMensPct ? ` +${d.descuentoMensPct}%` : ''}</small>` : ''}</td><td style="text-align:right">${d.ivaPct}%</td><td style="text-align:right">${d.total.toFixed(2)}</td></tr>`).join('');
-    const bases = t.basesPorIva.map(b => `<tr><td colspan="2">Base ${b.ivaPct}% IVA</td><td style="text-align:right">${b.base.toFixed(2)} (${b.iva.toFixed(2)})</td></tr>`).join('');
-    const w = window.open('', '_blank', 'width=380,height=640');
-    w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Recibo ${t.recibo.numero}</title>
-      <style>body{font-family:sans-serif;width:280px;margin:0 auto;padding:10px;color:#111;font-size:12px}
-      h2{text-align:center;font-size:14px;margin:2px 0}.c{text-align:center;color:#555;font-size:11px;line-height:1.4}
-      table{width:100%;border-collapse:collapse;margin-top:8px}td{padding:3px 0;border-bottom:1px solid #eee;vertical-align:top}
-      .tot{font-size:15px;font-weight:800;text-align:right;margin-top:6px}small{color:#777}</style></head><body>
-      <h2>${t.empresa.nombre}</h2>
-      <div class="c">${t.empresa.nif}<br>${t.empresa.direccion}<br>${t.empresa.cp}<br>${t.empresa.tel} · ${t.empresa.web}</div>
-      <hr>
-      <div>Recibo nº <b>${t.recibo.numero}</b><br>Fecha: ${new Date(t.recibo.fecha).toLocaleDateString('es-ES')}<br>Pagador: ${t.recibo.pagador}</div>
-      <table><thead><tr><td><b>Descripción</b></td><td style="text-align:right"><b>IVA</b></td><td style="text-align:right"><b>Importe</b></td></tr></thead>
-      <tbody>${filas}${bases}</tbody></table>
-      <div class="tot">TOTAL: ${t.recibo.total.toFixed(2)} €</div>
-      <div style="text-align:right">${t.recibo.medioPago}${t.recibo.medioPago === 'efectivo' ? ` · entregado ${Number(t.recibo.entregado).toFixed(2)} · cambio ${Number(t.recibo.cambio).toFixed(2)}` : ''}</div>
-      ${t.ahorro > 0 ? `<div style="text-align:right;color:#0a0">Ahorro: ${t.ahorro.toFixed(2)} €</div>` : ''}
-      <p style="text-align:center;margin-top:10px"><b>¡Gracias!</b></p>
-      <script>window.onload=()=>window.print()</script></body></html>`);
-    w.document.close();
-  }
+  const imprimirTicket = () => imprimirTicketRecibo(ticket);
 
   const family = cesta?.familia || [];
 
@@ -1796,6 +1774,191 @@ function BillingTPV({ showToast }) {
             </div>
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+// Imprime un ticket a partir del objeto que devuelven cobrar / detalle de recibo.
+function imprimirTicketRecibo(t) {
+  const anulado = t.recibo.estado === 'anulado';
+  const filas = t.detalle.map(d => `<tr><td>${d.descripcion}${d.cliente ? `<br><small>${d.cliente}</small>` : ''}${(d.descuentoPct || d.descuentoMensPct) ? `<br><small>dto ${(d.descuentoPct || 0)}%${d.descuentoMensPct ? ` +${d.descuentoMensPct}%` : ''}</small>` : ''}</td><td style="text-align:right">${d.ivaPct}%</td><td style="text-align:right">${Number(d.total).toFixed(2)}</td></tr>`).join('');
+  const bases = t.basesPorIva.map(b => `<tr><td colspan="2">Base ${b.ivaPct}% IVA</td><td style="text-align:right">${b.base.toFixed(2)} (${b.iva.toFixed(2)})</td></tr>`).join('');
+  const w = window.open('', '_blank', 'width=380,height=640');
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Recibo ${t.recibo.numero}</title>
+    <style>body{font-family:sans-serif;width:280px;margin:0 auto;padding:10px;color:#111;font-size:12px}
+    h2{text-align:center;font-size:14px;margin:2px 0}.c{text-align:center;color:#555;font-size:11px;line-height:1.4}
+    table{width:100%;border-collapse:collapse;margin-top:8px}td{padding:3px 0;border-bottom:1px solid #eee;vertical-align:top}
+    .tot{font-size:15px;font-weight:800;text-align:right;margin-top:6px}small{color:#777}
+    .anul{text-align:center;color:#c00;font-weight:800;border:2px solid #c00;padding:4px;margin:6px 0}</style></head><body>
+    <h2>${t.empresa.nombre}</h2>
+    <div class="c">${t.empresa.nif}<br>${t.empresa.direccion}<br>${t.empresa.cp}<br>${t.empresa.tel} · ${t.empresa.web}</div>
+    ${anulado ? `<div class="anul">RECIBO ANULADO${t.recibo.anuladoMotivo ? `<br><small style="color:#c00">${t.recibo.anuladoMotivo}</small>` : ''}</div>` : '<hr>'}
+    <div>Recibo nº <b>${t.recibo.numero}</b><br>Fecha: ${new Date(t.recibo.fecha).toLocaleDateString('es-ES')}<br>Pagador: ${t.recibo.pagador}</div>
+    <table><thead><tr><td><b>Descripción</b></td><td style="text-align:right"><b>IVA</b></td><td style="text-align:right"><b>Importe</b></td></tr></thead>
+    <tbody>${filas}${bases}</tbody></table>
+    <div class="tot">TOTAL: ${Number(t.recibo.total).toFixed(2)} €</div>
+    <div style="text-align:right">${t.recibo.medioPago || ''}${t.recibo.medioPago === 'efectivo' ? ` · entregado ${Number(t.recibo.entregado).toFixed(2)} · cambio ${Number(t.recibo.cambio).toFixed(2)}` : ''}</div>
+    ${t.ahorro > 0 ? `<div style="text-align:right;color:#0a0">Ahorro: ${t.ahorro.toFixed(2)} €</div>` : ''}
+    <p style="text-align:center;margin-top:10px"><b>¡Gracias!</b></p>
+    <script>window.onload=()=>window.print()</script></body></html>`);
+  w.document.close();
+}
+
+// Histórico de recibos: buscar, reimprimir y anular.
+function BillingRecibos({ showToast }) {
+  const [recibos, setRecibos] = useState([]);
+  const [q, setQ] = useState('');
+  const [estado, setEstado] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [detalle, setDetalle] = useState(null);
+  const [anulando, setAnulando] = useState(null); // { id, numero, motivo }
+  const [saving, setSaving] = useState(false);
+
+  async function cargar() {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (q.trim()) params.set('q', q.trim());
+      if (estado) params.set('estado', estado);
+      const r = await fetch(`/api/admin/billing/recibos?${params}`, { credentials: 'include' });
+      if (r.ok) setRecibos(await r.json());
+    } catch { /* noop */ }
+    finally { setLoading(false); }
+  }
+  useEffect(() => { const t = setTimeout(cargar, 250); return () => clearTimeout(t); }, [q, estado]);
+
+  async function verDetalle(id, imprimir) {
+    const r = await fetch(`/api/admin/billing/recibos/${id}`, { credentials: 'include' });
+    if (!r.ok) { alert('No se pudo cargar el recibo.'); return; }
+    const t = await r.json();
+    if (imprimir) imprimirTicketRecibo(t); else setDetalle(t);
+  }
+
+  async function anular() {
+    if (!anulando.motivo?.trim()) { alert('Indica el motivo.'); return; }
+    setSaving(true);
+    try {
+      const r = await fetch(`/api/admin/billing/recibos/${anulando.id}/anular`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ motivo: anulando.motivo }),
+      });
+      if (r.ok) {
+        const d = await r.json();
+        showToast?.(`Recibo anulado. ${d.cargosDevueltos} cargo${d.cargosDevueltos !== 1 ? 's' : ''} vuelve${d.cargosDevueltos === 1 ? '' : 'n'} a pendiente.`);
+        setAnulando(null); setDetalle(null); await cargar();
+      } else { const d = await r.json(); alert(d.error || 'No se pudo anular.'); }
+    } catch { alert('Error de conexión.'); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <div style={{ display: 'grid', gap: 14 }}>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div className="search-input" style={{ flex: '1 1 220px', maxWidth: 320 }}>
+          <I.Search />
+          <input placeholder="Buscar por pagador o nº de recibo..." value={q} onChange={e => setQ(e.target.value)} />
+        </div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {[['', 'Todos'], ['cobrado', 'Cobrados'], ['anulado', 'Anulados']].map(([v, l]) => (
+            <button key={v} className={`filter-pill ${estado === v ? 'is-active' : ''}`} onClick={() => setEstado(v)}>{l}</button>
+          ))}
+        </div>
+      </div>
+
+      {loading && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
+      {!loading && recibos.length === 0 && (
+        <div style={{ padding: 28, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>
+          No hay recibos todavía.
+        </div>
+      )}
+      {recibos.length > 0 && (
+        <div className="data-table">
+          <div className="data-table-head" style={{ gridTemplateColumns: '80px 1.6fr 110px 110px 100px 120px' }}>
+            <span>Nº</span><span>Pagador</span><span>Fecha</span><span>Importe</span><span>Medio</span><span></span>
+          </div>
+          {recibos.map(r => (
+            <div key={r.id} className="data-table-row" style={{ gridTemplateColumns: '80px 1.6fr 110px 110px 100px 120px', opacity: r.estado === 'anulado' ? .55 : 1 }}>
+              <span style={{ fontWeight: 800, fontFamily: 'var(--font-display)' }}>#{r.numero}</span>
+              <div>
+                <div className="pri">{r.pagador}</div>
+                <div className="sec">{r.nLineas} línea{r.nLineas !== 1 ? 's' : ''}{r.estado === 'anulado' ? ` · anulado: ${r.anuladoMotivo || ''}` : ''}</div>
+              </div>
+              <span className="sec">{r.fecha ? new Date(r.fecha).toLocaleDateString('es-ES') : ''}</span>
+              <span style={{ fontWeight: 700, textDecoration: r.estado === 'anulado' ? 'line-through' : 'none' }}>{eur(r.importe)}</span>
+              <span style={{ fontSize: 12, textTransform: 'capitalize' }}>{r.medioPago || '—'}</span>
+              <div className="row-actions">
+                <button className="icon-btn" title="Ver detalle" onClick={() => verDetalle(r.id, false)} aria-label="Ver"><I.Eye /></button>
+                <button className="icon-btn" title="Reimprimir" onClick={() => verDetalle(r.id, true)} aria-label="Imprimir"><I.Print /></button>
+                {r.estado !== 'anulado' && (
+                  <button className="icon-btn danger" title="Anular" onClick={() => setAnulando({ id: r.id, numero: r.numero, motivo: '' })} aria-label="Anular"><I.X /></button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Detalle */}
+      {detalle && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+          onClick={e => { if (e.target === e.currentTarget) setDetalle(null); }}>
+          <div style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 560, maxHeight: '90vh', overflowY: 'auto', padding: 24 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 12 }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>Recibo #{detalle.recibo.numero}</h3>
+                <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--ink-3)' }}>
+                  {detalle.recibo.pagador} · {detalle.recibo.fecha ? new Date(detalle.recibo.fecha).toLocaleDateString('es-ES') : ''} · {detalle.recibo.medioPago}
+                </p>
+              </div>
+              {detalle.recibo.estado === 'anulado' && <span className="status-pill pending">Anulado</span>}
+            </div>
+            {detalle.recibo.estado === 'anulado' && detalle.recibo.anuladoMotivo && (
+              <p style={{ fontSize: 13, color: 'var(--orange)', background: 'color-mix(in oklab, var(--orange) 8%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--orange) 25%, transparent)', borderRadius: 10, padding: '8px 12px', margin: '0 0 12px' }}>
+                Motivo: {detalle.recibo.anuladoMotivo}
+              </p>
+            )}
+            <div style={{ display: 'grid', gap: 6 }}>
+              {detalle.detalle.map((d, i) => (
+                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 13, padding: '6px 0', borderBottom: '1px solid var(--line-2)' }}>
+                  <div>
+                    <div style={{ fontWeight: 700 }}>{d.descripcion}</div>
+                    <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>{d.cliente} · {mesLargo(d.mes)}{d.descuentoMensPct ? ` · dto ${d.descuentoMensPct}%` : ''}{d.ivaPct ? ` · IVA ${d.ivaPct}%` : ''}</div>
+                  </div>
+                  <div style={{ fontWeight: 700, whiteSpace: 'nowrap' }}>{eur(d.total)}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12, fontWeight: 800, fontSize: 16 }}>
+              <span>TOTAL</span><span>{eur(detalle.recibo.total)}</span>
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+              <button className="btn btn-outline" onClick={() => setDetalle(null)}>Cerrar</button>
+              <button className="btn btn-primary" onClick={() => imprimirTicketRecibo(detalle)}><I.Print /> Reimprimir</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Anular */}
+      {anulando && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+          onClick={e => { if (e.target === e.currentTarget) setAnulando(null); }}>
+          <div style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 460, padding: 24 }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: 18, fontWeight: 800 }}>Anular recibo #{anulando.numero}</h3>
+            <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--ink-2)' }}>
+              El recibo no se borra: queda marcado como anulado. Sus cargos <b>vuelven a pendientes</b> y se podrán volver a cobrar.
+            </p>
+            <div className="field">
+              <label>Motivo (obligatorio)</label>
+              <input value={anulando.motivo} onChange={e => setAnulando(a => ({ ...a, motivo: e.target.value }))} placeholder="Ej. cobro duplicado" autoFocus />
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+              <button className="btn btn-outline" onClick={() => setAnulando(null)}>Cancelar</button>
+              <button className="btn btn-primary" style={{ background: 'var(--orange)' }} disabled={saving} onClick={anular}>{saving ? 'Anulando...' : 'Anular recibo'}</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -2024,7 +2187,7 @@ function AdminBilling({ showToast }) {
   return (
     <>
       <div style={{ display: 'flex', gap: 10, marginBottom: 22, borderBottom: '1px solid var(--line-2)', paddingBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-        {[['cobrar', '💳 Cobrar (TPV)'], ['catalogo', `Catálogo (${precios.length})`], ['clases', `Clases (${clasesMerged.length})`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra (${conceptos.length})`], ['fichas', `Fichas (${matriculas.length})`], ['generar', 'Generar cargos']].map(([id, label]) => (
+        {[['cobrar', '💳 Cobrar (TPV)'], ['recibos', 'Recibos'], ['catalogo', `Catálogo (${precios.length})`], ['clases', `Clases (${clasesMerged.length})`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra (${conceptos.length})`], ['fichas', `Fichas (${matriculas.length})`], ['generar', 'Generar cargos']].map(([id, label]) => (
           <button key={id} className={`filter-pill ${tab === id ? 'is-active' : ''}`} onClick={() => setTab(id)} style={{ borderRadius: 8, padding: '8px 16px' }}>{label}</button>
         ))}
         <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: activa ? 'var(--teal)' : 'var(--orange)' }}>
@@ -2042,6 +2205,9 @@ function AdminBilling({ showToast }) {
 
       {/* ── Cobrar (TPV) ── */}
       {!loading && tab === 'cobrar' && <BillingTPV showToast={showToast} />}
+
+      {/* ── Recibos (histórico) ── */}
+      {!loading && tab === 'recibos' && <BillingRecibos showToast={showToast} />}
 
       {/* ── Catálogo ── */}
       {!loading && tab === 'catalogo' && (

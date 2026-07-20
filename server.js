@@ -407,6 +407,10 @@ async function initDb() {
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
+        // Anulación de recibos: nunca se borran, se marcan (rastro de auditoría).
+        await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_motivo TEXT`);
+        await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_por UUID REFERENCES users(user_id) ON DELETE SET NULL`);
+        await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_at TIMESTAMPTZ`);
         // Migración pre-lanzamiento (tabla vacía): el cargo pasa a llevar el
         // DESTINO (target_ref = clase concreta, NULL = por actividad) para poder
         // cobrar una mensualidad por cada clase. Solo se dispara mientras no
@@ -2436,6 +2440,165 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
         res.status(500).json({ error: err.message });
     } finally {
         client.release();
+    }
+});
+
+// ── Histórico de recibos, reimpresión y anulación ──
+
+// Monta el objeto de ticket (mismo formato que devuelve el cobro).
+async function ticketDeRecibo(reciboId) {
+    const r = await pool.query(
+        `SELECT rc.*, u.name, u.surname FROM aim_recibos rc
+         LEFT JOIN users u ON u.user_id = rc.pagador_id WHERE rc.id = $1`, [reciboId]
+    );
+    if (r.rowCount === 0) return null;
+    const rec = r.rows[0];
+    const cs = await pool.query(
+        `SELECT c.*, u.name, u.surname FROM aim_cargos c JOIN users u ON u.user_id = c.cliente_id
+         WHERE c.recibo_id = $1 ORDER BY u.surname, u.name, c.mes`, [reciboId]
+    );
+    const detalle = cs.rows.map(c => {
+        const base = Number(c.importe ?? 0);
+        const ivaPct = Number(c.iva_pct);
+        return {
+            descripcion: c.descripcion, cliente: `${c.name} ${c.surname}`, mes: c.mes,
+            precio: Number(c.precio), descuentoPct: Number(c.descuento_pct),
+            descuentoMensPct: c.descuento_mens_pct == null ? 0 : Number(c.descuento_mens_pct),
+            ivaPct, base, total: r2Server(base + base * ivaPct / 100),
+        };
+    });
+    const grupos = new Map();
+    for (const d of detalle) {
+        const g = grupos.get(d.ivaPct) || { ivaPct: d.ivaPct, base: 0, iva: 0 };
+        g.base = r2Server(g.base + d.base);
+        grupos.set(d.ivaPct, g);
+    }
+    for (const g of grupos.values()) g.iva = r2Server(g.base * g.ivaPct / 100);
+    return {
+        recibo: {
+            id: rec.id, numero: rec.numero, fecha: rec.fecha,
+            pagador: rec.name ? `${rec.name} ${rec.surname}` : '(sin pagador)',
+            medioPago: rec.medio_pago, entregado: Number(rec.entregado ?? 0), cambio: Number(rec.cambio ?? 0),
+            total: Number(rec.importe ?? 0), estado: rec.estado,
+            anuladoMotivo: rec.anulado_motivo, anuladoAt: rec.anulado_at,
+        },
+        detalle,
+        basesPorIva: [...grupos.values()].sort((a, b) => a.ivaPct - b.ivaPct),
+        ahorro: r2Server(detalle.reduce((s, d) => s + (d.precio - d.base), 0)),
+        empresa: EMPRESA_TICKET,
+    };
+}
+
+app.get('/api/admin/billing/recibos', authenticateSession, requireAdmin, async (req, res) => {
+    const { desde, hasta, q, estado } = req.query;
+    const where = [];
+    const vals = [];
+    if (desde) { vals.push(desde); where.push(`rc.fecha >= $${vals.length}::date`); }
+    if (hasta) { vals.push(hasta); where.push(`rc.fecha <= $${vals.length}::date`); }
+    if (estado) { vals.push(estado); where.push(`rc.estado = $${vals.length}`); }
+    if (q) {
+        vals.push(`%${q}%`);
+        const pNombre = vals.length;
+        vals.push(String(q).trim());
+        where.push(`(u.name || ' ' || u.surname ILIKE $${pNombre} OR rc.numero::text = $${vals.length})`);
+    }
+    try {
+        const r = await pool.query(
+            `SELECT rc.*, u.name, u.surname,
+                    (SELECT COUNT(*) FROM aim_cargos c WHERE c.recibo_id = rc.id)::int AS n_lineas
+             FROM aim_recibos rc LEFT JOIN users u ON u.user_id = rc.pagador_id
+             ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+             ORDER BY rc.numero DESC LIMIT 300`,
+            vals
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows.map(rc => ({
+            id: rc.id, numero: rc.numero, fecha: rc.fecha,
+            pagador: rc.name ? `${rc.name} ${rc.surname}` : '(sin pagador)',
+            importe: Number(rc.importe ?? 0), medioPago: rc.medio_pago, estado: rc.estado,
+            nLineas: rc.n_lineas, anuladoMotivo: rc.anulado_motivo,
+        })));
+    } catch (err) {
+        console.error('Error listando recibos:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Detalle completo (para reimprimir el ticket).
+app.get('/api/admin/billing/recibos/:id', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const t = await ticketDeRecibo(req.params.id);
+        if (!t) return res.status(404).json({ error: 'Recibo no encontrado.' });
+        res.set('Cache-Control', 'no-store');
+        res.json(t);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Anular: el recibo se marca (nunca se borra) y sus cargos vuelven a pendientes.
+app.post('/api/admin/billing/recibos/:id/anular', authenticateSession, requireAdmin, async (req, res) => {
+    const { motivo } = req.body;
+    if (!motivo?.trim()) return res.status(400).json({ error: 'Hay que indicar el motivo de la anulación.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const r = await client.query(`SELECT estado FROM aim_recibos WHERE id = $1 FOR UPDATE`, [req.params.id]);
+        if (r.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Recibo no encontrado.' }); }
+        if (r.rows[0].estado === 'anulado') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Ese recibo ya está anulado.' }); }
+        await client.query(
+            `UPDATE aim_recibos SET estado = 'anulado', anulado_motivo = $1, anulado_por = $2, anulado_at = NOW() WHERE id = $3`,
+            [motivo.trim(), req.userSession.userId, req.params.id]
+        );
+        // Los cargos vuelven a deberse: pendientes y sin importe calculado.
+        const cs = await client.query(
+            `UPDATE aim_cargos SET recibo_id = NULL, estado = 'pendiente', importe = NULL, descuento_mens_pct = NULL
+             WHERE recibo_id = $1 RETURNING id`, [req.params.id]
+        );
+        await client.query('COMMIT');
+        res.json({ success: true, cargosDevueltos: cs.rowCount });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Error anulando recibo:', err);
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+// ── Recibos de la familia (panel del alumno/familia) ──
+// Solo los suyos: donde es pagador o donde hay algún cargo a su nombre.
+app.get('/api/me/recibos', authenticateSession, async (req, res) => {
+    const me = req.userSession.userId;
+    try {
+        const r = await pool.query(
+            `SELECT rc.*, u.name, u.surname FROM aim_recibos rc
+             LEFT JOIN users u ON u.user_id = rc.pagador_id
+             WHERE rc.pagador_id = $1
+                OR rc.id IN (SELECT recibo_id FROM aim_cargos WHERE cliente_id = $1 AND recibo_id IS NOT NULL)
+             ORDER BY rc.numero DESC LIMIT 100`, [me]
+        );
+        const ids = r.rows.map(x => x.id);
+        let lineasPorRecibo = {};
+        if (ids.length) {
+            const cs = await pool.query(
+                `SELECT c.recibo_id, c.descripcion, c.mes, c.importe, c.iva_pct, u.name, u.surname
+                 FROM aim_cargos c JOIN users u ON u.user_id = c.cliente_id
+                 WHERE c.recibo_id = ANY($1::int[]) ORDER BY c.mes`, [ids]
+            );
+            for (const c of cs.rows) {
+                (lineasPorRecibo[c.recibo_id] = lineasPorRecibo[c.recibo_id] || []).push({
+                    descripcion: c.descripcion, alumno: `${c.name} ${c.surname}`, mes: c.mes,
+                    importe: Number(c.importe ?? 0), ivaPct: Number(c.iva_pct),
+                });
+            }
+        }
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows.map(rc => ({
+            numero: rc.numero, fecha: rc.fecha, importe: Number(rc.importe ?? 0),
+            medioPago: rc.medio_pago, estado: rc.estado,
+            pagador: rc.name ? `${rc.name} ${rc.surname}` : '',
+            lineas: lineasPorRecibo[rc.id] || [],
+        })));
+    } catch (err) {
+        console.error('Error recibos de familia:', err);
+        res.status(500).json({ error: err.message });
     }
 });
 
