@@ -1799,6 +1799,7 @@ function BillingTPV({ showToast }) {
 // Imprime un ticket a partir del objeto que devuelven cobrar / detalle de recibo.
 function imprimirTicketRecibo(t) {
   const anulado = t.recibo.estado === 'anulado';
+  const rect = t.recibo.tipo === 'rectificativo';
   const filas = t.detalle.map(d => `<tr><td>${d.descripcion}${d.cliente ? `<br><small>${d.cliente}</small>` : ''}${(d.descuentoPct || d.descuentoMensPct) ? `<br><small>dto ${(d.descuentoPct || 0)}%${d.descuentoMensPct ? ` +${d.descuentoMensPct}%` : ''}</small>` : ''}</td><td style="text-align:right">${d.ivaPct}%</td><td style="text-align:right">${Number(d.total).toFixed(2)}</td></tr>`).join('');
   const bases = t.basesPorIva.map(b => `<tr><td colspan="2">Base ${b.ivaPct}% IVA</td><td style="text-align:right">${b.base.toFixed(2)} (${b.iva.toFixed(2)})</td></tr>`).join('');
   const w = window.open('', '_blank', 'width=380,height=640');
@@ -1807,11 +1808,13 @@ function imprimirTicketRecibo(t) {
     h2{text-align:center;font-size:14px;margin:2px 0}.c{text-align:center;color:#555;font-size:11px;line-height:1.4}
     table{width:100%;border-collapse:collapse;margin-top:8px}td{padding:3px 0;border-bottom:1px solid #eee;vertical-align:top}
     .tot{font-size:15px;font-weight:800;text-align:right;margin-top:6px}small{color:#777}
-    .anul{text-align:center;color:#c00;font-weight:800;border:2px solid #c00;padding:4px;margin:6px 0}</style></head><body>
+    .anul{text-align:center;color:#c00;font-weight:800;border:2px solid #c00;padding:4px;margin:6px 0}
+    .rect{text-align:center;font-weight:800;border:2px solid #111;padding:4px;margin:6px 0;font-size:12px}</style></head><body>
     <h2>${t.empresa.nombre}</h2>
     <div class="c">${t.empresa.nif}<br>${t.empresa.direccion}<br>${t.empresa.cp}<br>${t.empresa.tel} · ${t.empresa.web}</div>
-    ${anulado ? `<div class="anul">RECIBO ANULADO${t.recibo.anuladoMotivo ? `<br><small style="color:#c00">${t.recibo.anuladoMotivo}</small>` : ''}</div>` : '<hr>'}
-    <div>Recibo nº <b>${t.recibo.numero}</b><br>Fecha: ${new Date(t.recibo.fecha).toLocaleDateString('es-ES')}<br>Pagador: ${t.recibo.pagador}</div>
+    ${anulado ? `<div class="anul">RECIBO ANULADO${t.recibo.anuladoMotivo ? `<br><small style="color:#c00">${t.recibo.anuladoMotivo}</small>` : ''}</div>` : ''}
+    ${rect ? `<div class="rect">FACTURA RECTIFICATIVA<br><small>Rectifica al nº ${t.recibo.rectificaNumero || '—'}${t.recibo.rectificaFecha ? ` de ${new Date(t.recibo.rectificaFecha).toLocaleDateString('es-ES')}` : ''}<br>Por ${t.recibo.rectMetodo === 'diferencias' ? 'diferencias' : 'sustitución'}${t.recibo.rectMotivo ? `<br>Motivo: ${t.recibo.rectMotivo}` : ''}</small></div>` : (anulado ? '' : '<hr>')}
+    <div>${rect ? 'Rectificativa' : 'Recibo'} nº <b>${t.recibo.numero}</b><br>Fecha: ${new Date(t.recibo.fecha).toLocaleDateString('es-ES')}<br>Pagador: ${t.recibo.pagador}</div>
     <table><thead><tr><td><b>Descripción</b></td><td style="text-align:right"><b>IVA</b></td><td style="text-align:right"><b>Importe</b></td></tr></thead>
     <tbody>${filas}${bases}</tbody></table>
     <div class="tot">TOTAL: ${Number(t.recibo.total).toFixed(2)} €</div>
@@ -1830,6 +1833,7 @@ function BillingRecibos({ showToast }) {
   const [loading, setLoading] = useState(true);
   const [detalle, setDetalle] = useState(null);
   const [anulando, setAnulando] = useState(null); // { id, numero, motivo }
+  const [rectificando, setRectificando] = useState(null); // { id, numero, metodo, motivo, lineas[], sel{}, devolver }
   const [saving, setSaving] = useState(false);
 
   async function cargar() {
@@ -1850,6 +1854,38 @@ function BillingRecibos({ showToast }) {
     if (!r.ok) { alert('No se pudo cargar el recibo.'); return; }
     const t = await r.json();
     if (imprimir) imprimirTicketRecibo(t); else setDetalle(t);
+  }
+
+  // Abre el modal cargando las líneas reales del recibo a rectificar.
+  async function abrirRectificar(r) {
+    const res = await fetch(`/api/admin/billing/recibos/${r.id}`, { credentials: 'include' });
+    if (!res.ok) { alert('No se pudieron cargar las líneas del recibo.'); return; }
+    const t = await res.json();
+    const lineas = t.detalle.filter(l => l.cargoId != null);
+    const sel = {};
+    lineas.forEach(l => { sel[l.cargoId] = true; });
+    setRectificando({ id: r.id, numero: r.numero, metodo: 'sustitucion', motivo: '', lineas, sel, devolver: false });
+  }
+
+  async function rectificar() {
+    const R = rectificando;
+    if (!R.motivo.trim()) { alert('Indica el motivo.'); return; }
+    const cargoIds = R.lineas.filter(l => R.sel[l.cargoId]).map(l => l.cargoId);
+    if (!cargoIds.length) { alert('Selecciona al menos una línea.'); return; }
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/admin/billing/recibos/${R.id}/rectificar`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ metodo: R.metodo, motivo: R.motivo, cargoIds, devolverAPendiente: R.devolver }),
+      });
+      if (res.ok) {
+        const t = await res.json();
+        showToast?.(`Rectificativa ${t.recibo.numero} emitida. A devolver: ${eur(t.aDevolver)}`);
+        setRectificando(null); await cargar();
+        if (window.confirm(`Rectificativa ${t.recibo.numero} emitida.\nImporte a devolver: ${eur(t.aDevolver)}\n\n¿Imprimir el documento?`)) imprimirTicketRecibo(t);
+      } else { const d = await res.json(); alert(d.error || 'No se pudo rectificar.'); }
+    } catch { alert('Error de conexión.'); }
+    finally { setSaving(false); }
   }
 
   async function anular() {
@@ -1896,10 +1932,16 @@ function BillingRecibos({ showToast }) {
           </div>
           {recibos.map(r => (
             <div key={r.id} className="data-table-row" style={{ gridTemplateColumns: '80px 1.6fr 110px 110px 100px 120px', opacity: r.estado === 'anulado' ? .55 : 1 }}>
-              <span style={{ fontWeight: 800, fontFamily: 'var(--font-display)' }}>#{r.numero}</span>
+              <span style={{ fontWeight: 800, fontFamily: 'var(--font-display)', color: r.tipo === 'rectificativo' ? 'var(--purple)' : 'var(--ink)' }}>
+                {r.tipo === 'rectificativo' ? r.numero : `#${r.numero}`}
+              </span>
               <div>
                 <div className="pri">{r.pagador}</div>
-                <div className="sec">{r.nLineas} línea{r.nLineas !== 1 ? 's' : ''}{r.estado === 'anulado' ? ` · anulado: ${r.anuladoMotivo || ''}` : ''}</div>
+                <div className="sec">
+                  {r.tipo === 'rectificativo'
+                    ? `Rectificativa de ${r.rectificaNumero ? `#${r.rectificaNumero}` : '—'} · ${r.rectMetodo === 'diferencias' ? 'por diferencias' : 'por sustitución'}${r.rectMotivo ? ` · ${r.rectMotivo}` : ''}`
+                    : `${r.nLineas} línea${r.nLineas !== 1 ? 's' : ''}${r.estado === 'anulado' ? ` · anulado: ${r.anuladoMotivo || ''}` : ''}${r.estado === 'rectificado' ? ' · rectificado' : ''}`}
+                </div>
               </div>
               <span className="sec">{r.fecha ? new Date(r.fecha).toLocaleDateString('es-ES') : ''}</span>
               <span style={{ fontWeight: 700, textDecoration: r.estado === 'anulado' ? 'line-through' : 'none' }}>{eur(r.importe)}</span>
@@ -1907,8 +1949,11 @@ function BillingRecibos({ showToast }) {
               <div className="row-actions">
                 <button className="icon-btn" title="Ver detalle" onClick={() => verDetalle(r.id, false)} aria-label="Ver"><I.Eye /></button>
                 <button className="icon-btn" title="Reimprimir" onClick={() => verDetalle(r.id, true)} aria-label="Imprimir"><I.Print /></button>
-                {r.estado !== 'anulado' && (
-                  <button className="icon-btn danger" title="Anular" onClick={() => setAnulando({ id: r.id, numero: r.numero, motivo: '' })} aria-label="Anular"><I.X /></button>
+                {r.tipo !== 'rectificativo' && r.estado === 'cobrado' && (
+                  <button className="icon-btn" title="Rectificar (ya entregado al cliente)" onClick={() => abrirRectificar(r)} aria-label="Rectificar" style={{ color: 'var(--purple)' }}><I.Edit /></button>
+                )}
+                {r.tipo !== 'rectificativo' && r.estado === 'cobrado' && (
+                  <button className="icon-btn danger" title="Anular (aún no entregado)" onClick={() => setAnulando({ id: r.id, numero: r.numero, motivo: '' })} aria-label="Anular"><I.X /></button>
                 )}
               </div>
             </div>
@@ -1956,6 +2001,83 @@ function BillingRecibos({ showToast }) {
           </div>
         </div>
       )}
+
+      {/* Rectificar */}
+      {rectificando && (() => {
+        const R = rectificando;
+        const marcadas = R.lineas.filter(l => R.sel[l.cargoId]);
+        const quedan = R.lineas.filter(l => !R.sel[l.cargoId]);
+        const aDevolver = marcadas.reduce((s, l) => s + l.total, 0);
+        const totalDoc = R.metodo === 'diferencias' ? -aDevolver : quedan.reduce((s, l) => s + l.total, 0);
+        return (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+            onClick={e => { if (e.target === e.currentTarget) setRectificando(null); }}>
+            <div style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 620, maxHeight: '90vh', overflowY: 'auto', padding: 24 }}>
+              <h3 style={{ margin: '0 0 4px', fontSize: 18, fontWeight: 800 }}>Rectificar recibo #{R.numero}</h3>
+              <p style={{ margin: '0 0 16px', fontSize: 13, color: 'var(--ink-2)' }}>
+                Se emitirá un <b>documento nuevo</b> en la serie R que referencia a este recibo. El original no se borra: queda marcado como rectificado.
+              </p>
+
+              <div className="field">
+                <label>Método</label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {[['sustitucion', 'Por sustitución', 'Muestra los importes correctos que quedan'], ['diferencias', 'Por diferencias', 'Muestra solo lo rectificado, en negativo']].map(([v, l, d]) => (
+                    <button key={v} type="button" onClick={() => setRectificando(x => ({ ...x, metodo: v }))}
+                      style={{ flex: 1, textAlign: 'left', padding: '10px 12px', borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit',
+                        border: `1.5px solid ${R.metodo === v ? 'var(--purple)' : 'var(--line)'}`,
+                        background: R.metodo === v ? 'color-mix(in oklab, var(--purple) 8%, var(--bg-2))' : 'var(--bg-2)' }}>
+                      <div style={{ fontWeight: 800, fontSize: 13, color: R.metodo === v ? 'var(--purple)' : 'var(--ink)' }}>{l}</div>
+                      <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{d}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="field">
+                <label>Motivo (obligatorio)</label>
+                <input value={R.motivo} onChange={e => setRectificando(x => ({ ...x, motivo: e.target.value }))} placeholder="Ej. error en el concepto cobrado" autoFocus />
+              </div>
+
+              <div style={{ marginTop: 8 }}>
+                <label style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink-2)', display: 'block', marginBottom: 6 }}>Líneas a rectificar (devolver)</label>
+                <div style={{ display: 'grid', gap: 6 }}>
+                  {R.lineas.map(l => (
+                    <label key={l.cargoId} style={{ display: 'flex', gap: 10, alignItems: 'center', background: 'var(--bg-3)', border: '1px solid var(--line-2)', borderRadius: 10, padding: '8px 12px', cursor: 'pointer' }}>
+                      <input type="checkbox" checked={!!R.sel[l.cargoId]} onChange={e => setRectificando(x => ({ ...x, sel: { ...x.sel, [l.cargoId]: e.target.checked } }))} style={{ width: 16, height: 16, accentColor: 'var(--purple)' }} />
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ display: 'block', fontSize: 13, fontWeight: 700 }}>{l.descripcion}</span>
+                        <span style={{ display: 'block', fontSize: 11, color: 'var(--ink-3)' }}>{l.cliente} · {mesLargo(l.mes)}</span>
+                      </span>
+                      <span style={{ fontWeight: 700, fontSize: 13 }}>{eur(l.total)}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, cursor: 'pointer', marginTop: 12 }}>
+                <input type="checkbox" checked={R.devolver} onChange={e => setRectificando(x => ({ ...x, devolver: e.target.checked }))} />
+                Devolver esos cargos a <b>pendientes</b> (para volver a cobrarlos correctamente)
+              </label>
+
+              <div style={{ background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 12, padding: '12px 14px', marginTop: 14, display: 'grid', gap: 6, fontSize: 14 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--orange)', fontWeight: 800 }}>
+                  <span>A devolver al cliente</span><span>{eur(aDevolver)}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--ink-2)' }}>
+                  <span>Total del documento rectificativo</span><span>{eur(totalDoc)}</span>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+                <button className="btn btn-outline" onClick={() => setRectificando(null)}>Cancelar</button>
+                <button className="btn btn-primary" style={{ background: 'var(--purple)' }} disabled={saving || !marcadas.length} onClick={rectificar}>
+                  {saving ? 'Emitiendo...' : 'Emitir rectificativa'}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Anular */}
       {anulando && (

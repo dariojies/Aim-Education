@@ -417,6 +417,32 @@ async function initDb() {
         await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_motivo TEXT`);
         await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_por UUID REFERENCES users(user_id) ON DELETE SET NULL`);
         await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_at TIMESTAMPTZ`);
+        // Rectificativas: serie propia ('R'), referencia al original, método y motivo.
+        await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS serie VARCHAR(4) NOT NULL DEFAULT 'A'`);
+        await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS tipo VARCHAR(20) NOT NULL DEFAULT 'normal'`);
+        await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS rectifica_id INTEGER REFERENCES aim_recibos(id) ON DELETE SET NULL`);
+        await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS rect_metodo VARCHAR(20)`);
+        await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS rect_motivo TEXT`);
+        // La numeración es correlativa DENTRO de cada serie, no global.
+        await client.query(`ALTER TABLE aim_recibos DROP CONSTRAINT IF EXISTS aim_recibos_numero_key`);
+        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_aim_recibos_serie_numero ON aim_recibos (serie, numero)`);
+        await client.query(`CREATE SEQUENCE IF NOT EXISTS aim_recibos_rect_numero_seq START 1`);
+        // Líneas del rectificativo: son correcciones, no cargos. Se guardan
+        // como copia para que el documento quede fijo aunque cambie el original.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_recibo_rect_lineas (
+                id SERIAL PRIMARY KEY,
+                recibo_id INTEGER NOT NULL REFERENCES aim_recibos(id) ON DELETE CASCADE,
+                cargo_id INTEGER REFERENCES aim_cargos(id) ON DELETE SET NULL,
+                descripcion VARCHAR(255) NOT NULL,
+                cliente_nombre VARCHAR(255),
+                mes DATE,
+                iva_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
+                base NUMERIC(10,2) NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_rect_lineas_recibo ON aim_recibo_rect_lineas(recibo_id)`);
         // Migración pre-lanzamiento (tabla vacía): el cargo pasa a llevar el
         // DESTINO (target_ref = clase concreta, NULL = por actividad) para poder
         // cobrar una mensualidad por cada clase. Solo se dispara mientras no
@@ -452,10 +478,15 @@ async function initDb() {
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
-        // Único por (cliente, concepto, mes, destino). El destino NULL (cobro por
-        // actividad) colapsa a uno; por clase, uno por cada clase.
+        // Origen: 'generado' (generación mensual) o 'manual' (venta en mostrador).
+        await client.query(`ALTER TABLE aim_cargos ADD COLUMN IF NOT EXISTS origen VARCHAR(20) NOT NULL DEFAULT 'generado'`);
+        // Único por (cliente, concepto, mes, destino) SOLO para los generados: así la
+        // generación mensual no duplica, pero sí se puede vender el mismo artículo
+        // varias veces en el mismo mes en el mostrador.
+        await client.query(`DROP INDEX IF EXISTS uq_aim_cargos_destino`);
         await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_aim_cargos_destino
-            ON aim_cargos (cliente_id, concepto, mes, COALESCE(target_ref, '00000000-0000-0000-0000-000000000000'::uuid))`);
+            ON aim_cargos (cliente_id, concepto, mes, COALESCE(target_ref, '00000000-0000-0000-0000-000000000000'::uuid))
+            WHERE origen = 'generado'`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_cargos_cliente ON aim_cargos(cliente_id)`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_cargos_recibo ON aim_cargos(recibo_id)`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_cargos_estado ON aim_cargos(estado)`);
@@ -2393,8 +2424,8 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
             const p = pr.rows[0];
             const d = Number(ex.descuentoPct) || 0;
             const ins = await client.query(
-                `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado)
-                 VALUES ($1,$2,$3::date,$4,$5,$6,$7,$8,'pendiente') RETURNING id`,
+                `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado, origen)
+                 VALUES ($1,$2,$3::date,$4,$5,$6,$7,$8,'pendiente','manual') RETURNING id`,
                 [ex.clienteId || pagadorId, ex.concepto, mesActual, p.descripcion, p.tipo, p.precio, p.iva_pct, d]
             );
             extraIds.push(ins.rows[0].id);
@@ -2462,28 +2493,53 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
 
 // ── Histórico de recibos, reimpresión y anulación ──
 
+// Nº visible: la serie 'A' (normal) se muestra sin prefijo; la 'R' como R-n.
+const numeroVisible = (rec) => (rec.serie === 'R' ? `R-${rec.numero}` : `${rec.numero}`);
+
 // Monta el objeto de ticket (mismo formato que devuelve el cobro).
 async function ticketDeRecibo(reciboId) {
     const r = await pool.query(
-        `SELECT rc.*, u.name, u.surname FROM aim_recibos rc
-         LEFT JOIN users u ON u.user_id = rc.pagador_id WHERE rc.id = $1`, [reciboId]
+        `SELECT rc.*, u.name, u.surname,
+                o.numero AS orig_numero, o.serie AS orig_serie, o.fecha AS orig_fecha
+         FROM aim_recibos rc
+         LEFT JOIN users u ON u.user_id = rc.pagador_id
+         LEFT JOIN aim_recibos o ON o.id = rc.rectifica_id
+         WHERE rc.id = $1`, [reciboId]
     );
     if (r.rowCount === 0) return null;
     const rec = r.rows[0];
-    const cs = await pool.query(
-        `SELECT c.*, u.name, u.surname FROM aim_cargos c JOIN users u ON u.user_id = c.cliente_id
-         WHERE c.recibo_id = $1 ORDER BY u.surname, u.name, c.mes`, [reciboId]
-    );
-    const detalle = cs.rows.map(c => {
-        const base = Number(c.importe ?? 0);
-        const ivaPct = Number(c.iva_pct);
-        return {
-            descripcion: c.descripcion, cliente: `${c.name} ${c.surname}`, mes: c.mes,
-            precio: Number(c.precio), descuentoPct: Number(c.descuento_pct),
-            descuentoMensPct: c.descuento_mens_pct == null ? 0 : Number(c.descuento_mens_pct),
-            ivaPct, base, total: r2Server(base + base * ivaPct / 100),
-        };
-    });
+    let detalle;
+    if (rec.tipo === 'rectificativo') {
+        // Las líneas del rectificativo son copias fijas, no cargos.
+        const ls = await pool.query(
+            `SELECT * FROM aim_recibo_rect_lineas WHERE recibo_id = $1 ORDER BY id`, [reciboId]
+        );
+        detalle = ls.rows.map(l => {
+            const base = Number(l.base);
+            const ivaPct = Number(l.iva_pct);
+            return {
+                descripcion: l.descripcion, cliente: l.cliente_nombre || '', mes: l.mes,
+                precio: base, descuentoPct: 0, descuentoMensPct: 0,
+                ivaPct, base, total: r2Server(base + base * ivaPct / 100),
+            };
+        });
+    } else {
+        const cs = await pool.query(
+            `SELECT c.*, u.name, u.surname FROM aim_cargos c JOIN users u ON u.user_id = c.cliente_id
+             WHERE c.recibo_id = $1 ORDER BY u.surname, u.name, c.mes`, [reciboId]
+        );
+        detalle = cs.rows.map(c => {
+            const base = Number(c.importe ?? 0);
+            const ivaPct = Number(c.iva_pct);
+            return {
+                cargoId: c.id,
+                descripcion: c.descripcion, cliente: `${c.name} ${c.surname}`, mes: c.mes,
+                precio: Number(c.precio), descuentoPct: Number(c.descuento_pct),
+                descuentoMensPct: c.descuento_mens_pct == null ? 0 : Number(c.descuento_mens_pct),
+                ivaPct, base, total: r2Server(base + base * ivaPct / 100),
+            };
+        });
+    }
     const grupos = new Map();
     for (const d of detalle) {
         const g = grupos.get(d.ivaPct) || { ivaPct: d.ivaPct, base: 0, iva: 0 };
@@ -2493,11 +2549,14 @@ async function ticketDeRecibo(reciboId) {
     for (const g of grupos.values()) g.iva = r2Server(g.base * g.ivaPct / 100);
     return {
         recibo: {
-            id: rec.id, numero: rec.numero, fecha: rec.fecha,
+            id: rec.id, numero: numeroVisible(rec), serie: rec.serie, tipo: rec.tipo, fecha: rec.fecha,
             pagador: rec.name ? `${rec.name} ${rec.surname}` : '(sin pagador)',
             medioPago: rec.medio_pago, entregado: Number(rec.entregado ?? 0), cambio: Number(rec.cambio ?? 0),
             total: Number(rec.importe ?? 0), estado: rec.estado,
             anuladoMotivo: rec.anulado_motivo, anuladoAt: rec.anulado_at,
+            rectMetodo: rec.rect_metodo, rectMotivo: rec.rect_motivo,
+            rectificaNumero: rec.orig_numero == null ? null : numeroVisible({ serie: rec.orig_serie, numero: rec.orig_numero }),
+            rectificaFecha: rec.orig_fecha,
         },
         detalle,
         basesPorIva: [...grupos.values()].sort((a, b) => a.ivaPct - b.ivaPct),
@@ -2522,18 +2581,24 @@ app.get('/api/admin/billing/recibos', authenticateSession, requireAdmin, async (
     try {
         const r = await pool.query(
             `SELECT rc.*, u.name, u.surname,
-                    (SELECT COUNT(*) FROM aim_cargos c WHERE c.recibo_id = rc.id)::int AS n_lineas
-             FROM aim_recibos rc LEFT JOIN users u ON u.user_id = rc.pagador_id
+                    o.numero AS orig_numero, o.serie AS orig_serie,
+                    (SELECT COUNT(*) FROM aim_cargos c WHERE c.recibo_id = rc.id)::int
+                      + (SELECT COUNT(*) FROM aim_recibo_rect_lineas l WHERE l.recibo_id = rc.id)::int AS n_lineas
+             FROM aim_recibos rc
+             LEFT JOIN users u ON u.user_id = rc.pagador_id
+             LEFT JOIN aim_recibos o ON o.id = rc.rectifica_id
              ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-             ORDER BY rc.numero DESC LIMIT 300`,
+             ORDER BY rc.fecha DESC, rc.id DESC LIMIT 300`,
             vals
         );
         res.set('Cache-Control', 'no-store');
         res.json(r.rows.map(rc => ({
-            id: rc.id, numero: rc.numero, fecha: rc.fecha,
+            id: rc.id, numero: numeroVisible(rc), serie: rc.serie, tipo: rc.tipo, fecha: rc.fecha,
             pagador: rc.name ? `${rc.name} ${rc.surname}` : '(sin pagador)',
             importe: Number(rc.importe ?? 0), medioPago: rc.medio_pago, estado: rc.estado,
             nLineas: rc.n_lineas, anuladoMotivo: rc.anulado_motivo,
+            rectMotivo: rc.rect_motivo, rectMetodo: rc.rect_metodo,
+            rectificaNumero: rc.orig_numero == null ? null : numeroVisible({ serie: rc.orig_serie, numero: rc.orig_numero }),
         })));
     } catch (err) {
         console.error('Error listando recibos:', err);
@@ -2579,6 +2644,84 @@ app.post('/api/admin/billing/recibos/:id/anular', authenticateSession, requireAd
     } finally { client.release(); }
 });
 
+// Rectificar un recibo ya entregado: emite un documento NUEVO en la serie R que
+// referencia al original. Por 'diferencias' muestra solo lo rectificado en
+// negativo; por 'sustitución' muestra los importes correctos que quedan.
+app.post('/api/admin/billing/recibos/:id/rectificar', authenticateSession, requireAdmin, async (req, res) => {
+    const { metodo, motivo, cargoIds, devolverAPendiente } = req.body;
+    if (!['sustitucion', 'diferencias'].includes(metodo)) return res.status(400).json({ error: 'Método no válido (sustitución o diferencias).' });
+    if (!motivo?.trim()) return res.status(400).json({ error: 'Hay que indicar el motivo de la rectificación.' });
+    const rectificar = Array.isArray(cargoIds) ? cargoIds : [];
+    if (rectificar.length === 0) return res.status(400).json({ error: 'Selecciona al menos una línea a rectificar.' });
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const o = await client.query(`SELECT * FROM aim_recibos WHERE id = $1 FOR UPDATE`, [req.params.id]);
+        if (o.rowCount === 0) throw { httP: 404, msg: 'Recibo no encontrado.' };
+        const orig = o.rows[0];
+        if (orig.tipo === 'rectificativo') throw { httP: 409, msg: 'No se puede rectificar un documento rectificativo.' };
+        if (orig.estado === 'anulado') throw { httP: 409, msg: 'Ese recibo está anulado; no procede rectificarlo.' };
+        const yaRect = await client.query(`SELECT 1 FROM aim_recibos WHERE rectifica_id = $1 LIMIT 1`, [orig.id]);
+        if (yaRect.rowCount > 0) throw { httP: 409, msg: 'Ese recibo ya tiene una rectificativa.' };
+
+        // Líneas del recibo original.
+        const cs = await client.query(
+            `SELECT c.*, u.name, u.surname FROM aim_cargos c JOIN users u ON u.user_id = c.cliente_id
+             WHERE c.recibo_id = $1 ORDER BY u.surname, u.name, c.mes`, [orig.id]
+        );
+        if (cs.rowCount === 0) throw { httP: 409, msg: 'Ese recibo no tiene líneas.' };
+        const idsSet = new Set(rectificar.map(Number));
+        const quitadas = cs.rows.filter(c => idsSet.has(c.id));
+        const quedan = cs.rows.filter(c => !idsSet.has(c.id));
+        if (quitadas.length === 0) throw { httP: 400, msg: 'Las líneas seleccionadas no pertenecen a este recibo.' };
+
+        const conIva = (c) => r2Server(Number(c.importe ?? 0) * (1 + Number(c.iva_pct) / 100));
+        const aDevolver = r2Server(quitadas.reduce((s, c) => s + conIva(c), 0));
+        // Por diferencias: lo rectificado en negativo. Por sustitución: lo correcto.
+        const lineas = metodo === 'diferencias'
+            ? quitadas.map(c => ({ c, base: r2Server(-Number(c.importe ?? 0)) }))
+            : quedan.map(c => ({ c, base: r2Server(Number(c.importe ?? 0)) }));
+        const importe = r2Server(lineas.reduce((s, l) => s + l.base * (1 + Number(l.c.iva_pct) / 100), 0));
+
+        const num = (await client.query(`SELECT nextval('aim_recibos_rect_numero_seq') AS n`)).rows[0].n;
+        const nuevo = await client.query(
+            `INSERT INTO aim_recibos (numero, serie, tipo, rectifica_id, rect_metodo, rect_motivo,
+                                      pagador_id, fecha, importe, medio_pago, entregado, cambio, estado, cobrado_por, cobrado_at)
+             VALUES ($1,'R','rectificativo',$2,$3,$4,$5,CURRENT_DATE,$6,$7,0,0,'cobrado',$8,NOW()) RETURNING id`,
+            [num, orig.id, metodo, motivo.trim(), orig.pagador_id, importe, orig.medio_pago, req.userSession.userId]
+        );
+        const nuevoId = nuevo.rows[0].id;
+        for (const l of lineas) {
+            await client.query(
+                `INSERT INTO aim_recibo_rect_lineas (recibo_id, cargo_id, descripcion, cliente_nombre, mes, iva_pct, base)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+                [nuevoId, l.c.id, l.c.descripcion, `${l.c.name} ${l.c.surname}`, l.c.mes, l.c.iva_pct, l.base]
+            );
+        }
+
+        // El original queda marcado; sus líneas rectificadas dejan de contar como cobradas.
+        await client.query(`UPDATE aim_recibos SET estado = 'rectificado' WHERE id = $1`, [orig.id]);
+        if (devolverAPendiente) {
+            await client.query(
+                `UPDATE aim_cargos SET recibo_id = NULL, estado = 'pendiente', importe = NULL, descuento_mens_pct = NULL
+                 WHERE id = ANY($1::int[])`, [quitadas.map(c => c.id)]
+            );
+        } else {
+            await client.query(`UPDATE aim_cargos SET estado = 'rectificado' WHERE id = ANY($1::int[])`, [quitadas.map(c => c.id)]);
+        }
+
+        await client.query('COMMIT');
+        const ticket = await ticketDeRecibo(nuevoId);
+        res.json({ ...ticket, aDevolver, lineasRectificadas: quitadas.length });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        if (err && err.httP) return res.status(err.httP).json({ error: err.msg });
+        console.error('Error rectificando recibo:', err);
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
 // ── Recibos de la familia (panel del alumno/familia) ──
 // Solo los suyos: donde es pagador o donde hay algún cargo a su nombre.
 app.get('/api/me/recibos', authenticateSession, async (req, res) => {
@@ -2605,12 +2748,24 @@ app.get('/api/me/recibos', authenticateSession, async (req, res) => {
                     importe: Number(c.importe ?? 0), ivaPct: Number(c.iva_pct),
                 });
             }
+            // Líneas de los documentos rectificativos.
+            const rl = await pool.query(
+                `SELECT recibo_id, descripcion, cliente_nombre, mes, base, iva_pct
+                 FROM aim_recibo_rect_lineas WHERE recibo_id = ANY($1::int[]) ORDER BY id`, [ids]
+            );
+            for (const l of rl.rows) {
+                (lineasPorRecibo[l.recibo_id] = lineasPorRecibo[l.recibo_id] || []).push({
+                    descripcion: l.descripcion, alumno: l.cliente_nombre || '', mes: l.mes,
+                    importe: Number(l.base), ivaPct: Number(l.iva_pct),
+                });
+            }
         }
         res.set('Cache-Control', 'no-store');
         res.json(r.rows.map(rc => ({
-            numero: rc.numero, fecha: rc.fecha, importe: Number(rc.importe ?? 0),
+            numero: numeroVisible(rc), tipo: rc.tipo, fecha: rc.fecha, importe: Number(rc.importe ?? 0),
             medioPago: rc.medio_pago, estado: rc.estado,
             pagador: rc.name ? `${rc.name} ${rc.surname}` : '',
+            rectMotivo: rc.rect_motivo,
             lineas: lineasPorRecibo[rc.id] || [],
         })));
     } catch (err) {
