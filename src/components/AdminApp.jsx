@@ -9,7 +9,7 @@ function sectionLabel(id) {
     overview: "Resumen",
     students: "Gestión de alumnos",
     classes: "Clases y horarios",
-    payments: "Pagos y facturación",
+    payments: "Gastos del club",
     news: "Noticias y foro",
     events: "Eventos y talleres",
     camp: "Campamento de verano",
@@ -81,7 +81,7 @@ function AdminOverview({ setView, refreshTrigger, showToast }) {
       .then(r => r.ok ? r.json() : [])
       .then(u => setUserCount(u.length))
       .catch(() => { });
-    fetch('/api/receipts', { credentials: 'include' })
+    fetch('/api/admin/gastos', { credentials: 'include' })
       .then(r => r.ok ? r.json() : [])
       .then(data => setReceipts(Array.isArray(data) ? data : []))
       .catch(() => { });
@@ -91,7 +91,7 @@ function AdminOverview({ setView, refreshTrigger, showToast }) {
       .catch(() => { });
   }, [refreshTrigger]);
 
-  const receiptsTotal = receipts.reduce((sum, r) => sum + (r.amount || 0), 0);
+  const receiptsTotal = receipts.reduce((sum, r) => sum + (r.importe || 0), 0);
 
   const classCounts = {};
   classes.forEach(c => { classCounts[c.act] = (classCounts[c.act] || 0) + 1; });
@@ -104,7 +104,7 @@ function AdminOverview({ setView, refreshTrigger, showToast }) {
     <>
       <div className="kpis">
         <KPI label="Alumnos registrados" value={userCount != null ? String(userCount) : "…"} trend="en la plataforma" act="taekwondo" icon={<I.Users />} />
-        <KPI label="Ingresos registrados" value={receiptsTotal > 0 ? `${receiptsTotal.toLocaleString("es-ES")}€` : "0€"} trend={`${receipts.length} recibo${receipts.length !== 1 ? "s" : ""}`} act="funcional" icon={<I.Wallet />} />
+        <KPI label="Gastos registrados" value={receiptsTotal > 0 ? `${receiptsTotal.toLocaleString("es-ES")}€` : "0€"} trend={`${receipts.length} gasto${receipts.length !== 1 ? "s" : ""}`} act="funcional" icon={<I.Wallet />} />
         <KPI label="Posts publicados" value={stats ? String(stats.publishedPosts) : "…"} trend={stats ? `${stats.totalViews.toLocaleString("es-ES")} visitas` : "cargando..."} act="pintura" icon={<I.Newspaper />} />
         <KPI label="Borradores" value={stats ? String(stats.draftPosts) : "…"} trend="sin publicar" act="ballet" icon={<I.Edit />} />
       </div>
@@ -113,20 +113,20 @@ function AdminOverview({ setView, refreshTrigger, showToast }) {
         <div style={{ background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 18, padding: 24 }}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 18 }}>
             <h2 style={{ fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 800, letterSpacing: "-.015em", margin: 0 }}>
-              Últimos recibos
+              Últimos gastos
             </h2>
             <button className="btn btn-sm btn-outline" onClick={() => setView("payments")}>Ver todos</button>
           </div>
           {receipts.length === 0 ? (
-            <div style={{ padding: "32px 0", textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>No hay recibos registrados todavía.</div>
+            <div style={{ padding: "32px 0", textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>No hay gastos registrados todavía.</div>
           ) : receipts.slice(0, 5).map((r, i) => (
             <div key={r.id || i} className="payment-row">
               <div>
-                <div className="name">{r.company || "Recibo"}</div>
-                <div className="date">{r.paymentMethod || "—"}</div>
+                <div className="name">{r.proveedor || "Gasto"}</div>
+                <div className="date">{r.concepto || r.medioPago || "—"}</div>
               </div>
-              <span className="date">{r.date ? new Date(r.date).toLocaleDateString("es-ES") : "—"}</span>
-              <span className="amount">{r.amount != null ? `${parseFloat(r.amount).toLocaleString("es-ES", { minimumFractionDigits: 2 })}€` : "—"}</span>
+              <span className="date">{r.fecha ? new Date(r.fecha).toLocaleDateString("es-ES") : "—"}</span>
+              <span className="amount">{r.importe != null ? `${parseFloat(r.importe).toLocaleString("es-ES", { minimumFractionDigits: 2 })}€` : "—"}</span>
             </div>
           ))}
         </div>
@@ -518,74 +518,357 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
   }
 }
 
-function AdminPayments({ refreshTrigger }) {
-  const [receipts, setReceipts] = useState([]);
+const MEDIOS_GASTO = ['Tarjeta', 'Transferencia bancaria', 'Domiciliación SEPA', 'Efectivo', 'Bizum', 'Otro'];
+const gastoVacio = () => ({
+  fecha: new Date().toISOString().slice(0, 10), importe: '', medioPago: 'Transferencia bancaria',
+  proveedor: '', cif: '', numeroFactura: '', concepto: '', tipo: 'comun', actividad: '',
+  pagado: false, comprobadoBanco: false, facturaUrl: '', esNuevo: true,
+});
+
+function AdminGastos({ refreshTrigger, showToast }) {
+  const [tab, setTab] = useState('gastos'); // 'gastos' | 'informe'
+  const [gastos, setGastos] = useState([]);
+  const [actividades, setActividades] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [edit, setEdit] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [q, setQ] = useState('');
+  const [filtroPago, setFiltroPago] = useState('');
+  const [provSug, setProvSug] = useState([]);
+  const [archivo, setArchivo] = useState(null); // { nombre, mime, base64 }
 
-  useEffect(() => {
-    fetch('/api/receipts', { credentials: 'include' })
-      .then(r => r.ok ? r.json() : [])
-      .then(data => { setReceipts(data); setLoading(false); })
-      .catch(() => setLoading(false));
-  }, [refreshTrigger]);
-
-  const totalAmount = receipts.reduce((s, r) => s + (r.amount || 0), 0);
-
-  async function deleteReceipt(id) {
-    if (!window.confirm("¿Eliminar este recibo?")) return;
+  async function cargar() {
+    setLoading(true);
     try {
-      const res = await fetch(`/api/receipts/${id}`, { method: 'DELETE', credentials: 'include' });
-      if (res.ok) {
-        setReceipts(prev => prev.filter(r => r.id !== id));
-      }
-    } catch (e) {
-      console.error(e);
-    }
+      const params = new URLSearchParams();
+      if (q.trim()) params.set('q', q.trim());
+      if (filtroPago) params.set('pagado', filtroPago);
+      const r = await fetch(`/api/admin/gastos?${params}`, { credentials: 'include' });
+      if (r.ok) setGastos(await r.json());
+    } catch { /* noop */ }
+    finally { setLoading(false); }
   }
+  useEffect(() => { const t = setTimeout(cargar, 250); return () => clearTimeout(t); }, [q, filtroPago, refreshTrigger]);
+  useEffect(() => {
+    fetch('/api/admin/billing/actividades', { credentials: 'include' }).then(r => r.ok ? r.json() : []).then(setActividades).catch(() => {});
+  }, []);
+
+  // Autocompletado de proveedor
+  useEffect(() => {
+    const n = edit?.proveedor?.trim();
+    if (!edit || !n || n.length < 2 || edit.provElegido) { setProvSug([]); return; }
+    const t = setTimeout(() => {
+      fetch(`/api/admin/proveedores?q=${encodeURIComponent(n)}`, { credentials: 'include' })
+        .then(r => r.ok ? r.json() : []).then(setProvSug).catch(() => {});
+    }, 250);
+    return () => clearTimeout(t);
+  }, [edit?.proveedor, edit?.provElegido]);
+
+  function elegirArchivo(file) {
+    if (!file) { setArchivo(null); return; }
+    if (file.size > 3_500_000) { alert('La factura es demasiado grande (máx. 3,5 MB).'); return; }
+    const fr = new FileReader();
+    fr.onload = () => setArchivo({ nombre: file.name, mime: file.type || 'application/octet-stream', base64: String(fr.result) });
+    fr.readAsDataURL(file);
+  }
+
+  async function guardar(e) {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      const body = { ...edit };
+      if (archivo) { body.facturaArchivo = archivo.base64; body.facturaNombre = archivo.nombre; body.facturaMime = archivo.mime; }
+      const r = await fetch('/api/admin/gastos', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify(body),
+      });
+      if (r.ok) { setEdit(null); setArchivo(null); await cargar(); showToast?.('Gasto guardado.'); }
+      else { const d = await r.json(); alert(d.error || 'Error al guardar.'); }
+    } catch { alert('Error de conexión.'); }
+    finally { setSaving(false); }
+  }
+
+  async function marcar(g, patch) {
+    const r = await fetch('/api/admin/gastos', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+      body: JSON.stringify({ ...g, ...patch }),
+    });
+    if (r.ok) setGastos(prev => prev.map(x => x.id === g.id ? { ...x, ...patch } : x));
+  }
+
+  async function borrar(id) {
+    if (!window.confirm('¿Eliminar este gasto?')) return;
+    const r = await fetch(`/api/admin/gastos/${id}`, { method: 'DELETE', credentials: 'include' });
+    if (r.ok) { setGastos(prev => prev.filter(x => x.id !== id)); showToast?.('Gasto eliminado.'); }
+  }
+
+  const total = gastos.reduce((s, g) => s + (g.importe || 0), 0);
+  const pendientes = gastos.filter(g => !g.pagado);
+  const sinComprobar = gastos.filter(g => g.pagado && !g.comprobadoBanco);
 
   return (
     <>
-      <div className="kpis">
-        <KPI label="Total en recibos" value={`${totalAmount.toLocaleString("es-ES", { minimumFractionDigits: 0 })}€`} trend={`${receipts.length} registros`} act="taekwondo" icon={<I.Wallet />} />
-        <KPI label="Recibos con factura" value={String(receipts.filter(r => r.invoiceLink).length)} trend="con PDF adjunto" act="funcional" icon={<I.CreditCard />} />
-        <KPI label="Sin factura" value={String(receipts.filter(r => !r.invoiceLink).length)} trend="pendiente de adjuntar" act="ballet" icon={<I.Clock />} />
-        <KPI label="Empresas" value={String(new Set(receipts.map(r => r.company).filter(Boolean)).size)} trend="proveedores distintos" act="pintura" icon={<I.Trophy />} />
+      <div style={{ display: 'flex', gap: 10, marginBottom: 20, borderBottom: '1px solid var(--line-2)', paddingBottom: 14, flexWrap: 'wrap' }}>
+        {[['gastos', `Gastos (${gastos.length})`], ['informe', '📊 Beneficio por actividad']].map(([id, label]) => (
+          <button key={id} className={`filter-pill ${tab === id ? 'is-active' : ''}`} onClick={() => setTab(id)} style={{ borderRadius: 8, padding: '8px 16px' }}>{label}</button>
+        ))}
       </div>
 
-      <div className="data-table">
-        <div className="data-table-head" style={{ gridTemplateColumns: "2fr 2fr 1fr 1fr 1fr 120px" }}>
-          <span>Empresa / Concepto</span><span>Método</span><span>Fecha</span><span>Importe</span><span>Factura</span><span></span>
-        </div>
-        {loading && <div style={{ padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>Cargando...</div>}
-        {!loading && receipts.length === 0 && <div style={{ padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>No hay recibos.</div>}
-        {receipts.map((r, i) => {
-          const d = r.date ? new Date(r.date).toLocaleDateString("es-ES") : "—";
-          const amount = r.amount != null ? `${parseFloat(r.amount).toLocaleString("es-ES", { minimumFractionDigits: 2 })}€` : "—";
-          return (
-            <div key={r.id || i} className="data-table-row" style={{ gridTemplateColumns: "2fr 2fr 1fr 1fr 1fr 120px" }}>
-              <div className="cell-user">
-                <div className="avatar" style={{ background: "var(--grad-aim)" }}>{(r.company?.[0] || "R").toUpperCase()}</div>
-                <div className="pri">{r.company || "Sin empresa"}</div>
-              </div>
-              <div className="sec">{r.paymentMethod || "—"}</div>
-              <div>{d}</div>
-              <div className="pri" style={{ fontFamily: "var(--font-display)", fontSize: 15 }}>{amount}</div>
-              <div>
-                <span className={`status-pill ${r.invoiceLink ? "ok" : "pending"}`}>
-                  {r.invoiceLink ? "Con PDF" : "Sin PDF"}
-                </span>
-              </div>
-              <div className="row-actions" style={{ display: 'flex', gap: 8 }}>
-                {r.invoiceLink
-                  ? <a href={r.invoiceLink} target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-outline">PDF</a>
-                  : <button className="icon-btn" disabled><I.Eye /></button>}
-                <button className="icon-btn danger" onClick={() => deleteReceipt(r.id)}><I.Trash /></button>
-              </div>
+      {tab === 'informe' && <InformeBeneficios />}
+
+      {tab === 'gastos' && (
+        <>
+          <div className="kpis">
+            <KPI label="Total gastos" value={eur(total)} trend={`${gastos.length} registros`} act="funcional" icon={<I.Wallet />} />
+            <KPI label="Pendientes de pago" value={eur(pendientes.reduce((s, g) => s + (g.importe || 0), 0))} trend={`${pendientes.length} facturas`} act="ballet" icon={<I.Clock />} />
+            <KPI label="Sin comprobar en banco" value={String(sinComprobar.length)} trend="pagados sin verificar" act="robotica" icon={<I.Check />} />
+            <KPI label="Proveedores" value={String(new Set(gastos.map(g => g.proveedor).filter(Boolean)).size)} trend="distintos" act="pintura" icon={<I.Trophy />} />
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
+            <button className="btn btn-sm btn-primary" onClick={() => { setEdit(gastoVacio()); setArchivo(null); }}><I.Plus /> Nuevo gasto</button>
+            <div className="search-input" style={{ flex: '1 1 200px', maxWidth: 320 }}>
+              <I.Search />
+              <input placeholder="Buscar proveedor, CIF, concepto o nº factura..." value={q} onChange={e => setQ(e.target.value)} />
             </div>
-          );
-        })}
-      </div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {[['', 'Todos'], ['no', 'Pendientes'], ['si', 'Pagados']].map(([v, l]) => (
+                <button key={v} className={`filter-pill ${filtroPago === v ? 'is-active' : ''}`} onClick={() => setFiltroPago(v)}>{l}</button>
+              ))}
+            </div>
+          </div>
+
+          {loading && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
+          {!loading && gastos.length === 0 && (
+            <div style={{ padding: 28, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>
+              No hay gastos registrados.
+            </div>
+          )}
+          {gastos.length > 0 && (
+            <div className="data-table">
+              <div className="data-table-head" style={{ gridTemplateColumns: '1.8fr 1.4fr 100px 110px 130px 110px 90px' }}>
+                <span>Proveedor</span><span>Concepto</span><span>Fecha</span><span>Importe</span><span>Estado</span><span>Tipo</span><span></span>
+              </div>
+              {gastos.map(g => (
+                <div key={g.id} className="data-table-row" style={{ gridTemplateColumns: '1.8fr 1.4fr 100px 110px 130px 110px 90px' }}>
+                  <div>
+                    <div className="pri">{g.proveedor || 'Sin proveedor'}</div>
+                    <div className="sec">{g.cif || 'sin CIF'}{g.numeroFactura ? ` · nº ${g.numeroFactura}` : ''}</div>
+                  </div>
+                  <div className="sec" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{g.concepto || '—'}<div style={{ fontSize: 11 }}>{g.medioPago || ''}</div></div>
+                  <span className="sec">{g.fecha ? new Date(g.fecha).toLocaleDateString('es-ES') : '—'}</span>
+                  <span style={{ fontWeight: 700, fontFamily: 'var(--font-display)' }}>{eur(g.importe)}</span>
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                    <button onClick={() => marcar(g, { pagado: !g.pagado })} title="Marcar pagado"
+                      style={{ fontSize: 10, fontWeight: 800, padding: '2px 8px', borderRadius: 999, cursor: 'pointer', border: '1px solid',
+                        borderColor: g.pagado ? 'color-mix(in oklab, var(--teal) 40%, transparent)' : 'color-mix(in oklab, var(--orange) 40%, transparent)',
+                        color: g.pagado ? 'var(--teal)' : 'var(--orange)',
+                        background: `color-mix(in oklab, ${g.pagado ? 'var(--teal)' : 'var(--orange)'} 12%, var(--bg-2))` }}>
+                      {g.pagado ? '✓ Pagado' : 'Pendiente'}
+                    </button>
+                    <button onClick={() => marcar(g, { comprobadoBanco: !g.comprobadoBanco })} title="Comprobado en los movimientos del banco"
+                      style={{ fontSize: 10, fontWeight: 800, padding: '2px 8px', borderRadius: 999, cursor: 'pointer', border: '1px solid var(--line-2)',
+                        color: g.comprobadoBanco ? 'var(--purple)' : 'var(--ink-3)',
+                        background: g.comprobadoBanco ? 'color-mix(in oklab, var(--purple) 12%, var(--bg-2))' : 'var(--bg-3)' }}>
+                      {g.comprobadoBanco ? '✓ Banco' : 'Banco'}
+                    </button>
+                  </div>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: g.tipo === 'especifico' ? 'var(--teal)' : 'var(--ink-3)' }}>
+                    {g.tipo === 'especifico' ? (g.actividad || 'Actividad') : 'Común'}
+                  </span>
+                  <div className="row-actions">
+                    {(g.tieneArchivo || g.facturaUrl) && (
+                      <a className="icon-btn" href={g.tieneArchivo ? `/api/admin/gastos/${g.id}/factura` : g.facturaUrl} target="_blank" rel="noopener noreferrer" title="Ver factura"><I.Eye /></a>
+                    )}
+                    <button className="icon-btn" onClick={() => { setEdit({ ...g, provElegido: true }); setArchivo(null); }} aria-label="Editar"><I.Edit /></button>
+                    <button className="icon-btn danger" onClick={() => borrar(g.id)} aria-label="Borrar"><I.Trash /></button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Modal de gasto */}
+      {edit && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+          onClick={e => { if (e.target === e.currentTarget) { setEdit(null); setArchivo(null); } }}>
+          <div style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 620, maxHeight: '90vh', overflowY: 'auto', padding: 24 }}>
+            <h3 style={{ margin: '0 0 16px', fontSize: 18, fontWeight: 800 }}>{edit.esNuevo ? 'Nuevo gasto' : 'Editar gasto'}</h3>
+            <form onSubmit={guardar} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 14 }}>
+              {/* Proveedor con autocompletado */}
+              <div className="field-row" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.6fr) minmax(0, 1fr)', gap: 12 }}>
+                <div className="field" style={{ position: 'relative' }}>
+                  <label>Proveedor</label>
+                  <input value={edit.proveedor} required autoComplete="off"
+                    onChange={e => setEdit(g => ({ ...g, proveedor: e.target.value, provElegido: false }))}
+                    placeholder="Empieza a escribir para buscar..." />
+                  {provSug.length > 0 && (
+                    <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 5, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, marginTop: 2, overflow: 'hidden', boxShadow: 'var(--shadow)' }}>
+                      {provSug.map(p => (
+                        <button key={p.id} type="button" onClick={() => { setEdit(g => ({ ...g, proveedor: p.nombre, cif: p.cif || g.cif, provElegido: true })); setProvSug([]); }}
+                          style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', background: 'none', border: 0, borderBottom: '1px solid var(--line-2)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13 }}>
+                          <b>{p.nombre}</b>{p.cif ? <span style={{ color: 'var(--ink-3)' }}> · {p.cif}</span> : ''}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="field"><label>CIF / NIF</label><input value={edit.cif || ''} onChange={e => setEdit(g => ({ ...g, cif: e.target.value }))} placeholder="B12345678" /></div>
+              </div>
+
+              <div className="field"><label>Concepto (a qué corresponde)</label><input value={edit.concepto || ''} onChange={e => setEdit(g => ({ ...g, concepto: e.target.value }))} placeholder="Ej. Luz local julio, material de pintura..." /></div>
+
+              <div className="field-row" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12 }}>
+                <div className="field"><label>Fecha factura</label><input type="date" value={edit.fecha ? String(edit.fecha).slice(0, 10) : ''} onChange={e => setEdit(g => ({ ...g, fecha: e.target.value }))} required /></div>
+                <div className="field"><label>Nº factura</label><input value={edit.numeroFactura || ''} onChange={e => setEdit(g => ({ ...g, numeroFactura: e.target.value }))} /></div>
+                <div className="field"><label>Importe (€)</label><input type="number" step="0.01" min="0" value={edit.importe} onChange={e => setEdit(g => ({ ...g, importe: e.target.value }))} required /></div>
+              </div>
+
+              <div className="field">
+                <label>Tipo de pago</label>
+                <select value={edit.medioPago || ''} onChange={e => setEdit(g => ({ ...g, medioPago: e.target.value }))}>
+                  {MEDIOS_GASTO.map(m => <option key={m} value={m}>{m}</option>)}
+                </select>
+              </div>
+
+              {/* Común / específico de actividad */}
+              <div className="field">
+                <label>Tipo de gasto</label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {[['comun', 'Común', 'Se reparte entre todas las actividades'], ['especifico', 'De una actividad', 'Se imputa solo a esa actividad']].map(([v, l, d]) => (
+                    <button key={v} type="button" onClick={() => setEdit(g => ({ ...g, tipo: v }))}
+                      style={{ flex: 1, minWidth: 0, textAlign: 'left', padding: '10px 12px', borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit',
+                        border: `1.5px solid ${edit.tipo === v ? 'var(--teal)' : 'var(--line)'}`,
+                        background: edit.tipo === v ? 'color-mix(in oklab, var(--teal) 8%, var(--bg-2))' : 'var(--bg-2)' }}>
+                      <div style={{ fontWeight: 800, fontSize: 13, color: edit.tipo === v ? 'var(--teal)' : 'var(--ink)' }}>{l}</div>
+                      <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{d}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {edit.tipo === 'especifico' && (
+                <div className="field">
+                  <label>Actividad</label>
+                  <select value={edit.actividad || ''} onChange={e => setEdit(g => ({ ...g, actividad: e.target.value }))} required>
+                    <option value="">Elige actividad...</option>
+                    {actividades.map(a => <option key={a} value={a}>{a}</option>)}
+                  </select>
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, cursor: 'pointer', fontWeight: 700, color: edit.pagado ? 'var(--teal)' : 'var(--ink-2)' }}>
+                  <input type="checkbox" checked={!!edit.pagado} onChange={e => setEdit(g => ({ ...g, pagado: e.target.checked }))} style={{ accentColor: 'var(--teal)' }} />
+                  Pagado
+                </label>
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, cursor: 'pointer', fontWeight: 700, color: edit.comprobadoBanco ? 'var(--purple)' : 'var(--ink-2)' }}>
+                  <input type="checkbox" checked={!!edit.comprobadoBanco} onChange={e => setEdit(g => ({ ...g, comprobadoBanco: e.target.checked }))} style={{ accentColor: 'var(--purple)' }} />
+                  Comprobado en los movimientos del banco
+                </label>
+              </div>
+
+              {/* Factura: archivo o enlace */}
+              <div className="field">
+                <label>Factura (archivo)</label>
+                <input type="file" accept="application/pdf,image/*" onChange={e => elegirArchivo(e.target.files?.[0])}
+                  style={{ fontFamily: 'inherit', fontSize: 13, padding: '8px 0' }} />
+                {archivo && <div style={{ fontSize: 12, color: 'var(--teal)', fontWeight: 700 }}>Se subirá: {archivo.nombre}</div>}
+                {!archivo && edit.tieneArchivo && (
+                  <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                    Ya tiene adjunta <b>{edit.facturaNombre}</b> — <a href={`/api/admin/gastos/${edit.id}/factura`} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--purple)' }}>ver</a>. Sube otra para reemplazarla.
+                  </div>
+                )}
+                <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--ink-3)' }}>PDF o imagen, máx. 3,5 MB. También puedes pegar un enlace externo:</p>
+                <input value={edit.facturaUrl || ''} onChange={e => setEdit(g => ({ ...g, facturaUrl: e.target.value }))} placeholder="https://... (opcional)" style={{ marginTop: 4 }} />
+              </div>
+
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button type="button" className="btn btn-outline" onClick={() => { setEdit(null); setArchivo(null); }}>Cancelar</button>
+                <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Guardando...' : 'Guardar gasto'}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </>
+  );
+}
+
+// Informe de beneficio por actividad: ingresos − gastos, repartiendo los comunes.
+function InformeBeneficios() {
+  const [datos, setDatos] = useState(null);
+  const [reparto, setReparto] = useState('ingresos');
+  const [desde, setDesde] = useState('');
+  const [hasta, setHasta] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  async function cargar() {
+    setLoading(true);
+    try {
+      const p = new URLSearchParams({ reparto });
+      if (desde) p.set('desde', desde);
+      if (hasta) p.set('hasta', hasta);
+      const r = await fetch(`/api/admin/informes/beneficios?${p}`, { credentials: 'include' });
+      if (r.ok) setDatos(await r.json());
+    } catch { /* noop */ }
+    finally { setLoading(false); }
+  }
+  useEffect(() => { cargar(); }, [reparto, desde, hasta]);
+
+  return (
+    <div style={{ display: 'grid', gap: 14 }}>
+      <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>
+        Cruza los <b>ingresos cobrados</b> (recibos no anulados) con los <b>gastos</b> de cada actividad.
+        Los gastos comunes se reparten según el criterio que elijas.
+      </p>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '12px 16px' }}>
+        <label style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>Desde</label>
+        <input type="date" value={desde} onChange={e => setDesde(e.target.value)} style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontFamily: 'inherit' }} />
+        <label style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>Hasta</label>
+        <input type="date" value={hasta} onChange={e => setHasta(e.target.value)} style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontFamily: 'inherit' }} />
+        <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: 'var(--ink-3)' }}>Repartir comunes:</span>
+        {[['ingresos', 'Según ingresos'], ['iguales', 'A partes iguales']].map(([v, l]) => (
+          <button key={v} className={`filter-pill ${reparto === v ? 'is-active' : ''}`} onClick={() => setReparto(v)}>{l}</button>
+        ))}
+      </div>
+
+      {loading && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Calculando...</p>}
+      {datos && datos.filas.length === 0 && (
+        <div style={{ padding: 28, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>
+          Todavía no hay datos: hacen falta cobros e imputar gastos a actividades.
+        </div>
+      )}
+      {datos && datos.filas.length > 0 && (
+        <>
+          <div className="data-table">
+            <div className="data-table-head" style={{ gridTemplateColumns: '1.6fr 1fr 1fr 1fr 1fr' }}>
+              <span>Actividad</span><span>Ingresos</span><span>Gastos propios</span><span>Parte comunes</span><span>Beneficio</span>
+            </div>
+            {datos.filas.map(f => (
+              <div key={f.actividad} className="data-table-row" style={{ gridTemplateColumns: '1.6fr 1fr 1fr 1fr 1fr' }}>
+                <div className="pri">{f.actividad}</div>
+                <span style={{ color: 'var(--teal)', fontWeight: 700 }}>{eur(f.ingresos)}</span>
+                <span className="sec">{eur(f.gastosDirectos)}</span>
+                <span className="sec">{eur(f.gastosComunes)}</span>
+                <span style={{ fontWeight: 800, fontFamily: 'var(--font-display)', color: f.beneficio >= 0 ? 'var(--teal)' : 'var(--orange)' }}>{eur(f.beneficio)}</span>
+              </div>
+            ))}
+            <div className="data-table-row" style={{ gridTemplateColumns: '1.6fr 1fr 1fr 1fr 1fr', background: 'var(--bg-3)', fontWeight: 800 }}>
+              <span>TOTAL</span>
+              <span style={{ color: 'var(--teal)' }}>{eur(datos.totales.ingresos)}</span>
+              <span style={{ gridColumn: 'span 2' }}>{eur(datos.totales.gastos)}</span>
+              <span style={{ fontFamily: 'var(--font-display)', color: datos.totales.beneficio >= 0 ? 'var(--teal)' : 'var(--orange)' }}>{eur(datos.totales.beneficio)}</span>
+            </div>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--ink-3)', display: 'grid', gap: 4 }}>
+            <div>Gastos comunes repartidos: <b>{eur(datos.totalGastosComunes)}</b> ({reparto === 'iguales' ? 'a partes iguales' : 'proporcional a los ingresos'}).</div>
+            {datos.sinActividad > 0 && <div>Hay <b>{eur(datos.sinActividad)}</b> de ingresos sin actividad asignada (ventas de mostrador o cargos antiguos), no incluidos en el reparto.</div>}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -2023,7 +2306,7 @@ function BillingRecibos({ showToast }) {
                 <div style={{ display: 'flex', gap: 8 }}>
                   {[['sustitucion', 'Por sustitución', 'Muestra los importes correctos que quedan'], ['diferencias', 'Por diferencias', 'Muestra solo lo rectificado, en negativo']].map(([v, l, d]) => (
                     <button key={v} type="button" onClick={() => setRectificando(x => ({ ...x, metodo: v }))}
-                      style={{ flex: 1, textAlign: 'left', padding: '10px 12px', borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit',
+                      style={{ flex: 1, minWidth: 0, textAlign: 'left', padding: '10px 12px', borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit',
                         border: `1.5px solid ${R.metodo === v ? 'var(--purple)' : 'var(--line)'}`,
                         background: R.metodo === v ? 'color-mix(in oklab, var(--purple) 8%, var(--bg-2))' : 'var(--bg-2)' }}>
                       <div style={{ fontWeight: 800, fontSize: 13, color: R.metodo === v ? 'var(--purple)' : 'var(--ink)' }}>{l}</div>
@@ -3465,7 +3748,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
 
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [notification, setNotification] = useState(null);
-  const [activeModal, setActiveModal] = useState(null); // 'new-student' | 'edit-student' | 'new-receipt' | 'new-post' | 'edit-post' | 'new-group' | 'edit-group' | 'new-class' | 'add-activity-or-aula' | 'new-aula' | 'new-activity'
+  const [activeModal, setActiveModal] = useState(null); // 'new-student' | 'edit-student' | 'new-post' | 'edit-post' | 'new-group' | 'edit-group' | 'new-class' | 'add-activity-or-aula' | 'new-aula' | 'new-activity'
   const [editingItem, setEditingItem] = useState(null);
 
   const [studentsList, setStudentsList] = useState([]);
@@ -3546,26 +3829,6 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
       }
     } catch (err) {
       alert("Error al eliminar alumno.");
-    }
-  };
-
-  const handleReceiptSubmit = async (e) => {
-    e.preventDefault();
-    const id = editingItem.id || Math.random().toString(36).substring(2, 11);
-    try {
-      const res = await fetch('/api/receipts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...editingItem, id }),
-        credentials: 'include'
-      });
-      if (res.ok) {
-        showToast("Recibo guardado correctamente.");
-        setRefreshTrigger(p => p + 1);
-        setActiveModal(null);
-      }
-    } catch (err) {
-      alert("Error al guardar recibo.");
     }
   };
 
@@ -3738,16 +4001,13 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
               <button className="btn btn-icon"><I.Bell /></button>
               <button className="btn btn-icon" onClick={() => alert("Función de búsqueda global disponible próximamente.")}><I.Search /></button>
-              {!['classes', 'events', 'support', 'camp', 'billing'].includes(view) && (
+              {!['classes', 'events', 'support', 'camp', 'billing', 'payments'].includes(view) && (
                 <button
                   className="btn btn-primary"
                   onClick={() => {
                     if (view === 'students') {
                       setEditingItem({ firstName: '', lastName: '', email: '', belt: '', isSuperAdmin: false });
                       setActiveModal('new-student');
-                    } else if (view === 'payments') {
-                      setEditingItem({ date: new Date().toISOString().split('T')[0], amount: 0, paymentMethod: 'Domiciliación SEPA', company: '', invoiceLink: '' });
-                      setActiveModal('new-receipt');
                     } else if (view === 'news') {
                       setEditingItem({ title: '', slug: '', excerpt: '', content: '', coverImageUrl: '', category: 'general', status: 'draft' });
                       setActiveModal('new-post');
@@ -3787,7 +4047,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
               }}
             />
           )}
-          {view === "payments" && <AdminPayments refreshTrigger={refreshTrigger} />}
+          {view === "payments" && <AdminGastos refreshTrigger={refreshTrigger} showToast={showToast} />}
           {view === "news" && <AdminNews refreshTrigger={refreshTrigger} onEditPost={(p) => { setEditingItem({ ...p, coverImageUrl: p.cover_image_url }); setActiveModal('edit-post'); }} />}
           {view === "events" && <AdminEvents showToast={showToast} />}
           {view === "camp" && <AdminCamp showToast={showToast} />}
@@ -3860,58 +4120,6 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
               )}
               <button type="button" className="btn btn-outline btn-sm" onClick={() => setActiveModal(null)}>Cancelar</button>
               <button type="submit" className="btn btn-primary btn-sm">Guardar</button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* --- MODAL NUEVO RECIBO --- */}
-      {activeModal === 'new-receipt' && (
-        <div style={{
-          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-          backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(8px)',
-          display: 'grid', placeItems: 'center', zIndex: 1000, padding: 20
-        }}>
-          <form onSubmit={handleReceiptSubmit} style={{
-            backgroundColor: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 24,
-            width: '100%', maxWidth: 500, padding: 32, display: 'grid', gap: 16
-          }}>
-            <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: 'var(--ink)' }}>Emitir Nuevo Recibo</h3>
-
-            <div className="field">
-              <label>Empresa / Concepto</label>
-              <input value={editingItem.company || ''} onChange={e => setEditingItem({ ...editingItem, company: e.target.value })} required placeholder="Ej. Cuota mensual de Taekwondo" />
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              <div className="field">
-                <label>Importe (€)</label>
-                <input type="number" min="0" step="0.01" value={editingItem.amount || 0} onChange={e => setEditingItem({ ...editingItem, amount: parseFloat(e.target.value) })} required />
-              </div>
-              <div className="field">
-                <label>Fecha de cobro</label>
-                <input type="date" value={editingItem.date || ''} onChange={e => setEditingItem({ ...editingItem, date: e.target.value })} required />
-              </div>
-            </div>
-
-            <div className="field">
-              <label>Método de Pago</label>
-              <select value={editingItem.paymentMethod} onChange={e => setEditingItem({ ...editingItem, paymentMethod: e.target.value })} style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }}>
-                <option value="Domiciliación SEPA">Domiciliación SEPA</option>
-                <option value="Tarjeta de crédito">Tarjeta de crédito</option>
-                <option value="Transferencia bancaria">Transferencia bancaria</option>
-                <option value="Efectivo">Efectivo</option>
-              </select>
-            </div>
-
-            <div className="field">
-              <label>Enlace PDF de Factura (Opcional)</label>
-              <input value={editingItem.invoiceLink || ''} onChange={e => setEditingItem({ ...editingItem, invoiceLink: e.target.value })} placeholder="Ej. https://url-al-pdf.com/factura.pdf" />
-            </div>
-
-            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10 }}>
-              <button type="button" className="btn btn-outline btn-sm" onClick={() => setActiveModal(null)}>Cancelar</button>
-              <button type="submit" className="btn btn-primary btn-sm">Emitir Recibo</button>
             </div>
           </form>
         </div>

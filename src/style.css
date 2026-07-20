@@ -1833,6 +1833,9 @@ html[data-actaccents="off"] .act-card.solid {
   flex-direction: column;
   gap: 6px;
   margin-bottom: 14px;
+  /* Sin esto, dentro de un grid el campo no baja de su ancho intrínseco
+     (min-width:auto) y desborda el contenedor en lugar de encogerse. */
+  min-width: 0;
 }
 
 .field label {
@@ -1852,6 +1855,7 @@ html[data-actaccents="off"] .act-card.solid {
   background: var(--bg-2);
   color: var(--ink);
   outline: none;
+  min-width: 0;
   transition: border-color var(--tx-fast) ease, box-shadow var(--tx-fast) ease;
 }
 
@@ -1868,7 +1872,7 @@ html[data-actaccents="off"] .act-card.solid {
 
 .field-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 12px;
 }
 

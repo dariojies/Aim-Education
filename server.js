@@ -87,8 +87,15 @@ async function initDb() {
                 student_ids TEXT
             )
         `);
+        // GASTOS del club. La tabla se llamaba 'aim_education_recibos', pero
+        // nunca fueron recibos: siempre han sido gastos (proveedor + su factura).
+        // El nombre viejo se confundía con los recibos de cobro a las familias.
+        const tablaGastos = await client.query(`SELECT to_regclass('aim_education_recibos') AS vieja, to_regclass('aim_gastos') AS nueva`);
+        if (tablaGastos.rows[0].vieja && !tablaGastos.rows[0].nueva) {
+            await client.query(`ALTER TABLE aim_education_recibos RENAME TO aim_gastos`);
+        }
         await client.query(`
-            CREATE TABLE IF NOT EXISTS aim_education_recibos (
+            CREATE TABLE IF NOT EXISTS aim_gastos (
                 id TEXT PRIMARY KEY,
                 date DATE,
                 amount NUMERIC(10, 2),
@@ -97,6 +104,32 @@ async function initDb() {
                 invoice_link TEXT
             )
         `);
+        // Campos del gasto (algunos ya existían en la tabla pero sin usarse).
+        for (const col of [
+            'cif VARCHAR(50)',
+            'invoice_number VARCHAR(100)',
+            'concept TEXT',
+            'expense_type VARCHAR(20) DEFAULT \'comun\'',   // 'comun' | 'especifico'
+            'actividad VARCHAR(255)',                        // solo si es específico
+            'is_paid BOOLEAN DEFAULT false',
+            'comprobado_banco BOOLEAN DEFAULT false',
+            'factura_archivo TEXT',                          // contenido en base64
+            'factura_nombre VARCHAR(255)',
+            'factura_mime VARCHAR(100)',
+            'created_at TIMESTAMPTZ DEFAULT NOW()',
+        ]) {
+            await client.query(`ALTER TABLE aim_gastos ADD COLUMN IF NOT EXISTS ${col}`);
+        }
+        // Registro de proveedores, para no reescribir nombre y CIF cada vez.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_proveedores (
+                id SERIAL PRIMARY KEY,
+                nombre VARCHAR(255) NOT NULL,
+                cif VARCHAR(50),
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_aim_proveedores_nombre ON aim_proveedores (LOWER(nombre))`);
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_education_activities (
                 id VARCHAR(100) PRIMARY KEY,
@@ -480,6 +513,9 @@ async function initDb() {
         `);
         // Origen: 'generado' (generación mensual) o 'manual' (venta en mostrador).
         await client.query(`ALTER TABLE aim_cargos ADD COLUMN IF NOT EXISTS origen VARCHAR(20) NOT NULL DEFAULT 'generado'`);
+        // Actividad a la que pertenece el cargo, copiada de la ficha al generar.
+        // Es lo que permite cruzar ingresos y gastos por actividad.
+        await client.query(`ALTER TABLE aim_cargos ADD COLUMN IF NOT EXISTS actividad VARCHAR(255)`);
         // Único por (cliente, concepto, mes, destino) SOLO para los generados: así la
         // generación mensual no duplica, pero sí se puede vender el mismo artículo
         // varias veces en el mismo mes en el mostrador.
@@ -2234,10 +2270,10 @@ app.post('/api/admin/billing/generar', authenticateSession, requireAdmin, async 
         if (temp.rowCount === 0) return res.status(400).json({ error: 'No hay temporada activa.' });
         const mes = normalizaMes(req.body.mes);
         const r = await pool.query(
-            `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, target_ref, target_nombre, estado)
+            `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, target_ref, target_nombre, actividad, estado)
              SELECT DISTINCT ON (m.user_id, ct.concepto, ${SQL_TARGET_REF})
                     m.user_id, ct.concepto, $2::date, p.descripcion, p.tipo, p.precio, p.iva_pct, m.descuento_pct,
-                    ${SQL_TARGET_REF}, ct.target_nombre, 'pendiente'
+                    ${SQL_TARGET_REF}, ct.target_nombre, m.actividad, 'pendiente'
              FROM aim_conceptos_temporada ct
              JOIN aim_precios p ON p.concepto = ct.concepto AND p.activo = true
              ${SQL_JOIN_FICHA}
@@ -2848,47 +2884,235 @@ app.put('/api/admin/camp/attendance', authenticateSession, requireAdmin, async (
     }
 });
 
-// OJO: aim_education_recibos son GASTOS del club (proveedor + su factura), no
-// recibos de familias. Es información interna del negocio: solo admin.
-app.get('/api/receipts', authenticateSession, requireAdmin, async (req, res) => {
+// =============================================================================
+// GASTOS DEL CLUB (proveedor + su factura). Información interna: solo admin.
+// =============================================================================
+
+const mapGasto = (r, conArchivo = false) => ({
+    id: r.id, fecha: r.date, importe: r.amount == null ? null : parseFloat(r.amount),
+    medioPago: r.payment_method, proveedor: r.company, cif: r.cif,
+    numeroFactura: r.invoice_number, concepto: r.concept,
+    tipo: r.expense_type || 'comun', actividad: r.actividad,
+    pagado: !!r.is_paid, comprobadoBanco: !!r.comprobado_banco,
+    facturaUrl: r.invoice_link,
+    facturaNombre: r.factura_nombre, facturaMime: r.factura_mime,
+    tieneArchivo: !!r.factura_nombre,
+    ...(conArchivo ? { facturaArchivo: r.factura_archivo } : {}),
+});
+
+app.get('/api/admin/gastos', authenticateSession, requireAdmin, async (req, res) => {
+    const { desde, hasta, q, pagado, tipo, actividad } = req.query;
+    const where = [];
+    const vals = [];
+    if (desde) { vals.push(desde); where.push(`date >= $${vals.length}::date`); }
+    if (hasta) { vals.push(hasta); where.push(`date <= $${vals.length}::date`); }
+    if (pagado === 'si') where.push('is_paid = true');
+    if (pagado === 'no') where.push('is_paid = false');
+    if (tipo) { vals.push(tipo); where.push(`COALESCE(expense_type,'comun') = $${vals.length}`); }
+    if (actividad) { vals.push(actividad); where.push(`actividad = $${vals.length}`); }
+    if (q) {
+        vals.push(`%${q}%`);
+        where.push(`(company ILIKE $${vals.length} OR cif ILIKE $${vals.length} OR concept ILIKE $${vals.length} OR invoice_number ILIKE $${vals.length})`);
+    }
     try {
-        const result = await pool.query('SELECT * FROM Aim_education_recibos ORDER BY date DESC');
-        res.json(result.rows.map(r => ({
-            id: r.id,
-            date: r.date,
-            amount: parseFloat(r.amount),
-            paymentMethod: r.payment_method,
-            company: r.company,
-            invoiceLink: r.invoice_link
-        })));
+        // No devolvemos el archivo en el listado: pesaría muchísimo.
+        const r = await pool.query(
+            `SELECT id, date, amount, payment_method, company, invoice_link, cif, invoice_number,
+                    concept, expense_type, actividad, is_paid, comprobado_banco, factura_nombre, factura_mime
+             FROM aim_gastos ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+             ORDER BY date DESC NULLS LAST, created_at DESC LIMIT 500`,
+            vals
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows.map(x => mapGasto(x)));
     } catch (err) {
+        console.error('Error listando gastos:', err);
         res.status(500).json({ error: err.message });
     }
 });
 
-app.post('/api/receipts', authenticateSession, requireAdmin, async (req, res) => {
-    const { id, date, amount, paymentMethod, company, invoiceLink } = req.body;
+const MEDIOS_GASTO = ['Tarjeta', 'Transferencia bancaria', 'Domiciliación SEPA', 'Efectivo', 'Bizum', 'Otro'];
+
+app.post('/api/admin/gastos', authenticateSession, requireAdmin, async (req, res) => {
+    const {
+        id, fecha, importe, medioPago, proveedor, cif, numeroFactura, concepto,
+        tipo, actividad, pagado, comprobadoBanco, facturaUrl,
+        facturaArchivo, facturaNombre, facturaMime,
+    } = req.body;
+    if (!proveedor?.trim()) return res.status(400).json({ error: 'El proveedor es obligatorio.' });
+    if (importe == null || isNaN(Number(importe))) return res.status(400).json({ error: 'El importe es obligatorio.' });
+    if (Number(importe) < 0) return res.status(400).json({ error: 'El importe no puede ser negativo.' });
+    if (!fecha) return res.status(400).json({ error: 'La fecha de factura es obligatoria.' });
+    if (tipo === 'especifico' && !actividad?.trim()) return res.status(400).json({ error: 'Un gasto específico necesita una actividad.' });
+    // ~5MB de archivo en base64 (el límite del body es 6mb).
+    if (facturaArchivo && facturaArchivo.length > 5_000_000) return res.status(413).json({ error: 'La factura es demasiado grande (máx. ~3,5 MB).' });
+
+    const gastoId = id || crypto.randomBytes(6).toString('hex');
+    const client = await pool.connect();
     try {
-        await pool.query(`
-            INSERT INTO Aim_education_recibos (id, date, amount, payment_method, company, invoice_link)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (id) DO UPDATE SET
-                date = EXCLUDED.date, amount = EXCLUDED.amount,
-                payment_method = EXCLUDED.payment_method, company = EXCLUDED.company,
-                invoice_link = EXCLUDED.invoice_link
-        `, [id, date, amount, paymentMethod, company, invoiceLink]);
-        res.json({ success: true });
+        await client.query('BEGIN');
+        // Si no se envía archivo nuevo, se conserva el que hubiera.
+        const setArchivo = facturaArchivo !== undefined;
+        await client.query(
+            `INSERT INTO aim_gastos (id, date, amount, payment_method, company, cif, invoice_number, concept,
+                                     expense_type, actividad, is_paid, comprobado_banco, invoice_link,
+                                     factura_archivo, factura_nombre, factura_mime)
+             VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+             ON CONFLICT (id) DO UPDATE SET
+                date = EXCLUDED.date, amount = EXCLUDED.amount, payment_method = EXCLUDED.payment_method,
+                company = EXCLUDED.company, cif = EXCLUDED.cif, invoice_number = EXCLUDED.invoice_number,
+                concept = EXCLUDED.concept, expense_type = EXCLUDED.expense_type, actividad = EXCLUDED.actividad,
+                is_paid = EXCLUDED.is_paid, comprobado_banco = EXCLUDED.comprobado_banco,
+                invoice_link = EXCLUDED.invoice_link,
+                factura_archivo = CASE WHEN $17 THEN EXCLUDED.factura_archivo ELSE aim_gastos.factura_archivo END,
+                factura_nombre  = CASE WHEN $17 THEN EXCLUDED.factura_nombre  ELSE aim_gastos.factura_nombre END,
+                factura_mime    = CASE WHEN $17 THEN EXCLUDED.factura_mime    ELSE aim_gastos.factura_mime END`,
+            [gastoId, fecha, Number(importe), medioPago || null, proveedor.trim(), cif?.trim() || null,
+             numeroFactura?.trim() || null, concepto?.trim() || null, tipo === 'especifico' ? 'especifico' : 'comun',
+             tipo === 'especifico' ? actividad.trim() : null, !!pagado, !!comprobadoBanco, facturaUrl?.trim() || null,
+             facturaArchivo || null, facturaNombre?.trim() || null, facturaMime || null, setArchivo]
+        );
+        // El proveedor se guarda en el registro para poder buscarlo la próxima vez.
+        await client.query(
+            `INSERT INTO aim_proveedores (nombre, cif) VALUES ($1,$2)
+             ON CONFLICT (LOWER(nombre)) DO UPDATE SET cif = COALESCE(EXCLUDED.cif, aim_proveedores.cif)`,
+            [proveedor.trim(), cif?.trim() || null]
+        );
+        await client.query('COMMIT');
+        res.json({ success: true, id: gastoId });
     } catch (err) {
-        console.error('Save Receipt Error:', err);
+        await client.query('ROLLBACK');
+        console.error('Error guardando gasto:', err);
         res.status(500).json({ error: err.message });
-    }
+    } finally { client.release(); }
 });
 
-app.delete('/api/receipts/:id', authenticateSession, requireAdmin, async (req, res) => {
+app.delete('/api/admin/gastos/:id', authenticateSession, requireAdmin, async (req, res) => {
     try {
-        await pool.query('DELETE FROM Aim_education_recibos WHERE id = $1', [req.params.id]);
+        await pool.query('DELETE FROM aim_gastos WHERE id = $1', [req.params.id]);
         res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Descargar la factura adjunta de un gasto.
+app.get('/api/admin/gastos/:id/factura', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query('SELECT factura_archivo, factura_nombre, factura_mime FROM aim_gastos WHERE id = $1', [req.params.id]);
+        if (r.rowCount === 0 || !r.rows[0].factura_archivo) return res.status(404).json({ error: 'Ese gasto no tiene factura adjunta.' });
+        const { factura_archivo, factura_nombre, factura_mime } = r.rows[0];
+        const b64 = String(factura_archivo).includes(',') ? String(factura_archivo).split(',').pop() : factura_archivo;
+        const buf = Buffer.from(b64, 'base64');
+        res.setHeader('Content-Type', factura_mime || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `inline; filename="${(factura_nombre || 'factura').replace(/"/g, '')}"`);
+        res.send(buf);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Registro de proveedores (autocompletado de nombre + CIF).
+app.get('/api/admin/proveedores', authenticateSession, requireAdmin, async (req, res) => {
+    const q = `%${(req.query.q || '').trim()}%`;
+    try {
+        const r = await pool.query(
+            `SELECT id, nombre, cif FROM aim_proveedores
+             WHERE nombre ILIKE $1 OR COALESCE(cif,'') ILIKE $1 ORDER BY nombre LIMIT 25`, [q]
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/admin/proveedores/:id', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        await pool.query('DELETE FROM aim_proveedores WHERE id = $1', [req.params.id]);
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Informe de beneficios por actividad: ingresos (cargos cobrados en recibos no
+// anulados) menos gastos. Los gastos comunes se reparten según 'reparto'.
+app.get('/api/admin/informes/beneficios', authenticateSession, requireAdmin, async (req, res) => {
+    const { desde, hasta, reparto = 'ingresos' } = req.query;
+    try {
+        // Rango de fechas por parámetros ($1 desde, $2 hasta; NULL = sin límite).
+        const esFecha = v => /^\d{4}-\d{2}-\d{2}$/.test(v);
+        if ((desde && !esFecha(desde)) || (hasta && !esFecha(hasta))) {
+            return res.status(400).json({ error: 'Las fechas deben tener el formato AAAA-MM-DD.' });
+        }
+        const d = desde || null, h = hasta || null;
+        // Ingresos: importe base de cada cargo cobrado, agrupado por actividad.
+        const ing = await pool.query(
+            `SELECT COALESCE(NULLIF(c.actividad,''), 'Sin actividad') AS actividad,
+                    COALESCE(SUM(c.importe),0)::numeric AS total
+             FROM aim_cargos c
+             JOIN aim_recibos r ON r.id = c.recibo_id
+             WHERE c.estado = 'cobrado' AND r.estado <> 'anulado'
+               AND ($1::date IS NULL OR r.fecha >= $1::date)
+               AND ($2::date IS NULL OR r.fecha <= $2::date)
+             GROUP BY 1`, [d, h]
+        );
+        const gas = await pool.query(
+            `SELECT COALESCE(expense_type,'comun') AS tipo,
+                    COALESCE(NULLIF(actividad,''),'') AS actividad,
+                    COALESCE(SUM(amount),0)::numeric AS total
+             FROM aim_gastos
+             WHERE ($1::date IS NULL OR date >= $1::date)
+               AND ($2::date IS NULL OR date <= $2::date)
+             GROUP BY 1,2`, [d, h]
+        );
+
+        const ingresos = {};
+        for (const r of ing.rows) ingresos[r.actividad] = Number(r.total);
+        const gastosDir = {};
+        let gastosComunes = 0;
+        for (const g of gas.rows) {
+            if (g.tipo === 'especifico' && g.actividad) gastosDir[g.actividad] = (gastosDir[g.actividad] || 0) + Number(g.total);
+            else gastosComunes += Number(g.total);
+        }
+
+        // Actividades a considerar: las que tienen ingresos o gastos directos.
+        const nombres = [...new Set([...Object.keys(ingresos), ...Object.keys(gastosDir)])].filter(n => n !== 'Sin actividad');
+        const totalIngresos = nombres.reduce((s, n) => s + (ingresos[n] || 0), 0);
+        // Cuota de gastos comunes por actividad, ya redondeada a céntimos.
+        const cuotas = nombres.map(n => {
+            if (gastosComunes <= 0 || nombres.length === 0) return 0;
+            const ingr = ingresos[n] || 0;
+            const bruta = reparto === 'iguales'
+                ? gastosComunes / nombres.length
+                : (totalIngresos > 0 ? gastosComunes * (ingr / totalIngresos) : gastosComunes / nombres.length);
+            return r2Server(bruta);
+        });
+        // Redondear cada cuota por separado deja céntimos sueltos: el sobrante (o
+        // el defecto) se carga a la actividad con la cuota mayor para que la suma
+        // de las filas cuadre exactamente con el total de gastos comunes.
+        const descuadre = r2Server(r2Server(gastosComunes) - cuotas.reduce((s, c) => s + c, 0));
+        if (descuadre !== 0 && cuotas.length > 0) {
+            let mayor = 0;
+            for (let i = 1; i < cuotas.length; i++) if (cuotas[i] > cuotas[mayor]) mayor = i;
+            cuotas[mayor] = r2Server(cuotas[mayor] + descuadre);
+        }
+        const filas = nombres.map((n, i) => {
+            const ingr = r2Server(ingresos[n] || 0);
+            const dir = r2Server(gastosDir[n] || 0);
+            return {
+                actividad: n, ingresos: ingr, gastosDirectos: dir,
+                gastosComunes: cuotas[i], beneficio: r2Server(ingr - dir - cuotas[i]),
+            };
+        }).sort((a, b) => b.beneficio - a.beneficio);
+
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            reparto, desde: desde || null, hasta: hasta || null,
+            sinActividad: r2Server(ingresos['Sin actividad'] || 0),
+            totalGastosComunes: r2Server(gastosComunes),
+            filas,
+            totales: {
+                ingresos: r2Server(filas.reduce((s, f) => s + f.ingresos, 0)),
+                gastos: r2Server(filas.reduce((s, f) => s + f.gastosDirectos + f.gastosComunes, 0)),
+                beneficio: r2Server(filas.reduce((s, f) => s + f.beneficio, 0)),
+            },
+        });
     } catch (err) {
+        console.error('Error informe beneficios:', err);
         res.status(500).json({ error: err.message });
     }
 });
