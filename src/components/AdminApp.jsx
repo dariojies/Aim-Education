@@ -1649,11 +1649,23 @@ function BillingTPV({ showToast }) {
             <input placeholder="Buscar alumno o pagador por nombre..." value={q} onChange={e => setQ(e.target.value)} autoFocus />
           </div>
           {resultados.length > 0 && (
-            <div style={{ marginTop: 8, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, overflow: 'hidden', maxWidth: 420 }}>
+            <div style={{ marginTop: 8, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, overflow: 'hidden', maxWidth: 520 }}>
               {resultados.map(p => (
                 <button key={p.id} onClick={() => elegirPagador(p)} style={{ display: 'flex', width: '100%', justifyContent: 'space-between', alignItems: 'center', gap: 10, padding: '10px 14px', background: 'transparent', border: 0, borderBottom: '1px solid var(--line-2)', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}>
-                  <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--ink)' }}>{p.nombre} {p.apellidos}</span>
-                  <span style={{ fontSize: 12, color: p.esMenor ? 'var(--orange)' : 'var(--ink-3)', fontWeight: 700 }}>{p.edad != null ? `${p.edad} años` : ''}{p.esMenor ? ' · menor' : ''}</span>
+                  <span style={{ minWidth: 0, flex: 1 }}>
+                    <span style={{ display: 'block', fontWeight: 700, fontSize: 14, color: 'var(--ink)' }}>{p.nombre} {p.apellidos}</span>
+                    <span style={{ display: 'block', fontSize: 11, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {p.email || 'sin email'}{p.edad != null ? ` · ${p.edad} años` : ''}{p.esMenor ? ' · menor' : ''}
+                    </span>
+                  </span>
+                  <span style={{
+                    flexShrink: 0, fontSize: 11, fontWeight: 800, padding: '3px 10px', borderRadius: 999,
+                    color: p.pendientes > 0 ? 'var(--teal)' : 'var(--ink-3)',
+                    background: p.pendientes > 0 ? 'color-mix(in oklab, var(--teal) 14%, var(--bg-2))' : 'var(--bg-3)',
+                    border: `1px solid ${p.pendientes > 0 ? 'color-mix(in oklab, var(--teal) 30%, transparent)' : 'var(--line-2)'}`,
+                  }}>
+                    {p.pendientes > 0 ? `${p.pendientes} pendiente${p.pendientes !== 1 ? 's' : ''}` : 'sin pendientes'}
+                  </span>
                 </button>
               ))}
             </div>
@@ -1678,8 +1690,13 @@ function BillingTPV({ showToast }) {
             {/* Líneas */}
             <div style={{ display: 'grid', gap: 8 }}>
               {cesta.cargos.length === 0 && extras.length === 0 && (
-                <div style={{ padding: 24, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>
-                  Esta familia no tiene cargos pendientes. Puedes añadir un concepto manual abajo.
+                <div style={{ padding: 20, background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14, display: 'grid', gap: 8 }}>
+                  <div style={{ fontWeight: 700, color: 'var(--ink-2)' }}>Esta familia no tiene cargos pendientes.</div>
+                  <div style={{ fontSize: 13 }}>
+                    Si esperabas ver algo, comprueba: que la persona tenga <b>ficha</b> y se hayan <b>generado</b> los cargos del mes,
+                    y que no exista <b>otra cuenta con el mismo nombre</b> — en el buscador se indica cuántos pendientes tiene cada una.
+                  </div>
+                  <div style={{ fontSize: 13 }}>También puedes añadir un concepto manual abajo.</div>
                 </div>
               )}
               {cesta.cargos.map(c => (

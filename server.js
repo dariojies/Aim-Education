@@ -22,6 +22,12 @@ const port = process.env.PORT || 3000;
 
 const { Pool } = pg;
 
+// Una columna DATE es una fecha de calendario, no un instante. Por defecto
+// node-postgres la convierte a Date a medianoche LOCAL, y al serializarla a
+// JSON (UTC) se desplaza un día: un cargo de '2026-09-01' llegaba al front como
+// '2026-08-31T22:00Z' y se mostraba como agosto. La devolvemos tal cual.
+pg.types.setTypeParser(1082, v => v); // 1082 = DATE
+
 // Heroku Postgres provee DATABASE_URL automáticamente.
 // En local se usan las variables individuales del .env.
 const pool = process.env.DATABASE_URL
@@ -2290,20 +2296,31 @@ const cargoParaMotor = (c) => ({
     mes: c.mes, precio: Number(c.precio), ivaPct: Number(c.iva_pct), descuentoPct: Number(c.descuento_pct),
 });
 
-// Buscar personas del club por nombre/apellidos.
+// Buscar personas del club por nombre/apellidos. Devuelve también el email y
+// cuántos cargos pendientes tiene su familia: con cuentas duplicadas (mismo
+// nombre) es la única forma de saber cuál es la buena antes de seleccionarla.
 app.get('/api/admin/billing/tpv/buscar', authenticateSession, requireAdmin, async (req, res) => {
     const q = `%${(req.query.q || '').trim()}%`;
     try {
         const r = await pool.query(
-            `SELECT user_id, name, surname, birthday FROM users
-             WHERE club_id = $1 AND (name ILIKE $2 OR surname ILIKE $2 OR (name || ' ' || surname) ILIKE $2)
-             ORDER BY surname, name LIMIT 25`,
+            `SELECT u.user_id, u.name, u.surname, u.email, u.birthday,
+                    (SELECT COUNT(*) FROM aim_cargos c
+                      WHERE c.estado = 'pendiente' AND c.recibo_id IS NULL
+                        AND (c.cliente_id = u.user_id
+                          OR c.cliente_id IN (SELECT familiar_id FROM aim_familias WHERE persona_id = u.user_id)
+                          OR c.cliente_id IN (SELECT persona_id FROM aim_familias WHERE familiar_id = u.user_id)))::int AS pendientes
+             FROM users u
+             WHERE u.club_id = $1 AND (u.name ILIKE $2 OR u.surname ILIKE $2 OR (u.name || ' ' || u.surname) ILIKE $2)
+             ORDER BY pendientes DESC, u.surname, u.name LIMIT 25`,
             [AIM_CLUB_ID, q]
         );
         res.set('Cache-Control', 'no-store');
         res.json(r.rows.map(u => {
             const edad = edadDe(u.birthday);
-            return { id: u.user_id, nombre: u.name, apellidos: u.surname, edad, esMenor: edad != null && edad < 18 };
+            return {
+                id: u.user_id, nombre: u.name, apellidos: u.surname, email: u.email,
+                edad, esMenor: edad != null && edad < 18, pendientes: u.pendientes,
+            };
         }));
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
