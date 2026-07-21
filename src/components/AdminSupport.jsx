@@ -108,6 +108,72 @@ function leerImagen(file) {
   });
 }
 
+const MAX_IMAGEN = 3 * 1024 * 1024;
+
+// Comprueba y lee un archivo suelto. Devuelve { imagen } o { error }.
+async function aceptarImagen(file) {
+  if (!file) return {};
+  if (!file.type.startsWith('image/')) return { error: 'Solo se pueden adjuntar imágenes.' };
+  if (file.size > MAX_IMAGEN) return { error: 'La imagen no puede pasar de 3 MB.' };
+  const imagen = await leerImagen(file);
+  // Una captura pegada del portapapeles llega sin nombre útil ("image.png").
+  if (!imagen.nombre || imagen.nombre === 'image.png') {
+    imagen.nombre = `captura-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.png`;
+  }
+  return { imagen };
+}
+
+// Saca la imagen de un evento de pegado (Ctrl+V), si la hay.
+function imagenDelPortapapeles(e) {
+  const items = e.clipboardData?.items || [];
+  for (const it of items) {
+    if (it.type?.startsWith('image/')) return it.getAsFile();
+  }
+  return null;
+}
+
+// Adjuntar una captura: pegando con Ctrl+V, arrastrándola encima o con el botón.
+function AdjuntarImagen({ imagen, onImagen, onError, ayuda }) {
+  const [encima, setEncima] = useState(false);
+  const inputRef = useRef(null);
+
+  async function tomar(file) {
+    const { imagen: img, error } = await aceptarImagen(file);
+    if (error) onError?.(error);
+    else if (img) { onError?.(''); onImagen(img); }
+  }
+
+  if (imagen) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 10, border: '1px solid var(--line)', borderRadius: 10, background: 'var(--bg-3)' }}>
+        <img src={imagen.data} alt="" style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 8, flexShrink: 0 }} />
+        <span style={{ flex: 1, minWidth: 0, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{imagen.nombre}</span>
+        <button type="button" className="btn btn-sm btn-outline" onClick={() => onImagen(null)}>Quitar</button>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      onDragOver={e => { e.preventDefault(); setEncima(true); }}
+      onDragLeave={() => setEncima(false)}
+      onDrop={e => { e.preventDefault(); setEncima(false); tomar(e.dataTransfer.files?.[0]); }}
+      onClick={() => inputRef.current?.click()}
+      style={{
+        border: `1.5px dashed ${encima ? 'var(--purple)' : 'var(--line)'}`,
+        background: encima ? 'color-mix(in oklab, var(--purple) 8%, var(--bg-3))' : 'var(--bg-3)',
+        borderRadius: 10, padding: '14px 16px', textAlign: 'center', cursor: 'pointer',
+      }}>
+      <span className="btn btn-sm btn-outline" style={{ pointerEvents: 'none' }}>Adjuntar imagen</span>
+      <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 6 }}>
+        {ayuda || 'También puedes pegarla con Ctrl+V o arrastrarla aquí. Máx. 3 MB.'}
+      </div>
+      <input ref={inputRef} type="file" accept="image/*" style={{ display: 'none' }}
+        onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; tomar(f); }} />
+    </div>
+  );
+}
+
 function fmtHora(str) {
   const d = new Date(str);
   if (isNaN(d)) return '';
@@ -195,14 +261,18 @@ function TicketChat({ ticketId, canal, alto = 260 }) {
     finally { setEnviando(false); }
   }
 
-  async function elegirImagen(e) {
-    const f = e.target.files?.[0];
-    e.target.value = '';
+  async function tomarImagen(file) {
+    const { imagen: img, error: err } = await aceptarImagen(file);
+    if (err) setError(err);
+    else if (img) { setError(''); setImagen(img); }
+  }
+
+  // Ctrl+V sobre la caja de escribir adjunta la captura en vez de pegar nada.
+  async function pegar(e) {
+    const f = imagenDelPortapapeles(e);
     if (!f) return;
-    if (!f.type.startsWith('image/')) { setError('Solo se pueden adjuntar imágenes.'); return; }
-    if (f.size > 3 * 1024 * 1024) { setError('La imagen no puede pasar de 3 MB.'); return; }
-    setError('');
-    setImagen(await leerImagen(f));
+    e.preventDefault();
+    await tomarImagen(f);
   }
 
   return (
@@ -237,12 +307,13 @@ function TicketChat({ ticketId, canal, alto = 260 }) {
           </div>
         )}
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-          <textarea value={texto} onChange={e => setTexto(e.target.value)} rows={2}
+          <textarea value={texto} onChange={e => setTexto(e.target.value)} rows={2} onPaste={pegar}
             onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) enviar(e); }}
-            placeholder="Escribe un mensaje... (Ctrl+Enter para enviar)"
+            placeholder="Escribe un mensaje... (Ctrl+V pega una captura, Ctrl+Enter envía)"
             style={{ flex: 1, minWidth: 0, resize: 'vertical', fontFamily: 'inherit', fontSize: 14, padding: 10, background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 10, color: 'var(--ink)' }} />
-          <label className="btn btn-sm btn-outline" style={{ cursor: 'pointer', flexShrink: 0 }} title="Adjuntar captura">
-            <I.Share /><input type="file" accept="image/*" onChange={elegirImagen} style={{ display: 'none' }} />
+          <label className="btn btn-sm btn-outline" style={{ cursor: 'pointer', flexShrink: 0 }} title="Adjuntar imagen">
+            <I.Share /><input type="file" accept="image/*" style={{ display: 'none' }}
+              onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; tomarImagen(f); }} />
           </label>
           <button type="submit" className="btn btn-sm btn-primary" disabled={enviando || (!texto.trim() && !imagen)} style={{ flexShrink: 0 }}>
             {enviando ? '...' : 'Enviar'}
@@ -271,6 +342,16 @@ export function AdminSupport({ user, ticketId = null }) {
   const [description, setDescription] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submitMsg, setSubmitMsg] = useState('');
+  const [imagenAlta, setImagenAlta] = useState(null);
+
+  async function pegarEnAlta(e) {
+    const f = imagenDelPortapapeles(e);
+    if (!f) return;              // texto normal: que se pegue como siempre
+    e.preventDefault();
+    const { imagen, error } = await aceptarImagen(f);
+    if (error) setSubmitMsg(error);
+    else { setSubmitMsg(''); setImagenAlta(imagen); }
+  }
 
   const [selected, setSelected] = useState(null);
   const [devResponse, setDevResponse] = useState('');
@@ -360,12 +441,15 @@ export function AdminSupport({ user, ticketId = null }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ subject, description }),
+        body: JSON.stringify({
+          subject, description,
+          adjunto: imagenAlta?.data || null, adjuntoNombre: imagenAlta?.nombre || null, adjuntoMime: imagenAlta?.mime || null,
+        }),
       });
       const d = await r.json();
       if (d.success) {
         setSubmitMsg('Ticket #' + d.ticketId + ' creado correctamente.');
-        setSubject(''); setDescription('');
+        setSubject(''); setDescription(''); setImagenAlta(null);
         fetchTickets();
         setTimeout(() => setActiveTab('list'), 1500);
       } else { setSubmitMsg(d.error || 'Error al crear el ticket.'); }
@@ -505,14 +589,20 @@ export function AdminSupport({ user, ticketId = null }) {
         <div className="panel" style={{maxWidth: 640}}>
           <h2>Crear nuevo ticket de soporte</h2>
           <p className="sub">Documenta un bug, mejora o tarea interna.</p>
-          <form onSubmit={submitTicket}>
+          {/* onPaste en el formulario entero: da igual dónde tengas el cursor al
+              hacer Ctrl+V, la captura se adjunta igual. */}
+          <form onSubmit={submitTicket} onPaste={pegarEnAlta}>
             <div className="field" style={{marginTop: 16}}>
               <label>Asunto</label>
               <input placeholder="Ej. Bug en el formulario de login" value={subject} onChange={e => setSubject(e.target.value)} required />
             </div>
             <div className="field">
               <label>Descripción detallada</label>
-              <textarea placeholder="Describe el problema o tarea con el mayor detalle posible..." value={description} onChange={e => setDescription(e.target.value)} required rows={6} style={{width: "100%", resize: "vertical", fontFamily: "inherit", fontSize: 14, padding: 12, background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 10, color: "var(--ink)"}} />
+              <textarea placeholder="Describe el problema o tarea con el mayor detalle posible... (puedes pegar una captura con Ctrl+V)" value={description} onChange={e => setDescription(e.target.value)} required rows={6} style={{width: "100%", resize: "vertical", fontFamily: "inherit", fontSize: 14, padding: 12, background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 10, color: "var(--ink)"}} />
+            </div>
+            <div className="field">
+              <label>Captura (opcional)</label>
+              <AdjuntarImagen imagen={imagenAlta} onImagen={setImagenAlta} onError={m => setSubmitMsg(m)} />
             </div>
             {submitMsg && <p style={{color: submitMsg.startsWith('Ticket') ? "var(--teal)" : "var(--orange)", fontWeight: 600, fontSize: 13, marginBottom: 12}}>{submitMsg}</p>}
             <button type="submit" className="btn btn-gradient" disabled={submitting}>
@@ -817,14 +907,13 @@ export function UserSupport({ user }) {
 
   useEffect(() => { cargar(); }, [cargar]);
 
-  async function elegirImagen(e) {
-    const f = e.target.files?.[0];
-    e.target.value = '';
+  async function pegarEnAlta(e) {
+    const f = imagenDelPortapapeles(e);
     if (!f) return;
-    if (!f.type.startsWith('image/')) { setMsg('Solo se pueden adjuntar imágenes.'); return; }
-    if (f.size > 3 * 1024 * 1024) { setMsg('La imagen no puede pasar de 3 MB.'); return; }
-    setMsg('');
-    setImagen(await leerImagen(f));
+    e.preventDefault();
+    const { imagen: img, error } = await aceptarImagen(f);
+    if (error) setMsg(error);
+    else { setMsg(''); setImagen(img); }
   }
 
   async function submit(e) {
@@ -860,7 +949,7 @@ export function UserSupport({ user }) {
       <h2><I.Bell /> Soporte</h2>
       <p className="sub">¿Tienes algún problema o sugerencia? Escríbenos y te responderemos.</p>
 
-      <form onSubmit={submit} style={{marginTop: 20}}>
+      <form onSubmit={submit} onPaste={pegarEnAlta} style={{marginTop: 20}}>
         <div className="field">
           <label>Asunto</label>
           <input placeholder="Ej. No puedo iniciar sesión" value={subject} onChange={e => setSubject(e.target.value)} required />
@@ -871,16 +960,8 @@ export function UserSupport({ user }) {
         </div>
         <div className="field">
           <label>Captura (opcional)</label>
-          {imagen ? (
-            <div style={{display: "flex", alignItems: "center", gap: 10}}>
-              <img src={imagen.data} alt="" style={{width: 48, height: 48, objectFit: "cover", borderRadius: 8}} />
-              <span style={{flex: 1, minWidth: 0, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"}}>{imagen.nombre}</span>
-              <button type="button" className="btn btn-sm btn-outline" onClick={() => setImagen(null)}>Quitar</button>
-            </div>
-          ) : (
-            <input type="file" accept="image/*" onChange={elegirImagen} />
-          )}
-          <span style={{fontSize: 11, color: "var(--ink-3)"}}>Una imagen ayuda mucho a entender el problema. Máx. 3 MB.</span>
+          <AdjuntarImagen imagen={imagen} onImagen={setImagen} onError={m => setMsg(m)}
+            ayuda="Una imagen ayuda mucho a entender el problema. Pégala con Ctrl+V, arrástrala aquí o búscala. Máx. 3 MB." />
         </div>
         {msg && <p style={{color: msg.startsWith('Ticket') ? "var(--teal)" : "var(--orange)", fontWeight: 600, fontSize: 13, marginBottom: 12}}>{msg}</p>}
         <button type="submit" className="btn btn-gradient" disabled={loading}>
