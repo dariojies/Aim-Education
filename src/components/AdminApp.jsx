@@ -1773,6 +1773,13 @@ function CampRosterRow({ row, day, onSaved }) {
                 ⚠ {row.alergias}
               </span>
             )}
+            {/* Quién entra antes y quién se queda después: el monitor lo necesita a la vista. */}
+            {row.matinal && (
+              <span style={{ background: 'color-mix(in oklab, var(--purple) 14%, var(--bg-2))', color: 'var(--purple)', fontWeight: 800, padding: '2px 8px', borderRadius: 999, border: '1px solid color-mix(in oklab, var(--purple) 30%, transparent)' }}>Matinal</span>
+            )}
+            {row.custodia && (
+              <span style={{ background: 'color-mix(in oklab, var(--blue, var(--teal)) 14%, var(--bg-2))', color: 'var(--teal)', fontWeight: 800, padding: '2px 8px', borderRadius: 999, border: '1px solid color-mix(in oklab, var(--teal) 30%, transparent)' }}>Custodia</span>
+            )}
             {row.contacto && <span style={{ color: 'var(--ink-3)', fontWeight: 600 }}>📞 {row.contacto}</span>}
             {row.recogida && <span style={{ color: 'var(--ink-3)', fontWeight: 600 }}>Recoge: {row.recogida}</span>}
             {!row.pagado && <span style={{ color: 'var(--orange)', fontWeight: 800 }}>PAGO PENDIENTE</span>}
@@ -3240,6 +3247,8 @@ function AdminCamp({ showToast }) {
   const [rosterDay, setRosterDay] = useState(todayISO());
   const [rosterLoading, setRosterLoading] = useState(false);
   const [childrenLoading, setChildrenLoading] = useState(false);
+  const [servicios, setServicios] = useState(null);
+  const [facturandoSrv, setFacturandoSrv] = useState(false);
 
   // Orden (compartido entre inscritos y pasar lista)
   const [sortMode, setSortMode] = useState('alpha'); // 'alpha' | 'age'
@@ -3282,6 +3291,29 @@ function AdminCamp({ showToast }) {
     } catch { /* noop */ }
     finally { setChildrenLoading(false); }
   }
+  // Lo que toca cobrar por matinal y custodia, recalculado desde las marcas.
+  async function loadServicios() {
+    try {
+      const r = await fetch('/api/admin/camp/servicios', { credentials: 'include' });
+      if (r.ok) setServicios(await r.json());
+    } catch { /* noop */ }
+  }
+
+  async function facturarServicios() {
+    if (!window.confirm('Se van a generar los cargos pendientes de matinal y custodia.\nLos que ya estén cobrados no se tocan. ¿Continuar?')) return;
+    setFacturandoSrv(true);
+    try {
+      const r = await fetch('/api/admin/camp/servicios/facturar', { method: 'POST', credentials: 'include' });
+      const d = await r.json();
+      if (r.ok) {
+        showToast?.(`${d.creados} cargo${d.creados !== 1 ? 's' : ''} generado${d.creados !== 1 ? 's' : ''} · ${eur(d.total)}`);
+        if (d.sinFicha?.length) alert(`Sin ficha de alumno, no se les ha podido cobrar:\n\n${d.sinFicha.join('\n')}`);
+        await loadServicios();
+      } else alert(d.error || 'No se pudieron generar los cargos.');
+    } catch { alert('Error de conexión.'); }
+    finally { setFacturandoSrv(false); }
+  }
+
   async function loadRoster(day) {
     setRosterLoading(true);
     try {
@@ -3291,7 +3323,7 @@ function AdminCamp({ showToast }) {
     finally { setRosterLoading(false); }
   }
 
-  useEffect(() => { loadWeeks(); loadChildren(); }, []);
+  useEffect(() => { loadWeeks(); loadChildren(); loadServicios(); }, []);
   useEffect(() => { loadRoster(rosterDay); }, [rosterDay]);
 
   // Si hoy no cae dentro del campamento, saltar al primer día configurado.
@@ -3370,10 +3402,10 @@ function AdminCamp({ showToast }) {
     try {
       const r = await fetch(`/api/admin/camp/children/${editingDays.child.id}/days`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-        body: JSON.stringify({ days: editingDays.days }),
+        body: JSON.stringify({ days: editingDays.days, servicios: editingDays.servicios }),
       });
       if (r.ok) {
-        await loadChildren(); await loadWeeks(); loadRoster(rosterDay);
+        await loadChildren(); await loadWeeks(); loadRoster(rosterDay); loadServicios();
         setEditingDays(null);
         showToast?.('Días actualizados.');
       } else { const d = await r.json(); alert(d.error || 'Error al guardar.'); }
@@ -3564,6 +3596,34 @@ function AdminCamp({ showToast }) {
             </button>
           </div>
 
+          {/* Matinal y custodia pendientes de cobrar */}
+          {servicios && servicios.filas.length > 0 && (
+            <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '14px 16px', marginBottom: 14, display: 'grid', gap: 10 }}>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div style={{ fontWeight: 800, fontSize: 14 }}>Matinal y custodia · {eur(servicios.total)}</div>
+                  <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                    {eur(servicios.precioDia)} por día y servicio, con tope de {eur(servicios.precioSemana)} por semana (concepto 20401).
+                  </div>
+                </div>
+                <button className="btn btn-sm btn-primary" disabled={facturandoSrv} onClick={facturarServicios}>
+                  {facturandoSrv ? 'Generando...' : 'Generar cargos pendientes'}
+                </button>
+              </div>
+              <div style={{ display: 'grid', gap: 4, fontSize: 12 }}>
+                {servicios.filas.map(f => (
+                  <div key={`${f.childId}-${f.semana}`} style={{ display: 'flex', gap: 10, flexWrap: 'wrap', color: f.alumnoId ? 'var(--ink-2)' : 'var(--orange)' }}>
+                    <span style={{ fontWeight: 700, minWidth: 170 }}>{f.nombre}</span>
+                    <span style={{ color: 'var(--ink-3)' }}>{f.semana}</span>
+                    {f.matinal > 0 && <span>Matinal {f.matinal}d · {eur(f.importeMatinal)}</span>}
+                    {f.custodia > 0 && <span>Custodia {f.custodia}d · {eur(f.importeCustodia)}</span>}
+                    {!f.alumnoId && <span style={{ fontWeight: 700 }}>— sin ficha de alumno, no se le puede cobrar</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {childrenLoading && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
           {!childrenLoading && children.length === 0 && (
             <div style={{ padding: 28, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>
@@ -3576,7 +3636,7 @@ function AdminCamp({ showToast }) {
           <div className="camp-card-grid">
             {visibleChildren.map(c => (
               <div key={c.id}
-                onClick={() => setEditingDays({ child: c, days: [...(c.days || [])] })}
+                onClick={() => setEditingDays({ child: c, days: [...(c.days || [])], servicios: { ...(c.servicios || {}) } })}
                 title="Ver / editar días de asistencia"
                 style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: '10px 12px', display: 'grid', gap: 8, cursor: 'pointer', transition: 'border-color var(--tx-fast) ease, box-shadow var(--tx-fast) ease' }}
                 onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--ink-3)'; e.currentTarget.style.boxShadow = 'var(--shadow-sm)'; }}
@@ -3745,7 +3805,8 @@ function AdminCamp({ showToast }) {
           <div style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 560, maxHeight: '90vh', overflowY: 'auto', padding: 24 }}>
             <h3 style={{ margin: '0 0 4px', fontSize: 18, fontWeight: 800 }}>Días de {editingDays.child.nombre}</h3>
             <p style={{ margin: '0 0 16px', fontSize: 13, color: 'var(--ink-3)' }}>{editingDays.days.length} día{editingDays.days.length !== 1 ? 's' : ''} seleccionado{editingDays.days.length !== 1 ? 's' : ''}</p>
-            <CampDayPicker weeks={weeks} selected={editingDays.days} onChange={days => setEditingDays(d => ({ ...d, days }))} />
+            <CampDayPicker weeks={weeks} selected={editingDays.days} onChange={days => setEditingDays(d => ({ ...d, days }))}
+              servicios={editingDays.servicios} onServicios={servicios => setEditingDays(d => ({ ...d, servicios }))} />
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 18 }}>
               <button type="button" className="btn btn-outline" onClick={() => setEditingDays(null)}>Cancelar</button>
               <button type="button" className="btn btn-primary" disabled={savingModal} onClick={submitDays}>{savingModal ? 'Guardando...' : 'Guardar días'}</button>

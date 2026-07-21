@@ -377,8 +377,27 @@ function campFmtLong(iso) {
 // Selector de días del campamento agrupado por semanas.
 // weeks: [{id,label,startDate,endDate,capacity,days:[{day,count}]}]
 // selected: array de fechas ISO seleccionadas; onChange(nextArray)
-function CampDayPicker({ weeks, selected, onChange, disabled = false }) {
+function CampDayPicker({ weeks, selected, onChange, disabled = false, servicios = null, onServicios = null }) {
   const sel = new Set(selected);
+  // servicios: { 'YYYY-MM-DD': { matinal, custodia } }. Si no se pasa onServicios,
+  // el selector funciona como siempre y no enseña matinal ni custodia.
+  const srv = servicios || {};
+  const tiene = (day, cual) => !!srv[day]?.[cual];
+  const marcarDia = (day, cual) => {
+    if (disabled || !onServicios) return;
+    const actual = srv[day] || {};
+    onServicios({ ...srv, [day]: { ...actual, [cual]: !actual[cual] } });
+  };
+  // Marca o desmarca el servicio en todos los días elegidos de esa semana.
+  const marcarSemana = (w, cual) => {
+    if (disabled || !onServicios) return;
+    const dias = w.days.map(d => d.day).filter(d => sel.has(d));
+    if (!dias.length) return;
+    const todos = dias.every(d => tiene(d, cual));
+    const next = { ...srv };
+    dias.forEach(d => { next[d] = { ...(next[d] || {}), [cual]: !todos }; });
+    onServicios(next);
+  };
   const toggle = (day) => {
     if (disabled) return;
     const next = new Set(sel);
@@ -451,6 +470,51 @@ function CampDayPicker({ weeks, selected, onChange, disabled = false }) {
                 );
               })}
             </div>
+            {onServicios && !disabled && (() => {
+              const diasSem = w.days.map(d => d.day).filter(d => sel.has(d));
+              if (!diasSem.length) return null;
+              return (
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 10, paddingTop: 10, borderTop: "1px dashed var(--line)" }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-3)" }}>Servicios:</span>
+                  {[["matinal", "Matinal"], ["custodia", "Custodia"]].map(([k, l]) => {
+                    const n = diasSem.filter(d => tiene(d, k)).length;
+                    return (
+                      <button key={k} type="button" onClick={() => marcarSemana(w, k)}
+                        title={`Marcar o quitar ${l.toLowerCase()} en todos los días elegidos de esta semana`}
+                        style={{
+                          fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 999, cursor: "pointer", fontFamily: "inherit",
+                          border: `1px solid ${n ? "var(--purple)" : "var(--line)"}`,
+                          background: n === diasSem.length ? "var(--purple)" : n ? "color-mix(in oklab, var(--purple) 14%, var(--bg-2))" : "var(--bg-2)",
+                          color: n === diasSem.length ? "white" : n ? "var(--purple)" : "var(--ink-3)",
+                        }}>
+                        {l}{n ? ` · ${n}/${diasSem.length}` : ""}
+                      </button>
+                    );
+                  })}
+                  <div style={{ width: "100%", display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {diasSem.map(d => {
+                      const p = campDayParts(d);
+                      return (
+                        <div key={d} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 10 }}>
+                          <span style={{ color: "var(--ink-3)", fontWeight: 700, width: 20 }}>{p.num}</span>
+                          {[["matinal", "M"], ["custodia", "C"]].map(([k, letra]) => (
+                            <button key={k} type="button" onClick={() => marcarDia(d, k)}
+                              title={`${k === "matinal" ? "Matinal" : "Custodia"} el ${p.num} ${p.month}`}
+                              style={{
+                                width: 20, height: 20, borderRadius: 6, cursor: "pointer", fontFamily: "inherit",
+                                fontSize: 10, fontWeight: 800, lineHeight: 1, padding: 0,
+                                border: `1px solid ${tiene(d, k) ? "var(--purple)" : "var(--line)"}`,
+                                background: tiene(d, k) ? "var(--purple)" : "var(--bg-2)",
+                                color: tiene(d, k) ? "white" : "var(--ink-3)",
+                              }}>{letra}</button>
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         );
       })}

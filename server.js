@@ -410,6 +410,10 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_camp_days_day ON aim_camp_child_days(day)`);
+        // Servicios de ese día: entra antes (matinal) o se queda después (custodia).
+        for (const col of ['matinal BOOLEAN DEFAULT false', 'custodia BOOLEAN DEFAULT false']) {
+            await client.query(`ALTER TABLE aim_camp_child_days ADD COLUMN IF NOT EXISTS ${col}`);
+        }
         // Asistencia + diario del profesor por niño y día.
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_camp_attendance (
@@ -1550,6 +1554,7 @@ function mapCampChild(r) {
         pagado: r.pagado,
         createdAt: r.created_at,
         days: r.days || [],
+        servicios: r.servicios || {},
         parentName: r.parent_name || null,
         parentEmail: r.parent_email || null,
         alumnoId: r.alumno_id || null,
@@ -1821,6 +1826,9 @@ app.get('/api/admin/camp/children', authenticateSession, requireAdmin, async (re
         const result = await pool.query(
             `SELECT c.*,
                     COALESCE(json_agg(to_char(d.day,'YYYY-MM-DD') ORDER BY d.day) FILTER (WHERE d.id IS NOT NULL), '[]') AS days,
+                    COALESCE(json_object_agg(to_char(d.day,'YYYY-MM-DD'),
+                        json_build_object('matinal', d.matinal, 'custodia', d.custodia))
+                        FILTER (WHERE d.id IS NOT NULL AND (d.matinal OR d.custodia)), '{}') AS servicios,
                     u.name || ' ' || COALESCE(u.surname,'') AS parent_name,
                     u.email AS parent_email,
                     a.name || ' ' || COALESCE(a.surname,'') AS alumno_nombre,
@@ -1966,18 +1974,129 @@ app.delete('/api/admin/camp/children/:id', authenticateSession, requireAdmin, as
 
 // Admin: modificar los días de un niño.
 app.put('/api/admin/camp/children/:id/days', authenticateSession, requireAdmin, async (req, res) => {
-    const { days } = req.body;
+    const { days, servicios } = req.body;
     if (!Array.isArray(days)) return res.status(400).json({ error: 'days debe ser un array de fechas.' });
     const dayList = [...new Set(days)];
+    // servicios: { 'YYYY-MM-DD': { matinal: bool, custodia: bool } }. Solo cuenta
+    // lo de los días realmente elegidos.
+    const srv = servicios && typeof servicios === 'object' ? servicios : {};
     try {
         await pool.query('DELETE FROM aim_camp_child_days WHERE child_id = $1', [req.params.id]);
         for (const day of dayList) {
-            await pool.query(`INSERT INTO aim_camp_child_days (child_id, day) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [req.params.id, day]);
+            const s = srv[day] || {};
+            await pool.query(
+                `INSERT INTO aim_camp_child_days (child_id, day, matinal, custodia) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
+                [req.params.id, day, !!s.matinal, !!s.custodia]
+            );
         }
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
+});
+
+// Matinal y custodia se cobran con el concepto 20401: 3 € por día y servicio, y
+// 15 € si es la semana entera (5 × 3 = 15, así que el tope nunca cobra de más).
+const CAMP_SERVICIO_CONCEPTO = '20401';
+const CAMP_SERVICIO_DIA = 3;
+const CAMP_SERVICIO_SEMANA = 15;
+
+function importeServicio(diasMarcados) {
+    return Math.min(diasMarcados * CAMP_SERVICIO_DIA, CAMP_SERVICIO_SEMANA);
+}
+
+// Agrupa los días marcados por semana del campamento y devuelve lo que toca
+// cobrar a cada niño por matinal y por custodia.
+async function calcularServiciosCampamento() {
+    const semanas = (await pool.query('SELECT id, label, start_date, end_date FROM aim_camp_weeks ORDER BY start_date')).rows;
+    const filas = (await pool.query(
+        `SELECT d.day, d.matinal, d.custodia, c.id AS child_id, c.nombre, c.apellidos, c.alumno_id
+         FROM aim_camp_child_days d JOIN aim_camp_children c ON c.id = d.child_id
+         WHERE d.matinal OR d.custodia
+         ORDER BY c.apellidos, c.nombre, d.day`
+    )).rows;
+
+    const porNino = new Map();
+    for (const f of filas) {
+        const sem = semanas.find(s => f.day >= s.start_date && f.day <= s.end_date);
+        const claveSem = sem ? sem.id : 'sin-semana';
+        const etiqueta = sem ? sem.label : 'Días sueltos';
+        const inicio = sem ? sem.start_date : f.day;
+        const k = `${f.child_id}|${claveSem}`;
+        if (!porNino.has(k)) {
+            porNino.set(k, {
+                childId: f.child_id, alumnoId: f.alumno_id,
+                nombre: `${f.nombre} ${f.apellidos}`, semana: etiqueta, inicio,
+                matinal: 0, custodia: 0,
+            });
+        }
+        const e = porNino.get(k);
+        if (f.matinal) e.matinal++;
+        if (f.custodia) e.custodia++;
+    }
+    return [...porNino.values()].map(e => ({
+        ...e,
+        importeMatinal: e.matinal ? importeServicio(e.matinal) : 0,
+        importeCustodia: e.custodia ? importeServicio(e.custodia) : 0,
+    }));
+}
+
+// Admin: qué se cobraría por matinal y custodia, sin tocar nada.
+app.get('/api/admin/camp/servicios', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const filas = await calcularServiciosCampamento();
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            precioDia: CAMP_SERVICIO_DIA, precioSemana: CAMP_SERVICIO_SEMANA,
+            total: r2Server(filas.reduce((s, f) => s + f.importeMatinal + f.importeCustodia, 0)),
+            filas,
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Admin: generar los cargos pendientes de matinal y custodia. Se puede pulsar
+// las veces que haga falta: primero borra los pendientes que generó antes y los
+// vuelve a calcular, sin tocar jamás lo que ya se cobró.
+app.post('/api/admin/camp/servicios/facturar', authenticateSession, requireAdmin, async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const precio = await pool.query('SELECT descripcion, iva_pct FROM aim_precios WHERE concepto = $1', [CAMP_SERVICIO_CONCEPTO]);
+        if (!precio.rowCount) return res.status(409).json({ error: `Falta el concepto ${CAMP_SERVICIO_CONCEPTO} en el catálogo.` });
+        const { descripcion, iva_pct } = precio.rows[0];
+        const filas = await calcularServiciosCampamento();
+
+        await client.query('BEGIN');
+        const borrados = await client.query(
+            `DELETE FROM aim_cargos WHERE origen = 'campamento' AND concepto = $1 AND estado = 'pendiente' AND recibo_id IS NULL`,
+            [CAMP_SERVICIO_CONCEPTO]
+        );
+        let creados = 0, sinFicha = [];
+        for (const f of filas) {
+            if (!f.alumnoId) { sinFicha.push(f.nombre); continue; }
+            for (const [servicio, dias, importe] of [['Matinal', f.matinal, f.importeMatinal], ['Custodia', f.custodia, f.importeCustodia]]) {
+                if (!dias) continue;
+                await client.query(
+                    `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct,
+                                             descuento_pct, importe, target_nombre, estado, origen)
+                     VALUES ($1,$2,$3,$4,'Otros',$5,$6,0,$5,$7,'pendiente','campamento')`,
+                    [f.alumnoId, CAMP_SERVICIO_CONCEPTO, f.inicio,
+                     `${descripcion} — ${servicio} · ${f.semana} (${dias} día${dias !== 1 ? 's' : ''})`,
+                     importe, iva_pct, servicio]
+                );
+                creados++;
+            }
+        }
+        await client.query('COMMIT');
+        res.json({
+            success: true, creados, reemplazados: borrados.rowCount,
+            sinFicha: [...new Set(sinFicha)],
+            total: r2Server(filas.filter(f => f.alumnoId).reduce((s, f) => s + f.importeMatinal + f.importeCustodia, 0)),
+        });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Error facturando servicios de campamento:', err);
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
 });
 
 // Admin: lista del día (pasar lista) — niños apuntados a esa fecha con su asistencia y nota.
@@ -1987,7 +2106,7 @@ app.get('/api/admin/camp/roster', authenticateSession, requireAdmin, async (req,
     try {
         const result = await pool.query(
             `SELECT c.id, c.nombre, c.apellidos, c.edad, c.alergias, c.observaciones, c.contacto, c.recogida, c.fotos_rrss, c.pagado,
-                    a.asistio, a.note,
+                    a.asistio, a.note, d.matinal, d.custodia,
                     u.name || ' ' || COALESCE(u.surname,'') AS parent_name, u.email AS parent_email
              FROM aim_camp_child_days d
              JOIN aim_camp_children c ON c.id = d.child_id
@@ -2003,6 +2122,7 @@ app.get('/api/admin/camp/roster', authenticateSession, requireAdmin, async (req,
             alergias: r.alergias, observaciones: r.observaciones, contacto: r.contacto,
             recogida: r.recogida, fotosRrss: r.fotos_rrss, pagado: r.pagado,
             asistio: r.asistio, note: r.note,
+            matinal: !!r.matinal, custodia: !!r.custodia,
             parentName: r.parent_name, parentEmail: r.parent_email,
         })));
     } catch (err) {
