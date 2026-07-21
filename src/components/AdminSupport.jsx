@@ -120,8 +120,7 @@ function fmtHora(str) {
 
 // Conversación de un ticket. Dos canales separados: 'equipo' (entre desarrolladores)
 // y 'creador' (con quien abrió el ticket). Refresca cada 5 s pidiendo solo lo nuevo.
-function TicketChat({ ticketId, canales, canalInicial }) {
-  const [canal, setCanal] = useState(canalInicial || canales[0]);
+function TicketChat({ ticketId, canal, alto = 260 }) {
   const [mensajes, setMensajes] = useState([]);
   const [texto, setTexto] = useState('');
   const [imagen, setImagen] = useState(null);
@@ -206,28 +205,9 @@ function TicketChat({ ticketId, canales, canalInicial }) {
     setImagen(await leerImagen(f));
   }
 
-  const ETIQ = { equipo: 'Equipo de desarrollo', creador: 'Con quien abrió el ticket' };
-
   return (
     <div>
-      {canales.length > 1 && (
-        <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
-          {canales.map(c => (
-            <button key={c} type="button" onClick={() => setCanal(c)}
-              style={{ flex: 1, padding: '8px 0', borderRadius: 8, border: '1px solid var(--line)', cursor: 'pointer', fontWeight: 700, fontSize: 12, fontFamily: 'inherit',
-                background: canal === c ? 'var(--purple)' : 'var(--bg-3)', color: canal === c ? 'white' : 'var(--ink-2)' }}>
-              {ETIQ[c]}
-            </button>
-          ))}
-        </div>
-      )}
-      {canal === 'equipo' && (
-        <p style={{ margin: '0 0 8px', fontSize: 11, color: 'var(--ink-3)' }}>
-          Privado entre desarrolladores. Quien abrió el ticket no lo ve.
-        </p>
-      )}
-
-      <div ref={cajaRef} style={{ maxHeight: 260, overflowY: 'auto', background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 12, padding: 12, display: 'grid', gap: 10 }}>
+      <div ref={cajaRef} style={{ height: alto, overflowY: 'auto', background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 12, padding: 12, display: 'grid', gap: 10, alignContent: 'start' }}>
         {!mensajes.length && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Todavía no hay mensajes en esta conversación.</p>}
         {mensajes.map(m => (
           <div key={m.id} style={{ justifySelf: m.mio ? 'end' : 'start', maxWidth: '85%' }}>
@@ -302,6 +282,8 @@ export function AdminSupport({ user, ticketId = null }) {
   const [updateMsg, setUpdateMsg] = useState('');
   const [aviso, setAviso] = useState('');
   const [busqueda, setBusqueda] = useState('');
+  // null = pantalla de gestión; 'equipo' | 'creador' = ese chat a pantalla completa.
+  const [chatCanal, setChatCanal] = useState(null);
 
   const fetchTickets = useCallback(() => {
     setLoading(true);
@@ -340,6 +322,7 @@ export function AdminSupport({ user, ticketId = null }) {
     setTicketAssignedId(t.assigned_to || '');
     setTicketAppLabels(Array.isArray(t.app_label) ? t.app_label : ['Aim Education']);
     setUpdateMsg('');
+    setChatCanal(null);
   }
 
   async function updateTicket(newStatus) {
@@ -668,6 +651,34 @@ export function AdminSupport({ user, ticketId = null }) {
             {/* Modal body */}
             <div style={{overflowY: "auto", padding: "20px 24px", flex: 1}}>
 
+            {chatCanal ? (
+              /* Vista de chat: solo el motivo del ticket y la conversación elegida */
+              <>
+                <button onClick={() => setChatCanal(null)}
+                  style={{background: "none", border: 0, padding: 0, cursor: "pointer", color: "var(--purple)", fontWeight: 700, fontSize: 13, fontFamily: "inherit", marginBottom: 12}}>
+                  ← Volver a la gestión del ticket
+                </button>
+                <div style={{background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 12, padding: 14, marginBottom: 14}}>
+                  <p style={{margin: "0 0 4px", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--ink-3)"}}>Motivo del ticket</p>
+                  <p style={{margin: 0, fontSize: 14, color: "var(--ink-2)", lineHeight: 1.6, whiteSpace: "pre-wrap"}}>{selected.description}</p>
+                  {selected.tiene_adjunto && (
+                    <a href={`/api/support/${selected.id}/adjunto`} target="_blank" rel="noopener noreferrer" style={{display: "block", marginTop: 10}}>
+                      <img src={`/api/support/${selected.id}/adjunto`} alt="Captura adjunta" style={{maxWidth: "100%", maxHeight: 160, borderRadius: 8, border: "1px solid var(--line)"}} />
+                    </a>
+                  )}
+                </div>
+                <div style={{display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, marginBottom: 8}}>
+                  <p style={{margin: 0, fontSize: 13, fontWeight: 800, color: "var(--ink)"}}>
+                    {chatCanal === 'equipo' ? 'Equipo de desarrollo' : `Con ${selected.name} ${selected.surname || ''}`}
+                  </p>
+                  {chatCanal === 'equipo' && <span style={{fontSize: 11, color: "var(--ink-3)"}}>Privado: quien abrió el ticket no lo ve.</span>}
+                </div>
+                <TicketChat ticketId={selected.id} canal={chatCanal} alto={340} />
+                <div style={{height: 24}} />
+              </>
+            ) : (
+              <>
+
               {/* Ticket info */}
               <div style={{background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 12, padding: 16, marginBottom: 20}}>
                 <p style={{margin: "0 0 4px", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--ink-3)"}}>Usuario</p>
@@ -685,10 +696,17 @@ export function AdminSupport({ user, ticketId = null }) {
                 </div>
               </div>
 
-              {/* Conversación: hilo del equipo y hilo con quien abrió el ticket */}
+              {/* Los chats se abren en su propia vista para no alargar esta pantalla */}
               <div style={{marginBottom: 20}}>
                 <p style={{margin: "0 0 10px", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--ink-3)"}}>Conversación</p>
-                <TicketChat ticketId={selected.id} canales={['equipo', 'creador']} canalInicial="equipo" />
+                <div style={{display: "flex", gap: 8}}>
+                  {[['equipo', 'Equipo de desarrollo', selected.msgs_equipo], ['creador', 'Con quien abrió el ticket', selected.msgs_creador]].map(([c, l, n]) => (
+                    <button key={c} type="button" onClick={() => setChatCanal(c)}
+                      style={{flex: 1, padding: "10px 8px", borderRadius: 8, border: "1px solid var(--line)", cursor: "pointer", fontWeight: 700, fontSize: 12, fontFamily: "inherit", background: "var(--bg-3)", color: "var(--ink-2)"}}>
+                      {l}{n ? <span style={{color: "var(--purple)"}}> · {n}</span> : ''}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {/* Status buttons */}
@@ -768,6 +786,8 @@ export function AdminSupport({ user, ticketId = null }) {
                 {updating ? <span className="dot-loader" /> : <>Guardar cambios internos <I.Check /></>}
               </button>
               <div style={{height: 24}} />
+              </>
+            )}
             </div>
           </div>
         </div>
@@ -892,7 +912,7 @@ export function UserSupport({ user }) {
                   </button>
                   {estaAbierto && (
                     <div style={{marginTop: 12}}>
-                      <TicketChat ticketId={t.id} canales={['creador']} canalInicial="creador" />
+                      <TicketChat ticketId={t.id} canal="creador" alto={240} />
                     </div>
                   )}
                 </div>
