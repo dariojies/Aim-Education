@@ -3200,6 +3200,65 @@ function CampAgenda({ weeks, children }) {
   );
 }
 
+// Buscador de fichas del club para vincularlas a una inscripción del campamento.
+// Cuando hay una ficha elegida muestra una etiqueta con sus datos en vez del buscador.
+function FichaPicker({ label, ayuda, valor, onElegir, onQuitar }) {
+  const [q, setQ] = useState('');
+  const [sug, setSug] = useState([]);
+  const [buscando, setBuscando] = useState(false);
+
+  useEffect(() => {
+    if (valor || q.trim().length < 2) { setSug([]); return; }
+    let vivo = true;
+    setBuscando(true);
+    const t = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/admin/camp/fichas?q=${encodeURIComponent(q.trim())}`, { credentials: 'include' });
+        if (vivo && r.ok) setSug(await r.json());
+      } catch { /* noop */ }
+      finally { if (vivo) setBuscando(false); }
+    }, 300);
+    return () => { vivo = false; clearTimeout(t); };
+  }, [q, valor]);
+
+  if (valor) {
+    return (
+      <div className="field">
+        <label>{label}</label>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 10, border: '1.5px solid var(--teal)', background: 'color-mix(in oklab, var(--teal) 8%, var(--bg-2))' }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 800, fontSize: 13, color: 'var(--teal)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{valor.nombre}</div>
+            {valor.email && <div style={{ fontSize: 11, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{valor.email}</div>}
+          </div>
+          <button type="button" className="btn btn-sm btn-outline" onClick={() => { setQ(''); onQuitar(); }}>Quitar</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="field" style={{ position: 'relative' }}>
+      <label>{label}</label>
+      <input value={q} autoComplete="off" onChange={e => setQ(e.target.value)} placeholder="Escribe nombre, apellidos o email..." />
+      {ayuda && <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{ayuda}</div>}
+      {q.trim().length >= 2 && (
+        <div style={{ position: 'absolute', top: 'calc(100% - 14px)', left: 0, right: 0, zIndex: 5, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, marginTop: 2, overflow: 'hidden', maxHeight: 220, overflowY: 'auto', boxShadow: 'var(--shadow)' }}>
+          {buscando && !sug.length && <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--ink-3)' }}>Buscando...</div>}
+          {!buscando && !sug.length && <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--ink-3)' }}>Sin resultados. Puedes rellenar los datos a mano.</div>}
+          {sug.map(f => (
+            <button key={f.id} type="button" onClick={() => { setQ(''); setSug([]); onElegir(f); }}
+              style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', background: 'none', border: 0, borderBottom: '1px solid var(--line-2)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13 }}>
+              <b>{f.nombre} {f.apellidos}</b>
+              {f.yaInscrito && <span style={{ color: 'var(--orange)', fontWeight: 700 }}> · ya inscrito</span>}
+              <span style={{ display: 'block', fontSize: 11, color: 'var(--ink-3)' }}>{f.email}{f.contacto ? ` · ${f.contacto}` : ''}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AdminCamp({ showToast }) {
   const [tab, setTab] = useState('roster'); // 'roster' | 'children' | 'weeks' | 'agenda'
   const [weeks, setWeeks] = useState([]);
@@ -3222,7 +3281,19 @@ function AdminCamp({ showToast }) {
   const [editingWeek, setEditingWeek] = useState(null);     // semana (nueva o existente)
   const [savingModal, setSavingModal] = useState(false);
 
-  const emptyChild = { nombre: '', apellidos: '', edad: '', alergias: '', observaciones: '', contacto: '', recogida: '', fotosRrss: false, pagado: false, days: [] };
+  const emptyChild = { nombre: '', apellidos: '', edad: '', alergias: '', observaciones: '', contacto: '', recogida: '', fotosRrss: false, pagado: false, days: [], alumnoId: null, alumnoNombre: null, alumnoEmail: null, familiaId: null, parentName: null, parentEmail: null };
+
+  // Al elegir la ficha del alumno se traen sus datos, sin pisar lo que ya esté escrito.
+  function vincularAlumno(f) {
+    setEditingChild(c => ({
+      ...c, alumnoId: f.id, alumnoNombre: `${f.nombre} ${f.apellidos}`.trim(), alumnoEmail: f.email,
+      nombre: c.nombre || f.nombre,
+      apellidos: c.apellidos || f.apellidos,
+      contacto: c.contacto || f.contacto || '',
+      edad: c.edad || (f.edad ?? ''),
+      fotosRrss: c.fotosRrss || f.fotosRrss,
+    }));
+  }
 
   async function loadWeeks() {
     try {
@@ -3282,6 +3353,17 @@ function AdminCamp({ showToast }) {
       body: JSON.stringify(patch),
     });
     if (r.ok) setChildren(prev => prev.map(c => c.id === id ? { ...c, ...patch } : c));
+  }
+
+  // Da de alta como alumno del club a un niño que solo venía al campamento.
+  async function crearFicha(c) {
+    if (!window.confirm(`Se va a crear la ficha de alumno de ${c.nombre} ${c.apellidos} en el club y quedará vinculada a esta inscripción. ¿Continuar?`)) return;
+    try {
+      const r = await fetch(`/api/admin/camp/children/${c.id}/ficha`, { method: 'POST', credentials: 'include' });
+      const d = await r.json();
+      if (r.ok) { await loadChildren(); showToast?.(`Ficha creada (${d.email}).`); }
+      else alert(d.error || 'No se ha podido crear la ficha.');
+    } catch { alert('Error de conexión.'); }
   }
 
   async function deleteChild(id) {
@@ -3534,9 +3616,14 @@ function AdminCamp({ showToast }) {
                     <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
                       {c.edad ? `${c.edad} años · ` : ''}{c.parentEmail ? 'Familia web' : 'Alta manual'}
                     </div>
+                    {c.alumnoNombre && (
+                      <div title={c.alumnoEmail || ''} style={{ fontSize: 11, color: 'var(--teal)', fontWeight: 700, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        ✓ Ficha: {c.alumnoNombre}
+                      </div>
+                    )}
                   </div>
                   <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexShrink: 0 }} onClick={e => e.stopPropagation()}>
-                    <button className="icon-btn" style={{ width: 28, height: 28 }} onClick={() => setEditingChild({ ...c, edad: c.edad || '', alergias: c.alergias || '', observaciones: c.observaciones || '', contacto: c.contacto || '', recogida: c.recogida || '' })} aria-label="Editar"><I.Edit /></button>
+                    <button className="icon-btn" style={{ width: 28, height: 28 }} onClick={() => setEditingChild({ ...c, edad: c.edad || '', alergias: c.alergias || '', observaciones: c.observaciones || '', contacto: c.contacto || '', recogida: c.recogida || '', familiaId: c.userId || null })} aria-label="Editar"><I.Edit /></button>
                     <button className="icon-btn danger" style={{ width: 28, height: 28 }} onClick={() => deleteChild(c.id)} aria-label="Eliminar"><I.Trash /></button>
                   </div>
                 </div>
@@ -3553,6 +3640,12 @@ function AdminCamp({ showToast }) {
                     <span title={c.alergias} style={{ background: 'color-mix(in oklab, var(--orange) 14%, var(--bg-2))', color: 'var(--orange)', fontWeight: 800, padding: '2px 8px', borderRadius: 999, fontSize: 11, border: '1px solid color-mix(in oklab, var(--orange) 30%, transparent)', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       ⚠ {c.alergias}
                     </span>
+                  )}
+                  {!c.alumnoId && (
+                    <button onClick={() => crearFicha(c)} title="Darle ficha de alumno del club"
+                      style={{ fontSize: 11, fontWeight: 800, padding: '2px 9px', borderRadius: 999, cursor: 'pointer', border: '1px dashed var(--line)', color: 'var(--ink-3)', background: 'var(--bg-2)' }}>
+                      + Crear ficha
+                    </button>
                   )}
                 </div>
               </div>
@@ -3621,12 +3714,26 @@ function AdminCamp({ showToast }) {
           onClick={e => { if (e.target === e.currentTarget) setEditingChild(null); }}>
           <div style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 560, maxHeight: '90vh', overflowY: 'auto', padding: 24 }}>
             <h3 style={{ margin: '0 0 16px', fontSize: 18, fontWeight: 800 }}>{editingChild.id ? 'Editar datos' : 'Inscribir niño/a'}</h3>
-            <form onSubmit={submitChild} style={{ display: 'grid', gap: 14 }}>
-              <div className="field-row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <form onSubmit={submitChild} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 14 }}>
+              <FichaPicker
+                label="Ficha del alumno"
+                ayuda="Si ya es cliente del club, búscalo y se rellenan sus datos. Si solo viene al campamento, déjalo vacío."
+                valor={editingChild.alumnoId ? { nombre: editingChild.alumnoNombre, email: editingChild.alumnoEmail } : null}
+                onElegir={vincularAlumno}
+                onQuitar={() => setEditingChild(c => ({ ...c, alumnoId: null, alumnoNombre: null, alumnoEmail: null }))}
+              />
+              <FichaPicker
+                label="Cuenta de la familia (quien paga y lo ve en su panel)"
+                ayuda="Opcional. Es la cuenta desde la que la familia consulta los días y las notas."
+                valor={editingChild.familiaId ? { nombre: editingChild.parentName, email: editingChild.parentEmail } : null}
+                onElegir={f => setEditingChild(c => ({ ...c, familiaId: f.id, parentName: `${f.nombre} ${f.apellidos}`.trim(), parentEmail: f.email }))}
+                onQuitar={() => setEditingChild(c => ({ ...c, familiaId: null, parentName: null, parentEmail: null }))}
+              />
+              <div className="field-row" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 12 }}>
                 <div className="field"><label>Nombre</label><input value={editingChild.nombre} onChange={e => setEditingChild(c => ({ ...c, nombre: e.target.value }))} required /></div>
                 <div className="field"><label>Apellidos</label><input value={editingChild.apellidos} onChange={e => setEditingChild(c => ({ ...c, apellidos: e.target.value }))} required /></div>
               </div>
-              <div className="field-row" style={{ display: 'grid', gridTemplateColumns: '80px 1fr', gap: 12 }}>
+              <div className="field-row" style={{ display: 'grid', gridTemplateColumns: '80px minmax(0, 1fr)', gap: 12 }}>
                 <div className="field"><label>Edad</label><input type="number" min="2" max="17" value={editingChild.edad} onChange={e => setEditingChild(c => ({ ...c, edad: e.target.value }))} /></div>
                 <div className="field"><label>Teléfono de contacto</label><input value={editingChild.contacto} onChange={e => setEditingChild(c => ({ ...c, contacto: e.target.value }))} placeholder="+34 600 000 000" /></div>
               </div>

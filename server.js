@@ -315,6 +315,12 @@ async function initDb() {
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
+        // Ficha del alumno al que corresponde el niño, cuando ya es cliente del club.
+        // Va aparte de user_id, que es la cuenta de la familia que hizo la inscripción:
+        // un niño puede tener ficha propia, cuenta de familia, ambas o ninguna (los que
+        // solo vienen al campamento y no son socios).
+        await client.query(`ALTER TABLE aim_camp_children ADD COLUMN IF NOT EXISTS alumno_id UUID`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_camp_children_alumno ON aim_camp_children(alumno_id)`);
         // Días que asistirá cada niño.
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_camp_child_days (
@@ -1467,7 +1473,22 @@ function mapCampChild(r) {
         days: r.days || [],
         parentName: r.parent_name || null,
         parentEmail: r.parent_email || null,
+        alumnoId: r.alumno_id || null,
+        alumnoNombre: r.alumno_nombre || null,
+        alumnoEmail: r.alumno_email || null,
     };
+}
+
+// Comprueba que un id de usuario recibido del cliente es una ficha real del club.
+// Devuelve { id } (null si no se envió nada) o { error } si no vale.
+async function validarUsuarioClub(id, etiqueta) {
+    if (!id) return { id: null };
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id))) {
+        return { error: `La ficha de ${etiqueta} no es válida.` };
+    }
+    const r = await pool.query('SELECT user_id FROM users WHERE user_id = $1 AND club_id = $2', [id, AIM_CLUB_ID]);
+    if (!r.rowCount) return { error: `No se ha encontrado la ficha de ${etiqueta} en el club.` };
+    return { id: r.rows[0].user_id };
 }
 
 // Días L-V (laborables) dentro de una semana del campamento.
@@ -1722,11 +1743,14 @@ app.get('/api/admin/camp/children', authenticateSession, requireAdmin, async (re
             `SELECT c.*,
                     COALESCE(json_agg(to_char(d.day,'YYYY-MM-DD') ORDER BY d.day) FILTER (WHERE d.id IS NOT NULL), '[]') AS days,
                     u.name || ' ' || COALESCE(u.surname,'') AS parent_name,
-                    u.email AS parent_email
+                    u.email AS parent_email,
+                    a.name || ' ' || COALESCE(a.surname,'') AS alumno_nombre,
+                    a.email AS alumno_email
              FROM aim_camp_children c
              LEFT JOIN aim_camp_child_days d ON d.child_id = c.id
              LEFT JOIN users u ON u.user_id::text = c.user_id
-             GROUP BY c.id, u.name, u.surname, u.email
+             LEFT JOIN users a ON a.user_id = c.alumno_id
+             GROUP BY c.id, u.name, u.surname, u.email, a.name, a.surname, a.email
              ORDER BY c.apellidos ASC, c.nombre ASC`
         );
         res.set('Cache-Control', 'no-store');
@@ -1737,16 +1761,79 @@ app.get('/api/admin/camp/children', authenticateSession, requireAdmin, async (re
     }
 });
 
+// Admin: buscar fichas del club para vincularlas a una inscripción del campamento.
+// Trae ya los datos que si no habría que teclear a mano (teléfono, edad, permiso de fotos)
+// y avisa de si esa ficha ya está inscrita, para no duplicar niños.
+app.get('/api/admin/camp/fichas', authenticateSession, requireAdmin, async (req, res) => {
+    const termino = (req.query.q || '').trim();
+    if (termino.length < 2) return res.json([]);
+    const q = `%${termino}%`;
+    try {
+        const r = await pool.query(
+            `SELECT u.user_id, u.name, u.surname, u.email, u.phone, u.birthday, u.media_consent,
+                    EXISTS (SELECT 1 FROM aim_camp_children c WHERE c.alumno_id = u.user_id) AS ya_inscrito
+             FROM users u
+             WHERE u.club_id = $1
+               AND (u.name ILIKE $2 OR u.surname ILIKE $2
+                    OR (u.name || ' ' || COALESCE(u.surname,'')) ILIKE $2 OR u.email ILIKE $2)
+             ORDER BY u.surname, u.name LIMIT 20`,
+            [AIM_CLUB_ID, q]
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows.map(u => ({
+            id: u.user_id, nombre: u.name, apellidos: u.surname || '', email: u.email,
+            contacto: u.phone || '', edad: edadDe(u.birthday), fotosRrss: !!u.media_consent,
+            yaInscrito: u.ya_inscrito,
+        })));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Admin: crear la ficha de alumno de un niño que solo venía al campamento.
+// Los correos del club siguen el patrón nombre.apellido@aimeducation.es; si ya existe
+// se le añade un número. La contraseña es provisional y se debe cambiar al entrar.
+app.post('/api/admin/camp/children/:id/ficha', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const c = await pool.query('SELECT * FROM aim_camp_children WHERE id = $1', [req.params.id]);
+        if (!c.rowCount) return res.status(404).json({ error: 'No se ha encontrado al niño.' });
+        const nino = c.rows[0];
+        if (nino.alumno_id) return res.status(409).json({ error: 'Este niño ya tiene ficha de alumno.' });
+
+        const limpia = s => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+            .toLowerCase().replace(/[^a-z0-9]+/g, '');
+        const base = `${limpia(nino.nombre)}.${limpia(String(nino.apellidos).split(' ')[0])}`;
+        let email = `${base}@aimeducation.es`;
+        for (let i = 2; (await pool.query('SELECT 1 FROM users WHERE LOWER(email) = $1', [email])).rowCount; i++) {
+            email = `${base}${i}@aimeducation.es`;
+        }
+        const hash = await bcrypt.hash(crypto.randomUUID(), 12);
+        const nuevo = await pool.query(
+            `INSERT INTO users (name, surname, email, password, role, club_id, phone, media_consent, requires_password_change)
+             VALUES ($1,$2,$3,$4,'student',$5,$6,$7,true) RETURNING user_id`,
+            [nino.nombre, nino.apellidos, email, hash, AIM_CLUB_ID, nino.contacto || null, !!nino.fotos_rrss]
+        );
+        const alumnoId = nuevo.rows[0].user_id;
+        await pool.query('UPDATE aim_camp_children SET alumno_id = $1 WHERE id = $2', [alumnoId, nino.id]);
+        res.status(201).json({ alumnoId, email });
+    } catch (err) {
+        console.error('Error creando ficha desde campamento:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Admin: alta manual de un niño (secretaría).
 app.post('/api/admin/camp/children', authenticateSession, requireAdmin, async (req, res) => {
-    const { nombre, apellidos, edad, alergias, observaciones, contacto, recogida, fotosRrss, pagado, days } = req.body;
+    const { nombre, apellidos, edad, alergias, observaciones, contacto, recogida, fotosRrss, pagado, days, alumnoId, familiaId } = req.body;
     if (!nombre?.trim() || !apellidos?.trim()) return res.status(400).json({ error: 'Nombre y apellidos son obligatorios.' });
     const dayList = Array.isArray(days) ? [...new Set(days)] : [];
     try {
+        const alumno = await validarUsuarioClub(alumnoId, 'alumno');
+        if (alumno.error) return res.status(400).json({ error: alumno.error });
+        const familia = await validarUsuarioClub(familiaId, 'familia');
+        if (familia.error) return res.status(400).json({ error: familia.error });
         const result = await pool.query(
-            `INSERT INTO aim_camp_children (user_id, nombre, apellidos, edad, alergias, observaciones, contacto, recogida, fotos_rrss, pagado)
-             VALUES (NULL,$1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
-            [nombre.trim(), apellidos.trim(), edad || null, alergias?.trim() || null, observaciones?.trim() || null,
+            `INSERT INTO aim_camp_children (user_id, alumno_id, nombre, apellidos, edad, alergias, observaciones, contacto, recogida, fotos_rrss, pagado)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+            [familia.id, alumno.id, nombre.trim(), apellidos.trim(), edad || null, alergias?.trim() || null, observaciones?.trim() || null,
              contacto?.trim() || null, recogida?.trim() || null, !!fotosRrss, !!pagado]
         );
         const childId = result.rows[0].id;
@@ -1769,6 +1856,14 @@ app.patch('/api/admin/camp/children/:id', authenticateSession, requireAdmin, asy
             fields.push(`${col} = $${fields.length + 1}`);
             vals.push(req.body[key]);
         }
+    }
+    // Vínculos con fichas: se validan aparte y se permite desvincular enviando null.
+    for (const [key, col, etiqueta] of [['alumnoId', 'alumno_id', 'alumno'], ['familiaId', 'user_id', 'familia']]) {
+        if (req.body[key] === undefined) continue;
+        const v = await validarUsuarioClub(req.body[key], etiqueta);
+        if (v.error) return res.status(400).json({ error: v.error });
+        fields.push(`${col} = $${fields.length + 1}`);
+        vals.push(v.id);
     }
     if (!fields.length) return res.status(400).json({ error: 'Nada que actualizar.' });
     vals.push(req.params.id);
