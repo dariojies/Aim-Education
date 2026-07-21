@@ -3845,7 +3845,7 @@ function AdminCamp({ showToast }) {
   );
 }
 
-export default function AdminApp({ user, onLogout, subroute = "overview" }) {
+export default function AdminApp({ user, onLogout, subroute = "overview", ticketId = null }) {
   const { go } = useRouter();
   const [view, setView] = useState(subroute);
   useEffect(() => { setView(subroute); }, [subroute]);
@@ -4162,7 +4162,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview" }) {
           {view === "groups" && <AdminGroups refreshTrigger={refreshTrigger} onEditGroup={(g) => { setEditingItem(g); setActiveModal('edit-group'); }} />}
           {view === "instructors" && <AdminInstructores refreshTrigger={refreshTrigger} showToast={showToast} />}
           {view === "settings" && <AdminSettings />}
-          {view === "support" && <AdminSupport user={user} />}
+          {view === "support" && <AdminSupport user={user} ticketId={ticketId} />}
         </div>
       </div>
 

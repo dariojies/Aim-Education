@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { I } from './Icons.jsx';
 
 const APPS = ['Aim Education', 'Learning Dungeon', 'Aim Training', 'Aim Brickslab', 'Aim Artemis', 'Aim Eventos'];
@@ -37,6 +37,18 @@ function hace(str) {
   if (dias < 30) return `hace ${dias} días`;
   const meses = Math.floor(dias / 30);
   return meses === 1 ? 'hace 1 mes' : `hace ${meses} meses`;
+}
+
+// Cuánto se tardó en resolver, de creación a resolución.
+function tardanza(t) {
+  if (!t?.created_at || !t?.resolved_at) return null;
+  const ms = new Date(t.resolved_at) - new Date(t.created_at);
+  if (isNaN(ms) || ms < 0) return null;
+  const horas = Math.round(ms / 3600000);
+  if (horas < 1) return 'menos de 1 hora';
+  if (horas < 48) return horas === 1 ? '1 hora' : `${horas} horas`;
+  const dias = Math.round(horas / 24);
+  return `${dias} días`;
 }
 
 // Texto de un ticket. Lo usan tanto "copiar este ticket" como el listado completo,
@@ -86,7 +98,183 @@ function parseInputDate(str) {
   return null;
 }
 
-export function AdminSupport({ user }) {
+// Lee un archivo de imagen a base64 para mandarlo en el JSON, igual que las facturas.
+function leerImagen(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve({ data: fr.result, nombre: file.name, mime: file.type });
+    fr.onerror = reject;
+    fr.readAsDataURL(file);
+  });
+}
+
+function fmtHora(str) {
+  const d = new Date(str);
+  if (isNaN(d)) return '';
+  const hoy = new Date();
+  const mismoDia = d.toDateString() === hoy.toDateString();
+  return mismoDia
+    ? d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
+    : d.toLocaleString('es-ES', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+// Conversación de un ticket. Dos canales separados: 'equipo' (entre desarrolladores)
+// y 'creador' (con quien abrió el ticket). Refresca cada 5 s pidiendo solo lo nuevo.
+function TicketChat({ ticketId, canales, canalInicial }) {
+  const [canal, setCanal] = useState(canalInicial || canales[0]);
+  const [mensajes, setMensajes] = useState([]);
+  const [texto, setTexto] = useState('');
+  const [imagen, setImagen] = useState(null);
+  const [enviando, setEnviando] = useState(false);
+  const [error, setError] = useState('');
+  const ultimoId = useRef(0);
+  const finRef = useRef(null);
+  const cajaRef = useRef(null);
+
+  // El sondeo periódico y el envío pueden pedir lo nuevo a la vez y traerse el mismo
+  // mensaje; se añaden por id para que no salga duplicado en pantalla.
+  const añadir = useCallback(nuevos => {
+    if (!nuevos.length) return;
+    ultimoId.current = Math.max(ultimoId.current, ...nuevos.map(m => m.id));
+    setMensajes(prev => {
+      const vistos = new Set(prev.map(m => m.id));
+      const limpios = nuevos.filter(m => !vistos.has(m.id));
+      return limpios.length ? [...prev, ...limpios] : prev;
+    });
+  }, []);
+
+  // Al cambiar de canal se empieza de cero: son conversaciones distintas.
+  useEffect(() => { setMensajes([]); ultimoId.current = 0; }, [canal, ticketId]);
+
+  useEffect(() => {
+    let vivo = true;
+    async function traer() {
+      try {
+        const r = await fetch(`/api/support/${ticketId}/mensajes?canal=${canal}&desde=${ultimoId.current}`, { credentials: 'include' });
+        if (!r.ok || !vivo) return;
+        const d = await r.json();
+        if (vivo) añadir(d.mensajes || []);
+      } catch { /* si falla una consulta, la siguiente lo arregla */ }
+    }
+    traer();
+    const t = setInterval(traer, 5000);
+    return () => { vivo = false; clearInterval(t); };
+  }, [ticketId, canal, añadir]);
+
+  // Bajar al último mensaje, pero solo si ya estabas abajo: si estás leyendo
+  // hacia arriba, un mensaje nuevo no debe arrastrarte.
+  useEffect(() => {
+    const caja = cajaRef.current;
+    if (!caja) return;
+    const abajo = caja.scrollHeight - caja.scrollTop - caja.clientHeight < 120;
+    if (abajo) finRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [mensajes]);
+
+  async function enviar(e) {
+    e?.preventDefault();
+    if (!texto.trim() && !imagen) return;
+    setEnviando(true);
+    setError('');
+    try {
+      const r = await fetch(`/api/support/${ticketId}/mensajes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          canal, cuerpo: texto,
+          archivo: imagen?.data || null, archivoNombre: imagen?.nombre || null, archivoMime: imagen?.mime || null,
+        }),
+      });
+      const d = await r.json();
+      if (r.ok) {
+        setTexto(''); setImagen(null);
+        // Traer ya lo recién escrito sin esperar a la siguiente vuelta.
+        const rr = await fetch(`/api/support/${ticketId}/mensajes?canal=${canal}&desde=${ultimoId.current}`, { credentials: 'include' });
+        if (rr.ok) añadir((await rr.json()).mensajes || []);
+      } else setError(d.error || 'No se pudo enviar.');
+    } catch { setError('Error de conexión.'); }
+    finally { setEnviando(false); }
+  }
+
+  async function elegirImagen(e) {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+    if (!f.type.startsWith('image/')) { setError('Solo se pueden adjuntar imágenes.'); return; }
+    if (f.size > 3 * 1024 * 1024) { setError('La imagen no puede pasar de 3 MB.'); return; }
+    setError('');
+    setImagen(await leerImagen(f));
+  }
+
+  const ETIQ = { equipo: 'Equipo de desarrollo', creador: 'Con quien abrió el ticket' };
+
+  return (
+    <div>
+      {canales.length > 1 && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+          {canales.map(c => (
+            <button key={c} type="button" onClick={() => setCanal(c)}
+              style={{ flex: 1, padding: '8px 0', borderRadius: 8, border: '1px solid var(--line)', cursor: 'pointer', fontWeight: 700, fontSize: 12, fontFamily: 'inherit',
+                background: canal === c ? 'var(--purple)' : 'var(--bg-3)', color: canal === c ? 'white' : 'var(--ink-2)' }}>
+              {ETIQ[c]}
+            </button>
+          ))}
+        </div>
+      )}
+      {canal === 'equipo' && (
+        <p style={{ margin: '0 0 8px', fontSize: 11, color: 'var(--ink-3)' }}>
+          Privado entre desarrolladores. Quien abrió el ticket no lo ve.
+        </p>
+      )}
+
+      <div ref={cajaRef} style={{ maxHeight: 260, overflowY: 'auto', background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 12, padding: 12, display: 'grid', gap: 10 }}>
+        {!mensajes.length && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Todavía no hay mensajes en esta conversación.</p>}
+        {mensajes.map(m => (
+          <div key={m.id} style={{ justifySelf: m.mio ? 'end' : 'start', maxWidth: '85%' }}>
+            <div style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 2, textAlign: m.mio ? 'right' : 'left' }}>
+              {m.mio ? 'Tú' : m.autor} · {fmtHora(m.createdAt)}
+            </div>
+            <div style={{ background: m.mio ? 'var(--purple)' : 'var(--bg-2)', color: m.mio ? 'white' : 'var(--ink)', border: m.mio ? 'none' : '1px solid var(--line)', borderRadius: 12, padding: '8px 12px', fontSize: 14, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+              {m.cuerpo}
+              {m.tieneArchivo && (
+                <a href={`/api/support/mensajes/${m.id}/archivo`} target="_blank" rel="noopener noreferrer" style={{ display: 'block', marginTop: m.cuerpo ? 8 : 0 }}>
+                  <img src={`/api/support/mensajes/${m.id}/archivo`} alt={m.archivoNombre || 'captura'}
+                    style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 8, display: 'block' }} />
+                </a>
+              )}
+            </div>
+          </div>
+        ))}
+        <div ref={finRef} />
+      </div>
+
+      <form onSubmit={enviar} style={{ marginTop: 10 }}>
+        {imagen && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 12, color: 'var(--ink-2)' }}>
+            <img src={imagen.data} alt="" style={{ width: 40, height: 40, objectFit: 'cover', borderRadius: 6 }} />
+            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{imagen.nombre}</span>
+            <button type="button" className="btn btn-sm btn-outline" onClick={() => setImagen(null)}>Quitar</button>
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+          <textarea value={texto} onChange={e => setTexto(e.target.value)} rows={2}
+            onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) enviar(e); }}
+            placeholder="Escribe un mensaje... (Ctrl+Enter para enviar)"
+            style={{ flex: 1, minWidth: 0, resize: 'vertical', fontFamily: 'inherit', fontSize: 14, padding: 10, background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 10, color: 'var(--ink)' }} />
+          <label className="btn btn-sm btn-outline" style={{ cursor: 'pointer', flexShrink: 0 }} title="Adjuntar captura">
+            <I.Share /><input type="file" accept="image/*" onChange={elegirImagen} style={{ display: 'none' }} />
+          </label>
+          <button type="submit" className="btn btn-sm btn-primary" disabled={enviando || (!texto.trim() && !imagen)} style={{ flexShrink: 0 }}>
+            {enviando ? '...' : 'Enviar'}
+          </button>
+        </div>
+        {error && <p style={{ color: 'var(--orange)', fontSize: 12, fontWeight: 600, margin: '6px 0 0' }}>{error}</p>}
+      </form>
+    </div>
+  );
+}
+
+export function AdminSupport({ user, ticketId = null }) {
   const [tickets, setTickets] = useState([]);
   const [superadmins, setSuperadmins] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -113,6 +301,7 @@ export function AdminSupport({ user }) {
   const [updating, setUpdating] = useState(false);
   const [updateMsg, setUpdateMsg] = useState('');
   const [aviso, setAviso] = useState('');
+  const [busqueda, setBusqueda] = useState('');
 
   const fetchTickets = useCallback(() => {
     setLoading(true);
@@ -129,6 +318,19 @@ export function AdminSupport({ user }) {
       .then(d => setSuperadmins(d.superadmins || []))
       .catch(() => {});
   }, [fetchTickets]);
+
+  // Si se ha entrado por /admin/soporte/180, abrir ese ticket en cuanto cargue.
+  const abiertoPorEnlace = useRef(false);
+  useEffect(() => {
+    if (!ticketId || abiertoPorEnlace.current || !tickets.length) return;
+    const t = tickets.find(x => x.id === ticketId);
+    if (t) { abiertoPorEnlace.current = true; openTicket(t); }
+  }, [ticketId, tickets]);
+
+  async function copiarEnlace(t) {
+    const url = `${window.location.origin}/admin/soporte/${t.id}`;
+    avisar(await copiarAlPortapapeles(url) ? 'Enlace copiado.' : 'No se pudo copiar.');
+  }
 
   function openTicket(t) {
     setSelected(t);
@@ -259,8 +461,18 @@ export function AdminSupport({ user }) {
   }
 
   function getFiltered() {
+    // Busca en nº, asunto, descripción, quien lo abrió y la respuesta antigua.
+    const q = busqueda.trim().toLowerCase();
+    const casa = t => {
+      if (!q) return true;
+      if (q.replace('#', '') === String(t.id)) return true;
+      return [t.subject, t.description, t.dev_response, t.name, t.surname, t.email,
+        t.assignee_name, t.assignee_surname]
+        .some(v => (v || '').toString().toLowerCase().includes(q));
+    };
     return tickets
       .filter(t =>
+        casa(t) &&
         (filterPriority === 'all' || t.priority === filterPriority) &&
         (filterApp === 'all' || (Array.isArray(t.app_label) ? t.app_label.includes(filterApp) : t.app_label === filterApp)) &&
         (filterStatus === 'all' || t.status === filterStatus) &&
@@ -329,6 +541,20 @@ export function AdminSupport({ user }) {
 
       {activeTab === 'list' && (
         <>
+          {/* Buscador */}
+          <div style={{position: "relative", marginBottom: 14, maxWidth: 520}}>
+            <input
+              value={busqueda}
+              onChange={e => setBusqueda(e.target.value)}
+              placeholder="Buscar en asunto, descripción, nº de ticket o persona..."
+              style={{width: "100%", fontFamily: "inherit", fontSize: 14, padding: "10px 34px 10px 14px", background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 10, color: "var(--ink)"}}
+            />
+            {busqueda && (
+              <button onClick={() => setBusqueda('')} title="Limpiar"
+                style={{position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "none", border: 0, cursor: "pointer", color: "var(--ink-3)", fontSize: 16, lineHeight: 1}}>×</button>
+            )}
+          </div>
+
           {/* Filter bar */}
           <div style={{display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14, alignItems: "center"}}>
             <span style={{fontSize: 12, fontWeight: 700, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: ".08em"}}>App:</span>
@@ -427,6 +653,9 @@ export function AdminSupport({ user }) {
                 </p>
               </div>
               <div style={{display: "flex", gap: 8, alignItems: "center", flexShrink: 0}}>
+                <button className="btn btn-sm btn-outline" onClick={() => copiarEnlace(selected)} title="Copiar el enlace directo a este ticket">
+                  Enlace
+                </button>
                 <button className="btn btn-sm btn-outline" onClick={() => copiarTicket(selected)} title="Copiar este ticket al portapapeles">
                   Copiar ticket
                 </button>
@@ -445,12 +674,21 @@ export function AdminSupport({ user }) {
                 <p style={{margin: "0 0 12px", fontWeight: 700}}>{selected.name} {selected.surname || ''} <span style={{fontWeight: 400, fontSize: 13, color: "var(--ink-3)"}}>— {selected.email}</span></p>
                 <p style={{margin: "0 0 4px", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--ink-3)"}}>Descripción</p>
                 <p style={{margin: 0, fontSize: 14, color: "var(--ink-2)", lineHeight: 1.6, whiteSpace: "pre-wrap"}}>{selected.description}</p>
+                {selected.tiene_adjunto && (
+                  <a href={`/api/support/${selected.id}/adjunto`} target="_blank" rel="noopener noreferrer" style={{display: "block", marginTop: 10}}>
+                    <img src={`/api/support/${selected.id}/adjunto`} alt="Captura adjunta" style={{maxWidth: "100%", maxHeight: 220, borderRadius: 8, border: "1px solid var(--line)"}} />
+                  </a>
+                )}
+                <div style={{display: "flex", gap: 16, flexWrap: "wrap", marginTop: 12, fontSize: 12, color: "var(--ink-3)"}}>
+                  <span>Última actualización: <b>{selected.updated_at ? fmtDateTime(selected.updated_at) : 'sin cambios'}</b></span>
+                  {selected.resolved_at && <span style={{color: "var(--teal)"}}>Resuelto: <b>{fmtDateTime(selected.resolved_at)}</b>{tardanza(selected) ? ` · tardó ${tardanza(selected)}` : ''}</span>}
+                </div>
               </div>
 
-              {/* Dev response */}
-              <div className="field">
-                <label>Respuesta del desarrollador</label>
-                <textarea value={devResponse} onChange={e => setDevResponse(e.target.value)} rows={4} placeholder="Escribe aquí tu respuesta o comentarios..." style={{width: "100%", resize: "vertical", fontFamily: "inherit", fontSize: 14, padding: 12, background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 10, color: "var(--ink)"}} />
+              {/* Conversación: hilo del equipo y hilo con quien abrió el ticket */}
+              <div style={{marginBottom: 20}}>
+                <p style={{margin: "0 0 10px", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--ink-3)"}}>Conversación</p>
+                <TicketChat ticketId={selected.id} canales={['equipo', 'creador']} canalInicial="equipo" />
               </div>
 
               {/* Status buttons */}
@@ -538,24 +776,36 @@ export function AdminSupport({ user }) {
   );
 }
 
+
+// Panel de soporte de las familias: crear consultas, ver en qué estado están
+// y hablar con el equipo dentro de cada una.
 export function UserSupport({ user }) {
   const [subject, setSubject] = useState('');
   const [description, setDescription] = useState('');
+  const [imagen, setImagen] = useState(null);
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState('');
-  const [myTickets, setMyTickets] = useState([]);
+  const [misTickets, setMisTickets] = useState([]);
+  const [abierto, setAbierto] = useState(null);
 
-  useEffect(() => {
-    // Try to load personal tickets if admin, otherwise skip
-    // This endpoint returns all tickets but we only show those by current user
-    fetch('/api/support', { credentials: 'include' })
+  const cargar = useCallback(() => {
+    fetch('/api/support/mios', { credentials: 'include' })
       .then(r => r.ok ? r.json() : { tickets: [] })
-      .then(d => {
-        const mine = (d.tickets || []).filter(t => t.email === user?.email);
-        setMyTickets(mine);
-      })
+      .then(d => setMisTickets(d.tickets || []))
       .catch(() => {});
-  }, [user]);
+  }, []);
+
+  useEffect(() => { cargar(); }, [cargar]);
+
+  async function elegirImagen(e) {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+    if (!f.type.startsWith('image/')) { setMsg('Solo se pueden adjuntar imágenes.'); return; }
+    if (f.size > 3 * 1024 * 1024) { setMsg('La imagen no puede pasar de 3 MB.'); return; }
+    setMsg('');
+    setImagen(await leerImagen(f));
+  }
 
   async function submit(e) {
     e.preventDefault();
@@ -566,12 +816,16 @@ export function UserSupport({ user }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ subject, description }),
+        body: JSON.stringify({
+          subject, description,
+          adjunto: imagen?.data || null, adjuntoNombre: imagen?.nombre || null, adjuntoMime: imagen?.mime || null,
+        }),
       });
       const d = await r.json();
       if (d.success) {
         setMsg('Ticket #' + d.ticketId + ' enviado correctamente. Te responderemos pronto.');
-        setSubject(''); setDescription('');
+        setSubject(''); setDescription(''); setImagen(null);
+        cargar();
       } else {
         setMsg(d.error || 'Error al enviar el ticket.');
       }
@@ -595,28 +849,50 @@ export function UserSupport({ user }) {
           <label>Descripción</label>
           <textarea placeholder="Describe tu consulta o problema con el mayor detalle posible..." value={description} onChange={e => setDescription(e.target.value)} required rows={5} style={{width: "100%", resize: "vertical", fontFamily: "inherit", fontSize: 14, padding: 12, background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 10, color: "var(--ink)"}} />
         </div>
+        <div className="field">
+          <label>Captura (opcional)</label>
+          {imagen ? (
+            <div style={{display: "flex", alignItems: "center", gap: 10}}>
+              <img src={imagen.data} alt="" style={{width: 48, height: 48, objectFit: "cover", borderRadius: 8}} />
+              <span style={{flex: 1, minWidth: 0, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"}}>{imagen.nombre}</span>
+              <button type="button" className="btn btn-sm btn-outline" onClick={() => setImagen(null)}>Quitar</button>
+            </div>
+          ) : (
+            <input type="file" accept="image/*" onChange={elegirImagen} />
+          )}
+          <span style={{fontSize: 11, color: "var(--ink-3)"}}>Una imagen ayuda mucho a entender el problema. Máx. 3 MB.</span>
+        </div>
         {msg && <p style={{color: msg.startsWith('Ticket') ? "var(--teal)" : "var(--orange)", fontWeight: 600, fontSize: 13, marginBottom: 12}}>{msg}</p>}
         <button type="submit" className="btn btn-gradient" disabled={loading}>
           {loading ? <span className="dot-loader" /> : <>Enviar consulta <I.Arrow /></>}
         </button>
       </form>
 
-      {myTickets.length > 0 && (
+      {misTickets.length > 0 && (
         <>
-          <h3 style={{marginTop: 32, fontSize: 16, fontWeight: 700}}>Mis solicitudes anteriores</h3>
+          <h3 style={{marginTop: 32, fontSize: 16, fontWeight: 700}}>Mis solicitudes</h3>
           <div style={{display: "grid", gap: 10, marginTop: 12}}>
-            {myTickets.map(t => {
+            {misTickets.map(t => {
               const prioColor = PRIORITY_COLOR[t.priority?.toLowerCase()] || PRIORITY_COLOR.low;
+              const estaAbierto = abierto === t.id;
               return (
                 <div key={t.id} style={{background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 12, padding: "14px 16px", borderLeft: `4px solid ${prioColor}`}}>
-                  <div style={{display: "flex", justifyContent: "space-between", marginBottom: 4}}>
+                  <div style={{display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 4}}>
                     <span style={{fontWeight: 700, fontSize: 14}}>{t.subject}</span>
-                    <span style={{fontSize: 11, fontWeight: 800, textTransform: "uppercase", color: STATUS_COLOR[t.status] || "var(--ink-3)"}}>{STATUS_LABEL[t.status] || t.status}</span>
+                    <span style={{fontSize: 11, fontWeight: 800, textTransform: "uppercase", color: STATUS_COLOR[t.status] || "var(--ink-3)", flexShrink: 0}}>{STATUS_LABEL[t.status] || t.status}</span>
                   </div>
-                  <p style={{margin: 0, fontSize: 12, color: "var(--ink-3)"}}>{fmtDate(t.created_at)}</p>
-                  {t.dev_response && (
-                    <div style={{marginTop: 8, paddingLeft: 10, borderLeft: "2px solid var(--purple)", fontSize: 13, color: "var(--ink-2)", fontStyle: "italic"}}>
-                      {t.dev_response}
+                  <p style={{margin: 0, fontSize: 12, color: "var(--ink-3)"}}>
+                    Enviado el {fmtDate(t.created_at)}
+                    {t.resolved_at && <span style={{color: "var(--teal)"}}> · resuelto el {fmtDate(t.resolved_at)}</span>}
+                  </p>
+                  <button
+                    onClick={() => setAbierto(estaAbierto ? null : t.id)}
+                    style={{marginTop: 10, background: "none", border: 0, padding: 0, cursor: "pointer", color: "var(--purple)", fontWeight: 700, fontSize: 13, fontFamily: "inherit"}}>
+                    {estaAbierto ? 'Ocultar conversación' : `Ver conversación${t.mensajes ? ` (${t.mensajes})` : ''}`}
+                  </button>
+                  {estaAbierto && (
+                    <div style={{marginTop: 12}}>
+                      <TicketChat ticketId={t.id} canales={['creador']} canalInicial="creador" />
                     </div>
                   )}
                 </div>

@@ -20,6 +20,7 @@ function DashOverview({ go, setView }) {
   const [groups, setGroups] = useState([]);
   const [attendance, setAttendance] = useState([]);
   const [posts, setPosts] = useState([]);
+  const [recibos, setRecibos] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -27,14 +28,20 @@ function DashOverview({ go, setView }) {
       fetch('/api/me/groups', { credentials: 'include' }).then(r => r.ok ? r.json() : { groups: [], slots: [] }),
       fetch('/api/me/attendance', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
       fetch('/api/posts?limit=3').then(r => r.ok ? r.json() : []),
-    ]).then(([g, at, p]) => {
+      fetch('/api/me/recibos', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
+    ]).then(([g, at, p, rc]) => {
       setGroups(g.groups || []);
       setSlots(g.slots || []);
       setAttendance(Array.isArray(at) ? at : []);
       setPosts(Array.isArray(p) ? p : []);
+      setRecibos(Array.isArray(rc) ? rc : []);
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
+
+  // Solo cuentan los recibos que siguen en pie: un recibo anulado no es dinero pagado.
+  const recibosValidos = recibos.filter(r => r.estado !== 'anulado');
+  const totalPagado = recibosValidos.reduce((s, r) => s + Number(r.total ?? r.importe ?? 0), 0);
 
   const weekClasses = [...slots].sort((a, b) => (a.d - b.d) || (a.s - b.s)).slice(0, 6);
   const attWithRecords = attendance.filter(a => a.total > 0);
@@ -114,7 +121,7 @@ function DashOverview({ go, setView }) {
         <div className="panel">
           <h2><I.Wallet /> Resumen económico</h2>
           <p className="sub">Tus recibos registrados.</p>
-          {receipts.length === 0 ? (
+          {recibosValidos.length === 0 ? (
             <EmptyState icon={<I.Wallet />} text="No hay recibos disponibles." />
           ) : (
             <div style={{
@@ -125,9 +132,9 @@ function DashOverview({ go, setView }) {
               position: "relative",
               overflow: "hidden",
             }}>
-              <div style={{fontSize: 12, opacity: .8, textTransform: "uppercase", letterSpacing: ".1em", fontWeight: 700}}>Total registrado</div>
-              <div style={{fontFamily: "var(--font-display)", fontSize: 42, fontWeight: 800, letterSpacing: "-.025em", marginTop: 6}}>{totalPaid.toLocaleString("es-ES", {minimumFractionDigits: 2})}€</div>
-              <div style={{fontSize: 12, marginTop: 8, opacity: .9}}>{receipts.length} recibo{receipts.length !== 1 ? "s" : ""}</div>
+              <div style={{fontSize: 12, opacity: .8, textTransform: "uppercase", letterSpacing: ".1em", fontWeight: 700}}>Total pagado</div>
+              <div style={{fontFamily: "var(--font-display)", fontSize: 42, fontWeight: 800, letterSpacing: "-.025em", marginTop: 6}}>{totalPagado.toLocaleString("es-ES", {minimumFractionDigits: 2})}€</div>
+              <div style={{fontSize: 12, marginTop: 8, opacity: .9}}>{recibosValidos.length} recibo{recibosValidos.length !== 1 ? "s" : ""}</div>
               <button className="btn" style={{background: "var(--ink)", color: "white", marginTop: 14}} onClick={() => setView("payments")}>
                 Ver recibos <I.Arrow />
               </button>

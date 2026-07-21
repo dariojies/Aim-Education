@@ -87,6 +87,38 @@ async function initDb() {
                 student_ids TEXT
             )
         `);
+        // ── SOPORTE ──
+        // Fechas de seguimiento: cuándo se tocó por última vez y cuándo se resolvió.
+        for (const col of ['updated_at TIMESTAMPTZ', 'resolved_at TIMESTAMPTZ',
+            'adjunto TEXT', 'adjunto_nombre VARCHAR(255)', 'adjunto_mime VARCHAR(100)']) {
+            await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS ${col}`);
+        }
+        // Hilos de conversación del ticket. Hay dos canales separados: 'equipo' (entre
+        // desarrolladores, no lo ve quien abrió el ticket) y 'creador' (con quien lo abrió).
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS tickets_mensajes (
+                id SERIAL PRIMARY KEY,
+                ticket_id INTEGER NOT NULL REFERENCES tickets_registrosoporte(id) ON DELETE CASCADE,
+                canal VARCHAR(10) NOT NULL DEFAULT 'equipo',
+                autor_id UUID,
+                cuerpo TEXT,
+                archivo TEXT,
+                archivo_nombre VARCHAR(255),
+                archivo_mime VARCHAR(100),
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_mensajes_ticket ON tickets_mensajes(ticket_id, id)`);
+        // Las respuestas del campo antiguo dev_response pasan a ser el primer mensaje
+        // del hilo con el creador. Una sola vez: si el ticket ya tiene mensajes, no se toca.
+        await client.query(`
+            INSERT INTO tickets_mensajes (ticket_id, canal, autor_id, cuerpo, created_at)
+            SELECT t.id, 'creador', t.assigned_to, t.dev_response, COALESCE(t.updated_at, t.created_at)
+            FROM tickets_registrosoporte t
+            WHERE t.dev_response IS NOT NULL AND TRIM(t.dev_response) <> ''
+              AND NOT EXISTS (SELECT 1 FROM tickets_mensajes m WHERE m.ticket_id = t.id)
+        `);
+
         // GASTOS del club. La tabla se llamaba 'aim_education_recibos', pero
         // nunca fueron recibos: siempre han sido gastos (proveedor + su factura).
         // El nombre viejo se confundía con los recibos de cobro a las familias.
@@ -3599,15 +3631,19 @@ app.get('/noticias/:slug', (req, res) => {
 // =============================================================================
 
 app.post('/api/support', authenticateSession, async (req, res) => {
-    const { subject, description } = req.body;
+    const { subject, description, adjunto, adjuntoNombre, adjuntoMime } = req.body;
     const userId = req.userSession.userId;
     if (!subject || !description)
         return res.status(400).json({ error: 'Asunto y descripción son obligatorios.' });
+    if (adjunto && !/^data:image\/(png|jpe?g|gif|webp);base64,/.test(adjunto)) {
+        return res.status(400).json({ error: 'El adjunto debe ser una imagen.' });
+    }
+    if (adjunto && adjunto.length > 4_400_000) return res.status(400).json({ error: 'La imagen no puede pasar de 3 MB.' });
     try {
         const result = await pool.query(
-            `INSERT INTO tickets_registrosoporte (user_id, subject, description, app_label)
-             VALUES ($1, $2, $3, $4) RETURNING id`,
-            [userId, subject, description, ['Aim Education']]
+            `INSERT INTO tickets_registrosoporte (user_id, subject, description, app_label, adjunto, adjunto_nombre, adjunto_mime)
+             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+            [userId, subject, description, ['Aim Education'], adjunto || null, adjuntoNombre || null, adjuntoMime || null]
         );
         const ticketId = result.rows[0].id;
         if (mailTransporter) {
@@ -3631,13 +3667,20 @@ app.get('/api/support', authenticateSession, async (req, res) => {
     if (!req.userSession.isSuperAdmin && !req.userSession.canAccessAdmin)
         return res.status(403).json({ error: 'Sin permisos.' });
     try {
+        // Columnas explícitas a propósito: 'adjunto' guarda la imagen en base64 y con
+        // s.* el listado entero se llevaría todas las capturas por delante.
         const result = await pool.query(`
-            SELECT s.*,
+            SELECT s.id, s.user_id, s.subject, s.description, s.status, s.priority,
+                   s.due_date, s.assigned_to, s.app_label, s.dev_response, s.email_sent,
+                   s.created_at, s.updated_at, s.resolved_at,
+                   (s.adjunto IS NOT NULL) AS tiene_adjunto,
                    COALESCE(u.name, 'Admin') as name,
                    COALESCE(u.surname, '') as surname,
                    COALESCE(u.email, '') as email,
                    assignee.name as assignee_name,
-                   assignee.surname as assignee_surname
+                   assignee.surname as assignee_surname,
+                   (SELECT COUNT(*) FROM tickets_mensajes m WHERE m.ticket_id = s.id AND m.canal = 'equipo')::int AS msgs_equipo,
+                   (SELECT COUNT(*) FROM tickets_mensajes m WHERE m.ticket_id = s.id AND m.canal = 'creador')::int AS msgs_creador
             FROM tickets_registrosoporte s
             LEFT JOIN users u ON s.user_id = u.user_id
             LEFT JOIN users assignee ON s.assigned_to = assignee.user_id
@@ -3656,17 +3699,151 @@ app.put('/api/support/:id', authenticateSession, async (req, res) => {
     const { status, devResponse, priority, dueDate, assignedTo, appLabel } = req.body;
     const finalAppLabels = Array.isArray(appLabel) ? appLabel : (appLabel ? [appLabel] : ['Aim Education']);
     try {
+        const nuevoEstado = status || 'open';
+        // resolved_at se sella la primera vez que pasa a resuelto/cerrado y se borra
+        // si vuelve a abrirse, para que "cuánto tardó" siga siendo cierto. El estado
+        // final va como booleano aparte: reusar $1 dentro del CASE deja a Postgres sin
+        // poder deducir su tipo.
+        const esFinal = ['resolved', 'closed'].includes(nuevoEstado);
         await pool.query(
             `UPDATE tickets_registrosoporte
              SET status = $1, dev_response = $2, priority = $3,
-                 due_date = $4, assigned_to = $5, app_label = $6::TEXT[]
+                 due_date = $4, assigned_to = $5, app_label = $6::TEXT[],
+                 updated_at = NOW(),
+                 resolved_at = CASE WHEN $8 THEN COALESCE(resolved_at, NOW()) ELSE NULL END
              WHERE id = $7`,
-            [status || 'open', devResponse || '', priority || 'low', dueDate || null, assignedTo || null, finalAppLabels, req.params.id]
+            [nuevoEstado, devResponse || '', priority || 'low', dueDate || null, assignedTo || null, finalAppLabels, req.params.id, esFinal]
         );
         res.json({ success: true });
     } catch (err) {
         console.error('[SUPPORT] Update error:', err);
         res.status(500).json({ error: 'Error al actualizar el ticket.' });
+    }
+});
+
+// ── Conversación de un ticket ──────────────────────────────────────────────
+// Dos canales: 'equipo' (solo desarrolladores) y 'creador' (con quien lo abrió).
+// Quien abrió el ticket solo alcanza su propio ticket y solo el canal 'creador'.
+async function accesoTicket(req, ticketId, canal) {
+    const t = await pool.query('SELECT id, user_id FROM tickets_registrosoporte WHERE id = $1', [ticketId]);
+    if (!t.rowCount) return { error: 'Ticket no encontrado.', code: 404 };
+    const esStaff = req.userSession.isSuperAdmin || req.userSession.canAccessAdmin;
+    if (esStaff) return { ticket: t.rows[0], esStaff: true };
+    if (String(t.rows[0].user_id) !== String(req.userSession.userId)) {
+        return { error: 'Sin permisos.', code: 403 };
+    }
+    if (canal && canal !== 'creador') return { error: 'Sin permisos.', code: 403 };
+    return { ticket: t.rows[0], esStaff: false };
+}
+
+app.get('/api/support/:id/mensajes', authenticateSession, async (req, res) => {
+    const canal = req.query.canal === 'equipo' ? 'equipo' : 'creador';
+    try {
+        const a = await accesoTicket(req, req.params.id, canal);
+        if (a.error) return res.status(a.code).json({ error: a.error });
+        // 'desde' permite pedir solo lo nuevo en cada consulta periódica.
+        const desde = Number.parseInt(req.query.desde, 10) || 0;
+        const r = await pool.query(
+            `SELECT m.id, m.canal, m.cuerpo, m.created_at, m.autor_id,
+                    m.archivo_nombre, m.archivo_mime,
+                    (m.archivo IS NOT NULL) AS tiene_archivo,
+                    u.name AS autor_nombre, u.surname AS autor_apellido
+             FROM tickets_mensajes m
+             LEFT JOIN users u ON u.user_id = m.autor_id
+             WHERE m.ticket_id = $1 AND m.canal = $2 AND m.id > $3
+             ORDER BY m.id ASC`,
+            [req.params.id, canal, desde]
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            success: true,
+            mensajes: r.rows.map(m => ({
+                id: m.id, canal: m.canal, cuerpo: m.cuerpo, createdAt: m.created_at,
+                autorId: m.autor_id, autor: [m.autor_nombre, m.autor_apellido].filter(Boolean).join(' ') || 'Soporte',
+                mio: String(m.autor_id) === String(req.userSession.userId),
+                tieneArchivo: m.tiene_archivo, archivoNombre: m.archivo_nombre, archivoMime: m.archivo_mime,
+            })),
+        });
+    } catch (err) {
+        console.error('[SUPPORT] Mensajes error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/support/:id/mensajes', authenticateSession, async (req, res) => {
+    const { cuerpo, archivo, archivoNombre, archivoMime } = req.body;
+    const canal = req.body.canal === 'equipo' ? 'equipo' : 'creador';
+    if (!cuerpo?.trim() && !archivo) return res.status(400).json({ error: 'Escribe un mensaje o adjunta una imagen.' });
+    if (archivo && !/^data:image\/(png|jpe?g|gif|webp);base64,/.test(archivo)) {
+        return res.status(400).json({ error: 'El adjunto debe ser una imagen.' });
+    }
+    if (archivo && archivo.length > 4_400_000) return res.status(400).json({ error: 'La imagen no puede pasar de 3 MB.' });
+    try {
+        const a = await accesoTicket(req, req.params.id, canal);
+        if (a.error) return res.status(a.code).json({ error: a.error });
+        const r = await pool.query(
+            `INSERT INTO tickets_mensajes (ticket_id, canal, autor_id, cuerpo, archivo, archivo_nombre, archivo_mime)
+             VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+            [req.params.id, canal, req.userSession.userId, cuerpo?.trim() || null,
+             archivo || null, archivoNombre || null, archivoMime || null]
+        );
+        await pool.query('UPDATE tickets_registrosoporte SET updated_at = NOW() WHERE id = $1', [req.params.id]);
+        res.status(201).json({ success: true, id: r.rows[0].id });
+    } catch (err) {
+        console.error('[SUPPORT] Enviar mensaje error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Imagen adjunta a un mensaje, servida como archivo real.
+app.get('/api/support/mensajes/:id/archivo', authenticateSession, async (req, res) => {
+    try {
+        const r = await pool.query('SELECT ticket_id, canal, archivo, archivo_nombre, archivo_mime FROM tickets_mensajes WHERE id = $1', [req.params.id]);
+        if (!r.rowCount || !r.rows[0].archivo) return res.status(404).json({ error: 'Sin adjunto.' });
+        const m = r.rows[0];
+        const a = await accesoTicket(req, m.ticket_id, m.canal);
+        if (a.error) return res.status(a.code).json({ error: a.error });
+        const b64 = String(m.archivo).includes(',') ? String(m.archivo).split(',')[1] : m.archivo;
+        res.set('Content-Type', m.archivo_mime || 'image/png');
+        res.set('Content-Disposition', `inline; filename="${(m.archivo_nombre || 'captura').replace(/"/g, '')}"`);
+        res.send(Buffer.from(b64, 'base64'));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Imagen adjunta al propio ticket (la que se sube al crearlo).
+app.get('/api/support/:id/adjunto', authenticateSession, async (req, res) => {
+    try {
+        const a = await accesoTicket(req, req.params.id, 'creador');
+        if (a.error) return res.status(a.code).json({ error: a.error });
+        const r = await pool.query('SELECT adjunto, adjunto_nombre, adjunto_mime FROM tickets_registrosoporte WHERE id = $1', [req.params.id]);
+        if (!r.rowCount || !r.rows[0].adjunto) return res.status(404).json({ error: 'Sin adjunto.' });
+        const t = r.rows[0];
+        const b64 = String(t.adjunto).includes(',') ? String(t.adjunto).split(',')[1] : t.adjunto;
+        res.set('Content-Type', t.adjunto_mime || 'image/png');
+        res.set('Content-Disposition', `inline; filename="${(t.adjunto_nombre || 'captura').replace(/"/g, '')}"`);
+        res.send(Buffer.from(b64, 'base64'));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Tickets propios de quien consulta. Filtra en el servidor: antes el panel de
+// familias pedía la lista completa y la filtraba en el navegador.
+app.get('/api/support/mios', authenticateSession, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT s.id, s.subject, s.description, s.status, s.priority, s.created_at,
+                    s.updated_at, s.resolved_at, s.app_label,
+                    (s.adjunto IS NOT NULL) AS tiene_adjunto,
+                    (SELECT COUNT(*) FROM tickets_mensajes m WHERE m.ticket_id = s.id AND m.canal = 'creador')::int AS mensajes
+             FROM tickets_registrosoporte s
+             WHERE s.user_id = $1
+             ORDER BY s.created_at DESC`,
+            [req.userSession.userId]
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json({ success: true, tickets: r.rows });
+    } catch (err) {
+        console.error('[SUPPORT] Mis tickets error:', err);
+        res.status(500).json({ error: err.message });
     }
 });
 
