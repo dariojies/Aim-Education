@@ -87,6 +87,53 @@ async function initDb() {
                 student_ids TEXT
             )
         `);
+        // ── REGISTRO DE FACTURACIÓN (Verifactu) ──
+        // Cada factura emitida deja aquí un registro que no se modifica ni se borra
+        // jamás, encadenado con la huella del registro anterior. Si alguien tocara
+        // una fila la cadena dejaría de cuadrar y se notaría.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_factura_registro (
+                id SERIAL PRIMARY KEY,
+                recibo_id INTEGER NOT NULL REFERENCES aim_recibos(id),
+                tipo_factura VARCHAR(4) NOT NULL,
+                serie VARCHAR(5) NOT NULL,
+                numero INTEGER NOT NULL,
+                fecha_expedicion DATE NOT NULL,
+                nif_emisor VARCHAR(20) NOT NULL,
+                nombre_emisor VARCHAR(255) NOT NULL,
+                nif_receptor VARCHAR(20),
+                nombre_receptor VARCHAR(255),
+                descripcion TEXT,
+                base NUMERIC(12,2) NOT NULL,
+                cuota NUMERIC(12,2) NOT NULL,
+                total NUMERIC(12,2) NOT NULL,
+                rectifica_serie VARCHAR(5),
+                rectifica_numero INTEGER,
+                rectifica_fecha DATE,
+                huella_anterior CHAR(64),
+                huella CHAR(64) NOT NULL,
+                software_nombre VARCHAR(100),
+                software_version VARCHAR(20),
+                emitido_por UUID,
+                emitido_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                estado_envio VARCHAR(20) NOT NULL DEFAULT 'pendiente',
+                aeat_respuesta TEXT,
+                UNIQUE (serie, numero)
+            )
+        `);
+        // Registro de eventos: qué se ha hecho y cuándo, también solo de añadir.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_factura_eventos (
+                id SERIAL PRIMARY KEY,
+                tipo VARCHAR(40) NOT NULL,
+                registro_id INTEGER REFERENCES aim_factura_registro(id),
+                recibo_id INTEGER,
+                detalle TEXT,
+                usuario_id UUID,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+
         // ── SOPORTE ──
         // Fechas de seguimiento: cuándo se tocó por última vez y cuándo se resolvió.
         for (const col of ['updated_at TIMESTAMPTZ', 'resolved_at TIMESTAMPTZ',
@@ -2628,6 +2675,17 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
 
         // Datos del pagador para el ticket.
         const pg = await client.query(`SELECT name, surname FROM users WHERE user_id = $1`, [pagadorId]);
+
+        // La factura queda anotada en el registro encadenado dentro de la misma
+        // transacción: si el registro falla, el cobro no se llega a emitir.
+        await registrarFactura(client, {
+            recibo: { ...rec.rows[0], id: reciboId, serie: rec.rows[0].serie || 'A', tipo: 'normal' },
+            receptor: { nombre: pg.rows[0] ? `${pg.rows[0].name} ${pg.rows[0].surname || ''}`.trim() : null },
+            descripcion: calc.detalle.map(d => d.descripcion).join('; ').slice(0, 500),
+            base: calc.baseTotal, cuota: calc.ivaTotal, total,
+            userId: req.userSession.userId,
+        });
+
         await client.query('COMMIT');
 
         res.json({
@@ -2783,6 +2841,68 @@ app.get('/api/admin/billing/recibos/:id', authenticateSession, requireAdmin, asy
 });
 
 // Anular: el recibo se marca (nunca se borra) y sus cargos vuelven a pendientes.
+// ── Registro de facturación encadenado ──────────────────────────────────────
+const SOFTWARE_FACTURACION = { nombre: 'Aim Education', version: '1.0' };
+
+// Huella del registro: SHA-256 sobre los campos que identifican la factura más la
+// huella del registro anterior. Encadenarlos así hace que no se pueda cambiar ni
+// borrar una factura sin romper todas las siguientes.
+function huellaRegistro(r) {
+    const campos = [
+        `IDEmisorFactura=${r.nif_emisor}`,
+        `NumSerieFactura=${r.serie}-${r.numero}`,
+        `FechaExpedicionFactura=${r.fecha_expedicion}`,
+        `TipoFactura=${r.tipo_factura}`,
+        `CuotaTotal=${Number(r.cuota).toFixed(2)}`,
+        `ImporteTotal=${Number(r.total).toFixed(2)}`,
+        `Huella=${r.huella_anterior || ''}`,
+        `FechaHoraHusoGenRegistro=${r.emitido_at}`,
+    ].join('&');
+    return crypto.createHash('sha256').update(campos, 'utf8').digest('hex');
+}
+
+// Anota una factura en el registro. Va dentro de la misma transacción que la
+// emite: si el registro falla, la factura no se emite.
+async function registrarFactura(client, { recibo, receptor, descripcion, base, cuota, total, original, userId }) {
+    // El bloqueo evita que dos cobros a la vez se encadenen del mismo eslabón.
+    await client.query('LOCK TABLE aim_factura_registro IN EXCLUSIVE MODE');
+    const prev = await client.query(`SELECT huella FROM aim_factura_registro ORDER BY id DESC LIMIT 1`);
+    const fila = {
+        nif_emisor: EMPRESA_TICKET.nif,
+        serie: recibo.serie, numero: recibo.numero,
+        fecha_expedicion: String(recibo.fecha).slice(0, 10),
+        // F1 factura completa; R1 rectificativa por error fundado en derecho.
+        tipo_factura: recibo.tipo === 'rectificativo' ? 'R1' : 'F1',
+        cuota, total,
+        huella_anterior: prev.rows[0]?.huella || null,
+        emitido_at: new Date().toISOString(),
+    };
+    fila.huella = huellaRegistro(fila);
+    const r = await client.query(
+        `INSERT INTO aim_factura_registro
+           (recibo_id, tipo_factura, serie, numero, fecha_expedicion, nif_emisor, nombre_emisor,
+            nif_receptor, nombre_receptor, descripcion, base, cuota, total,
+            rectifica_serie, rectifica_numero, rectifica_fecha,
+            huella_anterior, huella, software_nombre, software_version, emitido_por, emitido_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+         RETURNING id`,
+        [recibo.id, fila.tipo_factura, fila.serie, fila.numero, fila.fecha_expedicion,
+         fila.nif_emisor, EMPRESA_TICKET.nombre,
+         receptor?.nif || null, receptor?.nombre || null, descripcion || null,
+         base, cuota, total,
+         original?.serie || null, original?.numero || null,
+         original?.fecha ? String(original.fecha).slice(0, 10) : null,
+         fila.huella_anterior, fila.huella,
+         SOFTWARE_FACTURACION.nombre, SOFTWARE_FACTURACION.version, userId || null, fila.emitido_at]
+    );
+    await client.query(
+        `INSERT INTO aim_factura_eventos (tipo, registro_id, recibo_id, detalle, usuario_id)
+         VALUES ($1,$2,$3,$4,$5)`,
+        ['alta_factura', r.rows[0].id, recibo.id, `${fila.serie}-${fila.numero} · ${Number(total).toFixed(2)} €`, userId || null]
+    );
+    return { id: r.rows[0].id, huella: fila.huella };
+}
+
 // Líneas de un recibo que siguen vivas: ni devueltas al cliente (recibo_id a NULL)
 // ni ya rectificadas antes. Es lo que se puede rectificar en una nueva pasada.
 async function lineasVivasDeRecibo(client, reciboId) {
@@ -2810,7 +2930,7 @@ async function emitirRectificativa(client, { orig, quitadas, quedan, metodo, mot
     const nuevo = await client.query(
         `INSERT INTO aim_recibos (numero, serie, tipo, rectifica_id, rect_metodo, rect_motivo,
                                   pagador_id, fecha, importe, medio_pago, entregado, cambio, estado, cobrado_por, cobrado_at)
-         VALUES ($1,'R','rectificativo',$2,$3,$4,$5,CURRENT_DATE,$6,$7,0,0,'cobrado',$8,NOW()) RETURNING id`,
+         VALUES ($1,'R','rectificativo',$2,$3,$4,$5,CURRENT_DATE,$6,$7,0,0,'cobrado',$8,NOW()) RETURNING id, numero, serie, fecha`,
         [num, orig.id, metodo, motivo.trim(), orig.pagador_id, importe, orig.medio_pago, userId]
     );
     const nuevoId = nuevo.rows[0].id;
@@ -2821,51 +2941,69 @@ async function emitirRectificativa(client, { orig, quitadas, quedan, metodo, mot
             [nuevoId, l.c.id, l.c.descripcion, `${l.c.name} ${l.c.surname}`, l.c.mes, l.c.iva_pct, l.base]
         );
     }
+
+    // Anotar el rectificativo en el registro encadenado, referenciando a la
+    // factura que corrige.
+    const baseTotal = r2Server(lineas.reduce((s, l) => s + l.base, 0));
+    const pag = await client.query('SELECT name, surname FROM users WHERE user_id = $1', [orig.pagador_id]);
+    await registrarFactura(client, {
+        recibo: { ...nuevo.rows[0], tipo: 'rectificativo' },
+        receptor: { nombre: pag.rows[0] ? `${pag.rows[0].name} ${pag.rows[0].surname || ''}`.trim() : null },
+        descripcion: `Rectificativa de ${orig.serie || 'A'}-${orig.numero}: ${motivo.trim()}`,
+        base: baseTotal, cuota: r2Server(importe - baseTotal), total: importe,
+        original: { serie: orig.serie || 'A', numero: orig.numero, fecha: orig.fecha },
+        userId,
+    });
+
     return { id: nuevoId, importe, aDevolver };
 }
 
-// Anular es rectificar el recibo entero: emite SIEMPRE una rectificativa por el
-// total que queda vivo y devuelve esos conceptos al cliente. El recibo original
-// conserva su número y no desaparece: queda marcado como anulado y enlazado con
-// su rectificativa, para que no se pueda quitar nada del sistema sin rastro.
-app.post('/api/admin/billing/recibos/:id/anular', authenticateSession, requireAdmin, async (req, res) => {
-    const { motivo } = req.body;
-    if (!motivo?.trim()) return res.status(400).json({ error: 'Hay que indicar el motivo de la anulación.' });
-    const client = await pool.connect();
+// Registro de facturación: lista los asientos y recalcula la cadena entera para
+// comprobar que nadie ha tocado ni borrado una factura por detrás.
+app.get('/api/admin/billing/registro', authenticateSession, requireAdmin, async (req, res) => {
     try {
-        await client.query('BEGIN');
-        const o = await client.query(`SELECT * FROM aim_recibos WHERE id = $1 FOR UPDATE`, [req.params.id]);
-        if (o.rowCount === 0) throw { httP: 404, msg: 'Recibo no encontrado.' };
-        const orig = o.rows[0];
-        if (orig.tipo === 'rectificativo') throw { httP: 409, msg: 'Un documento rectificativo no se anula: emite otra rectificativa sobre el recibo original.' };
-        if (orig.estado === 'anulado') throw { httP: 409, msg: 'Ese recibo ya está anulado.' };
-
-        const vivas = await lineasVivasDeRecibo(client, orig.id);
-        if (vivas.length === 0) throw { httP: 409, msg: 'Ese recibo ya no tiene líneas que devolver; está rectificado por completo.' };
-
-        const rect = await emitirRectificativa(client, {
-            orig, quitadas: vivas, quedan: [], metodo: 'diferencias', motivo, userId: req.userSession.userId,
+        const r = await pool.query(`SELECT * FROM aim_factura_registro ORDER BY id ASC`);
+        let anterior = null;
+        const filas = r.rows.map(f => {
+            const esperada = huellaRegistro({
+                nif_emisor: f.nif_emisor, serie: f.serie, numero: f.numero,
+                fecha_expedicion: String(f.fecha_expedicion).slice(0, 10),
+                tipo_factura: f.tipo_factura, cuota: f.cuota, total: f.total,
+                huella_anterior: f.huella_anterior,
+                emitido_at: f.emitido_at instanceof Date ? f.emitido_at.toISOString() : f.emitido_at,
+            });
+            const encadenaBien = (f.huella_anterior || null) === anterior;
+            const intacta = esperada === f.huella;
+            anterior = f.huella;
+            return {
+                id: f.id, numero: `${f.serie}-${f.numero}`, tipoFactura: f.tipo_factura,
+                fecha: f.fecha_expedicion, receptor: f.nombre_receptor, descripcion: f.descripcion,
+                base: Number(f.base), cuota: Number(f.cuota), total: Number(f.total),
+                rectifica: f.rectifica_numero ? `${f.rectifica_serie}-${f.rectifica_numero}` : null,
+                huella: f.huella, huellaAnterior: f.huella_anterior,
+                estadoEnvio: f.estado_envio, emitidoAt: f.emitido_at,
+                intacta, encadenaBien,
+            };
         });
-
-        await client.query(
-            `UPDATE aim_recibos SET estado = 'anulado', anulado_motivo = $1, anulado_por = $2, anulado_at = NOW() WHERE id = $3`,
-            [motivo.trim(), req.userSession.userId, orig.id]
-        );
-        // Los conceptos vuelven a deberse: pendientes y sin importe calculado.
-        await client.query(
-            `UPDATE aim_cargos SET recibo_id = NULL, estado = 'pendiente', importe = NULL, descuento_mens_pct = NULL
-             WHERE id = ANY($1::int[])`, [vivas.map(c => c.id)]
-        );
-
-        await client.query('COMMIT');
-        const ticket = await ticketDeRecibo(rect.id);
-        res.json({ ...ticket, success: true, cargosDevueltos: vivas.length, aDevolver: rect.aDevolver });
+        const rotas = filas.filter(f => !f.intacta || !f.encadenaBien);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            registros: filas.length, cadenaIntacta: rotas.length === 0,
+            problemas: rotas.map(f => ({ numero: f.numero, intacta: f.intacta, encadenaBien: f.encadenaBien })),
+            filas,
+        });
     } catch (err) {
-        await client.query('ROLLBACK');
-        if (err && err.httP) return res.status(err.httP).json({ error: err.msg });
-        console.error('Error anulando recibo:', err);
+        console.error('Error leyendo el registro de facturación:', err);
         res.status(500).json({ error: err.message });
-    } finally { client.release(); }
+    }
+});
+
+// Una factura emitida NO se anula nunca: se queda registrada con su número tal
+// como se emitió. Si hay que devolver dinero se emite un rectificativo que la
+// referencia, y se pueden emitir tantos como devoluciones haya. Este endpoint se
+// mantiene solo para que una llamada antigua no falle en silencio.
+app.post('/api/admin/billing/recibos/:id/anular', authenticateSession, requireAdmin, (req, res) => {
+    res.status(410).json({ error: 'Las facturas no se anulan. Emite un rectificativo por el importe a devolver.' });
 });
 
 // Rectificar un recibo ya entregado: emite un documento NUEVO en la serie R que
@@ -2885,17 +3023,17 @@ app.post('/api/admin/billing/recibos/:id/rectificar', authenticateSession, requi
         if (o.rowCount === 0) throw { httP: 404, msg: 'Recibo no encontrado.' };
         const orig = o.rows[0];
         if (orig.tipo === 'rectificativo') throw { httP: 409, msg: 'No se puede rectificar un documento rectificativo.' };
-        if (orig.estado === 'anulado') throw { httP: 409, msg: 'Ese recibo está anulado por completo; ya no queda nada que rectificar.' };
 
-        // Un recibo se puede rectificar varias veces: el cliente puede devolver
-        // cosas en momentos distintos. Cada pasada trabaja solo sobre lo que sigue
-        // vivo, así que una línea ya rectificada no se puede rectificar dos veces.
+        // Una factura se puede rectificar tantas veces como devoluciones haya: hoy
+        // devuelves 25 € y mañana otros 50, y cada devolución es su propio
+        // rectificativo. Cada pasada trabaja solo sobre lo que sigue vivo, así que
+        // una línea ya devuelta no se puede devolver dos veces.
         const vivas = await lineasVivasDeRecibo(client, orig.id);
-        if (vivas.length === 0) throw { httP: 409, msg: 'Ese recibo ya está rectificado por completo.' };
+        if (vivas.length === 0) throw { httP: 409, msg: 'De esta factura ya se ha devuelto todo; no queda nada que rectificar.' };
         const idsSet = new Set(rectificar.map(Number));
         const quitadas = vivas.filter(c => idsSet.has(c.id));
         const quedan = vivas.filter(c => !idsSet.has(c.id));
-        if (quitadas.length === 0) throw { httP: 400, msg: 'Las líneas seleccionadas ya estaban rectificadas o no son de este recibo.' };
+        if (quitadas.length === 0) throw { httP: 400, msg: 'Las líneas seleccionadas ya estaban devueltas o no son de esta factura.' };
 
         const rect = await emitirRectificativa(client, {
             orig, quitadas, quedan, metodo, motivo, userId: req.userSession.userId,
@@ -2903,8 +3041,9 @@ app.post('/api/admin/billing/recibos/:id/rectificar', authenticateSession, requi
         const nuevoId = rect.id;
         const aDevolver = rect.aDevolver;
 
-        // El original queda marcado; sus líneas rectificadas dejan de contar como cobradas.
-        await client.query(`UPDATE aim_recibos SET estado = 'rectificado' WHERE id = $1`, [orig.id]);
+        // La factura original NO se toca: se emitió y se queda como está, con su
+        // número y su importe. Lo que cambia son sus líneas, que dejan de contar
+        // como cobradas porque ya se han devuelto.
         if (devolverAPendiente) {
             await client.query(
                 `UPDATE aim_cargos SET recibo_id = NULL, estado = 'pendiente', importe = NULL, descuento_mens_pct = NULL
