@@ -2699,6 +2699,9 @@ async function ticketDeRecibo(reciboId) {
                 descripcion: c.descripcion, cliente: `${c.name} ${c.surname}`, mes: c.mes,
                 precio: Number(c.precio), descuentoPct: Number(c.descuento_pct),
                 descuentoMensPct: c.descuento_mens_pct == null ? 0 : Number(c.descuento_mens_pct),
+                // El recibo sigue mostrando la línea (es un documento, no cambia), pero
+                // marcada: ya se rectificó antes y no se puede volver a rectificar.
+                rectificada: c.estado === 'rectificado',
                 ivaPct, base, total: r2Server(base + base * ivaPct / 100),
             };
         });
@@ -2780,28 +2783,86 @@ app.get('/api/admin/billing/recibos/:id', authenticateSession, requireAdmin, asy
 });
 
 // Anular: el recibo se marca (nunca se borra) y sus cargos vuelven a pendientes.
+// Líneas de un recibo que siguen vivas: ni devueltas al cliente (recibo_id a NULL)
+// ni ya rectificadas antes. Es lo que se puede rectificar en una nueva pasada.
+async function lineasVivasDeRecibo(client, reciboId) {
+    const cs = await client.query(
+        `SELECT c.*, u.name, u.surname FROM aim_cargos c JOIN users u ON u.user_id = c.cliente_id
+         WHERE c.recibo_id = $1 AND COALESCE(c.estado,'') <> 'rectificado'
+         ORDER BY u.surname, u.name, c.mes`, [reciboId]
+    );
+    return cs.rows;
+}
+
+// Emite el documento rectificativo en la serie R referenciando al original y
+// devuelve { id, importe, aDevolver }. No decide qué pasa con los cargos: de eso
+// se encarga quien la llama, porque anular y rectificar no hacen lo mismo.
+async function emitirRectificativa(client, { orig, quitadas, quedan, metodo, motivo, userId }) {
+    const conIva = c => r2Server(Number(c.importe ?? 0) * (1 + Number(c.iva_pct) / 100));
+    const aDevolver = r2Server(quitadas.reduce((s, c) => s + conIva(c), 0));
+    // Por diferencias: lo rectificado en negativo. Por sustitución: lo que queda correcto.
+    const lineas = metodo === 'diferencias'
+        ? quitadas.map(c => ({ c, base: r2Server(-Number(c.importe ?? 0)) }))
+        : quedan.map(c => ({ c, base: r2Server(Number(c.importe ?? 0)) }));
+    const importe = r2Server(lineas.reduce((s, l) => s + l.base * (1 + Number(l.c.iva_pct) / 100), 0));
+
+    const num = (await client.query(`SELECT nextval('aim_recibos_rect_numero_seq') AS n`)).rows[0].n;
+    const nuevo = await client.query(
+        `INSERT INTO aim_recibos (numero, serie, tipo, rectifica_id, rect_metodo, rect_motivo,
+                                  pagador_id, fecha, importe, medio_pago, entregado, cambio, estado, cobrado_por, cobrado_at)
+         VALUES ($1,'R','rectificativo',$2,$3,$4,$5,CURRENT_DATE,$6,$7,0,0,'cobrado',$8,NOW()) RETURNING id`,
+        [num, orig.id, metodo, motivo.trim(), orig.pagador_id, importe, orig.medio_pago, userId]
+    );
+    const nuevoId = nuevo.rows[0].id;
+    for (const l of lineas) {
+        await client.query(
+            `INSERT INTO aim_recibo_rect_lineas (recibo_id, cargo_id, descripcion, cliente_nombre, mes, iva_pct, base)
+             VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+            [nuevoId, l.c.id, l.c.descripcion, `${l.c.name} ${l.c.surname}`, l.c.mes, l.c.iva_pct, l.base]
+        );
+    }
+    return { id: nuevoId, importe, aDevolver };
+}
+
+// Anular es rectificar el recibo entero: emite SIEMPRE una rectificativa por el
+// total que queda vivo y devuelve esos conceptos al cliente. El recibo original
+// conserva su número y no desaparece: queda marcado como anulado y enlazado con
+// su rectificativa, para que no se pueda quitar nada del sistema sin rastro.
 app.post('/api/admin/billing/recibos/:id/anular', authenticateSession, requireAdmin, async (req, res) => {
     const { motivo } = req.body;
     if (!motivo?.trim()) return res.status(400).json({ error: 'Hay que indicar el motivo de la anulación.' });
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        const r = await client.query(`SELECT estado FROM aim_recibos WHERE id = $1 FOR UPDATE`, [req.params.id]);
-        if (r.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Recibo no encontrado.' }); }
-        if (r.rows[0].estado === 'anulado') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Ese recibo ya está anulado.' }); }
+        const o = await client.query(`SELECT * FROM aim_recibos WHERE id = $1 FOR UPDATE`, [req.params.id]);
+        if (o.rowCount === 0) throw { httP: 404, msg: 'Recibo no encontrado.' };
+        const orig = o.rows[0];
+        if (orig.tipo === 'rectificativo') throw { httP: 409, msg: 'Un documento rectificativo no se anula: emite otra rectificativa sobre el recibo original.' };
+        if (orig.estado === 'anulado') throw { httP: 409, msg: 'Ese recibo ya está anulado.' };
+
+        const vivas = await lineasVivasDeRecibo(client, orig.id);
+        if (vivas.length === 0) throw { httP: 409, msg: 'Ese recibo ya no tiene líneas que devolver; está rectificado por completo.' };
+
+        const rect = await emitirRectificativa(client, {
+            orig, quitadas: vivas, quedan: [], metodo: 'diferencias', motivo, userId: req.userSession.userId,
+        });
+
         await client.query(
             `UPDATE aim_recibos SET estado = 'anulado', anulado_motivo = $1, anulado_por = $2, anulado_at = NOW() WHERE id = $3`,
-            [motivo.trim(), req.userSession.userId, req.params.id]
+            [motivo.trim(), req.userSession.userId, orig.id]
         );
-        // Los cargos vuelven a deberse: pendientes y sin importe calculado.
-        const cs = await client.query(
+        // Los conceptos vuelven a deberse: pendientes y sin importe calculado.
+        await client.query(
             `UPDATE aim_cargos SET recibo_id = NULL, estado = 'pendiente', importe = NULL, descuento_mens_pct = NULL
-             WHERE recibo_id = $1 RETURNING id`, [req.params.id]
+             WHERE id = ANY($1::int[])`, [vivas.map(c => c.id)]
         );
+
         await client.query('COMMIT');
-        res.json({ success: true, cargosDevueltos: cs.rowCount });
+        const ticket = await ticketDeRecibo(rect.id);
+        res.json({ ...ticket, success: true, cargosDevueltos: vivas.length, aDevolver: rect.aDevolver });
     } catch (err) {
         await client.query('ROLLBACK');
+        if (err && err.httP) return res.status(err.httP).json({ error: err.msg });
         console.error('Error anulando recibo:', err);
         res.status(500).json({ error: err.message });
     } finally { client.release(); }
@@ -2824,44 +2885,23 @@ app.post('/api/admin/billing/recibos/:id/rectificar', authenticateSession, requi
         if (o.rowCount === 0) throw { httP: 404, msg: 'Recibo no encontrado.' };
         const orig = o.rows[0];
         if (orig.tipo === 'rectificativo') throw { httP: 409, msg: 'No se puede rectificar un documento rectificativo.' };
-        if (orig.estado === 'anulado') throw { httP: 409, msg: 'Ese recibo está anulado; no procede rectificarlo.' };
-        const yaRect = await client.query(`SELECT 1 FROM aim_recibos WHERE rectifica_id = $1 LIMIT 1`, [orig.id]);
-        if (yaRect.rowCount > 0) throw { httP: 409, msg: 'Ese recibo ya tiene una rectificativa.' };
+        if (orig.estado === 'anulado') throw { httP: 409, msg: 'Ese recibo está anulado por completo; ya no queda nada que rectificar.' };
 
-        // Líneas del recibo original.
-        const cs = await client.query(
-            `SELECT c.*, u.name, u.surname FROM aim_cargos c JOIN users u ON u.user_id = c.cliente_id
-             WHERE c.recibo_id = $1 ORDER BY u.surname, u.name, c.mes`, [orig.id]
-        );
-        if (cs.rowCount === 0) throw { httP: 409, msg: 'Ese recibo no tiene líneas.' };
+        // Un recibo se puede rectificar varias veces: el cliente puede devolver
+        // cosas en momentos distintos. Cada pasada trabaja solo sobre lo que sigue
+        // vivo, así que una línea ya rectificada no se puede rectificar dos veces.
+        const vivas = await lineasVivasDeRecibo(client, orig.id);
+        if (vivas.length === 0) throw { httP: 409, msg: 'Ese recibo ya está rectificado por completo.' };
         const idsSet = new Set(rectificar.map(Number));
-        const quitadas = cs.rows.filter(c => idsSet.has(c.id));
-        const quedan = cs.rows.filter(c => !idsSet.has(c.id));
-        if (quitadas.length === 0) throw { httP: 400, msg: 'Las líneas seleccionadas no pertenecen a este recibo.' };
+        const quitadas = vivas.filter(c => idsSet.has(c.id));
+        const quedan = vivas.filter(c => !idsSet.has(c.id));
+        if (quitadas.length === 0) throw { httP: 400, msg: 'Las líneas seleccionadas ya estaban rectificadas o no son de este recibo.' };
 
-        const conIva = (c) => r2Server(Number(c.importe ?? 0) * (1 + Number(c.iva_pct) / 100));
-        const aDevolver = r2Server(quitadas.reduce((s, c) => s + conIva(c), 0));
-        // Por diferencias: lo rectificado en negativo. Por sustitución: lo correcto.
-        const lineas = metodo === 'diferencias'
-            ? quitadas.map(c => ({ c, base: r2Server(-Number(c.importe ?? 0)) }))
-            : quedan.map(c => ({ c, base: r2Server(Number(c.importe ?? 0)) }));
-        const importe = r2Server(lineas.reduce((s, l) => s + l.base * (1 + Number(l.c.iva_pct) / 100), 0));
-
-        const num = (await client.query(`SELECT nextval('aim_recibos_rect_numero_seq') AS n`)).rows[0].n;
-        const nuevo = await client.query(
-            `INSERT INTO aim_recibos (numero, serie, tipo, rectifica_id, rect_metodo, rect_motivo,
-                                      pagador_id, fecha, importe, medio_pago, entregado, cambio, estado, cobrado_por, cobrado_at)
-             VALUES ($1,'R','rectificativo',$2,$3,$4,$5,CURRENT_DATE,$6,$7,0,0,'cobrado',$8,NOW()) RETURNING id`,
-            [num, orig.id, metodo, motivo.trim(), orig.pagador_id, importe, orig.medio_pago, req.userSession.userId]
-        );
-        const nuevoId = nuevo.rows[0].id;
-        for (const l of lineas) {
-            await client.query(
-                `INSERT INTO aim_recibo_rect_lineas (recibo_id, cargo_id, descripcion, cliente_nombre, mes, iva_pct, base)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-                [nuevoId, l.c.id, l.c.descripcion, `${l.c.name} ${l.c.surname}`, l.c.mes, l.c.iva_pct, l.base]
-            );
-        }
+        const rect = await emitirRectificativa(client, {
+            orig, quitadas, quedan, metodo, motivo, userId: req.userSession.userId,
+        });
+        const nuevoId = rect.id;
+        const aDevolver = rect.aDevolver;
 
         // El original queda marcado; sus líneas rectificadas dejan de contar como cobradas.
         await client.query(`UPDATE aim_recibos SET estado = 'rectificado' WHERE id = $1`, [orig.id]);

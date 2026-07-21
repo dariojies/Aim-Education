@@ -2144,10 +2144,14 @@ function BillingRecibos({ showToast }) {
     const res = await fetch(`/api/admin/billing/recibos/${r.id}`, { credentials: 'include' });
     if (!res.ok) { alert('No se pudieron cargar las líneas del recibo.'); return; }
     const t = await res.json();
-    const lineas = t.detalle.filter(l => l.cargoId != null);
+    // Solo lo que sigue vivo: una línea rectificada antes no se rectifica dos veces.
+    const todas = t.detalle.filter(l => l.cargoId != null);
+    const lineas = todas.filter(l => !l.rectificada);
+    const yaRectificadas = todas.length - lineas.length;
+    if (!lineas.length) { alert('Este recibo ya está rectificado por completo.'); return; }
     const sel = {};
     lineas.forEach(l => { sel[l.cargoId] = true; });
-    setRectificando({ id: r.id, numero: r.numero, metodo: 'sustitucion', motivo: '', lineas, sel, devolver: false });
+    setRectificando({ id: r.id, numero: r.numero, metodo: 'sustitucion', motivo: '', lineas, sel, devolver: false, yaRectificadas });
   }
 
   async function rectificar() {
@@ -2181,8 +2185,9 @@ function BillingRecibos({ showToast }) {
       });
       if (r.ok) {
         const d = await r.json();
-        showToast?.(`Recibo anulado. ${d.cargosDevueltos} cargo${d.cargosDevueltos !== 1 ? 's' : ''} vuelve${d.cargosDevueltos === 1 ? '' : 'n'} a pendiente.`);
+        showToast?.(`Rectificativa ${d.recibo.numero} emitida. ${d.cargosDevueltos} concepto${d.cargosDevueltos !== 1 ? 's' : ''} vuelve${d.cargosDevueltos === 1 ? '' : 'n'} a pendiente.`);
         setAnulando(null); setDetalle(null); await cargar();
+        if (window.confirm(`Recibo anulado con la rectificativa ${d.recibo.numero}.\nImporte a devolver: ${eur(d.aDevolver)}\n\n¿Imprimir el documento?`)) imprimirTicketRecibo(d);
       } else { const d = await r.json(); alert(d.error || 'No se pudo anular.'); }
     } catch { alert('Error de conexión.'); }
     finally { setSaving(false); }
@@ -2232,11 +2237,13 @@ function BillingRecibos({ showToast }) {
               <div className="row-actions">
                 <button className="icon-btn" title="Ver detalle" onClick={() => verDetalle(r.id, false)} aria-label="Ver"><I.Eye /></button>
                 <button className="icon-btn" title="Reimprimir" onClick={() => verDetalle(r.id, true)} aria-label="Imprimir"><I.Print /></button>
-                {r.tipo !== 'rectificativo' && r.estado === 'cobrado' && (
-                  <button className="icon-btn" title="Rectificar (ya entregado al cliente)" onClick={() => abrirRectificar(r)} aria-label="Rectificar" style={{ color: 'var(--purple)' }}><I.Edit /></button>
+                {/* Un recibo ya rectificado se puede volver a rectificar: el cliente
+                    puede devolver cosas en momentos distintos. */}
+                {r.tipo !== 'rectificativo' && ['cobrado', 'rectificado'].includes(r.estado) && (
+                  <button className="icon-btn" title="Emitir rectificativa (devolución parcial)" onClick={() => abrirRectificar(r)} aria-label="Rectificar" style={{ color: 'var(--purple)' }}><I.Edit /></button>
                 )}
-                {r.tipo !== 'rectificativo' && r.estado === 'cobrado' && (
-                  <button className="icon-btn danger" title="Anular (aún no entregado)" onClick={() => setAnulando({ id: r.id, numero: r.numero, motivo: '' })} aria-label="Anular"><I.X /></button>
+                {r.tipo !== 'rectificativo' && ['cobrado', 'rectificado'].includes(r.estado) && (
+                  <button className="icon-btn danger" title="Anular entero: emite una rectificativa por todo lo que queda" onClick={() => setAnulando({ id: r.id, numero: r.numero, motivo: '' })} aria-label="Anular"><I.X /></button>
                 )}
               </div>
             </div>
@@ -2297,9 +2304,15 @@ function BillingRecibos({ showToast }) {
             onClick={e => { if (e.target === e.currentTarget) setRectificando(null); }}>
             <div style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 620, maxHeight: '90vh', overflowY: 'auto', padding: 24 }}>
               <h3 style={{ margin: '0 0 4px', fontSize: 18, fontWeight: 800 }}>Rectificar recibo #{R.numero}</h3>
-              <p style={{ margin: '0 0 16px', fontSize: 13, color: 'var(--ink-2)' }}>
+              <p style={{ margin: '0 0 8px', fontSize: 13, color: 'var(--ink-2)' }}>
                 Se emitirá un <b>documento nuevo</b> en la serie R que referencia a este recibo. El original no se borra: queda marcado como rectificado.
               </p>
+              {R.yaRectificadas > 0 && (
+                <p style={{ margin: '0 0 16px', fontSize: 13, fontWeight: 600, color: 'var(--purple)' }}>
+                  Este recibo ya tuvo {R.yaRectificadas} línea{R.yaRectificadas !== 1 ? 's' : ''} rectificada{R.yaRectificadas !== 1 ? 's' : ''} antes.
+                  Abajo solo aparece lo que aún queda por devolver.
+                </p>
+              )}
 
               <div className="field">
                 <label>Método</label>
@@ -2369,7 +2382,9 @@ function BillingRecibos({ showToast }) {
           <div style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 460, padding: 24 }}>
             <h3 style={{ margin: '0 0 8px', fontSize: 18, fontWeight: 800 }}>Anular recibo #{anulando.numero}</h3>
             <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--ink-2)' }}>
-              El recibo no se borra: queda marcado como anulado. Sus cargos <b>vuelven a pendientes</b> y se podrán volver a cobrar.
+              El recibo no se borra ni pierde su número: queda marcado como anulado y se emite
+              una <b>factura rectificativa</b> por todo lo que quede en él. Sus conceptos <b>vuelven a
+              pendientes</b> y se podrán volver a cobrar.
             </p>
             <div className="field">
               <label>Motivo (obligatorio)</label>
