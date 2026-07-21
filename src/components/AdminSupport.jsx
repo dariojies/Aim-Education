@@ -19,6 +19,63 @@ function fmtDue(str) {
   return `${String(d.getDate()).padStart(2,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${d.getFullYear()}`;
 }
 
+// Fecha y hora de creación: en un ticket la hora importa para saber el orden real.
+function fmtDateTime(str) {
+  if (!str) return '—';
+  const d = new Date(str);
+  if (isNaN(d)) return '—';
+  return d.toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+// Cuánto hace que se creó, para ver de un vistazo los tickets que llevan tiempo parados.
+function hace(str) {
+  if (!str) return null;
+  const dias = Math.floor((Date.now() - new Date(str).getTime()) / 86400000);
+  if (isNaN(dias) || dias < 0) return null;
+  if (dias === 0) return 'hoy';
+  if (dias === 1) return 'ayer';
+  if (dias < 30) return `hace ${dias} días`;
+  const meses = Math.floor(dias / 30);
+  return meses === 1 ? 'hace 1 mes' : `hace ${meses} meses`;
+}
+
+// Texto de un ticket. Lo usan tanto "copiar este ticket" como el listado completo,
+// para que los dos formatos no se separen con el tiempo.
+function ticketATexto(t) {
+  const apps = Array.isArray(t.app_label) ? t.app_label.join(', ') : (t.app_label || 'Aim Education');
+  let s = `[#${t.id}] ${(t.subject || '').toUpperCase()}\n`;
+  s += `Prioridad: ${(PRIORITY_LABEL[t.priority?.toLowerCase()] || t.priority || '').toUpperCase()} | Estado: ${(STATUS_LABEL[t.status] || t.status || '').toUpperCase()}\n`;
+  s += `Apps: ${apps}\n`;
+  s += `Creado: ${fmtDateTime(t.created_at)}${hace(t.created_at) ? ` (${hace(t.created_at)})` : ''}\n`;
+  s += `Creado por: ${t.name} ${t.surname || ''} (${t.email})\n`;
+  s += `Asignado: ${t.assignee_name ? `${t.assignee_name} ${t.assignee_surname || ''}` : 'Sin asignar'}\n`;
+  s += `Vence: ${t.due_date ? fmtDate(t.due_date) : 'N/A'}\n`;
+  s += `Descripción: ${t.description}\n`;
+  if (t.dev_response) s += `Respuesta: ${t.dev_response}\n`;
+  return s;
+}
+
+// Copia al portapapeles. document.execCommand es el plan B para cuando el navegador
+// no da permiso a la API moderna (pasa fuera de https).
+async function copiarAlPortapapeles(texto) {
+  try {
+    await navigator.clipboard.writeText(texto);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = texto;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch { return false; }
+  }
+}
+
 function parseInputDate(str) {
   if (!str) return null;
   const parts = str.split('-');
@@ -55,6 +112,7 @@ export function AdminSupport({ user }) {
   const [ticketAppLabels, setTicketAppLabels] = useState(['Aim Education']);
   const [updating, setUpdating] = useState(false);
   const [updateMsg, setUpdateMsg] = useState('');
+  const [aviso, setAviso] = useState('');
 
   const fetchTickets = useCallback(() => {
     setLoading(true);
@@ -184,20 +242,20 @@ export function AdminSupport({ user }) {
     let text = `REPORTE DE TICKETS — ${new Date().toLocaleDateString('es-ES')}\n`;
     text += `Filtros: App: ${filterApp}, Estado: ${filterStatus}, Prioridad: ${filterPriority}\n`;
     text += `${'─'.repeat(50)}\n\n`;
-    filtered.forEach(t => {
-      const apps = Array.isArray(t.app_label) ? t.app_label.join(', ') : (t.app_label || 'Aim Education');
-      text += `[#${t.id}] ${t.subject.toUpperCase()}\n`;
-      text += `Prioridad: ${(t.priority||'').toUpperCase()} | Estado: ${(t.status||'').toUpperCase()}\n`;
-      text += `Apps: ${apps}\n`;
-      text += `Creado por: ${t.name} ${t.surname||''} (${t.email})\n`;
-      text += `Asignado: ${t.assignee_name ? `${t.assignee_name} ${t.assignee_surname||''}` : 'Sin asignar'}\n`;
-      text += `Vence: ${t.due_date ? fmtDate(t.due_date) : 'N/A'}\n`;
-      text += `Descripción: ${t.description}\n`;
-      if (t.dev_response) text += `Respuesta: ${t.dev_response}\n`;
-      text += `\n${'─'.repeat(50)}\n\n`;
-    });
-    try { await navigator.clipboard.writeText(text); alert('Listado copiado al portapapeles.'); }
-    catch { alert('No se pudo copiar automáticamente.'); }
+    filtered.forEach(t => { text += ticketATexto(t) + `\n${'─'.repeat(50)}\n\n`; });
+    const ok = await copiarAlPortapapeles(text);
+    avisar(ok ? `${filtered.length} ticket${filtered.length !== 1 ? 's' : ''} copiado${filtered.length !== 1 ? 's' : ''}.` : 'No se pudo copiar.');
+  }
+
+  // Copia un único ticket, con el mismo formato que el listado completo.
+  async function copiarTicket(t) {
+    const ok = await copiarAlPortapapeles(ticketATexto(t));
+    avisar(ok ? `Ticket #${t.id} copiado.` : 'No se pudo copiar.');
+  }
+
+  function avisar(texto) {
+    setAviso(texto);
+    setTimeout(() => setAviso(''), 2500);
   }
 
   function getFiltered() {
@@ -224,6 +282,13 @@ export function AdminSupport({ user }) {
 
   return (
     <>
+      {/* Aviso de copiado. Por encima del modal, que va a z-index 2000. */}
+      {aviso && (
+        <div role="status" style={{position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", zIndex: 3000, background: "var(--ink)", color: "var(--bg-2)", padding: "10px 18px", borderRadius: 999, fontSize: 13, fontWeight: 700, boxShadow: "var(--shadow)"}}>
+          {aviso}
+        </div>
+      )}
+
       {/* Tabs */}
       <div style={{display: "flex", gap: 6, marginBottom: 22}}>
         {[
@@ -328,9 +393,10 @@ export function AdminSupport({ user }) {
                   <div style={{fontWeight: 700, fontSize: 15, color: "var(--ink)", marginBottom: 4}}>{t.subject}</div>
                   <div style={{fontSize: 13, color: "var(--ink-2)", marginBottom: 10, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden"}}>{t.description}</div>
                   <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, color: "var(--ink-3)"}}>
-                    <div>
+                    <div style={{display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center"}}>
                       <span style={{fontStyle: "italic"}}>De: {t.name} {t.surname || ''}</span>
-                      {t.due_date && <span style={{color: "var(--orange)", fontWeight: 700, marginLeft: 12}}>Vence: {fmtDue(t.due_date)}</span>}
+                      <span title={fmtDateTime(t.created_at)}>Creado: {fmtDate(t.created_at)}{hace(t.created_at) ? ` · ${hace(t.created_at)}` : ''}</span>
+                      {t.due_date && <span style={{color: "var(--orange)", fontWeight: 700}}>Vence: {fmtDue(t.due_date)}</span>}
                     </div>
                     {t.assignee_name && (
                       <span style={{fontWeight: 600}}>→ {t.assignee_name} {t.assignee_surname || ''}</span>
@@ -353,13 +419,21 @@ export function AdminSupport({ user }) {
           }}>
             {/* Modal header */}
             <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 24px", borderBottom: "1px solid var(--line)"}}>
-              <div>
+              <div style={{minWidth: 0}}>
                 <p style={{margin: 0, fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".1em", color: "var(--purple)"}}>Ticket #{selected.id}</p>
                 <h3 style={{margin: "4px 0 0", fontSize: 18, fontWeight: 800}}>{selected.subject}</h3>
+                <p style={{margin: "4px 0 0", fontSize: 12, color: "var(--ink-3)"}}>
+                  Creado el {fmtDateTime(selected.created_at)}{hace(selected.created_at) ? ` · ${hace(selected.created_at)}` : ''}
+                </p>
               </div>
-              <button onClick={() => setSelected(null)} style={{background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 8, padding: "8px 12px", cursor: "pointer", fontWeight: 700, color: "var(--ink)"}}>
-                <I.X />
-              </button>
+              <div style={{display: "flex", gap: 8, alignItems: "center", flexShrink: 0}}>
+                <button className="btn btn-sm btn-outline" onClick={() => copiarTicket(selected)} title="Copiar este ticket al portapapeles">
+                  Copiar ticket
+                </button>
+                <button onClick={() => setSelected(null)} style={{background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 8, padding: "8px 12px", cursor: "pointer", fontWeight: 700, color: "var(--ink)"}}>
+                  <I.X />
+                </button>
+              </div>
             </div>
 
             {/* Modal body */}
