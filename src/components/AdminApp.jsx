@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { I } from './Icons.jsx';
+import { ListaClases, AdminReportes } from './AdminTulClases.jsx';
 import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong, campDayParts } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 import { AdminSupport } from './AdminSupport.jsx';
@@ -9,6 +10,7 @@ function sectionLabel(id) {
     overview: "Resumen",
     students: "Gestión de alumnos",
     classes: "Clases y horarios",
+    reportes: "Reportes",
     payments: "Gastos del club",
     news: "Noticias y foro",
     events: "Eventos y talleres",
@@ -279,6 +281,9 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
   const [search, setSearch] = useState("");
   const [selectedSlot, setSelectedSlot] = useState(null);
   const [selectedRoom, setSelectedRoom] = useState("Todas");
+  // 'horario' es el calendario de siempre; 'lista' es el menú de gestión de
+  // Aim-Tul (actividades → grupos → alumnos) recreado aquí.
+  const [vista, setVista] = useState('horario');
 
   const roomsList = ["Todas", ...classrooms.map(r => r.name)];
 
@@ -288,12 +293,27 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
     return `${s.title} ${s.room} ${s.monitor || ''} ${s.act}`.toLowerCase().includes(q);
   });
 
+  if (vista === 'lista') {
+    return (
+      <>
+        <div className="toolbar">
+          <div style={{ display: "flex", gap: 6 }}>
+            <button className="filter-pill" onClick={() => setVista('horario')}>Semana</button>
+            <button className="filter-pill is-active">Lista de clases</button>
+          </div>
+        </div>
+        <ListaClases showToast={showToast} />
+      </>
+    );
+  }
+
   return (
     <>
       <div className="toolbar">
         <div style={{ display: "flex", gap: 6 }}>
           <button className="filter-pill is-active">Semana</button>
           <button className="filter-pill" onClick={() => alert("Vista mensual disponible en el siguiente pase.")}>Mes</button>
+          <button className="filter-pill" onClick={() => setVista('lista')}>Lista de clases</button>
         </div>
         <div className="search-input" style={{ maxWidth: 280 }}>
           <I.Search />
@@ -4056,6 +4076,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "payments", label: "Gastos", icon: <I.Wallet /> },
         { id: "classes", label: "Clases y horarios", icon: <I.Calendar /> },
         { id: "camp", label: "Campamento", icon: <I.Sun /> },
+        { id: "reportes", label: "Reportes", icon: <I.Trophy /> },
         { id: "events", label: "Eventos", icon: <I.Star /> },
         { id: "news", label: "Noticias / Foro", icon: <I.Newspaper /> },
       ]
@@ -4142,7 +4163,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
               <button className="btn btn-icon"><I.Bell /></button>
               <button className="btn btn-icon" onClick={() => alert("Función de búsqueda global disponible próximamente.")}><I.Search /></button>
-              {!['classes', 'events', 'support', 'camp', 'billing', 'payments'].includes(view) && (
+              {!['classes', 'events', 'support', 'camp', 'billing', 'payments', 'reportes'].includes(view) && (
                 <button
                   className="btn btn-primary"
                   onClick={() => {
@@ -4196,6 +4217,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {view === "groups" && <AdminGroups refreshTrigger={refreshTrigger} onEditGroup={(g) => { setEditingItem(g); setActiveModal('edit-group'); }} />}
           {view === "instructors" && <AdminInstructores refreshTrigger={refreshTrigger} showToast={showToast} />}
           {view === "settings" && <AdminSettings />}
+          {view === "reportes" && <AdminReportes />}
           {view === "support" && <AdminSupport user={user} ticketId={ticketId} />}
         </div>
       </div>

@@ -87,7 +87,7 @@ export default function App() {
     if (!userChecked) return null;
     if (!user || !user.canAccessAdmin) { go('/auth'); return null; }
     // 'recibos' se mantiene como alias antiguo: esa sección ahora son los gastos del club.
-    const adminSub = { campamento: 'camp', alumnos: 'students', clases: 'classes', eventos: 'events', noticias: 'news', gastos: 'payments', recibos: 'payments', facturacion: 'billing', soporte: 'support' }[seg[1]] || 'overview';
+    const adminSub = { campamento: 'camp', alumnos: 'students', clases: 'classes', eventos: 'events', noticias: 'news', gastos: 'payments', recibos: 'payments', facturacion: 'billing', soporte: 'support', reportes: 'reportes' }[seg[1]] || 'overview';
     // /admin/soporte/180 abre ese ticket directamente, para poder pasar el enlace.
     const ticketId = seg[1] === 'soporte' && /^\d+$/.test(seg[2] || '') ? Number(seg[2]) : null;
     screen = <AdminApp user={user} onLogout={handleLogout} subroute={adminSub} ticketId={ticketId} />;

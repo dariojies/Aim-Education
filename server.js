@@ -9,6 +9,7 @@ import crypto from 'crypto';
 import { GoogleGenAI, Type } from '@google/genai';
 import nodemailer from 'nodemailer';
 import { calcularRecibo, mesAGenerar } from './billing.js';
+import { crearRouterTulClases } from './tul-clases.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1538,6 +1539,10 @@ function requireAdmin(req, res, next) {
     if (!req.userSession?.canAccessAdmin) return res.status(403).json({ error: 'Acceso solo para administradores.' });
     next();
 }
+
+// Gestión de clases y reportes de Aim-Tul (mismas tablas tul_*, mismo SQL),
+// portados a nuestro panel. Ver tul-clases.js.
+app.use('/api/admin/tul', authenticateSession, requireAdmin, crearRouterTulClases({ pool, clubId: AIM_CLUB_ID }));
 
 function mapCampChild(r) {
     return {
