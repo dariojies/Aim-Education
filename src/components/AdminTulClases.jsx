@@ -657,29 +657,49 @@ export function AdminReportes() {
         </Seccion>
       )}
 
-      {/* Churn mensual */}
-      {churn && churn.months.length > 0 && (
-        <Seccion titulo="Abandono mes a mes">
-          <div style={{ overflowX: 'auto' }}>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', minWidth: 480 }}>
-              {churn.months.map(m => {
-                const pct = m.sociosInicio > 0 ? Math.round((m.bajas / m.sociosInicio) * 100) : 0;
-                return (
-                  <div key={m.month} style={{ flex: 1, textAlign: 'center', display: 'grid', gap: 4 }}>
-                    <div style={{ fontSize: 11, fontWeight: 700 }}>{m.bajas > 0 ? `${pct}%` : '—'}</div>
-                    <div style={{ height: 80, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
-                      <div style={{ width: 22, borderRadius: '6px 6px 0 0', background: m.bajas > 0 ? 'var(--orange)' : 'var(--bg-3)', height: `${Math.max(m.bajas > 0 ? 8 : 3, Math.min(100, pct * 4))}%` }} />
+      {/* Churn mensual. La gráfica cubre desde junio de 2025 hasta el mes actual:
+          los meses anteriores al primer registro se leen como abandono 0 %
+          (retención 100 %). Cada mes lleva dos barras: roja el abandono, azul la
+          retención. La membresía media se sigue calculando SOLO con los meses
+          reales; rellenarla con ceros la inflaría artificialmente. */}
+      {churn && (() => {
+        const reales = new Map((churn.months || []).map(m => [m.month, m]));
+        const hoy = new Date();
+        const meses = [];
+        for (let d = new Date(2025, 5, 1); d <= hoy; d.setMonth(d.getMonth() + 1)) {
+          const clave = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+          const real = reales.get(clave);
+          const pct = real && real.sociosInicio > 0 ? Math.round((real.bajas / real.sociosInicio) * 100) : 0;
+          meses.push({ clave, real, abandono: pct, retencion: 100 - pct });
+        }
+        const ROJO = '#E55353', AZUL = '#00BBF4';
+        return (
+          <Seccion titulo="Abandono y retención mes a mes"
+            extra={
+              <div style={{ display: 'flex', gap: 12, fontSize: 11, fontWeight: 700, color: 'var(--ink-2)' }}>
+                <span><span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 3, background: ROJO, marginRight: 4 }} />Abandono</span>
+                <span><span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 3, background: AZUL, marginRight: 4 }} />Retención</span>
+              </div>
+            }>
+            <div style={{ overflowX: 'auto' }}>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end', minWidth: 720 }}>
+                {meses.map(m => (
+                  <div key={m.clave} style={{ flex: 1, textAlign: 'center', display: 'grid', gap: 4 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: m.abandono > 0 ? ROJO : 'var(--ink-3)' }}>{m.abandono}%</div>
+                    <div style={{ height: 90, display: 'flex', alignItems: 'flex-end', justifyContent: 'center', gap: 3 }}>
+                      <div title={`Abandono ${m.abandono}%`} style={{ width: 12, borderRadius: '4px 4px 0 0', background: ROJO, height: `${Math.max(m.abandono, 2)}%`, opacity: m.abandono > 0 ? 1 : .35 }} />
+                      <div title={`Retención ${m.retencion}%`} style={{ width: 12, borderRadius: '4px 4px 0 0', background: AZUL, height: `${Math.max(m.retencion, 2)}%` }} />
                     </div>
-                    <div style={{ fontSize: 10, color: 'var(--ink-3)' }}>{m.month.slice(2)}</div>
-                    <div style={{ fontSize: 10, color: 'var(--ink-3)' }}>{m.bajas}/{m.sociosInicio}</div>
+                    <div style={{ fontSize: 10, color: 'var(--ink-3)' }}>{m.clave.slice(2)}</div>
+                    <div style={{ fontSize: 10, color: 'var(--ink-3)' }}>{m.real ? `${m.real.bajas}/${m.real.sociosInicio}` : '—'}</div>
                   </div>
-                );
-              })}
+                ))}
+              </div>
             </div>
-          </div>
-          {membresia && <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Duración media estimada de la membresía: <b>{membresia.texto}</b>.</p>}
-        </Seccion>
-      )}
+            {membresia && <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Duración media estimada de la membresía: <b>{membresia.texto}</b> (calculada solo con los meses con historial real).</p>}
+          </Seccion>
+        );
+      })()}
 
       {/* Asistencia del periodo */}
       <Seccion titulo={`Asistencia · ${periodo.label}`}>
