@@ -685,10 +685,14 @@ export function AdminReportes() {
               <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end', minWidth: 720 }}>
                 {meses.map(m => (
                   <div key={m.clave} style={{ flex: 1, textAlign: 'center', display: 'grid', gap: 4 }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: m.abandono > 0 ? ROJO : 'var(--ink-3)' }}>{m.abandono}%</div>
+                    {/* Un porcentaje encima de cada barra: rojo abandono, azul retención */}
+                    <div style={{ display: 'flex', justifyContent: 'center', gap: 3, fontSize: 9, fontWeight: 700 }}>
+                      <span style={{ width: 24, color: m.abandono > 0 ? ROJO : 'var(--ink-3)' }}>{m.abandono}%</span>
+                      <span style={{ width: 24, color: AZUL }}>{m.retencion}%</span>
+                    </div>
                     <div style={{ height: 90, display: 'flex', alignItems: 'flex-end', justifyContent: 'center', gap: 3 }}>
-                      <div title={`Abandono ${m.abandono}%`} style={{ width: 12, borderRadius: '4px 4px 0 0', background: ROJO, height: `${Math.max(m.abandono, 2)}%`, opacity: m.abandono > 0 ? 1 : .35 }} />
-                      <div title={`Retención ${m.retencion}%`} style={{ width: 12, borderRadius: '4px 4px 0 0', background: AZUL, height: `${Math.max(m.retencion, 2)}%` }} />
+                      <div title={`Abandono ${m.abandono}%`} style={{ width: 24, borderRadius: '4px 4px 0 0', background: ROJO, height: `${Math.max(m.abandono, 2)}%`, opacity: m.abandono > 0 ? 1 : .35 }} />
+                      <div title={`Retención ${m.retencion}%`} style={{ width: 24, borderRadius: '4px 4px 0 0', background: AZUL, height: `${Math.max(m.retencion, 2)}%` }} />
                     </div>
                     <div style={{ fontSize: 10, color: 'var(--ink-3)' }}>{m.clave.slice(2)}</div>
                     <div style={{ fontSize: 10, color: 'var(--ink-3)' }}>{m.real ? `${m.real.bajas}/${m.real.sociosInicio}` : '—'}</div>
