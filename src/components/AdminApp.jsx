@@ -293,6 +293,70 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
     return `${s.title} ${s.room} ${s.monitor || ''} ${s.act}`.toLowerCase().includes(q);
   });
 
+  // Exporta el horario a PDF por el diálogo de impresión del navegador, con los
+  // mismos filtros que se están viendo (búsqueda y sala). Un día por bloque,
+  // ordenado por hora: en papel se lee mejor que la rejilla.
+  function exportPDF() {
+    const slots = filteredSlots.filter(s => selectedRoom === "Todas" || s.room === selectedRoom);
+    if (!slots.length) { alert("No hay clases que exportar con los filtros actuales."); return; }
+    const esc = (t) => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const bloques = days.map((dia, d) => {
+      const delDia = slots.filter(s => s.d === d).sort((a, b) => (a.s - b.s) || String(a.room).localeCompare(String(b.room)));
+      if (!delDia.length) return '';
+      return `
+        <h2>${dia === 'Lun' ? 'Lunes' : dia === 'Mar' ? 'Martes' : dia === 'Mié' ? 'Miércoles' : dia === 'Jue' ? 'Jueves' : dia === 'Vie' ? 'Viernes' : 'Sábado'}</h2>
+        <table>
+          <thead><tr><th>Hora</th><th>Clase</th><th>Actividad</th><th>Sala</th><th>Monitor</th><th>Alumnos</th><th>Edades</th></tr></thead>
+          <tbody>
+            ${delDia.map(s => `
+              <tr>
+                <td class="hora">${esc(s.time || '')}</td>
+                <td><span class="punto" style="background:${esc(s.actColor || '#5233A8')}"></span><b>${esc(s.title)}</b></td>
+                <td>${esc(s.actName || '')}</td>
+                <td>${esc(s.room || '—')}</td>
+                <td>${esc(s.monitor || '—')}</td>
+                <td>${esc(s.students || '')}</td>
+                <td>${s.minAge != null || s.maxAge != null ? esc(`${s.minAge ?? '¿'}–${s.maxAge ?? '?'} años`) : '—'}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`;
+    }).join('');
+    const filtros = [
+      selectedRoom !== 'Todas' ? `Sala: ${selectedRoom}` : null,
+      search ? `Filtro: "${search}"` : null,
+    ].filter(Boolean).join(' · ');
+    const html = `
+      <style>
+        #print-horario { font-family: sans-serif; color: #222; padding: 24px; }
+        #print-horario h1 { color: #5233A8; border-bottom: 2px solid #5233A8; padding-bottom: 8px; margin: 0 0 4px; }
+        #print-horario .meta { color: #666; font-size: 12px; margin: 0 0 18px; }
+        #print-horario h2 { font-size: 15px; margin: 18px 0 6px; }
+        #print-horario table { width: 100%; border-collapse: collapse; font-size: 12px; page-break-inside: avoid; }
+        #print-horario th { text-align: left; background: #f3f0fa; color: #5233A8; padding: 6px 8px; border-bottom: 2px solid #5233A8; }
+        #print-horario td { padding: 5px 8px; border-bottom: 1px solid #e5e5e5; vertical-align: top; }
+        #print-horario .hora { white-space: nowrap; font-weight: bold; }
+        #print-horario .punto { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+      </style>
+      <h1>Horario de clases — Aim Education</h1>
+      <p class="meta">Generado: ${new Date().toLocaleString('es-ES')}${filtros ? ` · ${filtros}` : ''}</p>
+      ${bloques}`;
+
+    const style = document.createElement('style');
+    style.id = 'print-horario-style';
+    style.innerHTML = `@media print { body > *:not(#print-horario) { display: none !important; } #print-horario { display: block !important; position: static; background: white; } }`;
+    document.head.appendChild(style);
+    const el = document.createElement('div');
+    el.id = 'print-horario';
+    el.style.display = 'none';
+    el.innerHTML = html;
+    document.body.appendChild(el);
+    window.print();
+    setTimeout(() => {
+      document.getElementById('print-horario-style')?.remove();
+      document.getElementById('print-horario')?.remove();
+    }, 1000);
+  }
+
   if (vista === 'lista') {
     return (
       <>
@@ -321,7 +385,7 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
         </div>
         <div style={{ flex: 1 }} />
         {/* Las clases se crean desde "Lista de clases": ahí viven actividades y grupos. */}
-        <button className="btn btn-outline btn-sm" onClick={() => alert("Listado exportado correctamente en formato PDF.")}>Exportar PDF</button>
+        <button className="btn btn-outline btn-sm" onClick={exportPDF}>Exportar PDF</button>
       </div>
 
       {/* Classroom filter tabs */}
