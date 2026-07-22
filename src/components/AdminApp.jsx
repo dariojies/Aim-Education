@@ -320,8 +320,8 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
           <input placeholder="Filtrar por sala, monitor..." value={search} onChange={e => setSearch(e.target.value)} />
         </div>
         <div style={{ flex: 1 }} />
+        {/* Las clases se crean desde "Lista de clases": ahí viven actividades y grupos. */}
         <button className="btn btn-outline btn-sm" onClick={() => alert("Listado exportado correctamente en formato PDF.")}>Exportar PDF</button>
-        <button className="btn btn-primary btn-sm" onClick={onAddClassClick}><I.Plus /> Nueva clase</button>
       </div>
 
       {/* Classroom filter tabs */}

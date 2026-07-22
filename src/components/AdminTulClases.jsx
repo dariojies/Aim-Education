@@ -164,7 +164,7 @@ export function ListaClases({ showToast }) {
 
         {editGrupo && (
           <div style={modalFondo} onClick={e => { if (e.target === e.currentTarget) setEditGrupo(null); }}>
-            <div style={{ ...modalCaja, maxWidth: 640 }}>
+            <div className="scroll-oculto" style={{ ...modalCaja, maxWidth: 640 }}>
               <h3 style={{ margin: '0 0 16px', fontSize: 18, fontWeight: 800 }}>{editGrupo.id ? 'Editar grupo' : `Nuevo grupo de ${actividad.name}`}</h3>
               <div style={{ display: 'grid', gap: 14 }}>
                 <div className="field"><label>Nombre del grupo</label>
@@ -181,7 +181,15 @@ export function ListaClases({ showToast }) {
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                     <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>Sesiones semanales</span>
-                    <button type="button" className="btn btn-sm btn-outline" onClick={() => setEditGrupo(x => ({ ...x, sessions: [...(x.sessions || []), { days: [], startTime: '16:00', endTime: '17:00', aulaId: null, aulaName: null, instructorId: null, instructorName: null }] }))}>+ Añadir sesión</button>
+                    <button type="button" className="btn btn-sm btn-outline" onClick={() => setEditGrupo(x => {
+                      // Igual que aim-tul: la sesión nueva parte de la última (hora,
+                      // aula y monitor) y solo hay que elegirle los días.
+                      const ult = (x.sessions || [])[x.sessions.length - 1];
+                      const nueva = ult
+                        ? { days: [], startTime: ult.startTime, endTime: ult.endTime, aulaId: ult.aulaId, aulaName: ult.aulaName, instructorId: ult.instructorId, instructorName: ult.instructorName }
+                        : { days: [], startTime: '17:00', endTime: '18:00', aulaId: null, aulaName: null, instructorId: null, instructorName: null };
+                      return { ...x, sessions: [...(x.sessions || []), nueva] };
+                    })}>+ Añadir sesión</button>
                   </div>
                   {!(editGrupo.sessions || []).length && <p style={{ fontSize: 12, color: 'var(--ink-3)', margin: 0 }}>Sin sesiones: el grupo no aparecerá en el horario semanal.</p>}
                   <div style={{ display: 'grid', gap: 10 }}>
@@ -277,7 +285,7 @@ export function ListaClases({ showToast }) {
 
       {editAct && (
         <div style={modalFondo} onClick={e => { if (e.target === e.currentTarget) setEditAct(null); }}>
-          <div style={{ ...modalCaja, maxWidth: 520 }}>
+          <div className="scroll-oculto" style={{ ...modalCaja, maxWidth: 520 }}>
             <h3 style={{ margin: '0 0 16px', fontSize: 18, fontWeight: 800 }}>{editAct.id ? 'Editar actividad' : 'Nueva actividad'}</h3>
             <div style={{ display: 'grid', gap: 14 }}>
               <div className="field"><label>Nombre</label>

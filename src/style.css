@@ -3480,3 +3480,12 @@ html[data-theme="dark"] .dash-nav button.is-active {
   padding-bottom: .08em;
   display: inline;
 }
+/* Scroll sin barra visible: se puede desplazar igual (rueda, arrastre, teclado)
+   pero la barra no se pinta, que en los modales rompía la estética. */
+.scroll-oculto {
+  scrollbar-width: none;      /* Firefox */
+  -ms-overflow-style: none;   /* IE/Edge viejos */
+}
+.scroll-oculto::-webkit-scrollbar {
+  display: none;              /* Chrome, Safari */
+}
