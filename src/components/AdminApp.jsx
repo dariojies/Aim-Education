@@ -4,6 +4,7 @@ import { ListaClases, AdminReportes } from './AdminTulClases.jsx';
 import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong, campDayParts } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 import { AdminSupport } from './AdminSupport.jsx';
+import { fmtFecha, fmtFechaHora, fmtFechaLarga, fmtFechaCorta } from '../fechas.js';
 
 function sectionLabel(id) {
   return ({
@@ -127,7 +128,7 @@ function AdminOverview({ setView, refreshTrigger, showToast }) {
                 <div className="name">{r.proveedor || "Gasto"}</div>
                 <div className="date">{r.concepto || r.medioPago || "—"}</div>
               </div>
-              <span className="date">{r.fecha ? new Date(r.fecha).toLocaleDateString("es-ES") : "—"}</span>
+              <span className="date">{fmtFecha(r.fecha)}</span>
               <span className="amount">{r.importe != null ? `${parseFloat(r.importe).toLocaleString("es-ES", { minimumFractionDigits: 2 })}€` : "—"}</span>
             </div>
           ))}
@@ -338,7 +339,7 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
         #print-horario .punto { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
       </style>
       <h1>Horario de clases — Aim Education</h1>
-      <p class="meta">Generado: ${new Date().toLocaleString('es-ES')}${filtros ? ` · ${filtros}` : ''}</p>
+      <p class="meta">Generado: ${fmtFechaHora(new Date())}${filtros ? ` · ${filtros}` : ''}</p>
       ${bloques}`;
 
     const style = document.createElement('style');
@@ -749,7 +750,7 @@ function AdminGastos({ refreshTrigger, showToast }) {
                     <div className="sec">{g.cif || 'sin CIF'}{g.numeroFactura ? ` · nº ${g.numeroFactura}` : ''}</div>
                   </div>
                   <div className="sec" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{g.concepto || '—'}<div style={{ fontSize: 11 }}>{g.medioPago || ''}</div></div>
-                  <span className="sec">{g.fecha ? new Date(g.fecha).toLocaleDateString('es-ES') : '—'}</span>
+                  <span className="sec">{fmtFecha(g.fecha)}</span>
                   <span style={{ fontWeight: 700, fontFamily: 'var(--font-display)' }}>{eur(g.importe)}</span>
                   <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                     <button onClick={() => marcar(g, { pagado: !g.pagado })} title="Marcar pagado"
@@ -1024,7 +1025,7 @@ function AdminNews({ refreshTrigger, onEditPost }) {
           const a = ACT_BY_ID[p.category];
           const statusLabel = p.status === "published" ? "Publicado" : p.status === "draft" ? "Borrador" : p.status;
           const statusClass = p.status === "published" ? "ok" : p.status === "draft" ? "pending" : "upcoming";
-          const dateStr = p.published_at ? new Date(p.published_at).toLocaleDateString("es-ES") : (p.created_at ? new Date(p.created_at).toLocaleDateString("es-ES") : "—");
+          const dateStr = fmtFecha(p.published_at || p.created_at);
           return (
             <div key={p.id} className={`data-table-row ${a?.className || ""}`} style={{ gridTemplateColumns: "2.4fr 1fr 0.9fr 0.7fr 0.7fr 130px" }}>
               <div>
@@ -1458,12 +1459,12 @@ function AdminEvents({ showToast }) {
         @media print { body { padding: 0; } }
       </style></head><body>
       <h1>${ev.title}</h1>
-      <div class="meta">${ev.date ? new Date(ev.date).toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) : ''}${ev.time ? ' · ' + ev.time : ''}${ev.venue ? ' · ' + ev.venue : ''} — ${regList.length} inscritos</div>
+      <div class="meta">${fmtFechaLarga(ev.date)}${ev.time ? ' · ' + ev.time : ''}${ev.venue ? ' · ' + ev.venue : ''} — ${regList.length} inscritos</div>
       <table>
         <thead><tr><th>#</th><th>Nombre</th><th>Apellidos</th><th>Edad</th><th>Datos / Obs.</th><th>Fotos</th><th>Pagado</th><th>Asistió</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
-      <div class="footer"><span>AIM Education · Panel de gestión</span><span>Impreso el ${new Date().toLocaleDateString('es-ES')}</span></div>
+      <div class="footer"><span>AIM Education · Panel de gestión</span><span>Impreso el ${fmtFecha(new Date())}</span></div>
       <script>window.onload = () => { window.print(); }<\/script>
     </body></html>`;
     const w = window.open('', '_blank', 'width=900,height=700');
@@ -1527,7 +1528,7 @@ function AdminEvents({ showToast }) {
     showToast?.('Evento eliminado.');
   }
 
-  const fmt = (d) => d ? new Date(d).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
+  const fmt = (d) => fmtFechaCorta(d);
 
   return (
     <>
@@ -2196,8 +2197,8 @@ function imprimirTicketRecibo(t) {
     <h2>${t.empresa.nombre}</h2>
     <div class="c">${t.empresa.nif}<br>${t.empresa.direccion}<br>${t.empresa.cp}<br>${t.empresa.tel} · ${t.empresa.web}</div>
     ${anulado ? `<div class="anul">RECIBO ANULADO${t.recibo.anuladoMotivo ? `<br><small style="color:#c00">${t.recibo.anuladoMotivo}</small>` : ''}</div>` : ''}
-    ${rect ? `<div class="rect">FACTURA RECTIFICATIVA<br><small>Rectifica al nº ${t.recibo.rectificaNumero || '—'}${t.recibo.rectificaFecha ? ` de ${new Date(t.recibo.rectificaFecha).toLocaleDateString('es-ES')}` : ''}<br>Por ${t.recibo.rectMetodo === 'diferencias' ? 'diferencias' : 'sustitución'}${t.recibo.rectMotivo ? `<br>Motivo: ${t.recibo.rectMotivo}` : ''}</small></div>` : (anulado ? '' : '<hr>')}
-    <div>${rect ? 'Rectificativa' : 'Recibo'} nº <b>${t.recibo.numero}</b><br>Fecha: ${new Date(t.recibo.fecha).toLocaleDateString('es-ES')}<br>Pagador: ${t.recibo.pagador}</div>
+    ${rect ? `<div class="rect">FACTURA RECTIFICATIVA<br><small>Rectifica al nº ${t.recibo.rectificaNumero || '—'}${t.recibo.rectificaFecha ? ` de ${fmtFecha(t.recibo.rectificaFecha)}` : ''}<br>Por ${t.recibo.rectMetodo === 'diferencias' ? 'diferencias' : 'sustitución'}${t.recibo.rectMotivo ? `<br>Motivo: ${t.recibo.rectMotivo}` : ''}</small></div>` : (anulado ? '' : '<hr>')}
+    <div>${rect ? 'Rectificativa' : 'Recibo'} nº <b>${t.recibo.numero}</b><br>Fecha: ${fmtFecha(t.recibo.fecha)}<br>Pagador: ${t.recibo.pagador}</div>
     <table><thead><tr><td><b>Descripción</b></td><td style="text-align:right"><b>IVA</b></td><td style="text-align:right"><b>Importe</b></td></tr></thead>
     <tbody>${filas}${bases}</tbody></table>
     <div class="tot">TOTAL: ${Number(t.recibo.total).toFixed(2)} €</div>
@@ -2314,7 +2315,7 @@ function BillingRecibos({ showToast }) {
                     : `${r.nLineas} línea${r.nLineas !== 1 ? 's' : ''}${r.estado === 'anulado' ? ` · anulado: ${r.anuladoMotivo || ''}` : ''}${r.estado === 'rectificado' ? ' · rectificado' : ''}`}
                 </div>
               </div>
-              <span className="sec">{r.fecha ? new Date(r.fecha).toLocaleDateString('es-ES') : ''}</span>
+              <span className="sec">{fmtFecha(r.fecha, '')}</span>
               <span style={{ fontWeight: 700, textDecoration: r.estado === 'anulado' ? 'line-through' : 'none' }}>{eur(r.importe)}</span>
               <span style={{ fontSize: 12, textTransform: 'capitalize' }}>{r.medioPago || '—'}</span>
               <div className="row-actions">
@@ -2340,7 +2341,7 @@ function BillingRecibos({ showToast }) {
               <div>
                 <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>Recibo #{detalle.recibo.numero}</h3>
                 <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--ink-3)' }}>
-                  {detalle.recibo.pagador} · {detalle.recibo.fecha ? new Date(detalle.recibo.fecha).toLocaleDateString('es-ES') : ''} · {detalle.recibo.medioPago}
+                  {detalle.recibo.pagador} · {fmtFecha(detalle.recibo.fecha, '')} · {detalle.recibo.medioPago}
                 </p>
               </div>
               {detalle.recibo.estado === 'anulado' && <span className="status-pill pending">Anulado</span>}

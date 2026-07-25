@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { I } from './Icons.jsx';
+import { fmtMesAno } from '../fechas.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Lista de clases y Reportes: el menú de gestión de Aim-Tul recreado en nuestra
@@ -463,12 +464,12 @@ export function AdminReportes() {
     const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     if (modo === 'monthly') {
       const fin = new Date(y, m + 1, 0);
-      return { from: iso(new Date(y, m, 1)), to: iso(fin), label: inicio.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }) };
+      return { from: iso(new Date(y, m, 1)), to: iso(fin), label: fmtMesAno(inicio) };
     }
     const esPrimera = inicio.getDate() <= 15;
     const from = esPrimera ? new Date(y, m, 1) : new Date(y, m, 16);
     const to = esPrimera ? new Date(y, m, 15) : new Date(y, m + 1, 0);
-    return { from: iso(from), to: iso(to), label: `${esPrimera ? '1ª' : '2ª'} quincena · ${inicio.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })}` };
+    return { from: iso(from), to: iso(to), label: `${esPrimera ? '1ª' : '2ª'} quincena · ${fmtMesAno(inicio)}` };
   }, [modo, inicio]);
 
   function mover(delta) {

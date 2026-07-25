@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { I } from './Icons.jsx';
 import { AimHeader, AimFooter, ACT_BY_ID, MagicText } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
+import { fmtFechaLarga } from '../fechas.js';
 
 export default function PublicCalendar() {
   const { user } = useRouter();
@@ -421,7 +422,7 @@ export default function PublicCalendar() {
           const color = a?.color || "var(--ink)";
           const start = new Date(selectedEvent.date);
           const end = selectedEvent.end ? new Date(selectedEvent.end) : null;
-          const fmt = (dt) => dt.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+          const fmt = (dt) => fmtFechaLarga(dt);
           const dateText = end && end.getTime() !== start.getTime()
             ? `${fmt(start)} — ${fmt(end)}`
             : fmt(start);

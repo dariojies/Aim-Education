@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { I } from './Icons.jsx';
+import { fmtFecha, fmtFechaHora, fmtHora as fmtHoraCorta } from '../fechas.js';
 
 // Las categorías son las apps del grupo más 'General/A Futuro', para lo que no
 // pertenece a ninguna app concreta o queda apuntado para más adelante.
@@ -12,13 +13,13 @@ const STATUS_LABEL = { open: 'Abierto', resolved: 'Resuelto', closed: 'Cerrado' 
 
 function fmtDate(str) {
   if (!str) return '—';
-  return new Date(str).toLocaleDateString('es-ES');
+  return fmtFecha(str);
 }
 
+// La fecha límite se escribe y se muestra igual que el resto: DD/MM/AAAA.
 function fmtDue(str) {
   if (!str) return null;
-  const d = new Date(str);
-  return `${String(d.getDate()).padStart(2,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${d.getFullYear()}`;
+  return fmtFecha(str, null);
 }
 
 // Fecha y hora de creación: en un ticket la hora importa para saber el orden real.
@@ -26,7 +27,7 @@ function fmtDateTime(str) {
   if (!str) return '—';
   const d = new Date(str);
   if (isNaN(d)) return '—';
-  return d.toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return fmtFechaHora(d);
 }
 
 // Cuánto hace que se creó, para ver de un vistazo los tickets que llevan tiempo parados.
@@ -90,14 +91,14 @@ async function copiarAlPortapapeles(texto) {
   }
 }
 
+// Acepta lo que se teclee en la fecha límite: 31/12/2026, 31-12-2026 o ya en
+// formato ISO. Devuelve siempre AAAA-MM-DD, que es lo que espera la base.
 function parseInputDate(str) {
   if (!str) return null;
-  const parts = str.split('-');
-  if (parts.length === 3 && str.includes('-')) {
-    if (parts[0].length === 4) return str;
-    return `${parts[2]}-${parts[1]}-${parts[0]}`;
-  }
-  return null;
+  const p = String(str).trim().split(/[/-]/);
+  if (p.length !== 3) return null;
+  if (p[0].length === 4) return `${p[0]}-${p[1].padStart(2, '0')}-${p[2].padStart(2, '0')}`;
+  return `${p[2]}-${p[1].padStart(2, '0')}-${p[0].padStart(2, '0')}`;
 }
 
 // Lee un archivo de imagen a base64 para mandarlo en el JSON, igual que las facturas.
@@ -182,8 +183,8 @@ function fmtHora(str) {
   const hoy = new Date();
   const mismoDia = d.toDateString() === hoy.toDateString();
   return mismoDia
-    ? d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
-    : d.toLocaleString('es-ES', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    ? fmtHoraCorta(d)
+    : fmtFechaHora(d);
 }
 
 // Conversación de un ticket. Dos canales separados: 'equipo' (entre desarrolladores)
@@ -475,7 +476,7 @@ export function AdminSupport({ user, ticketId = null }) {
       @media print{body{padding:0}}
     </style></head><body>
     <h1>Reporte de Soporte — Aim Education</h1>
-    <p style="color:#666;font-size:13px">Generado: ${new Date().toLocaleString('es-ES')} | Filtros: App: ${filterApp}, Estado: ${filterStatus}, Prioridad: ${filterPriority}</p>
+    <p style="color:#666;font-size:13px">Generado: ${fmtFechaHora(new Date())} | Filtros: App: ${filterApp}, Estado: ${filterStatus}, Prioridad: ${filterPriority}</p>
     ${filtered.map(t => `
       <div class="ticket">
         <div><strong style="color:#5233A8">#${t.id}</strong><span class="prio prio-${t.priority}">${t.priority}</span> <span style="font-size:12px;font-weight:bold;color:${t.status==='open'?'#ccac00':t.status==='resolved'?'#38a169':'#666'}">${(t.status||'').toUpperCase()}</span></div>
@@ -510,7 +511,7 @@ export function AdminSupport({ user, ticketId = null }) {
 
   async function copyText() {
     const filtered = getFiltered();
-    let text = `REPORTE DE TICKETS — ${new Date().toLocaleDateString('es-ES')}\n`;
+    let text = `REPORTE DE TICKETS — ${fmtFecha(new Date())}\n`;
     text += `Filtros: App: ${filterApp}, Estado: ${filterStatus}, Prioridad: ${filterPriority}\n`;
     text += `${'─'.repeat(50)}\n\n`;
     filtered.forEach(t => { text += ticketATexto(t) + `\n${'─'.repeat(50)}\n\n`; });
@@ -561,6 +562,17 @@ export function AdminSupport({ user, ticketId = null }) {
   const openCount = tickets.filter(t => t.status === 'open').length;
   const highCount = tickets.filter(t => t.priority === 'high').length;
 
+  // Lo terminado en los últimos 3 días, de lo más reciente a lo más antiguo:
+  // sirve para ver de un vistazo qué se ha sacado adelante. Se apoya en
+  // resolved_at, que se sella al pasar a resuelto o cerrado.
+  const recientes = tickets
+    .filter(t => ['resolved', 'closed'].includes(t.status) && t.resolved_at)
+    .filter(t => Date.now() - new Date(t.resolved_at).getTime() <= 72 * 3600 * 1000)
+    .sort((a, b) => new Date(b.resolved_at) - new Date(a.resolved_at));
+  // Terminados sin fecha de cierre: son los anteriores a que se guardara, así que
+  // no se puede saber cuándo se cerraron y no caben en esta ventana.
+  const sinFechaCierre = tickets.filter(t => ['resolved', 'closed'].includes(t.status) && !t.resolved_at).length;
+
   return (
     <>
       {/* Aviso de copiado. Por encima del modal, que va a z-index 2000. */}
@@ -574,6 +586,7 @@ export function AdminSupport({ user, ticketId = null }) {
       <div style={{display: "flex", gap: 6, marginBottom: 22}}>
         {[
           { id: "list", label: `Ver tickets · ${tickets.length}` },
+          { id: "recientes", label: `Hechos (72 h) · ${recientes.length}` },
           { id: "create", label: "Crear ticket" },
         ].map(t => (
           <button key={t.id} className={`filter-pill ${activeTab === t.id ? "is-active" : ""}`} onClick={() => setActiveTab(t.id)}>
@@ -612,6 +625,56 @@ export function AdminSupport({ user, ticketId = null }) {
             </button>
           </form>
         </div>
+      )}
+
+      {activeTab === 'recientes' && (
+        <>
+          <p style={{margin: "0 0 14px", fontSize: 13, color: "var(--ink-3)"}}>
+            Tickets resueltos o cerrados en las últimas 72 horas, del más reciente al más antiguo.
+          </p>
+          {!recientes.length && (
+            <div style={{padding: 28, textAlign: "center", background: "var(--bg-2)", border: "1px dashed var(--line)", borderRadius: 14, color: "var(--ink-3)", fontSize: 14}}>
+              Nada terminado en los últimos 3 días.
+              {sinFechaCierre > 0 && (
+                <div style={{fontSize: 12, marginTop: 8}}>
+                  Hay {sinFechaCierre} ticket{sinFechaCierre !== 1 ? 's' : ''} ya terminado{sinFechaCierre !== 1 ? 's' : ''} sin fecha de cierre guardada
+                  (se cerraron antes de que se empezara a registrar), así que no pueden aparecer aquí.
+                  Los que cierres a partir de ahora sí.
+                </div>
+              )}
+            </div>
+          )}
+          <div style={{display: "grid", gap: 10}}>
+            {recientes.map(t => {
+              const labels = Array.isArray(t.app_label) ? t.app_label : ['Aim Education'];
+              const tardo = tardanza(t);
+              return (
+                <div key={t.id} onClick={() => openTicket(t)}
+                  style={{background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 14, padding: "14px 18px", cursor: "pointer", borderLeft: `5px solid ${STATUS_COLOR[t.status] || 'var(--teal)'}`}}
+                  onMouseEnter={e => e.currentTarget.style.boxShadow = "var(--shadow)"}
+                  onMouseLeave={e => e.currentTarget.style.boxShadow = "none"}>
+                  <div style={{display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6}}>
+                    <span style={{fontWeight: 800, color: "var(--purple)", fontSize: 13}}>#{t.id}</span>
+                    {labels.map(l => (
+                      <span key={l} style={{fontSize: 11, fontWeight: 700, background: "color-mix(in oklab, var(--purple) 12%, var(--bg-2))", color: "var(--purple)", padding: "2px 8px", borderRadius: 6}}>{l}</span>
+                    ))}
+                    <span style={{fontSize: 11, fontWeight: 800, textTransform: "uppercase", color: STATUS_COLOR[t.status]}}>{STATUS_LABEL[t.status]}</span>
+                    <div style={{flex: 1}} />
+                    <span style={{fontSize: 12, color: "var(--ink-3)"}} title={fmtDateTime(t.resolved_at)}>
+                      {hace(t.resolved_at) === 'hoy' ? 'hoy' : hace(t.resolved_at)} · {fmtDateTime(t.resolved_at)}
+                    </span>
+                  </div>
+                  <div style={{fontWeight: 700, fontSize: 15, color: "var(--ink)"}}>{t.subject}</div>
+                  <div style={{fontSize: 12, color: "var(--ink-3)", marginTop: 4}}>
+                    De: {t.name} {t.surname || ''}
+                    {tardo ? ` · tardó ${tardo}` : ''}
+                    {t.assignee_name ? ` · lo hizo ${t.assignee_name} ${t.assignee_surname || ''}` : ''}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
       )}
 
       {activeTab === 'list' && (
@@ -853,8 +916,8 @@ export function AdminSupport({ user, ticketId = null }) {
 
               {/* Due date */}
               <div className="field" style={{marginBottom: 16}}>
-                <label>Fecha límite (DD-MM-YYYY)</label>
-                <input placeholder="31-12-2026" value={ticketDueDate} onChange={e => setTicketDueDate(e.target.value)} style={{maxWidth: 200}} />
+                <label>Fecha límite (DD/MM/AAAA)</label>
+                <input placeholder="31/12/2026" value={ticketDueDate} onChange={e => setTicketDueDate(e.target.value)} style={{maxWidth: 200}} />
               </div>
 
               {/* App labels */}

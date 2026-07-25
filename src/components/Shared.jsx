@@ -1,6 +1,7 @@
 import React, { useState, useEffect, createContext, useContext } from 'react';
 import { I } from './Icons.jsx';
 import { useRouter } from '../App.jsx';
+import { fmtFechaLarga } from '../fechas.js';
 
 // ---------- Activity catalog (the source of truth) ----------
 const ACTIVITIES = [
@@ -371,7 +372,7 @@ function campDayParts(iso) {
 }
 
 function campFmtLong(iso) {
-  return new Date(iso + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  return fmtFechaLarga(iso + "T12:00:00");
 }
 
 // Selector de días del campamento agrupado por semanas.

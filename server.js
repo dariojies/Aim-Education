@@ -29,6 +29,14 @@ const { Pool } = pg;
 // '2026-08-31T22:00Z' y se mostraba como agosto. La devolvemos tal cual.
 pg.types.setTypeParser(1082, v => v); // 1082 = DATE
 
+// Un TIMESTAMP sin zona lo escribe siempre el propio Postgres (NOW(), CURRENT_
+// TIMESTAMP) y el servidor está en UTC, pero node-postgres lo interpreta como
+// hora local del proceso: en España se leía 2 horas antes de lo que era. Eso
+// hacía, por ejemplo, que un ticket creado y resuelto en el mismo minuto
+// dijera "tardó 2 horas", porque created_at (sin zona) y resolved_at (con
+// zona) no eran comparables. Se lee como lo que es: UTC.
+pg.types.setTypeParser(1114, v => (v == null ? v : new Date(v.replace(' ', 'T') + 'Z')));
+
 // Heroku Postgres provee DATABASE_URL automáticamente.
 // En local se usan las variables individuales del .env.
 const pool = process.env.DATABASE_URL

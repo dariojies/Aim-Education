@@ -3,6 +3,7 @@ import { I } from './Icons.jsx';
 import { AimLogo, ACT_BY_ID, CampDayPicker, campFmtLong } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 import { UserSupport } from './AdminSupport.jsx';
+import { fmtFecha } from '../fechas.js';
 
 function EmptyState({ icon, text }) {
   return (
@@ -352,7 +353,7 @@ function DashPayments() {
           </div>
           <div className="stat-card">
             <div className="l">Último pago</div>
-            <div className="v">{validos[0]?.fecha ? new Date(validos[0].fecha).toLocaleDateString('es-ES') : '—'}</div>
+            <div className="v">{fmtFecha(validos[0]?.fecha)}</div>
             <div style={{ marginTop: 8, fontSize: 13, color: 'var(--ink-2)', textTransform: 'capitalize' }}>{validos[0]?.medioPago || ''}</div>
           </div>
         </div>
@@ -381,7 +382,7 @@ function DashPayments() {
                     {anulado && <span className="status-pill pending" style={{ marginLeft: 8 }}>Anulado</span>}
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2, textTransform: 'capitalize' }}>
-                    {r.fecha ? new Date(r.fecha).toLocaleDateString('es-ES') : ''}{r.medioPago ? ` · ${r.medioPago}` : ''}
+                    {fmtFecha(r.fecha, '')}{r.medioPago ? ` · ${r.medioPago}` : ''}
                   </div>
                 </div>
                 <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 18, textDecoration: anulado ? 'line-through' : 'none' }}>
