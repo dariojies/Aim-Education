@@ -6,6 +6,8 @@ import { useRouter } from '../App.jsx';
 import { AdminSupport } from './AdminSupport.jsx';
 import { fmtFecha, fmtFechaHora, fmtFechaLarga, fmtFechaCorta } from '../fechas.js';
 import CampTarifas from './CampTarifas.jsx';
+import BillingArqueo from './BillingArqueo.jsx';
+import BillingAjustes from './BillingAjustes.jsx';
 
 function sectionLabel(id) {
   return ({
@@ -2684,7 +2686,7 @@ function AdminBilling({ showToast }) {
   return (
     <>
       <div style={{ display: 'flex', gap: 10, marginBottom: 22, borderBottom: '1px solid var(--line-2)', paddingBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-        {[['cobrar', '💳 Cobrar (TPV)'], ['recibos', 'Recibos'], ['catalogo', `Catálogo (${precios.length})`], ['clases', `Clases (${clasesMerged.length})`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra (${conceptos.length})`], ['fichas', `Fichas (${matriculas.length})`], ['generar', 'Generar cargos']].map(([id, label]) => (
+        {[['cobrar', '💳 Cobrar (TPV)'], ['recibos', 'Recibos'], ['arqueo', '🧾 Arqueo de caja'], ['catalogo', `Catálogo (${precios.length})`], ['clases', `Clases (${clasesMerged.length})`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra (${conceptos.length})`], ['fichas', `Fichas (${matriculas.length})`], ['generar', 'Generar cargos'], ['ajustes', '⚙️ Numeración']].map(([id, label]) => (
           <button key={id} className={`filter-pill ${tab === id ? 'is-active' : ''}`} onClick={() => setTab(id)} style={{ borderRadius: 8, padding: '8px 16px' }}>{label}</button>
         ))}
         <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: activa ? 'var(--teal)' : 'var(--orange)' }}>
@@ -2702,6 +2704,8 @@ function AdminBilling({ showToast }) {
 
       {/* ── Cobrar (TPV) ── */}
       {!loading && tab === 'cobrar' && <BillingTPV showToast={showToast} />}
+      {!loading && tab === 'arqueo' && <BillingArqueo showToast={showToast} />}
+      {!loading && tab === 'ajustes' && <BillingAjustes showToast={showToast} />}
 
       {/* ── Recibos (histórico) ── */}
       {!loading && tab === 'recibos' && <BillingRecibos showToast={showToast} />}

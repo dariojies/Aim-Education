@@ -143,6 +143,33 @@ async function initDb() {
             )
         `);
 
+        // Ajustes del club en clave/valor. De momento guarda el formato de la
+        // numeración de facturas, que el club fijará cuando pase al entorno real.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_ajustes (
+                clave VARCHAR(60) PRIMARY KEY,
+                valor JSONB NOT NULL,
+                actualizado_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                actualizado_por UUID
+            )
+        `);
+
+        // Cierre de caja de cada día: lo que debería haber según los cobros y lo
+        // que hay de verdad al contar, para que los descuadres queden por escrito.
+        // Se guarda el esperado del momento del cierre porque una rectificativa
+        // posterior cambiaría el cálculo y el arqueo dejaría de cuadrar.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_arqueos (
+                id SERIAL PRIMARY KEY,
+                fecha DATE NOT NULL UNIQUE,
+                esperado JSONB NOT NULL,
+                contado JSONB NOT NULL,
+                comentario TEXT,
+                cerrado_por UUID,
+                cerrado_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+
         // ── SOPORTE ──
         // Fechas de seguimiento: cuándo se tocó por última vez y cuándo se resolvió.
         for (const col of ['updated_at TIMESTAMPTZ', 'resolved_at TIMESTAMPTZ',
@@ -3133,7 +3160,29 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
 // ── Histórico de recibos, reimpresión y anulación ──
 
 // Nº visible: la serie 'A' (normal) se muestra sin prefijo; la 'R' como R-n.
-const numeroVisible = (rec) => (rec.serie === 'R' ? `R-${rec.numero}` : `${rec.numero}`);
+// Cómo se ve el número de una factura. El club emitirá con una numeración del
+// tipo 2026000946 y R-202600001, que aún está por confirmar, así que el formato
+// es configurable desde Ajustes de facturación y no está incrustado aquí:
+//   prefijo + (año si lleva) + secuencial rellenado a 'digitos'.
+// Mientras no se configure, se sigue viendo como hasta ahora (1, 2, R-1...).
+let FORMATO_NUMERACION = {
+    A: { prefijo: '', anio: false, digitos: 0 },
+    R: { prefijo: 'R-', anio: false, digitos: 0 },
+};
+
+async function cargarFormatoNumeracion() {
+    try {
+        const r = await pool.query("SELECT valor FROM aim_ajustes WHERE clave = 'numeracion'");
+        if (r.rowCount) FORMATO_NUMERACION = { ...FORMATO_NUMERACION, ...r.rows[0].valor };
+    } catch { /* si aún no existe la tabla, se usa el formato de siempre */ }
+}
+
+const numeroVisible = (rec) => {
+    const f = FORMATO_NUMERACION[rec.serie === 'R' ? 'R' : 'A'] || {};
+    const anio = f.anio ? new Date(rec.fecha || Date.now()).getFullYear() : '';
+    const sec = f.digitos > 0 ? String(rec.numero).padStart(f.digitos, '0') : String(rec.numero);
+    return `${f.prefijo ?? ''}${anio}${sec}`;
+};
 
 // Monta el objeto de ticket (mismo formato que devuelve el cobro).
 async function ticketDeRecibo(reciboId) {
@@ -3375,6 +3424,231 @@ async function emitirRectificativa(client, { orig, quitadas, quedan, metodo, mot
 
     return { id: nuevoId, importe, aDevolver };
 }
+
+// ── Numeración de facturas ───────────────────────────────────────────────────
+// El formato y el número por el que sigue cada serie se configuran aquí, para
+// que el día que el club fije su numeración real (2026000946, R-202600001…) no
+// haya que tocar código.
+app.get('/api/admin/billing/numeracion', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        await cargarFormatoNumeracion();
+        // El siguiente número sin consumirlo: la secuencia en sí expone is_called,
+        // que dice si last_value ya se ha entregado. pg_sequences no lo trae.
+        const siguienteDe = async (seq) => {
+            const q = await pool.query(`SELECT last_value, is_called FROM ${seq}`);
+            const { last_value, is_called } = q.rows[0];
+            return is_called ? Number(last_value) + 1 : Number(last_value);
+        };
+        const [sigA, sigR] = await Promise.all([
+            siguienteDe('aim_recibos_numero_seq'), siguienteDe('aim_recibos_rect_numero_seq'),
+        ]);
+        const valor = s => (s === 'aim_recibos_numero_seq' ? sigA : sigR);
+        const emitidas = await pool.query(
+            `SELECT COALESCE(serie,'A') AS serie, COUNT(*)::int n FROM aim_recibos GROUP BY 1`
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            formato: FORMATO_NUMERACION,
+            siguiente: { A: valor('aim_recibos_numero_seq'), R: valor('aim_recibos_rect_numero_seq') },
+            emitidas: Object.fromEntries(emitidas.rows.map(x => [x.serie, x.n])),
+            ejemplo: {
+                A: numeroVisible({ serie: 'A', numero: valor('aim_recibos_numero_seq'), fecha: new Date() }),
+                R: numeroVisible({ serie: 'R', numero: valor('aim_recibos_rect_numero_seq'), fecha: new Date() }),
+            },
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/admin/billing/numeracion', authenticateSession, requireAdmin, async (req, res) => {
+    const { formato, siguiente } = req.body;
+    const SERIES = [['A', 'aim_recibos_numero_seq'], ['R', 'aim_recibos_rect_numero_seq']];
+    const client = await pool.connect();
+    try {
+        // Primero se comprueba TODO y solo después se aplica: si una serie no vale,
+        // no puede quedar la otra ya cambiada.
+        const cambios = [];
+        for (const [serie, seq] of SERIES) {
+            const n = Number(siguiente?.[serie]);
+            if (!Number.isInteger(n) || n < 1) continue;
+            const max = await client.query(
+                `SELECT COALESCE(MAX(numero), 0)::int AS m FROM aim_recibos WHERE COALESCE(serie,'A') = $1`, [serie]
+            );
+            if (n <= max.rows[0].m) {
+                return res.status(409).json({ error: `La serie ${serie} ya tiene emitida la factura nº ${max.rows[0].m}. El siguiente número debe ser mayor.` });
+            }
+            cambios.push([seq, n]);
+        }
+
+        let limpio = null;
+        if (formato) {
+            limpio = {};
+            for (const [serie] of SERIES) {
+                const f = formato[serie] || {};
+                limpio[serie] = {
+                    prefijo: String(f.prefijo ?? '').slice(0, 10),
+                    anio: !!f.anio,
+                    digitos: Math.min(12, Math.max(0, Number(f.digitos) || 0)),
+                };
+            }
+        }
+
+        await client.query('BEGIN');
+        if (limpio) {
+            await client.query(
+                `INSERT INTO aim_ajustes (clave, valor, actualizado_por) VALUES ('numeracion', $1::jsonb, $2)
+                 ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+                [JSON.stringify(limpio), req.userSession.userId]
+            );
+        }
+        for (const [seq, n] of cambios) await client.query('SELECT setval($1, $2, false)', [seq, n]);
+        await client.query('COMMIT');
+
+        await cargarFormatoNumeracion();
+        res.json({ success: true, formato: FORMATO_NUMERACION });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('Error guardando la numeración:', err);
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+// Vacía las facturas de prueba para empezar de cero con la numeración real.
+// Es destructivo a propósito y solo debería usarse una vez, antes de emitir en
+// serio: borra recibos, rectificativos y el registro encadenado, y devuelve los
+// conceptos cobrados a pendientes para no perder lo que cada cliente debe.
+// No toca alumnos, clases, matrículas ni gastos.
+app.post('/api/admin/billing/vaciar-pruebas', authenticateSession, requireAdmin, async (req, res) => {
+    if (req.body?.confirmacion !== 'VACIAR FACTURACION') {
+        return res.status(400).json({ error: 'Para vaciar hay que escribir exactamente: VACIAR FACTURACION' });
+    }
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const antes = {
+            recibos: (await client.query('SELECT COUNT(*)::int c FROM aim_recibos')).rows[0].c,
+            registro: (await client.query('SELECT COUNT(*)::int c FROM aim_factura_registro')).rows[0].c,
+            cargosCobrados: (await client.query("SELECT COUNT(*)::int c FROM aim_cargos WHERE recibo_id IS NOT NULL OR estado <> 'pendiente'")).rows[0].c,
+        };
+        // Los conceptos vuelven a deberse: se sigue sabiendo qué debe cada cliente.
+        await client.query(
+            `UPDATE aim_cargos SET recibo_id = NULL, estado = 'pendiente', importe = NULL, descuento_mens_pct = NULL
+             WHERE recibo_id IS NOT NULL OR estado <> 'pendiente'`
+        );
+        await client.query('DELETE FROM aim_factura_eventos');
+        await client.query('DELETE FROM aim_factura_registro');
+        await client.query('DELETE FROM aim_recibo_rect_lineas');
+        await client.query('DELETE FROM aim_recibos');
+        await client.query('DELETE FROM aim_arqueos');
+        await client.query("SELECT setval('aim_recibos_numero_seq', 1, false)");
+        await client.query("SELECT setval('aim_recibos_rect_numero_seq', 1, false)");
+        await client.query('COMMIT');
+        res.json({ success: true, borrados: antes });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Error vaciando la facturación de pruebas:', err);
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+// ── Arqueo de caja ───────────────────────────────────────────────────────────
+// Lo cobrado de un día por medio de pago. Un rectificativo del mismo día resta,
+// porque ese dinero ha salido de la caja.
+async function movimientosDelDia(fecha) {
+    const r = await pool.query(
+        `SELECT medio_pago, tipo, COALESCE(SUM(importe), 0)::numeric AS total, COUNT(*)::int AS n
+         FROM aim_recibos
+         WHERE fecha = $1::date AND estado <> 'anulado'
+         GROUP BY medio_pago, tipo`, [fecha]
+    );
+    const porMedio = Object.fromEntries(MEDIOS_PAGO.map(m => [m, { cobrado: 0, devuelto: 0, neto: 0, n: 0 }]));
+    for (const x of r.rows) {
+        const medio = MEDIOS_PAGO.includes(x.medio_pago) ? x.medio_pago : 'efectivo';
+        const importe = Number(x.total);
+        if (importe < 0 || x.tipo === 'rectificativo') porMedio[medio].devuelto = r2Server(porMedio[medio].devuelto + Math.abs(importe));
+        else porMedio[medio].cobrado = r2Server(porMedio[medio].cobrado + importe);
+        porMedio[medio].n += x.n;
+    }
+    for (const m of MEDIOS_PAGO) porMedio[m].neto = r2Server(porMedio[m].cobrado - porMedio[m].devuelto);
+    return porMedio;
+}
+
+app.get('/api/admin/billing/arqueo', authenticateSession, requireAdmin, async (req, res) => {
+    const fecha = /^\d{4}-\d{2}-\d{2}$/.test(req.query.fecha || '') ? req.query.fecha : new Date().toISOString().slice(0, 10);
+    try {
+        const [esperado, guardado, detalle] = await Promise.all([
+            movimientosDelDia(fecha),
+            pool.query('SELECT * FROM aim_arqueos WHERE fecha = $1::date', [fecha]),
+            pool.query(
+                `SELECT r.id, r.serie, r.numero, r.tipo, r.importe, r.medio_pago, r.cobrado_at,
+                        u.name || ' ' || COALESCE(u.surname,'') AS pagador
+                 FROM aim_recibos r LEFT JOIN users u ON u.user_id = r.pagador_id
+                 WHERE r.fecha = $1::date AND r.estado <> 'anulado'
+                 ORDER BY r.cobrado_at NULLS LAST, r.id`, [fecha]),
+        ]);
+        const arq = guardado.rows[0] || null;
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            fecha, medios: MEDIOS_PAGO, esperado,
+            totalEsperado: r2Server(MEDIOS_PAGO.reduce((s, m) => s + esperado[m].neto, 0)),
+            cerrado: arq ? {
+                esperado: arq.esperado, contado: arq.contado, comentario: arq.comentario, cerradoAt: arq.cerrado_at,
+            } : null,
+            detalle: detalle.rows.map(d => ({
+                numero: `${d.serie || 'A'}-${d.numero}`, tipo: d.tipo, importe: Number(d.importe),
+                medioPago: d.medio_pago, pagador: (d.pagador || '').trim(), hora: d.cobrado_at,
+            })),
+        });
+    } catch (err) {
+        console.error('Error en el arqueo de caja:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Cierra el día. Se puede volver a guardar (una corrección del recuento es
+// normal), pero queda constancia de cuándo se hizo y de quién.
+app.post('/api/admin/billing/arqueo', authenticateSession, requireAdmin, async (req, res) => {
+    const { fecha, contado, comentario } = req.body;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha || '')) return res.status(400).json({ error: 'Falta la fecha del arqueo.' });
+    try {
+        const esperado = await movimientosDelDia(fecha);
+        const cont = {};
+        for (const m of MEDIOS_PAGO) cont[m] = r2Server(Number(contado?.[m]) || 0);
+        await pool.query(
+            `INSERT INTO aim_arqueos (fecha, esperado, contado, comentario, cerrado_por)
+             VALUES ($1::date, $2::jsonb, $3::jsonb, $4, $5)
+             ON CONFLICT (fecha) DO UPDATE
+               SET esperado = EXCLUDED.esperado, contado = EXCLUDED.contado,
+                   comentario = EXCLUDED.comentario, cerrado_por = EXCLUDED.cerrado_por, cerrado_at = NOW()`,
+            [fecha, JSON.stringify(esperado), JSON.stringify(cont), comentario?.trim() || null, req.userSession.userId]
+        );
+        const descuadre = r2Server(MEDIOS_PAGO.reduce((s, m) => s + (cont[m] - esperado[m].neto), 0));
+        res.json({ success: true, descuadre });
+    } catch (err) {
+        console.error('Error guardando el arqueo:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Histórico de cierres, para ver de un vistazo qué días descuadraron.
+app.get('/api/admin/billing/arqueos', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT a.fecha, a.esperado, a.contado, a.comentario, a.cerrado_at,
+                    u.name || ' ' || COALESCE(u.surname,'') AS quien
+             FROM aim_arqueos a LEFT JOIN users u ON u.user_id = a.cerrado_por
+             ORDER BY a.fecha DESC LIMIT 90`
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows.map(a => {
+            const esperado = r2Server(MEDIOS_PAGO.reduce((s, m) => s + Number(a.esperado?.[m]?.neto || 0), 0));
+            const contado = r2Server(MEDIOS_PAGO.reduce((s, m) => s + Number(a.contado?.[m] || 0), 0));
+            return {
+                fecha: a.fecha, esperado, contado, descuadre: r2Server(contado - esperado),
+                comentario: a.comentario, cerradoAt: a.cerrado_at, quien: (a.quien || '').trim(),
+            };
+        }));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 // Registro de facturación: lista los asientos y recalcula la cadena entera para
 // comprobar que nadie ha tocado ni borrado una factura por detrás.
@@ -4516,5 +4790,7 @@ app.get('*', (req, res) => {
 });
 
 app.listen(port, () => {
+    // El formato de numeración vive en la base: se carga al arrancar.
+    cargarFormatoNumeracion();
     console.log(`Server is running at http://localhost:${port}`);
 });
