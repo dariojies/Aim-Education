@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { I } from './Icons.jsx';
 
-const APPS = ['Aim Education', 'Learning Dungeon', 'Aim Training', 'Aim Brickslab', 'Aim Artemis', 'Aim Eventos'];
+// Las categorías son las apps del grupo más 'General/A Futuro', para lo que no
+// pertenece a ninguna app concreta o queda apuntado para más adelante.
+const APPS = ['Aim Education', 'Learning Dungeon', 'Aim Training', 'Aim Brickslab', 'Aim Artemis', 'Aim Eventos', 'General/A Futuro'];
 
 const PRIORITY_COLOR = { high: 'var(--orange)', medium: '#FFD526', low: 'var(--teal)' };
 const PRIORITY_LABEL = { high: 'Alta', medium: 'Media', low: 'Baja' };
