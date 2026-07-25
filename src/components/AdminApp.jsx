@@ -563,22 +563,31 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
 
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
               <button className="btn btn-outline btn-sm" onClick={() => setSelectedSlot(null)}>Cerrar</button>
+              {/* Borra el GRUPO entero, no solo este hueco del calendario: un grupo
+                  suele tener varias sesiones y todas desaparecen con él. */}
               <button className="btn btn-sm" style={{ background: 'var(--orange)', color: 'white' }} onClick={async () => {
-                if (selectedSlot.id) {
-                  try {
-                    const res = await fetch(`/api/classes/${selectedSlot.id}`, { method: 'DELETE', credentials: 'include' });
-                    if (res.ok) {
-                      setClassSlots(prev => prev.filter(s => s.id !== selectedSlot.id));
-                      showToast("Clase eliminada correctamente.");
-                    } else {
-                      alert("Error al eliminar la clase de la base de datos.");
-                    }
-                  } catch (e) {
-                    console.error(e);
-                  }
-                } else {
+                if (!selectedSlot.groupId) {
                   setClassSlots(prev => prev.filter(s => !(s.d === selectedSlot.d && s.s === selectedSlot.s && s.act === selectedSlot.act)));
+                  setSelectedSlot(null);
+                  return;
                 }
+                const sesiones = classSlots.filter(s => s.groupId === selectedSlot.groupId).length;
+                const alumnos = Number(String(selectedSlot.students || '0/0').split('/')[0]) || 0;
+                if (!window.confirm(
+                  `¿Eliminar la clase "${selectedSlot.title}"?\n\n` +
+                  `Se borra el grupo entero: ${sesiones} hueco${sesiones !== 1 ? 's' : ''} del horario` +
+                  `${alumnos ? ` y la matrícula de sus ${alumnos} alumno${alumnos !== 1 ? 's' : ''}` : ''}.\n` +
+                  `También desaparece de Learning Dungeon.`)) return;
+                try {
+                  const res = await fetch(`/api/admin/tul/groups/${selectedSlot.groupId}`, { method: 'DELETE', credentials: 'include' });
+                  if (res.ok) {
+                    setClassSlots(prev => prev.filter(s => s.groupId !== selectedSlot.groupId));
+                    showToast("Clase eliminada correctamente.");
+                  } else {
+                    const d = await res.json().catch(() => ({}));
+                    alert(d.error || "Error al eliminar la clase.");
+                  }
+                } catch { alert('Error de conexión.'); }
                 setSelectedSlot(null);
               }}>Eliminar clase</button>
             </div>
@@ -3347,7 +3356,7 @@ function AdminCamp({ showToast }) {
   const [editingWeek, setEditingWeek] = useState(null);     // semana (nueva o existente)
   const [savingModal, setSavingModal] = useState(false);
 
-  const emptyChild = { nombre: '', apellidos: '', edad: '', alergias: '', observaciones: '', contacto: '', recogida: '', fotosRrss: false, pagado: false, days: [], alumnoId: null, alumnoNombre: null, alumnoEmail: null, familiaId: null, parentName: null, parentEmail: null };
+  const emptyChild = { nombre: '', apellidos: '', edad: '', alergias: '', observaciones: '', contacto: '', recogida: '', fotosRrss: false, pagado: false, days: [], servicios: {}, alumnoId: null, alumnoNombre: null, alumnoEmail: null, familiaId: null, parentName: null, parentEmail: null };
 
   // Al elegir la ficha del alumno se traen sus datos, sin pisar lo que ya esté escrito.
   function vincularAlumno(f) {
@@ -3390,8 +3399,13 @@ function AdminCamp({ showToast }) {
       const r = await fetch('/api/admin/camp/servicios/facturar', { method: 'POST', credentials: 'include' });
       const d = await r.json();
       if (r.ok) {
-        showToast?.(`${d.creados} cargo${d.creados !== 1 ? 's' : ''} generado${d.creados !== 1 ? 's' : ''} · ${eur(d.total)}`);
-        if (d.sinFicha?.length) alert(`Sin ficha de alumno, no se les ha podido cobrar:\n\n${d.sinFicha.join('\n')}`);
+        showToast?.(`${d.creados} cargo${d.creados !== 1 ? 's' : ''} generado${d.creados !== 1 ? 's' : ''}${d.yaCobrados?.length ? ` · ${d.yaCobrados.length} ya cobrado${d.yaCobrados.length !== 1 ? 's' : ''}` : ''}`);
+        const avisos = [];
+        if (d.sinFicha?.length) avisos.push(`Sin ficha de alumno, no se les ha podido cobrar:\n${d.sinFicha.join('\n')}`);
+        // Si a alguien se le añadieron días después de pagar, lo cobrado se quedó
+        // corto: no se toca, pero hay que decirlo para cobrar la diferencia a mano.
+        if (d.difieren?.length) avisos.push(`Ya pagaron y luego cambiaron sus días (cobrar la diferencia a mano):\n${d.difieren.join('\n')}`);
+        if (avisos.length) alert(avisos.join('\n\n'));
         await loadServicios();
       } else alert(d.error || 'No se pudieron generar los cargos.');
     } catch { alert('Error de conexión.'); }
@@ -3685,7 +3699,12 @@ function AdminCamp({ showToast }) {
             <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '14px 16px', marginBottom: 14, display: 'grid', gap: 10 }}>
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                 <div style={{ flex: 1, minWidth: 220 }}>
-                  <div style={{ fontWeight: 800, fontSize: 14 }}>Matinal y custodia · {eur(servicios.total)}</div>
+                  <div style={{ fontWeight: 800, fontSize: 14 }}>
+                    Matinal y custodia · {eur(servicios.pendiente ?? servicios.total)} por cobrar
+                    {servicios.pendiente != null && servicios.pendiente !== servicios.total && (
+                      <span style={{ fontWeight: 600, color: 'var(--ink-3)' }}> (de {eur(servicios.total)} en total)</span>
+                    )}
+                  </div>
                   <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
                     {eur(servicios.precioDia)} por día y servicio, con tope de {eur(servicios.precioSemana)} por semana (concepto 20401).
                   </div>
@@ -3695,15 +3714,23 @@ function AdminCamp({ showToast }) {
                 </button>
               </div>
               <div style={{ display: 'grid', gap: 4, fontSize: 12 }}>
-                {servicios.filas.map(f => (
-                  <div key={`${f.childId}-${f.semana}`} style={{ display: 'flex', gap: 10, flexWrap: 'wrap', color: f.alumnoId ? 'var(--ink-2)' : 'var(--orange)' }}>
-                    <span style={{ fontWeight: 700, minWidth: 170 }}>{f.nombre}</span>
-                    <span style={{ color: 'var(--ink-3)' }}>{f.semana}</span>
-                    {f.matinal > 0 && <span>Matinal {f.matinal}d · {eur(f.importeMatinal)}</span>}
-                    {f.custodia > 0 && <span>Custodia {f.custodia}d · {eur(f.importeCustodia)}</span>}
-                    {!f.alumnoId && <span style={{ fontWeight: 700 }}>— sin ficha de alumno, no se le puede cobrar</span>}
-                  </div>
-                ))}
+                {servicios.filas.map(f => {
+                  // Un servicio ya cobrado se marca: ni se vuelve a generar ni suma al pendiente.
+                  const etiqueta = (nombre, dias, importe, cobrado) => dias > 0 && (
+                    <span style={{ color: cobrado ? 'var(--teal)' : undefined, fontWeight: cobrado ? 700 : undefined }}>
+                      {nombre} {dias}d · {eur(importe)}{cobrado ? ' ✓ cobrado' : ''}
+                    </span>
+                  );
+                  return (
+                    <div key={`${f.childId}-${f.semana}`} style={{ display: 'flex', gap: 10, flexWrap: 'wrap', color: f.alumnoId ? 'var(--ink-2)' : 'var(--orange)' }}>
+                      <span style={{ fontWeight: 700, minWidth: 170 }}>{f.nombre}</span>
+                      <span style={{ color: 'var(--ink-3)' }}>{f.semana}</span>
+                      {etiqueta('Matinal', f.matinal, f.importeMatinal, f.matinalCobrado)}
+                      {etiqueta('Custodia', f.custodia, f.importeCustodia, f.custodiaCobrado)}
+                      {!f.alumnoId && <span style={{ fontWeight: 700 }}>— sin ficha de alumno, no se le puede cobrar</span>}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -3870,7 +3897,8 @@ function AdminCamp({ showToast }) {
               {!editingChild.id && (
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--ink)', marginBottom: 8 }}>Días de asistencia</div>
-                  <CampDayPicker weeks={weeks} selected={editingChild.days} onChange={days => setEditingChild(c => ({ ...c, days }))} />
+                  <CampDayPicker weeks={weeks} selected={editingChild.days} onChange={days => setEditingChild(c => ({ ...c, days }))}
+                    servicios={editingChild.servicios} onServicios={servicios => setEditingChild(c => ({ ...c, servicios }))} />
                 </div>
               )}
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
@@ -3988,7 +4016,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
       .then(r => r.ok ? r.json() : [])
       .then(setStudentsList)
       .catch(() => { });
-    fetch('/api/classes', { credentials: 'include' })
+    fetch('/api/classes', { credentials: 'include', cache: 'no-store' })
       .then(r => r.ok ? r.json() : [])
       .then(data => {
         setClassSlots(data);

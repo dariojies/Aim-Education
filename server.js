@@ -1136,6 +1136,9 @@ function buildSlotsFromGroups(rows) {
                 if (isNaN(d) || d < 0 || d > 5) continue; // rejilla Lunes-Sábado
                 slots.push({
                     id: `${g.group_id}-${si}-${d}`,
+                    // El grupo real al que pertenece este hueco del calendario: es lo
+                    // que hay que tocar para editarlo o borrarlo.
+                    groupId: g.group_id,
                     d,
                     s: Math.floor(start),
                     h: dur,
@@ -1168,7 +1171,11 @@ app.get('/api/classes', async (req, res) => {
             JOIN tul_activities act ON g.activity_id = act.activity_id
             WHERE act.club_id = $1
         `, [AIM_CLUB_ID]);
-        res.set('Cache-Control', 'public, max-age=300, stale-while-revalidate=60');
+        // Caché corta: el horario lo consulta también la web pública, pero desde que
+        // las clases se crean y borran en el panel, 5 minutos hacían que un cambio
+        // no se viera y pareciera que no había funcionado. El panel además pide
+        // este endpoint con 'no-store'.
+        res.set('Cache-Control', 'public, max-age=30, stale-while-revalidate=30');
         res.json(buildSlotsFromGroups(result.rows));
     } catch (err) {
         console.error('Error fetching classes:', err);
@@ -1914,9 +1921,11 @@ app.post('/api/admin/camp/children/:id/ficha', authenticateSession, requireAdmin
 
 // Admin: alta manual de un niño (secretaría).
 app.post('/api/admin/camp/children', authenticateSession, requireAdmin, async (req, res) => {
-    const { nombre, apellidos, edad, alergias, observaciones, contacto, recogida, fotosRrss, pagado, days, alumnoId, familiaId } = req.body;
+    const { nombre, apellidos, edad, alergias, observaciones, contacto, recogida, fotosRrss, pagado, days, servicios, alumnoId, familiaId } = req.body;
     if (!nombre?.trim() || !apellidos?.trim()) return res.status(400).json({ error: 'Nombre y apellidos son obligatorios.' });
     const dayList = Array.isArray(days) ? [...new Set(days)] : [];
+    // Matinal y custodia se pueden marcar ya en el alta, no solo al editar.
+    const srv = servicios && typeof servicios === 'object' ? servicios : {};
     try {
         const alumno = await validarUsuarioClub(alumnoId, 'alumno');
         if (alumno.error) return res.status(400).json({ error: alumno.error });
@@ -1930,7 +1939,11 @@ app.post('/api/admin/camp/children', authenticateSession, requireAdmin, async (r
         );
         const childId = result.rows[0].id;
         for (const day of dayList) {
-            await pool.query(`INSERT INTO aim_camp_child_days (child_id, day) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [childId, day]);
+            const s = srv[day] || {};
+            await pool.query(
+                `INSERT INTO aim_camp_child_days (child_id, day, matinal, custodia) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
+                [childId, day, !!s.matinal, !!s.custodia]
+            );
         }
         res.status(201).json({ id: childId });
     } catch (err) {
@@ -2006,6 +2019,10 @@ const CAMP_SERVICIO_CONCEPTO = '20401';
 const CAMP_SERVICIO_DIA = 3;
 const CAMP_SERVICIO_SEMANA = 15;
 
+// Cada cargo de servicio queda identificado por alumno + semana + servicio:
+// con esa clave se sabe si ya se generó antes y si además ya está cobrado.
+const claveServicio = (clienteId, mes, servicio) => `${clienteId}|${String(mes).slice(0, 10)}|${servicio}`;
+
 function importeServicio(diasMarcados) {
     return Math.min(diasMarcados * CAMP_SERVICIO_DIA, CAMP_SERVICIO_SEMANA);
 }
@@ -2050,18 +2067,33 @@ async function calcularServiciosCampamento() {
 app.get('/api/admin/camp/servicios', authenticateSession, requireAdmin, async (req, res) => {
     try {
         const filas = await calcularServiciosCampamento();
+        // Marcar lo que ya está cobrado para no presentarlo como pendiente.
+        const yaRes = await pool.query(
+            `SELECT cliente_id, mes, target_nombre FROM aim_cargos
+             WHERE origen = 'campamento' AND concepto = $1
+               AND (recibo_id IS NOT NULL OR estado <> 'pendiente')`, [CAMP_SERVICIO_CONCEPTO]
+        );
+        const cobrados = new Set(yaRes.rows.map(c => claveServicio(c.cliente_id, c.mes, c.target_nombre)));
+        for (const f of filas) {
+            f.matinalCobrado = f.matinal > 0 && cobrados.has(claveServicio(f.alumnoId, f.inicio, 'Matinal'));
+            f.custodiaCobrado = f.custodia > 0 && cobrados.has(claveServicio(f.alumnoId, f.inicio, 'Custodia'));
+        }
+        const pendiente = filas.reduce((s, f) =>
+            s + (f.matinalCobrado ? 0 : f.importeMatinal) + (f.custodiaCobrado ? 0 : f.importeCustodia), 0);
         res.set('Cache-Control', 'no-store');
         res.json({
             precioDia: CAMP_SERVICIO_DIA, precioSemana: CAMP_SERVICIO_SEMANA,
             total: r2Server(filas.reduce((s, f) => s + f.importeMatinal + f.importeCustodia, 0)),
+            pendiente: r2Server(pendiente),
             filas,
         });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // Admin: generar los cargos pendientes de matinal y custodia. Se puede pulsar
-// las veces que haga falta: primero borra los pendientes que generó antes y los
-// vuelve a calcular, sin tocar jamás lo que ya se cobró.
+// las veces que haga falta: borra los pendientes que generó antes y los vuelve a
+// calcular. Lo que ya está cobrado NO se toca ni se vuelve a generar, porque si
+// no se cobraría dos veces el mismo servicio.
 app.post('/api/admin/camp/servicios/facturar', authenticateSession, requireAdmin, async (req, res) => {
     const client = await pool.connect();
     try {
@@ -2071,15 +2103,36 @@ app.post('/api/admin/camp/servicios/facturar', authenticateSession, requireAdmin
         const filas = await calcularServiciosCampamento();
 
         await client.query('BEGIN');
+        // Lo ya cobrado (o metido en un recibo): intocable, y sirve para no repetirlo.
+        const cobrados = new Map();
+        const yaRes = await client.query(
+            `SELECT cliente_id, mes, target_nombre, importe FROM aim_cargos
+             WHERE origen = 'campamento' AND concepto = $1
+               AND (recibo_id IS NOT NULL OR estado <> 'pendiente')`, [CAMP_SERVICIO_CONCEPTO]
+        );
+        for (const c of yaRes.rows) cobrados.set(claveServicio(c.cliente_id, c.mes, c.target_nombre), Number(c.importe));
+
         const borrados = await client.query(
             `DELETE FROM aim_cargos WHERE origen = 'campamento' AND concepto = $1 AND estado = 'pendiente' AND recibo_id IS NULL`,
             [CAMP_SERVICIO_CONCEPTO]
         );
-        let creados = 0, sinFicha = [];
+        let creados = 0;
+        const sinFicha = [], yaCobrados = [], difieren = [];
         for (const f of filas) {
             if (!f.alumnoId) { sinFicha.push(f.nombre); continue; }
             for (const [servicio, dias, importe] of [['Matinal', f.matinal, f.importeMatinal], ['Custodia', f.custodia, f.importeCustodia]]) {
                 if (!dias) continue;
+                const clave = claveServicio(f.alumnoId, f.inicio, servicio);
+                if (cobrados.has(clave)) {
+                    const pagado = cobrados.get(clave);
+                    yaCobrados.push(`${f.nombre} · ${servicio} · ${f.semana}`);
+                    // Si después de pagar se le añadieron días, lo cobrado se queda
+                    // corto: hay que avisar para cobrar la diferencia a mano.
+                    if (r2Server(pagado) !== r2Server(importe)) {
+                        difieren.push(`${f.nombre} · ${servicio} · ${f.semana}: cobrado ${r2Server(pagado)} €, ahora tocarían ${r2Server(importe)} €`);
+                    }
+                    continue;
+                }
                 await client.query(
                     `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct,
                                              descuento_pct, importe, target_nombre, estado, origen)
@@ -2094,7 +2147,7 @@ app.post('/api/admin/camp/servicios/facturar', authenticateSession, requireAdmin
         await client.query('COMMIT');
         res.json({
             success: true, creados, reemplazados: borrados.rowCount,
-            sinFicha: [...new Set(sinFicha)],
+            sinFicha: [...new Set(sinFicha)], yaCobrados, difieren,
             total: r2Server(filas.filter(f => f.alumnoId).reduce((s, f) => s + f.importeMatinal + f.importeCustodia, 0)),
         });
     } catch (err) {
