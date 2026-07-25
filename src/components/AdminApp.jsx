@@ -8,6 +8,8 @@ import { fmtFecha, fmtFechaHora, fmtFechaLarga, fmtFechaCorta } from '../fechas.
 import CampTarifas from './CampTarifas.jsx';
 import BillingArqueo from './BillingArqueo.jsx';
 import BillingAjustes from './BillingAjustes.jsx';
+import PasarListaClases from './PasarListaClases.jsx';
+import Campanita from './Campanita.jsx';
 
 function sectionLabel(id) {
   return ({
@@ -361,18 +363,24 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
     }, 1000);
   }
 
+  // Pestañas de la sección: el horario semanal, la gestión de clases y el
+  // pasar lista del día.
+  const pestanas = (activa) => (
+    <div className="toolbar">
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        <button className={`filter-pill ${activa === 'horario' ? 'is-active' : ''}`} onClick={() => setVista('horario')}>Semana</button>
+        <button className={`filter-pill ${activa === 'lista' ? 'is-active' : ''}`} onClick={() => setVista('lista')}>Lista de clases</button>
+        <button className={`filter-pill ${activa === 'asistencia' ? 'is-active' : ''}`} onClick={() => setVista('asistencia')}>Pasar lista</button>
+      </div>
+    </div>
+  );
+
   if (vista === 'lista') {
-    return (
-      <>
-        <div className="toolbar">
-          <div style={{ display: "flex", gap: 6 }}>
-            <button className="filter-pill" onClick={() => setVista('horario')}>Semana</button>
-            <button className="filter-pill is-active">Lista de clases</button>
-          </div>
-        </div>
-        <ListaClases showToast={showToast} />
-      </>
-    );
+    return (<>{pestanas('lista')}<ListaClases showToast={showToast} /></>);
+  }
+
+  if (vista === 'asistencia') {
+    return (<>{pestanas('asistencia')}<PasarListaClases showToast={showToast} /></>);
   }
 
   return (
@@ -382,6 +390,7 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
           <button className="filter-pill is-active">Semana</button>
           <button className="filter-pill" onClick={() => alert("Vista mensual disponible en el siguiente pase.")}>Mes</button>
           <button className="filter-pill" onClick={() => setVista('lista')}>Lista de clases</button>
+          <button className="filter-pill" onClick={() => setVista('asistencia')}>Pasar lista</button>
         </div>
         <div className="search-input" style={{ maxWidth: 280 }}>
           <I.Search />
@@ -4262,7 +4271,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
               </div>
             </div>
             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-              <button className="btn btn-icon"><I.Bell /></button>
+              <Campanita onIr={(destino) => go(destino)} />
               <button className="btn btn-icon" onClick={() => alert("Función de búsqueda global disponible próximamente.")}><I.Search /></button>
               {!['classes', 'events', 'support', 'camp', 'billing', 'payments', 'reportes'].includes(view) && (
                 <button

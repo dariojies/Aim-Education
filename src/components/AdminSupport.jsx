@@ -368,6 +368,7 @@ export function AdminSupport({ user, ticketId = null }) {
   const [busqueda, setBusqueda] = useState('');
   // null = pantalla de gestión; 'equipo' | 'creador' = ese chat a pantalla completa.
   const [chatCanal, setChatCanal] = useState(null);
+  const [vinculando, setVinculando] = useState('');   // nº de ticket a vincular
 
   const fetchTickets = useCallback(() => {
     setLoading(true);
@@ -392,6 +393,29 @@ export function AdminSupport({ user, ticketId = null }) {
     const t = tickets.find(x => x.id === ticketId);
     if (t) { abiertoPorEnlace.current = true; openTicket(t); }
   }, [ticketId, tickets]);
+
+  // Vincular tickets que son el mismo asunto: al abrir cualquiera se ven todos.
+  async function vincular(t) {
+    const n = Number(String(vinculando).replace('#', '').trim());
+    if (!Number.isInteger(n)) { avisar('Escribe el número del ticket.'); return; }
+    try {
+      const r = await fetch(`/api/support/${t.id}/vincular`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ ticketId: n }),
+      });
+      const d = await r.json();
+      if (r.ok) { setVinculando(''); avisar(`Vinculado con el #${n}.`); fetchTickets(); }
+      else avisar(d.error || 'No se pudo vincular.');
+    } catch { avisar('Error de conexión.'); }
+  }
+
+  async function desvincular(t) {
+    if (!window.confirm(`¿Sacar el ticket #${t.id} de su grupo?`)) return;
+    try {
+      const r = await fetch(`/api/support/${t.id}/vincular`, { method: 'DELETE', credentials: 'include' });
+      if (r.ok) { avisar('Desvinculado.'); fetchTickets(); setSelected(null); }
+    } catch { avisar('Error de conexión.'); }
+  }
 
   async function copiarEnlace(t) {
     const url = `${window.location.origin}/admin/soporte/${t.id}`;
@@ -850,6 +874,43 @@ export function AdminSupport({ user, ticketId = null }) {
                   {selected.resolved_at && <span style={{color: "var(--teal)"}}>Resuelto: <b>{fmtDateTime(selected.resolved_at)}</b>{tardanza(selected) ? ` · tardó ${tardanza(selected)}` : ''}</span>}
                 </div>
               </div>
+
+              {/* Tickets vinculados: el mismo asunto visto desde varios sitios */}
+              {(() => {
+                const vinculoId = tickets.find(t => t.id === selected.id)?.vinculo_id ?? selected.vinculo_id;
+                const hermanos = vinculoId
+                  ? tickets.filter(t => t.vinculo_id === vinculoId && t.id !== selected.id)
+                  : [];
+                return (
+                  <div style={{marginBottom: 20}}>
+                    <p style={{margin: "0 0 10px", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--ink-3)"}}>
+                      Tickets vinculados{hermanos.length ? ` (${hermanos.length})` : ''}
+                    </p>
+                    {hermanos.length > 0 && (
+                      <div style={{display: "grid", gap: 6, marginBottom: 8}}>
+                        {hermanos.map(h => (
+                          <button key={h.id} onClick={() => openTicket(h)}
+                            style={{textAlign: "left", background: "var(--bg-3)", border: "1px solid var(--line)", borderLeft: `3px solid ${STATUS_COLOR[h.status] || 'var(--ink-3)'}`, borderRadius: 10, padding: "8px 10px", cursor: "pointer", fontFamily: "inherit"}}>
+                            <div style={{fontSize: 13}}>
+                              <b style={{color: "var(--purple)"}}>#{h.id}</b> {h.subject}
+                              <span style={{fontSize: 11, fontWeight: 800, textTransform: "uppercase", color: STATUS_COLOR[h.status], marginLeft: 8}}>{STATUS_LABEL[h.status]}</span>
+                            </div>
+                            <div style={{fontSize: 11, color: "var(--ink-3)", marginTop: 2, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden"}}>{h.description}</div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <div style={{display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap"}}>
+                      <input value={vinculando} onChange={e => setVinculando(e.target.value)}
+                        placeholder="Nº de ticket" style={{width: 120, fontFamily: "inherit", fontSize: 13, padding: "6px 10px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--bg-3)", color: "var(--ink)"}} />
+                      <button className="btn btn-sm btn-outline" onClick={() => vincular(selected)}>Vincular</button>
+                      {vinculoId && (
+                        <button className="btn btn-sm btn-outline" style={{color: "var(--orange)"}} onClick={() => desvincular(selected)}>Sacar de este grupo</button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Los chats se abren en su propia vista para no alargar esta pantalla */}
               <div style={{marginBottom: 20}}>

@@ -274,6 +274,122 @@ export function crearRouterTulClases({ pool, clubId }) {
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
+    // ── Pasar lista de una clase ─────────────────────────────────────────────
+    // Escribe en tul_attendance con los mismos estados y el mismo formato que
+    // Learning Dungeon (present / absent / late, is_auto), para que lo que se
+    // marque aquí lo vea su app y al revés.
+    const ESTADOS_ASISTENCIA = ['present', 'absent', 'late'];
+
+    // Qué clases tocan un día concreto, según los días de sus sesiones.
+    router.get('/attendance/dia/:fecha', async (req, res) => {
+        const { fecha } = req.params;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) return res.status(400).json({ error: 'Fecha no válida.' });
+        try {
+            // getDay() da 0=domingo; en aim-tul las sesiones usan 0=lunes.
+            const js = new Date(fecha + 'T12:00:00').getDay();
+            const diaSemana = (js + 6) % 7;
+            const r = await pool.query(
+                `SELECT g.group_id AS id, g.name, g.sessions, a.name AS "activityName",
+                        (SELECT COUNT(*) FROM tul_group_students gs WHERE gs.group_id = g.group_id)::int AS "studentCount"
+                 FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+                 WHERE a.club_id = $1 ORDER BY a.name, g.name`, [clubId]
+            );
+            const marcados = await pool.query(
+                `SELECT at.group_id, COUNT(*)::int n FROM tul_attendance at
+                 JOIN tul_groups g ON g.group_id = at.group_id
+                 JOIN tul_activities a ON a.activity_id = g.activity_id
+                 WHERE a.club_id = $1 AND at.date = $2::date GROUP BY 1`, [clubId, fecha]
+            );
+            const yaMarcados = Object.fromEntries(marcados.rows.map(x => [x.group_id, x.n]));
+            const clases = [];
+            for (const g of r.rows) {
+                const ses = (Array.isArray(g.sessions) ? g.sessions : [])
+                    .filter(s => (s?.days || []).map(Number).includes(diaSemana));
+                if (!ses.length) continue;
+                clases.push({
+                    id: g.id, name: g.name, activityName: g.activityName, studentCount: g.studentCount,
+                    horario: ses.map(s => `${s.startTime || ''}${s.endTime ? `–${s.endTime}` : ''}${s.aulaName ? ` · ${s.aulaName}` : ''}`).join(' | '),
+                    instructor: ses.map(s => s.instructorName).filter(Boolean)[0] || null,
+                    hora: ses[0]?.startTime || '',
+                    marcados: yaMarcados[g.id] || 0,
+                });
+            }
+            clases.sort((a, b) => String(a.hora).localeCompare(String(b.hora)) || a.name.localeCompare(b.name));
+            res.set('Cache-Control', 'no-store');
+            res.json({ fecha, clases });
+        } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // Alumnos de una clase con lo que tengan marcado ese día.
+    router.get('/groups/:groupId/attendance/:fecha', async (req, res) => {
+        const { groupId, fecha } = req.params;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) return res.status(400).json({ error: 'Fecha no válida.' });
+        try {
+            const r = await pool.query(
+                `SELECT u.user_id AS id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre,
+                        COALESCE(u.belt, '') AS cinturon, at.status, at.is_auto AS "isAuto"
+                 FROM tul_group_students gs
+                 JOIN users u ON u.user_id = gs.student_id
+                 JOIN tul_groups g ON g.group_id = gs.group_id
+                 JOIN tul_activities a ON a.activity_id = g.activity_id
+                 LEFT JOIN tul_attendance at ON at.group_id = gs.group_id AND at.student_id = gs.student_id AND at.date = $2::date
+                 WHERE gs.group_id = $1 AND a.club_id = $3
+                 ORDER BY u.surname, u.name`, [groupId, fecha, clubId]
+            );
+            res.set('Cache-Control', 'no-store');
+            res.json({ fecha, alumnos: r.rows });
+        } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    router.post('/groups/:groupId/attendance', async (req, res) => {
+        const { studentId, fecha, status } = req.body;
+        if (!ESTADOS_ASISTENCIA.includes(status)) return res.status(400).json({ error: 'Estado no válido.' });
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha || '')) return res.status(400).json({ error: 'Fecha no válida.' });
+        try {
+            const propio = await pool.query(
+                `SELECT 1 FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+                 WHERE g.group_id = $1 AND a.club_id = $2`, [req.params.groupId, clubId]
+            );
+            if (!propio.rowCount) return res.status(404).json({ error: 'Esa clase no es de este club.' });
+            // is_auto a false: lo ha marcado una persona, no el generador automático.
+            const existe = await pool.query(
+                'SELECT attendance_id FROM tul_attendance WHERE group_id = $1 AND student_id = $2 AND date = $3::date',
+                [req.params.groupId, studentId, fecha]
+            );
+            if (existe.rowCount) {
+                await pool.query('UPDATE tul_attendance SET status = $1, is_auto = FALSE WHERE attendance_id = $2',
+                    [status, existe.rows[0].attendance_id]);
+            } else {
+                await pool.query(
+                    'INSERT INTO tul_attendance (group_id, student_id, date, status, is_auto) VALUES ($1, $2, $3::date, $4, FALSE)',
+                    [req.params.groupId, studentId, fecha, status]);
+            }
+            res.json({ success: true });
+        } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // Marcar de golpe a todos los que aún no tienen nada ese día.
+    router.post('/groups/:groupId/attendance/todos', async (req, res) => {
+        const { fecha, status } = req.body;
+        if (!ESTADOS_ASISTENCIA.includes(status)) return res.status(400).json({ error: 'Estado no válido.' });
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha || '')) return res.status(400).json({ error: 'Fecha no válida.' });
+        try {
+            const r = await pool.query(
+                `INSERT INTO tul_attendance (group_id, student_id, date, status, is_auto)
+                 SELECT gs.group_id, gs.student_id, $2::date, $3, FALSE
+                 FROM tul_group_students gs
+                 JOIN tul_groups g ON g.group_id = gs.group_id
+                 JOIN tul_activities a ON a.activity_id = g.activity_id
+                 WHERE gs.group_id = $1 AND a.club_id = $4
+                   AND NOT EXISTS (
+                     SELECT 1 FROM tul_attendance at
+                     WHERE at.group_id = gs.group_id AND at.student_id = gs.student_id AND at.date = $2::date)
+                 RETURNING attendance_id`, [req.params.groupId, fecha, status, clubId]
+            );
+            res.json({ success: true, marcados: r.rowCount });
+        } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
     // ── Reportes ─────────────────────────────────────────────────────────────
     // Portados uno a uno de aim-tul; misma matemática y mismos nombres de campo
     // para que las dos apps cuenten lo mismo.

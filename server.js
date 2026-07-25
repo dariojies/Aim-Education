@@ -170,6 +170,11 @@ async function initDb() {
             )
         `);
 
+        // Tickets vinculados: los que comparten vinculo_id son el mismo asunto
+        // visto desde varios sitios, y se ven juntos al abrir cualquiera de ellos.
+        await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS vinculo_id UUID`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_vinculo ON tickets_registrosoporte(vinculo_id)`);
+
         // ── SOPORTE ──
         // Fechas de seguimiento: cuándo se tocó por última vez y cuándo se resolvió.
         for (const col of ['updated_at TIMESTAMPTZ', 'resolved_at TIMESTAMPTZ',
@@ -4671,7 +4676,7 @@ app.get('/api/support', authenticateSession, async (req, res) => {
         const result = await pool.query(`
             SELECT s.id, s.user_id, s.subject, s.description, s.status, s.priority,
                    s.due_date, s.assigned_to, s.app_label, s.dev_response, s.email_sent,
-                   s.created_at, s.updated_at, s.resolved_at,
+                   s.created_at, s.updated_at, s.resolved_at, s.vinculo_id,
                    (s.adjunto IS NOT NULL) AS tiene_adjunto,
                    COALESCE(u.name, 'Admin') as name,
                    COALESCE(u.surname, '') as surname,
@@ -4844,6 +4849,141 @@ app.get('/api/support/mios', authenticateSession, async (req, res) => {
         console.error('[SUPPORT] Mis tickets error:', err);
         res.status(500).json({ error: err.message });
     }
+});
+
+// Los tickets que se asignan a la cuenta de soporte los atiende desarrollo, así
+// que se avisa de ellos solo a esta persona: el aviso se calcula en el servidor
+// y no se le devuelve a nadie más.
+const CUENTA_SOPORTE = 'soporte@aimeducation.es';
+const AVISO_SOPORTE_PARA = 'cm8175@gmail.com';
+
+// ── Campanita de avisos ──────────────────────────────────────────────────────
+// Lo que hay pendiente de atender ahora mismo, agrupado por sitio. Cada aviso
+// lleva a dónde resolverlo. Nada de esto se guarda: se calcula al abrirla.
+app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (req, res) => {
+    const yo = req.userSession.userId;
+    try {
+        const avisos = [];
+        const [tickets, mensajes, cobros, cajas, camp] = await Promise.all([
+            pool.query(
+                `SELECT COUNT(*) FILTER (WHERE assigned_to IS NULL)::int AS sin_asignar,
+                        COUNT(*) FILTER (WHERE assigned_to = $1)::int AS mios,
+                        COUNT(*) FILTER (WHERE priority = 'high')::int AS urgentes
+                 FROM tickets_registrosoporte WHERE status = 'open'`, [yo]),
+            // Mensajes de otros en las últimas 48 h, que es lo que hay sin leer
+            // de facto mientras no exista una marca de lectura por usuario.
+            pool.query(
+                `SELECT COUNT(*)::int n, COUNT(DISTINCT m.ticket_id)::int tickets
+                 FROM tickets_mensajes m JOIN tickets_registrosoporte t ON t.id = m.ticket_id
+                 WHERE m.created_at > NOW() - INTERVAL '48 hours'
+                   AND COALESCE(m.autor_id::text, '') <> $1 AND t.status = 'open'`, [String(yo)]),
+            pool.query(
+                `SELECT COUNT(*)::int n, COUNT(DISTINCT cliente_id)::int clientes,
+                        COALESCE(SUM(COALESCE(importe, precio)), 0)::numeric total
+                 FROM aim_cargos WHERE estado = 'pendiente' AND recibo_id IS NULL`),
+            // Días con cobros y sin arqueo, sin contar el de hoy (aún abierto).
+            pool.query(
+                `SELECT COUNT(*)::int n, MIN(fecha)::text AS desde FROM (
+                   SELECT r.fecha FROM aim_recibos r
+                   WHERE r.estado <> 'anulado' AND r.fecha < CURRENT_DATE
+                     AND r.fecha > CURRENT_DATE - INTERVAL '60 days'
+                   GROUP BY r.fecha
+                   HAVING NOT EXISTS (SELECT 1 FROM aim_arqueos a WHERE a.fecha = r.fecha)
+                 ) t`),
+            pool.query(
+                `SELECT COUNT(*) FILTER (WHERE alumno_id IS NULL)::int sin_ficha,
+                        COUNT(*)::int total FROM aim_camp_children`),
+        ]);
+
+        const t = tickets.rows[0];
+        if (t.sin_asignar) avisos.push({ tipo: 'tickets', texto: `${t.sin_asignar} ticket${t.sin_asignar !== 1 ? 's' : ''} sin asignar`, detalle: t.urgentes ? `${t.urgentes} de prioridad alta` : null, destino: '/admin/soporte', n: t.sin_asignar });
+        if (t.mios) avisos.push({ tipo: 'tickets', texto: `${t.mios} ticket${t.mios !== 1 ? 's' : ''} asignado${t.mios !== 1 ? 's' : ''} a ti`, destino: '/admin/soporte', n: t.mios });
+        const m = mensajes.rows[0];
+        if (m.n) avisos.push({ tipo: 'tickets', texto: `${m.n} mensaje${m.n !== 1 ? 's' : ''} nuevo${m.n !== 1 ? 's' : ''} en ${m.tickets} ticket${m.tickets !== 1 ? 's' : ''}`, detalle: 'en las últimas 48 h', destino: '/admin/soporte', n: m.n });
+
+        const c = cobros.rows[0];
+        if (c.n) avisos.push({ tipo: 'cobros', texto: `${c.n} cargo${c.n !== 1 ? 's' : ''} pendiente${c.n !== 1 ? 's' : ''} de cobrar`, detalle: `${r2Server(Number(c.total))} € de ${c.clientes} cliente${c.clientes !== 1 ? 's' : ''}`, destino: '/admin/facturacion', n: c.n });
+
+        const cj = cajas.rows[0];
+        if (cj.n) avisos.push({ tipo: 'caja', texto: `${cj.n} día${cj.n !== 1 ? 's' : ''} con cobros y sin arqueo`, detalle: cj.desde ? `el más antiguo, del ${cj.desde}` : null, destino: '/admin/facturacion', n: cj.n });
+
+        const cp = camp.rows[0];
+        if (cp.sin_ficha) avisos.push({ tipo: 'campamento', texto: `${cp.sin_ficha} niño${cp.sin_ficha !== 1 ? 's' : ''} del campamento sin ficha`, detalle: 'sin ficha no se les puede cobrar', destino: '/admin/campamento', n: cp.sin_ficha });
+
+        // Aviso privado: lo que se asigna a la cuenta de soporte lo acaba
+        // atendiendo el desarrollo, así que solo a esa persona se le avisa. Se
+        // decide aquí, en el servidor, y a nadie más se le devuelve.
+        if (String(req.userSession.email || '').toLowerCase() === AVISO_SOPORTE_PARA) {
+            const s = await pool.query(
+                `SELECT COUNT(*)::int n, COUNT(*) FILTER (WHERE t.priority = 'high')::int urgentes
+                 FROM tickets_registrosoporte t JOIN users u ON u.user_id = t.assigned_to
+                 WHERE t.status = 'open' AND LOWER(u.email) = $1`, [CUENTA_SOPORTE]
+            );
+            const n = s.rows[0]?.n || 0;
+            if (n) {
+                avisos.push({
+                    tipo: 'tickets',
+                    texto: `${n} ticket${n !== 1 ? 's' : ''} asignado${n !== 1 ? 's' : ''} a Soporte Aim Education`,
+                    detalle: s.rows[0].urgentes ? `${s.rows[0].urgentes} de prioridad alta` : null,
+                    destino: '/admin/soporte', n,
+                });
+            }
+        }
+
+        res.set('Cache-Control', 'no-store');
+        res.json({ total: avisos.reduce((s, a) => s + a.n, 0), avisos });
+    } catch (err) {
+        console.error('Error calculando los avisos:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ── Tickets vinculados ───────────────────────────────────────────────────────
+// Vincular el ticket :id con otro: los dos (y los que ya estuvieran con
+// cualquiera de ellos) pasan a compartir el mismo grupo.
+app.post('/api/support/:id/vincular', authenticateSession, requireAdmin, async (req, res) => {
+    const otro = Number(req.body?.ticketId);
+    const propio = Number(req.params.id);
+    if (!Number.isInteger(otro) || otro === propio) return res.status(400).json({ error: 'Indica otro ticket distinto.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const r = await client.query(
+            'SELECT id, vinculo_id FROM tickets_registrosoporte WHERE id = ANY($1::int[])', [[propio, otro]]
+        );
+        if (r.rowCount !== 2) throw { httP: 404, msg: 'Alguno de los tickets no existe.' };
+        const grupos = r.rows.map(x => x.vinculo_id).filter(Boolean);
+        // Si alguno ya estaba en un grupo se reutiliza; si había dos, se fusionan.
+        const destino = grupos[0] || crypto.randomUUID();
+        await client.query(
+            `UPDATE tickets_registrosoporte SET vinculo_id = $1
+             WHERE id = ANY($2::int[]) OR (vinculo_id IS NOT NULL AND vinculo_id = ANY($3::uuid[]))`,
+            [destino, [propio, otro], grupos]
+        );
+        await client.query('COMMIT');
+        res.json({ success: true, vinculoId: destino });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        if (err?.httP) return res.status(err.httP).json({ error: err.msg });
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+// Sacar un ticket de su grupo. Si se queda uno solo, deja de tener sentido.
+app.delete('/api/support/:id/vincular', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query('SELECT vinculo_id FROM tickets_registrosoporte WHERE id = $1', [req.params.id]);
+        const grupo = r.rows[0]?.vinculo_id;
+        await pool.query('UPDATE tickets_registrosoporte SET vinculo_id = NULL WHERE id = $1', [req.params.id]);
+        if (grupo) {
+            await pool.query(
+                `UPDATE tickets_registrosoporte SET vinculo_id = NULL
+                 WHERE vinculo_id = $1 AND (SELECT COUNT(*) FROM tickets_registrosoporte WHERE vinculo_id = $1) < 2`,
+                [grupo]
+            );
+        }
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get('/api/admin/superadmins', authenticateSession, async (req, res) => {
