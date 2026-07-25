@@ -2050,6 +2050,7 @@ app.put('/api/admin/camp/children/:id/days', authenticateSession, requireAdmin, 
 
 // Matinal y custodia se cobran con el concepto 20401: 3 € por día y servicio, y
 // 15 € si es la semana entera (5 × 3 = 15, así que el tope nunca cobra de más).
+const CAMP_ACTIVIDAD = 'Campamento de verano';
 const CAMP_SERVICIO_CONCEPTO = '20401';
 const CAMP_SERVICIO_DIA = 3;
 const CAMP_SERVICIO_SEMANA = 15;
@@ -2115,6 +2116,9 @@ const CAMP_TARIFAS = [
 // o menos, los días sueltos ganan.
 const SEMANA_COMPLETA_DESDE = 4;
 const CLAVES_TARIFA = CAMP_TARIFAS.map(t => t.clave);
+// Todos los conceptos con los que se cobra el campamento, para reconocerlos
+// aunque el cobro se haya hecho a mano desde el TPV.
+const CONCEPTOS_CAMPAMENTO = new Set([CAMP_SERVICIO_CONCEPTO, ...CAMP_TARIFAS.map(t => t.concepto)]);
 
 // Reparto más barato: semanas completas agrupadas en meses, quincenas y semanas
 // sueltas; el resto de días, uno a uno. A partir de 8 semanas sale mejor el
@@ -2288,10 +2292,10 @@ app.post('/api/admin/camp/tarifas/facturar', authenticateSession, requireAdmin, 
                 const importe = r2Server(Number(info.precio) * cuantas);
                 await client.query(
                     `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct,
-                                             descuento_pct, importe, target_nombre, estado, origen)
-                     VALUES ($1,$2,$3,$4,'Otros',$5,$6,0,$5,$7,'pendiente','campamento')`,
+                                             descuento_pct, importe, target_nombre, estado, origen, actividad)
+                     VALUES ($1,$2,$3,$4,'Otros',$5,$6,0,$5,$7,'pendiente','campamento',$8)`,
                     [f.alumnoId, t.concepto, fecha, `${info.descripcion}${etiquetaExtra ? ` — ${etiquetaExtra}` : ''}`,
-                     importe, Number(info.iva_pct ?? 0), t.etiqueta]
+                     importe, Number(info.iva_pct ?? 0), t.etiqueta, CAMP_ACTIVIDAD]
                 );
                 creados++; total = r2Server(total + importe);
             };
@@ -2402,11 +2406,11 @@ app.post('/api/admin/camp/servicios/facturar', authenticateSession, requireAdmin
                 }
                 await client.query(
                     `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct,
-                                             descuento_pct, importe, target_nombre, estado, origen)
-                     VALUES ($1,$2,$3,$4,'Otros',$5,$6,0,$5,$7,'pendiente','campamento')`,
+                                             descuento_pct, importe, target_nombre, estado, origen, actividad)
+                     VALUES ($1,$2,$3,$4,'Otros',$5,$6,0,$5,$7,'pendiente','campamento',$8)`,
                     [f.alumnoId, CAMP_SERVICIO_CONCEPTO, f.inicio,
                      `${descripcion} — ${servicio} · ${f.semana} (${dias} día${dias !== 1 ? 's' : ''})`,
-                     importe, iva_pct, servicio]
+                     importe, iva_pct, servicio, CAMP_ACTIVIDAD]
                 );
                 creados++;
             }
@@ -3078,10 +3082,12 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
             if (pr.rowCount === 0) throw { httP: 400, msg: `Concepto no válido: ${ex.concepto}` };
             const p = pr.rows[0];
             const d = Number(ex.descuentoPct) || 0;
+            // Sin actividad, este cobro no contaría en el beneficio por actividad.
+            const act = await actividadDeConcepto(ex.concepto, client);
             const ins = await client.query(
-                `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado, origen)
-                 VALUES ($1,$2,$3::date,$4,$5,$6,$7,$8,'pendiente','manual') RETURNING id`,
-                [ex.clienteId || pagadorId, ex.concepto, mesActual, p.descripcion, p.tipo, p.precio, p.iva_pct, d]
+                `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado, origen, actividad)
+                 VALUES ($1,$2,$3::date,$4,$5,$6,$7,$8,'pendiente','manual',$9) RETURNING id`,
+                [ex.clienteId || pagadorId, ex.concepto, mesActual, p.descripcion, p.tipo, p.precio, p.iva_pct, d, act]
             );
             extraIds.push(ins.rows[0].id);
         }
@@ -3424,6 +3430,128 @@ async function emitirRectificativa(client, { orig, quitadas, quedan, metodo, mot
 
     return { id: nuevoId, importe, aDevolver };
 }
+
+// A qué actividad pertenece un concepto, para poder repartir los ingresos por
+// actividad en el informe de beneficios. Se mira, por este orden: lo que diga
+// la temporada (una actividad directa, o la actividad de la clase asociada) y,
+// si no, nada: un cargo sin actividad simplemente no entra en el reparto.
+async function actividadDeConcepto(concepto, cliente = pool) {
+    if (!concepto) return null;
+    // Los conceptos con los que el propio sistema cobra el campamento son del
+    // campamento, se hayan cobrado desde su panel o a mano por el TPV.
+    if (CONCEPTOS_CAMPAMENTO.has(String(concepto))) return CAMP_ACTIVIDAD;
+    const r = await cliente.query(
+        `SELECT target_tipo, target_actividad, target_ref FROM aim_conceptos_temporada
+         WHERE concepto = $1 ORDER BY (target_tipo = 'actividad') DESC LIMIT 1`, [concepto]
+    );
+    if (!r.rowCount) return null;
+    const c = r.rows[0];
+    if (c.target_actividad) return c.target_actividad;
+    if (c.target_tipo === 'clase' && c.target_ref) {
+        const g = await cliente.query(
+            `SELECT a.name FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE g.group_id = $1`, [c.target_ref]
+        );
+        if (g.rowCount) return g.rows[0].name;
+    }
+    return null;
+}
+
+// Cuántos cargos se quedaron sin actividad y a cuántos se les puede deducir
+// ahora. Sin actividad no entran en el beneficio por actividad.
+app.get('/api/admin/billing/cargos-sin-actividad', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT concepto, origen, COUNT(*)::int n, SUM(COALESCE(importe, precio))::numeric importe
+             FROM aim_cargos WHERE actividad IS NULL GROUP BY 1, 2 ORDER BY n DESC`
+        );
+        const filas = [];
+        for (const x of r.rows) {
+            const deducida = x.origen === 'campamento' ? CAMP_ACTIVIDAD : await actividadDeConcepto(x.concepto);
+            filas.push({ concepto: x.concepto, origen: x.origen, n: x.n, importe: Number(x.importe || 0), deducida });
+        }
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            total: filas.reduce((s, f) => s + f.n, 0),
+            recuperables: filas.filter(f => f.deducida).reduce((s, f) => s + f.n, 0),
+            filas,
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Rellena la actividad de los cargos antiguos donde se puede deducir del
+// concepto. No inventa nada: lo que no se pueda deducir se queda como está.
+app.post('/api/admin/billing/cargos-sin-actividad/rellenar', authenticateSession, requireAdmin, async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const r = await client.query(`SELECT DISTINCT concepto, origen FROM aim_cargos WHERE actividad IS NULL`);
+        await client.query('BEGIN');
+        let actualizados = 0;
+        const detalle = [];
+        for (const x of r.rows) {
+            const act = x.origen === 'campamento' ? CAMP_ACTIVIDAD : await actividadDeConcepto(x.concepto, client);
+            if (!act) continue;
+            const up = await client.query(
+                `UPDATE aim_cargos SET actividad = $1
+                 WHERE actividad IS NULL AND concepto = $2 AND COALESCE(origen,'') = COALESCE($3,'')`,
+                [act, x.concepto, x.origen]
+            );
+            if (up.rowCount) { actualizados += up.rowCount; detalle.push(`${x.concepto} → ${act} (${up.rowCount})`); }
+        }
+        await client.query('COMMIT');
+        res.json({ success: true, actualizados, detalle });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+// Evolución mes a mes: ingresos cobrados y alumnos distintos que pagaron, en
+// total o de una actividad. Sirve para ver si la tendencia de ingresos se
+// mantiene aunque bajen los alumnos (por ejemplo tras subir precios).
+app.get('/api/admin/informes/evolucion', authenticateSession, requireAdmin, async (req, res) => {
+    const meses = Math.min(36, Math.max(1, Number(req.query.meses) || 12));
+    const actividad = req.query.actividad || null;
+    try {
+        const r = await pool.query(
+            `SELECT TO_CHAR(DATE_TRUNC('month', rc.fecha), 'YYYY-MM') AS mes,
+                    COALESCE(c.actividad, 'Sin actividad') AS actividad,
+                    SUM(c.importe)::numeric AS ingresos,
+                    COUNT(DISTINCT c.cliente_id)::int AS alumnos
+             FROM aim_cargos c
+             JOIN aim_recibos rc ON rc.id = c.recibo_id
+             WHERE c.estado = 'cobrado' AND rc.estado <> 'anulado'
+               AND rc.fecha >= (DATE_TRUNC('month', CURRENT_DATE) - ($1 || ' months')::interval)
+               AND ($2::text IS NULL OR c.actividad = $2)
+             GROUP BY 1, 2 ORDER BY 1`, [meses - 1, actividad]
+        );
+        // Un mes por fila, con el desglose por actividad dentro.
+        const porMes = new Map();
+        for (const x of r.rows) {
+            const e = porMes.get(x.mes) || { mes: x.mes, ingresos: 0, alumnos: 0, actividades: [] };
+            e.ingresos = r2Server(e.ingresos + Number(x.ingresos));
+            e.alumnos += x.alumnos;
+            e.actividades.push({ actividad: x.actividad, ingresos: r2Server(Number(x.ingresos)), alumnos: x.alumnos });
+            porMes.set(x.mes, e);
+        }
+        // Los meses sin cobros también salen, para que la línea no engañe.
+        const filas = [];
+        const hoy = new Date();
+        for (let i = meses - 1; i >= 0; i--) {
+            const d = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
+            const clave = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+            filas.push(porMes.get(clave) || { mes: clave, ingresos: 0, alumnos: 0, actividades: [] });
+        }
+        const acts = await pool.query(
+            `SELECT DISTINCT actividad FROM aim_cargos WHERE actividad IS NOT NULL ORDER BY 1`
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json({ meses: filas, actividades: acts.rows.map(a => a.actividad), actividad });
+    } catch (err) {
+        console.error('Error en la evolución de ingresos:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
 
 // ── Numeración de facturas ───────────────────────────────────────────────────
 // El formato y el número por el que sigue cada serie se configuran aquí, para

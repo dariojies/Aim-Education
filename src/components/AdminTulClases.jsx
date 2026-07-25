@@ -494,9 +494,9 @@ export function AdminReportes() {
       const rango = `from=${periodo.from}&to=${periodo.to}`;
       const [a, ins, ov, rc, ch, gm, at, ev] = await Promise.all([
         api('/activities'), api('/instructors'),
-        api(`/report/overview?x=1${segParams}`),
+        api(`/report/overview?hasta=${periodo.to}${segParams}`),
         api(`/report/roster-changes?${rango}${segParams}`),
-        api(`/report/monthly-churn?x=1${segParams}`),
+        api(`/report/monthly-churn?hasta=${periodo.to}${segParams}`),
         api(`/report/gamification?x=1${segParams}`),
         api(`/report/attendance?${rango}${segParams}`),
         api(`/report/evaluations?${rango}${segParams}`),
@@ -742,6 +742,9 @@ export function AdminReportes() {
         )}
       </Seccion>
 
+      {/* Evolución de ingresos y alumnos, mes a mes */}
+      <EvolucionIngresos />
+
       {/* Gamificación */}
       {gami && (
         <Seccion titulo="Gamificación">
@@ -778,5 +781,88 @@ export function AdminReportes() {
         </Seccion>
       )}
     </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Evolución de ingresos y alumnos mes a mes, en total o de una actividad.
+// Enfrentar las dos cifras deja ver, por ejemplo, que los ingresos suben
+// aunque bajen los alumnos porque se ha subido el precio.
+// ═════════════════════════════════════════════════════════════════════════════
+function EvolucionIngresos() {
+  const [datos, setDatos] = useState(null);
+  const [actividad, setActividad] = useState('');
+  const [meses, setMeses] = useState(12);
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      try {
+        const q = `meses=${meses}${actividad ? `&actividad=${encodeURIComponent(actividad)}` : ''}`;
+        // Este informe cuelga de facturación, no de /tul, así que va aparte.
+        const r = await fetch(`/api/admin/informes/evolucion?${q}`, { credentials: 'include' });
+        if (vivo && r.ok) setDatos(await r.json());
+      } catch { /* noop */ }
+    })();
+    return () => { vivo = false; };
+  }, [actividad, meses]);
+
+  if (!datos) return null;
+  const maxIngresos = Math.max(1, ...datos.meses.map(m => m.ingresos));
+  const maxAlumnos = Math.max(1, ...datos.meses.map(m => m.alumnos));
+  const totalIngresos = datos.meses.reduce((s, m) => s + m.ingresos, 0);
+  const conDatos = datos.meses.filter(m => m.ingresos > 0);
+  const media = conDatos.length ? totalIngresos / conDatos.length : 0;
+
+  return (
+    <Seccion titulo="Evolución de ingresos"
+      extra={
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <select value={actividad} onChange={e => setActividad(e.target.value)} style={{ ...inputCss, fontSize: 12, padding: '6px 10px' }}>
+            <option value="">Todas las actividades</option>
+            {datos.actividades.map(a => <option key={a} value={a}>{a}</option>)}
+          </select>
+          <select value={meses} onChange={e => setMeses(Number(e.target.value))} style={{ ...inputCss, fontSize: 12, padding: '6px 10px' }}>
+            {[6, 12, 24].map(n => <option key={n} value={n}>{n} meses</option>)}
+          </select>
+        </div>
+      }>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <Kpi titulo="Total del periodo" valor={`${eurFmtNum(totalIngresos.toFixed(2))} €`} sub={actividad || 'todas las actividades'} />
+        <Kpi titulo="Media por mes" valor={`${eurFmtNum(media.toFixed(2))} €`} sub={`${conDatos.length} mes(es) con cobros`} />
+      </div>
+
+      <div style={{ overflowX: 'auto' }}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end', minWidth: Math.max(420, datos.meses.length * 58) }}>
+          {datos.meses.map(m => (
+            <div key={m.mes} style={{ flex: 1, textAlign: 'center', display: 'grid', gap: 3 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: m.ingresos ? 'var(--teal)' : 'var(--ink-3)' }}>
+                {m.ingresos ? eurFmtNum(Math.round(m.ingresos)) : '—'}
+              </div>
+              <div style={{ height: 90, display: 'flex', alignItems: 'flex-end', justifyContent: 'center', gap: 3 }}>
+                <div title={`Ingresos ${m.ingresos} €`} style={{ width: 16, borderRadius: '4px 4px 0 0', background: 'var(--teal)', height: `${Math.max((m.ingresos / maxIngresos) * 100, m.ingresos ? 3 : 1)}%` }} />
+                <div title={`${m.alumnos} alumno(s) pagaron`} style={{ width: 10, borderRadius: '4px 4px 0 0', background: 'var(--purple)', height: `${Math.max((m.alumnos / maxAlumnos) * 100, m.alumnos ? 3 : 1)}%`, opacity: .75 }} />
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--ink-3)' }}>{m.mes.slice(2)}</div>
+              <div style={{ fontSize: 10, color: 'var(--purple)', fontWeight: 700 }}>{m.alumnos || '—'}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 12, fontSize: 11, fontWeight: 700, color: 'var(--ink-2)' }}>
+        <span><span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 3, background: 'var(--teal)', marginRight: 4 }} />Ingresos cobrados</span>
+        <span><span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 3, background: 'var(--purple)', marginRight: 4 }} />Alumnos que pagaron</span>
+      </div>
+      {!actividad && conDatos.length > 0 && (
+        <div style={{ display: 'grid', gap: 4, fontSize: 12 }}>
+          {conDatos.slice(-1)[0].actividades.sort((a, b) => b.ingresos - a.ingresos).map(a => (
+            <div key={a.actividad} style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+              <span style={{ fontWeight: 700 }}>{a.actividad}</span>
+              <span style={{ color: 'var(--ink-3)' }}>{eurFmtNum(a.ingresos)} € · {a.alumnos} alumno(s) · último mes con cobros</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Seccion>
   );
 }

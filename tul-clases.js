@@ -293,11 +293,45 @@ export function crearRouterTulClases({ pool, clubId }) {
         return '';
     };
 
+    // Quién estaba matriculado en una fecha dada. Se reconstruye desde la
+    // matrícula de hoy deshaciendo hacia atrás los movimientos posteriores: sin
+    // esto, los KPIs del informe daban siempre lo mismo aunque se cambiara de
+    // mes, porque miraban el estado actual.
+    async function matriculasEn(hasta) {
+        const actuales = await pool.query(
+            `SELECT gs.student_id AS "studentId", gs.group_id AS "groupId"
+             FROM tul_group_students gs
+             JOIN tul_groups g ON g.group_id = gs.group_id
+             JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE a.club_id = $1`, [clubId]
+        );
+        const set = new Set(actuales.rows.map(r => `${r.studentId}|${r.groupId}`));
+        if (!hasta) return set;
+        // Del más reciente al más antiguo, deshaciendo cada movimiento.
+        const posteriores = await pool.query(
+            `SELECT student_id AS "studentId", group_id AS "groupId", action
+             FROM tul_enrollment_history
+             WHERE club_id = $1 AND created_at > ($2::date + INTERVAL '1 day')
+             ORDER BY created_at DESC`, [clubId, hasta]
+        );
+        for (const ev of posteriores.rows) {
+            const clave = `${ev.studentId}|${ev.groupId}`;
+            if (ev.action === 'enrolled') set.delete(clave);
+            else set.add(clave);
+        }
+        return set;
+    }
+
     router.get('/report/overview', async (req, res) => {
         try {
-            const { activityId, instructorId } = req.query;
+            const { activityId, instructorId, hasta } = req.query;
             const segParams = [clubId];
             const segFilter = buildSegFilter(segParams, { activityId, instructorId });
+
+            // Con fecha, el informe se calcula sobre la matrícula de ese momento.
+            if (hasta && /^\d{4}-\d{2}-\d{2}$/.test(hasta)) {
+                return res.json(await overviewEnFecha(hasta, { activityId, instructorId }));
+            }
 
             const summaryRes = await pool.query(
                 `WITH filtered_groups AS (
@@ -382,6 +416,64 @@ export function crearRouterTulClases({ pool, clubId }) {
             });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
+
+    // Mismo informe que overview pero a fecha pasada: los grupos y su capacidad
+    // se toman de hoy (no hay histórico de eso), y la matrícula se reconstruye.
+    async function overviewEnFecha(hasta, { activityId, instructorId }) {
+        const [gruposRes, matriculas] = await Promise.all([
+            pool.query(
+                `SELECT g.group_id AS "groupId", g.name, g.max_students AS "maxStudents",
+                        g.sessions, a.activity_id AS "activityId", a.name AS "activityName"
+                 FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+                 WHERE a.club_id = $1 ORDER BY a.name, g.name`, [clubId]),
+            matriculasEn(hasta),
+        ]);
+        const enSegmento = (g) => {
+            if (activityId) return g.activityId === activityId;
+            if (instructorId) {
+                const ses = Array.isArray(g.sessions) ? g.sessions : [];
+                return ses.some(s => s && s.instructorId === instructorId);
+            }
+            return true;
+        };
+        const porGrupo = new Map();
+        for (const clave of matriculas) {
+            const [studentId, groupId] = clave.split('|');
+            if (!porGrupo.has(groupId)) porGrupo.set(groupId, new Set());
+            porGrupo.get(groupId).add(studentId);
+        }
+
+        const grupos = [], alumnosSegmento = new Set();
+        let totalCapacity = 0, totalEnrollments = 0;
+        const porActividad = new Map();
+        for (const g of gruposRes.rows) {
+            const n = porGrupo.get(g.groupId)?.size || 0;
+            const cap = g.maxStudents > 0 ? g.maxStudents : n + 5;
+            const act = porActividad.get(g.activityId) || { activityId: g.activityId, name: g.activityName, groupCount: 0, totalCapacity: 0, totalEnrollments: 0, alumnos: new Set() };
+            act.groupCount++; act.totalCapacity += cap; act.totalEnrollments += n;
+            for (const s of porGrupo.get(g.groupId) || []) act.alumnos.add(s);
+            porActividad.set(g.activityId, act);
+
+            if (!enSegmento(g)) continue;
+            grupos.push({ groupId: g.groupId, name: g.name, activityName: g.activityName, maxStudents: g.maxStudents || 0, studentCount: n });
+            totalCapacity += cap; totalEnrollments += n;
+            for (const s of porGrupo.get(g.groupId) || []) alumnosSegmento.add(s);
+        }
+        return {
+            success: true, hasta,
+            totalStudents: alumnosSegmento.size,
+            totalCapacity,
+            avgStudentsPerGroup: grupos.length > 0 ? Math.round(totalEnrollments / grupos.length) : 0,
+            overallCapacityPct: totalCapacity > 0 ? Math.round((totalEnrollments / totalCapacity) * 100) : 0,
+            activities: [...porActividad.values()].map(a => ({
+                activityId: a.activityId, name: a.name, groupCount: a.groupCount,
+                totalCapacity: a.totalCapacity, totalEnrollments: a.totalEnrollments,
+                studentCount: a.alumnos.size,
+                capacityPct: a.totalCapacity > 0 ? Math.round((a.totalEnrollments / a.totalCapacity) * 100) : 0,
+            })).sort((x, y) => y.studentCount - x.studentCount),
+            grupos: undefined, groups: grupos,
+        };
+    }
 
     // Histórico de altas/bajas con detección de cambios de horario internos
     // (baja+alta del mismo alumno el mismo día en la misma actividad).
@@ -512,7 +604,7 @@ export function crearRouterTulClases({ pool, clubId }) {
 
     router.get('/report/monthly-churn', async (req, res) => {
         try {
-            const { activityId, instructorId } = req.query;
+            const { activityId, instructorId, hasta } = req.query;
             const totalParams = [clubId];
             const totalSeg = buildSegFilter(totalParams, { activityId, instructorId });
             const totalRes = await pool.query(
@@ -527,11 +619,13 @@ export function crearRouterTulClases({ pool, clubId }) {
             const earliest = [...enrolled, ...unenrolled]
                 .reduce((min, e) => (!min || e.createdAt < min) ? e.createdAt : min, null);
 
-            const now = new Date();
+            // Los 12 meses terminan en el periodo que se esté mirando, no siempre
+            // en el mes actual: así el informe cambia al moverse de mes.
+            const ref = hasta && /^\d{4}-\d{2}-\d{2}$/.test(hasta) ? new Date(hasta + 'T12:00:00') : new Date();
             const windows = [];
             for (let i = 11; i >= 0; i--) {
-                const start = new Date(now.getFullYear(), now.getMonth() - i, 1);
-                const end = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
+                const start = new Date(ref.getFullYear(), ref.getMonth() - i, 1);
+                const end = new Date(ref.getFullYear(), ref.getMonth() - i + 1, 1);
                 if (earliest && end <= earliest) continue;
                 windows.push({ start, end });
             }
@@ -569,6 +663,9 @@ export function crearRouterTulClases({ pool, clubId }) {
                          SELECT 1 FROM jsonb_array_elements(COALESCE(g.sessions, '[]'::jsonb)) sess
                          WHERE sess->>'instructorId' = $${params.length}))`;
             }
+            // Solo cuenta quien está apuntado a alguna actividad ahora o lo ha
+            // estado en el último año: si no, el nivel medio salía diluido por
+            // cientos de cuentas que nunca han jugado ni entrenado.
             const statsRes = await pool.query(
                 `SELECT u.user_id as "userId",
                     TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) as "studentName",
@@ -586,6 +683,17 @@ export function crearRouterTulClases({ pool, clubId }) {
                          WHERE c.club_id = $1)
                  )
                  AND u.role IN ('student', 'instructor', 'club_owner')
+                 AND (
+                     EXISTS (
+                         SELECT 1 FROM tul_group_students gs
+                         JOIN tul_groups g ON g.group_id = gs.group_id
+                         JOIN tul_activities a ON a.activity_id = g.activity_id
+                         WHERE gs.student_id = u.user_id AND a.club_id = $1)
+                     OR EXISTS (
+                         SELECT 1 FROM tul_enrollment_history h
+                         WHERE h.student_id = u.user_id AND h.club_id = $1
+                           AND h.created_at > NOW() - INTERVAL '12 months')
+                 )
                  ${segFilter}
                  ORDER BY level DESC, exp DESC`, params);
             const students = statsRes.rows;
