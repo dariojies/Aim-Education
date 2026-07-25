@@ -5,6 +5,7 @@ import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong, campDayPart
 import { useRouter } from '../App.jsx';
 import { AdminSupport } from './AdminSupport.jsx';
 import { fmtFecha, fmtFechaHora, fmtFechaLarga, fmtFechaCorta } from '../fechas.js';
+import CampTarifas from './CampTarifas.jsx';
 
 function sectionLabel(id) {
   return ({
@@ -3694,6 +3695,9 @@ function AdminCamp({ showToast }) {
               <I.Print /> Imprimir
             </button>
           </div>
+
+          {/* Días de campamento: propuesta de tarifa ajustable por secretaría */}
+          <CampTarifas showToast={showToast} onCambio={loadServicios} />
 
           {/* Matinal y custodia pendientes de cobrar */}
           {servicios && servicios.filas.length > 0 && (

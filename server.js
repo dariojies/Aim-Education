@@ -2071,6 +2071,238 @@ async function calcularServiciosCampamento() {
     }));
 }
 
+// ── Días de campamento ───────────────────────────────────────────────────────
+// Los días en sí se cobran con las tarifas del catálogo. El precio sale siempre
+// de aim_precios, aquí solo está a qué concepto corresponde cada tarifa y
+// cuántas semanas cubre. El sistema propone el reparto más barato, pero la
+// última palabra la tiene secretaría: puede cambiar las cantidades antes de
+// generar los cargos.
+const CAMP_TARIFAS = [
+    { clave: 'completo', concepto: '20406', semanas: null, etiqueta: 'Campamento completo' },
+    { clave: 'mes', concepto: '20405', semanas: 4, etiqueta: 'Mes' },
+    { clave: 'quincena', concepto: '20404', semanas: 2, etiqueta: 'Quincena' },
+    { clave: 'semana', concepto: '20400', semanas: 1, etiqueta: 'Semana' },
+    { clave: 'dia', concepto: '20403', semanas: 0, etiqueta: 'Día suelto' },
+];
+// Una semana con 4 o 5 días sale igual o más barata que esos días sueltos; con 3
+// o menos, los días sueltos ganan.
+const SEMANA_COMPLETA_DESDE = 4;
+const CLAVES_TARIFA = CAMP_TARIFAS.map(t => t.clave);
+
+// Reparto más barato: semanas completas agrupadas en meses, quincenas y semanas
+// sueltas; el resto de días, uno a uno. A partir de 8 semanas sale mejor el
+// campamento completo, que además cubre todo lo que asista.
+function sugerirTarifas(semanasDelNino) {
+    const completas = semanasDelNino.filter(w => w.dias.length >= SEMANA_COMPLETA_DESDE);
+    const sueltos = semanasDelNino.filter(w => w.dias.length < SEMANA_COMPLETA_DESDE)
+        .reduce((s, w) => s + w.dias.length, 0);
+    if (completas.length >= 8) return { completo: 1, mes: 0, quincena: 0, semana: 0, dia: 0 };
+    const mes = Math.floor(completas.length / 4);
+    const resto = completas.length % 4;
+    return { completo: 0, mes, quincena: Math.floor(resto / 2), semana: resto % 2, dia: sueltos };
+}
+
+// Días de cada niño agrupados por semana del campamento, con su propuesta.
+async function calcularTarifasCampamento() {
+    const semanas = (await pool.query('SELECT id, label, start_date, end_date FROM aim_camp_weeks ORDER BY start_date')).rows;
+    const filas = (await pool.query(
+        `SELECT d.day, c.id AS child_id, c.nombre, c.apellidos, c.alumno_id
+         FROM aim_camp_child_days d JOIN aim_camp_children c ON c.id = d.child_id
+         ORDER BY c.apellidos, c.nombre, d.day`
+    )).rows;
+
+    const porNino = new Map();
+    for (const f of filas) {
+        if (!porNino.has(f.child_id)) {
+            porNino.set(f.child_id, {
+                childId: f.child_id, alumnoId: f.alumno_id,
+                nombre: `${f.nombre} ${f.apellidos}`, semanas: new Map(),
+            });
+        }
+        const e = porNino.get(f.child_id);
+        const sem = semanas.find(s => f.day >= s.start_date && f.day <= s.end_date);
+        const clave = sem ? sem.id : 'sueltos';
+        if (!e.semanas.has(clave)) {
+            e.semanas.set(clave, { label: sem ? sem.label : 'Días sueltos', inicio: sem ? sem.start_date : f.day, dias: [] });
+        }
+        e.semanas.get(clave).dias.push(f.day);
+    }
+
+    return [...porNino.values()].map(e => {
+        const listaSemanas = [...e.semanas.values()].sort((a, b) => a.inicio.localeCompare(b.inicio));
+        const totalDias = listaSemanas.reduce((s, w) => s + w.dias.length, 0);
+        return {
+            childId: e.childId, alumnoId: e.alumnoId, nombre: e.nombre,
+            totalDias, totalSemanas: listaSemanas.length,
+            semanas: listaSemanas.map(w => ({ label: w.label, inicio: w.inicio, dias: w.dias.length })),
+            sugerencia: sugerirTarifas(listaSemanas),
+        };
+    });
+}
+
+// Precios vigentes de las tarifas, leídos del catálogo.
+async function preciosTarifas() {
+    const r = await pool.query(
+        'SELECT concepto, descripcion, precio, iva_pct FROM aim_precios WHERE concepto = ANY($1::text[])',
+        [CAMP_TARIFAS.map(t => t.concepto)]
+    );
+    const porConcepto = Object.fromEntries(r.rows.map(x => [x.concepto, x]));
+    const faltan = CAMP_TARIFAS.filter(t => !porConcepto[t.concepto]).map(t => t.concepto);
+    return { porConcepto, faltan };
+}
+
+// Lo que ya se le ha cobrado a cada alumno, en unidades de cada tarifa. Las
+// unidades se deducen del importe porque los días sueltos van agrupados en un
+// solo cargo (3 días = un cargo de 45 €, no tres de 15 €).
+async function cobradoPorAlumnoCampamento(cliente = pool) {
+    const conceptos = CAMP_TARIFAS.map(t => t.concepto);
+    const { porConcepto } = await preciosTarifas();
+    const ya = await cliente.query(
+        `SELECT cliente_id, concepto, mes, importe FROM aim_cargos
+         WHERE origen = 'campamento' AND concepto = ANY($1::text[])
+           AND (recibo_id IS NOT NULL OR estado <> 'pendiente')`, [conceptos]
+    );
+    const mapa = new Map();
+    for (const c of ya.rows) {
+        const t = CAMP_TARIFAS.find(x => x.concepto === c.concepto);
+        if (!t) continue;
+        const unitario = Number(porConcepto[c.concepto]?.precio) || 0;
+        const unidades = unitario > 0 ? Math.max(1, Math.round(Number(c.importe) / unitario)) : 1;
+        const e = mapa.get(c.cliente_id) || { unidades: {}, importe: 0, semanasUsadas: new Set() };
+        e.unidades[t.clave] = (e.unidades[t.clave] || 0) + unidades;
+        e.importe = r2Server(e.importe + Number(c.importe));
+        if (c.mes) e.semanasUsadas.add(String(c.mes).slice(0, 10));
+        mapa.set(c.cliente_id, e);
+    }
+    return mapa;
+}
+
+app.get('/api/admin/camp/tarifas', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const [filas, { porConcepto, faltan }, cobrado] = await Promise.all([
+            calcularTarifasCampamento(), preciosTarifas(), cobradoPorAlumnoCampamento(),
+        ]);
+        const precioDe = clave => Number(porConcepto[CAMP_TARIFAS.find(t => t.clave === clave).concepto]?.precio ?? 0);
+        const tarifas = Object.fromEntries(CAMP_TARIFAS.map(t => [t.clave, { etiqueta: t.etiqueta, concepto: t.concepto, precio: precioDe(t.clave), semanas: t.semanas }]));
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            tarifas, faltanConceptos: faltan,
+            filas: filas.map(f => {
+                const ya = cobrado.get(f.alumnoId);
+                // Lo que le tocaría por TODOS sus días, menos lo que ya pagó: si
+                // pagó dos semanas y luego se apunta a un día más, solo debe ese día.
+                const neta = {};
+                for (const clave of CAMP_TARIFAS.map(t => t.clave)) {
+                    neta[clave] = Math.max(0, (f.sugerencia[clave] || 0) - (ya?.unidades?.[clave] || 0));
+                }
+                const yaCubreTodo = ya && Object.values(neta).every(n => n === 0);
+                return {
+                    ...f,
+                    sugerenciaTotal: f.sugerencia,
+                    sugerencia: neta,
+                    importeSugerido: r2Server(Object.entries(neta).reduce((s, [k, n]) => s + n * precioDe(k), 0)),
+                    yaCobrado: ya ? {
+                        importe: ya.importe,
+                        unidades: ya.unidades,
+                        detalle: Object.entries(ya.unidades).map(([k, n]) => `${n}× ${tarifas[k].etiqueta}`),
+                        cubreTodo: yaCubreTodo,
+                    } : null,
+                };
+            }),
+        });
+    } catch (err) {
+        console.error('Error calculando tarifas de campamento:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Genera los cargos de los días de campamento con las cantidades que haya
+// elegido secretaría: { [childId]: { completo, mes, quincena, semana, dia } }.
+// Como en matinal y custodia: reemplaza lo pendiente y respeta lo ya cobrado.
+app.post('/api/admin/camp/tarifas/facturar', authenticateSession, requireAdmin, async (req, res) => {
+    const eleccion = req.body?.eleccion;
+    if (!eleccion || typeof eleccion !== 'object') return res.status(400).json({ error: 'No se ha indicado qué cobrar.' });
+    const client = await pool.connect();
+    try {
+        const { porConcepto, faltan } = await preciosTarifas();
+        if (faltan.length) return res.status(409).json({ error: `Faltan conceptos en el catálogo: ${faltan.join(', ')}.` });
+        const filas = await calcularTarifasCampamento();
+        const conceptos = CAMP_TARIFAS.map(t => t.concepto);
+
+        await client.query('BEGIN');
+        // Lo ya cobrado no se toca y, además, sus semanas no se vuelven a usar:
+        // así, si alguien pagó dos semanas y luego añade un día, solo se le cobra
+        // ese día y el cargo nuevo no pisa el periodo que ya pagó.
+        const cobrado = await cobradoPorAlumnoCampamento(client);
+        const borrados = await client.query(
+            `DELETE FROM aim_cargos WHERE origen = 'campamento' AND concepto = ANY($1::text[])
+               AND estado = 'pendiente' AND recibo_id IS NULL`, [conceptos]
+        );
+
+        let creados = 0;
+        const sinFicha = [], omitidos = [];
+        let total = 0;
+        for (const f of filas) {
+            const sel = eleccion[f.childId];
+            if (!sel) continue;
+            if (!f.alumnoId) { sinFicha.push(f.nombre); continue; }
+            if (!CLAVES_TARIFA.some(k => Number(sel[k]) > 0)) { omitidos.push(f.nombre); continue; }
+
+            // Las semanas se reparten en orden entre los bloques elegidos, sin
+            // reutilizar las que ya cubre un cargo cobrado.
+            const usadas = cobrado.get(f.alumnoId)?.semanasUsadas || new Set();
+            const pendientes = f.semanas.filter(w => !usadas.has(String(w.inicio).slice(0, 10)));
+            if (!pendientes.length) pendientes.push(...f.semanas);
+            // cuantas > 1 solo lo usan los días sueltos: van en un cargo único por
+            // su importe total en vez de uno por día.
+            const alta = async (clave, cuantas, etiquetaExtra, fecha) => {
+                const t = CAMP_TARIFAS.find(x => x.clave === clave);
+                const info = porConcepto[t.concepto];
+                const importe = r2Server(Number(info.precio) * cuantas);
+                await client.query(
+                    `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct,
+                                             descuento_pct, importe, target_nombre, estado, origen)
+                     VALUES ($1,$2,$3,$4,'Otros',$5,$6,0,$5,$7,'pendiente','campamento')`,
+                    [f.alumnoId, t.concepto, fecha, `${info.descripcion}${etiquetaExtra ? ` — ${etiquetaExtra}` : ''}`,
+                     importe, Number(info.iva_pct ?? 0), t.etiqueta]
+                );
+                creados++; total = r2Server(total + importe);
+            };
+
+            const primerDia = f.semanas[0]?.inicio || null;
+            if (Number(sel.completo) > 0) {
+                await alta('completo', 1, `${f.totalDias} días`, primerDia);
+                pendientes.length = 0;
+            }
+            for (const clave of ['mes', 'quincena', 'semana']) {
+                const t = CAMP_TARIFAS.find(x => x.clave === clave);
+                for (let i = 0; i < (Number(sel[clave]) || 0); i++) {
+                    const bloque = pendientes.splice(0, t.semanas);
+                    const fecha = bloque[0]?.inicio || primerDia;
+                    const etiqueta = bloque.length
+                        ? (bloque.length > 1 ? `${bloque[0].label} a ${bloque[bloque.length - 1].label}` : bloque[0].label)
+                        : null;
+                    await alta(clave, 1, etiqueta, fecha);
+                }
+            }
+            const sueltos = Number(sel.dia) || 0;
+            if (sueltos > 0) {
+                const fecha = pendientes[0]?.inicio || primerDia;
+                await alta('dia', sueltos, `${sueltos} día${sueltos !== 1 ? 's' : ''} suelto${sueltos !== 1 ? 's' : ''}`, fecha);
+            }
+        }
+        await client.query('COMMIT');
+        res.json({
+            success: true, creados, reemplazados: borrados.rowCount, total,
+            sinFicha: [...new Set(sinFicha)], omitidos: [...new Set(omitidos)],
+        });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Error facturando días de campamento:', err);
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
 // Admin: qué se cobraría por matinal y custodia, sin tocar nada.
 app.get('/api/admin/camp/servicios', authenticateSession, requireAdmin, async (req, res) => {
     try {
