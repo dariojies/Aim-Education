@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { I } from './Icons.jsx';
+import { Insignia } from './FichaAlumnoClases.jsx';
 import { fmtMesAno } from '../fechas.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -368,14 +369,20 @@ export function ListaClases({ showToast }) {
 }
 
 // ── Nivel 3: alumnos matriculados en un grupo ──
+//
+// Aquí se matricula, se apunta a la lista de espera y se toca el rango de cada
+// alumno EN ESTA ACTIVIDAD. Los rangos no se pisan entre actividades: el rango
+// que se ve y se cambia aquí es solo el de la actividad de esta clase.
 function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
   const [alumnos, setAlumnos] = useState([]);
+  const [escala, setEscala] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [q, setQ] = useState('');
   const [sug, setSug] = useState([]);
   const [espera, setEspera] = useState([]);
   const [grupos, setGrupos] = useState([]);
-  const [provisional, setProvisional] = useState('');   // clase alternativa al apuntar
+  const [alta, setAlta] = useState(null);      // alumno elegido, pendiente de confirmar
+  const [guardando, setGuardando] = useState(false);
   const buscador = useRef(null);
 
   // Si se ha entrado desde "+ Lista de espera", el cursor ya está en el buscador.
@@ -389,21 +396,94 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
   }, [grupo.id]);
   useEffect(() => { cargarEspera(); api('/groups').then(d => setGrupos(d.groups || [])).catch(() => {}); }, [cargarEspera]);
 
+  const cargar = useCallback(async () => {
+    setCargando(true);
+    try {
+      const d = await api(`/groups/${grupo.id}/students`);
+      setAlumnos(d.students || []);
+      if (d.escala?.length) setEscala(d.escala);
+    } catch (e) { alert(e.message); }
+    finally { setCargando(false); }
+  }, [grupo.id]);
+  useEffect(() => { cargar(); }, [cargar]);
+
+  // Si la clase está vacía, la escala no viene con los alumnos: se pide aparte.
+  useEffect(() => {
+    if (escala.length || !grupo.activityId) return;
+    api('/escalas').then(d => {
+      const a = (d.actividades || []).find(x => x.id === grupo.activityId);
+      if (a?.niveles?.length) setEscala(a.niveles);
+    }).catch(() => {});
+  }, [escala.length, grupo.activityId]);
+
   const lleno = grupo.maxStudents != null && alumnos.length >= grupo.maxStudents;
   const plazasLibres = grupo.maxStudents != null ? Math.max(0, grupo.maxStudents - alumnos.length) : null;
+  const nivelDe = (orden) => escala.find(n => n.order === orden) || null;
 
-  async function apuntarEspera(s) {
+  useEffect(() => {
+    if (q.trim().length < 2) { setSug([]); return; }
+    let vivo = true;
+    const t = setTimeout(async () => {
+      try {
+        const url = `/students?q=${encodeURIComponent(q.trim())}` + (grupo.activityId ? `&activityId=${grupo.activityId}` : '');
+        const d = await api(url);
+        if (vivo) setSug((d.students || []).filter(s => !alumnos.some(a => a.id === s.id)));
+      } catch { /* noop */ }
+    }, 300);
+    return () => { vivo = false; clearTimeout(t); };
+  }, [q, alumnos, grupo.activityId]);
+
+  // Elegir a alguien no le da de alta todavía: abre la ficha de alta para
+  // repasar su rango y, si la clase está llena, dónde va mientras espera.
+  function elegir(s) {
+    setAlta({
+      ...s,
+      levelOrder: s.levelOrder != null ? String(s.levelOrder) : '',
+      provisional: '',
+      nota: '',
+    });
+    setQ(''); setSug([]);
+  }
+
+  async function confirmarAlta() {
+    if (!alta) return;
+    setGuardando(true);
+    const nivel = alta.levelOrder === '' ? null : Number(alta.levelOrder);
     try {
-      await api(`/groups/${grupo.id}/espera`, { method: 'POST', body: { studentId: s.id, grupoProvisionalId: provisional || null } });
-      setQ(''); setSug([]); setProvisional('');
-      await cargarEspera();
-      showToast?.(`${s.name} apuntado a la lista de espera.`);
+      if (lleno) {
+        await api(`/groups/${grupo.id}/espera`, {
+          method: 'POST',
+          body: { studentId: alta.id, grupoProvisionalId: alta.provisional || null, nota: alta.nota || null, levelOrder: nivel },
+        });
+        showToast?.(`${alta.name} apuntado a la lista de espera.`);
+      } else {
+        await api(`/groups/${grupo.id}/students/enroll`, { method: 'POST', body: { studentId: alta.id, levelOrder: nivel } });
+        showToast?.(`${alta.name} matriculado en ${grupo.name}.`);
+      }
+      setAlta(null);
+      await cargar(); await cargarEspera();
+    } catch (e) { alert(e.message); }
+    finally { setGuardando(false); }
+  }
+
+  // Cambiar el rango de alguien ya matriculado, sin ir a su ficha.
+  async function cambiarNivel(s, levelOrder) {
+    try {
+      await api(`/groups/${grupo.id}/students/${s.id}/nivel`, { method: 'PUT', body: { levelOrder: Number(levelOrder) } });
+      await cargar();
+      showToast?.(`Rango de ${s.name} actualizado.`);
     } catch (e) { alert(e.message); }
   }
 
+  async function cambiarNivelEspera(e, levelOrder) {
+    try {
+      await api(`/groups/${grupo.id}/students/${e.studentId}/nivel`, { method: 'PUT', body: { levelOrder: Number(levelOrder) } });
+      await cargarEspera();
+    } catch (err) { alert(err.message); }
+  }
+
   async function darPlaza(e) {
-    if (!window.confirm(`Dar la plaza a ${e.alumno}?${e.provisionalNombre ? `
-Se le dará de baja de ${e.provisionalNombre}.` : ''}`)) return;
+    if (!window.confirm(`Dar la plaza a ${e.alumno}?${e.provisionalNombre ? `\nSe le dará de baja de ${e.provisionalNombre}.` : ''}`)) return;
     try {
       const d = await api(`/espera/${e.id}/asignar`, { method: 'POST' });
       await cargar(); await cargarEspera();
@@ -417,85 +497,110 @@ Se le dará de baja de ${e.provisionalNombre}.` : ''}`)) return;
     catch (err) { alert(err.message); }
   }
 
-  const cargar = useCallback(async () => {
-    setCargando(true);
-    try { setAlumnos((await api(`/groups/${grupo.id}/students`)).students || []); }
-    catch (e) { alert(e.message); }
-    finally { setCargando(false); }
-  }, [grupo.id]);
-  useEffect(() => { cargar(); }, [cargar]);
-
-  useEffect(() => {
-    if (q.trim().length < 2) { setSug([]); return; }
-    let vivo = true;
-    const t = setTimeout(async () => {
-      try {
-        const d = await api(`/students?q=${encodeURIComponent(q.trim())}`);
-        if (vivo) setSug((d.students || []).filter(s => !alumnos.some(a => a.id === s.id)));
-      } catch { /* noop */ }
-    }, 300);
-    return () => { vivo = false; clearTimeout(t); };
-  }, [q, alumnos]);
-
-  async function matricular(s) {
-    try {
-      await api(`/groups/${grupo.id}/students/enroll`, { method: 'POST', body: { studentId: s.id } });
-      setQ(''); setSug([]); await cargar();
-      showToast?.(`${s.name} matriculado en ${grupo.name}.`);
-    } catch (e) { alert(e.message); }
-  }
-
   async function darBaja(s) {
     if (!window.confirm(`¿Dar de baja a ${s.name} del grupo ${grupo.name}?\nQuedará registrado en el histórico de altas y bajas.`)) return;
     try {
       await api(`/groups/${grupo.id}/students/${s.id}/enroll`, { method: 'DELETE' });
-      await cargar();
+      // Al liberarse una plaza puede tocarle ya al primero de la espera.
+      await cargar(); await cargarEspera();
       showToast?.(`${s.name} dado de baja.`);
     } catch (e) { alert(e.message); }
   }
+
+  const selNivel = { ...inputCss, fontSize: 12, padding: '5px 8px', width: 'auto', maxWidth: 190 };
 
   return (
     <div style={{ display: 'grid', gap: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <button className="btn btn-sm btn-outline" onClick={onVolver}>← {grupo.actividadNombre}</button>
         <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>{grupo.name}</h3>
-        <span style={{ fontSize: 12, color: lleno ? 'var(--orange)' : 'var(--ink-3)', fontWeight: lleno ? 800 : 400 }}>
+        <span style={{ fontSize: 13, fontWeight: 800, color: colorOcupacion(alumnos.length, grupo.maxStudents) }}>
           {alumnos.length}{grupo.maxStudents ? `/${grupo.maxStudents}` : ''} alumnos{lleno ? ' · COMPLETA' : ''}
         </span>
         {espera.length > 0 && (
-          <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--purple)' }}>
-            {espera.length} en espera
-          </span>
+          <Etiqueta color="var(--purple)">{espera.length} en espera</Etiqueta>
         )}
       </div>
 
-      <div style={{ position: 'relative', maxWidth: 420 }}>
-        <input ref={buscador} value={q} onChange={e => setQ(e.target.value)}
-          placeholder={lleno ? 'La clase está llena: buscar alumno para la lista de espera...' : 'Buscar alumno del club para matricular...'}
-          style={{ ...inputCss, width: '100%' }} />
-        {sug.length > 0 && (
-          <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 5, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, marginTop: 2, overflow: 'hidden', maxHeight: 240, overflowY: 'auto', boxShadow: 'var(--shadow)' }}>
-            {sug.map(s => (
-              <button key={s.id} type="button" onClick={() => (lleno ? apuntarEspera(s) : matricular(s))}
-                style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', background: 'none', border: 0, borderBottom: '1px solid var(--line-2)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13 }}>
-                <b>{s.name}</b><span style={{ display: 'block', fontSize: 11, color: 'var(--ink-3)' }}>{s.email}</span>
+      {/* Alta: se busca, se elige y se confirma. Nada se apunta de golpe. */}
+      <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: 14, display: 'grid', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontWeight: 800, fontSize: 14 }}>{lleno ? 'Apuntar a la lista de espera' : 'Matricular a un alumno'}</span>
+          <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+            {lleno
+              ? 'La clase está completa, así que el alumno guarda turno por orden de llegada.'
+              : plazasLibres == null ? 'Esta clase no tiene tope de plazas.'
+                : `Queda${plazasLibres === 1 ? '' : 'n'} ${plazasLibres} plaza${plazasLibres === 1 ? '' : 's'} por cubrir.`}
+          </span>
+        </div>
+
+        {!alta && (
+          <div style={{ position: 'relative', maxWidth: 460 }}>
+            <input ref={buscador} value={q} onChange={e => setQ(e.target.value)}
+              placeholder="Buscar por nombre o email..." style={{ ...inputCss, width: '100%' }} />
+            {sug.length > 0 && (
+              <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 5, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, marginTop: 2, overflow: 'hidden', maxHeight: 240, overflowY: 'auto', boxShadow: 'var(--shadow)' }}>
+                {sug.map(s => (
+                  <button key={s.id} type="button" onClick={() => elegir(s)}
+                    style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', padding: '8px 12px', background: 'none', border: 0, borderBottom: '1px solid var(--line-2)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13 }}>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <b>{s.name}</b><span style={{ display: 'block', fontSize: 11, color: 'var(--ink-3)' }}>{s.email}</span>
+                    </span>
+                    {s.levelName && <Insignia nivel={nivelDe(s.levelOrder) || { name: s.levelName, color: '#DDD' }} />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {alta && (
+          <div style={{ display: 'grid', gap: 10, background: 'var(--bg-3)', borderRadius: 12, padding: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontWeight: 800, fontSize: 14 }}>{alta.name}</span>
+              <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{alta.email}</span>
+            </div>
+
+            {escala.length > 0 && (
+              <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-2)' }}>
+                Su rango en {grupo.actividadNombre}
+                <select value={alta.levelOrder} onChange={e => setAlta({ ...alta, levelOrder: e.target.value })}
+                  style={{ ...inputCss, fontSize: 13, maxWidth: 320 }}>
+                  <option value="">Sin rango por ahora</option>
+                  {escala.map(n => <option key={n.order} value={n.order}>{n.name}</option>)}
+                </select>
+              </label>
+            )}
+
+            {lleno && (
+              <>
+                <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-2)' }}>
+                  Mientras espera, puede ir a
+                  <select value={alta.provisional} onChange={e => setAlta({ ...alta, provisional: e.target.value })}
+                    style={{ ...inputCss, fontSize: 13, maxWidth: 420 }}>
+                    <option value="">Ninguna clase de momento</option>
+                    {grupos.filter(g => g.id !== grupo.id && (g.maxStudents == null || g.studentCount < g.maxStudents))
+                      .map(g => <option key={g.id} value={g.id}>{g.name} ({g.studentCount}{g.maxStudents ? `/${g.maxStudents}` : ''})</option>)}
+                  </select>
+                  <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Se le matricula en ella y se le da de baja al entrar aquí.</span>
+                </label>
+                <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-2)' }}>
+                  Nota (opcional)
+                  <input value={alta.nota} onChange={e => setAlta({ ...alta, nota: e.target.value })}
+                    placeholder="Ej. solo puede los martes" style={{ ...inputCss, fontSize: 13, maxWidth: 420 }} />
+                </label>
+              </>
+            )}
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn btn-sm btn-outline" onClick={() => setAlta(null)}>Cancelar</button>
+              <button className="btn btn-sm btn-primary" disabled={guardando} onClick={confirmarAlta}>
+                {guardando ? 'Guardando...' : (lleno ? 'Apuntar a la espera' : 'Matricular')}
               </button>
-            ))}
+            </div>
           </div>
         )}
       </div>
-
-      {lleno && (
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12, color: 'var(--ink-2)' }}>
-          <span>Mientras espera, puede ir a:</span>
-          <select value={provisional} onChange={e => setProvisional(e.target.value)} style={{ ...inputCss, fontSize: 12, padding: '6px 10px' }}>
-            <option value="">Ninguna clase de momento</option>
-            {grupos.filter(g => g.id !== grupo.id && (g.maxStudents == null || g.studentCount < g.maxStudents))
-              .map(g => <option key={g.id} value={g.id}>{g.name} ({g.studentCount}{g.maxStudents ? `/${g.maxStudents}` : ''})</option>)}
-          </select>
-          <span style={{ color: 'var(--ink-3)' }}>se le matricula en ella y se le da de baja al entrar aquí</span>
-        </div>
-      )}
 
       {/* Lista de espera del grupo, por orden de llegada */}
       {espera.length > 0 && (
@@ -510,13 +615,23 @@ Se le dará de baja de ${e.provisionalNombre}.` : ''}`)) return;
             )}
           </div>
           {espera.map(e => (
-            <div key={e.id} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', fontSize: 13, padding: '6px 8px', background: e.leToca ? 'color-mix(in oklab, var(--teal) 8%, var(--bg-3))' : 'var(--bg-3)', borderRadius: 10 }}>
+            <div key={e.id} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', fontSize: 13, padding: '8px 10px', background: (plazasLibres != null && plazasLibres >= e.puesto) ? 'color-mix(in oklab, var(--teal) 8%, var(--bg-3))' : 'var(--bg-3)', borderRadius: 10 }}>
               <span style={{ fontWeight: 800, color: 'var(--purple)', minWidth: 24 }}>{e.puesto}º</span>
-              <span style={{ fontWeight: 700, flex: 1, minWidth: 120 }}>{e.alumno}</span>
-              {e.provisionalNombre
-                ? <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>mientras va a <b>{e.provisionalNombre}</b></span>
-                : <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>sin clase alternativa</span>}
-              {e.leToca && (
+              <span style={{ minWidth: 140 }}>
+                <span style={{ fontWeight: 700 }}>{e.alumno}</span>
+                <span style={{ display: 'block', fontSize: 11, color: 'var(--ink-3)' }}>
+                  {e.provisionalNombre ? <>mientras va a <b>{e.provisionalNombre}</b></> : 'sin clase alternativa'}
+                  {e.nota ? ` · ${e.nota}` : ''}
+                </span>
+              </span>
+              <div style={{ flex: 1 }} />
+              {escala.length > 0 && (
+                <select value={e.levelOrder ?? ''} onChange={ev => cambiarNivelEspera(e, ev.target.value)} style={selNivel}>
+                  <option value="" disabled>Sin rango</option>
+                  {escala.map(n => <option key={n.order} value={n.order}>{n.name}</option>)}
+                </select>
+              )}
+              {plazasLibres != null && plazasLibres >= e.puesto && (
                 <button className="btn btn-sm btn-primary" onClick={() => darPlaza(e)}>Darle la plaza</button>
               )}
               <button className="icon-btn danger" title="Quitar de la lista" onClick={() => quitarEspera(e)}><I.Trash /></button>
@@ -529,11 +644,18 @@ Se le dará de baja de ${e.provisionalNombre}.` : ''}`)) return;
       {!cargando && !alumnos.length && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Este grupo no tiene alumnos todavía.</p>}
       <div style={{ display: 'grid', gap: 8 }}>
         {alumnos.map(s => (
-          <div key={s.id} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: '10px 14px', display: 'flex', gap: 10, alignItems: 'center' }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
+          <div key={s.id} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: '10px 14px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 160 }}>
               <div style={{ fontWeight: 700, fontSize: 14 }}>{s.name}</div>
-              <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{s.email}{s.beltName ? ` · ${s.beltName}` : ''}</div>
+              <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{s.email}</div>
             </div>
+            {s.nivel && <Insignia nivel={s.nivel} />}
+            {escala.length > 0 && (
+              <select value={s.levelOrder ?? ''} onChange={e => cambiarNivel(s, e.target.value)} style={selNivel}>
+                <option value="" disabled>Sin rango</option>
+                {escala.map(n => <option key={n.order} value={n.order}>{n.name}</option>)}
+              </select>
+            )}
             <button className="btn btn-sm btn-outline" style={{ color: 'var(--orange)' }} onClick={() => darBaja(s)}>Dar de baja</button>
           </div>
         ))}

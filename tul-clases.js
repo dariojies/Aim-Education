@@ -1,4 +1,5 @@
 import express from 'express';
+import { escalaDe, escalasDelClub, TIPO_TAEKWONDO } from './rangos.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Gestión de clases y reportes de Aim-Tul, portados a Aim Education.
@@ -187,32 +188,78 @@ export function crearRouterTulClases({ pool, clubId }) {
             const result = await pool.query(`
                 SELECT u.user_id as id, u.email, CONCAT(u.name, ' ', COALESCE(u.surname, '')) as name,
                        COALESCE(u.belt_level, 0)            as rank,
-                       COALESCE(u.belt, 'Blanco (10º Gup)') as "beltName"
+                       COALESCE(u.belt, 'Blanco (10º Gup)') as "beltName",
+                       a.activity_id AS "activityId", a.activity_type AS tipo,
+                       up.level_order AS "levelOrder", up.level_name AS "levelName"
                 FROM users u
                 JOIN tul_group_students gs ON u.user_id = gs.student_id
                 JOIN tul_groups g ON gs.group_id = g.group_id
                 JOIN tul_activities a ON g.activity_id = a.activity_id
+                LEFT JOIN tul_user_progression up
+                       ON up.user_id = u.user_id AND up.activity_id = a.activity_id
                 WHERE gs.group_id = $1 AND a.club_id = $2
                 ORDER BY name`, [req.params.groupId, clubId]);
-            res.json({ success: true, students: result.rows.map(s => ({ ...s, name: s.name.trim() })) });
+            const tipo = result.rows[0]?.tipo;
+            const escala = tipo ? await escalaDe(tipo, pool) : [];
+            const porOrden = Object.fromEntries(escala.map(n => [n.order, n]));
+            res.json({
+                success: true,
+                escala,
+                students: result.rows.map(s => ({
+                    ...s, name: s.name.trim(),
+                    nivel: s.levelOrder != null ? porOrden[s.levelOrder] || { name: s.levelName, color: '#DDD' } : null,
+                })),
+            });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
+
+    // Poner el rango de un alumno en la actividad de una clase. Se usa al
+    // matricular y al apuntar a la espera, para no tener que ir luego a su ficha.
+    async function fijarNivel(groupId, studentId, levelOrder) {
+        const a = await pool.query(
+            `SELECT a.activity_id, a.activity_type FROM tul_groups g
+             JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE g.group_id = $1 AND a.club_id = $2`, [groupId, clubId]);
+        if (!a.rowCount) return;
+        const { activity_id, activity_type } = a.rows[0];
+        const nivel = (await escalaDe(activity_type, pool)).find(n => n.order === Number(levelOrder));
+        if (!nivel) return;
+        await pool.query(
+            `INSERT INTO tul_user_progression (user_id, activity_id, activity_type, level_order, level_name, updated_at)
+             VALUES ($1,$2,$3,$4,$5,NOW())
+             ON CONFLICT (user_id, activity_id) DO UPDATE
+               SET level_order = excluded.level_order, level_name = excluded.level_name, updated_at = NOW()`,
+            [studentId, activity_id, activity_type, nivel.order, nivel.name]);
+        await pool.query(
+            `INSERT INTO tul_user_progression_history (user_id, activity_id, activity_type, level_order, level_name, updated_at)
+             VALUES ($1,$2,$3,$4,$5,NOW())`,
+            [studentId, activity_id, activity_type, nivel.order, nivel.name]);
+        if (activity_type === TIPO_TAEKWONDO) {
+            await pool.query('UPDATE users SET belt = $1, belt_level = $2 WHERE user_id = $3',
+                [nivel.name, nivel.order, studentId]);
+        }
+    }
 
     // Buscar alumnos del club para matricular.
     router.get('/students', async (req, res) => {
         const q = `%${(req.query.q || '').trim()}%`;
+        const act = req.query.activityId || null;
         try {
             const result = await pool.query(
-                `SELECT user_id as id, CONCAT(name, ' ', COALESCE(surname, '')) as name, email
-                 FROM users WHERE club_id = $1 AND role = 'student'
-                   AND (name ILIKE $2 OR surname ILIKE $2 OR CONCAT(name,' ',COALESCE(surname,'')) ILIKE $2 OR email ILIKE $2)
-                 ORDER BY surname, name LIMIT 25`, [clubId, q]);
+                `SELECT u.user_id as id, CONCAT(u.name, ' ', COALESCE(u.surname, '')) as name, u.email,
+                        up.level_order AS "levelOrder", up.level_name AS "levelName"
+                 FROM users u
+                 LEFT JOIN tul_user_progression up
+                        ON up.user_id = u.user_id AND up.activity_id = $3::uuid
+                 WHERE u.club_id = $1 AND u.role = 'student'
+                   AND (u.name ILIKE $2 OR u.surname ILIKE $2 OR CONCAT(u.name,' ',COALESCE(u.surname,'')) ILIKE $2 OR u.email ILIKE $2)
+                 ORDER BY u.surname, u.name LIMIT 25`, [clubId, q, act]);
             res.json({ success: true, students: result.rows.map(s => ({ ...s, name: s.name.trim() })) });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
     router.post('/groups/:groupId/students/enroll', async (req, res) => {
-        const { studentId } = req.body;
+        const { studentId, levelOrder } = req.body;
         try {
             const groupRes = await pool.query(
                 `SELECT g.max_students FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
@@ -227,6 +274,15 @@ export function crearRouterTulClases({ pool, clubId }) {
                 }
             }
             await matricular(req.params.groupId, studentId);
+            if (levelOrder != null && levelOrder !== '') await fijarNivel(req.params.groupId, studentId, levelOrder);
+            res.json({ success: true });
+        } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // Cambiar el rango de un alumno en la actividad de una clase, sin salir de ella.
+    router.put('/groups/:groupId/students/:studentId/nivel', async (req, res) => {
+        try {
+            await fijarNivel(req.params.groupId, req.params.studentId, req.body.levelOrder);
             res.json({ success: true });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
@@ -282,6 +338,175 @@ export function crearRouterTulClases({ pool, clubId }) {
         await pool.query('DELETE FROM tul_group_students WHERE group_id = $1 AND student_id = $2', [groupId, studentId]);
     }
 
+    // ── Rangos de los alumnos ────────────────────────────────────────────────
+    // Cada actividad tiene su escala y no se pisan: el mismo alumno puede ser
+    // cinturón azul de Taekwondo y Grado 3 de Ballet. Los valores válidos salen
+    // del catálogo, así que no se puede escribir un rango que no existe.
+
+    router.get('/escalas', async (req, res) => {
+        try {
+            res.set('Cache-Control', 'no-store');
+            res.json({ actividades: await escalasDelClub(pool, clubId) });
+        } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // Los rangos de todos los alumnos de golpe, para pintarlos en el listado.
+    // Son pocas filas (una por alumno y actividad), así que va en una consulta.
+    router.get('/rangos', async (req, res) => {
+        try {
+            const r = await pool.query(
+                `SELECT up.user_id AS "userId", a.name AS actividad, a.activity_type AS tipo,
+                        up.level_order AS "levelOrder", up.level_name AS "levelName"
+                 FROM tul_user_progression up
+                 JOIN tul_activities a ON a.activity_id = up.activity_id
+                 WHERE a.club_id = $1
+                 ORDER BY a.name`, [clubId]
+            );
+            const colores = {};
+            for (const tipo of new Set(r.rows.map(x => x.tipo))) {
+                colores[tipo] = Object.fromEntries((await escalaDe(tipo, pool)).map(n => [n.order, n]));
+            }
+            const porAlumno = {};
+            for (const x of r.rows) {
+                const n = colores[x.tipo]?.[x.levelOrder];
+                (porAlumno[x.userId] ||= []).push({
+                    actividad: x.actividad, levelName: x.levelName,
+                    color: n?.color || '#DDD', textColor: n?.textColor,
+                });
+            }
+            res.set('Cache-Control', 'no-store');
+            res.json({ rangos: porAlumno });
+        } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // Ficha completa de un alumno: sus clases y su rango en cada actividad.
+    router.get('/students/:studentId/ficha', async (req, res) => {
+        const { studentId } = req.params;
+        try {
+            const [clases, rangos, acts] = await Promise.all([
+                pool.query(
+                    `SELECT g.group_id AS "groupId", g.name AS grupo, g.time,
+                            a.activity_id AS "activityId", a.name AS actividad, a.activity_type AS tipo
+                     FROM tul_group_students gs
+                     JOIN tul_groups g ON g.group_id = gs.group_id
+                     JOIN tul_activities a ON a.activity_id = g.activity_id
+                     WHERE gs.student_id = $1 AND a.club_id = $2
+                     ORDER BY a.name, g.name`, [studentId, clubId]),
+                pool.query(
+                    `SELECT up.activity_id AS "activityId", up.level_order AS "levelOrder",
+                            up.level_name AS "levelName", up.updated_at AS "updatedAt"
+                     FROM tul_user_progression up
+                     JOIN tul_activities a ON a.activity_id = up.activity_id
+                     WHERE up.user_id = $1 AND a.club_id = $2`, [studentId, clubId]),
+                pool.query(
+                    `SELECT DISTINCT a.activity_id AS id FROM tul_enrollment_history h
+                     JOIN tul_groups g ON g.group_id = h.group_id
+                     JOIN tul_activities a ON a.activity_id = g.activity_id
+                     WHERE h.student_id = $1 AND a.club_id = $2`, [studentId, clubId]),
+            ]);
+            // Actividades a las que va o ha ido: son las que le aplican rango.
+            const suyas = new Set([...clases.rows.map(c => c.activityId), ...acts.rows.map(a => a.id),
+                ...rangos.rows.map(r => r.activityId)]);
+            res.set('Cache-Control', 'no-store');
+            res.json({
+                clases: clases.rows,
+                rangos: Object.fromEntries(rangos.rows.map(r => [r.activityId, r])),
+                actividadesDelAlumno: [...suyas],
+            });
+        } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // Fijar el rango de un alumno en una actividad. El nivel tiene que existir
+    // en la escala de esa actividad.
+    router.put('/students/:studentId/rango', async (req, res) => {
+        const { activityId, levelOrder } = req.body;
+        const client = await pool.connect();
+        try {
+            const a = await client.query(
+                'SELECT activity_type AS tipo, name FROM tul_activities WHERE activity_id = $1 AND club_id = $2',
+                [activityId, clubId]
+            );
+            if (!a.rowCount) return res.status(404).json({ error: 'Esa actividad no es de este club.' });
+            const tipo = a.rows[0].tipo;
+            const escala = await escalaDe(tipo, pool);
+            if (!escala.length) return res.status(409).json({ error: `${a.rows[0].name} no tiene rangos.` });
+            const nivel = escala.find(n => n.order === Number(levelOrder));
+            if (!nivel) return res.status(400).json({ error: 'Ese nivel no existe en la escala de la actividad.' });
+
+            await client.query('BEGIN');
+            await client.query(
+                `INSERT INTO tul_user_progression (user_id, activity_id, activity_type, level_order, level_name, updated_at)
+                 VALUES ($1,$2,$3,$4,$5,NOW())
+                 ON CONFLICT (user_id, activity_id) DO UPDATE
+                   SET level_order = excluded.level_order, level_name = excluded.level_name, updated_at = NOW()`,
+                [req.params.studentId, activityId, tipo, nivel.order, nivel.name]
+            );
+            await client.query(
+                `INSERT INTO tul_user_progression_history (user_id, activity_id, activity_type, level_order, level_name, updated_at)
+                 VALUES ($1,$2,$3,$4,$5,NOW())`,
+                [req.params.studentId, activityId, tipo, nivel.order, nivel.name]
+            );
+            // En Taekwondo, el cinturón global del usuario se mantiene igual que
+            // en Learning Dungeon: otras partes de su app siguen leyendo de ahí.
+            if (tipo === TIPO_TAEKWONDO) {
+                await client.query('UPDATE users SET belt = $1, belt_level = $2 WHERE user_id = $3',
+                    [nivel.name, nivel.order, req.params.studentId]);
+                await client.query(
+                    'INSERT INTO tul_user_belts (user_id, belt_level, updated_at) VALUES ($1,$2,NOW()) ON CONFLICT DO NOTHING',
+                    [req.params.studentId, nivel.order]);
+            }
+            await client.query('COMMIT');
+            res.json({ success: true, nivel });
+        } catch (err) {
+            await client.query('ROLLBACK').catch(() => {});
+            res.status(500).json({ error: err.message });
+        } finally { client.release(); }
+    });
+
+    // Matricular a un alumno en una clase desde su propia ficha, poniéndole de
+    // paso su rango en esa actividad si aún no lo tiene.
+    router.post('/students/:studentId/clases', async (req, res) => {
+        const { groupId, levelOrder } = req.body;
+        try {
+            const g = await pool.query(
+                `SELECT g.max_students, a.activity_id, a.activity_type,
+                        (SELECT COUNT(*)::int FROM tul_group_students gs WHERE gs.group_id = g.group_id) AS n
+                 FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+                 WHERE g.group_id = $1 AND a.club_id = $2`, [groupId, clubId]
+            );
+            if (!g.rowCount) return res.status(404).json({ error: 'Esa clase no es de este club.' });
+            const info = g.rows[0];
+            if (info.max_students && info.n >= info.max_students) {
+                return res.status(409).json({ error: `Esa clase está llena (${info.n}/${info.max_students}). Puedes apuntarle a la lista de espera.` });
+            }
+            await matricular(groupId, req.params.studentId);
+            if (levelOrder != null && levelOrder !== '') {
+                const escala = await escalaDe(info.activity_type, pool);
+                const nivel = escala.find(n => n.order === Number(levelOrder));
+                if (nivel) {
+                    await pool.query(
+                        `INSERT INTO tul_user_progression (user_id, activity_id, activity_type, level_order, level_name, updated_at)
+                         VALUES ($1,$2,$3,$4,$5,NOW())
+                         ON CONFLICT (user_id, activity_id) DO UPDATE
+                           SET level_order = excluded.level_order, level_name = excluded.level_name, updated_at = NOW()`,
+                        [req.params.studentId, info.activity_id, info.activity_type, nivel.order, nivel.name]);
+                    if (info.activity_type === TIPO_TAEKWONDO) {
+                        await pool.query('UPDATE users SET belt = $1, belt_level = $2 WHERE user_id = $3',
+                            [nivel.name, nivel.order, req.params.studentId]);
+                    }
+                }
+            }
+            res.json({ success: true });
+        } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    router.delete('/students/:studentId/clases/:groupId', async (req, res) => {
+        try {
+            await desmatricular(req.params.groupId, req.params.studentId);
+            res.json({ success: true });
+        } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
     // ── Lista de espera ──────────────────────────────────────────────────────
     // Cuando una clase está llena, el alumno se apunta y guarda su turno por
     // orden de llegada. Puede quedarse mientras tanto en otra hora, de la que
@@ -298,11 +523,13 @@ export function crearRouterTulClases({ pool, clubId }) {
                         a.name AS "actividad",
                         TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno,
                         gp.name AS "provisionalNombre", ap.name AS "provisionalActividad",
+                        a.activity_type AS tipo, up.level_order AS "levelOrder", up.level_name AS "levelName",
                         (SELECT COUNT(*)::int FROM tul_group_students gs WHERE gs.group_id = e.group_id) AS ocupadas
                  FROM aim_lista_espera e
                  JOIN tul_groups g ON g.group_id = e.group_id
                  JOIN tul_activities a ON a.activity_id = g.activity_id
                  JOIN users u ON u.user_id = e.student_id
+                 LEFT JOIN tul_user_progression up ON up.user_id = e.student_id AND up.activity_id = a.activity_id
                  LEFT JOIN tul_groups gp ON gp.group_id = e.grupo_provisional_id
                  LEFT JOIN tul_activities ap ON ap.activity_id = gp.activity_id
                  WHERE e.estado = 'esperando' AND a.club_id = $1
@@ -331,7 +558,7 @@ export function crearRouterTulClases({ pool, clubId }) {
     });
 
     router.post('/groups/:groupId/espera', async (req, res) => {
-        const { studentId, grupoProvisionalId, nota } = req.body;
+        const { studentId, grupoProvisionalId, nota, levelOrder } = req.body;
         if (!studentId) return res.status(400).json({ error: 'Falta el alumno.' });
         try {
             const g = await pool.query(
@@ -369,6 +596,7 @@ export function crearRouterTulClases({ pool, clubId }) {
                 [req.params.groupId, studentId, grupoProvisionalId || null, nota?.trim() || null, req.userSession.userId]
             );
             if (!ins.rowCount) return res.status(409).json({ error: 'Ese alumno ya estaba en la lista de espera de esta clase.' });
+            if (levelOrder != null && levelOrder !== '') await fijarNivel(req.params.groupId, studentId, levelOrder);
             res.status(201).json({ success: true, id: ins.rows[0].id });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });

@@ -1125,11 +1125,16 @@ app.put('/api/users/:id', authenticateSession, async (req, res) => {
     try {
         const role = isSuperAdmin ? 'superadmin' : 'student';
         const dev_role = isSuperAdmin ? 'superadmin' : null;
+        // El cinturón lo lleva el bloque de rangos de la ficha, que escribe en
+        // tul_user_progression. Aquí solo se toca si viene en la petición, para
+        // no borrarlo desde un formulario que ya no lo pregunta.
         await pool.query(
             `UPDATE users
-             SET name = $1, surname = $2, email = $3, belt = $4, role = $5, dev_role = $6
-             WHERE user_id = $7`,
-            [firstName.trim(), (lastName || '').trim(), emailLower, belt || null, role, dev_role, id]
+             SET name = $1, surname = $2, email = $3, role = $4, dev_role = $5,
+                 belt = CASE WHEN $6::boolean THEN $7 ELSE belt END
+             WHERE user_id = $8`,
+            [firstName.trim(), (lastName || '').trim(), emailLower, role, dev_role,
+             belt !== undefined, belt || null, id]
         );
         res.json({ id, firstName, lastName, email, belt, isSuperAdmin });
     } catch (err) {

@@ -10,6 +10,7 @@ import BillingArqueo from './BillingArqueo.jsx';
 import BillingAjustes from './BillingAjustes.jsx';
 import PasarListaClases from './PasarListaClases.jsx';
 import Campanita from './Campanita.jsx';
+import FichaAlumnoClases from './FichaAlumnoClases.jsx';
 
 function sectionLabel(id) {
   return ({
@@ -193,6 +194,7 @@ function AdminOverview({ setView, refreshTrigger, showToast }) {
 
 function AdminStudents({ refreshTrigger, onEditUser }) {
   const [users, setUsers] = useState([]);
+  const [rangos, setRangos] = useState({});
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
 
@@ -201,6 +203,11 @@ function AdminStudents({ refreshTrigger, onEditUser }) {
       .then(r => r.ok ? r.json() : [])
       .then(u => { setUsers(u); setLoading(false); })
       .catch(() => setLoading(false));
+    // Los rangos van por actividad, así que no se leen del usuario.
+    fetch('/api/admin/tul/rangos', { credentials: 'include', cache: 'no-store' })
+      .then(r => r.ok ? r.json() : { rangos: {} })
+      .then(d => setRangos(d.rangos || {}))
+      .catch(() => {});
   }, [refreshTrigger]);
 
   const visible = users.filter(u => {
@@ -210,8 +217,10 @@ function AdminStudents({ refreshTrigger, onEditUser }) {
   });
 
   const handleExportCSV = () => {
-    const headers = ['ID', 'Nombre', 'Apellidos', 'Email', 'Cinturon', 'Rol'];
-    const rows = users.map(u => [u.id, u.firstName, u.lastName, u.email, u.belt || '', u.isSuperAdmin ? 'Admin' : 'Alumno']);
+    const headers = ['ID', 'Nombre', 'Apellidos', 'Email', 'Rangos', 'Rol'];
+    const rows = users.map(u => [u.id, u.firstName, u.lastName, u.email,
+      (rangos[u.id] || []).map(r => `${r.actividad}: ${r.levelName}`).join(' / '),
+      u.isSuperAdmin ? 'Admin' : 'Alumno']);
     const csvContent = "data:text/csv;charset=utf-8,\uFEFF"
       + [headers.join(','), ...rows.map(e => e.map(val => `"${val}"`).join(','))].join('\n');
     const encodedUri = encodeURI(csvContent);
@@ -235,11 +244,11 @@ function AdminStudents({ refreshTrigger, onEditUser }) {
       </div>
 
       <div className="data-table">
-        <div className="data-table-head" style={{ gridTemplateColumns: "32px 2.4fr 2fr 1fr 1fr 100px" }}>
+        <div className="data-table-head" style={{ gridTemplateColumns: "32px 2.2fr 2fr 1.4fr .8fr 100px" }}>
           <span></span>
           <span>Nombre</span>
           <span>Email</span>
-          <span>Cinturón</span>
+          <span>Rangos</span>
           <span>Rol</span>
           <span></span>
         </div>
@@ -247,7 +256,7 @@ function AdminStudents({ refreshTrigger, onEditUser }) {
           <div style={{ padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>Cargando...</div>
         )}
         {!loading && visible.map(u => (
-          <div key={u.id} className="data-table-row" style={{ gridTemplateColumns: "32px 2.4fr 2fr 1fr 1fr 100px" }}>
+          <div key={u.id} className="data-table-row" style={{ gridTemplateColumns: "32px 2.2fr 2fr 1.4fr .8fr 100px" }}>
             <input type="checkbox" style={{ accentColor: "var(--purple)" }} />
             <div className="cell-user">
               <div className="avatar" style={{ background: "var(--grad-aim)" }}>
@@ -259,7 +268,16 @@ function AdminStudents({ refreshTrigger, onEditUser }) {
               </div>
             </div>
             <div className="sec">{u.email}</div>
-            <div>{u.belt || <span style={{ color: "var(--ink-3)" }}>—</span>}</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+              {(rangos[u.id] || []).map((r, i) => (
+                <span key={i} title={r.actividad} style={{
+                  fontSize: 10, fontWeight: 800, padding: "2px 8px", borderRadius: 999,
+                  background: r.color, color: r.textColor || "#1a1a1a",
+                  border: "1px solid rgba(0,0,0,.18)", whiteSpace: "nowrap",
+                }}>{r.levelName}</span>
+              ))}
+              {!(rangos[u.id] || []).length && <span style={{ color: "var(--ink-3)" }}>—</span>}
+            </div>
             <div>
               <span className={`status-pill ${u.isSuperAdmin ? "ok" : "upcoming"}`}>
                 {u.isSuperAdmin ? "Admin" : "Alumno"}
@@ -4077,11 +4095,15 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
     const url = isEdit ? `/api/users/${editingItem.id}` : '/api/users';
     const method = isEdit ? 'PUT' : 'POST';
 
+    // El cinturón ya no se manda desde aquí: los rangos se guardan solos al
+    // elegirlos, y reenviar el que estaba cargado pisaría el recién puesto.
+    const { belt, belt_level, beltLevel, ...datos } = editingItem;
+
     try {
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editingItem),
+        body: JSON.stringify(datos),
         credentials: 'include'
       });
       if (res.ok) {
@@ -4286,7 +4308,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                   className="btn btn-primary"
                   onClick={() => {
                     if (view === 'students') {
-                      setEditingItem({ firstName: '', lastName: '', email: '', belt: '', isSuperAdmin: false });
+                      setEditingItem({ firstName: '', lastName: '', email: '', isSuperAdmin: false });
                       setActiveModal('new-student');
                     } else if (view === 'news') {
                       setEditingItem({ title: '', slug: '', excerpt: '', content: '', coverImageUrl: '', category: 'general', status: 'draft' });
@@ -4362,8 +4384,9 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         }}>
           <form onSubmit={handleUserSubmit} style={{
             backgroundColor: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 24,
-            width: '100%', maxWidth: 500, padding: 32, display: 'grid', gap: 16
-          }}>
+            width: '100%', maxWidth: 560, padding: 32, display: 'grid', gap: 16,
+            maxHeight: '90vh', overflowY: 'auto'
+          }} className="scroll-oculto">
             <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: 'var(--ink)' }}>
               {activeModal === 'edit-student' ? 'Editar Alumno' : 'Registrar Nuevo Alumno'}
             </h3>
@@ -4383,10 +4406,11 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
               <input type="email" value={editingItem.email || ''} onChange={e => setEditingItem({ ...editingItem, email: e.target.value })} required />
             </div>
 
-            <div className="field">
-              <label>Cinturón (Si aplica)</label>
-              <input value={editingItem.belt || ''} onChange={e => setEditingItem({ ...editingItem, belt: e.target.value })} placeholder="Ej. Blanco / Amarillo / N/A" />
-            </div>
+            {activeModal === 'edit-student' && editingItem.id && (
+              <div style={{ borderTop: '1px solid var(--line)', paddingTop: 16 }}>
+                <FichaAlumnoClases studentId={editingItem.id} nombre={`${editingItem.firstName || ''} ${editingItem.lastName || ''}`.trim()} showToast={showToast} />
+              </div>
+            )}
 
             <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer', fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>
               <input type="checkbox" checked={!!editingItem.isSuperAdmin} onChange={e => setEditingItem({ ...editingItem, isSuperAdmin: e.target.checked })} style={{ width: 18, height: 18 }} />
