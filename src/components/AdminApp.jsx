@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { I } from './Icons.jsx';
-import { ListaClases, AdminReportes } from './AdminTulClases.jsx';
+import { ListaClases, AdminReportes, colorOcupacion } from './AdminTulClases.jsx';
 import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong, campDayParts } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 import { AdminSupport } from './AdminSupport.jsx';
@@ -572,7 +572,15 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
             <p style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Horario:</strong> {selectedSlot.time || formatTime(selectedSlot.s, selectedSlot.h)}</p>
             <p style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Sala:</strong> {selectedSlot.room}</p>
             <p style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Profesor/a:</strong> {selectedSlot.monitor || '—'}</p>
-            <p style={{ margin: '0 0 16px', fontSize: 14, color: 'var(--ink-2)' }}><strong>Alumnos:</strong> {selectedSlot.students}</p>
+            <p style={{ margin: '0 0 16px', fontSize: 14, color: 'var(--ink-2)' }}>
+              <strong>Alumnos:</strong>{' '}
+              {(() => {
+                const [n, tope] = String(selectedSlot.students || '').split('/');
+                const max = tope === '∞' ? null : Number(tope);
+                return <b style={{ color: colorOcupacion(Number(n), max), fontSize: 15 }}>{selectedSlot.students}</b>;
+              })()}
+              {selectedSlot.lleno && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 800, color: '#E5484D' }}>COMPLETA</span>}
+            </p>
 
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
               <button className="btn btn-outline btn-sm" onClick={() => setSelectedSlot(null)}>Cerrar</button>

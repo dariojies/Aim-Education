@@ -427,7 +427,7 @@ export function crearRouterTulClases({ pool, clubId }) {
             const js = new Date(fecha + 'T12:00:00').getDay();
             const diaSemana = (js + 6) % 7;
             const r = await pool.query(
-                `SELECT g.group_id AS id, g.name, g.sessions, a.name AS "activityName",
+                `SELECT g.group_id AS id, g.name, g.sessions, g.max_students AS "maxStudents", a.name AS "activityName",
                         (SELECT COUNT(*) FROM tul_group_students gs WHERE gs.group_id = g.group_id)::int AS "studentCount"
                  FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
                  WHERE a.club_id = $1 ORDER BY a.name, g.name`, [clubId]
@@ -445,7 +445,8 @@ export function crearRouterTulClases({ pool, clubId }) {
                     .filter(s => (s?.days || []).map(Number).includes(diaSemana));
                 if (!ses.length) continue;
                 clases.push({
-                    id: g.id, name: g.name, activityName: g.activityName, studentCount: g.studentCount,
+                    id: g.id, name: g.name, activityName: g.activityName,
+                    studentCount: g.studentCount, maxStudents: g.maxStudents,
                     horario: ses.map(s => `${s.startTime || ''}${s.endTime ? `–${s.endTime}` : ''}${s.aulaName ? ` · ${s.aulaName}` : ''}`).join(' | '),
                     instructor: ses.map(s => s.instructorName).filter(Boolean)[0] || null,
                     hora: ses[0]?.startTime || '',

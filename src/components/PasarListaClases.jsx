@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { I } from './Icons.jsx';
 import { fmtFechaLarga, fmtFecha } from '../fechas.js';
+import { colorOcupacion } from './AdminTulClases.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pasar lista de las clases del día.
@@ -146,7 +147,10 @@ export default function PasarListaClases({ showToast }) {
                 <div style={{ fontWeight: 800, fontSize: 14 }}>{c.name}</div>
                 <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{c.activityName} · {c.horario}</div>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 }}>
-                  <span style={{ fontSize: 12, color: 'var(--ink-2)' }}>{c.studentCount} alumno{c.studentCount !== 1 ? 's' : ''}</span>
+                  <span style={{ fontSize: 13, fontWeight: 800, color: colorOcupacion(c.studentCount, c.maxStudents) }}>
+                    {c.studentCount}{c.maxStudents ? `/${c.maxStudents}` : ''}
+                  </span>
+                  <span style={{ fontSize: 12, color: 'var(--ink-2)' }}>alumno{c.studentCount !== 1 ? 's' : ''}</span>
                   {c.marcados > 0 && (
                     <span style={{ fontSize: 11, fontWeight: 800, color: c.marcados >= c.studentCount ? 'var(--teal)' : 'var(--ink-3)' }}>
                       {c.marcados >= c.studentCount ? '✓ lista pasada' : `${c.marcados}/${c.studentCount} marcados`}

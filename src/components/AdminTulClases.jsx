@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { I } from './Icons.jsx';
 import { fmtMesAno } from '../fechas.js';
 
@@ -52,6 +52,29 @@ const inputCss = { fontFamily: 'inherit', fontSize: 14, padding: '10px 12px', bo
 const modalFondo = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 2100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 };
 const modalCaja = { background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxHeight: '90vh', overflowY: 'auto', padding: 24 };
 
+// Semáforo de ocupación de una clase: rojo si está completa, amarillo si le
+// quedan menos de 3 huecos y verde si va holgada. Lo usan todas las pantallas
+// donde se ve cuánta gente hay en una clase, para que el color signifique lo
+// mismo en todas.
+export function colorOcupacion(alumnos, tope) {
+  if (tope == null || tope <= 0) return 'var(--ink-2)';   // sin límite, no hay semáforo
+  const libres = tope - alumnos;
+  if (libres <= 0) return '#E5484D';                       // completa
+  if (libres < 3) return '#B7791F';                        // quedan 1 o 2
+  return 'var(--teal)';
+}
+
+// Etiqueta de estado de una clase (completa, quedan pocas, en espera).
+function Etiqueta({ color, children }) {
+  return (
+    <span style={{
+      fontSize: 10, fontWeight: 800, letterSpacing: '.04em', padding: '2px 8px', borderRadius: 999,
+      color, background: `color-mix(in oklab, ${color} 14%, var(--bg-2))`,
+      border: `1px solid color-mix(in oklab, ${color} 35%, transparent)`,
+    }}>{children}</span>
+  );
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // LISTA DE CLASES: actividades → grupos → alumnos
 // ═════════════════════════════════════════════════════════════════════════════
@@ -63,6 +86,7 @@ export function ListaClases({ showToast }) {
   const [cargando, setCargando] = useState(true);
   const [actividad, setActividad] = useState(null);   // actividad abierta (nivel 2)
   const [grupoAlumnos, setGrupoAlumnos] = useState(null); // grupo abierto (nivel 3)
+  const [espera, setEspera] = useState([]);   // lista de espera de todo el club
 
   const [editAct, setEditAct] = useState(null);   // { id?, name, icon, activityType }
   const [editGrupo, setEditGrupo] = useState(null); // { id?, name, maxStudents, minAge, maxAge, sessions[] }
@@ -71,13 +95,14 @@ export function ListaClases({ showToast }) {
   const cargar = useCallback(async () => {
     setCargando(true);
     try {
-      const [a, g, au, ins] = await Promise.all([
-        api('/activities'), api('/groups'), api('/aulas'), api('/instructors'),
+      const [a, g, au, ins, e] = await Promise.all([
+        api('/activities'), api('/groups'), api('/aulas'), api('/instructors'), api('/espera'),
       ]);
       setActividades(a.activities || []);
       setGrupos(g.groups || []);
       setAulas(au.aulas || []);
       setInstructores(ins.instructors || []);
+      setEspera(e.filas || []);
     } catch (e) { alert(e.message); }
     finally { setCargando(false); }
   }, []);
@@ -146,21 +171,43 @@ export function ListaClases({ showToast }) {
         </div>
         {!propios.length && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Esta actividad aún no tiene grupos.</p>}
         <div style={{ display: 'grid', gap: 10 }}>
-          {propios.map(g => (
-            <div key={g.id} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '14px 16px', display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          {propios.map(g => {
+            const enEspera = espera.filter(e => e.groupId === g.id).length;
+            const lleno = g.maxStudents != null && g.studentCount >= g.maxStudents;
+            const libres = g.maxStudents != null ? g.maxStudents - g.studentCount : null;
+            return (
+            <div key={g.id} style={{
+              background: 'var(--bg-2)', borderRadius: 14, padding: '14px 16px', display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap',
+              border: '1px solid var(--line)',
+              borderLeft: `5px solid ${colorOcupacion(g.studentCount, g.maxStudents)}`,
+            }}>
               <div style={{ flex: 1, minWidth: 220 }}>
-                <div style={{ fontWeight: 800, fontSize: 15 }}>{g.name}</div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span style={{ fontWeight: 800, fontSize: 15 }}>{g.name}</span>
+                  {lleno && <Etiqueta color="#E5484D">COMPLETA</Etiqueta>}
+                  {enEspera > 0 && <Etiqueta color="var(--purple)">{enEspera} en espera</Etiqueta>}
+                </div>
                 <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>{resumenSesiones(g)}</div>
-                <div style={{ fontSize: 12, color: 'var(--ink-2)', marginTop: 2 }}>
-                  {g.studentCount}{g.maxStudents ? `/${g.maxStudents}` : ''} alumnos
-                  {(g.minAge || g.maxAge) ? ` · ${g.minAge ?? '¿'}–${g.maxAge ?? '?'} años` : ''}
+                <div style={{ fontSize: 12, color: 'var(--ink-2)', marginTop: 4, display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span style={{ fontWeight: 800, fontSize: 15, color: colorOcupacion(g.studentCount, g.maxStudents) }}>
+                    {g.studentCount}{g.maxStudents ? `/${g.maxStudents}` : ''}
+                  </span>
+                  <span>alumnos</span>
+                  {(g.minAge || g.maxAge) ? <span>· {g.minAge ?? '¿'}–{g.maxAge ?? '?'} años</span> : null}
                 </div>
               </div>
+              {lleno && (
+                <button className="btn btn-sm" style={{ background: 'var(--purple)', color: 'white' }}
+                  onClick={() => setGrupoAlumnos({ ...g, actividadNombre: actividad.name, abrirEspera: true })}>
+                  + Lista de espera
+                </button>
+              )}
               <button className="btn btn-sm btn-outline" onClick={() => setGrupoAlumnos({ ...g, actividadNombre: actividad.name })}><I.Users /> Alumnos</button>
               <button className="icon-btn" title="Editar" onClick={() => setEditGrupo({ id: g.id, name: g.name, maxStudents: g.maxStudents ?? '', minAge: g.minAge ?? '', maxAge: g.maxAge ?? '', sessions: Array.isArray(g.sessions) ? g.sessions.map(s => ({ ...s })) : [] })}><I.Edit /></button>
               <button className="icon-btn danger" title="Eliminar" onClick={() => borrarGrupo(g)}><I.Trash /></button>
             </div>
-          ))}
+          );
+          })}
         </div>
 
         {editGrupo && (
@@ -329,6 +376,10 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
   const [espera, setEspera] = useState([]);
   const [grupos, setGrupos] = useState([]);
   const [provisional, setProvisional] = useState('');   // clase alternativa al apuntar
+  const buscador = useRef(null);
+
+  // Si se ha entrado desde "+ Lista de espera", el cursor ya está en el buscador.
+  useEffect(() => { if (grupo.abrirEspera) buscador.current?.focus(); }, [grupo.abrirEspera]);
 
   const cargarEspera = useCallback(async () => {
     try {
@@ -419,7 +470,7 @@ Se le dará de baja de ${e.provisionalNombre}.` : ''}`)) return;
       </div>
 
       <div style={{ position: 'relative', maxWidth: 420 }}>
-        <input value={q} onChange={e => setQ(e.target.value)}
+        <input ref={buscador} value={q} onChange={e => setQ(e.target.value)}
           placeholder={lleno ? 'La clase está llena: buscar alumno para la lista de espera...' : 'Buscar alumno del club para matricular...'}
           style={{ ...inputCss, width: '100%' }} />
         {sug.length > 0 && (

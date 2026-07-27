@@ -1210,6 +1210,8 @@ function buildSlotsFromGroups(rows) {
                     room: sess.aulaName || '',
                     monitor: sess.instructorName || '',
                     students: `${g.student_count}/${g.max_students ?? '∞'}`,
+                    // Para pintar en el calendario las que ya no admiten a nadie.
+                    lleno: g.max_students != null && Number(g.student_count) >= Number(g.max_students),
                     time: `${sess.startTime || ''}–${sess.endTime || ''}`,
                     actColor: ACT_COLORS[aimId],
                     actName: g.activity_name,
