@@ -247,7 +247,7 @@ export function crearRouterTulClases({ pool, clubId }) {
         try {
             const result = await pool.query(
                 `SELECT u.user_id as id, CONCAT(u.name, ' ', COALESCE(u.surname, '')) as name, u.email,
-                        up.level_order AS "levelOrder", up.level_name AS "levelName"
+                        u.birthday, up.level_order AS "levelOrder", up.level_name AS "levelName"
                  FROM users u
                  LEFT JOIN tul_user_progression up
                         ON up.user_id = u.user_id AND up.activity_id = $3::uuid

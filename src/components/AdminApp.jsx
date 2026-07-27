@@ -759,7 +759,7 @@ function AdminGastos({ refreshTrigger, showToast }) {
   return (
     <>
       <div style={{ display: 'flex', gap: 10, marginBottom: 20, borderBottom: '1px solid var(--line-2)', paddingBottom: 14, flexWrap: 'wrap' }}>
-        {[['gastos', `Gastos (${gastos.length})`], ['informe', '📊 Beneficio por actividad']].map(([id, label]) => (
+        {[['gastos', `Gastos (${gastos.length})`], ['informe', 'Beneficio por actividad']].map(([id, label]) => (
           <button key={id} className={`filter-pill ${tab === id ? 'is-active' : ''}`} onClick={() => setTab(id)} style={{ borderRadius: 8, padding: '8px 16px' }}>{label}</button>
         ))}
       </div>
@@ -2695,7 +2695,7 @@ function AdminBilling({ showToast }) {
   return (
     <>
       <div style={{ display: 'flex', gap: 10, marginBottom: 22, borderBottom: '1px solid var(--line-2)', paddingBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-        {[['cobrar', '💳 Cobrar (TPV)'], ['recibos', 'Recibos'], ['arqueo', '🧾 Arqueo de caja'], ['catalogo', `Catálogo (${precios.length})`], ['clases', `Clases (${clasesMerged.length})`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra (${conceptos.length})`], ['fichas', `Fichas (${matriculas.length})`], ['generar', 'Generar cargos'], ['ajustes', '⚙️ Numeración']].map(([id, label]) => (
+        {[['cobrar', 'Cobrar (TPV)'], ['recibos', 'Recibos'], ['arqueo', 'Arqueo de caja'], ['catalogo', `Catálogo (${precios.length})`], ['clases', `Clases (${clasesMerged.length})`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra (${conceptos.length})`], ['fichas', `Fichas (${matriculas.length})`], ['generar', 'Generar cargos'], ['ajustes', 'Numeración']].map(([id, label]) => (
           <button key={id} className={`filter-pill ${tab === id ? 'is-active' : ''}`} onClick={() => setTab(id)} style={{ borderRadius: 8, padding: '8px 16px' }}>{label}</button>
         ))}
         <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: activa ? 'var(--teal)' : 'var(--orange)' }}>

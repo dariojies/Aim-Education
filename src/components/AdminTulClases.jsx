@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { I } from './Icons.jsx';
-import { Insignia } from './FichaAlumnoClases.jsx';
+import { Insignia, AcordeonClases, ChipEdad, edadDe } from './FichaAlumnoClases.jsx';
 import { fmtMesAno } from '../fechas.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -15,14 +15,37 @@ import { fmtMesAno } from '../fechas.js';
 const DIAS = ['L', 'M', 'X', 'J', 'V', 'S', 'D']; // índice 0 = lunes, como aim-tul
 
 // Los iconos se guardan con los nombres de MaterialCommunityIcons que usa
-// aim-tul (así su app los pinta bien); aquí los mostramos con un emoji.
+// aim-tul (así su app los pinta bien); aquí cada uno tiene su equivalente
+// dibujado. Nada de emojis: los pinta el sistema operativo y cada equipo los
+// enseña distinto, así que rompen el aspecto del panel.
 const ICONOS = [
-  ['karate', '🥋'], ['shoe-ballet', '🩰'], ['yoga', '🧘'], ['run', '🏃'], ['soccer', '⚽'],
-  ['basketball', '🏀'], ['tennis', '🎾'], ['swim', '🏊'], ['bike', '🚴'], ['boxing-glove', '🥊'],
-  ['palette', '🎨'], ['music', '🎵'], ['robot', '🤖'], ['translate', '🗣️'], ['weight-lifter', '🏋️'],
-  ['dumbbell', '💪'], ['human-handsup', '🙌'], ['meditation', '🧘‍♀️'], ['sword-cross', '⚔️'], ['shield-half-full', '🛡️'],
+  ['karate', 'Karate', 'Taekwondo / artes marciales'],
+  ['shoe-ballet', 'Slipper', 'Ballet'],
+  ['yoga', 'HandsUp', 'Baile'],
+  ['run', 'Run', 'Correr'],
+  ['soccer', 'Ball', 'Fútbol'],
+  ['basketball', 'Basketball', 'Baloncesto'],
+  ['tennis', 'Tennis', 'Tenis'],
+  ['swim', 'Swim', 'Natación'],
+  ['bike', 'Bike', 'Ciclismo'],
+  ['boxing-glove', 'Glove', 'Boxeo / kick boxing'],
+  ['palette', 'Brush', 'Pintura'],
+  ['music', 'Music', 'Música'],
+  ['robot', 'Robot', 'Robótica / STEM'],
+  ['translate', 'Globe', 'Idiomas'],
+  ['weight-lifter', 'Dumbbell', 'Musculación'],
+  ['dumbbell', 'Dumbbell', 'Pesas'],
+  ['human-handsup', 'HandsUp', 'Gimnasia'],
+  ['meditation', 'Meditation', 'Pilates / yoga'],
+  ['sword-cross', 'Swords', 'Esgrima'],
+  ['shield-half-full', 'Shield', 'Defensa personal'],
 ];
-export const emojiDe = (icon) => (ICONOS.find(([n]) => n === icon) || [null, '🏃'])[1];
+
+export function IconoActividad({ icon, size = 20, ...resto }) {
+  const nombre = (ICONOS.find(([n]) => n === icon) || [null, 'Run'])[1];
+  const Dibujo = I[nombre] || I.Run;
+  return <Dibujo width={size} height={size} {...resto} />;
+}
 
 const TIPOS_ACTIVIDAD = [
   ['general', 'General'], ['taekwondo_itf', 'Taekwondo ITF'], ['ingles', 'Inglés'], ['ballet', 'Ballet'],
@@ -164,7 +187,7 @@ export function ListaClases({ showToast }) {
       <div style={{ display: 'grid', gap: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <button className="btn btn-sm btn-outline" onClick={() => setActividad(null)}>← Actividades</button>
-          <span style={{ fontSize: 22 }}>{emojiDe(actividad.icon)}</span>
+          <IconoActividad icon={actividad.icon} size={22} style={{ color: 'var(--purple)' }} />
           <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>{actividad.name}</h3>
           <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{propios.length} grupo{propios.length !== 1 ? 's' : ''}</span>
           <div style={{ flex: 1 }} />
@@ -315,7 +338,7 @@ export function ListaClases({ showToast }) {
               style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '14px 16px', cursor: 'pointer', display: 'flex', gap: 12, alignItems: 'center' }}
               onMouseEnter={e => e.currentTarget.style.boxShadow = 'var(--shadow-sm)'}
               onMouseLeave={e => e.currentTarget.style.boxShadow = 'none'}>
-              <span style={{ fontSize: 28 }}>{emojiDe(a.icon)}</span>
+              <IconoActividad icon={a.icon} size={26} style={{ color: 'var(--purple)', flexShrink: 0 }} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 800, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</div>
                 <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
@@ -341,10 +364,12 @@ export function ListaClases({ showToast }) {
                 <input value={editAct.name} onChange={e => setEditAct(x => ({ ...x, name: e.target.value }))} placeholder="Ej. Robótica" autoFocus /></div>
               <div className="field"><label>Icono</label>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  {ICONOS.map(([nombre, emoji]) => (
+                  {ICONOS.map(([nombre, , titulo]) => (
                     <button key={nombre} type="button" onClick={() => setEditAct(x => ({ ...x, icon: nombre }))}
-                      title={nombre}
-                      style={{ width: 40, height: 40, fontSize: 20, borderRadius: 10, cursor: 'pointer', border: `2px solid ${editAct.icon === nombre ? 'var(--purple)' : 'var(--line)'}`, background: editAct.icon === nombre ? 'color-mix(in oklab, var(--purple) 12%, var(--bg-2))' : 'var(--bg-2)' }}>{emoji}</button>
+                      title={titulo}
+                      style={{ width: 40, height: 40, display: 'grid', placeItems: 'center', borderRadius: 10, cursor: 'pointer', color: editAct.icon === nombre ? 'var(--purple)' : 'var(--ink-2)', border: `2px solid ${editAct.icon === nombre ? 'var(--purple)' : 'var(--line)'}`, background: editAct.icon === nombre ? 'color-mix(in oklab, var(--purple) 12%, var(--bg-2))' : 'var(--bg-2)' }}>
+                      <IconoActividad icon={nombre} size={20} />
+                    </button>
                   ))}
                 </div>
               </div>
@@ -382,6 +407,8 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
   const [espera, setEspera] = useState([]);
   const [grupos, setGrupos] = useState([]);
   const [alta, setAlta] = useState(null);      // alumno elegido, pendiente de confirmar
+  const [escalasClub, setEscalasClub] = useState([]);
+  const [eligiendoProvisional, setEligiendoProvisional] = useState(false);
   const [guardando, setGuardando] = useState(false);
   const buscador = useRef(null);
 
@@ -394,7 +421,13 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
       setEspera((d.filas || []).filter(f => f.groupId === grupo.id));
     } catch { /* noop */ }
   }, [grupo.id]);
-  useEffect(() => { cargarEspera(); api('/groups').then(d => setGrupos(d.groups || [])).catch(() => {}); }, [cargarEspera]);
+  useEffect(() => {
+    cargarEspera();
+    api('/groups').then(d => setGrupos(d.groups || [])).catch(() => {});
+    api('/escalas').then(d => setEscalasClub(d.actividades || [])).catch(() => {});
+  }, [cargarEspera]);
+
+  const actPorId = useMemo(() => Object.fromEntries(escalasClub.map(a => [a.id, a])), [escalasClub]);
 
   const cargar = useCallback(async () => {
     setCargando(true);
@@ -439,9 +472,10 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
     setAlta({
       ...s,
       levelOrder: s.levelOrder != null ? String(s.levelOrder) : '',
-      provisional: '',
+      provisional: null,
       nota: '',
     });
+    setEligiendoProvisional(false);
     setQ(''); setSug([]);
   }
 
@@ -453,7 +487,7 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
       if (lleno) {
         await api(`/groups/${grupo.id}/espera`, {
           method: 'POST',
-          body: { studentId: alta.id, grupoProvisionalId: alta.provisional || null, nota: alta.nota || null, levelOrder: nivel },
+          body: { studentId: alta.id, grupoProvisionalId: alta.provisional?.id || null, nota: alta.nota || null, levelOrder: nivel },
         });
         showToast?.(`${alta.name} apuntado a la lista de espera.`);
       } else {
@@ -559,6 +593,7 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontWeight: 800, fontSize: 14 }}>{alta.name}</span>
               <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{alta.email}</span>
+              <ChipEdad edad={edadDe(alta.birthday)} />
             </div>
 
             {escala.length > 0 && (
@@ -574,16 +609,27 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
 
             {lleno && (
               <>
-                <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-2)' }}>
-                  Mientras espera, puede ir a
-                  <select value={alta.provisional} onChange={e => setAlta({ ...alta, provisional: e.target.value })}
-                    style={{ ...inputCss, fontSize: 13, maxWidth: 420 }}>
-                    <option value="">Ninguna clase de momento</option>
-                    {grupos.filter(g => g.id !== grupo.id && (g.maxStudents == null || g.studentCount < g.maxStudents))
-                      .map(g => <option key={g.id} value={g.id}>{g.name} ({g.studentCount}{g.maxStudents ? `/${g.maxStudents}` : ''})</option>)}
-                  </select>
-                  <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Se le matricula en ella y se le da de baja al entrar aquí.</span>
-                </label>
+                <div style={{ fontSize: 12, color: 'var(--ink-2)' }}>
+                  Mientras espera, puede ir a: <b>{alta.provisional ? alta.provisional.name : 'ninguna clase de momento'}</b>
+                  <button type="button" className="btn btn-sm btn-outline" style={{ marginLeft: 8 }}
+                    onClick={() => setEligiendoProvisional(v => !v)}>
+                    {eligiendoProvisional ? 'Cerrar' : alta.provisional ? 'Cambiar' : 'Elegir'}
+                  </button>
+                  {alta.provisional && (
+                    <button type="button" className="btn btn-sm btn-outline" style={{ marginLeft: 6 }}
+                      onClick={() => setAlta({ ...alta, provisional: null })}>Quitar</button>
+                  )}
+                  <span style={{ display: 'block', fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
+                    Se le matricula en ella y se le da de baja al entrar aquí.
+                  </span>
+                </div>
+
+                {eligiendoProvisional && (
+                  <AcordeonClases grupos={grupos.filter(g => g.id !== grupo.id)} actPorId={actPorId}
+                    yaApuntado={new Set()} edad={edadDe(alta.birthday)} sel={alta.provisional} alto={240} ocultarLlenas
+                    onSel={g => { setAlta({ ...alta, provisional: g }); setEligiendoProvisional(false); }} />
+                )}
+
                 <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-2)' }}>
                   Nota (opcional)
                   <input value={alta.nota} onChange={e => setAlta({ ...alta, nota: e.target.value })}
@@ -1017,7 +1063,7 @@ export function AdminReportes() {
               <div style={{ display: 'grid', gap: 4 }}>
                 {gami.topStudents.map((s, i) => (
                   <div key={s.userId} style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between', padding: '4px 8px', background: 'var(--bg-3)', borderRadius: 8 }}>
-                    <span style={{ fontWeight: 700 }}>{['🥇', '🥈', '🥉', '4º', '5º'][i]} {s.studentName}</span>
+                    <span style={{ fontWeight: 700 }}>{i + 1}º {s.studentName}</span>
                     <span style={{ color: 'var(--ink-3)' }}>Nv. {s.level} · {s.rpgClass}</span>
                   </div>
                 ))}
