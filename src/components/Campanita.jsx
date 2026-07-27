@@ -12,12 +12,14 @@ const COLOR = {
   cobros: 'var(--teal)',
   caja: 'var(--orange)',
   campamento: '#00BBF4',
+  clases: '#FF99D3',
 };
 const TITULO = {
   tickets: 'Soporte',
   cobros: 'Cobros',
   caja: 'Caja',
   campamento: 'Campamento',
+  clases: 'Clases',
 };
 
 export default function Campanita({ onIr }) {

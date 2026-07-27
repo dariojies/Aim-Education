@@ -170,6 +170,29 @@ async function initDb() {
             )
         `);
 
+        // Lista de espera de las clases llenas. El orden lo da created_at: quien
+        // antes se apunta, antes entra. Mientras espera puede estar matriculado
+        // en otra hora (grupo_provisional_id), de la que se le da de baja al
+        // pasarlo a la clase que quería.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_lista_espera (
+                id SERIAL PRIMARY KEY,
+                group_id UUID NOT NULL REFERENCES tul_groups(group_id) ON DELETE CASCADE,
+                student_id UUID NOT NULL,
+                grupo_provisional_id UUID REFERENCES tul_groups(group_id) ON DELETE SET NULL,
+                nota TEXT,
+                estado VARCHAR(12) NOT NULL DEFAULT 'esperando',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                resuelto_at TIMESTAMPTZ,
+                resuelto_por UUID,
+                apuntado_por UUID
+            )
+        `);
+        // Un alumno no puede estar dos veces esperando el mismo grupo.
+        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_espera_activa
+            ON aim_lista_espera(group_id, student_id) WHERE estado = 'esperando'`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_espera_grupo ON aim_lista_espera(group_id, created_at)`);
+
         // Tickets vinculados: los que comparten vinculo_id son el mismo asunto
         // visto desde varios sitios, y se ven juntos al abrir cualquiera de ellos.
         await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS vinculo_id UUID`);
@@ -1249,7 +1272,31 @@ app.get('/api/me/groups', authenticateSession, async (req, res) => {
             time: g.sessions,
             studentCount: Number(g.student_count),
         }));
-        res.json({ groups, slots: buildSlotsFromGroups(result.rows) });
+        // Clases en las que está en lista de espera, con su puesto: es lo que
+        // pregunta la familia, «en qué número voy».
+        const esp = await pool.query(
+            `SELECT e.group_id, g.name AS grupo, a.name AS actividad, e.created_at,
+                    gp.name AS provisional,
+                    (SELECT COUNT(*)::int FROM aim_lista_espera e2
+                      WHERE e2.group_id = e.group_id AND e2.estado = 'esperando'
+                        AND e2.created_at <= e.created_at) AS puesto,
+                    (SELECT COUNT(*)::int FROM aim_lista_espera e3
+                      WHERE e3.group_id = e.group_id AND e3.estado = 'esperando') AS total
+             FROM aim_lista_espera e
+             JOIN tul_groups g ON g.group_id = e.group_id
+             JOIN tul_activities a ON a.activity_id = g.activity_id
+             LEFT JOIN tul_groups gp ON gp.group_id = e.grupo_provisional_id
+             WHERE e.student_id = $1 AND e.estado = 'esperando' AND a.club_id = $2
+             ORDER BY e.created_at`, [userId, AIM_CLUB_ID]
+        );
+        res.json({
+            groups,
+            slots: buildSlotsFromGroups(result.rows),
+            espera: esp.rows.map(e => ({
+                grupo: e.grupo, actividad: e.actividad, puesto: e.puesto, total: e.total,
+                provisional: e.provisional, desde: e.created_at,
+            })),
+        });
     } catch (err) {
         console.error('Error fetching my groups:', err);
         res.status(500).json({ error: err.message });
@@ -4864,7 +4911,7 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
     const yo = req.userSession.userId;
     try {
         const avisos = [];
-        const [tickets, mensajes, cobros, cajas, camp] = await Promise.all([
+        const [tickets, mensajes, cobros, cajas, camp, espera] = await Promise.all([
             pool.query(
                 `SELECT COUNT(*) FILTER (WHERE assigned_to IS NULL)::int AS sin_asignar,
                         COUNT(*) FILTER (WHERE assigned_to = $1)::int AS mios,
@@ -4893,6 +4940,18 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
             pool.query(
                 `SELECT COUNT(*) FILTER (WHERE alumno_id IS NULL)::int sin_ficha,
                         COUNT(*)::int total FROM aim_camp_children`),
+            // Clases con gente esperando en las que ya hay hueco.
+            pool.query(
+                `SELECT COUNT(*)::int n FROM (
+                   SELECT e.group_id
+                   FROM aim_lista_espera e
+                   JOIN tul_groups g ON g.group_id = e.group_id
+                   JOIN tul_activities a ON a.activity_id = g.activity_id
+                   WHERE e.estado = 'esperando' AND a.club_id = $1 AND g.max_students IS NOT NULL
+                   GROUP BY e.group_id, g.max_students
+                   HAVING g.max_students - (
+                     SELECT COUNT(*) FROM tul_group_students gs WHERE gs.group_id = e.group_id) > 0
+                 ) t`, [AIM_CLUB_ID]),
         ]);
 
         const t = tickets.rows[0];
@@ -4909,6 +4968,9 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
 
         const cp = camp.rows[0];
         if (cp.sin_ficha) avisos.push({ tipo: 'campamento', texto: `${cp.sin_ficha} niño${cp.sin_ficha !== 1 ? 's' : ''} del campamento sin ficha`, detalle: 'sin ficha no se les puede cobrar', destino: '/admin/campamento', n: cp.sin_ficha });
+
+        const esp = espera.rows[0];
+        if (esp.n) avisos.push({ tipo: 'clases', texto: `${esp.n} clase${esp.n !== 1 ? 's' : ''} con plaza libre y gente esperando`, detalle: 'se puede dar la plaza al primero de la lista', destino: '/admin/clases', n: esp.n });
 
         // Aviso privado: lo que se asigna a la cuenta de soporte lo acaba
         // atendiendo el desarrollo, así que solo a esa persona se le avisa. Se

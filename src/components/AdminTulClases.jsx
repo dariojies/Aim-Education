@@ -326,6 +326,45 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
   const [cargando, setCargando] = useState(true);
   const [q, setQ] = useState('');
   const [sug, setSug] = useState([]);
+  const [espera, setEspera] = useState([]);
+  const [grupos, setGrupos] = useState([]);
+  const [provisional, setProvisional] = useState('');   // clase alternativa al apuntar
+
+  const cargarEspera = useCallback(async () => {
+    try {
+      const d = await api('/espera');
+      setEspera((d.filas || []).filter(f => f.groupId === grupo.id));
+    } catch { /* noop */ }
+  }, [grupo.id]);
+  useEffect(() => { cargarEspera(); api('/groups').then(d => setGrupos(d.groups || [])).catch(() => {}); }, [cargarEspera]);
+
+  const lleno = grupo.maxStudents != null && alumnos.length >= grupo.maxStudents;
+  const plazasLibres = grupo.maxStudents != null ? Math.max(0, grupo.maxStudents - alumnos.length) : null;
+
+  async function apuntarEspera(s) {
+    try {
+      await api(`/groups/${grupo.id}/espera`, { method: 'POST', body: { studentId: s.id, grupoProvisionalId: provisional || null } });
+      setQ(''); setSug([]); setProvisional('');
+      await cargarEspera();
+      showToast?.(`${s.name} apuntado a la lista de espera.`);
+    } catch (e) { alert(e.message); }
+  }
+
+  async function darPlaza(e) {
+    if (!window.confirm(`Dar la plaza a ${e.alumno}?${e.provisionalNombre ? `
+Se le dará de baja de ${e.provisionalNombre}.` : ''}`)) return;
+    try {
+      const d = await api(`/espera/${e.id}/asignar`, { method: 'POST' });
+      await cargar(); await cargarEspera();
+      showToast?.(`${e.alumno} matriculado${d.dejoProvisional ? ' y dado de baja de su clase provisional' : ''}.`);
+    } catch (err) { alert(err.message); }
+  }
+
+  async function quitarEspera(e) {
+    if (!window.confirm(`¿Quitar a ${e.alumno} de la lista de espera?`)) return;
+    try { await api(`/espera/${e.id}`, { method: 'DELETE' }); await cargarEspera(); }
+    catch (err) { alert(err.message); }
+  }
 
   const cargar = useCallback(async () => {
     setCargando(true);
@@ -369,18 +408,24 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <button className="btn btn-sm btn-outline" onClick={onVolver}>← {grupo.actividadNombre}</button>
         <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>{grupo.name}</h3>
-        <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
-          {alumnos.length}{grupo.maxStudents ? `/${grupo.maxStudents}` : ''} alumnos
+        <span style={{ fontSize: 12, color: lleno ? 'var(--orange)' : 'var(--ink-3)', fontWeight: lleno ? 800 : 400 }}>
+          {alumnos.length}{grupo.maxStudents ? `/${grupo.maxStudents}` : ''} alumnos{lleno ? ' · COMPLETA' : ''}
         </span>
+        {espera.length > 0 && (
+          <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--purple)' }}>
+            {espera.length} en espera
+          </span>
+        )}
       </div>
 
       <div style={{ position: 'relative', maxWidth: 420 }}>
-        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar alumno del club para matricular..."
+        <input value={q} onChange={e => setQ(e.target.value)}
+          placeholder={lleno ? 'La clase está llena: buscar alumno para la lista de espera...' : 'Buscar alumno del club para matricular...'}
           style={{ ...inputCss, width: '100%' }} />
         {sug.length > 0 && (
           <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 5, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, marginTop: 2, overflow: 'hidden', maxHeight: 240, overflowY: 'auto', boxShadow: 'var(--shadow)' }}>
             {sug.map(s => (
-              <button key={s.id} type="button" onClick={() => matricular(s)}
+              <button key={s.id} type="button" onClick={() => (lleno ? apuntarEspera(s) : matricular(s))}
                 style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', background: 'none', border: 0, borderBottom: '1px solid var(--line-2)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13 }}>
                 <b>{s.name}</b><span style={{ display: 'block', fontSize: 11, color: 'var(--ink-3)' }}>{s.email}</span>
               </button>
@@ -388,6 +433,46 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
           </div>
         )}
       </div>
+
+      {lleno && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12, color: 'var(--ink-2)' }}>
+          <span>Mientras espera, puede ir a:</span>
+          <select value={provisional} onChange={e => setProvisional(e.target.value)} style={{ ...inputCss, fontSize: 12, padding: '6px 10px' }}>
+            <option value="">Ninguna clase de momento</option>
+            {grupos.filter(g => g.id !== grupo.id && (g.maxStudents == null || g.studentCount < g.maxStudents))
+              .map(g => <option key={g.id} value={g.id}>{g.name} ({g.studentCount}{g.maxStudents ? `/${g.maxStudents}` : ''})</option>)}
+          </select>
+          <span style={{ color: 'var(--ink-3)' }}>se le matricula en ella y se le da de baja al entrar aquí</span>
+        </div>
+      )}
+
+      {/* Lista de espera del grupo, por orden de llegada */}
+      {espera.length > 0 && (
+        <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '12px 14px', display: 'grid', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontWeight: 800, fontSize: 14 }}>Lista de espera</span>
+            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>por orden de llegada</span>
+            {plazasLibres > 0 && (
+              <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--teal)' }}>
+                · {plazasLibres} plaza{plazasLibres !== 1 ? 's' : ''} libre{plazasLibres !== 1 ? 's' : ''}
+              </span>
+            )}
+          </div>
+          {espera.map(e => (
+            <div key={e.id} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', fontSize: 13, padding: '6px 8px', background: e.leToca ? 'color-mix(in oklab, var(--teal) 8%, var(--bg-3))' : 'var(--bg-3)', borderRadius: 10 }}>
+              <span style={{ fontWeight: 800, color: 'var(--purple)', minWidth: 24 }}>{e.puesto}º</span>
+              <span style={{ fontWeight: 700, flex: 1, minWidth: 120 }}>{e.alumno}</span>
+              {e.provisionalNombre
+                ? <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>mientras va a <b>{e.provisionalNombre}</b></span>
+                : <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>sin clase alternativa</span>}
+              {e.leToca && (
+                <button className="btn btn-sm btn-primary" onClick={() => darPlaza(e)}>Darle la plaza</button>
+              )}
+              <button className="icon-btn danger" title="Quitar de la lista" onClick={() => quitarEspera(e)}><I.Trash /></button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {cargando && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
       {!cargando && !alumnos.length && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Este grupo no tiene alumnos todavía.</p>}

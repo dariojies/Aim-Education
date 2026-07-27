@@ -151,6 +151,7 @@ function DashClasses() {
   const days = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
   const [groups, setGroups] = useState([]);
   const [slots, setSlots] = useState([]);
+  const [espera, setEspera] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedSlot, setSelectedSlot] = useState(null);
 
@@ -160,10 +161,35 @@ function DashClasses() {
       .then(data => {
         setGroups(data.groups || []);
         setSlots(data.slots || []);
+        setEspera(data.espera || []);
         setLoading(false);
       })
       .catch(() => setLoading(false));
   }, []);
+
+  // Clases llenas en las que se está esperando plaza, con el puesto en la cola.
+  const bloqueEspera = espera.length > 0 && (
+    <div className="panel" style={{marginBottom: 16}}>
+      <h2><I.Clock /> En lista de espera</h2>
+      <p className="sub">Te avisaremos en cuanto quede una plaza libre.</p>
+      <div style={{display: "grid", gap: 10, marginTop: 12}}>
+        {espera.map((e, i) => (
+          <div key={i} style={{background: "var(--bg-3)", border: "1px solid var(--line)", borderLeft: "4px solid var(--purple)", borderRadius: 12, padding: "12px 14px"}}>
+            <div style={{fontWeight: 800, fontSize: 15}}>{e.grupo} <span style={{fontWeight: 400, color: "var(--ink-3)", fontSize: 13}}>· {e.actividad}</span></div>
+            <div style={{display: "flex", gap: 10, flexWrap: "wrap", alignItems: "baseline", marginTop: 4}}>
+              <span style={{fontSize: 22, fontWeight: 800, fontFamily: "var(--font-display)", color: "var(--purple)"}}>{e.puesto}º</span>
+              <span style={{fontSize: 13, color: "var(--ink-2)"}}>de {e.total} en la lista</span>
+            </div>
+            {e.provisional && (
+              <div style={{fontSize: 12, color: "var(--ink-3)", marginTop: 4}}>
+                Mientras tanto vas a <b>{e.provisional}</b>.
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 
   const HOURS = Array.from({length: 14}, (_, i) => 9 + i);
 
@@ -172,16 +198,20 @@ function DashClasses() {
   }
   if (groups.length === 0) {
     return (
+      <>
+      {bloqueEspera}
       <div className="panel">
         <h2><I.Calendar /> Mis clases</h2>
         <p className="sub">Tus grupos y tu horario.</p>
         <EmptyState icon={<I.Calendar />} text="No estás matriculado/a en ninguna clase todavía. Habla con el club para apuntarte y aquí verás tu horario." />
       </div>
+      </>
     );
   }
 
   return (
     <>
+      {bloqueEspera}
       <div className="panel">
         <h2><I.Calendar /> Mis grupos</h2>
         <p className="sub">Las clases en las que estás matriculado/a.</p>

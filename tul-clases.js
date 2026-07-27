@@ -226,52 +226,190 @@ export function crearRouterTulClases({ pool, clubId }) {
                     return res.status(403).json({ error: `Este grupo ya está lleno (${currentCount}/${maxStudents} alumnos).` });
                 }
             }
-            const insertRes = await pool.query(
-                'INSERT INTO tul_group_students (group_id, student_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING *',
-                [req.params.groupId, studentId]
-            );
-            if (insertRes.rowCount > 0) {
-                // El histórico alimenta el reporte de altas/bajas: igual que aim-tul.
-                const infoRes = await pool.query(
-                    `SELECT u.club_id, TRIM(CONCAT(u.name,' ',COALESCE(u.surname,''))) as student_name,
-                            g.name as group_name, a.name as activity_name
-                     FROM users u
-                     JOIN tul_groups g ON g.group_id = $1
-                     JOIN tul_activities a ON a.activity_id = g.activity_id
-                     WHERE u.user_id = $2`, [req.params.groupId, studentId]);
-                if (infoRes.rows.length > 0) {
-                    const { club_id, student_name, group_name, activity_name } = infoRes.rows[0];
-                    await pool.query(
-                        `INSERT INTO tul_enrollment_history (club_id, group_id, student_id, student_name, group_name, activity_name, action)
-                         VALUES ($1, $2, $3, $4, $5, $6, 'enrolled')`,
-                        [club_id, req.params.groupId, studentId, student_name, group_name, activity_name]);
-                }
-            }
+            await matricular(req.params.groupId, studentId);
             res.json({ success: true });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
     router.delete('/groups/:groupId/students/:studentId/enroll', async (req, res) => {
         try {
-            const infoRes = await pool.query(
-                `SELECT u.club_id, TRIM(CONCAT(u.name,' ',COALESCE(u.surname,''))) as student_name,
-                        g.name as group_name, a.name as activity_name
-                 FROM users u
-                 JOIN tul_groups g ON g.group_id = $1
-                 JOIN tul_activities a ON a.activity_id = g.activity_id
-                 WHERE u.user_id = $2 AND a.club_id = $3`,
-                [req.params.groupId, req.params.studentId, clubId]);
-            if (infoRes.rows.length > 0) {
-                const { club_id, student_name, group_name, activity_name } = infoRes.rows[0];
-                await pool.query(
-                    `INSERT INTO tul_enrollment_history (club_id, group_id, student_id, student_name, group_name, activity_name, action)
-                     VALUES ($1, $2, $3, $4, $5, $6, 'unenrolled')`,
-                    [club_id, req.params.groupId, req.params.studentId, student_name, group_name, activity_name]);
-            }
-            await pool.query('DELETE FROM tul_group_students WHERE group_id = $1 AND student_id = $2',
-                [req.params.groupId, req.params.studentId]);
+            await desmatricular(req.params.groupId, req.params.studentId);
             res.json({ success: true });
         } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // Alta y baja de matrícula. Van aparte porque las usan tanto los endpoints
+    // de matriculación como la lista de espera, y el histórico tiene que
+    // quedar escrito igual en los dos casos: de ahí salen los reportes.
+    async function matricular(groupId, studentId) {
+        const ins = await pool.query(
+            'INSERT INTO tul_group_students (group_id, student_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING *',
+            [groupId, studentId]
+        );
+        if (!ins.rowCount) return false;
+        const info = await pool.query(
+            `SELECT u.club_id, TRIM(CONCAT(u.name,' ',COALESCE(u.surname,''))) as student_name,
+                    g.name as group_name, a.name as activity_name
+             FROM users u
+             JOIN tul_groups g ON g.group_id = $1
+             JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE u.user_id = $2`, [groupId, studentId]);
+        if (info.rowCount) {
+            const { club_id, student_name, group_name, activity_name } = info.rows[0];
+            await pool.query(
+                `INSERT INTO tul_enrollment_history (club_id, group_id, student_id, student_name, group_name, activity_name, action)
+                 VALUES ($1,$2,$3,$4,$5,$6,'enrolled')`,
+                [club_id, groupId, studentId, student_name, group_name, activity_name]);
+        }
+        return true;
+    }
+
+    async function desmatricular(groupId, studentId) {
+        const info = await pool.query(
+            `SELECT u.club_id, TRIM(CONCAT(u.name,' ',COALESCE(u.surname,''))) as student_name,
+                    g.name as group_name, a.name as activity_name
+             FROM users u
+             JOIN tul_groups g ON g.group_id = $1
+             JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE u.user_id = $2 AND a.club_id = $3`, [groupId, studentId, clubId]);
+        if (info.rowCount) {
+            const { club_id, student_name, group_name, activity_name } = info.rows[0];
+            await pool.query(
+                `INSERT INTO tul_enrollment_history (club_id, group_id, student_id, student_name, group_name, activity_name, action)
+                 VALUES ($1,$2,$3,$4,$5,$6,'unenrolled')`,
+                [club_id, groupId, studentId, student_name, group_name, activity_name]);
+        }
+        await pool.query('DELETE FROM tul_group_students WHERE group_id = $1 AND student_id = $2', [groupId, studentId]);
+    }
+
+    // ── Lista de espera ──────────────────────────────────────────────────────
+    // Cuando una clase está llena, el alumno se apunta y guarda su turno por
+    // orden de llegada. Puede quedarse mientras tanto en otra hora, de la que
+    // se le da de baja cuando entra en la que quería.
+
+    // Estado de la espera de todo el club: quién espera qué, en qué puesto, y
+    // dónde hay plazas libres con gente esperando.
+    router.get('/espera', async (req, res) => {
+        try {
+            const r = await pool.query(
+                `SELECT e.id, e.group_id AS "groupId", e.student_id AS "studentId",
+                        e.grupo_provisional_id AS "provisionalId", e.nota, e.created_at AS "createdAt",
+                        g.name AS "grupoNombre", g.max_students AS "maxStudents",
+                        a.name AS "actividad",
+                        TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno,
+                        gp.name AS "provisionalNombre", ap.name AS "provisionalActividad",
+                        (SELECT COUNT(*)::int FROM tul_group_students gs WHERE gs.group_id = e.group_id) AS ocupadas
+                 FROM aim_lista_espera e
+                 JOIN tul_groups g ON g.group_id = e.group_id
+                 JOIN tul_activities a ON a.activity_id = g.activity_id
+                 JOIN users u ON u.user_id = e.student_id
+                 LEFT JOIN tul_groups gp ON gp.group_id = e.grupo_provisional_id
+                 LEFT JOIN tul_activities ap ON ap.activity_id = gp.activity_id
+                 WHERE e.estado = 'esperando' AND a.club_id = $1
+                 ORDER BY e.group_id, e.created_at`, [clubId]
+            );
+            // El puesto es la posición dentro de su grupo, por orden de llegada.
+            const porGrupo = new Map();
+            const filas = r.rows.map(x => {
+                const n = (porGrupo.get(x.groupId) || 0) + 1;
+                porGrupo.set(x.groupId, n);
+                const libres = x.maxStudents ? Math.max(0, x.maxStudents - x.ocupadas) : null;
+                return {
+                    ...x, puesto: n,
+                    plazasLibres: libres,
+                    // Le toca si hay tantas plazas libres como su puesto.
+                    leToca: libres != null && libres >= n,
+                };
+            });
+            res.set('Cache-Control', 'no-store');
+            res.json({
+                total: filas.length,
+                conPlaza: filas.filter(f => f.leToca).length,
+                filas,
+            });
+        } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    router.post('/groups/:groupId/espera', async (req, res) => {
+        const { studentId, grupoProvisionalId, nota } = req.body;
+        if (!studentId) return res.status(400).json({ error: 'Falta el alumno.' });
+        try {
+            const g = await pool.query(
+                `SELECT g.group_id FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+                 WHERE g.group_id = $1 AND a.club_id = $2`, [req.params.groupId, clubId]
+            );
+            if (!g.rowCount) return res.status(404).json({ error: 'Esa clase no es de este club.' });
+            const ya = await pool.query(
+                'SELECT 1 FROM tul_group_students WHERE group_id = $1 AND student_id = $2',
+                [req.params.groupId, studentId]
+            );
+            if (ya.rowCount) return res.status(409).json({ error: 'Ese alumno ya está matriculado en esta clase.' });
+
+            // Si se le pone una hora alternativa, se le matricula de verdad en
+            // ella: va a esa clase mientras espera.
+            if (grupoProvisionalId) {
+                const gp = await pool.query(
+                    `SELECT g.max_students,
+                            (SELECT COUNT(*)::int FROM tul_group_students gs WHERE gs.group_id = g.group_id) AS n
+                     FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+                     WHERE g.group_id = $1 AND a.club_id = $2`, [grupoProvisionalId, clubId]
+                );
+                if (!gp.rowCount) return res.status(404).json({ error: 'La clase alternativa no es de este club.' });
+                if (gp.rows[0].max_students && gp.rows[0].n >= gp.rows[0].max_students) {
+                    return res.status(409).json({ error: 'La clase alternativa también está llena.' });
+                }
+                await matricular(grupoProvisionalId, studentId);
+            }
+
+            const ins = await pool.query(
+                `INSERT INTO aim_lista_espera (group_id, student_id, grupo_provisional_id, nota, apuntado_por)
+                 VALUES ($1,$2,$3,$4,$5)
+                 ON CONFLICT (group_id, student_id) WHERE estado = 'esperando' DO NOTHING
+                 RETURNING id`,
+                [req.params.groupId, studentId, grupoProvisionalId || null, nota?.trim() || null, req.userSession.userId]
+            );
+            if (!ins.rowCount) return res.status(409).json({ error: 'Ese alumno ya estaba en la lista de espera de esta clase.' });
+            res.status(201).json({ success: true, id: ins.rows[0].id });
+        } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    router.delete('/espera/:id', async (req, res) => {
+        try {
+            await pool.query(
+                `UPDATE aim_lista_espera SET estado = 'cancelado', resuelto_at = NOW(), resuelto_por = $2
+                 WHERE id = $1 AND estado = 'esperando'`, [req.params.id, req.userSession.userId]
+            );
+            res.json({ success: true });
+        } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // Darle la plaza: alta en la clase que esperaba y baja de la provisional.
+    router.post('/espera/:id/asignar', async (req, res) => {
+        try {
+            const e = await pool.query(
+                `SELECT e.*, g.max_students,
+                        (SELECT COUNT(*)::int FROM tul_group_students gs WHERE gs.group_id = e.group_id) AS ocupadas
+                 FROM aim_lista_espera e
+                 JOIN tul_groups g ON g.group_id = e.group_id
+                 JOIN tul_activities a ON a.activity_id = g.activity_id
+                 WHERE e.id = $1 AND e.estado = 'esperando' AND a.club_id = $2`, [req.params.id, clubId]
+            );
+            if (!e.rowCount) return res.status(404).json({ error: 'Esa espera ya no está activa.' });
+            const esp = e.rows[0];
+            if (esp.max_students && esp.ocupadas >= esp.max_students) {
+                return res.status(409).json({ error: 'La clase sigue llena.' });
+            }
+            await matricular(esp.group_id, esp.student_id);
+            if (esp.grupo_provisional_id) await desmatricular(esp.grupo_provisional_id, esp.student_id);
+            await pool.query(
+                `UPDATE aim_lista_espera SET estado = 'resuelto', resuelto_at = NOW(), resuelto_por = $2 WHERE id = $1`,
+                [req.params.id, req.userSession.userId]
+            );
+            res.json({ success: true, dejoProvisional: !!esp.grupo_provisional_id });
+        } catch (err) {
+            console.error('Error asignando plaza de la lista de espera:', err);
+            res.status(500).json({ error: err.message });
+        }
     });
 
     // ── Pasar lista de una clase ─────────────────────────────────────────────
