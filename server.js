@@ -1067,10 +1067,14 @@ app.post('/api/logout', authenticateSession, (req, res) => {
 
 app.get('/api/users', authenticateSession, async (req, res) => {
     try {
-        // Solo alumnos del club Aim Education (no todos los usuarios de la plataforma).
+        // Gente del club Aim Education (no toda la plataforma). Van los alumnos y
+        // tambien los instructores y la direccion: hay instructores que imparten
+        // una actividad y son alumnos de otra, y se gestionan igual que el resto.
         const result = await pool.query(
-            `SELECT user_id, name, surname, email, belt, dev_role, role, profile_picture
-             FROM users WHERE club_id = $1 AND role = 'student'
+            `SELECT user_id, name, surname, email, belt, dev_role, role, profile_picture,
+                    phone, birthday
+             FROM users
+             WHERE club_id = $1 AND role IN ('student', 'instructor', 'club_owner', 'superadmin')
              ORDER BY name, surname`,
             [AIM_CLUB_ID]
         );
@@ -1080,7 +1084,11 @@ app.get('/api/users', authenticateSession, async (req, res) => {
             lastName: u.surname,
             email: u.email,
             belt: u.belt,
+            phone: u.phone,
+            birthday: u.birthday,
             avatar: u.profile_picture,
+            role: u.role,
+            esInstructor: (u.role === 'instructor' || u.role === 'club_owner'),
             isSuperAdmin: (u.dev_role === 'superadmin' || u.role === 'superadmin' || u.role === 'SuperAdmin')
         }));
         res.json(mapped);
@@ -1090,7 +1098,7 @@ app.get('/api/users', authenticateSession, async (req, res) => {
 });
 
 app.post('/api/users', authenticateSession, async (req, res) => {
-    const { firstName, lastName, email, belt, isSuperAdmin } = req.body;
+    const { firstName, lastName, email, belt, phone, birthday, isSuperAdmin, rol } = req.body;
     if (!firstName || !email) {
         return res.status(400).json({ error: 'Nombre y email son requeridos.' });
     }
@@ -1102,12 +1110,15 @@ app.post('/api/users', authenticateSession, async (req, res) => {
         }
         const hash = await bcrypt.hash('aim123456', 12);
         const user_id = crypto.randomUUID();
-        const role = isSuperAdmin ? 'superadmin' : 'student';
+        const role = ['instructor', 'club_owner'].includes(rol) ? rol
+            : isSuperAdmin ? 'superadmin' : 'student';
         
         await pool.query(
-            `INSERT INTO users (user_id, name, surname, email, password, belt, role)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-            [user_id, firstName.trim(), (lastName || '').trim(), emailLower, hash, belt || null, role]
+            `INSERT INTO users (user_id, name, surname, email, password, belt, role,
+                                phone, birthday, club_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+            [user_id, firstName.trim(), (lastName || '').trim(), emailLower, hash, belt || null, role,
+             phone?.trim() || null, birthday || null, AIM_CLUB_ID]
         );
         res.status(201).json({ id: user_id, firstName, lastName, email, belt, isSuperAdmin });
     } catch (err) {
@@ -1116,30 +1127,53 @@ app.post('/api/users', authenticateSession, async (req, res) => {
 });
 
 app.put('/api/users/:id', authenticateSession, async (req, res) => {
-    const { firstName, lastName, email, belt, isSuperAdmin } = req.body;
+    const { firstName, lastName, email, belt, phone, birthday, isSuperAdmin } = req.body;
     const { id } = req.params;
     if (!firstName || !email) {
         return res.status(400).json({ error: 'Nombre y email son requeridos.' });
     }
     const emailLower = email.toLowerCase().trim();
     try {
-        const role = isSuperAdmin ? 'superadmin' : 'student';
         const dev_role = isSuperAdmin ? 'superadmin' : null;
         // El cinturón lo lleva el bloque de rangos de la ficha, que escribe en
         // tul_user_progression. Aquí solo se toca si viene en la petición, para
         // no borrarlo desde un formulario que ya no lo pregunta.
+        // El rol de instructor o de direccion no se toca desde aqui: quien da
+        // clase de una actividad y la recibe de otra sale en ambas listas, y
+        // guardar su ficha no puede degradarle a alumno.
         await pool.query(
             `UPDATE users
-             SET name = $1, surname = $2, email = $3, role = $4, dev_role = $5,
-                 belt = CASE WHEN $6::boolean THEN $7 ELSE belt END
-             WHERE user_id = $8`,
-            [firstName.trim(), (lastName || '').trim(), emailLower, role, dev_role,
-             belt !== undefined, belt || null, id]
+             SET name = $1, surname = $2, email = $3, dev_role = $4,
+                 role = CASE
+                          WHEN role IN ('instructor', 'club_owner') THEN role
+                          WHEN $5::boolean THEN 'superadmin'
+                          ELSE 'student'
+                        END,
+                 belt = CASE WHEN $6::boolean THEN $7 ELSE belt END,
+                 phone = $8, birthday = $9
+             WHERE user_id = $10`,
+            [firstName.trim(), (lastName || '').trim(), emailLower, dev_role,
+             !!isSuperAdmin, belt !== undefined, belt || null,
+             phone?.trim() || null, birthday || null, id]
         );
         res.json({ id, firstName, lastName, email, belt, isSuperAdmin });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
+});
+
+const ROLES_CLUB = ['student', 'instructor', 'club_owner'];
+app.put('/api/users/:id/rol', authenticateSession, requireAdmin, async (req, res) => {
+    const { rol } = req.body;
+    if (!ROLES_CLUB.includes(rol)) return res.status(400).json({ error: 'Ese rol no existe.' });
+    try {
+        const r = await pool.query(
+            `UPDATE users SET role = $1 WHERE user_id = $2 AND club_id = $3 RETURNING role`,
+            [rol, req.params.id, AIM_CLUB_ID]
+        );
+        if (!r.rowCount) return res.status(404).json({ error: 'Esa persona no es de este club.' });
+        res.json({ success: true, rol: r.rows[0].role });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.delete('/api/users/:id', authenticateSession, async (req, res) => {
@@ -1399,10 +1433,6 @@ app.get('/api/instructores', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
-
-app.post('/api/admin/instructores', authenticateSession, (req, res) => res.status(400).json(MANAGE_IN_AIMTUL));
-app.put('/api/admin/instructores/:id', authenticateSession, (req, res) => res.status(400).json(MANAGE_IN_AIMTUL));
-app.delete('/api/admin/instructores/:id', authenticateSession, (req, res) => res.status(400).json(MANAGE_IN_AIMTUL));
 
 // Grupos/clases reales del club (tul_groups) con sus alumnos matriculados (tul_group_students).
 app.get('/api/admin/groups', authenticateSession, async (req, res) => {
@@ -3996,6 +4026,26 @@ app.get('/api/me/recibos', authenticateSession, async (req, res) => {
 });
 
 // ── Familias (parentescos por persona, igual que la tabla familias antigua) ──
+// Buscador de personas del club para enlazar parentescos desde la ficha.
+app.get('/api/admin/personas', authenticateSession, requireAdmin, async (req, res) => {
+    const q = `%${(req.query.q || '').trim()}%`;
+    try {
+        const r = await pool.query(
+            `SELECT user_id AS id, TRIM(name || ' ' || COALESCE(surname, '')) AS nombre,
+                    email, role, birthday
+             FROM users
+             WHERE club_id = $1
+               AND (name ILIKE $2 OR surname ILIKE $2
+                    OR CONCAT(name, ' ', COALESCE(surname, '')) ILIKE $2 OR email ILIKE $2)
+             ORDER BY surname, name LIMIT 25`,
+            [AIM_CLUB_ID, q]
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
 app.get('/api/admin/billing/familias/:personaId', authenticateSession, requireAdmin, async (req, res) => {
     try {
         const r = await pool.query(

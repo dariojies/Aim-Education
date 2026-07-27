@@ -251,7 +251,7 @@ export function crearRouterTulClases({ pool, clubId }) {
                  FROM users u
                  LEFT JOIN tul_user_progression up
                         ON up.user_id = u.user_id AND up.activity_id = $3::uuid
-                 WHERE u.club_id = $1 AND u.role = 'student'
+                 WHERE u.club_id = $1 AND u.role IN ('student', 'instructor', 'club_owner')
                    AND (u.name ILIKE $2 OR u.surname ILIKE $2 OR CONCAT(u.name,' ',COALESCE(u.surname,'')) ILIKE $2 OR u.email ILIKE $2)
                  ORDER BY u.surname, u.name LIMIT 25`, [clubId, q, act]);
             res.json({ success: true, students: result.rows.map(s => ({ ...s, name: s.name.trim() })) });

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { I } from './Icons.jsx';
 import { ListaClases, AdminReportes, colorOcupacion } from './AdminTulClases.jsx';
 import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong, campDayParts } from './Shared.jsx';
@@ -88,7 +88,7 @@ function AdminOverview({ setView, refreshTrigger, showToast }) {
       .catch(() => { });
     fetch('/api/users', { credentials: 'include' })
       .then(r => r.ok ? r.json() : [])
-      .then(u => setUserCount(u.length))
+      .then(u => setUserCount(u.filter(x => !x.esInstructor).length))
       .catch(() => { });
     fetch('/api/admin/gastos', { credentials: 'include' })
       .then(r => r.ok ? r.json() : [])
@@ -192,11 +192,31 @@ function AdminOverview({ setView, refreshTrigger, showToast }) {
   );
 }
 
+// Edad a dia de hoy, para saber de un vistazo si encaja en el rango de la clase.
+function edadDe(fecha) {
+  if (!fecha) return null;
+  const n = new Date(String(fecha).slice(0, 10));
+  if (isNaN(n)) return null;
+  const hoy = new Date();
+  let a = hoy.getFullYear() - n.getFullYear();
+  const m = hoy.getMonth() - n.getMonth();
+  if (m < 0 || (m === 0 && hoy.getDate() < n.getDate())) a--;
+  return a >= 0 && a < 120 ? a : null;
+}
+
+// Como se llama cada uno en la lista: quien imparte, quien dirige y quien asiste.
+function etiquetaRol(u) {
+  if (u.role === "club_owner") return "Dirección";
+  if (u.role === "instructor") return "Instructor/a";
+  return u.isSuperAdmin ? "Admin" : "Alumno";
+}
+
 function AdminStudents({ refreshTrigger, onEditUser }) {
   const [users, setUsers] = useState([]);
   const [rangos, setRangos] = useState({});
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [tipo, setTipo] = useState("todos");   // todos | alumnos | instructores
 
   useEffect(() => {
     fetch('/api/users', { credentials: 'include' })
@@ -211,16 +231,19 @@ function AdminStudents({ refreshTrigger, onEditUser }) {
   }, [refreshTrigger]);
 
   const visible = users.filter(u => {
+    if (tipo === "alumnos" && u.esInstructor) return false;
+    if (tipo === "instructores" && !u.esInstructor) return false;
     if (!search) return true;
     const q = search.toLowerCase();
     return `${u.firstName} ${u.lastName} ${u.email}`.toLowerCase().includes(q);
   });
+  const nInstructores = users.filter(u => u.esInstructor).length;
 
   const handleExportCSV = () => {
     const headers = ['ID', 'Nombre', 'Apellidos', 'Email', 'Rangos', 'Rol'];
-    const rows = users.map(u => [u.id, u.firstName, u.lastName, u.email,
+    const rows = visible.map(u => [u.id, u.firstName, u.lastName, u.email,
       (rangos[u.id] || []).map(r => `${r.actividad}: ${r.levelName}`).join(' / '),
-      u.isSuperAdmin ? 'Admin' : 'Alumno']);
+      etiquetaRol(u)]);
     const csvContent = "data:text/csv;charset=utf-8,\uFEFF"
       + [headers.join(','), ...rows.map(e => e.map(val => `"${val}"`).join(','))].join('\n');
     const encodedUri = encodeURI(csvContent);
@@ -238,6 +261,14 @@ function AdminStudents({ refreshTrigger, onEditUser }) {
         <div className="search-input">
           <I.Search />
           <input placeholder="Buscar por nombre o email..." value={search} onChange={e => setSearch(e.target.value)} />
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[["todos", `Todos (${users.length})`],
+            ["alumnos", `Alumnos (${users.length - nInstructores})`],
+            ["instructores", `Instructores (${nInstructores})`]].map(([id, label]) => (
+            <button key={id} className={`btn btn-sm ${tipo === id ? "btn-primary" : "btn-outline"}`}
+              onClick={() => setTipo(id)}>{label}</button>
+          ))}
         </div>
         <div style={{ flex: 1 }} />
         <button className="btn btn-outline btn-sm" onClick={handleExportCSV}>Exportar CSV</button>
@@ -264,7 +295,9 @@ function AdminStudents({ refreshTrigger, onEditUser }) {
               </div>
               <div>
                 <div className="pri">{u.firstName || ""} {u.lastName || ""}</div>
-                {u.isSuperAdmin && <div className="sec">Superadmin</div>}
+                {u.esInstructor
+                  ? <div className="sec">{u.role === "club_owner" ? "Dirección" : "Instructor/a"} del club</div>
+                  : u.isSuperAdmin && <div className="sec">Superadmin</div>}
               </div>
             </div>
             <div className="sec">{u.email}</div>
@@ -278,10 +311,9 @@ function AdminStudents({ refreshTrigger, onEditUser }) {
               ))}
               {!(rangos[u.id] || []).length && <span style={{ color: "var(--ink-3)" }}>—</span>}
             </div>
-            <div>
-              <span className={`status-pill ${u.isSuperAdmin ? "ok" : "upcoming"}`}>
-                {u.isSuperAdmin ? "Admin" : "Alumno"}
-              </span>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+              <span className={`status-pill ${u.esInstructor ? "ok" : "upcoming"}`}>{etiquetaRol(u)}</span>
+              {u.esInstructor && u.isSuperAdmin && <span className="status-pill">Admin</span>}
             </div>
             <div className="row-actions">
               <button className="icon-btn" aria-label="Ver" onClick={() => onEditUser(u)}><I.Eye /></button>
@@ -292,7 +324,7 @@ function AdminStudents({ refreshTrigger, onEditUser }) {
       </div>
 
       <div style={{ marginTop: 16, fontSize: 13, color: "var(--ink-3)" }}>
-        {visible.length} de {users.length} usuario{users.length !== 1 ? "s" : ""}
+        {visible.length} de {users.length} persona{users.length !== 1 ? "s" : ""} del club
       </div>
     </>
   );
@@ -1242,91 +1274,78 @@ function AdminSettings() {
   );
 }
 
-function AdminInstructores({ refreshTrigger, showToast }) {
-  const [instructors, setInstructors] = useState([]);
+// Instructores: es la misma gente que en Alumnos, filtrada por rol. Hay quien
+// imparte una actividad y es alumno de otra, asi que se gestionan con la misma
+// ficha (clases, rangos, familia) en vez de con un formulario aparte.
+function AdminInstructores({ refreshTrigger, showToast, onEditUser, onNuevoInstructor }) {
+  const [gente, setGente] = useState([]);
+  const [clases, setClases] = useState({});
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [activeInstModal, setActiveInstModal] = useState(null); // 'new' | 'edit'
-  const [editingInst, setEditingInst] = useState(null);
 
-  const fetchInstructors = () => {
-    fetch('/api/instructores')
+  const cargar = useCallback(() => {
+    fetch('/api/users', { credentials: 'include', cache: 'no-store' })
       .then(r => r.ok ? r.json() : [])
-      .then(data => {
-        setInstructors(data);
-        setLoading(false);
-      })
+      .then(u => { setGente(u.filter(x => x.esInstructor)); setLoading(false); })
       .catch(() => setLoading(false));
-  };
+  }, []);
+  useEffect(() => { cargar(); }, [cargar, refreshTrigger]);
 
+  // Las clases a las que asisten como alumnos, que es justo lo que antes no se
+  // veia por ningun sitio: son pocos, asi que se piden sus fichas de una vez.
   useEffect(() => {
-    fetchInstructors();
-  }, [refreshTrigger]);
+    if (!gente.length) return;
+    let vivo = true;
+    Promise.all(gente.map(g =>
+      fetch(`/api/admin/tul/students/${g.id}/ficha`, { credentials: 'include', cache: 'no-store' })
+        .then(r => r.ok ? r.json() : null)
+        .then(f => [g.id, f?.clases || []])
+        .catch(() => [g.id, []])
+    )).then(pares => { if (vivo) setClases(Object.fromEntries(pares)); });
+    return () => { vivo = false; };
+  }, [gente]);
 
-  const handleSub = async (e) => {
-    e.preventDefault();
-    const isEdit = activeInstModal === 'edit';
-    const url = isEdit ? `/api/admin/instructores/${editingInst.id}` : '/api/admin/instructores';
-    const method = isEdit ? 'PUT' : 'POST';
-
+  async function cambiarRol(u, rol) {
+    const texto = rol === 'student'
+      ? `¿${u.firstName} deja de ser ${etiquetaRol(u).toLowerCase()} del club?\nSeguirá como alumno, con sus clases y sus rangos intactos.`
+      : `¿Pasar a ${u.firstName} a Dirección?`;
+    if (!window.confirm(texto)) return;
     try {
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editingInst),
-        credentials: 'include'
+      const r = await fetch(`/api/users/${u.id}/rol`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        credentials: 'include', body: JSON.stringify({ rol }),
       });
-      if (res.ok) {
-        showToast(isEdit ? "Instructor modificado con éxito." : "Instructor registrado con éxito.");
-        fetchInstructors();
-        setActiveInstModal(null);
-      } else {
-        const err = await res.json();
-        alert(err.error || "Ocurrió un error.");
-      }
-    } catch (err) {
-      alert("Error al guardar instructor.");
-    }
-  };
+      if (!r.ok) { const d = await r.json(); return alert(d.error || 'Error.'); }
+      showToast(rol === 'student' ? `${u.firstName} ya no es instructor/a.` : 'Rol actualizado.');
+      cargar();
+    } catch { alert('Error de conexión.'); }
+  }
 
-  const handleDel = async (id) => {
-    if (!window.confirm("¿Seguro que deseas eliminar este instructor?")) return;
-    try {
-      const res = await fetch(`/api/admin/instructores/${id}`, { method: 'DELETE', credentials: 'include' });
-      if (res.ok) {
-        showToast("Instructor eliminado.");
-        fetchInstructors();
-      } else {
-        alert("Error al eliminar instructor.");
-      }
-    } catch (err) {
-      alert("Error al eliminar instructor.");
-    }
-  };
-
-  const visible = instructors.filter(i => {
+  const visible = gente.filter(u => {
     if (!search) return true;
     const q = search.toLowerCase();
-    return `${i.name} ${i.email || ''} ${i.specialty || ''}`.toLowerCase().includes(q);
+    return `${u.firstName} ${u.lastName} ${u.email}`.toLowerCase().includes(q);
   });
+
+  const cols = "2.4fr 2fr 1.2fr 2fr 130px";
 
   return (
     <>
       <div className="toolbar">
         <div className="search-input">
           <I.Search />
-          <input placeholder="Buscar por nombre o especialidad..." value={search} onChange={e => setSearch(e.target.value)} />
+          <input placeholder="Buscar por nombre o email..." value={search} onChange={e => setSearch(e.target.value)} />
         </div>
         <div style={{ flex: 1 }} />
-        <button className="btn btn-primary btn-sm" onClick={() => { setEditingInst({ name: '', email: '', phone: '', specialty: '' }); setActiveInstModal('new'); }}><I.Plus /> Nuevo Instructor</button>
+        <button className="btn btn-primary btn-sm" onClick={onNuevoInstructor}><I.Plus /> Nuevo Instructor</button>
       </div>
 
       <div className="data-table">
-        <div className="data-table-head" style={{ gridTemplateColumns: "2.4fr 2fr 1.5fr 1.5fr 100px" }}>
+        <div className="data-table-head" style={{ gridTemplateColumns: cols }}>
           <span>Nombre</span>
           <span>Email</span>
           <span>Teléfono</span>
-          <span>Especialidad</span>
+          <span>Va a clase de</span>
           <span></span>
         </div>
         {loading && (
@@ -1335,68 +1354,37 @@ function AdminInstructores({ refreshTrigger, showToast }) {
         {!loading && visible.length === 0 && (
           <div style={{ padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>No hay instructores.</div>
         )}
-        {!loading && visible.map(inst => (
-          <div key={inst.id} className="data-table-row" style={{ gridTemplateColumns: "2.4fr 2fr 1.5fr 1.5fr 100px" }}>
+        {!loading && visible.map(u => (
+          <div key={u.id} className="data-table-row" style={{ gridTemplateColumns: cols }}>
             <div className="cell-user">
               <div className="avatar" style={{ background: "var(--grad-aim)" }}>
-                {(inst.name?.[0] || "?").toUpperCase()}
+                {(u.firstName?.[0] || "?").toUpperCase()}
               </div>
-              <div className="pri">{inst.name}</div>
+              <div>
+                <div className="pri">{u.firstName || ""} {u.lastName || ""}</div>
+                <div className="sec">{etiquetaRol(u)}</div>
+              </div>
             </div>
-            <div className="sec">{inst.email || <span style={{ color: "var(--ink-3)" }}>—</span>}</div>
-            <div>{inst.phone || <span style={{ color: "var(--ink-3)" }}>—</span>}</div>
-            <div>
-              <span className="activity-pill">{inst.specialty || <span style={{ color: "var(--ink-3)" }}>—</span>}</span>
+            <div className="sec">{u.email || <span style={{ color: "var(--ink-3)" }}>—</span>}</div>
+            <div>{u.phone || <span style={{ color: "var(--ink-3)" }}>—</span>}</div>
+            <div style={{ fontSize: 12 }}>
+              {clases[u.id]?.length
+                ? clases[u.id].map(c => `${c.actividad} · ${c.grupo}`).join(', ')
+                : <span style={{ color: "var(--ink-3)" }}>—</span>}
             </div>
             <div className="row-actions">
-              <button className="icon-btn" aria-label="Editar" onClick={() => { setEditingInst(inst); setActiveInstModal('edit'); }}><I.Edit /></button>
-              <button className="icon-btn danger" aria-label="Eliminar" onClick={() => handleDel(inst.id)}><I.Trash /></button>
+              <button className="icon-btn" aria-label="Abrir ficha" title="Abrir su ficha" onClick={() => onEditUser(u)}><I.Edit /></button>
+              <button className="icon-btn danger" aria-label="Dejar de ser instructor"
+                title="Dejar de ser instructor/a (sigue como alumno)" onClick={() => cambiarRol(u, 'student')}><I.Trash /></button>
             </div>
           </div>
         ))}
       </div>
 
-      {activeInstModal && (
-        <div style={{
-          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-          backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(8px)',
-          display: 'grid', placeItems: 'center', zIndex: 1100, padding: 20
-        }}>
-          <form onSubmit={handleSub} style={{
-            backgroundColor: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 24,
-            width: '100%', maxWidth: 450, padding: 32, display: 'grid', gap: 16
-          }}>
-            <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: 'var(--ink)' }}>
-              {activeInstModal === 'edit' ? 'Editar Instructor' : 'Registrar Nuevo Instructor'}
-            </h3>
-
-            <div className="field">
-              <label>Nombre Completo</label>
-              <input value={editingInst.name || ''} onChange={e => setEditingInst({ ...editingInst, name: e.target.value })} required placeholder="Ej. Carlos Ruiz" />
-            </div>
-
-            <div className="field">
-              <label>Correo Electrónico</label>
-              <input type="email" value={editingInst.email || ''} onChange={e => setEditingInst({ ...editingInst, email: e.target.value })} placeholder="Ej. carlos@aimeducation.es" />
-            </div>
-
-            <div className="field">
-              <label>Teléfono</label>
-              <input value={editingInst.phone || ''} onChange={e => setEditingInst({ ...editingInst, phone: e.target.value })} placeholder="Ej. +34 600 000 000" />
-            </div>
-
-            <div className="field">
-              <label>Especialidad / Rol</label>
-              <input value={editingInst.specialty || ''} onChange={e => setEditingInst({ ...editingInst, specialty: e.target.value })} placeholder="Ej. Taekwondo, Pilates, Inglés" />
-            </div>
-
-            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10 }}>
-              <button type="button" className="btn btn-outline btn-sm" onClick={() => setActiveInstModal(null)}>Cancelar</button>
-              <button type="submit" className="btn btn-primary btn-sm">Guardar</button>
-            </div>
-          </form>
-        </div>
-      )}
+      <div style={{ marginTop: 16, fontSize: 13, color: "var(--ink-3)" }}>
+        {visible.length} de {gente.length} · Se gestionan con la misma ficha que los alumnos: quien imparte una
+        actividad y recibe otra sale en las dos listas.
+      </div>
     </>
   );
 }
@@ -4097,7 +4085,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
 
     // El cinturón ya no se manda desde aquí: los rangos se guardan solos al
     // elegirlos, y reenviar el que estaba cargado pisaría el recién puesto.
-    const { belt, belt_level, beltLevel, ...datos } = editingItem;
+    const { belt, belt_level, beltLevel, esInstructor, role, ...datos } = editingItem;
 
     try {
       const res = await fetch(url, {
@@ -4107,7 +4095,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         credentials: 'include'
       });
       if (res.ok) {
-        showToast(isEdit ? "Alumno modificado con éxito." : "Alumno creado con éxito (contraseña por defecto: aim123456).");
+        const quien = editingItem.rol === 'instructor' ? 'Instructor' : 'Alumno';
+        showToast(isEdit ? `${quien} modificado con éxito.` : `${quien} creado con éxito (contraseña por defecto: aim123456).`);
         setRefreshTrigger(p => p + 1);
         setActiveModal(null);
       } else {
@@ -4355,7 +4344,15 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {view === "camp" && <AdminCamp showToast={showToast} />}
           {view === "billing" && <AdminBilling showToast={showToast} />}
           {view === "groups" && <AdminGroups refreshTrigger={refreshTrigger} onEditGroup={(g) => { setEditingItem(g); setActiveModal('edit-group'); }} />}
-          {view === "instructors" && <AdminInstructores refreshTrigger={refreshTrigger} showToast={showToast} />}
+          {view === "instructors" && (
+            <AdminInstructores
+              refreshTrigger={refreshTrigger} showToast={showToast}
+              onEditUser={(u) => { setEditingItem(u); setActiveModal('edit-student'); }}
+              onNuevoInstructor={() => {
+                setEditingItem({ firstName: '', lastName: '', email: '', rol: 'instructor', isSuperAdmin: false });
+                setActiveModal('new-student');
+              }} />
+          )}
           {view === "settings" && <AdminSettings />}
           {view === "reportes" && <AdminReportes />}
           {view === "support" && <AdminSupport user={user} ticketId={ticketId} />}
@@ -4384,26 +4381,45 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         }}>
           <form onSubmit={handleUserSubmit} style={{
             backgroundColor: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 24,
-            width: '100%', maxWidth: 560, padding: 32, display: 'grid', gap: 16,
+            width: '100%', maxWidth: 620, padding: 32, display: 'grid', gap: 16,
             maxHeight: '90vh', overflowY: 'auto'
           }} className="scroll-oculto">
             <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: 'var(--ink)' }}>
-              {activeModal === 'edit-student' ? 'Editar Alumno' : 'Registrar Nuevo Alumno'}
+              {activeModal !== 'edit-student'
+                ? (editingItem.rol === 'instructor' ? 'Registrar Nuevo Instructor' : 'Registrar Nuevo Alumno')
+                : editingItem.esInstructor ? `Editar ${etiquetaRol(editingItem)}` : 'Editar Alumno'}
             </h3>
 
-            <div className="field">
-              <label>Nombre</label>
-              <input value={editingItem.firstName || ''} onChange={e => setEditingItem({ ...editingItem, firstName: e.target.value })} required />
-            </div>
-
-            <div className="field">
-              <label>Apellidos</label>
-              <input value={editingItem.lastName || ''} onChange={e => setEditingItem({ ...editingItem, lastName: e.target.value })} required />
+            <div className="field-row">
+              <div className="field">
+                <label>Nombre</label>
+                <input value={editingItem.firstName || ''} onChange={e => setEditingItem({ ...editingItem, firstName: e.target.value })} required />
+              </div>
+              <div className="field">
+                <label>Apellidos</label>
+                <input value={editingItem.lastName || ''} onChange={e => setEditingItem({ ...editingItem, lastName: e.target.value })} required />
+              </div>
             </div>
 
             <div className="field">
               <label>Correo Electrónico</label>
               <input type="email" value={editingItem.email || ''} onChange={e => setEditingItem({ ...editingItem, email: e.target.value })} required />
+            </div>
+
+            <div className="field-row">
+              <div className="field">
+                <label>Teléfono</label>
+                <input type="tel" value={editingItem.phone || ''} onChange={e => setEditingItem({ ...editingItem, phone: e.target.value })} placeholder="Ej. 600 123 456" />
+              </div>
+              <div className="field">
+                <label>Fecha de nacimiento</label>
+                <input type="date" value={(editingItem.birthday || '').slice(0, 10)} onChange={e => setEditingItem({ ...editingItem, birthday: e.target.value })} />
+                {editingItem.birthday && (
+                  <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                    {fmtFecha(editingItem.birthday)}{edadDe(editingItem.birthday) != null ? ` · ${edadDe(editingItem.birthday)} años` : ''}
+                  </span>
+                )}
+              </div>
             </div>
 
             {activeModal === 'edit-student' && editingItem.id && (
@@ -4412,10 +4428,15 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
               </div>
             )}
 
-            <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer', fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer', fontSize: 14, fontWeight: 700, color: 'var(--ink)', borderTop: '1px solid var(--line)', paddingTop: 16 }}>
               <input type="checkbox" checked={!!editingItem.isSuperAdmin} onChange={e => setEditingItem({ ...editingItem, isSuperAdmin: e.target.checked })} style={{ width: 18, height: 18 }} />
               ¿Tiene permisos de Administrador?
             </label>
+            {editingItem.esInstructor && (
+              <p style={{ margin: '-8px 0 0', fontSize: 12, color: 'var(--ink-3)' }}>
+                Es {etiquetaRol(editingItem).toLowerCase()} del club: guardar aquí no le quita ese rol.
+              </p>
+            )}
 
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10 }}>
               {activeModal === 'edit-student' && (
