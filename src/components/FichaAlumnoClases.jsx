@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { I } from './Icons.jsx';
-import { colorOcupacion } from './AdminTulClases.jsx';
+import { colorOcupacion, emojiDe } from './AdminTulClases.jsx';
 import { fmtFecha } from '../fechas.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -24,16 +24,36 @@ async function api(url, opts = {}) {
   return d;
 }
 
-// Insignia con el color del nivel, igual que en Learning Dungeon.
+// Insignia del nivel, igual que en Learning Dungeon. Los cinturones de punta
+// son bicolor: se pinta la punta como una banda al final del cinturón.
 export function Insignia({ nivel }) {
   if (!nivel) return null;
   return (
     <span style={{
-      fontSize: 11, fontWeight: 800, padding: '2px 10px', borderRadius: 999,
-      background: nivel.color, color: nivel.textColor || (nivel.color === '#FFFFFF' ? '#333' : '#1a1a1a'),
-      border: '1px solid rgba(0,0,0,.18)', whiteSpace: 'nowrap',
-    }}>{nivel.name}</span>
+      display: 'inline-flex', alignItems: 'center', overflow: 'hidden',
+      fontSize: 11, fontWeight: 800, borderRadius: 999, whiteSpace: 'nowrap',
+      background: nivel.color, color: nivel.textColor || '#1A1A1A',
+      border: `1px solid ${nivel.borde || 'rgba(0,0,0,.18)'}`,
+    }}>
+      <span style={{ padding: '2px 10px' }}>{nivel.name}</span>
+      {nivel.punta && <span style={{ alignSelf: 'stretch', width: 10, background: nivel.punta }} />}
+    </span>
   );
+}
+
+// Los horarios vienen con un salto de línea por sesión; el HTML los aplastaba
+// todos en un renglón ilegible.
+const horario = { fontSize: 11, color: 'var(--ink-3)', whiteSpace: 'pre-line', lineHeight: 1.5 };
+
+export function edadDe(fecha) {
+  if (!fecha) return null;
+  const n = new Date(String(fecha).slice(0, 10));
+  if (isNaN(n)) return null;
+  const hoy = new Date();
+  let a = hoy.getFullYear() - n.getFullYear();
+  const m = hoy.getMonth() - n.getMonth();
+  if (m < 0 || (m === 0 && hoy.getDate() < n.getDate())) a--;
+  return a >= 0 && a < 120 ? a : null;
 }
 
 function Seccion({ titulo, extra, children }) {
@@ -62,57 +82,164 @@ const campo = {
 };
 
 // ── Elegir clase ─────────────────────────────────────────────────────────────
-// El desplegable con las 50 clases del club era ilegible. Aquí se escribe para
-// filtrar y se ve de un vistazo el horario y cuántos huecos quedan.
-function ElegirClase({ grupos, actPorId, yaApuntado, onElegir, onCancelar }) {
-  const [q, setQ] = useState('');
+// El mismo menú que "Asignar a Grupo" de Learning Dungeon: una sección plegable
+// por actividad, y dentro las clases que encajan con la edad del alumno
+// destacadas arriba. El desplegable con las 50 clases seguidas no había quien
+// lo leyera.
+function FilaClase({ g, elegida, recomendada, onElegir }) {
+  const completa = g.maxStudents != null && g.studentCount >= g.maxStudents;
+  const edades = (g.minAge != null || g.maxAge != null)
+    ? `${g.minAge ?? '0'} – ${g.maxAge ?? '∞'} años` : null;
+
+  return (
+    <button type="button" onClick={() => !completa && onElegir(g)} disabled={completa}
+      style={{
+        display: 'flex', gap: 10, alignItems: 'center', textAlign: 'left', width: '100%',
+        padding: '10px 12px', borderRadius: 10, marginBottom: 6, fontFamily: 'inherit',
+        cursor: completa ? 'not-allowed' : 'pointer', opacity: completa ? .55 : 1,
+        background: elegida ? 'color-mix(in oklab, var(--purple) 14%, transparent)'
+          : recomendada ? 'color-mix(in oklab, #D69E2E 12%, transparent)' : 'var(--bg-2)',
+        border: `1px solid ${elegida ? 'var(--purple)' : recomendada ? '#D69E2E88' : 'var(--line)'}`,
+      }}>
+      <span style={{
+        width: 20, height: 20, borderRadius: 999, flexShrink: 0,
+        border: `2px solid ${elegida ? 'var(--purple)' : 'var(--line)'}`,
+        background: elegida ? 'var(--purple)' : 'transparent',
+        display: 'grid', placeItems: 'center', color: '#fff', fontSize: 12, fontWeight: 900,
+      }}>{elegida ? '✓' : ''}</span>
+
+      <span style={{ flex: 1, minWidth: 0 }}>
+        <span style={{ fontWeight: 700, fontSize: 13.5 }}>{g.name}</span>
+        <span style={{ display: 'block', ...horario }}>{g.time}</span>
+      </span>
+
+      <span style={{ display: 'grid', gap: 3, justifyItems: 'end', flexShrink: 0 }}>
+        {edades && (
+          <span style={{ fontSize: 10, fontWeight: 800, color: 'var(--ink-3)', background: 'var(--bg-3)', borderRadius: 6, padding: '2px 6px' }}>
+            {edades}
+          </span>
+        )}
+        {g.maxStudents != null && (
+          <span style={{ fontSize: 11, fontWeight: 800, color: colorOcupacion(g.studentCount, g.maxStudents) }}>
+            {g.studentCount}/{g.maxStudents}{completa ? ' · LLENA' : ''}
+          </span>
+        )}
+      </span>
+    </button>
+  );
+}
+
+function ElegirClase({ grupos, actPorId, yaApuntado, edad, onElegir, onCancelar }) {
+  const [abiertas, setAbiertas] = useState(new Set());
   const [sel, setSel] = useState(null);
   const [nivel, setNivel] = useState('');
 
-  const lista = useMemo(() => {
-    const t = q.trim().toLowerCase();
-    return grupos
-      .filter(g => !yaApuntado.has(g.id))
-      .map(g => ({ ...g, actividad: actPorId[g.activityId]?.name || '' }))
-      .filter(g => !t || `${g.actividad} ${g.name}`.toLowerCase().includes(t))
-      .sort((a, b) => a.actividad.localeCompare(b.actividad) || a.name.localeCompare(b.name));
-  }, [grupos, actPorId, yaApuntado, q]);
+  // Una sección por actividad, con las clases que ya tiene contadas en la cabecera.
+  const secciones = useMemo(() => {
+    const porActividad = new Map();
+    for (const g of grupos) {
+      const a = actPorId[g.activityId];
+      const clave = g.activityId || 'sin';
+      const e = porActividad.get(clave) || { id: clave, nombre: a?.name || 'Sin actividad', icon: a?.icon, grupos: [] };
+      e.grupos.push(g);
+      porActividad.set(clave, e);
+    }
+    return [...porActividad.values()]
+      .map(e => {
+        // Recomendada = tiene rango de edad y la del alumno encaja. Sin rango
+        // configurado nunca se recomienda, igual que en Learning Dungeon.
+        const recomendadas = edad == null ? [] : e.grupos.filter(g =>
+          (g.minAge != null || g.maxAge != null) &&
+          (g.minAge == null || edad >= g.minAge) &&
+          (g.maxAge == null || edad <= g.maxAge));
+        return {
+          ...e,
+          recomendadas,
+          otras: e.grupos.filter(g => !recomendadas.includes(g)),
+          yaTiene: e.grupos.filter(g => yaApuntado.has(g.id)).length,
+          sinRangos: e.grupos.every(g => g.minAge == null && g.maxAge == null),
+        };
+      })
+      .sort((a, b) => a.nombre.localeCompare(b.nombre));
+  }, [grupos, actPorId, yaApuntado, edad]);
 
   const act = sel ? actPorId[sel.activityId] : null;
-  const lleno = !!sel && sel.maxStudents != null && sel.studentCount >= sel.maxStudents;
+
+  function alternar(id) {
+    setAbiertas(prev => {
+      const n = new Set(prev);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+  }
 
   return (
     <div style={{ display: 'grid', gap: 8, marginTop: 8, background: 'var(--bg-3)', borderRadius: 12, padding: 12 }}>
-      <input autoFocus value={q} onChange={e => { setQ(e.target.value); setSel(null); setNivel(''); }}
-        placeholder="Filtrar por actividad o clase..." style={campo} />
+      {edad != null && (
+        <span style={{
+          justifySelf: 'start', display: 'inline-flex', alignItems: 'center', gap: 5,
+          background: 'color-mix(in oklab, var(--purple) 15%, transparent)', color: 'var(--purple)',
+          borderRadius: 999, padding: '4px 12px', fontSize: 12, fontWeight: 800,
+        }}>
+          <I.User width={13} height={13} /> {edad} años
+        </span>
+      )}
 
-      <div className="scroll-oculto" style={{
-        maxHeight: 230, overflowY: 'auto', display: 'grid', gap: 4,
-        border: '1px solid var(--line)', borderRadius: 10, background: 'var(--bg-2)', padding: 4,
-      }}>
-        {!lista.length && <p style={{ margin: 0, padding: 10, fontSize: 12, color: 'var(--ink-3)' }}>Ninguna clase coincide.</p>}
-        {lista.map(g => {
-          const completa = g.maxStudents != null && g.studentCount >= g.maxStudents;
-          const elegida = sel?.id === g.id;
+      <div className="scroll-oculto" style={{ maxHeight: 340, overflowY: 'auto', display: 'grid', gap: 6 }}>
+        {secciones.map(sec => {
+          const abierta = abiertas.has(sec.id);
           return (
-            <button key={g.id} type="button" onClick={() => { setSel(g); setNivel(''); }}
-              style={{
-                display: 'flex', gap: 8, alignItems: 'center', textAlign: 'left', width: '100%',
-                padding: '7px 10px', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit',
-                background: elegida ? 'color-mix(in oklab, var(--purple) 14%, transparent)' : 'transparent',
-                border: elegida ? '1px solid var(--purple)' : '1px solid transparent',
-              }}>
-              <span style={{ flex: 1, minWidth: 0 }}>
-                <span style={{ fontWeight: 700, fontSize: 13 }}>{g.name}</span>
-                <span style={{ display: 'block', fontSize: 11, color: 'var(--ink-3)' }}>
-                  {g.actividad}{g.time ? ` · ${g.time}` : ''}
-                </span>
-              </span>
-              <span style={{ fontSize: 12, fontWeight: 800, color: colorOcupacion(g.studentCount, g.maxStudents), whiteSpace: 'nowrap' }}>
-                {g.studentCount}{g.maxStudents ? `/${g.maxStudents}` : ''}
-              </span>
-              {completa && <span style={{ fontSize: 10, fontWeight: 800, color: '#E5484D' }}>LLENA</span>}
-            </button>
+            <div key={sec.id}>
+              <button type="button" onClick={() => alternar(sec.id)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
+                  padding: '10px 12px', borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit',
+                  background: 'var(--bg-2)', border: '1px solid var(--line)',
+                }}>
+                <span style={{ fontSize: 16 }}>{emojiDe(sec.icon)}</span>
+                <span style={{ fontWeight: 800, fontSize: 13.5, flex: 1 }}>{sec.nombre}</span>
+                {sec.yaTiene > 0 && (
+                  <span style={{ background: 'var(--teal)', color: '#fff', borderRadius: 999, padding: '1px 8px', fontSize: 11, fontWeight: 800 }}>
+                    {sec.yaTiene}
+                  </span>
+                )}
+                <span style={{ color: 'var(--ink-3)', fontSize: 12 }}>{abierta ? '▲' : '▼'}</span>
+              </button>
+
+              {abierta && (
+                <div style={{ marginTop: 6 }}>
+                  {sec.recomendadas.length > 0 && (
+                    <div style={{ border: '1px solid #D69E2E55', borderRadius: 10, padding: 8, marginBottom: 6 }}>
+                      <div style={{ color: '#D69E2E', fontWeight: 800, fontSize: 11.5, marginBottom: 6, letterSpacing: '.02em' }}>
+                        ✨ RECOMENDADO PARA SU EDAD ({edad} años)
+                      </div>
+                      {sec.recomendadas.map(g => (
+                        <FilaClase key={g.id} g={g} recomendada elegida={sel?.id === g.id}
+                          onElegir={x => { setSel(x); setNivel(''); }} />
+                      ))}
+                    </div>
+                  )}
+
+                  {sec.otras.length > 0 && (
+                    <>
+                      {sec.recomendadas.length > 0 && (
+                        <div style={{ color: 'var(--ink-3)', fontSize: 11, margin: '8px 0 4px 4px' }}>Otras clases</div>
+                      )}
+                      {sec.otras.map(g => (
+                        <FilaClase key={g.id} g={g} recomendada={false} elegida={sel?.id === g.id}
+                          onElegir={x => { setSel(x); setNivel(''); }} />
+                      ))}
+                    </>
+                  )}
+
+                  {edad != null && sec.recomendadas.length === 0 && sec.sinRangos && (
+                    <div style={{ color: 'var(--ink-3)', fontSize: 11, fontStyle: 'italic', margin: '0 0 6px 4px' }}>
+                      Sin rango de edad configurado en estas clases
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           );
         })}
       </div>
@@ -127,16 +254,14 @@ function ElegirClase({ grupos, actPorId, yaApuntado, onElegir, onCancelar }) {
         </label>
       )}
 
-      {lleno && (
-        <p style={{ margin: 0, fontSize: 12, color: '#E5484D', fontWeight: 700 }}>
-          Esa clase está completa. Se apunta desde Clases y horarios, en su lista de espera.
-        </p>
-      )}
-
-      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <span style={{ fontSize: 12, color: 'var(--ink-3)', flex: 1, minWidth: 0 }}>
+          {sel ? <>Se le apunta a <b>{sel.name}</b></> : 'Elige una clase para apuntarle.'}
+        </span>
         <button type="button" className="btn btn-sm btn-outline" onClick={onCancelar}>Cancelar</button>
-        <button type="button" className="btn btn-sm btn-primary" disabled={!sel || lleno}
-          onClick={() => onElegir(sel, nivel)}>Apuntar</button>
+        <button type="button" className="btn btn-sm btn-primary" disabled={!sel} onClick={() => onElegir(sel, nivel)}>
+          Apuntar
+        </button>
       </div>
     </div>
   );
@@ -272,7 +397,7 @@ function Familia({ personaId, nombre, showToast }) {
 }
 
 // ── Clases y rangos ──────────────────────────────────────────────────────────
-export default function FichaAlumnoClases({ studentId, nombre, showToast }) {
+export default function FichaAlumnoClases({ studentId, nombre, nacimiento, showToast }) {
   const [escalas, setEscalas] = useState([]);
   const [ficha, setFicha] = useState(null);
   const [grupos, setGrupos] = useState([]);
@@ -353,7 +478,7 @@ export default function FichaAlumnoClases({ studentId, nombre, showToast }) {
             <div key={c.groupId} style={fila}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 700, fontSize: 13 }}>{c.grupo}</div>
-                <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>{c.actividad}{c.time ? ` · ${c.time}` : ''}</div>
+                <div style={horario}>{c.actividad}{c.time ? `\n${c.time}` : ''}</div>
               </div>
               <button type="button" className="icon-btn danger" title="Dar de baja" onClick={() => quitar(c)}><I.Trash /></button>
             </div>
@@ -362,7 +487,7 @@ export default function FichaAlumnoClases({ studentId, nombre, showToast }) {
 
         {anadiendo && (
           <ElegirClase grupos={grupos} actPorId={actPorId} yaApuntado={yaApuntado}
-            onElegir={apuntar} onCancelar={() => setAnadiendo(false)} />
+            edad={edadDe(nacimiento)} onElegir={apuntar} onCancelar={() => setAnadiendo(false)} />
         )}
       </Seccion>
 

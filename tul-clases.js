@@ -372,6 +372,7 @@ export function crearRouterTulClases({ pool, clubId }) {
                 (porAlumno[x.userId] ||= []).push({
                     actividad: x.actividad, levelName: x.levelName,
                     color: n?.color || '#DDD', textColor: n?.textColor,
+                    punta: n?.punta || null, borde: n?.borde || null,
                 });
             }
             res.set('Cache-Control', 'no-store');

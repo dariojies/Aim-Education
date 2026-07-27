@@ -37,25 +37,57 @@ export const ESCALAS = {
     ],
 };
 
-// Color aproximado de cada cinturón, para pintarlo igual que en Learning Dungeon.
-const COLOR_CINTURON = {
-    0: '#FFFFFF', 1: '#FFFFFF', 2: '#FFE135', 3: '#FFE135', 4: '#4CAF50',
-    5: '#4CAF50', 6: '#2196F3', 7: '#2196F3', 8: '#E53935', 9: '#E53935',
+// Aspecto de cada cinturón, copiado de "aim-tul RNW/src/data/belts.ts". Los de
+// punta son bicolor: el cinturón es del color base y la punta del siguiente.
+// El color del texto NO puede salir de aquí: un blanco-amarillo llevaba texto
+// amarillo sobre fondo blanco y no se leía. Se calcula por luminancia.
+const CINTURONES = {
+    0:  { base: '#FFFFFF' },
+    1:  { base: '#FFFFFF', punta: '#FFE135' },
+    2:  { base: '#FFE135' },
+    3:  { base: '#FFE135', punta: '#2E8B57' },
+    4:  { base: '#2E8B57' },
+    5:  { base: '#2E8B57', punta: '#0057B7' },
+    6:  { base: '#0057B7' },
+    7:  { base: '#0057B7', punta: '#CE1126' },
+    8:  { base: '#CE1126' },
+    9:  { base: '#CE1126', punta: '#000000' },
 };
+const NEGRO = { base: '#000000' };
+
+// Texto oscuro sobre fondos claros y claro sobre oscuros, para que siempre se lea.
+function textoLegible(hex) {
+    const n = parseInt(hex.slice(1), 16);
+    const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(v => {
+        const c = v / 255;
+        return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    });
+    const luz = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    return luz > 0.4 ? '#1A1A1A' : '#FFFFFF';
+}
 
 // La escala de una actividad. Taekwondo la saca de tul_belts (está en la base);
 // el resto, de las escalas fijas. Una actividad 'general' no tiene rangos.
 export async function escalaDe(activityType, pool) {
     if (activityType === TIPO_TAEKWONDO) {
         const r = await pool.query('SELECT belt_level, name FROM tul_belts ORDER BY belt_level');
-        return r.rows.map(b => ({
-            order: b.belt_level,
-            name: b.name,
-            color: COLOR_CINTURON[b.belt_level] || '#1A1A1A',
-            textColor: b.belt_level >= 10 || [1].includes(b.belt_level) ? '#FFFFFF' : undefined,
-        }));
+        return r.rows.map(b => {
+            const c = CINTURONES[b.belt_level] || NEGRO;
+            return {
+                order: b.belt_level,
+                name: b.name,
+                color: c.base,
+                punta: c.punta || null,
+                textColor: textoLegible(c.base),
+                // El blanco necesita borde para verse sobre fondo claro.
+                borde: c.base === '#FFFFFF' ? '#333333' : null,
+            };
+        });
     }
-    return ESCALAS[activityType] || [];
+    return (ESCALAS[activityType] || []).map(n => ({
+        ...n, textColor: n.textColor || textoLegible(n.color), punta: null,
+        borde: n.color === '#FFFFFF' ? '#333333' : null,
+    }));
 }
 
 // Devuelve, para cada actividad del club que tenga escala, sus niveles válidos.
@@ -63,7 +95,7 @@ export async function escalaDe(activityType, pool) {
 // existe, que es lo que pasaba cuando el cinturón era un campo de texto libre.
 export async function escalasDelClub(pool, clubId) {
     const acts = await pool.query(
-        'SELECT activity_id AS id, name, activity_type AS tipo FROM tul_activities WHERE club_id = $1 ORDER BY name',
+        'SELECT activity_id AS id, name, activity_type AS tipo, icon FROM tul_activities WHERE club_id = $1 ORDER BY name',
         [clubId]
     );
     const salida = [];

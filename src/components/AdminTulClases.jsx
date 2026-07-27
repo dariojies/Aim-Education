@@ -22,7 +22,7 @@ const ICONOS = [
   ['palette', '🎨'], ['music', '🎵'], ['robot', '🤖'], ['translate', '🗣️'], ['weight-lifter', '🏋️'],
   ['dumbbell', '💪'], ['human-handsup', '🙌'], ['meditation', '🧘‍♀️'], ['sword-cross', '⚔️'], ['shield-half-full', '🛡️'],
 ];
-const emojiDe = (icon) => (ICONOS.find(([n]) => n === icon) || [null, '🏃'])[1];
+export const emojiDe = (icon) => (ICONOS.find(([n]) => n === icon) || [null, '🏃'])[1];
 
 const TIPOS_ACTIVIDAD = [
   ['general', 'General'], ['taekwondo_itf', 'Taekwondo ITF'], ['ingles', 'Inglés'], ['ballet', 'Ballet'],

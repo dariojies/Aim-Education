@@ -10,7 +10,7 @@ import BillingArqueo from './BillingArqueo.jsx';
 import BillingAjustes from './BillingAjustes.jsx';
 import PasarListaClases from './PasarListaClases.jsx';
 import Campanita from './Campanita.jsx';
-import FichaAlumnoClases from './FichaAlumnoClases.jsx';
+import FichaAlumnoClases, { edadDe, Insignia } from './FichaAlumnoClases.jsx';
 
 function sectionLabel(id) {
   return ({
@@ -192,18 +192,6 @@ function AdminOverview({ setView, refreshTrigger, showToast }) {
   );
 }
 
-// Edad a dia de hoy, para saber de un vistazo si encaja en el rango de la clase.
-function edadDe(fecha) {
-  if (!fecha) return null;
-  const n = new Date(String(fecha).slice(0, 10));
-  if (isNaN(n)) return null;
-  const hoy = new Date();
-  let a = hoy.getFullYear() - n.getFullYear();
-  const m = hoy.getMonth() - n.getMonth();
-  if (m < 0 || (m === 0 && hoy.getDate() < n.getDate())) a--;
-  return a >= 0 && a < 120 ? a : null;
-}
-
 // Como se llama cada uno en la lista: quien imparte, quien dirige y quien asiste.
 function etiquetaRol(u) {
   if (u.role === "club_owner") return "Dirección";
@@ -275,7 +263,7 @@ function AdminStudents({ refreshTrigger, onEditUser }) {
       </div>
 
       <div className="data-table">
-        <div className="data-table-head" style={{ gridTemplateColumns: "32px 2.2fr 2fr 1.4fr .8fr 100px" }}>
+        <div className="data-table-head" style={{ gridTemplateColumns: "32px 2.1fr 1.9fr 1.4fr 1.1fr 100px" }}>
           <span></span>
           <span>Nombre</span>
           <span>Email</span>
@@ -287,7 +275,7 @@ function AdminStudents({ refreshTrigger, onEditUser }) {
           <div style={{ padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>Cargando...</div>
         )}
         {!loading && visible.map(u => (
-          <div key={u.id} className="data-table-row" style={{ gridTemplateColumns: "32px 2.2fr 2fr 1.4fr .8fr 100px" }}>
+          <div key={u.id} className="data-table-row" style={{ gridTemplateColumns: "32px 2.1fr 1.9fr 1.4fr 1.1fr 100px" }}>
             <input type="checkbox" style={{ accentColor: "var(--purple)" }} />
             <div className="cell-user">
               <div className="avatar" style={{ background: "var(--grad-aim)" }}>
@@ -303,11 +291,9 @@ function AdminStudents({ refreshTrigger, onEditUser }) {
             <div className="sec">{u.email}</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
               {(rangos[u.id] || []).map((r, i) => (
-                <span key={i} title={r.actividad} style={{
-                  fontSize: 10, fontWeight: 800, padding: "2px 8px", borderRadius: 999,
-                  background: r.color, color: r.textColor || "#1a1a1a",
-                  border: "1px solid rgba(0,0,0,.18)", whiteSpace: "nowrap",
-                }}>{r.levelName}</span>
+                <span key={i} title={r.actividad}>
+                  <Insignia nivel={{ ...r, name: r.levelName }} />
+                </span>
               ))}
               {!(rangos[u.id] || []).length && <span style={{ color: "var(--ink-3)" }}>—</span>}
             </div>
@@ -4424,7 +4410,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
 
             {activeModal === 'edit-student' && editingItem.id && (
               <div style={{ borderTop: '1px solid var(--line)', paddingTop: 16 }}>
-                <FichaAlumnoClases studentId={editingItem.id} nombre={`${editingItem.firstName || ''} ${editingItem.lastName || ''}`.trim()} showToast={showToast} />
+                <FichaAlumnoClases studentId={editingItem.id} nacimiento={editingItem.birthday}
+                  nombre={`${editingItem.firstName || ''} ${editingItem.lastName || ''}`.trim()} showToast={showToast} />
               </div>
             )}
 
