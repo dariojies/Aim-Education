@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { I } from './Icons.jsx';
-import { AimLogo, ACT_BY_ID, CampDayPicker, campFmtLong } from './Shared.jsx';
+import { AimLogo, ACT_BY_ID, CampDayPicker, campFmtLong, nombreMedioPago } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 import { UserSupport } from './AdminSupport.jsx';
 import { fmtFecha } from '../fechas.js';
@@ -357,6 +357,136 @@ const mesRec = (iso) => {
 };
 const eurRec = (n) => `${Number(n || 0).toFixed(2)} €`;
 
+// ── Pagar por internet ───────────────────────────────────────────────────────
+// Los recibos pendientes de la familia y el botón que lleva al TPV del banco.
+// La tarjeta se teclea en la pasarela, aquí no se ve ni se guarda nunca.
+function PagoPendiente({ onPagado }) {
+  const [datos, setDatos] = useState(null);
+  const [sel, setSel] = useState(new Set());
+  const [yendo, setYendo] = useState(false);
+  const [error, setError] = useState('');
+
+  const cargar = useCallback(() => {
+    fetch('/api/me/cargos', { credentials: 'include', cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        setDatos(d);
+        setSel(new Set((d?.lineas || []).map(l => l.cargoId)));
+      })
+      .catch(() => setDatos(null));
+  }, []);
+  useEffect(() => { cargar(); }, [cargar]);
+
+  // Al volver del banco se comprueba cómo acabó el pago.
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search).get('p');
+    if (!p) return;
+    let intentos = 0;
+    const mirar = () => {
+      fetch(`/api/me/pagos/${p}`, { credentials: 'include', cache: 'no-store' })
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+          if (!d) return;
+          if (d.estado === 'pagado') { onPagado?.(d); cargar(); return; }
+          if (d.estado === 'rechazado') { setError(d.motivo || 'El pago no se ha podido completar.'); cargar(); return; }
+          // Puede tardar un instante en llegarnos el aviso del banco.
+          if (++intentos < 6) setTimeout(mirar, 1500);
+        })
+        .catch(() => {});
+    };
+    mirar();
+    window.history.replaceState({}, '', window.location.pathname);
+  }, [cargar, onPagado]);
+
+  const lineas = datos?.lineas || [];
+  const elegidas = lineas.filter(l => sel.has(l.cargoId));
+  const total = elegidas.reduce((t, l) => t + Number(l.total || 0), 0);
+
+  function alternar(id) {
+    setSel(prev => {
+      const n = new Set(prev);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+  }
+
+  // Se va al banco con un formulario: es como exige el TPV virtual.
+  async function pagar() {
+    setYendo(true); setError('');
+    try {
+      const r = await fetch('/api/me/pagos/iniciar', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ cargoIds: [...sel] }),
+      });
+      const d = await r.json();
+      if (!r.ok) { setError(d.error || 'No se ha podido iniciar el pago.'); setYendo(false); return; }
+      const form = document.createElement('form');
+      form.method = 'POST';
+      form.action = d.url;
+      for (const [k, v] of Object.entries(d.campos)) {
+        const i = document.createElement('input');
+        i.type = 'hidden'; i.name = k; i.value = v;
+        form.appendChild(i);
+      }
+      document.body.appendChild(form);
+      form.submit();
+    } catch {
+      setError('No hay conexión con el servidor.');
+      setYendo(false);
+    }
+  }
+
+  if (!datos || !lineas.length) {
+    return error ? (
+      <div className="panel">
+        <h2><I.CreditCard /> Pagar por internet</h2>
+        <p style={{ color: 'var(--red, #E5484D)', fontWeight: 600, fontSize: 14 }}>{error}</p>
+      </div>
+    ) : null;
+  }
+
+  return (
+    <div className="panel">
+      <h2><I.CreditCard /> Pendiente de pago</h2>
+      <p className="sub">Elige lo que quieres pagar. La tarjeta se introduce en la pasarela del banco: aquí no se guarda.</p>
+
+      {error && (
+        <p style={{ color: '#E5484D', fontWeight: 600, fontSize: 14, marginTop: 0 }}>{error}</p>
+      )}
+
+      {lineas.map(l => (
+        <label key={l.cargoId} style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '12px 0', borderBottom: '1px solid var(--line-2)', cursor: 'pointer' }}>
+          <input type="checkbox" checked={sel.has(l.cargoId)} onChange={() => alternar(l.cargoId)}
+            style={{ width: 18, height: 18, accentColor: 'var(--purple)' }} />
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ display: 'block', fontWeight: 700, fontSize: 15 }}>{l.descripcion}</span>
+            <span style={{ display: 'block', fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>
+              {l.alumno}{l.mes ? ` · ${mesRec(l.mes)}` : ''}
+              {l.descuentoMensPct > 0 ? ` · ${l.descuentoMensPct}% por varias mensualidades` : ''}
+            </span>
+          </span>
+          <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 17 }}>{eurRec(l.total)}</span>
+        </label>
+      ))}
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 16 }}>
+        <span style={{ flex: 1, minWidth: 120 }}>
+          <span style={{ display: 'block', fontSize: 12, color: 'var(--ink-3)' }}>Total a pagar</span>
+          <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 26 }}>{eurRec(total)}</span>
+        </span>
+        <button className="btn btn-primary" disabled={!sel.size || yendo || total <= 0} onClick={pagar}>
+          {yendo ? 'Conectando con el banco...' : 'Pagar con tarjeta'}
+        </button>
+      </div>
+      {datos.ahorro > 0 && sel.size === lineas.length && (
+        <p style={{ fontSize: 12, color: 'var(--teal)', fontWeight: 700, margin: '8px 0 0' }}>
+          Pagándolo todo junto te ahorras {eurRec(datos.ahorro)}.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function DashPayments() {
   const [recibos, setRecibos] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -372,8 +502,16 @@ function DashPayments() {
   const validos = recibos.filter(r => r.estado !== 'anulado');
   const totalPagado = validos.reduce((s, r) => s + (r.importe || 0), 0);
 
+  const recargar = useCallback(() => {
+    fetch('/api/me/recibos', { credentials: 'include', cache: 'no-store' })
+      .then(r => r.ok ? r.json() : [])
+      .then(d => setRecibos(Array.isArray(d) ? d : []))
+      .catch(() => {});
+  }, []);
+
   return (
     <>
+      <PagoPendiente onPagado={recargar} />
       {validos.length > 0 && (
         <div className="dash-cards" style={{ gridTemplateColumns: 'repeat(2, 1fr)' }}>
           <div className="stat-card">
@@ -384,7 +522,7 @@ function DashPayments() {
           <div className="stat-card">
             <div className="l">Último pago</div>
             <div className="v">{fmtFecha(validos[0]?.fecha)}</div>
-            <div style={{ marginTop: 8, fontSize: 13, color: 'var(--ink-2)', textTransform: 'capitalize' }}>{validos[0]?.medioPago || ''}</div>
+            <div style={{ marginTop: 8, fontSize: 13, color: 'var(--ink-2)' }}>{nombreMedioPago(validos[0]?.medioPago)}</div>
           </div>
         </div>
       )}
@@ -411,8 +549,8 @@ function DashPayments() {
                     Recibo #{r.numero}
                     {anulado && <span className="status-pill pending" style={{ marginLeft: 8 }}>Anulado</span>}
                   </div>
-                  <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2, textTransform: 'capitalize' }}>
-                    {fmtFecha(r.fecha, '')}{r.medioPago ? ` · ${r.medioPago}` : ''}
+                  <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>
+                    {fmtFecha(r.fecha, '')}{r.medioPago ? ` · ${nombreMedioPago(r.medioPago)}` : ''}
                   </div>
                 </div>
                 <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 18, textDecoration: anulado ? 'line-through' : 'none' }}>

@@ -535,3 +535,11 @@ function MagicText({ children }) {
 }
 
 export { AimLogo, AimHeader, AimFooter, ACTIVITIES, ACT_BY_ID, ActIcon, Placeholder, MagicText, CampDayPicker, campDayParts, campFmtLong };
+
+// Como se llama cada medio de pago para las personas. 'tpv_online' es el TPV
+// virtual del banco: la familia paga por la web, no por el datafono.
+const MEDIOS = {
+  tpv_online: 'Tarjeta (web)', tarjeta: 'Tarjeta', bizum: 'Bizum',
+  efectivo: 'Efectivo', transferencia: 'Transferencia',
+};
+export const nombreMedioPago = (m) => MEDIOS[m] || (m ? m.charAt(0).toUpperCase() + m.slice(1) : '');

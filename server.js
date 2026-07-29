@@ -10,6 +10,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 import nodemailer from 'nodemailer';
 import { calcularRecibo, mesAGenerar } from './billing.js';
 import { crearRouterTulClases } from './tul-clases.js';
+import * as redsys from './redsys.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -599,6 +600,55 @@ async function initDb() {
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
+        // ── TPV virtual (Redsys) ──
+        // Un intento de pago online. Se crea ANTES de mandar a la familia a
+        // Redsys, porque el número de pedido tiene que ser único para siempre y
+        // sale del id de esta fila. El pago no se da por bueno hasta que llega
+        // la notificación firmada: el navegador puede no volver nunca.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_tpv_pagos (
+                id SERIAL PRIMARY KEY,
+                pedido VARCHAR(12) UNIQUE,
+                pagador_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                importe NUMERIC(10,2) NOT NULL,
+                concepto VARCHAR(200),
+                cargo_ids INTEGER[] NOT NULL DEFAULT '{}',
+                estado VARCHAR(20) NOT NULL DEFAULT 'creado',
+                entorno VARCHAR(10) NOT NULL DEFAULT 'pruebas',
+                recibo_id INTEGER REFERENCES aim_recibos(id) ON DELETE SET NULL,
+                ds_response VARCHAR(4),
+                ds_autorizacion VARCHAR(20),
+                tarjeta VARCHAR(40),
+                motivo TEXT,
+                notificacion JSONB,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                pagado_at TIMESTAMPTZ
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_tpv_pagos_estado ON aim_tpv_pagos (estado, created_at)`);
+
+        // Autorización de una familia para cobrarle cada mes. Guarda la
+        // referencia que devuelve Redsys, que es un identificador suyo: aquí no
+        // se guarda ningún dato de tarjeta, solo la marca y los últimos cuatro
+        // para que la familia reconozca cuál autorizó.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_tpv_mandatos (
+                id SERIAL PRIMARY KEY,
+                pagador_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                identificador TEXT NOT NULL,
+                cof_txnid TEXT,
+                tarjeta VARCHAR(40),
+                caducidad VARCHAR(8),
+                estado VARCHAR(20) NOT NULL DEFAULT 'activo',
+                pago_inicial_id INTEGER REFERENCES aim_tpv_pagos(id) ON DELETE SET NULL,
+                autorizado_at TIMESTAMPTZ DEFAULT NOW(),
+                revocado_at TIMESTAMPTZ
+            )
+        `);
+        await client.query(
+            `CREATE UNIQUE INDEX IF NOT EXISTS uq_tpv_mandato_activo
+             ON aim_tpv_mandatos (pagador_id) WHERE estado = 'activo'`);
+
         // Anulación de recibos: nunca se borran, se marcan (rastro de auditoría).
         await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_motivo TEXT`);
         await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_por UUID REFERENCES users(user_id) ON DELETE SET NULL`);
@@ -891,6 +941,8 @@ app.use(cors({
     credentials: true
 }));
 app.use(express.json({ limit: '6mb' })); // 6mb para permitir subir el cartel de eventos (base64)
+// Redsys manda su notificación como formulario, no como JSON.
+app.use(express.urlencoded({ extended: false, limit: '256kb' }));
 
 // =============================================================================
 // AUTH ROUTES
@@ -3052,6 +3104,9 @@ const EMPRESA_TICKET = {
     tel: '956 742 216',
 };
 const MEDIOS_PAGO = ['tarjeta', 'bizum', 'efectivo', 'transferencia'];
+// Los pagos por la web llevan su propio medio para distinguirlos del datáfono
+// del mostrador: no entran en el arqueo de caja del día.
+const MEDIO_TPV_ONLINE = 'tpv_online';
 
 function edadDe(birthday) {
     if (!birthday) return null;
@@ -3113,6 +3168,7 @@ app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async
         const cargos = await pool.query(
             `SELECT c.*, u.name, u.surname FROM aim_cargos c JOIN users u ON u.user_id = c.cliente_id
              WHERE c.cliente_id = ANY($1::uuid[]) AND c.estado = 'pendiente' AND c.recibo_id IS NULL
+               AND ${SQL_NO_RESERVADO}
              ORDER BY u.surname, u.name, c.mes`,
             [fam]
         );
@@ -3975,6 +4031,311 @@ app.post('/api/admin/billing/recibos/:id/rectificar', authenticateSession, requi
 
 // ── Recibos de la familia (panel del alumno/familia) ──
 // Solo los suyos: donde es pagador o donde hay algún cargo a su nombre.
+// ═════════════════════════════════════════════════════════════════════════════
+// TPV VIRTUAL (Redsys · BBVA)
+//
+// La familia elige qué cargos paga, se le manda a Redsys con los datos firmados
+// y allí introduce la tarjeta. Nosotros no la vemos nunca. Redsys nos avisa por
+// detrás a /api/pagos/redsys/notificacion, y ESA es la única fuente de verdad:
+// el navegador puede no volver (se cierra la pestaña, se queda sin batería) y
+// el pago estar hecho igualmente.
+//
+// El cobro acaba exactamente igual que uno de mostrador: recibo, cargos
+// marcados y factura anotada en la cadena, todo en la misma transacción.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Sin credenciales de verdad se trabaja contra el entorno de pruebas de Redsys.
+// La clave del comercio NO puede estar en el código: sale del entorno.
+function configTpv() {
+    const entorno = process.env.REDSYS_ENTORNO === 'real' ? 'real' : 'pruebas';
+    return {
+        entorno,
+        url: redsys.ENTORNOS[entorno],
+        comercio: process.env.REDSYS_COMERCIO || redsys.PRUEBAS.comercio,
+        terminal: process.env.REDSYS_TERMINAL || redsys.PRUEBAS.terminal,
+        clave: process.env.REDSYS_CLAVE || redsys.PRUEBAS.clave,
+        // Solo se guarda la referencia para cobros mensuales si está pedido a
+        // BBVA: el pago por referencia no viene activado de serie.
+        recurrente: process.env.REDSYS_RECURRENTE === 'si',
+    };
+}
+
+// La URL pública desde la que Redsys nos alcanza. En local no existe, así que
+// la notificación no llega y el pago se comprueba consultando su estado.
+function urlPublica(req) {
+    const base = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
+    return base.replace(/\/$/, '');
+}
+
+// Cargos que la familia tiene pendientes y nadie está pagando ahora mismo. Un
+// pago abierto reserva sus cargos 30 minutos, para que no se cobren dos veces
+// si alguien pasa por el mostrador mientras la familia paga desde casa.
+const SQL_NO_RESERVADO = `NOT EXISTS (
+    SELECT 1 FROM aim_tpv_pagos p
+     WHERE p.estado = 'creado' AND p.created_at > NOW() - INTERVAL '30 minutes'
+       AND c.id = ANY(p.cargo_ids))`;
+
+async function cargosPendientesDe(personaId) {
+    const fam = await familiaIds(personaId);
+    const r = await pool.query(
+        `SELECT c.*, u.name, u.surname FROM aim_cargos c
+         JOIN users u ON u.user_id = c.cliente_id
+         WHERE c.cliente_id = ANY($1::uuid[]) AND c.estado = 'pendiente' AND c.recibo_id IS NULL
+           AND ${SQL_NO_RESERVADO}
+         ORDER BY u.surname, u.name, c.mes`, [fam]);
+    return r.rows;
+}
+
+// Lo que la familia ve en su panel: sus cargos pendientes y lo que costarían.
+app.get('/api/me/cargos', authenticateSession, async (req, res) => {
+    try {
+        const cargos = await cargosPendientesDe(req.userSession.userId);
+        const calc = calcularRecibo(cargos.map(cargoParaMotor));
+        const porId = Object.fromEntries(cargos.map(c => [c.id, c]));
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            activo: true,
+            lineas: calc.detalle.map(d => ({
+                cargoId: d.id, descripcion: d.descripcion, mes: d.mes,
+                alumno: `${porId[d.id]?.name || ''} ${porId[d.id]?.surname || ''}`.trim(),
+                precio: d.precio, descuentoPct: d.descuentoPct,
+                descuentoMensPct: d.descuentoMensPct, ivaPct: d.ivaPct, total: d.total,
+            })),
+            total: calc.total, ahorro: calc.ahorro,
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Empezar un pago: se apunta el intento y se devuelven los campos firmados que
+// el navegador enviará a Redsys. El importe lo calcula el servidor a partir de
+// los cargos, nunca se acepta el que venga del cliente.
+app.post('/api/me/pagos/iniciar', authenticateSession, async (req, res) => {
+    const me = req.userSession.userId;
+    const pedidos = Array.isArray(req.body.cargoIds) ? req.body.cargoIds.map(Number).filter(Boolean) : [];
+    const guardarTarjeta = !!req.body.guardarTarjeta;
+    if (!pedidos.length) return res.status(400).json({ error: 'No has elegido nada que pagar.' });
+
+    const cfg = configTpv();
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        // Los cargos tienen que ser suyos, estar pendientes y no reservados.
+        const fam = await familiaIds(me);
+        const cs = await client.query(
+            `SELECT c.* FROM aim_cargos c
+             WHERE c.id = ANY($1::int[]) AND c.cliente_id = ANY($2::uuid[])
+               AND c.estado = 'pendiente' AND c.recibo_id IS NULL
+               AND ${SQL_NO_RESERVADO}
+             FOR UPDATE`, [pedidos, fam]);
+        if (cs.rowCount !== pedidos.length) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({ error: 'Alguno de esos recibos ya no está disponible. Vuelve a cargar la página.' });
+        }
+
+        const calc = calcularRecibo(cs.rows.map(cargoParaMotor));
+        if (!(calc.total > 0)) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'El importe a pagar es cero.' });
+        }
+
+        const concepto = calc.detalle.map(d => d.descripcion).join(', ').slice(0, 120) || 'AIM Education';
+        const ins = await client.query(
+            `INSERT INTO aim_tpv_pagos (pagador_id, importe, concepto, cargo_ids, entorno)
+             VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+            [me, calc.total, concepto, cs.rows.map(c => c.id), cfg.entorno]
+        );
+        const pagoId = ins.rows[0].id;
+        // El número de pedido sale del id, así que no puede repetirse ni con dos
+        // pagos a la vez. Redsys lo exige único para siempre en el comercio.
+        const pedido = redsys.numeroPedido(pagoId);
+        await client.query(`UPDATE aim_tpv_pagos SET pedido = $1 WHERE id = $2`, [pedido, pagoId]);
+        await client.query('COMMIT');
+
+        const base = urlPublica(req);
+        const datos = {
+            DS_MERCHANT_AMOUNT: redsys.aCentimos(calc.total),
+            DS_MERCHANT_ORDER: pedido,
+            DS_MERCHANT_MERCHANTCODE: cfg.comercio,
+            DS_MERCHANT_CURRENCY: '978',
+            DS_MERCHANT_TRANSACTIONTYPE: redsys.TIPO.autorizacion,
+            DS_MERCHANT_TERMINAL: cfg.terminal,
+            DS_MERCHANT_MERCHANTURL: `${base}/api/pagos/redsys/notificacion`,
+            DS_MERCHANT_URLOK: `${base}/pago/ok?p=${pedido}`,
+            DS_MERCHANT_URLKO: `${base}/pago/ko?p=${pedido}`,
+            DS_MERCHANT_PRODUCTDESCRIPTION: concepto,
+            // Con esto Redsys nos devuelve la referencia para cobrar los meses
+            // siguientes sin que el titular esté delante.
+            ...(guardarTarjeta && cfg.recurrente ? redsys.COF_INICIAL : {}),
+        };
+        const parametros = redsys.codificaParametros(datos);
+        res.json({
+            pedido,
+            total: calc.total,
+            url: cfg.url,
+            entorno: cfg.entorno,
+            campos: {
+                Ds_SignatureVersion: 'HMAC_SHA256_V1',
+                Ds_MerchantParameters: parametros,
+                Ds_Signature: redsys.firmar(cfg.clave, pedido, parametros),
+            },
+        });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+// Convierte un pago autorizado en recibo. Es idempotente: si la notificación
+// llega dos veces (Redsys reintenta), la segunda no cobra otra vez.
+async function asentarPago(client, pago, aviso) {
+    const cs = await client.query(
+        `SELECT * FROM aim_cargos WHERE id = ANY($1::int[]) AND estado = 'pendiente' AND recibo_id IS NULL FOR UPDATE`,
+        [pago.cargo_ids]);
+
+    // Si mientras pagaba se le cobró por mostrador, el dinero está cobrado pero
+    // no hay a qué aplicarlo: se deja marcado para que lo revise una persona.
+    if (cs.rowCount !== pago.cargo_ids.length) {
+        await client.query(
+            `UPDATE aim_tpv_pagos SET estado = 'revisar', pagado_at = NOW(),
+                    motivo = 'Cobrado en Redsys pero sus recibos ya no estaban pendientes. Revisar y devolver si procede.',
+                    ds_response = $2, ds_autorizacion = $3, notificacion = $4
+              WHERE id = $1`,
+            [pago.id, aviso.Ds_Response, aviso.Ds_AuthorisationCode, aviso]);
+        return { revisar: true };
+    }
+
+    const calc = calcularRecibo(cs.rows.map(cargoParaMotor));
+    const num = (await client.query(`SELECT nextval('aim_recibos_numero_seq') AS n`)).rows[0].n;
+    const rec = await client.query(
+        `INSERT INTO aim_recibos (numero, pagador_id, fecha, importe, medio_pago, entregado, cambio, estado, cobrado_at)
+         VALUES ($1,$2,CURRENT_DATE,$3,'tpv_online',$3,0,'cobrado',NOW()) RETURNING id, numero, fecha, serie`,
+        [num, pago.pagador_id, calc.total]);
+    const reciboId = rec.rows[0].id;
+
+    for (const d of calc.detalle) {
+        await client.query(
+            `UPDATE aim_cargos SET recibo_id = $1, descuento_mens_pct = $2, importe = $3, estado = 'cobrado' WHERE id = $4`,
+            [reciboId, d.descuentoMensPct, d.base, d.id]);
+    }
+
+    const pg = await client.query(`SELECT name, surname FROM users WHERE user_id = $1`, [pago.pagador_id]);
+    await registrarFactura(client, {
+        recibo: { ...rec.rows[0], id: reciboId, serie: rec.rows[0].serie || 'A', tipo: 'normal' },
+        receptor: { nombre: pg.rows[0] ? `${pg.rows[0].name} ${pg.rows[0].surname || ''}`.trim() : null },
+        descripcion: calc.detalle.map(d => d.descripcion).join('; ').slice(0, 500),
+        base: calc.baseTotal, cuota: calc.ivaTotal, total: calc.total,
+        userId: pago.pagador_id,
+    });
+
+    await client.query(
+        `UPDATE aim_tpv_pagos SET estado = 'pagado', pagado_at = NOW(), recibo_id = $2,
+                ds_response = $3, ds_autorizacion = $4, tarjeta = $5, notificacion = $6, importe = $7
+          WHERE id = $1`,
+        [pago.id, reciboId, aviso.Ds_Response, aviso.Ds_AuthorisationCode,
+         aviso.Ds_Card_Brand ? `**** ${aviso.Ds_Card_Number || ''}`.trim() : null, aviso, calc.total]);
+
+    // Si la familia autorizó el cobro mensual, Redsys devuelve la referencia.
+    if (aviso.Ds_Merchant_Identifier) {
+        await client.query(`UPDATE aim_tpv_mandatos SET estado = 'revocado', revocado_at = NOW()
+                             WHERE pagador_id = $1 AND estado = 'activo'`, [pago.pagador_id]);
+        await client.query(
+            `INSERT INTO aim_tpv_mandatos (pagador_id, identificador, cof_txnid, tarjeta, caducidad, pago_inicial_id)
+             VALUES ($1,$2,$3,$4,$5,$6)`,
+            [pago.pagador_id, aviso.Ds_Merchant_Identifier, aviso.Ds_Merchant_Cof_Txnid || null,
+             aviso.Ds_Card_Number ? `**** ${aviso.Ds_Card_Number}` : null, aviso.Ds_ExpiryDate || null, pago.id]);
+    }
+    return { reciboId, numero: rec.rows[0].numero };
+}
+
+// La notificación de Redsys. No lleva sesión: viene de sus servidores. Lo único
+// que la hace de fiar es la firma, así que se comprueba antes de nada.
+app.post('/api/pagos/redsys/notificacion', async (req, res) => {
+    const cfg = configTpv();
+    const { Ds_MerchantParameters, Ds_Signature } = req.body || {};
+    if (!Ds_MerchantParameters || !Ds_Signature) return res.status(400).send('faltan parametros');
+
+    let comprobado;
+    try {
+        comprobado = redsys.verificaNotificacion(cfg.clave, Ds_MerchantParameters, Ds_Signature);
+    } catch { return res.status(400).send('parametros ilegibles'); }
+
+    if (!comprobado.valida) {
+        console.error('[TPV] Notificación con firma inválida, pedido', comprobado.datos?.Ds_Order);
+        return res.status(403).send('firma no valida');
+    }
+
+    const aviso = comprobado.datos;
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const r = await client.query(`SELECT * FROM aim_tpv_pagos WHERE pedido = $1 FOR UPDATE`, [comprobado.pedido]);
+        if (!r.rowCount) { await client.query('ROLLBACK'); return res.status(404).send('pedido desconocido'); }
+        const pago = r.rows[0];
+
+        // Redsys reintenta si no contestamos: si ya está resuelto, se acepta sin
+        // volver a cobrar ni emitir otro recibo.
+        if (pago.estado !== 'creado') { await client.query('COMMIT'); return res.send('OK'); }
+
+        // El importe que confirma el banco tiene que ser el que pedimos.
+        if (String(aviso.Ds_Amount) !== redsys.aCentimos(pago.importe)) {
+            await client.query(
+                `UPDATE aim_tpv_pagos SET estado = 'revisar', notificacion = $2,
+                        motivo = 'El importe confirmado no coincide con el pedido.' WHERE id = $1`,
+                [pago.id, aviso]);
+            await client.query('COMMIT');
+            console.error('[TPV] Importe distinto en el pedido', pago.pedido);
+            return res.send('OK');
+        }
+
+        if (!redsys.respuestaAutorizada(aviso.Ds_Response)) {
+            await client.query(
+                `UPDATE aim_tpv_pagos SET estado = 'rechazado', ds_response = $2,
+                        motivo = $3, notificacion = $4 WHERE id = $1`,
+                [pago.id, aviso.Ds_Response, redsys.motivoDe(aviso.Ds_Response), aviso]);
+            await client.query('COMMIT');
+            return res.send('OK');
+        }
+
+        await asentarPago(client, pago, aviso);
+        await client.query('COMMIT');
+        res.send('OK');
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('[TPV] Error asentando la notificación:', err);
+        res.status(500).send('error');
+    } finally { client.release(); }
+});
+
+// Estado de un pago, para la pantalla de vuelta. La familia solo ve los suyos.
+app.get('/api/me/pagos/:pedido', authenticateSession, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT p.pedido, p.importe, p.estado, p.motivo, p.pagado_at, r.numero AS recibo
+             FROM aim_tpv_pagos p LEFT JOIN aim_recibos r ON r.id = p.recibo_id
+             WHERE p.pedido = $1 AND p.pagador_id = $2`, [req.params.pedido, req.userSession.userId]);
+        if (!r.rowCount) return res.status(404).json({ error: 'Ese pago no existe.' });
+        res.set('Cache-Control', 'no-store');
+        res.json({ ...r.rows[0], importe: Number(r.rows[0].importe) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Listado para el panel: incluye los rechazados y los que hay que revisar, que
+// es justo lo que no se ve en la pantalla de recibos.
+app.get('/api/admin/billing/tpv/online', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT p.id, p.pedido, p.importe, p.concepto, p.estado, p.entorno, p.motivo,
+                    p.ds_autorizacion, p.created_at, p.pagado_at, r.numero AS recibo,
+                    TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS pagador
+             FROM aim_tpv_pagos p
+             JOIN users u ON u.user_id = p.pagador_id
+             LEFT JOIN aim_recibos r ON r.id = p.recibo_id
+             ORDER BY p.created_at DESC LIMIT 200`);
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows.map(x => ({ ...x, importe: Number(x.importe) })));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/me/recibos', authenticateSession, async (req, res) => {
     const me = req.userSession.userId;
     try {

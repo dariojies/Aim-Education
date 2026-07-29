@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { I } from './Icons.jsx';
 import { ListaClases, AdminReportes, colorOcupacion } from './AdminTulClases.jsx';
-import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong, campDayParts } from './Shared.jsx';
+import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong, campDayParts, nombreMedioPago } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 import { AdminSupport } from './AdminSupport.jsx';
 import { fmtFecha, fmtFechaHora, fmtFechaLarga, fmtFechaCorta } from '../fechas.js';
@@ -2329,7 +2329,7 @@ function BillingRecibos({ showToast }) {
               </div>
               <span className="sec">{fmtFecha(r.fecha, '')}</span>
               <span style={{ fontWeight: 700, textDecoration: r.estado === 'anulado' ? 'line-through' : 'none' }}>{eur(r.importe)}</span>
-              <span style={{ fontSize: 12, textTransform: 'capitalize' }}>{r.medioPago || '—'}</span>
+              <span style={{ fontSize: 12 }}>{nombreMedioPago(r.medioPago) || '—'}</span>
               <div className="row-actions">
                 <button className="icon-btn" title="Ver detalle" onClick={() => verDetalle(r.id, false)} aria-label="Ver"><I.Eye /></button>
                 <button className="icon-btn" title="Reimprimir" onClick={() => verDetalle(r.id, true)} aria-label="Imprimir"><I.Print /></button>
