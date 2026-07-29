@@ -62,7 +62,7 @@ function TarifasCampamento() {
         )}
       </div>
 
-      {/* Lo suelto y los servicios de mañana y tarde, que también se cobran. */}
+      {/* Otras formas de venir. */}
       <div style={{
         marginTop: 20, padding: "18px 22px", background: "var(--bg-2)",
         border: "1px solid var(--line)", borderRadius: 18,
@@ -78,13 +78,44 @@ function TarifasCampamento() {
             <b style={{color: "var(--ink)"}}>Día suelto</b> · {eur(dia.precio)}
           </span>
         )}
-        {datos.servicio && (
-          <span style={{fontSize: 14, color: "var(--ink-2)"}}>
-            <b style={{color: "var(--ink)"}}>Matinal y custodia</b> · {eur(datos.servicio.precioDia)} por día y servicio,
-            máximo {eur(datos.servicio.topeSemana)} por semana
-          </span>
-        )}
       </div>
+
+      {/* Matinal y custodia: hay que decir qué son, no basta con nombrarlos. */}
+      {datos.servicio && (
+        <div style={{
+          marginTop: 20, padding: "24px 26px", background: "var(--bg-2)",
+          border: "1px solid var(--line)", borderRadius: 18,
+        }}>
+          <div style={{fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 800, letterSpacing: "-.02em", marginBottom: 4}}>
+            ¿Necesitáis más margen por la mañana o por la tarde?
+          </div>
+          <p style={{margin: "0 0 16px", fontSize: 14, color: "var(--ink-3)"}}>
+            El campamento va de 9:00 a 14:00. Si os viene mal ese horario, hay dos servicios
+            que lo estiran por los extremos y se pagan solo los días que se usan.
+          </p>
+          <div style={{display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14}}>
+            {[
+              { t: "Matinal", h: "Entrada a las 8:00", d: "Tu hijo entra una hora antes, a las 8:00 en vez de a las 9:00.", c: "var(--orange-soft)" },
+              { t: "Custodia", h: "Salida a las 15:00", d: "Tu hijo sale una hora más tarde, a las 15:00 en vez de a las 14:00.", c: "var(--purple)" },
+            ].map(x => (
+              <div key={x.t} style={{background: "var(--bg-3)", border: "1px solid var(--line-2)", borderRadius: 14, padding: "16px 18px"}}>
+                <div style={{display: "flex", alignItems: "center", gap: 8, marginBottom: 6}}>
+                  <span style={{width: 6, height: 18, borderRadius: 99, background: x.c}} />
+                  <b style={{fontSize: 15}}>{x.t}</b>
+                  <span style={{fontSize: 11, fontWeight: 800, color: x.c, background: `color-mix(in oklab, ${x.c} 14%, transparent)`, borderRadius: 999, padding: "2px 8px"}}>
+                    {x.h}
+                  </span>
+                </div>
+                <p style={{margin: 0, fontSize: 13, color: "var(--ink-2)", lineHeight: 1.5}}>{x.d}</p>
+              </div>
+            ))}
+          </div>
+          <p style={{margin: "14px 0 0", fontSize: 13, color: "var(--ink-2)"}}>
+            <b>{eur(datos.servicio.precioDia)} por día y servicio</b>, con un máximo de {eur(datos.servicio.topeSemana)} por
+            semana y servicio: a partir de cinco días, la semana entera sale al mismo precio.
+          </p>
+        </div>
+      )}
     </>
   );
 }
@@ -193,14 +224,17 @@ export default function PublicCamp() {
     };
   });
 
+  // El campamento va de 9:00 a 14:00. Matinal y custodia son los dos servicios
+  // que alargan ese horario por los extremos, y se cobran aparte.
   const DAY_PLAN = [
+    { time: "08:00", title: "Matinal", desc: "Servicio opcional: entrada a las 8:00 en vez de a las 9:00.", color: "var(--orange-soft)", extra: true },
     { time: "09:00", title: "Acogida", desc: "Llegada escalonada, desayuno saludable.", color: "var(--orange-soft)" },
     { time: "09:30", title: "Bloque activo", desc: "Taekwondo · funcional · gimnasia rítmica.", color: "var(--teal)" },
     { time: "11:00", title: "Snack + juego libre", desc: "Patio y zona de descanso.", color: "var(--yellow)" },
     { time: "11:30", title: "Bloque creativo", desc: "Pintura · robótica · baile.", color: "var(--purple)" },
-    { time: "13:00", title: "Comida", desc: "Menú equilibrado adaptado a alergias.", color: "var(--orange)" },
-    { time: "14:00", title: "Bloque inglés", desc: "Inmersión lúdica con monitores nativos.", color: "var(--blue)" },
-    { time: "15:30", title: "Cierre + recogida", desc: "Recogida hasta las 16:00.", color: "var(--pink)" },
+    { time: "12:30", title: "Bloque inglés", desc: "Inmersión lúdica con monitores nativos.", color: "var(--blue)" },
+    { time: "13:30", title: "Cierre + recogida", desc: "Recogida hasta las 14:00.", color: "var(--pink)" },
+    { time: "15:00", title: "Custodia", desc: "Servicio opcional: salida a las 15:00 en vez de a las 14:00.", color: "var(--purple)", extra: true },
   ];
 
   return (
@@ -244,7 +278,7 @@ export default function PublicCamp() {
                     <div style={{fontSize: 12, opacity: .9, marginTop: 4, fontWeight: 600}}>años de edad</div>
                   </div>
                   <div>
-                    <div style={{fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 36, letterSpacing: "-.02em", lineHeight: 1}}>9–16h</div>
+                    <div style={{fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 36, letterSpacing: "-.02em", lineHeight: 1}}>9–14h</div>
                     <div style={{fontSize: 12, opacity: .9, marginTop: 4, fontWeight: 600}}>de lunes a viernes</div>
                   </div>
                 </div>
@@ -381,8 +415,8 @@ export default function PublicCamp() {
                   gridTemplateColumns: "100px 12px 1fr",
                   gap: 18,
                   alignItems: "center",
-                  background: "var(--bg-2)",
-                  border: "1px solid var(--line)",
+                  background: d.extra ? "var(--bg-3)" : "var(--bg-2)",
+                  border: `1px ${d.extra ? "dashed" : "solid"} var(--line)`,
                   borderRadius: 14,
                   padding: "16px 22px",
                   transition: "transform var(--tx-fast) ease",
