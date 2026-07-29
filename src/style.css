@@ -2315,10 +2315,28 @@ html[data-theme="dark"] .dash-nav button.is-active {
 .class-row .day .w {
   font-size: 9px;
   font-weight: 800;
-  letter-spacing: .12em;
+  letter-spacing: .06em;
   text-transform: uppercase;
   color: var(--ink-3);
+  margin-top: 2px;
+  /* Nunca puede desbordar el recuadro y pisarse con la hora de al lado. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* De quién es la clase: con varios hijos es lo primero que se busca. */
+.class-row .info .quien {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   margin-top: 4px;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--purple);
+  background: color-mix(in oklab, var(--purple) 12%, transparent);
+  border-radius: 999px;
+  padding: 1px 8px;
 }
 
 .class-row .info {

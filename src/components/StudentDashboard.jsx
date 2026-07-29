@@ -137,10 +137,14 @@ function DashOverview({ go, setView }) {
               const a = ACT_BY_ID[c.act];
               return (
                 <div key={c.id} className={`class-row ${a?.className || ""}`}>
-                  <div className="day"><div className="d">{(DAY_NAMES[c.d] || "").slice(0, 3)}</div><div className="w">{a?.name || c.act}</div></div>
+                  <div className="day">
+                    <div className="d">{(DAY_NAMES[c.d] || "").slice(0, 3)}</div>
+                    <div className="w">{(c.time || "").split("–")[0] || `${c.s}:00`}</div>
+                  </div>
                   <div className="info">
                     <h4>{c.title}</h4>
-                    <p>{c.time || `${c.s}:00`} · {c.room}</p>
+                    <p>{c.time || `${c.s}:00`}{c.room ? ` · ${c.room}` : ""}</p>
+                    {c.alumno && <span className="quien"><I.User width={11} height={11} /> {c.alumno}</span>}
                   </div>
                   <span className="badge">{a?.name || c.act}</span>
                 </div>
@@ -436,10 +440,86 @@ const mesRec = (iso) => {
 };
 const eurRec = (n) => `${Number(n || 0).toFixed(2)} €`;
 
+// ── Vuelta del banco ─────────────────────────────────────────────────────────
+// Al volver de la pasarela no se puede soltar a la familia en la portada sin
+// decirle nada: se le confirma lo cobrado y se le enseña el recibo.
+function GraciasPorPagar({ pago, onCerrar }) {
+  const pdf = pago.recibo ? `/api/me/recibos/${pago.reciboId}/pdf` : null;
+  return (
+    <div className="panel" style={{ marginBottom: 22 }}>
+      <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', marginBottom: 6 }}>
+        <span style={{
+          width: 48, height: 48, borderRadius: 999, flexShrink: 0, display: 'grid', placeItems: 'center',
+          background: 'color-mix(in oklab, var(--teal) 16%, transparent)', color: 'var(--teal)',
+        }}><I.Check width={24} height={24} /></span>
+        <div style={{ flex: 1, minWidth: 200 }}>
+          <h2 style={{ margin: 0 }}>¡Gracias! Hemos recibido tu pago</h2>
+          <p className="sub" style={{ margin: '4px 0 0' }}>
+            Se han cobrado <b>{Number(pago.importe).toFixed(2)} €</b>
+            {pago.recibo ? <> y ya tienes el recibo <b>#{pago.recibo}</b>.</> : '.'}
+          </p>
+        </div>
+      </div>
+
+      {pdf && (
+        <div style={{ border: '1px solid var(--line)', borderRadius: 14, overflow: 'hidden', background: 'var(--bg-3)', marginTop: 12 }}>
+          <iframe src={pdf} title="Recibo" style={{ width: '100%', height: 460, border: 0, display: 'block' }} />
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 14 }}>
+        {pdf && (
+          <>
+            <a className="btn btn-outline btn-sm" href={`${pdf}?descargar=1`}>
+              <I.Print /> Descargar el recibo
+            </a>
+            <a className="btn btn-outline btn-sm" href={pdf} target="_blank" rel="noreferrer">
+              <I.Eye /> Abrirlo aparte
+            </a>
+          </>
+        )}
+        <div style={{ flex: 1 }} />
+        <button className="btn btn-primary" onClick={onCerrar}>Volver a Pagos y recibos</button>
+      </div>
+    </div>
+  );
+}
+
+// Los dos botoncitos de cada recibo: verlo y guardarlo.
+function BotonesRecibo({ id }) {
+  const [viendo, setViendo] = useState(false);
+  return (
+    <>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button className="btn btn-sm btn-outline" title="Ver el recibo"
+          onClick={(e) => { e.stopPropagation(); setViendo(v => !v); }}>
+          <I.Eye /> Ver
+        </button>
+        <a className="btn btn-sm btn-outline" title="Descargar el recibo"
+          href={`/api/me/recibos/${id}/pdf?descargar=1`} onClick={(e) => e.stopPropagation()}>
+          <I.Print /> PDF
+        </a>
+      </div>
+      {viendo && (
+        <div style={{ gridColumn: '1 / -1', width: '100%', marginTop: 10 }}>
+          <div style={{ border: '1px solid var(--line)', borderRadius: 14, overflow: 'hidden', background: 'var(--bg-3)' }}>
+            <iframe src={`/api/me/recibos/${id}/pdf`} title={`Recibo ${id}`}
+              style={{ width: '100%', height: 460, border: 0, display: 'block' }} />
+          </div>
+          <a href={`/api/me/recibos/${id}/pdf`} target="_blank" rel="noreferrer"
+            style={{ display: 'inline-block', marginTop: 6, fontSize: 12, color: 'var(--purple)', fontWeight: 700 }}>
+            ¿No se ve? Ábrelo en otra pestaña
+          </a>
+        </div>
+      )}
+    </>
+  );
+}
+
 // ── Pagar por internet ───────────────────────────────────────────────────────
 // Los recibos pendientes de la familia y el botón que lleva al TPV del banco.
 // La tarjeta se teclea en la pasarela, aquí no se ve ni se guarda nunca.
-function PagoPendiente({ onPagado }) {
+function PagoPendiente({ onPagado, onPagoHecho }) {
   const [datos, setDatos] = useState(null);
   const [sel, setSel] = useState(new Set());
   const [yendo, setYendo] = useState(false);
@@ -468,7 +548,7 @@ function PagoPendiente({ onPagado }) {
         .then(r => r.ok ? r.json() : null)
         .then(d => {
           if (!d) return;
-          if (d.estado === 'pagado') { onPagado?.(d); cargar(); return; }
+          if (d.estado === 'pagado') { onPagado?.(d); onPagoHecho?.(d); cargar(); return; }
           if (d.estado === 'rechazado') { setError(d.motivo || 'El pago no se ha podido completar.'); cargar(); return; }
           // Puede tardar un instante en llegarnos el aviso del banco.
           if (++intentos < 6) setTimeout(mirar, 1500);
@@ -572,6 +652,7 @@ function DashPayments() {
   const [recibos, setRecibos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [abierto, setAbierto] = useState(null);
+  const [gracias, setGracias] = useState(null);   // pago recién hecho, para agradecerlo
 
   useEffect(() => {
     fetch('/api/me/recibos', { credentials: 'include' })
@@ -594,7 +675,8 @@ function DashPayments() {
 
   return (
     <>
-      <PagoPendiente onPagado={recargar} />
+      {gracias && <GraciasPorPagar pago={gracias} onCerrar={() => setGracias(null)} />}
+      <PagoPendiente onPagado={recargar} onPagoHecho={setGracias} />
       {validos.length > 0 && (
         <div className="dash-cards" style={{ gridTemplateColumns: 'repeat(2, 1fr)' }}>
           <div className="stat-card">
@@ -624,10 +706,9 @@ function DashPayments() {
           const open = abierto === r.numero;
           return (
             <div key={r.numero} style={{ borderBottom: '1px solid var(--line-2)' }}>
-              <button
-                onClick={() => setAbierto(open ? null : r.numero)}
-                style={{ display: 'flex', width: '100%', gap: 12, alignItems: 'center', padding: '14px 0', background: 'none', border: 0, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', opacity: anulado ? .55 : 1 }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', width: '100%', gap: 12, alignItems: 'center', flexWrap: 'wrap', padding: '14px 0', opacity: anulado ? .55 : 1 }}>
+                <button onClick={() => setAbierto(open ? null : r.numero)}
+                  style={{ flex: 1, minWidth: 160, textAlign: 'left', background: 'none', border: 0, padding: 0, cursor: 'pointer', fontFamily: 'inherit' }}>
                   <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--ink)' }}>
                     Recibo #{r.numero}
                     {anulado && <span className="status-pill pending" style={{ marginLeft: 8 }}>Anulado</span>}
@@ -635,11 +716,12 @@ function DashPayments() {
                   <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>
                     {fmtFecha(r.fecha, '')}{r.medioPago ? ` · ${nombreMedioPago(r.medioPago)}` : ''}
                   </div>
-                </div>
+                </button>
                 <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 18, textDecoration: anulado ? 'line-through' : 'none' }}>
                   {eurRec(r.importe)}
                 </div>
-              </button>
+                <BotonesRecibo id={r.id} />
+              </div>
               {open && (
                 <div style={{ padding: '0 0 14px', display: 'grid', gap: 6 }}>
                   {r.lineas.length === 0 && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Sin detalle disponible.</p>}
@@ -799,6 +881,11 @@ function DashCamp() {
                       <span style={{ background: 'var(--bg-2)', color: 'var(--ink-2)', fontWeight: 700, padding: '2px 8px', borderRadius: 999, border: '1px solid var(--line-2)' }}>
                         {(kid.days || []).length} día{(kid.days || []).length !== 1 ? 's' : ''} elegido{(kid.days || []).length !== 1 ? 's' : ''}
                       </span>
+                      {kid.apuntadoPor && (
+                        <span style={{ background: 'color-mix(in oklab, var(--purple) 12%, transparent)', color: 'var(--purple)', fontWeight: 800, padding: '2px 8px', borderRadius: 999 }}>
+                          Apuntado por {kid.apuntadoPor}
+                        </span>
+                      )}
                       <span style={{ fontWeight: 800, padding: '2px 8px', borderRadius: 999, color: kid.pagado ? 'var(--teal)' : 'var(--orange)', background: `color-mix(in oklab, ${kid.pagado ? 'var(--teal)' : 'var(--orange)'} 12%, var(--bg-2))` }}>
                         {kid.pagado ? 'Pagado' : 'Pago pendiente'}
                       </span>

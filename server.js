@@ -11,6 +11,7 @@ import nodemailer from 'nodemailer';
 import { calcularRecibo, mesAGenerar } from './billing.js';
 import { crearRouterTulClases } from './tul-clases.js';
 import * as redsys from './redsys.js';
+import { generarReciboPdf } from './recibo-pdf.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1275,7 +1276,7 @@ function hourFloat(hhmm) {
 // Convierte filas de grupos (con sessions JSONB) en "slots" de horario (un bloque por
 // día/sesión) en el formato que consume el frontend. Reutilizado por el horario del club
 // y por el horario personal del alumno.
-function buildSlotsFromGroups(rows) {
+function buildSlotsFromGroups(rows, deQuien) {
     const slots = [];
     for (const g of rows) {
         const sessions = Array.isArray(g.sessions) ? g.sessions : [];
@@ -1308,6 +1309,10 @@ function buildSlotsFromGroups(rows) {
                     actName: g.activity_name,
                     minAge: g.min_age ?? null,
                     maxAge: g.max_age ?? null,
+                    // De quién es esta clase: con varios hijos hay que poder
+                    // distinguir de un vistazo a cuál pertenece cada hueco.
+                    alumnoId: g.student_id ?? null,
+                    alumno: deQuien && g.student_id && g.student_id !== deQuien ? g.alumno : null,
                 });
             }
         });
@@ -1379,6 +1384,7 @@ app.get('/api/me/groups', authenticateSession, async (req, res) => {
         // pregunta la familia, «en qué número voy».
         const esp = await pool.query(
             `SELECT e.group_id, g.name AS grupo, a.name AS actividad, e.created_at,
+                    e.student_id, TRIM(CONCAT(us.name, ' ', COALESCE(us.surname, ''))) AS alumno,
                     gp.name AS provisional,
                     (SELECT COUNT(*)::int FROM aim_lista_espera e2
                       WHERE e2.group_id = e.group_id AND e2.estado = 'esperando'
@@ -1388,16 +1394,18 @@ app.get('/api/me/groups', authenticateSession, async (req, res) => {
              FROM aim_lista_espera e
              JOIN tul_groups g ON g.group_id = e.group_id
              JOIN tul_activities a ON a.activity_id = g.activity_id
+             JOIN users us ON us.user_id = e.student_id
              LEFT JOIN tul_groups gp ON gp.group_id = e.grupo_provisional_id
              WHERE e.student_id = ANY($1::uuid[]) AND e.estado = 'esperando' AND a.club_id = $2
              ORDER BY e.created_at`, [fam, AIM_CLUB_ID]
         );
         res.json({
             groups,
-            slots: buildSlotsFromGroups(result.rows),
+            slots: buildSlotsFromGroups(result.rows, userId),
             espera: esp.rows.map(e => ({
                 grupo: e.grupo, actividad: e.actividad, puesto: e.puesto, total: e.total,
                 provisional: e.provisional, desde: e.created_at,
+                alumno: e.student_id !== userId ? e.alumno : null,
             })),
         });
     } catch (err) {
@@ -1850,16 +1858,28 @@ app.get('/api/camp/weeks', async (req, res) => {
 // Usuario: mis niños inscritos (con sus días).
 app.get('/api/camp/children', authenticateSession, async (req, res) => {
     try {
+        // El campamento es de la familia, no de la cuenta que rellenó el
+        // formulario: si el padre apunta a la niña, la madre tiene que verla.
+        // Entra tanto lo que ha apuntado alguien de la familia como los niños
+        // que son de la familia aunque los apuntara otro.
+        const fam = await familiaIds(req.userSession.userId);
         const result = await pool.query(
-            `SELECT c.*, COALESCE(json_agg(to_char(d.day,'YYYY-MM-DD') ORDER BY d.day) FILTER (WHERE d.id IS NOT NULL), '[]') AS days
+            `SELECT c.*, COALESCE(json_agg(to_char(d.day,'YYYY-MM-DD') ORDER BY d.day) FILTER (WHERE d.id IS NOT NULL), '[]') AS days,
+                    TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS apuntado_por_nombre
              FROM aim_camp_children c
              LEFT JOIN aim_camp_child_days d ON d.child_id = c.id
-             WHERE c.user_id = $1
-             GROUP BY c.id ORDER BY c.created_at ASC`,
-            [String(req.userSession.userId)]
+             LEFT JOIN users u ON u.user_id::text = c.user_id
+             WHERE c.user_id = ANY($1::text[]) OR c.alumno_id = ANY($2::uuid[])
+             GROUP BY c.id, u.name, u.surname ORDER BY c.created_at ASC`,
+            [fam.map(String), fam]
         );
+        const yo = String(req.userSession.userId);
         res.set('Cache-Control', 'no-store');
-        res.json(result.rows.map(mapCampChild));
+        res.json(result.rows.map(c => ({
+            ...mapCampChild(c),
+            // Solo se dice quién lo apuntó cuando no fue quien está mirando.
+            apuntadoPor: String(c.user_id) === yo ? null : c.apuntado_por_nombre,
+        })));
     } catch (err) {
         console.error('Error fetching camp children:', err);
         res.status(500).json({ error: err.message });
@@ -4191,8 +4211,8 @@ app.post('/api/me/pagos/iniciar', authenticateSession, async (req, res) => {
             DS_MERCHANT_TRANSACTIONTYPE: redsys.TIPO.autorizacion,
             DS_MERCHANT_TERMINAL: cfg.terminal,
             DS_MERCHANT_MERCHANTURL: `${base}/api/pagos/redsys/notificacion`,
-            DS_MERCHANT_URLOK: `${base}/pago/ok?p=${pedido}`,
-            DS_MERCHANT_URLKO: `${base}/pago/ko?p=${pedido}`,
+            DS_MERCHANT_URLOK: `${base}/dashboard/pagos?p=${pedido}`,
+            DS_MERCHANT_URLKO: `${base}/dashboard/pagos?p=${pedido}`,
             DS_MERCHANT_PRODUCTDESCRIPTION: concepto,
             // Con esto Redsys nos devuelve la referencia para cobrar los meses
             // siguientes sin que el titular esté delante.
@@ -4337,6 +4357,39 @@ app.post('/api/pagos/redsys/notificacion', async (req, res) => {
     } finally { client.release(); }
 });
 
+// Un recibo concreto de la familia, en PDF. Solo los suyos: se comprueba que el
+// recibo sea de esta persona o de alguien de su familia antes de darlo.
+async function reciboDeLaFamilia(reciboId, userId) {
+    const fam = await familiaIds(userId);
+    const r = await pool.query(
+        `SELECT 1 FROM aim_recibos rc
+         WHERE rc.id = $1 AND (rc.pagador_id = ANY($2::uuid[])
+           OR rc.id IN (SELECT recibo_id FROM aim_cargos WHERE cliente_id = ANY($2::uuid[]) AND recibo_id IS NOT NULL))`,
+        [reciboId, fam]);
+    return r.rowCount > 0;
+}
+
+app.get('/api/me/recibos/:id/pdf', authenticateSession, async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).send('recibo no válido');
+    try {
+        if (!await reciboDeLaFamilia(id, req.userSession.userId)) {
+            return res.status(404).send('Ese recibo no es tuyo.');
+        }
+        const t = await ticketDeRecibo(id);
+        if (!t) return res.status(404).send('Recibo no encontrado.');
+        const nombre = `recibo-${t.recibo.serie || 'A'}-${t.recibo.numero}.pdf`;
+        res.setHeader('Content-Type', 'application/pdf');
+        // Con ?descargar=1 el navegador lo guarda en vez de enseñarlo.
+        res.setHeader('Content-Disposition',
+            `${req.query.descargar ? 'attachment' : 'inline'}; filename="${nombre}"`);
+        generarReciboPdf(t, res);
+    } catch (err) {
+        console.error('[RECIBO PDF]', err);
+        res.status(500).send('No se ha podido generar el recibo.');
+    }
+});
+
 // Lo que una familia tiene pendiente de mirar: la campanita de su zona. Solo
 // entra lo que le pide algo (pagar, contestar, enterarse de una plaza), no un
 // resumen de todo, que para eso está el panel.
@@ -4417,12 +4470,19 @@ app.get('/api/me/notificaciones', authenticateSession, async (req, res) => {
 app.get('/api/me/pagos/:pedido', authenticateSession, async (req, res) => {
     try {
         const r = await pool.query(
-            `SELECT p.pedido, p.importe, p.estado, p.motivo, p.pagado_at, r.numero AS recibo
+            `SELECT p.pedido, p.importe, p.estado, p.motivo, p.pagado_at,
+                    r.numero, r.serie, r.fecha, r.tipo, r.id AS "reciboId"
              FROM aim_tpv_pagos p LEFT JOIN aim_recibos r ON r.id = p.recibo_id
              WHERE p.pedido = $1 AND p.pagador_id = $2`, [req.params.pedido, req.userSession.userId]);
         if (!r.rowCount) return res.status(404).json({ error: 'Ese pago no existe.' });
+        const x = r.rows[0];
         res.set('Cache-Control', 'no-store');
-        res.json({ ...r.rows[0], importe: Number(r.rows[0].importe) });
+        res.json({
+            pedido: x.pedido, importe: Number(x.importe), estado: x.estado,
+            motivo: x.motivo, pagado_at: x.pagado_at, reciboId: x.reciboId,
+            // El número tal y como lo ve la familia en su lista de recibos.
+            recibo: x.numero != null ? numeroVisible(x) : null,
+        });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -4481,6 +4541,8 @@ app.get('/api/me/recibos', authenticateSession, async (req, res) => {
         }
         res.set('Cache-Control', 'no-store');
         res.json(r.rows.map(rc => ({
+            // El id hace falta para pedir su PDF.
+            id: rc.id,
             numero: numeroVisible(rc), tipo: rc.tipo, fecha: rc.fecha, importe: Number(rc.importe ?? 0),
             medioPago: rc.medio_pago, estado: rc.estado,
             pagador: rc.name ? `${rc.name} ${rc.surname}` : '',
