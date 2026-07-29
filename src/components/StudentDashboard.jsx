@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { I } from './Icons.jsx';
 import { useEnVivo } from '../envivo.js';
+import Campanita from './Campanita.jsx';
 import { AimLogo, ACT_BY_ID, CampDayPicker, campFmtLong, nombreMedioPago } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 import { UserSupport } from './AdminSupport.jsx';
@@ -912,43 +913,6 @@ function timeAgo(dateStr) {
   return `Hace ${Math.floor(d / 7)} semana${Math.floor(d / 7) > 1 ? "s" : ""}`;
 }
 
-function DashNews() {
-  const [posts, setPosts] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    fetch('/api/posts?limit=10')
-      .then(r => r.ok ? r.json() : [])
-      .then(data => { setPosts(data); setLoading(false); })
-      .catch(() => setLoading(false));
-  }, []);
-
-  return (
-    <div className="panel">
-      <h2><I.Bell /> Avisos del club</h2>
-      <p className="sub">Últimas noticias y comunicaciones del club.</p>
-      {loading && <p style={{color: "var(--ink-3)", fontSize: 14}}>Cargando...</p>}
-      {!loading && posts.length === 0 && <p style={{color: "var(--ink-3)", fontSize: 14}}>No hay noticias publicadas.</p>}
-      {posts.map((n, i) => {
-        const color = CAT_COLOR[n.category] || "var(--purple)";
-        return (
-          <div key={n.id} style={{display: "flex", gap: 14, padding: "18px 0", borderBottom: i < posts.length - 1 ? "1px solid var(--line-2)" : "0"}}>
-            <div style={{width: 8, height: 8, borderRadius: "50%", background: color, marginTop: 8, flexShrink: 0}} />
-            <div style={{flex: 1}}>
-              <div style={{display: "flex", justifyContent: "space-between", marginBottom: 6}}>
-                <span style={{fontSize: 10, fontWeight: 800, letterSpacing: ".12em", textTransform: "uppercase", color}}>{n.category || "Aim"}</span>
-                <span style={{fontSize: 11, color: "var(--ink-3)"}}>{timeAgo(n.published_at || n.created_at)}</span>
-              </div>
-              <h4 style={{margin: "0 0 4px", fontSize: 15, fontWeight: 700, color: "var(--ink)"}}>{n.title}</h4>
-              {n.excerpt && <p style={{margin: 0, fontSize: 14, color: "var(--ink-2)", lineHeight: 1.5}}>{n.excerpt}</p>}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 function DashProfile({ user }) {
   return (
     <div className="panel">
@@ -1013,7 +977,6 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
     { id: "attendance", label: "Asistencia", icon: <I.Check /> },
     { id: "payments", label: "Pagos y recibos", icon: <I.Wallet /> },
     { id: "wallet", label: "Mi cartera", icon: <I.CreditCard /> },
-    { id: "news", label: "Avisos del club", icon: <I.Bell /> },
   ];
   const settingsItems = [
     { id: "profile", label: "Perfil", icon: <I.User /> },
@@ -1044,7 +1007,6 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
               <button key={it.id} className={view === it.id ? "is-active" : ""} onClick={() => navTo(it.id)}>
                 <span className="ico">{it.icon}</span>
                 <span>{it.label}</span>
-                {it.id === "news" && <span className="dot" style={{background: "var(--teal)"}}/>}
               </button>
             ))}
             <div className="heading">Cuenta</div>
@@ -1091,7 +1053,8 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
               </div>
             </div>
             <div style={{display: "flex", gap: 12, alignItems: "center"}}>
-              <button className="btn btn-icon" aria-label="Notificaciones"><I.Bell /></button>
+              <Campanita url="/api/me/notificaciones" onIr={(destino) => navTo(destino)}
+                vacio="No tienes nada pendiente ahora mismo." />
               <div className="avatar">{initials}</div>
             </div>
           </div>
@@ -1102,7 +1065,6 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
           {view === "attendance" && <DashAttendance />}
           {view === "payments" && <DashPayments />}
           {view === "wallet" && <DashWallet />}
-          {view === "news" && <DashNews />}
           {view === "profile" && <DashProfile user={user} />}
           {view === "settings" && <DashSettings />}
           {view === "support" && <UserSupport user={user} />}

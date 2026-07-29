@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { I } from './Icons.jsx';
+import { useEnVivo } from '../envivo.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Campanita de avisos: lo que hay pendiente de atender ahora mismo, agrupado
@@ -13,6 +14,10 @@ const COLOR = {
   caja: 'var(--orange)',
   campamento: '#00BBF4',
   clases: '#FF99D3',
+  // Los de la zona de familias.
+  pagos: 'var(--orange)',
+  soporte: 'var(--purple)',
+  avisos: '#00BBF4',
 };
 const TITULO = {
   tickets: 'Soporte',
@@ -20,25 +25,28 @@ const TITULO = {
   caja: 'Caja',
   campamento: 'Campamento',
   clases: 'Clases',
+  pagos: 'Pagos',
+  soporte: 'Soporte',
+  avisos: 'Del club',
 };
 
-export default function Campanita({ onIr }) {
+// La misma campanita para el panel y para la zona de familias: cambia de dónde
+// saca los avisos y a dónde lleva cada uno.
+export default function Campanita({ onIr, url = '/api/admin/notificaciones', vacio = 'Nada pendiente. Todo al día.' }) {
   const [datos, setDatos] = useState(null);
   const [abierta, setAbierta] = useState(false);
   const caja = useRef(null);
 
   const cargar = useCallback(async () => {
     try {
-      const r = await fetch('/api/admin/notificaciones', { credentials: 'include' });
+      const r = await fetch(url, { credentials: 'include', cache: 'no-store' });
       if (r.ok) setDatos(await r.json());
     } catch { /* noop */ }
-  }, []);
+  }, [url]);
 
-  useEffect(() => {
-    cargar();
-    const t = setInterval(cargar, 5 * 60 * 1000);
-    return () => clearInterval(t);
-  }, [cargar]);
+  useEffect(() => { cargar(); }, [cargar]);
+  // Se mantiene al día sola, sin que nadie recargue.
+  useEnVivo(cargar, { cada: 30000 });
 
   // Cerrar al pulsar fuera.
   useEffect(() => {
@@ -82,9 +90,7 @@ export default function Campanita({ onIr }) {
           </div>
 
           {!avisos.length && (
-            <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>
-              Nada pendiente. Todo al día.
-            </p>
+            <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>{vacio}</p>
           )}
 
           {Object.entries(porTipo).map(([tipo, lista]) => (

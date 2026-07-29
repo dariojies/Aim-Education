@@ -4337,6 +4337,82 @@ app.post('/api/pagos/redsys/notificacion', async (req, res) => {
     } finally { client.release(); }
 });
 
+// Lo que una familia tiene pendiente de mirar: la campanita de su zona. Solo
+// entra lo que le pide algo (pagar, contestar, enterarse de una plaza), no un
+// resumen de todo, que para eso está el panel.
+app.get('/api/me/notificaciones', authenticateSession, async (req, res) => {
+    const me = req.userSession.userId;
+    try {
+        const fam = await familiaIds(me);
+        const avisos = [];
+
+        // 1) Lo que hay por pagar, contando lo de toda la familia.
+        const cargos = await cargosPendientesDe(me);
+        if (cargos.length) {
+            const calc = calcularRecibo(cargos.map(cargoParaMotor));
+            avisos.push({
+                tipo: 'pagos', destino: 'payments',
+                texto: `Tienes ${calc.total.toFixed(2)} € por pagar`,
+                detalle: cargos.length === 1 ? cargos[0].descripcion : `${cargos.length} recibos pendientes`,
+            });
+        }
+
+        // 2) Plazas de la lista de espera: si ya le toca, es lo más urgente.
+        const esp = await pool.query(
+            `SELECT g.name AS grupo, a.name AS actividad, g.max_students,
+                    TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno,
+                    (SELECT COUNT(*)::int FROM aim_lista_espera e2
+                      WHERE e2.group_id = e.group_id AND e2.estado = 'esperando'
+                        AND e2.created_at <= e.created_at) AS puesto,
+                    (SELECT COUNT(*)::int FROM tul_group_students gs WHERE gs.group_id = e.group_id) AS ocupadas
+             FROM aim_lista_espera e
+             JOIN tul_groups g ON g.group_id = e.group_id
+             JOIN tul_activities a ON a.activity_id = g.activity_id
+             JOIN users u ON u.user_id = e.student_id
+             WHERE e.student_id = ANY($1::uuid[]) AND e.estado = 'esperando' AND a.club_id = $2`,
+            [fam, AIM_CLUB_ID]);
+        for (const e of esp.rows) {
+            const libres = e.max_students ? e.max_students - e.ocupadas : null;
+            const leToca = libres != null && libres >= e.puesto;
+            avisos.push({
+                tipo: 'clases', destino: 'classes',
+                texto: leToca
+                    ? `Hay plaza en ${e.grupo} para ${e.alumno}`
+                    : `${e.alumno} está ${e.puesto}º en la lista de ${e.grupo}`,
+                detalle: e.actividad,
+            });
+        }
+
+        // 3) Tickets de soporte con respuesta del club sin leer por su parte.
+        const tk = await pool.query(
+            `SELECT t.id, t.subject,
+                    (SELECT MAX(m.created_at) FROM tickets_mensajes m
+                      WHERE m.ticket_id = t.id AND m.canal = 'creador' AND m.autor_id IS DISTINCT FROM $1) AS ultima
+             FROM tickets_registrosoporte t
+             WHERE t.user_id = $1 AND t.status <> 'done'`, [me]);
+        for (const t of tk.rows) {
+            if (!t.ultima) continue;
+            avisos.push({
+                tipo: 'soporte', destino: 'support',
+                texto: `Te han contestado en soporte`,
+                detalle: t.subject,
+            });
+        }
+
+        // 4) Novedades del club de los últimos quince días.
+        const posts = await pool.query(
+            `SELECT title, published_at FROM aim_education_posts
+             WHERE status = 'published' AND published_at > NOW() - INTERVAL '15 days'
+             ORDER BY published_at DESC LIMIT 3`);
+        for (const n of posts.rows) {
+            avisos.push({ tipo: 'avisos', destino: 'overview', texto: n.title, detalle: 'Aviso del club' });
+        }
+
+        res.set('Cache-Control', 'no-store');
+        res.json({ avisos });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Estado de un pago, para la pantalla de vuelta. La familia solo ve los suyos.
 app.get('/api/me/pagos/:pedido', authenticateSession, async (req, res) => {
     try {
