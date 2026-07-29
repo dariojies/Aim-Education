@@ -5,12 +5,39 @@ import { useRouter } from '../App.jsx';
 import { UserSupport } from './AdminSupport.jsx';
 import { fmtFecha } from '../fechas.js';
 
-function EmptyState({ icon, text }) {
+function EmptyState({ icon, text, accion, onAccion }) {
   return (
-    <div style={{display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, padding: "44px 20px", color: "var(--ink-3)", textAlign: "center"}}>
-      {icon && <div style={{opacity: .45, transform: "scale(1.5)"}}>{icon}</div>}
-      <p style={{margin: 0, fontSize: 14, maxWidth: 360, lineHeight: 1.5}}>{text}</p>
+    <div style={{display: "flex", alignItems: "center", gap: 14, padding: "18px 16px", color: "var(--ink-3)",
+                 background: "var(--bg-3)", border: "1px dashed var(--line)", borderRadius: 14}}>
+      {icon && <span style={{opacity: .5, flexShrink: 0, display: "grid", placeItems: "center"}}>{icon}</span>}
+      <p style={{margin: 0, fontSize: 14, lineHeight: 1.5, flex: 1, minWidth: 0}}>{text}</p>
+      {accion && (
+        <button className="btn btn-brand btn-sm" style={{flexShrink: 0}} onClick={onAccion}>{accion}</button>
+      )}
     </div>
+  );
+}
+
+// Acceso rápido a lo que más se hace, igual que en el panel de admin.
+function AccesoRapido({ titulo, desc, color, icon, onClick }) {
+  return (
+    <button onClick={onClick} style={{
+      background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 18, padding: 20,
+      cursor: "pointer", textAlign: "left", fontFamily: "inherit", display: "flex", gap: 14,
+      alignItems: "flex-start", width: "100%",
+      transition: "transform var(--tx-base) ease, box-shadow var(--tx-base) ease, border-color var(--tx-base) ease",
+    }}
+      onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-3px)"; e.currentTarget.style.boxShadow = "var(--shadow)"; e.currentTarget.style.borderColor = "transparent"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.borderColor = "var(--line)"; }}>
+      <span style={{
+        width: 44, height: 44, borderRadius: 12, flexShrink: 0, display: "grid", placeItems: "center",
+        background: `color-mix(in oklab, ${color} 16%, var(--bg-2))`, color,
+      }}>{icon}</span>
+      <span style={{minWidth: 0}}>
+        <span style={{display: "block", fontWeight: 800, fontSize: 15, color: "var(--ink)"}}>{titulo}</span>
+        <span style={{display: "block", fontSize: 13, color: "var(--ink-3)", marginTop: 4, lineHeight: 1.45}}>{desc}</span>
+      </span>
+    </button>
   );
 }
 
@@ -56,26 +83,31 @@ function DashOverview({ go, setView }) {
   return (
     <>
       <div className="dash-cards" style={{gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))"}}>
-        <div className="stat-card act-taekwondo">
-          <div className="corner"><I.Calendar /></div>
+        <div className="stat-card">
+          <div className="corner" style={{color: "#5233A8"}}><I.Calendar /></div>
           <div className="l">Clases de la familia</div>
           <div className="v">{groups.length}</div>
-          <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>{groups.length === 1 ? "grupo matriculado" : "grupos matriculados"}</div>
-        </div>
-        <div className="stat-card act-ballet">
-          <div className="corner"><I.Check /></div>
-          <div className="l">Asistencia</div>
-          <div className="v">{attPct != null ? `${attPct}%` : "—"}</div>
-          <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>{attPct != null ? "del trimestre" : "sin registros aún"}</div>
+          <div className="trend" style={{background: "color-mix(in oklab, #5233A8 14%, var(--bg-2))", color: "#5233A8"}}>
+            {groups.length === 1 ? "1 grupo matriculado" : `${groups.length} grupos matriculados`}
+          </div>
         </div>
         <div className="stat-card">
-          <div className="corner"><I.Wallet /></div>
+          <div className="corner" style={{color: "#DB7093"}}><I.Check /></div>
+          <div className="l">Asistencia</div>
+          <div className="v">{attPct != null ? `${attPct}%` : "—"}</div>
+          <div className="trend" style={{background: "color-mix(in oklab, #DB7093 14%, var(--bg-2))", color: "#DB7093"}}>
+            {attPct != null ? "del trimestre" : "sin registros aún"}
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="corner" style={{color: pendiente > 0 ? "var(--orange)" : "var(--teal)"}}><I.Wallet /></div>
           <div className="l">Pendiente de pago</div>
           <div className="v">{pendiente > 0 ? `${pendiente.toFixed(2)} €` : "0 €"}</div>
-          <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>
-            {pendiente > 0
-              ? <button onClick={() => go("/dashboard/pagos")} style={{background: "none", border: 0, padding: 0, font: "inherit", color: "var(--purple)", fontWeight: 700, cursor: "pointer"}}>Pagar ahora →</button>
-              : "todo al día"}
+          <div className="trend" style={{
+            background: `color-mix(in oklab, ${pendiente > 0 ? "var(--orange)" : "var(--teal)"} 14%, var(--bg-2))`,
+            color: pendiente > 0 ? "var(--orange)" : "var(--teal)",
+          }}>
+            {pendiente > 0 ? "hay recibos que pagar" : "todo al día"}
           </div>
         </div>
       </div>
@@ -86,7 +118,9 @@ function DashOverview({ go, setView }) {
         {loading ? (
           <EmptyState text="Cargando horario..." />
         ) : weekClasses.length === 0 ? (
-          <EmptyState icon={<I.Calendar />} text="Todavía no hay ninguna clase apuntada en la familia." />
+          <EmptyState icon={<I.Calendar />}
+            text="Todavía no hay ninguna clase apuntada en la familia. Mira lo que hacemos y habla con el club para apuntaros."
+            accion="Ver actividades" onAccion={() => go("/actividades")} />
         ) : (
           <div className="classes-grid">
             {weekClasses.map((c) => {
@@ -155,6 +189,23 @@ function DashOverview({ go, setView }) {
             </div>
           )}
         </div>
+      </div>
+
+      {/* Los atajos a lo que más se hace, como los del panel de admin. */}
+      <div style={{display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16, marginTop: 22}}>
+        <AccesoRapido
+          titulo={pendiente > 0 ? "Pagar mis recibos" : "Mis recibos"}
+          desc={pendiente > 0 ? `Tienes ${pendiente.toFixed(2)} € pendientes de pago.` : "Consulta y descarga tus recibos."}
+          color={pendiente > 0 ? "var(--orange)" : "var(--teal)"}
+          icon={<I.Wallet />} onClick={() => setView("payments")} />
+        <AccesoRapido
+          titulo="Campamento de verano"
+          desc="Apunta a los tuyos y consulta los días."
+          color="#F99B35" icon={<I.Sun />} onClick={() => setView("camp")} />
+        <AccesoRapido
+          titulo="¿Necesitas ayuda?"
+          desc="Escribe al club y te contestamos por aquí."
+          color="#5233A8" icon={<I.Shield />} onClick={() => setView("support")} />
       </div>
     </>
   );
