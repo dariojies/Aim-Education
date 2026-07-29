@@ -22,6 +22,7 @@ function DashOverview({ go, setView }) {
   const [attendance, setAttendance] = useState([]);
   const [posts, setPosts] = useState([]);
   const [recibos, setRecibos] = useState([]);
+  const [pendiente, setPendiente] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -30,12 +31,14 @@ function DashOverview({ go, setView }) {
       fetch('/api/me/attendance', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
       fetch('/api/posts?limit=3').then(r => r.ok ? r.json() : []),
       fetch('/api/me/recibos', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
-    ]).then(([g, at, p, rc]) => {
+      fetch('/api/me/cargos', { credentials: 'include', cache: 'no-store' }).then(r => r.ok ? r.json() : null),
+    ]).then(([g, at, p, rc, cg]) => {
       setGroups(g.groups || []);
       setSlots(g.slots || []);
       setAttendance(Array.isArray(at) ? at : []);
       setPosts(Array.isArray(p) ? p : []);
       setRecibos(Array.isArray(rc) ? rc : []);
+      setPendiente(Number(cg?.total || 0));
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
@@ -52,28 +55,38 @@ function DashOverview({ go, setView }) {
 
   return (
     <>
-      <div className="dash-cards" style={{gridTemplateColumns: "repeat(2, 1fr)"}}>
+      <div className="dash-cards" style={{gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))"}}>
         <div className="stat-card act-taekwondo">
           <div className="corner"><I.Calendar /></div>
-          <div className="l">Mis clases</div>
+          <div className="l">Clases de la familia</div>
           <div className="v">{groups.length}</div>
           <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>{groups.length === 1 ? "grupo matriculado" : "grupos matriculados"}</div>
         </div>
         <div className="stat-card act-ballet">
           <div className="corner"><I.Check /></div>
-          <div className="l">Mi asistencia</div>
+          <div className="l">Asistencia</div>
           <div className="v">{attPct != null ? `${attPct}%` : "—"}</div>
           <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>{attPct != null ? "del trimestre" : "sin registros aún"}</div>
+        </div>
+        <div className="stat-card">
+          <div className="corner"><I.Wallet /></div>
+          <div className="l">Pendiente de pago</div>
+          <div className="v">{pendiente > 0 ? `${pendiente.toFixed(2)} €` : "0 €"}</div>
+          <div style={{marginTop: 8, fontSize: 13, color: "var(--ink-2)"}}>
+            {pendiente > 0
+              ? <button onClick={() => go("/dashboard/pagos")} style={{background: "none", border: 0, padding: 0, font: "inherit", color: "var(--purple)", fontWeight: 700, cursor: "pointer"}}>Pagar ahora →</button>
+              : "todo al día"}
+          </div>
         </div>
       </div>
 
       <div className="panel">
-        <h2><I.Calendar /> Mi horario de esta semana</h2>
-        <p className="sub">Tus clases programadas.</p>
+        <h2><I.Calendar /> El horario de esta semana</h2>
+        <p className="sub">Las clases de la familia, día a día.</p>
         {loading ? (
           <EmptyState text="Cargando horario..." />
         ) : weekClasses.length === 0 ? (
-          <EmptyState icon={<I.Calendar />} text="No estás matriculado/a en ninguna clase todavía." />
+          <EmptyState icon={<I.Calendar />} text="Todavía no hay ninguna clase apuntada en la familia." />
         ) : (
           <div className="classes-grid">
             {weekClasses.map((c) => {
@@ -956,7 +969,10 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
       {sidebarOpen && <div className="dash-overlay" onClick={() => setSidebarOpen(false)} />}
       <div className="dash-layout">
         <aside className={`dash-side${sidebarOpen ? ' is-open' : ''}`}>
-          <div className="brand"><AimLogo size="sm" sub /></div>
+          <div className="brand">
+            <AimLogo size="sm" auto onClick={() => go("/")} />
+            <div className="role">Zona de familias</div>
+          </div>
 
           <nav className="dash-nav">
             <div className="heading">{familyLabel}</div>
@@ -1002,7 +1018,11 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
                 <p style={{margin: 0, fontSize: 13, color: "var(--ink-3)", fontWeight: 600, letterSpacing: ".06em", textTransform: "uppercase"}}>
                   {navItems.concat(settingsItems).find(i => i.id === view)?.label || "Resumen"}
                 </p>
-                <h1>{view === "overview" ? `¡Hola ${user?.firstName || ""}!` : navItems.concat(settingsItems).find(i => i.id === view)?.label}</h1>
+                <h1>
+                  {view === "overview"
+                    ? <>{"¡Hola "}<span className="grad">{user?.firstName || ""}</span>!</>
+                    : navItems.concat(settingsItems).find(i => i.id === view)?.label}
+                </h1>
                 {view === "overview" && <p style={{margin: "6px 0 0", color: "var(--ink-3)"}}>Este es el resumen de tu familia esta semana.</p>}
               </div>
             </div>

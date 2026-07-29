@@ -127,8 +127,19 @@ const ACTIVITIES = [
 const ACT_BY_ID = Object.fromEntries(ACTIVITIES.map(a => [a.id, a]));
 
 // ---------- Aim logo (real brand asset) ----------
-function AimLogo({ size = "md", variant = "black", sub = false, onClick }) {
+function AimLogo({ size = "md", variant = "black", sub = false, auto = false, onClick }) {
   const cls = size === "sm" ? "sm" : size === "lg" ? "lg" : size === "xl" ? "xl" : "";
+  const estilo = { cursor: onClick ? "pointer" : "default" };
+  // 'auto' pinta las dos versiones y deja que el CSS elija según el tema: sobre
+  // fondo claro la normal y sobre oscuro la blanca.
+  if (auto) {
+    return (
+      <span className="aim-logo-auto" onClick={onClick} style={estilo}>
+        <img src="/src/brand/Aim_Horizontal.png" alt="Aim Education" className={`aim-logo ${cls} solo-claro`} />
+        <img src="/src/brand/Aim_White.png" alt="" aria-hidden="true" className={`aim-logo ${cls} solo-oscuro`} />
+      </span>
+    );
+  }
   const src = (variant === "white" || sub)
     ? "/src/brand/Aim_White.png"
     : "/src/brand/Aim_Horizontal.png";
@@ -138,7 +149,7 @@ function AimLogo({ size = "md", variant = "black", sub = false, onClick }) {
       alt="Aim Education"
       className={`aim-logo ${cls}`}
       onClick={onClick}
-      style={{ cursor: onClick ? "pointer" : "default" }}
+      style={estilo}
     />
   );
 }
@@ -209,7 +220,7 @@ function AimHeader({ route } = {}) {
               {/* Quien trabaja en el club también puede ser familia: desde aquí
                   entra a lo suyo sin pasar por el panel. */}
               {user.canAccessAdmin && (
-                <button className="btn btn-outline" onClick={() => go('/dashboard')}>Perfil</button>
+                <button className="btn btn-brand" onClick={() => go('/dashboard')}>Perfil</button>
               )}
               <button className="btn btn-gradient" onClick={() => go(user.canAccessAdmin ? '/admin' : '/dashboard')}>
                 {user.canAccessAdmin ? 'Panel Admin' : 'Mi cuenta'}
