@@ -1,11 +1,12 @@
 import PDFDocument from 'pdfkit';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// El recibo en PDF, tal y como lo recibe la familia.
+// La factura en PDF, tal y como la recibe la familia.
 //
-// Lleva los mismos datos que el ticket que se imprime en el mostrador: emisor,
-// número, fecha, líneas con su IVA, las bases por tipo y el total. Se dibuja a
-// mano con pdfkit para no depender de que el navegador imprima bien.
+// Lleva lo que una factura tiene que llevar: los datos del emisor y también los
+// del destinatario (nombre, NIF y domicilio), el número, la fecha, las líneas
+// con su IVA, las bases por tipo y el total. Se dibuja a mano con pdfkit para no
+// depender de que el navegador imprima bien.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const eur = (n) => `${Number(n || 0).toFixed(2)} €`;
@@ -19,7 +20,7 @@ const SUAVE = '#6B7280';
 
 export function generarReciboPdf(t, salida) {
     const doc = new PDFDocument({ size: 'A4', margin: 50, info: {
-        Title: `Recibo ${t.recibo.numero}`,
+        Title: `Factura ${t.recibo.numero}`,
         Author: t.empresa?.nombre || 'AIM Education',
     } });
     doc.pipe(salida);
@@ -37,23 +38,22 @@ export function generarReciboPdf(t, salida) {
         if (linea) doc.text(linea, izq, doc.y);
     }
 
-    // Franja de color de la marca, para que no parezca un folio cualquiera.
+    // Línea con el degradado de la marca, del morado al verde sin cortes. Antes
+    // eran cuatro trozos de color pegados y se notaba el salto.
     const yFranja = doc.y + 10;
-    const tramos = [['#5233A8', 0], ['#FF99D3', .3], ['#FFD526', .6], ['#21B668', .8]];
-    tramos.forEach(([color, desde], i) => {
-        const hasta = i + 1 < tramos.length ? tramos[i + 1][1] : 1;
-        doc.rect(izq + ancho * desde, yFranja, ancho * (hasta - desde), 3).fill(color);
-    });
+    const degradado = doc.linearGradient(izq, yFranja, izq + ancho, yFranja);
+    degradado.stop(0, '#5233A8').stop(.3, '#FF99D3').stop(.6, '#FFD526').stop(1, '#21B668');
+    doc.rect(izq, yFranja, ancho, 3).fill(degradado);
 
     let y = yFranja + 22;
     doc.fillColor(TINTA).font('Helvetica-Bold').fontSize(15)
-        .text(rect ? 'Factura rectificativa' : 'Recibo', izq, y);
+        .text(rect ? 'Factura rectificativa' : 'Factura', izq, y);
     y = doc.y + 6;
 
     if (anulado) {
         doc.rect(izq, y, ancho, 22).fillAndStroke('#FEE', '#C00');
         doc.fillColor('#C00').font('Helvetica-Bold').fontSize(10)
-            .text('RECIBO ANULADO', izq, y + 6, { width: ancho, align: 'center' });
+            .text('FACTURA ANULADA', izq, y + 6, { width: ancho, align: 'center' });
         y += 32;
     }
 
@@ -62,7 +62,6 @@ export function generarReciboPdf(t, salida) {
     const datos = [
         ['Número', `${t.recibo.serie || 'A'}-${t.recibo.numero}`],
         ['Fecha', fecha(t.recibo.fecha)],
-        ['Pagador', t.recibo.pagador || '—'],
         ['Forma de pago', nombreMedio(t.recibo.medioPago)],
     ];
     for (const [k, v] of datos) {
@@ -71,6 +70,33 @@ export function generarReciboPdf(t, salida) {
         doc.font('Helvetica');
         y += 16;
     }
+
+    // ── Destinatario ──
+    // Sin NIF o sin domicilio la factura no está completa, así que se dice a las
+    // claras en vez de dejar el hueco en blanco.
+    y += 10;
+    doc.rect(izq, y, ancho, 1).fill('#E5E7EB');
+    y += 12;
+    doc.fillColor(SUAVE).fontSize(9).font('Helvetica-Bold').text('FACTURAR A', izq, y);
+    y += 14;
+    doc.fillColor(TINTA).fontSize(11).font('Helvetica-Bold').text(t.recibo.pagador || '—', izq, y, { width: ancho });
+    y = doc.y + 2;
+    doc.font('Helvetica').fontSize(10);
+    const falta = [];
+    if (t.recibo.pagadorDni) {
+        doc.fillColor(TINTA).text(`NIF: ${t.recibo.pagadorDni}`, izq, y, { width: ancho });
+        y = doc.y;
+    } else { falta.push('el NIF'); }
+    if (t.recibo.pagadorDomicilio) {
+        doc.fillColor(TINTA).text(t.recibo.pagadorDomicilio, izq, y, { width: ancho });
+        y = doc.y;
+    } else { falta.push('el domicilio'); }
+    if (falta.length) {
+        doc.fillColor('#C2410C').fontSize(9)
+            .text(`Faltan ${falta.join(' y ')} del pagador en su ficha.`, izq, y, { width: ancho });
+        y = doc.y;
+    }
+    y += 6;
 
     // ── Líneas ──
     y += 12;

@@ -399,9 +399,12 @@ header.aim-header {
   position: relative;
   z-index: 0;
   overflow: hidden;
-  background: #5233A8;
   color: white;
   box-shadow: 0 10px 24px -10px rgba(110, 63, 217, .55);
+  background: linear-gradient(135deg, #5233A8, #FF99D3, #FFD526, #21B668);
+  isolation: isolate;
+  -webkit-mask-image: -webkit-radial-gradient(#fff, #000);
+  mask-image: radial-gradient(#fff, #000);
 }
 
 .btn-gradient::before {
@@ -2050,10 +2053,13 @@ html[data-actaccents="off"] .act-card.solid {
   position: relative;
   z-index: 0;
   overflow: hidden;
-  background: #5233A8;
   color: #fff;
   font-weight: 700;
   box-shadow: 0 8px 20px -10px rgba(110, 63, 217, .75);
+  background: linear-gradient(135deg, #5233A8, #FF99D3, #FFD526, #21B668);
+  isolation: isolate;
+  -webkit-mask-image: -webkit-radial-gradient(#fff, #000);
+  mask-image: radial-gradient(#fff, #000);
 }
 
 .dash-nav a.is-active::before,
@@ -2532,8 +2538,11 @@ html[data-theme="dark"] .dash-nav button.is-active {
   position: relative;
   z-index: 0;
   overflow: hidden;
-  background: #5233A8;
   color: white;
+  background: linear-gradient(135deg, #5233A8, #FF99D3, #FFD526, #21B668);
+  isolation: isolate;
+  -webkit-mask-image: -webkit-radial-gradient(#fff, #000);
+  mask-image: radial-gradient(#fff, #000);
 }
 
 .admin-nav button.is-active::before {

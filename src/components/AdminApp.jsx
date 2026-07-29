@@ -4450,6 +4450,28 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
               </div>
             </div>
 
+            {/* Datos fiscales: sin ellos la factura sale incompleta. */}
+            <div className="field-row">
+              <div className="field">
+                <label>DNI / NIF</label>
+                <input value={editingItem.dni || ''} onChange={e => setEditingItem({ ...editingItem, dni: e.target.value })} placeholder="Ej. 12345678Z" />
+              </div>
+              <div className="field">
+                <label>Domicilio</label>
+                <input value={editingItem.domicilio || ''} onChange={e => setEditingItem({ ...editingItem, domicilio: e.target.value })} placeholder="Calle, número, piso" />
+              </div>
+            </div>
+            <div className="field-row">
+              <div className="field">
+                <label>Código postal</label>
+                <input value={editingItem.cp || ''} onChange={e => setEditingItem({ ...editingItem, cp: e.target.value })} placeholder="11201" />
+              </div>
+              <div className="field">
+                <label>Población</label>
+                <input value={editingItem.poblacion || ''} onChange={e => setEditingItem({ ...editingItem, poblacion: e.target.value })} placeholder="Algeciras" />
+              </div>
+            </div>
+
             {activeModal === 'edit-student' && editingItem.id && (
               <div style={{ borderTop: '1px solid var(--line)', paddingTop: 16 }}>
                 <FichaAlumnoClases studentId={editingItem.id} nacimiento={editingItem.birthday}

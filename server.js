@@ -601,6 +601,13 @@ async function initDb() {
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
+        // Datos fiscales de quien paga: una factura los necesita, y hasta ahora
+        // solo se guardaban los del club.
+        await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS dni VARCHAR(20)`);
+        await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS domicilio VARCHAR(200)`);
+        await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS cp VARCHAR(10)`);
+        await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS poblacion VARCHAR(100)`);
+
         // ── TPV virtual (Redsys) ──
         // Un intento de pago online. Se crea ANTES de mandar a la familia a
         // Redsys, porque el número de pedido tiene que ser único para siempre y
@@ -1125,7 +1132,7 @@ app.get('/api/users', authenticateSession, async (req, res) => {
         // una actividad y son alumnos de otra, y se gestionan igual que el resto.
         const result = await pool.query(
             `SELECT user_id, name, surname, email, belt, dev_role, role, profile_picture,
-                    phone, birthday
+                    phone, birthday, dni, domicilio, cp, poblacion
              FROM users
              WHERE club_id = $1 AND role IN ('student', 'instructor', 'club_owner', 'superadmin')
              ORDER BY name, surname`,
@@ -1139,6 +1146,7 @@ app.get('/api/users', authenticateSession, async (req, res) => {
             belt: u.belt,
             phone: u.phone,
             birthday: u.birthday,
+            dni: u.dni, domicilio: u.domicilio, cp: u.cp, poblacion: u.poblacion,
             avatar: u.profile_picture,
             role: u.role,
             esInstructor: (u.role === 'instructor' || u.role === 'club_owner'),
@@ -1180,7 +1188,8 @@ app.post('/api/users', authenticateSession, async (req, res) => {
 });
 
 app.put('/api/users/:id', authenticateSession, async (req, res) => {
-    const { firstName, lastName, email, belt, phone, birthday, isSuperAdmin } = req.body;
+    const { firstName, lastName, email, belt, phone, birthday, isSuperAdmin,
+            dni, domicilio, cp, poblacion } = req.body;
     const { id } = req.params;
     if (!firstName || !email) {
         return res.status(400).json({ error: 'Nombre y email son requeridos.' });
@@ -1203,11 +1212,13 @@ app.put('/api/users/:id', authenticateSession, async (req, res) => {
                           ELSE 'student'
                         END,
                  belt = CASE WHEN $6::boolean THEN $7 ELSE belt END,
-                 phone = $8, birthday = $9
+                 phone = $8, birthday = $9,
+                 dni = $11, domicilio = $12, cp = $13, poblacion = $14
              WHERE user_id = $10`,
             [firstName.trim(), (lastName || '').trim(), emailLower, dev_role,
              !!isSuperAdmin, belt !== undefined, belt || null,
-             phone?.trim() || null, birthday || null, id]
+             phone?.trim() || null, birthday || null, id,
+             dni?.trim() || null, domicilio?.trim() || null, cp?.trim() || null, poblacion?.trim() || null]
         );
         res.json({ id, firstName, lastName, email, belt, isSuperAdmin });
     } catch (err) {
@@ -1977,6 +1988,12 @@ app.put('/api/camp/children/:id', authenticateSession, async (req, res) => {
 
 // Usuario: dar de baja al niño del campamento.
 app.delete('/api/camp/children/:id', authenticateSession, async (req, res) => {
+    // Las familias no dan de baja del campamento: si está inscrito, lo está. La
+    // baja la decide el club, que es quien sabe qué hay cobrado y quién espera
+    // plaza. Se comprueba aquí y no solo escondiendo el botón.
+    if (!req.userSession.canAccessAdmin) {
+        return res.status(403).json({ error: 'Para dar de baja del campamento, habla con el club.' });
+    }
     try {
         const child = await getOwnedChild(req, res);
         if (!child) return;
@@ -3423,7 +3440,7 @@ const numeroVisible = (rec) => {
 // Monta el objeto de ticket (mismo formato que devuelve el cobro).
 async function ticketDeRecibo(reciboId) {
     const r = await pool.query(
-        `SELECT rc.*, u.name, u.surname,
+        `SELECT rc.*, u.name, u.surname, u.dni, u.domicilio, u.cp, u.poblacion,
                 o.numero AS orig_numero, o.serie AS orig_serie, o.fecha AS orig_fecha
          FROM aim_recibos rc
          LEFT JOIN users u ON u.user_id = rc.pagador_id
@@ -3477,7 +3494,11 @@ async function ticketDeRecibo(reciboId) {
     return {
         recibo: {
             id: rec.id, numero: numeroVisible(rec), serie: rec.serie, tipo: rec.tipo, fecha: rec.fecha,
-            pagador: rec.name ? `${rec.name} ${rec.surname}` : '(sin pagador)',
+            pagador: rec.name ? `${rec.name} ${rec.surname || ''}`.trim() : '(sin pagador)',
+            // Datos fiscales de quien recibe la factura, que la ley exige.
+            pagadorDni: rec.dni || null,
+            pagadorDomicilio: [rec.domicilio, [rec.cp, rec.poblacion].filter(Boolean).join(' ')]
+                .filter(Boolean).join(', ') || null,
             medioPago: rec.medio_pago, entregado: Number(rec.entregado ?? 0), cambio: Number(rec.cambio ?? 0),
             total: Number(rec.importe ?? 0), estado: rec.estado,
             anuladoMotivo: rec.anulado_motivo, anuladoAt: rec.anulado_at,
@@ -4393,13 +4414,11 @@ app.post('/api/pagos/redsys/notificacion', async (req, res) => {
 
 // Un recibo concreto de la familia, en PDF. Solo los suyos: se comprueba que el
 // recibo sea de esta persona o de alguien de su familia antes de darlo.
+// La factura la descarga su destinatario y nadie más: lleva sus datos fiscales.
+// El resto de la familia la ve en su lista, pero no se la lleva.
 async function reciboDeLaFamilia(reciboId, userId) {
-    const fam = await familiaIds(userId);
     const r = await pool.query(
-        `SELECT 1 FROM aim_recibos rc
-         WHERE rc.id = $1 AND (rc.pagador_id = ANY($2::uuid[])
-           OR rc.id IN (SELECT recibo_id FROM aim_cargos WHERE cliente_id = ANY($2::uuid[]) AND recibo_id IS NOT NULL))`,
-        [reciboId, fam]);
+        `SELECT 1 FROM aim_recibos WHERE id = $1 AND pagador_id = $2`, [reciboId, userId]);
     return r.rowCount > 0;
 }
 
@@ -4408,7 +4427,7 @@ app.get('/api/me/recibos/:id/pdf', authenticateSession, async (req, res) => {
     if (!Number.isInteger(id)) return res.status(400).send('recibo no válido');
     try {
         if (!await reciboDeLaFamilia(id, req.userSession.userId)) {
-            return res.status(404).send('Ese recibo no es tuyo.');
+            return res.status(403).send('Esa factura está a nombre de otra persona.');
         }
         const t = await ticketDeRecibo(id);
         if (!t) return res.status(404).send('Recibo no encontrado.');
@@ -4540,12 +4559,16 @@ app.get('/api/admin/billing/tpv/online', authenticateSession, requireAdmin, asyn
 app.get('/api/me/recibos', authenticateSession, async (req, res) => {
     const me = req.userSession.userId;
     try {
+        // Si el padre paga la mensualidad de la niña, la madre tiene que saber que
+        // está pagada, aunque la factura sea de él y no pueda descargarla: le
+        // afecta igual. Entra todo lo que toca a alguien de su familia.
+        const fam = await familiaIds(me);
         const r = await pool.query(
             `SELECT rc.*, u.name, u.surname FROM aim_recibos rc
              LEFT JOIN users u ON u.user_id = rc.pagador_id
-             WHERE rc.pagador_id = $1
-                OR rc.id IN (SELECT recibo_id FROM aim_cargos WHERE cliente_id = $1 AND recibo_id IS NOT NULL)
-             ORDER BY rc.numero DESC LIMIT 100`, [me]
+             WHERE rc.pagador_id = ANY($1::uuid[])
+                OR rc.id IN (SELECT recibo_id FROM aim_cargos WHERE cliente_id = ANY($1::uuid[]) AND recibo_id IS NOT NULL)
+             ORDER BY rc.numero DESC LIMIT 100`, [fam]
         );
         const ids = r.rows.map(x => x.id);
         let lineasPorRecibo = {};
@@ -4579,7 +4602,10 @@ app.get('/api/me/recibos', authenticateSession, async (req, res) => {
             id: rc.id,
             numero: numeroVisible(rc), tipo: rc.tipo, fecha: rc.fecha, importe: Number(rc.importe ?? 0),
             medioPago: rc.medio_pago, estado: rc.estado,
-            pagador: rc.name ? `${rc.name} ${rc.surname}` : '',
+            pagador: rc.name ? `${rc.name} ${rc.surname || ''}`.trim() : '',
+            // La factura es de quien pagó: los demás la ven para saber que está
+            // pagada, pero el documento solo se lo lleva su destinatario.
+            mia: rc.pagador_id === me,
             rectMotivo: rc.rect_motivo,
             lineas: lineasPorRecibo[rc.id] || [],
         })));

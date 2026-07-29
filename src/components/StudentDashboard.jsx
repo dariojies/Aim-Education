@@ -456,14 +456,14 @@ function GraciasPorPagar({ pago, onCerrar }) {
           <h2 style={{ margin: 0 }}>¡Gracias! Hemos recibido tu pago</h2>
           <p className="sub" style={{ margin: '4px 0 0' }}>
             Se han cobrado <b>{Number(pago.importe).toFixed(2)} €</b>
-            {pago.recibo ? <> y ya tienes el recibo <b>#{pago.recibo}</b>.</> : '.'}
+            {pago.recibo ? <> y ya tienes la factura <b>#{pago.recibo}</b>.</> : '.'}
           </p>
         </div>
       </div>
 
       {pdf && (
         <div style={{ border: '1px solid var(--line)', borderRadius: 14, overflow: 'hidden', background: 'var(--bg-3)', marginTop: 12 }}>
-          <iframe src={pdf} title="Recibo" style={{ width: '100%', height: 460, border: 0, display: 'block' }} />
+          <iframe src={pdf} title="Factura" style={{ width: '100%', height: 460, border: 0, display: 'block' }} />
         </div>
       )}
 
@@ -471,7 +471,7 @@ function GraciasPorPagar({ pago, onCerrar }) {
         {pdf && (
           <>
             <a className="btn btn-outline btn-sm" href={`${pdf}?descargar=1`}>
-              <I.Print /> Descargar el recibo
+              <I.Print /> Descargar la factura
             </a>
             <a className="btn btn-outline btn-sm" href={pdf} target="_blank" rel="noreferrer">
               <I.Eye /> Abrirlo aparte
@@ -491,11 +491,11 @@ function BotonesRecibo({ id }) {
   return (
     <>
       <div style={{ display: 'flex', gap: 6 }}>
-        <button className="btn btn-sm btn-outline" title="Ver el recibo"
+        <button className="btn btn-sm btn-outline" title="Ver la factura"
           onClick={(e) => { e.stopPropagation(); setViendo(v => !v); }}>
           <I.Eye /> Ver
         </button>
-        <a className="btn btn-sm btn-outline" title="Descargar el recibo"
+        <a className="btn btn-sm btn-outline" title="Descargar la factura"
           href={`/api/me/recibos/${id}/pdf?descargar=1`} onClick={(e) => e.stopPropagation()}>
           <I.Print /> PDF
         </a>
@@ -503,7 +503,7 @@ function BotonesRecibo({ id }) {
       {viendo && (
         <div style={{ gridColumn: '1 / -1', width: '100%', marginTop: 10 }}>
           <div style={{ border: '1px solid var(--line)', borderRadius: 14, overflow: 'hidden', background: 'var(--bg-3)' }}>
-            <iframe src={`/api/me/recibos/${id}/pdf`} title={`Recibo ${id}`}
+            <iframe src={`/api/me/recibos/${id}/pdf`} title={`Factura ${id}`}
               style={{ width: '100%', height: 460, border: 0, display: 'block' }} />
           </div>
           <a href={`/api/me/recibos/${id}/pdf`} target="_blank" rel="noreferrer"
@@ -693,12 +693,12 @@ function DashPayments() {
       )}
 
       <div className="panel">
-        <h2><I.Wallet /> Mis recibos</h2>
-        <p className="sub">Los pagos hechos en el club. Toca un recibo para ver el detalle.</p>
+        <h2><I.Wallet /> Mis facturas</h2>
+        <p className="sub">Los pagos de la familia. Toca uno para ver el detalle.</p>
 
         {loading && <EmptyState text="Cargando recibos..." />}
         {!loading && recibos.length === 0 && (
-          <EmptyState icon={<I.Wallet />} text="Todavía no hay recibos a tu nombre. Aparecerán aquí en cuanto hagas un pago en el club." />
+          <EmptyState icon={<I.Wallet />} text="Todavía no hay facturas de la familia. Aparecerán aquí en cuanto hagáis un pago en el club." />
         )}
 
         {recibos.map(r => {
@@ -710,7 +710,7 @@ function DashPayments() {
                 <button onClick={() => setAbierto(open ? null : r.numero)}
                   style={{ flex: 1, minWidth: 160, textAlign: 'left', background: 'none', border: 0, padding: 0, cursor: 'pointer', fontFamily: 'inherit' }}>
                   <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--ink)' }}>
-                    Recibo #{r.numero}
+                    Factura #{r.numero}
                     {anulado && <span className="status-pill pending" style={{ marginLeft: 8 }}>Anulado</span>}
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>
@@ -720,7 +720,11 @@ function DashPayments() {
                 <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 18, textDecoration: anulado ? 'line-through' : 'none' }}>
                   {eurRec(r.importe)}
                 </div>
-                <BotonesRecibo id={r.id} />
+                {r.mia
+                  ? <BotonesRecibo id={r.id} />
+                  : <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--teal)', background: 'color-mix(in oklab, var(--teal) 12%, transparent)', borderRadius: 999, padding: '3px 10px' }}>
+                      Pagado por {r.pagador}
+                    </span>}
               </div>
               {open && (
                 <div style={{ padding: '0 0 14px', display: 'grid', gap: 6 }}>
@@ -790,12 +794,6 @@ function DashCamp() {
       else { const d = await r.json(); alert(d.error || 'Error al guardar.'); }
     } catch { alert('Error de conexión.'); }
     finally { setSaving(false); }
-  }
-
-  async function deleteKid(kid) {
-    if (!window.confirm(`¿Dar de baja a ${kid.nombre} del campamento?`)) return;
-    const r = await fetch(`/api/camp/children/${kid.id}`, { method: 'DELETE', credentials: 'include' });
-    if (r.ok) loadAll();
   }
 
   async function openDiary(kid) {
@@ -888,7 +886,6 @@ function DashCamp() {
                       <I.Newspaper /> Diario
                     </button>
                     <button className="icon-btn" onClick={() => setForm({ id: kid.id, nombre: kid.nombre, apellidos: kid.apellidos, edad: kid.edad || '', alergias: kid.alergias || '', observaciones: kid.observaciones || '', contacto: kid.contacto || '', recogida: kid.recogida || '', fotosRrss: !!kid.fotosRrss })} aria-label="Editar datos"><I.Edit /></button>
-                    <button className="icon-btn danger" onClick={() => deleteKid(kid)} aria-label="Dar de baja"><I.Trash /></button>
                   </div>
                 </div>
 
