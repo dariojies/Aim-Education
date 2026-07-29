@@ -451,7 +451,7 @@ function Familia({ personaId, nombre, showToast }) {
                   placeholder="Hijo/a, Hermano/a..." style={campo} />
               </label>
               <datalist id="parentescos">
-                {['Madre', 'Padre', 'Hijo/a', 'Hermano/a', 'Abuelo/a', 'Tutor/a', 'Tío/a', 'Primo/a'].map(x => <option key={x} value={x} />)}
+                {['Madre', 'Padre', 'Hijo/a', 'Cónyuge', 'Hermano/a', 'Abuelo/a', 'Tutor/a', 'Tío/a', 'Primo/a'].map(x => <option key={x} value={x} />)}
               </datalist>
             </>
           )}

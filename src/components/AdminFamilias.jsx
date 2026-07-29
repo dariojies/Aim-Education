@@ -15,9 +15,9 @@ import { I } from './Icons.jsx';
 // que de verdad pertenece a los dos.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const PARENTESCOS = ['Madre', 'Padre', 'Hijo/a', 'Hermano/a', 'Abuelo/a', 'Tutor/a', 'Tío/a', 'Primo/a'];
+const PARENTESCOS = ['Madre', 'Padre', 'Hijo/a', 'Cónyuge', 'Hermano/a', 'Abuelo/a', 'Tutor/a', 'Tío/a', 'Primo/a'];
 // Al decir "Ana es la madre de Luis", lo natural es que Luis sea su hijo/a.
-const INVERSO = { 'Madre': 'Hijo/a', 'Padre': 'Hijo/a', 'Hijo/a': 'Madre', 'Hermano/a': 'Hermano/a', 'Abuelo/a': 'Nieto/a', 'Tutor/a': 'Tutelado/a', 'Tío/a': 'Sobrino/a', 'Primo/a': 'Primo/a' };
+const INVERSO = { 'Madre': 'Hijo/a', 'Padre': 'Hijo/a', 'Hijo/a': 'Madre', 'Cónyuge': 'Cónyuge', 'Hermano/a': 'Hermano/a', 'Abuelo/a': 'Nieto/a', 'Tutor/a': 'Tutelado/a', 'Tío/a': 'Sobrino/a', 'Primo/a': 'Primo/a' };
 
 const eur = (n) => `${Number(n || 0).toLocaleString('es-ES', { minimumFractionDigits: 2 })} €`;
 
@@ -150,11 +150,12 @@ function NuevoLazo({ persona, onHecho, onCancelar, showToast }) {
           {tipo && (
             <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-2)' }}>
               <span>Y <b>{a.nombre}</b> es su... <span style={{ color: 'var(--ink-3)' }}>(así se ve desde los dos lados)</span></span>
-              <input list="parentescos-admin" value={inverso} onChange={e => setInverso(e.target.value)}
-                placeholder="Hijo/a, Hermano/a..." style={{ ...campo, maxWidth: 260 }} />
-              <datalist id="parentescos-admin">
-                {[...PARENTESCOS, 'Nieto/a', 'Sobrino/a', 'Tutelado/a'].map(x => <option key={x} value={x} />)}
-              </datalist>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {[...PARENTESCOS, 'Nieto/a', 'Sobrino/a', 'Tutelado/a'].map(x => (
+                  <button key={x} type="button" onClick={() => setInverso(x)}
+                    className={`btn btn-sm ${inverso === x ? 'btn-primary' : 'btn-outline'}`}>{x}</button>
+                ))}
+              </div>
             </label>
           )}
         </>

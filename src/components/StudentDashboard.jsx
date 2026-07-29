@@ -763,6 +763,8 @@ function DashCamp() {
   const [form, setForm] = useState(null);        // datos del niño (nuevo si !form.id)
   const [saving, setSaving] = useState(false);
   const [daysOpenFor, setDaysOpenFor] = useState(null);  // kid.id con selector de días abierto
+  const [daysDraft, setDaysDraft] = useState([]);
+  const [errorDias, setErrorDias] = useState('');
   const [diaryOpenFor, setDiaryOpenFor] = useState(null); // kid.id con diario abierto
   const [diary, setDiary] = useState([]);
   const [diaryLoading, setDiaryLoading] = useState(false);
@@ -793,6 +795,21 @@ function DashCamp() {
       if (r.ok) { setForm(null); await loadAll(); }
       else { const d = await r.json(); alert(d.error || 'Error al guardar.'); }
     } catch { alert('Error de conexión.'); }
+    finally { setSaving(false); }
+  }
+
+  // Guardar los días. El servidor tiene la última palabra: comprueba plazas,
+  // festivos, días pasados y si ya hay algo cobrado.
+  async function saveDays(kid) {
+    setSaving(true); setErrorDias('');
+    try {
+      const r = await fetch(`/api/camp/children/${kid.id}/days`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ days: daysDraft }),
+      });
+      if (r.ok) { setDaysOpenFor(null); await loadAll(); }
+      else { const d = await r.json(); setErrorDias(d.error || 'No se han podido guardar los días.'); }
+    } catch { setErrorDias('No hay conexión con el servidor.'); }
     finally { setSaving(false); }
   }
 
@@ -832,7 +849,7 @@ function DashCamp() {
     <>
       <div className="panel">
         <h2><I.Sun /> Campamento de verano</h2>
-        <p className="sub">Inscribe a tus hijos, consulta los días en los que están apuntados y sigue su día a día.</p>
+        <p className="sub">Inscribe a tus hijos, elige los días que les quedan por venir y sigue su día a día.</p>
 
         {loading && <EmptyState text="Cargando campamento..." />}
 
@@ -878,9 +895,9 @@ function DashCamp() {
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     <button className="btn btn-sm btn-outline" onClick={() => {
                       if (daysOpenFor === kid.id) { setDaysOpenFor(null); return; }
-                      setDaysOpenFor(kid.id); setDiaryOpenFor(null);
+                      setDaysOpenFor(kid.id); setDaysDraft([...(kid.days || [])]); setDiaryOpenFor(null);
                     }}>
-                      <I.Calendar /> Ver días
+                      <I.Calendar /> Días
                     </button>
                     <button className="btn btn-sm btn-outline" onClick={() => { openDiary(kid); setDaysOpenFor(null); }}>
                       <I.Newspaper /> Diario
@@ -891,12 +908,17 @@ function DashCamp() {
 
                 {daysOpenFor === kid.id && (
                   <div style={{ borderTop: '1px dashed var(--line)', paddingTop: 12, display: 'grid', gap: 12 }}>
-                    <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>
-                      Los días en los que está apuntado. Para cambiarlos, habla con el club.
+                    <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.55 }}>
+                      Puedes apuntarle a los días que quedan y tienen plaza. Los días que ya han pasado no se
+                      tocan{kid.pagado ? ', y como el campamento ya está pagado, para quitar días habla con el club' : ''}.
                     </p>
-                    <CampDayPicker weeks={weeks} selected={kid.days || []} onChange={() => {}} disabled />
-                    <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                      <button className="btn btn-sm btn-outline" onClick={() => setDaysOpenFor(null)}>Cerrar</button>
+                    <CampDayPicker weeks={weeks} selected={daysDraft} onChange={setDaysDraft} bloquearPasados />
+                    <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
+                      {errorDias && <span style={{ flex: 1, fontSize: 12, color: '#E5484D', fontWeight: 700 }}>{errorDias}</span>}
+                      <button className="btn btn-sm btn-outline" onClick={() => setDaysOpenFor(null)}>Cancelar</button>
+                      <button className="btn btn-sm btn-primary" disabled={saving} onClick={() => saveDays(kid)}>
+                        {saving ? 'Guardando...' : `Guardar (${daysDraft.length} días)`}
+                      </button>
                     </div>
                   </div>
                 )}

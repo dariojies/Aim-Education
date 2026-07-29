@@ -1838,6 +1838,11 @@ function parseHolidays(raw) {
 }
 
 // Comprueba los días solicitados: devuelve { day, reason: 'full' | 'holiday' } o null.
+const fechaCorta = (iso) => {
+    const [a, m, d] = String(iso).slice(0, 10).split('-');
+    return `${d}/${m}/${a}`;
+};
+
 async function findBlockedDay(daysToAdd, excludeChildId) {
     if (!daysToAdd.length) return null;
     const weeksRes = await pool.query(`SELECT *, to_char(start_date,'YYYY-MM-DD') AS s, to_char(end_date,'YYYY-MM-DD') AS e FROM aim_camp_weeks`);
@@ -1984,9 +1989,14 @@ async function getOwnedChild(req, res) {
     const result = await pool.query('SELECT * FROM aim_camp_children WHERE id = $1', [req.params.id]);
     if (result.rowCount === 0) { res.status(404).json({ error: 'Niño/a no encontrado/a.' }); return null; }
     const child = result.rows[0];
-    if (!req.userSession.canAccessAdmin && String(child.user_id) !== String(req.userSession.userId)) {
-        res.status(403).json({ error: 'No autorizado.' });
-        return null;
+    if (!req.userSession.canAccessAdmin) {
+        // El campamento es de la familia: si lo apuntó un progenitor, el otro
+        // también lo gestiona. Vale la cuenta que lo inscribió o cualquiera de
+        // su círculo familiar.
+        const fam = await familiaIds(req.userSession.userId);
+        const suyo = fam.some(id => String(id) === String(child.user_id))
+            || (child.alumno_id && fam.includes(child.alumno_id));
+        if (!suyo) { res.status(403).json({ error: 'No autorizado.' }); return null; }
     }
     return child;
 }
@@ -2038,6 +2048,34 @@ app.put('/api/camp/children/:id/days', authenticateSession, async (req, res) => 
         const currentRes = await pool.query(`SELECT to_char(day,'YYYY-MM-DD') AS day FROM aim_camp_child_days WHERE child_id = $1`, [child.id]);
         const current = new Set(currentRes.rows.map(r => r.day));
         const toAdd = dayList.filter(d => !current.has(d));
+
+        // La familia puede apuntar a días que quedan por venir y tienen sitio,
+        // pero no deshacer lo ya vivido ni lo ya cobrado: eso cambiaría lo que
+        // se facturó y lo decide el club.
+        if (!req.userSession.canAccessAdmin) {
+            const hoy = new Date().toISOString().slice(0, 10);
+            const quitados = [...current].filter(d => !dayList.includes(d));
+            const pasadoQuitado = quitados.find(d => d < hoy);
+            if (pasadoQuitado) {
+                return res.status(409).json({ error: `El ${fechaCorta(pasadoQuitado)} ya ha pasado y no se puede quitar.` });
+            }
+            const anadidoPasado = toAdd.find(d => d < hoy);
+            if (anadidoPasado) {
+                return res.status(409).json({ error: `El ${fechaCorta(anadidoPasado)} ya ha pasado: habla con el club.` });
+            }
+            if (quitados.length) {
+                const cobrado = await pool.query(
+                    `SELECT 1 FROM aim_cargos
+                     WHERE cliente_id = $1 AND origen = 'campamento' AND estado = 'cobrado' LIMIT 1`,
+                    [child.alumno_id]);
+                if (cobrado.rowCount) {
+                    return res.status(409).json({
+                        error: 'Hay días de campamento ya pagados, así que quitar días lo tiene que hacer el club.',
+                    });
+                }
+            }
+        }
+
         const blocked = await findBlockedDay(toAdd, child.id);
         if (blocked) return res.status(409).json({ error: blockedDayError(blocked) });
         await pool.query('DELETE FROM aim_camp_child_days WHERE child_id = $1', [child.id]);
@@ -4886,10 +4924,25 @@ app.post('/api/admin/billing/familias', authenticateSession, requireAdmin, async
 });
 
 app.delete('/api/admin/billing/familias/:id', authenticateSession, requireAdmin, async (req, res) => {
+    const client = await pool.connect();
     try {
-        await pool.query('DELETE FROM aim_familias WHERE id = $1', [req.params.id]);
+        await client.query('BEGIN');
+        // Un parentesco son dos filas, una por sentido. Si se quita que Virginia
+        // es la abuela de Darío, tiene que irse también que Darío es su nieto:
+        // dejar media relación es peor que no tenerla.
+        const r = await client.query(
+            'DELETE FROM aim_familias WHERE id = $1 RETURNING persona_id, familiar_id', [req.params.id]);
+        if (r.rowCount) {
+            const { persona_id, familiar_id } = r.rows[0];
+            await client.query(
+                'DELETE FROM aim_familias WHERE persona_id = $1 AND familiar_id = $2', [familiar_id, persona_id]);
+        }
+        await client.query('COMMIT');
         res.json({ success: true });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
 });
 
 // Admin: guardar asistencia y/o nota del profesor de un niño en un día.

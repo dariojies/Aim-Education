@@ -404,8 +404,11 @@ function campFmtLong(iso) {
 // Selector de días del campamento agrupado por semanas.
 // weeks: [{id,label,startDate,endDate,capacity,days:[{day,count}]}]
 // selected: array de fechas ISO seleccionadas; onChange(nextArray)
-function CampDayPicker({ weeks, selected, onChange, disabled = false, servicios = null, onServicios = null }) {
+function CampDayPicker({ weeks, selected, onChange, disabled = false, servicios = null, onServicios = null, bloquearPasados = false }) {
   const sel = new Set(selected);
+  // Lo ya vivido no se toca: ni se quita ni se añade a toro pasado.
+  const hoy = new Date().toISOString().slice(0, 10);
+  const pasado = (day) => bloquearPasados && day < hoy;
   // servicios: { 'YYYY-MM-DD': { matinal, custodia } }. Si no se pasa onServicios,
   // el selector funciona como siempre y no enseña matinal ni custodia.
   const srv = servicios || {};
@@ -426,15 +429,16 @@ function CampDayPicker({ weeks, selected, onChange, disabled = false, servicios 
     onServicios(next);
   };
   const toggle = (day) => {
-    if (disabled) return;
+    if (disabled || pasado(day)) return;
     const next = new Set(sel);
     next.has(day) ? next.delete(day) : next.add(day);
     onChange([...next].sort());
   };
   const toggleWeek = (w) => {
     if (disabled) return;
-    const wDays = w.days.map(d => d.day);
-    const freeDays = w.days.filter(d => !d.holiday && (sel.has(d.day) || w.capacity == null || d.count < w.capacity)).map(d => d.day);
+    const wDays = w.days.map(d => d.day).filter(d => !pasado(d));
+    const freeDays = w.days.filter(d => !d.holiday && !pasado(d.day)
+      && (sel.has(d.day) || w.capacity == null || d.count < w.capacity)).map(d => d.day);
     const allSelected = freeDays.length > 0 && freeDays.every(d => sel.has(d));
     const next = new Set(sel);
     if (allSelected) wDays.forEach(d => next.delete(d));
@@ -471,19 +475,22 @@ function CampDayPicker({ weeks, selected, onChange, disabled = false, servicios 
                 const isSel = sel.has(day);
                 const isHoliday = !!holiday && !isSel; // si quedó seleccionado antes de marcarse festivo, se permite quitarlo
                 const isFull = !isSel && !isHoliday && w.capacity != null && count >= w.capacity;
-                const isBlocked = isHoliday || isFull;
+                const yaPaso = pasado(day);
+                const isBlocked = isHoliday || isFull || yaPaso;
                 return (
                   <button key={day} type="button"
                     onClick={() => !isBlocked && toggle(day)}
                     disabled={disabled || isBlocked}
-                    title={isHoliday ? "Festivo — campamento cerrado" : isFull ? "Sin plazas libres" : `${count}${w.capacity ? `/${w.capacity}` : ""} apuntados`}
+                    title={yaPaso ? (isSel ? "Ya asistió: no se puede quitar" : "Este día ya ha pasado")
+                      : isHoliday ? "Festivo — campamento cerrado"
+                      : isFull ? "Sin plazas libres" : `${count}${w.capacity ? `/${w.capacity}` : ""} apuntados`}
                     style={{
                       display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
                       minWidth: 52, padding: "8px 10px", borderRadius: 12,
                       border: `1.5px ${isHoliday ? "dashed" : "solid"} ${isSel ? "var(--teal)" : isHoliday ? "color-mix(in oklab, var(--orange) 45%, var(--line))" : "var(--line)"}`,
                       background: isSel ? "var(--teal)" : isHoliday ? "color-mix(in oklab, var(--orange) 7%, var(--bg-2))" : "var(--bg-2)",
                       color: isSel ? "white" : isBlocked ? "var(--ink-3)" : "var(--ink)",
-                      opacity: isBlocked ? .55 : 1,
+                      opacity: yaPaso ? (isSel ? .6 : .35) : isBlocked ? .55 : 1,
                       cursor: disabled || isBlocked ? "default" : "pointer",
                       fontFamily: "inherit",
                       transition: "background .15s ease, border-color .15s ease",
@@ -491,7 +498,7 @@ function CampDayPicker({ weeks, selected, onChange, disabled = false, servicios 
                     <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: ".08em", opacity: .8 }}>{p.dow}</span>
                     <span style={{ fontSize: 16, fontWeight: 800, fontFamily: "var(--font-display)", lineHeight: 1, textDecoration: isHoliday ? "line-through" : "none" }}>{p.num}</span>
                     <span style={{ fontSize: 9, fontWeight: 700, opacity: .75, color: isHoliday ? "var(--orange)" : undefined }}>
-                      {isHoliday ? "Fiesta" : isFull ? "Completo" : `${count}${w.capacity ? `/${w.capacity}` : ""}`}
+                      {yaPaso ? "Pasado" : isHoliday ? "Fiesta" : isFull ? "Completo" : `${count}${w.capacity ? `/${w.capacity}` : ""}`}
                     </span>
                   </button>
                 );
