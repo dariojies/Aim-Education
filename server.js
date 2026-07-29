@@ -4397,63 +4397,65 @@ app.get('/api/me/recibos', authenticateSession, async (req, res) => {
 });
 
 // ── Familias (parentescos por persona, igual que la tabla familias antigua) ──
-// Todas las familias del club, agrupadas de verdad. La tabla guarda parejas
-// (Ana es madre de Luis), así que una familia de cuatro son varias filas: hay
-// que unir las que se tocan para verlas como un solo grupo.
+// Las familias del club, tal y como las trata la aplicación: por círculos.
+//
+// El parentesco se mira A UN SALTO, nunca en cadena, y eso no es un descuido:
+// si Darío y Virginia se separan, los dos siguen administrando a sus hijas,
+// pero cuando Darío tiene otro hijo con otra pareja, Virginia no tiene por qué
+// verlo. Encadenar parentescos metería a Virginia y a la nueva pareja en el
+// mismo saco, así que aquí se enseña un círculo por persona: a quién alcanza
+// cada una, que es exactamente lo que verá y podrá pagar desde su zona.
 app.get('/api/admin/familias', authenticateSession, requireAdmin, async (req, res) => {
     try {
         const r = await pool.query(
             `SELECT f.id, f.persona_id, f.familiar_id, f.tipo,
-                    TRIM(CONCAT(a.name, ' ', COALESCE(a.surname, ''))) AS persona,
                     TRIM(CONCAT(b.name, ' ', COALESCE(b.surname, ''))) AS familiar
              FROM aim_familias f
              JOIN users a ON a.user_id = f.persona_id
              JOIN users b ON b.user_id = f.familiar_id
-             WHERE a.club_id = $1 AND b.club_id = $1
-             ORDER BY f.id`, [AIM_CLUB_ID]);
+             WHERE a.club_id = $1 AND b.club_id = $1`, [AIM_CLUB_ID]);
 
-        // Unir-buscar: cada parentesco junta a dos personas en el mismo grupo.
-        const padre = new Map();
-        const raiz = (x) => { while (padre.get(x) !== x) { padre.set(x, padre.get(padre.get(x))); x = padre.get(x); } return x; };
-        const unir = (x, y) => { for (const v of [x, y]) if (!padre.has(v)) padre.set(v, v); const rx = raiz(x), ry = raiz(y); if (rx !== ry) padre.set(rx, ry); };
-        for (const f of r.rows) unir(f.persona_id, f.familiar_id);
+        const nombres = await pool.query(
+            `SELECT user_id, TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS nombre, birthday
+             FROM users WHERE club_id = $1`, [AIM_CLUB_ID]);
+        const quien = Object.fromEntries(nombres.rows.map(x => [x.user_id, x]));
 
-        const grupos = new Map();
-        for (const f of r.rows) {
-            const g = raiz(f.persona_id);
-            if (!grupos.has(g)) grupos.set(g, { personas: new Map(), lazos: [] });
-            const e = grupos.get(g);
-            e.personas.set(f.persona_id, f.persona);
-            e.personas.set(f.familiar_id, f.familiar);
-            e.lazos.push({ id: f.id, deId: f.persona_id, de: f.persona, aId: f.familiar_id, a: f.familiar, tipo: f.tipo });
-        }
-
-        // Lo pendiente de cada familia: es el dato por el que se agrupan, porque
-        // el descuento por varias mensualidades depende de ir todo junto.
+        // Lo pendiente de cada persona, para poder sumar lo de cada círculo.
         const ids = [...new Set(r.rows.flatMap(f => [f.persona_id, f.familiar_id]))];
         const pend = ids.length ? await pool.query(
             `SELECT cliente_id, COUNT(*)::int n, COALESCE(SUM(precio * (1 - descuento_pct/100.0)), 0)::numeric total
              FROM aim_cargos WHERE cliente_id = ANY($1::uuid[]) AND estado = 'pendiente' AND recibo_id IS NULL
              GROUP BY cliente_id`, [ids]) : { rows: [] };
-        const porPersona = Object.fromEntries(pend.rows.map(x => [x.cliente_id, x]));
+        const deuda = Object.fromEntries(pend.rows.map(x => [x.cliente_id, x]));
 
-        const salida = [...grupos.entries()].map(([id, g]) => {
-            const personas = [...g.personas.entries()].map(([pid, nombre]) => ({
-                id: pid, nombre,
-                pendientes: porPersona[pid]?.n || 0,
-                pendienteImporte: Number(porPersona[pid]?.total || 0),
-            })).sort((a, b) => a.nombre.localeCompare(b.nombre));
+        const circulos = new Map();
+        for (const f of r.rows) {
+            if (!circulos.has(f.persona_id)) circulos.set(f.persona_id, []);
+            circulos.get(f.persona_id).push({
+                lazoId: f.id, id: f.familiar_id, nombre: f.familiar, tipo: f.tipo,
+                pendientes: deuda[f.familiar_id]?.n || 0,
+                pendienteImporte: Number(deuda[f.familiar_id]?.total || 0),
+            });
+        }
+
+        const salida = [...circulos.entries()].map(([id, miembros]) => {
+            miembros.sort((a, b) => a.nombre.localeCompare(b.nombre));
+            const propio = Number(deuda[id]?.total || 0);
             return {
                 id,
-                personas,
-                lazos: g.lazos,
-                pendientes: personas.reduce((t, x) => t + x.pendientes, 0),
-                pendienteImporte: personas.reduce((t, x) => t + x.pendienteImporte, 0),
+                nombre: quien[id]?.nombre || '—',
+                nacimiento: quien[id]?.birthday || null,
+                pendientePropio: propio,
+                pendientesPropios: deuda[id]?.n || 0,
+                miembros,
+                // Lo que vería y podría pagar esta persona desde su zona: lo suyo
+                // más lo de quienes tiene enlazados directamente.
+                alcance: propio + miembros.reduce((t, m) => t + m.pendienteImporte, 0),
             };
-        }).sort((a, b) => a.personas[0].nombre.localeCompare(b.personas[0].nombre));
+        }).sort((a, b) => b.miembros.length - a.miembros.length || a.nombre.localeCompare(b.nombre));
 
         res.set('Cache-Control', 'no-store');
-        res.json({ familias: salida, totalPersonas: ids.length });
+        res.json({ circulos: salida, totalPersonas: ids.length, totalLazos: r.rowCount });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

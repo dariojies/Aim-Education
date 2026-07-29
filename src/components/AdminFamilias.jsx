@@ -2,13 +2,17 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { I } from './Icons.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Familias del club.
+// Familias del club, por círculos.
 //
-// Un parentesco es una pareja (Ana es madre de Luis), pero una familia son
-// todas las personas que se tocan entre sí, así que aquí se ven agrupadas. Es
-// lo que hace que un padre vea a sus hijos en su zona, que pueda pagarles los
-// recibos y que el descuento por varias mensualidades salga bien: si los
-// recibos no van juntos, el descuento no se aplica.
+// Cada persona alcanza a quienes tiene enlazados directamente, y ahí se para:
+// los parentescos NO se encadenan. Es lo que hace falta cuando hay separaciones.
+// Si Darío y Virginia se separan, los dos siguen administrando a sus hijas; pero
+// cuando Darío tiene otro hijo con otra pareja, ese hijo entra en el círculo de
+// Darío y no en el de Virginia, que no es su madre. Encadenar los parentescos
+// los juntaría a todos en un mismo saco.
+//
+// Por eso una misma niña sale en el círculo de su padre y en el de su madre: es
+// que de verdad pertenece a los dos.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const PARENTESCOS = ['Madre', 'Padre', 'Hijo/a', 'Hermano/a', 'Abuelo/a', 'Tutor/a', 'Tío/a', 'Primo/a'];
@@ -77,8 +81,8 @@ function BuscarPersona({ placeholder, excluir = [], onElegir }) {
 
 // Alta de un parentesco. Vale tanto para crear una familia desde cero como para
 // meter a alguien en una que ya existe.
-function NuevoLazo({ persona, miembros, onHecho, onCancelar, showToast }) {
-  const [a, setA] = useState(persona || (miembros?.length === 1 ? miembros[0] : null));
+function NuevoLazo({ persona, onHecho, onCancelar, showToast }) {
+  const [a, setA] = useState(persona || null);
   const [b, setB] = useState(null);
   const [tipo, setTipo] = useState('');
   const [inverso, setInverso] = useState('');
@@ -106,22 +110,11 @@ function NuevoLazo({ persona, miembros, onHecho, onCancelar, showToast }) {
 
   return (
     <div style={{ display: 'grid', gap: 12, background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 14, padding: 16 }}>
-      <div style={{ fontWeight: 800, fontSize: 14 }}>{miembros ? 'Añadir un familiar' : 'Nueva familia'}</div>
+      <div style={{ fontWeight: 800, fontSize: 14 }}>
+        {persona ? `Añadir un familiar a ${persona.nombre}` : 'Nuevo parentesco'}
+      </div>
 
-      {/* En una familia que ya existe se elige con quién emparenta el nuevo. */}
-      {miembros && miembros.length > 1 && (
-        <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-2)' }}>
-          ¿De quién es familiar?
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {miembros.map(m => (
-              <button key={m.id} type="button" onClick={() => setA(m)}
-                className={`btn btn-sm ${a?.id === m.id ? 'btn-primary' : 'btn-outline'}`}>{m.nombre}</button>
-            ))}
-          </div>
-        </label>
-      )}
-
-      {!persona && !miembros && (
+      {!persona && (
         <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-2)' }}>
           Persona
           {a
@@ -185,26 +178,24 @@ export default function AdminFamilias({ showToast, onEditUser }) {
 
   const cargar = useCallback(async () => {
     try { setDatos(await api('/api/admin/familias')); }
-    catch { setDatos({ familias: [], totalPersonas: 0 }); }
+    catch { setDatos({ circulos: [], totalPersonas: 0, totalLazos: 0 }); }
   }, []);
   useEffect(() => { cargar(); }, [cargar]);
 
   const visibles = useMemo(() => {
-    const fam = datos?.familias || [];
+    const cs = datos?.circulos || [];
     const t = q.trim().toLowerCase();
-    if (!t) return fam;
-    return fam.filter(f => f.personas.some(p => p.nombre.toLowerCase().includes(t)));
+    if (!t) return cs;
+    return cs.filter(c => c.nombre.toLowerCase().includes(t) || c.miembros.some(m => m.nombre.toLowerCase().includes(t)));
   }, [datos, q]);
 
-  async function quitarLazo(l) {
-    if (!window.confirm(`¿Quitar que ${l.a} sea ${l.tipo} de ${l.de}?\nSi es el único parentesco, la familia se deshace.`)) return;
-    try { await api(`/api/admin/billing/familias/${l.id}`, { method: 'DELETE' }); await cargar(); showToast?.('Parentesco quitado.'); }
+  async function quitarLazo(c, m) {
+    if (!window.confirm(`¿Quitar que ${m.nombre} sea ${m.tipo} de ${c.nombre}?\n${c.nombre} dejará de ver sus clases y sus recibos.`)) return;
+    try { await api(`/api/admin/billing/familias/${m.lazoId}`, { method: 'DELETE' }); await cargar(); showToast?.('Parentesco quitado.'); }
     catch (e) { alert(e.message); }
   }
 
   if (!datos) return <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando familias...</p>;
-
-  const totalPendiente = (datos.familias || []).reduce((t, f) => t + f.pendienteImporte, 0);
 
   return (
     <>
@@ -216,7 +207,7 @@ export default function AdminFamilias({ showToast, onEditUser }) {
         <div style={{ flex: 1 }} />
         {!creando && (
           <button className="btn btn-primary btn-sm" onClick={() => { setCreando(true); setAnadiendoA(null); }}>
-            <I.Plus /> Nueva familia
+            <I.Plus /> Nuevo parentesco
           </button>
         )}
       </div>
@@ -229,9 +220,9 @@ export default function AdminFamilias({ showToast, onEditUser }) {
         </div>
       )}
 
-      {!datos.familias.length && !creando && (
+      {!datos.circulos.length && !creando && (
         <div style={{ background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, padding: 24, textAlign: 'center' }}>
-          <p style={{ margin: '0 0 6px', fontWeight: 700 }}>Todavía no hay ninguna familia enlazada.</p>
+          <p style={{ margin: '0 0 6px', fontWeight: 700 }}>Todavía no hay ningún parentesco.</p>
           <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.6 }}>
             Enlazar a padres e hijos es lo que hace que una madre vea las clases de sus hijos en su zona,
             que pueda pagarles los recibos desde la web y que el descuento por varias mensualidades salga
@@ -241,48 +232,47 @@ export default function AdminFamilias({ showToast, onEditUser }) {
       )}
 
       <div style={{ display: 'grid', gap: 12 }}>
-        {visibles.map(f => (
-          <div key={f.id} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 16 }}>
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
-              <span style={{ fontWeight: 800, fontSize: 15 }}>
-                {f.personas.length} persona{f.personas.length !== 1 ? 's' : ''}
-              </span>
-              {f.pendientes > 0 && (
-                <span className="status-pill pending">{f.pendientes} pendiente{f.pendientes !== 1 ? 's' : ''} · {eur(f.pendienteImporte)}</span>
+        {visibles.map(c => (
+          <div key={c.id} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 16 }}>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 }}>
+              <button onClick={() => onEditUser?.({ id: c.id })} title="Abrir su ficha"
+                style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 800, fontSize: 16, color: 'var(--ink)' }}>
+                {c.nombre}
+              </button>
+              {c.alcance > 0 && (
+                <span className="status-pill pending">{eur(c.alcance)} a su alcance</span>
               )}
               <div style={{ flex: 1 }} />
               <button className="btn btn-sm btn-outline"
-                onClick={() => { setAnadiendoA(anadiendoA === f.id ? null : f.id); setCreando(false); }}>
+                onClick={() => { setAnadiendoA(anadiendoA === c.id ? null : c.id); setCreando(false); }}>
                 <I.Plus /> Añadir familiar
               </button>
             </div>
+            <p style={{ margin: '0 0 10px', fontSize: 12, color: 'var(--ink-3)' }}>
+              Desde su zona ve y puede pagar lo de {c.miembros.length === 1 ? 'esta persona' : `estas ${c.miembros.length} personas`}
+              {c.pendientesPropios > 0 ? ', además de lo suyo' : ''}.
+            </p>
 
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-              {f.personas.map(p => (
-                <button key={p.id} onClick={() => onEditUser?.({ id: p.id })} title="Abrir su ficha"
-                  style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 999, padding: '6px 12px', cursor: 'pointer', fontFamily: 'inherit' }}>
-                  <span style={{ fontWeight: 700, fontSize: 13 }}>{p.nombre}</span>
-                  {p.pendientes > 0 && (
-                    <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--orange)' }}>{eur(p.pendienteImporte)}</span>
+            <div style={{ display: 'grid', gap: 6 }}>
+              {c.miembros.map(m => (
+                <div key={m.lazoId} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', background: 'var(--bg-3)', borderRadius: 10, padding: '8px 12px' }}>
+                  <button onClick={() => onEditUser?.({ id: m.id })} title="Abrir su ficha"
+                    style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 700, fontSize: 13, color: 'var(--ink)' }}>
+                    {m.nombre}
+                  </button>
+                  <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>es su {m.tipo}</span>
+                  <div style={{ flex: 1 }} />
+                  {m.pendienteImporte > 0 && (
+                    <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--orange)' }}>{eur(m.pendienteImporte)}</span>
                   )}
-                </button>
-              ))}
-            </div>
-
-            <div style={{ display: 'grid', gap: 4 }}>
-              {f.lazos.map(l => (
-                <div key={l.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: 'var(--ink-2)' }}>
-                  <span style={{ flex: 1, minWidth: 0 }}>
-                    <b>{l.a}</b> es <b>{l.tipo}</b> de <b>{l.de}</b>
-                  </span>
-                  <button className="icon-btn danger" title="Quitar este parentesco" onClick={() => quitarLazo(l)}><I.Trash /></button>
+                  <button className="icon-btn danger" title="Quitar este parentesco" onClick={() => quitarLazo(c, m)}><I.Trash /></button>
                 </div>
               ))}
             </div>
 
-            {anadiendoA === f.id && (
+            {anadiendoA === c.id && (
               <div style={{ marginTop: 12 }}>
-                <NuevoLazo showToast={showToast} miembros={f.personas}
+                <NuevoLazo showToast={showToast} persona={{ id: c.id, nombre: c.nombre }}
                   onHecho={() => { setAnadiendoA(null); cargar(); }}
                   onCancelar={() => setAnadiendoA(null)} />
               </div>
@@ -291,10 +281,12 @@ export default function AdminFamilias({ showToast, onEditUser }) {
         ))}
       </div>
 
-      {datos.familias.length > 0 && (
-        <div style={{ marginTop: 16, fontSize: 13, color: 'var(--ink-3)' }}>
-          {visibles.length} de {datos.familias.length} familia{datos.familias.length !== 1 ? 's' : ''} · {datos.totalPersonas} personas enlazadas
-          {totalPendiente > 0 && <> · {eur(totalPendiente)} pendientes de cobro</>}
+      {datos.circulos.length > 0 && (
+        <div style={{ marginTop: 16, fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.6 }}>
+          {visibles.length} de {datos.circulos.length} círculo{datos.circulos.length !== 1 ? 's' : ''} · {datos.totalPersonas} personas enlazadas
+          <br />
+          Una misma persona sale en varios círculos cuando pertenece a varios: en una separación, la hija
+          está en el de su padre y en el de su madre, y cada uno ve solo lo suyo.
         </div>
       )}
     </>
