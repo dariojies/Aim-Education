@@ -203,7 +203,7 @@ function DashClasses() {
       <div className="panel">
         <h2><I.Calendar /> Mis clases</h2>
         <p className="sub">Tus grupos y tu horario.</p>
-        <EmptyState icon={<I.Calendar />} text="No estás matriculado/a en ninguna clase todavía. Habla con el club para apuntarte y aquí verás tu horario." />
+        <EmptyState icon={<I.Calendar />} text="Todavía no hay ninguna clase en la familia. Habla con el club para apuntaros y aquí veréis el horario." />
       </div>
       </>
     );
@@ -213,8 +213,8 @@ function DashClasses() {
     <>
       {bloqueEspera}
       <div className="panel">
-        <h2><I.Calendar /> Mis grupos</h2>
-        <p className="sub">Las clases en las que estás matriculado/a.</p>
+        <h2><I.Calendar /> Clases de la familia</h2>
+        <p className="sub">Las clases tuyas y las de los tuyos.</p>
         <div style={{display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12, marginTop: 14}}>
           {groups.map(g => {
             const a = ACT_BY_ID[g.act];
@@ -222,6 +222,11 @@ function DashClasses() {
               <div key={g.id} style={{background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 14, padding: 16, borderLeft: `4px solid ${a?.color || "var(--ink)"}`}}>
                 <div style={{fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".08em", color: a?.color || "var(--ink-3)"}}>{g.activityName}</div>
                 <div style={{fontWeight: 700, fontSize: 15, margin: "4px 0"}}>{g.name}</div>
+                {g.alumno && (
+                  <div style={{fontSize: 12, color: "var(--ink-2)", fontWeight: 600, marginBottom: 6, display: "flex", alignItems: "center", gap: 5}}>
+                    <I.User width={12} height={12} /> {g.alumno}
+                  </div>
+                )}
                 {g.level && <span style={{display: "inline-block", fontSize: 11, fontWeight: 700, background: "color-mix(in oklab, var(--purple) 12%, var(--bg-2))", color: "var(--purple)", padding: "2px 8px", borderRadius: 6}}>Nivel: {g.level}</span>}
               </div>
             );
@@ -969,7 +974,14 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
                 <span>{it.label}</span>
               </button>
             ))}
-            <button onClick={() => { go("/"); setSidebarOpen(false); }} style={{marginTop: 16, borderTop: "1px dashed var(--line-2)", paddingTop: 16}}>
+            {/* Vuelta al panel para quien además trabaja en el club. */}
+            {user?.canAccessAdmin && (
+              <button onClick={() => { go("/admin"); setSidebarOpen(false); }} style={{marginTop: 16, borderTop: "1px dashed var(--line-2)", paddingTop: 16, fontWeight: 700}}>
+                <span className="ico"><I.Dashboard width={16} height={16} /></span>
+                <span>Panel de admin</span>
+              </button>
+            )}
+            <button onClick={() => { go("/"); setSidebarOpen(false); }} style={{marginTop: user?.canAccessAdmin ? 8 : 16, borderTop: user?.canAccessAdmin ? 0 : "1px dashed var(--line-2)", paddingTop: user?.canAccessAdmin ? 0 : 16}}>
               <span className="ico"><I.Globe width={16} height={16} /></span>
               <span>Volver a la Web</span>
             </button>

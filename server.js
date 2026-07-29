@@ -1343,18 +1343,25 @@ app.get('/api/classes', async (req, res) => {
 app.get('/api/me/groups', authenticateSession, async (req, res) => {
     try {
         const userId = req.userSession.userId;
+        // Las clases de toda la familia, no solo las del titular de la cuenta.
+        // Un padre (sea o no trabajador del club) entra con su cuenta y tiene
+        // que ver a sus hijos; si no hay parentescos, sale solo lo suyo.
+        const fam = await familiaIds(userId);
         const result = await pool.query(`
             SELECT g.group_id, g.name, g.sessions, g.max_students,
                    act.name AS activity_name, act.activity_type,
                    up.level_name AS level_name, up.level_order AS level_order,
+                   gs.student_id,
+                   TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno,
                    (SELECT COUNT(*) FROM tul_group_students gs2 WHERE gs2.group_id = g.group_id) AS student_count
             FROM tul_groups g
             JOIN tul_group_students gs ON gs.group_id = g.group_id
+            JOIN users u ON u.user_id = gs.student_id
             JOIN tul_activities act ON g.activity_id = act.activity_id
             LEFT JOIN tul_user_progression up ON up.user_id = gs.student_id AND up.activity_id = g.activity_id
-            WHERE gs.student_id = $1 AND act.club_id = $2
+            WHERE gs.student_id = ANY($1::uuid[]) AND act.club_id = $2
             ORDER BY act.name, g.name
-        `, [userId, AIM_CLUB_ID]);
+        `, [fam, AIM_CLUB_ID]);
 
         const groups = result.rows.map(g => ({
             id: g.group_id,
@@ -1364,6 +1371,9 @@ app.get('/api/me/groups', authenticateSession, async (req, res) => {
             level: g.level_name || null,
             time: g.sessions,
             studentCount: Number(g.student_count),
+            // Solo se dice de quién es cuando hay más de uno en la familia.
+            alumnoId: g.student_id,
+            alumno: g.student_id === userId ? null : g.alumno,
         }));
         // Clases en las que está en lista de espera, con su puesto: es lo que
         // pregunta la familia, «en qué número voy».
@@ -1379,8 +1389,8 @@ app.get('/api/me/groups', authenticateSession, async (req, res) => {
              JOIN tul_groups g ON g.group_id = e.group_id
              JOIN tul_activities a ON a.activity_id = g.activity_id
              LEFT JOIN tul_groups gp ON gp.group_id = e.grupo_provisional_id
-             WHERE e.student_id = $1 AND e.estado = 'esperando' AND a.club_id = $2
-             ORDER BY e.created_at`, [userId, AIM_CLUB_ID]
+             WHERE e.student_id = ANY($1::uuid[]) AND e.estado = 'esperando' AND a.club_id = $2
+             ORDER BY e.created_at`, [fam, AIM_CLUB_ID]
         );
         res.json({
             groups,

@@ -4241,8 +4241,23 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
             </div>
           </div>
 
-          <button onClick={() => go("/")} style={{
+          {/* Quien trabaja aquí también puede ser padre o madre: desde el panel
+              se pasa a su propia zona de familia sin cerrar sesión. */}
+          <button onClick={() => go("/dashboard")} style={{
             marginTop: 16, width: "100%", padding: "10px 12px",
+            background: "rgba(255,255,255,.16)", color: "#fff",
+            border: 0, borderRadius: 10, cursor: "pointer", fontFamily: "inherit",
+            fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", gap: 8,
+            transition: "background 0.2s"
+          }}
+            onMouseEnter={(e) => e.currentTarget.style.background = "rgba(255,255,255,.24)"}
+            onMouseLeave={(e) => e.currentTarget.style.background = "rgba(255,255,255,.16)"}
+          >
+            <I.User width={16} height={16} /> Mi área de familia
+          </button>
+
+          <button onClick={() => go("/")} style={{
+            marginTop: 8, width: "100%", padding: "10px 12px",
             background: "rgba(255,255,255,.1)", color: "rgba(255,255,255,.9)",
             border: 0, borderRadius: 10, cursor: "pointer", fontFamily: "inherit",
             fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 8,
