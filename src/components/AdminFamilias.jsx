@@ -62,7 +62,9 @@ function BuscarPersona({ placeholder, excluir = [], onElegir }) {
           maxHeight: 240, overflowY: 'auto', boxShadow: 'var(--shadow)',
         }}>
           {sug.map(x => (
-            <button key={x.id} type="button" onClick={() => { onElegir(x); setQ(''); setSug([]); }}
+            <button key={x.id} type="button"
+              onMouseDown={(e) => { e.preventDefault(); onElegir(x); setQ(''); setSug([]); }}
+              onClick={(e) => e.preventDefault()}
               style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', padding: '8px 12px', background: 'none', border: 0, borderBottom: '1px solid var(--line-2)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13 }}>
               <span style={{ flex: 1, minWidth: 0 }}>
                 <b>{x.nombre}</b>

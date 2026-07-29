@@ -575,7 +575,9 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
             {sug.length > 0 && (
               <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 5, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, marginTop: 2, overflow: 'hidden', maxHeight: 240, overflowY: 'auto', boxShadow: 'var(--shadow)' }}>
                 {sug.map(s => (
-                  <button key={s.id} type="button" onClick={() => elegir(s)}
+                  <button key={s.id} type="button"
+                    onMouseDown={(e) => { e.preventDefault(); elegir(s); }}
+                    onClick={(e) => e.preventDefault()}
                     style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', padding: '8px 12px', background: 'none', border: 0, borderBottom: '1px solid var(--line-2)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13 }}>
                     <span style={{ flex: 1, minWidth: 0 }}>
                       <b>{s.name}</b><span style={{ display: 'block', fontSize: 11, color: 'var(--ink-3)' }}>{s.email}</span>

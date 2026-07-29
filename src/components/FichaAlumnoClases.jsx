@@ -421,7 +421,9 @@ function Familia({ personaId, nombre, showToast }) {
               {sug.length > 0 && (
                 <div className="scroll-oculto" style={{ maxHeight: 180, overflowY: 'auto', border: '1px solid var(--line)', borderRadius: 10, background: 'var(--bg-2)' }}>
                   {sug.map(x => (
-                    <button key={x.id} type="button" onClick={() => { setElegido(x); setSug([]); }}
+                    <button key={x.id} type="button"
+                      onMouseDown={(e) => { e.preventDefault(); setElegido(x); setSug([]); }}
+                      onClick={(e) => e.preventDefault()}
                       style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', background: 'none', border: 0, borderBottom: '1px solid var(--line-2)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13 }}>
                       <b>{x.nombre}</b>
                       <span style={{ display: 'block', fontSize: 11, color: 'var(--ink-3)' }}>{x.email}</span>
