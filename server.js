@@ -4397,18 +4397,80 @@ app.get('/api/me/recibos', authenticateSession, async (req, res) => {
 });
 
 // ── Familias (parentescos por persona, igual que la tabla familias antigua) ──
+// Todas las familias del club, agrupadas de verdad. La tabla guarda parejas
+// (Ana es madre de Luis), así que una familia de cuatro son varias filas: hay
+// que unir las que se tocan para verlas como un solo grupo.
+app.get('/api/admin/familias', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT f.id, f.persona_id, f.familiar_id, f.tipo,
+                    TRIM(CONCAT(a.name, ' ', COALESCE(a.surname, ''))) AS persona,
+                    TRIM(CONCAT(b.name, ' ', COALESCE(b.surname, ''))) AS familiar
+             FROM aim_familias f
+             JOIN users a ON a.user_id = f.persona_id
+             JOIN users b ON b.user_id = f.familiar_id
+             WHERE a.club_id = $1 AND b.club_id = $1
+             ORDER BY f.id`, [AIM_CLUB_ID]);
+
+        // Unir-buscar: cada parentesco junta a dos personas en el mismo grupo.
+        const padre = new Map();
+        const raiz = (x) => { while (padre.get(x) !== x) { padre.set(x, padre.get(padre.get(x))); x = padre.get(x); } return x; };
+        const unir = (x, y) => { for (const v of [x, y]) if (!padre.has(v)) padre.set(v, v); const rx = raiz(x), ry = raiz(y); if (rx !== ry) padre.set(rx, ry); };
+        for (const f of r.rows) unir(f.persona_id, f.familiar_id);
+
+        const grupos = new Map();
+        for (const f of r.rows) {
+            const g = raiz(f.persona_id);
+            if (!grupos.has(g)) grupos.set(g, { personas: new Map(), lazos: [] });
+            const e = grupos.get(g);
+            e.personas.set(f.persona_id, f.persona);
+            e.personas.set(f.familiar_id, f.familiar);
+            e.lazos.push({ id: f.id, deId: f.persona_id, de: f.persona, aId: f.familiar_id, a: f.familiar, tipo: f.tipo });
+        }
+
+        // Lo pendiente de cada familia: es el dato por el que se agrupan, porque
+        // el descuento por varias mensualidades depende de ir todo junto.
+        const ids = [...new Set(r.rows.flatMap(f => [f.persona_id, f.familiar_id]))];
+        const pend = ids.length ? await pool.query(
+            `SELECT cliente_id, COUNT(*)::int n, COALESCE(SUM(precio * (1 - descuento_pct/100.0)), 0)::numeric total
+             FROM aim_cargos WHERE cliente_id = ANY($1::uuid[]) AND estado = 'pendiente' AND recibo_id IS NULL
+             GROUP BY cliente_id`, [ids]) : { rows: [] };
+        const porPersona = Object.fromEntries(pend.rows.map(x => [x.cliente_id, x]));
+
+        const salida = [...grupos.entries()].map(([id, g]) => {
+            const personas = [...g.personas.entries()].map(([pid, nombre]) => ({
+                id: pid, nombre,
+                pendientes: porPersona[pid]?.n || 0,
+                pendienteImporte: Number(porPersona[pid]?.total || 0),
+            })).sort((a, b) => a.nombre.localeCompare(b.nombre));
+            return {
+                id,
+                personas,
+                lazos: g.lazos,
+                pendientes: personas.reduce((t, x) => t + x.pendientes, 0),
+                pendienteImporte: personas.reduce((t, x) => t + x.pendienteImporte, 0),
+            };
+        }).sort((a, b) => a.personas[0].nombre.localeCompare(b.personas[0].nombre));
+
+        res.set('Cache-Control', 'no-store');
+        res.json({ familias: salida, totalPersonas: ids.length });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Buscador de personas del club para enlazar parentescos desde la ficha.
 app.get('/api/admin/personas', authenticateSession, requireAdmin, async (req, res) => {
     const q = `%${(req.query.q || '').trim()}%`;
     try {
         const r = await pool.query(
-            `SELECT user_id AS id, TRIM(name || ' ' || COALESCE(surname, '')) AS nombre,
-                    email, role, birthday
-             FROM users
-             WHERE club_id = $1
-               AND (name ILIKE $2 OR surname ILIKE $2
-                    OR CONCAT(name, ' ', COALESCE(surname, '')) ILIKE $2 OR email ILIKE $2)
-             ORDER BY surname, name LIMIT 25`,
+            `SELECT u.user_id AS id, TRIM(u.name || ' ' || COALESCE(u.surname, '')) AS nombre,
+                    u.email, u.role, u.birthday,
+                    EXISTS (SELECT 1 FROM aim_familias f
+                             WHERE f.persona_id = u.user_id OR f.familiar_id = u.user_id) AS "tieneFamilia"
+             FROM users u
+             WHERE u.club_id = $1
+               AND (u.name ILIKE $2 OR u.surname ILIKE $2
+                    OR CONCAT(u.name, ' ', COALESCE(u.surname, '')) ILIKE $2 OR u.email ILIKE $2)
+             ORDER BY u.surname, u.name LIMIT 25`,
             [AIM_CLUB_ID, q]
         );
         res.set('Cache-Control', 'no-store');

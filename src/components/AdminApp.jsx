@@ -11,11 +11,13 @@ import BillingAjustes from './BillingAjustes.jsx';
 import PasarListaClases from './PasarListaClases.jsx';
 import Campanita from './Campanita.jsx';
 import FichaAlumnoClases, { edadDe, Insignia } from './FichaAlumnoClases.jsx';
+import AdminFamilias from './AdminFamilias.jsx';
 
 function sectionLabel(id) {
   return ({
     overview: "Resumen",
     students: "Gestión de alumnos",
+    familias: "Familias",
     classes: "Clases y horarios",
     reportes: "Reportes",
     payments: "Gastos del club",
@@ -4187,6 +4189,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
       heading: "Gestión", items: [
         { id: "overview", label: "Resumen", icon: <I.Dashboard /> },
         { id: "students", label: "Alumnos", icon: <I.Users /> },
+        { id: "familias", label: "Familias", icon: <I.Heart /> },
         { id: "billing", label: "Facturación", icon: <I.CreditCard /> },
         { id: "payments", label: "Gastos", icon: <I.Wallet /> },
         { id: "classes", label: "Clases y horarios", icon: <I.Calendar /> },
@@ -4318,6 +4321,14 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
 
           {view === "overview" && <AdminOverview setView={setView} refreshTrigger={refreshTrigger} showToast={showToast} />}
           {view === "students" && <AdminStudents refreshTrigger={refreshTrigger} onEditUser={(u) => { setEditingItem(u); setActiveModal('edit-student'); }} />}
+          {view === "familias" && (
+            <AdminFamilias showToast={showToast} onEditUser={async (p) => {
+              // La tarjeta solo trae el id: se pide la ficha entera para abrirla.
+              const todos = await fetch('/api/users', { credentials: 'include', cache: 'no-store' }).then(r => r.ok ? r.json() : []).catch(() => []);
+              const u = todos.find(x => x.id === p.id);
+              if (u) { setEditingItem(u); setActiveModal('edit-student'); }
+            }} />
+          )}
           {view === "classes" && (
             <AdminClasses
               classSlots={classSlots}
