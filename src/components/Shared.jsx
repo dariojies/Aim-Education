@@ -205,9 +205,16 @@ function AimHeader({ route } = {}) {
             }
           </button>
           {user ? (
-            <button className="btn btn-gradient" onClick={() => go(user.canAccessAdmin ? '/admin' : '/dashboard')}>
-              {user.canAccessAdmin ? 'Panel Admin' : 'Mi cuenta'}
-            </button>
+            <>
+              {/* Quien trabaja en el club también puede ser familia: desde aquí
+                  entra a lo suyo sin pasar por el panel. */}
+              {user.canAccessAdmin && (
+                <button className="btn btn-outline" onClick={() => go('/dashboard')}>Perfil</button>
+              )}
+              <button className="btn btn-gradient" onClick={() => go(user.canAccessAdmin ? '/admin' : '/dashboard')}>
+                {user.canAccessAdmin ? 'Panel Admin' : 'Mi cuenta'}
+              </button>
+            </>
           ) : (
             <>
               <button className="btn btn-ghost" onClick={() => go('/auth')}>Iniciar sesión</button>
@@ -220,6 +227,14 @@ function AimHeader({ route } = {}) {
         {links.map(l => (
           <a key={l.id} href={l.href} onClick={(e) => { e.preventDefault(); go(l.href); setMenuOpen(false); }}>{l.label}</a>
         ))}
+        {user && (
+          <a href="/dashboard" onClick={(e) => { e.preventDefault(); go('/dashboard'); setMenuOpen(false); }}>
+            {user.canAccessAdmin ? 'Perfil' : 'Mi cuenta'}
+          </a>
+        )}
+        {user?.canAccessAdmin && (
+          <a href="/admin" onClick={(e) => { e.preventDefault(); go('/admin'); setMenuOpen(false); }}>Panel Admin</a>
+        )}
       </nav>
     </header>
   );
