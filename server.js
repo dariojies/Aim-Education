@@ -1831,6 +1831,40 @@ function blockedDayError(blocked) {
 }
 
 // Público: semanas del campamento con ocupación por día.
+// Precios del campamento para la web pública. Salen del mismo catálogo con el
+// que se cobra: si secretaría cambia una tarifa, la web cambia con ella. Antes
+// estaban escritos a mano en la página y no cuadraban con la realidad.
+app.get('/api/camp/precios', async (req, res) => {
+    try {
+        const conceptos = [...CAMP_TARIFAS.map(t => t.concepto), CAMP_SERVICIO_CONCEPTO];
+        const r = await pool.query(
+            `SELECT concepto, descripcion, precio FROM aim_precios
+             WHERE concepto = ANY($1::text[]) AND activo = true`, [conceptos]);
+        const porConcepto = Object.fromEntries(r.rows.map(x => [x.concepto, Number(x.precio)]));
+
+        const semana = porConcepto[CAMP_TARIFAS.find(t => t.clave === 'semana').concepto];
+        const tarifas = CAMP_TARIFAS
+            .filter(t => porConcepto[t.concepto] != null)
+            .map(t => {
+                const precio = porConcepto[t.concepto];
+                // Cuánto se ahorra frente a pagar esas semanas sueltas.
+                const suelto = t.semanas ? semana * t.semanas : null;
+                return {
+                    clave: t.clave, etiqueta: t.etiqueta, precio, semanas: t.semanas,
+                    comparado: suelto && suelto > precio ? suelto : null,
+                    ahorroPct: suelto && suelto > precio ? Math.round((1 - precio / suelto) * 100) : null,
+                };
+            });
+
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            tarifas,
+            // Matinal y custodia se cobran aparte, por día y servicio.
+            servicio: { precioDia: CAMP_SERVICIO_DIA, topeSemana: CAMP_SERVICIO_SEMANA },
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/camp/weeks', async (req, res) => {
     try {
         const weeks = await pool.query(`SELECT id, label, capacity, holidays, to_char(start_date,'YYYY-MM-DD') AS start_date, to_char(end_date,'YYYY-MM-DD') AS end_date FROM aim_camp_weeks ORDER BY start_date ASC`);

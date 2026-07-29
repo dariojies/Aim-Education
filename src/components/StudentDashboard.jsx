@@ -759,7 +759,6 @@ function DashCamp() {
   const [form, setForm] = useState(null);        // datos del niño (nuevo si !form.id)
   const [saving, setSaving] = useState(false);
   const [daysOpenFor, setDaysOpenFor] = useState(null);  // kid.id con selector de días abierto
-  const [daysDraft, setDaysDraft] = useState([]);
   const [diaryOpenFor, setDiaryOpenFor] = useState(null); // kid.id con diario abierto
   const [diary, setDiary] = useState([]);
   const [diaryLoading, setDiaryLoading] = useState(false);
@@ -799,19 +798,6 @@ function DashCamp() {
     if (r.ok) loadAll();
   }
 
-  async function saveDays(kid) {
-    setSaving(true);
-    try {
-      const r = await fetch(`/api/camp/children/${kid.id}/days`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-        body: JSON.stringify({ days: daysDraft }),
-      });
-      if (r.ok) { setDaysOpenFor(null); await loadAll(); }
-      else { const d = await r.json(); alert(d.error || 'Error al guardar los días.'); }
-    } catch { alert('Error de conexión.'); }
-    finally { setSaving(false); }
-  }
-
   async function openDiary(kid) {
     if (diaryOpenFor === kid.id) { setDiaryOpenFor(null); return; }
     setDiaryOpenFor(kid.id);
@@ -848,7 +834,7 @@ function DashCamp() {
     <>
       <div className="panel">
         <h2><I.Sun /> Campamento de verano</h2>
-        <p className="sub">Inscribe a tus hijos, elige los días que asistirán y sigue su día a día.</p>
+        <p className="sub">Inscribe a tus hijos, consulta los días en los que están apuntados y sigue su día a día.</p>
 
         {loading && <EmptyState text="Cargando campamento..." />}
 
@@ -894,9 +880,9 @@ function DashCamp() {
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     <button className="btn btn-sm btn-outline" onClick={() => {
                       if (daysOpenFor === kid.id) { setDaysOpenFor(null); return; }
-                      setDaysOpenFor(kid.id); setDaysDraft([...(kid.days || [])]); setDiaryOpenFor(null);
+                      setDaysOpenFor(kid.id); setDiaryOpenFor(null);
                     }}>
-                      <I.Calendar /> Días
+                      <I.Calendar /> Ver días
                     </button>
                     <button className="btn btn-sm btn-outline" onClick={() => { openDiary(kid); setDaysOpenFor(null); }}>
                       <I.Newspaper /> Diario
@@ -908,12 +894,12 @@ function DashCamp() {
 
                 {daysOpenFor === kid.id && (
                   <div style={{ borderTop: '1px dashed var(--line)', paddingTop: 12, display: 'grid', gap: 12 }}>
-                    <CampDayPicker weeks={weeks} selected={daysDraft} onChange={setDaysDraft} />
-                    <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                      <button className="btn btn-sm btn-outline" onClick={() => setDaysOpenFor(null)}>Cancelar</button>
-                      <button className="btn btn-sm btn-primary" disabled={saving} onClick={() => saveDays(kid)}>
-                        {saving ? 'Guardando...' : `Guardar (${daysDraft.length} días)`}
-                      </button>
+                    <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>
+                      Los días en los que está apuntado. Para cambiarlos, habla con el club.
+                    </p>
+                    <CampDayPicker weeks={weeks} selected={kid.days || []} onChange={() => {}} disabled />
+                    <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                      <button className="btn btn-sm btn-outline" onClick={() => setDaysOpenFor(null)}>Cerrar</button>
                     </div>
                   </div>
                 )}
@@ -1032,7 +1018,6 @@ function DashSettings() {
         {[
           { t: "Avisos del club por email", desc: "Eventos, convocatorias y noticias." },
           { t: "Avisos de mi actividad por email", desc: "Solo las clases que sigo." },
-          { t: "Recordatorios SMS", desc: "Avisos 24h antes de cada clase." },
           { t: "Newsletter mensual", desc: "Lo más destacado del mes." },
         ].map((s, i) => (
           <label key={i} style={{display: "flex", justifyContent: "space-between", alignItems: "center", padding: 16, background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 14, cursor: "pointer"}}>

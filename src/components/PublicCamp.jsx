@@ -4,6 +4,91 @@ import { AimHeader, AimFooter, MagicText } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 
 const CAMP_MONTH_ABBR = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+// ── Precios ──────────────────────────────────────────────────────────────────
+// Salen del catálogo con el que cobra el club, no escritos aquí a mano: es la
+// única forma de que la web no acabe anunciando una tarifa que ya no existe.
+function TarifasCampamento() {
+  const [datos, setDatos] = useState(null);
+
+  useEffect(() => {
+    fetch('/api/camp/precios')
+      .then(r => r.ok ? r.json() : null)
+      .then(setDatos)
+      .catch(() => {});
+  }, []);
+
+  if (!datos) return null;
+
+  const de = (clave) => datos.tarifas.find(t => t.clave === clave);
+  const semana = de('semana');
+  const quincena = de('quincena');
+  const mes = de('mes');
+  const completo = de('completo');
+  const dia = de('dia');
+  const eur = (n) => `${Number(n) % 1 === 0 ? Number(n) : Number(n).toFixed(2)}€`;
+
+  const sueltas = (t) => t?.comparado ? `vs ${eur(t.comparado)} sueltas` : null;
+
+  return (
+    <>
+      <div className="camp-pricing-grid" style={{display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 20, marginTop: 32}}>
+        {semana && (
+          <PriceCard
+            tag="Una semana"
+            price={eur(semana.precio)}
+            desc="Una semana completa, de lunes a viernes."
+            features={["Comida incluida", "Material y excursiones", "Seguro de accidentes"]}
+          />
+        )}
+        {mes && (
+          <PriceCard
+            featured
+            tag="Un mes"
+            price={eur(mes.precio)}
+            discount={sueltas(mes)}
+            desc={mes.ahorroPct
+              ? `Cuatro semanas con un ${mes.ahorroPct}% de ahorro frente a pagarlas sueltas.`
+              : "Cuatro semanas de campamento."}
+            features={["Todo lo anterior", "Plaza asegurada todo el mes", "Un solo recibo"]}
+          />
+        )}
+        {completo && (
+          <PriceCard
+            tag="Verano completo"
+            price={eur(completo.precio)}
+            desc="Todo el campamento, de la primera semana a la última."
+            features={["Todo lo anterior", "Sin pensar en reservar cada mes", "El precio por semana más bajo"]}
+          />
+        )}
+      </div>
+
+      {/* Lo suelto y los servicios de mañana y tarde, que también se cobran. */}
+      <div style={{
+        marginTop: 20, padding: "18px 22px", background: "var(--bg-2)",
+        border: "1px solid var(--line)", borderRadius: 18,
+        display: "flex", gap: 28, flexWrap: "wrap", alignItems: "center",
+      }}>
+        {quincena && (
+          <span style={{fontSize: 14, color: "var(--ink-2)"}}>
+            <b style={{color: "var(--ink)"}}>Quincena</b> · {eur(quincena.precio)}
+          </span>
+        )}
+        {dia && (
+          <span style={{fontSize: 14, color: "var(--ink-2)"}}>
+            <b style={{color: "var(--ink)"}}>Día suelto</b> · {eur(dia.precio)}
+          </span>
+        )}
+        {datos.servicio && (
+          <span style={{fontSize: 14, color: "var(--ink-2)"}}>
+            <b style={{color: "var(--ink)"}}>Matinal y custodia</b> · {eur(datos.servicio.precioDia)} por día y servicio,
+            máximo {eur(datos.servicio.topeSemana)} por semana
+          </span>
+        )}
+      </div>
+    </>
+  );
+}
+
 function fmtShort(iso) {
   const d = new Date(iso + 'T12:00:00');
   return `${d.getDate()} ${CAMP_MONTH_ABBR[d.getMonth()]}`;
@@ -259,29 +344,7 @@ export default function PublicCamp() {
             <span className="eyebrow orange">Precios y descuentos</span>
             <h2 className="section-title">Una tarifa <MagicText>clara</MagicText>, sin sorpresas.</h2>
 
-            <div className="camp-pricing-grid" style={{display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 20, marginTop: 32}}>
-              <PriceCard
-                tag="Una semana"
-                price="160€"
-                desc="Una semana completa, lunes a viernes de 9:00 a 16:00."
-                features={["Comida incluida", "Material y excursiones", "Seguro de accidentes"]}
-              />
-              <PriceCard
-                featured
-                tag="Mes completo"
-                price="550€"
-                discount="vs 640€"
-                desc="Las cuatro semanas con un -14% sobre el precio individual."
-                features={["Todo lo anterior", "Camiseta exclusiva campamento", "Foto-libro de recuerdo"]}
-              />
-              <PriceCard
-                tag="Familia Aim"
-                price="-30%"
-                discount="sobre cualquier paquete"
-                desc="Si ya eres familia del club, descuento automático en cualquier reserva."
-                features={["Aplica sobre cualquier semana", "Acumulable con hermanos", "Prioridad de reserva"]}
-              />
-            </div>
+            <TarifasCampamento />
 
             <div style={{
               marginTop: 40,
