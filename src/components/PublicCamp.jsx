@@ -37,7 +37,7 @@ function TarifasCampamento() {
             tag="Una semana"
             price={eur(semana.precio)}
             desc="Una semana completa, de lunes a viernes."
-            features={["Comida incluida", "Material y excursiones", "Seguro de accidentes"]}
+            features={["De lunes a viernes, de 9:00 a 14:00", "Material y excursiones", "Seguro de accidentes"]}
           />
         )}
         {mes && (
@@ -230,7 +230,7 @@ export default function PublicCamp() {
     { time: "08:00", title: "Matinal", desc: "Servicio opcional: entrada a las 8:00 en vez de a las 9:00.", color: "var(--orange-soft)", extra: true },
     { time: "09:00", title: "Acogida", desc: "Llegada escalonada y arranque del día.", color: "var(--orange-soft)" },
     { time: "09:30", title: "Bloque activo", desc: "Taekwondo · funcional · gimnasia rítmica.", color: "var(--teal)" },
-    { time: "10:30", title: "Desayuno", desc: "Desayuno y rato de juego libre en el patio.", color: "var(--yellow)" },
+    { time: "10:30", title: "Desayuno", desc: "Cada niño trae el suyo de casa. Después, rato de juego libre en el patio.", color: "var(--yellow)" },
     { time: "11:00", title: "Bloque creativo", desc: "Pintura · robótica · baile.", color: "var(--purple)" },
     { time: "12:30", title: "Bloque inglés", desc: "Inmersión lúdica con monitores nativos.", color: "var(--blue)" },
     { time: "13:30", title: "Cierre + recogida", desc: "Recogida hasta las 14:00.", color: "var(--pink)" },
