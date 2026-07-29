@@ -202,7 +202,68 @@ function etiquetaRol(u) {
   return u.isSuperAdmin ? "Admin" : "Alumno";
 }
 
-function AdminStudents({ refreshTrigger, onEditUser }) {
+// Cambios de DNI o domicilio que ha pedido una familia. Se autorizan aquí
+// porque esos datos ya han salido impresos en facturas emitidas.
+function CambiosFiscales({ showToast }) {
+  const [lista, setLista] = useState([]);
+
+  const cargar = useCallback(() => {
+    fetch('/api/admin/fiscales/pendientes', { credentials: 'include', cache: 'no-store' })
+      .then(r => r.ok ? r.json() : [])
+      .then(d => setLista(Array.isArray(d) ? d : []))
+      .catch(() => {});
+  }, []);
+  useEffect(() => { cargar(); }, [cargar]);
+  useEnVivo(cargar, { cada: 20000 });
+
+  async function resolver(c, accion) {
+    const texto = accion === 'aprobar'
+      ? `¿Aplicar los datos nuevos de ${c.persona}?`
+      : `¿Rechazar el cambio de ${c.persona}?\nSus datos se quedan como están.`;
+    if (!window.confirm(texto)) return;
+    try {
+      const r = await fetch(`/api/admin/fiscales/${c.id}/${accion}`, { method: 'POST', credentials: 'include' });
+      if (!r.ok) { const d = await r.json(); return alert(d.error || 'Error.'); }
+      showToast?.(accion === 'aprobar' ? 'Datos actualizados.' : 'Cambio rechazado.');
+      cargar();
+    } catch { alert('Error de conexión.'); }
+  }
+
+  if (!lista.length) return null;
+
+  const linea = (x) => [x?.dni, x?.domicilio, [x?.cp, x?.poblacion].filter(Boolean).join(' ')]
+    .filter(Boolean).join(' · ') || '(vacío)';
+
+  return (
+    <div style={{ marginBottom: 18, background: 'var(--bg-2)', border: '1px solid color-mix(in oklab, var(--orange) 40%, var(--line))', borderRadius: 16, padding: 16 }}>
+      <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 4 }}>
+        {lista.length} cambio{lista.length !== 1 ? 's' : ''} de datos por autorizar
+      </div>
+      <p style={{ margin: '0 0 12px', fontSize: 13, color: 'var(--ink-3)' }}>
+        Una familia ha pedido cambiar su DNI o su domicilio. Hasta que se autorice, sus facturas salen con los datos de antes.
+      </p>
+      <div style={{ display: 'grid', gap: 10 }}>
+        {lista.map(c => (
+          <div key={c.id} style={{ background: 'var(--bg-3)', borderRadius: 12, padding: '12px 14px', display: 'grid', gap: 8 }}>
+            <div style={{ fontWeight: 700, fontSize: 14 }}>
+              {c.persona} <span style={{ fontWeight: 500, color: 'var(--ink-3)', fontSize: 12 }}>{c.email}</span>
+            </div>
+            <div style={{ display: 'grid', gap: 3, fontSize: 12 }}>
+              <div style={{ color: 'var(--ink-3)' }}>Antes: {linea(c.anterior)}</div>
+              <div style={{ color: 'var(--ink)', fontWeight: 700 }}>Pide: {linea(c)}</div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn btn-sm btn-outline" onClick={() => resolver(c, 'rechazar')}>Rechazar</button>
+              <button className="btn btn-sm btn-primary" onClick={() => resolver(c, 'aprobar')}>Autorizar</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AdminStudents({ refreshTrigger, onEditUser, showToast }) {
   const [users, setUsers] = useState([]);
   const [rangos, setRangos] = useState({});
   const [loading, setLoading] = useState(true);
@@ -248,6 +309,7 @@ function AdminStudents({ refreshTrigger, onEditUser }) {
 
   return (
     <>
+      <CambiosFiscales showToast={showToast} />
       <div className="toolbar">
         <div className="search-input">
           <I.Search />
@@ -4336,7 +4398,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           </div>
 
           {view === "overview" && <AdminOverview setView={setView} refreshTrigger={refreshTrigger} showToast={showToast} />}
-          {view === "students" && <AdminStudents refreshTrigger={refreshTrigger} onEditUser={(u) => { setEditingItem(u); setActiveModal('edit-student'); }} />}
+          {view === "students" && <AdminStudents refreshTrigger={refreshTrigger} showToast={showToast} onEditUser={(u) => { setEditingItem(u); setActiveModal('edit-student'); }} />}
           {view === "familias" && (
             <AdminFamilias showToast={showToast} onEditUser={async (p) => {
               // La tarjeta solo trae el id: se pide la ficha entera para abrirla.

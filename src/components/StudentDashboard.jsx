@@ -984,22 +984,116 @@ function timeAgo(dateStr) {
 }
 
 function DashProfile({ user }) {
+  const [datos, setDatos] = useState(null);
+  const [form, setForm] = useState(null);
+  const [guardando, setGuardando] = useState(false);
+  const [aviso, setAviso] = useState('');
+
+  const cargar = useCallback(() => {
+    fetch('/api/me/perfil', { credentials: 'include', cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d) return;
+        setDatos(d);
+        setForm({ telefono: d.telefono || '', ...Object.fromEntries(
+          ['dni', 'domicilio', 'cp', 'poblacion'].map(c => [c, d.fiscales[c] || ''])) });
+      })
+      .catch(() => {});
+  }, []);
+  useEffect(() => { cargar(); }, [cargar]);
+  useEnVivo(cargar, { cada: 20000 });
+
+  if (!datos || !form) {
+    return <div className="panel"><h2><I.User /> Perfil de la familia</h2><EmptyState text="Cargando tus datos..." /></div>;
+  }
+
+  const cambiaFiscal = ['dni', 'domicilio', 'cp', 'poblacion']
+    .some(c => (form[c] || '') !== (datos.fiscales[c] || ''));
+  const necesitaVisto = datos.yaRellenados && cambiaFiscal;
+
+  async function guardar() {
+    setGuardando(true); setAviso('');
+    try {
+      const r = await fetch('/api/me/perfil', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify(form),
+      });
+      const d = await r.json();
+      if (!r.ok) { setAviso(d.error || 'No se ha podido guardar.'); return; }
+      setAviso(d.requiereVisto
+        ? 'Enviado. El club tiene que dar el visto bueno al cambio; mientras tanto siguen los datos de antes.'
+        : 'Datos guardados.');
+      cargar();
+    } catch { setAviso('No hay conexión con el servidor.'); }
+    finally { setGuardando(false); }
+  }
+
+  const campo = (k, etiqueta, extra = {}) => (
+    <div className="field">
+      <label>{etiqueta}</label>
+      <input value={form[k]} onChange={e => setForm({ ...form, [k]: e.target.value })} {...extra} />
+    </div>
+  );
+
   return (
     <div className="panel">
       <h2><I.User /> Perfil de la familia</h2>
-      <p className="sub">Tus datos personales y los de tus alumnos.</p>
+      <p className="sub">Tus datos de contacto y los que salen en las facturas.</p>
 
-      <div style={{display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 16}}>
-        <div className="field"><label>Nombre tutor/a</label><input defaultValue={user?.firstName || ""} /></div>
-        <div className="field"><label>Apellidos</label><input defaultValue={user?.lastName || ""} /></div>
-        <div className="field"><label>Email</label><input type="email" defaultValue={user?.email || ""} readOnly /></div>
-        <div className="field"><label>Teléfono</label><input defaultValue="" placeholder="+34 600 000 000" /></div>
-        <div className="field"><label>DNI</label><input defaultValue="" placeholder="00000000A" /></div>
-        <div className="field"><label>Dirección</label><input defaultValue="" placeholder="Calle, nº · Ciudad" /></div>
+      {datos.pendiente && (
+        <div style={{
+          marginTop: 14, padding: '12px 14px', borderRadius: 12,
+          background: 'color-mix(in oklab, var(--orange) 10%, transparent)',
+          border: '1px solid color-mix(in oklab, var(--orange) 35%, transparent)',
+        }}>
+          <div style={{ fontWeight: 800, fontSize: 13, color: 'var(--orange)' }}>Tienes un cambio esperando al club</div>
+          <div style={{ fontSize: 12, color: 'var(--ink-2)', marginTop: 4, lineHeight: 1.5 }}>
+            Has pedido cambiar a: {[datos.pendiente.dni, datos.pendiente.domicilio,
+              [datos.pendiente.cp, datos.pendiente.poblacion].filter(Boolean).join(' ')].filter(Boolean).join(' · ') || '(vacío)'}.
+            <br />Hasta que lo autoricen, tus facturas salen con los datos de antes.
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginTop: 16 }}>
+        <div className="field"><label>Nombre</label><input value={datos.nombre || ''} readOnly /></div>
+        <div className="field"><label>Apellidos</label><input value={datos.apellidos || ''} readOnly /></div>
+        <div className="field"><label>Email</label><input type="email" value={datos.email || ''} readOnly /></div>
+        {campo('telefono', 'Teléfono', { type: 'tel', placeholder: '600 000 000' })}
       </div>
 
-      <p style={{marginTop: 24, fontSize: 13, color: "var(--ink-3)"}}>
-        Para actualizar los datos de alumnos, contacta con el club en recepción o por email.
+      <div style={{ marginTop: 24, borderTop: '1px solid var(--line)', paddingTop: 18 }}>
+        <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--ink-3)' }}>
+          Datos para la factura
+        </div>
+        <p style={{ margin: '6px 0 0', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.55 }}>
+          {datos.yaRellenados
+            ? 'Estos datos ya han salido en facturas emitidas, así que cambiarlos tiene que autorizarlo el club.'
+            : 'Rellénalos una vez y saldrán en todas tus facturas. Después, para cambiarlos habrá que pedírselo al club.'}
+        </p>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginTop: 14 }}>
+          {campo('dni', 'DNI / NIF', { placeholder: '12345678Z' })}
+          {campo('domicilio', 'Domicilio', { placeholder: 'Calle, número, piso' })}
+          {campo('cp', 'Código postal', { placeholder: '11201' })}
+          {campo('poblacion', 'Población', { placeholder: 'Algeciras' })}
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginTop: 18 }}>
+        <button className="btn btn-primary" disabled={guardando} onClick={guardar}>
+          {guardando ? 'Guardando...' : necesitaVisto ? 'Pedir el cambio' : 'Guardar'}
+        </button>
+        {necesitaVisto && (
+          <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+            El club recibirá tu petición y la revisará.
+          </span>
+        )}
+        {aviso && <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--teal)' }}>{aviso}</span>}
+      </div>
+
+      <p style={{ marginTop: 22, fontSize: 13, color: 'var(--ink-3)' }}>
+        Para cambiar los datos de tus hijos, habla con el club.
       </p>
     </div>
   );

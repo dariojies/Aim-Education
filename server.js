@@ -608,6 +608,29 @@ async function initDb() {
         await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS cp VARCHAR(10)`);
         await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS poblacion VARCHAR(100)`);
 
+        // Cambios de datos fiscales pedidos por la familia. Rellenarlos la primera
+        // vez lo hacen ellos; cambiarlos después lo tiene que autorizar
+        // secretaría, porque esos datos ya han salido impresos en facturas.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_datos_fiscales_cambios (
+                id SERIAL PRIMARY KEY,
+                user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                dni VARCHAR(20),
+                domicilio VARCHAR(200),
+                cp VARCHAR(10),
+                poblacion VARCHAR(100),
+                anterior JSONB,
+                estado VARCHAR(20) NOT NULL DEFAULT 'pendiente',
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                resuelto_at TIMESTAMPTZ,
+                resuelto_por UUID REFERENCES users(user_id) ON DELETE SET NULL
+            )
+        `);
+        // Una petición pendiente por persona: la nueva sustituye a la anterior.
+        await client.query(
+            `CREATE UNIQUE INDEX IF NOT EXISTS uq_fiscales_pendiente
+             ON aim_datos_fiscales_cambios (user_id) WHERE estado = 'pendiente'`);
+
         // ── TPV virtual (Redsys) ──
         // Un intento de pago online. Se crea ANTES de mandar a la familia a
         // Redsys, porque el número de pedido tiene que ser único para siempre y
@@ -4443,6 +4466,123 @@ app.get('/api/me/recibos/:id/pdf', authenticateSession, async (req, res) => {
     }
 });
 
+const CAMPOS_FISCALES = ['dni', 'domicilio', 'cp', 'poblacion'];
+const limpia = (v) => (typeof v === 'string' ? v.trim() : '') || null;
+
+// Sus propios datos, y si tiene un cambio esperando el visto bueno del club.
+app.get('/api/me/perfil', authenticateSession, async (req, res) => {
+    const me = req.userSession.userId;
+    try {
+        const u = await pool.query(
+            `SELECT name, surname, email, phone, dni, domicilio, cp, poblacion
+             FROM users WHERE user_id = $1`, [me]);
+        if (!u.rowCount) return res.status(404).json({ error: 'No encontrado.' });
+        const x = u.rows[0];
+        const sol = await pool.query(
+            `SELECT dni, domicilio, cp, poblacion, created_at FROM aim_datos_fiscales_cambios
+             WHERE user_id = $1 AND estado = 'pendiente'`, [me]);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            nombre: x.name, apellidos: x.surname, email: x.email, telefono: x.phone,
+            fiscales: { dni: x.dni, domicilio: x.domicilio, cp: x.cp, poblacion: x.poblacion },
+            // Si ya están puestos, cambiarlos hay que pedirlo.
+            yaRellenados: CAMPOS_FISCALES.some(c => x[c]),
+            pendiente: sol.rows[0] || null,
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/me/perfil', authenticateSession, async (req, res) => {
+    const me = req.userSession.userId;
+    const nuevos = Object.fromEntries(CAMPOS_FISCALES.map(c => [c, limpia(req.body[c])]));
+    const telefono = limpia(req.body.telefono);
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const u = await client.query(
+            `SELECT dni, domicilio, cp, poblacion FROM users WHERE user_id = $1 FOR UPDATE`, [me]);
+        if (!u.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'No encontrado.' }); }
+        const actuales = u.rows[0];
+
+        // El teléfono no es dato de factura: se cambia sin más trámite.
+        await client.query('UPDATE users SET phone = $1 WHERE user_id = $2', [telefono, me]);
+
+        const yaHabia = CAMPOS_FISCALES.some(c => actuales[c]);
+        const cambia = CAMPOS_FISCALES.some(c => (nuevos[c] || null) !== (actuales[c] || null));
+
+        if (!cambia) {
+            await client.query('COMMIT');
+            return res.json({ guardado: true, requiereVisto: false });
+        }
+
+        if (!yaHabia) {
+            // Primera vez: los pone la familia y ya está.
+            await client.query(
+                `UPDATE users SET dni = $1, domicilio = $2, cp = $3, poblacion = $4 WHERE user_id = $5`,
+                [nuevos.dni, nuevos.domicilio, nuevos.cp, nuevos.poblacion, me]);
+            await client.query('COMMIT');
+            return res.json({ guardado: true, requiereVisto: false });
+        }
+
+        // Ya estaban puestos: se pide el cambio y lo autoriza secretaría. Estos
+        // datos han salido impresos en facturas, así que no se tocan solos.
+        await client.query(
+            `INSERT INTO aim_datos_fiscales_cambios (user_id, dni, domicilio, cp, poblacion, anterior)
+             VALUES ($1,$2,$3,$4,$5,$6)
+             ON CONFLICT (user_id) WHERE estado = 'pendiente'
+             DO UPDATE SET dni = excluded.dni, domicilio = excluded.domicilio,
+                           cp = excluded.cp, poblacion = excluded.poblacion,
+                           anterior = excluded.anterior, created_at = NOW()`,
+            [me, nuevos.dni, nuevos.domicilio, nuevos.cp, nuevos.poblacion, actuales]);
+        await client.query('COMMIT');
+        res.json({ guardado: true, requiereVisto: true });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+// ── Lo que tiene que autorizar secretaría ───────────────────────────────────
+app.get('/api/admin/fiscales/pendientes', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT c.id, c.user_id, c.dni, c.domicilio, c.cp, c.poblacion, c.anterior, c.created_at,
+                    TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS persona, u.email
+             FROM aim_datos_fiscales_cambios c
+             JOIN users u ON u.user_id = c.user_id
+             WHERE c.estado = 'pendiente'
+             ORDER BY c.created_at`);
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/fiscales/:id/:accion', authenticateSession, requireAdmin, async (req, res) => {
+    const { id, accion } = req.params;
+    if (!['aprobar', 'rechazar'].includes(accion)) return res.status(400).json({ error: 'Acción no válida.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const c = await client.query(
+            `SELECT * FROM aim_datos_fiscales_cambios WHERE id = $1 AND estado = 'pendiente' FOR UPDATE`, [id]);
+        if (!c.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Esa petición ya está resuelta.' }); }
+        const s = c.rows[0];
+        if (accion === 'aprobar') {
+            await client.query(
+                `UPDATE users SET dni = $1, domicilio = $2, cp = $3, poblacion = $4 WHERE user_id = $5`,
+                [s.dni, s.domicilio, s.cp, s.poblacion, s.user_id]);
+        }
+        await client.query(
+            `UPDATE aim_datos_fiscales_cambios SET estado = $2, resuelto_at = NOW(), resuelto_por = $3 WHERE id = $1`,
+            [id, accion === 'aprobar' ? 'aprobado' : 'rechazado', req.userSession.userId]);
+        await client.query('COMMIT');
+        res.json({ success: true });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
 // Lo que una familia tiene pendiente de mirar: la campanita de su zona. Solo
 // entra lo que le pide algo (pagar, contestar, enterarse de una plaza), no un
 // resumen de todo, que para eso está el panel.
@@ -5686,6 +5826,18 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         // Aviso privado: lo que se asigna a la cuenta de soporte lo acaba
         // atendiendo el desarrollo, así que solo a esa persona se le avisa. Se
         // decide aquí, en el servidor, y a nadie más se le devuelve.
+        // Cambios de datos fiscales esperando autorización: si no se ven, la
+        // familia se queda esperando sin saberlo.
+        const fis = await pool.query(
+            `SELECT COUNT(*)::int n FROM aim_datos_fiscales_cambios WHERE estado = 'pendiente'`);
+        if (fis.rows[0].n > 0) {
+            avisos.push({
+                tipo: 'cobros', destino: 'students',
+                texto: `${fis.rows[0].n} cambio${fis.rows[0].n !== 1 ? 's' : ''} de datos por autorizar`,
+                detalle: 'DNI o domicilio que ha pedido cambiar una familia',
+            });
+        }
+
         if (String(req.userSession.email || '').toLowerCase() === AVISO_SOPORTE_PARA) {
             const s = await pool.query(
                 `SELECT COUNT(*)::int n, COUNT(*) FILTER (WHERE t.priority = 'high')::int urgentes
