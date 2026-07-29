@@ -228,10 +228,10 @@ export default function PublicCamp() {
   // que alargan ese horario por los extremos, y se cobran aparte.
   const DAY_PLAN = [
     { time: "08:00", title: "Matinal", desc: "Servicio opcional: entrada a las 8:00 en vez de a las 9:00.", color: "var(--orange-soft)", extra: true },
-    { time: "09:00", title: "Acogida", desc: "Llegada escalonada, desayuno saludable.", color: "var(--orange-soft)" },
+    { time: "09:00", title: "Acogida", desc: "Llegada escalonada y arranque del día.", color: "var(--orange-soft)" },
     { time: "09:30", title: "Bloque activo", desc: "Taekwondo · funcional · gimnasia rítmica.", color: "var(--teal)" },
-    { time: "11:00", title: "Snack + juego libre", desc: "Patio y zona de descanso.", color: "var(--yellow)" },
-    { time: "11:30", title: "Bloque creativo", desc: "Pintura · robótica · baile.", color: "var(--purple)" },
+    { time: "10:30", title: "Desayuno", desc: "Desayuno y rato de juego libre en el patio.", color: "var(--yellow)" },
+    { time: "11:00", title: "Bloque creativo", desc: "Pintura · robótica · baile.", color: "var(--purple)" },
     { time: "12:30", title: "Bloque inglés", desc: "Inmersión lúdica con monitores nativos.", color: "var(--blue)" },
     { time: "13:30", title: "Cierre + recogida", desc: "Recogida hasta las 14:00.", color: "var(--pink)" },
     { time: "15:00", title: "Custodia", desc: "Servicio opcional: salida a las 15:00 en vez de a las 14:00.", color: "var(--purple)", extra: true },
