@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { I } from './Icons.jsx';
+import { useEnVivo } from '../envivo.js';
 import { ListaClases, AdminReportes, colorOcupacion } from './AdminTulClases.jsx';
 import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong, campDayParts, nombreMedioPago } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
@@ -1968,17 +1969,32 @@ function BillingTPV({ showToast }) {
     return () => clearTimeout(t);
   }, [q]);
 
+  // Traer la cesta del pagador. Al refrescar sola se respeta lo que ya está
+  // marcado y los descuentos escritos a mano: si no, se borraría lo tecleado
+  // en mitad de un cobro.
+  const traerCesta = useCallback(async (id, reiniciar) => {
+    const r = await fetch(`/api/admin/billing/tpv/cesta?pagadorId=${id}`, { credentials: 'include', cache: 'no-store' });
+    if (!r.ok) return;
+    const c = await r.json();
+    setCesta(c);
+    setSel(prev => {
+      const s = {};
+      c.cargos.forEach(cg => {
+        const antes = reiniciar ? null : prev[cg.id];
+        s[cg.id] = antes || { on: true, descuentoPct: cg.descuentoPct };
+      });
+      return s;
+    });
+  }, []);
+
   async function elegirPagador(p) {
     setPagador(p); setResultados([]); setQ(''); setExtras([]); setTicket(null); setEntregado('');
-    const r = await fetch(`/api/admin/billing/tpv/cesta?pagadorId=${p.id}`, { credentials: 'include' });
-    if (r.ok) {
-      const c = await r.json();
-      setCesta(c);
-      const s = {};
-      c.cargos.forEach(cg => { s[cg.id] = { on: true, descuentoPct: cg.descuentoPct }; });
-      setSel(s);
-    }
+    await traerCesta(p.id, true);
   }
+
+  // Mientras hay un pagador en pantalla, la cesta se mantiene al día: si la
+  // familia paga por internet o cobra otra persona, se ve sin recargar.
+  useEnVivo(() => { if (pagador && !ticket) traerCesta(pagador.id, false); }, { cada: 8000, activo: !!pagador && !ticket });
 
   // Líneas activas (cargos seleccionados + extras) para calcular y cobrar.
   const lineasActivas = cesta ? cesta.cargos.filter(c => sel[c.id]?.on).map(c => ({

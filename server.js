@@ -3261,7 +3261,7 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
             throw {
                 httP: 409,
                 msg: `La familia está pagando por internet ahora mismo: ${enCurso.rows.map(x => x.descripcion).join(', ')}. `
-                    + 'Espera unos minutos y vuelve a cargar la pantalla.',
+                    + 'Espera unos segundos: la pantalla se actualiza sola en cuanto termine.',
             };
         }
 
@@ -3273,7 +3273,7 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
         // Si alguno se ha cobrado mientras tanto, se avisa en vez de cobrar el
         // resto por lo bajo: quien está en el mostrador tiene que saberlo.
         if (cs.rowCount !== allIds.length) {
-            throw { httP: 409, msg: 'Alguno de esos recibos ya se ha cobrado. Vuelve a cargar la pantalla.' };
+            throw { httP: 409, msg: 'Alguno de esos recibos acaba de cobrarse. La lista ya se ha puesto al día.' };
         }
 
         // 4) Calcular importes (autoritativo).

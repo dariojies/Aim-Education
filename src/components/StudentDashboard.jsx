@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { I } from './Icons.jsx';
+import { useEnVivo } from '../envivo.js';
 import { AimLogo, ACT_BY_ID, CampDayPicker, campFmtLong, nombreMedioPago } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 import { UserSupport } from './AdminSupport.jsx';
@@ -69,6 +70,14 @@ function DashOverview({ go, setView }) {
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
+
+  // Lo pendiente es lo que más cambia por detrás: se mantiene al día solo.
+  useEnVivo(() => {
+    fetch('/api/me/cargos', { credentials: 'include', cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => setPendiente(Number(d?.total || 0)))
+      .catch(() => {});
+  }, { cada: 15000 });
 
   // Solo cuentan los recibos que siguen en pie: un recibo anulado no es dinero pagado.
   const recibosValidos = recibos.filter(r => r.estado !== 'anulado');
@@ -445,6 +454,8 @@ function PagoPendiente({ onPagado }) {
       .catch(() => setDatos(null));
   }, []);
   useEffect(() => { cargar(); }, [cargar]);
+  // Si en secretaría cobran un recibo, desaparece de aquí sin recargar.
+  useEnVivo(cargar, { cada: 12000 });
 
   // Al volver del banco se comprueba cómo acabó el pago.
   useEffect(() => {
@@ -577,6 +588,8 @@ function DashPayments() {
       .then(d => setRecibos(Array.isArray(d) ? d : []))
       .catch(() => {});
   }, []);
+  // Un cobro en secretaría también genera recibo: aparece aquí sin recargar.
+  useEnVivo(recargar, { cada: 12000 });
 
   return (
     <>
