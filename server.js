@@ -3249,11 +3249,32 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
 
         // 3) Cargar todos los cargos a cobrar (bloqueados), validando estado.
         const allIds = [...idsSel, ...extraIds];
+
+        // Si la familia está pagando alguno por internet ahora mismo, no se
+        // cobra aquí: si no, se le cobraría dos veces. La cesta ya los esconde,
+        // pero puede haberse abierto antes de que la familia empezara a pagar.
+        const enCurso = await client.query(
+            `SELECT c.id, c.descripcion FROM aim_cargos c
+             WHERE c.id = ANY($1::int[]) AND NOT (${SQL_NO_RESERVADO})`, [allIds]
+        );
+        if (enCurso.rowCount) {
+            throw {
+                httP: 409,
+                msg: `La familia está pagando por internet ahora mismo: ${enCurso.rows.map(x => x.descripcion).join(', ')}. `
+                    + 'Espera unos minutos y vuelve a cargar la pantalla.',
+            };
+        }
+
         const cs = await client.query(
             `SELECT * FROM aim_cargos WHERE id = ANY($1::int[]) AND estado = 'pendiente' AND recibo_id IS NULL FOR UPDATE`,
             [allIds]
         );
         if (cs.rowCount === 0) throw { httP: 409, msg: 'Los cargos ya no están disponibles.' };
+        // Si alguno se ha cobrado mientras tanto, se avisa en vez de cobrar el
+        // resto por lo bajo: quien está en el mostrador tiene que saberlo.
+        if (cs.rowCount !== allIds.length) {
+            throw { httP: 409, msg: 'Alguno de esos recibos ya se ha cobrado. Vuelve a cargar la pantalla.' };
+        }
 
         // 4) Calcular importes (autoritativo).
         const calc = calcularRecibo(cs.rows.map(cargoParaMotor));
