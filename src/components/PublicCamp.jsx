@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { I } from './Icons.jsx';
-import { AimHeader, AimFooter, MagicText } from './Shared.jsx';
+import { AimHeader, AimFooter, MagicText, campDayParts } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 
 const CAMP_MONTH_ABBR = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
@@ -144,7 +144,7 @@ function PriceCard({ tag, price, discount, desc, features, featured }) {
 
 export default function PublicCamp() {
   const { go, user } = useRouter();
-  const [selectedWeek, setSelectedWeek] = useState(0);
+  const [selectedWeek, setSelectedWeek] = useState(null);
   const [apiWeeks, setApiWeeks] = useState([]);
 
   useEffect(() => {
@@ -156,28 +156,42 @@ export default function PublicCamp() {
 
   // Reservar: usuarios con sesión van directos a su panel de campamento.
   const reserve = () => go(user ? "/dashboard/campamento" : "/auth?mode=register");
+  // Las plazas que caben cada día: es lo que hay que anunciar, no la suma de la
+  // semana. Si las semanas tienen aforos distintos se enseña el más habitual.
+  const plazasPorDia = (() => {
+    const caps = apiWeeks.map(w => w.capacity).filter(c => c != null);
+    if (!caps.length) return null;
+    const veces = {};
+    caps.forEach(c => { veces[c] = (veces[c] || 0) + 1; });
+    return Number(Object.entries(veces).sort((a, b) => b[1] - a[1])[0][0]);
+  })();
 
-  // Semanas reales publicadas por el club; si aún no hay, se muestra la previsión.
-  const FALLBACK_WEEKS = [
-    { num: "01", range: "1 – 5 Jul", theme: "Aventura y deportes", spots: 8, total: 24 },
-    { num: "02", range: "8 – 12 Jul", theme: "Robots, ciencia y código", spots: 4, total: 24 },
-    { num: "03", range: "15 – 19 Jul", theme: "Cine, arte y baile", spots: 12, total: 24 },
-    { num: "04", range: "22 – 26 Jul", theme: "Olimpiadas Aim", spots: 0, total: 24 },
-  ];
-  const WEEKS = apiWeeks.length
-    ? apiWeeks.map((w, i) => {
-        const days = (w.days || []).filter(d => !d.holiday);
-        const total = (w.capacity || 24) * Math.max(days.length, 1);
-        const occupied = days.reduce((s, d) => s + d.count, 0);
-        return {
-          num: String(i + 1).padStart(2, "0"),
-          range: `${fmtShort(w.startDate)} – ${fmtShort(w.endDate)}`,
-          theme: w.label,
-          spots: Math.max(total - occupied, 0),
-          total,
-        };
-      })
-    : FALLBACK_WEEKS;
+  // Las semanas tal y como están publicadas, con las plazas que quedan de
+  // verdad. Fuera se enseña la media por día, no la suma de los cinco: decir
+  // "150 plazas" cuando caben 30 por día induce a error.
+  const WEEKS = apiWeeks.map((w, i) => {
+    const dias = (w.days || []).map(d => ({
+      ...d,
+      libres: w.capacity == null ? null : Math.max(w.capacity - d.count, 0),
+    }));
+    const abiertos = dias.filter(d => !d.holiday);
+    const libresTotal = abiertos.reduce((t, d) => t + (d.libres ?? 0), 0);
+    return {
+      id: w.id,
+      num: String(i + 1).padStart(2, "0"),
+      range: `${fmtShort(w.startDate)} – ${fmtShort(w.endDate)}`,
+      theme: w.label,
+      capacity: w.capacity,
+      dias,
+      // Media de huecos por día, sin decimales: es lo que de verdad significa
+      // "queda sitio esta semana".
+      mediaLibres: abiertos.length ? Math.floor(libresTotal / abiertos.length) : 0,
+      // Se considera completa cuando no queda un solo hueco en toda la semana.
+      completa: abiertos.length > 0 && libresTotal === 0,
+      ocupados: abiertos.reduce((t, d) => t + d.count, 0),
+      aforo: (w.capacity || 0) * abiertos.length,
+    };
+  });
 
   const DAY_PLAN = [
     { time: "09:00", title: "Acogida", desc: "Llegada escalonada, desayuno saludable.", color: "var(--orange-soft)" },
@@ -202,34 +216,36 @@ export default function PublicCamp() {
                 <span className="pill-day">🌞 Verano 2026 · Algeciras</span>
                 <h1>Campamento<br/>de verano Aim.</h1>
                 <p>
-                  Cuatro semanas de aventura, aprendizaje y diversión. Deporte por la mañana,
-                  inglés y talleres creativos por la tarde. Para niños y niñas de <b>4 a 14 años</b>.
+                  {WEEKS.length || 'Varias'} semanas de aventura, aprendizaje y diversión, cada una con su tema.
+                  Deporte por la mañana, inglés y talleres creativos por la tarde.
+                  Para niños y niñas de <b>4 a 14 años</b>.
                 </p>
                 <div style={{display: "flex", gap: 12, marginTop: 32, flexWrap: "wrap"}}>
                   <button className="btn btn-lg" style={{background: "var(--ink)", color: "white"}} onClick={reserve}>
                     Reservar plaza <I.Arrow />
                   </button>
-                  <button className="btn btn-lg" style={{background: "rgba(255,255,255,.22)", color: "white", border: "1px solid rgba(255,255,255,.4)"}}>
-                    Descargar folleto
+                  <button className="btn btn-lg" style={{background: "rgba(255,255,255,.22)", color: "white", border: "1px solid rgba(255,255,255,.4)"}}
+                    onClick={() => document.getElementById('camp-precios')?.scrollIntoView({ behavior: 'smooth' })}>
+                    Ver precios
                   </button>
                 </div>
 
                 <div style={{display: "flex", gap: 32, marginTop: 38, flexWrap: "wrap"}}>
                   <div>
-                    <div style={{fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 36, letterSpacing: "-.02em", lineHeight: 1}}>4</div>
+                    <div style={{fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 36, letterSpacing: "-.02em", lineHeight: 1}}>{WEEKS.length || '—'}</div>
                     <div style={{fontSize: 12, opacity: .9, marginTop: 4, fontWeight: 600}}>semanas temáticas</div>
                   </div>
                   <div>
-                    <div style={{fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 36, letterSpacing: "-.02em", lineHeight: 1}}>24</div>
-                    <div style={{fontSize: 12, opacity: .9, marginTop: 4, fontWeight: 600}}>plazas/semana</div>
+                    <div style={{fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 36, letterSpacing: "-.02em", lineHeight: 1}}>{plazasPorDia || '—'}</div>
+                    <div style={{fontSize: 12, opacity: .9, marginTop: 4, fontWeight: 600}}>plazas por día</div>
                   </div>
                   <div>
                     <div style={{fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 36, letterSpacing: "-.02em", lineHeight: 1}}>4-14</div>
                     <div style={{fontSize: 12, opacity: .9, marginTop: 4, fontWeight: 600}}>años de edad</div>
                   </div>
                   <div>
-                    <div style={{fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 36, letterSpacing: "-.02em", lineHeight: 1}}>-30%</div>
-                    <div style={{fontSize: 12, opacity: .9, marginTop: 4, fontWeight: 600}}>familias socias</div>
+                    <div style={{fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 36, letterSpacing: "-.02em", lineHeight: 1}}>9–16h</div>
+                    <div style={{fontSize: 12, opacity: .9, marginTop: 4, fontWeight: 600}}>de lunes a viernes</div>
                   </div>
                 </div>
               </div>
@@ -262,25 +278,28 @@ export default function PublicCamp() {
           <div className="container">
             <div style={{display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 16, marginBottom: 28}}>
               <div>
-                <span className="eyebrow orange">Elige tu semana</span>
-                <h2 className="section-title">Cuatro semanas, <MagicText>cuatro temas.</MagicText></h2>
+                <span className="eyebrow orange">Elige tus días</span>
+                <h2 className="section-title">Cada semana, <MagicText>un tema distinto.</MagicText></h2>
               </div>
-              <p style={{fontSize: 14, color: "var(--ink-3)", maxWidth: 320}}>
-                Puedes inscribirte a una, varias o las cuatro. Cada semana es independiente.
+              <p style={{fontSize: 14, color: "var(--ink-3)", maxWidth: 340, lineHeight: 1.6}}>
+                Ninguna semana se repite. Apúntate por días sueltos, por semanas o al campamento
+                completo; si necesitáis otra combinación, os preparamos un presupuesto a medida.
               </p>
             </div>
 
             <div className="weeks-grid">
               {WEEKS.map((w, i) => (
-                <div key={i}
-                  className={`week-card ${selectedWeek === i ? "is-selected" : ""} ${w.spots === 0 ? "full" : ""}`}
-                  onClick={() => setSelectedWeek(i)}>
+                <div key={w.id}
+                  className={`week-card ${selectedWeek === i ? "is-selected" : ""} ${w.completa ? "full" : ""}`}
+                  onClick={() => setSelectedWeek(selectedWeek === i ? null : i)}>
                   <div style={{display: "flex", justifyContent: "space-between", alignItems: "flex-start"}}>
                     <div className="num">SEM {w.num}</div>
-                    {w.spots === 0 ? (
+                    {w.completa ? (
                       <span style={{background: "var(--orange)", color: "white", fontSize: 10, fontWeight: 800, padding: "3px 9px", borderRadius: 999, letterSpacing: ".05em"}}>COMPLETA</span>
                     ) : (
-                      <span style={{background: "color-mix(in oklab, var(--teal) 16%, var(--bg-2))", color: "var(--teal)", fontSize: 10, fontWeight: 800, padding: "3px 9px", borderRadius: 999, letterSpacing: ".05em"}}>{w.spots} plazas</span>
+                      <span style={{background: "color-mix(in oklab, var(--teal) 16%, var(--bg-2))", color: "var(--teal)", fontSize: 10, fontWeight: 800, padding: "3px 9px", borderRadius: 999, letterSpacing: ".05em"}}>
+                        {w.mediaLibres} {w.mediaLibres === 1 ? "plaza" : "plazas"} al día
+                      </span>
                     )}
                   </div>
                   <div className="range">{w.range}</div>
@@ -289,18 +308,63 @@ export default function PublicCamp() {
                     <div style={{height: 6, background: "var(--bg-3)", borderRadius: 999, overflow: "hidden", border: "1px solid var(--line-2)"}}>
                       <div style={{
                         height: "100%",
-                        width: `${((w.total - w.spots) / w.total) * 100}%`,
-                        background: w.spots === 0 ? "var(--orange)" : "var(--orange-soft)",
+                        width: `${w.aforo ? Math.min(100, (w.ocupados / w.aforo) * 100) : 0}%`,
+                        background: w.completa ? "var(--orange)" : "var(--orange-soft)",
                       }} />
                     </div>
                     <div style={{display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 11, color: "var(--ink-3)", fontWeight: 600}}>
-                      <span>{w.total - w.spots}/{w.total} inscritos</span>
-                      <span>{w.spots > 0 ? "Disponible" : "Lista de espera"}</span>
+                      <span>{w.completa ? "Sin huecos" : "Quedan huecos"}</span>
+                      <span style={{color: "var(--purple)", fontWeight: 800}}>
+                        {selectedWeek === i ? "Ocultar días" : "Ver los días"}
+                      </span>
                     </div>
                   </div>
+
+                  {/* Al abrir la semana se ve hueco por hueco, día a día. */}
+                  {selectedWeek === i && (
+                    <div onClick={(e) => e.stopPropagation()} style={{marginTop: 16, borderTop: "1px dashed var(--line)", paddingTop: 14}}>
+                      <div style={{display: "flex", gap: 8, flexWrap: "wrap"}}>
+                        {w.dias.map(d => {
+                          const p = campDayParts(d.day);
+                          const lleno = !d.holiday && d.libres === 0;
+                          return (
+                            <div key={d.day} title={d.holiday ? "Festivo" : `${d.libres} libres de ${w.capacity}`}
+                              style={{
+                                minWidth: 62, padding: "8px 10px", borderRadius: 12, textAlign: "center",
+                                border: `1.5px ${d.holiday ? "dashed" : "solid"} ${d.holiday ? "color-mix(in oklab, var(--orange) 45%, var(--line))" : lleno ? "var(--line)" : "color-mix(in oklab, var(--teal) 45%, var(--line))"}`,
+                                background: d.holiday ? "color-mix(in oklab, var(--orange) 7%, var(--bg-2))" : lleno ? "var(--bg-3)" : "color-mix(in oklab, var(--teal) 8%, var(--bg-2))",
+                                opacity: d.holiday || lleno ? .7 : 1,
+                              }}>
+                              <div style={{fontSize: 10, fontWeight: 800, letterSpacing: ".08em", color: "var(--ink-3)"}}>{p.dow}</div>
+                              <div style={{fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 800, lineHeight: 1.1, textDecoration: d.holiday ? "line-through" : "none"}}>{p.num}</div>
+                              <div style={{fontSize: 10, fontWeight: 700, marginTop: 2, color: d.holiday ? "var(--orange)" : lleno ? "var(--ink-3)" : "var(--teal)"}}>
+                                {d.holiday ? "Fiesta" : lleno ? "Completo" : `${d.libres} libres`}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      <div style={{display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14}}>
+                        <button className="btn btn-sm btn-primary" onClick={reserve}>Reservar días sueltos</button>
+                        <button className="btn btn-sm btn-outline" onClick={reserve} disabled={w.completa}>Reservar la semana</button>
+                        <button className="btn btn-sm btn-outline" onClick={reserve}>Un mes entero</button>
+                        <button className="btn btn-sm btn-outline" onClick={reserve}>Verano completo</button>
+                      </div>
+                      <p style={{margin: "10px 0 0", fontSize: 12, color: "var(--ink-3)", lineHeight: 1.5}}>
+                        ¿Otra combinación? Escríbenos y os preparamos un presupuesto a medida.
+                      </p>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
+
+            {!WEEKS.length && (
+              <p style={{fontSize: 14, color: "var(--ink-3)"}}>
+                Las semanas de este verano se publicarán en breve.
+              </p>
+            )}
           </div>
         </section>
 
@@ -339,7 +403,7 @@ export default function PublicCamp() {
         </section>
 
         {/* Pricing */}
-        <section className="block tight">
+        <section className="block tight" id="camp-precios">
           <div className="container">
             <span className="eyebrow orange">Precios y descuentos</span>
             <h2 className="section-title">Una tarifa <MagicText>clara</MagicText>, sin sorpresas.</h2>
