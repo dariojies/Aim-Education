@@ -7,19 +7,50 @@ const CAT_COLOR = { taekwondo: '#21B668', ballet: '#FF99D3', ingles: '#00BBF4', 
 const catColor = c => CAT_COLOR[c] || '#5233A8';
 const MONTH_ABBR = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 
-// Cada azulejo lleva a su actividad: eran decorativos y la gente los pulsaba
-// igual, así que ahora hacen lo que parece que hacen.
-function BrandTile({ actId, cls, label, textColor, go }) {
-  const a = ACT_BY_ID[actId];
-  if (!a) return null;
+// Un hueco del mosaico. Lo que se ve y a dónde lleva se configura desde el panel
+// (Portada web): puede ser una actividad, una imagen propia para destacar un
+// evento o una noticia, o el patrón de la marca.
+function BrandTile({ hueco, go }) {
+  const a = ACT_BY_ID[hueco.actId];
+  // Sin destino propio, una actividad lleva a su página; el resto, a inicio.
+  const destino = hueco.url || (a ? `/actividades/${a.id}` : '/');
+  const irA = () => {
+    if (/^https?:\/\//i.test(destino)) window.open(destino, '_blank', 'noopener');
+    else go(destino);
+  };
+
+  const conImagen = !!hueco.imagenUrl;
+  const conPatron = hueco.tipo === 'patron' && !conImagen;
+  // A sangre, la imagen ES el cuadro entero y no se ve nada de color detrás.
+  // 'dentro' es la otra opción: la imagen completa sobre el color, sin recortar.
+  const aSangre = conImagen ? hueco.encaje !== 'dentro' : conPatron;
+  const sinColor = aSangre;
+
   return (
-    <div className={`tile colored ${cls} ${a.className} tile-link`}
+    <div className={`tile ${sinColor ? '' : 'colored'} ${hueco.titulo ? '' : 'sin-rotulo'} ${!sinColor && a ? a.className : ''} tile-link`}
       role="link" tabIndex={0}
-      onClick={() => go(`/actividades/${a.id}`)}
-      onKeyDown={(e) => { if (e.key === 'Enter') go(`/actividades/${a.id}`); }}
-      title={`Ver ${a.name}`}>
-      <img className="tile-icon" src={a.iconAsset} alt={a.name} />
-      {label && <span className="label" style={textColor ? {color: textColor, textShadow: "none"} : null}>{label}</span>}
+      onClick={irA}
+      onKeyDown={(e) => { if (e.key === 'Enter') irA(); }}
+      data-w={hueco.ancho} data-h={hueco.alto}
+      style={{
+        /* La casilla donde empieza y cuántas ocupa: lo decide el panel. */
+        gridColumn: `${hueco.col} / span ${hueco.ancho}`,
+        gridRow: `${hueco.fila} / span ${hueco.alto}`,
+        ...(sinColor ? {padding: 0} : null),
+        ...(hueco.color && !a ? {background: hueco.color} : null),
+      }}
+      title={hueco.titulo || (a ? `Ver ${a.name}` : 'Ver más')}>
+
+      {conImagen && (
+        <img className={`tile-foto ${aSangre ? '' : 'dentro'}`} src={hueco.imagenUrl} alt={hueco.titulo || ''} />
+      )}
+      {conPatron && <div className="tile-foto tile-patron" />}
+
+      {!conImagen && !conPatron && a && (
+        <span className="tile-icon-hueco"><img className="tile-icon" src={a.iconAsset} alt={a.name} /></span>
+      )}
+
+      {hueco.titulo && <span className="label">{hueco.titulo}</span>}
     </div>
   );
 }
@@ -65,10 +96,22 @@ export default function PublicLanding() {
   const [events, setEvents] = useState([]);
   // Lo que el club puede cambiar de la portada, y los números del club. Se
   // arranca con algo razonable para que nunca se vea la portada a medio pintar.
+  // El mismo mosaico que el servidor da por defecto, para que el primer pintado
+  // sea ya el bueno y no haya un parpadeo mientras llega la configuración.
   const [portada, setPortada] = useState({
     cta: { texto: 'Campamento de verano', url: '/campamento' },
     anoFundacion: 2008,
     datos: [],
+    columnas: 4, filas: 4,
+    mosaico: [
+      { id: 'b1', col: 1, fila: 1, ancho: 2, alto: 2, tipo: 'patron', titulo: '10+ actividades', url: '/actividades' },
+      { id: 'b2', col: 3, fila: 1, ancho: 2, alto: 1, tipo: 'actividad', actId: 'taekwondo', titulo: 'Taekwondo' },
+      { id: 'b3', col: 3, fila: 2, ancho: 1, alto: 1, tipo: 'actividad', actId: 'ballet', titulo: 'Ballet' },
+      { id: 'b4', col: 4, fila: 2, ancho: 1, alto: 1, tipo: 'actividad', actId: 'robotica', titulo: 'Robótica' },
+      { id: 'b5', col: 1, fila: 3, ancho: 1, alto: 2, tipo: 'actividad', actId: 'funcional', titulo: 'Funcional' },
+      { id: 'b6', col: 2, fila: 3, ancho: 1, alto: 2, tipo: 'actividad', actId: 'camaleon', titulo: 'Camaleón' },
+      { id: 'b7', col: 3, fila: 3, ancho: 2, alto: 2, tipo: 'actividad', actId: 'pintura', titulo: 'Pintura' },
+    ],
   });
 
   useEffect(() => {
@@ -123,29 +166,14 @@ export default function PublicLanding() {
               </div>
 
               {/* Visual mosaic — brand submarcas */}
-              <div className="hero-vis fade-up d2">
-                <div className="tile tile-1 tile-link" style={{padding: 0, overflow: "hidden"}}
-                  role="link" tabIndex={0}
-                  onClick={() => go("/actividades")}
-                  onKeyDown={(e) => { if (e.key === 'Enter') go("/actividades"); }}
-                  title="Ver todas las actividades">
-                  <img
-                    src="/src/brand/Aim_PatternV.png"
-                    alt="Actividades Aim"
-                    style={{position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover"}}
-                  />
-                  <div style={{
-                    position: "absolute", inset: 0,
-                    background: "linear-gradient(180deg, rgba(255,255,255,0) 50%, rgba(0,0,0,.45) 100%)",
-                  }}/>
-                  <span className="label" style={{color: "white"}}>10+ actividades</span>
-                </div>
-                <BrandTile go={go} actId="taekwondo" cls="tile-2" label="Taekwondo" />
-                <BrandTile go={go} actId="ballet" cls="tile-3" label="Ballet" />
-                <BrandTile go={go} actId="robotica" cls="tile-4" label="Robótica" />
-                <BrandTile go={go} actId="funcional" cls="tile-5" label="Funcional" />
-                <BrandTile go={go} actId="camaleon" cls="tile-6" label="Camaleón" />
-                <BrandTile go={go} actId="pintura" cls="tile-7" label="Pintura" />
+              {/* minmax(0,1fr) y no 1fr: con imágenes dentro, el mínimo automático
+                  de la pista es el tamaño real de la imagen y la rejilla crece
+                  hasta desbordar el hueco del hero. */}
+              <div className="hero-vis fade-up d2" style={{
+                gridTemplateColumns: `repeat(${portada.columnas || 4}, minmax(0, 1fr))`,
+                gridTemplateRows: `repeat(${portada.filas || 4}, minmax(0, 1fr))`,
+              }}>
+                {(portada.mosaico || []).map(h => <BrandTile key={h.id} hueco={h} go={go} />)}
               </div>
             </div>
           </div>

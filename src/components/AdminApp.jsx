@@ -28,6 +28,7 @@ function sectionLabel(id) {
     billing: "Facturación",
     groups: "Grupos",
     instructors: "Instructores",
+    portada: "Portada de la web",
     settings: "Ajustes del club",
     support: "Panel de soporte",
   })[id] || "Panel";
@@ -1375,9 +1376,216 @@ function AdminGroups({ refreshTrigger }) {
 
 // El botón destacado de la portada. Hoy lleva al campamento; cuando toque
 // destacar otra cosa se cambia aquí, sin tocar código ni desplegar.
+const COLS_MOSAICO = 4, FILAS_MOSAICO = 4;
+
+// Un bloque tal y como se va a ver en la portada, en pequeño. Se usa tanto en el
+// mapa de la cuadrícula como en la ficha de edición.
+function VistaBloque({ b, pequeno }) {
+  const act = ACT_BY_ID[b.actId];
+  const aSangre = b.imagenUrl ? b.encaje !== 'dentro' : b.tipo === 'patron';
+  return (
+    <div style={{
+      position: 'absolute', inset: 0, borderRadius: 8, overflow: 'hidden',
+      background: aSangre ? 'var(--line)' : (b.color || act?.color || 'var(--ink-3)'),
+      display: 'grid', placeItems: 'center',
+    }}>
+      {b.imagenUrl
+        ? <img src={b.imagenUrl} alt="" style={aSangre
+            ? { width: '100%', height: '100%', objectFit: 'cover' }
+            : { maxWidth: '76%', maxHeight: '70%', objectFit: 'contain', borderRadius: 4 }} />
+        : b.tipo === 'patron'
+          ? <span style={{ fontSize: 9, fontWeight: 800, color: 'var(--ink-3)' }}>PATRÓN</span>
+          : act ? <img src={act.iconAsset} alt="" style={{ width: '52%', maxWidth: 46, maxHeight: 46 }} />
+          : null}
+      {b.titulo && !pequeno && (
+        <span style={{
+          position: 'absolute', left: 0, right: 0, bottom: 0, padding: '14px 6px 4px',
+          background: 'linear-gradient(180deg, transparent, rgba(0,0,0,.5))',
+          color: '#fff', fontSize: 9, fontWeight: 800, lineHeight: 1.1,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>{b.titulo}</span>
+      )}
+    </div>
+  );
+}
+
+// El mapa de la cuadrícula: se ve la composición entera y se pincha el bloque
+// que se quiere tocar. Es la misma rejilla que la portada, a escala.
+function MapaMosaico({ bloques, seleccion, onSeleccionar }) {
+  // Casillas libres, para que se vea de un vistazo qué hueco queda por llenar.
+  const ocupadas = new Set();
+  for (const b of bloques) {
+    for (let c = b.col; c < b.col + b.ancho; c++) {
+      for (let f = b.fila; f < b.fila + b.alto; f++) ocupadas.add(`${c},${f}`);
+    }
+  }
+  const libres = [];
+  for (let f = 1; f <= FILAS_MOSAICO; f++) {
+    for (let c = 1; c <= COLS_MOSAICO; c++) if (!ocupadas.has(`${c},${f}`)) libres.push({ c, f });
+  }
+
+  return (
+    <div>
+      <div style={{
+        display: 'grid', gap: 6, aspectRatio: '1 / 1', maxWidth: 340,
+        gridTemplateColumns: `repeat(${COLS_MOSAICO}, 1fr)`,
+        gridTemplateRows: `repeat(${FILAS_MOSAICO}, 1fr)`,
+      }}>
+        {libres.map(({ c, f }) => (
+          <div key={`libre-${c}-${f}`} style={{
+            gridColumn: c, gridRow: f, borderRadius: 8,
+            border: '1px dashed var(--line-2)', background: 'var(--bg-3)',
+          }} />
+        ))}
+        {bloques.map(b => (
+          <button key={b.id} type="button" onClick={() => onSeleccionar(b.id)}
+            style={{
+              position: 'relative', padding: 0, cursor: 'pointer', borderRadius: 10,
+              gridColumn: `${b.col} / span ${b.ancho}`,
+              gridRow: `${b.fila} / span ${b.alto}`,
+              border: seleccion === b.id ? '2px solid var(--purple)' : '2px solid transparent',
+              outline: 'none', background: 'transparent',
+            }}>
+            <VistaBloque b={b} pequeno={b.ancho === 1 && b.alto === 1} />
+          </button>
+        ))}
+      </div>
+      {libres.length > 0 && (
+        <p style={{ fontSize: 11, color: 'var(--ink-3)', margin: '8px 0 0' }}>
+          Quedan {libres.length} casilla{libres.length === 1 ? '' : 's'} sin llenar (a rayas).
+        </p>
+      )}
+    </div>
+  );
+}
+
+// La ficha del bloque seleccionado.
+function FichaBloque({ b, bloques, onChange, onImagen, onQuitarImagen, onBorrar }) {
+  const act = ACT_BY_ID[b.actId];
+  const subir = (file) => {
+    if (!file) return;
+    if (file.size > 2_000_000) return alert('La imagen pesa demasiado (máx. 2 MB).');
+    const fr = new FileReader();
+    fr.onload = () => onImagen(String(fr.result));
+    fr.readAsDataURL(file);
+  };
+
+  // Si un bloque se sale o pisa a otro, mejor decirlo aquí que descubrirlo en la
+  // web: al pisarse, el navegador los amontona y la portada queda rara.
+  const cabe = b.col + b.ancho - 1 <= COLS_MOSAICO && b.fila + b.alto - 1 <= FILAS_MOSAICO;
+  const pisa = bloques.some(o => o.id !== b.id
+    && b.col < o.col + o.ancho && o.col < b.col + b.ancho
+    && b.fila < o.fila + o.alto && o.fila < b.fila + b.alto);
+
+  const num = (campo, etiqueta, max) => (
+    <div className="field">
+      <label>{etiqueta}</label>
+      <select value={b[campo]} onChange={e => onChange({ [campo]: Number(e.target.value) })}>
+        {Array.from({ length: max }, (_, i) => i + 1).map(v => <option key={v} value={v}>{v}</option>)}
+      </select>
+    </div>
+  );
+
+  return (
+    <div style={{ display: 'grid', gap: 12 }}>
+      {!cabe && <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: 'var(--orange)' }}>
+        Este bloque se sale de la cuadrícula. Baja el ancho o el alto.
+      </p>}
+      {cabe && pisa && <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: 'var(--orange)' }}>
+        Se solapa con otro bloque: en la web quedarán uno encima del otro.
+      </p>}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+        {num('col', 'Columna', COLS_MOSAICO)}
+        {num('fila', 'Fila', FILAS_MOSAICO)}
+        {num('ancho', 'Ancho', COLS_MOSAICO)}
+        {num('alto', 'Alto', FILAS_MOSAICO)}
+      </div>
+
+      <div className="field">
+        <label>Qué se ve</label>
+        <select value={b.tipo} onChange={e => onChange({ tipo: e.target.value })}>
+          <option value="actividad">El icono de una actividad</option>
+          <option value="libre">Una imagen mía</option>
+          <option value="patron">El patrón de la marca</option>
+        </select>
+      </div>
+
+      {b.tipo === 'actividad' && (
+        <div className="field">
+          <label>Actividad</label>
+          <select value={b.actId || ''} onChange={e => {
+            const a = ACT_BY_ID[e.target.value];
+            onChange({ actId: e.target.value, titulo: b.titulo || a?.name || '' });
+          }}>
+            <option value="">Elige actividad...</option>
+            {ACTIVITIES.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+          <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+            Sin dirección propia, lleva a la página de esa actividad.
+          </span>
+        </div>
+      )}
+
+      {b.tipo === 'libre' && (
+        <>
+          <div className="field">
+            <label>Imagen</label>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <input type="file" accept="image/*" onChange={e => subir(e.target.files?.[0])} />
+              {b.imagenUrl && <button type="button" className="btn btn-sm btn-outline" onClick={onQuitarImagen}>Quitar</button>}
+            </div>
+            <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Máx. 2 MB. Se sube al momento.</span>
+          </div>
+          {b.imagenUrl && (
+            <div className="field">
+              <label>Cómo se coloca</label>
+              <select value={b.encaje || 'llenar'} onChange={e => onChange({ encaje: e.target.value })}>
+                <option value="llenar">Ocupar el bloque entero (sin nada de color)</option>
+                <option value="dentro">Verla completa dentro del color</option>
+              </select>
+            </div>
+          )}
+        </>
+      )}
+
+      <div className="field">
+        <label>Texto encima</label>
+        <input value={b.titulo || ''} onChange={e => onChange({ titulo: e.target.value })}
+          placeholder="Vacío para no poner nada" maxLength={60} />
+      </div>
+
+      <div className="field">
+        <label>A dónde lleva</label>
+        <input value={b.url || ''} onChange={e => onChange({ url: e.target.value })}
+          placeholder={act ? `/actividades/${act.id}` : '/campamento'} />
+        <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+          Una sección de la web (empieza por /), un evento, una noticia, o un enlace completo (http).
+        </span>
+      </div>
+
+      {b.tipo !== 'actividad' && (
+        <div className="field" style={{ maxWidth: 160 }}>
+          <label>Color de fondo</label>
+          <input type="color" value={b.color || '#5233A8'} onChange={e => onChange({ color: e.target.value })}
+            style={{ height: 36, padding: 2 }} />
+        </div>
+      )}
+
+      <div>
+        <button type="button" className="btn btn-sm btn-outline" onClick={onBorrar}
+          style={{ color: 'var(--orange)', borderColor: 'var(--orange)' }}>
+          <I.Trash /> Quitar este bloque
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AjustesPortada({ showToast }) {
   const [cfg, setCfg] = useState(null);
   const [guardando, setGuardando] = useState(false);
+  const [seleccion, setSeleccion] = useState(null);
 
   useEffect(() => {
     fetch('/api/admin/landing', { credentials: 'include', cache: 'no-store' })
@@ -1385,6 +1593,11 @@ function AjustesPortada({ showToast }) {
       .then(d => { if (d) setCfg(d); })
       .catch(() => {});
   }, []);
+
+  async function recargar() {
+    const r = await fetch('/api/admin/landing', { credentials: 'include', cache: 'no-store' });
+    if (r.ok) setCfg(await r.json());
+  }
 
   async function guardar(e) {
     e.preventDefault();
@@ -1401,6 +1614,56 @@ function AjustesPortada({ showToast }) {
     finally { setGuardando(false); }
   }
 
+  // La imagen se sube en cuanto se elige, sin esperar a Guardar: así se ve el
+  // resultado al momento y no hay que adivinar si se ha subido o no.
+  const cambiarHueco = (id, patch) => setCfg(c => ({
+    ...c, mosaico: c.mosaico.map(t => t.id === id ? { ...t, ...patch } : t),
+  }));
+
+  // Un bloque nuevo cae en la primera casilla libre que haya, para no tener que
+  // colocarlo a mano antes de poder verlo.
+  function anadirBloque() {
+    const ocupadas = new Set();
+    for (const b of cfg.mosaico) {
+      for (let c = b.col; c < b.col + b.ancho; c++) {
+        for (let f = b.fila; f < b.fila + b.alto; f++) ocupadas.add(`${c},${f}`);
+      }
+    }
+    let sitio = { col: 1, fila: 1 };
+    buscar: for (let f = 1; f <= FILAS_MOSAICO; f++) {
+      for (let c = 1; c <= COLS_MOSAICO; c++) {
+        if (!ocupadas.has(`${c},${f}`)) { sitio = { col: c, fila: f }; break buscar; }
+      }
+    }
+    const id = `b${Date.now().toString(36)}`;
+    setCfg(c => ({ ...c, mosaico: [...c.mosaico, {
+      id, ...sitio, ancho: 1, alto: 1, tipo: 'libre', titulo: '', url: '', color: '#5233A8', encaje: 'llenar',
+    }] }));
+    setSeleccion(id);
+  }
+
+  function borrarBloque(id) {
+    if (!window.confirm('¿Quitar este bloque de la portada?')) return;
+    setCfg(c => ({ ...c, mosaico: c.mosaico.filter(t => t.id !== id) }));
+    setSeleccion(null);
+  }
+
+  async function subirImagen(id, archivo) {
+    const r = await fetch(`/api/admin/landing/mosaico/${id}/imagen`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+      body: JSON.stringify({ archivo }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) return alert(d.error || 'No se ha podido subir la imagen.');
+    await recargar();
+    showToast?.('Imagen subida.');
+  }
+
+  async function quitarImagen(id) {
+    const r = await fetch(`/api/admin/landing/mosaico/${id}/imagen`, { method: 'DELETE', credentials: 'include' });
+    if (r.ok) { await recargar(); showToast?.('Imagen quitada.'); }
+  }
+
   if (!cfg) return null;
 
   const atajos = [
@@ -1411,7 +1674,7 @@ function AjustesPortada({ showToast }) {
   ];
 
   return (
-    <form onSubmit={guardar} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 18, padding: 32, maxWidth: 600, display: 'grid', gap: 18, marginTop: 20 }}>
+    <form onSubmit={guardar} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 18, padding: 32, maxWidth: 980, display: 'grid', gap: 18, marginTop: 20 }}>
       <div>
         <h2 style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 20, margin: 0, color: 'var(--ink)' }}>Portada de la web</h2>
         <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--ink-3)' }}>
@@ -1458,9 +1721,50 @@ function AjustesPortada({ showToast }) {
       </div>
 
       <div>
+        <h3 style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 17, margin: '10px 0 2px', color: 'var(--ink)' }}>
+          El mosaico de la derecha
+        </h3>
+        <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>
+          Una cuadrícula de {COLS_MOSAICO}×{FILAS_MOSAICO} que quien visita la web no ve: solo ve los bloques
+          que coloques encima. Cada bloque ocupa las casillas que quieras y puede llevar a una
+          actividad, a un evento, a una noticia o a donde te dé la gana, con su propia imagen.
+        </p>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(240px, 340px) 1fr', gap: 24, alignItems: 'start' }}>
+        <div>
+          <MapaMosaico bloques={cfg.mosaico || []} seleccion={seleccion} onSeleccionar={setSeleccion} />
+          <button type="button" className="btn btn-sm btn-outline" onClick={anadirBloque} style={{ marginTop: 10 }}>
+            <I.Plus /> Añadir bloque
+          </button>
+        </div>
+
+        <div style={{ border: '1px solid var(--line)', borderRadius: 14, padding: 16, background: 'var(--bg-3)', minHeight: 200 }}>
+          {(() => {
+            const b = (cfg.mosaico || []).find(x => x.id === seleccion);
+            if (!b) return (
+              <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>
+                Pincha un bloque del mosaico para cambiarlo, o añade uno nuevo.
+              </p>
+            );
+            return (
+              <FichaBloque b={b} bloques={cfg.mosaico}
+                onChange={patch => cambiarHueco(b.id, patch)}
+                onImagen={archivo => subirImagen(b.id, archivo)}
+                onQuitarImagen={() => quitarImagen(b.id)}
+                onBorrar={() => borrarBloque(b.id)} />
+            );
+          })()}
+        </div>
+      </div>
+
+      <div style={{ position: 'sticky', bottom: 0, background: 'var(--bg-2)', paddingTop: 12, borderTop: '1px solid var(--line)' }}>
         <button className="btn btn-primary" type="submit" disabled={guardando}>
           {guardando ? 'Guardando...' : 'Guardar portada'}
         </button>
+        <span style={{ fontSize: 11, color: 'var(--ink-3)', marginLeft: 10 }}>
+          Las imágenes se guardan al subirlas; lo demás, al pulsar aquí.
+        </span>
       </div>
     </form>
   );
@@ -4594,6 +4898,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
       heading: "Club", items: [
         { id: "groups", label: "Grupos", icon: <I.Trophy /> },
         { id: "instructors", label: "Instructores", icon: <I.Users /> },
+        { id: "portada", label: "Portada web", icon: <I.Globe /> },
         { id: "settings", label: "Ajustes", icon: <I.Settings /> },
         { id: "support", label: "Soporte", icon: <I.Bell /> },
       ]
@@ -4756,7 +5061,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                 setActiveModal('new-student');
               }} />
           )}
-          {view === "settings" && <><AdminSettings /><AjustesPortada showToast={showToast} /></>}
+          {view === "portada" && <AjustesPortada showToast={showToast} />}
+          {view === "settings" && <AdminSettings />}
           {view === "reportes" && <AdminReportes />}
           {view === "support" && <AdminSupport user={user} ticketId={ticketId} />}
         </div>

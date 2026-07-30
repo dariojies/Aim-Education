@@ -535,6 +535,18 @@ async function initDb() {
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
+        // Las imágenes del mosaico de la portada. Van en su propia tabla y no
+        // dentro del JSON de ajustes para que /api/landing siga siendo ligero:
+        // así la portada no se descarga las siete imágenes en cada visita.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_portada_imagenes (
+                id VARCHAR(40) PRIMARY KEY,
+                mime VARCHAR(100) NOT NULL,
+                datos BYTEA NOT NULL,
+                actualizado_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+
         // El concepto con el que se cobran los talleres y eventos. El precio va a
         // cero porque lo pone cada evento; lo que importa aquí es el IVA, que es
         // 0 por ser enseñanza exenta (art. 20.Uno.9º LIVA), como el campamento.
@@ -2149,15 +2161,50 @@ function blockedDayError(blocked) {
 // El botón destacado de la portada y los números que se enseñan debajo. El
 // botón lo cambia el club sin tocar código: hoy lleva al campamento, mañana a
 // un evento o a lo que toque destacar.
+// El mosaico de la portada es una cuadrícula de 4x4 que no se ve: lo único que
+// ve quien entra son los bloques colocados encima. Cada bloque dice en qué
+// casilla empieza y cuántas ocupa a lo ancho y a lo alto, así que desde el panel
+// se puede montar la composición que se quiera sin tocar código.
+const MOSAICO_COLUMNAS = 4;
+const MOSAICO_FILAS = 4;
+const MOSAICO_MAX_BLOQUES = 16;
+
+const MOSAICO_POR_DEFECTO = [
+    { id: 'b1', col: 1, fila: 1, ancho: 2, alto: 2, tipo: 'patron', titulo: '10+ actividades', url: '/actividades' },
+    { id: 'b2', col: 3, fila: 1, ancho: 2, alto: 1, tipo: 'actividad', actId: 'taekwondo', titulo: 'Taekwondo', url: '' },
+    { id: 'b3', col: 3, fila: 2, ancho: 1, alto: 1, tipo: 'actividad', actId: 'ballet', titulo: 'Ballet', url: '' },
+    { id: 'b4', col: 4, fila: 2, ancho: 1, alto: 1, tipo: 'actividad', actId: 'robotica', titulo: 'Robótica', url: '' },
+    { id: 'b5', col: 1, fila: 3, ancho: 1, alto: 2, tipo: 'actividad', actId: 'funcional', titulo: 'Funcional', url: '' },
+    { id: 'b6', col: 2, fila: 3, ancho: 1, alto: 2, tipo: 'actividad', actId: 'camaleon', titulo: 'Camaleón', url: '' },
+    { id: 'b7', col: 3, fila: 3, ancho: 2, alto: 2, tipo: 'actividad', actId: 'pintura', titulo: 'Pintura', url: '' },
+];
+
 const PORTADA_POR_DEFECTO = {
     ctaTexto: 'Campamento de verano',
     ctaUrl: '/campamento',
     anoFundacion: 2008,
+    mosaico: MOSAICO_POR_DEFECTO,
 };
+
+// Una dirección que se pueda poner en un enlace público: una ruta de la propia
+// web o un http(s). Nada de javascript: en algo que ve todo el mundo.
+const urlValida = (u) => /^\/[^\s]*$/.test(u) || /^https?:\/\/[^\s]+$/i.test(u);
 
 async function leerPortada() {
     const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'portada'`);
-    return { ...PORTADA_POR_DEFECTO, ...(r.rows[0]?.valor || {}) };
+    const cfg = { ...PORTADA_POR_DEFECTO, ...(r.rows[0]?.valor || {}) };
+    if (!Array.isArray(cfg.mosaico) || !cfg.mosaico.length) cfg.mosaico = MOSAICO_POR_DEFECTO;
+    cfg.columnas = MOSAICO_COLUMNAS;
+    cfg.filas = MOSAICO_FILAS;
+
+    // Qué bloques tienen imagen propia subida, y de cuándo, para que el navegador
+    // pueda cachearla y aun así ver el cambio en cuanto se sustituye.
+    const imgs = await pool.query(`SELECT id, EXTRACT(EPOCH FROM actualizado_at)::bigint AS v FROM aim_portada_imagenes`);
+    const version = Object.fromEntries(imgs.rows.map(x => [x.id, x.v]));
+    for (const t of cfg.mosaico) {
+        t.imagenUrl = version[t.id] ? `/api/landing/mosaico/${t.id}/imagen?v=${version[t.id]}` : null;
+    }
+    return cfg;
 }
 
 app.get('/api/landing', async (req, res) => {
@@ -2177,6 +2224,8 @@ app.get('/api/landing', async (req, res) => {
         res.json({
             cta: { texto: cfg.ctaTexto, url: cfg.ctaUrl },
             anoFundacion: cfg.anoFundacion,
+            mosaico: cfg.mosaico,
+            columnas: cfg.columnas, filas: cfg.filas,
             datos: [
                 { v: `${anos}`, l: 'Años de experiencia' },
                 { v: redondo(alumnos.rows[0].n), l: 'Alumnos y alumnas' },
@@ -2187,31 +2236,109 @@ app.get('/api/landing', async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// La imagen de un hueco del mosaico. Es pública porque sale en la portada, y se
+// cachea fuerte: la dirección lleva la fecha de la última subida, así que al
+// cambiarla cambia la url y el navegador se la vuelve a pedir sola.
+app.get('/api/landing/mosaico/:id/imagen', async (req, res) => {
+    try {
+        const r = await pool.query(`SELECT mime, datos FROM aim_portada_imagenes WHERE id = $1`, [req.params.id]);
+        if (!r.rowCount) return res.status(404).end();
+        res.set('Content-Type', r.rows[0].mime);
+        res.set('Cache-Control', 'public, max-age=31536000, immutable');
+        res.send(r.rows[0].datos);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/landing/mosaico/:id/imagen', authenticateSession, requireAdmin, async (req, res) => {
+    if (!/^[\w-]{1,40}$/.test(req.params.id)) return res.status(400).json({ error: 'Bloque no válido.' });
+    const { archivo } = req.body;
+    const m = /^data:(image\/(?:png|jpeg|jpg|webp|gif));base64,(.+)$/i.exec(String(archivo || ''));
+    if (!m) return res.status(400).json({ error: 'Tiene que ser una imagen (png, jpg, webp o gif).' });
+    const datos = Buffer.from(m[2], 'base64');
+    if (datos.length > 2_000_000) return res.status(400).json({ error: 'La imagen pesa demasiado (máx. 2 MB).' });
+    try {
+        await pool.query(
+            `INSERT INTO aim_portada_imagenes (id, mime, datos, actualizado_at) VALUES ($1,$2,$3,NOW())
+             ON CONFLICT (id) DO UPDATE SET mime = $2, datos = $3, actualizado_at = NOW()`,
+            [req.params.id, m[1].toLowerCase(), datos]
+        );
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/admin/landing/mosaico/:id/imagen', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        await pool.query(`DELETE FROM aim_portada_imagenes WHERE id = $1`, [req.params.id]);
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/admin/landing', authenticateSession, requireAdmin, async (req, res) => {
     try { res.set('Cache-Control', 'no-store'); res.json(await leerPortada()); }
     catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.put('/api/admin/landing', authenticateSession, requireAdmin, async (req, res) => {
-    const { ctaTexto, ctaUrl, anoFundacion } = req.body;
+    const { ctaTexto, ctaUrl, anoFundacion, mosaico } = req.body;
     if (!ctaTexto?.trim()) return res.status(400).json({ error: 'El botón necesita un texto.' });
     const url = String(ctaUrl || '').trim();
-    // Solo rutas de la propia web o enlaces http(s): así no se puede colar un
-    // javascript: en un botón que ve todo el mundo.
-    if (!/^\/[^\s]*$/.test(url) && !/^https?:\/\/[^\s]+$/i.test(url)) {
+    if (!urlValida(url)) {
         return res.status(400).json({ error: 'La dirección debe empezar por / o por http.' });
     }
     const ano = Number(anoFundacion);
     if (!Number.isInteger(ano) || ano < 1900 || ano > new Date().getFullYear()) {
         return res.status(400).json({ error: 'El año de fundación no es válido.' });
     }
+
+    // Cada bloque dice dónde empieza y cuánto ocupa. Se comprueba que quepa en la
+    // cuadrícula: un bloque que se sale se lleva por delante la maquetación de la
+    // portada, y eso lo ve todo el que entra en la web.
+    const entrada = Array.isArray(mosaico) ? mosaico : [];
+    if (entrada.length > MOSAICO_MAX_BLOQUES) {
+        return res.status(400).json({ error: `Como mucho ${MOSAICO_MAX_BLOQUES} bloques.` });
+    }
+    const piezas = [];
+    const vistos = new Set();
+    for (const t of entrada) {
+        const id = String(t.id || '').trim().slice(0, 40);
+        if (!id || vistos.has(id)) return res.status(400).json({ error: 'Hay bloques con el mismo identificador.' });
+        vistos.add(id);
+
+        const nombre = t.titulo?.trim() || id;
+        const n = (v, def) => (Number.isInteger(Number(v)) ? Number(v) : def);
+        const col = n(t.col, 1), fila = n(t.fila, 1), ancho = n(t.ancho, 1), alto = n(t.alto, 1);
+        if (col < 1 || fila < 1 || ancho < 1 || alto < 1
+            || col + ancho - 1 > MOSAICO_COLUMNAS || fila + alto - 1 > MOSAICO_FILAS) {
+            return res.status(400).json({ error: `El bloque "${nombre}" no cabe en la cuadrícula.` });
+        }
+
+        const destino = String(t.url || '').trim();
+        if (destino && !urlValida(destino)) {
+            return res.status(400).json({ error: `La dirección de "${nombre}" debe empezar por / o por http.` });
+        }
+
+        piezas.push({
+            id, col, fila, ancho, alto,
+            tipo: ['actividad', 'patron', 'libre'].includes(t.tipo) ? t.tipo : 'libre',
+            actId: t.actId || null,
+            titulo: String(t.titulo || '').trim().slice(0, 60),
+            url: destino,
+            color: /^#[0-9a-f]{6}$/i.test(String(t.color || '')) ? t.color : null,
+            // A sangre (la imagen ocupa el bloque entero) o dentro del color.
+            encaje: t.encaje === 'dentro' ? 'dentro' : 'llenar',
+        });
+    }
+    if (!piezas.length) return res.status(400).json({ error: 'El mosaico necesita al menos un bloque.' });
+
     try {
         await pool.query(
             `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por)
              VALUES ('portada', $1, NOW(), $2)
              ON CONFLICT (clave) DO UPDATE SET valor = $1, actualizado_at = NOW(), actualizado_por = $2`,
-            [JSON.stringify({ ctaTexto: ctaTexto.trim(), ctaUrl: url, anoFundacion: ano }), req.userSession.userId]
+            [JSON.stringify({ ctaTexto: ctaTexto.trim(), ctaUrl: url, anoFundacion: ano, mosaico: piezas }), req.userSession.userId]
         );
+        // Las imágenes de bloques que ya no existen no le sirven a nadie.
+        await pool.query(`DELETE FROM aim_portada_imagenes WHERE id <> ALL($1::text[])`, [piezas.map(t => t.id)]);
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });

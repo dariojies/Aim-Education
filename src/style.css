@@ -812,13 +812,17 @@ html[data-actaccents="off"] [class*="act-"] {
   position: relative;
   min-height: 580px;
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  grid-template-rows: repeat(5, 1fr);
-  gap: 14px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-rows: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  /* La composición es cuadrada: así los bloques no se estiran de más cuando el
+     texto de la izquierda crece. */
+  aspect-ratio: 1 / 1;
+  align-self: center;
 }
 
 .tile {
-  border-radius: 18px;
+  border-radius: 16px;
   position: relative;
   overflow: hidden;
   background: var(--bg-2);
@@ -831,42 +835,97 @@ html[data-actaccents="off"] [class*="act-"] {
   box-shadow: var(--shadow);
 }
 
+/* El texto va sobre un velo propio, no sobre lo que haya debajo. Antes se
+   escribía directamente encima del patrón o de la foto y no se leía. */
 .tile .label {
   position: absolute;
-  bottom: 12px;
-  left: 14px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 26px 14px 12px;
   color: white;
   font-weight: 700;
   font-size: 14px;
-  text-shadow: 0 2px 8px rgba(0, 0, 0, .35);
-  z-index: 2;
+  line-height: 1.25;
+  letter-spacing: -.01em;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, .48) 100%);
+  z-index: 3;
+  pointer-events: none;
 }
 
 .tile.colored {
-  background: linear-gradient(180deg, color-mix(in oklab, var(--act) 96%, white) 0%, var(--act) 100%);
+  /* Fondo plano del color de la actividad: el icono de marca trae su propio
+     cuadro en ese mismo tono, así que cuanto menos ruido detrás, mejor pega. */
+  background: var(--act);
   color: white;
-  display: grid;
-  place-items: center;
-  padding: 10%;
+  padding: 0;
 }
 
 .tile.colored::before {
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(180deg, rgba(255, 255, 255, .02), rgba(0, 0, 0, .18));
+  background: radial-gradient(120% 90% at 30% 10%, rgba(255, 255, 255, .16), rgba(0, 0, 0, .14) 75%);
   z-index: 1;
+}
+
+/* El icono se hace todo lo grande que le deje el bloque, sin recortarse: con
+   'cover' se salían del cuadro y no se reconocía ni el guante ni el pincel. */
+/* El icono va dentro de un hueco sujeto a los cuatro lados del bloque, con sitio
+   abajo para el rótulo. El hueco hace falta: una imagen suelta con los cuatro
+   anclajes puestos se pinta igualmente a su tamaño natural (es un elemento
+   reemplazado) y el bloque la recortaba por arriba. */
+.tile-icon-hueco {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  bottom: 24px;
+  left: 12px;
+  z-index: 2;
+}
+
+/* Sin rótulo no hace falta reservar sitio abajo. */
+.tile.sin-rotulo .tile-icon-hueco {
+  bottom: 12px;
 }
 
 .tile-icon {
   width: 100%;
   height: 100%;
-  max-width: 200px;
-  max-height: 200px;
   object-fit: contain;
   display: block;
-  position: relative;
-  z-index: 2;
+}
+
+/* Una imagen propia llena el cuadro entero, de borde a borde: es lo que se pide
+   cuando se sube una foto para destacar un evento o una noticia. */
+.tile-foto {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 1;
+}
+
+/* El patrón de la marca se repite en vez de estirarse: ampliado a pantalla
+   completa se convertía en cuatro dibujos gigantes sin sentido. */
+.tile-patron {
+  background-image: url("/src/brand/Aim_PatternV.png");
+  background-size: 190px auto;
+  background-repeat: repeat;
+  background-position: center;
+}
+
+/* ...salvo que se prefiera verla completa dentro del color, sin recortar. */
+.tile-foto.dentro {
+  inset: 10%;
+  width: auto;
+  height: auto;
+  max-width: 80%;
+  max-height: 72%;
+  margin: auto;
+  object-fit: contain;
+  border-radius: 10px;
 }
 
 .tile.placeholder {
@@ -892,62 +951,15 @@ html[data-actaccents="off"] [class*="act-"] {
   border-radius: 6px;
 }
 
-/* Bento-box mosaic: 6 cols × 5 rows */
-.tile-1 {
-  grid-column: 1 / 4;
-  grid-row: 1 / 3;
-}
+/* La cuadrícula no se ve: solo se ven los bloques que el administrador coloca
+   encima, cada uno con su casilla y su tamaño (Portada web, en el panel). Las
+   posiciones ya no están escritas aquí, vienen con cada bloque. */
 
-/* Patrón — landscape grande */
-.tile-2 {
-  grid-column: 4 / 6;
-  grid-row: 1 / 3;
-}
-
-/* Taekwondo — cuadrado */
-.tile-3 {
-  grid-column: 6 / 7;
-  grid-row: 1 / 2;
-}
-
-/* Ballet — acento pequeño top */
-.tile-4 {
-  grid-column: 6 / 7;
-  grid-row: 2 / 3;
-}
-
-/* Robótica — acento pequeño bottom */
-.tile-5 {
-  grid-column: 1 / 3;
-  grid-row: 3 / 6;
-}
-
-/* Funcional — portrait */
-.tile-6 {
-  grid-column: 3 / 5;
-  grid-row: 3 / 6;
-}
-
-/* Camaleón — portrait */
-.tile-7 {
-  grid-column: 5 / 7;
-  grid-row: 3 / 6;
-}
-
-/* Pintura — portrait */
-
-/* Tiles pequeños de acento: icono más pequeño y sin label */
-.tile-3 .tile-icon,
-.tile-4 .tile-icon {
-  max-width: 56px;
-  max-height: 56px;
-}
-
-.tile-3 .label,
-.tile-4 .label {
-  font-size: 11px;
-  bottom: 8px;
-  left: 10px;
+/* En los bloques pequeños el rótulo baja de tamaño, o no cabe. */
+.tile[data-w="1"] .label,
+.tile[data-h="1"] .label {
+  font-size: 12px;
+  padding: 22px 10px 10px;
 }
 
 .tile .icon-bg {
@@ -3130,7 +3142,8 @@ html[data-theme="dark"] .dash-nav button.is-active {
   }
 
   .hero-vis {
-    min-height: 320px;
+    min-height: 420px;
+    gap: 10px;
   }
 
   .act-grid,
