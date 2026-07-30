@@ -2410,6 +2410,11 @@ app.put('/api/admin/camp/children/:id/days', authenticateSession, requireAdmin, 
 // Matinal y custodia se cobran con el concepto 20401: 3 € por día y servicio, y
 // 15 € si es la semana entera (5 × 3 = 15, así que el tope nunca cobra de más).
 const CAMP_ACTIVIDAD = 'Campamento de verano';
+// Los talleres y eventos se tratan como una actividad más, para poder
+// imputarles gastos y verlos en el informe junto a Taekwondo, Ballet o Inglés.
+const EVENTOS_ACTIVIDAD = 'Taller/Evento';
+// El campamento ocupa de 9:00 a 14:00, de lunes a viernes.
+const CAMP_HORAS_DIA = 5;
 const CAMP_SERVICIO_CONCEPTO = '20401';
 const CAMP_SERVICIO_DIA = 3;
 const CAMP_SERVICIO_SEMANA = 15;
@@ -2989,7 +2994,11 @@ app.get('/api/admin/billing/actividades', authenticateSession, requireAdmin, asy
     try {
         const cat = await pool.query(`SELECT DISTINCT actividad FROM aim_clases WHERE actividad IS NOT NULL AND activa = true`);
         const tul = await pool.query(`SELECT name FROM tul_activities WHERE club_id = $1`, [AIM_CLUB_ID]);
-        const set = new Set([...cat.rows.map(r => r.actividad), ...tul.rows.map(r => r.name)].filter(Boolean));
+        const set = new Set([
+            ...cat.rows.map(r => r.actividad), ...tul.rows.map(r => r.name),
+            // Las dos que no están en tul_activities pero facturan igual.
+            CAMP_ACTIVIDAD, EVENTOS_ACTIVIDAD,
+        ].filter(Boolean));
         res.set('Cache-Control', 'no-store');
         res.json([...set].sort((a, b) => a.localeCompare(b, 'es')));
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -5223,27 +5232,76 @@ app.get('/api/admin/informes/beneficios', authenticateSession, requireAdmin, asy
              GROUP BY 1,2,3`, [d, h]
         );
 
-        // Los dos repartos que no salen del dinero: cuántos alumnos tiene cada
-        // actividad y cuántas horas ocupa a la semana en el horario.
+        // Los dos repartos que no salen del dinero: cuánta gente tiene cada
+        // actividad y cuántas horas ocupa a la semana.
+        // Las dos cuentas van por separado a propósito: unirlas en una sola
+        // consulta multiplicaba las horas por el número de alumnos del grupo
+        // (Taekwon-Do salía con 186 h a la semana en vez de 18).
         const pesos = await pool.query(
             `SELECT a.name AS actividad,
-                    COUNT(DISTINCT gs.student_id)::int AS alumnos,
-                    COALESCE(SUM(
-                        (EXTRACT(EPOCH FROM (sess->>'endTime')::time - (sess->>'startTime')::time) / 3600.0)
-                        * COALESCE(jsonb_array_length(sess->'days'), 1)
-                    ), 0)::numeric AS horas
+                    COALESCE(al.alumnos, 0)::int AS alumnos,
+                    COALESCE(ho.horas, 0)::numeric AS horas
              FROM tul_activities a
-             LEFT JOIN tul_groups g ON g.activity_id = a.activity_id
-             LEFT JOIN LATERAL jsonb_array_elements(COALESCE(g.sessions::jsonb, '[]'::jsonb)) sess ON true
-             LEFT JOIN tul_group_students gs ON gs.group_id = g.group_id
-             WHERE a.club_id = $1
-             GROUP BY a.name`, [AIM_CLUB_ID]
+             LEFT JOIN LATERAL (
+                 SELECT COUNT(DISTINCT gs.student_id) AS alumnos
+                 FROM tul_groups g
+                 JOIN tul_group_students gs ON gs.group_id = g.group_id
+                 WHERE g.activity_id = a.activity_id
+             ) al ON true
+             LEFT JOIN LATERAL (
+                 SELECT SUM(
+                     (EXTRACT(EPOCH FROM (sess->>'endTime')::time - (sess->>'startTime')::time) / 3600.0)
+                     * COALESCE(jsonb_array_length(sess->'days'), 1)
+                 ) AS horas
+                 FROM tul_groups g
+                 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(g.sessions::jsonb, '[]'::jsonb)) sess
+                 WHERE g.activity_id = a.activity_id
+             ) ho ON true
+             WHERE a.club_id = $1`, [AIM_CLUB_ID]
         );
         const alumnosDe = {}, horasDe = {};
         for (const x of pesos.rows) {
             alumnosDe[x.actividad] = Number(x.alumnos) || 0;
             horasDe[x.actividad] = Number(x.horas) || 0;
         }
+
+        // El campamento no está en tul_activities: sus niños viven en su propia
+        // tabla y su horario no son sesiones. Sin esto pesaba cero y le tocaban
+        // 0 € de gastos comunes aunque fuera lo que más factura.
+        const camp = await pool.query(
+            `SELECT COUNT(DISTINCT c.id)::int AS ninos,
+                    COUNT(DISTINCT EXTRACT(DOW FROM d.day))::int AS diassemana
+             FROM aim_camp_children c
+             JOIN aim_camp_child_days d ON d.child_id = c.id
+             WHERE ($1::date IS NULL OR d.day >= $1::date)
+               AND ($2::date IS NULL OR d.day <= $2::date)`, [d, h]
+        );
+        alumnosDe[CAMP_ACTIVIDAD] = Number(camp.rows[0]?.ninos) || 0;
+        // Horas de horario semanal, que es la unidad con la que se comparan las
+        // demás actividades: los días de la semana que abre el campamento, a 5
+        // horas cada uno. De lunes a viernes, 25 h. Fuera del verano, cero.
+        horasDe[CAMP_ACTIVIDAD] = (Number(camp.rows[0]?.diassemana) || 0) * CAMP_HORAS_DIA;
+
+        // Los talleres y eventos, igual: su gente son las inscripciones y sus
+        // horas, lo que dura cada evento (los dos por separado, o el JOIN
+        // multiplicaría la duración por el número de inscritos).
+        const evt = await pool.query(
+            `SELECT (SELECT COUNT(*)::int FROM aim_event_registrations r
+                     JOIN aim_eventos e2 ON e2.id = r.event_id
+                     WHERE ($1::date IS NULL OR e2.event_date >= $1::date)
+                       AND ($2::date IS NULL OR e2.event_date <= $2::date)) AS inscritos,
+                    COALESCE(SUM(
+                        CASE WHEN e.time ~ '^[0-9]{1,2}:[0-9]{2}' AND e.end_time ~ '^[0-9]{1,2}:[0-9]{2}'
+                             AND e.end_time::time > e.time::time
+                        THEN EXTRACT(EPOCH FROM e.end_time::time - e.time::time) / 3600.0
+                        ELSE 2 END
+                    ), 0)::numeric AS horas
+             FROM aim_eventos e
+             WHERE ($1::date IS NULL OR e.event_date >= $1::date)
+               AND ($2::date IS NULL OR e.event_date <= $2::date)`, [d, h]
+        );
+        alumnosDe[EVENTOS_ACTIVIDAD] = Number(evt.rows[0]?.inscritos) || 0;
+        horasDe[EVENTOS_ACTIVIDAD] = Number(evt.rows[0]?.horas) || 0;
 
         const ingresos = {};
         for (const r of ing.rows) ingresos[r.actividad] = Number(r.total);
@@ -5256,8 +5314,13 @@ app.get('/api/admin/informes/beneficios', authenticateSession, requireAdmin, asy
         }
         const gastosComunes = bolsas.iguales + bolsas.alumnos + bolsas.horas;
 
-        // Actividades a considerar: las que tienen ingresos o gastos directos.
-        const nombres = [...new Set([...Object.keys(ingresos), ...Object.keys(gastosDir)])].filter(n => n !== 'Sin actividad');
+        // Actividades a considerar: las que tienen ingresos, gastos directos o
+        // actividad real en el periodo (niños en el campamento, gente en los
+        // talleres). Si ocupan sala y monitores, les toca parte de lo común.
+        const conVida = [CAMP_ACTIVIDAD, EVENTOS_ACTIVIDAD]
+            .filter(n => (alumnosDe[n] || 0) > 0 || (horasDe[n] || 0) > 0);
+        const nombres = [...new Set([...Object.keys(ingresos), ...Object.keys(gastosDir), ...conVida])]
+            .filter(n => n !== 'Sin actividad');
 
         // Reparte una bolsa según el peso de cada actividad. Sin pesos (nadie
         // matriculado, o ninguna hora en el horario) se cae a partes iguales,
@@ -5303,6 +5366,12 @@ app.get('/api/admin/informes/beneficios', authenticateSession, requireAdmin, asy
             },
             sinActividad: r2Server(ingresos['Sin actividad'] || 0),
             totalGastosComunes: r2Server(gastosComunes),
+            // Con qué peso ha entrado cada actividad en el reparto, para poder
+            // explicar en pantalla por qué a una le toca más que a otra.
+            pesos: Object.fromEntries(nombres.map(n => [n, {
+                alumnos: alumnosDe[n] || 0,
+                horas: r2Server(horasDe[n] || 0),
+            }])),
             filas,
             totales: {
                 ingresos: r2Server(filas.reduce((s, f) => s + f.ingresos, 0)),

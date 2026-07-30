@@ -733,6 +733,35 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
   }
 }
 
+// Periodos naturales de calendario, no ventanas móviles: en julio el mes es
+// julio entero (aunque no haya acabado), el trimestre es mayo-junio-julio y el
+// año es enero-diciembre. Contar "del 12 de junio al 12 de julio" no le cuadra
+// a nadie que lleve la caja del club.
+const iso = (dt) => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+const PERIODOS = {
+  mes: () => { const n = new Date(); return { desde: iso(new Date(n.getFullYear(), n.getMonth(), 1)), hasta: iso(new Date(n.getFullYear(), n.getMonth() + 1, 0)) }; },
+  trimestre: () => { const n = new Date(); return { desde: iso(new Date(n.getFullYear(), n.getMonth() - 2, 1)), hasta: iso(new Date(n.getFullYear(), n.getMonth() + 1, 0)) }; },
+  ano: () => { const n = new Date(); return { desde: `${n.getFullYear()}-01-01`, hasta: `${n.getFullYear()}-12-31` }; },
+  todo: () => ({ desde: '', hasta: '' }),
+};
+const NOMBRE_PERIODO = [['mes', 'Este mes'], ['trimestre', 'Último trimestre'], ['ano', 'Este año'], ['todo', 'Todo']];
+// Qué atajo corresponde a un rango, para que el botón siga marcado al volver.
+const periodoDe = (desde, hasta) =>
+  NOMBRE_PERIODO.map(([k]) => k).find(k => { const r = PERIODOS[k](); return r.desde === desde && r.hasta === hasta; }) || null;
+
+// Los botones de periodo. Salen en gastos y en el informe, con el mismo criterio.
+function FiltroPeriodo({ desde, hasta, onChange }) {
+  const activo = periodoDe(desde, hasta);
+  return (
+    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+      {NOMBRE_PERIODO.map(([k, l]) => (
+        <button key={k} className={`filter-pill ${activo === k ? 'is-active' : ''}`}
+          onClick={() => { const r = PERIODOS[k](); onChange(r.desde, r.hasta); }}>{l}</button>
+      ))}
+    </div>
+  );
+}
+
 const MEDIOS_GASTO = ['Tarjeta', 'Transferencia bancaria', 'Domiciliación SEPA', 'Efectivo', 'Bizum', 'Otro'];
 const gastoVacio = () => ({
   fecha: new Date().toISOString().slice(0, 10), importe: '', medioPago: 'Transferencia bancaria',
@@ -749,6 +778,8 @@ function AdminGastos({ refreshTrigger, showToast }) {
   const [saving, setSaving] = useState(false);
   const [q, setQ] = useState('');
   const [filtroPago, setFiltroPago] = useState('');
+  const [desde, setDesde] = useState('');
+  const [hasta, setHasta] = useState('');
   const [provSug, setProvSug] = useState([]);
   const [archivo, setArchivo] = useState(null); // { nombre, mime, base64 }
 
@@ -758,12 +789,14 @@ function AdminGastos({ refreshTrigger, showToast }) {
       const params = new URLSearchParams();
       if (q.trim()) params.set('q', q.trim());
       if (filtroPago) params.set('pagado', filtroPago);
+      if (desde) params.set('desde', desde);
+      if (hasta) params.set('hasta', hasta);
       const r = await fetch(`/api/admin/gastos?${params}`, { credentials: 'include' });
       if (r.ok) setGastos(await r.json());
     } catch { /* noop */ }
     finally { setLoading(false); }
   }
-  useEffect(() => { const t = setTimeout(cargar, 250); return () => clearTimeout(t); }, [q, filtroPago, refreshTrigger]);
+  useEffect(() => { const t = setTimeout(cargar, 250); return () => clearTimeout(t); }, [q, filtroPago, desde, hasta, refreshTrigger]);
   useEffect(() => {
     fetch('/api/admin/billing/actividades', { credentials: 'include' }).then(r => r.ok ? r.json() : []).then(setActividades).catch(() => {});
   }, []);
@@ -851,6 +884,20 @@ function AdminGastos({ refreshTrigger, showToast }) {
                 <button key={v} className={`filter-pill ${filtroPago === v ? 'is-active' : ''}`} onClick={() => setFiltroPago(v)}>{l}</button>
               ))}
             </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
+            <FiltroPeriodo desde={desde} hasta={hasta} onChange={(a, b) => { setDesde(a); setHasta(b); }} />
+            <input type="date" value={desde} onChange={e => setDesde(e.target.value)} aria-label="Desde"
+              style={{ padding: '6px 9px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontFamily: 'inherit', fontSize: 13 }} />
+            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>a</span>
+            <input type="date" value={hasta} onChange={e => setHasta(e.target.value)} aria-label="Hasta"
+              style={{ padding: '6px 9px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontFamily: 'inherit', fontSize: 13 }} />
+            {(desde || hasta) && (
+              <span style={{ fontSize: 12, color: 'var(--ink-3)', fontWeight: 600 }}>
+                {gastos.length} gasto{gastos.length === 1 ? '' : 's'} en el periodo
+              </span>
+            )}
           </div>
 
           {loading && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
@@ -1059,9 +1106,10 @@ function InformeBeneficios() {
     <div style={{ display: 'grid', gap: 14 }}>
       <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>
         Cruza los <b>ingresos cobrados</b> (recibos no anulados) con los <b>gastos</b> de cada actividad.
-        Los gastos comunes se reparten según el criterio que elijas.
+        Cada gasto común se reparte con el criterio que le pusiste al darlo de alta.
       </p>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '12px 16px' }}>
+        <FiltroPeriodo desde={desde} hasta={hasta} onChange={(a, b) => { setDesde(a); setHasta(b); }} />
         <label style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>Desde</label>
         <input type="date" value={desde} onChange={e => setDesde(e.target.value)} style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontFamily: 'inherit' }} />
         <label style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>Hasta</label>
@@ -1082,7 +1130,15 @@ function InformeBeneficios() {
             </div>
             {datos.filas.map(f => (
               <div key={f.actividad} className="data-table-row" style={{ gridTemplateColumns: '1.6fr 1fr 1fr 1fr 1fr' }}>
-                <div className="pri">{f.actividad}</div>
+                <div>
+                  <div className="pri">{f.actividad}</div>
+                  {datos.pesos?.[f.actividad] && (
+                    <div className="sec">
+                      {datos.pesos[f.actividad].alumnos} alumno{datos.pesos[f.actividad].alumnos === 1 ? '' : 's'}
+                      {' · '}{datos.pesos[f.actividad].horas} h/semana
+                    </div>
+                  )}
+                </div>
                 <span style={{ color: 'var(--teal)', fontWeight: 700 }}>{eur(f.ingresos)}</span>
                 <span className="sec">{eur(f.gastosDirectos)}</span>
                 <span className="sec">{eur(f.gastosComunes)}</span>
@@ -1106,6 +1162,10 @@ function InformeBeneficios() {
                   datos.bolsas.horas > 0 && `${eur(datos.bolsas.horas)} según las horas`,
                 ].filter(Boolean).join(', ') || 'nada que repartir'}</>
               )}
+            </div>
+            <div>
+              Los alumnos y las horas de cada actividad salen del horario. El <b>campamento</b> cuenta los
+              niños apuntados y sus 5 h diarias, y <b>Taller/Evento</b> los inscritos y la duración de cada evento.
             </div>
             {datos.sinActividad > 0 && <div>Hay <b>{eur(datos.sinActividad)}</b> de ingresos sin actividad asignada (ventas de mostrador o cargos antiguos), no incluidos en el reparto.</div>}
           </div>
