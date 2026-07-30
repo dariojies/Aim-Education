@@ -4898,7 +4898,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
       heading: "Club", items: [
         { id: "groups", label: "Grupos", icon: <I.Trophy /> },
         { id: "instructors", label: "Instructores", icon: <I.Users /> },
-        { id: "portada", label: "Portada web", icon: <I.Globe /> },
+        { id: "portada", label: "Portada web", icon: <I.Portada /> },
         { id: "settings", label: "Ajustes", icon: <I.Settings /> },
         { id: "support", label: "Soporte", icon: <I.Bell /> },
       ]
