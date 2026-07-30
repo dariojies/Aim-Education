@@ -1621,6 +1621,40 @@ function AdminInstructores({ refreshTrigger, showToast, onEditUser, onNuevoInstr
   );
 }
 
+// Busca a quién facturarle la inscripción. Selecciona en onMouseDown y no en
+// onClick porque Safari pierde el click cuando la lista se vuelve a pintar entre
+// el mousedown y el mouseup.
+function BuscarQuienPaga({ onElegir, onCancelar }) {
+  const [q, setQ] = useState('');
+  const [res, setRes] = useState([]);
+  useEffect(() => {
+    if (q.trim().length < 2) { setRes([]); return; }
+    const t = setTimeout(() => {
+      fetch(`/api/admin/billing/tpv/buscar?q=${encodeURIComponent(q.trim())}`, { credentials: 'include' })
+        .then(r => r.ok ? r.json() : []).then(d => setRes(Array.isArray(d) ? d.slice(0, 6) : [])).catch(() => setRes([]));
+    }, 250);
+    return () => clearTimeout(t);
+  }, [q]);
+  return (
+    <div style={{ display: 'grid', gap: 6 }}>
+      <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="Nombre del niño o del padre..."
+        style={{ padding: '6px 9px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)', fontFamily: 'inherit', fontSize: 12 }} />
+      {res.map(u => (
+        <button key={u.id} type="button"
+          onMouseDown={e => { e.preventDefault(); onElegir(u.id); }}
+          style={{ textAlign: 'left', padding: '6px 9px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12 }}>
+          <b>{u.nombre} {u.apellidos}</b>
+          <span style={{ color: 'var(--ink-3)' }}>{u.edad != null ? ` · ${u.edad} años` : ''}</span>
+        </button>
+      ))}
+      {q.trim().length >= 2 && res.length === 0 && (
+        <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Nadie con ese nombre. Hay que darle de alta como alumno primero.</span>
+      )}
+      <button type="button" className="btn btn-sm btn-outline" onClick={onCancelar}>Cancelar</button>
+    </div>
+  );
+}
+
 function AdminEvents({ showToast }) {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1674,12 +1708,42 @@ function AdminEvents({ showToast }) {
     setRegLoading(false);
   }
 
+  // A qué inscripción le estamos asignando pagador ahora mismo.
+  const [asignando, setAsignando] = useState(null);
+
   async function patchReg(regId, patch) {
     const r = await fetch(`/api/admin/events/${managingEvent.id}/registrations/${regId}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
       credentials: 'include', body: JSON.stringify(patch),
     });
-    if (r.ok) setRegList(prev => prev.map(x => x.id === regId ? { ...x, ...patch } : x));
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { alert(d.error || 'No se ha podido guardar.'); return; }
+    // Marcar pagado con un cargo detrás emite la factura: hay que recargar para
+    // ver el número y que no quede la pantalla diciendo "pendiente".
+    if (d.recibo) { await loadRegs(managingEvent.id); showToast?.(`Cobrado. Factura nº ${d.recibo.numero}.`); return; }
+    setRegList(prev => prev.map(x => x.id === regId ? { ...x, ...patch } : x));
+  }
+
+  // Asignar a quién se le factura: crea el cargo pendiente, que ya le sale a la
+  // familia en "Pagos y recibos" para pagarlo con tarjeta.
+  async function asignarPagador(regId, alumnoId) {
+    const r = await fetch(`/api/admin/events/${managingEvent.id}/registrations/${regId}/cargo`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      credentials: 'include', body: JSON.stringify({ alumnoId }),
+    });
+    const d = await r.json().catch(() => ({}));
+    setAsignando(null);
+    if (!r.ok) { alert(d.error || 'No se ha podido asignar.'); return; }
+    await loadRegs(managingEvent.id);
+    showToast?.('Cargo creado. Ya le aparece a la familia para pagarlo.');
+  }
+
+  async function quitarCargo(regId) {
+    if (!window.confirm('¿Quitar el cargo de esta inscripción?')) return;
+    const r = await fetch(`/api/admin/events/${managingEvent.id}/registrations/${regId}/cargo`, { method: 'DELETE', credentials: 'include' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { alert(d.error || 'No se ha podido quitar.'); return; }
+    await loadRegs(managingEvent.id);
   }
 
   async function deleteReg(regId) {
@@ -1739,7 +1803,7 @@ function AdminEvents({ showToast }) {
   }
   useEffect(() => { load(); }, []);
 
-  const blank = { title: '', description: '', date: '', endDate: '', time: '', endTime: '', venue: '', price: '', activity: 'general', posterUrl: '' };
+  const blank = { title: '', description: '', date: '', endDate: '', time: '', endTime: '', venue: '', price: '', activity: 'general', posterUrl: '', precio: '', precioSocio: '' };
 
   function startEdit(ev) {
     setEditing({
@@ -1991,19 +2055,55 @@ function AdminEvents({ showToast }) {
               return (
                 <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
                   <div style={{ display: 'grid', gap: 8, minWidth: 520 }}>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1.5fr 60px 1fr auto auto auto', gap: 10, padding: '8px 12px', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--ink-3)', borderBottom: '1px solid var(--line)' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1.3fr 55px 1fr 1.6fr auto auto auto', gap: 10, padding: '8px 12px', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--ink-3)', borderBottom: '1px solid var(--line)' }}>
                       <span>Nombre</span><span>Apellidos</span><span>Edad</span><span>Datos</span>
-                      <span>Fotos</span><span>Pagado</span><span>Asistió</span>
+                      <span>Facturación</span><span>Fotos</span><span>Pagado</span><span>Asistió</span>
                     </div>
                     {visible.map(reg => (
-                      <div key={reg.id} style={{ display: 'grid', gridTemplateColumns: '1.5fr 1.5fr 60px 1fr auto auto auto', gap: 10, padding: '10px 12px', background: 'var(--bg-3)', borderRadius: 10, alignItems: 'center', fontSize: 13 }}>
+                      <div key={reg.id} style={{ display: 'grid', gridTemplateColumns: '1.3fr 1.3fr 55px 1fr 1.6fr auto auto auto', gap: 10, padding: '10px 12px', background: 'var(--bg-3)', borderRadius: 10, alignItems: 'center', fontSize: 13 }}>
                         <span style={{ fontWeight: 700, color: 'var(--ink)' }}>{reg.nombre}</span>
                         <span style={{ color: 'var(--ink-2)' }}>{reg.apellidos}</span>
                         <span style={{ color: 'var(--ink-3)' }}>{reg.edad || '—'}</span>
                         <span style={{ color: 'var(--ink-3)', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={reg.datos || ''}>{reg.datos || '—'}</span>
+
+                        {/* A quién se le factura y cómo va el cargo. Sin precio,
+                            el taller es gratis y aquí no hay nada que hacer. */}
+                        <div style={{ fontSize: 11 }}>
+                          {!(managingEvent.precio > 0) ? (
+                            <span style={{ color: 'var(--ink-3)' }}>Gratuito</span>
+                          ) : asignando === reg.id ? (
+                            <BuscarQuienPaga onElegir={id => asignarPagador(reg.id, id)} onCancelar={() => setAsignando(null)} />
+                          ) : reg.cargoEstado === 'cobrado' ? (
+                            <span style={{ color: 'var(--teal)', fontWeight: 800 }}>
+                              Facturado · {fmtEur(reg.cargoImporte)}
+                              <div style={{ color: 'var(--ink-3)', fontWeight: 600 }}>{reg.alumno}</div>
+                            </span>
+                          ) : reg.cargoId ? (
+                            <span style={{ color: 'var(--orange)', fontWeight: 800 }}>
+                              Pendiente · {fmtEur(reg.cargoImporte)}
+                              <button className="icon-btn danger" style={{ width: 20, height: 20, marginLeft: 6, verticalAlign: 'middle' }}
+                                title="Quitar el cargo" onClick={() => quitarCargo(reg.id)}><I.X /></button>
+                              <div style={{ color: 'var(--ink-3)', fontWeight: 600 }}>{reg.alumno}</div>
+                            </span>
+                          ) : (
+                            <>
+                              <button className="btn btn-sm btn-outline" style={{ padding: '3px 8px', fontSize: 11 }}
+                                onClick={() => setAsignando(reg.id)}>Asignar a familia</button>
+                              {reg.alumno && <div style={{ color: 'var(--ink-3)', marginTop: 2 }}>Era de {reg.alumno}</div>}
+                            </>
+                          )}
+                        </div>
+
                         <span style={{ textAlign: 'center', fontSize: 14 }}>{reg.fotos_rrss ? '✓' : '—'}</span>
-                        <label style={{ display: 'grid', placeItems: 'center', cursor: 'pointer' }}>
-                          <input type="checkbox" checked={!!reg.pagado} onChange={e => patchReg(reg.id, { pagado: e.target.checked })} style={{ width: 16, height: 16, accentColor: 'var(--teal)' }} />
+                        <label style={{ display: 'grid', placeItems: 'center', cursor: 'pointer' }}
+                          title={reg.cargoId && reg.cargoEstado === 'pendiente' ? 'Al marcarlo se emite la factura' : ''}>
+                          <input type="checkbox" checked={!!reg.pagado} style={{ width: 16, height: 16, accentColor: 'var(--teal)' }}
+                            onChange={e => {
+                              // Con un cargo detrás esto no es una casilla, es cobrar.
+                              if (e.target.checked && reg.cargoId && reg.cargoEstado === 'pendiente'
+                                  && !window.confirm(`Se va a cobrar ${fmtEur(reg.cargoImporte)} a ${reg.alumno} y se emitirá su factura. ¿Seguir?`)) return;
+                              patchReg(reg.id, { pagado: e.target.checked });
+                            }} />
                         </label>
                         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                           <label style={{ display: 'grid', placeItems: 'center', cursor: 'pointer' }}>
@@ -2037,7 +2137,24 @@ function AdminEvents({ showToast }) {
               <div className="field-row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
                 <div className="field"><label>Hora inicio</label><input value={editing.time} onChange={e => setEditing({ ...editing, time: e.target.value })} placeholder="Ej. 19:00" /></div>
                 <div className="field"><label>Hora fin</label><input value={editing.endTime} onChange={e => setEditing({ ...editing, endTime: e.target.value })} placeholder="Ej. 21:00" /></div>
-                <div className="field"><label>Precio</label><input value={editing.price} onChange={e => setEditing({ ...editing, price: e.target.value })} placeholder="Ej. 5€ / Gratis" /></div>
+                <div className="field"><label>Precio (texto del cartel)</label><input value={editing.price} onChange={e => setEditing({ ...editing, price: e.target.value })} placeholder="Ej. 15€ (10€ Socios C.D. AIM)" /></div>
+                {/* El texto de arriba es para el cartel; para cobrar hace falta un
+                    número. Vacío o 0 = el taller es gratis y no genera cargos. */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                  <div className="field">
+                    <label>Importe a cobrar (€)</label>
+                    <input type="number" step="0.01" min="0" value={editing.precio ?? ''}
+                      onChange={e => setEditing({ ...editing, precio: e.target.value })} placeholder="Vacío = gratuito" />
+                  </div>
+                  <div className="field">
+                    <label>Importe socios (€)</label>
+                    <input type="number" step="0.01" min="0" value={editing.precioSocio ?? ''}
+                      onChange={e => setEditing({ ...editing, precioSocio: e.target.value })} placeholder="Si no, el general" />
+                  </div>
+                </div>
+                <span style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: -6 }}>
+                  Quien se apunta desde su cuenta paga el importe de socios. Sin IVA: la enseñanza está exenta.
+                </span>
               </div>
               <div className="field"><label>Lugar</label><input value={editing.venue} onChange={e => setEditing({ ...editing, venue: e.target.value })} placeholder="Ej. Teatro Municipal" /></div>
               <div className="field">

@@ -59,6 +59,12 @@ pool.on('error', (err) => {
 const dbLabel = process.env.DATABASE_URL ? 'DATABASE_URL (Heroku)' : `${process.env.DB_HOST}:${process.env.DB_PORT || 5432}`;
 console.log(`Conectando a la base de datos: ${dbLabel}...`);
 
+// Los talleres y eventos son una actividad más del club: se les imputan gastos
+// y se facturan como Taekwon-Do ITF, Ballet o Inglés.
+const EVENTOS_ACTIVIDAD = 'Taller/Evento';
+const EVENTOS_CONCEPTO = '20500';
+const CONCEPTOS_EVENTOS = new Set([EVENTOS_CONCEPTO]);
+
 async function initDb() {
     const client = await pool.connect();
     try {
@@ -410,6 +416,11 @@ async function initDb() {
         await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_eventos_date ON aim_eventos(event_date)`);
         await client.query(`ALTER TABLE aim_eventos ADD COLUMN IF NOT EXISTS end_time VARCHAR(100)`);
         await client.query(`ALTER TABLE aim_eventos ADD COLUMN IF NOT EXISTS price VARCHAR(100)`);
+        // 'price' es texto libre para el cartel ("15€ (10€ Socios C.D. AIM)"), que
+        // no sirve para cobrar. El importe de verdad va aparte, en euros, y es lo
+        // único que se factura. Sin precio (o a 0) el taller es gratis.
+        await client.query(`ALTER TABLE aim_eventos ADD COLUMN IF NOT EXISTS precio NUMERIC(10,2)`);
+        await client.query(`ALTER TABLE aim_eventos ADD COLUMN IF NOT EXISTS precio_socio NUMERIC(10,2)`);
 
         // Inscripciones a eventos.
         await client.query(`
@@ -428,6 +439,11 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_reg_event ON aim_event_registrations(event_id)`);
+        // A quién se le factura la inscripción y con qué cargo. Quien se apunta
+        // desde el formulario público no tiene ficha, así que van sueltos: se les
+        // asigna un pagador desde el panel cuando se sabe de qué familia son.
+        await client.query(`ALTER TABLE aim_event_registrations ADD COLUMN IF NOT EXISTS alumno_id UUID REFERENCES users(user_id) ON DELETE SET NULL`);
+        await client.query(`ALTER TABLE aim_event_registrations ADD COLUMN IF NOT EXISTS cargo_id INTEGER REFERENCES aim_cargos(id) ON DELETE SET NULL`);
 
         // ── Campamento de verano ──
         // Semanas del campamento (las define el admin; los días disponibles son L-V de cada semana).
@@ -518,6 +534,15 @@ async function initDb() {
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
+        // El concepto con el que se cobran los talleres y eventos. El precio va a
+        // cero porque lo pone cada evento; lo que importa aquí es el IVA, que es
+        // 0 por ser enseñanza exenta (art. 20.Uno.9º LIVA), como el campamento.
+        await client.query(
+            `INSERT INTO aim_precios (concepto, descripcion, precio, tipo, iva_pct)
+             VALUES ($1, 'Taller o evento', 0, 'Otros', 0)
+             ON CONFLICT (concepto) DO NOTHING`, [EVENTOS_CONCEPTO]
+        );
+
         // Catálogo de clases PROPIAS (las que no están en aim-tul). Las de
         // aim-tul NO se copian aquí: se leen en vivo, así siempre están al día.
         await client.query(`
@@ -1610,6 +1635,10 @@ app.delete('/api/admin/groups/:id', authenticateSession, (req, res) => res.statu
 // EVENTOS Y TALLERES (aim_eventos) — propios de aim-education
 // =============================================================================
 
+// Un importe que puede venir vacío desde un formulario: '' no es 0 €, es "no lo
+// he puesto", y la diferencia importa porque 0 € significa gratis.
+const numONull = (v) => (v === '' || v == null || isNaN(Number(v)) ? null : Number(v));
+
 function mapEvent(r) {
     return {
         id: r.id,
@@ -1621,6 +1650,8 @@ function mapEvent(r) {
         endTime: r.end_time,
         venue: r.venue,
         price: r.price,
+        precio: r.precio == null ? null : Number(r.precio),
+        precioSocio: r.precio_socio == null ? null : Number(r.precio_socio),
         activity: r.activity || 'taekwondo',
         posterUrl: r.poster_url,
     };
@@ -1655,14 +1686,15 @@ app.get('/api/admin/events', authenticateSession, async (req, res) => {
 });
 
 app.post('/api/admin/events', authenticateSession, async (req, res) => {
-    const { title, description, date, endDate, time, endTime, venue, price, activity, posterUrl } = req.body;
+    const { title, description, date, endDate, time, endTime, venue, price, activity, posterUrl, precio, precioSocio } = req.body;
     if (!title || !date) return res.status(400).json({ error: 'Título y fecha son obligatorios.' });
     const id = crypto.randomUUID();
     try {
         await pool.query(
-            `INSERT INTO aim_eventos (id, title, description, event_date, end_date, time, end_time, venue, price, activity, poster_url)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-            [id, title, description || null, date, endDate || null, time || null, endTime || null, venue || null, price || null, activity || 'taekwondo', posterUrl || null]
+            `INSERT INTO aim_eventos (id, title, description, event_date, end_date, time, end_time, venue, price, activity, poster_url, precio, precio_socio)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+            [id, title, description || null, date, endDate || null, time || null, endTime || null, venue || null, price || null, activity || 'taekwondo', posterUrl || null,
+             numONull(precio), numONull(precioSocio)]
         );
         const result = await pool.query('SELECT * FROM aim_eventos WHERE id = $1', [id]);
         res.status(201).json(mapEvent(result.rows[0]));
@@ -1673,14 +1705,16 @@ app.post('/api/admin/events', authenticateSession, async (req, res) => {
 });
 
 app.put('/api/admin/events/:id', authenticateSession, async (req, res) => {
-    const { title, description, date, endDate, time, endTime, venue, price, activity, posterUrl } = req.body;
+    const { title, description, date, endDate, time, endTime, venue, price, activity, posterUrl, precio, precioSocio } = req.body;
     if (!title || !date) return res.status(400).json({ error: 'Título y fecha son obligatorios.' });
     try {
         const result = await pool.query(
             `UPDATE aim_eventos
-             SET title=$1, description=$2, event_date=$3, end_date=$4, time=$5, end_time=$6, venue=$7, price=$8, activity=$9, poster_url=$10, updated_at=NOW()
+             SET title=$1, description=$2, event_date=$3, end_date=$4, time=$5, end_time=$6, venue=$7, price=$8, activity=$9, poster_url=$10,
+                 precio=$12, precio_socio=$13, updated_at=NOW()
              WHERE id=$11 RETURNING *`,
-            [title, description || null, date, endDate || null, time || null, endTime || null, venue || null, price || null, activity || 'taekwondo', posterUrl || null, req.params.id]
+            [title, description || null, date, endDate || null, time || null, endTime || null, venue || null, price || null, activity || 'taekwondo', posterUrl || null, req.params.id,
+             numONull(precio), numONull(precioSocio)]
         );
         if (result.rowCount === 0) return res.status(404).json({ error: 'Evento no encontrado.' });
         res.json(mapEvent(result.rows[0]));
@@ -1708,26 +1742,154 @@ app.delete('/api/admin/events/:id', authenticateSession, async (req, res) => {
 app.post('/api/events/:id/register', async (req, res) => {
     const { nombre, apellidos, edad, datos, fotosRrss } = req.body;
     if (!nombre?.trim() || !apellidos?.trim()) return res.status(400).json({ error: 'Nombre y apellidos son obligatorios.' });
-    const token = req.cookies?.aim_session;
+    // req.cookies no existe: aquí no hay cookie-parser. El resto de la aplicación
+    // lee la cookie con parseCookies, y por usar la otra forma este endpoint nunca
+    // veía la sesión (de ahí que ninguna inscripción tuviera usuario).
+    const token = parseCookies(req.headers.cookie)['aim_session'];
     const session = token ? sessions.get(token) : null;
+    const client = await pool.connect();
     try {
-        const result = await pool.query(
+        await client.query('BEGIN');
+        const result = await client.query(
             `INSERT INTO aim_event_registrations (event_id, nombre, apellidos, edad, datos, fotos_rrss, user_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
             [req.params.id, nombre.trim(), apellidos.trim(), edad || null, datos?.trim() || null, !!fotosRrss, session?.userId || null]
         );
-        res.status(201).json({ id: result.rows[0].id });
+        const reg = result.rows[0];
+
+        // Si se apunta desde su cuenta y el taller cuesta, se le deja el cargo
+        // pendiente: le sale en "Pagos y recibos" con el resto y lo paga cuando
+        // quiera. Quien se apunta desde el formulario público no tiene ficha, así
+        // que se queda sin cargo hasta que en secretaría le asignen la familia.
+        let cargoId = null;
+        if (session?.userId) {
+            const ev = await client.query(
+                `SELECT id, title, event_date, precio, precio_socio FROM aim_eventos WHERE id = $1`, [req.params.id]
+            );
+            if (ev.rowCount) {
+                const alumnoId = await alumnoDeInscripcion(client, session.userId, nombre.trim(), apellidos.trim());
+                cargoId = await crearCargoInscripcion(client, { reg, ev: ev.rows[0], alumnoId });
+            }
+        }
+        await client.query('COMMIT');
+        res.status(201).json({ id: reg.id, cargoId });
     } catch (err) {
+        await client.query('ROLLBACK');
         console.error('Error registering:', err);
         res.status(500).json({ error: err.message });
+    } finally {
+        client.release();
     }
 });
+
+// A quién se le pone el cargo: al hijo si el nombre apuntado es el de alguien de
+// su familia, y si no, a quien está apuntando. Así el recibo sale a nombre del
+// niño que va al taller, como en el resto de la aplicación.
+async function alumnoDeInscripcion(client, userId, nombre, apellidos) {
+    const fam = await client.query(
+        `SELECT u.user_id, u.name, u.surname FROM aim_familias f
+         JOIN users u ON u.user_id = f.familiar_id
+         WHERE f.persona_id = $1`, [userId]
+    ).catch(() => ({ rows: [] }));
+    const limpia = (t) => String(t || '').trim().toLowerCase();
+    const buscado = `${limpia(nombre)} ${limpia(apellidos)}`.trim();
+    const hit = fam.rows.find(u => `${limpia(u.name)} ${limpia(u.surname)}`.trim() === buscado);
+    return hit ? hit.user_id : userId;
+}
+
+// Cuánto le toca pagar a una inscripción. Quien tiene ficha en el club paga el
+// precio de socio si el evento lo tiene puesto; el resto, el general.
+function precioInscripcion(ev, esSocio) {
+    const general = ev.precio == null ? null : Number(ev.precio);
+    const socio = ev.precio_socio == null ? null : Number(ev.precio_socio);
+    const p = (esSocio && socio != null) ? socio : general;
+    return (p == null || !(p > 0)) ? 0 : r2Server(p);
+}
+
+// Crea el cargo pendiente de una inscripción y lo deja enganchado a ella. El
+// cargo es de la actividad Taller/Evento, así que cuenta en el informe de
+// beneficios junto a sus gastos. IVA 0: enseñanza exenta.
+async function crearCargoInscripcion(client, { reg, ev, alumnoId, importe }) {
+    const total = importe != null ? r2Server(Number(importe)) : precioInscripcion(ev, true);
+    if (!(total > 0)) return null;
+    const fecha = new Date(ev.event_date);
+    const mes = `${fecha.getFullYear()}-${String(fecha.getMonth() + 1).padStart(2, '0')}-01`;
+    const cuando = fecha.toLocaleDateString('es-ES', { day: 'numeric', month: 'long' });
+    const ins = await client.query(
+        `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct,
+                                 descuento_pct, importe, target_nombre, estado, origen, actividad)
+         VALUES ($1,$2,$3::date,$4,'Otros',$5,0,0,$5,$6,'pendiente','evento',$7) RETURNING id`,
+        [alumnoId, EVENTOS_CONCEPTO, mes, `${ev.title} · ${cuando}`, total,
+         `${reg.nombre} ${reg.apellidos}`.trim().slice(0, 255), EVENTOS_ACTIVIDAD]
+    );
+    const cargoId = ins.rows[0].id;
+    await client.query(
+        `UPDATE aim_event_registrations SET cargo_id = $1, alumno_id = $2 WHERE id = $3`,
+        [cargoId, alumnoId, reg.id]
+    );
+    return cargoId;
+}
+
+// Quién paga lo de un alumno. El cargo es del niño, pero la factura sale a
+// nombre de quien pone el dinero: su madre, su padre o su tutor. Si no consta
+// nadie así, se queda a nombre del propio alumno (los adultos se pagan lo suyo).
+async function pagadorDe(client, alumnoId) {
+    const r = await client.query(
+        `SELECT f.familiar_id AS id, f.tipo FROM aim_familias f
+         WHERE f.persona_id = $1 AND f.tipo IN ('Madre','Padre','Tutor/a')
+         ORDER BY f.id LIMIT 1`, [alumnoId]
+    );
+    return r.rowCount ? r.rows[0].id : alumnoId;
+}
+
+// Emite el recibo de unos cargos ya pendientes: es el mismo camino que el cobro
+// de mostrador (recibo numerado + registro encadenado de facturación), pero sin
+// la cesta ni los descuentos del TPV, que aquí no pintan nada.
+async function emitirReciboDe(client, { pagadorId, cargoIds, medioPago, userId }) {
+    const cs = await client.query(
+        `SELECT c.*, u.name, u.surname FROM aim_cargos c
+         JOIN users u ON u.user_id = c.cliente_id
+         WHERE c.id = ANY($1::int[]) AND c.estado = 'pendiente' AND c.recibo_id IS NULL
+         FOR UPDATE OF c`, [cargoIds]
+    );
+    if (cs.rowCount !== cargoIds.length) {
+        throw { httP: 409, msg: 'Alguno de los cargos ya no está pendiente. Recarga la pantalla.' };
+    }
+    const calc = calcularRecibo(cs.rows.map(cargoParaMotor));
+    const num = (await client.query(`SELECT nextval('aim_recibos_numero_seq') AS n`)).rows[0].n;
+    const rec = await client.query(
+        `INSERT INTO aim_recibos (numero, pagador_id, fecha, importe, medio_pago, entregado, cambio, estado, cobrado_por, cobrado_at)
+         VALUES ($1,$2,CURRENT_DATE,$3,$4,$3,0,'cobrado',$5,NOW()) RETURNING id, numero, fecha, serie`,
+        [num, pagadorId, calc.total, medioPago, userId]
+    );
+    const reciboId = rec.rows[0].id;
+    for (const d of calc.detalle) {
+        await client.query(
+            `UPDATE aim_cargos SET recibo_id = $1, descuento_mens_pct = $2, importe = $3, estado = 'cobrado' WHERE id = $4`,
+            [reciboId, d.descuentoMensPct, d.base, d.id]
+        );
+    }
+    const pg = await client.query(`SELECT name, surname FROM users WHERE user_id = $1`, [pagadorId]);
+    await registrarFactura(client, {
+        recibo: { ...rec.rows[0], id: reciboId, serie: rec.rows[0].serie || 'A', tipo: 'normal' },
+        receptor: { nombre: pg.rows[0] ? `${pg.rows[0].name} ${pg.rows[0].surname || ''}`.trim() : null },
+        descripcion: calc.detalle.map(d => d.descripcion).join('; ').slice(0, 500),
+        base: calc.baseTotal, cuota: calc.ivaTotal, total: calc.total,
+        userId,
+    });
+    return { reciboId, numero: rec.rows[0].numero, total: calc.total };
+}
 
 // Admin: listar inscritos de un evento.
 app.get('/api/admin/events/:id/registrations', authenticateSession, async (req, res) => {
     try {
         const result = await pool.query(
-            `SELECT * FROM aim_event_registrations WHERE event_id = $1 ORDER BY created_at ASC`,
+            `SELECT r.*, c.estado AS cargo_estado, c.importe AS cargo_importe, c.recibo_id,
+                    u.name AS alumno_nombre, u.surname AS alumno_apellidos
+             FROM aim_event_registrations r
+             LEFT JOIN aim_cargos c ON c.id = r.cargo_id
+             LEFT JOIN users u ON u.user_id = r.alumno_id
+             WHERE r.event_id = $1 ORDER BY r.created_at ASC`,
             [req.params.id]
         );
         res.set('Cache-Control', 'no-store');
@@ -1735,6 +1897,13 @@ app.get('/api/admin/events/:id/registrations', authenticateSession, async (req, 
             id: r.id, nombre: r.nombre, apellidos: r.apellidos, edad: r.edad,
             datos: r.datos, fotosRrss: r.fotos_rrss, pagado: r.pagado,
             asistio: r.asistio, userId: r.user_id, createdAt: r.created_at,
+            // Facturación: a quién se le pasa el cargo y en qué estado está.
+            alumnoId: r.alumno_id,
+            alumno: r.alumno_nombre ? `${r.alumno_nombre} ${r.alumno_apellidos || ''}`.trim() : null,
+            cargoId: r.cargo_id,
+            cargoEstado: r.cargo_estado || null,
+            cargoImporte: r.cargo_importe == null ? null : Number(r.cargo_importe),
+            reciboId: r.recibo_id || null,
         })));
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -1743,21 +1912,121 @@ app.get('/api/admin/events/:id/registrations', authenticateSession, async (req, 
 
 // Admin: actualizar pagado/asistio de un inscrito.
 app.patch('/api/admin/events/:id/registrations/:regId', authenticateSession, async (req, res) => {
-    const { pagado, asistio } = req.body;
-    const fields = [];
-    const vals = [];
-    if (pagado !== undefined) { fields.push(`pagado = $${fields.length + 1}`); vals.push(!!pagado); }
-    if (asistio !== undefined) { fields.push(`asistio = $${fields.length + 1}`); vals.push(!!asistio); }
-    if (!fields.length) return res.status(400).json({ error: 'Nada que actualizar.' });
-    vals.push(req.params.regId, req.params.id);
+    const { pagado, asistio, medioPago } = req.body;
+    const client = await pool.connect();
     try {
-        await pool.query(
+        await client.query('BEGIN');
+        const cur = await client.query(
+            `SELECT * FROM aim_event_registrations WHERE id = $1 AND event_id = $2 FOR UPDATE`,
+            [req.params.regId, req.params.id]
+        );
+        if (!cur.rowCount) throw { httP: 404, msg: 'Inscripción no encontrada.' };
+        const reg = cur.rows[0];
+
+        // Marcar "pagado" con un cargo pendiente detrás no es una casilla: es un
+        // cobro. Se emite el recibo y su factura, igual que en mostrador, para que
+        // no haya un pagado en eventos que en facturación siga debiendo.
+        let recibo = null;
+        if (pagado === true && reg.cargo_id && !reg.pagado) {
+            const c = await client.query(`SELECT estado, cliente_id FROM aim_cargos WHERE id = $1`, [reg.cargo_id]);
+            if (c.rowCount && c.rows[0].estado === 'pendiente') {
+                const medio = MEDIOS_PAGO.includes(medioPago) ? medioPago : 'efectivo';
+                recibo = await emitirReciboDe(client, {
+                    pagadorId: await pagadorDe(client, c.rows[0].cliente_id), cargoIds: [reg.cargo_id],
+                    medioPago: medio, userId: req.userSession.userId,
+                });
+            }
+        }
+        // Deshacer un cobro ya emitido no se puede: una factura solo se rectifica.
+        if (pagado === false && reg.cargo_id) {
+            const c = await client.query(`SELECT estado FROM aim_cargos WHERE id = $1`, [reg.cargo_id]);
+            if (c.rowCount && c.rows[0].estado === 'cobrado') {
+                throw { httP: 409, msg: 'Ya tiene factura emitida. Para devolver el dinero hay que emitir una rectificativa desde Facturación.' };
+            }
+        }
+
+        const fields = [];
+        const vals = [];
+        if (pagado !== undefined) { fields.push(`pagado = $${fields.length + 1}`); vals.push(!!pagado); }
+        if (asistio !== undefined) { fields.push(`asistio = $${fields.length + 1}`); vals.push(!!asistio); }
+        if (!fields.length) throw { httP: 400, msg: 'Nada que actualizar.' };
+        vals.push(req.params.regId, req.params.id);
+        await client.query(
             `UPDATE aim_event_registrations SET ${fields.join(', ')} WHERE id = $${vals.length - 1} AND event_id = $${vals.length}`,
             vals
         );
+        await client.query('COMMIT');
+        res.json({ success: true, recibo });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        if (err && err.httP) return res.status(err.httP).json({ error: err.msg });
+        console.error('Error actualizando inscripción:', err);
+        res.status(500).json({ error: err.message });
+    } finally {
+        client.release();
+    }
+});
+
+// Admin: asignar el pagador de una inscripción y dejarle el cargo pendiente.
+// Es lo que permite facturar a quien se apuntó por el formulario público, que no
+// tiene ficha y por tanto no puede tener cargos.
+app.post('/api/admin/events/:id/registrations/:regId/cargo', authenticateSession, requireAdmin, async (req, res) => {
+    const { alumnoId, importe } = req.body;
+    if (!alumnoId) return res.status(400).json({ error: 'Falta a quién se le factura.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const r = await client.query(
+            `SELECT * FROM aim_event_registrations WHERE id = $1 AND event_id = $2 FOR UPDATE`,
+            [req.params.regId, req.params.id]
+        );
+        if (!r.rowCount) throw { httP: 404, msg: 'Inscripción no encontrada.' };
+        if (r.rows[0].cargo_id) throw { httP: 409, msg: 'Esta inscripción ya tiene un cargo.' };
+
+        const ev = await client.query(`SELECT * FROM aim_eventos WHERE id = $1`, [req.params.id]);
+        if (!ev.rowCount) throw { httP: 404, msg: 'Evento no encontrado.' };
+        const quien = await client.query(`SELECT user_id FROM users WHERE user_id = $1`, [alumnoId]);
+        if (!quien.rowCount) throw { httP: 400, msg: 'Esa persona no existe.' };
+
+        const cargoId = await crearCargoInscripcion(client, { reg: r.rows[0], ev: ev.rows[0], alumnoId, importe });
+        if (!cargoId) throw { httP: 400, msg: 'El taller no tiene precio: pon un importe o déjalo como gratuito.' };
+        await client.query('COMMIT');
+        res.status(201).json({ cargoId });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        if (err && err.httP) return res.status(err.httP).json({ error: err.msg });
+        console.error('Error creando cargo de inscripción:', err);
+        res.status(500).json({ error: err.message });
+    } finally {
+        client.release();
+    }
+});
+
+// Admin: quitar el cargo de una inscripción. Solo si sigue pendiente: lo que ya
+// está facturado no se borra, se rectifica.
+app.delete('/api/admin/events/:id/registrations/:regId/cargo', authenticateSession, requireAdmin, async (req, res) => {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const r = await client.query(
+            `SELECT cargo_id FROM aim_event_registrations WHERE id = $1 AND event_id = $2 FOR UPDATE`,
+            [req.params.regId, req.params.id]
+        );
+        if (!r.rowCount || !r.rows[0].cargo_id) throw { httP: 404, msg: 'No tiene ningún cargo.' };
+        const c = await client.query(
+            `DELETE FROM aim_cargos WHERE id = $1 AND estado = 'pendiente' AND recibo_id IS NULL RETURNING id`,
+            [r.rows[0].cargo_id]
+        );
+        if (!c.rowCount) throw { httP: 409, msg: 'Ese cargo ya está cobrado: hay que rectificar la factura desde Facturación.' };
+        await client.query(`UPDATE aim_event_registrations SET cargo_id = NULL WHERE id = $1`, [req.params.regId]);
+        await client.query('COMMIT');
         res.json({ success: true });
     } catch (err) {
+        await client.query('ROLLBACK');
+        if (err && err.httP) return res.status(err.httP).json({ error: err.msg });
         res.status(500).json({ error: err.message });
+    } finally {
+        client.release();
     }
 });
 
@@ -2412,7 +2681,6 @@ app.put('/api/admin/camp/children/:id/days', authenticateSession, requireAdmin, 
 const CAMP_ACTIVIDAD = 'Campamento de verano';
 // Los talleres y eventos se tratan como una actividad más, para poder
 // imputarles gastos y verlos en el informe junto a Taekwondo, Ballet o Inglés.
-const EVENTOS_ACTIVIDAD = 'Taller/Evento';
 // El campamento ocupa de 9:00 a 14:00, de lunes a viernes.
 const CAMP_HORAS_DIA = 5;
 const CAMP_SERVICIO_CONCEPTO = '20401';
@@ -3837,6 +4105,7 @@ async function actividadDeConcepto(concepto, cliente = pool) {
     // Los conceptos con los que el propio sistema cobra el campamento son del
     // campamento, se hayan cobrado desde su panel o a mano por el TPV.
     if (CONCEPTOS_CAMPAMENTO.has(String(concepto))) return CAMP_ACTIVIDAD;
+    if (CONCEPTOS_EVENTOS.has(String(concepto))) return EVENTOS_ACTIVIDAD;
     const r = await cliente.query(
         `SELECT target_tipo, target_actividad, target_ref FROM aim_conceptos_temporada
          WHERE concepto = $1 ORDER BY (target_tipo = 'actividad') DESC LIMIT 1`, [concepto]

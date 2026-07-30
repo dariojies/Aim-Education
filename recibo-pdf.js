@@ -134,6 +134,16 @@ export function generarReciboPdf(t, salida) {
         y += 13;
     }
 
+    // Una factura sin IVA tiene que decir por qué no lo lleva: son clases, y la
+    // enseñanza está exenta. Sin esta mención la factura está incompleta.
+    const todoExento = (t.basesPorIva || []).length > 0 && (t.basesPorIva || []).every(b => Number(b.ivaPct) === 0);
+    if (todoExento) {
+        doc.fontSize(8).fillColor(SUAVE)
+            .text('Operación exenta de IVA por el artículo 20.Uno.9º de la Ley 37/1992 (servicios de enseñanza).',
+                  izq, y, { width: ancho, align: 'right' });
+        y += 14;
+    }
+
     y += 6;
     doc.rect(izq + ancho - 220, y, 220, 34).fill('#F5F3EF');
     doc.fillColor(TINTA).font('Helvetica-Bold').fontSize(14)
