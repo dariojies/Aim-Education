@@ -973,6 +973,29 @@ function AdminGastos({ refreshTrigger, showToast }) {
                 </div>
               )}
 
+              {/* Un gasto común no siempre se reparte igual: la luz no es como
+                  el material, así que lo decide cada gasto y no el informe. */}
+              {edit.tipo !== 'especifico' && (
+                <div className="field">
+                  <label>¿Cómo se reparte entre las actividades?</label>
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    {[
+                      ['iguales', 'A partes iguales', 'El mismo importe para cada actividad.'],
+                      ['alumnos', 'Según los alumnos', 'Paga más la actividad que tiene más alumnos matriculados.'],
+                      ['horas', 'Según las horas', 'Paga más la actividad que ocupa más horas en el horario semanal.'],
+                    ].map(([v, l, d]) => (
+                      <button key={v} type="button" onClick={() => setEdit(g => ({ ...g, reparto: v }))}
+                        style={{ textAlign: 'left', padding: '10px 12px', borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit',
+                          border: `1.5px solid ${(edit.reparto || 'iguales') === v ? 'var(--teal)' : 'var(--line)'}`,
+                          background: (edit.reparto || 'iguales') === v ? 'color-mix(in oklab, var(--teal) 8%, var(--bg-2))' : 'var(--bg-2)' }}>
+                        <div style={{ fontWeight: 800, fontSize: 13, color: (edit.reparto || 'iguales') === v ? 'var(--teal)' : 'var(--ink)' }}>{l}</div>
+                        <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{d}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
                 <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, cursor: 'pointer', fontWeight: 700, color: edit.pagado ? 'var(--teal)' : 'var(--ink-2)' }}>
                   <input type="checkbox" checked={!!edit.pagado} onChange={e => setEdit(g => ({ ...g, pagado: e.target.checked }))} style={{ accentColor: 'var(--teal)' }} />
@@ -1014,7 +1037,7 @@ function AdminGastos({ refreshTrigger, showToast }) {
 // Informe de beneficio por actividad: ingresos − gastos, repartiendo los comunes.
 function InformeBeneficios() {
   const [datos, setDatos] = useState(null);
-  const [reparto, setReparto] = useState('ingresos');
+
   const [desde, setDesde] = useState('');
   const [hasta, setHasta] = useState('');
   const [loading, setLoading] = useState(false);
@@ -1022,7 +1045,7 @@ function InformeBeneficios() {
   async function cargar() {
     setLoading(true);
     try {
-      const p = new URLSearchParams({ reparto });
+      const p = new URLSearchParams();
       if (desde) p.set('desde', desde);
       if (hasta) p.set('hasta', hasta);
       const r = await fetch(`/api/admin/informes/beneficios?${p}`, { credentials: 'include' });
@@ -1030,7 +1053,7 @@ function InformeBeneficios() {
     } catch { /* noop */ }
     finally { setLoading(false); }
   }
-  useEffect(() => { cargar(); }, [reparto, desde, hasta]);
+  useEffect(() => { cargar(); }, [desde, hasta]);
 
   return (
     <div style={{ display: 'grid', gap: 14 }}>
@@ -1043,10 +1066,6 @@ function InformeBeneficios() {
         <input type="date" value={desde} onChange={e => setDesde(e.target.value)} style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontFamily: 'inherit' }} />
         <label style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>Hasta</label>
         <input type="date" value={hasta} onChange={e => setHasta(e.target.value)} style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontFamily: 'inherit' }} />
-        <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: 'var(--ink-3)' }}>Repartir comunes:</span>
-        {[['ingresos', 'Según ingresos'], ['iguales', 'A partes iguales']].map(([v, l]) => (
-          <button key={v} className={`filter-pill ${reparto === v ? 'is-active' : ''}`} onClick={() => setReparto(v)}>{l}</button>
-        ))}
       </div>
 
       {loading && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Calculando...</p>}
@@ -1078,7 +1097,16 @@ function InformeBeneficios() {
             </div>
           </div>
           <div style={{ fontSize: 12, color: 'var(--ink-3)', display: 'grid', gap: 4 }}>
-            <div>Gastos comunes repartidos: <b>{eur(datos.totalGastosComunes)}</b> ({reparto === 'iguales' ? 'a partes iguales' : 'proporcional a los ingresos'}).</div>
+            <div>
+              Gastos comunes repartidos: <b>{eur(datos.totalGastosComunes)}</b>
+              {datos.bolsas && (
+                <> — {[
+                  datos.bolsas.iguales > 0 && `${eur(datos.bolsas.iguales)} a partes iguales`,
+                  datos.bolsas.alumnos > 0 && `${eur(datos.bolsas.alumnos)} según los alumnos`,
+                  datos.bolsas.horas > 0 && `${eur(datos.bolsas.horas)} según las horas`,
+                ].filter(Boolean).join(', ') || 'nada que repartir'}</>
+              )}
+            </div>
             {datos.sinActividad > 0 && <div>Hay <b>{eur(datos.sinActividad)}</b> de ingresos sin actividad asignada (ventas de mostrador o cargos antiguos), no incluidos en el reparto.</div>}
           </div>
         </>

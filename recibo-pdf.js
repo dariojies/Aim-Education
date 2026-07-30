@@ -71,13 +71,13 @@ export function generarReciboPdf(t, salida) {
         y += 16;
     }
 
-    // ── Destinatario ──
+    // ── Datos del cliente ──
     // Sin NIF o sin domicilio la factura no está completa, así que se dice a las
     // claras en vez de dejar el hueco en blanco.
     y += 10;
     doc.rect(izq, y, ancho, 1).fill('#E5E7EB');
     y += 12;
-    doc.fillColor(SUAVE).fontSize(9).font('Helvetica-Bold').text('FACTURAR A', izq, y);
+    doc.fillColor(SUAVE).fontSize(9).font('Helvetica-Bold').text('DATOS CLIENTE', izq, y);
     y += 14;
     doc.fillColor(TINTA).fontSize(11).font('Helvetica-Bold').text(t.recibo.pagador || '—', izq, y, { width: ancho });
     y = doc.y + 2;

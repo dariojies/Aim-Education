@@ -631,6 +631,11 @@ async function initDb() {
             `CREATE UNIQUE INDEX IF NOT EXISTS uq_fiscales_pendiente
              ON aim_datos_fiscales_cambios (user_id) WHERE estado = 'pendiente'`);
 
+        // Cómo se reparte cada gasto común entre las actividades. Antes era una
+        // opción del informe, igual para todos; pero la luz no se reparte como
+        // el material de una actividad concreta, así que lo decide cada gasto.
+        await client.query(`ALTER TABLE aim_gastos ADD COLUMN IF NOT EXISTS reparto VARCHAR(20) NOT NULL DEFAULT 'iguales'`);
+
         // ── TPV virtual (Redsys) ──
         // Un intento de pago online. Se crea ANTES de mandar a la familia a
         // Redsys, porque el número de pedido tiene que ser único para siempre y
@@ -5046,6 +5051,7 @@ const mapGasto = (r, conArchivo = false) => ({
     medioPago: r.payment_method, proveedor: r.company, cif: r.cif,
     numeroFactura: r.invoice_number, concepto: r.concept,
     tipo: r.expense_type || 'comun', actividad: r.actividad,
+    reparto: r.reparto || 'iguales',
     pagado: !!r.is_paid, comprobadoBanco: !!r.comprobado_banco,
     facturaUrl: r.invoice_link,
     facturaNombre: r.factura_nombre, facturaMime: r.factura_mime,
@@ -5071,7 +5077,7 @@ app.get('/api/admin/gastos', authenticateSession, requireAdmin, async (req, res)
         // No devolvemos el archivo en el listado: pesaría muchísimo.
         const r = await pool.query(
             `SELECT id, date, amount, payment_method, company, invoice_link, cif, invoice_number,
-                    concept, expense_type, actividad, is_paid, comprobado_banco, factura_nombre, factura_mime
+                    concept, expense_type, actividad, reparto, is_paid, comprobado_banco, factura_nombre, factura_mime
              FROM aim_gastos ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
              ORDER BY date DESC NULLS LAST, created_at DESC LIMIT 500`,
             vals
@@ -5089,7 +5095,7 @@ const MEDIOS_GASTO = ['Tarjeta', 'Transferencia bancaria', 'Domiciliación SEPA'
 app.post('/api/admin/gastos', authenticateSession, requireAdmin, async (req, res) => {
     const {
         id, fecha, importe, medioPago, proveedor, cif, numeroFactura, concepto,
-        tipo, actividad, pagado, comprobadoBanco, facturaUrl,
+        tipo, actividad, reparto, pagado, comprobadoBanco, facturaUrl,
         facturaArchivo, facturaNombre, facturaMime,
     } = req.body;
     if (!proveedor?.trim()) return res.status(400).json({ error: 'El proveedor es obligatorio.' });
@@ -5097,6 +5103,8 @@ app.post('/api/admin/gastos', authenticateSession, requireAdmin, async (req, res
     if (Number(importe) < 0) return res.status(400).json({ error: 'El importe no puede ser negativo.' });
     if (!fecha) return res.status(400).json({ error: 'La fecha de factura es obligatoria.' });
     if (tipo === 'especifico' && !actividad?.trim()) return res.status(400).json({ error: 'Un gasto específico necesita una actividad.' });
+    const REPARTOS = ['iguales', 'alumnos', 'horas'];
+    const comoReparte = REPARTOS.includes(reparto) ? reparto : 'iguales';
     // ~5MB de archivo en base64 (el límite del body es 6mb).
     if (facturaArchivo && facturaArchivo.length > 5_000_000) return res.status(413).json({ error: 'La factura es demasiado grande (máx. ~3,5 MB).' });
 
@@ -5108,13 +5116,14 @@ app.post('/api/admin/gastos', authenticateSession, requireAdmin, async (req, res
         const setArchivo = facturaArchivo !== undefined;
         await client.query(
             `INSERT INTO aim_gastos (id, date, amount, payment_method, company, cif, invoice_number, concept,
-                                     expense_type, actividad, is_paid, comprobado_banco, invoice_link,
+                                     expense_type, actividad, reparto, is_paid, comprobado_banco, invoice_link,
                                      factura_archivo, factura_nombre, factura_mime)
-             VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+             VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$18,$11,$12,$13,$14,$15,$16)
              ON CONFLICT (id) DO UPDATE SET
                 date = EXCLUDED.date, amount = EXCLUDED.amount, payment_method = EXCLUDED.payment_method,
                 company = EXCLUDED.company, cif = EXCLUDED.cif, invoice_number = EXCLUDED.invoice_number,
                 concept = EXCLUDED.concept, expense_type = EXCLUDED.expense_type, actividad = EXCLUDED.actividad,
+                reparto = EXCLUDED.reparto,
                 is_paid = EXCLUDED.is_paid, comprobado_banco = EXCLUDED.comprobado_banco,
                 invoice_link = EXCLUDED.invoice_link,
                 factura_archivo = CASE WHEN $17 THEN EXCLUDED.factura_archivo ELSE aim_gastos.factura_archivo END,
@@ -5123,7 +5132,7 @@ app.post('/api/admin/gastos', authenticateSession, requireAdmin, async (req, res
             [gastoId, fecha, Number(importe), medioPago || null, proveedor.trim(), cif?.trim() || null,
              numeroFactura?.trim() || null, concepto?.trim() || null, tipo === 'especifico' ? 'especifico' : 'comun',
              tipo === 'especifico' ? actividad.trim() : null, !!pagado, !!comprobadoBanco, facturaUrl?.trim() || null,
-             facturaArchivo || null, facturaNombre?.trim() || null, facturaMime || null, setArchivo]
+             facturaArchivo || null, facturaNombre?.trim() || null, facturaMime || null, setArchivo, comoReparte]
         );
         // El proveedor se guarda en el registro para poder buscarlo la próxima vez.
         await client.query(
@@ -5184,7 +5193,7 @@ app.delete('/api/admin/proveedores/:id', authenticateSession, requireAdmin, asyn
 // Informe de beneficios por actividad: ingresos (cargos cobrados en recibos no
 // anulados) menos gastos. Los gastos comunes se reparten según 'reparto'.
 app.get('/api/admin/informes/beneficios', authenticateSession, requireAdmin, async (req, res) => {
-    const { desde, hasta, reparto = 'ingresos' } = req.query;
+    const { desde, hasta } = req.query;
     try {
         // Rango de fechas por parámetros ($1 desde, $2 hasta; NULL = sin límite).
         const esFecha = v => /^\d{4}-\d{2}-\d{2}$/.test(v);
@@ -5206,34 +5215,65 @@ app.get('/api/admin/informes/beneficios', authenticateSession, requireAdmin, asy
         const gas = await pool.query(
             `SELECT COALESCE(expense_type,'comun') AS tipo,
                     COALESCE(NULLIF(actividad,''),'') AS actividad,
+                    COALESCE(reparto,'iguales') AS reparto,
                     COALESCE(SUM(amount),0)::numeric AS total
              FROM aim_gastos
              WHERE ($1::date IS NULL OR date >= $1::date)
                AND ($2::date IS NULL OR date <= $2::date)
-             GROUP BY 1,2`, [d, h]
+             GROUP BY 1,2,3`, [d, h]
         );
+
+        // Los dos repartos que no salen del dinero: cuántos alumnos tiene cada
+        // actividad y cuántas horas ocupa a la semana en el horario.
+        const pesos = await pool.query(
+            `SELECT a.name AS actividad,
+                    COUNT(DISTINCT gs.student_id)::int AS alumnos,
+                    COALESCE(SUM(
+                        (EXTRACT(EPOCH FROM (sess->>'endTime')::time - (sess->>'startTime')::time) / 3600.0)
+                        * COALESCE(jsonb_array_length(sess->'days'), 1)
+                    ), 0)::numeric AS horas
+             FROM tul_activities a
+             LEFT JOIN tul_groups g ON g.activity_id = a.activity_id
+             LEFT JOIN LATERAL jsonb_array_elements(COALESCE(g.sessions::jsonb, '[]'::jsonb)) sess ON true
+             LEFT JOIN tul_group_students gs ON gs.group_id = g.group_id
+             WHERE a.club_id = $1
+             GROUP BY a.name`, [AIM_CLUB_ID]
+        );
+        const alumnosDe = {}, horasDe = {};
+        for (const x of pesos.rows) {
+            alumnosDe[x.actividad] = Number(x.alumnos) || 0;
+            horasDe[x.actividad] = Number(x.horas) || 0;
+        }
 
         const ingresos = {};
         for (const r of ing.rows) ingresos[r.actividad] = Number(r.total);
         const gastosDir = {};
-        let gastosComunes = 0;
+        // Los comunes se agrupan por su criterio: cada bolsa se reparte a su modo.
+        const bolsas = { iguales: 0, alumnos: 0, horas: 0 };
         for (const g of gas.rows) {
             if (g.tipo === 'especifico' && g.actividad) gastosDir[g.actividad] = (gastosDir[g.actividad] || 0) + Number(g.total);
-            else gastosComunes += Number(g.total);
+            else bolsas[g.reparto in bolsas ? g.reparto : 'iguales'] += Number(g.total);
         }
+        const gastosComunes = bolsas.iguales + bolsas.alumnos + bolsas.horas;
 
         // Actividades a considerar: las que tienen ingresos o gastos directos.
         const nombres = [...new Set([...Object.keys(ingresos), ...Object.keys(gastosDir)])].filter(n => n !== 'Sin actividad');
-        const totalIngresos = nombres.reduce((s, n) => s + (ingresos[n] || 0), 0);
-        // Cuota de gastos comunes por actividad, ya redondeada a céntimos.
-        const cuotas = nombres.map(n => {
-            if (gastosComunes <= 0 || nombres.length === 0) return 0;
-            const ingr = ingresos[n] || 0;
-            const bruta = reparto === 'iguales'
-                ? gastosComunes / nombres.length
-                : (totalIngresos > 0 ? gastosComunes * (ingr / totalIngresos) : gastosComunes / nombres.length);
-            return r2Server(bruta);
-        });
+
+        // Reparte una bolsa según el peso de cada actividad. Sin pesos (nadie
+        // matriculado, o ninguna hora en el horario) se cae a partes iguales,
+        // que es lo único razonable.
+        const repartir = (bolsa, peso) => {
+            if (bolsa <= 0 || !nombres.length) return nombres.map(() => 0);
+            const ps = nombres.map(peso);
+            const suma = ps.reduce((t, x) => t + x, 0);
+            return suma > 0
+                ? ps.map(x => r2Server(bolsa * (x / suma)))
+                : nombres.map(() => r2Server(bolsa / nombres.length));
+        };
+        const porIguales = repartir(bolsas.iguales, () => 1);
+        const porAlumnos = repartir(bolsas.alumnos, n => alumnosDe[n] || 0);
+        const porHoras = repartir(bolsas.horas, n => horasDe[n] || 0);
+        const cuotas = nombres.map((_, i) => r2Server(porIguales[i] + porAlumnos[i] + porHoras[i]));
         // Redondear cada cuota por separado deja céntimos sueltos: el sobrante (o
         // el defecto) se carga a la actividad con la cuota mayor para que la suma
         // de las filas cuadre exactamente con el total de gastos comunes.
@@ -5254,7 +5294,13 @@ app.get('/api/admin/informes/beneficios', authenticateSession, requireAdmin, asy
 
         res.set('Cache-Control', 'no-store');
         res.json({
-            reparto, desde: desde || null, hasta: hasta || null,
+            desde: desde || null, hasta: hasta || null,
+            // Cuánto se ha repartido con cada criterio, para poder explicarlo.
+            bolsas: {
+                iguales: r2Server(bolsas.iguales),
+                alumnos: r2Server(bolsas.alumnos),
+                horas: r2Server(bolsas.horas),
+            },
             sinActividad: r2Server(ingresos['Sin actividad'] || 0),
             totalGastosComunes: r2Server(gastosComunes),
             filas,
