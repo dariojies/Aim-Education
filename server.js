@@ -12,6 +12,7 @@ import { calcularRecibo, mesAGenerar } from './billing.js';
 import { crearRouterTulClases } from './tul-clases.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
+import { generarGastosPdf, gastosCsv, nombrePeriodo } from './gastos-pdf.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -5337,8 +5338,10 @@ const mapGasto = (r, conArchivo = false) => ({
     ...(conArchivo ? { facturaArchivo: r.factura_archivo } : {}),
 });
 
-app.get('/api/admin/gastos', authenticateSession, requireAdmin, async (req, res) => {
-    const { desde, hasta, q, pagado, tipo, actividad } = req.query;
+// Los filtros del listado de gastos. Van aparte porque la descarga tiene que
+// traer exactamente lo mismo que se está viendo en pantalla: si el papel no
+// cuadra con la pantalla, no hay quien lo cuadre después.
+function filtrosGastos({ desde, hasta, q, pagado, tipo, actividad }) {
     const where = [];
     const vals = [];
     if (desde) { vals.push(desde); where.push(`date >= $${vals.length}::date`); }
@@ -5351,12 +5354,92 @@ app.get('/api/admin/gastos', authenticateSession, requireAdmin, async (req, res)
         vals.push(`%${q}%`);
         where.push(`(company ILIKE $${vals.length} OR cif ILIKE $${vals.length} OR concept ILIKE $${vals.length} OR invoice_number ILIKE $${vals.length})`);
     }
+    return { sql: where.length ? 'WHERE ' + where.join(' AND ') : '', vals };
+}
+
+// Lo que se descarga: los gastos del periodo con sus totales ya hechos.
+async function resumenGastos(query) {
+    const { sql, vals } = filtrosGastos(query);
+    const r = await pool.query(
+        `SELECT id, date, amount, payment_method, company, invoice_link, cif, invoice_number,
+                concept, expense_type, actividad, reparto, is_paid, comprobado_banco, factura_nombre, factura_mime
+         FROM aim_gastos ${sql}
+         ORDER BY date ASC NULLS LAST, created_at ASC`, vals
+    );
+    const gastos = r.rows.map(x => mapGasto(x));
+
+    const suma = (fs) => r2Server(fs.reduce((t, g) => t + (g.importe || 0), 0));
+    const agrupar = (clave) => {
+        const m = new Map();
+        for (const g of gastos) {
+            const k = clave(g);
+            if (k == null) continue;
+            m.set(k, (m.get(k) || 0) + (g.importe || 0));
+        }
+        return [...m.entries()].map(([nombre, total]) => ({ nombre, total: r2Server(total) }))
+            .sort((a, b) => b.total - a.total);
+    };
+    const NOMBRE_REPARTO = { iguales: 'A partes iguales', alumnos: 'Según los alumnos', horas: 'Según las horas' };
+
+    // Qué filtros llevaba puestos, para que el papel lo diga y no haya dudas
+    // sobre por qué falta un gasto que se esperaba ver.
+    const filtros = [];
+    if (query.pagado === 'si') filtros.push('solo pagados');
+    if (query.pagado === 'no') filtros.push('solo pendientes');
+    if (query.tipo) filtros.push(query.tipo === 'especifico' ? 'solo de una actividad' : 'solo comunes');
+    if (query.actividad) filtros.push(`actividad: ${query.actividad}`);
+    if (query.q) filtros.push(`búsqueda: "${query.q}"`);
+
+    return {
+        periodo: nombrePeriodo(query.desde || null, query.hasta || null),
+        filtros, gastos,
+        total: suma(gastos),
+        pagado: suma(gastos.filter(g => g.pagado)),
+        pendiente: suma(gastos.filter(g => !g.pagado)),
+        porActividad: agrupar(g => g.tipo === 'especifico' ? (g.actividad || 'Sin actividad') : 'Gastos comunes'),
+        porReparto: agrupar(g => g.tipo === 'especifico' ? null : (NOMBRE_REPARTO[g.reparto] || 'A partes iguales')),
+        empresa: EMPRESA_TICKET,
+    };
+}
+
+// Un nombre de archivo que se entienda al verlo en la carpeta de descargas.
+const nombreArchivo = (periodo, ext) =>
+    `Gastos ${periodo}`.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '-') + '.' + ext;
+
+app.get('/api/admin/gastos/resumen.pdf', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const t = await resumenGastos(req.query);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${nombreArchivo(t.periodo, 'pdf')}"`);
+        res.setHeader('Cache-Control', 'no-store');
+        generarGastosPdf(t, res);
+    } catch (err) {
+        console.error('Error generando el resumen de gastos:', err);
+        if (!res.headersSent) res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/admin/gastos/resumen.csv', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const t = await resumenGastos(req.query);
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${nombreArchivo(t.periodo, 'csv')}"`);
+        res.setHeader('Cache-Control', 'no-store');
+        res.send(gastosCsv(t));
+    } catch (err) {
+        console.error('Error generando el csv de gastos:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/admin/gastos', authenticateSession, requireAdmin, async (req, res) => {
+    const { sql, vals } = filtrosGastos(req.query);
     try {
         // No devolvemos el archivo en el listado: pesaría muchísimo.
         const r = await pool.query(
             `SELECT id, date, amount, payment_method, company, invoice_link, cif, invoice_number,
                     concept, expense_type, actividad, reparto, is_paid, comprobado_banco, factura_nombre, factura_mime
-             FROM aim_gastos ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+             FROM aim_gastos ${sql}
              ORDER BY date DESC NULLS LAST, created_at DESC LIMIT 500`,
             vals
         );

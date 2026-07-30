@@ -783,15 +783,21 @@ function AdminGastos({ refreshTrigger, showToast }) {
   const [provSug, setProvSug] = useState([]);
   const [archivo, setArchivo] = useState(null); // { nombre, mime, base64 }
 
+  // Lo que se está viendo ahora mismo, en forma de query. Lo usan el listado y
+  // las descargas, para que no puedan desincronizarse.
+  function paramsActuales() {
+    const params = new URLSearchParams();
+    if (q.trim()) params.set('q', q.trim());
+    if (filtroPago) params.set('pagado', filtroPago);
+    if (desde) params.set('desde', desde);
+    if (hasta) params.set('hasta', hasta);
+    return params.toString();
+  }
+
   async function cargar() {
     setLoading(true);
     try {
-      const params = new URLSearchParams();
-      if (q.trim()) params.set('q', q.trim());
-      if (filtroPago) params.set('pagado', filtroPago);
-      if (desde) params.set('desde', desde);
-      if (hasta) params.set('hasta', hasta);
-      const r = await fetch(`/api/admin/gastos?${params}`, { credentials: 'include' });
+      const r = await fetch(`/api/admin/gastos?${paramsActuales()}`, { credentials: 'include' });
       if (r.ok) setGastos(await r.json());
     } catch { /* noop */ }
     finally { setLoading(false); }
@@ -898,6 +904,15 @@ function AdminGastos({ refreshTrigger, showToast }) {
                 {gastos.length} gasto{gastos.length === 1 ? '' : 's'} en el periodo
               </span>
             )}
+
+            {/* Se descarga lo mismo que se está viendo: el periodo elegido y los
+                filtros puestos. Si en pantalla hay solo pendientes, eso baja. */}
+            <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
+              <a className="btn btn-sm btn-outline" href={`/api/admin/gastos/resumen.pdf?${paramsActuales()}`}
+                title="Resumen del periodo en PDF"><I.Download /> PDF</a>
+              <a className="btn btn-sm btn-outline" href={`/api/admin/gastos/resumen.csv?${paramsActuales()}`}
+                title="Para abrirlo en Excel o mandarlo a la gestoría"><I.Download /> Excel</a>
+            </div>
           </div>
 
           {loading && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
