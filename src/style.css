@@ -3659,3 +3659,40 @@ html[data-theme="dark"] .dash-nav button.is-active {
   outline: 3px solid var(--purple);
   outline-offset: 3px;
 }
+
+/* Los cuatro números de la portada, siempre en una sola fila: partidos en dos
+   empujaban todo hacia abajo y obligaban a bajar la página desde el principio. */
+.hero-datos {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: clamp(10px, 1.4vw, 24px);
+  margin-top: 34px;
+}
+
+.hero-datos .v {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: clamp(21px, 2.1vw, 32px);
+  letter-spacing: -.025em;
+  line-height: 1;
+  color: var(--ink);
+}
+
+.hero-datos .l {
+  font-size: clamp(10px, .78vw, 12px);
+  color: var(--ink-3);
+  margin-top: 5px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+/* En el móvil sí se parten, que si no no caben. */
+@media (max-width: 720px) {
+  .hero-datos {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px;
+  }
+
+  .hero-datos .v { font-size: 28px; }
+  .hero-datos .l { font-size: 12px; }
+}

@@ -112,11 +112,11 @@ export default function PublicLanding() {
                   </button>
                 </div>
 
-                <div style={{display: "flex", gap: 28, marginTop: 38, flexWrap: "wrap"}}>
+                <div className="hero-datos">
                   {portada.datos.map((d, i) => (
                     <div key={i}>
-                      <div style={{fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 32, letterSpacing: "-.025em", lineHeight: 1, color: "var(--ink)"}}>{d.v}</div>
-                      <div style={{fontSize: 12, color: "var(--ink-3)", marginTop: 4, fontWeight: 600}}>{d.l}</div>
+                      <div className="v">{d.v}</div>
+                      <div className="l">{d.l}</div>
                     </div>
                   ))}
                 </div>
