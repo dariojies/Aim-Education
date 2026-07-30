@@ -1870,6 +1870,77 @@ function blockedDayError(blocked) {
 }
 
 // Público: semanas del campamento con ocupación por día.
+// ── Portada ─────────────────────────────────────────────────────────────────
+// El botón destacado de la portada y los números que se enseñan debajo. El
+// botón lo cambia el club sin tocar código: hoy lleva al campamento, mañana a
+// un evento o a lo que toque destacar.
+const PORTADA_POR_DEFECTO = {
+    ctaTexto: 'Campamento de verano',
+    ctaUrl: '/campamento',
+    anoFundacion: 2008,
+};
+
+async function leerPortada() {
+    const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'portada'`);
+    return { ...PORTADA_POR_DEFECTO, ...(r.rows[0]?.valor || {}) };
+}
+
+app.get('/api/landing', async (req, res) => {
+    try {
+        const cfg = await leerPortada();
+        // Los números salen de la base: si se inventan, envejecen mal.
+        const [alumnos, profes, acts] = await Promise.all([
+            pool.query(`SELECT COUNT(*)::int n FROM users WHERE club_id = $1 AND role = 'student'`, [AIM_CLUB_ID]),
+            pool.query(`SELECT COUNT(*)::int n FROM users WHERE club_id = $1 AND role IN ('instructor','club_owner')`, [AIM_CLUB_ID]),
+            pool.query(`SELECT COUNT(*)::int n FROM tul_activities WHERE club_id = $1`, [AIM_CLUB_ID]),
+        ]);
+        const anos = new Date().getFullYear() - cfg.anoFundacion;
+        // Se redondea a la baja en centenas para que no cante que baje un día.
+        const redondo = (n) => (n >= 100 ? `${Math.floor(n / 50) * 50}+` : String(n));
+
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            cta: { texto: cfg.ctaTexto, url: cfg.ctaUrl },
+            anoFundacion: cfg.anoFundacion,
+            datos: [
+                { v: `${anos}`, l: 'Años de experiencia' },
+                { v: redondo(alumnos.rows[0].n), l: 'Alumnos y alumnas' },
+                { v: String(profes.rows[0].n), l: 'Profesores titulados' },
+                { v: String(acts.rows[0].n), l: 'Actividades distintas' },
+            ],
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/admin/landing', authenticateSession, requireAdmin, async (req, res) => {
+    try { res.set('Cache-Control', 'no-store'); res.json(await leerPortada()); }
+    catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/admin/landing', authenticateSession, requireAdmin, async (req, res) => {
+    const { ctaTexto, ctaUrl, anoFundacion } = req.body;
+    if (!ctaTexto?.trim()) return res.status(400).json({ error: 'El botón necesita un texto.' });
+    const url = String(ctaUrl || '').trim();
+    // Solo rutas de la propia web o enlaces http(s): así no se puede colar un
+    // javascript: en un botón que ve todo el mundo.
+    if (!/^\/[^\s]*$/.test(url) && !/^https?:\/\/[^\s]+$/i.test(url)) {
+        return res.status(400).json({ error: 'La dirección debe empezar por / o por http.' });
+    }
+    const ano = Number(anoFundacion);
+    if (!Number.isInteger(ano) || ano < 1900 || ano > new Date().getFullYear()) {
+        return res.status(400).json({ error: 'El año de fundación no es válido.' });
+    }
+    try {
+        await pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por)
+             VALUES ('portada', $1, NOW(), $2)
+             ON CONFLICT (clave) DO UPDATE SET valor = $1, actualizado_at = NOW(), actualizado_por = $2`,
+            [JSON.stringify({ ctaTexto: ctaTexto.trim(), ctaUrl: url, anoFundacion: ano }), req.userSession.userId]
+        );
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Precios del campamento para la web pública. Salen del mismo catálogo con el
 // que se cobra: si secretaría cambia una tarifa, la web cambia con ella. Antes
 // estaban escritos a mano en la página y no cuadraban con la realidad.

@@ -3642,3 +3642,20 @@ html[data-theme="dark"] .dash-nav button.is-active {
   width: 0;
   height: 0;
 }
+
+/* Azulejos del mosaico de la portada: llevan a su actividad. */
+.tile-link {
+  cursor: pointer;
+  transition: transform var(--tx-base) ease, box-shadow var(--tx-base) ease;
+}
+
+.tile-link:hover {
+  transform: translateY(-6px) scale(1.02);
+  box-shadow: 0 24px 48px -20px rgba(0, 0, 0, .35);
+  z-index: 2;
+}
+
+.tile-link:focus-visible {
+  outline: 3px solid var(--purple);
+  outline-offset: 3px;
+}

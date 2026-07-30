@@ -7,11 +7,17 @@ const CAT_COLOR = { taekwondo: '#21B668', ballet: '#FF99D3', ingles: '#00BBF4', 
 const catColor = c => CAT_COLOR[c] || '#5233A8';
 const MONTH_ABBR = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 
-function BrandTile({ actId, cls, label, textColor }) {
+// Cada azulejo lleva a su actividad: eran decorativos y la gente los pulsaba
+// igual, así que ahora hacen lo que parece que hacen.
+function BrandTile({ actId, cls, label, textColor, go }) {
   const a = ACT_BY_ID[actId];
   if (!a) return null;
   return (
-    <div className={`tile colored ${cls} ${a.className}`}>
+    <div className={`tile colored ${cls} ${a.className} tile-link`}
+      role="link" tabIndex={0}
+      onClick={() => go(`/actividades/${a.id}`)}
+      onKeyDown={(e) => { if (e.key === 'Enter') go(`/actividades/${a.id}`); }}
+      title={`Ver ${a.name}`}>
       <img className="tile-icon" src={a.iconAsset} alt={a.name} />
       {label && <span className="label" style={textColor ? {color: textColor, textShadow: "none"} : null}>{label}</span>}
     </div>
@@ -57,11 +63,25 @@ export default function PublicLanding() {
   const { go } = useRouter();
   const [posts, setPosts] = useState([]);
   const [events, setEvents] = useState([]);
+  // Lo que el club puede cambiar de la portada, y los números del club. Se
+  // arranca con algo razonable para que nunca se vea la portada a medio pintar.
+  const [portada, setPortada] = useState({
+    cta: { texto: 'Campamento de verano', url: '/campamento' },
+    anoFundacion: 2008,
+    datos: [],
+  });
 
   useEffect(() => {
     fetch('/api/posts?limit=3').then(r => r.ok ? r.json() : []).then(d => setPosts(Array.isArray(d) ? d : [])).catch(() => {});
     fetch('/api/events').then(r => r.ok ? r.json() : []).then(d => setEvents(Array.isArray(d) ? d : [])).catch(() => {});
+    fetch('/api/landing').then(r => r.ok ? r.json() : null).then(d => { if (d) setPortada(d); }).catch(() => {});
   }, []);
+
+  // El destino del botón puede ser una sección nuestra o un enlace de fuera.
+  const irA = (url) => {
+    if (/^https?:\/\//i.test(url)) window.open(url, '_blank', 'noopener');
+    else go(url || '/');
+  };
 
   return (
     <>
@@ -72,7 +92,7 @@ export default function PublicLanding() {
           <div className="container">
             <div className="hero-grid">
               <div className="fade-up">
-                <span className="pill-badge purple">Algeciras · Desde 2018</span>
+                <span className="pill-badge purple">Algeciras · Desde {portada.anoFundacion}</span>
                 <h1>
                   Innovación educativa,<br/>
                   <MagicText>pasión por el aprendizaje.</MagicText>
@@ -84,8 +104,8 @@ export default function PublicLanding() {
                   de cada alumno.
                 </p>
                 <div className="hero-ctas">
-                  <button className="btn btn-gradient btn-lg" onClick={() => go("/campamento")}>
-                    Campamento de verano <I.Arrow />
+                  <button className="btn btn-gradient btn-lg" onClick={() => irA(portada.cta.url)}>
+                    {portada.cta.texto} <I.Arrow />
                   </button>
                   <button className="btn btn-outline btn-lg" onClick={() => go("/actividades")}>
                     Ver actividades
@@ -93,14 +113,10 @@ export default function PublicLanding() {
                 </div>
 
                 <div style={{display: "flex", gap: 28, marginTop: 38, flexWrap: "wrap"}}>
-                  {[
-                    { v: "10+", l: "Actividades" },
-                    { v: "3–60", l: "Años cubiertos" },
-                    { v: "4★", l: "Certificaciones" },
-                  ].map((s, i) => (
+                  {portada.datos.map((d, i) => (
                     <div key={i}>
-                      <div style={{fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 32, letterSpacing: "-.025em", lineHeight: 1, color: "var(--ink)"}}>{s.v}</div>
-                      <div style={{fontSize: 12, color: "var(--ink-3)", marginTop: 4, fontWeight: 600}}>{s.l}</div>
+                      <div style={{fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 32, letterSpacing: "-.025em", lineHeight: 1, color: "var(--ink)"}}>{d.v}</div>
+                      <div style={{fontSize: 12, color: "var(--ink-3)", marginTop: 4, fontWeight: 600}}>{d.l}</div>
                     </div>
                   ))}
                 </div>
@@ -108,7 +124,11 @@ export default function PublicLanding() {
 
               {/* Visual mosaic — brand submarcas */}
               <div className="hero-vis fade-up d2">
-                <div className="tile tile-1" style={{padding: 0, overflow: "hidden"}}>
+                <div className="tile tile-1 tile-link" style={{padding: 0, overflow: "hidden"}}
+                  role="link" tabIndex={0}
+                  onClick={() => go("/actividades")}
+                  onKeyDown={(e) => { if (e.key === 'Enter') go("/actividades"); }}
+                  title="Ver todas las actividades">
                   <img
                     src="/src/brand/Aim_PatternV.png"
                     alt="Actividades Aim"
@@ -120,12 +140,12 @@ export default function PublicLanding() {
                   }}/>
                   <span className="label" style={{color: "white"}}>10+ actividades</span>
                 </div>
-                <BrandTile actId="taekwondo" cls="tile-2" label="Taekwondo" />
-                <BrandTile actId="ballet" cls="tile-3" label="Ballet" />
-                <BrandTile actId="robotica" cls="tile-4" label="Robótica" />
-                <BrandTile actId="funcional" cls="tile-5" label="Funcional" />
-                <BrandTile actId="camaleon" cls="tile-6" label="Camaleón" />
-                <BrandTile actId="pintura" cls="tile-7" label="Pintura" />
+                <BrandTile go={go} actId="taekwondo" cls="tile-2" label="Taekwondo" />
+                <BrandTile go={go} actId="ballet" cls="tile-3" label="Ballet" />
+                <BrandTile go={go} actId="robotica" cls="tile-4" label="Robótica" />
+                <BrandTile go={go} actId="funcional" cls="tile-5" label="Funcional" />
+                <BrandTile go={go} actId="camaleon" cls="tile-6" label="Camaleón" />
+                <BrandTile go={go} actId="pintura" cls="tile-7" label="Pintura" />
               </div>
             </div>
           </div>

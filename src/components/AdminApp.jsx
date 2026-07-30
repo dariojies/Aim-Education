@@ -1270,6 +1270,99 @@ function AdminGroups({ refreshTrigger }) {
   );
 }
 
+// El botón destacado de la portada. Hoy lleva al campamento; cuando toque
+// destacar otra cosa se cambia aquí, sin tocar código ni desplegar.
+function AjustesPortada({ showToast }) {
+  const [cfg, setCfg] = useState(null);
+  const [guardando, setGuardando] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/admin/landing', { credentials: 'include', cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setCfg(d); })
+      .catch(() => {});
+  }, []);
+
+  async function guardar(e) {
+    e.preventDefault();
+    setGuardando(true);
+    try {
+      const r = await fetch('/api/admin/landing', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify(cfg),
+      });
+      const d = await r.json();
+      if (!r.ok) return alert(d.error || 'No se ha podido guardar.');
+      showToast?.('Portada actualizada.');
+    } catch { alert('Error de conexión.'); }
+    finally { setGuardando(false); }
+  }
+
+  if (!cfg) return null;
+
+  const atajos = [
+    ['Campamento de verano', '/campamento'],
+    ['Ver actividades', '/actividades'],
+    ['Calendario', '/calendario'],
+    ['Noticias', '/noticias'],
+  ];
+
+  return (
+    <form onSubmit={guardar} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 18, padding: 32, maxWidth: 600, display: 'grid', gap: 18, marginTop: 20 }}>
+      <div>
+        <h2 style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 20, margin: 0, color: 'var(--ink)' }}>Portada de la web</h2>
+        <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--ink-3)' }}>
+          El botón de color que sale arriba del todo. Cámbialo cuando quieras destacar otra cosa.
+        </p>
+      </div>
+
+      <div className="field">
+        <label>Texto del botón</label>
+        <input value={cfg.ctaTexto} onChange={e => setCfg({ ...cfg, ctaTexto: e.target.value })}
+          placeholder="Campamento de verano" required />
+      </div>
+
+      <div className="field">
+        <label>A dónde lleva</label>
+        <input value={cfg.ctaUrl} onChange={e => setCfg({ ...cfg, ctaUrl: e.target.value })}
+          placeholder="/campamento" required />
+        <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+          Una sección de la web (empieza por /) o un enlace completo (empieza por http).
+        </span>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+          {atajos.map(([t, u]) => (
+            <button key={u} type="button" className="btn btn-sm btn-outline"
+              onClick={() => setCfg({ ...cfg, ctaTexto: t, ctaUrl: u })}>{t}</button>
+          ))}
+        </div>
+      </div>
+
+      <div className="field" style={{ maxWidth: 220 }}>
+        <label>Año de fundación</label>
+        <input type="number" value={cfg.anoFundacion}
+          onChange={e => setCfg({ ...cfg, anoFundacion: Number(e.target.value) })} />
+        <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+          Sale en la etiqueta de arriba y en los años de experiencia.
+        </span>
+      </div>
+
+      <div style={{ background: 'var(--bg-3)', borderRadius: 12, padding: 14 }}>
+        <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--ink-3)', marginBottom: 8 }}>
+          Así queda
+        </div>
+        <span className="btn btn-gradient" style={{ pointerEvents: 'none' }}>{cfg.ctaTexto || 'Sin texto'}</span>
+        <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 8 }}>Lleva a {cfg.ctaUrl || '—'}</div>
+      </div>
+
+      <div>
+        <button className="btn btn-primary" type="submit" disabled={guardando}>
+          {guardando ? 'Guardando...' : 'Guardar portada'}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 function AdminSettings() {
   const [settings, setSettings] = useState(() => {
     const saved = localStorage.getItem('aim_education_club_settings');
@@ -4443,7 +4536,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                 setActiveModal('new-student');
               }} />
           )}
-          {view === "settings" && <AdminSettings />}
+          {view === "settings" && <><AdminSettings /><AjustesPortada showToast={showToast} /></>}
           {view === "reportes" && <AdminReportes />}
           {view === "support" && <AdminSupport user={user} ticketId={ticketId} />}
         </div>
