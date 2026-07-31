@@ -59,13 +59,20 @@ export default function BillingArqueo({ showToast }) {
   const totalContado = medios.reduce((s, m) => s + Number(contado[m] || 0), 0);
   const descuadreTotal = Number((totalContado - (datos?.totalEsperado ?? 0)).toFixed(2));
 
+  // Un día que aún no ha llegado no tiene caja que contar, así que no se puede
+  // ni mirar ni cerrar: si se cerrara, taparía los cobros que se hagan ese día.
+  const esFuturo = fecha > hoyISO();
+
   function moverDia(delta) {
     const d = new Date(fecha + 'T12:00:00');
     d.setDate(d.getDate() + delta);
-    setFecha(d.toISOString().slice(0, 10));
+    const nueva = d.toISOString().slice(0, 10);
+    if (nueva > hoyISO()) return;
+    setFecha(nueva);
   }
 
   async function cerrar() {
+    if (fecha > hoyISO()) return alert('Ese día todavía no ha llegado: no se puede cerrar la caja de una fecha futura.');
     if (Math.abs(descuadreTotal) > 0 && !comentario.trim()) {
       if (!window.confirm(`Hay un descuadre de ${eur(descuadreTotal)} y no has escrito ningún comentario.\n¿Cerrar el día igualmente?`)) return;
     }
@@ -150,9 +157,11 @@ export default function BillingArqueo({ showToast }) {
     <div style={{ display: 'grid', gap: 16 }}>
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
         <button className="btn btn-icon" onClick={() => moverDia(-1)} aria-label="Día anterior">‹</button>
-        <input type="date" value={fecha} onChange={e => e.target.value && setFecha(e.target.value)}
+        <input type="date" value={fecha} max={hoyISO()}
+          onChange={e => e.target.value && e.target.value <= hoyISO() && setFecha(e.target.value)}
           style={{ fontFamily: 'inherit', fontSize: 14, fontWeight: 700, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)' }} />
-        <button className="btn btn-icon" onClick={() => moverDia(1)} aria-label="Día siguiente">›</button>
+        <button className="btn btn-icon" onClick={() => moverDia(1)} aria-label="Día siguiente"
+          disabled={fecha >= hoyISO()} title={fecha >= hoyISO() ? 'No hay días posteriores a hoy' : 'Día siguiente'}>›</button>
         {fecha !== hoyISO() && <button className="btn btn-sm btn-outline" onClick={() => setFecha(hoyISO())}>Hoy</button>}
         {datos.cerrado && (
           <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--teal)', background: 'color-mix(in oklab, var(--teal) 12%, var(--bg-2))', padding: '4px 12px', borderRadius: 999 }}>
@@ -212,8 +221,9 @@ export default function BillingArqueo({ showToast }) {
           {verDetalle ? 'Ocultar' : 'Ver'} los {datos.detalle.length} movimiento{datos.detalle.length !== 1 ? 's' : ''} del día
         </button>
         <div style={{ flex: 1 }} />
-        <button className="btn btn-primary" disabled={guardando} onClick={cerrar}>
-          {guardando ? 'Guardando...' : datos.cerrado ? 'Actualizar el cierre' : 'Cerrar caja del día'}
+        <button className="btn btn-primary" disabled={guardando || esFuturo} onClick={cerrar}
+          title={esFuturo ? 'Ese día todavía no ha llegado' : ''}>
+          {guardando ? 'Guardando...' : esFuturo ? 'Ese día aún no ha llegado' : datos.cerrado ? 'Actualizar el cierre' : 'Cerrar caja del día'}
         </button>
       </div>
 

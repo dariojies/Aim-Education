@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { I } from './Icons.jsx';
 import { useEnVivo } from '../envivo.js';
 import { ListaClases, AdminReportes, colorOcupacion } from './AdminTulClases.jsx';
@@ -1378,6 +1378,19 @@ function AdminGroups({ refreshTrigger }) {
 // destacar otra cosa se cambia aquí, sin tocar código ni desplegar.
 const COLS_MOSAICO = 4, FILAS_MOSAICO = 4;
 
+// Dos bloques se pisan si sus rectángulos se cruzan. Es la comprobación que
+// impide dejar uno encima de otro, tanto al arrastrar como al cambiar el tamaño.
+const seCruzan = (a, b) =>
+  a.col < b.col + b.ancho && b.col < a.col + a.ancho &&
+  a.fila < b.fila + b.alto && b.fila < a.fila + a.alto;
+
+// ¿Cabe este bloque aquí? Dentro de la cuadrícula y sin pisar a ninguno.
+const sitioLibre = (bloque, bloques) =>
+  bloque.col >= 1 && bloque.fila >= 1 &&
+  bloque.col + bloque.ancho - 1 <= COLS_MOSAICO &&
+  bloque.fila + bloque.alto - 1 <= FILAS_MOSAICO &&
+  !bloques.some(o => o.id !== bloque.id && seCruzan(bloque, o));
+
 // Un bloque tal y como se va a ver en la portada, en pequeño. Se usa tanto en el
 // mapa de la cuadrícula como en la ficha de edición.
 function VistaBloque({ b, pequeno }) {
@@ -1390,18 +1403,18 @@ function VistaBloque({ b, pequeno }) {
       display: 'grid', placeItems: 'center',
     }}>
       {b.imagenUrl
-        ? <img src={b.imagenUrl} alt="" style={aSangre
+        ? <img src={b.imagenUrl} alt="" draggable={false} style={aSangre
             ? { width: '100%', height: '100%', objectFit: 'cover' }
             : { maxWidth: '76%', maxHeight: '70%', objectFit: 'contain', borderRadius: 4 }} />
         : b.tipo === 'patron'
           ? <span style={{ fontSize: 9, fontWeight: 800, color: 'var(--ink-3)' }}>PATRÓN</span>
-          : act ? <img src={act.iconAsset} alt="" style={{ width: '52%', maxWidth: 46, maxHeight: 46 }} />
+          : act ? <img src={act.iconAsset} alt="" draggable={false} style={{ width: '52%', maxWidth: 46, maxHeight: 46 }} />
           : null}
-      {b.titulo && !pequeno && (
+      {b.titulo && (
         <span style={{
-          position: 'absolute', left: 0, right: 0, bottom: 0, padding: '14px 6px 4px',
-          background: 'linear-gradient(180deg, transparent, rgba(0,0,0,.5))',
-          color: '#fff', fontSize: 9, fontWeight: 800, lineHeight: 1.1,
+          position: 'absolute', left: 0, right: 0, bottom: 0, padding: '14px 5px 4px',
+          background: 'linear-gradient(180deg, transparent, rgba(0,0,0,.55))',
+          color: '#fff', fontSize: pequeno ? 8 : 9, fontWeight: 800, lineHeight: 1.1,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>{b.titulo}</span>
       )}
@@ -1409,52 +1422,223 @@ function VistaBloque({ b, pequeno }) {
   );
 }
 
-// El mapa de la cuadrícula: se ve la composición entera y se pincha el bloque
-// que se quiere tocar. Es la misma rejilla que la portada, a escala.
-function MapaMosaico({ bloques, seleccion, onSeleccionar }) {
-  // Casillas libres, para que se vea de un vistazo qué hueco queda por llenar.
-  const ocupadas = new Set();
-  for (const b of bloques) {
-    for (let c = b.col; c < b.col + b.ancho; c++) {
-      for (let f = b.fila; f < b.fila + b.alto; f++) ocupadas.add(`${c},${f}`);
+// Busca el hueco libre más cercano para un bloque, midiendo desde donde está
+// ahora. Es lo que hace que al apartarse se vaya al sitio de al lado y no al
+// otro extremo de la cuadrícula.
+function huecoMasCerca(bloque, ocupados) {
+  let mejor = null, mejorDist = Infinity;
+  for (let fila = 1; fila <= FILAS_MOSAICO - bloque.alto + 1; fila++) {
+    for (let col = 1; col <= COLS_MOSAICO - bloque.ancho + 1; col++) {
+      const sitio = { ...bloque, col, fila };
+      if (ocupados.some(o => seCruzan(sitio, o))) continue;
+      const d = Math.abs(col - bloque.col) + Math.abs(fila - bloque.fila);
+      if (d < mejorDist) { mejor = { col, fila }; mejorDist = d; }
     }
   }
-  const libres = [];
-  for (let f = 1; f <= FILAS_MOSAICO; f++) {
-    for (let c = 1; c <= COLS_MOSAICO; c++) if (!ocupadas.has(`${c},${f}`)) libres.push({ c, f });
+  return mejor;
+}
+
+// Coloca un bloque en una casilla y aparta a los que estorben, como cuando se
+// arrastra un icono en la pantalla del móvil. Devuelve la composición entera ya
+// recolocada, o null si no hay manera de que quepan todos.
+function reacomodar(bloques, id, col, fila) {
+  const movido = bloques.find(b => b.id === id);
+  if (!movido) return null;
+  const destino = { ...movido, col, fila };
+  if (destino.col < 1 || destino.fila < 1
+    || destino.col + destino.ancho - 1 > COLS_MOSAICO
+    || destino.fila + destino.alto - 1 > FILAS_MOSAICO) return null;
+
+  const resto = bloques.filter(b => b.id !== id);
+  const quietos = resto.filter(b => !seCruzan(b, destino));
+  // Los desalojados se recolocan de menor a mayor: los grandes necesitan más
+  // sitio, así que se les deja elegir al final, cuando queda claro qué queda.
+  const desalojados = resto.filter(b => seCruzan(b, destino))
+    .sort((x, y) => x.ancho * x.alto - y.ancho * y.alto);
+
+  const enOrden = (colocados) => bloques.map(b => colocados.find(c => c.id === b.id));
+
+  // 1) Apartarlos al hueco libre más cercano.
+  const apartando = [destino, ...quietos];
+  let cabenTodos = true;
+  for (const b of desalojados) {
+    const sitio = huecoMasCerca(b, apartando);
+    if (!sitio) { cabenTodos = false; break; }
+    apartando.push({ ...b, ...sitio });
   }
+  if (cabenTodos) return enOrden(apartando);
+
+  // 2) Si no hay hueco (la cuadrícula está llena), se cambian el sitio: el que
+  //    estorba se va al que acaba de dejar libre el que estamos arrastrando.
+  //    Es lo natural entre dos bloques del mismo tamaño.
+  if (desalojados.length === 1) {
+    const otro = { ...desalojados[0], col: movido.col, fila: movido.fila };
+    const cabe = otro.col + otro.ancho - 1 <= COLS_MOSAICO && otro.fila + otro.alto - 1 <= FILAS_MOSAICO;
+    if (cabe && !seCruzan(otro, destino) && !quietos.some(q => seCruzan(q, otro))) {
+      return enOrden([destino, ...quietos, otro]);
+    }
+  }
+  return null;
+}
+
+const HUECO_MAPA = 6;
+
+// El mapa de la cuadrícula: la composición entera a escala. Los bloques se
+// arrastran con el dedo o el ratón y los demás se apartan solos para hacer
+// sitio. Se colocan en píxeles y no con grid-column para poder animarlos: el
+// navegador no sabe animar un cambio de casilla, y sin animación el reacomodo
+// pega saltos y no se entiende qué ha pasado.
+function MapaMosaico({ bloques, seleccion, onSeleccionar, onReordenar }) {
+  const cajaRef = useRef(null);
+  const [lado, setLado] = useState(0);
+  // { id, dx, dy, x, y, base, vista } mientras se arrastra.
+  const [arr, setArr] = useState(null);
+
+  useEffect(() => {
+    const el = cajaRef.current;
+    if (!el) return;
+    const medir = () => setLado(el.getBoundingClientRect().width);
+    medir();
+    const ro = new ResizeObserver(medir);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const anchoCelda = (lado - HUECO_MAPA * (COLS_MOSAICO - 1)) / COLS_MOSAICO;
+  const altoCelda = anchoCelda;
+  const geo = (b) => ({
+    left: (b.col - 1) * (anchoCelda + HUECO_MAPA),
+    top: (b.fila - 1) * (altoCelda + HUECO_MAPA),
+    width: b.ancho * anchoCelda + (b.ancho - 1) * HUECO_MAPA,
+    height: b.alto * altoCelda + (b.alto - 1) * HUECO_MAPA,
+  });
+
+  const vista = arr?.vista || bloques;
+
+  // Mientras se arrastra se escucha en la ventana entera: si solo se escuchara
+  // en el bloque, al salirse un poco con el ratón se perdía el arrastre.
+  useEffect(() => {
+    if (!arr) return;
+
+    const mover = (e) => {
+      const caja = cajaRef.current?.getBoundingClientRect();
+      if (!caja) return;
+      const b = arr.base.find(x => x.id === arr.id);
+      const x = e.clientX - arr.dx - caja.left;
+      const y = e.clientY - arr.dy - caja.top;
+      const tope = (v, max) => Math.min(Math.max(v, 1), max);
+      const col = tope(Math.round(x / (anchoCelda + HUECO_MAPA)) + 1, COLS_MOSAICO - b.ancho + 1);
+      const fila = tope(Math.round(y / (altoCelda + HUECO_MAPA)) + 1, FILAS_MOSAICO - b.alto + 1);
+      // Siempre se recoloca partiendo de la composición del principio: si se
+      // encadenaran los reacomodos, los bloques se irían yendo solos.
+      const nueva = reacomodar(arr.base, arr.id, col, fila);
+      // Si donde está ahora no vale, se enseña todo como estaba: mostrar la
+      // última colocación válida por la que pasó el cursor engaña, porque al
+      // soltar no es la que se va a quedar.
+      setArr(a => a && { ...a, x: e.clientX, y: e.clientY, vista: nueva || a.base, vale: !!nueva });
+    };
+
+    const soltar = () => {
+      setArr(a => {
+        // Solo se guarda si en el sitio donde se suelta cabe de verdad.
+        if (a && a.vale !== false && a.vista !== a.base) onReordenar(a.vista);
+        return null;
+      });
+    };
+
+    window.addEventListener('pointermove', mover);
+    window.addEventListener('pointerup', soltar);
+    window.addEventListener('pointercancel', soltar);
+    return () => {
+      window.removeEventListener('pointermove', mover);
+      window.removeEventListener('pointerup', soltar);
+      window.removeEventListener('pointercancel', soltar);
+    };
+  }, [arr, anchoCelda, altoCelda, onReordenar]);
+
+  function agarrar(e, b) {
+    const caja = cajaRef.current?.getBoundingClientRect();
+    if (!caja || !lado) return;
+    const g = geo(b);
+    setArr({
+      id: b.id,
+      dx: e.clientX - (caja.left + g.left),
+      dy: e.clientY - (caja.top + g.top),
+      x: e.clientX, y: e.clientY,
+      base: bloques, vista: bloques,
+    });
+  }
+
+  const casillasLibres = () => {
+    const ocupadas = new Set();
+    for (const b of vista) {
+      for (let c = b.col; c < b.col + b.ancho; c++) {
+        for (let f = b.fila; f < b.fila + b.alto; f++) ocupadas.add(`${c},${f}`);
+      }
+    }
+    const libres = [];
+    for (let f = 1; f <= FILAS_MOSAICO; f++) {
+      for (let c = 1; c <= COLS_MOSAICO; c++) if (!ocupadas.has(`${c},${f}`)) libres.push({ c, f });
+    }
+    return libres;
+  };
+  const libres = casillasLibres();
 
   return (
     <div>
-      <div style={{
-        display: 'grid', gap: 6, aspectRatio: '1 / 1', maxWidth: 340,
-        gridTemplateColumns: `repeat(${COLS_MOSAICO}, 1fr)`,
-        gridTemplateRows: `repeat(${FILAS_MOSAICO}, 1fr)`,
+      <div ref={cajaRef} style={{
+        position: 'relative', width: '100%', maxWidth: 340, aspectRatio: '1 / 1',
+        touchAction: 'none', userSelect: 'none',
       }}>
-        {libres.map(({ c, f }) => (
-          <div key={`libre-${c}-${f}`} style={{
-            gridColumn: c, gridRow: f, borderRadius: 8,
+        {/* Las casillas que quedan por llenar */}
+        {lado > 0 && libres.map(({ c, f }) => {
+          const g = geo({ col: c, fila: f, ancho: 1, alto: 1 });
+          return <div key={`libre-${c}-${f}`} style={{
+            position: 'absolute', ...g, borderRadius: 8,
             border: '1px dashed var(--line-2)', background: 'var(--bg-3)',
-          }} />
-        ))}
-        {bloques.map(b => (
-          <button key={b.id} type="button" onClick={() => onSeleccionar(b.id)}
-            style={{
-              position: 'relative', padding: 0, cursor: 'pointer', borderRadius: 10,
-              gridColumn: `${b.col} / span ${b.ancho}`,
-              gridRow: `${b.fila} / span ${b.alto}`,
-              border: seleccion === b.id ? '2px solid var(--purple)' : '2px solid transparent',
-              outline: 'none', background: 'transparent',
-            }}>
-            <VistaBloque b={b} pequeno={b.ancho === 1 && b.alto === 1} />
-          </button>
-        ))}
+          }} />;
+        })}
+
+        {lado > 0 && vista.map(b => {
+          const arrastrado = arr?.id === b.id;
+          const g = geo(b);
+          const caja = cajaRef.current?.getBoundingClientRect();
+          // El que se arrastra va pegado al cursor; los demás se deslizan solos
+          // hasta su nuevo sitio.
+          const sigueAlCursor = arrastrado && caja;
+          return (
+            <button key={b.id} type="button" draggable={false}
+              onPointerDown={e => { e.preventDefault(); agarrar(e, b); }}
+              onDragStart={e => e.preventDefault()}
+              onClick={() => onSeleccionar(b.id)}
+              title={`${b.titulo || 'Bloque sin texto'} — arrástralo para colocarlo`}
+              style={{
+                position: 'absolute', padding: 0, background: 'transparent', outline: 'none',
+                width: g.width, height: g.height,
+                left: sigueAlCursor ? arr.x - arr.dx - caja.left : g.left,
+                top: sigueAlCursor ? arr.y - arr.dy - caja.top : g.top,
+                borderRadius: 10,
+                border: seleccion === b.id ? '2px solid var(--purple)' : '2px solid transparent',
+                cursor: arrastrado ? 'grabbing' : 'grab',
+                zIndex: arrastrado ? 5 : 1,
+                transform: arrastrado ? `scale(1.06) rotate(${arr.vale === false ? '-2deg' : '0deg'})` : 'none',
+                boxShadow: arrastrado
+                  ? `0 12px 28px rgba(0,0,0,.28)${arr.vale === false ? ', 0 0 0 3px var(--orange)' : ''}`
+                  : 'none',
+                transition: arrastrado ? 'transform .12s ease, box-shadow .12s ease'
+                                       : 'left .18s ease, top .18s ease, width .18s ease, height .18s ease, transform .12s ease',
+              }}>
+              <VistaBloque b={b} pequeno={b.ancho === 1 && b.alto === 1} />
+            </button>
+          );
+        })}
       </div>
-      {libres.length > 0 && (
-        <p style={{ fontSize: 11, color: 'var(--ink-3)', margin: '8px 0 0' }}>
-          Quedan {libres.length} casilla{libres.length === 1 ? '' : 's'} sin llenar (a rayas).
-        </p>
-      )}
+
+      <p style={{ fontSize: 11, color: 'var(--ink-3)', margin: '10px 0 0' }}>
+        Arrastra los bloques para colocarlos: los que estorben se apartan o cambian de sitio contigo.
+        Si el bloque se pone naranja, ahí no cabe y volverá a su sitio.
+        {libres.length > 0 && ` Quedan ${libres.length} casilla${libres.length === 1 ? '' : 's'} sin llenar.`}
+      </p>
     </div>
   );
 }
@@ -1470,31 +1654,21 @@ function FichaBloque({ b, bloques, onChange, onImagen, onQuitarImagen, onBorrar 
     fr.readAsDataURL(file);
   };
 
-  // Si un bloque se sale o pisa a otro, mejor decirlo aquí que descubrirlo en la
-  // web: al pisarse, el navegador los amontona y la portada queda rara.
-  const cabe = b.col + b.ancho - 1 <= COLS_MOSAICO && b.fila + b.alto - 1 <= FILAS_MOSAICO;
-  const pisa = bloques.some(o => o.id !== b.id
-    && b.col < o.col + o.ancho && o.col < b.col + b.ancho
-    && b.fila < o.fila + o.alto && o.fila < b.fila + b.alto);
-
+  // Los desplegables solo ofrecen los valores con los que el bloque sigue
+  // cabiendo y sin pisar a nadie: así no hay forma de dejar la portada rota.
   const num = (campo, etiqueta, max) => (
     <div className="field">
       <label>{etiqueta}</label>
       <select value={b[campo]} onChange={e => onChange({ [campo]: Number(e.target.value) })}>
-        {Array.from({ length: max }, (_, i) => i + 1).map(v => <option key={v} value={v}>{v}</option>)}
+        {Array.from({ length: max }, (_, i) => i + 1)
+          .filter(v => v === b[campo] || sitioLibre({ ...b, [campo]: v }, bloques))
+          .map(v => <option key={v} value={v}>{v}</option>)}
       </select>
     </div>
   );
 
   return (
     <div style={{ display: 'grid', gap: 12 }}>
-      {!cabe && <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: 'var(--orange)' }}>
-        Este bloque se sale de la cuadrícula. Baja el ancho o el alto.
-      </p>}
-      {cabe && pisa && <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: 'var(--orange)' }}>
-        Se solapa con otro bloque: en la web quedarán uno encima del otro.
-      </p>}
-
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
         {num('col', 'Columna', COLS_MOSAICO)}
         {num('fila', 'Fila', FILAS_MOSAICO)}
@@ -1541,9 +1715,12 @@ function FichaBloque({ b, bloques, onChange, onImagen, onQuitarImagen, onBorrar 
             <div className="field">
               <label>Cómo se coloca</label>
               <select value={b.encaje || 'llenar'} onChange={e => onChange({ encaje: e.target.value })}>
-                <option value="llenar">Ocupar el bloque entero (sin nada de color)</option>
-                <option value="dentro">Verla completa dentro del color</option>
+                <option value="llenar">Ocupar el bloque entero, de borde a borde</option>
+                <option value="dentro">Verla completa dentro de un color</option>
               </select>
+              <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                De borde a borde se recorta lo que sobre para llenar el bloque, sin que se vea color por detrás.
+              </span>
             </div>
           )}
         </>
@@ -1564,7 +1741,9 @@ function FichaBloque({ b, bloques, onChange, onImagen, onQuitarImagen, onBorrar 
         </span>
       </div>
 
-      {b.tipo !== 'actividad' && (
+      {/* Con la imagen ocupando el bloque entero no se ve nada del fondo, así que
+          preguntar por un color solo confunde. */}
+      {b.tipo !== 'actividad' && !(b.imagenUrl && (b.encaje || 'llenar') === 'llenar') && (
         <div className="field" style={{ maxWidth: 160 }}>
           <label>Color de fondo</label>
           <input type="color" value={b.color || '#5233A8'} onChange={e => onChange({ color: e.target.value })}
@@ -1619,6 +1798,10 @@ function AjustesPortada({ showToast }) {
   const cambiarHueco = (id, patch) => setCfg(c => ({
     ...c, mosaico: c.mosaico.map(t => t.id === id ? { ...t, ...patch } : t),
   }));
+
+  // El arrastre no mueve un bloque: recoloca a todos los que se han tenido que
+  // apartar, así que llega la composición entera.
+  const reordenar = useCallback((mosaico) => setCfg(c => ({ ...c, mosaico })), []);
 
   // Un bloque nuevo cae en la primera casilla libre que haya, para no tener que
   // colocarlo a mano antes de poder verlo.
@@ -1733,7 +1916,8 @@ function AjustesPortada({ showToast }) {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(240px, 340px) 1fr', gap: 24, alignItems: 'start' }}>
         <div>
-          <MapaMosaico bloques={cfg.mosaico || []} seleccion={seleccion} onSeleccionar={setSeleccion} />
+          <MapaMosaico bloques={cfg.mosaico || []} seleccion={seleccion} onSeleccionar={setSeleccion}
+            onReordenar={reordenar} />
           <button type="button" className="btn btn-sm btn-outline" onClick={anadirBloque} style={{ marginTop: 10 }}>
             <I.Plus /> Añadir bloque
           </button>

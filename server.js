@@ -2330,6 +2330,21 @@ app.put('/api/admin/landing', authenticateSession, requireAdmin, async (req, res
     }
     if (!piezas.length) return res.status(400).json({ error: 'El mosaico necesita al menos un bloque.' });
 
+    // Dos bloques en la misma casilla se pintan uno encima del otro y tapan al
+    // de abajo. En el panel no se deja hacer, pero la comprobación va aquí
+    // también: es lo que acaba viendo todo el que entra en la web.
+    for (let i = 0; i < piezas.length; i++) {
+        for (let j = i + 1; j < piezas.length; j++) {
+            const a = piezas[i], b = piezas[j];
+            if (a.col < b.col + b.ancho && b.col < a.col + a.ancho
+                && a.fila < b.fila + b.alto && b.fila < a.fila + a.alto) {
+                return res.status(400).json({
+                    error: `Los bloques "${a.titulo || a.id}" y "${b.titulo || b.id}" se pisan.`,
+                });
+            }
+        }
+    }
+
     try {
         await pool.query(
             `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por)
@@ -4531,6 +4546,13 @@ app.get('/api/admin/billing/arqueo', authenticateSession, requireAdmin, async (r
 app.post('/api/admin/billing/arqueo', authenticateSession, requireAdmin, async (req, res) => {
     const { fecha, contado, comentario } = req.body;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha || '')) return res.status(400).json({ error: 'Falta la fecha del arqueo.' });
+    // Un día que no ha llegado no se puede cerrar: no ha habido caja que contar,
+    // y el cierre taparía los cobros que se hagan ese día cuando llegue.
+    const hoy = new Date();
+    const hoyIso = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}-${String(hoy.getDate()).padStart(2, '0')}`;
+    if (fecha > hoyIso) {
+        return res.status(400).json({ error: 'Ese día todavía no ha llegado: no se puede cerrar la caja de una fecha futura.' });
+    }
     try {
         const esperado = await movimientosDelDia(fecha);
         const cont = {};
@@ -6487,12 +6509,20 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                         COUNT(*) FILTER (WHERE priority = 'high')::int AS urgentes
                  FROM tickets_registrosoporte WHERE status = 'open'`, [yo]),
             // Mensajes de otros en las últimas 48 h, que es lo que hay sin leer
-            // de facto mientras no exista una marca de lectura por usuario.
+            // de facto mientras no exista una marca de lectura por usuario. Van
+            // uno por ticket, con su asunto y quién ha escrito: "3 mensajes en 2
+            // tickets" no dice a cuáles hay que entrar.
             pool.query(
-                `SELECT COUNT(*)::int n, COUNT(DISTINCT m.ticket_id)::int tickets
+                `SELECT t.id, t.subject, COUNT(*)::int n, MAX(m.created_at) AS ultimo,
+                        (SELECT COALESCE(NULLIF(TRIM(CONCAT(u.name, ' ', u.surname)), ''), u.email)
+                         FROM tickets_mensajes m2 LEFT JOIN users u ON u.user_id = m2.autor_id
+                         WHERE m2.ticket_id = t.id AND COALESCE(m2.autor_id::text,'') <> $1
+                         ORDER BY m2.created_at DESC LIMIT 1) AS quien
                  FROM tickets_mensajes m JOIN tickets_registrosoporte t ON t.id = m.ticket_id
                  WHERE m.created_at > NOW() - INTERVAL '48 hours'
-                   AND COALESCE(m.autor_id::text, '') <> $1 AND t.status = 'open'`, [String(yo)]),
+                   AND COALESCE(m.autor_id::text, '') <> $1 AND t.status = 'open'
+                 GROUP BY t.id, t.subject
+                 ORDER BY MAX(m.created_at) DESC`, [String(yo)]),
             pool.query(
                 `SELECT COUNT(*)::int n, COUNT(DISTINCT cliente_id)::int clientes,
                         COALESCE(SUM(COALESCE(importe, precio)), 0)::numeric total
@@ -6526,8 +6556,29 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         const t = tickets.rows[0];
         if (t.sin_asignar) avisos.push({ tipo: 'tickets', texto: `${t.sin_asignar} ticket${t.sin_asignar !== 1 ? 's' : ''} sin asignar`, detalle: t.urgentes ? `${t.urgentes} de prioridad alta` : null, destino: '/admin/soporte', n: t.sin_asignar });
         if (t.mios) avisos.push({ tipo: 'tickets', texto: `${t.mios} ticket${t.mios !== 1 ? 's' : ''} asignado${t.mios !== 1 ? 's' : ''} a ti`, destino: '/admin/soporte', n: t.mios });
-        const m = mensajes.rows[0];
-        if (m.n) avisos.push({ tipo: 'tickets', texto: `${m.n} mensaje${m.n !== 1 ? 's' : ''} nuevo${m.n !== 1 ? 's' : ''} en ${m.tickets} ticket${m.tickets !== 1 ? 's' : ''}`, detalle: 'en las últimas 48 h', destino: '/admin/soporte', n: m.n });
+        // Un aviso por ticket, y cada uno lleva directo a ese ticket. Si hay
+        // muchos se enseñan los cinco últimos y el resto se resume, para que la
+        // campanita no se convierta en una lista interminable.
+        const TOPE_TICKETS = 5;
+        for (const t of mensajes.rows.slice(0, TOPE_TICKETS)) {
+            avisos.push({
+                tipo: 'tickets',
+                texto: `${t.n} mensaje${t.n !== 1 ? 's' : ''} en «${t.subject || `Ticket #${t.id}`}»`,
+                detalle: [t.quien ? `de ${t.quien}` : null, `ticket #${t.id}`].filter(Boolean).join(' · '),
+                destino: `/admin/soporte/${t.id}`,
+                n: t.n,
+            });
+        }
+        if (mensajes.rows.length > TOPE_TICKETS) {
+            const sobran = mensajes.rows.slice(TOPE_TICKETS);
+            avisos.push({
+                tipo: 'tickets',
+                texto: `y ${sobran.length} ticket${sobran.length !== 1 ? 's' : ''} más con mensajes nuevos`,
+                detalle: 'en las últimas 48 h',
+                destino: '/admin/soporte',
+                n: sobran.reduce((x, t) => x + t.n, 0),
+            });
+        }
 
         const c = cobros.rows[0];
         if (c.n) avisos.push({ tipo: 'cobros', texto: `${c.n} cargo${c.n !== 1 ? 's' : ''} pendiente${c.n !== 1 ? 's' : ''} de cobrar`, detalle: `${r2Server(Number(c.total))} € de ${c.clientes} cliente${c.clientes !== 1 ? 's' : ''}`, destino: '/admin/facturacion', n: c.n });

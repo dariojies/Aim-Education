@@ -37,7 +37,9 @@ function BrandTile({ hueco, go }) {
         gridColumn: `${hueco.col} / span ${hueco.ancho}`,
         gridRow: `${hueco.fila} / span ${hueco.alto}`,
         ...(sinColor ? {padding: 0} : null),
-        ...(hueco.color && !a ? {background: hueco.color} : null),
+        /* Con la imagen de borde a borde no se ve nada del fondo: no se pinta
+           ningún color detrás, que es justo lo que se pide al subir una foto. */
+        ...(hueco.color && !a && !aSangre ? {background: hueco.color} : null),
       }}
       title={hueco.titulo || (a ? `Ver ${a.name}` : 'Ver más')}>
 
