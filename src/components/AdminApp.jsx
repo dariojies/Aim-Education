@@ -80,6 +80,94 @@ function QuickCard({ title, desc, act, icon, onClick }) {
   );
 }
 
+// El resumen de un instructor. El general habla de gastos, recibos y noticias,
+// que no son asunto suyo; aquí solo salen sus clases y sus alumnos.
+function ResumenInstructor({ setView, refreshTrigger }) {
+  const [grupos, setGrupos] = useState(null);
+  const [clasesHoy, setClasesHoy] = useState(null);
+  const hoy = new Date();
+  const hoyIso = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}-${String(hoy.getDate()).padStart(2, '0')}`;
+
+  useEffect(() => {
+    fetch('/api/admin/tul/groups', { credentials: 'include', cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null).then(d => setGrupos(d?.groups || [])).catch(() => setGrupos([]));
+    fetch(`/api/admin/tul/attendance/dia/${hoyIso}`, { credentials: 'include', cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null).then(d => setClasesHoy(d?.clases || [])).catch(() => setClasesHoy([]));
+  }, [refreshTrigger, hoyIso]);
+
+  const cargando = grupos === null || clasesHoy === null;
+  const alumnos = (grupos || []).reduce((n, g) => n + Number(g.studentCount || 0), 0);
+  const sinPasar = (clasesHoy || []).filter(c => !c.marcados).length;
+
+  return (
+    <>
+      <div className="kpis">
+        <KPI label="Tus clases" value={cargando ? '…' : String(grupos.length)} trend="grupos que llevas" act="taekwondo" icon={<I.Trophy />} />
+        <KPI label="Tus alumnos" value={cargando ? '…' : String(alumnos)} trend="matriculados en tus grupos" act="ballet" icon={<I.Users />} />
+        <KPI label="Clases hoy" value={cargando ? '…' : String(clasesHoy.length)} trend={fmtFecha(hoyIso)} act="funcional" icon={<I.Calendar />} />
+        <KPI label="Listas por pasar" value={cargando ? '…' : String(sinPasar)} trend={sinPasar ? 'te faltan hoy' : 'todo al día'} act="pintura" icon={<I.Check />} />
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: 18 }}>
+        <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 18, padding: 24 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 18 }}>
+            <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 800, letterSpacing: '-.015em', margin: 0 }}>
+              Tus clases de hoy
+            </h2>
+            <button className="btn btn-sm btn-outline" onClick={() => setView('classes')}>Pasar lista</button>
+          </div>
+          {cargando ? <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>
+            : clasesHoy.length === 0 ? (
+              <div style={{ padding: '32px 0', textAlign: 'center', color: 'var(--ink-3)', fontSize: 14 }}>
+                Hoy no te toca ninguna clase.
+              </div>
+            ) : clasesHoy.map(c => (
+              <div key={c.id} className="payment-row">
+                <div>
+                  <div className="name">{c.name}</div>
+                  <div className="date">{c.activityName}{c.horario ? ` · ${c.horario}` : ''}</div>
+                </div>
+                <span className="date">{c.studentCount} alumno{c.studentCount !== 1 ? 's' : ''}</span>
+                <span className={`status-pill ${c.marcados ? 'ok' : 'upcoming'}`}>
+                  {c.marcados ? 'Lista pasada' : 'Sin pasar'}
+                </span>
+              </div>
+            ))}
+        </div>
+
+        <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 18, padding: 24 }}>
+          <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 800, letterSpacing: '-.015em', margin: 0, marginBottom: 4 }}>
+            Tus grupos
+          </h2>
+          <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: '0 0 18px' }}>Los que tienes asignados en el horario</p>
+          {cargando ? <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>
+            : grupos.length === 0 ? (
+              <div style={{ padding: '24px 0', textAlign: 'center', color: 'var(--ink-3)', fontSize: 13 }}>
+                Todavía no tienes ningún grupo asignado. Los asigna la dirección desde el horario.
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gap: 10 }}>
+                {grupos.map(g => (
+                  <div key={g.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+                    <span style={{ fontWeight: 700 }}>{g.name}</span>
+                    <span style={{ color: 'var(--ink-3)' }}>{g.studentCount}{g.maxStudents ? ` / ${g.maxStudents}` : ''}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+        </div>
+      </div>
+
+      <div style={{ marginTop: 18, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
+        <QuickCard title="Pasar lista" desc="Marca la asistencia de tus clases de hoy."
+          act="taekwondo" icon={<I.Check />} onClick={() => setView('classes')} />
+        <QuickCard title="Tus estadísticas" desc="Asistencia y evolución de tus grupos."
+          act="robotica" icon={<I.Trophy />} onClick={() => setView('reportes')} />
+      </div>
+    </>
+  );
+}
+
 function AdminOverview({ setView, refreshTrigger, showToast }) {
   const [stats, setStats] = useState(null);
   const [userCount, setUserCount] = useState(null);
@@ -2161,7 +2249,132 @@ function BuscarQuienPaga({ onElegir, onCancelar }) {
   );
 }
 
-function AdminEvents({ showToast }) {
+// Un instructor no crea eventos: los pide y el club decide. Aquí se escribe la
+// petición y en la misma pantalla se ve cómo ha quedado.
+function SolicitudesEventos({ permisos, showToast }) {
+  const [lista, setLista] = useState([]);
+  const [pidiendo, setPidiendo] = useState(null);
+  const [guardando, setGuardando] = useState(false);
+  const puedeResolver = !!permisos.editarEventos;
+
+  const cargar = useCallback(() => {
+    fetch('/api/admin/events/solicitudes', { credentials: 'include', cache: 'no-store' })
+      .then(r => r.ok ? r.json() : []).then(d => setLista(Array.isArray(d) ? d : [])).catch(() => {});
+  }, []);
+  useEffect(() => { cargar(); }, [cargar]);
+
+  async function enviar(e) {
+    e.preventDefault();
+    setGuardando(true);
+    try {
+      const r = await fetch('/api/admin/events/solicitudes', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify(pidiendo),
+      });
+      const d = await r.json();
+      if (!r.ok) return alert(d.error || 'No se ha podido enviar.');
+      setPidiendo(null); cargar();
+      showToast?.('Solicitud enviada. El club te dirá algo.');
+    } catch { alert('Error de conexión.'); }
+    finally { setGuardando(false); }
+  }
+
+  async function resolver(sol, accion) {
+    const respuesta = accion === 'rechazar'
+      ? window.prompt('¿Por qué se rechaza? (se le enseña a quien lo pidió)') : null;
+    if (accion === 'rechazar' && respuesta === null) return;
+    const r = await fetch(`/api/admin/events/solicitudes/${sol.id}/${accion}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+      body: JSON.stringify({ respuesta }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) return alert(d.error || 'No se ha podido guardar.');
+    cargar();
+    showToast?.(accion === 'aprobar' ? 'Evento creado a partir de la solicitud.' : 'Solicitud rechazada.');
+  }
+
+  const pendientes = lista.filter(x => x.estado === 'pendiente');
+  if (puedeResolver && !lista.length) return null;
+
+  return (
+    <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 18, padding: 20, marginBottom: 20, display: 'grid', gap: 14 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+        <div>
+          <h3 style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: 17, fontWeight: 800 }}>
+            {puedeResolver ? `Eventos propuestos${pendientes.length ? ` (${pendientes.length} por decidir)` : ''}` : 'Tus solicitudes de evento'}
+          </h3>
+          {!puedeResolver && (
+            <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--ink-3)' }}>
+              Propón un evento y el club lo aprueba o lo rechaza.
+            </p>
+          )}
+        </div>
+        {!puedeResolver && !pidiendo && (
+          <button className="btn btn-sm btn-primary" onClick={() => setPidiendo({ titulo: '', descripcion: '', fecha: '', hora: '', horaFin: '', lugar: '', actividad: 'general' })}>
+            <I.Plus /> Proponer un evento
+          </button>
+        )}
+      </div>
+
+      {pidiendo && (
+        <form onSubmit={enviar} style={{ display: 'grid', gap: 10, background: 'var(--bg-3)', padding: 14, borderRadius: 12 }}>
+          <div className="field">
+            <label>Qué evento propones</label>
+            <input value={pidiendo.titulo} onChange={e => setPidiendo({ ...pidiendo, titulo: e.target.value })} required autoFocus />
+          </div>
+          <div className="field">
+            <label>De qué va</label>
+            <textarea rows={2} value={pidiendo.descripcion} onChange={e => setPidiendo({ ...pidiendo, descripcion: e.target.value })} />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+            <div className="field"><label>Día</label>
+              <input type="date" value={pidiendo.fecha} onChange={e => setPidiendo({ ...pidiendo, fecha: e.target.value })} /></div>
+            <div className="field"><label>Hora</label>
+              <input type="time" value={pidiendo.hora} onChange={e => setPidiendo({ ...pidiendo, hora: e.target.value })} /></div>
+            <div className="field"><label>Hasta</label>
+              <input type="time" value={pidiendo.horaFin} onChange={e => setPidiendo({ ...pidiendo, horaFin: e.target.value })} /></div>
+            <div className="field"><label>Dónde</label>
+              <input value={pidiendo.lugar} onChange={e => setPidiendo({ ...pidiendo, lugar: e.target.value })} /></div>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-sm btn-primary" type="submit" disabled={guardando}>
+              {guardando ? 'Enviando...' : 'Enviar la propuesta'}
+            </button>
+            <button className="btn btn-sm btn-outline" type="button" onClick={() => setPidiendo(null)}>Cancelar</button>
+          </div>
+        </form>
+      )}
+
+      {lista.length === 0 && !pidiendo && (
+        <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Todavía no has propuesto ninguno.</p>
+      )}
+
+      {lista.map(x => (
+        <div key={x.id} style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', padding: '10px 12px', background: 'var(--bg-3)', borderRadius: 10 }}>
+          <div style={{ flex: 1, minWidth: 180 }}>
+            <div style={{ fontWeight: 800, fontSize: 13 }}>{x.titulo}</div>
+            <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+              {[x.fecha ? fmtFecha(x.fecha) : 'sin fecha', x.hora, x.lugar, puedeResolver ? `lo pide ${x.solicitante}` : null]
+                .filter(Boolean).join(' · ')}
+            </div>
+            {x.respuesta && <div style={{ fontSize: 11, color: 'var(--orange)', marginTop: 2 }}>{x.respuesta}</div>}
+          </div>
+          <span className={`status-pill ${x.estado === 'aprobada' ? 'ok' : x.estado === 'rechazada' ? 'danger' : 'upcoming'}`}>
+            {{ pendiente: 'Por decidir', aprobada: 'Aprobado', rechazada: 'Rechazado' }[x.estado]}
+          </span>
+          {puedeResolver && x.estado === 'pendiente' && (
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button className="btn btn-sm btn-primary" onClick={() => resolver(x, 'aprobar')}>Aprobar</button>
+              <button className="btn btn-sm btn-outline" onClick={() => resolver(x, 'rechazar')}>Rechazar</button>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AdminEvents({ showToast, permisos = {} }) {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
@@ -2216,6 +2429,13 @@ function AdminEvents({ showToast }) {
 
   // A qué inscripción le estamos asignando pagador ahora mismo.
   const [asignando, setAsignando] = useState(null);
+  // Quien no lleva el dinero del club no ve ni la facturación ni el cobro, así
+  // que esas dos columnas desaparecen de la cabecera y de las filas a la vez:
+  // quitarlas solo de un sitio desalinea la tabla entera.
+  const conDinero = permisos.verDineroEventos !== false;
+  const colsInscritos = conDinero
+    ? '1.3fr 1.3fr 55px 1fr 1.6fr auto auto auto'
+    : '1.3fr 1.3fr 55px 1fr auto auto';
 
   async function patchReg(regId, patch) {
     const r = await fetch(`/api/admin/events/${managingEvent.id}/registrations/${regId}`, {
@@ -2360,9 +2580,13 @@ function AdminEvents({ showToast }) {
 
   return (
     <>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 18 }}>
-        <button className="btn btn-primary" onClick={() => setEditing({ ...blank })}><I.Plus /> Nuevo evento</button>
-      </div>
+      <SolicitudesEventos permisos={permisos} showToast={showToast} />
+
+      {permisos.editarEventos !== false && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 18 }}>
+          <button className="btn btn-primary" onClick={() => setEditing({ ...blank })}><I.Plus /> Nuevo evento</button>
+        </div>
+      )}
 
       {loading && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando eventos...</p>}
       {!loading && events.length === 0 && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>No hay eventos creados. Crea el primero con "Nuevo evento".</p>}
@@ -2387,9 +2611,15 @@ function AdminEvents({ showToast }) {
                 </div>
                 {ev.description && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.4 }}>{ev.description}</p>}
                 <div style={{ marginTop: 'auto', display: 'flex', gap: 8, paddingTop: 10, flexWrap: 'wrap' }}>
-                  <button className="btn btn-sm btn-primary" style={{ flex: 1 }} onClick={() => { setManagingEvent(ev); loadRegs(ev.id); }}>Gestionar Evento</button>
-                  <button className="btn btn-sm btn-outline" onClick={() => startEdit(ev)}><I.Edit /></button>
-                  <button className="icon-btn danger" onClick={() => del(ev)}><I.Trash /></button>
+                  <button className="btn btn-sm btn-primary" style={{ flex: 1 }} onClick={() => { setManagingEvent(ev); loadRegs(ev.id); }}>
+                    {permisos.editarEventos === false ? 'Ver inscritos' : 'Gestionar Evento'}
+                  </button>
+                  {permisos.editarEventos !== false && (
+                    <>
+                      <button className="btn btn-sm btn-outline" onClick={() => startEdit(ev)}><I.Edit /></button>
+                      <button className="icon-btn danger" onClick={() => del(ev)}><I.Trash /></button>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -2455,7 +2685,7 @@ function AdminEvents({ showToast }) {
                   </div>
 
                   {/* Dinero (solo si hay precio) */}
-                  {hasPrice && (
+                  {hasPrice && conDinero && (
                     <div style={{ background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 14, padding: '14px 18px', display: 'grid', gap: 8 }}>
                       <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 2 }}>
                         Precio unitario · {managingEvent.price}
@@ -2561,12 +2791,13 @@ function AdminEvents({ showToast }) {
               return (
                 <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
                   <div style={{ display: 'grid', gap: 8, minWidth: 520 }}>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1.3fr 55px 1fr 1.6fr auto auto auto', gap: 10, padding: '8px 12px', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--ink-3)', borderBottom: '1px solid var(--line)' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: colsInscritos, gap: 10, padding: '8px 12px', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--ink-3)', borderBottom: '1px solid var(--line)' }}>
                       <span>Nombre</span><span>Apellidos</span><span>Edad</span><span>Datos</span>
-                      <span>Facturación</span><span>Fotos</span><span>Pagado</span><span>Asistió</span>
+                      {conDinero && <span>Facturación</span>}
+                      <span>Fotos</span>{conDinero && <span>Pagado</span>}<span>Asistió</span>
                     </div>
                     {visible.map(reg => (
-                      <div key={reg.id} style={{ display: 'grid', gridTemplateColumns: '1.3fr 1.3fr 55px 1fr 1.6fr auto auto auto', gap: 10, padding: '10px 12px', background: 'var(--bg-3)', borderRadius: 10, alignItems: 'center', fontSize: 13 }}>
+                      <div key={reg.id} style={{ display: 'grid', gridTemplateColumns: colsInscritos, gap: 10, padding: '10px 12px', background: 'var(--bg-3)', borderRadius: 10, alignItems: 'center', fontSize: 13 }}>
                         <span style={{ fontWeight: 700, color: 'var(--ink)' }}>{reg.nombre}</span>
                         <span style={{ color: 'var(--ink-2)' }}>{reg.apellidos}</span>
                         <span style={{ color: 'var(--ink-3)' }}>{reg.edad || '—'}</span>
@@ -2574,7 +2805,7 @@ function AdminEvents({ showToast }) {
 
                         {/* A quién se le factura y cómo va el cargo. Sin precio,
                             el taller es gratis y aquí no hay nada que hacer. */}
-                        <div style={{ fontSize: 11 }}>
+                        {conDinero && <div style={{ fontSize: 11 }}>
                           {!(managingEvent.precio > 0) ? (
                             <span style={{ color: 'var(--ink-3)' }}>Gratuito</span>
                           ) : asignando === reg.id ? (
@@ -2598,10 +2829,10 @@ function AdminEvents({ showToast }) {
                               {reg.alumno && <div style={{ color: 'var(--ink-3)', marginTop: 2 }}>Era de {reg.alumno}</div>}
                             </>
                           )}
-                        </div>
+                        </div>}
 
                         <span style={{ textAlign: 'center', fontSize: 14 }}>{reg.fotos_rrss ? '✓' : '—'}</span>
-                        <label style={{ display: 'grid', placeItems: 'center', cursor: 'pointer' }}
+                        {conDinero && <label style={{ display: 'grid', placeItems: 'center', cursor: 'pointer' }}
                           title={reg.cargoId && reg.cargoEstado === 'pendiente' ? 'Al marcarlo se emite la factura' : ''}>
                           <input type="checkbox" checked={!!reg.pagado} style={{ width: 16, height: 16, accentColor: 'var(--teal)' }}
                             onChange={e => {
@@ -2610,7 +2841,7 @@ function AdminEvents({ showToast }) {
                                   && !window.confirm(`Se va a cobrar ${fmtEur(reg.cargoImporte)} a ${reg.alumno} y se emitirá su factura. ¿Seguir?`)) return;
                               patchReg(reg.id, { pagado: e.target.checked });
                             }} />
-                        </label>
+                        </label>}
                         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                           <label style={{ display: 'grid', placeItems: 'center', cursor: 'pointer' }}>
                             <input type="checkbox" checked={!!reg.asistio} onChange={e => patchReg(reg.id, { asistio: e.target.checked })} style={{ width: 16, height: 16, accentColor: 'var(--orange)' }} />
@@ -4231,8 +4462,10 @@ function FichaPicker({ label, ayuda, valor, onElegir, onQuitar }) {
   );
 }
 
-function AdminCamp({ showToast }) {
+function AdminCamp({ showToast, permisos }) {
   const [tab, setTab] = useState('roster'); // 'roster' | 'children' | 'weeks' | 'agenda'
+  // Sin permiso, cualquier pestaña que no sea lista o agenda vuelve a la lista.
+  const tabVisible = (permisos?.campCompleto === false && !['roster', 'agenda'].includes(tab)) ? 'roster' : tab;
   const [weeks, setWeeks] = useState([]);
   const [children, setChildren] = useState([]);
   const [roster, setRoster] = useState([]);
@@ -4516,15 +4749,18 @@ function AdminCamp({ showToast }) {
     <>
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 22, borderBottom: '1px solid var(--line-2)', paddingBottom: 14, flexWrap: 'wrap' }}>
-        {[['roster', 'Pasar lista'], ['children', `Inscritos (${children.length})`], ['agenda', 'Agenda'], ['weeks', 'Semanas y plazas']].map(([id, label]) => (
-          <button key={id} className={`filter-pill ${tab === id ? 'is-active' : ''}`} onClick={() => setTab(id)} style={{ borderRadius: 8, padding: '8px 16px' }}>
+        {(permisos?.campCompleto === false
+          ? [['roster', 'Pasar lista'], ['agenda', 'Agenda']]
+          : [['roster', 'Pasar lista'], ['children', `Inscritos (${children.length})`], ['agenda', 'Agenda'], ['weeks', 'Semanas y plazas']]
+        ).map(([id, label]) => (
+          <button key={id} className={`filter-pill ${tabVisible === id ? 'is-active' : ''}`} onClick={() => setTab(id)} style={{ borderRadius: 8, padding: '8px 16px' }}>
             {label}
           </button>
         ))}
       </div>
 
       {/* ── Pasar lista ── */}
-      {tab === 'roster' && (
+      {tabVisible === 'roster' && (
         <div style={{ display: 'grid', gap: 16 }}>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             <button className="btn btn-icon" onClick={() => shiftDay(-1)} aria-label="Día anterior">
@@ -4570,7 +4806,7 @@ function AdminCamp({ showToast }) {
       )}
 
       {/* ── Inscritos ── */}
-      {tab === 'children' && (
+      {tabVisible === 'children' && (
         <div style={{ display: 'grid', gap: 16 }}>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
             <button className="btn btn-sm btn-primary" onClick={() => setEditingChild({ ...emptyChild })}>
@@ -4701,10 +4937,10 @@ function AdminCamp({ showToast }) {
       )}
 
       {/* ── Agenda (quién viene cada día) ── */}
-      {tab === 'agenda' && <CampAgenda weeks={weeks} children={children} />}
+      {tabVisible === 'agenda' && <CampAgenda weeks={weeks} children={children} />}
 
       {/* ── Semanas ── */}
-      {tab === 'weeks' && (
+      {tabVisible === 'weeks' && (
         <div style={{ display: 'grid', gap: 16 }}>
           <div>
             <button className="btn btn-sm btn-primary" onClick={() => setEditingWeek({ label: '', startDate: '', endDate: '', capacity: 24, holidays: [] })}>
@@ -5213,7 +5449,9 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
             </div>
           </div>
 
-          {ver("overview") && <AdminOverview setView={setView} refreshTrigger={refreshTrigger} showToast={showToast} />}
+          {ver("overview") && (permisos.resumenGeneral
+            ? <AdminOverview setView={setView} refreshTrigger={refreshTrigger} showToast={showToast} />
+            : <ResumenInstructor setView={setView} refreshTrigger={refreshTrigger} />)}
           {ver("students") && <AdminStudents refreshTrigger={refreshTrigger} showToast={showToast} permisos={permisos}
             onEditUser={(u) => { setEditingItem(u); setActiveModal('edit-student'); }} />}
           {ver("familias") && (
@@ -5247,8 +5485,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           )}
           {ver("payments") && <AdminGastos refreshTrigger={refreshTrigger} showToast={showToast} />}
           {ver("news") && <AdminNews refreshTrigger={refreshTrigger} onEditPost={(p) => { setEditingItem({ ...p, coverImageUrl: p.cover_image_url }); setActiveModal('edit-post'); }} />}
-          {ver("events") && <AdminEvents showToast={showToast} />}
-          {ver("camp") && <AdminCamp showToast={showToast} />}
+          {ver("events") && <AdminEvents showToast={showToast} permisos={permisos} />}
+          {ver("camp") && <AdminCamp showToast={showToast} permisos={permisos} />}
           {ver("billing") && <AdminBilling showToast={showToast} />}
           {ver("groups") && <AdminGroups refreshTrigger={refreshTrigger} onEditGroup={(g) => { setEditingItem(g); setActiveModal('edit-group'); }} />}
           {ver("instructors") && (

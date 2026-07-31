@@ -1723,17 +1723,21 @@ app.get('/api/events', async (req, res) => {
 });
 
 // Admin: lista completa de eventos sin caché (para el panel de gestión).
+// Quita del evento lo que es dinero, para quien no tiene por que verlo.
+const sinDinero = (e) => { const { price, precio, precioSocio, ...resto } = e; return resto; };
+
 app.get('/api/admin/events', authenticateSession, async (req, res) => {
     try {
         const result = await pool.query(`SELECT * FROM aim_eventos ORDER BY event_date ASC`);
         res.set('Cache-Control', 'no-store');
-        res.json(result.rows.map(mapEvent));
+        const conDinero = permisos(req).verDineroEventos;
+        res.json(result.rows.map(r => conDinero ? mapEvent(r) : sinDinero(mapEvent(r))));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-app.post('/api/admin/events', authenticateSession, async (req, res) => {
+app.post('/api/admin/events', authenticateSession, requirePermiso('editarEventos'), async (req, res) => {
     const { title, description, date, endDate, time, endTime, venue, price, activity, posterUrl, precio, precioSocio } = req.body;
     if (!title || !date) return res.status(400).json({ error: 'Título y fecha son obligatorios.' });
     const id = crypto.randomUUID();
@@ -1752,7 +1756,7 @@ app.post('/api/admin/events', authenticateSession, async (req, res) => {
     }
 });
 
-app.put('/api/admin/events/:id', authenticateSession, async (req, res) => {
+app.put('/api/admin/events/:id', authenticateSession, requirePermiso('editarEventos'), async (req, res) => {
     const { title, description, date, endDate, time, endTime, venue, price, activity, posterUrl, precio, precioSocio } = req.body;
     if (!title || !date) return res.status(400).json({ error: 'Título y fecha son obligatorios.' });
     try {
@@ -1772,7 +1776,7 @@ app.put('/api/admin/events/:id', authenticateSession, async (req, res) => {
     }
 });
 
-app.delete('/api/admin/events/:id', authenticateSession, async (req, res) => {
+app.delete('/api/admin/events/:id', authenticateSession, requirePermiso('editarEventos'), async (req, res) => {
     try {
         await pool.query('DELETE FROM aim_eventos WHERE id = $1', [req.params.id]);
         res.json({ success: true });
@@ -1941,17 +1945,21 @@ app.get('/api/admin/events/:id/registrations', authenticateSession, async (req, 
             [req.params.id]
         );
         res.set('Cache-Control', 'no-store');
+        // Un instructor puede ver quien va, pero no quien ha pagado ni cuanto.
+        const conDinero = permisos(req).verDineroEventos;
         res.json(result.rows.map(r => ({
             id: r.id, nombre: r.nombre, apellidos: r.apellidos, edad: r.edad,
-            datos: r.datos, fotosRrss: r.fotos_rrss, pagado: r.pagado,
-            asistio: r.asistio, userId: r.user_id, createdAt: r.created_at,
-            // Facturación: a quién se le pasa el cargo y en qué estado está.
-            alumnoId: r.alumno_id,
-            alumno: r.alumno_nombre ? `${r.alumno_nombre} ${r.alumno_apellidos || ''}`.trim() : null,
-            cargoId: r.cargo_id,
-            cargoEstado: r.cargo_estado || null,
-            cargoImporte: r.cargo_importe == null ? null : Number(r.cargo_importe),
-            reciboId: r.recibo_id || null,
+            datos: r.datos, fotosRrss: r.fotos_rrss,
+            asistio: r.asistio, createdAt: r.created_at,
+            ...(conDinero ? {
+                pagado: r.pagado, userId: r.user_id,
+                alumnoId: r.alumno_id,
+                alumno: r.alumno_nombre ? `${r.alumno_nombre} ${r.alumno_apellidos || ''}`.trim() : null,
+                cargoId: r.cargo_id,
+                cargoEstado: r.cargo_estado || null,
+                cargoImporte: r.cargo_importe == null ? null : Number(r.cargo_importe),
+                reciboId: r.recibo_id || null,
+            } : {}),
         })));
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -1959,7 +1967,7 @@ app.get('/api/admin/events/:id/registrations', authenticateSession, async (req, 
 });
 
 // Admin: actualizar pagado/asistio de un inscrito.
-app.patch('/api/admin/events/:id/registrations/:regId', authenticateSession, async (req, res) => {
+app.patch('/api/admin/events/:id/registrations/:regId', authenticateSession, requirePermiso('verDineroEventos'), async (req, res) => {
     const { pagado, asistio, medioPago } = req.body;
     const client = await pool.connect();
     try {
@@ -2078,8 +2086,85 @@ app.delete('/api/admin/events/:id/registrations/:regId/cargo', authenticateSessi
     }
 });
 
+// Un instructor no crea eventos: los pide, y el club se los aprueba. Las rutas
+// van antes que /api/admin/events/:id para que 'solicitudes' no se cuele como
+// un id de evento.
+app.post('/api/admin/events/solicitudes', authenticateSession, requireAdmin, async (req, res) => {
+    const { titulo, descripcion, fecha, hora, horaFin, lugar, actividad } = req.body;
+    if (!titulo?.trim()) return res.status(400).json({ error: 'Ponle un título al evento.' });
+    try {
+        const r = await pool.query(
+            `INSERT INTO aim_eventos_solicitudes (solicitante_id, titulo, descripcion, fecha, hora, hora_fin, lugar, actividad)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+            [req.userSession.userId, titulo.trim(), descripcion?.trim() || null, fecha || null,
+             hora || null, horaFin || null, lugar?.trim() || null, actividad || null]
+        );
+        res.status(201).json({ id: r.rows[0].id });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Quien la pidió ve las suyas; quien lleva el club, todas.
+app.get('/api/admin/events/solicitudes', authenticateSession, requireAdmin, async (req, res) => {
+    const todas = permisos(req).editarEventos;
+    try {
+        const r = await pool.query(
+            `SELECT s.*, u.name, u.surname FROM aim_eventos_solicitudes s
+             JOIN users u ON u.user_id = s.solicitante_id
+             ${todas ? '' : 'WHERE s.solicitante_id = $1'}
+             ORDER BY (s.estado = 'pendiente') DESC, s.created_at DESC`,
+            todas ? [] : [req.userSession.userId]
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows.map(x => ({
+            id: x.id, titulo: x.titulo, descripcion: x.descripcion, fecha: x.fecha,
+            hora: x.hora, horaFin: x.hora_fin, lugar: x.lugar, actividad: x.actividad,
+            estado: x.estado, respuesta: x.respuesta, eventoId: x.evento_id,
+            solicitante: `${x.name} ${x.surname || ''}`.trim(), createdAt: x.created_at,
+        })));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Aprobar crea el evento de verdad; rechazar solo deja el motivo.
+app.post('/api/admin/events/solicitudes/:id/:accion', authenticateSession, requirePermiso('editarEventos'), async (req, res) => {
+    const { accion } = req.params;
+    if (!['aprobar', 'rechazar'].includes(accion)) return res.status(400).json({ error: 'Acción no válida.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const s = await client.query(
+            `SELECT * FROM aim_eventos_solicitudes WHERE id = $1 AND estado = 'pendiente' FOR UPDATE`, [req.params.id]);
+        if (!s.rowCount) throw { httP: 409, msg: 'Esa solicitud ya está resuelta.' };
+        const sol = s.rows[0];
+
+        let eventoId = null;
+        if (accion === 'aprobar') {
+            if (!sol.fecha) throw { httP: 400, msg: 'La solicitud no tiene fecha, así que no se puede crear el evento.' };
+            eventoId = crypto.randomUUID();
+            await client.query(
+                `INSERT INTO aim_eventos (id, title, description, event_date, time, end_time, venue, activity)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+                [eventoId, sol.titulo, sol.descripcion, sol.fecha, sol.hora, sol.hora_fin, sol.lugar, sol.actividad || 'general']
+            );
+        }
+        await client.query(
+            `UPDATE aim_eventos_solicitudes
+             SET estado = $1, respuesta = $2, resuelto_por = $3, resuelto_at = NOW(), evento_id = $4
+             WHERE id = $5`,
+            [accion === 'aprobar' ? 'aprobada' : 'rechazada', req.body?.respuesta?.trim() || null,
+             req.userSession.userId, eventoId, req.params.id]
+        );
+        await client.query('COMMIT');
+        res.json({ success: true, eventoId });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        if (err && err.httP) return res.status(err.httP).json({ error: err.msg });
+        console.error('Error resolviendo la solicitud de evento:', err);
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
 // Admin: eliminar un inscrito.
-app.delete('/api/admin/events/:id/registrations/:regId', authenticateSession, async (req, res) => {
+app.delete('/api/admin/events/:id/registrations/:regId', authenticateSession, requirePermiso('editarEventos'), async (req, res) => {
     try {
         await pool.query('DELETE FROM aim_event_registrations WHERE id = $1 AND event_id = $2', [req.params.regId, req.params.id]);
         res.json({ success: true });
@@ -2124,6 +2209,28 @@ for (const [ruta, seccion] of [
 ]) {
     app.use(ruta, authenticateSession, requireSeccion(seccion));
 }
+
+// Del campamento, un instructor solo tiene que ver la lista del día y la agenda.
+// Los inscritos llevan datos de pago y las semanas son las plazas que vende el
+// club, así que ni se leen ni se tocan sin permiso. Se cierra por ruta, como el
+// resto: lo que se deja pasar se nombra una a una, un poco más abajo.
+// La agenda necesita saber qué niños van cada día, así que la lista se deja
+// leer; lo que no sale es el dinero (ver mapCampChild).
+const CAMP_ABIERTO = ['/api/admin/camp/roster', '/api/admin/camp/attendance',
+                      '/api/admin/camp/weeks', '/api/admin/camp/children'];
+app.use('/api/admin/camp', authenticateSession, (req, res, next) => {
+    if (permisos(req).campCompleto) return next();
+    // 'weeks' se deja solo en lectura: la agenda necesita saber qué semanas hay.
+    const ruta = req.baseUrl + req.path;
+    const esLectura = req.method === 'GET';
+    const abierta = CAMP_ABIERTO.some(x => ruta.startsWith(x));
+    if (abierta && (esLectura || ruta.startsWith('/api/admin/camp/attendance'))) return next();
+    // Y solo la lista en sí: /children/:id/ficha y demás siguen cerrados.
+    if (ruta.startsWith('/api/admin/camp/children/') && esLectura) {
+        return res.status(403).json({ error: 'Tu perfil solo puede pasar lista y ver la agenda del campamento.' });
+    }
+    return res.status(403).json({ error: 'Tu perfil solo puede pasar lista y ver la agenda del campamento.' });
+});
 
 // Los grupos que lleva un instructor. Sale del horario: cada sesión de un grupo
 // guarda a qué profesor se le ha asignado (tul_groups.sessions -> instructorId),
@@ -2186,7 +2293,16 @@ function requireRol(minimo) {
 app.use('/api/admin/tul', authenticateSession, requireAdmin,
     crearRouterTulClases({ pool, clubId: AIM_CLUB_ID, permisos, gruposDe, grupoSuyo }));
 
-function mapCampChild(r) {
+// 'conDinero' a false deja fuera el estado de pago y los datos de contacto de la
+// familia: un instructor necesita saber quién viene cada día, no quién debe.
+function mapCampChild(r, conDinero = true) {
+    if (!conDinero) {
+        return {
+            id: r.id, nombre: r.nombre, apellidos: r.apellidos, edad: r.edad,
+            alergias: r.alergias, observaciones: r.observaciones,
+            days: r.days || [], servicios: r.servicios || {},
+        };
+    }
     return {
         id: r.id,
         userId: r.user_id,
@@ -2779,7 +2895,8 @@ app.get('/api/admin/camp/children', authenticateSession, requireAdmin, async (re
              ORDER BY c.apellidos ASC, c.nombre ASC`
         );
         res.set('Cache-Control', 'no-store');
-        res.json(result.rows.map(mapCampChild));
+        const conDinero = permisos(req).campCompleto;
+        res.json(result.rows.map(r => mapCampChild(r, conDinero)));
     } catch (err) {
         console.error('Error fetching admin camp children:', err);
         res.status(500).json({ error: err.message });
