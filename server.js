@@ -13,6 +13,7 @@ import { crearRouterTulClases } from './tul-clases.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
 import { generarGastosPdf, gastosCsv, nombrePeriodo } from './gastos-pdf.js';
+import { rolEfectivo, permisosDe, mandaAlMenos, ROLES_STAFF } from './permisos.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -535,6 +536,42 @@ async function initDb() {
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
+        // Qué grupos lleva cada instructor. No existía en ninguna parte: los
+        // grupos viven en tul_groups, que es de Aim-Tul y no se toca desde aquí,
+        // así que la asignación va en su propia tabla nuestra. Sin esto no se
+        // puede saber de quién es una clase, y por tanto no se le puede limitar
+        // a un instructor a pasar lista solo de las suyas.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_grupo_instructores (
+                group_id UUID NOT NULL,
+                instructor_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                asignado_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (group_id, instructor_id)
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_grupo_instr ON aim_grupo_instructores(instructor_id)`);
+
+        // Eventos que pide un instructor para que el club se los apruebe.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_eventos_solicitudes (
+                id SERIAL PRIMARY KEY,
+                solicitante_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                titulo VARCHAR(255) NOT NULL,
+                descripcion TEXT,
+                fecha DATE,
+                hora VARCHAR(20),
+                hora_fin VARCHAR(20),
+                lugar VARCHAR(255),
+                actividad VARCHAR(100),
+                estado VARCHAR(20) NOT NULL DEFAULT 'pendiente',
+                respuesta TEXT,
+                resuelto_por UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                resuelto_at TIMESTAMPTZ,
+                evento_id TEXT REFERENCES aim_eventos(id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+
         // Las imágenes del mosaico de la portada. Van en su propia tabla y no
         // dentro del JSON de ajustes para que /api/landing siga siendo ligero:
         // así la portada no se descarga las siete imágenes en cada visita.
@@ -1072,9 +1109,12 @@ app.post('/api/login', async (req, res) => {
 
         const userRole = (user.role || '').toLowerCase();
         const devRole = (user.dev_role || '').toLowerCase();
-        const allowedRoles = ['instructor', 'club_owner', 'superadmin'];
-        const canAccessAdmin = allowedRoles.includes(userRole) || allowedRoles.includes(devRole);
-        const isSuperAdmin = devRole === 'superadmin' || userRole === 'superadmin';
+        // El rol manda en todo el panel: qué secciones se ven y qué se puede
+        // tocar en cada una. Un instructor que además lleva el desarrollo
+        // (dev_role superadmin) sigue viéndolo todo.
+        const rol = rolEfectivo(userRole, devRole);
+        const canAccessAdmin = !!rol;
+        const isSuperAdmin = rol === 'superadmin';
 
         const token = crypto.randomBytes(32).toString('hex');
         sessions.set(token, {
@@ -1085,6 +1125,8 @@ app.post('/api/login', async (req, res) => {
             avatar: user.profile_picture,
             isSuperAdmin,
             canAccessAdmin,
+            rol,
+            permisos: permisosDe(rol),
             expiresAt: now + SESSION_DURATION_MS
         });
 
@@ -1105,7 +1147,9 @@ app.post('/api/login', async (req, res) => {
                 email: user.email,
                 avatar: user.profile_picture,
                 isSuperAdmin,
-                canAccessAdmin
+                canAccessAdmin,
+                rol,
+                permisos: permisosDe(rol),
             }
         });
     } catch (err) {
@@ -1177,7 +1221,9 @@ app.get('/api/me', authenticateSession, (req, res) => {
         email: s.email,
         avatar: s.avatar,
         isSuperAdmin: s.isSuperAdmin,
-        canAccessAdmin: s.canAccessAdmin
+        canAccessAdmin: s.canAccessAdmin,
+        rol: s.rol || null,
+        permisos: s.permisos || null,
     });
 });
 
@@ -1224,7 +1270,7 @@ app.get('/api/users', authenticateSession, async (req, res) => {
     }
 });
 
-app.post('/api/users', authenticateSession, async (req, res) => {
+app.post('/api/users', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
     const { firstName, lastName, email, belt, phone, birthday, isSuperAdmin, rol } = req.body;
     if (!firstName || !email) {
         return res.status(400).json({ error: 'Nombre y email son requeridos.' });
@@ -1253,7 +1299,7 @@ app.post('/api/users', authenticateSession, async (req, res) => {
     }
 });
 
-app.put('/api/users/:id', authenticateSession, async (req, res) => {
+app.put('/api/users/:id', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
     const { firstName, lastName, email, belt, phone, birthday, isSuperAdmin,
             dni, domicilio, cp, poblacion } = req.body;
     const { id } = req.params;
@@ -1292,8 +1338,9 @@ app.put('/api/users/:id', authenticateSession, async (req, res) => {
     }
 });
 
-const ROLES_CLUB = ['student', 'instructor', 'club_owner'];
-app.put('/api/users/:id/rol', authenticateSession, requireAdmin, async (req, res) => {
+// Secretaría va por encima de los instructores y por debajo de la dirección.
+const ROLES_CLUB = ['student', 'instructor', 'secretaria', 'club_owner'];
+app.put('/api/users/:id/rol', authenticateSession, requireAdmin, requireRol('club_owner'), async (req, res) => {
     const { rol } = req.body;
     if (!ROLES_CLUB.includes(rol)) return res.status(400).json({ error: 'Ese rol no existe.' });
     try {
@@ -1306,7 +1353,7 @@ app.put('/api/users/:id/rol', authenticateSession, requireAdmin, async (req, res
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.delete('/api/users/:id', authenticateSession, async (req, res) => {
+app.delete('/api/users/:id', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
     const { id } = req.params;
     try {
         await pool.query('DELETE FROM users WHERE user_id = $1', [id]);
@@ -2061,6 +2108,124 @@ function requireAdmin(req, res, next) {
     if (!req.userSession?.canAccessAdmin) return res.status(403).json({ error: 'Acceso solo para administradores.' });
     next();
 }
+
+// Exige poder ver una sección del panel.
+function requireSeccion(id) {
+    return (req, res, next) => {
+        if (!req.userSession?.canAccessAdmin) return res.status(403).json({ error: 'Acceso solo para administradores.' });
+        if (!permisos(req).secciones[id]) {
+            return res.status(403).json({ error: 'Tu perfil no tiene acceso a esta sección.' });
+        }
+        next();
+    };
+}
+
+// Las secciones que un instructor no ve se cierran por ruta y no endpoint a
+// endpoint: así no se escapa ninguna al añadir una nueva más adelante. Va aquí
+// arriba a propósito, antes de que se declaren esas rutas, porque Express
+// atiende la pila en el orden en que se registra.
+for (const [ruta, seccion] of [
+    ['/api/admin/familias', 'familias'],
+    ['/api/admin/billing', 'billing'],
+    ['/api/admin/gastos', 'payments'],
+    ['/api/admin/proveedores', 'payments'],
+    ['/api/admin/informes', 'payments'],
+    ['/api/admin/posts', 'news'],
+    ['/api/admin/instructores', 'instructors'],
+    ['/api/admin/landing', 'portada'],
+]) {
+    app.use(ruta, authenticateSession, requireSeccion(seccion));
+}
+
+// Los grupos que lleva un instructor. Devuelve null cuando no hay que filtrar
+// por nadie (dirección y superadmins ven todos), y una lista de ids cuando sí.
+async function gruposDe(userId) {
+    const r = await pool.query(
+        `SELECT group_id FROM aim_grupo_instructores WHERE instructor_id = $1`, [userId]
+    );
+    return r.rows.map(x => x.group_id);
+}
+
+// ¿Este grupo es suyo? Para dirección y superadmins, todos lo son.
+async function grupoSuyo(req, groupId) {
+    if (!permisos(req).soloSusGrupos) return true;
+    const r = await pool.query(
+        `SELECT 1 FROM aim_grupo_instructores WHERE instructor_id = $1 AND group_id = $2`,
+        [req.userSession.userId, groupId]
+    );
+    return r.rowCount > 0;
+}
+
+// Los permisos de quien hace la petición. Si la sesión es vieja (se guardó antes
+// de que existieran los roles) se recalculan, para no dejar a nadie fuera ni
+// darle de más mientras no vuelva a entrar.
+function permisos(req) {
+    return req.userSession?.permisos || permisosDe(req.userSession?.rol || null);
+}
+
+// Exige un permiso concreto de los de permisos.js. Esconder el botón en la
+// pantalla no basta: cualquiera puede llamar al endpoint a mano.
+function requirePermiso(nombre) {
+    return (req, res, next) => {
+        if (!req.userSession?.canAccessAdmin) return res.status(403).json({ error: 'Acceso solo para administradores.' });
+        if (!permisos(req)[nombre]) {
+            return res.status(403).json({ error: 'Tu perfil no tiene acceso a esto.' });
+        }
+        next();
+    };
+}
+
+// Exige un rol mínimo (instructor < secretaria < club_owner < superadmin).
+function requireRol(minimo) {
+    return (req, res, next) => {
+        if (!mandaAlMenos(req.userSession?.rol, minimo)) {
+            return res.status(403).json({ error: 'Tu perfil no tiene acceso a esto.' });
+        }
+        next();
+    };
+}
+
+// Admin: qué instructores lleva cada grupo, y al revés. Lo gestiona la
+// dirección desde la ficha del instructor.
+app.get('/api/admin/grupos-instructores', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT gi.group_id, gi.instructor_id, u.name, u.surname, g.name AS grupo, a.name AS actividad
+             FROM aim_grupo_instructores gi
+             JOIN users u ON u.user_id = gi.instructor_id
+             LEFT JOIN tul_groups g ON g.group_id = gi.group_id
+             LEFT JOIN tul_activities a ON a.activity_id = g.activity_id
+             ORDER BY u.surname, u.name, a.name, g.name`
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows.map(x => ({
+            groupId: x.group_id, instructorId: x.instructor_id,
+            instructor: `${x.name} ${x.surname || ''}`.trim(),
+            grupo: x.grupo, actividad: x.actividad,
+        })));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/admin/instructores/:id/grupos', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const { grupos } = req.body;
+    if (!Array.isArray(grupos)) return res.status(400).json({ error: 'Faltan los grupos.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query(`DELETE FROM aim_grupo_instructores WHERE instructor_id = $1`, [req.params.id]);
+        for (const g of grupos) {
+            await client.query(
+                `INSERT INTO aim_grupo_instructores (group_id, instructor_id) VALUES ($1, $2)
+                 ON CONFLICT DO NOTHING`, [g, req.params.id]
+            );
+        }
+        await client.query('COMMIT');
+        res.json({ success: true, n: grupos.length });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
 
 // Gestión de clases y reportes de Aim-Tul (mismas tablas tul_*, mismo SQL),
 // portados a nuestro panel. Ver tul-clases.js.
@@ -6308,6 +6473,9 @@ app.post('/api/support', authenticateSession, async (req, res) => {
 app.get('/api/support', authenticateSession, async (req, res) => {
     if (!req.userSession.isSuperAdmin && !req.userSession.canAccessAdmin)
         return res.status(403).json({ error: 'Sin permisos.' });
+    // Un instructor ve sus tickets y nada más, igual que cualquiera desde su
+    // perfil: los de las familias y los del club no son asunto suyo.
+    const soloMios = !permisos(req).soporteCompleto;
     try {
         // Columnas explícitas a propósito: 'adjunto' guarda la imagen en base64 y con
         // s.* el listado entero se llevaría todas las capturas por delante.
@@ -6326,9 +6494,10 @@ app.get('/api/support', authenticateSession, async (req, res) => {
             FROM tickets_registrosoporte s
             LEFT JOIN users u ON s.user_id = u.user_id
             LEFT JOIN users assignee ON s.assigned_to = assignee.user_id
+            ${soloMios ? 'WHERE s.user_id = $1 OR s.assigned_to = $1' : ''}
             ORDER BY s.created_at DESC
-        `);
-        res.json({ success: true, tickets: result.rows });
+        `, soloMios ? [req.userSession.userId] : []);
+        res.json({ success: true, tickets: result.rows, soloMios });
     } catch (err) {
         console.error('[SUPPORT] Fetch error:', err);
         res.status(500).json({ error: 'Error al obtener tickets.' });
@@ -6338,6 +6507,13 @@ app.get('/api/support', authenticateSession, async (req, res) => {
 app.put('/api/support/:id', authenticateSession, async (req, res) => {
     if (!req.userSession.isSuperAdmin && !req.userSession.canAccessAdmin)
         return res.status(403).json({ error: 'Sin permisos.' });
+    if (!permisos(req).soporteCompleto) {
+        const mio = await pool.query(
+            `SELECT 1 FROM tickets_registrosoporte WHERE id = $1 AND (user_id = $2 OR assigned_to = $2)`,
+            [req.params.id, req.userSession.userId]
+        );
+        if (!mio.rowCount) return res.status(403).json({ error: 'Ese ticket no es tuyo.' });
+    }
     const { status, devResponse, priority, dueDate, assignedTo, appLabel } = req.body;
     const finalAppLabels = Array.isArray(appLabel) ? appLabel : (appLabel ? [appLabel] : ['Aim Education']);
     try {
@@ -6500,6 +6676,7 @@ const AVISO_SOPORTE_PARA = 'cm8175@gmail.com';
 // lleva a dónde resolverlo. Nada de esto se guarda: se calcula al abrirla.
 app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (req, res) => {
     const yo = req.userSession.userId;
+    const permisosYo = permisos(req);
     try {
         const avisos = [];
         const [tickets, mensajes, cobros, cajas, camp, espera] = await Promise.all([
@@ -6521,8 +6698,10 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                  FROM tickets_mensajes m JOIN tickets_registrosoporte t ON t.id = m.ticket_id
                  WHERE m.created_at > NOW() - INTERVAL '48 hours'
                    AND COALESCE(m.autor_id::text, '') <> $1 AND t.status = 'open'
+                   -- A un instructor solo se le avisa de sus propios tickets.
+                   AND ($2::boolean OR t.user_id::text = $1 OR t.assigned_to::text = $1)
                  GROUP BY t.id, t.subject
-                 ORDER BY MAX(m.created_at) DESC`, [String(yo)]),
+                 ORDER BY MAX(m.created_at) DESC`, [String(yo), !!permisosYo.soporteCompleto]),
             pool.query(
                 `SELECT COUNT(*)::int n, COUNT(DISTINCT cliente_id)::int clientes,
                         COALESCE(SUM(COALESCE(importe, precio)), 0)::numeric total
@@ -6554,6 +6733,8 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         ]);
 
         const t = tickets.rows[0];
+        // Los tickets sin asignar y los del club son cosa de quien los lleva.
+        if (!permisosYo.soporteCompleto) { t.sin_asignar = 0; }
         if (t.sin_asignar) avisos.push({ tipo: 'tickets', texto: `${t.sin_asignar} ticket${t.sin_asignar !== 1 ? 's' : ''} sin asignar`, detalle: t.urgentes ? `${t.urgentes} de prioridad alta` : null, destino: '/admin/soporte', n: t.sin_asignar });
         if (t.mios) avisos.push({ tipo: 'tickets', texto: `${t.mios} ticket${t.mios !== 1 ? 's' : ''} asignado${t.mios !== 1 ? 's' : ''} a ti`, destino: '/admin/soporte', n: t.mios });
         // Un aviso por ticket, y cada uno lleva directo a ese ticket. Si hay

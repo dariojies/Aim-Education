@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { I } from './Icons.jsx';
+import { permisosDe, NOMBRE_ROL } from '../../permisos.js';
 import { useEnVivo } from '../envivo.js';
 import { ListaClases, AdminReportes, colorOcupacion } from './AdminTulClases.jsx';
 import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong, campDayParts, nombreMedioPago } from './Shared.jsx';
@@ -264,7 +265,7 @@ function CambiosFiscales({ showToast }) {
   );
 }
 
-function AdminStudents({ refreshTrigger, onEditUser, showToast }) {
+function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos }) {
   const [users, setUsers] = useState([]);
   const [rangos, setRangos] = useState({});
   const [loading, setLoading] = useState(true);
@@ -369,7 +370,9 @@ function AdminStudents({ refreshTrigger, onEditUser, showToast }) {
             </div>
             <div className="row-actions">
               <button className="icon-btn" aria-label="Ver" onClick={() => onEditUser(u)}><I.Eye /></button>
-              <button className="icon-btn" aria-label="Editar" onClick={() => onEditUser(u)}><I.Edit /></button>
+              {permisos?.editarAlumnos !== false && (
+                <button className="icon-btn" aria-label="Editar" onClick={() => onEditUser(u)}><I.Edit /></button>
+              )}
             </div>
           </div>
         ))}
@@ -5063,6 +5066,13 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
   const adminInitials = `${user?.firstName?.[0] || ""}${user?.lastName?.[0] || ""}`.toUpperCase() || "A";
   const adminName = user ? `${user.firstName || ""} ${user.lastName || ""}`.trim() : "Admin";
 
+  // Qué puede ver y tocar esta persona. Llega calculado del servidor; si la
+  // sesión es de antes de los roles, se recalcula aquí con lo mismo.
+  const permisos = user?.permisos || permisosDe(user?.rol || null);
+  // Una sección solo se pinta si además de estar abierta se puede ver: escribir
+  // la ruta a mano no debe colar.
+  const ver = (id) => view === id && !!permisos.secciones[id];
+
   const sections = [
     {
       heading: "Gestión", items: [
@@ -5087,7 +5097,11 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "support", label: "Soporte", icon: <I.Bell /> },
       ]
     },
-  ];
+  ]
+    // Cada rol ve solo sus secciones. Un grupo que se queda sin ninguna no
+    // pinta su título suelto en el menú.
+    .map(g => ({ ...g, items: g.items.filter(i => permisos.secciones[i.id]) }))
+    .filter(g => g.items.length > 0);
 
   async function handleLogout() {
     if (onLogout) await onLogout();
@@ -5199,9 +5213,10 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
             </div>
           </div>
 
-          {view === "overview" && <AdminOverview setView={setView} refreshTrigger={refreshTrigger} showToast={showToast} />}
-          {view === "students" && <AdminStudents refreshTrigger={refreshTrigger} showToast={showToast} onEditUser={(u) => { setEditingItem(u); setActiveModal('edit-student'); }} />}
-          {view === "familias" && (
+          {ver("overview") && <AdminOverview setView={setView} refreshTrigger={refreshTrigger} showToast={showToast} />}
+          {ver("students") && <AdminStudents refreshTrigger={refreshTrigger} showToast={showToast} permisos={permisos}
+            onEditUser={(u) => { setEditingItem(u); setActiveModal('edit-student'); }} />}
+          {ver("familias") && (
             <AdminFamilias showToast={showToast} onEditUser={async (p) => {
               // La tarjeta solo trae el id: se pide la ficha entera para abrirla.
               const todos = await fetch('/api/users', { credentials: 'include', cache: 'no-store' }).then(r => r.ok ? r.json() : []).catch(() => []);
@@ -5209,7 +5224,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
               if (u) { setEditingItem(u); setActiveModal('edit-student'); }
             }} />
           )}
-          {view === "classes" && (
+          {ver("classes") && (
             <AdminClasses
               classSlots={classSlots}
               setClassSlots={setClassSlots}
@@ -5230,13 +5245,13 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
               }}
             />
           )}
-          {view === "payments" && <AdminGastos refreshTrigger={refreshTrigger} showToast={showToast} />}
-          {view === "news" && <AdminNews refreshTrigger={refreshTrigger} onEditPost={(p) => { setEditingItem({ ...p, coverImageUrl: p.cover_image_url }); setActiveModal('edit-post'); }} />}
-          {view === "events" && <AdminEvents showToast={showToast} />}
-          {view === "camp" && <AdminCamp showToast={showToast} />}
-          {view === "billing" && <AdminBilling showToast={showToast} />}
-          {view === "groups" && <AdminGroups refreshTrigger={refreshTrigger} onEditGroup={(g) => { setEditingItem(g); setActiveModal('edit-group'); }} />}
-          {view === "instructors" && (
+          {ver("payments") && <AdminGastos refreshTrigger={refreshTrigger} showToast={showToast} />}
+          {ver("news") && <AdminNews refreshTrigger={refreshTrigger} onEditPost={(p) => { setEditingItem({ ...p, coverImageUrl: p.cover_image_url }); setActiveModal('edit-post'); }} />}
+          {ver("events") && <AdminEvents showToast={showToast} />}
+          {ver("camp") && <AdminCamp showToast={showToast} />}
+          {ver("billing") && <AdminBilling showToast={showToast} />}
+          {ver("groups") && <AdminGroups refreshTrigger={refreshTrigger} onEditGroup={(g) => { setEditingItem(g); setActiveModal('edit-group'); }} />}
+          {ver("instructors") && (
             <AdminInstructores
               refreshTrigger={refreshTrigger} showToast={showToast}
               onEditUser={(u) => { setEditingItem(u); setActiveModal('edit-student'); }}
@@ -5245,10 +5260,18 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                 setActiveModal('new-student');
               }} />
           )}
-          {view === "portada" && <AjustesPortada showToast={showToast} />}
-          {view === "settings" && <AdminSettings />}
-          {view === "reportes" && <AdminReportes />}
-          {view === "support" && <AdminSupport user={user} ticketId={ticketId} />}
+          {!permisos.secciones[view] && (
+            <div style={{ padding: 40, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 16 }}>
+              <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 19, margin: '0 0 6px' }}>Esta sección no es para tu perfil</h2>
+              <p style={{ margin: 0, fontSize: 14, color: 'var(--ink-3)' }}>
+                Si crees que deberías poder entrar, pídeselo a la dirección del club.
+              </p>
+            </div>
+          )}
+          {ver("portada") && <AjustesPortada showToast={showToast} />}
+          {ver("settings") && <AdminSettings />}
+          {ver("reportes") && <AdminReportes />}
+          {ver("support") && <AdminSupport user={user} ticketId={ticketId} />}
         </div>
       </div>
 
@@ -5278,10 +5301,16 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
             maxHeight: '90vh', overflowY: 'auto'
           }} className="scroll-oculto">
             <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: 'var(--ink)' }}>
-              {activeModal !== 'edit-student'
-                ? (editingItem.rol === 'instructor' ? 'Registrar Nuevo Instructor' : 'Registrar Nuevo Alumno')
-                : editingItem.esInstructor ? `Editar ${etiquetaRol(editingItem)}` : 'Editar Alumno'}
+              {!permisos.editarAlumnos ? 'Ficha del alumno'
+                : activeModal !== 'edit-student'
+                  ? (editingItem.rol === 'instructor' ? 'Registrar Nuevo Instructor' : 'Registrar Nuevo Alumno')
+                  : editingItem.esInstructor ? `Editar ${etiquetaRol(editingItem)}` : 'Editar Alumno'}
             </h3>
+            {!permisos.editarAlumnos && (
+              <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)', background: 'var(--bg-3)', padding: '8px 12px', borderRadius: 10 }}>
+                Solo consulta: tu perfil no puede cambiar los datos de las fichas.
+              </p>
+            )}
 
             <div className="field-row">
               <div className="field">
@@ -5361,7 +5390,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                 </button>
               )}
               <button type="button" className="btn btn-outline btn-sm" onClick={() => setActiveModal(null)}>Cancelar</button>
-              <button type="submit" className="btn btn-primary btn-sm">Guardar</button>
+              {permisos.editarAlumnos && <button type="submit" className="btn btn-primary btn-sm">Guardar</button>}
             </div>
           </form>
         </div>
