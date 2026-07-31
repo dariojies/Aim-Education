@@ -64,6 +64,8 @@ console.log(`Conectando a la base de datos: ${dbLabel}...`);
 // Los talleres y eventos son una actividad más del club: se les imputan gastos
 // y se facturan como Taekwon-Do ITF, Ballet o Inglés.
 const EVENTOS_ACTIVIDAD = 'Taller/Evento';
+// Casi todo se hace en el local, así que si no se dice otra cosa, es ahí.
+const LUGAR_POR_DEFECTO = 'Urbanización Terrazas de Doña Lola, Local 1 (AIM Education)';
 const EVENTOS_CONCEPTO = '20500';
 const CONCEPTOS_EVENTOS = new Set([EVENTOS_CONCEPTO]);
 
@@ -559,6 +561,16 @@ async function initDb() {
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
+
+        // Una solicitud lleva exactamente los mismos datos que un evento: quien la
+        // pide rellena la ficha entera (precios, cartel, horas) y al aprobarla se
+        // copia tal cual, o con lo que haya corregido el club.
+        for (const col of [
+            'end_date DATE', 'price VARCHAR(100)', 'precio NUMERIC(10,2)',
+            'precio_socio NUMERIC(10,2)', 'poster_url TEXT',
+        ]) {
+            await client.query(`ALTER TABLE aim_eventos_solicitudes ADD COLUMN IF NOT EXISTS ${col}`);
+        }
 
         // Las imágenes del mosaico de la portada. Van en su propia tabla y no
         // dentro del JSON de ajustes para que /api/landing siga siendo ligero:
@@ -1745,7 +1757,8 @@ app.post('/api/admin/events', authenticateSession, requirePermiso('editarEventos
         await pool.query(
             `INSERT INTO aim_eventos (id, title, description, event_date, end_date, time, end_time, venue, price, activity, poster_url, precio, precio_socio)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-            [id, title, description || null, date, endDate || null, time || null, endTime || null, venue || null, price || null, activity || 'taekwondo', posterUrl || null,
+            [id, title, description || null, date, endDate || null, time || null, endTime || null,
+             venue?.trim() || LUGAR_POR_DEFECTO, price || null, activity || 'taekwondo', posterUrl || null,
              numONull(precio), numONull(precioSocio)]
         );
         const result = await pool.query('SELECT * FROM aim_eventos WHERE id = $1', [id]);
@@ -1765,7 +1778,8 @@ app.put('/api/admin/events/:id', authenticateSession, requirePermiso('editarEven
              SET title=$1, description=$2, event_date=$3, end_date=$4, time=$5, end_time=$6, venue=$7, price=$8, activity=$9, poster_url=$10,
                  precio=$12, precio_socio=$13, updated_at=NOW()
              WHERE id=$11 RETURNING *`,
-            [title, description || null, date, endDate || null, time || null, endTime || null, venue || null, price || null, activity || 'taekwondo', posterUrl || null, req.params.id,
+            [title, description || null, date, endDate || null, time || null, endTime || null,
+             venue?.trim() || LUGAR_POR_DEFECTO, price || null, activity || 'taekwondo', posterUrl || null, req.params.id,
              numONull(precio), numONull(precioSocio)]
         );
         if (result.rowCount === 0) return res.status(404).json({ error: 'Evento no encontrado.' });
@@ -2090,14 +2104,18 @@ app.delete('/api/admin/events/:id/registrations/:regId/cargo', authenticateSessi
 // van antes que /api/admin/events/:id para que 'solicitudes' no se cuele como
 // un id de evento.
 app.post('/api/admin/events/solicitudes', authenticateSession, requireAdmin, async (req, res) => {
-    const { titulo, descripcion, fecha, hora, horaFin, lugar, actividad } = req.body;
-    if (!titulo?.trim()) return res.status(400).json({ error: 'Ponle un título al evento.' });
+    const { title, description, date, endDate, time, endTime, venue, price, activity, posterUrl, precio, precioSocio } = req.body;
+    if (!title?.trim()) return res.status(400).json({ error: 'Ponle un título al evento.' });
+    if (!date) return res.status(400).json({ error: 'Ponle una fecha al evento.' });
     try {
         const r = await pool.query(
-            `INSERT INTO aim_eventos_solicitudes (solicitante_id, titulo, descripcion, fecha, hora, hora_fin, lugar, actividad)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-            [req.userSession.userId, titulo.trim(), descripcion?.trim() || null, fecha || null,
-             hora || null, horaFin || null, lugar?.trim() || null, actividad || null]
+            `INSERT INTO aim_eventos_solicitudes
+                (solicitante_id, titulo, descripcion, fecha, end_date, hora, hora_fin, lugar,
+                 actividad, price, precio, precio_socio, poster_url)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+            [req.userSession.userId, title.trim(), description?.trim() || null, date, endDate || null,
+             time || null, endTime || null, venue?.trim() || LUGAR_POR_DEFECTO,
+             activity || 'general', price || null, numONull(precio), numONull(precioSocio), posterUrl || null]
         );
         res.status(201).json({ id: r.rows[0].id });
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -2115,12 +2133,21 @@ app.get('/api/admin/events/solicitudes', authenticateSession, requireAdmin, asyn
             todas ? [] : [req.userSession.userId]
         );
         res.set('Cache-Control', 'no-store');
-        res.json(r.rows.map(x => ({
-            id: x.id, titulo: x.titulo, descripcion: x.descripcion, fecha: x.fecha,
-            hora: x.hora, horaFin: x.hora_fin, lugar: x.lugar, actividad: x.actividad,
-            estado: x.estado, respuesta: x.respuesta, eventoId: x.evento_id,
-            solicitante: `${x.name} ${x.surname || ''}`.trim(), createdAt: x.created_at,
-        })));
+        // Con los mismos nombres que un evento: así la solicitud se pinta con la
+        // misma tarjeta y se edita con el mismo formulario, sin traducir nada.
+        const conDinero = permisos(req).verDineroEventos;
+        res.json(r.rows.map(x => {
+            const e = {
+                id: x.id, title: x.titulo, description: x.descripcion,
+                date: x.fecha, endDate: x.end_date, time: x.hora, endTime: x.hora_fin,
+                venue: x.lugar, activity: x.actividad || 'general', posterUrl: x.poster_url,
+                price: x.price, precio: x.precio == null ? null : Number(x.precio),
+                precioSocio: x.precio_socio == null ? null : Number(x.precio_socio),
+                estado: x.estado, respuesta: x.respuesta, eventoId: x.evento_id,
+                solicitante: `${x.name} ${x.surname || ''}`.trim(), createdAt: x.created_at,
+            };
+            return conDinero ? e : sinDinero(e);
+        }));
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -2138,12 +2165,28 @@ app.post('/api/admin/events/solicitudes/:id/:accion', authenticateSession, requi
 
         let eventoId = null;
         if (accion === 'aprobar') {
-            if (!sol.fecha) throw { httP: 400, msg: 'La solicitud no tiene fecha, así que no se puede crear el evento.' };
+            // El club puede corregir lo que haga falta antes de aprobar: lo que
+            // venga en el cuerpo manda, y lo que no, se queda como lo pidió.
+            const e = req.body?.evento || {};
+            const val = (nuevo, viejo) => (nuevo === undefined ? viejo : nuevo);
+            const fecha = val(e.date, sol.fecha);
+            if (!fecha) throw { httP: 400, msg: 'La solicitud no tiene fecha, así que no se puede crear el evento.' };
+
             eventoId = crypto.randomUUID();
             await client.query(
-                `INSERT INTO aim_eventos (id, title, description, event_date, time, end_time, venue, activity)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-                [eventoId, sol.titulo, sol.descripcion, sol.fecha, sol.hora, sol.hora_fin, sol.lugar, sol.actividad || 'general']
+                `INSERT INTO aim_eventos (id, title, description, event_date, end_date, time, end_time,
+                                          venue, activity, price, precio, precio_socio, poster_url)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+                [eventoId,
+                 val(e.title, sol.titulo), val(e.description, sol.descripcion),
+                 fecha, val(e.endDate, sol.end_date) || null,
+                 val(e.time, sol.hora), val(e.endTime, sol.hora_fin),
+                 String(val(e.venue, sol.lugar) || '').trim() || LUGAR_POR_DEFECTO,
+                 val(e.activity, sol.actividad) || 'general',
+                 val(e.price, sol.price),
+                 e.precio === undefined ? sol.precio : numONull(e.precio),
+                 e.precioSocio === undefined ? sol.precio_socio : numONull(e.precioSocio),
+                 val(e.posterUrl, sol.poster_url)]
             );
         }
         await client.query(
@@ -6751,6 +6794,9 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
     const permisosYo = permisos(req);
     try {
         const avisos = [];
+        // Que haya cobros pendientes o cajas sin cuadrar no es trabajo de un
+        // instructor: esos avisos ni se calculan ni se le mandan.
+        const misGrupos = permisosYo.soloSusGrupos ? await gruposDe(req.userSession.userId) : null;
         const [tickets, mensajes, cobros, cajas, camp, espera] = await Promise.all([
             pool.query(
                 `SELECT COUNT(*) FILTER (WHERE assigned_to IS NULL)::int AS sin_asignar,
@@ -6798,10 +6844,12 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                    JOIN tul_groups g ON g.group_id = e.group_id
                    JOIN tul_activities a ON a.activity_id = g.activity_id
                    WHERE e.estado = 'esperando' AND a.club_id = $1 AND g.max_students IS NOT NULL
+                     -- A un instructor solo le importan las suyas.
+                     AND ($2::uuid[] IS NULL OR e.group_id = ANY($2::uuid[]))
                    GROUP BY e.group_id, g.max_students
                    HAVING g.max_students - (
                      SELECT COUNT(*) FROM tul_group_students gs WHERE gs.group_id = e.group_id) > 0
-                 ) t`, [AIM_CLUB_ID]),
+                 ) t`, [AIM_CLUB_ID, misGrupos]),
         ]);
 
         const t = tickets.rows[0];
@@ -6834,13 +6882,38 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         }
 
         const c = cobros.rows[0];
-        if (c.n) avisos.push({ tipo: 'cobros', texto: `${c.n} cargo${c.n !== 1 ? 's' : ''} pendiente${c.n !== 1 ? 's' : ''} de cobrar`, detalle: `${r2Server(Number(c.total))} € de ${c.clientes} cliente${c.clientes !== 1 ? 's' : ''}`, destino: '/admin/facturacion', n: c.n });
+        if (c.n && permisosYo.secciones.billing) avisos.push({ tipo: 'cobros', texto: `${c.n} cargo${c.n !== 1 ? 's' : ''} pendiente${c.n !== 1 ? 's' : ''} de cobrar`, detalle: `${r2Server(Number(c.total))} € de ${c.clientes} cliente${c.clientes !== 1 ? 's' : ''}`, destino: '/admin/facturacion', n: c.n });
 
         const cj = cajas.rows[0];
-        if (cj.n) avisos.push({ tipo: 'caja', texto: `${cj.n} día${cj.n !== 1 ? 's' : ''} con cobros y sin arqueo`, detalle: cj.desde ? `el más antiguo, del ${cj.desde}` : null, destino: '/admin/facturacion', n: cj.n });
+        if (cj.n && permisosYo.secciones.billing) avisos.push({ tipo: 'caja', texto: `${cj.n} día${cj.n !== 1 ? 's' : ''} con cobros y sin arqueo`, detalle: cj.desde ? `el más antiguo, del ${cj.desde}` : null, destino: '/admin/facturacion', n: cj.n });
 
         const cp = camp.rows[0];
-        if (cp.sin_ficha) avisos.push({ tipo: 'campamento', texto: `${cp.sin_ficha} niño${cp.sin_ficha !== 1 ? 's' : ''} del campamento sin ficha`, detalle: 'sin ficha no se les puede cobrar', destino: '/admin/campamento', n: cp.sin_ficha });
+        // Sin ficha no se les puede cobrar: es un aviso de facturación.
+        if (cp.sin_ficha && permisosYo.campCompleto) avisos.push({ tipo: 'campamento', texto: `${cp.sin_ficha} niño${cp.sin_ficha !== 1 ? 's' : ''} del campamento sin ficha`, detalle: 'sin ficha no se les puede cobrar', destino: '/admin/campamento', n: cp.sin_ficha });
+
+        // Eventos que ha propuesto alguien y están esperando respuesta. A quien
+        // los pidió también se le avisa cuando ya se los han contestado.
+        if (permisosYo.editarEventos) {
+            const sol = await pool.query(
+                `SELECT COUNT(*)::int n FROM aim_eventos_solicitudes WHERE estado = 'pendiente'`);
+            if (sol.rows[0].n) avisos.push({
+                tipo: 'clases', destino: '/admin/eventos',
+                texto: `${sol.rows[0].n} evento${sol.rows[0].n !== 1 ? 's' : ''} propuesto${sol.rows[0].n !== 1 ? 's' : ''} sin decidir`,
+                detalle: 'los ha pedido un instructor', n: sol.rows[0].n,
+            });
+        } else {
+            const mias = await pool.query(
+                `SELECT titulo, estado FROM aim_eventos_solicitudes
+                 WHERE solicitante_id = $1 AND estado <> 'pendiente' AND resuelto_at > NOW() - INTERVAL '7 days'
+                 ORDER BY resuelto_at DESC LIMIT 3`, [yo]);
+            for (const m of mias.rows) {
+                avisos.push({
+                    tipo: 'clases', destino: '/admin/eventos',
+                    texto: `Tu evento «${m.titulo}» está ${m.estado === 'aprobada' ? 'aprobado' : 'rechazado'}`,
+                    detalle: 'lo has propuesto tú', n: 1,
+                });
+            }
+        }
 
         const esp = espera.rows[0];
         if (esp.n) avisos.push({ tipo: 'clases', texto: `${esp.n} clase${esp.n !== 1 ? 's' : ''} con plaza libre y gente esperando`, detalle: 'se puede dar la plaza al primero de la lista', destino: '/admin/clases', n: esp.n });
@@ -6850,8 +6923,9 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         // decide aquí, en el servidor, y a nadie más se le devuelve.
         // Cambios de datos fiscales esperando autorización: si no se ven, la
         // familia se queda esperando sin saberlo.
-        const fis = await pool.query(
-            `SELECT COUNT(*)::int n FROM aim_datos_fiscales_cambios WHERE estado = 'pendiente'`);
+        const fis = permisosYo.secciones.billing
+            ? await pool.query(`SELECT COUNT(*)::int n FROM aim_datos_fiscales_cambios WHERE estado = 'pendiente'`)
+            : { rows: [{ n: 0 }] };
         if (fis.rows[0].n > 0) {
             avisos.push({
                 tipo: 'cobros', destino: 'students',

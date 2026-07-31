@@ -2249,127 +2249,123 @@ function BuscarQuienPaga({ onElegir, onCancelar }) {
   );
 }
 
-// Un instructor no crea eventos: los pide y el club decide. Aquí se escribe la
-// petición y en la misma pantalla se ve cómo ha quedado.
-function SolicitudesEventos({ permisos, showToast }) {
+const LUGAR_POR_DEFECTO = 'Urbanización Terrazas de Doña Lola, Local 1 (AIM Education)';
+
+// La ficha de un evento tal y como se ve en la tarjeta. Se usa igual para un
+// evento ya publicado que para una solicitud que está esperando respuesta, para
+// que quien la aprueba vea exactamente lo que va a quedar publicado.
+function TarjetaEvento({ ev, conDinero = true, pie }) {
+  const a = ACT_BY_ID[ev.activity];
+  const color = a?.color || 'var(--ink)';
+  return (
+    <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 18, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      {ev.posterUrl
+        ? <img src={ev.posterUrl} alt={ev.title} style={{ width: '100%', height: 'auto', display: 'block' }} />
+        : <div style={{ height: 120, background: `color-mix(in oklab, ${color} 20%, var(--bg-3))`, display: 'grid', placeItems: 'center', color }}><I.Star /></div>}
+      <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
+        <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color }}>{a?.name || 'General'}</span>
+        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: 'var(--ink)' }}>{ev.title}</h3>
+        <div style={{ fontSize: 12, color: 'var(--ink-3)', display: 'grid', gap: 3 }}>
+          <span>{fmtFechaCorta(ev.date)}{ev.endDate ? ` – ${fmtFechaCorta(ev.endDate)}` : ''}{ev.time ? ` · ${ev.time}${ev.endTime ? `–${ev.endTime}` : ''}` : ''}</span>
+          <span>{ev.venue || LUGAR_POR_DEFECTO}</span>
+          {conDinero && (ev.precio > 0
+            ? <span>{eur(ev.precio)}{ev.precioSocio != null ? ` · socios ${eur(ev.precioSocio)}` : ''}</span>
+            : <span>Gratuito</span>)}
+        </div>
+        {ev.description && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.4 }}>{ev.description}</p>}
+        {pie && <div style={{ marginTop: 'auto', paddingTop: 10 }}>{pie}</div>}
+      </div>
+    </div>
+  );
+}
+
+// Eventos propuestos. Quien los pide rellena la misma ficha que un evento de
+// verdad; quien los aprueba los ve con la misma tarjeta y puede corregir lo que
+// haga falta antes de darles el visto bueno.
+function SolicitudesEventos({ permisos, showToast, onEditar, recargarEventos, refrescar }) {
   const [lista, setLista] = useState([]);
-  const [pidiendo, setPidiendo] = useState(null);
-  const [guardando, setGuardando] = useState(false);
   const puedeResolver = !!permisos.editarEventos;
+  const conDinero = permisos.verDineroEventos !== false;
 
   const cargar = useCallback(() => {
     fetch('/api/admin/events/solicitudes', { credentials: 'include', cache: 'no-store' })
       .then(r => r.ok ? r.json() : []).then(d => setLista(Array.isArray(d) ? d : [])).catch(() => {});
   }, []);
-  useEffect(() => { cargar(); }, [cargar]);
+  useEffect(() => { cargar(); }, [cargar, refrescar]);
 
-  async function enviar(e) {
-    e.preventDefault();
-    setGuardando(true);
-    try {
-      const r = await fetch('/api/admin/events/solicitudes', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-        body: JSON.stringify(pidiendo),
-      });
-      const d = await r.json();
-      if (!r.ok) return alert(d.error || 'No se ha podido enviar.');
-      setPidiendo(null); cargar();
-      showToast?.('Solicitud enviada. El club te dirá algo.');
-    } catch { alert('Error de conexión.'); }
-    finally { setGuardando(false); }
-  }
-
-  async function resolver(sol, accion) {
+  async function resolver(sol, accion, evento) {
     const respuesta = accion === 'rechazar'
-      ? window.prompt('¿Por qué se rechaza? (se le enseña a quien lo pidió)') : null;
+      ? window.prompt('¿Por qué se rechaza? Lo verá quien lo propuso.') : null;
     if (accion === 'rechazar' && respuesta === null) return;
     const r = await fetch(`/api/admin/events/solicitudes/${sol.id}/${accion}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-      body: JSON.stringify({ respuesta }),
+      body: JSON.stringify({ respuesta, evento }),
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) return alert(d.error || 'No se ha podido guardar.');
     cargar();
-    showToast?.(accion === 'aprobar' ? 'Evento creado a partir de la solicitud.' : 'Solicitud rechazada.');
+    if (accion === 'aprobar') recargarEventos?.();
+    showToast?.(accion === 'aprobar' ? 'Aprobado. Ya está publicado con el resto de eventos.' : 'Propuesta rechazada.');
   }
 
   const pendientes = lista.filter(x => x.estado === 'pendiente');
-  if (puedeResolver && !lista.length) return null;
+  const resueltas = lista.filter(x => x.estado !== 'pendiente');
+  if (!lista.length && puedeResolver) return null;
 
   return (
-    <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 18, padding: 20, marginBottom: 20, display: 'grid', gap: 14 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-        <div>
-          <h3 style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: 17, fontWeight: 800 }}>
-            {puedeResolver ? `Eventos propuestos${pendientes.length ? ` (${pendientes.length} por decidir)` : ''}` : 'Tus solicitudes de evento'}
-          </h3>
-          {!puedeResolver && (
-            <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--ink-3)' }}>
-              Propón un evento y el club lo aprueba o lo rechaza.
-            </p>
-          )}
-        </div>
-        {!puedeResolver && !pidiendo && (
-          <button className="btn btn-sm btn-primary" onClick={() => setPidiendo({ titulo: '', descripcion: '', fecha: '', hora: '', horaFin: '', lugar: '', actividad: 'general' })}>
-            <I.Plus /> Proponer un evento
-          </button>
-        )}
+    <div style={{ marginBottom: 22, display: 'grid', gap: 14 }}>
+      <div>
+        <h3 style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: 17, fontWeight: 800 }}>
+          {puedeResolver
+            ? `Eventos propuestos${pendientes.length ? ` · ${pendientes.length} sin decidir` : ''}`
+            : 'Tus propuestas de evento'}
+        </h3>
+        <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--ink-3)' }}>
+          {puedeResolver
+            ? 'Míralos como quedarían publicados. Puedes aprobarlos, corregirlos antes de aprobarlos, o rechazarlos.'
+            : 'Rellena la ficha del evento y el club lo aprueba o lo rechaza.'}
+        </p>
       </div>
 
-      {pidiendo && (
-        <form onSubmit={enviar} style={{ display: 'grid', gap: 10, background: 'var(--bg-3)', padding: 14, borderRadius: 12 }}>
-          <div className="field">
-            <label>Qué evento propones</label>
-            <input value={pidiendo.titulo} onChange={e => setPidiendo({ ...pidiendo, titulo: e.target.value })} required autoFocus />
-          </div>
-          <div className="field">
-            <label>De qué va</label>
-            <textarea rows={2} value={pidiendo.descripcion} onChange={e => setPidiendo({ ...pidiendo, descripcion: e.target.value })} />
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
-            <div className="field"><label>Día</label>
-              <input type="date" value={pidiendo.fecha} onChange={e => setPidiendo({ ...pidiendo, fecha: e.target.value })} /></div>
-            <div className="field"><label>Hora</label>
-              <input type="time" value={pidiendo.hora} onChange={e => setPidiendo({ ...pidiendo, hora: e.target.value })} /></div>
-            <div className="field"><label>Hasta</label>
-              <input type="time" value={pidiendo.horaFin} onChange={e => setPidiendo({ ...pidiendo, horaFin: e.target.value })} /></div>
-            <div className="field"><label>Dónde</label>
-              <input value={pidiendo.lugar} onChange={e => setPidiendo({ ...pidiendo, lugar: e.target.value })} /></div>
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn btn-sm btn-primary" type="submit" disabled={guardando}>
-              {guardando ? 'Enviando...' : 'Enviar la propuesta'}
-            </button>
-            <button className="btn btn-sm btn-outline" type="button" onClick={() => setPidiendo(null)}>Cancelar</button>
-          </div>
-        </form>
-      )}
-
-      {lista.length === 0 && !pidiendo && (
+      {!lista.length && (
         <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Todavía no has propuesto ninguno.</p>
       )}
 
-      {lista.map(x => (
-        <div key={x.id} style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', padding: '10px 12px', background: 'var(--bg-3)', borderRadius: 10 }}>
-          <div style={{ flex: 1, minWidth: 180 }}>
-            <div style={{ fontWeight: 800, fontSize: 13 }}>{x.titulo}</div>
-            <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>
-              {[x.fecha ? fmtFecha(x.fecha) : 'sin fecha', x.hora, x.lugar, puedeResolver ? `lo pide ${x.solicitante}` : null]
-                .filter(Boolean).join(' · ')}
-            </div>
-            {x.respuesta && <div style={{ fontSize: 11, color: 'var(--orange)', marginTop: 2 }}>{x.respuesta}</div>}
-          </div>
-          <span className={`status-pill ${x.estado === 'aprobada' ? 'ok' : x.estado === 'rechazada' ? 'danger' : 'upcoming'}`}>
-            {{ pendiente: 'Por decidir', aprobada: 'Aprobado', rechazada: 'Rechazado' }[x.estado]}
-          </span>
-          {puedeResolver && x.estado === 'pendiente' && (
-            <div style={{ display: 'flex', gap: 6 }}>
-              <button className="btn btn-sm btn-primary" onClick={() => resolver(x, 'aprobar')}>Aprobar</button>
-              <button className="btn btn-sm btn-outline" onClick={() => resolver(x, 'rechazar')}>Rechazar</button>
-            </div>
-          )}
+      {pendientes.length > 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 20 }}>
+          {pendientes.map(sol => (
+            <TarjetaEvento key={sol.id} ev={sol} conDinero={conDinero} pie={
+              <div style={{ display: 'grid', gap: 8 }}>
+                <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                  {puedeResolver ? `Lo propone ${sol.solicitante}` : 'Esperando respuesta del club'}
+                </div>
+                {puedeResolver && (
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    <button className="btn btn-sm btn-primary" onClick={() => resolver(sol, 'aprobar')}>Aprobar</button>
+                    <button className="btn btn-sm btn-outline" onClick={() => onEditar(sol)}>Corregir y aprobar</button>
+                    <button className="btn btn-sm btn-outline" onClick={() => resolver(sol, 'rechazar')}>Rechazar</button>
+                  </div>
+                )}
+              </div>
+            } />
+          ))}
         </div>
-      ))}
+      )}
+
+      {resueltas.length > 0 && (
+        <div style={{ display: 'grid', gap: 6 }}>
+          {resueltas.map(x => (
+            <div key={x.id} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '8px 12px', background: 'var(--bg-3)', borderRadius: 10, fontSize: 12 }}>
+              <span style={{ fontWeight: 800, flex: 1, minWidth: 140 }}>{x.title}</span>
+              <span style={{ color: 'var(--ink-3)' }}>{fmtFechaCorta(x.date)}</span>
+              <span className={`status-pill ${x.estado === 'aprobada' ? 'ok' : 'danger'}`}>
+                {x.estado === 'aprobada' ? 'Aprobado' : 'Rechazado'}
+              </span>
+              {x.respuesta && <span style={{ color: 'var(--orange)' }}>{x.respuesta}</span>}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -2378,6 +2374,8 @@ function AdminEvents({ showToast, permisos = {} }) {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
+  // Para que la lista de propuestas se recargue al aprobar o al proponer.
+  const [refrescarSol, setRefrescarSol] = useState(0);
   const [saving, setSaving] = useState(false);
 
   // ── Gestionar Evento (inscripciones) ──
@@ -2549,22 +2547,31 @@ function AdminEvents({ showToast, permisos = {} }) {
     reader.readAsDataURL(file);
   }
 
+  // Un solo formulario para las tres cosas: crear un evento, proponerlo, y
+  // corregir una propuesta antes de aprobarla. Lo que cambia es a dónde se manda.
   async function save(e) {
     e.preventDefault();
     setSaving(true);
-    const isEdit = !!editing.id;
+    const { _solicitud, _solicitudId, ...datos } = editing;
+    const isEdit = !!datos.id && !_solicitud && !_solicitudId;
+    const url = _solicitudId ? `/api/admin/events/solicitudes/${_solicitudId}/aprobar`
+      : _solicitud ? '/api/admin/events/solicitudes'
+      : isEdit ? `/api/admin/events/${datos.id}` : '/api/admin/events';
     try {
-      const r = await fetch(isEdit ? `/api/admin/events/${editing.id}` : '/api/admin/events', {
+      const r = await fetch(url, {
         method: isEdit ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify(editing),
+        body: JSON.stringify(_solicitudId ? { evento: datos } : datos),
       });
       const d = await r.json();
       if (!r.ok) { alert(d.error || 'Error al guardar el evento.'); setSaving(false); return; }
       setEditing(null);
       load();
-      showToast?.(isEdit ? 'Evento actualizado.' : 'Evento creado.');
+      setRefrescarSol(x => x + 1);
+      showToast?.(_solicitudId ? 'Corregido y aprobado. Ya está publicado.'
+        : _solicitud ? 'Propuesta enviada. El club te dirá algo.'
+        : isEdit ? 'Evento actualizado.' : 'Evento creado.');
     } catch { alert('Error de conexión.'); }
     finally { setSaving(false); }
   }
@@ -2580,13 +2587,22 @@ function AdminEvents({ showToast, permisos = {} }) {
 
   return (
     <>
-      <SolicitudesEventos permisos={permisos} showToast={showToast} />
+      <SolicitudesEventos permisos={permisos} showToast={showToast} refrescar={refrescarSol}
+        recargarEventos={load}
+        onEditar={(sol) => setEditing({
+          title: sol.title || '', description: sol.description || '',
+          date: String(sol.date || '').slice(0, 10), endDate: String(sol.endDate || '').slice(0, 10),
+          time: sol.time || '', endTime: sol.endTime || '', venue: sol.venue || '',
+          price: sol.price || '', activity: sol.activity || 'general', posterUrl: sol.posterUrl || '',
+          precio: sol.precio ?? '', precioSocio: sol.precioSocio ?? '',
+          _solicitudId: sol.id,
+        })} />
 
-      {permisos.editarEventos !== false && (
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 18 }}>
-          <button className="btn btn-primary" onClick={() => setEditing({ ...blank })}><I.Plus /> Nuevo evento</button>
-        </div>
-      )}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 18 }}>
+        {permisos.editarEventos !== false
+          ? <button className="btn btn-primary" onClick={() => setEditing({ ...blank })}><I.Plus /> Nuevo evento</button>
+          : <button className="btn btn-primary" onClick={() => setEditing({ ...blank, _solicitud: true })}><I.Plus /> Proponer un evento</button>}
+      </div>
 
       {loading && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando eventos...</p>}
       {!loading && events.length === 0 && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>No hay eventos creados. Crea el primero con "Nuevo evento".</p>}
@@ -2863,7 +2879,16 @@ function AdminEvents({ showToast, permisos = {} }) {
       {editing && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }} onClick={e => { if (e.target === e.currentTarget) setEditing(null); }}>
           <div style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 560, maxHeight: '90vh', overflowY: 'auto', padding: 24 }}>
-            <h3 style={{ margin: '0 0 16px', fontSize: 18, fontWeight: 800 }}>{editing.id ? 'Editar evento' : 'Nuevo evento'}</h3>
+            <h3 style={{ margin: '0 0 16px', fontSize: 18, fontWeight: 800 }}>
+              {editing._solicitudId ? 'Corregir la propuesta antes de aprobarla'
+                : editing._solicitud ? 'Proponer un evento'
+                : editing.id ? 'Editar evento' : 'Nuevo evento'}
+            </h3>
+            {editing._solicitud && (
+              <p style={{ margin: '-8px 0 12px', fontSize: 12, color: 'var(--ink-3)' }}>
+                Rellena la ficha como quieres que salga publicada. El club la revisa y decide.
+              </p>
+            )}
             <form onSubmit={save} style={{ display: 'grid', gap: 14 }}>
               <div className="field"><label>Título</label><input value={editing.title} onChange={e => setEditing({ ...editing, title: e.target.value })} required /></div>
               <div className="field"><label>Descripción</label><textarea rows={3} value={editing.description} onChange={e => setEditing({ ...editing, description: e.target.value })} style={{ width: '100%', fontFamily: 'inherit', fontSize: 14, padding: 12, background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 10, color: 'var(--ink)', resize: 'vertical' }} /></div>
@@ -2893,7 +2918,15 @@ function AdminEvents({ showToast, permisos = {} }) {
                   Quien se apunta desde su cuenta paga el importe de socios. Sin IVA: la enseñanza está exenta.
                 </span>
               </div>
-              <div className="field"><label>Lugar</label><input value={editing.venue} onChange={e => setEditing({ ...editing, venue: e.target.value })} placeholder="Ej. Teatro Municipal" /></div>
+              {/* Vacío significa el local del club, que es donde se hace casi todo. */}
+              <div className="field">
+                <label>Lugar</label>
+                <input value={editing.venue} onChange={e => setEditing({ ...editing, venue: e.target.value })}
+                  placeholder={LUGAR_POR_DEFECTO} />
+                <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                  Si lo dejas vacío se publica en el local del club.
+                </span>
+              </div>
               <div className="field">
                 <label>Actividad (color)</label>
                 <select value={editing.activity} onChange={e => setEditing({ ...editing, activity: e.target.value })}>
@@ -2908,7 +2941,12 @@ function AdminEvents({ showToast, permisos = {} }) {
               </div>
               <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 6 }}>
                 <button type="button" className="btn btn-outline" onClick={() => setEditing(null)}>Cancelar</button>
-                <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Guardando...' : (editing.id ? 'Guardar cambios' : 'Crear evento')}</button>
+                <button type="submit" className="btn btn-primary" disabled={saving}>
+                  {saving ? 'Guardando...'
+                    : editing._solicitudId ? 'Guardar y aprobar'
+                    : editing._solicitud ? 'Enviar la propuesta'
+                    : editing.id ? 'Guardar cambios' : 'Crear evento'}
+                </button>
               </div>
             </form>
           </div>
