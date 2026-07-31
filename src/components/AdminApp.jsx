@@ -5370,7 +5370,9 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
             <div className="avatar" style={{ width: 36, height: 36, fontSize: 13 }}>{adminInitials}</div>
             <div>
               <div className="name">{adminName}</div>
-              <div className="role-tag">{user?.isSuperAdmin ? "Superadmin" : "Admin"}</div>
+              {/* Con qué perfil ha entrado: poner "Admin" a un instructor confunde
+                  sobre lo que puede hacer. */}
+              <div className="role-tag">{NOMBRE_ROL[user?.rol] || (user?.isSuperAdmin ? "Superadmin" : "Admin")}</div>
             </div>
           </div>
 
@@ -5508,7 +5510,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           )}
           {ver("portada") && <AjustesPortada showToast={showToast} />}
           {ver("settings") && <AdminSettings />}
-          {ver("reportes") && <AdminReportes />}
+          {ver("reportes") && <AdminReportes user={user} permisos={permisos} />}
           {ver("support") && <AdminSupport user={user} ticketId={ticketId} />}
         </div>
       </div>

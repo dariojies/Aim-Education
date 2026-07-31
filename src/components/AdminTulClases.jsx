@@ -748,12 +748,17 @@ function Seccion({ titulo, children, extra }) {
   );
 }
 
-export function AdminReportes() {
+export function AdminReportes({ user, permisos = {} }) {
+  // Un instructor no ve la visión general ni la de una actividad entera: solo
+  // la suya de monitor. Arranca ya en esa vista y con su propio id puesto, y no
+  // se le ofrece cambiar de una ni de otro.
+  const soloYo = permisos.reportesGenerales === false;
+
   // Periodo: mensual o quincenal, navegable, igual que aim-tul.
   const [modo, setModo] = useState('monthly'); // 'monthly' | 'biweekly'
   const [inicio, setInicio] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
-  const [segmento, setSegmento] = useState('general'); // 'general' | 'activity' | 'instructor' | 'gamification'
-  const [segmentoId, setSegmentoId] = useState(null);
+  const [segmento, setSegmento] = useState(soloYo ? 'instructor' : 'general'); // 'general' | 'activity' | 'instructor'
+  const [segmentoId, setSegmentoId] = useState(soloYo ? (user?.id || null) : null);
 
   const [actividades, setActividades] = useState([]);
   const [instructores, setInstructores] = useState([]);
@@ -856,20 +861,28 @@ export function AdminReportes() {
       {/* Segmento */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '.08em' }}>Ver:</span>
-        {[['general', 'General'], ['activity', 'Por actividad'], ['instructor', 'Por monitor']].map(([v, l]) => (
-          <button key={v} className={`filter-pill ${segmento === v ? 'is-active' : ''}`} onClick={() => { setSegmento(v); setSegmentoId(null); }}>{l}</button>
-        ))}
-        {segmento === 'activity' && (
-          <select value={segmentoId || ''} onChange={e => setSegmentoId(e.target.value || null)} style={inputCss}>
-            <option value="">Todas las actividades</option>
-            {actividades.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-          </select>
-        )}
-        {segmento === 'instructor' && (
-          <select value={segmentoId || ''} onChange={e => setSegmentoId(e.target.value || null)} style={inputCss}>
-            <option value="">Todos los monitores</option>
-            {instructores.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-          </select>
+        {soloYo ? (
+          <span className="filter-pill is-active" style={{ cursor: 'default' }}>
+            Tus clases · {[user?.firstName, user?.lastName].filter(Boolean).join(' ') || 'monitor'}
+          </span>
+        ) : (
+          <>
+            {[['general', 'General'], ['activity', 'Por actividad'], ['instructor', 'Por monitor']].map(([v, l]) => (
+              <button key={v} className={`filter-pill ${segmento === v ? 'is-active' : ''}`} onClick={() => { setSegmento(v); setSegmentoId(null); }}>{l}</button>
+            ))}
+            {segmento === 'activity' && (
+              <select value={segmentoId || ''} onChange={e => setSegmentoId(e.target.value || null)} style={inputCss}>
+                <option value="">Todas las actividades</option>
+                {actividades.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>
+            )}
+            {segmento === 'instructor' && (
+              <select value={segmentoId || ''} onChange={e => setSegmentoId(e.target.value || null)} style={inputCss}>
+                <option value="">Todos los monitores</option>
+                {instructores.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>
+            )}
+          </>
         )}
       </div>
 
@@ -886,7 +899,7 @@ export function AdminReportes() {
 
       {/* Distribución por actividad / grupos */}
       {overview && (
-        <Seccion titulo={segParams ? 'Grupos del segmento' : 'Distribución por actividad'}>
+        <Seccion titulo={soloYo ? 'Tus grupos' : segParams ? 'Grupos del segmento' : 'Distribución por actividad'}>
           <div style={{ display: 'grid', gap: 10 }}>
             {(segParams ? overview.groups : overview.activities).map(x => {
               const nombre = segParams ? `${x.name} · ${x.activityName}` : x.name;
