@@ -26,8 +26,32 @@ const PLAN_LIMITS = {
 };
 const getPlanLimits = (plan) => PLAN_LIMITS[plan] || PLAN_LIMITS['free'];
 
-export function crearRouterTulClases({ pool, clubId }) {
+export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSuyo }) {
     const router = express.Router();
+
+    // Un instructor solo ve y toca las clases que lleva él. De quién es una
+    // clase sale del horario: cada sesión guarda su instructorId.
+    const soloSuyos = (req) => !!permisos?.(req)?.soloSusGrupos;
+
+    // Corta la petición si el grupo no es suyo. Devuelve true cuando ya se ha
+    // respondido, para poder salir del handler sin más.
+    async function ajeno(req, res, groupId) {
+        if (!soloSuyos(req)) return false;
+        if (await grupoSuyo(req, groupId)) return false;
+        res.status(403).json({ error: 'Esa clase no es tuya.' });
+        return true;
+    }
+
+    // Los reportes de un instructor son los suyos y solo los suyos: se le fuerza
+    // el filtro por su id y se le quita el de actividad, que en buildSegFilter
+    // tiene preferencia y le dejaría ver los de toda la actividad.
+    router.use('/report', (req, res, next) => {
+        if (soloSuyos(req)) {
+            req.query.instructorId = req.userSession.userId;
+            delete req.query.activityId;
+        }
+        next();
+    });
 
     // ── Actividades ──────────────────────────────────────────────────────────
     router.get('/activities', async (req, res) => {
@@ -81,6 +105,7 @@ export function crearRouterTulClases({ pool, clubId }) {
     // ── Grupos ───────────────────────────────────────────────────────────────
     router.get('/groups', async (req, res) => {
         try {
+            const mios = soloSuyos(req) ? await gruposDe(req.userSession.userId) : null;
             const result = await pool.query(`
                 SELECT g.group_id as id, g.activity_id as "activityId", g.name, g.time,
                        g.max_students as "maxStudents", g.min_age as "minAge", g.max_age as "maxAge", g.sessions,
@@ -88,8 +113,9 @@ export function crearRouterTulClases({ pool, clubId }) {
                 FROM tul_groups g
                 JOIN tul_activities a ON g.activity_id = a.activity_id
                 WHERE a.club_id = $1
-                ORDER BY g.name`, [clubId]);
-            res.json({ success: true, groups: result.rows });
+                  AND ($2::uuid[] IS NULL OR g.group_id = ANY($2::uuid[]))
+                ORDER BY g.name`, [clubId, mios]);
+            res.json({ success: true, groups: result.rows, soloMios: !!mios });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
@@ -127,6 +153,7 @@ export function crearRouterTulClases({ pool, clubId }) {
     });
 
     router.put('/groups/:groupId', async (req, res) => {
+        if (await ajeno(req, res, req.params.groupId)) return;
         const { name, time, maxStudents, sessions, minAge, maxAge } = req.body;
         try {
             const maxStudentsVal = maxStudents != null && maxStudents !== '' ? parseInt(maxStudents) : null;
@@ -147,6 +174,7 @@ export function crearRouterTulClases({ pool, clubId }) {
     });
 
     router.delete('/groups/:groupId', async (req, res) => {
+        if (await ajeno(req, res, req.params.groupId)) return;
         try {
             await pool.query(
                 `DELETE FROM tul_groups g USING tul_activities a
@@ -167,6 +195,14 @@ export function crearRouterTulClases({ pool, clubId }) {
     });
 
     router.get('/instructors', async (req, res) => {
+        // Un instructor no elige a otro en los filtros: solo se ve a sí mismo.
+        if (soloSuyos(req)) {
+            const yo = await pool.query(
+                `SELECT user_id AS id, name, surname FROM users WHERE user_id = $1`,
+                [req.userSession.userId]
+            );
+            return res.json({ success: true, instructors: yo.rows });
+        }
         try {
             const result = await pool.query(
                 `SELECT user_id as id, email, name, surname, role, activity_ids as "activityIds"
@@ -184,6 +220,7 @@ export function crearRouterTulClases({ pool, clubId }) {
 
     // ── Alumnos de un grupo, matrícula y baja ────────────────────────────────
     router.get('/groups/:groupId/students', async (req, res) => {
+        if (await ajeno(req, res, req.params.groupId)) return;
         try {
             const result = await pool.query(`
                 SELECT u.user_id as id, u.email, CONCAT(u.name, ' ', COALESCE(u.surname, '')) as name,
@@ -259,6 +296,7 @@ export function crearRouterTulClases({ pool, clubId }) {
     });
 
     router.post('/groups/:groupId/students/enroll', async (req, res) => {
+        if (await ajeno(req, res, req.params.groupId)) return;
         const { studentId, levelOrder } = req.body;
         try {
             const groupRes = await pool.query(
@@ -281,6 +319,7 @@ export function crearRouterTulClases({ pool, clubId }) {
 
     // Cambiar el rango de un alumno en la actividad de una clase, sin salir de ella.
     router.put('/groups/:groupId/students/:studentId/nivel', async (req, res) => {
+        if (await ajeno(req, res, req.params.groupId)) return;
         try {
             await fijarNivel(req.params.groupId, req.params.studentId, req.body.levelOrder);
             res.json({ success: true });
@@ -288,6 +327,7 @@ export function crearRouterTulClases({ pool, clubId }) {
     });
 
     router.delete('/groups/:groupId/students/:studentId/enroll', async (req, res) => {
+        if (await ajeno(req, res, req.params.groupId)) return;
         try {
             await desmatricular(req.params.groupId, req.params.studentId);
             res.json({ success: true });
@@ -559,6 +599,7 @@ export function crearRouterTulClases({ pool, clubId }) {
     });
 
     router.post('/groups/:groupId/espera', async (req, res) => {
+        if (await ajeno(req, res, req.params.groupId)) return;
         const { studentId, grupoProvisionalId, nota, levelOrder } = req.body;
         if (!studentId) return res.status(400).json({ error: 'Falta el alumno.' });
         try {
@@ -659,7 +700,10 @@ export function crearRouterTulClases({ pool, clubId }) {
                 `SELECT g.group_id AS id, g.name, g.sessions, g.max_students AS "maxStudents", a.name AS "activityName",
                         (SELECT COUNT(*) FROM tul_group_students gs WHERE gs.group_id = g.group_id)::int AS "studentCount"
                  FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
-                 WHERE a.club_id = $1 ORDER BY a.name, g.name`, [clubId]
+                 WHERE a.club_id = $1
+                   AND ($2::uuid[] IS NULL OR g.group_id = ANY($2::uuid[]))
+                 ORDER BY a.name, g.name`,
+                [clubId, soloSuyos(req) ? await gruposDe(req.userSession.userId) : null]
             );
             const marcados = await pool.query(
                 `SELECT at.group_id, COUNT(*)::int n FROM tul_attendance at
@@ -691,6 +735,7 @@ export function crearRouterTulClases({ pool, clubId }) {
     // Alumnos de una clase con lo que tengan marcado ese día.
     router.get('/groups/:groupId/attendance/:fecha', async (req, res) => {
         const { groupId, fecha } = req.params;
+        if (await ajeno(req, res, groupId)) return;
         if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) return res.status(400).json({ error: 'Fecha no válida.' });
         try {
             const r = await pool.query(
@@ -710,6 +755,7 @@ export function crearRouterTulClases({ pool, clubId }) {
     });
 
     router.post('/groups/:groupId/attendance', async (req, res) => {
+        if (await ajeno(req, res, req.params.groupId)) return;
         const { studentId, fecha, status } = req.body;
         if (!ESTADOS_ASISTENCIA.includes(status)) return res.status(400).json({ error: 'Estado no válido.' });
         if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha || '')) return res.status(400).json({ error: 'Fecha no válida.' });
@@ -738,6 +784,7 @@ export function crearRouterTulClases({ pool, clubId }) {
 
     // Marcar de golpe a todos los que aún no tienen nada ese día.
     router.post('/groups/:groupId/attendance/todos', async (req, res) => {
+        if (await ajeno(req, res, req.params.groupId)) return;
         const { fecha, status } = req.body;
         if (!ESTADOS_ASISTENCIA.includes(status)) return res.status(400).json({ error: 'Estado no válido.' });
         if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha || '')) return res.status(400).json({ error: 'Fecha no válida.' });

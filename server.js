@@ -536,20 +536,8 @@ async function initDb() {
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
-        // Qué grupos lleva cada instructor. No existía en ninguna parte: los
-        // grupos viven en tul_groups, que es de Aim-Tul y no se toca desde aquí,
-        // así que la asignación va en su propia tabla nuestra. Sin esto no se
-        // puede saber de quién es una clase, y por tanto no se le puede limitar
-        // a un instructor a pasar lista solo de las suyas.
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS aim_grupo_instructores (
-                group_id UUID NOT NULL,
-                instructor_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                asignado_at TIMESTAMPTZ DEFAULT NOW(),
-                PRIMARY KEY (group_id, instructor_id)
-            )
-        `);
-        await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_grupo_instr ON aim_grupo_instructores(instructor_id)`);
+        // Quién lleva cada clase ya está en tul_groups.sessions: cada sesión
+        // guarda su instructorId. No hace falta nada nuestro.
 
         // Eventos que pide un instructor para que el club se los apruebe.
         await client.query(`
@@ -2137,11 +2125,17 @@ for (const [ruta, seccion] of [
     app.use(ruta, authenticateSession, requireSeccion(seccion));
 }
 
-// Los grupos que lleva un instructor. Devuelve null cuando no hay que filtrar
-// por nadie (dirección y superadmins ven todos), y una lista de ids cuando sí.
+// Los grupos que lleva un instructor. Sale del horario: cada sesión de un grupo
+// guarda a qué profesor se le ha asignado (tul_groups.sessions -> instructorId),
+// y eso es justo lo que hace suya una clase.
 async function gruposDe(userId) {
     const r = await pool.query(
-        `SELECT group_id FROM aim_grupo_instructores WHERE instructor_id = $1`, [userId]
+        `SELECT DISTINCT g.group_id
+         FROM tul_groups g
+         JOIN tul_activities a ON a.activity_id = g.activity_id
+         CROSS JOIN LATERAL jsonb_array_elements(COALESCE(g.sessions::jsonb, '[]'::jsonb)) sess
+         WHERE a.club_id = $1 AND sess->>'instructorId' = $2`,
+        [AIM_CLUB_ID, String(userId)]
     );
     return r.rows.map(x => x.group_id);
 }
@@ -2150,8 +2144,10 @@ async function gruposDe(userId) {
 async function grupoSuyo(req, groupId) {
     if (!permisos(req).soloSusGrupos) return true;
     const r = await pool.query(
-        `SELECT 1 FROM aim_grupo_instructores WHERE instructor_id = $1 AND group_id = $2`,
-        [req.userSession.userId, groupId]
+        `SELECT 1 FROM tul_groups g
+         CROSS JOIN LATERAL jsonb_array_elements(COALESCE(g.sessions::jsonb, '[]'::jsonb)) sess
+         WHERE g.group_id = $1 AND sess->>'instructorId' = $2 LIMIT 1`,
+        [groupId, String(req.userSession.userId)]
     );
     return r.rowCount > 0;
 }
@@ -2185,51 +2181,10 @@ function requireRol(minimo) {
     };
 }
 
-// Admin: qué instructores lleva cada grupo, y al revés. Lo gestiona la
-// dirección desde la ficha del instructor.
-app.get('/api/admin/grupos-instructores', authenticateSession, requireAdmin, async (req, res) => {
-    try {
-        const r = await pool.query(
-            `SELECT gi.group_id, gi.instructor_id, u.name, u.surname, g.name AS grupo, a.name AS actividad
-             FROM aim_grupo_instructores gi
-             JOIN users u ON u.user_id = gi.instructor_id
-             LEFT JOIN tul_groups g ON g.group_id = gi.group_id
-             LEFT JOIN tul_activities a ON a.activity_id = g.activity_id
-             ORDER BY u.surname, u.name, a.name, g.name`
-        );
-        res.set('Cache-Control', 'no-store');
-        res.json(r.rows.map(x => ({
-            groupId: x.group_id, instructorId: x.instructor_id,
-            instructor: `${x.name} ${x.surname || ''}`.trim(),
-            grupo: x.grupo, actividad: x.actividad,
-        })));
-    } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.put('/api/admin/instructores/:id/grupos', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
-    const { grupos } = req.body;
-    if (!Array.isArray(grupos)) return res.status(400).json({ error: 'Faltan los grupos.' });
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-        await client.query(`DELETE FROM aim_grupo_instructores WHERE instructor_id = $1`, [req.params.id]);
-        for (const g of grupos) {
-            await client.query(
-                `INSERT INTO aim_grupo_instructores (group_id, instructor_id) VALUES ($1, $2)
-                 ON CONFLICT DO NOTHING`, [g, req.params.id]
-            );
-        }
-        await client.query('COMMIT');
-        res.json({ success: true, n: grupos.length });
-    } catch (err) {
-        await client.query('ROLLBACK');
-        res.status(500).json({ error: err.message });
-    } finally { client.release(); }
-});
-
 // Gestión de clases y reportes de Aim-Tul (mismas tablas tul_*, mismo SQL),
 // portados a nuestro panel. Ver tul-clases.js.
-app.use('/api/admin/tul', authenticateSession, requireAdmin, crearRouterTulClases({ pool, clubId: AIM_CLUB_ID }));
+app.use('/api/admin/tul', authenticateSession, requireAdmin,
+    crearRouterTulClases({ pool, clubId: AIM_CLUB_ID, permisos, gruposDe, grupoSuyo }));
 
 function mapCampChild(r) {
     return {
