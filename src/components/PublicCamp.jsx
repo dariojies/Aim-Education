@@ -287,20 +287,28 @@ export default function PublicCamp() {
               <div className="fade-up d2 camp-hero-img">
                 <div style={{
                   aspectRatio: "4/5",
-                  background: "repeating-linear-gradient(45deg, rgba(255,255,255,.08) 0 12px, rgba(255,255,255,.16) 12px 24px)",
-                  borderRadius: 24,
-                  border: "2px solid rgba(255,255,255,.3)",
-                  boxShadow: "0 30px 80px -20px rgba(0,0,0,.4)",
                   position: "relative",
-                  display: "grid",
-                  placeItems: "center",
                 }}>
-                  <span style={{fontFamily: "var(--font-mono)", fontSize: 13, color: "rgba(255,255,255,.85)", background: "rgba(0,0,0,.2)", padding: "8px 14px", borderRadius: 8}}>
-                    foto · campamento aim
-                  </span>
-                  <span style={{position: "absolute", top: 24, right: -16, background: "white", color: "var(--ink)", padding: "8px 14px", borderRadius: 999, fontSize: 12, fontWeight: 800, boxShadow: "var(--shadow)"}}>🥋 Taekwondo</span>
-                  <span style={{position: "absolute", bottom: 60, left: -22, background: "white", color: "var(--ink)", padding: "8px 14px", borderRadius: 999, fontSize: 12, fontWeight: 800, boxShadow: "var(--shadow)"}}>🤖 Robótica</span>
-                  <span style={{position: "absolute", top: "50%", right: -28, background: "white", color: "var(--ink)", padding: "8px 14px", borderRadius: 999, fontSize: 12, fontWeight: 800, boxShadow: "var(--shadow)"}}>🌍 Inglés</span>
+                  {/* El recorte va en un hueco propio: si se pusiera en el de
+                      fuera, se llevaría por delante las etiquetas que asoman. */}
+                  <div style={{
+                    position: "absolute", inset: 0,
+                    borderRadius: 24,
+                    border: "2px solid rgba(255,255,255,.3)",
+                    boxShadow: "0 30px 80px -20px rgba(0,0,0,.4)",
+                    overflow: "hidden",
+                  }}>
+                    {/* La imagen es vertical (868x1300) y el hueco es 4/5, así
+                        que 'cover' recorta un poco por arriba y por abajo. */}
+                    <img
+                      src="/src/submarcas/AIM VERANO--65.jpg"
+                      alt="Campamento de verano de AIM Education"
+                      style={{width: "100%", height: "100%", objectFit: "cover", display: "block"}}
+                    />
+                  </div>
+                  <span style={{position: "absolute", top: 24, right: -16, background: "white", color: "var(--ink)", padding: "8px 14px", borderRadius: 999, fontSize: 12, fontWeight: 800, boxShadow: "var(--shadow)"}}>Taekwondo</span>
+                  <span style={{position: "absolute", bottom: 60, left: -22, background: "white", color: "var(--ink)", padding: "8px 14px", borderRadius: 999, fontSize: 12, fontWeight: 800, boxShadow: "var(--shadow)"}}>Robótica</span>
+                  <span style={{position: "absolute", top: "50%", right: -28, background: "white", color: "var(--ink)", padding: "8px 14px", borderRadius: 999, fontSize: 12, fontWeight: 800, boxShadow: "var(--shadow)"}}>Inglés</span>
                 </div>
               </div>
             </div>
