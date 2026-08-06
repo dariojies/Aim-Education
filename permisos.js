@@ -46,6 +46,8 @@ export function permisosDe(rol) {
         // ── Secciones del menú ──
         secciones: {
             overview: true,
+            // La agenda es de cada uno: la tiene todo el que entra al panel.
+            agenda: true,
             students: true,
             familias: !instructor,
             billing: !instructor,

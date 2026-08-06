@@ -578,6 +578,25 @@ async function initDb() {
         // Quién da el evento. Esto sí sale en los datos del evento.
         await client.query(`ALTER TABLE aim_eventos ADD COLUMN IF NOT EXISTS docente_id UUID REFERENCES users(user_id) ON DELETE SET NULL`);
 
+        // Las tareas de cada uno. Son privadas: solo las ve y las toca quien las
+        // escribe, y por eso no hay ningún endpoint de administración sobre
+        // ellas. Van con hora para poder colocarlas en los huecos libres del
+        // día, o sin ella si es algo que hay que hacer y da igual cuándo.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_tareas (
+                id SERIAL PRIMARY KEY,
+                user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                fecha DATE NOT NULL,
+                hora VARCHAR(5),
+                hora_fin VARCHAR(5),
+                titulo VARCHAR(200) NOT NULL,
+                notas TEXT,
+                hecha BOOLEAN NOT NULL DEFAULT false,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_tareas_dia ON aim_tareas(user_id, fecha)`);
+
         // Las imágenes del mosaico de la portada. Van en su propia tabla y no
         // dentro del JSON de ajustes para que /api/landing siga siendo ligero:
         // así la portada no se descarga las siete imágenes en cada visita.
@@ -2299,6 +2318,119 @@ app.use('/api/admin/camp', authenticateSession, (req, res, next) => {
         return res.status(403).json({ error: 'Tu perfil solo puede pasar lista y ver la agenda del campamento.' });
     }
     return res.status(403).json({ error: 'Tu perfil solo puede pasar lista y ver la agenda del campamento.' });
+});
+
+// El día de quien lo pide: lo que ya tiene ocupado (las clases que da y los
+// eventos donde figura como docente) y sus tareas. Todo suyo y solo suyo.
+app.get('/api/me/agenda', authenticateSession, requireAdmin, async (req, res) => {
+    const yo = req.userSession.userId;
+    const fecha = String(req.query.fecha || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) return res.status(400).json({ error: 'Falta el día.' });
+    try {
+        // getDay() da 0=domingo; en las sesiones de aim-tul 0 es lunes.
+        const js = new Date(fecha + 'T12:00:00').getDay();
+        const diaSemana = (js + 6) % 7;
+
+        const grupos = await pool.query(
+            `SELECT g.group_id, g.name, a.name AS actividad, g.sessions
+             FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE a.club_id = $1`, [AIM_CLUB_ID]
+        );
+        const clases = [];
+        for (const g of grupos.rows) {
+            for (const ses of (Array.isArray(g.sessions) ? g.sessions : [])) {
+                if (String(ses?.instructorId || '') !== String(yo)) continue;
+                if (!(ses?.days || []).map(Number).includes(diaSemana)) continue;
+                clases.push({
+                    id: `${g.group_id}-${ses.startTime}`,
+                    grupo: g.name, actividad: g.actividad,
+                    hora: ses.startTime || null, horaFin: ses.endTime || null,
+                    aula: ses.aulaName || null,
+                });
+            }
+        }
+        clases.sort((a, b) => String(a.hora).localeCompare(String(b.hora)));
+
+        const eventos = await pool.query(
+            `SELECT id, title, time, end_time, venue FROM aim_eventos
+             WHERE docente_id = $1 AND event_date = $2::date ORDER BY time`, [yo, fecha]
+        );
+        const tareas = await pool.query(
+            `SELECT * FROM aim_tareas WHERE user_id = $1 AND fecha = $2::date
+             ORDER BY (hora IS NULL), hora, id`, [yo, fecha]
+        );
+
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            fecha, clases,
+            eventos: eventos.rows.map(e => ({
+                id: e.id, titulo: e.title, hora: e.time, horaFin: e.end_time, lugar: e.venue,
+            })),
+            tareas: tareas.rows.map(t => ({
+                id: t.id, titulo: t.titulo, hora: t.hora, horaFin: t.hora_fin,
+                notas: t.notas, hecha: t.hecha,
+            })),
+        });
+    } catch (err) {
+        console.error('Error cargando la agenda:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+const HORA_OK = (h) => h == null || h === '' || /^([01]\d|2[0-3]):[0-5]\d$/.test(h);
+
+app.post('/api/me/tareas', authenticateSession, requireAdmin, async (req, res) => {
+    const { fecha, titulo, hora, horaFin, notas } = req.body;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha || ''))) return res.status(400).json({ error: 'Falta el día.' });
+    if (!titulo?.trim()) return res.status(400).json({ error: 'Ponle un nombre a la tarea.' });
+    if (!HORA_OK(hora) || !HORA_OK(horaFin)) return res.status(400).json({ error: 'La hora no es válida.' });
+    if (hora && horaFin && horaFin <= hora) return res.status(400).json({ error: 'La hora de fin va después de la de inicio.' });
+    try {
+        const r = await pool.query(
+            `INSERT INTO aim_tareas (user_id, fecha, hora, hora_fin, titulo, notas)
+             VALUES ($1,$2::date,$3,$4,$5,$6) RETURNING id`,
+            [req.userSession.userId, fecha, hora || null, horaFin || null, titulo.trim().slice(0, 200), notas?.trim() || null]
+        );
+        res.status(201).json({ id: r.rows[0].id });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Todas las consultas llevan el user_id: una tarea de otro ni se lee ni se toca.
+app.patch('/api/me/tareas/:id', authenticateSession, requireAdmin, async (req, res) => {
+    const { titulo, hora, horaFin, notas, hecha, fecha } = req.body;
+    if (!HORA_OK(hora) || !HORA_OK(horaFin)) return res.status(400).json({ error: 'La hora no es válida.' });
+    const campos = [], vals = [];
+    const set = (col, v) => { vals.push(v); campos.push(`${col} = $${vals.length}`); };
+    if (titulo !== undefined) { if (!titulo.trim()) return res.status(400).json({ error: 'La tarea necesita un nombre.' }); set('titulo', titulo.trim().slice(0, 200)); }
+    if (hora !== undefined) set('hora', hora || null);
+    if (horaFin !== undefined) set('hora_fin', horaFin || null);
+    if (notas !== undefined) set('notas', notas?.trim() || null);
+    if (hecha !== undefined) set('hecha', !!hecha);
+    if (fecha !== undefined) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha))) return res.status(400).json({ error: 'Día no válido.' });
+        vals.push(fecha); campos.push(`fecha = $${vals.length}::date`);
+    }
+    if (!campos.length) return res.status(400).json({ error: 'Nada que cambiar.' });
+    vals.push(req.params.id, req.userSession.userId);
+    try {
+        const r = await pool.query(
+            `UPDATE aim_tareas SET ${campos.join(', ')}
+             WHERE id = $${vals.length - 1} AND user_id = $${vals.length} RETURNING id`, vals
+        );
+        if (!r.rowCount) return res.status(404).json({ error: 'Esa tarea no es tuya.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/me/tareas/:id', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `DELETE FROM aim_tareas WHERE id = $1 AND user_id = $2 RETURNING id`,
+            [req.params.id, req.userSession.userId]
+        );
+        if (!r.rowCount) return res.status(404).json({ error: 'Esa tarea no es tuya.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // Los grupos que lleva un instructor. Sale del horario: cada sesión de un grupo

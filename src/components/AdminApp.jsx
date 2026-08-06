@@ -6,6 +6,7 @@ import { ListaClases, AdminReportes, colorOcupacion } from './AdminTulClases.jsx
 import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong, campDayParts, nombreMedioPago } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 import { AdminSupport } from './AdminSupport.jsx';
+import AdminAgenda from './AdminAgenda.jsx';
 import { fmtFecha, fmtFechaHora, fmtFechaLarga, fmtFechaCorta } from '../fechas.js';
 import CampTarifas from './CampTarifas.jsx';
 import BillingArqueo from './BillingArqueo.jsx';
@@ -29,6 +30,7 @@ function sectionLabel(id) {
     billing: "Facturación",
     groups: "Grupos",
     instructors: "Instructores",
+    agenda: "Mi día",
     portada: "Portada de la web",
     settings: "Ajustes del club",
     support: "Panel de soporte",
@@ -5491,6 +5493,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
     {
       heading: "Gestión", items: [
         { id: "overview", label: "Resumen", icon: <I.Dashboard /> },
+        { id: "agenda", label: "Mi día", icon: <I.Check /> },
         { id: "students", label: "Alumnos", icon: <I.Users /> },
         { id: "familias", label: "Familias", icon: <I.Heart /> },
         { id: "billing", label: "Facturación", icon: <I.CreditCard /> },
@@ -5629,6 +5632,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
             </div>
           </div>
 
+          {ver("agenda") && <AdminAgenda showToast={showToast} />}
           {ver("overview") && (permisos.resumenGeneral
             ? <AdminOverview setView={setView} refreshTrigger={refreshTrigger} showToast={showToast} />
             : <ResumenInstructor setView={setView} refreshTrigger={refreshTrigger} />)}
