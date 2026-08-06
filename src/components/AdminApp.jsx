@@ -1932,6 +1932,10 @@ function AjustesPortada({ showToast }) {
     setSeleccion(null);
   }
 
+  // La imagen se coloca en el bloque tal cual, sin recargar la configuración:
+  // recargarla traía la guardada en el servidor y se llevaba por delante los
+  // bloques recién añadidos, que aún no están guardados. Al perderse el bloque,
+  // su imagen quedaba huérfana y la borraba la limpieza del siguiente guardado.
   async function subirImagen(id, archivo) {
     const r = await fetch(`/api/admin/landing/mosaico/${id}/imagen`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
@@ -1939,13 +1943,13 @@ function AjustesPortada({ showToast }) {
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) return alert(d.error || 'No se ha podido subir la imagen.');
-    await recargar();
-    showToast?.('Imagen subida.');
+    cambiarHueco(id, { imagenUrl: d.imagenUrl, tipo: 'libre' });
+    showToast?.('Imagen subida. Acuérdate de guardar la portada.');
   }
 
   async function quitarImagen(id) {
     const r = await fetch(`/api/admin/landing/mosaico/${id}/imagen`, { method: 'DELETE', credentials: 'include' });
-    if (r.ok) { await recargar(); showToast?.('Imagen quitada.'); }
+    if (r.ok) { cambiarHueco(id, { imagenUrl: null }); showToast?.('Imagen quitada.'); }
   }
 
   if (!cfg) return null;

@@ -2587,12 +2587,16 @@ app.post('/api/admin/landing/mosaico/:id/imagen', authenticateSession, requireAd
     const datos = Buffer.from(m[2], 'base64');
     if (datos.length > 2_000_000) return res.status(400).json({ error: 'La imagen pesa demasiado (máx. 2 MB).' });
     try {
-        await pool.query(
+        const g = await pool.query(
             `INSERT INTO aim_portada_imagenes (id, mime, datos, actualizado_at) VALUES ($1,$2,$3,NOW())
-             ON CONFLICT (id) DO UPDATE SET mime = $2, datos = $3, actualizado_at = NOW()`,
+             ON CONFLICT (id) DO UPDATE SET mime = $2, datos = $3, actualizado_at = NOW()
+             RETURNING EXTRACT(EPOCH FROM actualizado_at)::bigint AS v`,
             [req.params.id, m[1].toLowerCase(), datos]
         );
-        res.json({ success: true });
+        // Se devuelve la dirección para que la pantalla la ponga en el bloque sin
+        // tener que recargar la configuración: un bloque recién añadido todavía
+        // no está guardado, y recargar lo haría desaparecer.
+        res.json({ success: true, imagenUrl: `/api/landing/mosaico/${req.params.id}/imagen?v=${g.rows[0].v}` });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
