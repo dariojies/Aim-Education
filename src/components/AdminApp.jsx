@@ -5491,27 +5491,46 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
 
   const sections = [
     {
-      heading: "Gestión", items: [
+      // Agrupado por aquello de lo que trata cada sitio, no por quién lo usa:
+      // once entradas seguidas bajo un solo título no se leen, hay que ir
+      // buscando. Cada grupo cabe de un vistazo.
+      heading: "Tu día", items: [
         { id: "overview", label: "Resumen", icon: <I.Dashboard /> },
         { id: "agenda", label: "Mi día", icon: <I.Check /> },
+        { id: "support", label: "Soporte", icon: <I.Bell /> },
+      ]
+    },
+    {
+      heading: "Personas", items: [
         { id: "students", label: "Alumnos", icon: <I.Users /> },
         { id: "familias", label: "Familias", icon: <I.Heart /> },
+        { id: "instructors", label: "Instructores", icon: <I.Whistle /> },
+      ]
+    },
+    {
+      heading: "Actividad", items: [
+        { id: "classes", label: "Clases y horarios", icon: <I.Calendar /> },
+        { id: "groups", label: "Grupos", icon: <I.Trophy /> },
+        { id: "camp", label: "Campamento", icon: <I.Sun /> },
+        { id: "events", label: "Eventos", icon: <I.Star /> },
+        { id: "reportes", label: "Reportes", icon: <I.Chart /> },
+      ]
+    },
+    {
+      heading: "Dinero", items: [
         { id: "billing", label: "Facturación", icon: <I.CreditCard /> },
         { id: "payments", label: "Gastos", icon: <I.Wallet /> },
-        { id: "classes", label: "Clases y horarios", icon: <I.Calendar /> },
-        { id: "camp", label: "Campamento", icon: <I.Sun /> },
-        { id: "reportes", label: "Reportes", icon: <I.Trophy /> },
-        { id: "events", label: "Eventos", icon: <I.Star /> },
+      ]
+    },
+    {
+      heading: "Web pública", items: [
+        { id: "portada", label: "Portada", icon: <I.Portada /> },
         { id: "news", label: "Noticias / Foro", icon: <I.Newspaper /> },
       ]
     },
     {
       heading: "Club", items: [
-        { id: "groups", label: "Grupos", icon: <I.Trophy /> },
-        { id: "instructors", label: "Instructores", icon: <I.Users /> },
-        { id: "portada", label: "Portada web", icon: <I.Portada /> },
         { id: "settings", label: "Ajustes", icon: <I.Settings /> },
-        { id: "support", label: "Soporte", icon: <I.Bell /> },
       ]
     },
   ]

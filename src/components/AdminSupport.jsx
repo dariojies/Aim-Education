@@ -594,8 +594,12 @@ export function AdminSupport({ user, ticketId = null }) {
   }
 
   const filtered = getFiltered();
+  // Los de arriba contaban cosas distintas sin decirlo: el total incluía los
+  // resueltos, y "alta prioridad" salía de todos los estados, así que aparecían
+  // más urgentes que abiertos y no había forma de entenderlo. Ahora los dos
+  // hablan de lo que queda por hacer.
   const openCount = tickets.filter(t => t.status === 'open').length;
-  const highCount = tickets.filter(t => t.priority === 'high').length;
+  const highCount = tickets.filter(t => t.priority === 'high' && t.status === 'open').length;
 
   // Lo terminado en los últimos 3 días, de lo más reciente a lo más antiguo:
   // sirve para ver de un vistazo qué se ha sacado adelante. Se apoya en
@@ -620,7 +624,7 @@ export function AdminSupport({ user, ticketId = null }) {
       {/* Tabs */}
       <div style={{display: "flex", gap: 6, marginBottom: 22}}>
         {[
-          { id: "list", label: `Ver tickets · ${tickets.length}` },
+          { id: "list", label: `Ver tickets · ${filtered.length}` },
           { id: "recientes", label: `Hechos (72 h) · ${recientes.length}` },
           { id: "create", label: "Crear ticket" },
         ].map(t => (
@@ -630,8 +634,17 @@ export function AdminSupport({ user, ticketId = null }) {
         ))}
         <div style={{flex: 1}} />
         <div style={{display: "flex", gap: 10, alignItems: "center", fontSize: 13, color: "var(--ink-3)"}}>
-          <span style={{color: "var(--orange)", fontWeight: 700}}>{openCount} abiertos</span>
-          {highCount > 0 && <span style={{color: "var(--orange)", fontWeight: 700, background: "color-mix(in oklab, var(--orange) 12%, var(--bg-2))", padding: "2px 10px", borderRadius: 99}}>{highCount} alta prioridad</span>}
+          {/* Se dice de dónde sale cada número, que era justo lo que faltaba. */}
+          <span title={`${tickets.length} en total, contando los ya resueltos`}>
+            {filtered.length} de {tickets.length}
+          </span>
+          <span style={{color: "var(--orange)", fontWeight: 700}}>{openCount} sin cerrar</span>
+          {highCount > 0 && (
+            <span title="Prioridad alta y todavía abiertos"
+              style={{color: "var(--orange)", fontWeight: 700, background: "color-mix(in oklab, var(--orange) 12%, var(--bg-2))", padding: "2px 10px", borderRadius: 99}}>
+              {highCount} urgente{highCount !== 1 ? 's' : ''} sin cerrar
+            </span>
+          )}
         </div>
       </div>
 
