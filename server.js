@@ -568,9 +568,15 @@ async function initDb() {
         for (const col of [
             'end_date DATE', 'price VARCHAR(100)', 'precio NUMERIC(10,2)',
             'precio_socio NUMERIC(10,2)', 'poster_url TEXT',
+            // Lo que quien propone quiere contarle al club y no debe salir
+            // publicado: se queda en la solicitud y no se copia al evento.
+            'comentario_privado TEXT',
+            'docente_id UUID REFERENCES users(user_id) ON DELETE SET NULL',
         ]) {
             await client.query(`ALTER TABLE aim_eventos_solicitudes ADD COLUMN IF NOT EXISTS ${col}`);
         }
+        // Quién da el evento. Esto sí sale en los datos del evento.
+        await client.query(`ALTER TABLE aim_eventos ADD COLUMN IF NOT EXISTS docente_id UUID REFERENCES users(user_id) ON DELETE SET NULL`);
 
         // Las imágenes del mosaico de la portada. Van en su propia tabla y no
         // dentro del JSON de ajustes para que /api/landing siga siendo ligero:
@@ -1712,6 +1718,8 @@ function mapEvent(r) {
         price: r.price,
         precio: r.precio == null ? null : Number(r.precio),
         precioSocio: r.precio_socio == null ? null : Number(r.precio_socio),
+        docenteId: r.docente_id || null,
+        docente: r.docente || null,
         activity: r.activity || 'taekwondo',
         posterUrl: r.poster_url,
     };
@@ -1721,10 +1729,13 @@ function mapEvent(r) {
 app.get('/api/events', async (req, res) => {
     try {
         const all = req.query.all === '1';
+        // Con el nombre de quien lo da: es parte de los datos del evento y sale
+        // en su ficha, tanto en el calendario como en el panel.
         const result = await pool.query(
-            all
-                ? `SELECT * FROM aim_eventos ORDER BY event_date ASC`
-                : `SELECT * FROM aim_eventos WHERE COALESCE(end_date, event_date) >= CURRENT_DATE ORDER BY event_date ASC`
+            `SELECT e.*, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS docente
+             FROM aim_eventos e LEFT JOIN users u ON u.user_id = e.docente_id
+             ${all ? '' : 'WHERE COALESCE(e.end_date, e.event_date) >= CURRENT_DATE'}
+             ORDER BY e.event_date ASC`
         );
         res.set('Cache-Control', 'public, max-age=120, stale-while-revalidate=30');
         res.json(result.rows.map(mapEvent));
@@ -1740,7 +1751,10 @@ const sinDinero = (e) => { const { price, precio, precioSocio, ...resto } = e; r
 
 app.get('/api/admin/events', authenticateSession, async (req, res) => {
     try {
-        const result = await pool.query(`SELECT * FROM aim_eventos ORDER BY event_date ASC`);
+        const result = await pool.query(
+            `SELECT e.*, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS docente
+             FROM aim_eventos e LEFT JOIN users u ON u.user_id = e.docente_id
+             ORDER BY e.event_date ASC`);
         res.set('Cache-Control', 'no-store');
         const conDinero = permisos(req).verDineroEventos;
         res.json(result.rows.map(r => conDinero ? mapEvent(r) : sinDinero(mapEvent(r))));
@@ -1750,16 +1764,16 @@ app.get('/api/admin/events', authenticateSession, async (req, res) => {
 });
 
 app.post('/api/admin/events', authenticateSession, requirePermiso('editarEventos'), async (req, res) => {
-    const { title, description, date, endDate, time, endTime, venue, price, activity, posterUrl, precio, precioSocio } = req.body;
+    const { title, description, date, endDate, time, endTime, venue, price, activity, posterUrl, precio, precioSocio, docenteId } = req.body;
     if (!title || !date) return res.status(400).json({ error: 'Título y fecha son obligatorios.' });
     const id = crypto.randomUUID();
     try {
         await pool.query(
-            `INSERT INTO aim_eventos (id, title, description, event_date, end_date, time, end_time, venue, price, activity, poster_url, precio, precio_socio)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+            `INSERT INTO aim_eventos (id, title, description, event_date, end_date, time, end_time, venue, price, activity, poster_url, precio, precio_socio, docente_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
             [id, title, description || null, date, endDate || null, time || null, endTime || null,
              venue?.trim() || LUGAR_POR_DEFECTO, price || null, activity || 'taekwondo', posterUrl || null,
-             numONull(precio), numONull(precioSocio)]
+             numONull(precio), numONull(precioSocio), docenteId || null]
         );
         const result = await pool.query('SELECT * FROM aim_eventos WHERE id = $1', [id]);
         res.status(201).json(mapEvent(result.rows[0]));
@@ -1770,17 +1784,17 @@ app.post('/api/admin/events', authenticateSession, requirePermiso('editarEventos
 });
 
 app.put('/api/admin/events/:id', authenticateSession, requirePermiso('editarEventos'), async (req, res) => {
-    const { title, description, date, endDate, time, endTime, venue, price, activity, posterUrl, precio, precioSocio } = req.body;
+    const { title, description, date, endDate, time, endTime, venue, price, activity, posterUrl, precio, precioSocio, docenteId } = req.body;
     if (!title || !date) return res.status(400).json({ error: 'Título y fecha son obligatorios.' });
     try {
         const result = await pool.query(
             `UPDATE aim_eventos
              SET title=$1, description=$2, event_date=$3, end_date=$4, time=$5, end_time=$6, venue=$7, price=$8, activity=$9, poster_url=$10,
-                 precio=$12, precio_socio=$13, updated_at=NOW()
+                 precio=$12, precio_socio=$13, docente_id=$14, updated_at=NOW()
              WHERE id=$11 RETURNING *`,
             [title, description || null, date, endDate || null, time || null, endTime || null,
              venue?.trim() || LUGAR_POR_DEFECTO, price || null, activity || 'taekwondo', posterUrl || null, req.params.id,
-             numONull(precio), numONull(precioSocio)]
+             numONull(precio), numONull(precioSocio), docenteId || null]
         );
         if (result.rowCount === 0) return res.status(404).json({ error: 'Evento no encontrado.' });
         res.json(mapEvent(result.rows[0]));
@@ -2111,11 +2125,13 @@ app.post('/api/admin/events/solicitudes', authenticateSession, requireAdmin, asy
         const r = await pool.query(
             `INSERT INTO aim_eventos_solicitudes
                 (solicitante_id, titulo, descripcion, fecha, end_date, hora, hora_fin, lugar,
-                 actividad, price, precio, precio_socio, poster_url)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+                 actividad, price, precio, precio_socio, poster_url
+                 , comentario_privado, docente_id)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
             [req.userSession.userId, title.trim(), description?.trim() || null, date, endDate || null,
              time || null, endTime || null, venue?.trim() || LUGAR_POR_DEFECTO,
-             activity || 'general', price || null, numONull(precio), numONull(precioSocio), posterUrl || null]
+             activity || 'general', price || null, numONull(precio), numONull(precioSocio), posterUrl || null,
+             req.body.comentarioPrivado?.trim() || null, req.body.docenteId || null]
         );
         res.status(201).json({ id: r.rows[0].id });
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -2126,8 +2142,11 @@ app.get('/api/admin/events/solicitudes', authenticateSession, requireAdmin, asyn
     const todas = permisos(req).editarEventos;
     try {
         const r = await pool.query(
-            `SELECT s.*, u.name, u.surname FROM aim_eventos_solicitudes s
+            `SELECT s.*, u.name, u.surname,
+                    TRIM(CONCAT(d.name, ' ', COALESCE(d.surname, ''))) AS docente
+             FROM aim_eventos_solicitudes s
              JOIN users u ON u.user_id = s.solicitante_id
+             LEFT JOIN users d ON d.user_id = s.docente_id
              ${todas ? '' : 'WHERE s.solicitante_id = $1'}
              ORDER BY (s.estado = 'pendiente') DESC, s.created_at DESC`,
             todas ? [] : [req.userSession.userId]
@@ -2145,6 +2164,10 @@ app.get('/api/admin/events/solicitudes', authenticateSession, requireAdmin, asyn
                 precioSocio: x.precio_socio == null ? null : Number(x.precio_socio),
                 estado: x.estado, respuesta: x.respuesta, eventoId: x.evento_id,
                 solicitante: `${x.name} ${x.surname || ''}`.trim(), createdAt: x.created_at,
+                // Lo que quien propone quiere explicar, y quién lo daría. El
+                // comentario se queda aquí: no se copia al evento al aprobar.
+                comentarioPrivado: x.comentario_privado,
+                docenteId: x.docente_id, docente: x.docente,
             };
             return conDinero ? e : sinDinero(e);
         }));
@@ -2174,9 +2197,11 @@ app.post('/api/admin/events/solicitudes/:id/:accion', authenticateSession, requi
 
             eventoId = crypto.randomUUID();
             await client.query(
+                // El comentario privado no se copia: se queda en la solicitud, que
+                // es justo lo que se pide, que no se vea una vez publicado.
                 `INSERT INTO aim_eventos (id, title, description, event_date, end_date, time, end_time,
-                                          venue, activity, price, precio, precio_socio, poster_url)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+                                          venue, activity, price, precio, precio_socio, poster_url, docente_id)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
                 [eventoId,
                  val(e.title, sol.titulo), val(e.description, sol.descripcion),
                  fecha, val(e.endDate, sol.end_date) || null,
@@ -2186,7 +2211,8 @@ app.post('/api/admin/events/solicitudes/:id/:accion', authenticateSession, requi
                  val(e.price, sol.price),
                  e.precio === undefined ? sol.precio : numONull(e.precio),
                  e.precioSocio === undefined ? sol.precio_socio : numONull(e.precioSocio),
-                 val(e.posterUrl, sol.poster_url)]
+                 val(e.posterUrl, sol.poster_url),
+                 val(e.docenteId, sol.docente_id) || null]
             );
         }
         await client.query(

@@ -71,6 +71,7 @@ export default function PublicCalendar() {
     time: e.time || "Todo el día",
     endTime: e.endTime || null,
     venue: e.venue || "",
+    docente: e.docente || null,
     price: e.price || null,
     desc: e.description || "",
     posterUrl: e.posterUrl || null,
@@ -461,7 +462,15 @@ export default function PublicCalendar() {
                     {selectedEvent.venue && (
                       <div style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 14, color: "var(--ink-2)" }}>
                         <I.MapPin width={16} height={16} style={{ color, flexShrink: 0 }} />
-                        <span>{selectedEvent.venue}</span>
+                        {/* La dirección se puede pulsar para abrir el mapa. */}
+                        <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(selectedEvent.venue)}`}
+                           target="_blank" rel="noopener" style={{ color: "var(--ink-2)" }}>{selectedEvent.venue}</a>
+                      </div>
+                    )}
+                    {selectedEvent.docente && (
+                      <div style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 14, color: "var(--ink-2)" }}>
+                        <I.Users width={16} height={16} style={{ color, flexShrink: 0 }} />
+                        <span>Lo da {selectedEvent.docente}</span>
                       </div>
                     )}
                     {selectedEvent.price && (

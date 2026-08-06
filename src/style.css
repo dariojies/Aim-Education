@@ -1172,24 +1172,30 @@ html[data-actaccents="off"] [class*="act-"] {
    color. Metidos en un cuadrado de 64x64 con las esquinas redondeadas y
    overflow oculto, el recuadro les recortaba las esquinas y parecían cortados.
    Ahora el hueco se adapta al alto del logo y no recorta nada. */
+/* El hueco vuelve a medir siempre lo mismo para que todos los logos queden a la
+   misma altura: los assets no son iguales (Taekwondo es cuadrado, 187x187, y el
+   resto apaisados) y con el alto automático el suyo caía 5px más abajo que los
+   demás. Lo que no lleva es el recorte: sin overflow oculto ni esquinas
+   redondeadas, que era lo que les comía las esquinas de su propio fondo. */
 .act-card .icon-tile {
   width: 64px;
-  height: auto;
+  height: 64px;
   flex-shrink: 0;
   background: transparent;
-  display: block;
-  line-height: 0;
+  display: grid;
+  place-items: center;
 }
 
 .act-card .icon-tile img {
-  width: 100%;
+  width: auto;
   height: auto;
+  max-width: 100%;
+  max-height: 100%;
   display: block;
   object-fit: contain;
 }
 
 .act-card .icon-tile.placeholder {
-  height: 64px;
   border-radius: 14px;
   background: color-mix(in oklab, var(--act, var(--teal)) 16%, var(--bg-2));
   color: var(--act, var(--teal));

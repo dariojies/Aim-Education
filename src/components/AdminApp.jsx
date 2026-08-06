@@ -2362,6 +2362,7 @@ function TarjetaEvento({ ev, conDinero = true, pie }) {
         <div style={{ fontSize: 12, color: 'var(--ink-3)', display: 'grid', gap: 3 }}>
           <span>{fmtFechaCorta(ev.date)}{ev.endDate ? ` – ${fmtFechaCorta(ev.endDate)}` : ''}{ev.time ? ` · ${ev.time}${ev.endTime ? `–${ev.endTime}` : ''}` : ''}</span>
           <span>{ev.venue || LUGAR_POR_DEFECTO}</span>
+          {ev.docente && <span>Lo da {ev.docente}</span>}
           {conDinero && (ev.precio > 0
             ? <span>{eur(ev.precio)}{ev.precioSocio != null ? ` · socios ${eur(ev.precioSocio)}` : ''}</span>
             : <span>Gratuito</span>)}
@@ -2433,6 +2434,15 @@ function SolicitudesEventos({ permisos, showToast, onEditar, recargarEventos, re
                 <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>
                   {puedeResolver ? `Lo propone ${sol.solicitante}` : 'Esperando respuesta del club'}
                 </div>
+                {sol.comentarioPrivado && (
+                  <div style={{ fontSize: 11, background: 'var(--bg-3)', border: '1px dashed var(--line)', borderRadius: 8, padding: '8px 10px' }}>
+                    <b style={{ display: 'block', color: 'var(--ink-2)' }}>Nota para el club</b>
+                    <span style={{ color: 'var(--ink-3)' }}>{sol.comentarioPrivado}</span>
+                    <span style={{ display: 'block', marginTop: 4, color: 'var(--ink-3)', fontStyle: 'italic' }}>
+                      No se publica: al aprobarlo se queda aquí.
+                    </span>
+                  </div>
+                )}
                 {puedeResolver && (
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     <button className="btn btn-sm btn-primary" onClick={() => resolver(sol, 'aprobar')}>Aprobar</button>
@@ -2470,6 +2480,12 @@ function AdminEvents({ showToast, permisos = {} }) {
   const [editing, setEditing] = useState(null);
   // Para que la lista de propuestas se recargue al aprobar o al proponer.
   const [refrescarSol, setRefrescarSol] = useState(0);
+  // Quién puede figurar como docente del evento.
+  const [docentes, setDocentes] = useState([]);
+  useEffect(() => {
+    fetch('/api/admin/tul/instructors', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null).then(d => setDocentes(d?.instructors || [])).catch(() => {});
+  }, []);
   const [saving, setSaving] = useState(false);
 
   // ── Gestionar Evento (inscripciones) ──
@@ -2621,7 +2637,7 @@ function AdminEvents({ showToast, permisos = {} }) {
   }
   useEffect(() => { load(); }, []);
 
-  const blank = { title: '', description: '', date: '', endDate: '', time: '', endTime: '', venue: '', price: '', activity: 'general', posterUrl: '', precio: '', precioSocio: '' };
+  const blank = { title: '', description: '', date: '', endDate: '', time: '', endTime: '', venue: '', price: '', activity: 'general', posterUrl: '', precio: '', precioSocio: '', docenteId: null, comentarioPrivado: '' };
 
   function startEdit(ev) {
     setEditing({
@@ -2629,6 +2645,7 @@ function AdminEvents({ showToast, permisos = {} }) {
       date: ev.date ? String(ev.date).slice(0, 10) : '',
       endDate: ev.endDate ? String(ev.endDate).slice(0, 10) : '',
       time: ev.time || '', endTime: ev.endTime || '', venue: ev.venue || '', price: ev.price || '', activity: ev.activity || 'general', posterUrl: ev.posterUrl || '',
+      precio: ev.precio ?? '', precioSocio: ev.precioSocio ?? '', docenteId: ev.docenteId || null,
     });
   }
 
@@ -2689,6 +2706,7 @@ function AdminEvents({ showToast, permisos = {} }) {
           time: sol.time || '', endTime: sol.endTime || '', venue: sol.venue || '',
           price: sol.price || '', activity: sol.activity || 'general', posterUrl: sol.posterUrl || '',
           precio: sol.precio ?? '', precioSocio: sol.precioSocio ?? '',
+          docenteId: sol.docenteId || null, comentarioPrivado: sol.comentarioPrivado || '',
           _solicitudId: sol.id,
         })} />
 
@@ -3014,6 +3032,15 @@ function AdminEvents({ showToast, permisos = {} }) {
               </div>
               {/* Vacío significa el local del club, que es donde se hace casi todo. */}
               <div className="field">
+                <label>Quién lo da</label>
+                <select value={editing.docenteId || ''} onChange={e => setEditing({ ...editing, docenteId: e.target.value || null })}>
+                  <option value="">Sin asignar</option>
+                  {docentes.map(d => <option key={d.id} value={d.id}>{d.name} {d.surname || ''}</option>)}
+                </select>
+                <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Sale en los datos del evento.</span>
+              </div>
+
+              <div className="field">
                 <label>Lugar</label>
                 <input value={editing.venue} onChange={e => setEditing({ ...editing, venue: e.target.value })}
                   placeholder={LUGAR_POR_DEFECTO} />
@@ -3035,6 +3062,21 @@ function AdminEvents({ showToast, permisos = {} }) {
               </div>
               <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 6 }}>
                 <button type="button" className="btn btn-outline" onClick={() => setEditing(null)}>Cancelar</button>
+                {/* Solo al proponer: es lo que quien lo pide quiere contarle al
+                    club, y no debe salir publicado. Al aprobar no se copia. */}
+                {(editing._solicitud || editing._solicitudId) && (
+                  <div className="field" style={{ gridColumn: '1 / -1' }}>
+                    <label>Nota para el club (no se publica)</label>
+                    <textarea rows={2} value={editing.comentarioPrivado || ''}
+                      onChange={e => setEditing({ ...editing, comentarioPrivado: e.target.value })}
+                      placeholder="Material que hace falta, por qué ese día, con quién has hablado..."
+                      style={{ width: '100%', fontFamily: 'inherit', fontSize: 14, padding: 12, background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 10, color: 'var(--ink)', resize: 'vertical' }} />
+                    <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                      Lo lee quien decide. Una vez aprobado el evento, esto no se ve en ningún sitio.
+                    </span>
+                  </div>
+                )}
+
                 <button type="submit" className="btn btn-primary" disabled={saving}>
                   {saving ? 'Guardando...'
                     : editing._solicitudId ? 'Guardar y aprobar'
