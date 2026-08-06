@@ -2458,11 +2458,30 @@ const MOSAICO_POR_DEFECTO = [
     { id: 'b7', col: 3, fila: 3, ancho: 2, alto: 2, tipo: 'actividad', actId: 'pintura', titulo: 'Pintura', url: '' },
 ];
 
+// Lo que dicen las familias. Se escriben a mano desde el panel: traerlos de
+// Google Maps necesita la API de Places con su clave y facturación, y además su
+// licencia no deja guardarlos por nuestra cuenta. Cada uno lleva de dónde sale,
+// así que si algún día se conectan, el formato ya vale.
+const TESTIMONIOS_POR_DEFECTO = [];
+
+// Formulario de empleo. Se incrusta el de HubSpot, que es con el que se trabaja;
+// hasta que estén el portal y el formulario, la sección no se pinta.
+const EMPLEO_POR_DEFECTO = {
+    activo: false,
+    titulo: 'Trabaja con nosotros',
+    texto: 'Buscamos gente a la que le guste enseñar. Déjanos tu currículum y te escribimos.',
+    hubspotPortalId: '',
+    hubspotFormId: '',
+    hubspotRegion: 'eu1',
+};
+
 const PORTADA_POR_DEFECTO = {
     ctaTexto: 'Campamento de verano',
     ctaUrl: '/campamento',
     anoFundacion: 2008,
     mosaico: MOSAICO_POR_DEFECTO,
+    testimonios: TESTIMONIOS_POR_DEFECTO,
+    empleo: EMPLEO_POR_DEFECTO,
 };
 
 // Una dirección que se pueda poner en un enlace público: una ruta de la propia
@@ -2473,6 +2492,8 @@ async function leerPortada() {
     const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'portada'`);
     const cfg = { ...PORTADA_POR_DEFECTO, ...(r.rows[0]?.valor || {}) };
     if (!Array.isArray(cfg.mosaico) || !cfg.mosaico.length) cfg.mosaico = MOSAICO_POR_DEFECTO;
+    if (!Array.isArray(cfg.testimonios)) cfg.testimonios = TESTIMONIOS_POR_DEFECTO;
+    cfg.empleo = { ...EMPLEO_POR_DEFECTO, ...(cfg.empleo || {}) };
     cfg.columnas = MOSAICO_COLUMNAS;
     cfg.filas = MOSAICO_FILAS;
 
@@ -2505,6 +2526,10 @@ app.get('/api/landing', async (req, res) => {
             anoFundacion: cfg.anoFundacion,
             mosaico: cfg.mosaico,
             columnas: cfg.columnas, filas: cfg.filas,
+            testimonios: cfg.testimonios,
+            // La clave del portal no es secreta (va en el HTML del formulario),
+            // pero solo se manda si la sección está encendida.
+            empleo: cfg.empleo?.activo ? cfg.empleo : { activo: false },
             datos: [
                 { v: `${anos}`, l: 'Años de experiencia' },
                 { v: redondo(alumnos.rows[0].n), l: 'Alumnos y alumnas' },
@@ -2558,7 +2583,7 @@ app.get('/api/admin/landing', authenticateSession, requireAdmin, async (req, res
 });
 
 app.put('/api/admin/landing', authenticateSession, requireAdmin, async (req, res) => {
-    const { ctaTexto, ctaUrl, anoFundacion, mosaico } = req.body;
+    const { ctaTexto, ctaUrl, anoFundacion, mosaico, testimonios, empleo } = req.body;
     if (!ctaTexto?.trim()) return res.status(400).json({ error: 'El botón necesita un texto.' });
     const url = String(ctaUrl || '').trim();
     if (!urlValida(url)) {
@@ -2629,7 +2654,25 @@ app.put('/api/admin/landing', authenticateSession, requireAdmin, async (req, res
             `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por)
              VALUES ('portada', $1, NOW(), $2)
              ON CONFLICT (clave) DO UPDATE SET valor = $1, actualizado_at = NOW(), actualizado_por = $2`,
-            [JSON.stringify({ ctaTexto: ctaTexto.trim(), ctaUrl: url, anoFundacion: ano, mosaico: piezas }), req.userSession.userId]
+            [JSON.stringify({
+                ctaTexto: ctaTexto.trim(), ctaUrl: url, anoFundacion: ano, mosaico: piezas,
+                testimonios: (Array.isArray(testimonios) ? testimonios : []).slice(0, 24).map(t => ({
+                    id: String(t.id || '').slice(0, 40) || `t${Date.now()}${Math.random().toString(36).slice(2, 6)}`,
+                    nombre: String(t.nombre || '').trim().slice(0, 80),
+                    texto: String(t.texto || '').trim().slice(0, 600),
+                    estrellas: Math.min(Math.max(Number(t.estrellas) || 5, 1), 5),
+                    origen: ['google', 'directo'].includes(t.origen) ? t.origen : 'directo',
+                    actividad: String(t.actividad || '').trim().slice(0, 60) || null,
+                })).filter(t => t.nombre && t.texto),
+                empleo: {
+                    activo: !!empleo?.activo,
+                    titulo: String(empleo?.titulo || '').trim().slice(0, 120) || EMPLEO_POR_DEFECTO.titulo,
+                    texto: String(empleo?.texto || '').trim().slice(0, 400) || EMPLEO_POR_DEFECTO.texto,
+                    hubspotPortalId: String(empleo?.hubspotPortalId || '').trim().slice(0, 40),
+                    hubspotFormId: String(empleo?.hubspotFormId || '').trim().slice(0, 80),
+                    hubspotRegion: String(empleo?.hubspotRegion || 'eu1').trim().slice(0, 10),
+                },
+            }), req.userSession.userId]
         );
         // Las imágenes de bloques que ya no existen no le sirven a nadie.
         await pool.query(`DELETE FROM aim_portada_imagenes WHERE id <> ALL($1::text[])`, [piezas.map(t => t.id)]);

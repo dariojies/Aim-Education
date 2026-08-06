@@ -1864,6 +1864,16 @@ function AjustesPortada({ showToast }) {
       .catch(() => {});
   }, []);
 
+  const cambiarTesti = (i, patch) => setCfg(c => ({
+    ...c, testimonios: (c.testimonios || []).map((t, j) => j === i ? { ...t, ...patch } : t),
+  }));
+  const quitarTesti = (i) => setCfg(c => ({ ...c, testimonios: (c.testimonios || []).filter((_, j) => j !== i) }));
+  const anadirTesti = () => setCfg(c => ({
+    ...c, testimonios: [...(c.testimonios || []), {
+      id: `t${Date.now().toString(36)}`, nombre: '', texto: '', estrellas: 5, origen: 'directo', actividad: '',
+    }],
+  }));
+
   async function recargar() {
     const r = await fetch('/api/admin/landing', { credentials: 'include', cache: 'no-store' });
     if (r.ok) setCfg(await r.json());
@@ -2031,6 +2041,90 @@ function AjustesPortada({ showToast }) {
             );
           })()}
         </div>
+      </div>
+
+      {/* ── Lo que dicen las familias ── */}
+      <div>
+        <h3 style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 17, margin: '10px 0 2px', color: 'var(--ink)' }}>
+          Testimonios
+        </h3>
+        <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>
+          Opiniones de familias, en la portada. Si copias una reseña de Google, márcala como tal
+          para que se vea de dónde sale.
+        </p>
+      </div>
+
+      <div style={{ display: 'grid', gap: 10 }}>
+        {(cfg.testimonios || []).map((t, i) => (
+          <div key={t.id || i} style={{ border: '1px solid var(--line)', borderRadius: 12, padding: 14, background: 'var(--bg-3)', display: 'grid', gap: 10 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr 110px 130px auto', gap: 10, alignItems: 'end' }}>
+              <div className="field"><label>Quién lo dice</label>
+                <input value={t.nombre || ''} onChange={e => cambiarTesti(i, { nombre: e.target.value })} placeholder="Ej. María G." /></div>
+              <div className="field"><label>Actividad</label>
+                <input value={t.actividad || ''} onChange={e => cambiarTesti(i, { actividad: e.target.value })} placeholder="Opcional" /></div>
+              <div className="field"><label>Estrellas</label>
+                <select value={t.estrellas || 5} onChange={e => cambiarTesti(i, { estrellas: Number(e.target.value) })}>
+                  {[5, 4, 3, 2, 1].map(n => <option key={n} value={n}>{'★'.repeat(n)}</option>)}
+                </select></div>
+              <div className="field"><label>De dónde sale</label>
+                <select value={t.origen || 'directo'} onChange={e => cambiarTesti(i, { origen: e.target.value })}>
+                  <option value="directo">Nos lo han dicho</option>
+                  <option value="google">Reseña de Google</option>
+                </select></div>
+              <button type="button" className="icon-btn danger" onClick={() => quitarTesti(i)} title="Quitar"><I.Trash /></button>
+            </div>
+            <div className="field"><label>Qué dice</label>
+              <textarea rows={2} value={t.texto || ''} onChange={e => cambiarTesti(i, { texto: e.target.value })}
+                style={{ width: '100%', fontFamily: 'inherit', fontSize: 13, padding: 10, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, color: 'var(--ink)', resize: 'vertical' }} /></div>
+          </div>
+        ))}
+        <div>
+          <button type="button" className="btn btn-sm btn-outline" onClick={anadirTesti}><I.Plus /> Añadir testimonio</button>
+          {!(cfg.testimonios || []).length && (
+            <span style={{ fontSize: 12, color: 'var(--ink-3)', marginLeft: 10 }}>
+              Sin ninguno, la sección no sale en la web.
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* ── Trabaja con nosotros ── */}
+      <div>
+        <h3 style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 17, margin: '10px 0 2px', color: 'var(--ink)' }}>
+          Trabaja con nosotros
+        </h3>
+        <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>
+          Sección para recoger currículums. El formulario es el de HubSpot: los datos y los
+          archivos se quedan allí, no en esta web.
+        </p>
+      </div>
+
+      <div style={{ border: '1px solid var(--line)', borderRadius: 12, padding: 14, background: 'var(--bg-3)', display: 'grid', gap: 12 }}>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+          <input type="checkbox" checked={!!cfg.empleo?.activo}
+            onChange={e => setCfg(c => ({ ...c, empleo: { ...c.empleo, activo: e.target.checked } }))}
+            style={{ accentColor: 'var(--teal)' }} />
+          Enseñar la sección en la portada
+        </label>
+        <div className="field"><label>Título</label>
+          <input value={cfg.empleo?.titulo || ''} onChange={e => setCfg(c => ({ ...c, empleo: { ...c.empleo, titulo: e.target.value } }))} /></div>
+        <div className="field"><label>Texto</label>
+          <textarea rows={2} value={cfg.empleo?.texto || ''} onChange={e => setCfg(c => ({ ...c, empleo: { ...c.empleo, texto: e.target.value } }))}
+            style={{ width: '100%', fontFamily: 'inherit', fontSize: 13, padding: 10, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, color: 'var(--ink)', resize: 'vertical' }} /></div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr 110px', gap: 10 }}>
+          <div className="field"><label>Portal de HubSpot</label>
+            <input value={cfg.empleo?.hubspotPortalId || ''} onChange={e => setCfg(c => ({ ...c, empleo: { ...c.empleo, hubspotPortalId: e.target.value } }))} placeholder="Ej. 12345678" /></div>
+          <div className="field"><label>Formulario</label>
+            <input value={cfg.empleo?.hubspotFormId || ''} onChange={e => setCfg(c => ({ ...c, empleo: { ...c.empleo, hubspotFormId: e.target.value } }))} placeholder="Ej. 1a2b3c4d-..." /></div>
+          <div className="field"><label>Región</label>
+            <select value={cfg.empleo?.hubspotRegion || 'eu1'} onChange={e => setCfg(c => ({ ...c, empleo: { ...c.empleo, hubspotRegion: e.target.value } }))}>
+              <option value="eu1">eu1</option><option value="na1">na1</option>
+            </select></div>
+        </div>
+        <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+          Los dos códigos salen en HubSpot, en el propio formulario, al pulsar «Compartir» o «Insertar».
+          Sin ellos la sección no se pinta.
+        </span>
       </div>
 
       <div style={{ position: 'sticky', bottom: 0, background: 'var(--bg-2)', paddingTop: 12, borderTop: '1px solid var(--line)' }}>

@@ -3,6 +3,11 @@ import { I } from './Icons.jsx';
 import { useRouter } from '../App.jsx';
 import { fmtFechaLarga } from '../fechas.js';
 
+// La dirección del club, y el enlace para abrirla en el mapa. En un móvil, ese
+// enlace lo recoge la aplicación de mapas que tenga puesta cada uno.
+export const DIRECCION = 'Urb. Terrazas de Doña Lola, Local 1, 11203 Algeciras (Cádiz)';
+export const MAPA_URL = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent('AIM Education, ' + DIRECCION)}`;
+
 // ---------- Activity catalog (the source of truth) ----------
 const ACTIVITIES = [
   {
@@ -275,7 +280,7 @@ function AimFooter() {
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21l1.65-3.8a9 9 0 1 1 3.4 2.9L3 21M9 10a.5.5 0 0 0 1 0V9a.5.5 0 0 0-1 0v1m1 0a5 5 0 0 0 5 5m0-1a.5.5 0 0 0 0-1h-1a.5.5 0 0 0 0 1h1" /></svg>
               </a>
               <a href="https://www.linkedin.com/company/aimeducationesp/" target="_blank" rel="noopener" aria-label="LinkedIn">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21l1.65-3.8a9 9 0 1 1 3.4 2.9L3 21M9 10a.5.5 0 0 0 1 0V9a.5.5 0 0 0-1 0v1m1 0a5 5 0 0 0 5 5m0-1a.5.5 0 0 0 0-1h-1a.5.5 0 0 0 0 1h1" /></svg>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-4 0v7h-4v-7a6 6 0 0 1 6-6z" /><rect x="2" y="9" width="4" height="12" /><circle cx="4" cy="4" r="2" /></svg>
               </a>
             </div>
           </div>
@@ -301,8 +306,15 @@ function AimFooter() {
           <div>
             <h5>Contacto</h5>
             <ul>
-              <li>Urb. Terrazas de Doña Lola, Local 1</li>
-              <li>11203 Algeciras (Cádiz)</li>
+              {/* Un enlace de maps.google sin app concreta: en el móvil lo coge
+                  la aplicación de mapas que tenga puesta cada uno. */}
+              <li>
+                <a href={MAPA_URL} target="_blank" rel="noopener"
+                   style={{ display: 'inline-flex', gap: 6, alignItems: 'flex-start' }}>
+                  <I.MapPin width={14} height={14} style={{ flexShrink: 0, marginTop: 2 }} />
+                  <span>Urb. Terrazas de Doña Lola, Local 1<br />11203 Algeciras (Cádiz)</span>
+                </a>
+              </li>
               <li><a href="mailto:info@aimeducation.es">info@aimeducation.es</a></li>
               <li><a href="tel:+34956742216">+34 956 742 216</a></li>
             </ul>

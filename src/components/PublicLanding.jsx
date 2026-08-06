@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { I } from './Icons.jsx';
 import { AimHeader, AimFooter, ACTIVITIES, ACT_BY_ID, MagicText } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
@@ -6,6 +6,83 @@ import { useRouter } from '../App.jsx';
 const CAT_COLOR = { taekwondo: '#21B668', ballet: '#FF99D3', ingles: '#00BBF4', robotica: '#FFD526', baile: '#AF99FF', pintura: '#5233A8', funcional: '#FF4F15', pilates: '#BFD300', camaleon: '#25D8BA', competicion: '#21B668', club: '#5233A8', general: '#5233A8', shelfie: '#FF99D3' };
 const catColor = c => CAT_COLOR[c] || '#5233A8';
 const MONTH_ABBR = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+
+// Lo que dicen las familias. Se escriben desde el panel; los de Google llevan su
+// marca para que se vea de dónde salen.
+function Testimonios({ lista }) {
+  if (!lista?.length) return null;
+  return (
+    <section className="block tight">
+      <div className="container">
+        <div className="section-head">
+          <div>
+            <span className="eyebrow">Lo que dicen las familias</span>
+            <h2 className="section-title">Quien mejor nos conoce.</h2>
+          </div>
+        </div>
+        <div className="testi-grid">
+          {lista.map(t => (
+            <figure key={t.id} className="testi">
+              <div className="testi-estrellas" aria-label={`${t.estrellas} de 5`}>
+                {'★'.repeat(t.estrellas)}<span className="apagadas">{'★'.repeat(5 - t.estrellas)}</span>
+              </div>
+              <blockquote>{t.texto}</blockquote>
+              <figcaption>
+                <span className="quien">{t.nombre}</span>
+                {t.actividad && <span className="que"> · {t.actividad}</span>}
+                {t.origen === 'google' && <span className="google">Reseña de Google</span>}
+              </figcaption>
+            </figure>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// Trabaja con nosotros. El formulario es el de HubSpot, que es donde se recogen
+// los currículums; se carga solo si está configurado.
+function TrabajaConNosotros({ empleo }) {
+  const montado = useRef(false);
+  const { activo, hubspotPortalId, hubspotFormId, hubspotRegion } = empleo || {};
+
+  useEffect(() => {
+    if (!activo || !hubspotPortalId || !hubspotFormId || montado.current) return;
+    montado.current = true;
+    const pintar = () => window.hbspt?.forms?.create({
+      portalId: hubspotPortalId, formId: hubspotFormId,
+      region: hubspotRegion || 'eu1', target: '#form-empleo',
+    });
+    if (window.hbspt) return pintar();
+    const sc = document.createElement('script');
+    sc.src = `https://js-${hubspotRegion || 'eu1'}.hsforms.net/forms/embed/v2.js`;
+    sc.async = true;
+    sc.onload = pintar;
+    document.body.appendChild(sc);
+  }, [activo, hubspotPortalId, hubspotFormId, hubspotRegion]);
+
+  if (!activo) return null;
+  return (
+    <section className="block tight" id="empleo">
+      <div className="container">
+        <div className="empleo-caja">
+          <div>
+            <span className="eyebrow">Únete al equipo</span>
+            <h2 className="section-title">{empleo.titulo}</h2>
+            <p className="section-lede" style={{marginTop: 10}}>{empleo.texto}</p>
+          </div>
+          <div id="form-empleo" className="empleo-form">
+            {(!hubspotPortalId || !hubspotFormId) && (
+              <p style={{fontSize: 13, color: "var(--ink-3)", margin: 0}}>
+                El formulario todavía no está configurado.
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
 
 // Un hueco del mosaico. Lo que se ve y a dónde lleva se configura desde el panel
 // (Portada web): puede ser una actividad, una imagen propia para destacar un
@@ -105,6 +182,7 @@ export default function PublicLanding() {
     anoFundacion: 2008,
     datos: [],
     columnas: 4, filas: 4,
+    testimonios: [], empleo: { activo: false },
     mosaico: [
       { id: 'b1', col: 1, fila: 1, ancho: 2, alto: 2, tipo: 'patron', titulo: '10+ actividades', url: '/actividades' },
       { id: 'b2', col: 3, fila: 1, ancho: 2, alto: 1, tipo: 'actividad', actId: 'taekwondo', titulo: 'Taekwondo' },
@@ -364,6 +442,9 @@ export default function PublicLanding() {
         </section>
 
         {/* ===== CTA ===== */}
+        <Testimonios lista={portada.testimonios} />
+        <TrabajaConNosotros empleo={portada.empleo} />
+
         <section className="block tight">
           <div className="container">
             <div className="cta-block" style={{

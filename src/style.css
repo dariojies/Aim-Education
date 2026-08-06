@@ -305,7 +305,14 @@ header.aim-header {
   background: color-mix(in oklab, var(--bg) 86%, transparent);
   backdrop-filter: saturate(180%) blur(14px);
   -webkit-backdrop-filter: saturate(180%) blur(14px);
-  border-bottom: 1px solid var(--line);
+  /* La raya de abajo dibujaba una costura contra el fondo de color del hero;
+     solo aparece al bajar, cuando de verdad hace falta separar. */
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--tx-base) ease;
+}
+
+header.aim-header.scrolled {
+  border-bottom-color: var(--line);
 }
 
 .aim-header .row {
@@ -734,25 +741,29 @@ html[data-actaccents="off"] [class*="act-"] {
   overflow: hidden;
 }
 
+/* Las manchas de color del fondo. Iban salidas por arriba y por los lados, y
+   como el hero recorta lo que se sale, se veía el corte recto justo debajo de
+   la cabecera. Ahora caben enteras dentro y se apagan antes de llegar al borde,
+   así que no hay línea que cortar. */
 .hero::before {
   content: "";
   position: absolute;
-  top: -20%;
-  right: -10%;
-  width: 60%;
-  height: 110%;
-  background: radial-gradient(circle, color-mix(in oklab, var(--pink) 30%, transparent) 0%, transparent 60%);
+  top: 4%;
+  right: -4%;
+  width: 52%;
+  height: 78%;
+  background: radial-gradient(closest-side, color-mix(in oklab, var(--pink) 26%, transparent) 0%, transparent 100%);
   pointer-events: none;
 }
 
 .hero::after {
   content: "";
   position: absolute;
-  bottom: -30%;
-  left: -10%;
-  width: 50%;
-  height: 80%;
-  background: radial-gradient(circle, color-mix(in oklab, var(--yellow) 25%, transparent) 0%, transparent 60%);
+  bottom: 2%;
+  left: -6%;
+  width: 46%;
+  height: 62%;
+  background: radial-gradient(closest-side, color-mix(in oklab, var(--yellow) 22%, transparent) 0%, transparent 100%);
   pointer-events: none;
 }
 
@@ -1025,6 +1036,93 @@ html[data-actaccents="off"] [class*="act-"] {
 }
 
 /* =============================================================
+   Testimonios y trabaja con nosotros
+   ============================================================= */
+.testi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 18px;
+}
+
+.testi {
+  margin: 0;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: var(--shadow-sm);
+}
+
+.testi-estrellas {
+  color: var(--yellow);
+  font-size: 15px;
+  letter-spacing: 2px;
+  line-height: 1;
+}
+
+.testi-estrellas .apagadas {
+  color: var(--line-2);
+}
+
+.testi blockquote {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+
+.testi figcaption {
+  margin-top: auto;
+  font-size: 12px;
+  color: var(--ink-3);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.testi figcaption .quien {
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.testi figcaption .google {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+}
+
+.empleo-caja {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+  align-items: start;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 32px;
+}
+
+.empleo-form {
+  min-height: 60px;
+}
+
+@media (max-width: 860px) {
+  .empleo-caja {
+    grid-template-columns: 1fr;
+    gap: 20px;
+    padding: 22px;
+  }
+}
+
+/* =============================================================
    Activity cards
    ============================================================= */
 .act-grid {
@@ -1070,24 +1168,29 @@ html[data-actaccents="off"] [class*="act-"] {
   transform: scaleX(1);
 }
 
+/* Los logos de marca vienen apaisados (unos 220x188) y con su propio fondo de
+   color. Metidos en un cuadrado de 64x64 con las esquinas redondeadas y
+   overflow oculto, el recuadro les recortaba las esquinas y parecían cortados.
+   Ahora el hueco se adapta al alto del logo y no recorta nada. */
 .act-card .icon-tile {
   width: 64px;
-  height: 64px;
-  border-radius: 14px;
-  overflow: hidden;
+  height: auto;
   flex-shrink: 0;
   background: transparent;
   display: block;
+  line-height: 0;
 }
 
 .act-card .icon-tile img {
   width: 100%;
-  height: 100%;
+  height: auto;
   display: block;
   object-fit: contain;
 }
 
 .act-card .icon-tile.placeholder {
+  height: 64px;
+  border-radius: 14px;
   background: color-mix(in oklab, var(--act, var(--teal)) 16%, var(--bg-2));
   color: var(--act, var(--teal));
   display: grid;
@@ -3333,9 +3436,22 @@ html[data-theme="dark"] .dash-nav button.is-active {
   }
 
   .badges-strip {
-    grid-template-columns: 1fr;
-    padding: 18px 16px;
-    gap: 12px;
+    /* De cuatro a una de golpe deja una columna larguísima; en dos entra bien
+       y ocupa la mitad de alto. */
+    grid-template-columns: 1fr 1fr;
+    padding: 16px 14px;
+    gap: 12px 14px;
+  }
+
+  .badges-strip .b {
+    font-size: 12px;
+    gap: 10px;
+  }
+
+  .badges-strip .b .ico {
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
   }
 
   section.block {
@@ -3427,11 +3543,17 @@ html[data-theme="dark"] .dash-nav button.is-active {
   /* Section heads */
   .section-head {
     flex-direction: column;
-    align-items: flex-start;
-    gap: 16px;
+    /* En columna, 'stretch' es lo que da el ancho completo; con flex-start los
+       bloques se encogían al ancho de su contenido. */
+    align-items: stretch !important;
+    gap: 16px !important;
   }
 
+  /* Puesto en columna, el flex-basis de 460px pasa a ser el ALTO, y dejaba dos
+     bloques de 460px con la mitad vacía. Que cada uno mida lo que ocupe. */
   .section-head>* {
+    flex: 0 0 auto !important;
+    width: 100%;
     max-width: 100% !important;
   }
 
