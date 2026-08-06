@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { I } from './Icons.jsx';
+import { useRouter } from '../App.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // La agenda de cada uno: lo que ya tiene ocupado ese día (las clases que da y
@@ -20,7 +21,88 @@ const comoHora = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String
 const fechaLarga = (f) => new Date(f + 'T12:00:00')
     .toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
 
-export default function AdminAgenda({ showToast }) {
+// Elegir un ticket para engancharlo a una tarea. Se puede mirar entre los
+// propios, entre los que no tiene nadie —para cogerlos— o entre todos.
+function ElegirTicket({ valor, onElegir, coger, onCoger, yo }) {
+    const [tickets, setTickets] = useState([]);
+    const [ambito, setAmbito] = useState('mios'); // 'mios' | 'sinDuenio' | 'todos'
+    const [busca, setBusca] = useState('');
+    const [abierto, setAbierto] = useState(false);
+
+    useEffect(() => {
+        fetch('/api/support', { credentials: 'include', cache: 'no-store' })
+            .then(r => r.ok ? r.json() : null)
+            .then(d => setTickets(d?.tickets || []))
+            .catch(() => {});
+    }, []);
+
+    const lista = useMemo(() => {
+        const q = busca.trim().toLowerCase();
+        return tickets
+            .filter(t => t.status !== 'done' && t.status !== 'resolved')
+            .filter(t => ambito === 'todos'
+                || (ambito === 'mios' && (t.assigned_to === yo || t.user_id === yo))
+                || (ambito === 'sinDuenio' && !t.assigned_to))
+            .filter(t => !q || `${t.id} ${t.subject}`.toLowerCase().includes(q))
+            .slice(0, 40);
+    }, [tickets, ambito, busca, yo]);
+
+    const elegido = tickets.find(t => t.id === valor);
+
+    if (valor && !abierto) {
+        return (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13, fontWeight: 700 }}>
+                    #{valor}{elegido ? ` · ${elegido.subject}` : ''}
+                </span>
+                <button type="button" className="btn btn-sm btn-outline" onClick={() => setAbierto(true)}>Cambiar</button>
+                <button type="button" className="btn btn-sm btn-outline" onClick={() => onElegir(null)}>Quitar</button>
+            </div>
+        );
+    }
+
+    return (
+        <div style={{ display: 'grid', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {[['mios', 'Míos'], ['sinDuenio', 'Sin dueño'], ['todos', 'Todos']].map(([v, l]) => (
+                    <button key={v} type="button" className={`filter-pill ${ambito === v ? 'is-active' : ''}`}
+                        onClick={() => setAmbito(v)}>{l}</button>
+                ))}
+            </div>
+            <input value={busca} onChange={e => setBusca(e.target.value)} placeholder="Buscar por número o asunto..." />
+            <div style={{ maxHeight: 190, overflowY: 'auto', display: 'grid', gap: 5 }}>
+                {lista.map(t => (
+                    <button key={t.id} type="button"
+                        onClick={() => { onElegir(t.id); setAbierto(false); }}
+                        style={{
+                            textAlign: 'left', padding: '7px 10px', borderRadius: 8, cursor: 'pointer',
+                            border: '1px solid var(--line)', background: 'var(--bg-2)', fontFamily: 'inherit', fontSize: 12,
+                        }}>
+                        <b>#{t.id}</b> {t.subject}
+                        <span style={{ color: 'var(--ink-3)' }}>
+                            {' · '}{t.priority === 'high' ? 'alta' : t.priority === 'medium' ? 'media' : 'baja'}
+                            {!t.assigned_to ? ' · sin dueño' : ''}
+                        </span>
+                    </button>
+                ))}
+                {!lista.length && (
+                    <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                        {ambito === 'mios' ? 'No tienes tickets abiertos.' : 'Ninguno con ese filtro.'}
+                    </span>
+                )}
+            </div>
+            {ambito !== 'mios' && (
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={coger} onChange={e => onCoger(e.target.checked)} style={{ accentColor: 'var(--teal)' }} />
+                    Asignármelo si no tiene dueño
+                </label>
+            )}
+        </div>
+    );
+}
+
+export default function AdminAgenda({ showToast, user }) {
+    const { go } = useRouter();
     const [dia, setDia] = useState(HOY());
     const [datos, setDatos] = useState(null);
     const [cargando, setCargando] = useState(false);
@@ -154,7 +236,7 @@ export default function AdminAgenda({ showToast }) {
                                         </div>
                                     ))}
                                     {f.tareas.map(t => (
-                                        <TareaFila key={t.id} t={t} onMarcar={marcar} onEditar={setEditando} onBorrar={borrar} />
+                                        <TareaFila key={t.id} t={t} onMarcar={marcar} onEditar={setEditando} onBorrar={borrar} onIrTicket={(id) => go(`/admin/soporte/${id}`)} />
                                     ))}
                                     {libre && (
                                         <button onClick={() => abrirEn(f.hora)} style={{
@@ -180,7 +262,7 @@ export default function AdminAgenda({ showToast }) {
                         </p>
                     </div>
                     {sinHora.map(t => (
-                        <TareaFila key={t.id} t={t} onMarcar={marcar} onEditar={setEditando} onBorrar={borrar} />
+                        <TareaFila key={t.id} t={t} onMarcar={marcar} onEditar={setEditando} onBorrar={borrar} onIrTicket={(id) => go(`/admin/soporte/${id}`)} />
                     ))}
                     {!sinHora.length && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Nada apuntado.</p>}
                     <button className="btn btn-sm btn-outline" onClick={() => abrirEn('')}><I.Plus /> Añadir</button>
@@ -213,6 +295,20 @@ export default function AdminAgenda({ showToast }) {
                             </div>
                         </div>
                         <div className="field">
+                            <label>Ticket de soporte</label>
+                            <ElegirTicket
+                                valor={editando.ticketId || null}
+                                onElegir={(id) => setEditando(e => ({
+                                    ...e, ticketId: id,
+                                    // Si la tarea no tiene nombre todavía, se le pone el del ticket.
+                                    titulo: e.titulo?.trim() ? e.titulo : (id ? `Ticket #${id}` : ''),
+                                }))}
+                                coger={editando.cogerTicket !== false}
+                                onCoger={(v) => setEditando(e => ({ ...e, cogerTicket: v }))}
+                                yo={user?.id} />
+                        </div>
+
+                        <div className="field">
                             <label>Notas</label>
                             <textarea rows={2} value={editando.notas || ''}
                                 onChange={e => setEditando({ ...editando, notas: e.target.value })}
@@ -231,7 +327,7 @@ export default function AdminAgenda({ showToast }) {
     );
 }
 
-function TareaFila({ t, onMarcar, onEditar, onBorrar }) {
+function TareaFila({ t, onMarcar, onEditar, onBorrar, onIrTicket }) {
     return (
         <div style={{
             display: 'flex', gap: 8, alignItems: 'center',
@@ -250,6 +346,18 @@ function TareaFila({ t, onMarcar, onEditar, onBorrar }) {
                     <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>
                         {[t.hora && `${t.hora}${t.horaFin ? `–${t.horaFin}` : ''}`, t.notas].filter(Boolean).join(' · ')}
                     </div>
+                )}
+                {t.ticket && (
+                    <button type="button" onClick={() => onIrTicket(t.ticket.id)}
+                        title={t.ticket.asunto}
+                        style={{
+                            marginTop: 3, padding: '2px 8px', borderRadius: 999, cursor: 'pointer',
+                            border: '1px solid var(--line)', background: 'var(--bg-2)',
+                            fontFamily: 'inherit', fontSize: 10, fontWeight: 800, color: 'var(--purple)',
+                            maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}>
+                        #{t.ticket.id} · {t.ticket.asunto}
+                    </button>
                 )}
             </div>
             <button className="icon-btn" style={{ width: 26, height: 26 }} onClick={() => onEditar(t)} aria-label="Cambiar"><I.Edit /></button>

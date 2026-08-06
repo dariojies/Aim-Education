@@ -5632,7 +5632,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
             </div>
           </div>
 
-          {ver("agenda") && <AdminAgenda showToast={showToast} />}
+          {ver("agenda") && <AdminAgenda showToast={showToast} user={user} />}
           {ver("overview") && (permisos.resumenGeneral
             ? <AdminOverview setView={setView} refreshTrigger={refreshTrigger} showToast={showToast} />
             : <ResumenInstructor setView={setView} refreshTrigger={refreshTrigger} />)}

@@ -596,6 +596,10 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_tareas_dia ON aim_tareas(user_id, fecha)`);
+        // Una tarea puede ser "sacar adelante este ticket": se enlaza y desde el
+        // día se salta a él. Si el ticket desaparece, la tarea se queda suelta
+        // en vez de irse con él.
+        await client.query(`ALTER TABLE aim_tareas ADD COLUMN IF NOT EXISTS ticket_id INTEGER REFERENCES tickets_registrosoporte(id) ON DELETE SET NULL`);
 
         // Las imágenes del mosaico de la portada. Van en su propia tabla y no
         // dentro del JSON de ajustes para que /api/landing siga siendo ligero:
@@ -2356,8 +2360,11 @@ app.get('/api/me/agenda', authenticateSession, requireAdmin, async (req, res) =>
              WHERE docente_id = $1 AND event_date = $2::date ORDER BY time`, [yo, fecha]
         );
         const tareas = await pool.query(
-            `SELECT * FROM aim_tareas WHERE user_id = $1 AND fecha = $2::date
-             ORDER BY (hora IS NULL), hora, id`, [yo, fecha]
+            `SELECT t.*, s.subject AS ticket_asunto, s.status AS ticket_estado, s.priority AS ticket_prioridad
+             FROM aim_tareas t
+             LEFT JOIN tickets_registrosoporte s ON s.id = t.ticket_id
+             WHERE t.user_id = $1 AND t.fecha = $2::date
+             ORDER BY (t.hora IS NULL), t.hora, t.id`, [yo, fecha]
         );
 
         res.set('Cache-Control', 'no-store');
@@ -2369,6 +2376,11 @@ app.get('/api/me/agenda', authenticateSession, requireAdmin, async (req, res) =>
             tareas: tareas.rows.map(t => ({
                 id: t.id, titulo: t.titulo, hora: t.hora, horaFin: t.hora_fin,
                 notas: t.notas, hecha: t.hecha,
+                ticketId: t.ticket_id,
+                ticket: t.ticket_id ? {
+                    id: t.ticket_id, asunto: t.ticket_asunto,
+                    estado: t.ticket_estado, prioridad: t.ticket_prioridad,
+                } : null,
             })),
         });
     } catch (err) {
@@ -2386,13 +2398,18 @@ app.post('/api/me/tareas', authenticateSession, requireAdmin, async (req, res) =
     if (!HORA_OK(hora) || !HORA_OK(horaFin)) return res.status(400).json({ error: 'La hora no es válida.' });
     if (hora && horaFin && horaFin <= hora) return res.status(400).json({ error: 'La hora de fin va después de la de inicio.' });
     try {
+        const ticket = await ticketEnlazable(req, req.body.ticketId, req.body.cogerTicket);
         const r = await pool.query(
-            `INSERT INTO aim_tareas (user_id, fecha, hora, hora_fin, titulo, notas)
-             VALUES ($1,$2::date,$3,$4,$5,$6) RETURNING id`,
-            [req.userSession.userId, fecha, hora || null, horaFin || null, titulo.trim().slice(0, 200), notas?.trim() || null]
+            `INSERT INTO aim_tareas (user_id, fecha, hora, hora_fin, titulo, notas, ticket_id)
+             VALUES ($1,$2::date,$3,$4,$5,$6,$7) RETURNING id`,
+            [req.userSession.userId, fecha, hora || null, horaFin || null,
+             titulo.trim().slice(0, 200), notas?.trim() || null, ticket]
         );
         res.status(201).json({ id: r.rows[0].id });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) {
+        if (err && err.httP) return res.status(err.httP).json({ error: err.msg });
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Todas las consultas llevan el user_id: una tarea de otro ni se lee ni se toca.
@@ -2409,6 +2426,14 @@ app.patch('/api/me/tareas/:id', authenticateSession, requireAdmin, async (req, r
     if (fecha !== undefined) {
         if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha))) return res.status(400).json({ error: 'Día no válido.' });
         vals.push(fecha); campos.push(`fecha = $${vals.length}::date`);
+    }
+    try {
+        if (req.body.ticketId !== undefined) {
+            set('ticket_id', await ticketEnlazable(req, req.body.ticketId, req.body.cogerTicket));
+        }
+    } catch (err) {
+        if (err && err.httP) return res.status(err.httP).json({ error: err.msg });
+        return res.status(500).json({ error: err.message });
     }
     if (!campos.length) return res.status(400).json({ error: 'Nada que cambiar.' });
     vals.push(req.params.id, req.userSession.userId);
@@ -2432,6 +2457,31 @@ app.delete('/api/me/tareas/:id', authenticateSession, requireAdmin, async (req, 
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
+
+// Solo se puede enlazar un ticket que esa persona pueda ver: los suyos si es
+// instructor, cualquiera si lleva el soporte. Si se pide 'cogerlo' y no tiene
+// dueño, se lo queda quien lo enlaza — que es lo que se hace al ponérselo en el
+// día. Nunca se le quita a otro: si ya tiene dueño, se deja como está.
+async function ticketEnlazable(req, ticketId, coger) {
+    if (ticketId == null || ticketId === '') return null;
+    const id = Number(ticketId);
+    if (!Number.isInteger(id)) throw { httP: 400, msg: 'Ese ticket no vale.' };
+    const yo = req.userSession.userId;
+    const suyos = !permisos(req).soporteCompleto;
+    const r = await pool.query(
+        `SELECT id, assigned_to FROM tickets_registrosoporte
+         WHERE id = $1 ${suyos ? 'AND (user_id = $2 OR assigned_to = $2)' : ''}`,
+        suyos ? [id, yo] : [id]
+    );
+    if (!r.rowCount) throw { httP: 404, msg: 'Ese ticket no existe o no es tuyo.' };
+    if (coger && !r.rows[0].assigned_to) {
+        await pool.query(
+            `UPDATE tickets_registrosoporte SET assigned_to = $1 WHERE id = $2 AND assigned_to IS NULL`,
+            [yo, id]
+        );
+    }
+    return id;
+}
 
 // Los grupos que lleva un instructor. Sale del horario: cada sesión de un grupo
 // guarda a qué profesor se le ha asignado (tul_groups.sessions -> instructorId),
