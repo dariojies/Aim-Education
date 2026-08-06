@@ -338,7 +338,10 @@ export function AdminSupport({ user, ticketId = null }) {
   const [filterStatus, setFilterStatus] = useState('open');
   const [filterOnlyMe, setFilterOnlyMe] = useState(false);
   const [sortDir, setSortDir] = useState('desc');
-  const [sortByPriority, setSortByPriority] = useState(false);
+  // Por qué se ordena: 'entrega' | 'prioridad' | 'id'. Antes eran dos
+  // interruptores sueltos que se pisaban entre sí y no se sabía cuál mandaba.
+  // Arranca por fecha de entrega, que es lo que aprieta.
+  const [orden, setOrden] = useState('entrega');
 
   const [activeTab, setActiveTab] = useState('list');
   const [subject, setSubject] = useState('');
@@ -573,10 +576,18 @@ export function AdminSupport({ user, ticketId = null }) {
         (!filterOnlyMe || t.assigned_to === user?.id)
       )
       .sort((a, b) => {
-        if (sortByPriority) {
-          const w = { high: 3, medium: 2, low: 1 };
-          const diff = (w[b.priority?.toLowerCase()] || 0) - (w[a.priority?.toLowerCase()] || 0);
-          if (diff !== 0) return diff;
+        const peso = { high: 3, medium: 2, low: 1 };
+        const porPrioridad = () => (peso[b.priority?.toLowerCase()] || 0) - (peso[a.priority?.toLowerCase()] || 0);
+        // Los que no tienen fecha de entrega van al final, no al principio:
+        // sin fecha se ordenan por su prioridad entre ellos.
+        const cuando = (t) => (t.due_date ? new Date(t.due_date).getTime() : Infinity);
+        const porEntrega = () => cuando(a) - cuando(b);
+
+        if (orden === 'entrega') {
+          return porEntrega() || porPrioridad() || (b.id - a.id);
+        }
+        if (orden === 'prioridad') {
+          return porPrioridad() || porEntrega() || (b.id - a.id);
         }
         return sortDir === 'desc' ? b.id - a.id : a.id - b.id;
       });
@@ -737,12 +748,15 @@ export function AdminSupport({ user, ticketId = null }) {
             <button className={`filter-pill ${filterOnlyMe ? "is-active" : ""}`} onClick={() => setFilterOnlyMe(x => !x)}>
               <I.User width={13} height={13} style={{verticalAlign: "middle"}} /> Solo las mías
             </button>
-            <button className="filter-pill" onClick={() => setSortByPriority(x => !x)} style={sortByPriority ? {background: "var(--orange)", color: "white", borderColor: "var(--orange)"} : {}}>
-              Por prioridad
-            </button>
-            <button className="filter-pill" onClick={() => setSortDir(d => d === 'desc' ? 'asc' : 'desc')}>
-              ID {sortDir === 'desc' ? '↓' : '↑'}
-            </button>
+            <span style={{fontSize: 12, fontWeight: 700, color: "var(--ink-3)", marginLeft: 4}}>Ordenar:</span>
+            {[['entrega', 'Por entrega'], ['prioridad', 'Por prioridad'], ['id', 'Por ID']].map(([v, l]) => (
+              <button key={v} className={`filter-pill ${orden === v ? "is-active" : ""}`}
+                onClick={() => (v === 'id' && orden === 'id')
+                  ? setSortDir(d => d === 'desc' ? 'asc' : 'desc')
+                  : setOrden(v)}>
+                {l}{v === 'id' && orden === 'id' ? (sortDir === 'desc' ? ' ↓' : ' ↑') : ''}
+              </button>
+            ))}
             <button className="btn btn-sm btn-outline" onClick={exportPDF}>Exportar PDF</button>
             <button className="btn btn-sm btn-outline" onClick={copyText}>Copiar texto</button>
           </div>
