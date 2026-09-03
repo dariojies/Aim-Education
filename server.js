@@ -1271,9 +1271,12 @@ app.get('/api/users', authenticateSession, async (req, res) => {
         // Gente del club Aim Education (no toda la plataforma). Van los alumnos y
         // tambien los instructores y la direccion: hay instructores que imparten
         // una actividad y son alumnos de otra, y se gestionan igual que el resto.
+        // Solo lo que se pinta en la lista. Antes iba la ficha entera de cada uno
+        // —telefono, DNI, domicilio y hasta la foto en base64— y con 766 personas
+        // eso son cientos de kilobytes que tardan segundos en llegar, cuando la
+        // consulta en si tarda un milisegundo. Lo demas se pide al abrir la ficha.
         const result = await pool.query(
-            `SELECT user_id, name, surname, email, belt, dev_role, role, profile_picture,
-                    phone, birthday, dni, domicilio, cp, poblacion
+            `SELECT user_id, name, surname, email, belt, dev_role, role
              FROM users
              WHERE club_id = $1 AND role IN ('student', 'instructor', 'club_owner', 'superadmin')
              ORDER BY name, surname`,
@@ -1285,18 +1288,40 @@ app.get('/api/users', authenticateSession, async (req, res) => {
             lastName: u.surname,
             email: u.email,
             belt: u.belt,
-            phone: u.phone,
-            birthday: u.birthday,
-            dni: u.dni, domicilio: u.domicilio, cp: u.cp, poblacion: u.poblacion,
-            avatar: u.profile_picture,
             role: u.role,
             esInstructor: (u.role === 'instructor' || u.role === 'club_owner'),
             isSuperAdmin: (u.dev_role === 'superadmin' || u.role === 'superadmin' || u.role === 'SuperAdmin')
         }));
+        // Sin cache: al meter o sacar a alguien el cambio tiene que verse ya, y
+        // el navegador estaba reutilizando la respuesta anterior.
+        res.set('Cache-Control', 'no-store');
         res.json(mapped);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
+});
+
+// La ficha completa de una persona, para cuando se abre. La lista no la trae.
+app.get('/api/users/:id', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT user_id, name, surname, email, belt, dev_role, role, profile_picture,
+                    phone, birthday, dni, domicilio, cp, poblacion
+             FROM users WHERE user_id = $1 AND club_id = $2`,
+            [req.params.id, AIM_CLUB_ID]
+        );
+        if (!r.rowCount) return res.status(404).json({ error: 'Esa persona no es del club.' });
+        const u = r.rows[0];
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            id: u.user_id, firstName: u.name, lastName: u.surname, email: u.email,
+            belt: u.belt, phone: u.phone, birthday: u.birthday,
+            dni: u.dni, domicilio: u.domicilio, cp: u.cp, poblacion: u.poblacion,
+            avatar: u.profile_picture, role: u.role,
+            esInstructor: (u.role === 'instructor' || u.role === 'club_owner'),
+            isSuperAdmin: (u.dev_role === 'superadmin' || u.role === 'superadmin'),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/users', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {

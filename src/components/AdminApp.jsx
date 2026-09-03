@@ -435,7 +435,8 @@ function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos }) {
   const [tipo, setTipo] = useState("todos");   // todos | alumnos | instructores
 
   useEffect(() => {
-    fetch('/api/users', { credentials: 'include' })
+    setLoading(true);
+    fetch('/api/users', { credentials: 'include', cache: 'no-store' })
       .then(r => r.ok ? r.json() : [])
       .then(u => { setUsers(u); setLoading(false); })
       .catch(() => setLoading(false));
@@ -5635,6 +5636,21 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
     }
   };
 
+  // La ficha completa se pide al abrirla. La lista solo trae lo que pinta, que
+  // con cientos de personas es la diferencia entre esperar segundos o no.
+  const abrirFicha = async (u) => {
+    setEditingItem(u);
+    setActiveModal('edit-student');
+    try {
+      const r = await fetch(`/api/users/${u.id}`, { credentials: 'include', cache: 'no-store' });
+      if (r.ok) {
+        const completa = await r.json();
+        // Si mientras llegaba se ha cerrado o se ha abierto otra, no se pisa.
+        setEditingItem(prev => (prev && prev.id === completa.id ? { ...prev, ...completa } : prev));
+      }
+    } catch { /* se queda con lo que traia la lista */ }
+  };
+
   // Meter en el club a alguien que ya tiene cuenta. Va directo con 'adoptar',
   // porque aquí ya se ha visto quién es: no hace falta preguntar dos veces.
   const meterEnElClub = async (u) => {
@@ -5945,7 +5961,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
             ? <AdminOverview setView={setView} refreshTrigger={refreshTrigger} showToast={showToast} />
             : <ResumenInstructor setView={setView} refreshTrigger={refreshTrigger} />)}
           {ver("students") && <AdminStudents refreshTrigger={refreshTrigger} showToast={showToast} permisos={permisos}
-            onEditUser={(u) => { setEditingItem(u); setActiveModal('edit-student'); }} />}
+            onEditUser={abrirFicha} />}
           {ver("familias") && (
             <AdminFamilias showToast={showToast} onEditUser={async (p) => {
               // La tarjeta solo trae el id: se pide la ficha entera para abrirla.
@@ -5984,7 +6000,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("instructors") && (
             <AdminInstructores
               refreshTrigger={refreshTrigger} showToast={showToast}
-              onEditUser={(u) => { setEditingItem(u); setActiveModal('edit-student'); }}
+              onEditUser={abrirFicha}
               onNuevoInstructor={() => {
                 setEditingItem({ firstName: '', lastName: '', email: '', rol: 'instructor', isSuperAdmin: false });
                 setActiveModal('new-student');
