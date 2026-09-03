@@ -1448,7 +1448,15 @@ function buildSlotsFromGroups(rows, deQuien) {
                     // que hay que tocar para editarlo o borrarlo.
                     groupId: g.group_id,
                     d,
+                    // 's' se redondea a la hora en punto porque es la FILA de la
+                    // rejilla. La hora de verdad va aparte: si no, una clase de
+                    // las 17:30 se anunciaba como de las 17:00.
                     s: Math.floor(start),
+                    inicio: sess.startTime || null,
+                    fin: sess.endTime || null,
+                    // Minutos pasados de la hora en punto, para colocarla dentro
+                    // de su fila en el sitio que le toca.
+                    desfase: Math.round((start - Math.floor(start)) * 60),
                     h: dur,
                     act: aimId,
                     title: g.name,

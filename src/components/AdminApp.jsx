@@ -495,23 +495,51 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
   });
 
   // Exporta el horario a PDF por el diálogo de impresión del navegador, con los
-  // mismos filtros que se están viendo (búsqueda y sala). Un día por bloque,
-  // ordenado por hora: en papel se lee mejor que la rejilla.
-  function exportPDF() {
+  // mismos filtros que se están viendo (búsqueda y sala). Dos formas, porque
+  // sirven para cosas distintas: la lista para repasar día a día, y la rejilla
+  // para colgarla en la pared tal y como se ve en pantalla.
+  function exportPDF(forma = 'lista') {
     const slots = filteredSlots.filter(s => selectedRoom === "Todas" || s.room === selectedRoom);
     if (!slots.length) { alert("No hay clases que exportar con los filtros actuales."); return; }
     const esc = (t) => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const bloques = days.map((dia, d) => {
-      const delDia = slots.filter(s => s.d === d).sort((a, b) => (a.s - b.s) || String(a.room).localeCompare(String(b.room)));
+    const nombreDia = (dia) => dia === 'Lun' ? 'Lunes' : dia === 'Mar' ? 'Martes' : dia === 'Mié' ? 'Miércoles'
+      : dia === 'Jue' ? 'Jueves' : dia === 'Vie' ? 'Viernes' : 'Sábado';
+    const cuando = (x) => x.inicio ? `${x.inicio}${x.fin ? `–${x.fin}` : ''}` : (x.time || '');
+    const orden = (a, b) => (a.s - b.s) || ((a.desfase || 0) - (b.desfase || 0)) || String(a.room).localeCompare(String(b.room));
+
+    // La rejilla, igual que en pantalla: un día por columna y una hora por fila.
+    const rejilla = () => `
+      <table class="rejilla">
+        <thead><tr><th class="hcol">Hora</th>${days.map(d => `<th>${esc(nombreDia(d))}</th>`).join('')}</tr></thead>
+        <tbody>
+          ${HOURS.map(h => `
+            <tr>
+              <td class="hcol">${h}:00</td>
+              ${days.map((_, d) => {
+                const dentro = slots.filter(x => x.d === d && Math.floor(x.s) === h).sort(orden);
+                return `<td>${dentro.map(x => `
+                  <div class="clase" style="border-left-color:${esc(x.actColor || '#5233A8')}">
+                    <b>${esc(x.title)}</b>
+                    <span>${esc(cuando(x))}</span>
+                    ${x.room ? `<span>${esc(x.room)}</span>` : ''}
+                    ${x.monitor ? `<span>${esc(x.monitor)}</span>` : ''}
+                  </div>`).join('')}</td>`;
+              }).join('')}
+            </tr>`).join('')}
+        </tbody>
+      </table>`;
+
+    const bloques = forma === 'rejilla' ? rejilla() : days.map((dia, d) => {
+      const delDia = slots.filter(s => s.d === d).sort(orden);
       if (!delDia.length) return '';
       return `
-        <h2>${dia === 'Lun' ? 'Lunes' : dia === 'Mar' ? 'Martes' : dia === 'Mié' ? 'Miércoles' : dia === 'Jue' ? 'Jueves' : dia === 'Vie' ? 'Viernes' : 'Sábado'}</h2>
+        <h2>${nombreDia(dia)}</h2>
         <table>
           <thead><tr><th>Hora</th><th>Clase</th><th>Actividad</th><th>Sala</th><th>Monitor</th><th>Alumnos</th><th>Edades</th></tr></thead>
           <tbody>
             ${delDia.map(s => `
               <tr>
-                <td class="hora">${esc(s.time || '')}</td>
+                <td class="hora">${esc(cuando(s))}</td>
                 <td><span class="punto" style="background:${esc(s.actColor || '#5233A8')}"></span><b>${esc(s.title)}</b></td>
                 <td>${esc(s.actName || '')}</td>
                 <td>${esc(s.room || '—')}</td>
@@ -537,6 +565,17 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
         #print-horario td { padding: 5px 8px; border-bottom: 1px solid #e5e5e5; vertical-align: top; }
         #print-horario .hora { white-space: nowrap; font-weight: bold; }
         #print-horario .punto { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+        /* La rejilla va apaisada: con seis días en vertical no cabe. */
+        #print-horario table.rejilla { table-layout: fixed; font-size: 9px; }
+        #print-horario table.rejilla th, #print-horario table.rejilla td {
+          border: 1px solid #ddd; vertical-align: top; padding: 3px; }
+        #print-horario table.rejilla .hcol { width: 42px; text-align: right; font-weight: bold; color: #666; background: #faf9f7; }
+        #print-horario table.rejilla .clase {
+          border-left: 3px solid #5233A8; background: #f7f5fb; border-radius: 3px;
+          padding: 3px 5px; margin-bottom: 3px; line-height: 1.25; }
+        #print-horario table.rejilla .clase b { display: block; }
+        #print-horario table.rejilla .clase span { display: block; color: #555; }
+        ${forma === 'rejilla' ? '@page { size: A4 landscape; margin: 10mm; }' : ''}
       </style>
       <h1>Horario de clases — Aim Education</h1>
       <p class="meta">Generado: ${fmtFechaHora(new Date())}${filtros ? ` · ${filtros}` : ''}</p>
@@ -593,7 +632,8 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
         </div>
         <div style={{ flex: 1 }} />
         {/* Las clases se crean desde "Lista de clases": ahí viven actividades y grupos. */}
-        <button className="btn btn-outline btn-sm" onClick={exportPDF}>Exportar PDF</button>
+        <button className="btn btn-outline btn-sm" onClick={() => exportPDF('lista')}>Exportar lista</button>
+        <button className="btn btn-outline btn-sm" onClick={() => exportPDF('rejilla')}>Exportar horario</button>
       </div>
 
       {/* Classroom filter tabs */}
@@ -641,7 +681,11 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
               {h}:00
             </div>
             {days.map((_, dIdx) => {
-              const slotsInCell = filteredSlots.filter(s => s.d === dIdx && Math.floor(s.s) === h);
+              // Dentro de una hora pueden caer varias: se ordenan por su hora
+              // real, que no tiene por qué ser la de la fila.
+              const slotsInCell = filteredSlots
+                .filter(s => s.d === dIdx && Math.floor(s.s) === h)
+                .sort((a, b) => (a.desfase || 0) - (b.desfase || 0));
               return (
                 <div key={dIdx} style={{
                   borderTop: "1px solid var(--line-2)",
@@ -658,8 +702,12 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
                     .filter(slot => selectedRoom === "Todas" || slot.room === selectedRoom)
                     .map((slot, sIdx) => {
                       const color = slot.actColor || actById[slot.act]?.color || "var(--ink)";
-                      const startMinutes = (slot.s % 1) * 60;
-                      const timeLabel = `${Math.floor(slot.s)}:${String(startMinutes).padStart(2, '0')}`;
+                      // La hora tal cual está en el horario, de inicio a fin.
+                      // Antes se calculaba a partir de la fila y siempre salía en
+                      // punto, aunque la clase empezara a y media.
+                      const timeLabel = slot.inicio
+                        ? `${slot.inicio}${slot.fin ? `–${slot.fin}` : ''}`
+                        : (slot.time || `${Math.floor(slot.s)}:00`);
                       return (
                         <button
                           key={sIdx}
@@ -675,11 +723,16 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
                             flexDirection: "column",
                             gap: 2,
                             width: "100%",
-                            boxSizing: "border-box"
+                            boxSizing: "border-box",
+                            // Empujada hacia abajo según los minutos que pasen de
+                            // la hora en punto, para que se vea de un vistazo que
+                            // esa clase no empieza al principio de la franja.
+                            marginTop: slot.desfase ? Math.round(slot.desfase / 60 * 14) : 0,
                           }}
                         >
                           <span className="t" style={{ fontSize: 12, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{slot.title}</span>
-                          <span className="meta" style={{ fontSize: 10, opacity: 0.9 }}>{slot.room} · {timeLabel}</span>
+                          <span className="meta" style={{ fontSize: 10, opacity: 0.95, fontWeight: 700 }}>{timeLabel}</span>
+                          {slot.room && <span className="meta" style={{ fontSize: 10, opacity: 0.8 }}>{slot.room}</span>}
                         </button>
                       );
                     })}
