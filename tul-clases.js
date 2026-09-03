@@ -23,6 +23,11 @@ const PLAN_LIMITS = {
     club_pro:   { maxActivities: 5,  maxGroupsPerActivity: 15 },
     club_elite: { maxActivities: 10, maxGroupsPerActivity: 30 },
     elite:      { maxActivities: 10, maxGroupsPerActivity: 30 },
+    // Plan de la casa: sin tope de nada. No se ofrece ni se vende, no sale en
+    // ninguna pantalla y solo se pone a mano en tul_clubs.plan. Tiene que estar
+    // aqui declarado porque un plan que no figure en esta tabla cae a 'free',
+    // que es justo lo contrario de lo que se busca.
+    aim:        { maxActivities: Infinity, maxGroupsPerActivity: Infinity },
 };
 const getPlanLimits = (plan) => PLAN_LIMITS[plan] || PLAN_LIMITS['free'];
 
