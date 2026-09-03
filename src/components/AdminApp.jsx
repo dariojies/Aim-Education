@@ -355,6 +355,78 @@ function CambiosFiscales({ showToast }) {
   );
 }
 
+// Buscar a alguien que ya tenga cuenta, antes de teclear nada. Las cuentas son
+// comunes a todas las aplicaciones, asi que casi siempre la persona ya esta: lo
+// que hacia falta era encontrarla, no volver a rellenar sus datos y descubrir al
+// guardar que ya existia.
+function BuscarCuentaExistente({ rol, onMeter }) {
+  const [q, setQ] = useState('');
+  const [gente, setGente] = useState([]);
+  const [buscando, setBuscando] = useState(false);
+  const [metiendo, setMetiendo] = useState(null);
+
+  useEffect(() => {
+    if (q.trim().length < 3) { setGente([]); return; }
+    setBuscando(true);
+    const t = setTimeout(() => {
+      fetch(`/api/admin/personas/existentes?q=${encodeURIComponent(q.trim())}`, { credentials: 'include', cache: 'no-store' })
+        .then(r => r.ok ? r.json() : [])
+        .then(d => setGente(Array.isArray(d) ? d : []))
+        .catch(() => setGente([]))
+        .finally(() => setBuscando(false));
+    }, 280);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  return (
+    <div style={{ background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 12, padding: 14, display: 'grid', gap: 10 }}>
+      <div>
+        <label style={{ fontSize: 12, fontWeight: 800, color: 'var(--ink-2)' }}>
+          ¿Ya tiene cuenta? Búscala antes de escribir nada
+        </label>
+        <p style={{ margin: '2px 0 0', fontSize: 11, color: 'var(--ink-3)' }}>
+          Las cuentas son las mismas en todas las aplicaciones. Si aparece aquí, con un clic
+          {rol === 'instructor' ? ' se le da el rango de instructor' : ' se le mete en el club'}.
+        </p>
+      </div>
+      <input value={q} onChange={e => setQ(e.target.value)} autoFocus
+        placeholder="Correo, nombre o apellidos..." />
+
+      {q.trim().length >= 3 && (
+        <div style={{ display: 'grid', gap: 6 }}>
+          {buscando && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Buscando...</span>}
+          {!buscando && !gente.length && (
+            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+              Nadie con ese dato. Rellena los campos de abajo para crear la cuenta.
+            </span>
+          )}
+          {gente.map(u => (
+            <div key={u.id} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap',
+              background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, padding: '8px 10px' }}>
+              <div style={{ flex: 1, minWidth: 150 }}>
+                <div style={{ fontWeight: 800, fontSize: 13 }}>{u.nombre || '(sin nombre)'}</div>
+                <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>{u.email}</div>
+              </div>
+              <span className={`status-pill ${u.enEsteClub ? 'ok' : 'upcoming'}`}>
+                {u.enEsteClub ? `Ya en el club · ${etiquetaRolSimple(u.role)}` : u.enOtroClub ? 'En otro club' : 'De otra aplicación'}
+              </span>
+              <button type="button" className="btn btn-sm btn-primary" disabled={metiendo === u.id}
+                onClick={async () => { setMetiendo(u.id); await onMeter(u); setMetiendo(null); }}>
+                {metiendo === u.id ? '...' : rol === 'instructor' ? 'Hacer instructor' : 'Meter en el club'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const etiquetaRolSimple = (r) => ({
+  student: 'alumno', instructor: 'instructor', secretaria: 'secretaría',
+  club_owner: 'dirección', superadmin: 'admin',
+}[r] || r || 'alumno');
+
 function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos }) {
   const [users, setUsers] = useState([]);
   const [rangos, setRangos] = useState({});
@@ -5563,6 +5635,32 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
     }
   };
 
+  // Meter en el club a alguien que ya tiene cuenta. Va directo con 'adoptar',
+  // porque aquí ya se ha visto quién es: no hace falta preguntar dos veces.
+  const meterEnElClub = async (u) => {
+    const rol = editingItem?.rol === 'instructor' ? 'instructor' : undefined;
+    if (u.enEsteClub && (!rol || u.role === rol)) {
+      alert(`${u.nombre} ya está en el club${rol ? ' como instructor' : ''}.`);
+      return;
+    }
+    if (u.enOtroClub && !window.confirm(
+      `${u.nombre} está en OTRO club. Si sigues, se le saca de ese club y pasa a este. ¿Seguir?`)) return;
+    try {
+      const res = await fetch('/api/users', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({
+          firstName: u.name || u.nombre, lastName: u.surname || '',
+          email: u.email, rol, adoptar: true,
+        }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) return alert(d.error || 'No se ha podido.');
+      showToast(`${d.firstName || u.nombre} ${rol ? 'ya es instructor del club' : 'ya está en el club'}.`);
+      setRefreshTrigger(p => p + 1);
+      setActiveModal(null);
+    } catch { alert('Error de conexión.'); }
+  };
+
   // La tabla de cuentas la comparten todas las apps, así que borrar de verdad se
   // lleva su cuenta de todas partes. Casi siempre lo que se quiere es sacarle
   // del club, así que se pregunta primero eso y el borrado va aparte.
@@ -5942,6 +6040,19 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
               <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)', background: 'var(--bg-3)', padding: '8px 12px', borderRadius: 10 }}>
                 Solo consulta: tu perfil no puede cambiar los datos de las fichas.
               </p>
+            )}
+
+            {/* Al dar de alta se busca primero: casi siempre la persona ya tiene
+                cuenta de otra aplicación y no hay nada que teclear. */}
+            {activeModal === 'new-student' && permisos.editarAlumnos && (
+              <>
+                <BuscarCuentaExistente rol={editingItem.rol} onMeter={meterEnElClub} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'var(--ink-3)', fontSize: 11, fontWeight: 700 }}>
+                  <span style={{ flex: 1, height: 1, background: 'var(--line)' }} />
+                  O CREAR LA CUENTA DESDE CERO
+                  <span style={{ flex: 1, height: 1, background: 'var(--line)' }} />
+                </div>
+              </>
             )}
 
             <div className="field-row">

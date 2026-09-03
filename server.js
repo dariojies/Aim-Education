@@ -5969,6 +5969,35 @@ app.get('/api/admin/familias', authenticateSession, requireAdmin, async (req, re
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Buscar en TODA la tabla de cuentas, no solo en el club: es lo que hace falta
+// para encontrar a alguien que ya tiene cuenta de otra aplicacion y meterlo aqui
+// sin volver a teclear sus datos. Pide al menos tres letras y devuelve poco, que
+// esto abre la puerta a cuentas que no son de este club.
+app.get('/api/admin/personas/existentes', authenticateSession, requireAdmin, async (req, res) => {
+    const texto = String(req.query.q || '').trim();
+    if (texto.length < 3) return res.json([]);
+    const q = `%${texto}%`;
+    try {
+        const r = await pool.query(
+            `SELECT u.user_id AS id,
+                    TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre,
+                    u.name, u.surname, u.email, u.phone, u.birthday, u.role,
+                    -- COALESCE porque (NULL = $1) da NULL, no false: sin esto
+                    -- las cuentas sin club devolvian null y no se sabia leer.
+                    COALESCE(u.club_id = $1, false) AS "enEsteClub",
+                    COALESCE(u.club_id IS NOT NULL AND u.club_id <> $1, false) AS "enOtroClub"
+             FROM users u
+             WHERE u.email ILIKE $2 OR u.name ILIKE $2 OR u.surname ILIKE $2
+                OR CONCAT(u.name, ' ', COALESCE(u.surname, '')) ILIKE $2
+             ORDER BY (u.club_id = $1) DESC, u.surname, u.name
+             LIMIT 8`,
+            [AIM_CLUB_ID, q]
+        );
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Buscador de personas del club para enlazar parentescos desde la ficha.
 app.get('/api/admin/personas', authenticateSession, requireAdmin, async (req, res) => {
     const q = `%${(req.query.q || '').trim()}%`;
