@@ -5426,35 +5426,91 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
     // elegirlos, y reenviar el que estaba cargado pisaría el recién puesto.
     const { belt, belt_level, beltLevel, esInstructor, role, ...datos } = editingItem;
 
-    try {
+    // La base la comparten varias apps, así que un correo repetido casi nunca es
+    // un error: suele ser alguien que ya tiene cuenta y solo hay que meterlo en
+    // el club. Se pregunta y, si se dice que sí, se reenvía con 'adoptar'.
+    const enviar = async (adoptar) => {
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(datos),
+        body: JSON.stringify(adoptar ? { ...datos, adoptar: true } : datos),
         credentials: 'include'
       });
+      const d = await res.json().catch(() => ({}));
+      return { res, d };
+    };
+
+    const quien = editingItem.rol === 'instructor' ? 'Instructor' : 'Alumno';
+    try {
+      let { res, d } = await enviar(false);
+
+      if (!res.ok && d?.existe) {
+        const u = d.usuario;
+        const aviso = [
+          `Ya hay una cuenta con ese correo:`,
+          ``,
+          `   ${u.nombre || '(sin nombre)'} · ${u.email}`,
+          u.enEsteClub ? '   Ya está en el club.'
+            : u.enOtroClub ? '   Está en OTRO club: al seguir, se le saca de ese club.'
+            : '   No está en ningún club (es de otra aplicación).',
+          ``,
+          u.seLeHara.length
+            ? `Si continúas, ${u.seLeHara.join(' y ')}. No se toca su nombre, su correo ni su contraseña.`
+            : `No hay nada que cambiarle.`,
+          ``,
+          `¿Seguir?`,
+        ].join(String.fromCharCode(10));
+        if (!window.confirm(aviso)) return;
+        ({ res, d } = await enviar(true));
+      }
+
       if (res.ok) {
-        const quien = editingItem.rol === 'instructor' ? 'Instructor' : 'Alumno';
-        showToast(isEdit ? `${quien} modificado con éxito.` : `${quien} creado con éxito (contraseña por defecto: aim123456).`);
+        showToast(
+          d?.adoptado
+            ? `${d.firstName || quien} ya estaba en la base: se le ha metido en el club${d.rol && d.rol !== 'student' ? ` como ${d.rol}` : ''}.`
+            : isEdit ? `${quien} modificado con éxito.`
+            : `${quien} creado con éxito (contraseña por defecto: aim123456).`
+        );
         setRefreshTrigger(p => p + 1);
         setActiveModal(null);
       } else {
-        const err = await res.json();
-        alert(err.error || "Ocurrió un error.");
+        alert(d?.error || "Ocurrió un error.");
       }
     } catch (err) {
       alert("Error al guardar alumno.");
     }
   };
 
+  // La tabla de cuentas la comparten todas las apps, así que borrar de verdad se
+  // lleva su cuenta de todas partes. Casi siempre lo que se quiere es sacarle
+  // del club, así que se pregunta primero eso y el borrado va aparte.
   const handleUserDelete = async () => {
-    if (!window.confirm("¿Seguro que deseas eliminar este usuario de la base de datos de forma permanente?")) return;
+    const nombre = `${editingItem.firstName || ''} ${editingItem.lastName || ''}`.trim() || 'esta persona';
+    const L = String.fromCharCode(10);
+    const sacar = window.confirm(
+      `Vas a sacar a ${nombre} del club.` + L + L +
+      `Su cuenta sigue existiendo y puede seguir usando otras aplicaciones; solo deja de aparecer aquí.` + L + L +
+      `¿Seguir?`);
+    if (!sacar) return;
+
+    let modo = 'club';
+    if (window.confirm(
+      `Hecho: se le saca del club.` + L + L +
+      `¿Quieres además BORRAR su cuenta de la base de datos entera?` + L +
+      `Eso la elimina también de las demás aplicaciones y no tiene vuelta atrás.` + L + L +
+      `Aceptar = borrarla del todo · Cancelar = solo sacarla del club (lo normal)`)) {
+      modo = 'borrar';
+    }
+
     try {
-      const res = await fetch(`/api/users/${editingItem.id}`, { method: 'DELETE', credentials: 'include' });
+      const res = await fetch(`/api/users/${editingItem.id}?modo=${modo}`, { method: 'DELETE', credentials: 'include' });
+      const d = await res.json().catch(() => ({}));
       if (res.ok) {
-        showToast("Alumno eliminado.");
+        showToast(d.borrado ? 'Cuenta borrada de la base de datos.' : `${nombre} ya no está en el club.`);
         setRefreshTrigger(p => p + 1);
         setActiveModal(null);
+      } else {
+        alert(d.error || 'No se ha podido hacer.');
       }
     } catch (err) {
       alert("Error al eliminar alumno.");

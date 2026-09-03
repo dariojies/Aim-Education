@@ -13,7 +13,7 @@ import { crearRouterTulClases } from './tul-clases.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
 import { generarGastosPdf, gastosCsv, nombrePeriodo } from './gastos-pdf.js';
-import { rolEfectivo, permisosDe, mandaAlMenos, ROLES_STAFF } from './permisos.js';
+import { rolEfectivo, permisosDe, mandaAlMenos, ROLES_STAFF, NOMBRE_ROL } from './permisos.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1305,15 +1305,67 @@ app.post('/api/users', authenticateSession, requirePermiso('editarAlumnos'), asy
         return res.status(400).json({ error: 'Nombre y email son requeridos.' });
     }
     const emailLower = email.toLowerCase().trim();
+
+    // Qué rol se le pone. Subir a alguien a direccion o secretaria es cosa de la
+    // direccion: si no, cualquiera con acceso al panel podria hacerse jefe.
+    const rolPedido = ['instructor', 'secretaria', 'club_owner'].includes(rol) ? rol : null;
+    if (['secretaria', 'club_owner'].includes(rolPedido) && !mandaAlMenos(req.userSession.rol, 'club_owner')) {
+        return res.status(403).json({ error: 'Solo la direccion puede dar ese rol.' });
+    }
+    const role = rolPedido || (isSuperAdmin ? 'superadmin' : 'student');
+
     try {
-        const exists = await pool.query('SELECT user_id FROM users WHERE LOWER(email) = $1', [emailLower]);
+        // La base la comparten varias apps y quien esta en el club se sabe por su
+        // club_id. Que el correo exista no significa que sea de aqui: puede ser
+        // de otra app, y entonces lo que toca es meterlo en el club, no crearlo
+        // otra vez ni obligar a tocar la base a mano.
+        const exists = await pool.query(
+            `SELECT user_id, name, surname, email, role, dev_role, club_id
+             FROM users WHERE LOWER(email) = $1`, [emailLower]);
         if (exists.rowCount > 0) {
-            return res.status(409).json({ error: 'Ya existe una cuenta con ese email.' });
+            const u = exists.rows[0];
+            const enEsteClub = u.club_id === AIM_CLUB_ID;
+            const enOtroClub = !!u.club_id && !enEsteClub;
+
+            if (!req.body.adoptar) {
+                return res.status(409).json({
+                    error: 'Ya existe una cuenta con ese email.',
+                    existe: true,
+                    usuario: {
+                        id: u.user_id,
+                        nombre: `${u.name || ''} ${u.surname || ''}`.trim(),
+                        email: u.email,
+                        rol: u.role,
+                        enEsteClub, enOtroClub,
+                        seLeHara: [
+                            !enEsteClub ? 'se le mete en el club' : null,
+                            (rolPedido && u.role !== rolPedido) ? `pasa a ser ${NOMBRE_ROL[rolPedido] || rolPedido}` : null,
+                        ].filter(Boolean),
+                    },
+                });
+            }
+
+            // Adoptarla: se le mete en el club y, si se pidio, se le cambia el
+            // rol. No se toca su nombre, su correo ni su contrasena: la cuenta es
+            // suya y la usa en otras apps.
+            if (enEsteClub && (!rolPedido || u.role === rolPedido)) {
+                return res.status(409).json({ error: 'Esa persona ya esta en el club con ese mismo rol.' });
+            }
+            const r = await pool.query(
+                `UPDATE users SET club_id = $1, role = COALESCE($2, role)
+                 WHERE user_id = $3
+                 RETURNING user_id, name, surname, email, role`,
+                [AIM_CLUB_ID, rolPedido, u.user_id]
+            );
+            const a = r.rows[0];
+            return res.status(200).json({
+                adoptado: true, id: a.user_id,
+                firstName: a.name, lastName: a.surname, email: a.email, rol: a.role,
+                yaEstaba: enEsteClub, veniaDeOtroClub: enOtroClub,
+            });
         }
         const hash = await bcrypt.hash('aim123456', 12);
         const user_id = crypto.randomUUID();
-        const role = ['instructor', 'club_owner'].includes(rol) ? rol
-            : isSuperAdmin ? 'superadmin' : 'student';
         
         await pool.query(
             `INSERT INTO users (user_id, name, surname, email, password, belt, role,
@@ -1382,11 +1434,25 @@ app.put('/api/users/:id/rol', authenticateSession, requireAdmin, requireRol('clu
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Ojo con esto: la tabla users la comparten TODAS las apps, asi que un DELETE
+// se lleva la cuenta de todas ellas, no solo de este club. Por eso hay dos
+// formas, y la de quitar del club es la que se ofrece primero en pantalla:
+//   ?modo=club   -> deja de pertenecer al club (su cuenta sigue viva)
+//   ?modo=borrar -> borra la cuenta de la base entera
 app.delete('/api/users/:id', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
     const { id } = req.params;
+    const borrarDeVerdad = req.query.modo === 'borrar';
     try {
+        if (!borrarDeVerdad) {
+            // No se le toca el rol: lo puede estar usando otra aplicacion.
+            const r = await pool.query(
+                `UPDATE users SET club_id = NULL WHERE user_id = $1 AND club_id = $2 RETURNING user_id`,
+                [id, AIM_CLUB_ID]);
+            if (!r.rowCount) return res.status(404).json({ error: 'Esa persona no esta en el club.' });
+            return res.json({ success: true, sacadoDelClub: true });
+        }
         await pool.query('DELETE FROM users WHERE user_id = $1', [id]);
-        res.json({ success: true });
+        res.json({ success: true, borrado: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
