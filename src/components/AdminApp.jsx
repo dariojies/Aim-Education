@@ -482,13 +482,24 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
   const [search, setSearch] = useState("");
   const [selectedSlot, setSelectedSlot] = useState(null);
   const [selectedRoom, setSelectedRoom] = useState("Todas");
+  const [selectedMonitor, setSelectedMonitor] = useState("Todos");
   // 'horario' es el calendario de siempre; 'lista' es el menú de gestión de
   // Aim-Tul (actividades → grupos → alumnos) recreado aquí.
   const [vista, setVista] = useState('horario');
 
   const roomsList = ["Todas", ...classrooms.map(r => r.name)];
 
+  // Los monitores salen del propio horario, no de la lista de instructores: en
+  // el filtro solo tiene sentido quien de verdad tiene clases puestas.
+  const monitoresList = ["Todos", ...[...new Set(classSlots.map(s => s.monitor).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'))];
+  const hayHuerfanas = classSlots.some(s => !s.monitor);
+
   const filteredSlots = classSlots.filter(s => {
+    // El de monitor sí recorta de verdad: a diferencia del de sala, que deja las
+    // demás como puntitos, aquí lo que se quiere es ver el horario de esa
+    // persona y nada más.
+    if (selectedMonitor === "Sin asignar") { if (s.monitor) return false; }
+    else if (selectedMonitor !== "Todos" && s.monitor !== selectedMonitor) return false;
     if (!search) return true;
     const q = search.toLowerCase();
     return `${s.title} ${s.room} ${s.monitor || ''} ${s.act}`.toLowerCase().includes(q);
@@ -520,9 +531,8 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
                 return `<td>${dentro.map(x => `
                   <div class="clase" style="border-left-color:${esc(x.actColor || '#5233A8')}">
                     <b>${esc(x.title)}</b>
-                    <span>${esc(cuando(x))}</span>
-                    ${x.room ? `<span>${esc(x.room)}</span>` : ''}
-                    ${x.monitor ? `<span>${esc(x.monitor)}</span>` : ''}
+                    <span class="h">${esc(cuando(x))}</span>
+                    ${[x.room, x.monitor].filter(Boolean).map(t => `<span class="s">${esc(t)}</span>`).join('')}
                   </div>`).join('')}</td>`;
               }).join('')}
             </tr>`).join('')}
@@ -550,36 +560,95 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
           </tbody>
         </table>`;
     }).join('');
+    // Qué actividad es cada color: en la rejilla no cabe el nombre, así que sin
+    // esto los lomos de color no dicen nada.
+    const actividades = [...new Map(slots.filter(x => x.actName)
+      .map(x => [x.actName, x.actColor || '#5233A8'])).entries()]
+      .sort((a, b) => a[0].localeCompare(b[0], 'es'));
+    const leyenda = (forma === 'rejilla' && actividades.length)
+      ? `<p class="leyenda">${actividades.map(([n, c]) => `<i style="background:${esc(c)}"></i>${esc(n)}`).join('')}</p>`
+      : '';
+
     const filtros = [
       selectedRoom !== 'Todas' ? `Sala: ${selectedRoom}` : null,
+      selectedMonitor !== 'Todos' ? `Monitor: ${selectedMonitor}` : null,
       search ? `Filtro: "${search}"` : null,
     ].filter(Boolean).join(' · ');
+    const nDias = new Set(slots.map(x => x.d)).size;
     const html = `
       <style>
-        #print-horario { font-family: sans-serif; color: #222; padding: 24px; }
-        #print-horario h1 { color: #5233A8; border-bottom: 2px solid #5233A8; padding-bottom: 8px; margin: 0 0 4px; }
-        #print-horario .meta { color: #666; font-size: 12px; margin: 0 0 18px; }
-        #print-horario h2 { font-size: 15px; margin: 18px 0 6px; }
-        #print-horario table { width: 100%; border-collapse: collapse; font-size: 12px; page-break-inside: avoid; }
-        #print-horario th { text-align: left; background: #f3f0fa; color: #5233A8; padding: 6px 8px; border-bottom: 2px solid #5233A8; }
-        #print-horario td { padding: 5px 8px; border-bottom: 1px solid #e5e5e5; vertical-align: top; }
-        #print-horario .hora { white-space: nowrap; font-weight: bold; }
-        #print-horario .punto { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
-        /* La rejilla va apaisada: con seis días en vertical no cabe. */
-        #print-horario table.rejilla { table-layout: fixed; font-size: 9px; }
-        #print-horario table.rejilla th, #print-horario table.rejilla td {
-          border: 1px solid #ddd; vertical-align: top; padding: 3px; }
-        #print-horario table.rejilla .hcol { width: 42px; text-align: right; font-weight: bold; color: #666; background: #faf9f7; }
+        #print-horario {
+          font-family: 'Segoe UI', system-ui, sans-serif; color: #1A1A1A; padding: 0;
+          -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+        /* Cabecera con la franja de la marca, como las facturas. */
+        #print-horario .cab { padding: 0 0 14px; }
+        #print-horario h1 { font-size: 22px; letter-spacing: -.02em; margin: 0; color: #1A1A1A; }
+        #print-horario .franja {
+          height: 4px; margin: 10px 0 8px; border-radius: 2px;
+          background: linear-gradient(90deg, #5233A8, #FF99D3 30%, #FFD526 60%, #21B668);
+        }
+        #print-horario .meta { color: #6B7280; font-size: 11px; margin: 0; }
+        #print-horario .chip {
+          display: inline-block; background: #F1EEF9; color: #5233A8; border-radius: 99px;
+          padding: 2px 9px; font-size: 10px; font-weight: 700; margin-right: 5px;
+        }
+        #print-horario .resumen { color: #6B7280; font-size: 11px; margin: 4px 0 0; }
+
+        /* ── Lista: un dia por bloque ── */
+        #print-horario h2 {
+          font-size: 13px; margin: 16px 0 6px; text-transform: uppercase;
+          letter-spacing: .08em; color: #5233A8;
+        }
+        #print-horario table { width: 100%; border-collapse: collapse; font-size: 11px; page-break-inside: avoid; }
+        #print-horario thead { display: table-header-group; }
+        #print-horario th {
+          text-align: left; color: #6B7280; padding: 5px 8px; font-size: 9px;
+          text-transform: uppercase; letter-spacing: .06em; border-bottom: 1.5px solid #E5E7EB;
+        }
+        #print-horario td { padding: 6px 8px; border-bottom: 1px solid #EFEFEF; vertical-align: top; }
+        /* Una fila si y otra no, para no perder el renglon al leer. */
+        #print-horario tbody tr:nth-child(even) td { background: #FAFAFA; }
+        #print-horario .hora { white-space: nowrap; font-weight: 700; font-variant-numeric: tabular-nums; }
+        #print-horario .punto { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+
+        /* ── Rejilla: apaisada, que con seis dias en vertical no cabe ── */
+        #print-horario table.rejilla { table-layout: fixed; font-size: 8.5px; border: 1px solid #E5E7EB; }
+        #print-horario table.rejilla th {
+          background: #F7F5FB; color: #5233A8; text-align: center; font-size: 10px;
+          letter-spacing: .04em; padding: 6px 3px; border-bottom: 1.5px solid #5233A8;
+        }
+        #print-horario table.rejilla td { border: 1px solid #EFEFEF; vertical-align: top; padding: 2px; height: 34px; }
+        #print-horario table.rejilla tbody tr:nth-child(even) td { background: #FCFCFC; }
+        #print-horario table.rejilla .hcol {
+          width: 38px; text-align: right; font-weight: 700; color: #6B7280;
+          background: #F7F5FB !important; font-variant-numeric: tabular-nums; padding-right: 5px;
+        }
+        /* Cada clase con el color de su actividad en el lomo. */
         #print-horario table.rejilla .clase {
-          border-left: 3px solid #5233A8; background: #f7f5fb; border-radius: 3px;
-          padding: 3px 5px; margin-bottom: 3px; line-height: 1.25; }
-        #print-horario table.rejilla .clase b { display: block; }
-        #print-horario table.rejilla .clase span { display: block; color: #555; }
-        ${forma === 'rejilla' ? '@page { size: A4 landscape; margin: 10mm; }' : ''}
+          border-left: 3px solid #5233A8; border-radius: 3px; background: #FAFAFA;
+          padding: 3px 4px; margin-bottom: 2px; line-height: 1.3;
+        }
+        #print-horario table.rejilla .clase b { display: block; font-size: 8.5px; }
+        #print-horario table.rejilla .clase .h { display: block; font-weight: 700; font-variant-numeric: tabular-nums; color: #444; }
+        #print-horario table.rejilla .clase .s { display: block; color: #777; }
+        #print-horario .leyenda { margin-top: 10px; font-size: 9px; color: #6B7280; }
+        #print-horario .leyenda i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin: 0 4px 0 10px; }
+        #print-horario .pie { margin-top: 12px; font-size: 9px; color: #9CA3AF; text-align: center; }
+        @page { size: A4 ${forma === 'rejilla' ? 'landscape' : 'portrait'}; margin: 12mm; }
       </style>
-      <h1>Horario de clases — Aim Education</h1>
-      <p class="meta">Generado: ${fmtFechaHora(new Date())}${filtros ? ` · ${filtros}` : ''}</p>
-      ${bloques}`;
+      <div class="cab">
+        <h1>Horario de clases</h1>
+        <div class="franja"></div>
+        <p class="meta">
+          <span class="chip">${forma === 'rejilla' ? 'Cuadrante semanal' : 'Listado por días'}</span>
+          Aim Education · Generado el ${esc(fmtFechaHora(new Date()))}
+        </p>
+        <p class="resumen">${slots.length} clase${slots.length !== 1 ? 's' : ''} en ${nDias} día${nDias !== 1 ? 's' : ''}${filtros ? ` · ${esc(filtros)}` : ''}</p>
+      </div>
+      ${bloques}
+      ${leyenda}
+      <p class="pie">Aim Education · Urb. Terrazas de Doña Lola, Local 1 · 11203 Algeciras (Cádiz)</p>`;
 
     const style = document.createElement('style');
     style.id = 'print-horario-style';
@@ -658,6 +727,19 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
             {room}
           </button>
         ))}
+
+        <span style={{ width: 1, height: 22, background: "var(--line)", margin: "0 4px" }} />
+        <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-3)", marginRight: 4 }}>Monitor:</span>
+        <select value={selectedMonitor} onChange={e => setSelectedMonitor(e.target.value)}
+          style={{ padding: "5px 10px", borderRadius: 8, fontSize: 12, fontFamily: "inherit", fontWeight: 600,
+                   border: "1px solid var(--line)", background: "var(--bg-2)", color: "var(--ink)" }}>
+          {monitoresList.map(m => <option key={m} value={m}>{m}</option>)}
+          {hayHuerfanas && <option value="Sin asignar">Sin asignar</option>}
+        </select>
+        {selectedMonitor !== "Todos" && (
+          <button className="btn btn-sm btn-outline" onClick={() => setSelectedMonitor("Todos")}
+            style={{ padding: "4px 10px", fontSize: 11 }}>Quitar filtro</button>
+        )}
       </div>
 
       <div style={{
