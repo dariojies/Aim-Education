@@ -2,6 +2,14 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { I } from './Icons.jsx';
 import { Insignia, AcordeonClases, ChipEdad, edadDe } from './FichaAlumnoClases.jsx';
 import { fmtMesAno } from '../fechas.js';
+import svgArtesMarciales from '../assets/actividades/artes-marciales.svg';
+import svgBaile from '../assets/actividades/baile-moderno.svg';
+import svgBallet from '../assets/actividades/ballet.svg';
+import svgIngles from '../assets/actividades/ingles.svg';
+import svgEntrenamiento from '../assets/actividades/entrenamiento.svg';
+import svgPilates from '../assets/actividades/pilates.svg';
+import svgPintura from '../assets/actividades/pintura.svg';
+import svgRobotica from '../assets/actividades/robotica.svg';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Lista de clases y Reportes: el menú de gestión de Aim-Tul recreado en nuestra
@@ -41,10 +49,39 @@ const ICONOS = [
   ['shield-half-full', 'Shield', 'Defensa personal'],
 ];
 
-export function IconoActividad({ icon, size = 20, ...resto }) {
+// El dibujo abstracto (MaterialCommunityIcons portado) de un icono. Es lo que
+// se guarda en la actividad y lo que pinta aim-tul, así que se conserva para el
+// selector y como respaldo cuando no hay SVG de marca.
+function dibujoDe(icon) {
   const nombre = (ICONOS.find(([n]) => n === icon) || [null, 'Run'])[1];
-  const Dibujo = I[nombre] || I.Run;
-  return <Dibujo width={size} height={size} {...resto} />;
+  return I[nombre] || I.Run;
+}
+
+// Los SVG de marca de AIM, por el nombre de icono que tiene guardado cada
+// actividad. Son los del directorio info/SVG (símbolo + nombre de la
+// disciplina). Defensa Personal comparte el de artes marciales porque no tiene
+// uno propio. El campo 'icon' NO se toca: esto es solo cómo se pinta aquí.
+const SVG_ACTIVIDAD = {
+  'karate': svgArtesMarciales,
+  'shield-half-full': svgArtesMarciales,
+  'shoe-ballet': svgBallet,
+  'yoga': svgBaile,
+  'translate': svgIngles,
+  'boxing-glove': svgEntrenamiento,
+  'meditation': svgPilates,
+  'palette': svgPintura,
+  'robot': svgRobotica,
+};
+
+export function IconoActividad({ icon, size = 20, style, ...resto }) {
+  const svg = SVG_ACTIVIDAD[icon];
+  if (svg) {
+    // Son lockups apaisados: se fija la altura y el ancho se ajusta solo para
+    // no deformarlos. Nada de tinte: llevan sus propios colores de marca.
+    return <img src={svg} alt="" style={{ height: size, width: 'auto', display: 'block', ...style }} {...resto} />;
+  }
+  const Dibujo = dibujoDe(icon);
+  return <Dibujo width={size} height={size} style={style} {...resto} />;
 }
 
 const TIPOS_ACTIVIDAD = [
@@ -410,7 +447,9 @@ export function ListaClases({ showToast }) {
                     <button key={nombre} type="button" onClick={() => setEditAct(x => ({ ...x, icon: nombre }))}
                       title={titulo}
                       style={{ width: 40, height: 40, display: 'grid', placeItems: 'center', borderRadius: 10, cursor: 'pointer', color: editAct.icon === nombre ? 'var(--purple)' : 'var(--ink-2)', border: `2px solid ${editAct.icon === nombre ? 'var(--purple)' : 'var(--line)'}`, background: editAct.icon === nombre ? 'color-mix(in oklab, var(--purple) 12%, var(--bg-2))' : 'var(--bg-2)' }}>
-                      <IconoActividad icon={nombre} size={20} />
+                      {/* En el selector va el dibujo abstracto, no el SVG de marca:
+                          la cuadrícula queda uniforme y se elige el icono que guarda aim-tul. */}
+                      {(() => { const D = dibujoDe(nombre); return <D width={20} height={20} />; })()}
                     </button>
                   ))}
                 </div>
