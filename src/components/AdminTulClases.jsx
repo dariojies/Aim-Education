@@ -2,14 +2,12 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { I } from './Icons.jsx';
 import { Insignia, AcordeonClases, ChipEdad, edadDe } from './FichaAlumnoClases.jsx';
 import { fmtMesAno } from '../fechas.js';
-import svgArtesMarciales from '../assets/actividades/artes-marciales.svg';
-import svgBaile from '../assets/actividades/baile-moderno.svg';
 import svgBallet from '../assets/actividades/ballet.svg';
 import svgIngles from '../assets/actividades/ingles.svg';
-import svgEntrenamiento from '../assets/actividades/entrenamiento.svg';
 import svgPilates from '../assets/actividades/pilates.svg';
 import svgPintura from '../assets/actividades/pintura.svg';
 import svgRobotica from '../assets/actividades/robotica.svg';
+import svgTkd from '../assets/actividades/tkd.svg';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Lista de clases y Reportes: el menú de gestión de Aim-Tul recreado en nuestra
@@ -57,28 +55,30 @@ function dibujoDe(icon) {
   return I[nombre] || I.Run;
 }
 
-// Los SVG de marca de AIM, por el nombre de icono que tiene guardado cada
-// actividad. Son los del directorio info/SVG (símbolo + nombre de la
-// disciplina). Defensa Personal comparte el de artes marciales porque no tiene
-// uno propio. El campo 'icon' NO se toca: esto es solo cómo se pinta aquí.
+// Los iconos cuadrados de AIM (info/SVG, los que no llevan "Aim_"), por el
+// nombre de icono que tiene guardado cada actividad. No hay versión cuadrada de
+// Baile Moderno, Kick Boxing ni Defensa Personal: esas se quedan con el dibujo.
+// El campo 'icon' NO se toca: esto es solo cómo se pinta aquí.
 const SVG_ACTIVIDAD = {
-  'karate': svgArtesMarciales,
-  'shield-half-full': svgArtesMarciales,
   'shoe-ballet': svgBallet,
-  'yoga': svgBaile,
   'translate': svgIngles,
-  'boxing-glove': svgEntrenamiento,
   'meditation': svgPilates,
   'palette': svgPintura,
   'robot': svgRobotica,
+  'karate': svgTkd,
 };
+// Estos dos vienen dibujados en blanco (para fondo oscuro): sobre la tarjeta
+// blanca no se verían, así que se oscurecen para que salgan como los demás.
+const SVG_BLANCO = new Set(['palette', 'karate']);
 
 export function IconoActividad({ icon, size = 20, style, ...resto }) {
   const svg = SVG_ACTIVIDAD[icon];
   if (svg) {
-    // Son lockups apaisados: se fija la altura y el ancho se ajusta solo para
-    // no deformarlos. Nada de tinte: llevan sus propios colores de marca.
-    return <img src={svg} alt="" style={{ height: size, width: 'auto', display: 'block', ...style }} {...resto} />;
+    return <img src={svg} alt="" style={{
+      width: size, height: size, objectFit: 'contain', display: 'block',
+      ...(SVG_BLANCO.has(icon) ? { filter: 'brightness(0.23)' } : null),
+      ...style,
+    }} {...resto} />;
   }
   const Dibujo = dibujoDe(icon);
   return <Dibujo width={size} height={size} style={style} {...resto} />;
