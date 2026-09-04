@@ -866,10 +866,25 @@ function Kpi({ titulo, valor, sub }) {
   );
 }
 
-function Barra({ pct, color = 'var(--teal)' }) {
+// Guías al 25/50/75/100 % para leer la barra de un vistazo. Van por encima del
+// relleno pero muy finas y traslúcidas, para marcar el nivel sin tapar la barra.
+const MARCAS_BARRA = [25, 50, 75, 100];
+
+function Barra({ pct, color = 'var(--teal)', marcas = true }) {
   return (
-    <div style={{ height: 8, borderRadius: 999, background: 'var(--bg-3)', overflow: 'hidden' }}>
+    <div style={{ position: 'relative', height: 8, borderRadius: 999, background: 'var(--bg-3)', overflow: 'hidden' }}>
       <div style={{ width: `${Math.min(100, Math.max(0, pct))}%`, height: '100%', borderRadius: 999, background: color }} />
+      {marcas && MARCAS_BARRA.map(m => (
+        <span key={m} aria-hidden="true" style={{
+          position: 'absolute', top: 0, bottom: 0, left: `${m}%`,
+          // El 50 % se ve un pelín más para servir de referencia central; el
+          // 100 % se mete 1 px para que no lo coma la esquina redondeada.
+          width: 1, marginLeft: m === 100 ? -1 : 0,
+          // Gris neutro (no negro puro) para que se lea igual sobre el relleno de
+          // color, sobre la pista clara y en modo oscuro sin destacar de más.
+          background: `rgba(120,120,120,${m === 50 ? 0.6 : 0.4})`,
+        }} />
+      ))}
     </div>
   );
 }
