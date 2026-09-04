@@ -2869,8 +2869,17 @@ async function fijarNivelExamen(client, alumnoId, act, levelOrder) {
          VALUES ($1,$2,$3,$4,$5,NOW())`,
         [alumnoId, act.activity_id, act.activity_type, nivel.order, nivel.name]).catch(() => {});
     if (act.activity_type === 'taekwondo_itf') {
+        // El cinturón vale para las dos apps: se deja en users (columna de
+        // referencia) y se apunta en tul_user_belts, de donde Learning Dungeon
+        // lee el cinturón vigente (la última fila por fecha) y su histórico.
+        // Solo se registra si cambia de verdad respecto a lo último anotado.
         await client.query('UPDATE users SET belt = $1, belt_level = $2 WHERE user_id = $3',
             [nivel.name, nivel.order, alumnoId]);
+        await client.query(
+            `INSERT INTO tul_user_belts (user_id, belt_level, updated_at)
+             SELECT $1, $2, NOW()
+             WHERE $2 <> COALESCE((SELECT belt_level FROM tul_user_belts WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1), -1)`,
+            [alumnoId, nivel.order]);
     }
 }
 

@@ -50,6 +50,24 @@ function nombresDocentesSes(s) {
     return s?.instructorName ? [s.instructorName] : [];
 }
 
+// Cambia el cinturón de Taekwon-Do de un alumno de forma que valga para las dos
+// apps. Learning Dungeon (aim-tul) lee el cinturón vigente de tul_user_belts —la
+// última fila por fecha— y lo usa en el multiplicador de combate, el acceso a
+// los tuls y el BeltDisplay; y guarda ahí el histórico de cambios. Así que hay
+// que dejar el cinturón en `users` (que es la columna de referencia) Y apuntarlo
+// en tul_user_belts. Solo se registra si cambia de verdad respecto a lo último
+// anotado: repetir el mismo nivel no aporta nada y solo ensuciaría el histórico.
+// `db` es el pool o un client de transacción; los dos tienen .query.
+async function aplicarCinturonTKD(db, studentId, levelOrder, levelName) {
+    await db.query('UPDATE users SET belt = $1, belt_level = $2 WHERE user_id = $3',
+        [levelName, levelOrder, studentId]);
+    await db.query(
+        `INSERT INTO tul_user_belts (user_id, belt_level, updated_at)
+         SELECT $1, $2, NOW()
+         WHERE $2 <> COALESCE((SELECT belt_level FROM tul_user_belts WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1), -1)`,
+        [studentId, levelOrder]);
+}
+
 export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSuyo }) {
     const router = express.Router();
 
@@ -296,8 +314,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
              VALUES ($1,$2,$3,$4,$5,NOW())`,
             [studentId, activity_id, activity_type, nivel.order, nivel.name]);
         if (activity_type === TIPO_TAEKWONDO) {
-            await pool.query('UPDATE users SET belt = $1, belt_level = $2 WHERE user_id = $3',
-                [nivel.name, nivel.order, studentId]);
+            await aplicarCinturonTKD(pool, studentId, nivel.order, nivel.name);
         }
     }
 
@@ -514,11 +531,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
             // En Taekwondo, el cinturón global del usuario se mantiene igual que
             // en Learning Dungeon: otras partes de su app siguen leyendo de ahí.
             if (tipo === TIPO_TAEKWONDO) {
-                await client.query('UPDATE users SET belt = $1, belt_level = $2 WHERE user_id = $3',
-                    [nivel.name, nivel.order, req.params.studentId]);
-                await client.query(
-                    'INSERT INTO tul_user_belts (user_id, belt_level, updated_at) VALUES ($1,$2,NOW()) ON CONFLICT DO NOTHING',
-                    [req.params.studentId, nivel.order]);
+                await aplicarCinturonTKD(client, req.params.studentId, nivel.order, nivel.name);
             }
             await client.query('COMMIT');
             res.json({ success: true, nivel });
@@ -556,8 +569,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                            SET level_order = excluded.level_order, level_name = excluded.level_name, updated_at = NOW()`,
                         [req.params.studentId, info.activity_id, info.activity_type, nivel.order, nivel.name]);
                     if (info.activity_type === TIPO_TAEKWONDO) {
-                        await pool.query('UPDATE users SET belt = $1, belt_level = $2 WHERE user_id = $3',
-                            [nivel.name, nivel.order, req.params.studentId]);
+                        await aplicarCinturonTKD(pool, req.params.studentId, nivel.order, nivel.name);
                     }
                 }
             }
