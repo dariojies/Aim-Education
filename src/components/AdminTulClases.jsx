@@ -452,6 +452,7 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
   const [escalasClub, setEscalasClub] = useState([]);
   const [eligiendoProvisional, setEligiendoProvisional] = useState(false);
   const [guardando, setGuardando] = useState(false);
+  const [asignarPlaza, setAsignarPlaza] = useState(false); // pop-up al liberarse un hueco
   const buscador = useRef(null);
 
   // Si se ha entrado desde "+ Lista de espera", el cursor ya está en el buscador.
@@ -494,6 +495,11 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
   const lleno = grupo.maxStudents != null && alumnos.length >= grupo.maxStudents;
   const plazasLibres = grupo.maxStudents != null ? Math.max(0, grupo.maxStudents - alumnos.length) : null;
   const nivelDe = (orden) => escala.find(n => n.order === orden) || null;
+  // Si hay gente esperando, un hueco libre es suyo por orden: no se puede
+  // matricular a dedo aunque quede sitio. Quien se busca ahora entra al final de
+  // la cola. Por eso mandan las dos cosas juntas.
+  const hayEspera = espera.length > 0;
+  const vaAEspera = lleno || hayEspera;
 
   useEffect(() => {
     if (q.trim().length < 2) { setSug([]); return; }
@@ -526,12 +532,14 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
     setGuardando(true);
     const nivel = alta.levelOrder === '' ? null : Number(alta.levelOrder);
     try {
-      if (lleno) {
+      if (vaAEspera) {
         await api(`/groups/${grupo.id}/espera`, {
           method: 'POST',
           body: { studentId: alta.id, grupoProvisionalId: alta.provisional?.id || null, nota: alta.nota || null, levelOrder: nivel },
         });
-        showToast?.(`${alta.name} apuntado a la lista de espera.`);
+        showToast?.(hayEspera && !lleno
+          ? `${alta.name} entra a la lista de espera (la plaza libre es para quien ya esperaba).`
+          : `${alta.name} apuntado a la lista de espera.`);
       } else {
         await api(`/groups/${grupo.id}/students/enroll`, { method: 'POST', body: { studentId: alta.id, levelOrder: nivel } });
         showToast?.(`${alta.name} matriculado en ${grupo.name}.`);
@@ -562,8 +570,13 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
     if (!window.confirm(`Dar la plaza a ${e.alumno}?${e.provisionalNombre ? `\nSe le dará de baja de ${e.provisionalNombre}.` : ''}`)) return;
     try {
       const d = await api(`/espera/${e.id}/asignar`, { method: 'POST' });
-      await cargar(); await cargarEspera();
+      await cargar();
+      const r = await api('/espera');
+      const suya = (r.filas || []).filter(f => f.groupId === grupo.id);
+      setEspera(suya);
       showToast?.(`${e.alumno} matriculado${d.dejoProvisional ? ' y dado de baja de su clase provisional' : ''}.`);
+      // Si ya no queda nadie esperando o no quedan huecos, se cierra el aviso.
+      if (!suya.some(f => f.leToca)) setAsignarPlaza(false);
     } catch (err) { alert(err.message); }
   }
 
@@ -578,8 +591,13 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
     try {
       await api(`/groups/${grupo.id}/students/${s.id}/enroll`, { method: 'DELETE' });
       // Al liberarse una plaza puede tocarle ya al primero de la espera.
-      await cargar(); await cargarEspera();
+      await cargar();
+      const d = await api('/espera');
+      const suya = (d.filas || []).filter(f => f.groupId === grupo.id);
+      setEspera(suya);
       showToast?.(`${s.name} dado de baja.`);
+      // Se ha liberado un hueco y hay cola: se ofrece de inmediato asignarlo.
+      if (suya.length > 0) setAsignarPlaza(true);
     } catch (e) { alert(e.message); }
   }
 
@@ -601,12 +619,14 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
       {/* Alta: se busca, se elige y se confirma. Nada se apunta de golpe. */}
       <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: 14, display: 'grid', gap: 10 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-          <span style={{ fontWeight: 800, fontSize: 14 }}>{lleno ? 'Apuntar a la lista de espera' : 'Matricular a un alumno'}</span>
+          <span style={{ fontWeight: 800, fontSize: 14 }}>{vaAEspera ? 'Apuntar a la lista de espera' : 'Matricular a un alumno'}</span>
           <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
             {lleno
               ? 'La clase está completa, así que el alumno guarda turno por orden de llegada.'
-              : plazasLibres == null ? 'Esta clase no tiene tope de plazas.'
-                : `Queda${plazasLibres === 1 ? '' : 'n'} ${plazasLibres} plaza${plazasLibres === 1 ? '' : 's'} por cubrir.`}
+              : hayEspera
+                ? `Hay ${espera.length} en lista de espera: las plazas libres son para la cola, así que este alumno entra al final.`
+                : plazasLibres == null ? 'Esta clase no tiene tope de plazas.'
+                  : `Queda${plazasLibres === 1 ? '' : 'n'} ${plazasLibres} plaza${plazasLibres === 1 ? '' : 's'} por cubrir.`}
           </span>
         </div>
 
@@ -651,7 +671,7 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
               </label>
             )}
 
-            {lleno && (
+            {vaAEspera && (
               <>
                 <div style={{ fontSize: 12, color: 'var(--ink-2)' }}>
                   Mientras espera, puede ir a: <b>{alta.provisional ? alta.provisional.name : 'ninguna clase de momento'}</b>
@@ -685,7 +705,7 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button className="btn btn-sm btn-outline" onClick={() => setAlta(null)}>Cancelar</button>
               <button className="btn btn-sm btn-primary" disabled={guardando} onClick={confirmarAlta}>
-                {guardando ? 'Guardando...' : (lleno ? 'Apuntar a la espera' : 'Matricular')}
+                {guardando ? 'Guardando...' : (vaAEspera ? 'Apuntar a la espera' : 'Matricular')}
               </button>
             </div>
           </div>
@@ -750,6 +770,44 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
           </div>
         ))}
       </div>
+
+      {/* Pop-up al liberarse una plaza: se ofrece dársela a quien espera, para
+          que el hueco no se quede sin cubrir ni se lo lleve alguien saltándose
+          la cola. */}
+      {asignarPlaza && espera.length > 0 && (
+        <div onClick={() => setAsignarPlaza(false)}
+          style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div onClick={ev => ev.stopPropagation()}
+            style={{ background: 'var(--bg-1)', border: '1px solid var(--line)', borderRadius: 16, padding: 20, maxWidth: 480, width: '100%', boxShadow: 'var(--shadow)', display: 'grid', gap: 12 }}>
+            <div>
+              <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>Se ha liberado una plaza</h3>
+              <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--ink-3)' }}>
+                En <b>{grupo.name}</b> hay {espera.length} alumno{espera.length !== 1 ? 's' : ''} esperando. Dale la plaza a quien le toca:
+              </p>
+            </div>
+            <div style={{ display: 'grid', gap: 8, maxHeight: 320, overflowY: 'auto' }}>
+              {espera.map(e => (
+                <div key={e.id} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '10px 12px', borderRadius: 10, background: e.leToca ? 'color-mix(in oklab, var(--teal) 10%, var(--bg-2))' : 'var(--bg-2)', border: '1px solid var(--line)' }}>
+                  <span style={{ fontWeight: 800, color: 'var(--purple)', minWidth: 26 }}>{e.puesto}º</span>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span style={{ fontWeight: 700, fontSize: 14 }}>{e.alumno}</span>
+                    <span style={{ display: 'block', fontSize: 11, color: 'var(--ink-3)' }}>
+                      {e.provisionalNombre ? <>mientras va a <b>{e.provisionalNombre}</b></> : 'sin clase alternativa'}
+                      {e.nota ? ` · ${e.nota}` : ''}
+                    </span>
+                  </span>
+                  <button className="btn btn-sm btn-primary" disabled={!e.leToca} onClick={() => darPlaza(e)}>
+                    {e.leToca ? 'Darle la plaza' : 'Sin plaza aún'}
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <button className="btn btn-sm btn-outline" onClick={() => setAsignarPlaza(false)}>Ahora no</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

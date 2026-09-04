@@ -344,6 +344,8 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                 `SELECT g.max_students FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
                  WHERE g.group_id = $1 AND a.club_id = $2`, [req.params.groupId, clubId]);
             if (!groupRes.rowCount) return res.status(404).json({ error: 'Grupo no encontrado.' });
+            // El hueco libre es de quien espera: no se matricula a nadie a dedo.
+            if (await esperandoEn(req.params.groupId) > 0) return res.status(409).json(ERROR_ESPERA);
             const maxStudents = groupRes.rows[0]?.max_students;
             if (maxStudents !== null && maxStudents !== undefined) {
                 const countRes = await pool.query('SELECT COUNT(*) FROM tul_group_students WHERE group_id = $1', [req.params.groupId]);
@@ -418,6 +420,21 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
         }
         await pool.query('DELETE FROM tul_group_students WHERE group_id = $1 AND student_id = $2', [groupId, studentId]);
     }
+
+    // Cuánta gente lleva esperando esta clase. Si hay alguien, un hueco libre es
+    // suyo por orden de llegada: no se puede matricular a nadie por la vía
+    // directa saltándose la cola (ticket de lista de espera). La plaza se da
+    // desde la propia lista con /espera/:id/asignar.
+    async function esperandoEn(groupId) {
+        const r = await pool.query(
+            `SELECT COUNT(*)::int n FROM aim_lista_espera WHERE group_id = $1 AND estado = 'esperando'`,
+            [groupId]);
+        return r.rows[0].n;
+    }
+    const ERROR_ESPERA = {
+        error: 'Esta clase tiene lista de espera: la plaza libre es para quien lleva esperando. Dásela desde la lista de espera.',
+        listaEspera: true,
+    };
 
     // ── Rangos de los alumnos ────────────────────────────────────────────────
     // Cada actividad tiene su escala y no se pisan: el mismo alumno puede ser
@@ -554,6 +571,8 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
             );
             if (!g.rowCount) return res.status(404).json({ error: 'Esa clase no es de este club.' });
             const info = g.rows[0];
+            // Con lista de espera, el hueco es para la cola: no se matricula a dedo.
+            if (await esperandoEn(groupId) > 0) return res.status(409).json(ERROR_ESPERA);
             if (info.max_students && info.n >= info.max_students) {
                 return res.status(409).json({ error: `Esa clase está llena (${info.n}/${info.max_students}). Puedes apuntarle a la lista de espera.` });
             }
@@ -662,6 +681,9 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                 if (!gp.rowCount) return res.status(404).json({ error: 'La clase alternativa no es de este club.' });
                 if (gp.rows[0].max_students && gp.rows[0].n >= gp.rows[0].max_students) {
                     return res.status(409).json({ error: 'La clase alternativa también está llena.' });
+                }
+                if (await esperandoEn(grupoProvisionalId) > 0) {
+                    return res.status(409).json({ error: 'La clase alternativa tiene lista de espera, así que tampoco tiene plaza libre.' });
                 }
                 await matricular(grupoProvisionalId, studentId);
             }
