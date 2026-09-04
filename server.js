@@ -13,6 +13,7 @@ import { crearRouterTulClases } from './tul-clases.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
 import { generarGastosPdf, gastosCsv, nombrePeriodo } from './gastos-pdf.js';
+import { escalaDe, escalasDelClub, resultadoDe, baremoDe, matriculaExamenDe } from './rangos.js';
 import { rolEfectivo, permisosDe, mandaAlMenos, ROLES_STAFF, NOMBRE_ROL } from './permisos.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -68,6 +69,10 @@ const EVENTOS_ACTIVIDAD = 'Taller/Evento';
 const LUGAR_POR_DEFECTO = 'Urbanización Terrazas de Doña Lola, Local 1 (AIM Education)';
 const EVENTOS_CONCEPTO = '20500';
 const CONCEPTOS_EVENTOS = new Set([EVENTOS_CONCEPTO]);
+// Concepto con el que se cobra la matrícula de un examen. Solo se usa en Ballet
+// (la RAD): en Inglés y Taekwon-Do la familia paga fuera y no la cobramos. IVA 0
+// por ser enseñanza exenta, igual que los eventos y el campamento.
+const MATRICULA_EXAMEN_CONCEPTO = '20600';
 
 async function initDb() {
     const client = await pool.connect();
@@ -621,6 +626,42 @@ async function initDb() {
              VALUES ($1, 'Taller o evento', 0, 'Otros', 0)
              ON CONFLICT (concepto) DO NOTHING`, [EVENTOS_CONCEPTO]
         );
+
+        // Concepto de la matrícula de examen (solo Ballet la cobra el club).
+        await client.query(
+            `INSERT INTO aim_precios (concepto, descripcion, precio, tipo, iva_pct)
+             VALUES ($1, 'Matrícula de examen', 0, 'Otros', 0)
+             ON CONFLICT (concepto) DO NOTHING`, [MATRICULA_EXAMEN_CONCEPTO]
+        );
+
+        // Exámenes y títulos (ticket #212). Un examen es de un alumno en una
+        // actividad, con su nota en puntos y el resultado que sale del baremo.
+        // La matrícula se anota aquí; solo la de Ballet genera un cargo (cargo_id).
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_examenes (
+                id SERIAL PRIMARY KEY,
+                alumno_id UUID NOT NULL,
+                activity_id UUID,
+                activity_type VARCHAR(60),
+                actividad VARCHAR(255),
+                fecha DATE NOT NULL,
+                convocatoria VARCHAR(120),
+                nivel VARCHAR(120),
+                puntos NUMERIC,
+                puntos_max NUMERIC DEFAULT 100,
+                resultado VARCHAR(120),
+                apto BOOLEAN,
+                observaciones TEXT,
+                matricula_modo VARCHAR(20),
+                matricula_estado VARCHAR(20) DEFAULT 'pendiente',
+                matricula_importe NUMERIC,
+                cargo_id INTEGER,
+                comunicado_enviado BOOLEAN DEFAULT false,
+                comunicado_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                created_by UUID
+            )
+        `);
 
         // Catálogo de clases PROPIAS (las que no están en aim-tul). Las de
         // aim-tul NO se copian aquí: se leen en vivo, así siempre están al día.
@@ -2397,6 +2438,7 @@ for (const [ruta, seccion] of [
     ['/api/admin/posts', 'news'],
     ['/api/admin/instructores', 'instructors'],
     ['/api/admin/landing', 'portada'],
+    ['/api/admin/examenes', 'titulos'],
 ]) {
     app.use(ruta, authenticateSession, requireSeccion(seccion));
 }
@@ -2642,6 +2684,302 @@ function requireRol(minimo) {
 // portados a nuestro panel. Ver tul-clases.js.
 app.use('/api/admin/tul', authenticateSession, requireAdmin,
     crearRouterTulClases({ pool, clubId: AIM_CLUB_ID, permisos, gruposDe, grupoSuyo }));
+
+// =============================================================================
+// EXÁMENES Y TÍTULOS (ticket #212)
+// =============================================================================
+// El instructor no entra aquí: la sección 'titulos' ya se cierra por ruta más
+// arriba. Estos endpoints son para el club y la secretaría.
+
+// Lo que necesita el formulario de un vistazo: las actividades que llevan
+// escala (Ballet, Inglés, Taekwon-Do), sus niveles, el baremo de notas y cómo
+// se paga la matrícula en cada una. Así el navegador no tiene que saber nada.
+app.get('/api/admin/examenes/opciones', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const acts = (await escalasDelClub(pool, AIM_CLUB_ID)).filter(a => a.tieneRangos);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            actividades: acts.map(a => ({
+                id: a.id, name: a.name, tipo: a.tipo, niveles: a.niveles,
+                baremo: baremoDe(a.tipo), matricula: matriculaExamenDe(a.tipo),
+            })),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// El listado de exámenes ya registrados. Se puede filtrar por actividad y por
+// alumno; sin filtros salen todos, del más reciente al más antiguo.
+app.get('/api/admin/examenes', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const cond = ['1=1'];
+        const params = [];
+        if (req.query.actividad) { params.push(req.query.actividad); cond.push(`e.activity_id = $${params.length}`); }
+        if (req.query.alumno) { params.push(req.query.alumno); cond.push(`e.alumno_id = $${params.length}`); }
+        const r = await pool.query(
+            `SELECT e.*, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno_nombre, u.email AS alumno_email
+             FROM aim_examenes e
+             JOIN users u ON u.user_id = e.alumno_id
+             WHERE ${cond.join(' AND ')}
+             ORDER BY e.fecha DESC, e.id DESC`, params);
+        res.set('Cache-Control', 'no-store');
+        res.json({ examenes: r.rows.map(mapExamen) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+function mapExamen(e) {
+    return {
+        id: e.id, alumnoId: e.alumno_id, alumnoNombre: e.alumno_nombre, alumnoEmail: e.alumno_email,
+        activityId: e.activity_id, activityType: e.activity_type, actividad: e.actividad,
+        fecha: e.fecha, convocatoria: e.convocatoria, nivel: e.nivel,
+        puntos: e.puntos != null ? Number(e.puntos) : null,
+        puntosMax: e.puntos_max != null ? Number(e.puntos_max) : null,
+        resultado: e.resultado, apto: e.apto, observaciones: e.observaciones,
+        matriculaModo: e.matricula_modo, matriculaEstado: e.matricula_estado,
+        matriculaImporte: e.matricula_importe != null ? Number(e.matricula_importe) : null,
+        cargoId: e.cargo_id,
+        comunicadoEnviado: e.comunicado_enviado, comunicadoAt: e.comunicado_at,
+        createdAt: e.created_at,
+    };
+}
+
+// Registrar un examen. El resultado se calcula del baremo salvo que venga uno a
+// mano (para los casos que no son apto/no apto, como los shields de Inglés).
+// En Ballet, si se marca cobrar la matrícula, se genera el cargo pendiente.
+app.post('/api/admin/examenes', authenticateSession, requireAdmin, async (req, res) => {
+    const b = req.body || {};
+    if (!b.alumnoId || !b.activityId || !b.fecha) {
+        return res.status(400).json({ error: 'Faltan el alumno, la actividad o la fecha.' });
+    }
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const act = await client.query(
+            `SELECT activity_id, name, activity_type FROM tul_activities WHERE activity_id = $1 AND club_id = $2`,
+            [b.activityId, AIM_CLUB_ID]);
+        if (!act.rowCount) throw { httP: 404, msg: 'Esa actividad no es del club.' };
+        const { name, activity_type } = act.rows[0];
+
+        const puntos = b.puntos === '' || b.puntos == null ? null : Number(b.puntos);
+        const puntosMax = b.puntosMax ? Number(b.puntosMax) : 100;
+        const auto = resultadoDe(activity_type, puntos, puntosMax);
+        // Un resultado escrito a mano manda sobre el baremo; si no, va el del baremo.
+        const resultado = (b.resultado && String(b.resultado).trim()) || auto?.resultado || null;
+        const apto = b.apto != null ? !!b.apto : (auto ? auto.apto : null);
+
+        const mat = matriculaExamenDe(activity_type);
+        const cobrar = mat.modo === 'cobrada' && b.cobrarMatricula && Number(b.matriculaImporte) > 0;
+
+        const ins = await client.query(
+            `INSERT INTO aim_examenes
+               (alumno_id, activity_id, activity_type, actividad, fecha, convocatoria, nivel,
+                puntos, puntos_max, resultado, apto, observaciones,
+                matricula_modo, matricula_estado, matricula_importe, created_by)
+             VALUES ($1,$2,$3,$4,$5::date,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+             RETURNING *`,
+            [b.alumnoId, b.activityId, activity_type, name, b.fecha,
+             b.convocatoria?.trim() || null, b.nivel?.trim() || null,
+             puntos, puntosMax, resultado, apto, b.observaciones?.trim() || null,
+             mat.modo, cobrar ? 'pendiente' : (mat.modo === 'cobrada' ? 'pendiente' : 'no_aplica'),
+             Number(b.matriculaImporte) > 0 ? Number(b.matriculaImporte) : null,
+             req.userSession.userId]
+        );
+        const examen = ins.rows[0];
+
+        if (cobrar) {
+            const cargoId = await crearCargoMatriculaExamen(client, examen);
+            await client.query(`UPDATE aim_examenes SET cargo_id = $1 WHERE id = $2`, [cargoId, examen.id]);
+            examen.cargo_id = cargoId;
+        }
+
+        // Si aprueba y se pide, se le sube el rango en esa actividad.
+        if (apto && b.promocionar && b.nivelOrder != null && b.nivelOrder !== '') {
+            await fijarNivelExamen(client, b.alumnoId, act.rows[0], Number(b.nivelOrder));
+        }
+
+        await client.query('COMMIT');
+        const full = await pool.query(
+            `SELECT e.*, TRIM(CONCAT(u.name,' ',COALESCE(u.surname,''))) AS alumno_nombre, u.email AS alumno_email
+             FROM aim_examenes e JOIN users u ON u.user_id = e.alumno_id WHERE e.id = $1`, [examen.id]);
+        res.status(201).json({ examen: mapExamen(full.rows[0]) });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        if (err.httP) return res.status(err.httP).json({ error: err.msg });
+        console.error('[EXAMENES] create:', err);
+        res.status(500).json({ error: 'No se pudo guardar el examen.' });
+    } finally {
+        client.release();
+    }
+});
+
+// El cargo de la matrícula de Ballet: mismo camino que el de una inscripción de
+// evento, pero con el concepto de matrícula. Sale a nombre de quien paga.
+async function crearCargoMatriculaExamen(client, examen) {
+    const total = r2Server(Number(examen.matricula_importe));
+    if (!(total > 0)) return null;
+    const fecha = new Date(examen.fecha);
+    const mes = `${fecha.getFullYear()}-${String(fecha.getMonth() + 1).padStart(2, '0')}-01`;
+    const desc = `Matrícula examen ${examen.actividad}${examen.convocatoria ? ` · ${examen.convocatoria}` : ''}`;
+    const ins = await client.query(
+        `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct,
+                                 descuento_pct, importe, estado, origen, actividad)
+         VALUES ($1,$2,$3::date,$4,'Otros',$5,0,0,$5,'pendiente','examen',$6) RETURNING id`,
+        [examen.alumno_id, MATRICULA_EXAMEN_CONCEPTO, mes, desc.slice(0, 255), total, examen.actividad]
+    );
+    return ins.rows[0].id;
+}
+
+// Subir el rango del alumno cuando aprueba. Es lo mismo que hace el bloque de
+// rangos de la ficha, pero disparado por el examen.
+async function fijarNivelExamen(client, alumnoId, act, levelOrder) {
+    const nivel = (await escalaDe(act.activity_type, pool)).find(n => n.order === levelOrder);
+    if (!nivel) return;
+    await client.query(
+        `INSERT INTO tul_user_progression (user_id, activity_id, activity_type, level_order, level_name, updated_at)
+         VALUES ($1,$2,$3,$4,$5,NOW())
+         ON CONFLICT (user_id, activity_id) DO UPDATE
+           SET level_order = excluded.level_order, level_name = excluded.level_name, updated_at = NOW()`,
+        [alumnoId, act.activity_id, act.activity_type, nivel.order, nivel.name]);
+    await client.query(
+        `INSERT INTO tul_user_progression_history (user_id, activity_id, activity_type, level_order, level_name, updated_at)
+         VALUES ($1,$2,$3,$4,$5,NOW())`,
+        [alumnoId, act.activity_id, act.activity_type, nivel.order, nivel.name]).catch(() => {});
+    if (act.activity_type === 'taekwondo_itf') {
+        await client.query('UPDATE users SET belt = $1, belt_level = $2 WHERE user_id = $3',
+            [nivel.name, nivel.order, alumnoId]);
+    }
+}
+
+// Editar un examen (nota, resultado, nivel, estado de la matrícula, notas).
+app.patch('/api/admin/examenes/:id', authenticateSession, requireAdmin, async (req, res) => {
+    const b = req.body || {};
+    try {
+        const cur = await pool.query(`SELECT * FROM aim_examenes WHERE id = $1`, [req.params.id]);
+        if (!cur.rowCount) return res.status(404).json({ error: 'Ese examen no existe.' });
+        const e = cur.rows[0];
+        const puntos = b.puntos === '' || b.puntos == null ? e.puntos : Number(b.puntos);
+        const puntosMax = b.puntosMax ? Number(b.puntosMax) : (e.puntos_max || 100);
+        const auto = resultadoDe(e.activity_type, puntos, puntosMax);
+        // Si cambian los puntos y no se manda un resultado a mano, el resultado
+        // y el apto se recalculan juntos del baremo: así no queda un "Distinción"
+        // marcado como no apto. Un resultado escrito a mano siempre manda.
+        const cambiaPuntos = b.puntos !== undefined;
+        const resultado = b.resultado !== undefined
+            ? (String(b.resultado).trim() || auto?.resultado || null)
+            : (cambiaPuntos && auto ? auto.resultado : e.resultado);
+        const apto = b.apto !== undefined ? (b.apto == null ? null : !!b.apto)
+            : (cambiaPuntos && auto ? auto.apto : e.apto);
+        const r = await pool.query(
+            `UPDATE aim_examenes SET
+                fecha = COALESCE($2::date, fecha),
+                convocatoria = $3, nivel = $4,
+                puntos = $5, puntos_max = $6, resultado = $7, apto = $8,
+                observaciones = $9,
+                matricula_estado = COALESCE($10, matricula_estado),
+                matricula_importe = $11
+             WHERE id = $1 RETURNING *`,
+            [e.id, b.fecha || null,
+             b.convocatoria !== undefined ? (b.convocatoria?.trim() || null) : e.convocatoria,
+             b.nivel !== undefined ? (b.nivel?.trim() || null) : e.nivel,
+             puntos, puntosMax, resultado, apto,
+             b.observaciones !== undefined ? (b.observaciones?.trim() || null) : e.observaciones,
+             b.matriculaEstado || null,
+             b.matriculaImporte !== undefined ? (Number(b.matriculaImporte) || null) : e.matricula_importe]
+        );
+        const full = await pool.query(
+            `SELECT e.*, TRIM(CONCAT(u.name,' ',COALESCE(u.surname,''))) AS alumno_nombre, u.email AS alumno_email
+             FROM aim_examenes e JOIN users u ON u.user_id = e.alumno_id WHERE e.id = $1`, [r.rows[0].id]);
+        res.json({ examen: mapExamen(full.rows[0]) });
+    } catch (err) {
+        console.error('[EXAMENES] patch:', err);
+        res.status(500).json({ error: 'No se pudo actualizar el examen.' });
+    }
+});
+
+// Borrar un examen. Si generó un cargo de matrícula que aún está pendiente, se
+// borra con él; si ese cargo ya se cobró, no se deja borrar para no descuadrar
+// la caja (primero habría que anular el recibo).
+app.delete('/api/admin/examenes/:id', authenticateSession, requireAdmin, async (req, res) => {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const cur = await client.query(`SELECT * FROM aim_examenes WHERE id = $1 FOR UPDATE`, [req.params.id]);
+        if (!cur.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Ese examen no existe.' }); }
+        const e = cur.rows[0];
+        if (e.cargo_id) {
+            const c = await client.query(`SELECT estado FROM aim_cargos WHERE id = $1`, [e.cargo_id]);
+            if (c.rowCount && c.rows[0].estado === 'cobrado') {
+                await client.query('ROLLBACK');
+                return res.status(409).json({ error: 'La matrícula de este examen ya se cobró. Anula antes el recibo.' });
+            }
+            await client.query(`DELETE FROM aim_cargos WHERE id = $1 AND estado = 'pendiente'`, [e.cargo_id]);
+        }
+        await client.query(`DELETE FROM aim_examenes WHERE id = $1`, [e.id]);
+        await client.query('COMMIT');
+        res.json({ success: true });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('[EXAMENES] delete:', err);
+        res.status(500).json({ error: 'No se pudo borrar el examen.' });
+    } finally {
+        client.release();
+    }
+});
+
+// Enviar a la familia el resultado del examen por correo. Va a quien paga (la
+// madre, el padre o el tutor) y, si no consta nadie, al propio alumno.
+app.post('/api/admin/examenes/:id/comunicar', authenticateSession, requireAdmin, async (req, res) => {
+    if (!mailTransporter) return res.status(503).json({ error: 'El correo no está configurado en el servidor.' });
+    try {
+        const r = await pool.query(
+            `SELECT e.*, TRIM(CONCAT(u.name,' ',COALESCE(u.surname,''))) AS alumno_nombre
+             FROM aim_examenes e JOIN users u ON u.user_id = e.alumno_id WHERE e.id = $1`, [req.params.id]);
+        if (!r.rowCount) return res.status(404).json({ error: 'Ese examen no existe.' });
+        const e = r.rows[0];
+        const pagadorId = await pagadorDe(pool, e.alumno_id);
+        const dest = await pool.query(`SELECT name, surname, email FROM users WHERE user_id = $1`, [pagadorId]);
+        const email = dest.rows[0]?.email;
+        if (!email) return res.status(400).json({ error: 'No hay un correo al que enviar el resultado.' });
+
+        const asunto = `Resultado de examen · ${e.actividad} · ${e.alumno_nombre}`;
+        await mailTransporter.sendMail({
+            from: process.env.EMAIL_USER, to: email,
+            subject: `[AIM Education] ${asunto}`,
+            html: cuerpoComunicadoExamen(e, dest.rows[0]),
+        });
+        const upd = await pool.query(
+            `UPDATE aim_examenes SET comunicado_enviado = true, comunicado_at = NOW() WHERE id = $1
+             RETURNING comunicado_at`, [e.id]);
+        res.json({ success: true, email, comunicadoAt: upd.rows[0].comunicado_at });
+    } catch (err) {
+        console.error('[EXAMENES] comunicar:', err);
+        res.status(500).json({ error: 'No se pudo enviar el correo.' });
+    }
+});
+
+function cuerpoComunicadoExamen(e, dest) {
+    const fecha = new Date(e.fecha).toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' });
+    const filas = [
+        ['Alumno/a', e.alumno_nombre],
+        ['Actividad', e.actividad],
+        ['Convocatoria', e.convocatoria || fecha],
+        ['Nivel', e.nivel || '—'],
+        e.puntos != null ? ['Puntuación', `${Number(e.puntos)}${e.puntos_max ? ` / ${Number(e.puntos_max)}` : ''}`] : null,
+        ['Resultado', e.resultado || (e.apto ? 'Apto' : 'No apto')],
+    ].filter(Boolean);
+    const saludo = dest?.name ? `Hola ${dest.name}` : 'Hola';
+    return `
+        <div style="font-family:Arial,Helvetica,sans-serif;color:#222;max-width:520px">
+            <p>${saludo},</p>
+            <p>Ya está disponible el resultado del examen de <b>${e.alumno_nombre}</b>. Estos son los datos:</p>
+            <table style="border-collapse:collapse;font-size:14px">
+                ${filas.map(([k, v]) => `<tr>
+                    <td style="padding:6px 14px 6px 0;color:#666">${k}</td>
+                    <td style="padding:6px 0;font-weight:600">${v}</td></tr>`).join('')}
+            </table>
+            ${e.observaciones ? `<p style="margin-top:14px"><b>Observaciones:</b><br>${String(e.observaciones).replace(/\n/g, '<br>')}</p>` : ''}
+            <p style="margin-top:18px">Un saludo,<br><b>AIM Education</b> · Algeciras</p>
+        </div>`;
+}
 
 // 'conDinero' a false deja fuera el estado de pago y los datos de contacto de la
 // familia: un instructor necesita saber quién viene cada día, no quién debe.

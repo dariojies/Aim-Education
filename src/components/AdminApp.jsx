@@ -15,6 +15,7 @@ import PasarListaClases from './PasarListaClases.jsx';
 import Campanita from './Campanita.jsx';
 import FichaAlumnoClases, { edadDe, Insignia } from './FichaAlumnoClases.jsx';
 import AdminFamilias from './AdminFamilias.jsx';
+import AdminExamenes from './AdminExamenes.jsx';
 
 function sectionLabel(id) {
   return ({
@@ -27,6 +28,7 @@ function sectionLabel(id) {
     news: "Noticias y foro",
     events: "Eventos y talleres",
     camp: "Campamento de verano",
+    titulos: "Títulos y exámenes",
     billing: "Facturación",
     groups: "Grupos",
     instructors: "Instructores",
@@ -5818,6 +5820,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "groups", label: "Grupos", icon: <I.Trophy /> },
         { id: "camp", label: "Campamento", icon: <I.Sun /> },
         { id: "events", label: "Eventos", icon: <I.Star /> },
+        { id: "titulos", label: "Títulos", icon: <I.Shield /> },
         { id: "reportes", label: "Reportes", icon: <I.Chart /> },
       ]
     },
@@ -6017,6 +6020,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("portada") && <AjustesPortada showToast={showToast} />}
           {ver("settings") && <AdminSettings />}
           {ver("reportes") && <AdminReportes user={user} permisos={permisos} />}
+          {ver("titulos") && <AdminExamenes showToast={showToast} />}
           {ver("support") && <AdminSupport user={user} ticketId={ticketId} />}
         </div>
       </div>

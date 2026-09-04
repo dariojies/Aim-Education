@@ -54,6 +54,8 @@ export function permisosDe(rol) {
             payments: !instructor,     // gastos del club
             classes: true,
             camp: true,
+            // Los títulos y las notas de examen los sube el club, no el monitor.
+            titulos: !instructor,
             reportes: true,
             events: true,
             news: !instructor,

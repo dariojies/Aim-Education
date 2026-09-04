@@ -105,3 +105,78 @@ export async function escalasDelClub(pool, clubId) {
     }
     return salida;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Exámenes y títulos (ticket #212)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Correspondencia puntos → resultado, por disciplina. Son los baremos de los
+// organismos que examinan (la RAD en Ballet, Cambridge en Inglés, la federación
+// en Taekwon-Do), NO los decide el club: por eso están fijos aquí, igual que las
+// escalas. La nota se normaliza a 100 antes de mirar la banda, así da igual que
+// el examen venga sobre 100, sobre 15 o sobre lo que sea. El resultado se puede
+// reescribir a mano en cada examen para los casos que no encajan en bandas
+// (p. ej. los "shields" de Starters/Movers/Flyers, que no son apto/no apto).
+export const BAREMOS = {
+    ballet: {
+        max: 100,
+        bandas: [
+            { min: 75, resultado: 'Distinción', apto: true },
+            { min: 60, resultado: 'Mérito', apto: true },
+            { min: 40, resultado: 'Aprobado', apto: true },
+            { min: 0,  resultado: 'No apto', apto: false },
+        ],
+    },
+    ingles: {
+        max: 100,
+        bandas: [
+            { min: 80, resultado: 'Sobresaliente (A)', apto: true },
+            { min: 75, resultado: 'Notable (B)', apto: true },
+            { min: 60, resultado: 'Aprobado (C)', apto: true },
+            { min: 0,  resultado: 'No apto', apto: false },
+        ],
+    },
+    taekwondo_itf: {
+        max: 100,
+        bandas: [
+            { min: 90, resultado: 'Apto con mención', apto: true },
+            { min: 60, resultado: 'Apto', apto: true },
+            { min: 0,  resultado: 'No apto', apto: false },
+        ],
+    },
+};
+
+export const baremoDe = (activityType) => BAREMOS[activityType] || null;
+
+// A partir de la nota, el resultado y si está apto. Devuelve null si esa
+// actividad no tiene baremo o si no hay nota (entonces el resultado se pone a
+// mano). puntosMax deja meter exámenes que no van sobre 100.
+export function resultadoDe(activityType, puntos, puntosMax) {
+    const b = BAREMOS[activityType];
+    if (!b || puntos == null || puntos === '') return null;
+    const max = Number(puntosMax) || b.max || 100;
+    const sobre100 = max !== 100 ? (Number(puntos) / max) * 100 : Number(puntos);
+    const banda = b.bandas.find(x => sobre100 >= x.min);
+    return banda ? { resultado: banda.resultado, apto: banda.apto } : null;
+}
+
+// Cómo se paga la matrícula del examen en cada disciplina (lo explica el ticket
+// #212). Solo el Ballet la cobramos nosotros —y la abonamos íntegra a la RAD—,
+// así que es la única que genera un cargo. Las demás son pagos que la familia
+// hace fuera y de los que no llevamos la caja; se dejan anotados y ya está.
+export const MATRICULA_EXAMEN = {
+    ballet: {
+        modo: 'cobrada',
+        nota: 'La matrícula la cobramos nosotros y la abonamos íntegra a la RAD.',
+    },
+    ingles: {
+        modo: 'externa',
+        nota: 'La familia transfiere la matrícula directamente al centro examinador. No hacemos seguimiento del pago.',
+    },
+    taekwondo_itf: {
+        modo: 'club',
+        nota: 'La cuota del examen se abona al club deportivo.',
+    },
+};
+
+export const matriculaExamenDe = (activityType) => MATRICULA_EXAMEN[activityType] || { modo: 'externa', nota: '' };
