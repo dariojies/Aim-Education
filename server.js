@@ -1593,7 +1593,10 @@ function buildSlotsFromGroups(rows, deQuien) {
                     act: aimId,
                     title: g.name,
                     room: sess.aulaName || '',
-                    monitor: sess.instructorName || '',
+                    monitor: nombresDocentes(sess).join(' y '),
+                    // Cada monitor por separado, para poder filtrar el horario por
+                    // uno aunque la clase la den dos (ticket #224).
+                    monitores: nombresDocentes(sess),
                     students: `${g.student_count}/${g.max_students ?? '∞'}`,
                     // Para pintar en el calendario las que ya no admiten a nadie.
                     lleno: g.max_students != null && Number(g.student_count) >= Number(g.max_students),
@@ -1820,7 +1823,7 @@ app.get('/api/admin/groups', authenticateSession, async (req, res) => {
         res.json(result.rows.map(g => {
             const sessions = Array.isArray(g.sessions) ? g.sessions : [];
             const rooms = [...new Set(sessions.map(s => s.aulaName).filter(Boolean))];
-            const instructors = [...new Set(sessions.map(s => s.instructorName).filter(Boolean))];
+            const instructors = [...new Set(sessions.flatMap(s => nombresDocentes(s)))];
             const schedule = [];
             for (const s of sessions) {
                 for (const d of (Array.isArray(s.days) ? s.days : [])) {
@@ -1829,7 +1832,7 @@ app.get('/api/admin/groups', authenticateSession, async (req, res) => {
                         dayNum: Number(d),
                         time: `${s.startTime || ''}–${s.endTime || ''}`,
                         room: s.aulaName || '',
-                        instructor: s.instructorName || '',
+                        instructor: nombresDocentes(s).join(' y '),
                     });
                 }
             }
@@ -2484,7 +2487,7 @@ app.get('/api/me/agenda', authenticateSession, requireAdmin, async (req, res) =>
         const clases = [];
         for (const g of grupos.rows) {
             for (const ses of (Array.isArray(g.sessions) ? g.sessions : [])) {
-                if (String(ses?.instructorId || '') !== String(yo)) continue;
+                if (!esDocente(ses, yo)) continue;
                 if (!(ses?.days || []).map(Number).includes(diaSemana)) continue;
                 clases.push({
                     id: `${g.group_id}-${ses.startTime}`,
@@ -2627,13 +2630,32 @@ async function ticketEnlazable(req, ticketId, coger) {
 // Los grupos que lleva un instructor. Sale del horario: cada sesión de un grupo
 // guarda a qué profesor se le ha asignado (tul_groups.sessions -> instructorId),
 // y eso es justo lo que hace suya una clase.
+// ¿La persona da esta sesión? Mira los dos monitores (ticket #224): el array
+// `instructors` si está, y siempre el instructorId de siempre por si la sesión
+// es antigua o la escribió aim-tul.
+function esDocente(ses, userId) {
+    const yo = String(userId);
+    if (String(ses?.instructorId || '') === yo) return true;
+    return (Array.isArray(ses?.instructors) ? ses.instructors : []).some(d => String(d?.id || '') === yo);
+}
+
+// Los nombres de los monitores de una sesión, para pintarlos ("Darío y Dani").
+function nombresDocentes(ses) {
+    const arr = (Array.isArray(ses?.instructors) ? ses.instructors : []).map(d => d?.name).filter(Boolean);
+    if (arr.length) return arr;
+    return ses?.instructorName ? [ses.instructorName] : [];
+}
+
 async function gruposDe(userId) {
     const r = await pool.query(
         `SELECT DISTINCT g.group_id
          FROM tul_groups g
          JOIN tul_activities a ON a.activity_id = g.activity_id
          CROSS JOIN LATERAL jsonb_array_elements(COALESCE(g.sessions::jsonb, '[]'::jsonb)) sess
-         WHERE a.club_id = $1 AND sess->>'instructorId' = $2`,
+         WHERE a.club_id = $1 AND (
+             sess->>'instructorId' = $2
+             OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(sess->'instructors', '[]'::jsonb)) d WHERE d->>'id' = $2)
+         )`,
         [AIM_CLUB_ID, String(userId)]
     );
     return r.rows.map(x => x.group_id);
@@ -2645,7 +2667,10 @@ async function grupoSuyo(req, groupId) {
     const r = await pool.query(
         `SELECT 1 FROM tul_groups g
          CROSS JOIN LATERAL jsonb_array_elements(COALESCE(g.sessions::jsonb, '[]'::jsonb)) sess
-         WHERE g.group_id = $1 AND sess->>'instructorId' = $2 LIMIT 1`,
+         WHERE g.group_id = $1 AND (
+             sess->>'instructorId' = $2
+             OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(sess->'instructors', '[]'::jsonb)) d WHERE d->>'id' = $2)
+         ) LIMIT 1`,
         [groupId, String(req.userSession.userId)]
     );
     return r.rowCount > 0;

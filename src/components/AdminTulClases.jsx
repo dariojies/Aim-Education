@@ -63,6 +63,27 @@ async function api(url, opts = {}) {
   return d;
 }
 
+// Los monitores de una sesión (ticket #224: hasta dos por hora). El array
+// `instructors` es lo nuevo; si una sesión aún no lo tiene (viene de antes o de
+// aim-tul), se reconstruye desde el instructorId/instructorName de siempre.
+function docentesDeSesion(s) {
+  if (Array.isArray(s?.instructors) && s.instructors.length) return s.instructors.filter(d => d && d.id);
+  return s?.instructorId ? [{ id: s.instructorId, name: s.instructorName }] : [];
+}
+
+// Fija la lista de monitores y, a la vez, deja el primero en instructorId/
+// instructorName para que la app de aim-tul —que solo mira ese campo— siga
+// viendo un responsable de la clase.
+function ponerDocentes(session, lista) {
+  const limpia = lista.filter(d => d && d.id);
+  return {
+    ...session,
+    instructors: limpia,
+    instructorId: limpia[0]?.id || null,
+    instructorName: limpia[0]?.name || null,
+  };
+}
+
 function resumenSesiones(g) {
   const ses = Array.isArray(g.sessions) ? g.sessions : [];
   if (!ses.length) return g.time || 'Sin horario';
@@ -258,8 +279,8 @@ export function ListaClases({ showToast }) {
                       // aula y monitor) y solo hay que elegirle los días.
                       const ult = (x.sessions || [])[x.sessions.length - 1];
                       const nueva = ult
-                        ? { days: [], startTime: ult.startTime, endTime: ult.endTime, aulaId: ult.aulaId, aulaName: ult.aulaName, instructorId: ult.instructorId, instructorName: ult.instructorName }
-                        : { days: [], startTime: '17:00', endTime: '18:00', aulaId: null, aulaName: null, instructorId: null, instructorName: null };
+                        ? { days: [], startTime: ult.startTime, endTime: ult.endTime, aulaId: ult.aulaId, aulaName: ult.aulaName, instructorId: ult.instructorId, instructorName: ult.instructorName, instructors: docentesDeSesion(ult) }
+                        : { days: [], startTime: '17:00', endTime: '18:00', aulaId: null, aulaName: null, instructorId: null, instructorName: null, instructors: [] };
                       return { ...x, sessions: [...(x.sessions || []), nueva] };
                     })}>+ Añadir sesión</button>
                   </div>
@@ -294,13 +315,34 @@ export function ListaClases({ showToast }) {
                             <option value="">Sin aula</option>
                             {aulas.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                           </select>
-                          <select value={s.instructorId || ''} style={inputCss} onChange={e => setEditGrupo(x => {
-                            const ins = instructores.find(a => a.id === e.target.value) || null;
-                            const ses = [...x.sessions]; ses[i] = { ...ses[i], instructorId: ins?.id || null, instructorName: ins?.name || null }; return { ...x, sessions: ses };
-                          })}>
-                            <option value="">Sin monitor</option>
-                            {instructores.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-                          </select>
+                          {/* Hasta dos monitores por hora (ticket #224). El segundo
+                              solo se elige cuando hay un primero, y no puede repetirlo. */}
+                          {(() => {
+                            const docs = docentesDeSesion(s);
+                            const cambiar = (pos, id) => setEditGrupo(x => {
+                              const ses = [...x.sessions];
+                              const ins = instructores.find(a => a.id === id) || null;
+                              const lista = docentesDeSesion(ses[i]).slice();
+                              if (!ins) lista.splice(pos, 1);                    // "Sin monitor" quita ese hueco
+                              else lista[pos] = { id: ins.id, name: ins.name };
+                              ses[i] = ponerDocentes(ses[i], lista);
+                              return { ...x, sessions: ses };
+                            });
+                            return (
+                              <>
+                                <select value={docs[0]?.id || ''} style={inputCss} onChange={e => cambiar(0, e.target.value)}>
+                                  <option value="">Sin monitor</option>
+                                  {instructores.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                                </select>
+                                {docs.length > 0 && (
+                                  <select value={docs[1]?.id || ''} style={inputCss} onChange={e => cambiar(1, e.target.value)}>
+                                    <option value="">+ Segundo monitor</option>
+                                    {instructores.filter(a => a.id !== docs[0]?.id).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                                  </select>
+                                )}
+                              </>
+                            );
+                          })()}
                         </div>
                       </div>
                     ))}

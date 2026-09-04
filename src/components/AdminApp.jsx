@@ -565,16 +565,19 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
   const roomsList = ["Todas", ...classrooms.map(r => r.name)];
 
   // Los monitores salen del propio horario, no de la lista de instructores: en
-  // el filtro solo tiene sentido quien de verdad tiene clases puestas.
-  const monitoresList = ["Todos", ...[...new Set(classSlots.map(s => s.monitor).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'))];
-  const hayHuerfanas = classSlots.some(s => !s.monitor);
+  // el filtro solo tiene sentido quien de verdad tiene clases puestas. Se
+  // desglosan uno a uno (una clase la pueden dar dos, ticket #224), para poder
+  // filtrar por cada uno aunque compartan hora.
+  const monitoresDe = (s) => Array.isArray(s.monitores) ? s.monitores : (s.monitor ? [s.monitor] : []);
+  const monitoresList = ["Todos", ...[...new Set(classSlots.flatMap(monitoresDe))].sort((a, b) => a.localeCompare(b, 'es'))];
+  const hayHuerfanas = classSlots.some(s => !monitoresDe(s).length);
 
   const filteredSlots = classSlots.filter(s => {
     // El de monitor sí recorta de verdad: a diferencia del de sala, que deja las
     // demás como puntitos, aquí lo que se quiere es ver el horario de esa
     // persona y nada más.
-    if (selectedMonitor === "Sin asignar") { if (s.monitor) return false; }
-    else if (selectedMonitor !== "Todos" && s.monitor !== selectedMonitor) return false;
+    if (selectedMonitor === "Sin asignar") { if (monitoresDe(s).length) return false; }
+    else if (selectedMonitor !== "Todos" && !monitoresDe(s).includes(selectedMonitor)) return false;
     if (!search) return true;
     const q = search.toLowerCase();
     return `${s.title} ${s.room} ${s.monitor || ''} ${s.act}`.toLowerCase().includes(q);

@@ -31,6 +31,25 @@ const PLAN_LIMITS = {
 };
 const getPlanLimits = (plan) => PLAN_LIMITS[plan] || PLAN_LIMITS['free'];
 
+// ¿La persona da esta sesión? Mira los dos monitores posibles (ticket #224): el
+// array `instructors` si está, y siempre el instructorId de toda la vida por si
+// la sesión es antigua o la escribió aim-tul.
+function esDocenteSes(s, id) {
+    if (!id) return false;
+    if (String(s?.instructorId || '') === String(id)) return true;
+    return (Array.isArray(s?.instructors) ? s.instructors : []).some(d => String(d?.id || '') === String(id));
+}
+// La misma comprobación en SQL, para una sesión `sess` ya desanidada con
+// jsonb_array_elements. `ph` es el placeholder del id (p. ej. "$2").
+const sqlEsDocente = (ph) =>
+    `(sess->>'instructorId' = ${ph} OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(sess->'instructors','[]'::jsonb)) d WHERE d->>'id' = ${ph}))`;
+// Los nombres de los monitores de una sesión.
+function nombresDocentesSes(s) {
+    const arr = (Array.isArray(s?.instructors) ? s.instructors : []).map(d => d?.name).filter(Boolean);
+    if (arr.length) return arr;
+    return s?.instructorName ? [s.instructorName] : [];
+}
+
 export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSuyo }) {
     const router = express.Router();
 
@@ -726,7 +745,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                     id: g.id, name: g.name, activityName: g.activityName,
                     studentCount: g.studentCount, maxStudents: g.maxStudents,
                     horario: ses.map(s => `${s.startTime || ''}${s.endTime ? `–${s.endTime}` : ''}${s.aulaName ? ` · ${s.aulaName}` : ''}`).join(' | '),
-                    instructor: ses.map(s => s.instructorName).filter(Boolean)[0] || null,
+                    instructor: [...new Set(ses.flatMap(nombresDocentesSes))].join(' y ') || null,
                     hora: ses[0]?.startTime || '',
                     marcados: yaMarcados[g.id] || 0,
                 });
@@ -823,7 +842,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
             paramsArr.push(instructorId);
             return ` AND EXISTS (
                 SELECT 1 FROM jsonb_array_elements(COALESCE(g.sessions, '[]'::jsonb)) sess
-                WHERE sess->>'instructorId' = $${paramsArr.length}
+                WHERE ${sqlEsDocente('$' + paramsArr.length)}
             )`;
         }
         return '';
@@ -968,7 +987,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
             if (activityId) return g.activityId === activityId;
             if (instructorId) {
                 const ses = Array.isArray(g.sessions) ? g.sessions : [];
-                return ses.some(s => s && s.instructorId === instructorId);
+                return ses.some(s => esDocenteSes(s, instructorId));
             }
             return true;
         };
@@ -1038,7 +1057,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
         const matchesSegment = (row) => {
             if (instructorId) {
                 const sessions = Array.isArray(row.sessions) ? row.sessions : [];
-                return sessions.some(s => s && s.instructorId === instructorId);
+                return sessions.some(s => esDocenteSes(s, instructorId));
             }
             if (activityId) return row.activityId === activityId;
             return true;
@@ -1197,7 +1216,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                      JOIN tul_groups g ON gs.group_id = g.group_id
                      WHERE EXISTS (
                          SELECT 1 FROM jsonb_array_elements(COALESCE(g.sessions, '[]'::jsonb)) sess
-                         WHERE sess->>'instructorId' = $${params.length}))`;
+                         WHERE ${sqlEsDocente('$' + params.length)}))`;
             }
             // Solo cuenta quien está apuntado a alguna actividad ahora o lo ha
             // estado en el último año: si no, el nivel medio salía diluido por
@@ -1344,7 +1363,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                 for (const row of groupsRes.rows) {
                     const sessions = Array.isArray(row.sessions) ? row.sessions : [];
                     for (const sess of sessions) {
-                        if (!sess || sess.instructorId !== instructorId) continue;
+                        if (!esDocenteSes(sess, instructorId)) continue;
                         const days = Array.isArray(sess.days) ? sess.days : [];
                         for (const d of days) {
                             const day = parseInt(d, 10);
