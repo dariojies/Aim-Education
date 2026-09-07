@@ -2036,6 +2036,30 @@ html[data-actaccents="off"] .act-card.solid {
   gap: 12px;
 }
 
+/* Ficha del alumno/instructor (ticket de mejora visual): más ancha y con los
+   campos más grandes, que a tamaño normal se veía todo apretado. Va acotado a
+   la ficha para no tocar el resto de formularios. */
+.ficha-modal .field {
+  margin-bottom: 0; /* el espaciado lo lleva el gap del grid del formulario */
+  gap: 7px;
+}
+.ficha-modal .field label {
+  font-size: 14px;
+}
+.ficha-modal .field input,
+.ficha-modal .field select,
+.ficha-modal .field textarea {
+  font-size: 16px;
+  padding: 14px 16px;
+}
+.ficha-modal .field-row {
+  gap: 18px;
+}
+@media (max-width: 640px) {
+  .ficha-modal { padding: 24px 20px !important; }
+  .ficha-modal .field-row { grid-template-columns: minmax(0, 1fr); }
+}
+
 .field-meta {
   display: flex;
   justify-content: space-between;

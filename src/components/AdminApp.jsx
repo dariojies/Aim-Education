@@ -6051,10 +6051,10 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         }}>
           <form onSubmit={handleUserSubmit} style={{
             backgroundColor: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 24,
-            width: '100%', maxWidth: 620, padding: 32, display: 'grid', gap: 16,
-            maxHeight: '90vh', overflowY: 'auto'
-          }} className="scroll-oculto">
-            <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: 'var(--ink)' }}>
+            width: '100%', maxWidth: 880, padding: '34px 40px', display: 'grid', gap: 18,
+            maxHeight: '92vh', overflowY: 'auto'
+          }} className="scroll-oculto ficha-modal">
+            <h3 style={{ margin: 0, fontSize: 23, fontWeight: 800, color: 'var(--ink)' }}>
               {!permisos.editarAlumnos ? 'Ficha del alumno'
                 : activeModal !== 'edit-student'
                   ? (editingItem.rol === 'instructor' ? 'Registrar Nuevo Instructor' : 'Registrar Nuevo Alumno')
