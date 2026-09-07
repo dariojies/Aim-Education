@@ -6282,11 +6282,18 @@ app.put('/api/me/perfil', authenticateSession, async (req, res) => {
             return res.json({ guardado: true, requiereVisto: false });
         }
 
-        if (!yaHabia) {
-            // Primera vez: los pone la familia y ya está.
+        // Primera vez (los pone la familia y ya está) o personal del club, que es
+        // quien autoriza estos cambios: no tiene sentido que se pida permiso a sí
+        // mismo, su propio dato fiscal se guarda directo.
+        if (!yaHabia || req.userSession.canAccessAdmin) {
             await client.query(
                 `UPDATE users SET dni = $1, domicilio = $2, cp = $3, poblacion = $4 WHERE user_id = $5`,
                 [nuevos.dni, nuevos.domicilio, nuevos.cp, nuevos.poblacion, me]);
+            // Si tenía una solicitud propia esperando, ya no hace falta: se cierra
+            // para que no quede el aviso colgado en la campanita.
+            await client.query(
+                `UPDATE aim_datos_fiscales_cambios SET estado = 'aprobado', resuelto_at = NOW(), resuelto_por = $1
+                 WHERE user_id = $1 AND estado = 'pendiente'`, [me]);
             await client.query('COMMIT');
             return res.json({ guardado: true, requiereVisto: false });
         }
@@ -7902,7 +7909,10 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
             : { rows: [{ n: 0 }] };
         if (fis.rows[0].n > 0) {
             avisos.push({
-                tipo: 'cobros', destino: 'students',
+                // El bloque para autorizarlos se pinta arriba del apartado
+                // Alumnos; el destino tiene que ser la ruta, no el id suelto, que
+                // si no la campanita se va a la portada pública.
+                tipo: 'cobros', destino: '/admin/alumnos',
                 texto: `${fis.rows[0].n} cambio${fis.rows[0].n !== 1 ? 's' : ''} de datos por autorizar`,
                 detalle: 'DNI o domicilio que ha pedido cambiar una familia',
             });
