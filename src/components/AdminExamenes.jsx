@@ -1,23 +1,23 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { I } from './Icons.jsx';
 import { Insignia } from './FichaAlumnoClases.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Exámenes y títulos (ticket #212)
+// Títulos y exámenes por CONVOCATORIA (ticket #212)
 //
-// Un sitio donde el club sube las calificaciones de los exámenes —Ballet (RAD),
-// Inglés (Cambridge) y los cambios de cinturón de Taekwon-Do—, la nota se
-// traduce sola a apto/no apto por el baremo de cada disciplina, y desde aquí se
-// avisa a la familia por correo. La matrícula: en Ballet la cobramos nosotros
-// (genera un cargo), en Inglés y Taekwon-Do se paga fuera y solo se anota.
+// En vez de rellenar un formulario entero por cada persona que se examina, se
+// crea UNA convocatoria (actividad, fecha, nombre y cómo va la matrícula), se le
+// meten los alumnos por su usuario, y luego se entra en cada participante para
+// ponerle la nota, el rango/cinturón/título que promociona y avisar por correo a
+// la familia (y al propio usuario) de que ha aprobado.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const eur = (n) => `${Number(n ?? 0).toFixed(2)} €`;
+const fmtFecha = (f) => f ? new Date(String(f).slice(0, 10)).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
 
-async function api(url, opts = {}) {
-  const r = await fetch(`/api/admin/examenes${url}`, {
-    credentials: 'include',
-    cache: 'no-store',
+async function req(path, opts = {}) {
+  const r = await fetch(path, {
+    credentials: 'include', cache: 'no-store',
     headers: opts.body ? { 'Content-Type': 'application/json' } : undefined,
     ...opts,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
@@ -31,27 +31,26 @@ const inputCss = {
   fontFamily: 'inherit', fontSize: 14, padding: '10px 12px', borderRadius: 10,
   border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)', minWidth: 0, width: '100%',
 };
+const campo = { display: 'grid', gap: 5 };
+const label = { fontSize: 12, fontWeight: 700, color: 'var(--ink-3)' };
 
-const fmtFecha = (f) => f ? new Date(String(f).slice(0, 10)).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
-
-// Pastilla verde/roja según el resultado.
-function Resultado({ examen }) {
-  const apto = examen.apto;
+// Pastilla verde/roja/gris según el resultado.
+function Resultado({ apto, resultado }) {
   const color = apto === true ? 'var(--green, #16a34a)' : apto === false ? 'var(--red, #dc2626)' : 'var(--ink-3)';
-  const texto = examen.resultado || (apto === true ? 'Apto' : apto === false ? 'No apto' : '—');
+  const texto = resultado || (apto === true ? 'Apto' : apto === false ? 'No apto' : 'Sin evaluar');
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 800,
-      color: '#fff', background: color, padding: '3px 10px', borderRadius: 999, whiteSpace: 'nowrap',
+      color: apto == null ? 'var(--ink-2)' : '#fff', background: apto == null ? 'var(--bg-3)' : color,
+      padding: '3px 10px', borderRadius: 999, whiteSpace: 'nowrap',
     }}>
-      {apto === true ? '✓' : apto === false ? '✕' : ''} {texto}
+      {apto === true ? '✓' : apto === false ? '✕' : '•'} {texto}
     </span>
   );
 }
 
-// Buscador de alumno: escribe y elige de la lista. Habla con el mismo endpoint
-// que usan las clases para matricular.
-function BuscarAlumno({ onElegir, activityId }) {
+// Busca un alumno por su usuario (mismo endpoint que usan las clases).
+function BuscarAlumno({ onElegir, activityId, excluir = [] }) {
   const [q, setQ] = useState('');
   const [sug, setSug] = useState([]);
   useEffect(() => {
@@ -62,11 +61,11 @@ function BuscarAlumno({ onElegir, activityId }) {
         const url = `/api/admin/tul/students?q=${encodeURIComponent(q.trim())}` + (activityId ? `&activityId=${activityId}` : '');
         const r = await fetch(url, { credentials: 'include', cache: 'no-store' });
         const d = await r.json().catch(() => ({}));
-        if (vivo) setSug(d.students || []);
+        if (vivo) setSug((d.students || []).filter(s => !excluir.includes(s.id)));
       } catch { /* noop */ }
     }, 300);
     return () => { vivo = false; clearTimeout(t); };
-  }, [q, activityId]);
+  }, [q, activityId, excluir]);
   return (
     <div style={{ position: 'relative' }}>
       <input style={inputCss} value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar alumno por nombre o correo..." />
@@ -92,160 +91,70 @@ function BuscarAlumno({ onElegir, activityId }) {
   );
 }
 
-const campo = { display: 'grid', gap: 5 };
-const label = { fontSize: 12, fontWeight: 700, color: 'var(--ink-3)' };
+// El apto que sale del baremo para una nota. null si esa actividad no tiene
+// baremo o no hay nota (entonces manda lo que se escriba a mano).
+function bandaDe(baremo, puntos, puntosMax) {
+  if (!baremo || puntos === '' || puntos == null) return null;
+  const max = Number(puntosMax) || baremo.max || 100;
+  const sobre100 = max !== 100 ? (Number(puntos) / max) * 100 : Number(puntos);
+  return baremo.bandas.find(x => sobre100 >= x.min) || null;
+}
 
-// El formulario de alta/edición. Sirve para los dos: si llega `inicial`, edita.
-function FormExamen({ opciones, inicial, onGuardar, onCancelar, guardando }) {
-  const editando = !!inicial?.id;
-  const [alumno, setAlumno] = useState(inicial ? { id: inicial.alumnoId, name: inicial.alumnoNombre, email: inicial.alumnoEmail } : null);
-  const [activityId, setActividad] = useState(inicial?.activityId || (opciones[0]?.id || ''));
-  const [fecha, setFecha] = useState(inicial?.fecha ? String(inicial.fecha).slice(0, 10) : new Date().toISOString().slice(0, 10));
-  const [convocatoria, setConvocatoria] = useState(inicial?.convocatoria || '');
-  const [nivelOrder, setNivelOrder] = useState(inicial?.nivelOrder ?? '');
-  const [nivelTexto, setNivelTexto] = useState(inicial?.nivel || '');
-  const [puntos, setPuntos] = useState(inicial?.puntos ?? '');
-  const [puntosMax, setPuntosMax] = useState(inicial?.puntosMax ?? 100);
-  const [resultado, setResultado] = useState(inicial?.resultado || '');
-  const [resultadoTocado, setResultadoTocado] = useState(!!inicial?.resultado);
-  const [observaciones, setObservaciones] = useState(inicial?.observaciones || '');
-  const [cobrarMatricula, setCobrar] = useState(inicial ? !!inicial.cargoId : true);
-  const [matriculaImporte, setImporte] = useState(inicial?.matriculaImporte ?? '');
-  const [promocionar, setPromocionar] = useState(false);
+// ── El único formulario: crear la convocatoria ──────────────────────────────
+function NuevaConvocatoria({ opciones, onCrear, onCancel, creando }) {
+  const [activityId, setActividad] = useState(opciones[0]?.id || '');
+  const [nombre, setNombre] = useState('');
+  const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10));
+  const [cobrarMatricula, setCobrar] = useState(true);
+  const [matriculaImporte, setImporte] = useState('');
+  const [observaciones, setObs] = useState('');
 
   const act = useMemo(() => opciones.find(a => a.id === activityId) || null, [opciones, activityId]);
-  const niveles = act?.niveles || [];
-  const baremo = act?.baremo || null;
   const matricula = act?.matricula || { modo: 'externa', nota: '' };
-
-  // El nivel elegido pone su nombre como "nivel" del título de forma automática.
-  useEffect(() => {
-    if (nivelOrder === '' ) return;
-    const n = niveles.find(x => x.order === Number(nivelOrder));
-    if (n) setNivelTexto(n.name);
-  }, [nivelOrder, niveles]);
-
-  // El resultado se sugiere solo desde la nota y el baremo, mientras no se
-  // escriba a mano. Es orientativo: los "shields" de Inglés no son apto/suspenso.
-  const sugerido = useMemo(() => {
-    if (!baremo || puntos === '' || puntos == null) return null;
-    const max = Number(puntosMax) || baremo.max || 100;
-    const sobre100 = max !== 100 ? (Number(puntos) / max) * 100 : Number(puntos);
-    const banda = baremo.bandas.find(x => sobre100 >= x.min);
-    return banda || null;
-  }, [baremo, puntos, puntosMax]);
-
-  useEffect(() => {
-    if (!resultadoTocado && sugerido) setResultado(sugerido.resultado);
-  }, [sugerido, resultadoTocado]);
-
-  const nivelActual = niveles.find(n => n.order === Number(nivelOrder)) || null;
 
   function enviar(e) {
     e.preventDefault();
-    if (!alumno) { alert('Elige un alumno.'); return; }
-    const apto = resultadoTocado
-      ? (sugerido ? sugerido.apto : (resultado.toLowerCase().includes('no apto') ? false : true))
-      : (sugerido ? sugerido.apto : null);
-    onGuardar({
-      alumnoId: alumno.id, activityId, fecha,
-      convocatoria: convocatoria.trim() || null,
-      nivel: nivelTexto.trim() || null,
-      nivelOrder: nivelOrder === '' ? null : Number(nivelOrder),
-      puntos: puntos === '' ? null : Number(puntos),
-      puntosMax: Number(puntosMax) || 100,
-      resultado: resultado.trim() || null,
-      apto,
-      observaciones: observaciones.trim() || null,
+    onCrear({
+      activityId, nombre: nombre.trim() || null, fecha,
       cobrarMatricula: matricula.modo === 'cobrada' && cobrarMatricula,
       matriculaImporte: matriculaImporte === '' ? null : Number(matriculaImporte),
-      promocionar: apto === true && promocionar,
+      observaciones: observaciones.trim() || null,
     });
   }
 
   return (
     <form onSubmit={enviar} style={{ display: 'grid', gap: 14 }}>
-      <div style={campo}>
-        <span style={label}>Alumno</span>
-        {alumno
-          ? <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <b style={{ fontSize: 14 }}>{alumno.name}</b>
-              <span style={{ color: 'var(--ink-3)', fontSize: 12 }}>{alumno.email}</span>
-              {!editando && <button type="button" className="btn btn-sm btn-outline" onClick={() => setAlumno(null)}>Cambiar</button>}
-            </div>
-          : <BuscarAlumno activityId={activityId} onElegir={setAlumno} />}
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 12 }}>
         <div style={campo}>
           <span style={label}>Actividad</span>
-          <select style={inputCss} value={activityId} onChange={e => { setActividad(e.target.value); setNivelOrder(''); }} disabled={editando}>
+          <select style={inputCss} value={activityId} onChange={e => setActividad(e.target.value)}>
             {opciones.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
         </div>
         <div style={campo}>
-          <span style={label}>Fecha</span>
+          <span style={label}>Fecha del examen</span>
           <input style={inputCss} type="date" value={fecha} onChange={e => setFecha(e.target.value)} />
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <div style={campo}>
-          <span style={label}>Convocatoria</span>
-          <input style={inputCss} value={convocatoria} onChange={e => setConvocatoria(e.target.value)} placeholder="p. ej. Junio 2026" />
-        </div>
-        <div style={campo}>
-          <span style={label}>Nivel / título</span>
-          {niveles.length > 0
-            ? <select style={inputCss} value={nivelOrder} onChange={e => setNivelOrder(e.target.value)}>
-                <option value="">Sin especificar</option>
-                {niveles.map(n => <option key={n.order} value={n.order}>{n.name}</option>)}
-              </select>
-            : <input style={inputCss} value={nivelTexto} onChange={e => setNivelTexto(e.target.value)} />}
-        </div>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1.4fr', gap: 12, alignItems: 'end' }}>
-        <div style={campo}>
-          <span style={label}>Puntos</span>
-          <input style={inputCss} type="number" step="0.01" value={puntos}
-            onChange={e => { setPuntos(e.target.value); setResultadoTocado(false); }} placeholder="—" />
-        </div>
-        <div style={campo}>
-          <span style={label}>Sobre</span>
-          <input style={inputCss} type="number" step="1" value={puntosMax} onChange={e => setPuntosMax(e.target.value)} />
-        </div>
-        <div style={campo}>
-          <span style={label}>Resultado {sugerido && !resultadoTocado && <em style={{ color: 'var(--ink-3)', fontWeight: 400 }}>· sugerido</em>}</span>
-          <input style={inputCss} value={resultado}
-            onChange={e => { setResultado(e.target.value); setResultadoTocado(true); }}
-            placeholder="Apto / No apto / Distinción..." />
-        </div>
-      </div>
-      {baremo && (
-        <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: -6 }}>
-          Baremo: {baremo.bandas.map(b => `${b.min}+ ${b.resultado}`).join(' · ')}
-        </div>
-      )}
-
       <div style={campo}>
-        <span style={label}>Observaciones</span>
-        <textarea style={{ ...inputCss, minHeight: 60, resize: 'vertical' }} value={observaciones}
-          onChange={e => setObservaciones(e.target.value)} placeholder="Comentarios que verá la familia en el correo (opcional)." />
+        <span style={label}>Nombre de la convocatoria</span>
+        <input style={inputCss} value={nombre} onChange={e => setNombre(e.target.value)} placeholder="p. ej. Junio 2026" />
       </div>
 
-      {/* Matrícula: distinta en cada disciplina, tal y como pide el ticket. */}
+      {/* Matrícula: en Ballet la cobramos (un cargo por participante al meterlo);
+          en Inglés y Taekwon-Do se paga fuera y solo se anota. */}
       <div style={{ border: '1px solid var(--line)', borderRadius: 10, padding: 12, display: 'grid', gap: 8, background: 'var(--bg-2)' }}>
         <span style={{ ...label, textTransform: 'uppercase', letterSpacing: '.05em' }}>Matrícula</span>
         {matricula.modo === 'cobrada' ? (
           <>
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
               <input type="checkbox" checked={cobrarMatricula} onChange={e => setCobrar(e.target.checked)} style={{ accentColor: 'var(--teal)' }} />
-              Generar el cargo de la matrícula a la familia
+              Cobrar la matrícula a cada participante al meterlo en la convocatoria
             </label>
             {cobrarMatricula && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontSize: 13 }}>Importe:</span>
+                <span style={{ fontSize: 13 }}>Importe por alumno:</span>
                 <input style={{ ...inputCss, width: 120 }} type="number" step="0.01" value={matriculaImporte}
                   onChange={e => setImporte(e.target.value)} placeholder="0.00" /> €
               </div>
@@ -257,130 +166,296 @@ function FormExamen({ opciones, inicial, onGuardar, onCancelar, guardando }) {
         )}
       </div>
 
-      {nivelActual && (
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
-          <input type="checkbox" checked={promocionar} onChange={e => setPromocionar(e.target.checked)} style={{ accentColor: 'var(--teal)' }} />
-          Si aprueba, subir su rango a <Insignia nivel={nivelActual} /> en {act?.name}
-        </label>
-      )}
+      <div style={campo}>
+        <span style={label}>Notas de la convocatoria (opcional)</span>
+        <input style={inputCss} value={observaciones} onChange={e => setObs(e.target.value)} placeholder="Centro examinador, horario..." />
+      </div>
 
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-        <button type="button" className="btn btn-outline" onClick={onCancelar} disabled={guardando}>Cancelar</button>
-        <button type="submit" className="btn btn-primary" disabled={guardando}>{guardando ? 'Guardando...' : (editando ? 'Guardar cambios' : 'Registrar examen')}</button>
+        <button type="button" className="btn btn-outline" onClick={onCancel} disabled={creando}>Cancelar</button>
+        <button type="submit" className="btn btn-primary" disabled={creando}>{creando ? 'Creando...' : 'Crear convocatoria'}</button>
       </div>
     </form>
   );
 }
 
-function FilaExamen({ examen, onEditar, onBorrar, onComunicar, comunicando }) {
-  const [conf, setConf] = useState(false);
+// ── Panel para evaluar a un participante ────────────────────────────────────
+function EvaluarParticipante({ participante: p, actividad, onGuardar, onCerrar, guardando }) {
+  const niveles = actividad?.niveles || [];
+  const baremo = actividad?.baremo || null;
+  const [puntos, setPuntos] = useState(p.puntos ?? '');
+  const [puntosMax, setPuntosMax] = useState(p.puntosMax ?? 100);
+  const [resultado, setResultado] = useState(p.resultado || '');
+  const [resultadoTocado, setResultadoTocado] = useState(!!p.resultado);
+  const [observaciones, setObs] = useState(p.observaciones || '');
+  // Por defecto promociona al nivel siguiente al que tiene ahora.
+  const siguiente = p.nivelActualOrder != null
+    ? niveles.find(n => n.order === p.nivelActualOrder + 1)?.order
+    : (niveles[0]?.order);
+  const [nivelOrder, setNivelOrder] = useState(
+    p.nivel && niveles.find(n => n.name === p.nivel) ? niveles.find(n => n.name === p.nivel).order
+      : (siguiente != null ? siguiente : ''));
+  const [promocionar, setPromocionar] = useState(true);
+
+  const banda = useMemo(() => bandaDe(baremo, puntos, puntosMax), [baremo, puntos, puntosMax]);
+  useEffect(() => { if (!resultadoTocado && banda) setResultado(banda.resultado); }, [banda, resultadoTocado]);
+
+  const apto = resultadoTocado
+    ? (banda ? banda.apto : (resultado.toLowerCase().includes('no apto') ? false : resultado ? true : null))
+    : (banda ? banda.apto : null);
+  const nivelSel = niveles.find(n => n.order === Number(nivelOrder)) || null;
+
+  function guardar() {
+    onGuardar({
+      puntos: puntos === '' ? null : Number(puntos),
+      puntosMax: Number(puntosMax) || 100,
+      resultado: resultado.trim() || null,
+      apto,
+      nivel: nivelSel?.name || (p.nivel || null),
+      nivelOrder: nivelOrder === '' ? null : Number(nivelOrder),
+      promocionar: apto === true && promocionar,
+      observaciones: observaciones.trim() || null,
+    });
+  }
+
   return (
-    <div style={{
-      display: 'grid', gridTemplateColumns: '1.4fr 1fr auto auto auto', gap: 12, alignItems: 'center',
-      padding: '12px 14px', border: '1px solid var(--line)', borderRadius: 12, background: 'var(--bg-1)',
-    }}>
-      <div style={{ minWidth: 0 }}>
-        <div style={{ fontWeight: 700, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{examen.alumnoNombre}</div>
-        <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
-          {examen.actividad}{examen.nivel ? ` · ${examen.nivel}` : ''}{examen.convocatoria ? ` · ${examen.convocatoria}` : ''}
+    <div style={{ display: 'grid', gap: 12, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: 14, marginTop: 4 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1.4fr', gap: 12, alignItems: 'end' }}>
+        <div style={campo}>
+          <span style={label}>Puntos</span>
+          <input style={inputCss} type="number" step="0.01" value={puntos}
+            onChange={e => { setPuntos(e.target.value); setResultadoTocado(false); }} placeholder="—" />
+        </div>
+        <div style={campo}>
+          <span style={label}>Sobre</span>
+          <input style={inputCss} type="number" step="1" value={puntosMax} onChange={e => setPuntosMax(e.target.value)} />
+        </div>
+        <div style={campo}>
+          <span style={label}>Resultado {banda && !resultadoTocado && <em style={{ color: 'var(--ink-3)', fontWeight: 400 }}>· sugerido</em>}</span>
+          <input style={inputCss} value={resultado}
+            onChange={e => { setResultado(e.target.value); setResultadoTocado(true); }}
+            placeholder="Apto / No apto / Distinción..." />
         </div>
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <Resultado examen={examen} />
-        <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
-          {examen.puntos != null ? `${examen.puntos}${examen.puntosMax ? `/${examen.puntosMax}` : ''} · ` : ''}{fmtFecha(examen.fecha)}
-        </span>
+      {baremo && (
+        <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: -6 }}>
+          Baremo: {baremo.bandas.map(b => `${b.min}+ ${b.resultado}`).join(' · ')}
+        </div>
+      )}
+
+      {niveles.length > 0 && (
+        <div style={{ display: 'grid', gap: 8 }}>
+          <div style={campo}>
+            <span style={label}>Rango / título que obtiene</span>
+            <select style={{ ...inputCss, maxWidth: 320 }} value={nivelOrder} onChange={e => setNivelOrder(e.target.value)}>
+              <option value="">Sin cambio</option>
+              {niveles.map(n => <option key={n.order} value={n.order}>{n.name}</option>)}
+            </select>
+          </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer', opacity: nivelSel ? 1 : .5 }}>
+            <input type="checkbox" checked={promocionar} disabled={!nivelSel} onChange={e => setPromocionar(e.target.checked)} style={{ accentColor: 'var(--teal)' }} />
+            Si aprueba, promocionarle a {nivelSel ? <Insignia nivel={nivelSel} /> : '—'} en {actividad?.name}
+          </label>
+        </div>
+      )}
+
+      <div style={campo}>
+        <span style={label}>Observaciones (se envían a la familia)</span>
+        <textarea style={{ ...inputCss, minHeight: 56, resize: 'vertical' }} value={observaciones} onChange={e => setObs(e.target.value)} />
       </div>
-      <div style={{ fontSize: 11.5, textAlign: 'center', minWidth: 90 }}>
-        {examen.matriculaModo === 'cobrada'
-          ? <span style={{ color: examen.matriculaEstado === 'pagada' || (examen.cargoId ? false : false) ? 'var(--green)' : 'var(--ink-3)' }}>
-              Matrícula {examen.cargoId ? '· cargo generado' : '· sin cobrar'}
-              {examen.matriculaImporte ? ` (${eur(examen.matriculaImporte)})` : ''}
-            </span>
-          : <span style={{ color: 'var(--ink-3)' }}>{examen.matriculaModo === 'club' ? 'Cuota al club' : 'Pago externo'}</span>}
-      </div>
-      <div style={{ textAlign: 'center' }}>
-        {examen.comunicadoEnviado
-          ? <span title={`Enviado ${fmtFecha(examen.comunicadoAt)}`} style={{ fontSize: 11.5, color: 'var(--green, #16a34a)', fontWeight: 700 }}>✓ Avisado</span>
-          : <button className="btn btn-sm btn-outline" disabled={comunicando} onClick={() => onComunicar(examen)}>
-              {comunicando ? 'Enviando...' : 'Avisar familia'}
-            </button>}
-      </div>
-      <div style={{ display: 'flex', gap: 4 }}>
-        <button className="icon-btn" title="Editar" onClick={() => onEditar(examen)}><I.Edit /></button>
-        {conf
-          ? <button className="btn btn-sm" style={{ background: 'var(--red, #dc2626)', color: '#fff' }} onClick={() => onBorrar(examen)}>¿Seguro?</button>
-          : <button className="icon-btn danger" title="Borrar" onClick={() => setConf(true)}><I.Trash /></button>}
+
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <button className="btn btn-sm btn-outline" onClick={onCerrar} disabled={guardando}>Cerrar</button>
+        <button className="btn btn-sm btn-primary" onClick={guardar} disabled={guardando}>{guardando ? 'Guardando...' : 'Guardar evaluación'}</button>
       </div>
     </div>
   );
 }
 
-export default function AdminExamenes({ showToast }) {
-  const [opciones, setOpciones] = useState([]);
-  const [examenes, setExamenes] = useState([]);
+function ParticipanteFila({ p, actividad, abierto, onAbrir, onGuardar, onComunicar, onQuitar, guardando, comunicando }) {
+  const [conf, setConf] = useState(false);
+  const nivelActual = actividad?.niveles?.find(n => n.order === p.nivelActualOrder) || null;
+  return (
+    <div style={{ border: '1px solid var(--line)', borderRadius: 12, background: 'var(--bg-1)', overflow: 'hidden' }}>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '12px 14px', flexWrap: 'wrap' }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontWeight: 700, fontSize: 14 }}>{p.alumnoNombre}</div>
+          <div style={{ fontSize: 12, color: 'var(--ink-3)', display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            {nivelActual ? <>Ahora: <Insignia nivel={nivelActual} /></> : 'Sin rango previo'}
+            {p.matriculaModo === 'cobrada' && <span>· matrícula {p.cargoId ? `${p.matriculaImporte ? eur(p.matriculaImporte) : ''} (cargo generado)` : 'sin cobrar'}</span>}
+          </div>
+        </div>
+        <Resultado apto={p.apto} resultado={p.resultado} />
+        {p.apto === true && (
+          p.comunicadoEnviado
+            ? <span title={`Avisado ${fmtFecha(p.comunicadoAt)}`} style={{ fontSize: 11.5, color: 'var(--green, #16a34a)', fontWeight: 700 }}>✓ Avisado</span>
+            : <button className="btn btn-sm btn-outline" disabled={comunicando} onClick={() => onComunicar(p)}>{comunicando ? 'Enviando...' : 'Avisar familia'}</button>
+        )}
+        <button className="btn btn-sm btn-primary" onClick={() => onAbrir(abierto ? null : p.id)}>{abierto ? 'Cerrar' : (p.apto == null ? 'Evaluar' : 'Editar')}</button>
+        {conf
+          ? <button className="btn btn-sm" style={{ background: 'var(--red, #dc2626)', color: '#fff' }} onClick={() => onQuitar(p)}>¿Sacar?</button>
+          : <button className="icon-btn danger" title="Sacar de la convocatoria" onClick={() => setConf(true)}><I.Trash /></button>}
+      </div>
+      {abierto && (
+        <div style={{ padding: '0 14px 14px' }}>
+          <EvaluarParticipante participante={p} actividad={actividad} onGuardar={onGuardar} onCerrar={() => onAbrir(null)} guardando={guardando} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Detalle de una convocatoria: participantes y evaluación ─────────────────
+function ConvocatoriaDetalle({ convocatoria, opciones, onVolver, onCambio, showToast }) {
+  const [participantes, setParticipantes] = useState([]);
   const [cargando, setCargando] = useState(true);
-  const [filtroAct, setFiltroAct] = useState('');
-  const [busca, setBusca] = useState('');
-  const [form, setForm] = useState(null);        // null | {} nuevo | examen para editar
+  const [abierto, setAbierto] = useState(null);      // id del participante que se está evaluando
   const [guardando, setGuardando] = useState(false);
   const [comunicando, setComunicando] = useState(null);
+  const [anadiendo, setAnadiendo] = useState(false);
 
-  const aviso = useCallback((msg, tipo) => showToast ? showToast(msg, tipo) : alert(msg), [showToast]);
+  const actividad = useMemo(() => opciones.find(a => a.id === convocatoria.activityId) || null, [opciones, convocatoria]);
+  const aviso = useCallback((m, t) => showToast ? showToast(m, t) : alert(m), [showToast]);
 
   const cargar = useCallback(async () => {
     setCargando(true);
     try {
-      const q = filtroAct ? `?actividad=${filtroAct}` : '';
-      const d = await api(q);
-      setExamenes(d.examenes || []);
+      const d = await req(`/api/admin/convocatorias/${convocatoria.id}`);
+      setParticipantes(d.participantes || []);
     } catch (e) { aviso(e.message, 'error'); }
     finally { setCargando(false); }
-  }, [filtroAct, aviso]);
-
-  useEffect(() => {
-    api('/opciones').then(d => setOpciones(d.actividades || [])).catch(() => {});
-  }, []);
+  }, [convocatoria.id, aviso]);
   useEffect(() => { cargar(); }, [cargar]);
 
-  const filtrados = useMemo(() => {
-    const q = busca.trim().toLowerCase();
-    if (!q) return examenes;
-    return examenes.filter(e => e.alumnoNombre.toLowerCase().includes(q));
-  }, [examenes, busca]);
+  async function anadir(alumno) {
+    setAnadiendo(true);
+    try {
+      await req(`/api/admin/convocatorias/${convocatoria.id}/participantes`, { method: 'POST', body: { alumnoId: alumno.id } });
+      aviso(`${alumno.name} añadido.`, 'success');
+      await cargar(); onCambio?.();
+    } catch (e) { aviso(e.message, 'error'); }
+    finally { setAnadiendo(false); }
+  }
 
-  async function guardar(datos) {
+  async function guardarEval(id, datos) {
     setGuardando(true);
     try {
-      if (form?.id) {
-        await api(`/${form.id}`, { method: 'PATCH', body: datos });
-        aviso('Examen actualizado.', 'success');
-      } else {
-        await api('', { method: 'POST', body: datos });
-        aviso('Examen registrado.', 'success');
-      }
-      setForm(null);
-      await cargar();
+      const d = await req(`/api/admin/examenes/${id}`, { method: 'PATCH', body: datos });
+      setParticipantes(xs => xs.map(x => x.id === id ? d.examen : x));
+      setAbierto(null);
+      aviso('Evaluación guardada.', 'success');
+      onCambio?.();
     } catch (e) { aviso(e.message, 'error'); }
     finally { setGuardando(false); }
   }
 
-  async function borrar(examen) {
+  async function comunicar(p) {
+    setComunicando(p.id);
     try {
-      await api(`/${examen.id}`, { method: 'DELETE' });
-      setExamenes(xs => xs.filter(x => x.id !== examen.id));
-      aviso('Examen borrado.', 'success');
+      const d = await req(`/api/admin/examenes/${p.id}/comunicar`, { method: 'POST' });
+      setParticipantes(xs => xs.map(x => x.id === p.id ? { ...x, comunicadoEnviado: true, comunicadoAt: d.comunicadoAt } : x));
+      aviso(`Correo enviado a ${(d.emails || []).join(', ')}.`, 'success');
+      onCambio?.();
+    } catch (e) { aviso(e.message, 'error'); }
+    finally { setComunicando(null); }
+  }
+
+  async function quitar(p) {
+    try {
+      await req(`/api/admin/examenes/${p.id}`, { method: 'DELETE' });
+      setParticipantes(xs => xs.filter(x => x.id !== p.id));
+      aviso(`${p.alumnoNombre} sacado de la convocatoria.`, 'success');
+      onCambio?.();
     } catch (e) { aviso(e.message, 'error'); }
   }
 
-  async function comunicar(examen) {
-    setComunicando(examen.id);
+  const idsDentro = participantes.map(p => p.alumnoId);
+  const aprobados = participantes.filter(p => p.apto === true).length;
+
+  return (
+    <div style={{ display: 'grid', gap: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <button className="btn btn-sm btn-outline" onClick={onVolver}>← Convocatorias</button>
+        <div>
+          <h2 style={{ margin: 0 }}>{convocatoria.actividad}{convocatoria.nombre ? ` · ${convocatoria.nombre}` : ''}</h2>
+          <p style={{ margin: '2px 0 0', fontSize: 13, color: 'var(--ink-3)' }}>
+            {fmtFecha(convocatoria.fecha)} · {participantes.length} participante{participantes.length !== 1 ? 's' : ''} · {aprobados} aprobado{aprobados !== 1 ? 's' : ''}
+          </p>
+        </div>
+      </div>
+
+      <div style={{ border: '1px solid var(--line)', borderRadius: 14, padding: 16, background: 'var(--bg-1)', display: 'grid', gap: 8 }}>
+        <span style={{ fontWeight: 800, fontSize: 14 }}>Añadir participante</span>
+        <BuscarAlumno activityId={convocatoria.activityId} excluir={idsDentro} onElegir={anadir} />
+        {anadiendo && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Añadiendo...</span>}
+      </div>
+
+      {cargando
+        ? <p style={{ color: 'var(--ink-3)' }}>Cargando...</p>
+        : participantes.length === 0
+          ? <p style={{ color: 'var(--ink-3)' }}>Todavía no hay participantes. Búscalos arriba por su usuario.</p>
+          : <div style={{ display: 'grid', gap: 8 }}>
+              {participantes.map(p => (
+                <ParticipanteFila key={p.id} p={p} actividad={actividad}
+                  abierto={abierto === p.id} onAbrir={setAbierto}
+                  onGuardar={(datos) => guardarEval(p.id, datos)}
+                  onComunicar={comunicar} onQuitar={quitar}
+                  guardando={guardando} comunicando={comunicando === p.id} />
+              ))}
+            </div>}
+    </div>
+  );
+}
+
+// ── Pantalla principal: lista de convocatorias ──────────────────────────────
+export default function AdminExamenes({ showToast }) {
+  const [opciones, setOpciones] = useState([]);
+  const [convocatorias, setConvocatorias] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [nueva, setNueva] = useState(false);
+  const [creando, setCreando] = useState(false);
+  const [sel, setSel] = useState(null);   // convocatoria abierta
+
+  const aviso = useCallback((m, t) => showToast ? showToast(m, t) : alert(m), [showToast]);
+
+  const cargar = useCallback(async () => {
+    setCargando(true);
     try {
-      const d = await api(`/${examen.id}/comunicar`, { method: 'POST' });
-      setExamenes(xs => xs.map(x => x.id === examen.id ? { ...x, comunicadoEnviado: true, comunicadoAt: d.comunicadoAt } : x));
-      aviso(`Correo enviado a ${d.email}.`, 'success');
+      const d = await req('/api/admin/convocatorias');
+      setConvocatorias(d.convocatorias || []);
     } catch (e) { aviso(e.message, 'error'); }
-    finally { setComunicando(null); }
+    finally { setCargando(false); }
+  }, [aviso]);
+
+  useEffect(() => {
+    req('/api/admin/examenes/opciones').then(d => setOpciones(d.actividades || [])).catch(() => {});
+  }, []);
+  useEffect(() => { cargar(); }, [cargar]);
+
+  async function crear(datos) {
+    setCreando(true);
+    try {
+      const d = await req('/api/admin/convocatorias', { method: 'POST', body: datos });
+      setNueva(false);
+      await cargar();
+      setSel(d.convocatoria);   // abre la nueva para meterle gente
+      aviso('Convocatoria creada. Ahora mete a los alumnos.', 'success');
+    } catch (e) { aviso(e.message, 'error'); }
+    finally { setCreando(false); }
+  }
+
+  async function borrar(c) {
+    if (!window.confirm(`¿Borrar la convocatoria "${c.actividad}${c.nombre ? ` · ${c.nombre}` : ''}" con sus ${c.participantes} participante(s)?`)) return;
+    try {
+      await req(`/api/admin/convocatorias/${c.id}`, { method: 'DELETE' });
+      setConvocatorias(xs => xs.filter(x => x.id !== c.id));
+      aviso('Convocatoria borrada.', 'success');
+    } catch (e) { aviso(e.message, 'error'); }
+  }
+
+  if (sel) {
+    return <ConvocatoriaDetalle convocatoria={sel} opciones={opciones}
+      onVolver={() => { setSel(null); cargar(); }} onCambio={cargar} showToast={showToast} />;
   }
 
   return (
@@ -389,41 +464,41 @@ export default function AdminExamenes({ showToast }) {
         <div>
           <h2 style={{ margin: 0 }}>Títulos y exámenes</h2>
           <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--ink-3)' }}>
-            Calificaciones de Ballet, Inglés y cambios de cinturón. Al guardar puedes avisar a la familia.
+            Crea una convocatoria, mete a los alumnos que se examinan y evalúalos uno a uno.
           </p>
         </div>
         <div style={{ flex: 1 }} />
-        {!form && <button className="btn btn-primary" onClick={() => setForm({})}>+ Nuevo examen</button>}
+        {!nueva && <button className="btn btn-primary" onClick={() => setNueva(true)} disabled={!opciones.length}>+ Nueva convocatoria</button>}
       </div>
 
-      {form && (
+      {nueva && (
         <div style={{ border: '1px solid var(--line)', borderRadius: 14, padding: 18, background: 'var(--bg-1)' }}>
-          <h3 style={{ margin: '0 0 14px' }}>{form.id ? 'Editar examen' : 'Nuevo examen'}</h3>
+          <h3 style={{ margin: '0 0 14px' }}>Nueva convocatoria</h3>
           {opciones.length === 0
             ? <p style={{ color: 'var(--ink-3)' }}>No hay actividades con escala de niveles (Ballet, Inglés o Taekwon-Do).</p>
-            : <FormExamen opciones={opciones} inicial={form.id ? form : null} guardando={guardando}
-                onGuardar={guardar} onCancelar={() => setForm(null)} />}
+            : <NuevaConvocatoria opciones={opciones} creando={creando} onCrear={crear} onCancel={() => setNueva(false)} />}
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-        <select style={{ ...inputCss, width: 'auto' }} value={filtroAct} onChange={e => setFiltroAct(e.target.value)}>
-          <option value="">Todas las actividades</option>
-          {opciones.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-        </select>
-        <input style={{ ...inputCss, width: 'auto', flex: 1, minWidth: 180 }} value={busca}
-          onChange={e => setBusca(e.target.value)} placeholder="Buscar por alumno..." />
-        <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>{filtrados.length} examen{filtrados.length !== 1 ? 'es' : ''}</span>
-      </div>
-
       {cargando
         ? <p style={{ color: 'var(--ink-3)' }}>Cargando...</p>
-        : filtrados.length === 0
-          ? <p style={{ color: 'var(--ink-3)' }}>Todavía no hay exámenes registrados.</p>
+        : convocatorias.length === 0
+          ? <p style={{ color: 'var(--ink-3)' }}>No hay convocatorias todavía.</p>
           : <div style={{ display: 'grid', gap: 8 }}>
-              {filtrados.map(e => (
-                <FilaExamen key={e.id} examen={e} comunicando={comunicando === e.id}
-                  onEditar={setForm} onBorrar={borrar} onComunicar={comunicar} />
+              {convocatorias.map(c => (
+                <div key={c.id} style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '14px 16px', border: '1px solid var(--line)', borderRadius: 12, background: 'var(--bg-1)', cursor: 'pointer' }}
+                  onClick={() => setSel(c)}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 800, fontSize: 15 }}>{c.actividad}{c.nombre ? ` · ${c.nombre}` : ''}</div>
+                    <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                      {fmtFecha(c.fecha)} · {c.participantes} participante{c.participantes !== 1 ? 's' : ''}
+                      {c.participantes > 0 ? ` · ${c.evaluados}/${c.participantes} evaluados · ${c.aprobados} aprobados` : ''}
+                      {c.avisados > 0 ? ` · ${c.avisados} avisados` : ''}
+                    </div>
+                  </div>
+                  <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Abrir →</span>
+                  <button className="icon-btn danger" title="Borrar convocatoria" onClick={e => { e.stopPropagation(); borrar(c); }}><I.Trash /></button>
+                </div>
               ))}
             </div>}
     </div>

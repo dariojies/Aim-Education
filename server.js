@@ -663,6 +663,28 @@ async function initDb() {
             )
         `);
 
+        // Convocatoria de examen: se rellena UNA vez (actividad, fecha, nombre y
+        // cómo va la matrícula) y luego se le van metiendo participantes, que son
+        // filas de aim_examenes con su convocatoria_id. Así no hay que repetir el
+        // formulario por cada alumno (ticket #212).
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_convocatorias (
+                id SERIAL PRIMARY KEY,
+                activity_id UUID,
+                activity_type VARCHAR(60),
+                actividad VARCHAR(255),
+                nombre VARCHAR(160),
+                fecha DATE NOT NULL,
+                matricula_modo VARCHAR(20),
+                cobrar_matricula BOOLEAN DEFAULT false,
+                matricula_importe NUMERIC,
+                observaciones TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                created_by UUID
+            )
+        `);
+        await client.query(`ALTER TABLE aim_examenes ADD COLUMN IF NOT EXISTS convocatoria_id INTEGER`);
+
         // Catálogo de clases PROPIAS (las que no están en aim-tul). Las de
         // aim-tul NO se copian aquí: se leen en vivo, así siempre están al día.
         await client.query(`
@@ -2732,6 +2754,172 @@ app.get('/api/admin/examenes/opciones', authenticateSession, requireAdmin, async
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+function mapConvocatoria(c) {
+    return {
+        id: c.id, activityId: c.activity_id, activityType: c.activity_type, actividad: c.actividad,
+        nombre: c.nombre, fecha: c.fecha,
+        matriculaModo: c.matricula_modo, cobrarMatricula: c.cobrar_matricula,
+        matriculaImporte: c.matricula_importe != null ? Number(c.matricula_importe) : null,
+        observaciones: c.observaciones, createdAt: c.created_at,
+        participantes: c.participantes != null ? Number(c.participantes) : 0,
+        evaluados: c.evaluados != null ? Number(c.evaluados) : 0,
+        aprobados: c.aprobados != null ? Number(c.aprobados) : 0,
+        avisados: c.avisados != null ? Number(c.avisados) : 0,
+    };
+}
+
+// Las convocatorias, con el recuento de participantes/evaluados/aprobados.
+app.get('/api/admin/convocatorias', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT c.*,
+                    COUNT(e.id)::int AS participantes,
+                    COUNT(e.id) FILTER (WHERE e.apto IS NOT NULL)::int AS evaluados,
+                    COUNT(e.id) FILTER (WHERE e.apto = true)::int AS aprobados,
+                    COUNT(e.id) FILTER (WHERE e.comunicado_enviado)::int AS avisados
+             FROM aim_convocatorias c
+             LEFT JOIN aim_examenes e ON e.convocatoria_id = c.id
+             GROUP BY c.id
+             ORDER BY c.fecha DESC, c.id DESC`);
+        res.set('Cache-Control', 'no-store');
+        res.json({ convocatorias: r.rows.map(mapConvocatoria) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Crear una convocatoria: un solo formulario para toda la tanda de exámenes.
+app.post('/api/admin/convocatorias', authenticateSession, requireAdmin, async (req, res) => {
+    const b = req.body || {};
+    if (!b.activityId || !b.fecha) return res.status(400).json({ error: 'Faltan la actividad o la fecha.' });
+    try {
+        const act = await pool.query(
+            `SELECT activity_id, name, activity_type FROM tul_activities WHERE activity_id = $1 AND club_id = $2`,
+            [b.activityId, AIM_CLUB_ID]);
+        if (!act.rowCount) return res.status(404).json({ error: 'Esa actividad no es del club.' });
+        const { name, activity_type } = act.rows[0];
+        const mat = matriculaExamenDe(activity_type);
+        const cobrar = mat.modo === 'cobrada' && !!b.cobrarMatricula;
+        const r = await pool.query(
+            `INSERT INTO aim_convocatorias
+               (activity_id, activity_type, actividad, nombre, fecha, matricula_modo,
+                cobrar_matricula, matricula_importe, observaciones, created_by)
+             VALUES ($1,$2,$3,$4,$5::date,$6,$7,$8,$9,$10) RETURNING *`,
+            [b.activityId, activity_type, name, b.nombre?.trim() || null, b.fecha, mat.modo,
+             cobrar, cobrar && Number(b.matriculaImporte) > 0 ? Number(b.matriculaImporte) : null,
+             b.observaciones?.trim() || null, req.userSession.userId]);
+        res.status(201).json({ convocatoria: mapConvocatoria({ ...r.rows[0], participantes: 0, evaluados: 0, aprobados: 0, avisados: 0 }) });
+    } catch (err) {
+        console.error('[CONVOCATORIAS] create:', err);
+        res.status(500).json({ error: 'No se pudo crear la convocatoria.' });
+    }
+});
+
+// Una convocatoria con todos sus participantes.
+app.get('/api/admin/convocatorias/:id', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const c = await pool.query(`SELECT * FROM aim_convocatorias WHERE id = $1`, [req.params.id]);
+        if (!c.rowCount) return res.status(404).json({ error: 'Esa convocatoria no existe.' });
+        const parts = await pool.query(`${SELECT_EXAMEN} WHERE e.convocatoria_id = $1 ORDER BY alumno_nombre`, [req.params.id]);
+        res.set('Cache-Control', 'no-store');
+        res.json({ convocatoria: mapConvocatoria(c.rows[0]), participantes: parts.rows.map(mapExamen) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Editar la cabecera de la convocatoria (nombre, fecha, matrícula).
+app.patch('/api/admin/convocatorias/:id', authenticateSession, requireAdmin, async (req, res) => {
+    const b = req.body || {};
+    try {
+        const cur = await pool.query(`SELECT * FROM aim_convocatorias WHERE id = $1`, [req.params.id]);
+        if (!cur.rowCount) return res.status(404).json({ error: 'Esa convocatoria no existe.' });
+        const c = cur.rows[0];
+        const cobrar = c.matricula_modo === 'cobrada' && (b.cobrarMatricula !== undefined ? !!b.cobrarMatricula : c.cobrar_matricula);
+        const r = await pool.query(
+            `UPDATE aim_convocatorias SET
+                nombre = $2, fecha = COALESCE($3::date, fecha),
+                cobrar_matricula = $4, matricula_importe = $5, observaciones = $6
+             WHERE id = $1 RETURNING *`,
+            [c.id,
+             b.nombre !== undefined ? (b.nombre?.trim() || null) : c.nombre,
+             b.fecha || null, cobrar,
+             b.matriculaImporte !== undefined ? (Number(b.matriculaImporte) || null) : c.matricula_importe,
+             b.observaciones !== undefined ? (b.observaciones?.trim() || null) : c.observaciones]);
+        res.json({ convocatoria: mapConvocatoria(r.rows[0]) });
+    } catch (err) {
+        console.error('[CONVOCATORIAS] patch:', err);
+        res.status(500).json({ error: 'No se pudo actualizar la convocatoria.' });
+    }
+});
+
+// Meter un alumno en la convocatoria. Se crea su fila de examen copiando la
+// actividad, la fecha, el nombre y la matrícula de la convocatoria; la
+// evaluación se rellena luego, participante a participante. En Ballet, si la
+// convocatoria cobra matrícula, se le genera el cargo al entrar (la matrícula es
+// para poder presentarse).
+app.post('/api/admin/convocatorias/:id/participantes', authenticateSession, requireAdmin, async (req, res) => {
+    const alumnoId = req.body?.alumnoId;
+    if (!alumnoId) return res.status(400).json({ error: 'Falta el alumno.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const c = (await client.query(`SELECT * FROM aim_convocatorias WHERE id = $1`, [req.params.id])).rows[0];
+        if (!c) throw { httP: 404, msg: 'Esa convocatoria no existe.' };
+        const dup = await client.query(
+            `SELECT 1 FROM aim_examenes WHERE convocatoria_id = $1 AND alumno_id = $2`, [c.id, alumnoId]);
+        if (dup.rowCount) throw { httP: 409, msg: 'Ese alumno ya está en la convocatoria.' };
+
+        const cobra = c.matricula_modo === 'cobrada' && c.cobrar_matricula && Number(c.matricula_importe) > 0;
+        const ins = await client.query(
+            `INSERT INTO aim_examenes
+               (convocatoria_id, alumno_id, activity_id, activity_type, actividad, fecha, convocatoria,
+                matricula_modo, matricula_estado, matricula_importe, created_by)
+             VALUES ($1,$2,$3,$4,$5,$6::date,$7,$8,$9,$10,$11) RETURNING *`,
+            [c.id, alumnoId, c.activity_id, c.activity_type, c.actividad, c.fecha, c.nombre,
+             c.matricula_modo, c.matricula_modo === 'cobrada' ? 'pendiente' : 'no_aplica',
+             cobra ? Number(c.matricula_importe) : null, req.userSession.userId]);
+        const examen = ins.rows[0];
+        if (cobra) {
+            const cargoId = await crearCargoMatriculaExamen(client, examen);
+            await client.query(`UPDATE aim_examenes SET cargo_id = $1 WHERE id = $2`, [cargoId, examen.id]);
+        }
+        await client.query('COMMIT');
+        const full = await pool.query(`${SELECT_EXAMEN} WHERE e.id = $1`, [examen.id]);
+        res.status(201).json({ participante: mapExamen(full.rows[0]) });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        if (err.httP) return res.status(err.httP).json({ error: err.msg });
+        console.error('[CONVOCATORIAS] add participante:', err);
+        res.status(500).json({ error: 'No se pudo meter al alumno.' });
+    } finally { client.release(); }
+});
+
+// Borrar una convocatoria entera con sus participantes. Si algún participante
+// tiene una matrícula ya cobrada, no se deja (habría que anular el recibo).
+app.delete('/api/admin/convocatorias/:id', authenticateSession, requireAdmin, async (req, res) => {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const c = await client.query(`SELECT id FROM aim_convocatorias WHERE id = $1 FOR UPDATE`, [req.params.id]);
+        if (!c.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Esa convocatoria no existe.' }); }
+        const cobrado = await client.query(
+            `SELECT 1 FROM aim_examenes e JOIN aim_cargos g ON g.id = e.cargo_id
+             WHERE e.convocatoria_id = $1 AND g.estado = 'cobrado' LIMIT 1`, [req.params.id]);
+        if (cobrado.rowCount) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({ error: 'Hay matrículas ya cobradas en esta convocatoria. Anula antes esos recibos.' });
+        }
+        await client.query(
+            `DELETE FROM aim_cargos WHERE id IN (SELECT cargo_id FROM aim_examenes WHERE convocatoria_id = $1 AND cargo_id IS NOT NULL) AND estado = 'pendiente'`,
+            [req.params.id]);
+        await client.query(`DELETE FROM aim_examenes WHERE convocatoria_id = $1`, [req.params.id]);
+        await client.query(`DELETE FROM aim_convocatorias WHERE id = $1`, [req.params.id]);
+        await client.query('COMMIT');
+        res.json({ success: true });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('[CONVOCATORIAS] delete:', err);
+        res.status(500).json({ error: 'No se pudo borrar la convocatoria.' });
+    } finally { client.release(); }
+});
+
 // El listado de exámenes ya registrados. Se puede filtrar por actividad y por
 // alumno; sin filtros salen todos, del más reciente al más antiguo.
 app.get('/api/admin/examenes', authenticateSession, requireAdmin, async (req, res) => {
@@ -2753,7 +2941,8 @@ app.get('/api/admin/examenes', authenticateSession, requireAdmin, async (req, re
 
 function mapExamen(e) {
     return {
-        id: e.id, alumnoId: e.alumno_id, alumnoNombre: e.alumno_nombre, alumnoEmail: e.alumno_email,
+        id: e.id, convocatoriaId: e.convocatoria_id,
+        alumnoId: e.alumno_id, alumnoNombre: e.alumno_nombre, alumnoEmail: e.alumno_email,
         activityId: e.activity_id, activityType: e.activity_type, actividad: e.actividad,
         fecha: e.fecha, convocatoria: e.convocatoria, nivel: e.nivel,
         puntos: e.puntos != null ? Number(e.puntos) : null,
@@ -2764,8 +2953,19 @@ function mapExamen(e) {
         cargoId: e.cargo_id,
         comunicadoEnviado: e.comunicado_enviado, comunicadoAt: e.comunicado_at,
         createdAt: e.created_at,
+        // El rango que tiene ahora en esa actividad (viene del join), para
+        // proponer al que promociona.
+        nivelActualOrder: e.nivel_actual_order != null ? Number(e.nivel_actual_order) : null,
+        nivelActualNombre: e.nivel_actual_nombre || null,
     };
 }
+
+const SELECT_EXAMEN = `
+    SELECT e.*, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno_nombre, u.email AS alumno_email,
+           up.level_order AS nivel_actual_order, up.level_name AS nivel_actual_nombre
+    FROM aim_examenes e
+    JOIN users u ON u.user_id = e.alumno_id
+    LEFT JOIN tul_user_progression up ON up.user_id = e.alumno_id AND up.activity_id = e.activity_id`;
 
 // Registrar un examen. El resultado se calcula del baremo salvo que venga uno a
 // mano (para los casos que no son apto/no apto, como los shields de Inglés).
@@ -2883,12 +3083,16 @@ async function fijarNivelExamen(client, alumnoId, act, levelOrder) {
     }
 }
 
-// Editar un examen (nota, resultado, nivel, estado de la matrícula, notas).
+// Evaluar/editar un participante: nota, resultado, nivel al que promociona,
+// notas y estado de matrícula. Si aprueba y se pide promocionar, se le sube el
+// rango/cinturón/título en esa actividad (y se sincroniza con Learning Dungeon).
 app.patch('/api/admin/examenes/:id', authenticateSession, requireAdmin, async (req, res) => {
     const b = req.body || {};
+    const client = await pool.connect();
     try {
-        const cur = await pool.query(`SELECT * FROM aim_examenes WHERE id = $1`, [req.params.id]);
-        if (!cur.rowCount) return res.status(404).json({ error: 'Ese examen no existe.' });
+        await client.query('BEGIN');
+        const cur = await client.query(`SELECT * FROM aim_examenes WHERE id = $1 FOR UPDATE`, [req.params.id]);
+        if (!cur.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Ese examen no existe.' }); }
         const e = cur.rows[0];
         const puntos = b.puntos === '' || b.puntos == null ? e.puntos : Number(b.puntos);
         const puntosMax = b.puntosMax ? Number(b.puntosMax) : (e.puntos_max || 100);
@@ -2902,31 +3106,35 @@ app.patch('/api/admin/examenes/:id', authenticateSession, requireAdmin, async (r
             : (cambiaPuntos && auto ? auto.resultado : e.resultado);
         const apto = b.apto !== undefined ? (b.apto == null ? null : !!b.apto)
             : (cambiaPuntos && auto ? auto.apto : e.apto);
-        const r = await pool.query(
+        const r = await client.query(
             `UPDATE aim_examenes SET
                 fecha = COALESCE($2::date, fecha),
-                convocatoria = $3, nivel = $4,
-                puntos = $5, puntos_max = $6, resultado = $7, apto = $8,
-                observaciones = $9,
-                matricula_estado = COALESCE($10, matricula_estado),
-                matricula_importe = $11
+                nivel = $3,
+                puntos = $4, puntos_max = $5, resultado = $6, apto = $7,
+                observaciones = $8,
+                matricula_estado = COALESCE($9, matricula_estado),
+                matricula_importe = $10
              WHERE id = $1 RETURNING *`,
             [e.id, b.fecha || null,
-             b.convocatoria !== undefined ? (b.convocatoria?.trim() || null) : e.convocatoria,
              b.nivel !== undefined ? (b.nivel?.trim() || null) : e.nivel,
              puntos, puntosMax, resultado, apto,
              b.observaciones !== undefined ? (b.observaciones?.trim() || null) : e.observaciones,
              b.matriculaEstado || null,
              b.matriculaImporte !== undefined ? (Number(b.matriculaImporte) || null) : e.matricula_importe]
         );
-        const full = await pool.query(
-            `SELECT e.*, TRIM(CONCAT(u.name,' ',COALESCE(u.surname,''))) AS alumno_nombre, u.email AS alumno_email
-             FROM aim_examenes e JOIN users u ON u.user_id = e.alumno_id WHERE e.id = $1`, [r.rows[0].id]);
+        // Promoción: solo si aprueba y se pide. Sube el rango/cinturón/título.
+        if (apto === true && b.promocionar && b.nivelOrder != null && b.nivelOrder !== '') {
+            await fijarNivelExamen(client, e.alumno_id,
+                { activity_id: e.activity_id, activity_type: e.activity_type }, Number(b.nivelOrder));
+        }
+        await client.query('COMMIT');
+        const full = await pool.query(`${SELECT_EXAMEN} WHERE e.id = $1`, [r.rows[0].id]);
         res.json({ examen: mapExamen(full.rows[0]) });
     } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
         console.error('[EXAMENES] patch:', err);
         res.status(500).json({ error: 'No se pudo actualizar el examen.' });
-    }
+    } finally { client.release(); }
 });
 
 // Borrar un examen. Si generó un cargo de matrícula que aún está pendiente, se
@@ -2969,21 +3177,28 @@ app.post('/api/admin/examenes/:id/comunicar', authenticateSession, requireAdmin,
              FROM aim_examenes e JOIN users u ON u.user_id = e.alumno_id WHERE e.id = $1`, [req.params.id]);
         if (!r.rowCount) return res.status(404).json({ error: 'Ese examen no existe.' });
         const e = r.rows[0];
-        const pagadorId = await pagadorDe(pool, e.alumno_id);
-        const dest = await pool.query(`SELECT name, surname, email FROM users WHERE user_id = $1`, [pagadorId]);
-        const email = dest.rows[0]?.email;
-        if (!email) return res.status(400).json({ error: 'No hay un correo al que enviar el resultado.' });
+        // El aviso va a los padres Y al propio usuario: el correo del alumno más
+        // los de madre, padre o tutor que consten. Sin repetidos.
+        const dest = await pool.query(
+            `SELECT DISTINCT LOWER(u.email) AS email, u.name
+             FROM users u
+             WHERE u.user_id = $1
+                OR u.user_id IN (SELECT familiar_id FROM aim_familias
+                                 WHERE persona_id = $1 AND tipo IN ('Madre','Padre','Tutor/a'))`,
+            [e.alumno_id]);
+        const emails = dest.rows.map(x => x.email).filter(Boolean);
+        if (!emails.length) return res.status(400).json({ error: 'No hay ningún correo al que enviar el resultado.' });
 
         const asunto = `Resultado de examen · ${e.actividad} · ${e.alumno_nombre}`;
         await mailTransporter.sendMail({
-            from: process.env.EMAIL_USER, to: email,
+            from: process.env.EMAIL_USER, to: emails,
             subject: `[AIM Education] ${asunto}`,
-            html: cuerpoComunicadoExamen(e, dest.rows[0]),
+            html: cuerpoComunicadoExamen(e, null),
         });
         const upd = await pool.query(
             `UPDATE aim_examenes SET comunicado_enviado = true, comunicado_at = NOW() WHERE id = $1
              RETURNING comunicado_at`, [e.id]);
-        res.json({ success: true, email, comunicadoAt: upd.rows[0].comunicado_at });
+        res.json({ success: true, emails, comunicadoAt: upd.rows[0].comunicado_at });
     } catch (err) {
         console.error('[EXAMENES] comunicar:', err);
         res.status(500).json({ error: 'No se pudo enviar el correo.' });
@@ -3001,9 +3216,13 @@ function cuerpoComunicadoExamen(e, dest) {
         ['Resultado', e.resultado || (e.apto ? 'Apto' : 'No apto')],
     ].filter(Boolean);
     const saludo = dest?.name ? `Hola ${dest.name}` : 'Hola';
+    const promociona = e.apto === true
+        ? `<p style="margin:0 0 4px;font-size:15px"><b>¡Enhorabuena!</b> Ha superado el examen${e.nivel ? ` y promociona a <b>${e.nivel}</b>` : ''}.</p>`
+        : '';
     return `
         <div style="font-family:Arial,Helvetica,sans-serif;color:#222;max-width:520px">
             <p>${saludo},</p>
+            ${promociona}
             <p>Ya está disponible el resultado del examen de <b>${e.alumno_nombre}</b>. Estos son los datos:</p>
             <table style="border-collapse:collapse;font-size:14px">
                 ${filas.map(([k, v]) => `<tr>
