@@ -13,6 +13,7 @@ import { crearRouterTulClases } from './tul-clases.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
 import { generarGastosPdf, gastosCsv, nombrePeriodo } from './gastos-pdf.js';
+import { generarResumenAnualPdf } from './resumen-anual-pdf.js';
 import { escalaDe, escalasDelClub, resultadoDe, baremoDe, matriculaExamenDe } from './rangos.js';
 import { rolEfectivo, permisosDe, mandaAlMenos, ROLES_STAFF, NOMBRE_ROL } from './permisos.js';
 
@@ -73,6 +74,8 @@ const CONCEPTOS_EVENTOS = new Set([EVENTOS_CONCEPTO]);
 // (la RAD): en Inglés y Taekwon-Do la familia paga fuera y no la cobramos. IVA 0
 // por ser enseñanza exenta, igual que los eventos y el campamento.
 const MATRICULA_EXAMEN_CONCEPTO = '20600';
+// Iniciales de los días como en aim-tul: índice 0 = lunes.
+const DIAS_CORTO = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
 
 async function initDb() {
     const client = await pool.connect();
@@ -6645,6 +6648,221 @@ app.get('/api/admin/personas', authenticateSession, requireAdmin, async (req, re
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FICHA 360º DEL ALUMNO (ticket #222)
+//
+// Todo lo relevante de un alumno en un sitio: sus tutores, sus clases con
+// horario y monitor, su asistencia, y su parte económica (lo pendiente y las
+// facturas que le tocan). Lleva dinero, así que es para el club, no para los
+// instructores: se cierra con editarAlumnos.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Los posibles pagadores de un alumno: sus tutores (madre, padre, tutor/a), él
+// mismo, y cualquiera que ya le haya pagado alguna factura. Sin repetidos.
+async function pagadoresDe(alumnoId) {
+    const r = await pool.query(
+        `SELECT u.user_id AS id, TRIM(u.name || ' ' || COALESCE(u.surname, '')) AS nombre, u.email,
+                CASE WHEN u.user_id = $1 THEN 'El propio alumno' ELSE COALESCE(f.tipo, 'Pagador') END AS relacion
+         FROM users u
+         LEFT JOIN aim_familias f ON f.familiar_id = u.user_id AND f.persona_id = $1
+         WHERE u.user_id = $1
+            OR u.user_id IN (SELECT familiar_id FROM aim_familias WHERE persona_id = $1
+                             AND tipo IN ('Madre','Padre','Tutor/a','Cónyuge'))
+            OR u.user_id IN (SELECT DISTINCT rc.pagador_id FROM aim_recibos rc
+                             WHERE rc.pagador_id IN (
+                                SELECT cliente_id FROM aim_cargos WHERE cliente_id = $1)
+                                OR rc.id IN (SELECT recibo_id FROM aim_cargos WHERE cliente_id = $1 AND recibo_id IS NOT NULL))
+         ORDER BY relacion, nombre`, [alumnoId]);
+    return r.rows;
+}
+
+// Las líneas (conceptos) de unos recibos: los cargos normales y las líneas de
+// los documentos rectificativos, en un solo mapa por recibo.
+async function lineasDeRecibos(ids) {
+    const mapa = {};
+    if (!ids.length) return mapa;
+    const cs = await pool.query(
+        `SELECT c.recibo_id, c.descripcion, c.mes, c.importe, c.iva_pct, c.actividad,
+                TRIM(u.name || ' ' || COALESCE(u.surname,'')) AS alumno
+         FROM aim_cargos c JOIN users u ON u.user_id = c.cliente_id
+         WHERE c.recibo_id = ANY($1::int[]) ORDER BY c.mes`, [ids]);
+    for (const c of cs.rows) {
+        (mapa[c.recibo_id] ||= []).push({
+            descripcion: c.descripcion, alumno: c.alumno, actividad: c.actividad,
+            mes: c.mes, importe: Number(c.importe ?? 0), ivaPct: Number(c.iva_pct),
+        });
+    }
+    const rl = await pool.query(
+        `SELECT recibo_id, descripcion, cliente_nombre, mes, base, iva_pct
+         FROM aim_recibo_rect_lineas WHERE recibo_id = ANY($1::int[]) ORDER BY id`, [ids]);
+    for (const l of rl.rows) {
+        (mapa[l.recibo_id] ||= []).push({
+            descripcion: l.descripcion, alumno: l.cliente_nombre || '', actividad: null,
+            mes: l.mes, importe: Number(l.base), ivaPct: Number(l.iva_pct), rectificativa: true,
+        });
+    }
+    return mapa;
+}
+
+app.get('/api/admin/alumnos/:id/ficha360', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
+    const id = req.params.id;
+    try {
+        const uq = await pool.query(
+            `SELECT user_id, name, surname, email, phone, birthday, dni, domicilio, cp, poblacion, belt
+             FROM users WHERE user_id = $1`, [id]);
+        if (!uq.rowCount) return res.status(404).json({ error: 'No existe ese alumno.' });
+        const u = uq.rows[0];
+
+        // Tutores/responsables.
+        const tut = await pool.query(
+            `SELECT f.tipo, TRIM(uu.name || ' ' || COALESCE(uu.surname,'')) AS nombre, uu.email, uu.phone, uu.user_id AS id
+             FROM aim_familias f JOIN users uu ON uu.user_id = f.familiar_id
+             WHERE f.persona_id = $1 ORDER BY f.tipo, nombre`, [id]);
+
+        // Clases donde está inscrito, con su horario, monitor(es) y estado.
+        const gq = await pool.query(
+            `SELECT g.group_id, g.name AS grupo, g.sessions, a.name AS actividad, a.activity_type,
+                    g.max_students,
+                    (SELECT COUNT(*)::int FROM tul_group_students gs WHERE gs.group_id = g.group_id) AS ocupadas
+             FROM tul_group_students x
+             JOIN tul_groups g ON g.group_id = x.group_id
+             JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE x.student_id = $1 AND a.club_id = $2
+             ORDER BY a.name, g.name`, [id, AIM_CLUB_ID]);
+        const clases = gq.rows.map(g => {
+            const ses = Array.isArray(g.sessions) ? g.sessions : [];
+            return {
+                groupId: g.group_id, actividad: g.actividad, grupo: g.grupo,
+                horario: ses.map(s => `${(s.days || []).map(d => DIAS_CORTO[d] ?? d).join('')} ${s.startTime || ''}${s.endTime ? `–${s.endTime}` : ''}${s.aulaName ? ` · ${s.aulaName}` : ''}`).join('  |  '),
+                monitores: [...new Set(ses.flatMap(nombresDocentes))].join(' y ') || null,
+                estado: 'Matriculado',
+            };
+        });
+
+        // Lista de espera (reservas activas donde aún no ha entrado).
+        const esp = await pool.query(
+            `SELECT a.name AS actividad, g.name AS grupo, e.created_at
+             FROM aim_lista_espera e
+             JOIN tul_groups g ON g.group_id = e.group_id
+             JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE e.student_id = $1 AND e.estado = 'esperando' AND a.club_id = $2
+             ORDER BY e.created_at`, [id, AIM_CLUB_ID]);
+
+        // Asistencia: resumen por estado + histórico reciente.
+        const asisResumen = await pool.query(
+            `SELECT status, COUNT(*)::int n FROM tul_attendance WHERE student_id = $1 GROUP BY status`, [id]);
+        const asisHist = await pool.query(
+            `SELECT at.date, at.status, g.name AS grupo, a.name AS actividad
+             FROM tul_attendance at
+             JOIN tul_groups g ON g.group_id = at.group_id
+             JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE at.student_id = $1 AND a.club_id = $2
+             ORDER BY at.date DESC LIMIT 60`, [id, AIM_CLUB_ID]);
+        const resumen = { present: 0, absent: 0, late: 0 };
+        for (const r of asisResumen.rows) if (resumen[r.status] != null) resumen[r.status] = r.n;
+
+        // Económico: lo pendiente de este alumno (con su importe real) y las
+        // facturas que le tocan (donde es su cargo o donde paga un tutor suyo).
+        const pend = await pool.query(
+            `SELECT c.*, TRIM(u.name || ' ' || COALESCE(u.surname,'')) AS alumno FROM aim_cargos c
+             JOIN users u ON u.user_id = c.cliente_id
+             WHERE c.cliente_id = $1 AND c.estado = 'pendiente' AND c.recibo_id IS NULL
+             ORDER BY c.mes`, [id]);
+        const calcP = calcularRecibo(pend.rows.map(cargoParaMotor));
+        const pendientes = calcP.detalle.map(d => ({
+            descripcion: d.descripcion, mes: d.mes, actividad: pend.rows.find(c => c.id === d.id)?.actividad || null, total: d.total,
+        }));
+
+        const rq = await pool.query(
+            `SELECT rc.id, rc.numero, rc.serie, rc.tipo, rc.fecha, rc.importe, rc.estado, rc.medio_pago,
+                    rc.rect_metodo, TRIM(p.name || ' ' || COALESCE(p.surname,'')) AS pagador
+             FROM aim_recibos rc
+             LEFT JOIN users p ON p.user_id = rc.pagador_id
+             WHERE rc.pagador_id IN (SELECT familiar_id FROM aim_familias WHERE persona_id = $1)
+                OR rc.pagador_id = $1
+                OR rc.id IN (SELECT recibo_id FROM aim_cargos WHERE cliente_id = $1 AND recibo_id IS NOT NULL)
+             ORDER BY rc.fecha DESC, rc.id DESC LIMIT 60`, [id]);
+        const lineas = await lineasDeRecibos(rq.rows.map(r => r.id));
+        const facturas = rq.rows.map(r => ({
+            id: r.id, numero: numeroVisible(r), serie: r.serie, tipo: r.tipo, fecha: r.fecha,
+            importe: Number(r.importe ?? 0), estado: r.estado, medioPago: r.medio_pago,
+            rectificativa: r.tipo === 'rectificativo', rectMetodo: r.rect_metodo,
+            pagador: r.pagador || '(sin pagador)', conceptos: lineas[r.id] || [],
+        }));
+
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            persona: {
+                id: u.user_id, nombre: u.name, apellidos: u.surname, email: u.email, telefono: u.phone,
+                nacimiento: u.birthday, dni: u.dni, domicilio: u.domicilio, cp: u.cp, poblacion: u.poblacion, belt: u.belt,
+            },
+            tutores: tut.rows,
+            clases,
+            reservas: esp.rows.map(e => ({ actividad: e.actividad, grupo: e.grupo, desde: e.created_at })),
+            asistencia: { resumen, historico: asisHist.rows },
+            economico: {
+                pendientes, totalPendiente: calcP.total,
+                facturas,
+            },
+            pagadores: await pagadoresDe(id),
+        });
+    } catch (err) {
+        console.error('[FICHA360]', err);
+        res.status(500).json({ error: 'No se pudo cargar la ficha.' });
+    }
+});
+
+// Resumen económico anual de un pagador (ticket #222, puntos 4-6): todas sus
+// facturas del año, con conceptos y total, teniendo en cuenta las rectificativas.
+app.get('/api/admin/alumnos/:id/resumen-economico.pdf', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
+    const anio = parseInt(req.query.anio, 10);
+    const pagadorId = req.query.pagador;
+    if (!Number.isInteger(anio) || !pagadorId) return res.status(400).send('Faltan el año o el pagador.');
+    try {
+        const pg = await pool.query(
+            `SELECT TRIM(name || ' ' || COALESCE(surname,'')) AS nombre, dni, domicilio, cp, poblacion, email
+             FROM users WHERE user_id = $1`, [pagadorId]);
+        if (!pg.rowCount) return res.status(404).send('Pagador no encontrado.');
+
+        const rq = await pool.query(
+            `SELECT rc.id, rc.numero, rc.serie, rc.tipo, rc.fecha, rc.importe, rc.rect_metodo, rc.estado
+             FROM aim_recibos rc
+             WHERE rc.pagador_id = $1 AND EXTRACT(YEAR FROM rc.fecha) = $2 AND rc.estado <> 'anulado'
+             ORDER BY rc.fecha, rc.id`, [pagadorId, anio]);
+        const lineas = await lineasDeRecibos(rq.rows.map(r => r.id));
+        const facturas = rq.rows.map(r => ({
+            numero: numeroVisible(r), fecha: r.fecha, tipo: r.tipo,
+            rectificativa: r.tipo === 'rectificativo', rectMetodo: r.rect_metodo,
+            importe: Number(r.importe ?? 0), conceptos: lineas[r.id] || [],
+        }));
+        // Total neto: lo facturado normal menos lo devuelto (las rectificativas por
+        // diferencias van en negativo). Las de sustitución se listan pero no se
+        // suman, para no duplicar el importe de la factura que reemplazan.
+        let facturado = 0, devuelto = 0, sustituciones = 0;
+        for (const f of facturas) {
+            if (!f.rectificativa) facturado += f.importe;
+            else if (f.rectMetodo === 'diferencias') devuelto += f.importe; // negativo
+            else sustituciones += f.importe;
+        }
+        const totalNeto = r2Server(facturado + devuelto);
+
+        const datos = {
+            emisor: EMPRESA_TICKET,
+            pagador: pg.rows[0],
+            anio, facturas,
+            facturado: r2Server(facturado), devuelto: r2Server(devuelto),
+            haySustituciones: sustituciones !== 0, totalNeto,
+        };
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition',
+            `${req.query.descargar ? 'attachment' : 'inline'}; filename="resumen-economico-${anio}-${(pg.rows[0].nombre || '').replace(/[^\w]+/g, '_')}.pdf"`);
+        generarResumenAnualPdf(datos, res);
+    } catch (err) {
+        console.error('[RESUMEN ANUAL PDF]', err);
+        res.status(500).send('No se pudo generar el resumen.');
+    }
+});
 
 app.get('/api/admin/billing/familias/:personaId', authenticateSession, requireAdmin, async (req, res) => {
     try {
