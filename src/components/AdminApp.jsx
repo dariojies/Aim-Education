@@ -6044,12 +6044,13 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
 
       {/* --- MODAL NUEVO / EDITAR ALUMNO --- */}
       {(activeModal === 'new-student' || activeModal === 'edit-student') && (
-        <div style={{
+        <div onClick={() => setActiveModal(null)} style={{
           position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
           backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(8px)',
           display: 'grid', placeItems: 'center', zIndex: 1000, padding: 20
         }}>
-          <form onSubmit={handleUserSubmit} style={{
+          {/* Clic fuera cierra; dentro no, para no perder lo que se está escribiendo. */}
+          <form onSubmit={handleUserSubmit} onClick={e => e.stopPropagation()} style={{
             backgroundColor: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 24,
             width: '100%', maxWidth: 880, padding: '34px 40px', display: 'grid', gap: 18,
             maxHeight: '92vh', overflowY: 'auto'

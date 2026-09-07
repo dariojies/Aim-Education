@@ -6752,13 +6752,15 @@ app.get('/api/admin/alumnos/:id/ficha360', authenticateSession, requirePermiso('
         // Asistencia: resumen por estado + histórico reciente.
         const asisResumen = await pool.query(
             `SELECT status, COUNT(*)::int n FROM tul_attendance WHERE student_id = $1 GROUP BY status`, [id]);
+        // Todo el histórico (hasta un tope alto): el filtro por periodo —mes,
+        // temporada...— se hace en la pantalla, así que aquí va todo (ticket #222).
         const asisHist = await pool.query(
             `SELECT at.date, at.status, g.name AS grupo, a.name AS actividad
              FROM tul_attendance at
              JOIN tul_groups g ON g.group_id = at.group_id
              JOIN tul_activities a ON a.activity_id = g.activity_id
              WHERE at.student_id = $1 AND a.club_id = $2
-             ORDER BY at.date DESC LIMIT 60`, [id, AIM_CLUB_ID]);
+             ORDER BY at.date DESC LIMIT 2000`, [id, AIM_CLUB_ID]);
         const resumen = { present: 0, absent: 0, late: 0 };
         for (const r of asisResumen.rows) if (resumen[r.status] != null) resumen[r.status] = r.n;
 

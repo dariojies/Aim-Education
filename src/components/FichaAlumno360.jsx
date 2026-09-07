@@ -14,6 +14,26 @@ const fmtFecha = (f) => f ? new Date(String(f).slice(0, 10) + 'T12:00:00').toLoc
 const ESTADO_RECIBO = { cobrado: ['Cobrado', 'var(--green, #16a34a)'], pendiente: ['Pendiente', 'var(--orange)'], anulado: ['Anulado', 'var(--ink-3)'] };
 const ASIS_LABEL = { present: ['Asistencias', 'var(--green, #16a34a)'], late: ['Retrasos', 'var(--orange)'], absent: ['Faltas', 'var(--red, #dc2626)'] };
 
+// Una temporada es el curso académico: del 1 de septiembre al 31 de agosto.
+// Devuelve [inicio, fin) de la temporada a la que pertenece una fecha, corriendo
+// `atras` temporadas hacia el pasado (0 = la de esa fecha).
+function temporadaDe(ref, atras = 0) {
+  const d = new Date(ref);
+  const inicioAnio = (d.getMonth() >= 8 ? d.getFullYear() : d.getFullYear() - 1) - atras;
+  return [new Date(inicioAnio, 8, 1), new Date(inicioAnio + 1, 8, 1)];
+}
+
+// El rango [desde, hasta) de cada periodo de asistencia. null = sin límite.
+function rangoPeriodo(periodo) {
+  const hoy = new Date();
+  if (periodo === 'mes') return [new Date(hoy.getFullYear(), hoy.getMonth(), 1), new Date(hoy.getFullYear(), hoy.getMonth() + 1, 1)];
+  if (periodo === 'trimestre') { const d = new Date(hoy); d.setMonth(d.getMonth() - 3); return [d, null]; }
+  if (periodo === 'temporada') return temporadaDe(hoy, 0);
+  if (periodo === 'temporada_pasada') return temporadaDe(hoy, 1);
+  return [null, null]; // todo
+}
+const PERIODOS_ASIS = [['todo', 'Todo'], ['mes', 'Este mes'], ['trimestre', 'Últimos 3 meses'], ['temporada', 'Esta temporada'], ['temporada_pasada', 'Temporada pasada']];
+
 function Seccion({ titulo, extra, children }) {
   return (
     <div style={{ borderTop: '1px solid var(--line)', paddingTop: 16, marginTop: 16 }}>
@@ -65,6 +85,7 @@ export default function FichaAlumno360({ studentId }) {
   const [error, setError] = useState('');
   const [anio, setAnio] = useState(new Date().getFullYear());
   const [pagador, setPagador] = useState('');
+  const [periodoAsis, setPeriodoAsis] = useState('todo');
 
   useEffect(() => {
     let vivo = true;
@@ -92,7 +113,16 @@ export default function FichaAlumno360({ studentId }) {
   if (!data) return null;
 
   const { economico, asistencia, pagadores, reservas } = data;
-  const totalAsis = (asistencia.resumen.present || 0) + (asistencia.resumen.absent || 0) + (asistencia.resumen.late || 0);
+  // La asistencia se filtra por periodo en la propia pantalla, sobre el histórico
+  // completo, y el resumen (asistencias/retrasos/faltas) se recalcula al vuelo.
+  const [desde, hasta] = rangoPeriodo(periodoAsis);
+  const asisFiltrada = (asistencia.historico || []).filter(h => {
+    const f = new Date(String(h.date).slice(0, 10) + 'T12:00:00');
+    return (!desde || f >= desde) && (!hasta || f < hasta);
+  });
+  const resumenAsis = { present: 0, late: 0, absent: 0 };
+  for (const h of asisFiltrada) if (resumenAsis[h.status] != null) resumenAsis[h.status]++;
+  const totalAsis = asisFiltrada.length;
 
   return (
     <div>
@@ -119,34 +149,40 @@ export default function FichaAlumno360({ studentId }) {
         </div>
       </Seccion>
 
-      {/* ── Asistencia ── */}
-      <Seccion titulo="Asistencia" extra={<span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{totalAsis} clases registradas</span>}>
+      {/* ── Asistencia (con filtro por periodo) ── */}
+      <Seccion titulo="Asistencia"
+        extra={<select value={periodoAsis} onChange={e => setPeriodoAsis(e.target.value)} style={{ ...selCss, padding: '6px 10px', fontSize: 13 }}>
+          {PERIODOS_ASIS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+        </select>}>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
           {['present', 'late', 'absent'].map(k => {
             const [lbl, col] = ASIS_LABEL[k];
             return (
               <div key={k} style={{ flex: 1, minWidth: 90, padding: '8px 12px', border: '1px solid var(--line)', borderRadius: 10, background: 'var(--bg-2)' }}>
-                <div style={{ fontSize: 20, fontWeight: 800, color: col }}>{asistencia.resumen[k] || 0}</div>
+                <div style={{ fontSize: 20, fontWeight: 800, color: col }}>{resumenAsis[k]}</div>
                 <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>{lbl}</div>
               </div>
             );
           })}
         </div>
-        {asistencia.historico.length > 0 && (
-          <div style={{ display: 'grid', gap: 3, maxHeight: 180, overflowY: 'auto' }}>
-            {asistencia.historico.map((h, i) => {
-              const [lbl, col] = ASIS_LABEL[h.status] || [h.status, 'var(--ink-3)'];
-              return (
-                <div key={i} style={{ display: 'flex', gap: 8, fontSize: 12, padding: '4px 8px', borderRadius: 6, background: i % 2 ? 'transparent' : 'var(--bg-2)' }}>
-                  <span style={{ color: 'var(--ink-3)', minWidth: 90 }}>{fmtFecha(h.date)}</span>
-                  <span style={{ flex: 1 }}>{h.actividad} · {h.grupo}</span>
-                  <span style={{ fontWeight: 700, color: col }}>{lbl.replace(/s$/, '')}</span>
-                </div>
-              );
-            })}
-          </div>
-        )}
-        {!asistencia.historico.length && <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>Sin asistencia registrada todavía.</span>}
+        {asisFiltrada.length > 0
+          ? (
+            <div style={{ display: 'grid', gap: 3, maxHeight: 220, overflowY: 'auto' }}>
+              {asisFiltrada.map((h, i) => {
+                const [lbl, col] = ASIS_LABEL[h.status] || [h.status, 'var(--ink-3)'];
+                return (
+                  <div key={i} style={{ display: 'flex', gap: 8, fontSize: 12, padding: '4px 8px', borderRadius: 6, background: i % 2 ? 'transparent' : 'var(--bg-2)' }}>
+                    <span style={{ color: 'var(--ink-3)', minWidth: 90 }}>{fmtFecha(h.date)}</span>
+                    <span style={{ flex: 1 }}>{h.actividad} · {h.grupo}</span>
+                    <span style={{ fontWeight: 700, color: col }}>{lbl.replace(/s$/, '')}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )
+          : <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>
+              {asistencia.historico.length ? 'Sin registros en este periodo.' : 'Sin asistencia registrada todavía.'}
+            </span>}
       </Seccion>
 
       {/* ── Reservas activas (lista de espera) ── */}
