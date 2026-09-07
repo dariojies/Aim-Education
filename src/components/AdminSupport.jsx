@@ -11,6 +11,18 @@ const PRIORITY_LABEL = { high: 'Alta', medium: 'Media', low: 'Baja' };
 const STATUS_COLOR = { open: '#ccac00', resolved: 'var(--teal)', closed: 'var(--ink-3)' };
 const STATUS_LABEL = { open: 'Abierto', resolved: 'Resuelto', closed: 'Cerrado' };
 
+// Recurrencia de un ticket (ticket #215). Al cerrar uno recurrente, el servidor
+// genera solo el siguiente con la fecha límite corrida.
+const RECUR_OPCIONES = [['', 'No se repite'], ['diaria', 'Diaria'], ['semanal', 'Semanal'], ['quincenal', 'Quincenal'], ['mensual', 'Mensual'], ['anual', 'Anual']];
+const RECUR_LABEL = { diaria: 'Diaria', semanal: 'Semanal', quincenal: 'Quincenal', mensual: 'Mensual', anual: 'Anual' };
+
+const cabecillaCss = { margin: "0 0 8px", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--ink-3)" };
+const pillCss = (activo) => ({
+  padding: "6px 14px", borderRadius: 8, border: "1px solid var(--line)", cursor: "pointer",
+  fontSize: 12, fontWeight: 700, fontFamily: "inherit",
+  background: activo ? "var(--purple)" : "var(--bg-3)", color: activo ? "white" : "var(--ink-2)",
+});
+
 function fmtDate(str) {
   if (!str) return '—';
   return fmtFecha(str);
@@ -349,6 +361,12 @@ export function AdminSupport({ user, ticketId = null }) {
   const [submitting, setSubmitting] = useState(false);
   const [submitMsg, setSubmitMsg] = useState('');
   const [imagenAlta, setImagenAlta] = useState(null);
+  // Gestión interna al crear el ticket (ticket #214).
+  const [nuevaPrioridad, setNuevaPrioridad] = useState('low');
+  const [nuevoAsignado, setNuevoAsignado] = useState('');
+  const [nuevaFecha, setNuevaFecha] = useState('');
+  const [nuevasApps, setNuevasApps] = useState(['Aim Education']);
+  const [nuevaRecurrencia, setNuevaRecurrencia] = useState('');
 
   async function pegarEnAlta(e) {
     const f = imagenDelPortapapeles(e);
@@ -365,6 +383,7 @@ export function AdminSupport({ user, ticketId = null }) {
   const [ticketDueDate, setTicketDueDate] = useState('');
   const [ticketAssignedId, setTicketAssignedId] = useState('');
   const [ticketAppLabels, setTicketAppLabels] = useState(['Aim Education']);
+  const [ticketRecurrencia, setTicketRecurrencia] = useState('');
   const [updating, setUpdating] = useState(false);
   const [updateMsg, setUpdateMsg] = useState('');
   const [aviso, setAviso] = useState('');
@@ -431,6 +450,7 @@ export function AdminSupport({ user, ticketId = null }) {
     setTicketPriority(t.priority || 'low');
     setTicketDueDate(fmtDue(t.due_date) || '');
     setTicketAssignedId(t.assigned_to || '');
+    setTicketRecurrencia(t.recurrencia || '');
     setTicketAppLabels(Array.isArray(t.app_label) ? t.app_label : ['Aim Education']);
     setUpdateMsg('');
     setChatCanal(null);
@@ -447,6 +467,7 @@ export function AdminSupport({ user, ticketId = null }) {
       dueDate: parseInputDate(ticketDueDate),
       assignedTo: ticketAssignedId || null,
       appLabel: ticketAppLabels,
+      recurrencia: ticketRecurrencia || null,
     };
     try {
       const r = await fetch(`/api/support/${selected.id}`, {
@@ -474,12 +495,18 @@ export function AdminSupport({ user, ticketId = null }) {
         body: JSON.stringify({
           subject, description,
           adjunto: imagenAlta?.data || null, adjuntoNombre: imagenAlta?.nombre || null, adjuntoMime: imagenAlta?.mime || null,
+          priority: nuevaPrioridad,
+          assignedTo: nuevoAsignado || null,
+          dueDate: parseInputDate(nuevaFecha),
+          appLabel: nuevasApps.length ? nuevasApps : ['Aim Education'],
+          recurrencia: nuevaRecurrencia || null,
         }),
       });
       const d = await r.json();
       if (d.success) {
         setSubmitMsg('Ticket #' + d.ticketId + ' creado correctamente.');
         setSubject(''); setDescription(''); setImagenAlta(null);
+        setNuevaPrioridad('low'); setNuevoAsignado(''); setNuevaFecha(''); setNuevasApps(['Aim Education']); setNuevaRecurrencia('');
         fetchTickets();
         setTimeout(() => setActiveTab('list'), 1500);
       } else { setSubmitMsg(d.error || 'Error al crear el ticket.'); }
@@ -667,7 +694,67 @@ export function AdminSupport({ user, ticketId = null }) {
               <label>Captura (opcional)</label>
               <AdjuntarImagen imagen={imagenAlta} onImagen={setImagenAlta} onError={m => setSubmitMsg(m)} />
             </div>
-            {submitMsg && <p style={{color: submitMsg.startsWith('Ticket') ? "var(--teal)" : "var(--orange)", fontWeight: 600, fontSize: 13, marginBottom: 12}}>{submitMsg}</p>}
+
+            {/* Gestión interna al crear (ticket #214): prioridad, responsable,
+                fecha límite, apps y si se repite. */}
+            <div style={{marginTop: 6, padding: 14, background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 12, display: "grid", gap: 14}}>
+              <span style={{fontSize: 12, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--ink-3)"}}>Gestión interna</span>
+
+              <div>
+                <p style={cabecillaCss}>Prioridad</p>
+                <div style={{display: "flex", gap: 8}}>
+                  {['low','medium','high'].map(p => (
+                    <button key={p} type="button" onClick={() => setNuevaPrioridad(p)}
+                      style={{flex: 1, padding: "8px 0", borderRadius: 8, border: "1px solid var(--line)", cursor: "pointer", fontWeight: 700, fontSize: 12, fontFamily: "inherit",
+                        background: nuevaPrioridad === p ? PRIORITY_COLOR[p] : "var(--bg-3)",
+                        color: nuevaPrioridad === p ? (p === 'medium' ? '#000' : 'white') : "var(--ink-2)"}}>
+                      {PRIORITY_LABEL[p]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <p style={cabecillaCss}>Responsable</p>
+                <div style={{display: "flex", gap: 8, flexWrap: "wrap"}}>
+                  <button type="button" onClick={() => setNuevoAsignado('')}
+                    style={pillCss(!nuevoAsignado)}>Sin asignar</button>
+                  {superadmins.map(sa => (
+                    <button key={sa.id} type="button" onClick={() => setNuevoAsignado(sa.id)}
+                      style={pillCss(nuevoAsignado === sa.id)}>{sa.name} {sa.surname || ''}</button>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{display: "flex", gap: 16, flexWrap: "wrap"}}>
+                <div className="field" style={{margin: 0}}>
+                  <label>Fecha límite (DD/MM/AAAA)</label>
+                  <input placeholder="31/12/2026" value={nuevaFecha} onChange={e => setNuevaFecha(e.target.value)} style={{maxWidth: 180}} />
+                </div>
+                <div className="field" style={{margin: 0}}>
+                  <label>Se repite</label>
+                  <select value={nuevaRecurrencia} onChange={e => setNuevaRecurrencia(e.target.value)}
+                    style={{maxWidth: 180, fontFamily: "inherit", fontSize: 14, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--line)", background: "var(--bg-3)", color: "var(--ink)"}}>
+                    {RECUR_OPCIONES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <p style={cabecillaCss}>Aplicaciones</p>
+                <div style={{display: "flex", gap: 8, flexWrap: "wrap"}}>
+                  {APPS.map(app => {
+                    const sel = nuevasApps.includes(app);
+                    return (
+                      <button key={app} type="button" onClick={() => setNuevasApps(prev => sel ? prev.filter(l => l !== app) : [...prev, app])}
+                        style={pillCss(sel)}>{app}</button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {submitMsg && <p style={{color: submitMsg.startsWith('Ticket') ? "var(--teal)" : "var(--orange)", fontWeight: 600, fontSize: 13, marginBottom: 12, marginTop: 12}}>{submitMsg}</p>}
             <button type="submit" className="btn btn-gradient" disabled={submitting}>
               {submitting ? <span className="dot-loader" /> : <>Enviar ticket <I.Arrow /></>}
             </button>
@@ -800,6 +887,12 @@ export function AdminSupport({ user, ticketId = null }) {
                         <span key={l} style={{fontSize: 11, fontWeight: 700, background: "color-mix(in oklab, var(--purple) 12%, var(--bg-2))", color: "var(--purple)", padding: "2px 8px", borderRadius: 6}}>{l}</span>
                       ))}
                       <span style={{fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".08em", color: prioColor, background: `color-mix(in oklab, ${prioColor} 14%, var(--bg-2))`, padding: "2px 8px", borderRadius: 6}}>{PRIORITY_LABEL[t.priority?.toLowerCase()] || t.priority}</span>
+                      {t.recurrencia && (
+                        <span title={`Se repite: ${RECUR_LABEL[t.recurrencia] || t.recurrencia}`}
+                          style={{fontSize: 11, fontWeight: 700, color: "var(--purple)", background: "color-mix(in oklab, var(--purple) 12%, var(--bg-2))", padding: "2px 8px", borderRadius: 6}}>
+                          🔁 {RECUR_LABEL[t.recurrencia] || t.recurrencia}
+                        </span>
+                      )}
                     </div>
                     <span style={{fontSize: 11, fontWeight: 800, textTransform: "uppercase", color: STATUS_COLOR[t.status] || "var(--ink-3)", flexShrink: 0}}>
                       {STATUS_LABEL[t.status] || t.status}
@@ -1002,11 +1095,25 @@ export function AdminSupport({ user, ticketId = null }) {
                 </div>
               </div>
 
-              {/* Due date */}
-              <div className="field" style={{marginBottom: 16}}>
-                <label>Fecha límite (DD/MM/AAAA)</label>
-                <input placeholder="31/12/2026" value={ticketDueDate} onChange={e => setTicketDueDate(e.target.value)} style={{maxWidth: 200}} />
+              {/* Due date + recurrencia */}
+              <div style={{display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 16}}>
+                <div className="field" style={{margin: 0}}>
+                  <label>Fecha límite (DD/MM/AAAA)</label>
+                  <input placeholder="31/12/2026" value={ticketDueDate} onChange={e => setTicketDueDate(e.target.value)} style={{maxWidth: 180}} />
+                </div>
+                <div className="field" style={{margin: 0}}>
+                  <label>Se repite</label>
+                  <select value={ticketRecurrencia} onChange={e => setTicketRecurrencia(e.target.value)}
+                    style={{maxWidth: 180, fontFamily: "inherit", fontSize: 14, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--line)", background: "var(--bg-3)", color: "var(--ink)"}}>
+                    {RECUR_OPCIONES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                  </select>
+                </div>
               </div>
+              {ticketRecurrencia && (
+                <p style={{margin: "-6px 0 16px", fontSize: 11.5, color: "var(--ink-3)"}}>
+                  Al cerrar este ticket se creará solo el siguiente ({RECUR_LABEL[ticketRecurrencia]?.toLowerCase()}), con la fecha límite corrida.
+                </p>
+              )}
 
               {/* App labels */}
               <div style={{marginBottom: 20}}>

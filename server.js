@@ -404,6 +404,9 @@ async function initDb() {
         await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS due_date TIMESTAMP`);
         await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS assigned_to UUID REFERENCES users(user_id) ON DELETE SET NULL`);
         await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS app_label TEXT[] DEFAULT ARRAY['Aim Education']`);
+        // Recurrencia del ticket (ticket #215): cuando uno recurrente se cierra,
+        // se genera solo el siguiente con la fecha límite corrida.
+        await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS recurrencia VARCHAR(20)`);
         await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS dev_role VARCHAR(50) DEFAULT 'student'`);
 
         // Eventos y talleres del club (propio de aim-education).
@@ -7533,6 +7536,21 @@ app.get('/noticias/:slug', (req, res) => {
 // SUPPORT TICKET ROUTES
 // =============================================================================
 
+const RECURRENCIAS = ['diaria', 'semanal', 'quincenal', 'mensual', 'anual'];
+// La siguiente fecha de un ticket recurrente, corriendo desde la que tenía (o
+// desde hoy si no tenía). Devuelve una fecha o null si la recurrencia no vale.
+function siguienteFechaRecurrente(base, recurrencia) {
+    if (!RECURRENCIAS.includes(recurrencia)) return null;
+    const d = base ? new Date(base) : new Date();
+    if (isNaN(d)) return null;
+    if (recurrencia === 'diaria') d.setDate(d.getDate() + 1);
+    else if (recurrencia === 'semanal') d.setDate(d.getDate() + 7);
+    else if (recurrencia === 'quincenal') d.setDate(d.getDate() + 14);
+    else if (recurrencia === 'mensual') d.setMonth(d.getMonth() + 1);
+    else if (recurrencia === 'anual') d.setFullYear(d.getFullYear() + 1);
+    return d;
+}
+
 app.post('/api/support', authenticateSession, async (req, res) => {
     const { subject, description, adjunto, adjuntoNombre, adjuntoMime } = req.body;
     const userId = req.userSession.userId;
@@ -7542,11 +7560,24 @@ app.post('/api/support', authenticateSession, async (req, res) => {
         return res.status(400).json({ error: 'El adjunto debe ser una imagen.' });
     }
     if (adjunto && adjunto.length > 4_400_000) return res.status(400).json({ error: 'La imagen no puede pasar de 3 MB.' });
+    // La prioridad, el responsable, la fecha límite, las apps y la recurrencia
+    // son gestión interna (ticket #214): solo las pone el personal del club. A una
+    // familia se le ignoran y el ticket entra con los valores por defecto.
+    const staff = !!req.userSession.canAccessAdmin;
+    const b = req.body || {};
+    const priority = staff && ['low', 'medium', 'high'].includes(b.priority) ? b.priority : 'low';
+    const assignedTo = staff && b.assignedTo ? b.assignedTo : null;
+    const dueDate = staff && b.dueDate ? b.dueDate : null;
+    const appLabel = staff && Array.isArray(b.appLabel) && b.appLabel.length ? b.appLabel : ['Aim Education'];
+    const recurrencia = staff && RECURRENCIAS.includes(b.recurrencia) ? b.recurrencia : null;
     try {
         const result = await pool.query(
-            `INSERT INTO tickets_registrosoporte (user_id, subject, description, app_label, adjunto, adjunto_nombre, adjunto_mime)
-             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-            [userId, subject, description, ['Aim Education'], adjunto || null, adjuntoNombre || null, adjuntoMime || null]
+            `INSERT INTO tickets_registrosoporte
+               (user_id, subject, description, app_label, adjunto, adjunto_nombre, adjunto_mime,
+                priority, assigned_to, due_date, recurrencia)
+             VALUES ($1,$2,$3,$4::TEXT[],$5,$6,$7,$8,$9,$10::date,$11) RETURNING id`,
+            [userId, subject, description, appLabel, adjunto || null, adjuntoNombre || null, adjuntoMime || null,
+             priority, assignedTo, dueDate, recurrencia]
         );
         const ticketId = result.rows[0].id;
         if (mailTransporter) {
@@ -7577,7 +7608,7 @@ app.get('/api/support', authenticateSession, async (req, res) => {
         // s.* el listado entero se llevaría todas las capturas por delante.
         const result = await pool.query(`
             SELECT s.id, s.user_id, s.subject, s.description, s.status, s.priority,
-                   s.due_date, s.assigned_to, s.app_label, s.dev_response, s.email_sent,
+                   s.due_date, s.assigned_to, s.app_label, s.dev_response, s.email_sent, s.recurrencia,
                    s.created_at, s.updated_at, s.resolved_at, s.vinculo_id,
                    (s.adjunto IS NOT NULL) AS tiene_adjunto,
                    COALESCE(u.name, 'Admin') as name,
@@ -7612,27 +7643,58 @@ app.put('/api/support/:id', authenticateSession, async (req, res) => {
     }
     const { status, devResponse, priority, dueDate, assignedTo, appLabel } = req.body;
     const finalAppLabels = Array.isArray(appLabel) ? appLabel : (appLabel ? [appLabel] : ['Aim Education']);
+    const client = await pool.connect();
     try {
+        await client.query('BEGIN');
+        const prev = await client.query(
+            `SELECT user_id, subject, description, due_date, recurrencia FROM tickets_registrosoporte WHERE id = $1 FOR UPDATE`,
+            [req.params.id]);
+        if (!prev.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Ese ticket no existe.' }); }
+        const p = prev.rows[0];
         const nuevoEstado = status || 'open';
+        const esFinal = ['resolved', 'closed'].includes(nuevoEstado);
+        // Recurrencia efectiva: la que venga en la petición o la que ya tenía.
+        const recEfectiva = req.body.recurrencia !== undefined
+            ? (RECURRENCIAS.includes(req.body.recurrencia) ? req.body.recurrencia : null)
+            : (p.recurrencia || null);
+        // Al cerrar/resolver un ticket recurrente se genera el siguiente y este
+        // deja de ser recurrente, para no volver a generarlo si se reabre y cierra.
+        const generar = esFinal && !!recEfectiva;
+        const recGuardar = generar ? null : recEfectiva;
+
         // resolved_at se sella la primera vez que pasa a resuelto/cerrado y se borra
         // si vuelve a abrirse, para que "cuánto tardó" siga siendo cierto. El estado
         // final va como booleano aparte: reusar $1 dentro del CASE deja a Postgres sin
         // poder deducir su tipo.
-        const esFinal = ['resolved', 'closed'].includes(nuevoEstado);
-        await pool.query(
+        await client.query(
             `UPDATE tickets_registrosoporte
              SET status = $1, dev_response = $2, priority = $3,
                  due_date = $4, assigned_to = $5, app_label = $6::TEXT[],
-                 updated_at = NOW(),
+                 recurrencia = $9, updated_at = NOW(),
                  resolved_at = CASE WHEN $8 THEN COALESCE(resolved_at, NOW()) ELSE NULL END
              WHERE id = $7`,
-            [nuevoEstado, devResponse || '', priority || 'low', dueDate || null, assignedTo || null, finalAppLabels, req.params.id, esFinal]
+            [nuevoEstado, devResponse || '', priority || 'low', dueDate || null, assignedTo || null,
+             finalAppLabels, req.params.id, esFinal, recGuardar]
         );
-        res.json({ success: true });
+
+        let siguienteId = null;
+        if (generar) {
+            const sig = siguienteFechaRecurrente(dueDate || p.due_date, recEfectiva);
+            const nuevo = await client.query(
+                `INSERT INTO tickets_registrosoporte
+                   (user_id, subject, description, app_label, priority, assigned_to, due_date, recurrencia)
+                 VALUES ($1,$2,$3,$4::TEXT[],$5,$6,$7,$8) RETURNING id`,
+                [p.user_id, p.subject, p.description, finalAppLabels, priority || 'low',
+                 assignedTo || null, sig ? sig.toISOString() : null, recEfectiva]);
+            siguienteId = nuevo.rows[0].id;
+        }
+        await client.query('COMMIT');
+        res.json({ success: true, siguienteId });
     } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
         console.error('[SUPPORT] Update error:', err);
         res.status(500).json({ error: 'Error al actualizar el ticket.' });
-    }
+    } finally { client.release(); }
 });
 
 // ── Conversación de un ticket ──────────────────────────────────────────────
