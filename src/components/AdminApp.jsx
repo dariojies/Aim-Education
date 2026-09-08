@@ -3523,6 +3523,9 @@ function SortToggle({ value, onChange }) {
 // FACTURACIÓN — catálogo, temporadas y fichas
 // =============================================================================
 
+// Concepto del catálogo con el que se registran los anticipos (ticket #221).
+const ANTICIPO_CONCEPTO = '01000';
+
 // TPV / Cobro: buscar familia → cesta de cargos → cobrar → ticket.
 function BillingTPV({ showToast }) {
   const [q, setQ] = useState('');
@@ -3539,6 +3542,8 @@ function BillingTPV({ showToast }) {
   const [cobrando, setCobrando] = useState(false);
   const [ticket, setTicket] = useState(null);
   const [addExtra, setAddExtra] = useState(null);      // { clienteId, concepto }
+  const [addAnticipo, setAddAnticipo] = useState(null);// { clienteId, importe, motivo } (registrar anticipo)
+  const [aplicarAnt, setAplicarAnt] = useState({});    // anticipoId -> { on, importe } (aplicar anticipos)
 
   useEffect(() => {
     fetch('/api/admin/billing/precios', { credentials: 'include' }).then(r => r.ok ? r.json() : []).then(setPrecios).catch(() => { });
@@ -3573,7 +3578,7 @@ function BillingTPV({ showToast }) {
   }, []);
 
   async function elegirPagador(p) {
-    setPagador(p); setResultados([]); setQ(''); setExtras([]); setTicket(null); setEntregado('');
+    setPagador(p); setResultados([]); setQ(''); setExtras([]); setTicket(null); setEntregado(''); setAplicarAnt({}); setAddAnticipo(null);
     await traerCesta(p.id, true);
   }
 
@@ -3585,9 +3590,15 @@ function BillingTPV({ showToast }) {
   const lineasActivas = cesta ? cesta.cargos.filter(c => sel[c.id]?.on).map(c => ({
     ...c, descuentoPct: Number(sel[c.id].descuentoPct) || 0,
   })) : [];
+  // Anticipos que se van a aplicar: cada uno resta del total (línea negativa).
+  const anticiposDisp = cesta?.anticipos || [];
+  const antAplicados = anticiposDisp
+    .map(a => ({ a, imp: aplicarAnt[a.id]?.on ? Math.min(Number(aplicarAnt[a.id]?.importe) || 0, a.saldo) : 0 }))
+    .filter(x => x.imp > 0);
   const lineasMotor = [
     ...lineasActivas.map(c => ({ concepto: c.concepto, descripcion: c.descripcion, tipo: c.tipo, mes: c.mes, precio: c.precio, ivaPct: c.ivaPct, descuentoPct: c.descuentoPct })),
     ...extras.map(e => ({ concepto: e.concepto, descripcion: e.descripcion, tipo: e.tipo, mes: e.mes || (new Date().toISOString().slice(0, 7) + '-01'), precio: e.precio, ivaPct: e.ivaPct, descuentoPct: Number(e.descuentoPct) || 0 })),
+    ...antAplicados.map(x => ({ concepto: ANTICIPO_CONCEPTO, descripcion: `Anticipo aplicado${x.a.motivo ? ` — ${x.a.motivo}` : ''}`, tipo: 'Otros', mes: new Date().toISOString().slice(0, 7) + '-01', precio: -x.imp, ivaPct: 0, descuentoPct: 0 })),
   ];
 
   // Recalcular totales en el servidor cuando cambian líneas/descuentos/extras.
@@ -3612,12 +3623,13 @@ function BillingTPV({ showToast }) {
         body: JSON.stringify({
           pagadorId: pagadorFactura || pagador.id,
           lineas: lineasActivas.map(c => ({ cargoId: c.id, descuentoPct: c.descuentoPct })),
-          extras: extras.map(e => ({ clienteId: e.clienteId, concepto: e.concepto, descuentoPct: Number(e.descuentoPct) || 0, mes: e.mes || null })),
+          extras: extras.map(e => ({ clienteId: e.clienteId, concepto: e.concepto, descuentoPct: Number(e.descuentoPct) || 0, mes: e.mes || null, importe: e.concepto === ANTICIPO_CONCEPTO ? e.precio : undefined, motivo: e.concepto === ANTICIPO_CONCEPTO ? (e.motivo || '') : undefined })),
+          anticipos: antAplicados.map(x => ({ id: x.a.id, importe: x.imp })),
           medioPago,
           entregado: medioPago === 'efectivo' ? (Number(entregado) || total) : total,
         }),
       });
-      if (r.ok) { const d = await r.json(); setTicket(d); showToast?.(`Recibo #${d.recibo.numero} cobrado.`); setPagador(null); setCesta(null); setExtras([]); }
+      if (r.ok) { const d = await r.json(); setTicket(d); showToast?.(`Recibo #${d.recibo.numero} cobrado.`); setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null); }
       else { const d = await r.json(); alert(d.error || 'Error al cobrar.'); }
     } catch { alert('Error de conexión.'); }
     finally { setCobrando(false); }
@@ -3690,7 +3702,7 @@ function BillingTPV({ showToast }) {
                 {pagador.esMenor && <span style={{ color: 'var(--orange)', fontWeight: 700 }}> · ⚠ el pagador es menor</span>}
               </div>
             </div>
-            <button className="btn btn-sm btn-outline" style={{ marginLeft: 'auto' }} onClick={() => { setPagador(null); setCesta(null); setExtras([]); }}>Cambiar</button>
+            <button className="btn btn-sm btn-outline" style={{ marginLeft: 'auto' }} onClick={() => { setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null); }}>Cambiar</button>
           </div>
 
           {/* Menor de edad: la factura debe ir a un adulto de la familia (#219). */}
@@ -3738,7 +3750,7 @@ function BillingTPV({ showToast }) {
               ))}
               {extras.map(e => (
                 <div key={e.key} style={{ display: 'flex', gap: 10, alignItems: 'center', background: 'color-mix(in oklab, var(--purple) 6%, var(--bg-2))', border: '1px solid var(--line)', borderRadius: 12, padding: '10px 14px' }}>
-                  <span style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', color: 'var(--purple)' }}>Extra</span>
+                  <span style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', color: 'var(--purple)' }}>{e.concepto === ANTICIPO_CONCEPTO ? 'Anticipo' : 'Extra'}</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 700, fontSize: 14 }}>{e.descripcion} <span style={{ color: 'var(--ink-3)', fontWeight: 500, fontSize: 12 }}>· {e.nombre}</span></div>
                     <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
@@ -3773,7 +3785,7 @@ function BillingTPV({ showToast }) {
                   </select>
                   <select value={addExtra.concepto} onChange={e => setAddExtra(a => ({ ...a, concepto: e.target.value }))} required style={{ fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
                     <option value="">Concepto...</option>
-                    {precios.map(p => <option key={p.concepto} value={p.concepto}>{p.descripcion} ({eur(p.precio)})</option>)}
+                    {precios.filter(p => p.concepto !== ANTICIPO_CONCEPTO).map(p => <option key={p.concepto} value={p.concepto}>{p.descripcion} ({eur(p.precio)})</option>)}
                   </select>
                   {/* Una mensualidad se cobra a un mes concreto: si no, al generar
                       ese mes se cobraría dos veces (ticket #220). */}
@@ -3791,6 +3803,67 @@ function BillingTPV({ showToast }) {
                 <button className="btn btn-sm btn-outline" style={{ justifySelf: 'start' }} onClick={() => setAddExtra({ clienteId: pagador.id, concepto: '' })}>
                   <I.Plus /> Añadir concepto (material, etc.)
                 </button>
+              )}
+
+              {/* Registrar un anticipo: importe a mano + motivo (ticket #221). El
+                  dinero entra ahora y queda como saldo para aplicarlo más tarde. */}
+              {addAnticipo ? (
+                <form style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', background: 'color-mix(in oklab, var(--purple) 6%, var(--bg-3))', border: '1px solid var(--line)', borderRadius: 12, padding: 12 }}
+                  onSubmit={ev => {
+                    ev.preventDefault();
+                    const persona = family.find(f => f.id === addAnticipo.clienteId) || pagador;
+                    const imp = Math.round((Number(addAnticipo.importe) + Number.EPSILON) * 100) / 100;
+                    if (!persona || !(imp > 0)) return;
+                    const motivo = (addAnticipo.motivo || '').trim();
+                    setExtras(x => [...x, { key: Math.random().toString(36).slice(2), clienteId: persona.id, nombre: persona.nombre, concepto: ANTICIPO_CONCEPTO, descripcion: motivo ? `Anticipo — ${motivo}` : 'Anticipo', precio: imp, ivaPct: 0, tipo: 'Otros', descuentoPct: 0, mes: null, motivo }]);
+                    setAddAnticipo(null);
+                  }}>
+                  <select value={addAnticipo.clienteId} onChange={e => setAddAnticipo(a => ({ ...a, clienteId: e.target.value }))} required style={{ fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
+                    <option value="">¿Para quién?...</option>
+                    {family.map(f => <option key={f.id} value={f.id}>{f.nombre} {f.apellidos}</option>)}
+                  </select>
+                  <input type="number" step="0.01" min="0" placeholder="Importe €" value={addAnticipo.importe || ''} onChange={e => setAddAnticipo(a => ({ ...a, importe: e.target.value }))}
+                    required style={{ width: 110, fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }} />
+                  <input type="text" placeholder="Motivo / referencia (p. ej. campamento)" value={addAnticipo.motivo || ''} onChange={e => setAddAnticipo(a => ({ ...a, motivo: e.target.value }))}
+                    style={{ flex: 1, minWidth: 160, fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }} />
+                  <button className="btn btn-sm btn-primary" type="submit" disabled={!addAnticipo.clienteId || !(Number(addAnticipo.importe) > 0)}>Añadir anticipo</button>
+                  <button className="btn btn-sm btn-outline" type="button" onClick={() => setAddAnticipo(null)}>Cancelar</button>
+                </form>
+              ) : (
+                <button className="btn btn-sm btn-outline" style={{ justifySelf: 'start' }} onClick={() => setAddAnticipo({ clienteId: pagador.id, importe: '', motivo: '' })}>
+                  <I.Plus /> Registrar anticipo (pago a cuenta)
+                </button>
+              )}
+
+              {/* Anticipos ya guardados de la familia: se pueden aplicar ahora,
+                  restándolos del total (el dinero ya entró; ticket #221). */}
+              {anticiposDisp.length > 0 && (
+                <div style={{ display: 'grid', gap: 8, marginTop: 4, padding: '12px 14px', background: 'color-mix(in oklab, var(--teal) 7%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--teal) 30%, var(--line))', borderRadius: 12 }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--teal)', textTransform: 'uppercase', letterSpacing: '.02em' }}>Anticipos disponibles</div>
+                  {anticiposDisp.map(a => {
+                    const st = aplicarAnt[a.id] || { on: false, importe: a.saldo };
+                    return (
+                      <div key={a.id} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <input type="checkbox" checked={!!st.on} onChange={e => setAplicarAnt(m => ({ ...m, [a.id]: { on: e.target.checked, importe: m[a.id]?.importe ?? a.saldo } }))} style={{ width: 18, height: 18, accentColor: 'var(--teal)' }} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 700, fontSize: 13 }}>{a.motivo || 'Anticipo'} <span style={{ color: 'var(--ink-3)', fontWeight: 500, fontSize: 12 }}>· {a.nombre}</span></div>
+                          <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>Saldo disponible: {eur(a.saldo)}{a.importe !== a.saldo ? ` (de ${eur(a.importe)})` : ''}</div>
+                        </div>
+                        {st.on && (
+                          <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 12, color: 'var(--ink-3)' }}>
+                            aplicar €
+                            <input type="number" step="0.01" min="0" max={a.saldo} value={st.importe ?? a.saldo}
+                              onChange={e => setAplicarAnt(m => ({ ...m, [a.id]: { on: true, importe: e.target.value } }))}
+                              style={{ width: 76, padding: '4px 6px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontSize: 13, textAlign: 'right' }} />
+                          </label>
+                        )}
+                        <div style={{ fontWeight: 800, fontFamily: 'var(--font-display)', minWidth: 66, textAlign: 'right', color: st.on ? 'var(--teal)' : 'var(--ink-3)' }}>
+                          {st.on ? `−${eur(Math.min(Number(st.importe) || 0, a.saldo))}` : eur(0)}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
 

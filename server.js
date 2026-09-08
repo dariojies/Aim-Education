@@ -884,6 +884,40 @@ async function initDb() {
             `CREATE UNIQUE INDEX IF NOT EXISTS uq_tpv_mandato_activo
              ON aim_tpv_mandatos (pagador_id) WHERE estado = 'activo'`);
 
+        // Anticipos (ticket #221): pagos a cuenta que la familia deja por
+        // adelantado (p. ej. reserva de campamento). Se cobran como un cargo
+        // normal —entra el dinero y cuenta en el arqueo del día— y además se
+        // anotan aquí con su saldo disponible. Más tarde se aplican a un cobro
+        // definitivo restándolos, sin volver a contar el dinero (el recibo
+        // definitivo cobra solo la diferencia). 'saldo' baja según se gasta.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_anticipos (
+                id SERIAL PRIMARY KEY,
+                cliente_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                importe NUMERIC(10,2) NOT NULL,
+                saldo NUMERIC(10,2) NOT NULL,
+                motivo TEXT,
+                recibo_origen_id INTEGER REFERENCES aim_recibos(id) ON DELETE SET NULL,
+                estado VARCHAR(20) NOT NULL DEFAULT 'disponible',
+                created_by UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_anticipos_cliente ON aim_anticipos (cliente_id) WHERE estado = 'disponible'`);
+        // Ledger de aplicaciones: qué anticipo se gastó, en qué recibo y cuánto.
+        // Permite aplicar un anticipo en varias veces y deja rastro de auditoría.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_anticipos_aplicaciones (
+                id SERIAL PRIMARY KEY,
+                anticipo_id INTEGER NOT NULL REFERENCES aim_anticipos(id) ON DELETE CASCADE,
+                recibo_id INTEGER REFERENCES aim_recibos(id) ON DELETE SET NULL,
+                cargo_id INTEGER REFERENCES aim_cargos(id) ON DELETE SET NULL,
+                importe NUMERIC(10,2) NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_anticipos_aplic_anticipo ON aim_anticipos_aplicaciones (anticipo_id)`);
+
         // Anulación de recibos: nunca se borran, se marcan (rastro de auditoría).
         await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_motivo TEXT`);
         await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_por UUID REFERENCES users(user_id) ON DELETE SET NULL`);
@@ -5283,6 +5317,8 @@ const MEDIOS_PAGO = ['tarjeta', 'bizum', 'efectivo', 'transferencia'];
 // Los pagos por la web llevan su propio medio para distinguirlos del datáfono
 // del mostrador: no entran en el arqueo de caja del día.
 const MEDIO_TPV_ONLINE = 'tpv_online';
+// Concepto del catálogo con el que se registran los anticipos (ticket #221).
+const ANTICIPO_CONCEPTO = '01000';
 
 function edadDe(birthday) {
     if (!birthday) return null;
@@ -5352,6 +5388,14 @@ app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async
             `SELECT user_id, name, surname, birthday FROM users WHERE user_id = ANY($1::uuid[]) ORDER BY birthday NULLS FIRST`,
             [fam]
         );
+        // Anticipos disponibles de la familia, para poder aplicarlos (ticket #221).
+        const anticipos = await pool.query(
+            `SELECT a.id, a.cliente_id, a.importe, a.saldo, a.motivo, a.created_at, u.name, u.surname
+             FROM aim_anticipos a JOIN users u ON u.user_id = a.cliente_id
+             WHERE a.cliente_id = ANY($1::uuid[]) AND a.estado = 'disponible' AND a.saldo > 0
+             ORDER BY a.created_at`,
+            [fam]
+        );
         const preview = calcularRecibo(cargos.rows.map(cargoParaMotor));
         res.set('Cache-Control', 'no-store');
         res.json({
@@ -5359,6 +5403,10 @@ app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async
                 const edad = edadDe(u.birthday);
                 return { id: u.user_id, nombre: u.name, apellidos: u.surname, edad, esMenor: edad != null && edad < 18 };
             }),
+            anticipos: anticipos.rows.map(a => ({
+                id: a.id, clienteId: a.cliente_id, nombre: a.name, apellidos: a.surname,
+                importe: Number(a.importe), saldo: Number(a.saldo), motivo: a.motivo, fecha: a.created_at,
+            })),
             cargos: cargos.rows.map(c => ({
                 id: c.id, clienteId: c.cliente_id, nombre: c.name, apellidos: c.surname,
                 concepto: c.concepto, descripcion: c.descripcion, tipo: c.tipo, mes: c.mes,
@@ -5375,7 +5423,7 @@ app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async
 // Cobrar: crea el recibo, congela los cargos y devuelve el ticket. El importe
 // se calcula SIEMPRE en el servidor (nunca se confía en el cliente).
 app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, async (req, res) => {
-    const { pagadorId, lineas, extras, medioPago, entregado } = req.body;
+    const { pagadorId, lineas, extras, anticipos, medioPago, entregado } = req.body;
     if (!pagadorId) return res.status(400).json({ error: 'Falta el pagador.' });
     if (!MEDIOS_PAGO.includes(medioPago)) return res.status(400).json({ error: 'Medio de pago no válido.' });
     // La factura no puede ir a nombre de un menor (#219): tiene que emitirse a un
@@ -5389,6 +5437,7 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
     }
     const idsSel = Array.isArray(lineas) ? lineas.map(l => l.cargoId).filter(Boolean) : [];
     const extrasArr = Array.isArray(extras) ? extras : [];
+    const anticiposArr = Array.isArray(anticipos) ? anticipos.filter(a => a && a.id && Number(a.importe) > 0) : [];
     if (idsSel.length === 0 && extrasArr.length === 0) return res.status(400).json({ error: 'No hay nada que cobrar.' });
 
     const client = await pool.connect();
@@ -5407,7 +5456,28 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
         // 2) Crear cargos "extra" (venta al momento: material, etc.).
         const mesActual = new Date().toISOString().slice(0, 7) + '-01';
         const extraIds = [];
+        // Anticipos que se registran nuevos en este cobro (ticket #221): se cobran
+        // como un cargo normal y luego se anotan en aim_anticipos con su saldo.
+        const anticiposNuevos = [];   // { cargoId, importe, motivo, clienteId }
         for (const ex of extrasArr) {
+            // Anticipo (#221): importe MANUAL escrito a mano + motivo. Es el único
+            // caso en que el importe lo pone quien cobra; para todo lo demás manda
+            // el precio del catálogo (nunca se confía en el importe del cliente).
+            if (ex.concepto === ANTICIPO_CONCEPTO) {
+                const imp = r2Server(Number(ex.importe));
+                if (!(imp > 0)) throw { httP: 400, msg: 'El anticipo necesita un importe mayor que 0 €.' };
+                const motivo = (ex.motivo || '').toString().trim().slice(0, 200);
+                const clienteAnt = ex.clienteId || pagadorId;
+                const desc = motivo ? `Anticipo — ${motivo}` : 'Anticipo';
+                const ins = await client.query(
+                    `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado, origen, actividad)
+                     VALUES ($1,$2,$3::date,$4,'Otros',$5,0,0,'pendiente','anticipo',NULL) RETURNING id`,
+                    [clienteAnt, ANTICIPO_CONCEPTO, mesActual, desc, imp]
+                );
+                extraIds.push(ins.rows[0].id);
+                anticiposNuevos.push({ cargoId: ins.rows[0].id, importe: imp, motivo, clienteId: clienteAnt });
+                continue;
+            }
             const pr = await client.query(`SELECT descripcion, tipo, precio, iva_pct FROM aim_precios WHERE concepto = $1 AND activo = true`, [ex.concepto]);
             if (pr.rowCount === 0) throw { httP: 400, msg: `Concepto no válido: ${ex.concepto}` };
             const p = pr.rows[0];
@@ -5428,6 +5498,35 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
                 [ex.clienteId || pagadorId, ex.concepto, mesCargo, p.descripcion, p.tipo, p.precio, p.iva_pct, d, act]
             );
             extraIds.push(ins.rows[0].id);
+        }
+
+        // 2b) Aplicar anticipos ya guardados (ticket #221): cada uno entra como
+        // una línea NEGATIVA que resta del total (el dinero ya se cobró el día
+        // que se dejó el anticipo, así que aquí solo se cobra la diferencia y no
+        // se cuenta dos veces). Se bloquea la fila y se valida saldo y familia.
+        const aplicaciones = [];   // { cargoId, anticipoId, importe }
+        if (anticiposArr.length) {
+            const fam = await familiaIds(pagadorId);
+            for (const ap of anticiposArr) {
+                const imp = r2Server(Number(ap.importe));
+                if (!(imp > 0)) throw { httP: 400, msg: 'Importe de anticipo no válido.' };
+                const a = await client.query(
+                    `SELECT id, cliente_id, saldo, motivo FROM aim_anticipos
+                     WHERE id = $1 AND cliente_id = ANY($2::uuid[]) AND estado = 'disponible' FOR UPDATE`,
+                    [ap.id, fam]
+                );
+                if (a.rowCount === 0) throw { httP: 409, msg: 'Un anticipo ya no está disponible. Refresca e inténtalo de nuevo.' };
+                const saldo = Number(a.rows[0].saldo);
+                if (imp > r2Server(saldo) + 0.005) throw { httP: 400, msg: `El anticipo no tiene saldo suficiente (quedan ${r2Server(saldo)} €).` };
+                const motivo = a.rows[0].motivo ? ` — ${a.rows[0].motivo}` : '';
+                const ins = await client.query(
+                    `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado, origen, actividad)
+                     VALUES ($1,$2,$3::date,$4,'Otros',$5,0,0,'pendiente','anticipo_aplic',NULL) RETURNING id`,
+                    [a.rows[0].cliente_id, ANTICIPO_CONCEPTO, mesActual, `Anticipo aplicado${motivo}`, -imp]
+                );
+                extraIds.push(ins.rows[0].id);
+                aplicaciones.push({ cargoId: ins.rows[0].id, anticipoId: a.rows[0].id, importe: imp });
+            }
         }
 
         // 3) Cargar todos los cargos a cobrar (bloqueados), validando estado.
@@ -5459,9 +5558,11 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
             throw { httP: 409, msg: 'Alguno de esos recibos acaba de cobrarse. La lista ya se ha puesto al día.' };
         }
 
-        // 4) Calcular importes (autoritativo).
+        // 4) Calcular importes (autoritativo). Las líneas de anticipo aplicado ya
+        // van dentro (negativas), así que 'total' es lo que se cobra de verdad.
         const calc = calcularRecibo(cs.rows.map(cargoParaMotor));
         const total = calc.total;
+        if (total < 0) throw { httP: 400, msg: 'Los anticipos aplicados superan el importe a cobrar. Ajusta el importe a aplicar.' };
         const entregadoNum = medioPago === 'efectivo' ? (Number(entregado) || total) : total;
         const cambio = r2Server(entregadoNum - total);
         if (cambio < 0) throw { httP: 400, msg: 'El importe entregado es menor que el total.' };
@@ -5480,6 +5581,31 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
             await client.query(
                 `UPDATE aim_cargos SET recibo_id = $1, descuento_mens_pct = $2, importe = $3, estado = 'cobrado' WHERE id = $4`,
                 [reciboId, d.descuentoMensPct, d.base, d.id]
+            );
+        }
+
+        // 6b) Anticipos (ticket #221): anotar los nuevos con su saldo y descontar
+        // de los aplicados, dejando rastro en el ledger para no contarlos dos veces.
+        for (const n of anticiposNuevos) {
+            await client.query(
+                `INSERT INTO aim_anticipos (cliente_id, importe, saldo, motivo, recibo_origen_id, estado, created_by)
+                 VALUES ($1,$2,$2,$3,$4,'disponible',$5)`,
+                [n.clienteId, n.importe, n.motivo || null, reciboId, req.userSession.userId]
+            );
+        }
+        for (const ap of aplicaciones) {
+            const upd = await client.query(
+                `UPDATE aim_anticipos
+                    SET saldo = saldo - $2,
+                        estado = CASE WHEN saldo - $2 <= 0.005 THEN 'consumido' ELSE 'disponible' END
+                  WHERE id = $1 RETURNING saldo`,
+                [ap.anticipoId, ap.importe]
+            );
+            if (!upd.rowCount || Number(upd.rows[0].saldo) < -0.005) throw { httP: 409, msg: 'El saldo de un anticipo cambió mientras se cobraba. Refresca e inténtalo de nuevo.' };
+            await client.query(
+                `INSERT INTO aim_anticipos_aplicaciones (anticipo_id, recibo_id, cargo_id, importe)
+                 VALUES ($1,$2,$3,$4)`,
+                [ap.anticipoId, reciboId, ap.cargoId, ap.importe]
             );
         }
 
