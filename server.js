@@ -1363,7 +1363,10 @@ app.get('/api/users', authenticateSession, async (req, res) => {
                               AND f.tipo IN ('Padre','Madre','Tutor/a','Cónyuge')) AS es_tutor,
                     -- #219 (8): tiene al menos una actividad activa (matrícula/
                     -- inscripción vigente). Si no, está inactivo.
-                    EXISTS (SELECT 1 FROM tul_group_students gs WHERE gs.student_id = u.user_id) AS activo
+                    EXISTS (SELECT 1 FROM tul_group_students gs WHERE gs.student_id = u.user_id) AS activo,
+                    -- Tiene foto de perfil (para pintarla en la lista sin cargar
+                    -- el base64 entero de cada persona).
+                    (u.profile_picture IS NOT NULL) AS tiene_foto
              FROM users u
              WHERE u.club_id = $1 AND u.role IN ('student', 'instructor', 'club_owner', 'superadmin')
              ORDER BY u.name, u.surname`,
@@ -1383,6 +1386,7 @@ app.get('/api/users', authenticateSession, async (req, res) => {
                 esInstructor,
                 esTutor,
                 activo: !!u.activo,
+                tieneFoto: !!u.tiene_foto,
                 isSuperAdmin: (u.dev_role === 'superadmin' || u.role === 'superadmin' || u.role === 'SuperAdmin'),
             };
         });
@@ -1416,6 +1420,29 @@ app.get('/api/users/:id', authenticateSession, requireAdmin, async (req, res) =>
             isSuperAdmin: (u.dev_role === 'superadmin' || u.role === 'superadmin'),
         });
     } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// La foto de perfil servida como imagen, no como base64 dentro del JSON: así el
+// listado de alumnos puede enseñarla (con <img>) sin cargar cientos de KB por
+// persona en la lista. Se cachea en el navegador un rato.
+app.get('/api/users/:id/avatar', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT profile_picture FROM users WHERE user_id = $1 AND club_id = $2`,
+            [req.params.id, AIM_CLUB_ID]);
+        const pic = r.rows[0]?.profile_picture;
+        if (!pic) return res.status(404).end();
+        const m = /^data:([^;,]+)(;base64)?,([\s\S]*)$/.exec(pic);
+        if (m) {
+            const buf = Buffer.from(m[3], m[2] ? 'base64' : 'utf8');
+            res.setHeader('Content-Type', m[1] || 'image/jpeg');
+            res.setHeader('Cache-Control', 'private, max-age=3600');
+            return res.end(buf);
+        }
+        // Si no es un data URL, es una URL normal: se manda ahí.
+        if (/^https?:\/\//.test(pic)) return res.redirect(pic);
+        return res.status(404).end();
+    } catch (err) { console.error('[AVATAR]', err.message); res.status(500).end(); }
 });
 
 app.post('/api/users', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {

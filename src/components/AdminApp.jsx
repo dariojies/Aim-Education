@@ -529,8 +529,11 @@ function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos }) {
           <div key={u.id} className="data-table-row" style={{ gridTemplateColumns: "32px 2.1fr 1.9fr 1.4fr 1.1fr 100px" }}>
             <input type="checkbox" style={{ accentColor: "var(--purple)" }} />
             <div className="cell-user">
-              <div className="avatar" style={{ background: "var(--grad-aim)" }}>
-                {(u.firstName?.[0] || u.email?.[0] || "?").toUpperCase()}
+              <div className="avatar" style={{ background: "var(--grad-aim)", overflow: "hidden" }}>
+                {u.tieneFoto
+                  ? <img src={`/api/users/${u.id}/avatar`} alt="" loading="lazy"
+                      style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  : (u.firstName?.[0] || u.email?.[0] || "?").toUpperCase()}
               </div>
               <div>
                 <div className="pri">{u.firstName || ""} {u.lastName || ""}</div>
