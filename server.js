@@ -6142,11 +6142,25 @@ app.post('/api/me/pagos/iniciar', authenticateSession, async (req, res) => {
             return res.status(400).json({ error: 'El importe a pagar es cero.' });
         }
 
+        // #219 (3): la factura no puede salir a nombre de un menor. Si quien paga
+        // es menor de edad, se emite a su responsable adulto (madre, padre o
+        // tutor/a). Si no consta ninguno, no se deja pagar.
+        let pagadorFactura = me;
+        const yo = (await client.query(`SELECT birthday FROM users WHERE user_id = $1`, [me])).rows[0];
+        if (edadDe(yo?.birthday) != null && edadDe(yo.birthday) < 18) {
+            const adulto = await pagadorDe(client, me);
+            if (!adulto || adulto === me) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ error: 'La factura no puede ir a nombre de un menor. Pide al club que asocie a un adulto responsable (madre, padre o tutor/a) a la familia.' });
+            }
+            pagadorFactura = adulto;
+        }
+
         const concepto = calc.detalle.map(d => d.descripcion).join(', ').slice(0, 120) || 'AIM Education';
         const ins = await client.query(
             `INSERT INTO aim_tpv_pagos (pagador_id, importe, concepto, cargo_ids, entorno)
              VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-            [me, calc.total, concepto, cs.rows.map(c => c.id), cfg.entorno]
+            [pagadorFactura, calc.total, concepto, cs.rows.map(c => c.id), cfg.entorno]
         );
         const pagoId = ins.rows[0].id;
         // El número de pedido sale del id, así que no puede repetirse ni con dos
@@ -6544,11 +6558,15 @@ app.get('/api/me/notificaciones', authenticateSession, async (req, res) => {
 // Estado de un pago, para la pantalla de vuelta. La familia solo ve los suyos.
 app.get('/api/me/pagos/:pedido', authenticateSession, async (req, res) => {
     try {
+        // Lo puede consultar cualquiera de la familia: si el pago lo inició un
+        // menor pero la factura salió a nombre de un adulto (#219), el menor
+        // tiene que poder ver el resultado igualmente.
+        const fam = await familiaIds(req.userSession.userId);
         const r = await pool.query(
             `SELECT p.pedido, p.importe, p.estado, p.motivo, p.pagado_at,
                     r.numero, r.serie, r.fecha, r.tipo, r.id AS "reciboId"
              FROM aim_tpv_pagos p LEFT JOIN aim_recibos r ON r.id = p.recibo_id
-             WHERE p.pedido = $1 AND p.pagador_id = $2`, [req.params.pedido, req.userSession.userId]);
+             WHERE p.pedido = $1 AND p.pagador_id = ANY($2::uuid[])`, [req.params.pedido, fam]);
         if (!r.rowCount) return res.status(404).json({ error: 'Ese pago no existe.' });
         const x = r.rows[0];
         res.set('Cache-Control', 'no-store');
