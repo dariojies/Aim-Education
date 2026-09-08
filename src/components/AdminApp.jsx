@@ -4041,6 +4041,36 @@ function BillingRecibos({ showToast }) {
 
 const TIPOS_CONCEPTO = ['Mensualidad', 'Material', 'Otros'];
 const eur = (n) => `${Number(n || 0).toFixed(2)} €`;
+
+// Buscador de concepto con autocompletado (#220, punto 11): en vez de un
+// desplegable con cientos de conceptos, se escribe y filtra por código o nombre.
+function AutocompletarConcepto({ precios, onElegir, placeholder = 'Escribe para buscar un concepto...' }) {
+  const [q, setQ] = useState('');
+  const [abierto, setAbierto] = useState(false);
+  const ql = q.trim().toLowerCase();
+  const matches = ql
+    ? precios.filter(p => p.activo && `${p.concepto} ${p.descripcion}`.toLowerCase().includes(ql)).slice(0, 12)
+    : [];
+  return (
+    <div style={{ position: 'relative', flex: 1, minWidth: 220 }}>
+      <input value={q} onChange={e => { setQ(e.target.value); setAbierto(true); }}
+        onFocus={() => setAbierto(true)} onBlur={() => setTimeout(() => setAbierto(false), 150)}
+        placeholder={placeholder}
+        style={{ width: '100%', fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)' }} />
+      {abierto && matches.length > 0 && (
+        <div style={{ position: 'absolute', zIndex: 30, top: '100%', left: 0, right: 0, marginTop: 4, background: 'var(--bg-1)', border: '1px solid var(--line)', borderRadius: 10, maxHeight: 240, overflowY: 'auto', boxShadow: '0 8px 24px rgba(0,0,0,.12)' }}>
+          {matches.map(p => (
+            <button key={p.concepto} type="button"
+              onMouseDown={e => { e.preventDefault(); onElegir(p.concepto); setQ(''); setAbierto(false); }}
+              style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', cursor: 'pointer', border: 'none', borderBottom: '1px solid var(--line)', background: 'transparent', fontFamily: 'inherit', fontSize: 13, color: 'var(--ink)' }}>
+              <b>{p.descripcion}</b> <span style={{ color: 'var(--ink-3)' }}>· {p.concepto} · {eur(p.precio)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 const MESES_ES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 function mesLargo(iso) {
   if (!iso) return '';
@@ -4253,6 +4283,20 @@ function AdminBilling({ showToast }) {
     const key = c.targetTipo === 'actividad' ? `actividad:${c.targetActividad}` : `clase:${c.targetRef}`;
     (conceptosPorDestino[key] = conceptosPorDestino[key] || { tipo: c.targetTipo, nombre: c.targetNombre, items: [] }).items.push(c);
   }
+  // #220 (10): concepto(s) por actividad y por clase, para pintar el listado
+  // completo de clases y ver de un vistazo cuáles no tienen concepto.
+  const conceptosDeActividad = {}, conceptosDeClase = {};
+  for (const c of conceptos) {
+    if (c.targetTipo === 'actividad') (conceptosDeActividad[c.targetActividad] = conceptosDeActividad[c.targetActividad] || []).push(c);
+    else (conceptosDeClase[c.targetRef] = conceptosDeClase[c.targetRef] || []).push(c);
+  }
+  async function asignarConcepto(destino, concepto) {
+    if (!concepto || !activa) return;
+    const body = destino.tipo === 'actividad'
+      ? { concepto, temporadaId: activa.id, targetTipo: 'actividad', targetActividad: destino.actividad }
+      : { concepto, temporadaId: activa.id, targetTipo: 'clase', targetOrigen: destino.origen, targetRef: destino.ref };
+    await api('/api/admin/billing/conceptos', { method: 'POST', body: JSON.stringify(body) }, 'Concepto asignado.');
+  }
 
   const fichasVisibles = matriculas.filter(m => {
     const q = fichaQ.trim().toLowerCase();
@@ -4419,70 +4463,72 @@ function AdminBilling({ showToast }) {
       )}
 
       {/* ── Qué se cobra a cada actividad / grupo ── */}
-      {!loading && tab === 'conceptos' && activa && (
+      {!loading && tab === 'conceptos' && activa && (() => {
+        // Chip de un concepto asignado, con botón de quitar.
+        const chip = (c) => (
+          <span key={c.id} style={{ display: 'inline-flex', gap: 8, alignItems: 'center', background: 'color-mix(in oklab, var(--teal) 10%, var(--bg-3))', border: '1px solid var(--line-2)', borderRadius: 999, padding: '3px 6px 3px 12px', fontSize: 12, fontWeight: 700 }}>
+            {c.descripcion} · {eur(c.precio)}{c.ivaPct > 0 ? ` +${c.ivaPct}%` : ''}
+            <button className="icon-btn danger" style={{ width: 20, height: 20 }} onClick={() => api(`/api/admin/billing/conceptos/${c.id}`, { method: 'DELETE' }, 'Quitado.')} aria-label="Quitar"><I.X /></button>
+          </span>
+        );
+        const acts = Object.keys(clasesPorActividad).sort((a, b) => a.localeCompare(b, 'es'));
+        const sinConcepto = acts.reduce((n, act) => n + (clasesPorActividad[act] || []).filter(c => !(conceptosDeClase[c.ref]?.length) && !(conceptosDeActividad[act]?.length)).length, 0);
+        return (
         <div style={{ display: 'grid', gap: 14 }}>
           <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>
-            Asigna un concepto a una <b>actividad entera</b> (lo pagan todas sus clases) o a una <b>clase concreta</b>.
-            La lista mezcla vuestras clases de Aim-Tul (en vivo) con las propias. Es lo que usará la generación mensual.
+            Todas las clases con el concepto que se les cobra. Puedes asignarlo a una <b>clase concreta</b> o a la
+            <b> actividad entera</b> (vale para todas sus clases). Escribe para buscar el concepto por nombre o código.
+            {sinConcepto > 0
+              ? <b style={{ color: 'var(--orange)' }}> Hay {sinConcepto} clase{sinConcepto !== 1 ? 's' : ''} sin concepto.</b>
+              : <b style={{ color: 'var(--teal)' }}> Todas las clases tienen concepto.</b>}
           </p>
-          <form style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }} onSubmit={async e => {
-            e.preventDefault();
-            if (!nuevoConcepto.concepto || !nuevoConcepto.destino) return;
-            let body = { concepto: nuevoConcepto.concepto, temporadaId: activa.id };
-            if (nuevoConcepto.destino.startsWith('actividad:')) {
-              body = { ...body, targetTipo: 'actividad', targetActividad: nuevoConcepto.destino.slice('actividad:'.length) };
-            } else {
-              const [, origen, ref] = nuevoConcepto.destino.split(':');
-              body = { ...body, targetTipo: 'clase', targetOrigen: origen, targetRef: ref };
-            }
-            if (await api('/api/admin/billing/conceptos', { method: 'POST', body: JSON.stringify(body) }, 'Asignado.')) {
-              setNuevoConcepto({ concepto: '', destino: '' });
-            }
-          }}>
-            <select value={nuevoConcepto.concepto} onChange={e => setNuevoConcepto(c => ({ ...c, concepto: e.target.value }))}
-              style={{ fontFamily: 'inherit', fontSize: 14, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)', minWidth: 220 }}>
-              <option value="">Concepto...</option>
-              {precios.filter(p => p.activo).map(p => <option key={p.concepto} value={p.concepto}>{p.descripcion} ({eur(p.precio)})</option>)}
-            </select>
-            <select value={nuevoConcepto.destino} onChange={e => setNuevoConcepto(c => ({ ...c, destino: e.target.value }))}
-              style={{ fontFamily: 'inherit', fontSize: 14, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)', minWidth: 260 }}>
-              <option value="">¿A quién se le cobra?...</option>
-              <optgroup label="Actividad entera (todas sus clases)">
-                {actividades.map(a => <option key={a} value={`actividad:${a}`}>🎯 {a}</option>)}
-              </optgroup>
-              {Object.entries(clasesPorActividad).map(([actName, cs]) => (
-                <optgroup key={actName} label={`Clases de ${actName}`}>
-                  {cs.map(c => <option key={`${c.origen}:${c.ref}`} value={`clase:${c.origen}:${c.ref}`}>{c.nombre}{c.origen === 'custom' ? ' (propia)' : ''}</option>)}
-                </optgroup>
-              ))}
-            </select>
-            <button className="btn btn-sm btn-primary" type="submit" disabled={saving}><I.Plus /> Asignar</button>
-          </form>
-          {conceptos.length === 0 && (
+          {acts.length === 0 && (
             <div style={{ padding: 28, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>
-              Nada asignado todavía en {activa.nombre}.
+              No hay clases todavía.
             </div>
           )}
-          {Object.entries(conceptosPorDestino).map(([key, grupo]) => (
-            <div key={key} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: '12px 16px' }}>
-              <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
-                <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.06em', textTransform: 'uppercase', padding: '2px 8px', borderRadius: 999, background: grupo.tipo === 'actividad' ? 'color-mix(in oklab, var(--purple) 16%, var(--bg-2))' : 'var(--bg-3)', color: grupo.tipo === 'actividad' ? 'var(--purple)' : 'var(--ink-3)', border: '1px solid var(--line-2)' }}>
-                  {grupo.tipo === 'actividad' ? 'Actividad' : 'Clase'}
-                </span>
-                {grupo.nombre || '(sin nombre)'}
+          {acts.map(act => {
+            const actConc = conceptosDeActividad[act] || [];
+            return (
+              <div key={act} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: '12px 16px', display: 'grid', gap: 10 }}>
+                {/* Nivel actividad: aplica a todas sus clases. */}
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', borderBottom: '1px solid var(--line-2)', paddingBottom: 10 }}>
+                  <span style={{ fontWeight: 800, fontSize: 14, minWidth: 120 }}>{act}</span>
+                  <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.06em', textTransform: 'uppercase', padding: '2px 8px', borderRadius: 999, background: 'color-mix(in oklab, var(--purple) 16%, var(--bg-2))', color: 'var(--purple)' }}>Toda la actividad</span>
+                  {actConc.map(chip)}
+                  <AutocompletarConcepto precios={precios} placeholder="+ concepto para toda la actividad..."
+                    onElegir={(concepto) => asignarConcepto({ tipo: 'actividad', actividad: act }, concepto)} />
+                </div>
+                {/* Cada clase de la actividad. */}
+                <div style={{ display: 'grid', gap: 8 }}>
+                  {(clasesPorActividad[act] || []).map(c => {
+                    const propios = conceptosDeClase[c.ref] || [];
+                    const cubiertaPorActividad = actConc.length > 0;
+                    const sin = !propios.length && !cubiertaPorActividad;
+                    return (
+                      <div key={`${c.origen}:${c.ref}`} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '4px 0 4px 8px' }}>
+                        <span style={{ fontSize: 13, fontWeight: 700, minWidth: 150 }}>
+                          {c.nombre}{c.origen === 'custom' ? <span style={{ fontSize: 10, color: 'var(--ink-3)' }}> · propia</span> : ''}
+                        </span>
+                        {propios.map(chip)}
+                        {!propios.length && cubiertaPorActividad && (
+                          <span style={{ fontSize: 11, color: 'var(--ink-3)', fontStyle: 'italic' }}>usa el de la actividad</span>
+                        )}
+                        {sin && (
+                          <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--orange)', background: 'color-mix(in oklab, var(--orange) 12%, var(--bg-2))', padding: '2px 8px', borderRadius: 999 }}>Sin concepto</span>
+                        )}
+                        <AutocompletarConcepto precios={precios} placeholder="+ concepto para esta clase..."
+                          onElegir={(concepto) => asignarConcepto({ tipo: 'clase', origen: c.origen, ref: c.ref }, concepto)} />
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {grupo.items.map(c => (
-                  <span key={c.id} style={{ display: 'inline-flex', gap: 8, alignItems: 'center', background: 'var(--bg-3)', border: '1px solid var(--line-2)', borderRadius: 999, padding: '4px 6px 4px 12px', fontSize: 12, fontWeight: 700 }}>
-                    {c.descripcion} · {eur(c.precio)}{c.ivaPct > 0 ? ` +${c.ivaPct}%` : ''}
-                    <button className="icon-btn danger" style={{ width: 22, height: 22 }} onClick={() => api(`/api/admin/billing/conceptos/${c.id}`, { method: 'DELETE' }, 'Quitado.')} aria-label="Quitar"><I.X /></button>
-                  </span>
-                ))}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
-      )}
+        );
+      })()}
 
       {/* ── Fichas ── */}
       {!loading && tab === 'fichas' && activa && (
