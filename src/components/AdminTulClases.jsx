@@ -66,10 +66,13 @@ const SVG_ACTIVIDAD = {
   'palette': svgPintura,
   'robot': svgRobotica,
   'karate': svgTkd,
+  // Kick Boxing y Defensa Personal comparten el icono de Taekwon-Do (#220).
+  'boxing-glove': svgTkd,
+  'shield-half-full': svgTkd,
 };
-// Estos dos vienen dibujados en blanco (para fondo oscuro): sobre la tarjeta
-// blanca no se verían, así que se oscurecen para que salgan como los demás.
-const SVG_BLANCO = new Set(['palette', 'karate']);
+// Estos vienen dibujados en blanco (para fondo oscuro): sobre la tarjeta blanca
+// no se verían, así que se oscurecen para que salgan como los demás.
+const SVG_BLANCO = new Set(['palette', 'karate', 'boxing-glove', 'shield-half-full']);
 
 export function IconoActividad({ icon, size = 20, style, ...resto }) {
   const svg = SVG_ACTIVIDAD[icon];

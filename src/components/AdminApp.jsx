@@ -5950,7 +5950,6 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
     {
       heading: "Actividad", items: [
         { id: "classes", label: "Clases y horarios", icon: <I.Calendar /> },
-        { id: "groups", label: "Grupos", icon: <I.Trophy /> },
         { id: "camp", label: "Campamento", icon: <I.Sun /> },
         { id: "events", label: "Eventos", icon: <I.Star /> },
         { id: "titulos", label: "Títulos", icon: <I.Shield /> },
