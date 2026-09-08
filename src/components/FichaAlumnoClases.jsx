@@ -518,8 +518,10 @@ export default function FichaAlumnoClases({ studentId, nombre, nacimiento, showT
         });
         showToast?.(`En la lista de espera de ${grupo.name}.`);
       } else {
-        await api(`/students/${studentId}/clases`, { method: 'POST', body: { groupId: grupo.id, levelOrder } });
+        const d = await api(`/students/${studentId}/clases`, { method: 'POST', body: { groupId: grupo.id, levelOrder } });
         showToast?.(`Apuntado a ${grupo.name}.`);
+        // #219: incorporación nueva (no tenía ninguna actividad) -> matrícula.
+        if (d?.matriculaNueva) showToast?.('⚠ No tenía matrícula vigente: recuérdale cobrar la matrícula.', 'warn');
       }
       setAnadiendo(false);
       await cargar();

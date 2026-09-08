@@ -583,8 +583,11 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
           ? `${alta.name} entra a la lista de espera (la plaza libre es para quien ya esperaba).`
           : `${alta.name} apuntado a la lista de espera.`);
       } else {
-        await api(`/groups/${grupo.id}/students/enroll`, { method: 'POST', body: { studentId: alta.id, levelOrder: nivel } });
+        const d = await api(`/groups/${grupo.id}/students/enroll`, { method: 'POST', body: { studentId: alta.id, levelOrder: nivel } });
         showToast?.(`${alta.name} matriculado en ${grupo.name}.`);
+        // #219: si no tenía ninguna actividad, es una incorporación nueva y hay
+        // que cobrarle matrícula (es única por alumno y se mantiene con continuidad).
+        if (d?.matriculaNueva) showToast?.(`⚠ ${alta.name} no tenía matrícula vigente: recuérdale cobrar la matrícula.`, 'warn');
       }
       setAlta(null);
       await cargar(); await cargarEspera();

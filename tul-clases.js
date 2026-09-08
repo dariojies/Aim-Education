@@ -354,9 +354,10 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                     return res.status(403).json({ error: `Este grupo ya está lleno (${currentCount}/${maxStudents} alumnos).` });
                 }
             }
+            const activoAntes = await tieneActividadActiva(studentId);
             await matricular(req.params.groupId, studentId);
             if (levelOrder != null && levelOrder !== '') await fijarNivel(req.params.groupId, studentId, levelOrder);
-            res.json({ success: true });
+            res.json({ success: true, matriculaNueva: !activoAntes });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
@@ -449,6 +450,15 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
         error: 'Esta clase tiene lista de espera: la plaza libre es para quien lleva esperando. Dásela desde la lista de espera.',
         listaEspera: true,
     };
+
+    // ¿El alumno tiene ya alguna actividad activa? La matrícula es única por
+    // alumno y se mantiene mientras siga en al menos una actividad (ticket #219).
+    // Si no tiene ninguna, al inscribirle es una incorporación nueva: hay que
+    // cobrarle matrícula. Si ya tiene alguna, la matrícula sigue vigente.
+    async function tieneActividadActiva(studentId) {
+        const r = await pool.query(`SELECT 1 FROM tul_group_students WHERE student_id = $1 LIMIT 1`, [studentId]);
+        return r.rowCount > 0;
+    }
 
     // ── Rangos de los alumnos ────────────────────────────────────────────────
     // Cada actividad tiene su escala y no se pisan: el mismo alumno puede ser
@@ -590,6 +600,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
             if (info.max_students && info.n >= info.max_students) {
                 return res.status(409).json({ error: `Esa clase está llena (${info.n}/${info.max_students}). Puedes apuntarle a la lista de espera.` });
             }
+            const activoAntes = await tieneActividadActiva(req.params.studentId);
             await matricular(groupId, req.params.studentId);
             if (levelOrder != null && levelOrder !== '') {
                 const escala = await escalaDe(info.activity_type, pool);
@@ -606,7 +617,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                     }
                 }
             }
-            res.json({ success: true });
+            res.json({ success: true, matriculaNueva: !activoAntes });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
