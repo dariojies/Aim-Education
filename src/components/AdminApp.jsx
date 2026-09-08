@@ -561,6 +561,7 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
   const [selectedSlot, setSelectedSlot] = useState(null);
   const [selectedRoom, setSelectedRoom] = useState("Todas");
   const [selectedMonitor, setSelectedMonitor] = useState("Todos");
+  const [filtroEdad, setFiltroEdad] = useState("");   // #220: "¿qué hay para un niño de 8?"
   // 'horario' es el calendario de siempre; 'lista' es el menú de gestión de
   // Aim-Tul (actividades → grupos → alumnos) recreado aquí.
   const [vista, setVista] = useState('horario');
@@ -581,6 +582,15 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
     // persona y nada más.
     if (selectedMonitor === "Sin asignar") { if (monitoresDe(s).length) return false; }
     else if (selectedMonitor !== "Todos" && !monitoresDe(s).includes(selectedMonitor)) return false;
+    // Filtro por edad: una clase entra si el niño cabe en su horquilla; las que
+    // no tienen edad puesta valen para cualquiera.
+    if (filtroEdad !== "") {
+      const edad = Number(filtroEdad);
+      if (!Number.isNaN(edad)) {
+        if (s.minAge != null && edad < s.minAge) return false;
+        if (s.maxAge != null && edad > s.maxAge) return false;
+      }
+    }
     if (!search) return true;
     const q = search.toLowerCase();
     return `${s.title} ${s.room} ${s.monitor || ''} ${s.act}`.toLowerCase().includes(q);
@@ -820,6 +830,17 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
         {selectedMonitor !== "Todos" && (
           <button className="btn btn-sm btn-outline" onClick={() => setSelectedMonitor("Todos")}
             style={{ padding: "4px 10px", fontSize: 11 }}>Quitar filtro</button>
+        )}
+
+        <span style={{ width: 1, height: 22, background: "var(--line)", margin: "0 4px" }} />
+        <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-3)", marginRight: 4 }}>Edad:</span>
+        <input type="number" min="0" max="99" value={filtroEdad} onChange={e => setFiltroEdad(e.target.value)}
+          placeholder="años" title="Muestra las clases para un alumno de esa edad"
+          style={{ width: 72, padding: "5px 8px", borderRadius: 8, fontSize: 12, fontFamily: "inherit", fontWeight: 600,
+                   border: "1px solid var(--line)", background: "var(--bg-2)", color: "var(--ink)" }} />
+        {filtroEdad !== "" && (
+          <button className="btn btn-sm btn-outline" onClick={() => setFiltroEdad("")}
+            style={{ padding: "4px 10px", fontSize: 11 }}>Quitar</button>
         )}
       </div>
 
@@ -2601,6 +2622,7 @@ function TarjetaEvento({ ev, conDinero = true, pie }) {
 // haga falta antes de darles el visto bueno.
 function SolicitudesEventos({ permisos, showToast, onEditar, recargarEventos, refrescar }) {
   const [lista, setLista] = useState([]);
+  const [verRechazados, setVerRechazados] = useState(false); // #220: rechazados ocultos por defecto
   const puedeResolver = !!permisos.editarEventos;
   const conDinero = permisos.verDineroEventos !== false;
 
@@ -2626,8 +2648,20 @@ function SolicitudesEventos({ permisos, showToast, onEditar, recargarEventos, re
   }
 
   const pendientes = lista.filter(x => x.estado === 'pendiente');
-  const resueltas = lista.filter(x => x.estado !== 'pendiente');
+  const aprobadas = lista.filter(x => x.estado === 'aprobada');
+  const rechazadas = lista.filter(x => x.estado === 'rechazada');
   if (!lista.length && puedeResolver) return null;
+
+  const filaResuelta = (x) => (
+    <div key={x.id} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '8px 12px', background: 'var(--bg-3)', borderRadius: 10, fontSize: 12 }}>
+      <span style={{ fontWeight: 800, flex: 1, minWidth: 140 }}>{x.title}</span>
+      <span style={{ color: 'var(--ink-3)' }}>{fmtFechaCorta(x.date)}</span>
+      <span className={`status-pill ${x.estado === 'aprobada' ? 'ok' : 'danger'}`}>
+        {x.estado === 'aprobada' ? 'Aprobado' : 'Rechazado'}
+      </span>
+      {x.respuesta && <span style={{ color: 'var(--orange)' }}>{x.respuesta}</span>}
+    </div>
+  );
 
   return (
     <div style={{ marginBottom: 22, display: 'grid', gap: 14 }}>
@@ -2678,18 +2712,22 @@ function SolicitudesEventos({ permisos, showToast, onEditar, recargarEventos, re
         </div>
       )}
 
-      {resueltas.length > 0 && (
+      {aprobadas.length > 0 && (
         <div style={{ display: 'grid', gap: 6 }}>
-          {resueltas.map(x => (
-            <div key={x.id} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '8px 12px', background: 'var(--bg-3)', borderRadius: 10, fontSize: 12 }}>
-              <span style={{ fontWeight: 800, flex: 1, minWidth: 140 }}>{x.title}</span>
-              <span style={{ color: 'var(--ink-3)' }}>{fmtFechaCorta(x.date)}</span>
-              <span className={`status-pill ${x.estado === 'aprobada' ? 'ok' : 'danger'}`}>
-                {x.estado === 'aprobada' ? 'Aprobado' : 'Rechazado'}
-              </span>
-              {x.respuesta && <span style={{ color: 'var(--orange)' }}>{x.respuesta}</span>}
-            </div>
-          ))}
+          {aprobadas.map(filaResuelta)}
+        </div>
+      )}
+
+      {/* Los rechazados no ocupan sitio: quedan detrás de un botón para
+          consultarlos solo cuando se quiere ver el histórico (ticket #220). */}
+      {rechazadas.length > 0 && (
+        <div style={{ display: 'grid', gap: 6 }}>
+          <button type="button" onClick={() => setVerRechazados(v => !v)}
+            style={{ justifySelf: 'start', background: 'none', border: 0, cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 700, color: 'var(--ink-3)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: 0 }}>
+            <I.Chevron style={{ transform: verRechazados ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }} />
+            {verRechazados ? 'Ocultar' : 'Ver'} rechazados ({rechazadas.length})
+          </button>
+          {verRechazados && rechazadas.map(filaResuelta)}
         </div>
       )}
     </div>
@@ -4120,6 +4158,7 @@ function BillingGenerar({ activa, showToast }) {
 
 function AdminBilling({ showToast }) {
   const [tab, setTab] = useState('cobrar'); // 'cobrar' | 'catalogo' | 'clases' | 'temporadas' | 'conceptos' | 'fichas' | 'generar'
+  const [buscaCat, setBuscaCat] = useState(''); // #220: buscador del catálogo
   const [temporadas, setTemporadas] = useState([]);
   const [precios, setPrecios] = useState([]);
   const [clases, setClases] = useState([]);       // clases propias
@@ -4231,22 +4270,45 @@ function AdminBilling({ showToast }) {
       {!loading && tab === 'recibos' && <BillingRecibos showToast={showToast} />}
 
       {/* ── Catálogo ── */}
-      {!loading && tab === 'catalogo' && (
+      {!loading && tab === 'catalogo' && (() => {
+        const q = buscaCat.trim().toLowerCase();
+        const preciosFiltrados = q
+          ? precios.filter(p => `${p.concepto} ${p.descripcion}`.toLowerCase().includes(q))
+          : precios;
+        const exportarCatalogo = () => {
+          const filas = [['Código', 'Concepto', 'Tipo', 'Precio base', 'IVA %', 'Estado'],
+            ...preciosFiltrados.map(p => [p.concepto, p.descripcion, p.tipo, Number(p.precio).toFixed(2), p.ivaPct, p.activo ? 'Activo' : 'Inactivo'])];
+          const csv = '﻿' + filas.map(f => f.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(';')).join('\r\n');
+          const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+          const a = document.createElement('a');
+          a.href = url; a.download = `catalogo_conceptos_${new Date().toISOString().slice(0, 10)}.csv`;
+          document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+        };
+        return (
         <div style={{ display: 'grid', gap: 14 }}>
-          <div>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             <button className="btn btn-sm btn-primary" onClick={() => setEditPrecio({ ...emptyPrecio })}><I.Plus /> Nuevo concepto</button>
+            {/* #220: buscar por código o nombre, filtrando según se escribe. */}
+            <input value={buscaCat} onChange={e => setBuscaCat(e.target.value)} placeholder="Buscar por código o nombre..."
+              style={{ flex: 1, minWidth: 200, fontFamily: 'inherit', fontSize: 14, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)' }} />
+            <button className="btn btn-sm btn-outline" onClick={exportarCatalogo} disabled={!preciosFiltrados.length}>
+              <I.Download /> Exportar {q ? '(filtrado)' : ''}
+            </button>
           </div>
           {precios.length === 0 && (
             <div style={{ padding: 28, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>
               El catálogo está vacío. Cada concepto es algo que cobráis: una mensualidad, un material, etc.
             </div>
           )}
-          {precios.length > 0 && (
+          {precios.length > 0 && preciosFiltrados.length === 0 && (
+            <p style={{ fontSize: 13, color: 'var(--ink-3)' }}>Ningún concepto coincide con «{buscaCat}».</p>
+          )}
+          {preciosFiltrados.length > 0 && (
             <div className="data-table">
               <div className="data-table-head" style={{ gridTemplateColumns: '1.6fr 100px 110px 90px 90px 80px' }}>
                 <span>Concepto</span><span>Tipo</span><span>Precio (base)</span><span>IVA</span><span>Estado</span><span></span>
               </div>
-              {precios.map(p => (
+              {preciosFiltrados.map(p => (
                 <div key={p.concepto} className="data-table-row" style={{ gridTemplateColumns: '1.6fr 100px 110px 90px 90px 80px', opacity: p.activo ? 1 : .5 }}>
                   <div>
                     <div className="pri">{p.descripcion}</div>
@@ -4268,7 +4330,8 @@ function AdminBilling({ showToast }) {
             </div>
           )}
         </div>
-      )}
+        );
+      })()}
 
       {/* ── Clases ── */}
       {!loading && tab === 'clases' && (

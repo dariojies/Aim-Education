@@ -243,7 +243,7 @@ export default function AdminFamilias({ showToast, onEditUser }) {
                 {c.nombre}
               </button>
               {c.alcance > 0 && (
-                <span className="status-pill pending">{eur(c.alcance)} a su alcance</span>
+                <span className="status-pill pending" title="Importe pendiente de pago">{eur(c.alcance)}</span>
               )}
               <div style={{ flex: 1 }} />
               <button className="btn btn-sm btn-outline"
