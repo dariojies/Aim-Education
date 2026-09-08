@@ -309,6 +309,9 @@ export default function AdminAgenda({ showToast, user }) {
                     })}
                 </div>
 
+                {/* Columna derecha: sin hora, vencidas y fuera de horario, apiladas.
+                    Van juntas en un contenedor para que no caigan bajo las horas. */}
+                <div style={{ display: 'grid', gap: 18, alignItems: 'start' }}>
                 {/* Lo que hay que hacer sin hora concreta */}
                 <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 18, display: 'grid', gap: 10 }}>
                     <div>
@@ -366,6 +369,7 @@ export default function AdminAgenda({ showToast, user }) {
                         ))}
                     </div>
                 )}
+                </div>
             </div>
 
             {editando && (
