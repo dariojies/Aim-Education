@@ -1446,7 +1446,8 @@ app.get('/api/users/:id/avatar', authenticateSession, requireAdmin, async (req, 
 });
 
 app.post('/api/users', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
-    const { firstName, lastName, email, belt, phone, birthday, isSuperAdmin, rol } = req.body;
+    const { firstName, lastName, email, belt, phone, birthday, isSuperAdmin, rol,
+            dni, domicilio, cp, poblacion } = req.body;
     if (!firstName || !email) {
         return res.status(400).json({ error: 'Nombre y email son requeridos.' });
     }
@@ -1515,10 +1516,12 @@ app.post('/api/users', authenticateSession, requirePermiso('editarAlumnos'), asy
         
         await pool.query(
             `INSERT INTO users (user_id, name, surname, email, password, belt, role,
-                                phone, birthday, club_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+                                phone, birthday, dni, domicilio, cp, poblacion, club_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
             [user_id, firstName.trim(), (lastName || '').trim(), emailLower, hash, belt || null, role,
-             phone?.trim() || null, birthday || null, AIM_CLUB_ID]
+             phone?.trim() || null, birthday || null,
+             dni?.trim() || null, domicilio?.trim() || null, cp?.trim() || null, poblacion?.trim() || null,
+             AIM_CLUB_ID]
         );
         res.status(201).json({ id: user_id, firstName, lastName, email, belt, isSuperAdmin });
     } catch (err) {
