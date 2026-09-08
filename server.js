@@ -1416,7 +1416,11 @@ app.get('/api/users', authenticateSession, async (req, res) => {
                     EXISTS (SELECT 1 FROM tul_group_students gs WHERE gs.student_id = u.user_id) AS activo,
                     -- Tiene foto de perfil (para pintarla en la lista sin cargar
                     -- el base64 entero de cada persona).
-                    (u.profile_picture IS NOT NULL) AS tiene_foto
+                    (u.profile_picture IS NOT NULL) AS tiene_foto,
+                    -- ¿Es su cumpleaños hoy? Para la coronita en los listados.
+                    (u.birthday IS NOT NULL
+                     AND EXTRACT(MONTH FROM u.birthday) = EXTRACT(MONTH FROM CURRENT_DATE)
+                     AND EXTRACT(DAY FROM u.birthday) = EXTRACT(DAY FROM CURRENT_DATE)) AS cumple_hoy
              FROM users u
              WHERE u.club_id = $1 AND u.role IN ('student', 'instructor', 'club_owner', 'superadmin')
              ORDER BY u.name, u.surname`,
@@ -1439,6 +1443,7 @@ app.get('/api/users', authenticateSession, async (req, res) => {
                 esTutor,
                 activo: !!u.activo,
                 tieneFoto: !!u.tiene_foto,
+                cumpleHoy: !!u.cumple_hoy,
                 isSuperAdmin: (u.dev_role === 'superadmin' || u.role === 'superadmin' || u.role === 'SuperAdmin'),
             };
         });

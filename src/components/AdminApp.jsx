@@ -3,7 +3,7 @@ import { I } from './Icons.jsx';
 import { permisosDe, NOMBRE_ROL } from '../../permisos.js';
 import { useEnVivo } from '../envivo.js';
 import { ListaClases, AdminReportes, colorOcupacion } from './AdminTulClases.jsx';
-import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong, campDayParts, nombreMedioPago } from './Shared.jsx';
+import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong, campDayParts, nombreMedioPago, CoronaCumple, COLOR_CUMPLE } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 import { AdminSupport } from './AdminSupport.jsx';
 import AdminAgenda from './AdminAgenda.jsx';
@@ -533,14 +533,19 @@ function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos }) {
           <div key={u.id} className="data-table-row" style={{ gridTemplateColumns: "32px 2.1fr 1.9fr 1.4fr 1.1fr 100px" }}>
             <input type="checkbox" style={{ accentColor: "var(--purple)" }} />
             <div className="cell-user">
-              <div className="avatar" style={{ background: "var(--grad-aim)", overflow: "hidden" }}>
-                {u.tieneFoto
-                  ? <img src={`/api/users/${u.id}/avatar`} alt="" loading="lazy"
-                      style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                  : (u.firstName?.[0] || u.email?.[0] || "?").toUpperCase()}
+              <div className="avatar" style={{ background: "var(--grad-aim)", overflow: "visible", position: "relative" }}>
+                <div style={{ width: "100%", height: "100%", borderRadius: "inherit", overflow: "hidden", display: "grid", placeItems: "center" }}>
+                  {u.tieneFoto
+                    ? <img src={`/api/users/${u.id}/avatar`} alt="" loading="lazy"
+                        style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    : (u.firstName?.[0] || u.email?.[0] || "?").toUpperCase()}
+                </div>
+                {u.cumpleHoy && <CoronaCumple />}
               </div>
               <div>
-                <div className="pri">{u.firstName || ""} {u.lastName || ""}</div>
+                <div className="pri" style={u.cumpleHoy ? { color: COLOR_CUMPLE, fontWeight: 800 } : undefined}>
+                  {u.firstName || ""} {u.lastName || ""}{u.cumpleHoy && " 🎂"}
+                </div>
                 {u.esInstructor
                   ? <div className="sec">{u.role === "club_owner" ? "Dirección" : "Instructor/a"} del club</div>
                   : u.isSuperAdmin && <div className="sec">Superadmin</div>}
@@ -2543,11 +2548,16 @@ function AdminInstructores({ refreshTrigger, showToast, onEditUser, onNuevoInstr
         {!loading && visible.map(u => (
           <div key={u.id} className="data-table-row" style={{ gridTemplateColumns: cols }}>
             <div className="cell-user">
-              <div className="avatar" style={{ background: "var(--grad-aim)" }}>
-                {(u.firstName?.[0] || "?").toUpperCase()}
+              <div className="avatar" style={{ background: "var(--grad-aim)", overflow: "visible", position: "relative" }}>
+                <div style={{ width: "100%", height: "100%", borderRadius: "inherit", display: "grid", placeItems: "center" }}>
+                  {(u.firstName?.[0] || "?").toUpperCase()}
+                </div>
+                {u.cumpleHoy && <CoronaCumple />}
               </div>
               <div>
-                <div className="pri">{u.firstName || ""} {u.lastName || ""}</div>
+                <div className="pri" style={u.cumpleHoy ? { color: COLOR_CUMPLE, fontWeight: 800 } : undefined}>
+                  {u.firstName || ""} {u.lastName || ""}{u.cumpleHoy && " 🎂"}
+                </div>
                 <div className="sec">{etiquetaRol(u)}</div>
               </div>
             </div>

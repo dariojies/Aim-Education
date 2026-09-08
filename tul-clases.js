@@ -823,7 +823,11 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
         try {
             const r = await pool.query(
                 `SELECT u.user_id AS id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre,
-                        COALESCE(u.belt, '') AS cinturon, at.status, at.is_auto AS "isAuto"
+                        COALESCE(u.belt, '') AS cinturon, at.status, at.is_auto AS "isAuto",
+                        -- ¿Cumple años el día que se pasa lista? Para la coronita.
+                        (u.birthday IS NOT NULL
+                         AND EXTRACT(MONTH FROM u.birthday) = EXTRACT(MONTH FROM $2::date)
+                         AND EXTRACT(DAY FROM u.birthday) = EXTRACT(DAY FROM $2::date)) AS "cumpleHoy"
                  FROM tul_group_students gs
                  JOIN users u ON u.user_id = gs.student_id
                  JOIN tul_groups g ON g.group_id = gs.group_id

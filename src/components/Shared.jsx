@@ -588,3 +588,31 @@ const MEDIOS = {
   efectivo: 'Efectivo', transferencia: 'Transferencia',
 };
 export const nombreMedioPago = (m) => MEDIOS[m] || (m ? m.charAt(0).toUpperCase() + m.slice(1) : '');
+
+// ── Cumpleaños ──────────────────────────────────────────────────────────────
+// Idea del club: el día que alguien cumple años, en los listados con foto/perfil
+// (usuarios, pasar lista...) le sale una coronita en la cabeza y su nombre en
+// dorado, para felicitarle de un vistazo.
+export const COLOR_CUMPLE = '#E7B10A'; // dorado
+
+// ¿Hoy es el cumpleaños de esta persona? Compara día y mes (da igual el año).
+// La fecha se guarda como 'YYYY-MM-DD' sin hora, así que se lee en UTC para que
+// no se corra un día según la zona horaria del navegador.
+export function esCumpleHoy(birthday) {
+  if (!birthday) return false;
+  const d = new Date(birthday);
+  if (isNaN(d.getTime())) return false;
+  const hoy = new Date();
+  return d.getUTCMonth() === hoy.getMonth() && d.getUTCDate() === hoy.getDate();
+}
+
+// Coronita para poner sobre un avatar. Su contenedor debe ser position:relative.
+export function CoronaCumple({ size = 16, title = '¡Hoy es su cumpleaños!' }) {
+  return (
+    <span title={title} aria-label={title} style={{
+      position: 'absolute', top: -Math.round(size * 0.6), left: '50%',
+      transform: 'translateX(-50%) rotate(14deg)', fontSize: size, lineHeight: 1,
+      pointerEvents: 'none', filter: 'drop-shadow(0 1px 1px rgba(0,0,0,.25))', zIndex: 2,
+    }}>👑</span>
+  );
+}

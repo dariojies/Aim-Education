@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { I } from './Icons.jsx';
 import { fmtFechaLarga, fmtFecha } from '../fechas.js';
 import { colorOcupacion } from './AdminTulClases.jsx';
+import { COLOR_CUMPLE } from './Shared.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pasar lista de las clases del día.
@@ -186,7 +187,9 @@ export default function PasarListaClases({ showToast }) {
             {alumnos.map(a => (
               <div key={a.id} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: '10px 12px', display: 'grid', gap: 8 }}>
                 <div>
-                  <div style={{ fontWeight: 700, fontSize: 13, color: a.status === 'absent' ? 'var(--ink-3)' : 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.nombre}</div>
+                  <div style={{ fontWeight: a.cumpleHoy ? 800 : 700, fontSize: 13, color: a.cumpleHoy ? COLOR_CUMPLE : (a.status === 'absent' ? 'var(--ink-3)' : 'var(--ink)'), overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {a.cumpleHoy && <span title="¡Hoy es su cumpleaños!" style={{ marginRight: 3 }}>👑</span>}{a.nombre}{a.cumpleHoy && ' 🎂'}
+                  </div>
                   {a.cinturon && <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>{a.cinturon}</div>}
                 </div>
                 <div style={{ display: 'flex', gap: 4 }}>
