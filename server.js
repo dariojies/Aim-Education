@@ -4836,7 +4836,36 @@ app.delete('/api/admin/billing/conceptos/:id', authenticateSession, requireAdmin
 });
 
 // ── Fichas / matrículas ──
+// #226: las fichas de Facturación reflejan las inscripciones reales de la
+// temporada activa, sin registrar a nadie dos veces. Da de alta la ficha de cada
+// inscripción de aim-tul que no la tenga (reabriéndola si estaba de baja) y da de
+// baja las fichas de aim-tul cuya inscripción ya no existe. Las clases propias
+// (origen 'custom') no se tocan: no salen del horario. El descuento de cada
+// ficha se conserva.
+async function sincronizarFichasActivas() {
+    const t = await pool.query(`SELECT id FROM aim_temporadas WHERE activa = true LIMIT 1`);
+    if (!t.rowCount) return null;
+    const tid = t.rows[0].id;
+    await pool.query(
+        `INSERT INTO aim_matriculas (user_id, clase_ref, clase_origen, clase_nombre, actividad, temporada_id, descuento_pct, alta)
+         SELECT gs.student_id, g.group_id, 'aimtul', g.name, a.name, $1, 0, CURRENT_DATE
+         FROM tul_group_students gs
+         JOIN tul_groups g ON g.group_id = gs.group_id
+         JOIN tul_activities a ON a.activity_id = g.activity_id
+         WHERE a.club_id = $2
+         ON CONFLICT (user_id, clase_ref, temporada_id) DO UPDATE SET baja = NULL`,
+        [tid, AIM_CLUB_ID]);
+    await pool.query(
+        `UPDATE aim_matriculas m SET baja = CURRENT_DATE
+         WHERE m.temporada_id = $1 AND m.clase_origen = 'aimtul' AND m.baja IS NULL
+           AND NOT EXISTS (SELECT 1 FROM tul_group_students gs
+                           WHERE gs.student_id = m.user_id AND gs.group_id = m.clase_ref)`,
+        [tid]);
+    return tid;
+}
+
 app.get('/api/admin/billing/matriculas', authenticateSession, requireAdmin, async (req, res) => {
+    await sincronizarFichasActivas().catch(e => console.error('[FICHAS sync]', e.message));
     const { temporadaId, userId } = req.query;
     const where = ['u.club_id = $1'];
     const vals = [AIM_CLUB_ID];
@@ -4948,6 +4977,7 @@ async function candidatosGeneracion(temporadaId, mes) {
 // Previsualizar: cuántos cargos se crearían, sin insertar nada.
 app.get('/api/admin/billing/generar/preview', authenticateSession, requireAdmin, async (req, res) => {
     try {
+        await sincronizarFichasActivas().catch(e => console.error('[FICHAS sync]', e.message));
         const temp = await pool.query('SELECT id, nombre FROM aim_temporadas WHERE activa = true');
         if (temp.rowCount === 0) return res.status(400).json({ error: 'No hay temporada activa.' });
         const mes = normalizaMes(req.query.mes);
@@ -4976,6 +5006,7 @@ function r2Server(n) { return Math.round((Number(n) + Number.EPSILON) * 100) / 1
 // Generar: inserta los cargos que falten (idempotente por (cliente, concepto, mes)).
 app.post('/api/admin/billing/generar', authenticateSession, requireAdmin, async (req, res) => {
     try {
+        await sincronizarFichasActivas().catch(e => console.error('[FICHAS sync]', e.message));
         const temp = await pool.query('SELECT id, nombre FROM aim_temporadas WHERE activa = true');
         if (temp.rowCount === 0) return res.status(400).json({ error: 'No hay temporada activa.' });
         const mes = normalizaMes(req.body.mes);
