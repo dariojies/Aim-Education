@@ -2055,9 +2055,15 @@ html[data-actaccents="off"] .act-card.solid {
 .ficha-modal .field-row {
   gap: 18px;
 }
+/* La cabecera de color sangra hasta los bordes del modal (compensa su padding). */
+.ficha-modal .ficha-cabecera {
+  margin: -34px -40px 6px;
+}
 @media (max-width: 640px) {
   .ficha-modal { padding: 24px 20px !important; }
   .ficha-modal .field-row { grid-template-columns: minmax(0, 1fr); }
+  .ficha-modal .ficha-cols { grid-template-columns: minmax(0, 1fr) !important; }
+  .ficha-modal .ficha-cabecera { margin: -24px -20px 6px; padding: 18px 20px 16px; }
 }
 
 .field-meta {

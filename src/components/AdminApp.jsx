@@ -18,6 +18,8 @@ import AdminFamilias from './AdminFamilias.jsx';
 import AdminExamenes from './AdminExamenes.jsx';
 import FichaAlumno360 from './FichaAlumno360.jsx';
 
+const fichaCardTitulo = { margin: '0 0 12px', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--ink-3)' };
+
 function sectionLabel(id) {
   return ({
     overview: "Resumen",
@@ -6055,104 +6057,168 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
             width: '100%', maxWidth: 880, padding: '34px 40px', display: 'grid', gap: 18,
             maxHeight: '92vh', overflowY: 'auto'
           }} className="scroll-oculto ficha-modal">
-            <h3 style={{ margin: 0, fontSize: 23, fontWeight: 800, color: 'var(--ink)' }}>
-              {!permisos.editarAlumnos ? 'Ficha del alumno'
-                : activeModal !== 'edit-student'
-                  ? (editingItem.rol === 'instructor' ? 'Registrar Nuevo Instructor' : 'Registrar Nuevo Alumno')
-                  : editingItem.esInstructor ? `Editar ${etiquetaRol(editingItem)}` : 'Editar Alumno'}
-            </h3>
-            {!permisos.editarAlumnos && (
-              <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)', background: 'var(--bg-3)', padding: '8px 12px', borderRadius: 10 }}>
-                Solo consulta: tu perfil no puede cambiar los datos de las fichas.
-              </p>
-            )}
+            {(() => {
+              const esEdit = activeModal === 'edit-student';
+              const nombre = `${editingItem.firstName || ''} ${editingItem.lastName || ''}`.trim();
+              const iniciales = ((editingItem.firstName || '')[0] || '') + ((editingItem.lastName || '')[0] || '') || '·';
+              const titulo = !permisos.editarAlumnos ? 'Ficha del alumno'
+                : !esEdit ? (editingItem.rol === 'instructor' ? 'Registrar nuevo instructor' : 'Registrar nuevo alumno')
+                  : editingItem.esInstructor ? `Editar ${etiquetaRol(editingItem)}` : 'Editar alumno';
+              const edad = edadDe(editingItem.birthday);
+              const claves = esEdit ? [
+                edad != null && ['Edad', `${edad} años`],
+                ['Rol', etiquetaRol(editingItem)],
+                editingItem.belt && ['Cinturón', editingItem.belt],
+                editingItem.phone && ['Teléfono', editingItem.phone],
+                editingItem.poblacion && ['Población', editingItem.poblacion],
+              ].filter(Boolean) : [];
+              return (
+                <>
+                  {/* Cabecera de color con el nombre, como una ficha de perfil. */}
+                  <div className="ficha-cabecera" style={{
+                    padding: '22px 40px 20px',
+                    background: 'linear-gradient(120deg, var(--purple), color-mix(in oklab, var(--purple) 70%, #d16ba5))',
+                    color: '#fff', borderRadius: '24px 24px 0 0',
+                  }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, opacity: .85, textTransform: 'uppercase', letterSpacing: '.1em' }}>{titulo}</div>
+                    <div style={{ fontSize: 26, fontWeight: 800, marginTop: 3, lineHeight: 1.1 }}>
+                      {esEdit ? (nombre || 'Sin nombre') : (editingItem.rol === 'instructor' ? 'Nuevo instructor' : 'Nuevo alumno')}
+                    </div>
+                    {esEdit && (
+                      <div style={{ fontSize: 13, opacity: .92, marginTop: 3 }}>
+                        {etiquetaRol(editingItem)}{editingItem.email ? ` · ${editingItem.email}` : ''}
+                      </div>
+                    )}
+                  </div>
 
-            {/* Al dar de alta se busca primero: casi siempre la persona ya tiene
-                cuenta de otra aplicación y no hay nada que teclear. */}
-            {activeModal === 'new-student' && permisos.editarAlumnos && (
-              <>
-                <BuscarCuentaExistente rol={editingItem.rol} onMeter={meterEnElClub} />
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'var(--ink-3)', fontSize: 11, fontWeight: 700 }}>
-                  <span style={{ flex: 1, height: 1, background: 'var(--line)' }} />
-                  O CREAR LA CUENTA DESDE CERO
-                  <span style={{ flex: 1, height: 1, background: 'var(--line)' }} />
-                </div>
-              </>
-            )}
+                  {!permisos.editarAlumnos && (
+                    <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)', background: 'var(--bg-3)', padding: '8px 12px', borderRadius: 10 }}>
+                      Solo consulta: tu perfil no puede cambiar los datos de las fichas.
+                    </p>
+                  )}
 
-            <div className="field-row">
-              <div className="field">
-                <label>Nombre</label>
-                <input value={editingItem.firstName || ''} onChange={e => setEditingItem({ ...editingItem, firstName: e.target.value })} required />
-              </div>
-              <div className="field">
-                <label>Apellidos</label>
-                <input value={editingItem.lastName || ''} onChange={e => setEditingItem({ ...editingItem, lastName: e.target.value })} required />
-              </div>
-            </div>
+                  {/* Al dar de alta se busca primero: casi siempre la persona ya
+                      tiene cuenta de otra app y no hay nada que teclear. */}
+                  {!esEdit && permisos.editarAlumnos && (
+                    <>
+                      <BuscarCuentaExistente rol={editingItem.rol} onMeter={meterEnElClub} />
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'var(--ink-3)', fontSize: 11, fontWeight: 700 }}>
+                        <span style={{ flex: 1, height: 1, background: 'var(--line)' }} />
+                        O CREAR LA CUENTA DESDE CERO
+                        <span style={{ flex: 1, height: 1, background: 'var(--line)' }} />
+                      </div>
+                    </>
+                  )}
 
-            <div className="field">
-              <label>Correo Electrónico</label>
-              <input type="email" value={editingItem.email || ''} onChange={e => setEditingItem({ ...editingItem, email: e.target.value })} required />
-            </div>
+                  <div className="ficha-cols" style={{ display: 'grid', gridTemplateColumns: esEdit ? '240px 1fr' : '1fr', gap: 22, alignItems: 'start' }}>
+                    {/* Columna izquierda: foto + datos clave (solo al editar). */}
+                    {esEdit && (
+                      <aside style={{ display: 'grid', gap: 14 }}>
+                        <div style={{
+                          width: '100%', aspectRatio: '1 / 1', borderRadius: 16, overflow: 'hidden',
+                          background: 'var(--bg-3)', display: 'grid', placeItems: 'center', border: '1px solid var(--line)',
+                        }}>
+                          {editingItem.avatar
+                            ? <img src={editingItem.avatar} alt={nombre} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                            : <span style={{ fontSize: 52, fontWeight: 800, color: 'var(--ink-3)' }}>{iniciales.toUpperCase()}</span>}
+                        </div>
+                        {claves.length > 0 && (
+                          <div style={{ background: 'var(--bg-3)', borderRadius: 14, padding: '12px 14px', display: 'grid', gap: 9 }}>
+                            {claves.map(([k, v]) => (
+                              <div key={k} style={{ display: 'flex', gap: 10, alignItems: 'baseline' }}>
+                                <span style={{ flex: '0 0 84px', textAlign: 'right', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--purple)' }}>{k}</span>
+                                <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--ink)', minWidth: 0, wordBreak: 'break-word' }}>{v}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </aside>
+                    )}
 
-            <div className="field-row">
-              <div className="field">
-                <label>Teléfono</label>
-                <input type="tel" value={editingItem.phone || ''} onChange={e => setEditingItem({ ...editingItem, phone: e.target.value })} placeholder="Ej. 600 123 456" />
-              </div>
-              <div className="field">
-                <label>Fecha de nacimiento</label>
-                <input type="date" value={(editingItem.birthday || '').slice(0, 10)} onChange={e => setEditingItem({ ...editingItem, birthday: e.target.value })} />
-                {editingItem.birthday && (
-                  <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
-                    {fmtFecha(editingItem.birthday)}{edadDe(editingItem.birthday) != null ? ` · ${edadDe(editingItem.birthday)} años` : ''}
-                  </span>
-                )}
-              </div>
-            </div>
+                    {/* Columna derecha: los campos, agrupados en tarjetas. */}
+                    <div style={{ display: 'grid', gap: 16, minWidth: 0 }}>
+                      <div style={{ background: esEdit ? 'var(--bg-3)' : 'transparent', borderRadius: esEdit ? 14 : 0, padding: esEdit ? 16 : 0 }}>
+                        {esEdit && <p style={fichaCardTitulo}>Datos personales</p>}
+                        <div className="field-row">
+                          <div className="field">
+                            <label>Nombre</label>
+                            <input value={editingItem.firstName || ''} onChange={e => setEditingItem({ ...editingItem, firstName: e.target.value })} required />
+                          </div>
+                          <div className="field">
+                            <label>Apellidos</label>
+                            <input value={editingItem.lastName || ''} onChange={e => setEditingItem({ ...editingItem, lastName: e.target.value })} required />
+                          </div>
+                        </div>
+                        <div className="field">
+                          <label>Correo electrónico</label>
+                          <input type="email" value={editingItem.email || ''} onChange={e => setEditingItem({ ...editingItem, email: e.target.value })} required />
+                        </div>
+                        <div className="field-row">
+                          <div className="field">
+                            <label>Teléfono</label>
+                            <input type="tel" value={editingItem.phone || ''} onChange={e => setEditingItem({ ...editingItem, phone: e.target.value })} placeholder="Ej. 600 123 456" />
+                          </div>
+                          <div className="field">
+                            <label>Fecha de nacimiento</label>
+                            <input type="date" value={(editingItem.birthday || '').slice(0, 10)} onChange={e => setEditingItem({ ...editingItem, birthday: e.target.value })} />
+                            {editingItem.birthday && (
+                              <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                                {fmtFecha(editingItem.birthday)}{edadDe(editingItem.birthday) != null ? ` · ${edadDe(editingItem.birthday)} años` : ''}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
 
-            {/* Datos fiscales: sin ellos la factura sale incompleta. */}
-            <div className="field-row">
-              <div className="field">
-                <label>DNI / NIF</label>
-                <input value={editingItem.dni || ''} onChange={e => setEditingItem({ ...editingItem, dni: e.target.value })} placeholder="Ej. 12345678Z" />
-              </div>
-              <div className="field">
-                <label>Domicilio</label>
-                <input value={editingItem.domicilio || ''} onChange={e => setEditingItem({ ...editingItem, domicilio: e.target.value })} placeholder="Calle, número, piso" />
-              </div>
-            </div>
-            <div className="field-row">
-              <div className="field">
-                <label>Código postal</label>
-                <input value={editingItem.cp || ''} onChange={e => setEditingItem({ ...editingItem, cp: e.target.value })} placeholder="11201" />
-              </div>
-              <div className="field">
-                <label>Población</label>
-                <input value={editingItem.poblacion || ''} onChange={e => setEditingItem({ ...editingItem, poblacion: e.target.value })} placeholder="Algeciras" />
-              </div>
-            </div>
+                      {/* Datos fiscales: sin ellos la factura sale incompleta. */}
+                      <div style={{ background: esEdit ? 'var(--bg-3)' : 'transparent', borderRadius: esEdit ? 14 : 0, padding: esEdit ? 16 : 0 }}>
+                        {esEdit && <p style={fichaCardTitulo}>Datos fiscales</p>}
+                        <div className="field-row">
+                          <div className="field">
+                            <label>DNI / NIF</label>
+                            <input value={editingItem.dni || ''} onChange={e => setEditingItem({ ...editingItem, dni: e.target.value })} placeholder="Ej. 12345678Z" />
+                          </div>
+                          <div className="field">
+                            <label>Domicilio</label>
+                            <input value={editingItem.domicilio || ''} onChange={e => setEditingItem({ ...editingItem, domicilio: e.target.value })} placeholder="Calle, número, piso" />
+                          </div>
+                        </div>
+                        <div className="field-row">
+                          <div className="field">
+                            <label>Código postal</label>
+                            <input value={editingItem.cp || ''} onChange={e => setEditingItem({ ...editingItem, cp: e.target.value })} placeholder="11201" />
+                          </div>
+                          <div className="field">
+                            <label>Población</label>
+                            <input value={editingItem.poblacion || ''} onChange={e => setEditingItem({ ...editingItem, poblacion: e.target.value })} placeholder="Algeciras" />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
 
-            {activeModal === 'edit-student' && editingItem.id && (
-              <div style={{ borderTop: '1px solid var(--line)', paddingTop: 16 }}>
-                <FichaAlumnoClases studentId={editingItem.id} nacimiento={editingItem.birthday}
-                  nombre={`${editingItem.firstName || ''} ${editingItem.lastName || ''}`.trim()} showToast={showToast} />
-                {/* Ficha 360º (ticket #222): económico, asistencia y resumen anual.
-                    Lleva dinero, así que solo el personal del club. */}
-                {permisos.editarAlumnos && <FichaAlumno360 studentId={editingItem.id} />}
-              </div>
-            )}
+                  {esEdit && editingItem.id && (
+                    <div style={{ borderTop: '1px solid var(--line)', paddingTop: 16 }}>
+                      <FichaAlumnoClases studentId={editingItem.id} nacimiento={editingItem.birthday}
+                        nombre={nombre} showToast={showToast} />
+                      {/* Ficha 360º (ticket #222): económico, asistencia y resumen anual.
+                          Lleva dinero, así que solo el personal del club. */}
+                      {permisos.editarAlumnos && <FichaAlumno360 studentId={editingItem.id} />}
+                    </div>
+                  )}
 
-            <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer', fontSize: 14, fontWeight: 700, color: 'var(--ink)', borderTop: '1px solid var(--line)', paddingTop: 16 }}>
-              <input type="checkbox" checked={!!editingItem.isSuperAdmin} onChange={e => setEditingItem({ ...editingItem, isSuperAdmin: e.target.checked })} style={{ width: 18, height: 18 }} />
-              ¿Tiene permisos de Administrador?
-            </label>
-            {editingItem.esInstructor && (
-              <p style={{ margin: '-8px 0 0', fontSize: 12, color: 'var(--ink-3)' }}>
-                Es {etiquetaRol(editingItem).toLowerCase()} del club: guardar aquí no le quita ese rol.
-              </p>
-            )}
+                  <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer', fontSize: 14, fontWeight: 700, color: 'var(--ink)', borderTop: '1px solid var(--line)', paddingTop: 16 }}>
+                    <input type="checkbox" checked={!!editingItem.isSuperAdmin} onChange={e => setEditingItem({ ...editingItem, isSuperAdmin: e.target.checked })} style={{ width: 18, height: 18 }} />
+                    ¿Tiene permisos de Administrador?
+                  </label>
+                  {editingItem.esInstructor && (
+                    <p style={{ margin: '-8px 0 0', fontSize: 12, color: 'var(--ink-3)' }}>
+                      Es {etiquetaRol(editingItem).toLowerCase()} del club: guardar aquí no le quita ese rol.
+                    </p>
+                  )}
+                </>
+              );
+            })()}
 
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10 }}>
               {activeModal === 'edit-student' && (
