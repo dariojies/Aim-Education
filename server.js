@@ -1355,22 +1355,37 @@ app.get('/api/users', authenticateSession, async (req, res) => {
         // eso son cientos de kilobytes que tardan segundos en llegar, cuando la
         // consulta en si tarda un milisegundo. Lo demas se pide al abrir la ficha.
         const result = await pool.query(
-            `SELECT user_id, name, surname, email, belt, dev_role, role
-             FROM users
-             WHERE club_id = $1 AND role IN ('student', 'instructor', 'club_owner', 'superadmin')
-             ORDER BY name, surname`,
+            `SELECT u.user_id, u.name, u.surname, u.email, u.belt, u.dev_role, u.role,
+                    -- #219 (9): es responsable/tutor de alguien (para distinguir
+                    -- tutores de alumnos).
+                    EXISTS (SELECT 1 FROM aim_familias f
+                            WHERE f.familiar_id = u.user_id
+                              AND f.tipo IN ('Padre','Madre','Tutor/a','Cónyuge')) AS es_tutor,
+                    -- #219 (8): tiene al menos una actividad activa (matrícula/
+                    -- inscripción vigente). Si no, está inactivo.
+                    EXISTS (SELECT 1 FROM tul_group_students gs WHERE gs.student_id = u.user_id) AS activo
+             FROM users u
+             WHERE u.club_id = $1 AND u.role IN ('student', 'instructor', 'club_owner', 'superadmin')
+             ORDER BY u.name, u.surname`,
             [AIM_CLUB_ID]
         );
-        const mapped = result.rows.map(u => ({
-            id: u.user_id,
-            firstName: u.name,
-            lastName: u.surname,
-            email: u.email,
-            belt: u.belt,
-            role: u.role,
-            esInstructor: (u.role === 'instructor' || u.role === 'club_owner'),
-            isSuperAdmin: (u.dev_role === 'superadmin' || u.role === 'superadmin' || u.role === 'SuperAdmin')
-        }));
+        const mapped = result.rows.map(u => {
+            const esInstructor = (u.role === 'instructor' || u.role === 'club_owner');
+            // Un tutor es responsable de alguien y no hace actividades ni imparte.
+            const esTutor = !!u.es_tutor && !u.activo && !esInstructor;
+            return {
+                id: u.user_id,
+                firstName: u.name,
+                lastName: u.surname,
+                email: u.email,
+                belt: u.belt,
+                role: u.role,
+                esInstructor,
+                esTutor,
+                activo: !!u.activo,
+                isSuperAdmin: (u.dev_role === 'superadmin' || u.role === 'superadmin' || u.role === 'SuperAdmin'),
+            };
+        });
         // Sin cache: al meter o sacar a alguien el cambio tiene que verse ya, y
         // el navegador estaba reutilizando la respuesta anterior.
         res.set('Cache-Control', 'no-store');

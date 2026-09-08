@@ -437,7 +437,8 @@ function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos }) {
   const [rangos, setRangos] = useState({});
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [tipo, setTipo] = useState("todos");   // todos | alumnos | instructores
+  const [tipo, setTipo] = useState("todos");   // todos | alumnos | tutores | instructores
+  const [estado, setEstado] = useState("todos"); // todos | activos | inactivos (#219.8)
 
   useEffect(() => {
     setLoading(true);
@@ -452,14 +453,21 @@ function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos }) {
       .catch(() => {});
   }, [refreshTrigger]);
 
+  const esAlumno = (u) => !u.esInstructor && !u.esTutor;
   const visible = users.filter(u => {
-    if (tipo === "alumnos" && u.esInstructor) return false;
+    if (tipo === "alumnos" && !esAlumno(u)) return false;
+    if (tipo === "tutores" && !u.esTutor) return false;
     if (tipo === "instructores" && !u.esInstructor) return false;
+    // Estado (matrícula/actividad vigente): activo = tiene alguna actividad.
+    if (estado === "activos" && !u.activo) return false;
+    if (estado === "inactivos" && u.activo) return false;
     if (!search) return true;
     const q = search.toLowerCase();
     return `${u.firstName} ${u.lastName} ${u.email}`.toLowerCase().includes(q);
   });
   const nInstructores = users.filter(u => u.esInstructor).length;
+  const nTutores = users.filter(u => u.esTutor).length;
+  const nAlumnos = users.filter(esAlumno).length;
 
   const handleExportCSV = () => {
     const headers = ['ID', 'Nombre', 'Apellidos', 'Email', 'Rangos', 'Rol'];
@@ -485,12 +493,20 @@ function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos }) {
           <I.Search />
           <input placeholder="Buscar por nombre o email..." value={search} onChange={e => setSearch(e.target.value)} />
         </div>
-        <div style={{ display: "flex", gap: 6 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {[["todos", `Todos (${users.length})`],
-            ["alumnos", `Alumnos (${users.length - nInstructores})`],
+            ["alumnos", `Alumnos (${nAlumnos})`],
+            ["tutores", `Tutores (${nTutores})`],
             ["instructores", `Instructores (${nInstructores})`]].map(([id, label]) => (
             <button key={id} className={`btn btn-sm ${tipo === id ? "btn-primary" : "btn-outline"}`}
               onClick={() => setTipo(id)}>{label}</button>
+          ))}
+        </div>
+        {/* Estado: activos (con actividad/matrícula vigente) vs inactivos (#219.8) */}
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {[["todos", "Estado: todos"], ["activos", "Activos"], ["inactivos", "Inactivos"]].map(([id, label]) => (
+            <button key={id} className={`btn btn-sm ${estado === id ? "btn-primary" : "btn-outline"}`}
+              onClick={() => setEstado(id)}>{label}</button>
           ))}
         </div>
         <div style={{ flex: 1 }} />
