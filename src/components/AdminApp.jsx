@@ -3476,6 +3476,7 @@ function BillingTPV({ showToast }) {
   const [resultados, setResultados] = useState([]);
   const [pagador, setPagador] = useState(null);
   const [cesta, setCesta] = useState(null);            // { familia, cargos, preview }
+  const [pagadorFactura, setPagadorFactura] = useState(''); // #219: a nombre de quién se factura (adulto)
   const [sel, setSel] = useState({});                  // cargoId -> { on, descuentoPct }
   const [extras, setExtras] = useState([]);            // { key, clienteId, nombre, concepto, descripcion, precio, ivaPct, tipo, descuentoPct }
   const [totales, setTotales] = useState(null);
@@ -3556,7 +3557,7 @@ function BillingTPV({ showToast }) {
       const r = await fetch('/api/admin/billing/tpv/cobrar', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
         body: JSON.stringify({
-          pagadorId: pagador.id,
+          pagadorId: pagadorFactura || pagador.id,
           lineas: lineasActivas.map(c => ({ cargoId: c.id, descuentoPct: c.descuentoPct })),
           extras: extras.map(e => ({ clienteId: e.clienteId, concepto: e.concepto, descuentoPct: Number(e.descuentoPct) || 0, mes: e.mes || null })),
           medioPago,
@@ -3572,6 +3573,14 @@ function BillingTPV({ showToast }) {
   const imprimirTicket = () => imprimirTicketRecibo(ticket);
 
   const family = cesta?.familia || [];
+  const adultos = family.filter(f => !f.esMenor);
+  // Por defecto la factura va al propio pagador si es adulto; si es menor, al
+  // primer adulto de la familia (hay que elegirlo antes de cobrar). #219.
+  useEffect(() => {
+    if (!pagador || !cesta) { setPagadorFactura(''); return; }
+    setPagadorFactura(pagador.esMenor ? (adultos[0]?.id || '') : pagador.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pagador?.id, cesta]);
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
@@ -3630,6 +3639,22 @@ function BillingTPV({ showToast }) {
             </div>
             <button className="btn btn-sm btn-outline" style={{ marginLeft: 'auto' }} onClick={() => { setPagador(null); setCesta(null); setExtras([]); }}>Cambiar</button>
           </div>
+
+          {/* Menor de edad: la factura debe ir a un adulto de la familia (#219). */}
+          {pagador.esMenor && (
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '10px 14px', borderRadius: 12, background: 'color-mix(in oklab, var(--orange) 10%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--orange) 35%, var(--line))' }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--orange)' }}>⚠ El alumno es menor. Factura a nombre de:</span>
+              {adultos.length ? (
+                <select value={pagadorFactura} onChange={e => setPagadorFactura(e.target.value)}
+                  style={{ fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)' }}>
+                  <option value="">Elige un adulto...</option>
+                  {adultos.map(a => <option key={a.id} value={a.id}>{a.nombre} {a.apellidos}{a.edad != null ? ` (${a.edad})` : ''}</option>)}
+                </select>
+              ) : (
+                <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>No hay ningún adulto en su familia. Añádelo en <b>Familias</b> antes de cobrar.</span>
+              )}
+            </div>
+          )}
 
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.7fr) minmax(240px, 1fr)', gap: 16, alignItems: 'start' }}>
             {/* Líneas */}
@@ -3748,7 +3773,7 @@ function BillingTPV({ showToast }) {
                   )}
                 </div>
               )}
-              <button className="btn btn-primary btn-block" disabled={cobrando || !total} onClick={cobrar} style={{ fontSize: 15, padding: '13px 0' }}>
+              <button className="btn btn-primary btn-block" disabled={cobrando || !total || (pagador.esMenor && !pagadorFactura)} onClick={cobrar} style={{ fontSize: 15, padding: '13px 0' }}>
                 {cobrando ? 'Cobrando...' : `Cobrar ${eur(total)}`}
               </button>
             </div>
@@ -3831,7 +3856,7 @@ function BillingRecibos({ showToast }) {
     if (!lineas.length) { alert('Este recibo ya está rectificado por completo.'); return; }
     const sel = {};
     lineas.forEach(l => { sel[l.cargoId] = true; });
-    setRectificando({ id: r.id, numero: r.numero, metodo: 'sustitucion', motivo: '', lineas, sel, devolver: false, yaRectificadas });
+    setRectificando({ id: r.id, numero: r.numero, metodo: 'diferencias', motivo: '', lineas, sel, devolver: false, yaRectificadas });
   }
 
   async function rectificar() {
@@ -3977,7 +4002,7 @@ function BillingRecibos({ showToast }) {
               <div className="field">
                 <label>Método</label>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  {[['sustitucion', 'Por sustitución', 'Muestra los importes correctos que quedan'], ['diferencias', 'Por diferencias', 'Muestra solo lo rectificado, en negativo']].map(([v, l, d]) => (
+                  {[['diferencias', 'Por diferencias (recomendado)', 'Solo lo que se corrige, en negativo (p. ej. −25 €). La original se queda igual.'], ['sustitucion', 'Por sustitución', 'Reemite el total ya corregido. Puede inflar la facturación.']].map(([v, l, d]) => (
                     <button key={v} type="button" onClick={() => setRectificando(x => ({ ...x, metodo: v }))}
                       style={{ flex: 1, minWidth: 0, textAlign: 'left', padding: '10px 12px', borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit',
                         border: `1.5px solid ${R.metodo === v ? 'var(--purple)' : 'var(--line)'}`,

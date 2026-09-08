@@ -5141,6 +5141,15 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
     const { pagadorId, lineas, extras, medioPago, entregado } = req.body;
     if (!pagadorId) return res.status(400).json({ error: 'Falta el pagador.' });
     if (!MEDIOS_PAGO.includes(medioPago)) return res.status(400).json({ error: 'Medio de pago no válido.' });
+    // La factura no puede ir a nombre de un menor (#219): tiene que emitirse a un
+    // adulto de su familia (padre, madre o tutor/a).
+    {
+        const rp = await pool.query(`SELECT birthday FROM users WHERE user_id = $1`, [pagadorId]);
+        const edadPag = rp.rowCount ? edadDe(rp.rows[0].birthday) : null;
+        if (edadPag != null && edadPag < 18) {
+            return res.status(400).json({ error: 'El pagador es menor de edad. La factura debe emitirse a un adulto de la familia (padre, madre o tutor/a): selecciónalo arriba.' });
+        }
+    }
     const idsSel = Array.isArray(lineas) ? lineas.map(l => l.cargoId).filter(Boolean) : [];
     const extrasArr = Array.isArray(extras) ? extras : [];
     if (idsSel.length === 0 && extrasArr.length === 0) return res.status(400).json({ error: 'No hay nada que cobrar.' });

@@ -399,6 +399,20 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                 `INSERT INTO tul_enrollment_history (club_id, group_id, student_id, student_name, group_name, activity_name, action)
                  VALUES ($1,$2,$3,$4,$5,$6,'enrolled')`,
                 [club_id, groupId, studentId, student_name, group_name, activity_name]);
+            // #219 (1): al inscribir desde Clases y horarios, el alumno aparece
+            // también en Facturación > Fichas con esa clase, sin tener que
+            // registrarlo dos veces. El descuento se ajusta luego en la ficha.
+            // Solo si hay temporada activa; si el alumno ya tenía ficha de esa
+            // clase esta temporada, se le reabre (se le quita la baja).
+            const temp = await pool.query(`SELECT id FROM aim_temporadas WHERE activa = true LIMIT 1`);
+            if (temp.rowCount) {
+                await pool.query(
+                    `INSERT INTO aim_matriculas (user_id, clase_ref, clase_origen, clase_nombre, actividad, temporada_id, descuento_pct, alta)
+                     VALUES ($1,$2,'aimtul',$3,$4,$5,0,CURRENT_DATE)
+                     ON CONFLICT (user_id, clase_ref, temporada_id) DO UPDATE SET baja = NULL`,
+                    [studentId, groupId, group_name, activity_name, temp.rows[0].id]
+                ).catch(() => {});
+            }
         }
         return true;
     }
