@@ -56,6 +56,8 @@ export function permisosDe(rol) {
             camp: true,
             // Los títulos y las notas de examen los sube el club, no el monitor.
             titulos: !instructor,
+            // Objetos perdidos: lo lleva secretaría/dirección.
+            objetos: !instructor,
             reportes: true,
             events: true,
             news: !instructor,

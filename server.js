@@ -617,6 +617,22 @@ async function initDb() {
                 hora_fin INT NOT NULL DEFAULT 24
             )
         `);
+        // Objetos perdidos (ticket #208): foto, día en que se encontró y plazo
+        // para recogerlo (2 meses por defecto). Pasado el plazo pasa al registro.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_objetos_perdidos (
+                id SERIAL PRIMARY KEY,
+                descripcion VARCHAR(255) NOT NULL,
+                foto TEXT,
+                fecha_encontrado DATE NOT NULL,
+                plazo DATE NOT NULL,
+                estado VARCHAR(20) NOT NULL DEFAULT 'activo',
+                recogido_at TIMESTAMPTZ,
+                recogido_nota VARCHAR(255),
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                created_by UUID
+            )
+        `);
         // Una tarea puede ser "sacar adelante este ticket": se enlaza y desde el
         // día se salta a él. Si el ticket desaparece, la tarea se queda suelta
         // en vez de irse con él.
@@ -1374,8 +1390,10 @@ app.get('/api/users', authenticateSession, async (req, res) => {
         );
         const mapped = result.rows.map(u => {
             const esInstructor = (u.role === 'instructor' || u.role === 'club_owner');
-            // Un tutor es responsable de alguien y no hace actividades ni imparte.
-            const esTutor = !!u.es_tutor && !u.activo && !esInstructor;
+            // Tutor = responsable de alguien. No es excluyente: un instructor (o un
+            // alumno adulto) que además es padre/madre sale también en Tutores, para
+            // tener a los papis siempre a la vista.
+            const esTutor = !!u.es_tutor;
             return {
                 id: u.user_id,
                 firstName: u.name,
@@ -2525,6 +2543,7 @@ for (const [ruta, seccion] of [
     ['/api/admin/instructores', 'instructors'],
     ['/api/admin/landing', 'portada'],
     ['/api/admin/examenes', 'titulos'],
+    ['/api/admin/objetos', 'objetos'],
 ]) {
     app.use(ruta, authenticateSession, requireSeccion(seccion));
 }
@@ -2855,6 +2874,99 @@ function requireRol(minimo) {
 // portados a nuestro panel. Ver tul-clases.js.
 app.use('/api/admin/tul', authenticateSession, requireAdmin,
     crearRouterTulClases({ pool, clubId: AIM_CLUB_ID, permisos, gruposDe, grupoSuyo }));
+
+// =============================================================================
+// OBJETOS PERDIDOS (ticket #208)
+// =============================================================================
+// La sección 'objetos' ya se cierra por ruta más arriba (no la ven los
+// instructores). La foto se sirve aparte para no cargar el base64 en la lista.
+function mapObjeto(o) {
+    const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+    const plazo = new Date(String(o.plazo).slice(0, 10) + 'T00:00:00');
+    const situacion = o.estado === 'recogido' ? 'recogido' : (plazo < hoy ? 'caducado' : 'activo');
+    return {
+        id: o.id, descripcion: o.descripcion, tieneFoto: !!o.foto,
+        fechaEncontrado: o.fecha_encontrado, plazo: o.plazo, estado: o.estado, situacion,
+        recogidoAt: o.recogido_at, recogidoNota: o.recogido_nota, createdAt: o.created_at,
+    };
+}
+
+app.get('/api/admin/objetos', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT id, descripcion, (foto IS NOT NULL) AS foto, fecha_encontrado, plazo, estado,
+                    recogido_at, recogido_nota, created_at
+             FROM aim_objetos_perdidos ORDER BY fecha_encontrado DESC, id DESC`);
+        res.set('Cache-Control', 'no-store');
+        res.json({ objetos: r.rows.map(mapObjeto) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/objetos', authenticateSession, requireAdmin, async (req, res) => {
+    const b = req.body || {};
+    if (!b.descripcion?.trim()) return res.status(400).json({ error: 'Describe el objeto (qué es).' });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.fechaEncontrado || ''))) return res.status(400).json({ error: 'Falta el día en que se encontró.' });
+    if (b.foto && !/^data:image\/(png|jpe?g|gif|webp);base64,/.test(b.foto)) return res.status(400).json({ error: 'La foto debe ser una imagen.' });
+    if (b.foto && b.foto.length > 4_400_000) return res.status(400).json({ error: 'La foto no puede pasar de 3 MB.' });
+    // Plazo: si no viene, 2 meses desde el día que se encontró.
+    let plazo = b.plazo;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(plazo || ''))) {
+        const d = new Date(b.fechaEncontrado + 'T00:00:00');
+        const meses = Number.isInteger(b.plazoMeses) ? b.plazoMeses : 2;
+        d.setMonth(d.getMonth() + meses);
+        plazo = d.toISOString().slice(0, 10);
+    }
+    try {
+        const r = await pool.query(
+            `INSERT INTO aim_objetos_perdidos (descripcion, foto, fecha_encontrado, plazo, created_by)
+             VALUES ($1,$2,$3::date,$4::date,$5) RETURNING id`,
+            [b.descripcion.trim().slice(0, 255), b.foto || null, b.fechaEncontrado, plazo, req.userSession.userId]);
+        res.status(201).json({ id: r.rows[0].id });
+    } catch (err) { console.error('[OBJETOS] create:', err); res.status(500).json({ error: 'No se pudo guardar el objeto.' }); }
+});
+
+app.patch('/api/admin/objetos/:id', authenticateSession, requireAdmin, async (req, res) => {
+    const b = req.body || {};
+    try {
+        const cur = await pool.query(`SELECT * FROM aim_objetos_perdidos WHERE id = $1`, [req.params.id]);
+        if (!cur.rowCount) return res.status(404).json({ error: 'Ese objeto no existe.' });
+        const o = cur.rows[0];
+        // Marcar como recogido / reabrir, y editar datos básicos.
+        const estado = b.estado === 'recogido' ? 'recogido' : (b.estado === 'activo' ? 'activo' : o.estado);
+        const recogidoAt = estado === 'recogido' ? (o.recogido_at || new Date()) : null;
+        await pool.query(
+            `UPDATE aim_objetos_perdidos SET
+                descripcion = $2, fecha_encontrado = COALESCE($3::date, fecha_encontrado),
+                plazo = COALESCE($4::date, plazo), estado = $5,
+                recogido_at = $6, recogido_nota = $7
+             WHERE id = $1`,
+            [o.id,
+             b.descripcion !== undefined ? (b.descripcion?.trim() || o.descripcion) : o.descripcion,
+             b.fechaEncontrado || null, b.plazo || null, estado, recogidoAt,
+             b.recogidoNota !== undefined ? (b.recogidoNota?.trim() || null) : o.recogido_nota]);
+        res.json({ success: true });
+    } catch (err) { console.error('[OBJETOS] patch:', err); res.status(500).json({ error: 'No se pudo actualizar.' }); }
+});
+
+app.delete('/api/admin/objetos/:id', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        await pool.query(`DELETE FROM aim_objetos_perdidos WHERE id = $1`, [req.params.id]);
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/admin/objetos/:id/foto', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(`SELECT foto FROM aim_objetos_perdidos WHERE id = $1`, [req.params.id]);
+        const foto = r.rows[0]?.foto;
+        if (!foto) return res.status(404).end();
+        const m = /^data:([^;,]+)(;base64)?,([\s\S]*)$/.exec(foto);
+        if (!m) return res.status(404).end();
+        res.setHeader('Content-Type', m[1] || 'image/jpeg');
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        res.end(Buffer.from(m[3], m[2] ? 'base64' : 'utf8'));
+    } catch (err) { console.error('[OBJETOS foto]', err.message); res.status(500).end(); }
+});
 
 // =============================================================================
 // EXÁMENES Y TÍTULOS (ticket #212)

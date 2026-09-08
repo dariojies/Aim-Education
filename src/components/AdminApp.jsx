@@ -17,6 +17,7 @@ import FichaAlumnoClases, { edadDe, Insignia } from './FichaAlumnoClases.jsx';
 import AdminFamilias from './AdminFamilias.jsx';
 import AdminExamenes from './AdminExamenes.jsx';
 import FichaAlumno360 from './FichaAlumno360.jsx';
+import AdminObjetosPerdidos from './AdminObjetosPerdidos.jsx';
 
 const fichaCardTitulo = { margin: '0 0 12px', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--ink-3)' };
 
@@ -38,6 +39,7 @@ function sectionLabel(id) {
     agenda: "Mi día",
     portada: "Portada de la web",
     settings: "Ajustes del club",
+    objetos: "Objetos perdidos",
     support: "Panel de soporte",
   })[id] || "Panel";
 }
@@ -453,7 +455,9 @@ function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos }) {
       .catch(() => {});
   }, [refreshTrigger]);
 
-  const esAlumno = (u) => !u.esInstructor && !u.esTutor;
+  // Los filtros no son excluyentes: un padre que además da clase o entrena sale
+  // en varias listas. Alumno = participa en actividades, o cuenta sin otro rol.
+  const esAlumno = (u) => u.activo || (!u.esInstructor && !u.esTutor);
   const visible = users.filter(u => {
     if (tipo === "alumnos" && !esAlumno(u)) return false;
     if (tipo === "tutores" && !u.esTutor) return false;
@@ -5993,6 +5997,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
     },
     {
       heading: "Club", items: [
+        { id: "objetos", label: "Objetos perdidos", icon: <I.Search /> },
         { id: "settings", label: "Ajustes", icon: <I.Settings /> },
       ]
     },
@@ -6176,6 +6181,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("settings") && <AdminSettings />}
           {ver("reportes") && <AdminReportes user={user} permisos={permisos} />}
           {ver("titulos") && <AdminExamenes showToast={showToast} />}
+          {ver("objetos") && <AdminObjetosPerdidos showToast={showToast} />}
           {ver("support") && <AdminSupport user={user} ticketId={ticketId} />}
         </div>
       </div>
