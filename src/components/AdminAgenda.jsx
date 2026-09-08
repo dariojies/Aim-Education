@@ -21,6 +21,8 @@ const comoHora = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String
 
 const fechaLarga = (f) => new Date(f + 'T12:00:00')
     .toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
+const vistaFecha = (f) => new Date(String(f).slice(0, 10) + 'T12:00:00')
+    .toLocaleDateString('es-ES', { day: '2-digit', month: 'short' });
 
 // Elegir un ticket para engancharlo a una tarea. Se puede mirar entre los
 // propios, entre los que no tiene nadie —para cogerlos— o entre todos.
@@ -158,6 +160,22 @@ export default function AdminAgenda({ showToast, user }) {
         if (r.ok) { await cargar(); showToast?.('Tarea quitada.'); }
     }
 
+    // Reprogramar una tarea vencida al día que se está viendo (ticket #225): así
+    // se recupera y deja de estar perdida en un día pasado. Si tenía hora fuera
+    // del horario o daba error, se quita la hora para no bloquear el cambio.
+    async function reprogramar(t) {
+        const r = await fetch(`/api/me/tareas/${t.id}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+            body: JSON.stringify({ fecha: dia, hora: null }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) return showToast?.(d.error || 'No se pudo mover la tarea.');
+        await cargar();
+        showToast?.(`"${t.titulo}" movida a ${dia === HOY() ? 'hoy' : 'este día'}.`);
+    }
+    // Marcar hecha una vencida y refrescar (para que salga de la lista).
+    async function marcarYRecargar(t) { await marcar(t); await cargar(); }
+
     // Cambiar el horario de trabajo propio: entre qué horas se pinta el día y se
     // pueden poner tareas (ticket #217).
     async function guardarJornada(horaInicio, horaFin) {
@@ -179,6 +197,7 @@ export default function AdminAgenda({ showToast, user }) {
 
     const conHora = (datos?.tareas || []).filter(t => t.hora);
     const sinHora = (datos?.tareas || []).filter(t => !t.hora);
+    const vencidas = datos?.vencidas || [];
 
     // El día se pinta entre las horas del horario de trabajo de cada uno
     // (ticket #217), no de 8 a 22 fijo. Por defecto 8:00–00:00.
@@ -304,6 +323,33 @@ export default function AdminAgenda({ showToast, user }) {
                     {!sinHora.length && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Nada apuntado.</p>}
                     <button className="btn btn-sm btn-outline" onClick={() => abrirEn('')}><I.Plus /> Añadir</button>
                 </div>
+
+                {/* Tareas vencidas: de días anteriores sin terminar (ticket #225).
+                    Salen aquí para reprogramarlas o hacerlas, y que ninguna quede
+                    olvidada en el calendario. */}
+                {vencidas.length > 0 && (
+                    <div style={{ background: 'color-mix(in oklab, var(--red, #dc2626) 8%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--red, #dc2626) 30%, var(--line))', borderRadius: 16, padding: 18, display: 'grid', gap: 10 }}>
+                        <div>
+                            <h3 style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 800, color: 'var(--red, #dc2626)' }}>
+                                Tareas vencidas ({vencidas.length})
+                            </h3>
+                            <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--ink-3)' }}>
+                                De días anteriores, sin terminar. Pásalas a este día o márcalas hechas.
+                            </p>
+                        </div>
+                        {vencidas.map(t => (
+                            <div key={t.id} style={{ display: 'grid', gap: 4 }}>
+                                <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--red, #dc2626)' }}>
+                                    Vencía el {vistaFecha(t.fecha)}{t.hora ? ` · ${t.hora}` : ''}
+                                </span>
+                                <TareaFila t={t} onMarcar={marcarYRecargar} onEditar={setEditando} onBorrar={borrar} onIrTicket={(id) => go(`/admin/soporte/${id}`)} />
+                                <button className="btn btn-sm btn-outline" style={{ justifySelf: 'start' }} onClick={() => reprogramar(t)}>
+                                    Pasar a {dia === HOY() ? 'hoy' : 'este día'}
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                )}
 
                 {/* Tareas que quedaron fuera del horario: se enseñan aquí para que
                     no se pierda ninguna. Se pueden editar (cambiarles la hora) o quitar. */}

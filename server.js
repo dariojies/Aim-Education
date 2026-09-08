@@ -2586,13 +2586,31 @@ app.get('/api/me/agenda', authenticateSession, requireAdmin, async (req, res) =>
             `SELECT id, title, time, end_time, venue FROM aim_eventos
              WHERE docente_id = $1 AND event_date = $2::date ORDER BY time`, [yo, fecha]
         );
-        const tareas = await pool.query(
-            `SELECT t.*, s.subject AS ticket_asunto, s.status AS ticket_estado, s.priority AS ticket_prioridad
+        const SEL_TAREA = `t.*, s.subject AS ticket_asunto, s.status AS ticket_estado, s.priority AS ticket_prioridad
              FROM aim_tareas t
-             LEFT JOIN tickets_registrosoporte s ON s.id = t.ticket_id
+             LEFT JOIN tickets_registrosoporte s ON s.id = t.ticket_id`;
+        const tareas = await pool.query(
+            `SELECT ${SEL_TAREA}
              WHERE t.user_id = $1 AND t.fecha = $2::date
              ORDER BY (t.hora IS NULL), t.hora, t.id`, [yo, fecha]
         );
+        // Tareas vencidas: de días ANTERIORES al que se está viendo, sin hacer.
+        // Salen en la vista lateral para reprogramarlas o hacerlas, y que ninguna
+        // se pierda en el calendario (ticket #225).
+        const vencidas = await pool.query(
+            `SELECT ${SEL_TAREA}
+             WHERE t.user_id = $1 AND t.hecha = false AND t.fecha < $2::date
+             ORDER BY t.fecha DESC, (t.hora IS NULL), t.hora LIMIT 200`, [yo, fecha]
+        );
+        const mapTarea = (t) => ({
+            id: t.id, titulo: t.titulo, fecha: t.fecha, hora: t.hora, horaFin: t.hora_fin,
+            notas: t.notas, hecha: t.hecha,
+            ticketId: t.ticket_id,
+            ticket: t.ticket_id ? {
+                id: t.ticket_id, asunto: t.ticket_asunto,
+                estado: t.ticket_estado, prioridad: t.ticket_prioridad,
+            } : null,
+        });
 
         res.set('Cache-Control', 'no-store');
         res.json({
@@ -2601,15 +2619,8 @@ app.get('/api/me/agenda', authenticateSession, requireAdmin, async (req, res) =>
             eventos: eventos.rows.map(e => ({
                 id: e.id, titulo: e.title, hora: e.time, horaFin: e.end_time, lugar: e.venue,
             })),
-            tareas: tareas.rows.map(t => ({
-                id: t.id, titulo: t.titulo, hora: t.hora, horaFin: t.hora_fin,
-                notas: t.notas, hecha: t.hecha,
-                ticketId: t.ticket_id,
-                ticket: t.ticket_id ? {
-                    id: t.ticket_id, asunto: t.ticket_asunto,
-                    estado: t.ticket_estado, prioridad: t.ticket_prioridad,
-                } : null,
-            })),
+            tareas: tareas.rows.map(mapTarea),
+            vencidas: vencidas.rows.map(mapTarea),
         });
     } catch (err) {
         console.error('Error cargando la agenda:', err);
