@@ -3533,7 +3533,7 @@ function BillingTPV({ showToast }) {
   })) : [];
   const lineasMotor = [
     ...lineasActivas.map(c => ({ concepto: c.concepto, descripcion: c.descripcion, tipo: c.tipo, mes: c.mes, precio: c.precio, ivaPct: c.ivaPct, descuentoPct: c.descuentoPct })),
-    ...extras.map(e => ({ concepto: e.concepto, descripcion: e.descripcion, tipo: e.tipo, mes: new Date().toISOString().slice(0, 7) + '-01', precio: e.precio, ivaPct: e.ivaPct, descuentoPct: Number(e.descuentoPct) || 0 })),
+    ...extras.map(e => ({ concepto: e.concepto, descripcion: e.descripcion, tipo: e.tipo, mes: e.mes || (new Date().toISOString().slice(0, 7) + '-01'), precio: e.precio, ivaPct: e.ivaPct, descuentoPct: Number(e.descuentoPct) || 0 })),
   ];
 
   // Recalcular totales en el servidor cuando cambian líneas/descuentos/extras.
@@ -3558,7 +3558,7 @@ function BillingTPV({ showToast }) {
         body: JSON.stringify({
           pagadorId: pagador.id,
           lineas: lineasActivas.map(c => ({ cargoId: c.id, descuentoPct: c.descuentoPct })),
-          extras: extras.map(e => ({ clienteId: e.clienteId, concepto: e.concepto, descuentoPct: Number(e.descuentoPct) || 0 })),
+          extras: extras.map(e => ({ clienteId: e.clienteId, concepto: e.concepto, descuentoPct: Number(e.descuentoPct) || 0, mes: e.mes || null })),
           medioPago,
           entregado: medioPago === 'efectivo' ? (Number(entregado) || total) : total,
         }),
@@ -3663,21 +3663,30 @@ function BillingTPV({ showToast }) {
                   <span style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', color: 'var(--purple)' }}>Extra</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 700, fontSize: 14 }}>{e.descripcion} <span style={{ color: 'var(--ink-3)', fontWeight: 500, fontSize: 12 }}>· {e.nombre}</span></div>
-                    <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{e.tipo === 'Material' ? `+${e.ivaPct}% IVA` : ''}</div>
+                    <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                      {e.mes ? new Date(e.mes).toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }) : ''}
+                      {e.mes && e.tipo === 'Material' ? ' · ' : ''}
+                      {e.tipo === 'Material' ? `+${e.ivaPct}% IVA` : ''}
+                    </div>
                   </div>
                   <div style={{ fontWeight: 800, fontFamily: 'var(--font-display)', minWidth: 66, textAlign: 'right' }}>{eur(e.precio)}</div>
                   <button className="icon-btn danger" style={{ width: 26, height: 26 }} onClick={() => setExtras(x => x.filter(y => y.key !== e.key))} aria-label="Quitar"><I.X /></button>
                 </div>
               ))}
               {/* Añadir concepto manual */}
-              {addExtra ? (
+              {addExtra ? (() => {
+                const pSel = precios.find(x => x.concepto === addExtra.concepto);
+                const periodico = pSel?.tipo === 'Mensualidad';
+                const faltaMes = periodico && !addExtra.mes;
+                return (
                 <form style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 12, padding: 12 }}
                   onSubmit={ev => {
                     ev.preventDefault();
                     const p = precios.find(x => x.concepto === addExtra.concepto);
                     const persona = family.find(f => f.id === addExtra.clienteId) || pagador;
                     if (!p || !persona) return;
-                    setExtras(x => [...x, { key: Math.random().toString(36).slice(2), clienteId: persona.id, nombre: persona.nombre, concepto: p.concepto, descripcion: p.descripcion, precio: p.precio, ivaPct: p.ivaPct, tipo: p.tipo, descuentoPct: 0 }]);
+                    if (p.tipo === 'Mensualidad' && !addExtra.mes) return;
+                    setExtras(x => [...x, { key: Math.random().toString(36).slice(2), clienteId: persona.id, nombre: persona.nombre, concepto: p.concepto, descripcion: p.descripcion, precio: p.precio, ivaPct: p.ivaPct, tipo: p.tipo, descuentoPct: 0, mes: p.tipo === 'Mensualidad' ? addExtra.mes + '-01' : null }]);
                     setAddExtra(null);
                   }}>
                   <select value={addExtra.clienteId} onChange={e => setAddExtra(a => ({ ...a, clienteId: e.target.value }))} required style={{ fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
@@ -3688,10 +3697,19 @@ function BillingTPV({ showToast }) {
                     <option value="">Concepto...</option>
                     {precios.map(p => <option key={p.concepto} value={p.concepto}>{p.descripcion} ({eur(p.precio)})</option>)}
                   </select>
-                  <button className="btn btn-sm btn-primary" type="submit" disabled={!addExtra.concepto || !addExtra.clienteId}>Añadir</button>
+                  {/* Una mensualidad se cobra a un mes concreto: si no, al generar
+                      ese mes se cobraría dos veces (ticket #220). */}
+                  {periodico && (
+                    <input type="month" value={addExtra.mes || ''} onChange={e => setAddExtra(a => ({ ...a, mes: e.target.value }))}
+                      required title="¿De qué mes es esta mensualidad?"
+                      style={{ fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: `1px solid ${faltaMes ? 'var(--orange)' : 'var(--line)'}`, background: 'var(--bg-2)' }} />
+                  )}
+                  <button className="btn btn-sm btn-primary" type="submit" disabled={!addExtra.concepto || !addExtra.clienteId || faltaMes}>Añadir</button>
                   <button className="btn btn-sm btn-outline" type="button" onClick={() => setAddExtra(null)}>Cancelar</button>
+                  {periodico && <span style={{ fontSize: 11, color: 'var(--ink-3)', flexBasis: '100%' }}>Es una mensualidad: indica el mes al que corresponde para no volver a cobrarla al generar ese mes.</span>}
                 </form>
-              ) : (
+                );
+              })() : (
                 <button className="btn btn-sm btn-outline" style={{ justifySelf: 'start' }} onClick={() => setAddExtra({ clienteId: pagador.id, concepto: '' })}>
                   <I.Plus /> Añadir concepto (material, etc.)
                 </button>

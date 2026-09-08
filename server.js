@@ -4918,7 +4918,7 @@ async function candidatosGeneracion(temporadaId, mes) {
                 m.user_id, u.name, u.surname, ct.concepto, ${SQL_TARGET_REF} AS target_ref,
                 p.descripcion, p.tipo, p.precio, p.iva_pct, m.descuento_pct,
                 EXISTS (SELECT 1 FROM aim_cargos c WHERE c.cliente_id = m.user_id AND c.concepto = ct.concepto
-                        AND c.mes = $2::date AND c.target_ref IS NOT DISTINCT FROM ${SQL_TARGET_REF}) AS ya_existe
+                        AND c.mes = $2::date AND c.estado <> 'anulado') AS ya_existe
          FROM aim_conceptos_temporada ct
          JOIN aim_precios p ON p.concepto = ct.concepto AND p.activo = true
          ${SQL_JOIN_FICHA}
@@ -4973,6 +4973,14 @@ app.post('/api/admin/billing/generar', authenticateSession, requireAdmin, async 
              JOIN aim_precios p ON p.concepto = ct.concepto AND p.activo = true
              ${SQL_JOIN_FICHA}
              WHERE ct.temporada_id = $1 AND ${SQL_FILTRO_VIGENTE}
+               -- No duplicar lo ya cobrado por adelantado: si el alumno ya tiene
+               -- un cargo vivo de ese concepto y mes (p. ej. una mensualidad que
+               -- pagó adelantada en el TPV), no se genera otro (ticket #220).
+               AND NOT EXISTS (
+                   SELECT 1 FROM aim_cargos c2
+                   WHERE c2.cliente_id = m.user_id AND c2.concepto = ct.concepto
+                     AND c2.mes = $2::date AND c2.estado <> 'anulado'
+               )
              ORDER BY m.user_id, ct.concepto, ${SQL_TARGET_REF}, m.descuento_pct DESC
              ON CONFLICT DO NOTHING
              RETURNING id`,
@@ -5158,12 +5166,20 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
             if (pr.rowCount === 0) throw { httP: 400, msg: `Concepto no válido: ${ex.concepto}` };
             const p = pr.rows[0];
             const d = Number(ex.descuentoPct) || 0;
+            // Los conceptos periódicos (mensualidades) SE COBRAN A UN MES concreto:
+            // así, cuando luego se generen los cargos de ese mes, el sistema ve que
+            // ya está pagado y no lo duplica (ticket #220, punto 12). Los conceptos
+            // puntuales (material, etc.) van al mes actual sin más.
+            const periodico = p.tipo === 'Mensualidad';
+            const mesPedido = /^\d{4}-\d{2}(-01)?$/.test(String(ex.mes || '')) ? String(ex.mes).slice(0, 7) + '-01' : null;
+            if (periodico && !mesPedido) throw { httP: 400, msg: `Indica a qué mes corresponde "${p.descripcion}".` };
+            const mesCargo = mesPedido || mesActual;
             // Sin actividad, este cobro no contaría en el beneficio por actividad.
             const act = await actividadDeConcepto(ex.concepto, client);
             const ins = await client.query(
                 `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado, origen, actividad)
                  VALUES ($1,$2,$3::date,$4,$5,$6,$7,$8,'pendiente','manual',$9) RETURNING id`,
-                [ex.clienteId || pagadorId, ex.concepto, mesActual, p.descripcion, p.tipo, p.precio, p.iva_pct, d, act]
+                [ex.clienteId || pagadorId, ex.concepto, mesCargo, p.descripcion, p.tipo, p.precio, p.iva_pct, d, act]
             );
             extraIds.push(ins.rows[0].id);
         }
