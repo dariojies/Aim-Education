@@ -4307,7 +4307,7 @@ function AdminBilling({ showToast }) {
   return (
     <>
       <div style={{ display: 'flex', gap: 10, marginBottom: 22, borderBottom: '1px solid var(--line-2)', paddingBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-        {[['cobrar', 'Cobrar (TPV)'], ['recibos', 'Recibos'], ['arqueo', 'Arqueo de caja'], ['catalogo', `Catálogo (${precios.length})`], ['clases', `Clases (${clasesMerged.length})`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra (${conceptos.length})`], ['fichas', `Fichas (${matriculas.length})`], ['generar', 'Generar cargos'], ['ajustes', 'Numeración']].map(([id, label]) => (
+        {[['cobrar', 'Cobrar (TPV)'], ['recibos', 'Recibos'], ['arqueo', 'Arqueo de caja'], ['catalogo', `Catálogo (${precios.length})`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra (${clasesMerged.length})`], ['fichas', `Fichas (${matriculas.length})`], ['generar', 'Generar cargos'], ['ajustes', 'Numeración']].map(([id, label]) => (
           <button key={id} className={`filter-pill ${tab === id ? 'is-active' : ''}`} onClick={() => setTab(id)} style={{ borderRadius: 8, padding: '8px 16px' }}>{label}</button>
         ))}
         <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: activa ? 'var(--teal)' : 'var(--orange)' }}>
@@ -4395,44 +4395,6 @@ function AdminBilling({ showToast }) {
         );
       })()}
 
-      {/* ── Clases ── */}
-      {!loading && tab === 'clases' && (
-        <div style={{ display: 'grid', gap: 14 }}>
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button className="btn btn-sm btn-primary" onClick={() => setEditClase({ nombre: '', actividad: '', esNueva: true })}>
-              <I.Plus /> Nueva clase propia
-            </button>
-            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
-              Las <b>{aimtul.groups.length}</b> clases de Aim-Tul aparecen aquí y en los desplegables <b>automáticamente y en tiempo real</b> — no hay que importarlas.
-            </span>
-          </div>
-          {Object.entries(clasesPorActividad).sort((a, b) => a[0].localeCompare(b[0], 'es')).map(([act, cs]) => (
-            <div key={act} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: '12px 16px' }}>
-              <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8 }}>{act}</div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {cs.map(c => (
-                  <span key={`${c.origen}:${c.ref}`} style={{ display: 'inline-flex', gap: 8, alignItems: 'center', background: c.origen === 'custom' ? 'color-mix(in oklab, var(--teal) 10%, var(--bg-3))' : 'var(--bg-3)', border: '1px solid var(--line-2)', borderRadius: 999, padding: c.origen === 'custom' ? '4px 6px 4px 12px' : '5px 12px', fontSize: 12, fontWeight: 700 }}>
-                    {c.nombre}
-                    <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: c.origen === 'custom' ? 'var(--teal)' : 'var(--ink-3)' }}>
-                      {c.origen === 'custom' ? 'Propia' : 'Aim-Tul'}
-                    </span>
-                    {c.origen === 'custom' && (
-                      <>
-                        <button className="icon-btn" style={{ width: 22, height: 22 }} onClick={() => setEditClase({ id: c.ref, nombre: c.nombre, actividad: clases.find(x => x.id === c.ref)?.actividad || '' })} aria-label="Editar"><I.Edit /></button>
-                        <button className="icon-btn danger" style={{ width: 22, height: 22 }} onClick={async () => {
-                          if (!window.confirm(`¿Borrar la clase propia "${c.nombre}"? Si tiene fichas, se desactivará.`)) return;
-                          await api(`/api/admin/billing/clases/${c.ref}`, { method: 'DELETE' }, 'Clase eliminada.');
-                        }} aria-label="Borrar"><I.Trash /></button>
-                      </>
-                    )}
-                  </span>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
       {/* ── Temporadas ── */}
       {!loading && tab === 'temporadas' && (
         <div style={{ display: 'grid', gap: 14 }}>
@@ -4482,6 +4444,14 @@ function AdminBilling({ showToast }) {
               ? <b style={{ color: 'var(--orange)' }}> Hay {sinConcepto} clase{sinConcepto !== 1 ? 's' : ''} sin concepto.</b>
               : <b style={{ color: 'var(--teal)' }}> Todas las clases tienen concepto.</b>}
           </p>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button className="btn btn-sm btn-primary" onClick={() => setEditClase({ nombre: '', actividad: '', esNueva: true })}>
+              <I.Plus /> Nueva clase propia
+            </button>
+            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+              Las clases de <b>Aim-Tul</b> salen aquí en vivo; las <b>propias</b> (apoyo, campamento…) se crean desde aquí.
+            </span>
+          </div>
           {acts.length === 0 && (
             <div style={{ padding: 28, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>
               No hay clases todavía.
@@ -4507,8 +4477,17 @@ function AdminBilling({ showToast }) {
                     const sin = !propios.length && !cubiertaPorActividad;
                     return (
                       <div key={`${c.origen}:${c.ref}`} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '4px 0 4px 8px' }}>
-                        <span style={{ fontSize: 13, fontWeight: 700, minWidth: 150 }}>
+                        <span style={{ fontSize: 13, fontWeight: 700, minWidth: 150, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                           {c.nombre}{c.origen === 'custom' ? <span style={{ fontSize: 10, color: 'var(--ink-3)' }}> · propia</span> : ''}
+                          {c.origen === 'custom' && (
+                            <>
+                              <button className="icon-btn" style={{ width: 20, height: 20 }} onClick={() => setEditClase({ id: c.ref, nombre: c.nombre, actividad: clases.find(x => x.id === c.ref)?.actividad || '' })} aria-label="Editar clase"><I.Edit /></button>
+                              <button className="icon-btn danger" style={{ width: 20, height: 20 }} onClick={async () => {
+                                if (!window.confirm(`¿Borrar la clase propia "${c.nombre}"? Si tiene fichas, se desactivará.`)) return;
+                                await api(`/api/admin/billing/clases/${c.ref}`, { method: 'DELETE' }, 'Clase eliminada.');
+                              }} aria-label="Borrar clase"><I.Trash /></button>
+                            </>
+                          )}
                         </span>
                         {propios.map(chip)}
                         {!propios.length && cubiertaPorActividad && (
