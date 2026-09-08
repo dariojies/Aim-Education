@@ -2499,6 +2499,44 @@ app.post('/api/admin/events/solicitudes/:id/:accion', authenticateSession, requi
     } finally { client.release(); }
 });
 
+// Editar una propuesta SIN aprobarla (ticket #213): darle una segunda vuelta y
+// dejarla pendiente. Solo mientras siga pendiente.
+app.patch('/api/admin/events/solicitudes/:id', authenticateSession, requirePermiso('editarEventos'), async (req, res) => {
+    const e = req.body?.evento || {};
+    try {
+        const s = await pool.query(`SELECT estado FROM aim_eventos_solicitudes WHERE id = $1`, [req.params.id]);
+        if (!s.rowCount) return res.status(404).json({ error: 'Esa propuesta no existe.' });
+        if (s.rows[0].estado !== 'pendiente') return res.status(409).json({ error: 'Esa propuesta ya está resuelta.' });
+        if (e.date !== undefined && !e.date) return res.status(400).json({ error: 'La propuesta necesita una fecha.' });
+        const r = await pool.query(
+            `UPDATE aim_eventos_solicitudes SET
+                titulo = COALESCE($2, titulo), descripcion = COALESCE($3, descripcion),
+                fecha = COALESCE($4::date, fecha), end_date = $5::date, hora = $6, hora_fin = $7,
+                lugar = COALESCE($8, lugar), actividad = COALESCE($9, actividad),
+                price = $10, precio = $11, precio_socio = $12, poster_url = $13,
+                docente_id = $14, comentario_privado = $15
+             WHERE id = $1 AND estado = 'pendiente' RETURNING id`,
+            [req.params.id,
+             e.title !== undefined ? e.title : null,
+             e.description !== undefined ? e.description : null,
+             e.date || null, e.endDate || null, e.time || null, e.endTime || null,
+             e.venue !== undefined ? e.venue : null,
+             e.activity !== undefined ? e.activity : null,
+             e.price !== undefined ? e.price : null,
+             e.precio === undefined ? null : numONull(e.precio),
+             e.precioSocio === undefined ? null : numONull(e.precioSocio),
+             e.posterUrl !== undefined ? e.posterUrl : null,
+             e.docenteId || null,
+             e.comentarioPrivado !== undefined ? (e.comentarioPrivado?.trim() || null) : null]
+        );
+        if (!r.rowCount) return res.status(409).json({ error: 'Esa propuesta ya está resuelta.' });
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Error editando la solicitud de evento:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Admin: eliminar un inscrito.
 app.delete('/api/admin/events/:id/registrations/:regId', authenticateSession, requirePermiso('editarEventos'), async (req, res) => {
     try {

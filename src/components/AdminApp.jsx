@@ -2709,23 +2709,25 @@ function SolicitudesEventos({ permisos, showToast, onEditar, recargarEventos, re
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 20 }}>
           {pendientes.map(sol => (
             <TarjetaEvento key={sol.id} ev={sol} conDinero={conDinero} pie={
-              <div style={{ display: 'grid', gap: 8 }}>
-                <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>
-                  {puedeResolver ? `Lo propone ${sol.solicitante}` : 'Esperando respuesta del club'}
-                </div>
+              <div style={{ display: 'grid', gap: 10 }}>
+                {/* La nota privada va arriba y bien separada, no entre los botones
+                    (ticket #213). */}
                 {sol.comentarioPrivado && (
                   <div style={{ fontSize: 11, background: 'var(--bg-3)', border: '1px dashed var(--line)', borderRadius: 8, padding: '8px 10px' }}>
-                    <b style={{ display: 'block', color: 'var(--ink-2)' }}>Nota para el club</b>
+                    <b style={{ display: 'block', color: 'var(--ink-2)' }}>Nota para el club (privada)</b>
                     <span style={{ color: 'var(--ink-3)' }}>{sol.comentarioPrivado}</span>
                     <span style={{ display: 'block', marginTop: 4, color: 'var(--ink-3)', fontStyle: 'italic' }}>
                       No se publica: al aprobarlo se queda aquí.
                     </span>
                   </div>
                 )}
+                <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                  {puedeResolver ? `Lo propone ${sol.solicitante}` : 'Esperando respuesta del club'}
+                </div>
                 {puedeResolver && (
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', borderTop: '1px solid var(--line-2)', paddingTop: 10 }}>
                     <button className="btn btn-sm btn-primary" onClick={() => resolver(sol, 'aprobar')}>Aprobar</button>
-                    <button className="btn btn-sm btn-outline" onClick={() => onEditar(sol)}>Corregir y aprobar</button>
+                    <button className="btn btn-sm btn-outline" onClick={() => onEditar(sol)}>Editar</button>
                     <button className="btn btn-sm btn-outline" onClick={() => resolver(sol, 'rechazar')}>Rechazar</button>
                   </div>
                 )}
@@ -2966,6 +2968,25 @@ function AdminEvents({ showToast, permisos = {} }) {
       showToast?.(_solicitudId ? 'Corregido y aprobado. Ya está publicado.'
         : _solicitud ? 'Propuesta enviada. El club te dirá algo.'
         : isEdit ? 'Evento actualizado.' : 'Evento creado.');
+    } catch { alert('Error de conexión.'); }
+    finally { setSaving(false); }
+  }
+
+  // Guardar los cambios de una propuesta SIN aprobarla: se queda pendiente para
+  // darle una segunda vuelta (ticket #213).
+  async function guardarSolicitud() {
+    const { _solicitud, _solicitudId, ...datos } = editing;
+    if (!_solicitudId) return;
+    setSaving(true);
+    try {
+      const r = await fetch(`/api/admin/events/solicitudes/${_solicitudId}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ evento: datos }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(d.error || 'No se pudieron guardar los cambios.'); setSaving(false); return; }
+      setEditing(null); load(); setRefrescarSol(x => x + 1);
+      showToast?.('Propuesta actualizada. Sigue pendiente de aprobar.');
     } catch { alert('Error de conexión.'); }
     finally { setSaving(false); }
   }
@@ -3275,7 +3296,7 @@ function AdminEvents({ showToast, permisos = {} }) {
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }} onClick={e => { if (e.target === e.currentTarget) setEditing(null); }}>
           <div style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 560, maxHeight: '90vh', overflowY: 'auto', padding: 24 }}>
             <h3 style={{ margin: '0 0 16px', fontSize: 18, fontWeight: 800 }}>
-              {editing._solicitudId ? 'Corregir la propuesta antes de aprobarla'
+              {editing._solicitudId ? 'Editar la propuesta'
                 : editing._solicitud ? 'Proponer un evento'
                 : editing.id ? 'Editar evento' : 'Nuevo evento'}
             </h3>
@@ -3360,12 +3381,21 @@ function AdminEvents({ showToast, permisos = {} }) {
                   </div>
                 )}
 
-                <button type="submit" className="btn btn-primary" disabled={saving}>
-                  {saving ? 'Guardando...'
-                    : editing._solicitudId ? 'Guardar y aprobar'
-                    : editing._solicitud ? 'Enviar la propuesta'
-                    : editing.id ? 'Guardar cambios' : 'Crear evento'}
-                </button>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {/* Al corregir una propuesta se puede guardar sin aprobarla,
+                      para darle una segunda vuelta (ticket #213). */}
+                  {editing._solicitudId && (
+                    <button type="button" className="btn btn-outline" disabled={saving} onClick={guardarSolicitud}>
+                      Guardar cambios (sin aprobar)
+                    </button>
+                  )}
+                  <button type="submit" className="btn btn-primary" disabled={saving}>
+                    {saving ? 'Guardando...'
+                      : editing._solicitudId ? 'Guardar y aprobar'
+                      : editing._solicitud ? 'Enviar la propuesta'
+                      : editing.id ? 'Guardar cambios' : 'Crear evento'}
+                  </button>
+                </div>
               </div>
             </form>
           </div>
