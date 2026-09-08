@@ -13,8 +13,9 @@ import { useRouter } from '../App.jsx';
 const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const HOY = () => iso(new Date());
 
-// De qué hora a qué hora se pinta el día.
-const DESDE = 8, HASTA = 22;
+// De qué hora a qué hora se pinta el día por defecto (si no hay horario propio).
+const DESDE = 8, HASTA = 24;
+const selHora = { fontFamily: 'inherit', fontSize: 12, fontWeight: 700, padding: '5px 6px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)' };
 const enMinutos = (h) => { const [a, b] = String(h || '').split(':').map(Number); return (a || 0) * 60 + (b || 0); };
 const comoHora = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 
@@ -157,6 +158,18 @@ export default function AdminAgenda({ showToast, user }) {
         if (r.ok) { await cargar(); showToast?.('Tarea quitada.'); }
     }
 
+    // Cambiar el horario de trabajo propio: entre qué horas se pinta el día y se
+    // pueden poner tareas (ticket #217).
+    async function guardarJornada(horaInicio, horaFin) {
+        const r = await fetch('/api/me/agenda-config', {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+            body: JSON.stringify({ horaInicio, horaFin }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) return showToast?.(d.error || 'No se pudo guardar el horario.');
+        await cargar();
+    }
+
     // Lo que ocupa cada franja: las clases y los eventos son intocables, las
     // tareas con hora se pintan encima de su hueco.
     const ocupado = [
@@ -167,9 +180,14 @@ export default function AdminAgenda({ showToast, user }) {
     const conHora = (datos?.tareas || []).filter(t => t.hora);
     const sinHora = (datos?.tareas || []).filter(t => !t.hora);
 
+    // El día se pinta entre las horas del horario de trabajo de cada uno
+    // (ticket #217), no de 8 a 22 fijo. Por defecto 8:00–00:00.
+    const desdeH = datos?.config?.horaInicio ?? DESDE;
+    const hastaH = datos?.config?.horaFin ?? HASTA;
+
     // Una franja por hora. Dentro de cada una se listan las cosas que empiezan ahí.
     const franjas = [];
-    for (let h = DESDE; h < HASTA; h++) {
+    for (let h = desdeH; h < hastaH; h++) {
         const desde = h * 60, hasta = desde + 60;
         const dentro = (x) => enMinutos(x.hora) >= desde && enMinutos(x.hora) < hasta;
         franjas.push({
@@ -178,6 +196,12 @@ export default function AdminAgenda({ showToast, user }) {
             tareas: conHora.filter(dentro),
         });
     }
+    // Tareas que quedaron fuera del horario (p. ej. de antes de configurarlo):
+    // se enseñan aparte para que no se pierda ninguna.
+    const fueraDeHorario = conHora.filter(t => {
+        const m = enMinutos(t.hora);
+        return m < desdeH * 60 || m >= hastaH * 60;
+    });
 
     const libres = franjas.filter(f => !f.ocupado.length && !f.tareas.length).length;
     const hechas = (datos?.tareas || []).filter(t => t.hecha).length;
@@ -194,13 +218,26 @@ export default function AdminAgenda({ showToast, user }) {
                 {dia !== HOY() && <button className="btn btn-sm btn-outline" onClick={() => setDia(HOY())}>Hoy</button>}
                 <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink-2)', textTransform: 'capitalize' }}>{fechaLarga(dia)}</span>
                 <div style={{ flex: 1 }} />
+                {/* Horario de trabajo: entre estas horas se pinta el día y puedes
+                    ponerte tareas (ticket #217). */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--ink-3)' }}
+                    title="Tu horario de trabajo: solo puedes ponerte tareas entre estas horas.">
+                    <span style={{ fontWeight: 700 }}>Mi horario</span>
+                    <select value={desdeH} onChange={e => guardarJornada(Number(e.target.value), hastaH)} style={selHora}>
+                        {Array.from({ length: 24 }, (_, h) => h).map(h => <option key={h} value={h}>{String(h).padStart(2, '0')}:00</option>)}
+                    </select>
+                    <span>–</span>
+                    <select value={hastaH} onChange={e => guardarJornada(desdeH, Number(e.target.value))} style={selHora}>
+                        {Array.from({ length: 24 }, (_, i) => i + 1).map(h => <option key={h} value={h}>{h >= 24 ? '00:00' : `${String(h).padStart(2, '0')}:00`}</option>)}
+                    </select>
+                </div>
                 <button className="btn btn-sm btn-primary" onClick={() => abrirEn('')}><I.Plus /> Nueva tarea</button>
             </div>
 
             <div className="kpis">
                 <KPI label="Clases" valor={String((datos?.clases || []).length)} pie="que das hoy" />
                 <KPI label="Tareas" valor={String((datos?.tareas || []).length)} pie={`${hechas} hechas`} />
-                <KPI label="Horas libres" valor={String(libres)} pie={`de ${HASTA - DESDE} del día`} />
+                <KPI label="Horas libres" valor={String(libres)} pie={`de ${hastaH - desdeH} del día`} />
             </div>
 
             {cargando && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
@@ -267,6 +304,22 @@ export default function AdminAgenda({ showToast, user }) {
                     {!sinHora.length && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Nada apuntado.</p>}
                     <button className="btn btn-sm btn-outline" onClick={() => abrirEn('')}><I.Plus /> Añadir</button>
                 </div>
+
+                {/* Tareas que quedaron fuera del horario: se enseñan aquí para que
+                    no se pierda ninguna. Se pueden editar (cambiarles la hora) o quitar. */}
+                {fueraDeHorario.length > 0 && (
+                    <div style={{ background: 'color-mix(in oklab, var(--orange) 8%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--orange) 30%, var(--line))', borderRadius: 16, padding: 18, display: 'grid', gap: 10 }}>
+                        <div>
+                            <h3 style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 800, color: 'var(--orange)' }}>Fuera de tu horario</h3>
+                            <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--ink-3)' }}>
+                                A una hora que ya no entra en tu día. Cámbiales la hora o amplía tu horario arriba.
+                            </p>
+                        </div>
+                        {fueraDeHorario.map(t => (
+                            <TareaFila key={t.id} t={t} onMarcar={marcar} onEditar={setEditando} onBorrar={borrar} onIrTicket={(id) => go(`/admin/soporte/${id}`)} />
+                        ))}
+                    </div>
+                )}
             </div>
 
             {editando && (

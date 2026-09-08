@@ -607,6 +607,16 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_tareas_dia ON aim_tareas(user_id, fecha)`);
+        // Horario de trabajo de cada uno (ticket #217): entre qué horas se pinta
+        // su día y, por tanto, entre qué horas puede ponerse tareas. Por defecto
+        // de 8:00 a 00:00 (fin = 24). Es de cada usuario, no del club.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_agenda_prefs (
+                user_id UUID PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                hora_inicio INT NOT NULL DEFAULT 8,
+                hora_fin INT NOT NULL DEFAULT 24
+            )
+        `);
         // Una tarea puede ser "sacar adelante este ticket": se enlaza y desde el
         // día se salta a él. Si el ticket desaparece, la tarea se queda suelta
         // en vez de irse con él.
@@ -2542,6 +2552,7 @@ app.get('/api/me/agenda', authenticateSession, requireAdmin, async (req, res) =>
         res.set('Cache-Control', 'no-store');
         res.json({
             fecha, clases,
+            config: await jornadaDe(yo),
             eventos: eventos.rows.map(e => ({
                 id: e.id, titulo: e.title, hora: e.time, horaFin: e.end_time, lugar: e.venue,
             })),
@@ -2563,6 +2574,45 @@ app.get('/api/me/agenda', authenticateSession, requireAdmin, async (req, res) =>
 
 const HORA_OK = (h) => h == null || h === '' || /^([01]\d|2[0-3]):[0-5]\d$/.test(h);
 
+// El horario de trabajo de una persona (ticket #217). Por defecto 8:00–00:00.
+async function jornadaDe(userId) {
+    const r = await pool.query(`SELECT hora_inicio, hora_fin FROM aim_agenda_prefs WHERE user_id = $1`, [userId]);
+    const p = r.rows[0];
+    return { horaInicio: p ? p.hora_inicio : 8, horaFin: p ? p.hora_fin : 24 };
+}
+// ¿La hora de una tarea cae dentro de su jornada? Una tarea sin hora vale siempre.
+function dentroDeJornada(hora, j) {
+    if (!hora) return true;
+    const [h, m] = String(hora).split(':').map(Number);
+    const min = (h || 0) * 60 + (m || 0);
+    return min >= j.horaInicio * 60 && min < j.horaFin * 60;
+}
+const horaBonita = (h) => h >= 24 ? '00:00' : `${String(h).padStart(2, '0')}:00`;
+
+// El horario de trabajo del que pide: entre qué horas se pinta su día y puede
+// ponerse tareas.
+app.get('/api/me/agenda-config', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        res.set('Cache-Control', 'no-store');
+        res.json(await jornadaDe(req.userSession.userId));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/me/agenda-config', authenticateSession, requireAdmin, async (req, res) => {
+    let ini = parseInt(req.body.horaInicio, 10);
+    let fin = parseInt(req.body.horaFin, 10);
+    if (!Number.isInteger(ini) || !Number.isInteger(fin) || ini < 0 || ini > 23 || fin < 1 || fin > 24 || fin <= ini) {
+        return res.status(400).json({ error: 'El horario no es válido: la hora de fin va después de la de inicio.' });
+    }
+    try {
+        await pool.query(
+            `INSERT INTO aim_agenda_prefs (user_id, hora_inicio, hora_fin) VALUES ($1,$2,$3)
+             ON CONFLICT (user_id) DO UPDATE SET hora_inicio = excluded.hora_inicio, hora_fin = excluded.hora_fin`,
+            [req.userSession.userId, ini, fin]);
+        res.json({ horaInicio: ini, horaFin: fin });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.post('/api/me/tareas', authenticateSession, requireAdmin, async (req, res) => {
     const { fecha, titulo, hora, horaFin, notas } = req.body;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha || ''))) return res.status(400).json({ error: 'Falta el día.' });
@@ -2570,6 +2620,10 @@ app.post('/api/me/tareas', authenticateSession, requireAdmin, async (req, res) =
     if (!HORA_OK(hora) || !HORA_OK(horaFin)) return res.status(400).json({ error: 'La hora no es válida.' });
     if (hora && horaFin && horaFin <= hora) return res.status(400).json({ error: 'La hora de fin va después de la de inicio.' });
     try {
+        const jornada = await jornadaDe(req.userSession.userId);
+        if (!dentroDeJornada(hora, jornada)) {
+            return res.status(400).json({ error: `Esa hora queda fuera de tu horario de trabajo (${horaBonita(jornada.horaInicio)}–${horaBonita(jornada.horaFin)}). Cámbialo en tu día si quieres ampliarlo.` });
+        }
         const ticket = await ticketEnlazable(req, req.body.ticketId, req.body.cogerTicket);
         const r = await pool.query(
             `INSERT INTO aim_tareas (user_id, fecha, hora, hora_fin, titulo, notas, ticket_id)
@@ -2588,6 +2642,14 @@ app.post('/api/me/tareas', authenticateSession, requireAdmin, async (req, res) =
 app.patch('/api/me/tareas/:id', authenticateSession, requireAdmin, async (req, res) => {
     const { titulo, hora, horaFin, notas, hecha, fecha } = req.body;
     if (!HORA_OK(hora) || !HORA_OK(horaFin)) return res.status(400).json({ error: 'La hora no es válida.' });
+    if (hora !== undefined && hora) {
+        try {
+            const jornada = await jornadaDe(req.userSession.userId);
+            if (!dentroDeJornada(hora, jornada)) {
+                return res.status(400).json({ error: `Esa hora queda fuera de tu horario de trabajo (${horaBonita(jornada.horaInicio)}–${horaBonita(jornada.horaFin)}).` });
+            }
+        } catch (err) { return res.status(500).json({ error: err.message }); }
+    }
     const campos = [], vals = [];
     const set = (col, v) => { vals.push(v); campos.push(`${col} = $${vals.length}`); };
     if (titulo !== undefined) { if (!titulo.trim()) return res.status(400).json({ error: 'La tarea necesita un nombre.' }); set('titulo', titulo.trim().slice(0, 200)); }
