@@ -4274,9 +4274,9 @@ function mesLargo(iso) {
 function BillingGenerar({ activa, showToast }) {
   const [mes, setMes] = useState('');
   const [preview, setPreview] = useState(null);
-  const [cargos, setCargos] = useState([]);
   const [loadingPv, setLoadingPv] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [ultimoGenerado, setUltimoGenerado] = useState(null);
 
   useEffect(() => {
     fetch('/api/admin/billing/mes-a-generar', { credentials: 'include' })
@@ -4295,14 +4295,7 @@ function BillingGenerar({ activa, showToast }) {
     } catch { alert('Error de conexión.'); }
     finally { setLoadingPv(false); }
   }
-  async function cargarCargos() {
-    if (!mesIso) return;
-    try {
-      const r = await fetch(`/api/admin/billing/cargos?mes=${mesIso}&estado=pendiente`, { credentials: 'include' });
-      if (r.ok) setCargos(await r.json());
-    } catch { /* noop */ }
-  }
-  useEffect(() => { if (mesIso) { cargarPreview(); cargarCargos(); } }, [mesIso]);
+  useEffect(() => { if (mesIso) { cargarPreview(); setUltimoGenerado(null); } }, [mesIso]);
 
   async function generar() {
     if (!window.confirm(`¿Generar los cargos de ${mesLargo(mesIso)}? Es seguro repetirlo: no duplica.`)) return;
@@ -4312,43 +4305,20 @@ function BillingGenerar({ activa, showToast }) {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
         body: JSON.stringify({ mes: mesIso }),
       });
-      if (r.ok) { const d = await r.json(); showToast?.(`${d.creados} cargo${d.creados !== 1 ? 's' : ''} generado${d.creados !== 1 ? 's' : ''}.`); await cargarPreview(); await cargarCargos(); }
+      if (r.ok) { const d = await r.json(); setUltimoGenerado(d.creados); showToast?.(`${d.creados} cargo${d.creados !== 1 ? 's' : ''} generado${d.creados !== 1 ? 's' : ''}.`); await cargarPreview(); }
       else { const d = await r.json(); alert(d.error || 'Error al generar.'); }
     } catch { alert('Error de conexión.'); }
     finally { setGenerating(false); }
   }
 
-  async function borrarCargo(id) {
-    if (!window.confirm('¿Borrar este cargo pendiente?')) return;
-    const r = await fetch(`/api/admin/billing/cargos/${id}`, { method: 'DELETE', credentials: 'include' });
-    if (r.ok) { await cargarPreview(); await cargarCargos(); showToast?.('Cargo borrado.'); }
-    else { const d = await r.json(); alert(d.error || 'No se pudo borrar.'); }
-  }
-
-  // Exportar a CSV los cargos pendientes del mes elegido (ticket #231): se abre
-  // en Excel/Numbers. Con ';' y BOM para que los acentos y las columnas salgan bien.
-  function exportarCargos() {
-    if (!cargos.length) return;
-    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const filas = cargos.map(c => {
-      const base = c.precio * (1 - (c.descuentoPct || 0) / 100);
-      return [`${c.nombre} ${c.apellidos || ''}`.trim(), c.descripcion, c.precio, `${c.descuentoPct || 0}%`, base.toFixed(2)].map(esc).join(';');
-    });
-    const csv = '﻿' + ['Alumno;Concepto;Precio;Dto.;Base'].concat(filas).join('\r\n');
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
-    const a = document.createElement('a');
-    a.href = url; a.download = `cargos-pendientes-${mes}.csv`; a.click();
-    URL.revokeObjectURL(url);
-  }
-
   if (!activa) return null;
-  const totalPendiente = cargos.reduce((s, c) => s + c.precio * (1 - c.descuentoPct / 100), 0);
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
       <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>
         Genera los cargos del mes para todos los alumnos con ficha vigente, según lo definido en <b>Qué se cobra</b>.
         Se cobra por adelantado (corte el día 5). Repetirlo es seguro: no duplica. El descuento por varias mensualidades se aplica al cobrar.
+        Los cargos ya creados se consultan y exportan en la pestaña <b>Cargos pendientes</b>.
       </p>
 
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '14px 16px' }}>
@@ -4361,6 +4331,12 @@ function BillingGenerar({ activa, showToast }) {
           {generating ? 'Generando...' : `Generar ${preview?.nuevos ? `(${preview.nuevos})` : ''}`}
         </button>
       </div>
+
+      {ultimoGenerado != null && (
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--teal)', background: 'color-mix(in oklab, var(--teal) 10%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--teal) 30%, var(--line))', borderRadius: 12, padding: '10px 14px' }}>
+          {ultimoGenerado} cargo{ultimoGenerado !== 1 ? 's' : ''} generado{ultimoGenerado !== 1 ? 's' : ''} de {mesLargo(mesIso)}. Míralos y expórtalos en <b>Cargos pendientes</b>.
+        </div>
+      )}
 
       {loadingPv && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Calculando...</p>}
       {preview && (
@@ -4400,32 +4376,109 @@ function BillingGenerar({ activa, showToast }) {
           </div>
         </details>
       )}
+    </div>
+  );
+}
 
+// Apartado único de cargos pendientes (ticket #231): se ven y exportan los cargos
+// pendientes de un mes concreto o de todos, separado de la generación.
+function BillingPendientes({ activa, showToast }) {
+  const [mes, setMes] = useState('');
+  const [todos, setTodos] = useState(false);   // ver los pendientes de todos los meses
+  const [cargos, setCargos] = useState([]);
+  const [cargando, setCargando] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/admin/billing/mes-a-generar', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null).then(d => { if (d?.mes) setMes(d.mes.slice(0, 7)); }).catch(() => { });
+  }, []);
+
+  const mesIso = mes ? `${mes}-01` : '';
+
+  const cargar = useCallback(async () => {
+    if (!todos && !mesIso) return;
+    setCargando(true);
+    try {
+      const url = todos
+        ? '/api/admin/billing/cargos?estado=pendiente'
+        : `/api/admin/billing/cargos?mes=${mesIso}&estado=pendiente`;
+      const r = await fetch(url, { credentials: 'include', cache: 'no-store' });
+      if (r.ok) setCargos(await r.json());
+    } catch { /* noop */ }
+    finally { setCargando(false); }
+  }, [todos, mesIso]);
+  useEffect(() => { cargar(); }, [cargar]);
+
+  async function borrarCargo(id) {
+    if (!window.confirm('¿Borrar este cargo pendiente?')) return;
+    const r = await fetch(`/api/admin/billing/cargos/${id}`, { method: 'DELETE', credentials: 'include' });
+    if (r.ok) { await cargar(); showToast?.('Cargo borrado.'); }
+    else { const d = await r.json(); alert(d.error || 'No se pudo borrar.'); }
+  }
+
+  function exportarCargos() {
+    if (!cargos.length) return;
+    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const filas = cargos.map(c => {
+      const base = c.precio * (1 - (c.descuentoPct || 0) / 100);
+      return [`${c.nombre} ${c.apellidos || ''}`.trim(), c.descripcion, mesLargo(c.mes), c.precio, `${c.descuentoPct || 0}%`, base.toFixed(2)].map(esc).join(';');
+    });
+    const csv = '﻿' + ['Alumno;Concepto;Mes;Precio;Dto.;Base'].concat(filas).join('\r\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = `cargos-pendientes-${todos ? 'todos' : mes}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  if (!activa) return null;
+  const totalPendiente = cargos.reduce((s, c) => s + c.precio * (1 - (c.descuentoPct || 0) / 100), 0);
+
+  return (
+    <div style={{ display: 'grid', gap: 16 }}>
+      <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>
+        Todos los cargos pendientes de cobro. Elige un mes o mira los de todos los meses, y expórtalos a CSV.
+      </p>
+
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '14px 16px' }}>
+        <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, fontWeight: 700, color: 'var(--ink-2)', cursor: 'pointer' }}>
+          <input type="checkbox" checked={todos} onChange={e => setTodos(e.target.checked)} style={{ accentColor: 'var(--purple)' }} />
+          Todos los meses
+        </label>
+        {!todos && (
+          <>
+            <label style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>Mes</label>
+            <input type="month" value={mes} onChange={e => setMes(e.target.value)}
+              style={{ fontFamily: 'inherit', fontSize: 14, fontWeight: 700, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }} />
+            <span style={{ fontSize: 13, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{mesLargo(mesIso)}</span>
+          </>
+        )}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, alignItems: 'center' }}>
+          <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--ink-2)' }}>{cargos.length} cargos · base {eur(totalPendiente)}</span>
+          <button className="btn btn-sm btn-outline" onClick={exportarCargos} disabled={!cargos.length}><I.Download /> Exportar CSV</button>
+        </div>
+      </div>
+
+      {cargando && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
+      {!cargando && cargos.length === 0 && (
+        <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>No hay cargos pendientes {todos ? 'en ningún mes' : `de ${mesLargo(mesIso)}`}.</p>
+      )}
       {cargos.length > 0 && (
-        <div style={{ display: 'grid', gap: 8 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
-            <h3 style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 800, margin: 0 }}>Cargos pendientes de {mesLargo(mesIso)}</h3>
-            <div style={{ display: 'flex', gap: 10, alignItems: 'baseline' }}>
-              <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--ink-2)' }}>{cargos.length} cargos · base {eur(totalPendiente)}</span>
-              <button className="btn btn-sm btn-outline" onClick={exportarCargos}><I.Download /> Exportar CSV</button>
-            </div>
+        <div className="data-table">
+          <div className="data-table-head" style={{ gridTemplateColumns: todos ? '1.6fr 1.6fr 110px 90px 80px 60px' : '1.6fr 1.6fr 90px 80px 60px' }}>
+            <span>Alumno</span><span>Concepto</span>{todos && <span>Mes</span>}<span>Precio</span><span>Dto.</span><span></span>
           </div>
-          <div className="data-table">
-            <div className="data-table-head" style={{ gridTemplateColumns: '1.6fr 1.6fr 90px 80px 60px' }}>
-              <span>Alumno</span><span>Concepto</span><span>Precio</span><span>Dto.</span><span></span>
-            </div>
-            {cargos.map(c => (
-              <div key={c.id} className="data-table-row" style={{ gridTemplateColumns: '1.6fr 1.6fr 90px 80px 60px' }}>
-                <div className="pri">{c.nombre} {c.apellidos}</div>
-                <span style={{ fontSize: 13 }}>{c.descripcion}</span>
-                <span style={{ fontWeight: 700 }}>{eur(c.precio)}</span>
-                <span style={{ color: c.descuentoPct > 0 ? 'var(--teal)' : 'var(--ink-3)', fontWeight: 700 }}>{c.descuentoPct}%</span>
-                <div className="row-actions">
-                  <button className="icon-btn danger" onClick={() => borrarCargo(c.id)} aria-label="Borrar"><I.Trash /></button>
-                </div>
+          {cargos.map(c => (
+            <div key={c.id} className="data-table-row" style={{ gridTemplateColumns: todos ? '1.6fr 1.6fr 110px 90px 80px 60px' : '1.6fr 1.6fr 90px 80px 60px' }}>
+              <div className="pri">{c.nombre} {c.apellidos}</div>
+              <span style={{ fontSize: 13 }}>{c.descripcion}</span>
+              {todos && <span style={{ fontSize: 12, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{mesLargo(c.mes)}</span>}
+              <span style={{ fontWeight: 700 }}>{eur(c.precio)}</span>
+              <span style={{ color: c.descuentoPct > 0 ? 'var(--teal)' : 'var(--ink-3)', fontWeight: 700 }}>{c.descuentoPct}%</span>
+              <div className="row-actions">
+                <button className="icon-btn danger" onClick={() => borrarCargo(c.id)} aria-label="Borrar"><I.Trash /></button>
               </div>
-            ))}
-          </div>
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -4535,7 +4588,7 @@ function AdminBilling({ showToast }) {
   return (
     <>
       <div style={{ display: 'flex', gap: 10, marginBottom: 22, borderBottom: '1px solid var(--line-2)', paddingBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-        {[['cobrar', 'Cobrar (TPV)'], ['recibos', 'Recibos'], ['arqueo', 'Arqueo de caja'], ['catalogo', `Catálogo (${precios.length})`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra (${clasesMerged.length})`], ['fichas', `Fichas (${matriculas.length})`], ['generar', 'Generar cargos'], ['ajustes', 'Numeración']].map(([id, label]) => (
+        {[['cobrar', 'Cobrar (TPV)'], ['recibos', 'Recibos'], ['arqueo', 'Arqueo de caja'], ['catalogo', `Catálogo (${precios.length})`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra (${clasesMerged.length})`], ['fichas', `Fichas (${matriculas.length})`], ['generar', 'Generar cargos'], ['pendientes', 'Cargos pendientes'], ['ajustes', 'Numeración']].map(([id, label]) => (
           <button key={id} className={`filter-pill ${tab === id ? 'is-active' : ''}`} onClick={() => setTab(id)} style={{ borderRadius: 8, padding: '8px 16px' }}>{label}</button>
         ))}
         <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: activa ? 'var(--teal)' : 'var(--orange)' }}>
@@ -4789,6 +4842,7 @@ function AdminBilling({ showToast }) {
 
       {/* ── Generar cargos ── */}
       {!loading && tab === 'generar' && <BillingGenerar activa={activa} showToast={showToast} />}
+      {!loading && tab === 'pendientes' && <BillingPendientes activa={activa} showToast={showToast} />}
 
       {/* ── Modal concepto ── */}
       {editPrecio && (
