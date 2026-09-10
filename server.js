@@ -534,6 +534,24 @@ async function initDb() {
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
+        // Registro de quién estuvo en cada clase en cada temporada (ticket #198).
+        // La plantilla viva sigue en tul_group_students (la temporada activa); al
+        // cerrar una temporada se vuelca aquí, para poder consultar los alumnos de
+        // temporadas anteriores y promocionarlos a la clase de la temporada nueva.
+        // Tabla compartida con Learning Dungeon (se crea igual en su servidor).
+        // temporada_id va sin FK a aim_temporadas a propósito: la tabla se crea
+        // idéntica en Learning Dungeon, que no es dueño de las tablas aim_, para
+        // que no dependa de qué servidor arranca antes.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS tul_group_students_historico (
+                group_id UUID NOT NULL REFERENCES tul_groups(group_id) ON DELETE CASCADE,
+                student_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                temporada_id INTEGER NOT NULL,
+                archived_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (group_id, student_id, temporada_id)
+            )
+        `).catch(() => {}); // si tul_groups aún no existe (arranque en frío), se creará luego
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_tul_gsh_group_temp ON tul_group_students_historico (group_id, temporada_id)`).catch(() => {});
         // Catálogo de conceptos facturables. El IVA va POR CONCEPTO (antes se
         // deducía comparando tipo == 'material', de donde salía el descuadre).
         // 'precio' es SIEMPRE base imponible: el IVA se suma encima.
@@ -4818,6 +4836,24 @@ app.put('/api/admin/billing/temporadas/:id/activar', authenticateSession, requir
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
+        // Al cambiar de temporada, la plantilla viva de clases pasa a ser el
+        // registro de la temporada que se cierra (ticket #198). No se vacía la
+        // plantilla: la temporada nueva parte de la misma y se va depurando; a
+        // quien se saque de una clase queda recuperable en "Temporada anterior".
+        const saliente = await client.query('SELECT id FROM aim_temporadas WHERE activa = true');
+        for (const t of saliente.rows) {
+            if (String(t.id) === String(req.params.id)) continue; // reactivar la misma no archiva
+            await client.query(
+                `INSERT INTO tul_group_students_historico (group_id, student_id, temporada_id)
+                 SELECT gs.group_id, gs.student_id, $2
+                 FROM tul_group_students gs
+                 JOIN tul_groups g ON g.group_id = gs.group_id
+                 JOIN tul_activities a ON a.activity_id = g.activity_id
+                 WHERE a.club_id = $1
+                 ON CONFLICT (group_id, student_id, temporada_id) DO NOTHING`,
+                [AIM_CLUB_ID, t.id]
+            );
+        }
         await client.query('UPDATE aim_temporadas SET activa = false WHERE activa = true');
         const r = await client.query('UPDATE aim_temporadas SET activa = true WHERE id = $1 RETURNING id', [req.params.id]);
         if (r.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Temporada no encontrada.' }); }

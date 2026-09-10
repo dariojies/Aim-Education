@@ -485,6 +485,8 @@ export function ListaClases({ showToast }) {
 function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
   const [alumnos, setAlumnos] = useState([]);
   const [escala, setEscala] = useState([]);
+  const [tempAnterior, setTempAnterior] = useState(null); // #198: alumnos de la temporada anterior
+  const [promoviendo, setPromoviendo] = useState(null);   // id que se está promocionando
   const [cargando, setCargando] = useState(true);
   const [q, setQ] = useState('');
   const [sug, setSug] = useState([]);
@@ -520,9 +522,24 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
       const d = await api(`/groups/${grupo.id}/students`);
       setAlumnos(d.students || []);
       if (d.escala?.length) setEscala(d.escala);
+      setTempAnterior(d.temporadaAnterior || null);
     } catch (e) { alert(e.message); }
     finally { setCargando(false); }
   }, [grupo.id]);
+
+  // Promocionar a un alumno de la temporada anterior a esta clase (#198): es
+  // matricularlo en la temporada activa. Después se recarga para que salga
+  // arriba y desaparezca del subapartado.
+  const promover = useCallback(async (s) => {
+    setPromoviendo(s.id);
+    try {
+      const d = await api(`/groups/${grupo.id}/students/enroll`, { method: 'POST', body: { studentId: s.id } });
+      showToast?.(`${s.name} promocionado a ${grupo.name}.`);
+      if (d?.matriculaNueva) showToast?.(`⚠ ${s.name} no tenía matrícula vigente: recuérdale cobrar la matrícula.`, 'warn');
+      await cargar();
+    } catch (e) { alert(e.message); }
+    finally { setPromoviendo(null); }
+  }, [grupo.id, grupo.name, showToast, cargar]);
   useEffect(() => { cargar(); }, [cargar]);
 
   // Si la clase está vacía, la escala no viene con los alumnos: se pide aparte.
@@ -815,6 +832,33 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
           </div>
         ))}
       </div>
+
+      {/* Temporada anterior (#198): alumnos que estuvieron en esta clase la
+          temporada pasada y todavía no están matriculados esta. Se pueden
+          promocionar de un clic para reusar la misma clase en la temporada nueva. */}
+      {tempAnterior && tempAnterior.students.length > 0 && (
+        <div style={{ marginTop: 4, border: '1px dashed var(--line)', borderRadius: 14, background: 'var(--bg-2)', overflow: 'hidden' }}>
+          <div style={{ padding: '10px 14px', background: 'color-mix(in oklab, var(--purple) 6%, var(--bg-2))', borderBottom: '1px solid var(--line)' }}>
+            <div style={{ fontWeight: 800, fontSize: 13 }}>Temporada anterior · {tempAnterior.temporada.nombre}</div>
+            <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+              Estuvieron en esta clase la temporada pasada. Promociónalos si siguen este año.
+            </div>
+          </div>
+          <div style={{ display: 'grid', gap: 6, padding: 10 }}>
+            {tempAnterior.students.map(s => (
+              <div key={s.id} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 12px', borderRadius: 10, background: 'var(--bg-1)', border: '1px solid var(--line-2)', opacity: promoviendo === s.id ? .6 : 1 }}>
+                <div style={{ flex: 1, minWidth: 160 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>{s.name}</div>
+                  <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{s.email}{s.beltName ? ` · ${s.beltName}` : ''}</div>
+                </div>
+                <button className="btn btn-sm btn-primary" disabled={promoviendo === s.id || lleno} title={lleno ? 'La clase está llena' : ''} onClick={() => promover(s)}>
+                  {promoviendo === s.id ? 'Promocionando...' : 'Promover'}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Pop-up al liberarse una plaza: se ofrece dársela a quien espera, para
           que el hueco no se quede sin cubrir ni se lo lleve alguien saltándose

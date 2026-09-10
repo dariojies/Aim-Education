@@ -281,6 +281,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
             const tipo = result.rows[0]?.tipo;
             const escala = tipo ? await escalaDe(tipo, pool) : [];
             const porOrden = Object.fromEntries(escala.map(n => [n.order, n]));
+            const temporadaAnterior = await alumnosTemporadaAnterior(req.params.groupId);
             res.json({
                 success: true,
                 escala,
@@ -288,9 +289,34 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                     ...s, name: s.name.trim(),
                     nivel: s.levelOrder != null ? porOrden[s.levelOrder] || { name: s.levelName, color: '#DDD' } : null,
                 })),
+                temporadaAnterior,
             });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
+
+    // Alumnos que estuvieron en esta clase en la última temporada cerrada y que
+    // AÚN NO están matriculados esta temporada (ticket #198): salen en un
+    // subapartado para poder promocionarlos a la clase con un clic.
+    async function alumnosTemporadaAnterior(groupId) {
+        const t = await pool.query(
+            `SELECT t.id, t.nombre FROM aim_temporadas t
+             WHERE t.activa = false
+               AND EXISTS (SELECT 1 FROM tul_group_students_historico h
+                           WHERE h.group_id = $1 AND h.temporada_id = t.id)
+             ORDER BY t.nombre DESC LIMIT 1`, [groupId]);
+        if (!t.rowCount) return null;
+        const temporada = t.rows[0];
+        const r = await pool.query(
+            `SELECT u.user_id AS id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS name,
+                    u.email, COALESCE(u.belt, 'Blanco (10º Gup)') AS "beltName"
+             FROM tul_group_students_historico h
+             JOIN users u ON u.user_id = h.student_id
+             WHERE h.group_id = $1 AND h.temporada_id = $2
+               AND NOT EXISTS (SELECT 1 FROM tul_group_students gs
+                               WHERE gs.group_id = $1 AND gs.student_id = h.student_id)
+             ORDER BY name`, [groupId, temporada.id]);
+        return { temporada, students: r.rows };
+    }
 
     // Poner el rango de un alumno en la actividad de una clase. Se usa al
     // matricular y al apuntar a la espera, para no tener que ir luego a su ficha.
