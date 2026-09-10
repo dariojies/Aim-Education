@@ -266,8 +266,10 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
         try {
             const result = await pool.query(`
                 SELECT u.user_id as id, u.email, CONCAT(u.name, ' ', COALESCE(u.surname, '')) as name,
-                       COALESCE(u.belt_level, 0)            as rank,
-                       COALESCE(u.belt, 'Blanco (10º Gup)') as "beltName",
+                       -- El cinturón blanco por defecto es SOLO de Taekwondo (ticket #230):
+                       -- en el resto de actividades, sin rango asignado no se pone nada.
+                       CASE WHEN a.activity_type = 'taekwondo_itf' THEN COALESCE(u.belt_level, 0) ELSE u.belt_level END as rank,
+                       CASE WHEN a.activity_type = 'taekwondo_itf' THEN COALESCE(u.belt, 'Blanco (10º Gup)') ELSE u.belt END as "beltName",
                        a.activity_id AS "activityId", a.activity_type AS tipo,
                        up.level_order AS "levelOrder", up.level_name AS "levelName"
                 FROM users u
@@ -307,10 +309,13 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
         if (!t.rowCount) return null;
         const temporada = t.rows[0];
         const r = await pool.query(
-            `SELECT u.user_id AS id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS name,
-                    u.email, COALESCE(u.belt, 'Blanco (10º Gup)') AS "beltName"
+            `SELECT u.user_id AS id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS name, u.email,
+                    -- Cinturón blanco por defecto solo en Taekwondo (ticket #230).
+                    CASE WHEN a.activity_type = 'taekwondo_itf' THEN COALESCE(u.belt, 'Blanco (10º Gup)') ELSE u.belt END AS "beltName"
              FROM tul_group_students_historico h
              JOIN users u ON u.user_id = h.student_id
+             JOIN tul_groups g ON g.group_id = h.group_id
+             JOIN tul_activities a ON a.activity_id = g.activity_id
              WHERE h.group_id = $1 AND h.temporada_id = $2
                AND NOT EXISTS (SELECT 1 FROM tul_group_students gs
                                WHERE gs.group_id = $1 AND gs.student_id = h.student_id)
@@ -327,6 +332,12 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
              WHERE g.group_id = $1 AND a.club_id = $2`, [groupId, clubId]);
         if (!a.rowCount) return;
         const { activity_id, activity_type } = a.rows[0];
+        // "Sin rango" (ticket #230): al elegir la opción vacía se le quita el rango
+        // en esta actividad, para poder dejarlo sin título si toca.
+        if (levelOrder === null || levelOrder === undefined || levelOrder === '') {
+            await pool.query(`DELETE FROM tul_user_progression WHERE user_id = $1 AND activity_id = $2`, [studentId, activity_id]);
+            return;
+        }
         const nivel = (await escalaDe(activity_type, pool)).find(n => n.order === Number(levelOrder));
         if (!nivel) return;
         await pool.query(

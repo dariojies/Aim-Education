@@ -612,18 +612,19 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
     finally { setGuardando(false); }
   }
 
-  // Cambiar el rango de alguien ya matriculado, sin ir a su ficha.
+  // Cambiar el rango de alguien ya matriculado, sin ir a su ficha. Vacío = quitarle
+  // el rango (ticket #230): se puede volver a "sin rango" aunque tuviera título.
   async function cambiarNivel(s, levelOrder) {
     try {
-      await api(`/groups/${grupo.id}/students/${s.id}/nivel`, { method: 'PUT', body: { levelOrder: Number(levelOrder) } });
+      await api(`/groups/${grupo.id}/students/${s.id}/nivel`, { method: 'PUT', body: { levelOrder: levelOrder === '' ? null : Number(levelOrder) } });
       await cargar();
-      showToast?.(`Rango de ${s.name} actualizado.`);
+      showToast?.(levelOrder === '' ? `${s.name} se queda sin rango.` : `Rango de ${s.name} actualizado.`);
     } catch (e) { alert(e.message); }
   }
 
   async function cambiarNivelEspera(e, levelOrder) {
     try {
-      await api(`/groups/${grupo.id}/students/${e.studentId}/nivel`, { method: 'PUT', body: { levelOrder: Number(levelOrder) } });
+      await api(`/groups/${grupo.id}/students/${e.studentId}/nivel`, { method: 'PUT', body: { levelOrder: levelOrder === '' ? null : Number(levelOrder) } });
       await cargarEspera();
     } catch (err) { alert(err.message); }
   }
@@ -799,7 +800,7 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
               <div style={{ flex: 1 }} />
               {escala.length > 0 && (
                 <select value={e.levelOrder ?? ''} onChange={ev => cambiarNivelEspera(e, ev.target.value)} style={selNivel}>
-                  <option value="" disabled>Sin rango</option>
+                  <option value="">Sin rango</option>
                   {escala.map(n => <option key={n.order} value={n.order}>{n.name}</option>)}
                 </select>
               )}
@@ -824,7 +825,7 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
             {s.nivel && <Insignia nivel={s.nivel} />}
             {escala.length > 0 && (
               <select value={s.levelOrder ?? ''} onChange={e => cambiarNivel(s, e.target.value)} style={selNivel}>
-                <option value="" disabled>Sin rango</option>
+                <option value="">Sin rango</option>
                 {escala.map(n => <option key={n.order} value={n.order}>{n.name}</option>)}
               </select>
             )}
