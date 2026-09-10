@@ -925,6 +925,9 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_anticipos_cliente ON aim_anticipos (cliente_id) WHERE estado = 'disponible'`);
+        // IVA del anticipo (ticket #238): se marca al cobrarlo (con o sin IVA) y se
+        // arrastra a la línea negativa al aplicarlo, para que la factura cuadre.
+        await client.query(`ALTER TABLE aim_anticipos ADD COLUMN IF NOT EXISTS iva_pct NUMERIC(5,2) NOT NULL DEFAULT 0`);
         // Ledger de aplicaciones: qué anticipo se gastó, en qué recibo y cuánto.
         // Permite aplicar un anticipo en varias veces y deja rastro de auditoría.
         await client.query(`
@@ -3007,7 +3010,7 @@ function requireRol(minimo) {
 // Gestión de clases y reportes de Aim-Tul (mismas tablas tul_*, mismo SQL),
 // portados a nuestro panel. Ver tul-clases.js.
 app.use('/api/admin/tul', authenticateSession, requireAdmin,
-    crearRouterTulClases({ pool, clubId: AIM_CLUB_ID, permisos, gruposDe, grupoSuyo }));
+    crearRouterTulClases({ pool, clubId: AIM_CLUB_ID, permisos, gruposDe, grupoSuyo, generarCargosDeMatricula }));
 
 // =============================================================================
 // OBJETOS PERDIDOS (ticket #208)
@@ -5209,7 +5212,13 @@ app.post('/api/admin/billing/matriculas', authenticateSession, requireAdmin, asy
              VALUES ($1,$2,$3,$4,$5,$6,$7, COALESCE($8::date, CURRENT_DATE), $9::date) RETURNING id`,
             [userId, claseRef, claseOrigen, cl.nombre, cl.actividad, temporadaId, dto, alta || null, baja || null]
         );
-        res.status(201).json({ id: r.rows[0].id });
+        // #231: al crear la ficha, su cobro de este mes queda ya pendiente (si el
+        // concepto está definido en "Qué se cobra"), sin esperar al "generar".
+        let cargosCreados = 0;
+        try {
+            cargosCreados = await generarCargosDeMatricula({ userId, claseRef, actividad: cl.actividad, temporadaId, descuentoPct: dto });
+        } catch (e) { console.error('[#231 cargo ficha]', e.message); }
+        res.status(201).json({ id: r.rows[0].id, cargosCreados });
     } catch (err) {
         if (err.code === '23505') return res.status(409).json({ error: 'Ese alumno ya tiene ficha en esa clase esta temporada.' });
         if (err.code === '22P02') return res.status(400).json({ error: 'Clase no válida.' });
@@ -5344,6 +5353,31 @@ app.post('/api/admin/billing/generar', authenticateSession, requireAdmin, async 
     }
 });
 
+// Genera ya los cargos pendientes de UNA matrícula recién creada, para el mes que
+// toca facturar (ticket #231): al apuntar a alguien a una actividad, su cobro
+// aparece pendiente al momento, sin esperar al "generar" mensual. Idempotente:
+// no duplica lo que ya exista de ese concepto y mes. Devuelve cuántos creó.
+async function generarCargosDeMatricula({ userId, claseRef, actividad, temporadaId, descuentoPct = 0, mes }, cliente = pool) {
+    if (!userId || !temporadaId) return 0;
+    const m = normalizaMes(mes || mesAGenerar());
+    const r = await cliente.query(
+        `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, target_ref, target_nombre, actividad, estado)
+         SELECT $1::uuid, ct.concepto, $2::date, p.descripcion, p.tipo, p.precio, p.iva_pct, $3::numeric,
+                (CASE WHEN ct.target_tipo = 'clase' THEN ct.target_ref ELSE NULL END), ct.target_nombre, $4::text, 'pendiente'
+         FROM aim_conceptos_temporada ct
+         JOIN aim_precios p ON p.concepto = ct.concepto AND p.activo = true
+         WHERE ct.temporada_id = $5::int
+           AND ( (ct.target_tipo = 'clase' AND ct.target_ref = $6::uuid) OR (ct.target_tipo = 'actividad' AND ct.target_actividad = $4::text) )
+           AND NOT EXISTS (
+               SELECT 1 FROM aim_cargos c
+               WHERE c.cliente_id = $1::uuid AND c.concepto = ct.concepto AND c.mes = $2::date AND c.estado <> 'anulado')
+         ON CONFLICT DO NOTHING
+         RETURNING id`,
+        [userId, m, descuentoPct, actividad || null, temporadaId, claseRef || null]
+    );
+    return r.rowCount;
+}
+
 // Listar cargos (pendientes por defecto), opcionalmente por mes o alumno.
 app.get('/api/admin/billing/cargos', authenticateSession, requireAdmin, async (req, res) => {
     const { mes, clienteId, estado } = req.query;
@@ -5399,6 +5433,8 @@ const MEDIOS_PAGO = ['tarjeta', 'bizum', 'efectivo', 'transferencia'];
 const MEDIO_TPV_ONLINE = 'tpv_online';
 // Concepto del catálogo con el que se registran los anticipos (ticket #221).
 const ANTICIPO_CONCEPTO = '01000';
+// Tipos de IVA admitidos para un anticipo (ticket #238): los vigentes en España.
+const IVAS_VALIDOS = [0, 4, 10, 21];
 
 function edadDe(birthday) {
     if (!birthday) return null;
@@ -5470,8 +5506,10 @@ app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async
         );
         // Anticipos disponibles de la familia, para poder aplicarlos (ticket #221).
         const anticipos = await pool.query(
-            `SELECT a.id, a.cliente_id, a.importe, a.saldo, a.motivo, a.created_at, u.name, u.surname
+            `SELECT a.id, a.cliente_id, a.importe, a.saldo, a.motivo, a.iva_pct, a.created_at, u.name, u.surname,
+                    o.numero AS orig_numero, o.serie AS orig_serie, o.fecha AS orig_fecha
              FROM aim_anticipos a JOIN users u ON u.user_id = a.cliente_id
+             LEFT JOIN aim_recibos o ON o.id = a.recibo_origen_id
              WHERE a.cliente_id = ANY($1::uuid[]) AND a.estado = 'disponible' AND a.saldo > 0
              ORDER BY a.created_at`,
             [fam]
@@ -5486,6 +5524,8 @@ app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async
             anticipos: anticipos.rows.map(a => ({
                 id: a.id, clienteId: a.cliente_id, nombre: a.name, apellidos: a.surname,
                 importe: Number(a.importe), saldo: Number(a.saldo), motivo: a.motivo, fecha: a.created_at,
+                ivaPct: Number(a.iva_pct) || 0,
+                facturaOrigen: a.orig_numero != null ? numeroVisible({ serie: a.orig_serie, numero: a.orig_numero, fecha: a.orig_fecha }) : null,
             })),
             cargos: cargos.rows.map(c => ({
                 id: c.id, clienteId: c.cliente_id, nombre: c.name, apellidos: c.surname,
@@ -5546,16 +5586,19 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
             if (ex.concepto === ANTICIPO_CONCEPTO) {
                 const imp = r2Server(Number(ex.importe));
                 if (!(imp > 0)) throw { httP: 400, msg: 'El anticipo necesita un importe mayor que 0 €.' };
+                // IVA del anticipo (ticket #238): con o sin IVA, para que la factura
+                // haga el cálculo. Solo se admiten los tipos válidos.
+                const ivaPct = IVAS_VALIDOS.includes(Number(ex.ivaPct)) ? Number(ex.ivaPct) : 0;
                 const motivo = (ex.motivo || '').toString().trim().slice(0, 200);
                 const clienteAnt = ex.clienteId || pagadorId;
                 const desc = motivo ? `Anticipo — ${motivo}` : 'Anticipo';
                 const ins = await client.query(
                     `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado, origen, actividad)
-                     VALUES ($1,$2,$3::date,$4,'Otros',$5,0,0,'pendiente','anticipo',NULL) RETURNING id`,
-                    [clienteAnt, ANTICIPO_CONCEPTO, mesActual, desc, imp]
+                     VALUES ($1,$2,$3::date,$4,'Otros',$5,$6,0,'pendiente','anticipo',NULL) RETURNING id`,
+                    [clienteAnt, ANTICIPO_CONCEPTO, mesActual, desc, imp, ivaPct]
                 );
                 extraIds.push(ins.rows[0].id);
-                anticiposNuevos.push({ cargoId: ins.rows[0].id, importe: imp, motivo, clienteId: clienteAnt });
+                anticiposNuevos.push({ cargoId: ins.rows[0].id, importe: imp, motivo, clienteId: clienteAnt, ivaPct });
                 continue;
             }
             const pr = await client.query(`SELECT descripcion, tipo, precio, iva_pct FROM aim_precios WHERE concepto = $1 AND activo = true`, [ex.concepto]);
@@ -5590,19 +5633,30 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
             for (const ap of anticiposArr) {
                 const imp = r2Server(Number(ap.importe));
                 if (!(imp > 0)) throw { httP: 400, msg: 'Importe de anticipo no válido.' };
+                // Se traen también el IVA y la factura donde se dejó el anticipo
+                // (ticket #238), para arrastrar el IVA y mostrar el nº en el ticket.
                 const a = await client.query(
-                    `SELECT id, cliente_id, saldo, motivo FROM aim_anticipos
-                     WHERE id = $1 AND cliente_id = ANY($2::uuid[]) AND estado = 'disponible' FOR UPDATE`,
+                    `SELECT an.id, an.cliente_id, an.saldo, an.motivo, an.iva_pct,
+                            o.numero AS orig_numero, o.serie AS orig_serie, o.fecha AS orig_fecha
+                     FROM aim_anticipos an
+                     LEFT JOIN aim_recibos o ON o.id = an.recibo_origen_id
+                     WHERE an.id = $1 AND an.cliente_id = ANY($2::uuid[]) AND an.estado = 'disponible' FOR UPDATE OF an`,
                     [ap.id, fam]
                 );
                 if (a.rowCount === 0) throw { httP: 409, msg: 'Un anticipo ya no está disponible. Refresca e inténtalo de nuevo.' };
-                const saldo = Number(a.rows[0].saldo);
+                const anRow = a.rows[0];
+                const saldo = Number(anRow.saldo);
                 if (imp > r2Server(saldo) + 0.005) throw { httP: 400, msg: `El anticipo no tiene saldo suficiente (quedan ${r2Server(saldo)} €).` };
-                const motivo = a.rows[0].motivo ? ` — ${a.rows[0].motivo}` : '';
+                const ivaAnt = Number(anRow.iva_pct) || 0;
+                const motivo = anRow.motivo ? ` — ${anRow.motivo}` : '';
+                // Nº de la factura donde se abonó el anticipo, p. ej. "Factura 202600005".
+                const factOrigen = anRow.orig_numero != null
+                    ? ` · Factura ${numeroVisible({ serie: anRow.orig_serie, numero: anRow.orig_numero, fecha: anRow.orig_fecha })}`
+                    : '';
                 const ins = await client.query(
                     `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado, origen, actividad)
-                     VALUES ($1,$2,$3::date,$4,'Otros',$5,0,0,'pendiente','anticipo_aplic',NULL) RETURNING id`,
-                    [a.rows[0].cliente_id, ANTICIPO_CONCEPTO, mesActual, `Anticipo aplicado${motivo}`, -imp]
+                     VALUES ($1,$2,$3::date,$4,'Otros',$5,$6,0,'pendiente','anticipo_aplic',NULL) RETURNING id`,
+                    [anRow.cliente_id, ANTICIPO_CONCEPTO, mesActual, `Anticipo aplicado${motivo}${factOrigen}`, -imp, ivaAnt]
                 );
                 extraIds.push(ins.rows[0].id);
                 aplicaciones.push({ cargoId: ins.rows[0].id, anticipoId: a.rows[0].id, importe: imp });
@@ -5668,9 +5722,9 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
         // de los aplicados, dejando rastro en el ledger para no contarlos dos veces.
         for (const n of anticiposNuevos) {
             await client.query(
-                `INSERT INTO aim_anticipos (cliente_id, importe, saldo, motivo, recibo_origen_id, estado, created_by)
-                 VALUES ($1,$2,$2,$3,$4,'disponible',$5)`,
-                [n.clienteId, n.importe, n.motivo || null, reciboId, req.userSession.userId]
+                `INSERT INTO aim_anticipos (cliente_id, importe, saldo, motivo, recibo_origen_id, estado, created_by, iva_pct)
+                 VALUES ($1,$2,$2,$3,$4,'disponible',$5,$6)`,
+                [n.clienteId, n.importe, n.motivo || null, reciboId, req.userSession.userId, n.ivaPct || 0]
             );
         }
         for (const ap of aplicaciones) {

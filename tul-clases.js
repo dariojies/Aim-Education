@@ -68,7 +68,7 @@ async function aplicarCinturonTKD(db, studentId, levelOrder, levelName) {
         [studentId, levelOrder]);
 }
 
-export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSuyo }) {
+export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSuyo, generarCargosDeMatricula }) {
     const router = express.Router();
 
     // Un instructor solo ve y toca las clases que lleva él. De quién es una
@@ -450,6 +450,14 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                      ON CONFLICT (user_id, clase_ref, temporada_id) DO UPDATE SET baja = NULL`,
                     [studentId, groupId, group_name, activity_name, temp.rows[0].id]
                 ).catch(() => {});
+                // #231: al apuntarle, su cobro de esa actividad queda ya pendiente
+                // (sin esperar al "generar" del mes). No duplica si ya lo tuviera.
+                if (generarCargosDeMatricula) {
+                    await generarCargosDeMatricula({
+                        userId: studentId, claseRef: groupId, actividad: activity_name,
+                        temporadaId: temp.rows[0].id, descuentoPct: 0,
+                    }).catch(e => console.error('[#231 cargo matrícula]', e.message));
+                }
             }
         }
         return true;

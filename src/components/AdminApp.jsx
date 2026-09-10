@@ -3608,7 +3608,7 @@ function BillingTPV({ showToast }) {
   const lineasMotor = [
     ...lineasActivas.map(c => ({ concepto: c.concepto, descripcion: c.descripcion, tipo: c.tipo, mes: c.mes, precio: c.precio, ivaPct: c.ivaPct, descuentoPct: c.descuentoPct })),
     ...extras.map(e => ({ concepto: e.concepto, descripcion: e.descripcion, tipo: e.tipo, mes: e.mes || (new Date().toISOString().slice(0, 7) + '-01'), precio: e.precio, ivaPct: e.ivaPct, descuentoPct: Number(e.descuentoPct) || 0 })),
-    ...antAplicados.map(x => ({ concepto: ANTICIPO_CONCEPTO, descripcion: `Anticipo aplicado${x.a.motivo ? ` — ${x.a.motivo}` : ''}`, tipo: 'Otros', mes: new Date().toISOString().slice(0, 7) + '-01', precio: -x.imp, ivaPct: 0, descuentoPct: 0 })),
+    ...antAplicados.map(x => ({ concepto: ANTICIPO_CONCEPTO, descripcion: `Anticipo aplicado${x.a.motivo ? ` — ${x.a.motivo}` : ''}${x.a.facturaOrigen ? ` · Factura ${x.a.facturaOrigen}` : ''}`, tipo: 'Otros', mes: new Date().toISOString().slice(0, 7) + '-01', precio: -x.imp, ivaPct: Number(x.a.ivaPct) || 0, descuentoPct: 0 })),
   ];
 
   // Recalcular totales en el servidor cuando cambian líneas/descuentos/extras.
@@ -3633,7 +3633,7 @@ function BillingTPV({ showToast }) {
         body: JSON.stringify({
           pagadorId: pagadorFactura || pagador.id,
           lineas: lineasActivas.map(c => ({ cargoId: c.id, descuentoPct: c.descuentoPct })),
-          extras: extras.map(e => ({ clienteId: e.clienteId, concepto: e.concepto, descuentoPct: Number(e.descuentoPct) || 0, mes: e.mes || null, importe: e.concepto === ANTICIPO_CONCEPTO ? e.precio : undefined, motivo: e.concepto === ANTICIPO_CONCEPTO ? (e.motivo || '') : undefined })),
+          extras: extras.map(e => ({ clienteId: e.clienteId, concepto: e.concepto, descuentoPct: Number(e.descuentoPct) || 0, mes: e.mes || null, importe: e.concepto === ANTICIPO_CONCEPTO ? e.precio : undefined, motivo: e.concepto === ANTICIPO_CONCEPTO ? (e.motivo || '') : undefined, ivaPct: e.concepto === ANTICIPO_CONCEPTO ? (Number(e.ivaPct) || 0) : undefined })),
           anticipos: antAplicados.map(x => ({ id: x.a.id, importe: x.imp })),
           medioPago,
           entregado: medioPago === 'efectivo' ? (Number(entregado) || total) : total,
@@ -3793,10 +3793,32 @@ function BillingTPV({ showToast }) {
                     <option value="">¿Para quién?...</option>
                     {family.map(f => <option key={f.id} value={f.id}>{f.nombre} {f.apellidos}</option>)}
                   </select>
-                  <select value={addExtra.concepto} onChange={e => setAddExtra(a => ({ ...a, concepto: e.target.value }))} required style={{ fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
-                    <option value="">Concepto...</option>
-                    {precios.filter(p => p.concepto !== ANTICIPO_CONCEPTO).map(p => <option key={p.concepto} value={p.concepto}>{p.descripcion} ({eur(p.precio)})</option>)}
-                  </select>
+                  {/* Buscador de conceptos (ticket #229): se escribe y va ofreciendo
+                      las opciones, en vez de un desplegable largo difícil de recorrer. */}
+                  <div style={{ position: 'relative', minWidth: 220, flex: 1 }}>
+                    <input value={addExtra.q ?? ''} placeholder="Buscar concepto (nombre o código)..." autoFocus required={!addExtra.concepto}
+                      onChange={e => setAddExtra(a => ({ ...a, q: e.target.value, concepto: '' }))}
+                      style={{ width: '100%', fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: `1px solid ${addExtra.concepto ? 'var(--teal)' : 'var(--line)'}`, background: 'var(--bg-2)' }} />
+                    {(() => {
+                      const qc = (addExtra.q || '').trim().toLowerCase();
+                      if (!qc || addExtra.concepto) return null;
+                      const opts = precios.filter(p => p.concepto !== ANTICIPO_CONCEPTO
+                        && (p.descripcion.toLowerCase().includes(qc) || String(p.concepto).toLowerCase().includes(qc))).slice(0, 8);
+                      if (!opts.length) return null;
+                      return (
+                        <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 6, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, marginTop: 2, overflow: 'hidden', maxHeight: 240, overflowY: 'auto', boxShadow: 'var(--shadow)' }}>
+                          {opts.map(p => (
+                            <button key={p.concepto} type="button"
+                              onMouseDown={e => { e.preventDefault(); setAddExtra(a => ({ ...a, concepto: p.concepto, q: `${p.descripcion} (${eur(p.precio)})` })); }}
+                              style={{ display: 'flex', justifyContent: 'space-between', gap: 8, width: '100%', textAlign: 'left', padding: '8px 12px', background: 'none', border: 0, borderBottom: '1px solid var(--line-2)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13 }}>
+                              <span>{p.descripcion} <span style={{ color: 'var(--ink-3)', fontSize: 11 }}>· {p.concepto}</span></span>
+                              <b>{eur(p.precio)}</b>
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </div>
                   {/* Una mensualidad se cobra a un mes concreto: si no, al generar
                       ese mes se cobraría dos veces (ticket #220). */}
                   {periodico && (
@@ -3810,7 +3832,7 @@ function BillingTPV({ showToast }) {
                 </form>
                 );
               })() : (
-                <button className="btn btn-sm btn-outline" style={{ justifySelf: 'start' }} onClick={() => setAddExtra({ clienteId: pagador.id, concepto: '' })}>
+                <button className="btn btn-sm btn-outline" style={{ justifySelf: 'start' }} onClick={() => setAddExtra({ clienteId: pagador.id, concepto: '', q: '' })}>
                   <I.Plus /> Añadir concepto (material, etc.)
                 </button>
               )}
@@ -3825,7 +3847,8 @@ function BillingTPV({ showToast }) {
                     const imp = Math.round((Number(addAnticipo.importe) + Number.EPSILON) * 100) / 100;
                     if (!persona || !(imp > 0)) return;
                     const motivo = (addAnticipo.motivo || '').trim();
-                    setExtras(x => [...x, { key: Math.random().toString(36).slice(2), clienteId: persona.id, nombre: persona.nombre, concepto: ANTICIPO_CONCEPTO, descripcion: motivo ? `Anticipo — ${motivo}` : 'Anticipo', precio: imp, ivaPct: 0, tipo: 'Otros', descuentoPct: 0, mes: null, motivo }]);
+                    const ivaPct = Number(addAnticipo.ivaPct) || 0;
+                    setExtras(x => [...x, { key: Math.random().toString(36).slice(2), clienteId: persona.id, nombre: persona.nombre, concepto: ANTICIPO_CONCEPTO, descripcion: motivo ? `Anticipo — ${motivo}` : 'Anticipo', precio: imp, ivaPct, tipo: 'Otros', descuentoPct: 0, mes: null, motivo }]);
                     setAddAnticipo(null);
                   }}>
                   <select value={addAnticipo.clienteId} onChange={e => setAddAnticipo(a => ({ ...a, clienteId: e.target.value }))} required style={{ fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
@@ -3834,6 +3857,14 @@ function BillingTPV({ showToast }) {
                   </select>
                   <input type="number" step="0.01" min="0" placeholder="Importe €" value={addAnticipo.importe || ''} onChange={e => setAddAnticipo(a => ({ ...a, importe: e.target.value }))}
                     required style={{ width: 110, fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }} />
+                  {/* IVA del anticipo (ticket #238): con o sin IVA para que cuadre la factura. */}
+                  <select value={addAnticipo.ivaPct ?? 0} onChange={e => setAddAnticipo(a => ({ ...a, ivaPct: e.target.value }))}
+                    title="IVA del anticipo" style={{ fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
+                    <option value="0">Sin IVA</option>
+                    <option value="4">IVA 4%</option>
+                    <option value="10">IVA 10%</option>
+                    <option value="21">IVA 21%</option>
+                  </select>
                   <input type="text" placeholder="Motivo / referencia (p. ej. campamento)" value={addAnticipo.motivo || ''} onChange={e => setAddAnticipo(a => ({ ...a, motivo: e.target.value }))}
                     style={{ flex: 1, minWidth: 160, fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }} />
                   <button className="btn btn-sm btn-primary" type="submit" disabled={!addAnticipo.clienteId || !(Number(addAnticipo.importe) > 0)}>Añadir anticipo</button>
@@ -4294,6 +4325,22 @@ function BillingGenerar({ activa, showToast }) {
     else { const d = await r.json(); alert(d.error || 'No se pudo borrar.'); }
   }
 
+  // Exportar a CSV los cargos pendientes del mes elegido (ticket #231): se abre
+  // en Excel/Numbers. Con ';' y BOM para que los acentos y las columnas salgan bien.
+  function exportarCargos() {
+    if (!cargos.length) return;
+    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const filas = cargos.map(c => {
+      const base = c.precio * (1 - (c.descuentoPct || 0) / 100);
+      return [`${c.nombre} ${c.apellidos || ''}`.trim(), c.descripcion, c.precio, `${c.descuentoPct || 0}%`, base.toFixed(2)].map(esc).join(';');
+    });
+    const csv = '﻿' + ['Alumno;Concepto;Precio;Dto.;Base'].concat(filas).join('\r\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = `cargos-pendientes-${mes}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  }
+
   if (!activa) return null;
   const totalPendiente = cargos.reduce((s, c) => s + c.precio * (1 - c.descuentoPct / 100), 0);
 
@@ -4336,12 +4383,32 @@ function BillingGenerar({ activa, showToast }) {
           Se crearán {preview.nuevos} cargos nuevos. (El descuento por nº de mensualidades y el IVA se calculan al cobrar en el TPV.)
         </p>
       )}
+      {/* Detalle de la previsualización (ticket #231): qué cargos se crearían, no
+          solo el número, para poder revisarlos antes de generar. */}
+      {preview && preview.detalle && preview.detalle.length > 0 && (
+        <details style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '10px 14px' }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 700, fontSize: 13 }}>
+            Ver el detalle ({preview.detalle.length}{preview.nuevos > preview.detalle.length ? ` de ${preview.nuevos}` : ''} cargos que se crearían)
+          </summary>
+          <div style={{ display: 'grid', gap: 4, marginTop: 10 }}>
+            {preview.detalle.map((d, i) => (
+              <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 13, padding: '4px 0', borderBottom: '1px solid var(--line-2)' }}>
+                <span style={{ minWidth: 0, flex: 1 }}><b>{d.nombre}</b> · {d.concepto}</span>
+                <span style={{ color: 'var(--ink-2)', fontWeight: 700 }}>{eur(d.precio)}{d.descuentoPct > 0 ? ` −${d.descuentoPct}%` : ''}</span>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
 
       {cargos.length > 0 && (
         <div style={{ display: 'grid', gap: 8 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
             <h3 style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 800, margin: 0 }}>Cargos pendientes de {mesLargo(mesIso)}</h3>
-            <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--ink-2)' }}>{cargos.length} cargos · base {eur(totalPendiente)}</span>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'baseline' }}>
+              <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--ink-2)' }}>{cargos.length} cargos · base {eur(totalPendiente)}</span>
+              <button className="btn btn-sm btn-outline" onClick={exportarCargos}><I.Download /> Exportar CSV</button>
+            </div>
           </div>
           <div className="data-table">
             <div className="data-table-head" style={{ gridTemplateColumns: '1.6fr 1.6fr 90px 80px 60px' }}>
