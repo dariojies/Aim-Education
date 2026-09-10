@@ -655,6 +655,9 @@ async function initDb() {
         // día se salta a él. Si el ticket desaparece, la tarea se queda suelta
         // en vez de irse con él.
         await client.query(`ALTER TABLE aim_tareas ADD COLUMN IF NOT EXISTS ticket_id INTEGER REFERENCES tickets_registrosoporte(id) ON DELETE SET NULL`);
+        // Tareas que se repiten (ticket #237). Al marcar hecha una recurrente se
+        // crea sola la del siguiente día/semana/mes. NULL = tarea de un solo día.
+        await client.query(`ALTER TABLE aim_tareas ADD COLUMN IF NOT EXISTS recurrencia VARCHAR(20)`);
 
         // Las imágenes del mosaico de la portada. Van en su propia tabla y no
         // dentro del JSON de ajustes para que /api/landing siga siendo ligero:
@@ -2718,7 +2721,7 @@ app.get('/api/me/agenda', authenticateSession, requireAdmin, async (req, res) =>
         );
         const mapTarea = (t) => ({
             id: t.id, titulo: t.titulo, fecha: t.fecha, hora: t.hora, horaFin: t.hora_fin,
-            notas: t.notas, hecha: t.hecha,
+            notas: t.notas, hecha: t.hecha, recurrencia: t.recurrencia || null,
             ticketId: t.ticket_id,
             ticket: t.ticket_id ? {
                 id: t.ticket_id, asunto: t.ticket_asunto,
@@ -2743,6 +2746,13 @@ app.get('/api/me/agenda', authenticateSession, requireAdmin, async (req, res) =>
 });
 
 const HORA_OK = (h) => h == null || h === '' || /^([01]\d|2[0-3]):[0-5]\d$/.test(h);
+
+// ¿La fecha (YYYY-MM-DD) es de un día ya pasado? Se compara con CURRENT_DATE del
+// servidor para que cuadre con el resto de fechas de la app (ticket #236).
+async function fechaEnPasado(fecha) {
+    const r = await pool.query('SELECT ($1::date < CURRENT_DATE) AS p', [fecha]);
+    return !!r.rows[0].p;
+}
 
 // El horario de trabajo de una persona (ticket #217). Por defecto 8:00–00:00.
 async function jornadaDe(userId) {
@@ -2789,6 +2799,9 @@ app.post('/api/me/tareas', authenticateSession, requireAdmin, async (req, res) =
     if (!titulo?.trim()) return res.status(400).json({ error: 'Ponle un nombre a la tarea.' });
     if (!HORA_OK(hora) || !HORA_OK(horaFin)) return res.status(400).json({ error: 'La hora no es válida.' });
     if (hora && horaFin && horaFin <= hora) return res.status(400).json({ error: 'La hora de fin va después de la de inicio.' });
+    // No se puede programar una tarea en un día que ya pasó (ticket #236).
+    if (await fechaEnPasado(fecha)) return res.status(400).json({ error: 'Ese día ya ha pasado: pon la tarea para hoy o más adelante.' });
+    const recurrencia = RECURRENCIAS.includes(req.body.recurrencia) ? req.body.recurrencia : null;
     try {
         const jornada = await jornadaDe(req.userSession.userId);
         if (!dentroDeJornada(hora, jornada)) {
@@ -2796,10 +2809,10 @@ app.post('/api/me/tareas', authenticateSession, requireAdmin, async (req, res) =
         }
         const ticket = await ticketEnlazable(req, req.body.ticketId, req.body.cogerTicket);
         const r = await pool.query(
-            `INSERT INTO aim_tareas (user_id, fecha, hora, hora_fin, titulo, notas, ticket_id)
-             VALUES ($1,$2::date,$3,$4,$5,$6,$7) RETURNING id`,
+            `INSERT INTO aim_tareas (user_id, fecha, hora, hora_fin, titulo, notas, ticket_id, recurrencia)
+             VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8) RETURNING id`,
             [req.userSession.userId, fecha, hora || null, horaFin || null,
-             titulo.trim().slice(0, 200), notas?.trim() || null, ticket]
+             titulo.trim().slice(0, 200), notas?.trim() || null, ticket, recurrencia]
         );
         res.status(201).json({ id: r.rows[0].id });
     } catch (err) {
@@ -2827,6 +2840,7 @@ app.patch('/api/me/tareas/:id', authenticateSession, requireAdmin, async (req, r
     if (horaFin !== undefined) set('hora_fin', horaFin || null);
     if (notas !== undefined) set('notas', notas?.trim() || null);
     if (hecha !== undefined) set('hecha', !!hecha);
+    if (req.body.recurrencia !== undefined) set('recurrencia', RECURRENCIAS.includes(req.body.recurrencia) ? req.body.recurrencia : null);
     if (fecha !== undefined) {
         if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha))) return res.status(400).json({ error: 'Día no válido.' });
         vals.push(fecha); campos.push(`fecha = $${vals.length}::date`);
@@ -2847,9 +2861,34 @@ app.patch('/api/me/tareas/:id', authenticateSession, requireAdmin, async (req, r
              WHERE id = $${vals.length - 1} AND user_id = $${vals.length} RETURNING id`, vals
         );
         if (!r.rowCount) return res.status(404).json({ error: 'Esa tarea no es tuya.' });
+        // Al terminar una tarea recurrente se crea sola la del siguiente periodo
+        // (ticket #237), salvo que ya exista. Toda la aritmética de fechas la hace
+        // Postgres para no liarla con zonas horarias.
+        if (hecha === true) await crearSiguienteRecurrente(req.params.id, req.userSession.userId);
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
+
+// Genera la próxima aparición de una tarea recurrente que se acaba de completar.
+const INTERVALO_RECURRENCIA = `(CASE t.recurrencia
+    WHEN 'diaria' THEN INTERVAL '1 day' WHEN 'semanal' THEN INTERVAL '7 days'
+    WHEN 'quincenal' THEN INTERVAL '14 days' WHEN 'mensual' THEN INTERVAL '1 month'
+    WHEN 'anual' THEN INTERVAL '1 year' END)`;
+async function crearSiguienteRecurrente(tareaId, userId) {
+    try {
+        await pool.query(
+            `INSERT INTO aim_tareas (user_id, fecha, hora, hora_fin, titulo, notas, recurrencia)
+             SELECT t.user_id, (t.fecha + ${INTERVALO_RECURRENCIA})::date, t.hora, t.hora_fin, t.titulo, t.notas, t.recurrencia
+             FROM aim_tareas t
+             WHERE t.id = $1 AND t.user_id = $2 AND t.recurrencia IS NOT NULL
+               AND NOT EXISTS (
+                 SELECT 1 FROM aim_tareas n
+                 WHERE n.user_id = t.user_id AND n.titulo = t.titulo AND n.recurrencia = t.recurrencia
+                   AND n.fecha = (t.fecha + ${INTERVALO_RECURRENCIA})::date)`,
+            [tareaId, userId]
+        );
+    } catch (err) { console.error('No se pudo crear la tarea recurrente siguiente:', err.message); }
+}
 
 app.delete('/api/me/tareas/:id', authenticateSession, requireAdmin, async (req, res) => {
     try {

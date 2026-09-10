@@ -17,6 +17,10 @@ const HOY = () => iso(new Date());
 const DESDE = 8, HASTA = 24;
 const selHora = { fontFamily: 'inherit', fontSize: 12, fontWeight: 700, padding: '5px 6px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)' };
 const enMinutos = (h) => { const [a, b] = String(h || '').split(':').map(Number); return (a || 0) * 60 + (b || 0); };
+const ahoraHHMM = () => { const d = new Date(); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+// Etiquetas de recurrencia para "Mi día" (ticket #237).
+const RECURRENCIAS_TAREA = [['', 'No se repite'], ['diaria', 'Cada día'], ['semanal', 'Cada semana'], ['mensual', 'Cada mes']];
+const nombreRecurrencia = (r) => ({ diaria: 'Cada día', semanal: 'Cada semana', quincenal: 'Cada 15 días', mensual: 'Cada mes', anual: 'Cada año' }[r] || null);
 const comoHora = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 
 const fechaLarga = (f) => new Date(f + 'T12:00:00')
@@ -130,13 +134,22 @@ export default function AdminAgenda({ showToast, user }) {
 
     async function guardar(e) {
         e.preventDefault();
+        // Día de la tarea: el que se elija en el formulario (permite moverla a un
+        // día futuro, ticket #236); si no, el día que se está viendo.
+        const fechaTarea = editando.fecha ? String(editando.fecha).slice(0, 10) : dia;
+        // No se puede poner en el pasado (ticket #236): ni un día pasado ni, si es
+        // hoy, una hora que ya pasó.
+        if (fechaTarea < HOY()) return alert('No puedes poner una tarea en un día que ya ha pasado.');
+        if (fechaTarea === HOY() && editando.hora && editando.hora < ahoraHHMM()) {
+            return alert('Esa hora ya ha pasado hoy. Elige una hora futura o déjala sin hora.');
+        }
         setGuardando(true);
         try {
             const nueva = !editando.id;
             const r = await fetch(nueva ? '/api/me/tareas' : `/api/me/tareas/${editando.id}`, {
                 method: nueva ? 'POST' : 'PATCH',
                 headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-                body: JSON.stringify({ ...editando, fecha: dia }),
+                body: JSON.stringify({ ...editando, fecha: fechaTarea }),
             });
             const d = await r.json();
             if (!r.ok) return alert(d.error || 'No se ha podido guardar.');
@@ -225,7 +238,7 @@ export default function AdminAgenda({ showToast, user }) {
     const libres = franjas.filter(f => !f.ocupado.length && !f.tareas.length).length;
     const hechas = (datos?.tareas || []).filter(t => t.hecha).length;
 
-    const abrirEn = (hora) => setEditando({ titulo: '', hora, horaFin: '', notas: '' });
+    const abrirEn = (hora) => setEditando({ titulo: '', hora, horaFin: '', notas: '', fecha: dia, recurrencia: '' });
 
     return (
         <div style={{ display: 'grid', gap: 16 }}>
@@ -386,6 +399,26 @@ export default function AdminAgenda({ showToast, user }) {
                         </div>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                             <div className="field">
+                                {/* Día de la tarea: se puede mover a un día futuro (ticket #236).
+                                    No deja elegir un día pasado. */}
+                                <label>Qué día</label>
+                                <input type="date" min={HOY()}
+                                    value={editando.fecha ? String(editando.fecha).slice(0, 10) : dia}
+                                    onChange={e => e.target.value && setEditando({ ...editando, fecha: e.target.value })} />
+                            </div>
+                            <div className="field">
+                                {/* Repetir la tarea (ticket #237): al marcarla hecha se crea sola
+                                    la del siguiente periodo. */}
+                                <label>Repetir</label>
+                                <select value={editando.recurrencia || ''}
+                                    onChange={e => setEditando({ ...editando, recurrencia: e.target.value })}
+                                    style={{ fontFamily: 'inherit', fontSize: 14, padding: '9px 10px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }}>
+                                    {RECURRENCIAS_TAREA.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                                </select>
+                            </div>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                            <div className="field">
                                 <label>A qué hora</label>
                                 <input type="time" value={editando.hora || ''}
                                     onChange={e => setEditando({ ...editando, hora: e.target.value })} />
@@ -448,6 +481,11 @@ function TareaFila({ t, onMarcar, onEditar, onBorrar, onIrTicket }) {
                 {(t.hora || t.notas) && (
                     <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>
                         {[t.hora && `${t.hora}${t.horaFin ? `–${t.horaFin}` : ''}`, t.notas].filter(Boolean).join(' · ')}
+                    </div>
+                )}
+                {t.recurrencia && (
+                    <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--purple)' }} title="Se repite: al marcarla hecha aparece la siguiente">
+                        🔁 {nombreRecurrencia(t.recurrencia)}
                     </div>
                 )}
                 {t.ticket && (
