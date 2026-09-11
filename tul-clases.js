@@ -68,7 +68,7 @@ async function aplicarCinturonTKD(db, studentId, levelOrder, levelName) {
         [studentId, levelOrder]);
 }
 
-export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSuyo, generarCargosDeMatricula }) {
+export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSuyo, generarCargosDeMatricula, generarCargoInscripcion }) {
     const router = express.Router();
 
     // Un instructor solo ve y toca las clases que lleva él. De quién es una
@@ -394,6 +394,11 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
             const activoAntes = await tieneActividadActiva(studentId);
             await matricular(req.params.groupId, studentId);
             if (levelOrder != null && levelOrder !== '') await fijarNivel(req.params.groupId, studentId, levelOrder);
+            // Alumno nuevo (no tenía ninguna actividad): se le crea ya el cobro de
+            // matrícula/inscripción pendiente (ticket #231), además de la cuota.
+            if (!activoAntes && generarCargoInscripcion) {
+                await generarCargoInscripcion({ userId: studentId }).catch(e => console.error('[#231 inscripción]', e.message));
+            }
             res.json({ success: true, matriculaNueva: !activoAntes });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
@@ -661,6 +666,10 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                         await aplicarCinturonTKD(pool, req.params.studentId, nivel.order, nivel.name);
                     }
                 }
+            }
+            // Alumno nuevo: se le crea ya el cobro de matrícula/inscripción (#231).
+            if (!activoAntes && generarCargoInscripcion) {
+                await generarCargoInscripcion({ userId: req.params.studentId }).catch(e => console.error('[#231 inscripción]', e.message));
             }
             res.json({ success: true, matriculaNueva: !activoAntes });
         } catch (err) { res.status(500).json({ error: err.message }); }

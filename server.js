@@ -3010,7 +3010,7 @@ function requireRol(minimo) {
 // Gestión de clases y reportes de Aim-Tul (mismas tablas tul_*, mismo SQL),
 // portados a nuestro panel. Ver tul-clases.js.
 app.use('/api/admin/tul', authenticateSession, requireAdmin,
-    crearRouterTulClases({ pool, clubId: AIM_CLUB_ID, permisos, gruposDe, grupoSuyo, generarCargosDeMatricula }));
+    crearRouterTulClases({ pool, clubId: AIM_CLUB_ID, permisos, gruposDe, grupoSuyo, generarCargosDeMatricula, generarCargoInscripcion }));
 
 // =============================================================================
 // OBJETOS PERDIDOS (ticket #208)
@@ -5374,6 +5374,29 @@ async function generarCargosDeMatricula({ userId, claseRef, actividad, temporada
          ON CONFLICT DO NOTHING
          RETURNING id`,
         [userId, m, descuentoPct, actividad || null, temporadaId, claseRef || null]
+    );
+    return r.rowCount;
+}
+
+// Concepto de la cuota de inscripción/matrícula de temporada (ticket #231).
+const CONCEPTO_INSCRIPCION = '00000';
+// Genera el cargo pendiente de la matrícula/inscripción cuando entra un alumno
+// NUEVO (que no tenía ninguna actividad). Toma el importe del catálogo (concepto
+// 00000). No lo crea si el alumno ya tiene una inscripción pendiente. Devuelve
+// cuántos creó (0 o 1).
+async function generarCargoInscripcion({ userId, mes }, cliente = pool) {
+    if (!userId) return 0;
+    const m = normalizaMes(mes || mesAGenerar());
+    const r = await cliente.query(
+        `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado, origen, actividad)
+         SELECT $1::uuid, p.concepto, $2::date, p.descripcion, p.tipo, p.precio, p.iva_pct, 0, 'pendiente', 'inscripcion', NULL
+         FROM aim_precios p
+         WHERE p.concepto = $3 AND p.activo = true AND p.precio > 0
+           AND NOT EXISTS (
+               SELECT 1 FROM aim_cargos c
+               WHERE c.cliente_id = $1::uuid AND c.concepto = $3 AND c.estado = 'pendiente')
+         RETURNING id`,
+        [userId, m, CONCEPTO_INSCRIPCION]
     );
     return r.rowCount;
 }
