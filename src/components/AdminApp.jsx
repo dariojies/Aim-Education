@@ -4271,7 +4271,7 @@ function mesLargo(iso) {
 // Selector de mes y año con dos <select> (ticket: Safari/Apple no pinta el
 // <input type="month">). value/onChange usan el formato 'YYYY-MM'. Si arranca
 // vacío, emite el mes actual para que quede un valor válido.
-function MesAnioInput({ value, onChange, desdeAnios = 2, hastaAnios = 2, style }) {
+function MesAnioInput({ value, onChange, desdeAnios = 5, hastaAnios = 10, style }) {
   const hoy = new Date();
   const [yStr, mStr] = String(value || '').split('-');
   const anioSel = yStr ? Number(yStr) : hoy.getFullYear();
@@ -4281,8 +4281,13 @@ function MesAnioInput({ value, onChange, desdeAnios = 2, hastaAnios = 2, style }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const emit = (mm, yy) => onChange(`${yy}-${String(mm).padStart(2, '0')}`);
+  // La ventana se calcula desde el año ACTUAL en cada render, así se auto-avanza
+  // sola cada año (no hay que tocar código con los años). Siempre se incluye el
+  // año ya seleccionado, aunque quede fuera de la ventana, para poder verlo.
   const anios = [];
-  for (let a = hoy.getFullYear() - desdeAnios; a <= hoy.getFullYear() + hastaAnios; a++) anios.push(a);
+  const minA = Math.min(hoy.getFullYear() - desdeAnios, anioSel);
+  const maxA = Math.max(hoy.getFullYear() + hastaAnios, anioSel);
+  for (let a = minA; a <= maxA; a++) anios.push(a);
   const sel = { fontFamily: 'inherit', fontSize: 14, fontWeight: 700, padding: '9px 10px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' };
   return (
     <span style={{ display: 'inline-flex', gap: 6, ...style }}>
