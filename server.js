@@ -5259,6 +5259,16 @@ function normalizaMes(mes) {
     return /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s.slice(0, 7)}-01` : mesAGenerar();
 }
 
+// Una temporada va de JULIO a JUNIO: la "2026/2027" son julio 2026 → junio 2027.
+// Se saca del nombre. Sirve para no generar cargos de meses que ya no son de la
+// temporada activa (la temporada solo cambia cuando el club le da a cambiarla) y
+// para saber hasta dónde llega la previsión de pendientes futuros.
+function mesesDeTemporada(nombre) {
+    const m = String(nombre || '').match(/(\d{4})\D+(\d{4})/);
+    if (!m) return null;
+    return { inicio: `${m[1]}-07-01`, fin: `${m[2]}-06-01` };
+}
+
 // El destino del cargo: por clase → la clase concreta (un cargo por clase);
 // por actividad → NULL (un cargo por alumno aunque esté en varios grupos).
 const SQL_TARGET_REF = `(CASE WHEN ct.target_tipo = 'clase' THEN ct.target_ref ELSE NULL END)`;
@@ -5317,6 +5327,31 @@ app.get('/api/admin/billing/generar/preview', authenticateSession, requireAdmin,
 
 function r2Server(n) { return Math.round((Number(n) + Number.EPSILON) * 100) / 100; }
 
+// Previsión de un mes FUTURO de la temporada: los cargos que se generarían ese
+// mes y que aún no existen. Es solo una previsión (no crea deuda). Se usa en
+// "Cargos pendientes" para poder ver los pagos pendientes futuros de la temporada
+// sin cobrárselos ni apuntarlos por adelantado a nadie.
+app.get('/api/admin/billing/cargos/prevision', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const temp = await pool.query('SELECT id, nombre FROM aim_temporadas WHERE activa = true');
+        if (temp.rowCount === 0) return res.json({ prevision: [], dentroDeTemporada: false });
+        const mes = normalizaMes(req.query.mes);
+        const rango = mesesDeTemporada(temp.rows[0].nombre);
+        const dentro = !rango || (mes >= rango.inicio && mes <= rango.fin);
+        if (!dentro) return res.json({ mes, temporada: temp.rows[0].nombre, dentroDeTemporada: false, prevision: [] });
+        const rows = await candidatosGeneracion(temp.rows[0].id, mes);
+        const prevision = rows.filter(r => !r.ya_existe).map(r => ({
+            nombre: r.name, apellidos: r.surname, descripcion: r.descripcion,
+            precio: Number(r.precio), descuentoPct: Number(r.descuento_pct),
+        }));
+        res.set('Cache-Control', 'no-store');
+        res.json({ mes, temporada: temp.rows[0].nombre, dentroDeTemporada: true, prevision });
+    } catch (err) {
+        console.error('Error previsión de cargos:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Generar: inserta los cargos que falten (idempotente por (cliente, concepto, mes)).
 // Genera los cargos del mes de todas las fichas vigentes de la temporada activa.
 // Idempotente (no duplica). La usan tanto el botón manual como el job automático
@@ -5372,7 +5407,15 @@ async function generacionAutomatica() {
     if (generacionEnCurso) return;
     generacionEnCurso = true;
     try {
-        const out = await ejecutarGeneracionCargos(null); // mes que toca ahora
+        const temp = await pool.query('SELECT nombre FROM aim_temporadas WHERE activa = true');
+        if (!temp.rowCount) return;
+        // Solo se generan meses de la temporada activa (jul→jun). Si el calendario
+        // ya pasó de junio pero el club aún no ha cambiado de temporada, no se
+        // generan cargos de la siguiente: se espera a que le den a cambiarla.
+        const rango = mesesDeTemporada(temp.rows[0].nombre);
+        const mes = mesAGenerar();
+        if (rango && (mes < rango.inicio || mes > rango.fin)) return;
+        const out = await ejecutarGeneracionCargos(mes);
         if (out.creados > 0) console.log(`[GEN auto] ${out.creados} cargo(s) generados de ${out.mes}`);
     } catch (e) {
         console.error('[GEN auto] error:', e.message);
