@@ -5366,7 +5366,7 @@ app.post('/api/admin/billing/generar', authenticateSession, requireAdmin, async 
 // que toca facturar para la temporada activa, para que los cargos salgan solos en
 // "Cargos pendientes". Es idempotente, así que repetirlo no duplica nada. Un
 // candado evita que se solapen dos pasadas si una tarda.
-const INTERVALO_GENERACION_MS = 60 * 1000; // cada minuto
+const INTERVALO_GENERACION_MS = 45 * 1000; // cada 45 segundos
 let generacionEnCurso = false;
 async function generacionAutomatica() {
     if (generacionEnCurso) return;
