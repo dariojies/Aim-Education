@@ -5318,40 +5318,68 @@ app.get('/api/admin/billing/generar/preview', authenticateSession, requireAdmin,
 function r2Server(n) { return Math.round((Number(n) + Number.EPSILON) * 100) / 100; }
 
 // Generar: inserta los cargos que falten (idempotente por (cliente, concepto, mes)).
+// Genera los cargos del mes de todas las fichas vigentes de la temporada activa.
+// Idempotente (no duplica). La usan tanto el botón manual como el job automático
+// (ticket: los cargos se generan solos cada poco, sin darle a "Generar").
+async function ejecutarGeneracionCargos(mesPedido) {
+    await sincronizarFichasActivas().catch(e => console.error('[FICHAS sync]', e.message));
+    const temp = await pool.query('SELECT id, nombre FROM aim_temporadas WHERE activa = true');
+    if (temp.rowCount === 0) return { creados: 0, mes: null, temporada: null, sinTemporada: true };
+    const mes = normalizaMes(mesPedido);
+    const r = await pool.query(
+        `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, target_ref, target_nombre, actividad, estado)
+         SELECT DISTINCT ON (m.user_id, ct.concepto, ${SQL_TARGET_REF})
+                m.user_id, ct.concepto, $2::date, p.descripcion, p.tipo, p.precio, p.iva_pct, m.descuento_pct,
+                ${SQL_TARGET_REF}, ct.target_nombre, m.actividad, 'pendiente'
+         FROM aim_conceptos_temporada ct
+         JOIN aim_precios p ON p.concepto = ct.concepto AND p.activo = true
+         ${SQL_JOIN_FICHA}
+         WHERE ct.temporada_id = $1 AND ${SQL_FILTRO_VIGENTE}
+           -- No duplicar lo ya cobrado por adelantado: si el alumno ya tiene
+           -- un cargo vivo de ese concepto y mes (p. ej. una mensualidad que
+           -- pagó adelantada en el TPV), no se genera otro (ticket #220).
+           AND NOT EXISTS (
+               SELECT 1 FROM aim_cargos c2
+               WHERE c2.cliente_id = m.user_id AND c2.concepto = ct.concepto
+                 AND c2.mes = $2::date AND c2.estado <> 'anulado'
+           )
+         ORDER BY m.user_id, ct.concepto, ${SQL_TARGET_REF}, m.descuento_pct DESC
+         ON CONFLICT DO NOTHING
+         RETURNING id`,
+        [temp.rows[0].id, mes]
+    );
+    return { creados: r.rowCount, mes, temporada: temp.rows[0].nombre };
+}
+
 app.post('/api/admin/billing/generar', authenticateSession, requireAdmin, async (req, res) => {
     try {
-        await sincronizarFichasActivas().catch(e => console.error('[FICHAS sync]', e.message));
-        const temp = await pool.query('SELECT id, nombre FROM aim_temporadas WHERE activa = true');
-        if (temp.rowCount === 0) return res.status(400).json({ error: 'No hay temporada activa.' });
-        const mes = normalizaMes(req.body.mes);
-        const r = await pool.query(
-            `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, target_ref, target_nombre, actividad, estado)
-             SELECT DISTINCT ON (m.user_id, ct.concepto, ${SQL_TARGET_REF})
-                    m.user_id, ct.concepto, $2::date, p.descripcion, p.tipo, p.precio, p.iva_pct, m.descuento_pct,
-                    ${SQL_TARGET_REF}, ct.target_nombre, m.actividad, 'pendiente'
-             FROM aim_conceptos_temporada ct
-             JOIN aim_precios p ON p.concepto = ct.concepto AND p.activo = true
-             ${SQL_JOIN_FICHA}
-             WHERE ct.temporada_id = $1 AND ${SQL_FILTRO_VIGENTE}
-               -- No duplicar lo ya cobrado por adelantado: si el alumno ya tiene
-               -- un cargo vivo de ese concepto y mes (p. ej. una mensualidad que
-               -- pagó adelantada en el TPV), no se genera otro (ticket #220).
-               AND NOT EXISTS (
-                   SELECT 1 FROM aim_cargos c2
-                   WHERE c2.cliente_id = m.user_id AND c2.concepto = ct.concepto
-                     AND c2.mes = $2::date AND c2.estado <> 'anulado'
-               )
-             ORDER BY m.user_id, ct.concepto, ${SQL_TARGET_REF}, m.descuento_pct DESC
-             ON CONFLICT DO NOTHING
-             RETURNING id`,
-            [temp.rows[0].id, mes]
-        );
-        res.json({ success: true, mes, creados: r.rowCount });
+        const out = await ejecutarGeneracionCargos(req.body.mes);
+        if (out.sinTemporada) return res.status(400).json({ error: 'No hay temporada activa.' });
+        res.json({ success: true, mes: out.mes, creados: out.creados });
     } catch (err) {
         console.error('Error generando cargos:', err);
         res.status(500).json({ error: err.message });
     }
 });
+
+// Generación automática de cargos (sin botón): cada poco tiempo se genera el mes
+// que toca facturar para la temporada activa, para que los cargos salgan solos en
+// "Cargos pendientes". Es idempotente, así que repetirlo no duplica nada. Un
+// candado evita que se solapen dos pasadas si una tarda.
+const INTERVALO_GENERACION_MS = 60 * 1000; // cada minuto
+let generacionEnCurso = false;
+async function generacionAutomatica() {
+    if (generacionEnCurso) return;
+    generacionEnCurso = true;
+    try {
+        const out = await ejecutarGeneracionCargos(null); // mes que toca ahora
+        if (out.creados > 0) console.log(`[GEN auto] ${out.creados} cargo(s) generados de ${out.mes}`);
+    } catch (e) {
+        console.error('[GEN auto] error:', e.message);
+    } finally {
+        generacionEnCurso = false;
+    }
+}
 
 // Genera ya los cargos pendientes de UNA matrícula recién creada, para el mes que
 // toca facturar (ticket #231): al apuntar a alguien a una actividad, su cobro
@@ -8973,4 +9001,9 @@ app.listen(port, () => {
     // El formato de numeración vive en la base: se carga al arrancar.
     cargarFormatoNumeracion();
     console.log(`Server is running at http://localhost:${port}`);
+    // Los cargos del mes se generan solos cada poco, sin darle a ningún botón.
+    // Se hace una primera pasada al arrancar (con un pequeño margen para que la
+    // base ya esté lista) y luego a intervalos.
+    setTimeout(generacionAutomatica, 15 * 1000);
+    setInterval(generacionAutomatica, INTERVALO_GENERACION_MS);
 });

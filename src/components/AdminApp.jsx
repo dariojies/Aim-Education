@@ -3822,9 +3822,7 @@ function BillingTPV({ showToast }) {
                   {/* Una mensualidad se cobra a un mes concreto: si no, al generar
                       ese mes se cobraría dos veces (ticket #220). */}
                   {periodico && (
-                    <input type="month" value={addExtra.mes || ''} onChange={e => setAddExtra(a => ({ ...a, mes: e.target.value }))}
-                      required title="¿De qué mes es esta mensualidad?"
-                      style={{ fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: `1px solid ${faltaMes ? 'var(--orange)' : 'var(--line)'}`, background: 'var(--bg-2)' }} />
+                    <MesAnioInput value={addExtra.mes || ''} onChange={mv => setAddExtra(a => ({ ...a, mes: mv }))} />
                   )}
                   <button className="btn btn-sm btn-primary" type="submit" disabled={!addExtra.concepto || !addExtra.clienteId || faltaMes}>Añadir</button>
                   <button className="btn btn-sm btn-outline" type="button" onClick={() => setAddExtra(null)}>Cancelar</button>
@@ -4270,113 +4268,31 @@ function mesLargo(iso) {
   return `${MESES_ES[Number(m) - 1]} de ${y}`;
 }
 
-// Generación mensual de cargos (previsualizar → generar → ver pendientes).
-function BillingGenerar({ activa, showToast }) {
-  const [mes, setMes] = useState('');
-  const [preview, setPreview] = useState(null);
-  const [loadingPv, setLoadingPv] = useState(false);
-  const [generating, setGenerating] = useState(false);
-  const [ultimoGenerado, setUltimoGenerado] = useState(null);
-
+// Selector de mes y año con dos <select> (ticket: Safari/Apple no pinta el
+// <input type="month">). value/onChange usan el formato 'YYYY-MM'. Si arranca
+// vacío, emite el mes actual para que quede un valor válido.
+function MesAnioInput({ value, onChange, desdeAnios = 2, hastaAnios = 2, style }) {
+  const hoy = new Date();
+  const [yStr, mStr] = String(value || '').split('-');
+  const anioSel = yStr ? Number(yStr) : hoy.getFullYear();
+  const mesSel = mStr ? Number(mStr) : (hoy.getMonth() + 1);
   useEffect(() => {
-    fetch('/api/admin/billing/mes-a-generar', { credentials: 'include' })
-      .then(r => r.ok ? r.json() : null).then(d => { if (d?.mes) setMes(d.mes.slice(0, 7)); }).catch(() => { });
+    if (!value) onChange(`${anioSel}-${String(mesSel).padStart(2, '0')}`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const mesIso = mes ? `${mes}-01` : '';
-
-  async function cargarPreview() {
-    if (!mesIso) return;
-    setLoadingPv(true); setPreview(null);
-    try {
-      const r = await fetch(`/api/admin/billing/generar/preview?mes=${mesIso}`, { credentials: 'include' });
-      if (r.ok) setPreview(await r.json());
-      else { const d = await r.json(); alert(d.error || 'Error.'); }
-    } catch { alert('Error de conexión.'); }
-    finally { setLoadingPv(false); }
-  }
-  useEffect(() => { if (mesIso) { cargarPreview(); setUltimoGenerado(null); } }, [mesIso]);
-
-  async function generar() {
-    if (!window.confirm(`¿Generar los cargos de ${mesLargo(mesIso)}? Es seguro repetirlo: no duplica.`)) return;
-    setGenerating(true);
-    try {
-      const r = await fetch('/api/admin/billing/generar', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-        body: JSON.stringify({ mes: mesIso }),
-      });
-      if (r.ok) { const d = await r.json(); setUltimoGenerado(d.creados); showToast?.(`${d.creados} cargo${d.creados !== 1 ? 's' : ''} generado${d.creados !== 1 ? 's' : ''}.`); await cargarPreview(); }
-      else { const d = await r.json(); alert(d.error || 'Error al generar.'); }
-    } catch { alert('Error de conexión.'); }
-    finally { setGenerating(false); }
-  }
-
-  if (!activa) return null;
-
+  const emit = (mm, yy) => onChange(`${yy}-${String(mm).padStart(2, '0')}`);
+  const anios = [];
+  for (let a = hoy.getFullYear() - desdeAnios; a <= hoy.getFullYear() + hastaAnios; a++) anios.push(a);
+  const sel = { fontFamily: 'inherit', fontSize: 14, fontWeight: 700, padding: '9px 10px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' };
   return (
-    <div style={{ display: 'grid', gap: 16 }}>
-      <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>
-        Genera los cargos del mes para todos los alumnos con ficha vigente, según lo definido en <b>Qué se cobra</b>.
-        Se cobra por adelantado (corte el día 5). Repetirlo es seguro: no duplica. El descuento por varias mensualidades se aplica al cobrar.
-        Los cargos ya creados se consultan y exportan en la pestaña <b>Cargos pendientes</b>.
-      </p>
-
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '14px 16px' }}>
-        <label style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>Mes a generar</label>
-        <input type="month" value={mes} onChange={e => setMes(e.target.value)}
-          style={{ fontFamily: 'inherit', fontSize: 14, fontWeight: 700, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }} />
-        <span style={{ fontSize: 13, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{mesLargo(mesIso)}</span>
-        <button className="btn btn-sm btn-outline" onClick={cargarPreview} disabled={loadingPv}>Previsualizar</button>
-        <button className="btn btn-sm btn-primary" style={{ marginLeft: 'auto' }} onClick={generar} disabled={generating || !preview?.nuevos}>
-          {generating ? 'Generando...' : `Generar ${preview?.nuevos ? `(${preview.nuevos})` : ''}`}
-        </button>
-      </div>
-
-      {ultimoGenerado != null && (
-        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--teal)', background: 'color-mix(in oklab, var(--teal) 10%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--teal) 30%, var(--line))', borderRadius: 12, padding: '10px 14px' }}>
-          {ultimoGenerado} cargo{ultimoGenerado !== 1 ? 's' : ''} generado{ultimoGenerado !== 1 ? 's' : ''} de {mesLargo(mesIso)}. Míralos y expórtalos en <b>Cargos pendientes</b>.
-        </div>
-      )}
-
-      {loadingPv && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Calculando...</p>}
-      {preview && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
-          {[
-            { l: 'Cargos nuevos', v: preview.nuevos, c: 'var(--teal)' },
-            { l: 'Ya existían', v: preview.yaExistian, c: 'var(--ink-3)' },
-            { l: 'Alumnos', v: preview.totalAlumnos, c: 'var(--ink)' },
-            { l: 'Base (tras dto. manual)', v: eur(preview.importeBase), c: 'var(--purple)' },
-          ].map((k, i) => (
-            <div key={i} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '14px 16px' }}>
-              <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>{k.l}</div>
-              <div style={{ fontSize: 24, fontWeight: 800, fontFamily: 'var(--font-display)', color: k.c, marginTop: 4 }}>{k.v}</div>
-            </div>
-          ))}
-        </div>
-      )}
-      {preview && preview.nuevos > 0 && (
-        <p style={{ fontSize: 12, color: 'var(--ink-3)', margin: 0 }}>
-          Se crearán {preview.nuevos} cargos nuevos. (El descuento por nº de mensualidades y el IVA se calculan al cobrar en el TPV.)
-        </p>
-      )}
-      {/* Detalle de la previsualización (ticket #231): qué cargos se crearían, no
-          solo el número, para poder revisarlos antes de generar. */}
-      {preview && preview.detalle && preview.detalle.length > 0 && (
-        <details style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '10px 14px' }}>
-          <summary style={{ cursor: 'pointer', fontWeight: 700, fontSize: 13 }}>
-            Ver el detalle ({preview.detalle.length}{preview.nuevos > preview.detalle.length ? ` de ${preview.nuevos}` : ''} cargos que se crearían)
-          </summary>
-          <div style={{ display: 'grid', gap: 4, marginTop: 10 }}>
-            {preview.detalle.map((d, i) => (
-              <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 13, padding: '4px 0', borderBottom: '1px solid var(--line-2)' }}>
-                <span style={{ minWidth: 0, flex: 1 }}><b>{d.nombre}</b> · {d.concepto}</span>
-                <span style={{ color: 'var(--ink-2)', fontWeight: 700 }}>{eur(d.precio)}{d.descuentoPct > 0 ? ` −${d.descuentoPct}%` : ''}</span>
-              </div>
-            ))}
-          </div>
-        </details>
-      )}
-    </div>
+    <span style={{ display: 'inline-flex', gap: 6, ...style }}>
+      <select value={mesSel} onChange={e => emit(Number(e.target.value), anioSel)} style={sel} aria-label="Mes">
+        {MESES_ES.map((n, i) => <option key={i} value={i + 1}>{n.charAt(0).toUpperCase() + n.slice(1)}</option>)}
+      </select>
+      <select value={anioSel} onChange={e => emit(mesSel, Number(e.target.value))} style={sel} aria-label="Año">
+        {anios.map(a => <option key={a} value={a}>{a}</option>)}
+      </select>
+    </span>
   );
 }
 
@@ -4447,8 +4363,7 @@ function BillingPendientes({ activa, showToast }) {
         {!todos && (
           <>
             <label style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>Mes</label>
-            <input type="month" value={mes} onChange={e => setMes(e.target.value)}
-              style={{ fontFamily: 'inherit', fontSize: 14, fontWeight: 700, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }} />
+            <MesAnioInput value={mes} onChange={setMes} />
             <span style={{ fontSize: 13, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{mesLargo(mesIso)}</span>
           </>
         )}
@@ -4588,7 +4503,7 @@ function AdminBilling({ showToast }) {
   return (
     <>
       <div style={{ display: 'flex', gap: 10, marginBottom: 22, borderBottom: '1px solid var(--line-2)', paddingBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-        {[['cobrar', 'Cobrar (TPV)'], ['recibos', 'Recibos'], ['arqueo', 'Arqueo de caja'], ['catalogo', `Catálogo (${precios.length})`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra (${clasesMerged.length})`], ['fichas', `Fichas (${matriculas.length})`], ['generar', 'Generar cargos'], ['pendientes', 'Cargos pendientes'], ['ajustes', 'Numeración']].map(([id, label]) => (
+        {[['cobrar', 'Cobrar (TPV)'], ['recibos', 'Recibos'], ['arqueo', 'Arqueo de caja'], ['catalogo', `Catálogo (${precios.length})`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra (${clasesMerged.length})`], ['fichas', `Fichas (${matriculas.length})`], ['pendientes', 'Cargos pendientes'], ['ajustes', 'Numeración']].map(([id, label]) => (
           <button key={id} className={`filter-pill ${tab === id ? 'is-active' : ''}`} onClick={() => setTab(id)} style={{ borderRadius: 8, padding: '8px 16px' }}>{label}</button>
         ))}
         <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: activa ? 'var(--teal)' : 'var(--orange)' }}>
@@ -4841,7 +4756,6 @@ function AdminBilling({ showToast }) {
       )}
 
       {/* ── Generar cargos ── */}
-      {!loading && tab === 'generar' && <BillingGenerar activa={activa} showToast={showToast} />}
       {!loading && tab === 'pendientes' && <BillingPendientes activa={activa} showToast={showToast} />}
 
       {/* ── Modal concepto ── */}
