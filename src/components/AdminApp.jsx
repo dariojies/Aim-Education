@@ -3608,7 +3608,9 @@ function BillingTPV({ showToast }) {
   const lineasMotor = [
     ...lineasActivas.map(c => ({ concepto: c.concepto, descripcion: c.descripcion, tipo: c.tipo, mes: c.mes, precio: c.precio, ivaPct: c.ivaPct, descuentoPct: c.descuentoPct })),
     ...extras.map(e => ({ concepto: e.concepto, descripcion: e.descripcion, tipo: e.tipo, mes: e.mes || (new Date().toISOString().slice(0, 7) + '-01'), precio: e.precio, ivaPct: e.ivaPct, descuentoPct: Number(e.descuentoPct) || 0 })),
-    ...antAplicados.map(x => ({ concepto: ANTICIPO_CONCEPTO, descripcion: `Anticipo aplicado${x.a.motivo ? ` — ${x.a.motivo}` : ''}${x.a.facturaOrigen ? ` · Factura ${x.a.facturaOrigen}` : ''}`, tipo: 'Otros', mes: new Date().toISOString().slice(0, 7) + '-01', precio: -x.imp, ivaPct: Number(x.a.ivaPct) || 0, descuentoPct: 0 })),
+    // x.imp es el importe a aplicar CON IVA; el motor pone el IVA sobre la base,
+    // así que la línea negativa lleva la base (bruto / (1 + IVA)) para restar el bruto.
+    ...antAplicados.map(x => ({ concepto: ANTICIPO_CONCEPTO, descripcion: `Anticipo aplicado${x.a.motivo ? ` — ${x.a.motivo}` : ''}${x.a.facturaOrigen ? ` · Factura ${x.a.facturaOrigen}` : ''}`, tipo: 'Otros', mes: new Date().toISOString().slice(0, 7) + '-01', precio: -(x.imp / (1 + (Number(x.a.ivaPct) || 0) / 100)), ivaPct: Number(x.a.ivaPct) || 0, descuentoPct: 0 })),
   ];
 
   // Recalcular totales en el servidor cuando cambian líneas/descuentos/extras.
@@ -3633,7 +3635,7 @@ function BillingTPV({ showToast }) {
         body: JSON.stringify({
           pagadorId: pagadorFactura || pagador.id,
           lineas: lineasActivas.map(c => ({ cargoId: c.id, descuentoPct: c.descuentoPct })),
-          extras: extras.map(e => ({ clienteId: e.clienteId, concepto: e.concepto, descuentoPct: Number(e.descuentoPct) || 0, mes: e.mes || null, importe: e.concepto === ANTICIPO_CONCEPTO ? e.precio : undefined, motivo: e.concepto === ANTICIPO_CONCEPTO ? (e.motivo || '') : undefined, ivaPct: e.concepto === ANTICIPO_CONCEPTO ? (Number(e.ivaPct) || 0) : undefined })),
+          extras: extras.map(e => ({ clienteId: e.clienteId, concepto: e.concepto, descuentoPct: Number(e.descuentoPct) || 0, mes: e.mes || null, importe: e.concepto === ANTICIPO_CONCEPTO ? (e.bruto ?? e.precio) : undefined, motivo: e.concepto === ANTICIPO_CONCEPTO ? (e.motivo || '') : undefined, ivaPct: e.concepto === ANTICIPO_CONCEPTO ? (Number(e.ivaPct) || 0) : undefined })),
           anticipos: antAplicados.map(x => ({ id: x.a.id, importe: x.imp })),
           medioPago,
           entregado: medioPago === 'efectivo' ? (Number(entregado) || total) : total,
@@ -3769,7 +3771,7 @@ function BillingTPV({ showToast }) {
                       {e.tipo === 'Material' ? `+${e.ivaPct}% IVA` : ''}
                     </div>
                   </div>
-                  <div style={{ fontWeight: 800, fontFamily: 'var(--font-display)', minWidth: 66, textAlign: 'right' }}>{eur(e.precio)}</div>
+                  <div style={{ fontWeight: 800, fontFamily: 'var(--font-display)', minWidth: 66, textAlign: 'right' }}>{eur(e.bruto ?? e.precio)}{e.concepto === ANTICIPO_CONCEPTO && e.ivaPct > 0 ? <span style={{ display: 'block', fontSize: 10, fontWeight: 500, color: 'var(--ink-3)' }}>IVA {e.ivaPct}% incl.</span> : null}</div>
                   <button className="icon-btn danger" style={{ width: 26, height: 26 }} onClick={() => setExtras(x => x.filter(y => y.key !== e.key))} aria-label="Quitar"><I.X /></button>
                 </div>
               ))}
@@ -3846,18 +3848,23 @@ function BillingTPV({ showToast }) {
                     if (!persona || !(imp > 0)) return;
                     const motivo = (addAnticipo.motivo || '').trim();
                     const ivaPct = Number(addAnticipo.ivaPct) || 0;
-                    setExtras(x => [...x, { key: Math.random().toString(36).slice(2), clienteId: persona.id, nombre: persona.nombre, concepto: ANTICIPO_CONCEPTO, descripcion: motivo ? `Anticipo — ${motivo}` : 'Anticipo', precio: imp, ivaPct, tipo: 'Otros', descuentoPct: 0, mes: null, motivo }]);
+                    // 'imp' es el importe CON IVA (lo que paga la familia). El motor
+                    // suma el IVA sobre la base, así que se guarda la base para que
+                    // el total salga = imp. 'bruto' se guarda para mostrarlo tal cual.
+                    const base = Math.round((imp / (1 + ivaPct / 100) + Number.EPSILON) * 100) / 100;
+                    setExtras(x => [...x, { key: Math.random().toString(36).slice(2), clienteId: persona.id, nombre: persona.nombre, concepto: ANTICIPO_CONCEPTO, descripcion: motivo ? `Anticipo — ${motivo}` : 'Anticipo', precio: base, bruto: imp, ivaPct, tipo: 'Otros', descuentoPct: 0, mes: null, motivo }]);
                     setAddAnticipo(null);
                   }}>
                   <select value={addAnticipo.clienteId} onChange={e => setAddAnticipo(a => ({ ...a, clienteId: e.target.value }))} required style={{ fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
                     <option value="">¿Para quién?...</option>
                     {family.map(f => <option key={f.id} value={f.id}>{f.nombre} {f.apellidos}</option>)}
                   </select>
-                  <input type="number" step="0.01" min="0" placeholder="Importe €" value={addAnticipo.importe || ''} onChange={e => setAddAnticipo(a => ({ ...a, importe: e.target.value }))}
-                    required style={{ width: 110, fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }} />
-                  {/* IVA del anticipo (ticket #238): con o sin IVA para que cuadre la factura. */}
+                  <input type="number" step="0.01" min="0" placeholder="Importe € (IVA incl.)" title="Lo que paga la familia, con el IVA incluido" value={addAnticipo.importe || ''} onChange={e => setAddAnticipo(a => ({ ...a, importe: e.target.value }))}
+                    required style={{ width: 140, fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }} />
+                  {/* IVA del anticipo (ticket #238): el importe es CON IVA incluido; se
+                      elige el tipo para desglosar base + IVA en la factura. */}
                   <select value={addAnticipo.ivaPct ?? 0} onChange={e => setAddAnticipo(a => ({ ...a, ivaPct: e.target.value }))}
-                    title="IVA del anticipo" style={{ fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
+                    title="IVA incluido en el importe del anticipo" style={{ fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
                     <option value="0">Sin IVA</option>
                     <option value="4">IVA 4%</option>
                     <option value="10">IVA 10%</option>

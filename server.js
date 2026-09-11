@@ -5678,21 +5678,26 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
             // caso en que el importe lo pone quien cobra; para todo lo demás manda
             // el precio del catálogo (nunca se confía en el importe del cliente).
             if (ex.concepto === ANTICIPO_CONCEPTO) {
-                const imp = r2Server(Number(ex.importe));
-                if (!(imp > 0)) throw { httP: 400, msg: 'El anticipo necesita un importe mayor que 0 €.' };
-                // IVA del anticipo (ticket #238): con o sin IVA, para que la factura
-                // haga el cálculo. Solo se admiten los tipos válidos.
+                // El importe del anticipo es lo que paga la familia CON IVA incluido
+                // (ticket #238): 100 € al 21% son 100 € cobrados (base + IVA = 100),
+                // no 121. Se guarda la base (bruto / (1 + IVA)) para que el motor,
+                // que siempre suma el IVA sobre la base, dé de total el bruto.
+                const bruto = r2Server(Number(ex.importe));
+                if (!(bruto > 0)) throw { httP: 400, msg: 'El anticipo necesita un importe mayor que 0 €.' };
                 const ivaPct = IVAS_VALIDOS.includes(Number(ex.ivaPct)) ? Number(ex.ivaPct) : 0;
+                const base = r2Server(bruto / (1 + ivaPct / 100));
                 const motivo = (ex.motivo || '').toString().trim().slice(0, 200);
                 const clienteAnt = ex.clienteId || pagadorId;
                 const desc = motivo ? `Anticipo — ${motivo}` : 'Anticipo';
                 const ins = await client.query(
                     `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado, origen, actividad)
                      VALUES ($1,$2,$3::date,$4,'Otros',$5,$6,0,'pendiente','anticipo',NULL) RETURNING id`,
-                    [clienteAnt, ANTICIPO_CONCEPTO, mesActual, desc, imp, ivaPct]
+                    [clienteAnt, ANTICIPO_CONCEPTO, mesActual, desc, base, ivaPct]
                 );
                 extraIds.push(ins.rows[0].id);
-                anticiposNuevos.push({ cargoId: ins.rows[0].id, importe: imp, motivo, clienteId: clienteAnt, ivaPct });
+                // El saldo del anticipo se lleva en BRUTO (con IVA): es lo que la
+                // familia ha dejado a cuenta y lo que se descuenta luego del total.
+                anticiposNuevos.push({ cargoId: ins.rows[0].id, importe: bruto, motivo, clienteId: clienteAnt, ivaPct });
                 continue;
             }
             const pr = await client.query(`SELECT descripcion, tipo, precio, iva_pct FROM aim_precios WHERE concepto = $1 AND activo = true`, [ex.concepto]);
@@ -5725,6 +5730,8 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
         if (anticiposArr.length) {
             const fam = await familiaIds(pagadorId);
             for (const ap of anticiposArr) {
+                // El importe a aplicar va en BRUTO (con IVA): es lo que se descuenta
+                // del total que queda por pagar. Se convierte a base para la línea.
                 const imp = r2Server(Number(ap.importe));
                 if (!(imp > 0)) throw { httP: 400, msg: 'Importe de anticipo no válido.' };
                 // Se traen también el IVA y la factura donde se dejó el anticipo
@@ -5747,10 +5754,11 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
                 const factOrigen = anRow.orig_numero != null
                     ? ` · Factura ${numeroVisible({ serie: anRow.orig_serie, numero: anRow.orig_numero, fecha: anRow.orig_fecha })}`
                     : '';
+                const baseAplic = r2Server(imp / (1 + ivaAnt / 100)); // base negativa (el IVA lo pone el motor)
                 const ins = await client.query(
                     `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado, origen, actividad)
                      VALUES ($1,$2,$3::date,$4,'Otros',$5,$6,0,'pendiente','anticipo_aplic',NULL) RETURNING id`,
-                    [anRow.cliente_id, ANTICIPO_CONCEPTO, mesActual, `Anticipo aplicado${motivo}${factOrigen}`, -imp, ivaAnt]
+                    [anRow.cliente_id, ANTICIPO_CONCEPTO, mesActual, `Anticipo aplicado${motivo}${factOrigen}`, -baseAplic, ivaAnt]
                 );
                 extraIds.push(ins.rows[0].id);
                 aplicaciones.push({ cargoId: ins.rows[0].id, anticipoId: a.rows[0].id, importe: imp });
