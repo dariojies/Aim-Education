@@ -4414,7 +4414,7 @@ function BillingPendientes({ activa, showToast }) {
         </div>
       )}
 
-      {/* Previsión: pagos pendientes futuros de la temporada (jul→jun). Es lo que
+      {/* Previsión: pagos pendientes futuros de la temporada (sept→ago). Es lo que
           se cobrará ese mes, todavía sin generar: no es deuda ni se le ha apuntado
           a nadie. Solo para un mes concreto (no en "todos los meses"). */}
       {!todos && prevision.length > 0 && (

@@ -5259,14 +5259,14 @@ function normalizaMes(mes) {
     return /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s.slice(0, 7)}-01` : mesAGenerar();
 }
 
-// Una temporada va de JULIO a JUNIO: la "2026/2027" son julio 2026 → junio 2027.
-// Se saca del nombre. Sirve para no generar cargos de meses que ya no son de la
-// temporada activa (la temporada solo cambia cuando el club le da a cambiarla) y
-// para saber hasta dónde llega la previsión de pendientes futuros.
+// Una temporada va de SEPTIEMBRE a AGOSTO: la "2026/2027" son septiembre 2026 →
+// agosto 2027. Se saca del nombre. Sirve para no generar cargos de meses que ya
+// no son de la temporada activa (la temporada solo cambia cuando el club le da a
+// cambiarla) y para saber hasta dónde llega la previsión de pendientes futuros.
 function mesesDeTemporada(nombre) {
     const m = String(nombre || '').match(/(\d{4})\D+(\d{4})/);
     if (!m) return null;
-    return { inicio: `${m[1]}-07-01`, fin: `${m[2]}-06-01` };
+    return { inicio: `${m[1]}-09-01`, fin: `${m[2]}-08-01` };
 }
 
 // El destino del cargo: por clase → la clase concreta (un cargo por clase);
