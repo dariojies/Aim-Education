@@ -16,9 +16,21 @@
 //      El precio guardado es SIEMPRE base imponible: el IVA se suma encima.
 // =============================================================================
 
-// Redondeo a 2 decimales evitando el clásico 1.005 -> 1.00 del binario.
+// Redondeo a 2 decimales, medio céntimo hacia arriba (ticket #243): si el tercer
+// decimal es 5 o más, sube al céntimo de arriba; si es 4 o menos, baja. Debe ser
+// exacto: al club no le vale que un total suba o baje un céntimo.
+//
+// El truco de sumar Number.EPSILON no bastaba: a euros grandes (p. ej. 555.555)
+// o con importes negativos, el error binario es mayor que ese épsilon y el
+// redondeo caía al céntimo equivocado. Aquí se limpia primero el ruido llevando
+// los céntimos a 6 decimales (1.005 se guarda como 1.00499999…, que así vuelve a
+// 1.005) y se redondea medio hacia arriba en valor absoluto, para que negativos
+// y positivos se comporten igual (-1.005 → -1.01).
 export function r2(n) {
-    return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+    const x = Number(n);
+    if (!Number.isFinite(x)) return 0;
+    const centimos = Math.round(Number((Math.abs(x) * 100).toFixed(6)));
+    return (x < 0 ? -centimos : centimos) / 100;
 }
 
 function num(v) {
@@ -74,30 +86,46 @@ export function calcularRecibo(lineas) {
         const base = r2(trasManual * (1 - descuentoMensPct / 100));
         const ivaPct = num(l.ivaPct);
 
+        // Total FIJO de la línea (ticket #243, solo anticipos): en vez de grosar la
+        // base (base × (1+IVA), que puede bailar un céntimo), se respeta el bruto
+        // exacto y el IVA sale de restar (bruto − base). Así lo que paga la familia
+        // cuadra al céntimo aunque el desglose no case con base × tipo justo.
+        const brutoFijo = (l.brutoFijo !== undefined && Number.isFinite(Number(l.brutoFijo)))
+            ? r2(Number(l.brutoFijo)) : null;
+        const iva = brutoFijo != null ? r2(brutoFijo - base) : r2(base * ivaPct / 100);
+        const total = brutoFijo != null ? brutoFijo : r2(base + iva);
+
         return {
             ...l,
             precio: r2(precio),
             descuentoPct,
             descuentoMensPct,
             base,                        // base imponible de la línea (el "importe")
-            iva: r2(base * ivaPct / 100),
-            total: r2(base + r2(base * ivaPct / 100)),
+            iva,
+            total,
+            ivaFijo: brutoFijo != null,  // el IVA de esta línea es exacto (bruto−base)
             ahorro: r2(precio - base),
         };
     });
 
     // 3) Bases por tipo de IVA. El IVA se calcula sobre la base agregada de cada
     //    tipo (no sumando los IVA por línea ya redondeados), que es lo correcto.
+    //    Las líneas con total fijo (anticipos) aportan su IVA ya cerrado (bruto−
+    //    base) en vez de recalcularlo, para que el total no baile (ticket #243).
     const grupos = new Map();
     for (const d of detalle) {
         const ivaPct = num(d.ivaPct);
-        const g = grupos.get(ivaPct) || { ivaPct, base: 0, iva: 0 };
+        const g = grupos.get(ivaPct) || { ivaPct, base: 0, baseVar: 0, ivaFija: 0 };
         g.base = r2(g.base + d.base);
+        if (d.ivaFijo) g.ivaFija = r2(g.ivaFija + d.iva);
+        else g.baseVar = r2(g.baseVar + d.base);
         grupos.set(ivaPct, g);
     }
-    for (const g of grupos.values()) g.iva = r2(g.base * g.ivaPct / 100);
+    for (const g of grupos.values()) g.iva = r2(r2(g.baseVar * g.ivaPct / 100) + g.ivaFija);
 
-    const basesPorIva = [...grupos.values()].sort((a, b) => a.ivaPct - b.ivaPct);
+    const basesPorIva = [...grupos.values()]
+        .map(g => ({ ivaPct: g.ivaPct, base: g.base, iva: g.iva }))
+        .sort((a, b) => a.ivaPct - b.ivaPct);
     const baseTotal = r2(detalle.reduce((s, d) => s + d.base, 0));
     const ivaTotal = r2(basesPorIva.reduce((s, g) => s + g.iva, 0));
 

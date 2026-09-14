@@ -89,6 +89,12 @@ export default function AdminSpeaking({ showToast }) {
     setQ(''); setSug([]);
   };
   const toggleFranja = (id, f) => setNuevos(x => x.map(n => n.id === id ? { ...n, franjas: { ...n.franjas, [f]: !n.franjas[f] } } : n));
+  // Mejora de selección de franjas (ticket #241): fijar una franja concreta, la
+  // hora entera o ninguna para un alumno o de golpe para todos los añadidos.
+  const setFranjasDe = (id, sel) => setNuevos(x => x.map(n => n.id === id ? { ...n, franjas: { ...sel } } : n));
+  const setFranjasTodos = (sel) => setNuevos(x => x.map(n => ({ ...n, franjas: { ...sel } })));
+  const TODAS = { 1: true, 2: true, 3: true }, NINGUNA = { 1: false, 2: false, 3: false };
+  const nFranjas = (fr) => [1, 2, 3].filter(f => fr[f]).length;
 
   async function guardar() {
     const alumnos = nuevos.map(n => ({ studentId: n.id, franjas: [1, 2, 3].filter(f => n.franjas[f]) })).filter(a => a.franjas.length);
@@ -175,10 +181,25 @@ export default function AdminSpeaking({ showToast }) {
 
           {nuevos.length > 0 && (
             <div style={{ display: 'grid', gap: 8 }}>
+              {/* Aplicar la misma selección de franjas a todos los añadidos. */}
+              {nuevos.length > 1 && (
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12, color: 'var(--ink-3)' }}>
+                  <span style={{ fontWeight: 700 }}>Para todos:</span>
+                  <button type="button" className="filter-pill" style={{ fontSize: 11 }} onClick={() => setFranjasTodos(TODAS)}>Hora entera</button>
+                  {franjas.map(f => (
+                    <button key={f.n} type="button" className="filter-pill" style={{ fontSize: 11 }}
+                      onClick={() => setFranjasTodos({ ...NINGUNA, [f.n]: true })}>Solo {f.label}</button>
+                  ))}
+                </div>
+              )}
               {nuevos.map(n => (
                 <div key={n.id} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 12, padding: '8px 12px' }}>
-                  <span style={{ fontWeight: 700, fontSize: 14, flex: '1 1 160px', minWidth: 0 }}>{n.name}</span>
-                  <div style={{ display: 'flex', gap: 6 }}>
+                  <span style={{ fontWeight: 700, fontSize: 14, flex: '1 1 140px', minWidth: 0 }}>{n.name}</span>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button type="button" onClick={() => setFranjasDe(n.id, nFranjas(n.franjas) === 3 ? NINGUNA : TODAS)}
+                      className={`filter-pill ${nFranjas(n.franjas) === 3 ? 'is-active' : ''}`} style={{ fontSize: 11 }}
+                      title="La hora entera (las tres franjas)">Hora entera</button>
+                    <span style={{ color: 'var(--line)' }}>|</span>
                     {franjas.map(f => (
                       <button key={f.n} type="button" onClick={() => toggleFranja(n.id, f.n)}
                         className={`filter-pill ${n.franjas[f.n] ? 'is-active' : ''}`} style={{ fontSize: 11 }}>{f.label}</button>
@@ -221,13 +242,18 @@ export default function AdminSpeaking({ showToast }) {
                   <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--purple)' }}>{franjasFila(s)}</span>
                   <span style={{ fontSize: 12, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.contactos || 'sin contacto'}</span>
                   <span style={{ fontSize: 12, fontWeight: 800, color: e.c }}>{e.t}</span>
-                  <button onClick={() => marcarLlamado(s)} title="Marcar que ya has llamado a los padres"
-                    style={{ fontSize: 11, fontWeight: 800, padding: '4px 10px', borderRadius: 999, cursor: 'pointer', border: '1px solid',
-                      borderColor: s.llamado ? 'color-mix(in oklab, var(--teal) 40%, transparent)' : 'color-mix(in oklab, var(--orange) 40%, transparent)',
-                      color: s.llamado ? 'var(--teal)' : 'var(--orange)',
-                      background: `color-mix(in oklab, ${s.llamado ? 'var(--teal)' : 'var(--orange)'} 12%, var(--bg-2))` }}>
-                    {s.llamado ? '✓ Llamado' : 'Llamar'}
-                  </button>
+                  {/* Si la familia ya confirmó (sí), no hay que llamar (ticket #241). */}
+                  {s.confirmado === true ? (
+                    <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink-3)' }}>No hace falta llamar</span>
+                  ) : (
+                    <button onClick={() => marcarLlamado(s)} title="Marcar que ya has llamado a los padres"
+                      style={{ fontSize: 11, fontWeight: 800, padding: '4px 10px', borderRadius: 999, cursor: 'pointer', border: '1px solid',
+                        borderColor: s.llamado ? 'color-mix(in oklab, var(--teal) 40%, transparent)' : 'color-mix(in oklab, var(--orange) 40%, transparent)',
+                        color: s.llamado ? 'var(--teal)' : 'var(--orange)',
+                        background: `color-mix(in oklab, ${s.llamado ? 'var(--teal)' : 'var(--orange)'} 12%, var(--bg-2))` }}>
+                      {s.llamado ? '✓ Llamado' : 'Llamar'}
+                    </button>
+                  )}
                   <div className="row-actions"><button className="icon-btn danger" onClick={() => borrar(s)} aria-label="Quitar"><I.Trash /></button></div>
                 </div>
               );

@@ -975,6 +975,8 @@ async function initDb() {
         await client.query(`ALTER TABLE aim_speaking ADD COLUMN IF NOT EXISTS group_id UUID`);
         await client.query(`ALTER TABLE aim_speaking ADD COLUMN IF NOT EXISTS hora_inicio VARCHAR(5)`);
         await client.query(`ALTER TABLE aim_speaking ADD COLUMN IF NOT EXISTS hora_fin VARCHAR(5)`);
+        // Segundo correo de confirmación el día antes de la clase (ticket #241).
+        await client.query(`ALTER TABLE aim_speaking ADD COLUMN IF NOT EXISTS recordatorio_enviado BOOLEAN NOT NULL DEFAULT false`);
 
         // Anulación de recibos: nunca se borran, se marcan (rastro de auditoría).
         await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_motivo TEXT`);
@@ -1046,6 +1048,11 @@ async function initDb() {
         // Actividad a la que pertenece el cargo, copiada de la ficha al generar.
         // Es lo que permite cruzar ingresos y gastos por actividad.
         await client.query(`ALTER TABLE aim_cargos ADD COLUMN IF NOT EXISTS actividad VARCHAR(255)`);
+        // Importe bruto FIJO de la línea (ticket #243). Solo lo usan los anticipos:
+        // el motor, en vez de grosar la base (base × (1+IVA), que puede bailar un
+        // céntimo), toma este total exacto y calcula el IVA como bruto − base, para
+        // que lo que paga la familia cuadre al céntimo. NULL en el resto de cargos.
+        await client.query(`ALTER TABLE aim_cargos ADD COLUMN IF NOT EXISTS importe_bruto NUMERIC(12,2)`);
         // Único por (cliente, concepto, mes, destino) SOLO para los generados: así la
         // generación mensual no duplica, pero sí se puede vender el mismo artículo
         // varias veces en el mismo mes en el mostrador.
@@ -1257,6 +1264,12 @@ const mailTransporter = (process.env.EMAIL_USER && process.env.EMAIL_PASS)
         host: 'smtp.gmail.com',
         port: 465,
         secure: true,
+        // Conexión reutilizada (ticket #241): sin pool, cada correo abría y cerraba
+        // una conexión TLS nueva con Gmail y tardaba de más en salir. Con pool la
+        // conexión se mantiene y los correos se envían en cuanto se piden.
+        pool: true,
+        maxConnections: 3,
+        maxMessages: 100,
         auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
     })
     : null;
@@ -5359,7 +5372,29 @@ app.get('/api/admin/billing/generar/preview', authenticateSession, requireAdmin,
     }
 });
 
-function r2Server(n) { return Math.round((Number(n) + Number.EPSILON) * 100) / 100; }
+// Redondeo a 2 decimales, medio céntimo hacia arriba (ticket #243), idéntico al
+// r2 del motor de facturación (billing.js): 3er decimal ≥5 sube, ≤4 baja, exacto
+// para positivos y negativos. Ver la explicación completa en billing.js.
+function r2Server(n) {
+    const x = Number(n);
+    if (!Number.isFinite(x)) return 0;
+    const centimos = Math.round(Number((Math.abs(x) * 100).toFixed(6)));
+    return (x < 0 ? -centimos : centimos) / 100;
+}
+
+// Base imponible tal que, al sumarle de nuevo el IVA y redondear, dé EXACTAMENTE
+// el bruto tecleado (ticket #243). Sin esto, guardar base = bruto/(1+IVA) y luego
+// grosar de vuelta podía bailar un céntimo (100 € al 21% → base 82,64 → 99,99).
+// Se ajusta como mucho un céntimo hasta que cuadre.
+function baseExactaDesdeBruto(bruto, ivaPct) {
+    const g = r2Server(bruto);
+    const base0 = r2Server(g / (1 + ivaPct / 100));
+    for (const delta of [0, 0.01, -0.01, 0.02, -0.02]) {
+        const cand = r2Server(base0 + delta);
+        if (r2Server(cand * (1 + ivaPct / 100)) === g) return cand;
+    }
+    return base0;
+}
 
 // Previsión de un mes FUTURO de la temporada: los cargos que se generarían ese
 // mes y que aún no existen. Es solo una previsión (no crea deuda). Se usa en
@@ -5584,6 +5619,8 @@ async function familiaIds(personaId) {
 const cargoParaMotor = (c) => ({
     id: c.id, concepto: c.concepto, descripcion: c.descripcion, tipo: c.tipo,
     mes: c.mes, precio: Number(c.precio), ivaPct: Number(c.iva_pct), descuentoPct: Number(c.descuento_pct),
+    // Anticipos (ticket #243): total exacto de la línea, si viene fijado.
+    brutoFijo: c.importe_bruto != null ? Number(c.importe_bruto) : undefined,
 });
 
 // Buscar personas del club por nombre/apellidos. Devuelve también el email y
@@ -5719,14 +5756,15 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
                 const bruto = r2Server(Number(ex.importe));
                 if (!(bruto > 0)) throw { httP: 400, msg: 'El anticipo necesita un importe mayor que 0 €.' };
                 const ivaPct = IVAS_VALIDOS.includes(Number(ex.ivaPct)) ? Number(ex.ivaPct) : 0;
-                const base = r2Server(bruto / (1 + ivaPct / 100));
+                // Base que grosa de vuelta al bruto exacto (ticket #243).
+                const base = baseExactaDesdeBruto(bruto, ivaPct);
                 const motivo = (ex.motivo || '').toString().trim().slice(0, 200);
                 const clienteAnt = ex.clienteId || pagadorId;
                 const desc = motivo ? `Anticipo — ${motivo}` : 'Anticipo';
                 const ins = await client.query(
-                    `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado, origen, actividad)
-                     VALUES ($1,$2,$3::date,$4,'Otros',$5,$6,0,'pendiente','anticipo',NULL) RETURNING id`,
-                    [clienteAnt, ANTICIPO_CONCEPTO, mesActual, desc, base, ivaPct]
+                    `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado, origen, actividad, importe_bruto)
+                     VALUES ($1,$2,$3::date,$4,'Otros',$5,$6,0,'pendiente','anticipo',NULL,$7) RETURNING id`,
+                    [clienteAnt, ANTICIPO_CONCEPTO, mesActual, desc, base, ivaPct, bruto]
                 );
                 extraIds.push(ins.rows[0].id);
                 // El saldo del anticipo se lleva en BRUTO (con IVA): es lo que la
@@ -5788,11 +5826,12 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
                 const factOrigen = anRow.orig_numero != null
                     ? ` · Factura ${numeroVisible({ serie: anRow.orig_serie, numero: anRow.orig_numero, fecha: anRow.orig_fecha })}`
                     : '';
-                const baseAplic = r2Server(imp / (1 + ivaAnt / 100)); // base negativa (el IVA lo pone el motor)
+                // Base que, grosada de vuelta, da el importe aplicado exacto (#243).
+                const baseAplic = baseExactaDesdeBruto(imp, ivaAnt); // el IVA lo pone el motor
                 const ins = await client.query(
-                    `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado, origen, actividad)
-                     VALUES ($1,$2,$3::date,$4,'Otros',$5,$6,0,'pendiente','anticipo_aplic',NULL) RETURNING id`,
-                    [anRow.cliente_id, ANTICIPO_CONCEPTO, mesActual, `Anticipo aplicado${motivo}${factOrigen}`, -baseAplic, ivaAnt]
+                    `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado, origen, actividad, importe_bruto)
+                     VALUES ($1,$2,$3::date,$4,'Otros',$5,$6,0,'pendiente','anticipo_aplic',NULL,$7) RETURNING id`,
+                    [anRow.cliente_id, ANTICIPO_CONCEPTO, mesActual, `Anticipo aplicado${motivo}${factOrigen}`, -baseAplic, ivaAnt, -imp]
                 );
                 extraIds.push(ins.rows[0].id);
                 aplicaciones.push({ cargoId: ins.rows[0].id, anticipoId: a.rows[0].id, importe: imp });
@@ -6150,13 +6189,21 @@ async function lineasVivasDeRecibo(client, reciboId) {
 // devuelve { id, importe, aDevolver }. No decide qué pasa con los cargos: de eso
 // se encarga quien la llama, porque anular y rectificar no hacen lo mismo.
 async function emitirRectificativa(client, { orig, quitadas, quedan, metodo, motivo, userId }) {
-    const conIva = c => r2Server(Number(c.importe ?? 0) * (1 + Number(c.iva_pct) / 100));
+    // Los anticipos llevan bruto fijo (ticket #243): su total con IVA es el importe
+    // bruto guardado, no base × (1+IVA), para que no baile un céntimo tampoco aquí.
+    const conIva = c => c.importe_bruto != null
+        ? r2Server(Number(c.importe_bruto))
+        : r2Server(Number(c.importe ?? 0) * (1 + Number(c.iva_pct) / 100));
     const aDevolver = r2Server(quitadas.reduce((s, c) => s + conIva(c), 0));
     // Por diferencias: lo rectificado en negativo. Por sustitución: lo que queda correcto.
-    const lineas = metodo === 'diferencias'
-        ? quitadas.map(c => ({ c, base: r2Server(-Number(c.importe ?? 0)) }))
-        : quedan.map(c => ({ c, base: r2Server(Number(c.importe ?? 0)) }));
-    const importe = r2Server(lineas.reduce((s, l) => s + l.base * (1 + Number(l.c.iva_pct) / 100), 0));
+    const signo = metodo === 'diferencias' ? -1 : 1;
+    const lineas = (metodo === 'diferencias' ? quitadas : quedan).map(c => ({
+        c,
+        base: r2Server(signo * Number(c.importe ?? 0)),
+        bruto: c.importe_bruto != null ? r2Server(signo * Number(c.importe_bruto)) : null,
+    }));
+    const importe = r2Server(lineas.reduce((s, l) =>
+        s + (l.bruto != null ? l.bruto : l.base * (1 + Number(l.c.iva_pct) / 100)), 0));
 
     const num = (await client.query(`SELECT nextval('aim_recibos_rect_numero_seq') AS n`)).rows[0].n;
     const nuevo = await client.query(
@@ -9067,8 +9114,10 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
 
         // Speaking (ticket #228): alumnos apuntados a una sesión futura sin llamar
         // a los padres, y padres que han dicho que NO, para que secretaría lo vea.
+        // Ya confirmados no cuentan como "por llamar" (ticket #241): si la familia
+        // ya dijo que sí desde el correo/web, no hay que llamarles para confirmar.
         const spk = await pool.query(
-            `SELECT COUNT(*) FILTER (WHERE llamado = false)::int AS por_llamar,
+            `SELECT COUNT(*) FILTER (WHERE llamado = false AND confirmado IS DISTINCT FROM true)::int AS por_llamar,
                     COUNT(*) FILTER (WHERE confirmado = false)::int AS rechazados,
                     COUNT(*) FILTER (WHERE confirmado = true)::int AS confirmados
              FROM aim_speaking WHERE fecha >= CURRENT_DATE`);
@@ -9120,13 +9169,17 @@ async function sesionSpeakingDe(groupId, fecha) {
     }
     return null;
 }
-// Correos de los adultos de la familia de un alumno (para avisar a los padres).
+// Correos a los que avisar de la clase de Speaking de un alumno (ticket #241):
+// los adultos de la familia Y el propio alumno. Antes se excluía al alumno, así
+// que si el alumno es su propio contacto (adulto que se apunta a sí mismo) no le
+// llegaba nada. Ahora se incluye siempre su correo, además del de la familia.
 async function emailsFamilia(studentId) {
     const fam = await familiaIds(studentId);
+    const ids = [...new Set([...(fam || []), studentId])];
     const r = await pool.query(
         `SELECT DISTINCT email FROM users
-         WHERE user_id = ANY($1::uuid[]) AND user_id <> $2 AND email IS NOT NULL AND email <> ''`,
-        [fam, studentId]);
+         WHERE user_id = ANY($1::uuid[]) AND email IS NOT NULL AND email <> ''`,
+        [ids]);
     return r.rows.map(x => x.email);
 }
 function paginaSpeaking(ok, si) {
@@ -9146,8 +9199,9 @@ function paginaSpeaking(ok, si) {
         </div>
       </body></html>`;
 }
-// Envía los correos de confirmación a los padres, en segundo plano.
-async function enviarCorreosSpeaking(ids) {
+// Envía los correos de confirmación, en segundo plano. Con recordatorio=true es
+// el segundo aviso del día antes (ticket #241): mismo enlace, otro asunto/texto.
+async function enviarCorreosSpeaking(ids, { recordatorio = false } = {}) {
     if (!ids.length || !mailTransporter) return;
     // La app (con la página pública /speaking) vive en el subdominio de Heroku
     // aim.aimeducation.es; aimeducation.es es otro sitio (IONOS) y no tiene esta
@@ -9157,21 +9211,26 @@ async function enviarCorreosSpeaking(ids) {
         `SELECT s.id, s.fecha, s.franjas, s.token, s.student_id, s.hora_inicio, s.hora_fin,
                 TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno
          FROM aim_speaking s JOIN users u ON u.user_id = s.student_id WHERE s.id = ANY($1::int[])`, [ids]);
-    for (const row of r.rows) {
+    // En paralelo: cada correo abría antes su conexión y se enviaban de uno en uno,
+    // así que una tanda grande tardaba mucho. Con el pool del transporte y este
+    // Promise.all salen a la vez.
+    await Promise.all(r.rows.map(async (row) => {
         try {
             const correos = await emailsFamilia(row.student_id);
-            if (!correos.length) continue;
+            if (!correos.length) return;
             const fechaTxt = new Date(row.fecha).toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
             const franjasTxt = franjasTexto(row.hora_inicio, row.hora_fin, row.franjas || []);
             const si = `${base}/speaking/${row.token}/si`;
             const no = `${base}/speaking/${row.token}/no`;
+            const intro = recordatorio
+                ? `<p>Te recordamos que <b>mañana</b> es la clase de <b>Speaking</b> de <b>${row.alumno}</b> (<b>${fechaTxt}</b>${franjasTxt ? ` · ${franjasTxt}` : ''}).</p><p>Si aún no lo has hecho, confirma la asistencia:</p>`
+                : `<p><b>${row.alumno}</b> está apuntado/a a la clase de <b>Speaking</b> del <b>${fechaTxt}</b>${franjasTxt ? ` (${franjasTxt})` : ''}.</p><p>Por favor, confirma si podrá asistir:</p>`;
             await mailTransporter.sendMail({
                 from: process.env.EMAIL_USER, to: correos.join(','),
-                subject: `Clase de Speaking de ${row.alumno} · ${fechaTxt}`,
+                subject: `${recordatorio ? 'Recordatorio · ' : ''}Clase de Speaking de ${row.alumno} · ${fechaTxt}`,
                 html: `<div style="font-family:system-ui,sans-serif;color:#1a1a1a">
                   <p>Hola,</p>
-                  <p><b>${row.alumno}</b> está apuntado/a a la clase de <b>Speaking</b> del <b>${fechaTxt}</b>${franjasTxt ? ` (${franjasTxt})` : ''}.</p>
-                  <p>Por favor, confirma si podrá asistir:</p>
+                  ${intro}
                   <p style="margin:20px 0">
                     <a href="${si}" style="background:#0a7d3c;color:#fff;text-decoration:none;padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block;margin-right:8px">Sí, asistirá</a>
                     <a href="${no}" style="background:#eee;color:#333;text-decoration:none;padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block">No podrá</a>
@@ -9179,8 +9238,35 @@ async function enviarCorreosSpeaking(ids) {
                   <p style="font-size:12px;color:#888">AIM Education · Algeciras</p>
                 </div>`,
             });
-            await pool.query(`UPDATE aim_speaking SET email_enviado = true WHERE id = $1`, [row.id]);
+            await pool.query(
+                `UPDATE aim_speaking SET ${recordatorio ? 'recordatorio_enviado' : 'email_enviado'} = true WHERE id = $1`,
+                [row.id]);
         } catch (e) { console.error('[speaking mail]', e.message); }
+    }));
+}
+
+// Segundo aviso automático (ticket #241): el día antes de la clase se reenvía la
+// confirmación a quien no haya dicho que NO y no se le haya recordado ya. Guardado
+// por recordatorio_enviado, así que aunque se llame a menudo solo manda una vez.
+let recordatorioSpeakingEnCurso = false;
+async function recordatoriosSpeaking() {
+    if (recordatorioSpeakingEnCurso || !mailTransporter) return;
+    recordatorioSpeakingEnCurso = true;
+    try {
+        const r = await pool.query(
+            `SELECT id FROM aim_speaking
+             WHERE fecha = CURRENT_DATE + 1
+               AND recordatorio_enviado = false
+               AND confirmado IS DISTINCT FROM false`);
+        const ids = r.rows.map(x => x.id);
+        if (ids.length) {
+            await enviarCorreosSpeaking(ids, { recordatorio: true });
+            console.log(`[speaking] ${ids.length} recordatorio(s) enviados`);
+        }
+    } catch (e) {
+        console.error('[speaking recordatorio]', e.message);
+    } finally {
+        recordatorioSpeakingEnCurso = false;
     }
 }
 
@@ -9466,4 +9552,8 @@ app.listen(port, () => {
     // base ya esté lista) y luego a intervalos.
     setTimeout(generacionAutomatica, 15 * 1000);
     setInterval(generacionAutomatica, INTERVALO_GENERACION_MS);
+    // Segundo aviso de Speaking el día antes (ticket #241). No hace falta afinar la
+    // hora: se comprueba cada 15 min y solo manda una vez por sesión.
+    setTimeout(recordatoriosSpeaking, 30 * 1000);
+    setInterval(recordatoriosSpeaking, 15 * 60 * 1000);
 });
