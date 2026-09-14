@@ -1269,6 +1269,9 @@ export function AdminReportes({ user, permisos = {} }) {
       {/* Evolución de ingresos y alumnos, mes a mes */}
       <EvolucionIngresos />
 
+      {/* Estimación de ganancia de la temporada (ticket #239) */}
+      {!soloYo && <EstimacionTemporada />}
+
       {/* Gamificación */}
       {gami && (
         <Seccion titulo="Gamificación">
@@ -1305,6 +1308,49 @@ export function AdminReportes({ user, permisos = {} }) {
         </Seccion>
       )}
     </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Estimación de ganancia de la temporada (ticket #239): media de lo cobrado al
+// mes en los últimos 12 meses (mensualidades y material por separado), proyectada
+// a los 12 meses de temporada. Es el equivalente económico del informe de alumnos.
+// ═════════════════════════════════════════════════════════════════════════════
+function EstimacionTemporada() {
+  const [d, setD] = useState(null);
+  useEffect(() => {
+    let vivo = true;
+    fetch('/api/admin/informes/estimacion-temporada', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null).then(x => { if (vivo) setD(x); }).catch(() => { });
+    return () => { vivo = false; };
+  }, []);
+  if (!d) return null;
+  const e = d.estimacionTemporada, m = d.medias;
+  const eu = (n) => `${eurFmtNum(Number(n || 0).toFixed(2))} €`;
+  return (
+    <Seccion titulo="Estimación de ganancia de la temporada"
+      extra={<span style={{ fontSize: 11, color: 'var(--ink-3)' }}>según los últimos 12 meses · {d.mesesConDatos} con datos</span>}>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <Kpi titulo="Estimación temporada" valor={eu(e.total)} sub="media mensual × 12 meses" />
+        <Kpi titulo="En mensualidades" valor={eu(e.mensualidad)} sub={`media ${eu(m.mensualidad)}/mes`} />
+        <Kpi titulo="En material" valor={eu(e.material)} sub={`media ${eu(m.material)}/mes`} />
+        {e.otros > 0 && <Kpi titulo="Otros" valor={eu(e.otros)} sub={`media ${eu(m.otros)}/mes`} />}
+      </div>
+      <p style={{ fontSize: 12, color: 'var(--ink-3)', margin: '4px 0 0' }}>
+        Media de lo cobrado al mes (los meses sin datos cuentan como 0 €), proyectada a los 12 meses de temporada.
+      </p>
+      {d.porActividad?.length > 0 && (
+        <div style={{ display: 'grid', gap: 4, fontSize: 12, marginTop: 6 }}>
+          <div style={{ fontWeight: 800, color: 'var(--ink-2)' }}>Media mensual por actividad</div>
+          {d.porActividad.map(a => (
+            <div key={a.actividad} style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+              <span style={{ fontWeight: 700 }}>{a.actividad}</span>
+              <span style={{ color: 'var(--ink-3)' }}>{eu(a.mediaMes)}/mes · {eu(a.total12m)} en 12 meses</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Seccion>
   );
 }
 

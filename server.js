@@ -6284,6 +6284,75 @@ app.get('/api/admin/informes/evolucion', authenticateSession, requireAdmin, asyn
     }
 });
 
+// Estimación de ganancia de la temporada (ticket #239): a partir del mes actual y
+// los 11 anteriores (los meses sin datos cuentan como 0 €), la media de lo cobrado
+// al mes —desglosado en mensualidades y material— y la proyección a los 12 meses
+// de temporada. Es el equivalente económico del informe de alumnos.
+app.get('/api/admin/informes/estimacion-temporada', authenticateSession, requireAdmin, async (req, res) => {
+    const MESES = 12; // mes actual + 11 anteriores
+    try {
+        const r = await pool.query(
+            `SELECT TO_CHAR(DATE_TRUNC('month', rc.fecha), 'YYYY-MM') AS mes,
+                    CASE WHEN c.tipo = 'Mensualidad' THEN 'mensualidad'
+                         WHEN c.tipo = 'Material' THEN 'material'
+                         ELSE 'otros' END AS categoria,
+                    SUM(c.importe)::numeric AS ingresos
+             FROM aim_cargos c
+             JOIN aim_recibos rc ON rc.id = c.recibo_id
+             WHERE c.estado = 'cobrado' AND rc.estado <> 'anulado'
+               AND rc.fecha >= (DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '11 months')
+             GROUP BY 1, 2`);
+        const porMes = new Map();
+        for (const x of r.rows) {
+            const e = porMes.get(x.mes) || { mes: x.mes, mensualidad: 0, material: 0, otros: 0, total: 0 };
+            e[x.categoria] = r2Server(e[x.categoria] + Number(x.ingresos));
+            e.total = r2Server(e.total + Number(x.ingresos));
+            porMes.set(x.mes, e);
+        }
+        // Los 12 meses (actual + 11 anteriores); los que no tienen datos van a 0 €.
+        const filas = [];
+        const hoy = new Date();
+        for (let i = MESES - 1; i >= 0; i--) {
+            const d = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
+            const clave = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+            filas.push(porMes.get(clave) || { mes: clave, mensualidad: 0, material: 0, otros: 0, total: 0 });
+        }
+        const suma = (k) => filas.reduce((s, f) => s + f[k], 0);
+        const medias = {
+            mensualidad: r2Server(suma('mensualidad') / MESES),
+            material: r2Server(suma('material') / MESES),
+            otros: r2Server(suma('otros') / MESES),
+            total: r2Server(suma('total') / MESES),
+        };
+        // Proyección a la temporada completa (12 meses).
+        const estimacionTemporada = {
+            mensualidad: r2Server(medias.mensualidad * 12),
+            material: r2Server(medias.material * 12),
+            otros: r2Server(medias.otros * 12),
+            total: r2Server(medias.total * 12),
+        };
+        // Media mensual por actividad ("cuánto genera cada clase").
+        const ra = await pool.query(
+            `SELECT COALESCE(c.actividad, 'Sin actividad') AS actividad, SUM(c.importe)::numeric AS ingresos
+             FROM aim_cargos c JOIN aim_recibos rc ON rc.id = c.recibo_id
+             WHERE c.estado = 'cobrado' AND rc.estado <> 'anulado'
+               AND rc.fecha >= (DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '11 months')
+             GROUP BY 1 ORDER BY ingresos DESC`);
+        const porActividad = ra.rows.map(a => ({
+            actividad: a.actividad, total12m: r2Server(Number(a.ingresos)),
+            mediaMes: r2Server(Number(a.ingresos) / MESES),
+        }));
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            meses: filas, medias, estimacionTemporada, porActividad,
+            mesesConDatos: filas.filter(f => f.total > 0).length,
+        });
+    } catch (err) {
+        console.error('Error en la estimación de temporada:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // ── Numeración de facturas ───────────────────────────────────────────────────
 // El formato y el número por el que sigue cada serie se configuran aquí, para
 // que el día que el club fije su numeración real (2026000946, R-202600001…) no
