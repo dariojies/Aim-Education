@@ -56,6 +56,8 @@ export function permisosDe(rol) {
             // La clase de Speaking la gestionan los profes (apuntar alumnos) y la
             // ve secretaría (llamar a los padres). Ticket #228.
             speaking: true,
+            // La mascota de clase la llevan los profes (prestar/devolver/sortear).
+            mascotas: true,
             camp: true,
             // Los títulos y las notas de examen los sube el club, no el monitor.
             titulos: !instructor,

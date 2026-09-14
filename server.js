@@ -978,6 +978,35 @@ async function initDb() {
         // Segundo correo de confirmación el día antes de la clase (ticket #241).
         await client.query(`ALTER TABLE aim_speaking ADD COLUMN IF NOT EXISTS recordatorio_enviado BOOLEAN NOT NULL DEFAULT false`);
 
+        // Mascota de clase (ticket #244): un peluche por clase que los alumnos se
+        // llevan a casa por turnos. Se guarda quién lo tiene ahora, cuándo debe
+        // devolverlo, si lo ha devuelto y el histórico, para repartir con justicia:
+        // el sorteo da prioridad a quien menos veces se lo ha llevado.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_mascotas (
+                id SERIAL PRIMARY KEY,
+                group_id UUID NOT NULL REFERENCES tul_groups(group_id) ON DELETE CASCADE,
+                nombre VARCHAR(80),
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE (group_id)
+            )
+        `).catch(() => {}); // por si tul_groups aún no existe en un arranque en frío
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_mascota_prestamos (
+                id SERIAL PRIMARY KEY,
+                mascota_id INTEGER NOT NULL REFERENCES aim_mascotas(id) ON DELETE CASCADE,
+                student_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                fecha_prestamo DATE NOT NULL DEFAULT CURRENT_DATE,
+                devolver_antes DATE,
+                devuelto_at TIMESTAMPTZ,
+                created_by UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `).catch(() => {});
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_mascota_prestamos ON aim_mascota_prestamos (mascota_id, student_id)`).catch(() => {});
+        // Como mucho un préstamo activo (sin devolver) por mascota a la vez.
+        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_mascota_activa ON aim_mascota_prestamos (mascota_id) WHERE devuelto_at IS NULL`).catch(() => {});
+
         // Anulación de recibos: nunca se borran, se marcan (rastro de auditoría).
         await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_motivo TEXT`);
         await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_por UUID REFERENCES users(user_id) ON DELETE SET NULL`);
@@ -9421,6 +9450,188 @@ app.post('/api/me/speaking/:id/confirmar', authenticateSession, async (req, res)
             [si, req.params.id, fam]);
         if (!r.rowCount) return res.status(404).json({ error: 'Esa sesión no es de tu familia o ya ha pasado.' });
         res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// MASCOTAS DE CLASE (ticket #244)
+// Un peluche por clase que los alumnos se llevan a casa por turnos. Se registra
+// quién lo tiene, cuándo debe devolverlo, si lo ha devuelto y cuántas veces se lo
+// ha llevado cada uno. El sorteo prioriza a quien menos veces se lo ha llevado.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// El "ranking" de una clase: cada alumno matriculado con cuántas veces se ha
+// llevado la mascota y cuándo fue la última. Base para el reparto justo.
+async function rankingMascota(mascotaId, groupId, cliente = pool) {
+    const r = await cliente.query(
+        `SELECT u.user_id AS student_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno,
+                COUNT(p.id)::int AS veces, MAX(p.fecha_prestamo) AS ultima
+         FROM tul_group_students gs
+         JOIN users u ON u.user_id = gs.student_id
+         LEFT JOIN aim_mascota_prestamos p ON p.mascota_id = $1 AND p.student_id = gs.student_id
+         WHERE gs.group_id = $2
+         GROUP BY u.user_id, u.name, u.surname
+         ORDER BY veces ASC, alumno ASC`, [mascotaId, groupId]);
+    return r.rows.map(x => ({ studentId: x.student_id, alumno: x.alumno, veces: x.veces, ultima: x.ultima }));
+}
+
+// El préstamo activo (sin devolver) de una mascota, o null.
+async function prestamoActivo(mascotaId, cliente = pool) {
+    const r = await cliente.query(
+        `SELECT p.id, p.student_id, p.fecha_prestamo, p.devolver_antes,
+                TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno
+         FROM aim_mascota_prestamos p JOIN users u ON u.user_id = p.student_id
+         WHERE p.mascota_id = $1 AND p.devuelto_at IS NULL`, [mascotaId]);
+    if (!r.rowCount) return null;
+    const a = r.rows[0];
+    return {
+        prestamoId: a.id, studentId: a.student_id, alumno: a.alumno,
+        fechaPrestamo: a.fecha_prestamo, devolverAntes: a.devolver_antes,
+        vencido: a.devolver_antes ? new Date(a.devolver_antes) < new Date(new Date().toISOString().slice(0, 10)) : false,
+    };
+}
+
+// Todas las mascotas del club con su clase, quién la tiene ahora y cuántos préstamos lleva.
+app.get('/api/admin/mascotas', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT m.id, m.group_id, m.nombre, g.name AS clase, a.name AS actividad,
+                    (SELECT COUNT(*) FROM tul_group_students gs WHERE gs.group_id = m.group_id)::int AS alumnos,
+                    (SELECT COUNT(*) FROM aim_mascota_prestamos p WHERE p.mascota_id = m.id)::int AS prestamos
+             FROM aim_mascotas m
+             JOIN tul_groups g ON g.group_id = m.group_id
+             JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE a.club_id = $1
+             ORDER BY a.name, g.name`, [AIM_CLUB_ID]);
+        const mascotas = [];
+        for (const m of r.rows) {
+            mascotas.push({
+                id: m.id, groupId: m.group_id, nombre: m.nombre, clase: m.clase, actividad: m.actividad,
+                alumnos: m.alumnos, prestamos: m.prestamos, actual: await prestamoActivo(m.id),
+            });
+        }
+        res.set('Cache-Control', 'no-store');
+        res.json({ mascotas });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Detalle de una mascota: su ranking (reparto) y el histórico de préstamos.
+app.get('/api/admin/mascotas/:id', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const m = await pool.query(
+            `SELECT m.id, m.group_id, m.nombre, g.name AS clase, a.name AS actividad
+             FROM aim_mascotas m JOIN tul_groups g ON g.group_id = m.group_id
+             JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE m.id = $1 AND a.club_id = $2`, [req.params.id, AIM_CLUB_ID]);
+        if (!m.rowCount) return res.status(404).json({ error: 'Esa mascota no existe.' });
+        const mas = m.rows[0];
+        const historico = await pool.query(
+            `SELECT p.id, p.student_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno,
+                    p.fecha_prestamo, p.devolver_antes, p.devuelto_at
+             FROM aim_mascota_prestamos p JOIN users u ON u.user_id = p.student_id
+             WHERE p.mascota_id = $1 ORDER BY p.fecha_prestamo DESC, p.id DESC LIMIT 60`, [req.params.id]);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            id: mas.id, groupId: mas.group_id, nombre: mas.nombre, clase: mas.clase, actividad: mas.actividad,
+            actual: await prestamoActivo(mas.id),
+            ranking: await rankingMascota(mas.id, mas.group_id),
+            historico: historico.rows.map(h => ({
+                id: h.id, studentId: h.student_id, alumno: h.alumno,
+                fechaPrestamo: h.fecha_prestamo, devolverAntes: h.devolver_antes, devueltoAt: h.devuelto_at,
+            })),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Asignar (o renombrar) la mascota de una clase. Una mascota por clase.
+app.post('/api/admin/mascotas', authenticateSession, requireAdmin, async (req, res) => {
+    const { groupId, nombre } = req.body || {};
+    if (!groupId) return res.status(400).json({ error: 'Elige la clase.' });
+    try {
+        const g = await pool.query(
+            `SELECT 1 FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE g.group_id = $1 AND a.club_id = $2`, [groupId, AIM_CLUB_ID]);
+        if (!g.rowCount) return res.status(400).json({ error: 'Esa clase no es del club.' });
+        const nom = (nombre || '').toString().trim().slice(0, 80) || null;
+        const r = await pool.query(
+            `INSERT INTO aim_mascotas (group_id, nombre) VALUES ($1, $2)
+             ON CONFLICT (group_id) DO UPDATE SET nombre = EXCLUDED.nombre RETURNING id`, [groupId, nom]);
+        res.status(201).json({ success: true, id: r.rows[0].id });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.patch('/api/admin/mascotas/:id', authenticateSession, requireAdmin, async (req, res) => {
+    const nom = (req.body?.nombre || '').toString().trim().slice(0, 80) || null;
+    try {
+        const r = await pool.query(`UPDATE aim_mascotas SET nombre = $1 WHERE id = $2 RETURNING id`, [nom, req.params.id]);
+        if (!r.rowCount) return res.status(404).json({ error: 'Esa mascota no existe.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/admin/mascotas/:id', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        await pool.query(`DELETE FROM aim_mascotas WHERE id = $1`, [req.params.id]);
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Prestar la mascota a un alumno. Debe estar devuelta antes de prestarla de nuevo
+// (así no se pierde el rastro de si alguien no la devolvió). El alumno tiene que
+// ser de la clase.
+app.post('/api/admin/mascotas/:id/prestar', authenticateSession, requireAdmin, async (req, res) => {
+    const { studentId, devolverAntes } = req.body || {};
+    if (!studentId) return res.status(400).json({ error: 'Elige a quién se la lleva.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const m = await client.query(`SELECT group_id FROM aim_mascotas WHERE id = $1 FOR UPDATE`, [req.params.id]);
+        if (!m.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Esa mascota no existe.' }); }
+        const activo = await prestamoActivo(req.params.id, client);
+        if (activo) { await client.query('ROLLBACK'); return res.status(409).json({ error: `La tiene ${activo.alumno}. Marca primero la devolución.` }); }
+        const enClase = await client.query(
+            `SELECT 1 FROM tul_group_students WHERE group_id = $1 AND student_id = $2`, [m.rows[0].group_id, studentId]);
+        if (!enClase.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Ese alumno no está en la clase.' }); }
+        const antes = /^\d{4}-\d{2}-\d{2}$/.test(String(devolverAntes || '')) ? devolverAntes : null;
+        const ins = await client.query(
+            `INSERT INTO aim_mascota_prestamos (mascota_id, student_id, devolver_antes, created_by)
+             VALUES ($1, $2, $3::date, $4) RETURNING id`,
+            [req.params.id, studentId, antes, req.userSession.userId]);
+        await client.query('COMMIT');
+        res.status(201).json({ success: true, prestamoId: ins.rows[0].id });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+// Marcar que la mascota ya se ha devuelto (cierra el préstamo activo).
+app.post('/api/admin/mascotas/:id/devolver', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `UPDATE aim_mascota_prestamos SET devuelto_at = NOW()
+             WHERE mascota_id = $1 AND devuelto_at IS NULL RETURNING id`, [req.params.id]);
+        if (!r.rowCount) return res.status(409).json({ error: 'No hay ningún préstamo por devolver.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Sortear a quién le toca: aleatorio, pero solo entre los que MENOS veces se la
+// han llevado (reparto justo, ticket #244). Excluye a quien la tenga ahora. No
+// asigna nada: solo propone; el club confirma con "prestar".
+app.get('/api/admin/mascotas/:id/sugerencia', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const m = await pool.query(`SELECT group_id FROM aim_mascotas WHERE id = $1`, [req.params.id]);
+        if (!m.rowCount) return res.status(404).json({ error: 'Esa mascota no existe.' });
+        const activo = await prestamoActivo(req.params.id);
+        let ranking = await rankingMascota(req.params.id, m.rows[0].group_id);
+        if (activo) ranking = ranking.filter(x => x.studentId !== activo.studentId);
+        if (!ranking.length) return res.status(400).json({ error: 'No hay alumnos en la clase a los que prestársela.' });
+        const minVeces = Math.min(...ranking.map(x => x.veces));
+        const candidatos = ranking.filter(x => x.veces === minVeces);
+        const elegido = candidatos[Math.floor(Math.random() * candidatos.length)];
+        res.set('Cache-Control', 'no-store');
+        res.json({ sugerido: elegido, entre: candidatos.length, veces: minVeces });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

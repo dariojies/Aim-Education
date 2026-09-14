@@ -19,6 +19,7 @@ import AdminExamenes from './AdminExamenes.jsx';
 import FichaAlumno360 from './FichaAlumno360.jsx';
 import AdminObjetosPerdidos from './AdminObjetosPerdidos.jsx';
 import AdminSpeaking from './AdminSpeaking.jsx';
+import AdminMascotas from './AdminMascotas.jsx';
 
 const fichaCardTitulo = { margin: '0 0 12px', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--ink-3)' };
 
@@ -6252,6 +6253,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
       heading: "Actividad", items: [
         { id: "classes", label: "Clases y horarios", icon: <I.Calendar /> },
         { id: "speaking", label: "Speaking", icon: <I.Users /> },
+        { id: "mascotas", label: "Mascotas", icon: <I.Heart /> },
         { id: "camp", label: "Campamento", icon: <I.Sun /> },
         { id: "events", label: "Eventos", icon: <I.Star /> },
         { id: "titulos", label: "Títulos", icon: <I.Shield /> },
@@ -6458,6 +6460,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("titulos") && <AdminExamenes showToast={showToast} />}
           {ver("objetos") && <AdminObjetosPerdidos showToast={showToast} />}
           {ver("speaking") && <AdminSpeaking showToast={showToast} />}
+          {ver("mascotas") && <AdminMascotas showToast={showToast} />}
           {ver("support") && <AdminSupport user={user} ticketId={ticketId} />}
         </div>
       </div>
