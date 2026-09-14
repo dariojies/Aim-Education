@@ -1125,7 +1125,7 @@ const MEDIOS_GASTO = ['Tarjeta', 'Transferencia bancaria', 'Domiciliación SEPA'
 const gastoVacio = () => ({
   fecha: new Date().toISOString().slice(0, 10), importe: '', medioPago: 'Transferencia bancaria',
   proveedor: '', cif: '', numeroFactura: '', concepto: '', tipo: 'comun', actividad: '',
-  pagado: false, comprobadoBanco: false, facturaUrl: '', esNuevo: true,
+  pagado: false, comprobadoBanco: false, facturaUrl: '', personaId: null, recurrente: false, esNuevo: true,
 });
 
 function AdminGastos({ refreshTrigger, showToast }) {
@@ -1137,10 +1137,14 @@ function AdminGastos({ refreshTrigger, showToast }) {
   const [saving, setSaving] = useState(false);
   const [q, setQ] = useState('');
   const [filtroPago, setFiltroPago] = useState('');
+  const [filtroPersona, setFiltroPersona] = useState(''); // #240
+  const [filtroActividad, setFiltroActividad] = useState(''); // #240
   const [desde, setDesde] = useState('');
   const [hasta, setHasta] = useState('');
   const [provSug, setProvSug] = useState([]);
   const [archivo, setArchivo] = useState(null); // { nombre, mime, base64 }
+  const [personas, setPersonas] = useState([]);   // #240: instructores para asociar gastos
+  const [prevision, setPrevision] = useState([]); // #240: previsión de gastos recurrentes
 
   // Lo que se está viendo ahora mismo, en forma de query. Lo usan el listado y
   // las descargas, para que no puedan desincronizarse.
@@ -1148,6 +1152,8 @@ function AdminGastos({ refreshTrigger, showToast }) {
     const params = new URLSearchParams();
     if (q.trim()) params.set('q', q.trim());
     if (filtroPago) params.set('pagado', filtroPago);
+    if (filtroPersona) params.set('persona', filtroPersona);
+    if (filtroActividad) params.set('actividad', filtroActividad);
     if (desde) params.set('desde', desde);
     if (hasta) params.set('hasta', hasta);
     return params.toString();
@@ -1161,10 +1167,21 @@ function AdminGastos({ refreshTrigger, showToast }) {
     } catch { /* noop */ }
     finally { setLoading(false); }
   }
-  useEffect(() => { const t = setTimeout(cargar, 250); return () => clearTimeout(t); }, [q, filtroPago, desde, hasta, refreshTrigger]);
+  useEffect(() => { const t = setTimeout(cargar, 250); return () => clearTimeout(t); }, [q, filtroPago, filtroPersona, filtroActividad, desde, hasta, refreshTrigger]);
   useEffect(() => {
     fetch('/api/admin/billing/actividades', { credentials: 'include' }).then(r => r.ok ? r.json() : []).then(setActividades).catch(() => {});
+    // Instructores del club, para poder asociar un gasto a una persona (#240).
+    fetch('/api/users', { credentials: 'include' }).then(r => r.ok ? r.json() : []).then(u => setPersonas((Array.isArray(u) ? u : []).filter(x => x.esInstructor))).catch(() => {});
   }, []);
+
+  // Previsión de gastos recurrentes (#240): media de los últimos 12 meses por serie.
+  const cargarPrevision = useCallback(async () => {
+    try {
+      const r = await fetch('/api/admin/gastos/prevision', { credentials: 'include', cache: 'no-store' });
+      if (r.ok) setPrevision((await r.json()).prevision || []);
+    } catch { /* noop */ }
+  }, []);
+  useEffect(() => { cargarPrevision(); }, [cargarPrevision, refreshTrigger, gastos]);
 
   // Autocompletado de proveedor
   useEffect(() => {
@@ -1238,6 +1255,33 @@ function AdminGastos({ refreshTrigger, showToast }) {
             <KPI label="Proveedores" value={String(new Set(gastos.map(g => g.proveedor).filter(Boolean)).size)} trend="distintos" act="pintura" icon={<I.Trophy />} />
           </div>
 
+          {/* Previsión de gastos recurrentes (#240): media de los últimos 12 meses
+              de cada gasto marcado como recurrente. Estima cuánto gastarás este mes
+              y cuáles faltan por apuntar (aún no cotejados con el banco). */}
+          {prevision.length > 0 && (() => {
+            const pendientesMes = prevision.filter(p => !p.yaEsteMes);
+            const totalPrevisto = prevision.reduce((s, p) => s + (p.media || 0), 0);
+            return (
+              <details style={{ marginBottom: 14, background: 'color-mix(in oklab, var(--orange) 6%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--orange) 25%, var(--line))', borderRadius: 14, padding: '12px 16px' }}>
+                <summary style={{ cursor: 'pointer', fontWeight: 800, fontSize: 14, color: 'var(--orange)' }}>
+                  Previsión de gastos recurrentes · {eur(totalPrevisto)}/mes
+                  {pendientesMes.length > 0 ? ` · ${pendientesMes.length} sin apuntar este mes` : ' · todos apuntados este mes'}
+                </summary>
+                <div style={{ display: 'grid', gap: 6, marginTop: 10 }}>
+                  {prevision.map(p => (
+                    <div key={p.clave} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 13, padding: '5px 0', borderBottom: '1px solid var(--line-2)' }}>
+                      <span style={{ minWidth: 0, flex: 1 }}>{p.nombre} <span style={{ color: 'var(--ink-3)', fontSize: 11 }}>· media de {p.n} recibo{p.n !== 1 ? 's' : ''}</span></span>
+                      <span style={{ fontWeight: 700 }}>{eur(p.media)}</span>
+                      <span style={{ minWidth: 130, textAlign: 'right', fontSize: 11, fontWeight: 700, color: p.yaEsteMes ? 'var(--teal)' : 'var(--orange)' }}>
+                        {p.yaEsteMes ? `✓ apuntado (${eur(p.importeEsteMes)})` : 'pendiente este mes'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            );
+          })()}
+
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
             <button className="btn btn-sm btn-primary" onClick={() => { setEdit(gastoVacio()); setArchivo(null); }}><I.Plus /> Nuevo gasto</button>
             <div className="search-input" style={{ flex: '1 1 200px', maxWidth: 320 }}>
@@ -1249,6 +1293,18 @@ function AdminGastos({ refreshTrigger, showToast }) {
                 <button key={v} className={`filter-pill ${filtroPago === v ? 'is-active' : ''}`} onClick={() => setFiltroPago(v)}>{l}</button>
               ))}
             </div>
+            {/* Filtros por actividad y por persona (#240): saber lo que cuesta una
+                actividad, o lo que cuesta por cada instructor. */}
+            <select value={filtroActividad} onChange={e => setFiltroActividad(e.target.value)}
+              style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontFamily: 'inherit', fontSize: 13 }}>
+              <option value="">Toda actividad</option>
+              {actividades.map(a => <option key={a} value={a}>{a}</option>)}
+            </select>
+            <select value={filtroPersona} onChange={e => setFiltroPersona(e.target.value)}
+              style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontFamily: 'inherit', fontSize: 13 }}>
+              <option value="">Toda persona</option>
+              {personas.map(p => <option key={p.id} value={p.id}>{p.firstName} {p.lastName}</option>)}
+            </select>
           </div>
 
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
@@ -1291,7 +1347,10 @@ function AdminGastos({ refreshTrigger, showToast }) {
                     <div className="pri">{g.proveedor || 'Sin proveedor'}</div>
                     <div className="sec">{g.cif || 'sin CIF'}{g.numeroFactura ? ` · nº ${g.numeroFactura}` : ''}</div>
                   </div>
-                  <div className="sec" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{g.concepto || '—'}<div style={{ fontSize: 11 }}>{g.medioPago || ''}</div></div>
+                  <div className="sec" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {g.concepto || '—'}{g.recurrente ? <span title="Gasto recurrente" style={{ color: 'var(--orange)', fontWeight: 800 }}> 🔁</span> : null}
+                    <div style={{ fontSize: 11 }}>{[g.medioPago, g.persona].filter(Boolean).join(' · ') || ''}</div>
+                  </div>
                   <span className="sec">{fmtFecha(g.fecha)}</span>
                   <span style={{ fontWeight: 700, fontFamily: 'var(--font-display)' }}>{eur(g.importe)}</span>
                   <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
@@ -1417,6 +1476,16 @@ function AdminGastos({ refreshTrigger, showToast }) {
                 </div>
               )}
 
+              {/* Persona asociada (#240): p. ej. gasto de taekwondo de un instructor
+                  concreto, para desglosar el coste por persona. Opcional. */}
+              <div className="field">
+                <label>Persona asociada (opcional)</label>
+                <select value={edit.personaId || ''} onChange={e => setEdit(g => ({ ...g, personaId: e.target.value || null }))}>
+                  <option value="">Sin persona</option>
+                  {personas.map(p => <option key={p.id} value={p.id}>{p.firstName} {p.lastName}</option>)}
+                </select>
+              </div>
+
               <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
                 <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, cursor: 'pointer', fontWeight: 700, color: edit.pagado ? 'var(--teal)' : 'var(--ink-2)' }}>
                   <input type="checkbox" checked={!!edit.pagado} onChange={e => setEdit(g => ({ ...g, pagado: e.target.checked }))} style={{ accentColor: 'var(--teal)' }} />
@@ -1425,6 +1494,11 @@ function AdminGastos({ refreshTrigger, showToast }) {
                 <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, cursor: 'pointer', fontWeight: 700, color: edit.comprobadoBanco ? 'var(--purple)' : 'var(--ink-2)' }}>
                   <input type="checkbox" checked={!!edit.comprobadoBanco} onChange={e => setEdit(g => ({ ...g, comprobadoBanco: e.target.checked }))} style={{ accentColor: 'var(--purple)' }} />
                   Comprobado en los movimientos del banco
+                </label>
+                {/* Gasto recurrente (#240): entra en la previsión (media de 12 meses). */}
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, cursor: 'pointer', fontWeight: 700, color: edit.recurrente ? 'var(--orange)' : 'var(--ink-2)' }}>
+                  <input type="checkbox" checked={!!edit.recurrente} onChange={e => setEdit(g => ({ ...g, recurrente: e.target.checked }))} style={{ accentColor: 'var(--orange)' }} />
+                  Recurrente (luz, alquiler...)
                 </label>
               </div>
 

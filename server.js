@@ -280,6 +280,11 @@ async function initDb() {
             'factura_nombre VARCHAR(255)',
             'factura_mime VARCHAR(100)',
             'created_at TIMESTAMPTZ DEFAULT NOW()',
+            // Ticket #240: un gasto se puede asociar a una persona (p. ej. gasto de
+            // taekwondo de Dani) para desglosar el coste por instructor; y marcar
+            // como recurrente para prever gastos (media de los últimos 12 meses).
+            'persona_id UUID REFERENCES users(user_id) ON DELETE SET NULL',
+            'recurrente BOOLEAN NOT NULL DEFAULT false',
         ]) {
             await client.query(`ALTER TABLE aim_gastos ADD COLUMN IF NOT EXISTS ${col}`);
         }
@@ -7668,6 +7673,10 @@ const mapGasto = (r, conArchivo = false) => ({
     numeroFactura: r.invoice_number, concepto: r.concept,
     tipo: r.expense_type || 'comun', actividad: r.actividad,
     reparto: r.reparto || 'iguales',
+    // Ticket #240: persona asociada al gasto y si es recurrente.
+    personaId: r.persona_id || null,
+    persona: r.persona_nombre ? r.persona_nombre.trim() : null,
+    recurrente: !!r.recurrente,
     pagado: !!r.is_paid, comprobadoBanco: !!r.comprobado_banco,
     facturaUrl: r.invoice_link,
     facturaNombre: r.factura_nombre, facturaMime: r.factura_mime,
@@ -7678,18 +7687,19 @@ const mapGasto = (r, conArchivo = false) => ({
 // Los filtros del listado de gastos. Van aparte porque la descarga tiene que
 // traer exactamente lo mismo que se está viendo en pantalla: si el papel no
 // cuadra con la pantalla, no hay quien lo cuadre después.
-function filtrosGastos({ desde, hasta, q, pagado, tipo, actividad }) {
+function filtrosGastos({ desde, hasta, q, pagado, tipo, actividad, persona }) {
     const where = [];
     const vals = [];
-    if (desde) { vals.push(desde); where.push(`date >= $${vals.length}::date`); }
-    if (hasta) { vals.push(hasta); where.push(`date <= $${vals.length}::date`); }
-    if (pagado === 'si') where.push('is_paid = true');
-    if (pagado === 'no') where.push('is_paid = false');
-    if (tipo) { vals.push(tipo); where.push(`COALESCE(expense_type,'comun') = $${vals.length}`); }
-    if (actividad) { vals.push(actividad); where.push(`actividad = $${vals.length}`); }
+    if (desde) { vals.push(desde); where.push(`g.date >= $${vals.length}::date`); }
+    if (hasta) { vals.push(hasta); where.push(`g.date <= $${vals.length}::date`); }
+    if (pagado === 'si') where.push('g.is_paid = true');
+    if (pagado === 'no') where.push('g.is_paid = false');
+    if (tipo) { vals.push(tipo); where.push(`COALESCE(g.expense_type,'comun') = $${vals.length}`); }
+    if (actividad) { vals.push(actividad); where.push(`g.actividad = $${vals.length}`); }
+    if (persona) { vals.push(persona); where.push(`g.persona_id = $${vals.length}`); }
     if (q) {
         vals.push(`%${q}%`);
-        where.push(`(company ILIKE $${vals.length} OR cif ILIKE $${vals.length} OR concept ILIKE $${vals.length} OR invoice_number ILIKE $${vals.length})`);
+        where.push(`(g.company ILIKE $${vals.length} OR g.cif ILIKE $${vals.length} OR g.concept ILIKE $${vals.length} OR g.invoice_number ILIKE $${vals.length})`);
     }
     return { sql: where.length ? 'WHERE ' + where.join(' AND ') : '', vals };
 }
@@ -7698,10 +7708,11 @@ function filtrosGastos({ desde, hasta, q, pagado, tipo, actividad }) {
 async function resumenGastos(query) {
     const { sql, vals } = filtrosGastos(query);
     const r = await pool.query(
-        `SELECT id, date, amount, payment_method, company, invoice_link, cif, invoice_number,
-                concept, expense_type, actividad, reparto, is_paid, comprobado_banco, factura_nombre, factura_mime
-         FROM aim_gastos ${sql}
-         ORDER BY date ASC NULLS LAST, created_at ASC`, vals
+        `SELECT g.id, g.date, g.amount, g.payment_method, g.company, g.invoice_link, g.cif, g.invoice_number,
+                g.concept, g.expense_type, g.actividad, g.reparto, g.is_paid, g.comprobado_banco, g.factura_nombre, g.factura_mime,
+                g.persona_id, g.recurrente, TRIM(CONCAT(pu.name, ' ', COALESCE(pu.surname, ''))) AS persona_nombre
+         FROM aim_gastos g LEFT JOIN users pu ON pu.user_id = g.persona_id ${sql}
+         ORDER BY g.date ASC NULLS LAST, g.created_at ASC`, vals
     );
     const gastos = r.rows.map(x => mapGasto(x));
 
@@ -7774,10 +7785,12 @@ app.get('/api/admin/gastos', authenticateSession, requireAdmin, async (req, res)
     try {
         // No devolvemos el archivo en el listado: pesaría muchísimo.
         const r = await pool.query(
-            `SELECT id, date, amount, payment_method, company, invoice_link, cif, invoice_number,
-                    concept, expense_type, actividad, reparto, is_paid, comprobado_banco, factura_nombre, factura_mime
-             FROM aim_gastos ${sql}
-             ORDER BY date DESC NULLS LAST, created_at DESC LIMIT 500`,
+            `SELECT g.id, g.date, g.amount, g.payment_method, g.company, g.invoice_link, g.cif, g.invoice_number,
+                    g.concept, g.expense_type, g.actividad, g.reparto, g.is_paid, g.comprobado_banco, g.factura_nombre, g.factura_mime,
+                    g.persona_id, g.recurrente, TRIM(CONCAT(pu.name, ' ', COALESCE(pu.surname, ''))) AS persona_nombre
+             FROM aim_gastos g LEFT JOIN users pu ON pu.user_id = g.persona_id
+             ${sql}
+             ORDER BY g.date DESC NULLS LAST, g.created_at DESC LIMIT 500`,
             vals
         );
         res.set('Cache-Control', 'no-store');
@@ -7790,11 +7803,42 @@ app.get('/api/admin/gastos', authenticateSession, requireAdmin, async (req, res)
 
 const MEDIOS_GASTO = ['Tarjeta', 'Transferencia bancaria', 'Domiciliación SEPA', 'Efectivo', 'Bizum', 'Otro'];
 
+// Previsión de gastos recurrentes (ticket #240): para cada gasto marcado como
+// recurrente, la media de los recibos de los últimos 12 meses (agrupados por
+// concepto/proveedor). Sirve para estimar cuánto se va a gastar y saber cuánto
+// guardar; cuando llega el recibo real, se apunta a mano y deja de ser previsión.
+app.get('/api/admin/gastos/prevision', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT LOWER(TRIM(COALESCE(NULLIF(concept,''), company, 'gasto'))) AS clave,
+                    MAX(COALESCE(NULLIF(concept,''), company)) AS nombre,
+                    ROUND(AVG(amount), 2) AS media,
+                    COUNT(*)::int AS n,
+                    BOOL_OR(date >= date_trunc('month', CURRENT_DATE)) AS ya_este_mes,
+                    MAX(amount) FILTER (WHERE date >= date_trunc('month', CURRENT_DATE)) AS importe_este_mes
+             FROM aim_gastos
+             WHERE recurrente = true AND date >= (CURRENT_DATE - INTERVAL '12 months')
+             GROUP BY 1
+             ORDER BY nombre`);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            prevision: r.rows.map(x => ({
+                clave: x.clave, nombre: x.nombre, media: x.media == null ? 0 : Number(x.media), n: x.n,
+                yaEsteMes: !!x.ya_este_mes,
+                importeEsteMes: x.importe_este_mes == null ? null : Number(x.importe_este_mes),
+            })),
+        });
+    } catch (err) {
+        console.error('Error previsión de gastos:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.post('/api/admin/gastos', authenticateSession, requireAdmin, async (req, res) => {
     const {
         id, fecha, importe, medioPago, proveedor, cif, numeroFactura, concepto,
         tipo, actividad, reparto, pagado, comprobadoBanco, facturaUrl,
-        facturaArchivo, facturaNombre, facturaMime,
+        facturaArchivo, facturaNombre, facturaMime, personaId, recurrente,
     } = req.body;
     if (!proveedor?.trim()) return res.status(400).json({ error: 'El proveedor es obligatorio.' });
     if (importe == null || isNaN(Number(importe))) return res.status(400).json({ error: 'El importe es obligatorio.' });
@@ -7815,8 +7859,8 @@ app.post('/api/admin/gastos', authenticateSession, requireAdmin, async (req, res
         await client.query(
             `INSERT INTO aim_gastos (id, date, amount, payment_method, company, cif, invoice_number, concept,
                                      expense_type, actividad, reparto, is_paid, comprobado_banco, invoice_link,
-                                     factura_archivo, factura_nombre, factura_mime)
-             VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$18,$11,$12,$13,$14,$15,$16)
+                                     factura_archivo, factura_nombre, factura_mime, persona_id, recurrente)
+             VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$18,$11,$12,$13,$14,$15,$16,$19::uuid,$20)
              ON CONFLICT (id) DO UPDATE SET
                 date = EXCLUDED.date, amount = EXCLUDED.amount, payment_method = EXCLUDED.payment_method,
                 company = EXCLUDED.company, cif = EXCLUDED.cif, invoice_number = EXCLUDED.invoice_number,
@@ -7824,13 +7868,15 @@ app.post('/api/admin/gastos', authenticateSession, requireAdmin, async (req, res
                 reparto = EXCLUDED.reparto,
                 is_paid = EXCLUDED.is_paid, comprobado_banco = EXCLUDED.comprobado_banco,
                 invoice_link = EXCLUDED.invoice_link,
+                persona_id = EXCLUDED.persona_id, recurrente = EXCLUDED.recurrente,
                 factura_archivo = CASE WHEN $17 THEN EXCLUDED.factura_archivo ELSE aim_gastos.factura_archivo END,
                 factura_nombre  = CASE WHEN $17 THEN EXCLUDED.factura_nombre  ELSE aim_gastos.factura_nombre END,
                 factura_mime    = CASE WHEN $17 THEN EXCLUDED.factura_mime    ELSE aim_gastos.factura_mime END`,
             [gastoId, fecha, Number(importe), medioPago || null, proveedor.trim(), cif?.trim() || null,
              numeroFactura?.trim() || null, concepto?.trim() || null, tipo === 'especifico' ? 'especifico' : 'comun',
              tipo === 'especifico' ? actividad.trim() : null, !!pagado, !!comprobadoBanco, facturaUrl?.trim() || null,
-             facturaArchivo || null, facturaNombre?.trim() || null, facturaMime || null, setArchivo, comoReparte]
+             facturaArchivo || null, facturaNombre?.trim() || null, facturaMime || null, setArchivo, comoReparte,
+             personaId || null, !!recurrente]
         );
         // El proveedor se guarda en el registro para poder buscarlo la próxima vez.
         await client.query(
