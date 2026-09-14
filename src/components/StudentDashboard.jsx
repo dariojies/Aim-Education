@@ -71,7 +71,12 @@ function SpeakingFamilia() {
 
   if (!sesiones || sesiones.length === 0) return null;
   const fmt = (f) => new Date(String(f).slice(0, 10) + 'T12:00:00').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
-  const franjas = (arr) => (arr || []).length === 3 ? 'la hora entera' : `franja${(arr || []).length !== 1 ? 's' : ''} ${(arr || []).join(', ')} (de 20 min)`;
+  // Franjas con las horas reales de la clase (si el servidor las manda); si no, el nº.
+  const franjas = (s) => {
+    if ((s.franjas || []).length === 3) return 'la hora entera';
+    const tx = (s.franjasTexto || []).filter(f => (s.franjas || []).includes(f.n)).map(f => f.label);
+    return tx.length ? tx.join(', ') : `franja${(s.franjas || []).length !== 1 ? 's' : ''} ${(s.franjas || []).join(', ')}`;
+  };
 
   return (
     <div className="panel">
@@ -81,8 +86,8 @@ function SpeakingFamilia() {
         {sesiones.map(s => (
           <div key={s.id} style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', padding: '12px 14px', borderRadius: 12, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
             <div style={{ flex: '1 1 220px', minWidth: 0 }}>
-              <div style={{ fontWeight: 800, fontSize: 15 }}>{s.alumno}</div>
-              <div style={{ fontSize: 13, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{fmt(s.fecha)} · {franjas(s.franjas)}</div>
+              <div style={{ fontWeight: 800, fontSize: 15 }}>{s.alumno}{s.clase ? ` · ${s.clase}` : ''}</div>
+              <div style={{ fontSize: 13, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{fmt(s.fecha)} · {franjas(s)}</div>
             </div>
             {s.confirmado === true ? (
               <span style={{ fontWeight: 800, color: 'var(--teal)', fontSize: 14 }}>✓ Confirmado <button onClick={() => responder(s, false)} style={{ marginLeft: 8, fontSize: 12, background: 'none', border: 0, color: 'var(--ink-3)', textDecoration: 'underline', cursor: 'pointer' }}>cambiar</button></span>

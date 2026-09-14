@@ -970,6 +970,11 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_speaking_fecha ON aim_speaking (fecha)`);
+        // Vinculación con la clase "Speaking" reservada (grupo del horario): el
+        // día es una de sus sesiones y las franjas salen de su hora (dividida en 3).
+        await client.query(`ALTER TABLE aim_speaking ADD COLUMN IF NOT EXISTS group_id UUID`);
+        await client.query(`ALTER TABLE aim_speaking ADD COLUMN IF NOT EXISTS hora_inicio VARCHAR(5)`);
+        await client.query(`ALTER TABLE aim_speaking ADD COLUMN IF NOT EXISTS hora_fin VARCHAR(5)`);
 
         // Anulación de recibos: nunca se borran, se marcan (rastro de auditoría).
         await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_motivo TEXT`);
@@ -9092,6 +9097,29 @@ const normalizaFranjas = (arr) => {
     const s = new Set((Array.isArray(arr) ? arr : []).map(Number).filter(n => FRANJAS_SPEAKING.includes(n)));
     return [...s].sort();
 };
+// Las 3 franjas de la hora de clase (p. ej. 17:30–18:30 → 17:30–17:50, …).
+const minSpk = (hhmm) => { const [h, m] = String(hhmm || '').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
+const hhmmSpk = (min) => `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
+function franjasDeHoras(inicio, fin) {
+    const a = minSpk(inicio), b = minSpk(fin);
+    if (!inicio || !fin || b <= a) return FRANJAS_SPEAKING.map(n => ({ n, label: FRANJA_HORA[n] }));
+    const paso = (b - a) / 3;
+    return FRANJAS_SPEAKING.map(n => ({ n, desde: hhmmSpk(Math.round(a + paso * (n - 1))), hasta: hhmmSpk(Math.round(a + paso * n)) }));
+}
+const franjasTexto = (inicio, fin, sub) => franjasDeHoras(inicio, fin)
+    .filter(f => (sub || FRANJAS_SPEAKING).includes(f.n))
+    .map(f => f.desde ? `${f.desde}–${f.hasta}` : f.label).join(', ');
+// La sesión del grupo Speaking que cae en el día de la semana de una fecha
+// (convención aim-tul: 0 = lunes). Devuelve {startTime, endTime} o null.
+async function sesionSpeakingDe(groupId, fecha) {
+    const g = await pool.query(`SELECT sessions FROM tul_groups WHERE group_id = $1`, [groupId]);
+    if (!g.rowCount) return null;
+    const dia = (new Date(fecha + 'T12:00:00').getDay() + 6) % 7;
+    for (const ses of (Array.isArray(g.rows[0].sessions) ? g.rows[0].sessions : [])) {
+        if ((ses.days || []).map(Number).includes(dia)) return { startTime: ses.startTime || null, endTime: ses.endTime || null };
+    }
+    return null;
+}
 // Correos de los adultos de la familia de un alumno (para avisar a los padres).
 async function emailsFamilia(studentId) {
     const fam = await familiaIds(studentId);
@@ -9126,7 +9154,7 @@ async function enviarCorreosSpeaking(ids) {
     // ruta. Se puede cambiar con PUBLIC_BASE_URL si algún día cambia el dominio.
     const base = (process.env.PUBLIC_BASE_URL || 'https://aim.aimeducation.es').replace(/\/+$/, '');
     const r = await pool.query(
-        `SELECT s.id, s.fecha, s.franjas, s.token, s.student_id,
+        `SELECT s.id, s.fecha, s.franjas, s.token, s.student_id, s.hora_inicio, s.hora_fin,
                 TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno
          FROM aim_speaking s JOIN users u ON u.user_id = s.student_id WHERE s.id = ANY($1::int[])`, [ids]);
     for (const row of r.rows) {
@@ -9134,7 +9162,7 @@ async function enviarCorreosSpeaking(ids) {
             const correos = await emailsFamilia(row.student_id);
             if (!correos.length) continue;
             const fechaTxt = new Date(row.fecha).toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
-            const franjasTxt = (row.franjas || []).map(f => FRANJA_HORA[f]).join(', ');
+            const franjasTxt = franjasTexto(row.hora_inicio, row.hora_fin, row.franjas || []);
             const si = `${base}/speaking/${row.token}/si`;
             const no = `${base}/speaking/${row.token}/no`;
             await mailTransporter.sendMail({
@@ -9156,11 +9184,36 @@ async function enviarCorreosSpeaking(ids) {
     }
 }
 
-// El profesor apunta a varios alumnos a una sesión de speaking de un día.
+// Las clases "Speaking" reservadas del horario (grupos de Inglés llamados así),
+// con sus sesiones (días y horas), para vincular el apartado con ellas.
+app.get('/api/admin/speaking/clases', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT g.group_id, g.name, a.name AS actividad, g.sessions
+             FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE a.club_id = $1 AND (g.name ILIKE '%speaking%' OR a.name ILIKE '%speaking%')
+             ORDER BY g.name`, [AIM_CLUB_ID]);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            clases: r.rows.map(g => ({
+                groupId: g.group_id, name: g.name, actividad: g.actividad,
+                sesiones: (Array.isArray(g.sessions) ? g.sessions : []).map(s => ({
+                    days: (s.days || []).map(Number), startTime: s.startTime || null, endTime: s.endTime || null, aula: s.aulaName || null,
+                })),
+            })),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// El profesor apunta a varios alumnos a una sesión de speaking de un día, dentro
+// de una clase "Speaking" reservada (el día tiene que ser una de sus sesiones).
 app.post('/api/admin/speaking', authenticateSession, requireAdmin, async (req, res) => {
-    const { fecha, alumnos } = req.body;
+    const { fecha, alumnos, groupId } = req.body;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha || ''))) return res.status(400).json({ error: 'Falta el día de la clase.' });
+    if (!groupId) return res.status(400).json({ error: 'Elige la clase de Speaking.' });
     if (await fechaEnPasado(fecha)) return res.status(400).json({ error: 'Ese día ya ha pasado.' });
+    const ses = await sesionSpeakingDe(groupId, fecha);
+    if (!ses) return res.status(400).json({ error: 'Ese día no toca esa clase de Speaking (mira sus días en el horario).' });
     const lista = (Array.isArray(alumnos) ? alumnos : []).filter(a => a && a.studentId && normalizaFranjas(a.franjas).length);
     if (!lista.length) return res.status(400).json({ error: 'Añade al menos un alumno con alguna franja marcada.' });
     try {
@@ -9168,12 +9221,13 @@ app.post('/api/admin/speaking', authenticateSession, requireAdmin, async (req, r
         for (const a of lista) {
             const token = crypto.randomBytes(20).toString('hex');
             const ins = await pool.query(
-                `INSERT INTO aim_speaking (fecha, student_id, franjas, token, created_by)
-                 VALUES ($1::date, $2, $3::smallint[], $4, $5)
+                `INSERT INTO aim_speaking (fecha, student_id, franjas, token, created_by, group_id, hora_inicio, hora_fin)
+                 VALUES ($1::date, $2, $3::smallint[], $4, $5, $6::uuid, $7, $8)
                  ON CONFLICT (fecha, student_id) DO UPDATE SET franjas = EXCLUDED.franjas,
+                    group_id = EXCLUDED.group_id, hora_inicio = EXCLUDED.hora_inicio, hora_fin = EXCLUDED.hora_fin,
                     confirmado = NULL, respondido_at = NULL, email_enviado = false
                  RETURNING id`,
-                [fecha, a.studentId, normalizaFranjas(a.franjas), token, req.userSession.userId]);
+                [fecha, a.studentId, normalizaFranjas(a.franjas), token, req.userSession.userId, groupId, ses.startTime, ses.endTime]);
             ids.push(ins.rows[0].id);
         }
         // Los correos a los padres van en segundo plano (no bloquean la respuesta).
@@ -9189,12 +9243,14 @@ app.get('/api/admin/speaking', authenticateSession, requireAdmin, async (req, re
     try {
         const r = await pool.query(
             `SELECT s.id, s.fecha, s.franjas, s.confirmado, s.respondido_at, s.llamado, s.email_enviado,
-                    s.student_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno,
+                    s.student_id, s.hora_inicio, s.hora_fin, g.name AS clase,
+                    TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno,
                     (SELECT string_agg(DISTINCT NULLIF(TRIM(CONCAT(fu.name, ' ', COALESCE(fu.surname, ''),
                               CASE WHEN fu.phone IS NOT NULL AND fu.phone <> '' THEN ' · ' || fu.phone ELSE '' END)), ''), '   ')
                      FROM aim_familias f JOIN users fu ON fu.user_id = f.familiar_id
                      WHERE f.persona_id = s.student_id) AS contactos
              FROM aim_speaking s JOIN users u ON u.user_id = s.student_id
+             LEFT JOIN tul_groups g ON g.group_id = s.group_id
              WHERE s.fecha >= COALESCE($1::date, CURRENT_DATE)
              ORDER BY s.fecha, alumno`, [desde]);
         res.set('Cache-Control', 'no-store');
@@ -9203,6 +9259,8 @@ app.get('/api/admin/speaking', authenticateSession, requireAdmin, async (req, re
                 id: x.id, fecha: x.fecha, franjas: x.franjas || [], confirmado: x.confirmado,
                 respondidoAt: x.respondido_at, llamado: x.llamado, emailEnviado: x.email_enviado,
                 alumno: x.alumno, studentId: x.student_id, contactos: x.contactos || null,
+                clase: x.clase || null, horaInicio: x.hora_inicio || null, horaFin: x.hora_fin || null,
+                franjasTexto: franjasDeHoras(x.hora_inicio, x.hora_fin),
             })),
         });
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -9255,13 +9313,14 @@ app.get('/api/me/speaking', authenticateSession, async (req, res) => {
     try {
         const fam = await familiaIds(req.userSession.userId);
         const r = await pool.query(
-            `SELECT s.id, s.fecha, s.franjas, s.confirmado,
+            `SELECT s.id, s.fecha, s.franjas, s.confirmado, s.hora_inicio, s.hora_fin, g.name AS clase,
                     TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno
              FROM aim_speaking s JOIN users u ON u.user_id = s.student_id
+             LEFT JOIN tul_groups g ON g.group_id = s.group_id
              WHERE s.student_id = ANY($1::uuid[]) AND s.fecha >= CURRENT_DATE
              ORDER BY s.fecha, alumno`, [fam]);
         res.set('Cache-Control', 'no-store');
-        res.json({ sesiones: r.rows.map(x => ({ id: x.id, fecha: x.fecha, franjas: x.franjas || [], confirmado: x.confirmado, alumno: x.alumno })) });
+        res.json({ sesiones: r.rows.map(x => ({ id: x.id, fecha: x.fecha, franjas: x.franjas || [], confirmado: x.confirmado, alumno: x.alumno, clase: x.clase || null, franjasTexto: franjasDeHoras(x.hora_inicio, x.hora_fin) })) });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
