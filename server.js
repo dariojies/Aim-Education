@@ -9121,7 +9121,10 @@ function paginaSpeaking(ok, si) {
 // Envía los correos de confirmación a los padres, en segundo plano.
 async function enviarCorreosSpeaking(ids) {
     if (!ids.length || !mailTransporter) return;
-    const base = (process.env.PUBLIC_BASE_URL || 'https://www.aimeducation.es').replace(/\/+$/, '');
+    // La app (con la página pública /speaking) vive en el subdominio de Heroku
+    // aim.aimeducation.es; aimeducation.es es otro sitio (IONOS) y no tiene esta
+    // ruta. Se puede cambiar con PUBLIC_BASE_URL si algún día cambia el dominio.
+    const base = (process.env.PUBLIC_BASE_URL || 'https://aim.aimeducation.es').replace(/\/+$/, '');
     const r = await pool.query(
         `SELECT s.id, s.fecha, s.franjas, s.token, s.student_id,
                 TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno
