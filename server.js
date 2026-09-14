@@ -9246,6 +9246,36 @@ app.get('/speaking/:token/:r', async (req, res) => {
     }
 });
 
+// La familia, desde su área en la web (ticket #228): las sesiones de Speaking
+// próximas de sus hijos y confirmar/rechazar la asistencia sin salir de la web.
+app.get('/api/me/speaking', authenticateSession, async (req, res) => {
+    try {
+        const fam = await familiaIds(req.userSession.userId);
+        const r = await pool.query(
+            `SELECT s.id, s.fecha, s.franjas, s.confirmado,
+                    TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno
+             FROM aim_speaking s JOIN users u ON u.user_id = s.student_id
+             WHERE s.student_id = ANY($1::uuid[]) AND s.fecha >= CURRENT_DATE
+             ORDER BY s.fecha, alumno`, [fam]);
+        res.set('Cache-Control', 'no-store');
+        res.json({ sesiones: r.rows.map(x => ({ id: x.id, fecha: x.fecha, franjas: x.franjas || [], confirmado: x.confirmado, alumno: x.alumno })) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/me/speaking/:id/confirmar', authenticateSession, async (req, res) => {
+    const si = req.body?.confirmado === true ? true : req.body?.confirmado === false ? false : null;
+    if (si === null) return res.status(400).json({ error: 'Falta la respuesta.' });
+    try {
+        const fam = await familiaIds(req.userSession.userId);
+        const r = await pool.query(
+            `UPDATE aim_speaking SET confirmado = $1, respondido_at = NOW()
+             WHERE id = $2 AND student_id = ANY($3::uuid[]) AND fecha >= CURRENT_DATE RETURNING id`,
+            [si, req.params.id, fam]);
+        if (!r.rowCount) return res.status(404).json({ error: 'Esa sesión no es de tu familia o ya ha pasado.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── Tickets vinculados ───────────────────────────────────────────────────────
 // Vincular el ticket :id con otro: los dos (y los que ya estuvieran con
 // cualquiera de ellos) pasan a compartir el mismo grupo.

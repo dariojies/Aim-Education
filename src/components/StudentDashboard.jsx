@@ -45,6 +45,63 @@ function AccesoRapido({ titulo, desc, color, icon, onClick }) {
 
 const DAY_NAMES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
 
+// Clase de Speaking (ticket #228): las sesiones próximas de los hijos, para que la
+// familia confirme la asistencia desde la web (además del correo). Solo se ve si
+// hay alguna sesión apuntada.
+function SpeakingFamilia() {
+  const [sesiones, setSesiones] = useState(null);
+  const [guardando, setGuardando] = useState(null);
+
+  const cargar = () => fetch('/api/me/speaking', { credentials: 'include', cache: 'no-store' })
+    .then(r => r.ok ? r.json() : { sesiones: [] }).then(d => setSesiones(d.sesiones || [])).catch(() => setSesiones([]));
+  useEffect(() => { cargar(); }, []);
+
+  async function responder(s, confirmado) {
+    setGuardando(s.id);
+    try {
+      const r = await fetch(`/api/me/speaking/${s.id}/confirmar`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ confirmado }),
+      });
+      if (r.ok) setSesiones(prev => prev.map(x => x.id === s.id ? { ...x, confirmado } : x));
+      else { const d = await r.json().catch(() => ({})); alert(d.error || 'No se pudo guardar.'); }
+    } catch { alert('Error de conexión.'); }
+    finally { setGuardando(null); }
+  }
+
+  if (!sesiones || sesiones.length === 0) return null;
+  const fmt = (f) => new Date(String(f).slice(0, 10) + 'T12:00:00').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
+  const franjas = (arr) => (arr || []).length === 3 ? 'la hora entera' : `franja${(arr || []).length !== 1 ? 's' : ''} ${(arr || []).join(', ')} (de 20 min)`;
+
+  return (
+    <div className="panel">
+      <h2><I.Calendar /> Clase de Speaking</h2>
+      <p className="sub">Confirma si tu hijo/a podrá asistir a estas clases.</p>
+      <div style={{ display: 'grid', gap: 10 }}>
+        {sesiones.map(s => (
+          <div key={s.id} style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', padding: '12px 14px', borderRadius: 12, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
+            <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+              <div style={{ fontWeight: 800, fontSize: 15 }}>{s.alumno}</div>
+              <div style={{ fontSize: 13, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{fmt(s.fecha)} · {franjas(s.franjas)}</div>
+            </div>
+            {s.confirmado === true ? (
+              <span style={{ fontWeight: 800, color: 'var(--teal)', fontSize: 14 }}>✓ Confirmado <button onClick={() => responder(s, false)} style={{ marginLeft: 8, fontSize: 12, background: 'none', border: 0, color: 'var(--ink-3)', textDecoration: 'underline', cursor: 'pointer' }}>cambiar</button></span>
+            ) : s.confirmado === false ? (
+              <span style={{ fontWeight: 800, color: 'var(--orange)', fontSize: 14 }}>✗ No asistirá <button onClick={() => responder(s, true)} style={{ marginLeft: 8, fontSize: 12, background: 'none', border: 0, color: 'var(--ink-3)', textDecoration: 'underline', cursor: 'pointer' }}>cambiar</button></span>
+            ) : (
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn btn-sm" disabled={guardando === s.id} onClick={() => responder(s, true)}
+                  style={{ background: 'var(--teal)', color: '#fff', fontWeight: 700 }}>Sí, asistirá</button>
+                <button className="btn btn-sm btn-outline" disabled={guardando === s.id} onClick={() => responder(s, false)}>No podrá</button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function DashOverview({ go, setView }) {
   const [slots, setSlots] = useState([]);
   const [groups, setGroups] = useState([]);
@@ -153,6 +210,8 @@ function DashOverview({ go, setView }) {
           </div>
         )}
       </div>
+
+      <SpeakingFamilia />
 
       <div style={{display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 22}}>
         <div className="panel">
