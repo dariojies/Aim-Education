@@ -947,6 +947,30 @@ async function initDb() {
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_anticipos_aplic_anticipo ON aim_anticipos_aplicaciones (anticipo_id)`);
 
+        // Clase de Speaking / Inglés (ticket #228): sesiones puntuales que el
+        // profesor marca en un día concreto (no ocurren todos los días). Cada
+        // alumno se apunta a una o varias de las 3 franjas de 20 min (la hora
+        // entera son las tres). Se avisa a secretaría para que llame a los padres
+        // y se manda un correo a los padres para que confirmen la asistencia. NO
+        // usa tul_group_students, así que no cuenta en los reportes de alumnos.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_speaking (
+                id SERIAL PRIMARY KEY,
+                fecha DATE NOT NULL,
+                student_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                franjas SMALLINT[] NOT NULL DEFAULT '{}',  -- subconjunto de {1,2,3}
+                confirmado BOOLEAN,                         -- NULL pendiente · true sí · false no puede
+                respondido_at TIMESTAMPTZ,
+                token TEXT UNIQUE,                          -- para el enlace del correo a los padres
+                llamado BOOLEAN NOT NULL DEFAULT false,     -- secretaría ya llamó
+                email_enviado BOOLEAN NOT NULL DEFAULT false,
+                created_by UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE (fecha, student_id)
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_speaking_fecha ON aim_speaking (fecha)`);
+
         // Anulación de recibos: nunca se borran, se marcan (rastro de auditoría).
         await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_motivo TEXT`);
         await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_por UUID REFERENCES users(user_id) ON DELETE SET NULL`);
@@ -9036,11 +9060,189 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
             }
         }
 
+        // Speaking (ticket #228): alumnos apuntados a una sesión futura sin llamar
+        // a los padres, y padres que han dicho que NO, para que secretaría lo vea.
+        const spk = await pool.query(
+            `SELECT COUNT(*) FILTER (WHERE llamado = false)::int AS por_llamar,
+                    COUNT(*) FILTER (WHERE confirmado = false)::int AS rechazados,
+                    COUNT(*) FILTER (WHERE confirmado = true)::int AS confirmados
+             FROM aim_speaking WHERE fecha >= CURRENT_DATE`);
+        const sp = spk.rows[0];
+        if (sp.por_llamar) avisos.push({ tipo: 'speaking', texto: `${sp.por_llamar} alumno${sp.por_llamar !== 1 ? 's' : ''} de Speaking por avisar a los padres`, detalle: 'llamar y confirmar asistencia', destino: '/admin/speaking', n: sp.por_llamar });
+        if (sp.rechazados) avisos.push({ tipo: 'speaking', texto: `${sp.rechazados} familia${sp.rechazados !== 1 ? 's' : ''} han dicho que NO al Speaking`, detalle: 'revisar la asistencia', destino: '/admin/speaking', n: sp.rechazados });
+
         res.set('Cache-Control', 'no-store');
         res.json({ total: avisos.reduce((s, a) => s + a.n, 0), avisos });
     } catch (err) {
         console.error('Error calculando los avisos:', err);
         res.status(500).json({ error: err.message });
+    }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// CLASE DE SPEAKING / INGLÉS (ticket #228)
+// El profesor apunta alumnos a una sesión de un día concreto, a una o varias de
+// las 3 franjas de 20 min. Secretaría recibe aviso para llamar a los padres, y a
+// los padres les llega un correo para confirmar la asistencia. No usa las clases
+// normales (tul_group_students), así que no cuenta en los reportes de alumnos.
+// ═════════════════════════════════════════════════════════════════════════════
+const FRANJAS_SPEAKING = [1, 2, 3];
+const FRANJA_HORA = { 1: '1ª franja (0–20 min)', 2: '2ª franja (20–40 min)', 3: '3ª franja (40–60 min)' };
+const normalizaFranjas = (arr) => {
+    const s = new Set((Array.isArray(arr) ? arr : []).map(Number).filter(n => FRANJAS_SPEAKING.includes(n)));
+    return [...s].sort();
+};
+// Correos de los adultos de la familia de un alumno (para avisar a los padres).
+async function emailsFamilia(studentId) {
+    const fam = await familiaIds(studentId);
+    const r = await pool.query(
+        `SELECT DISTINCT email FROM users
+         WHERE user_id = ANY($1::uuid[]) AND user_id <> $2 AND email IS NOT NULL AND email <> ''`,
+        [fam, studentId]);
+    return r.rows.map(x => x.email);
+}
+function paginaSpeaking(ok, si) {
+    const titulo = !ok ? 'Enlace caducado o no válido'
+        : si ? '¡Asistencia confirmada!' : 'Asistencia rechazada';
+    const texto = !ok ? 'Es posible que la clase ya haya pasado o que el enlace no sea correcto. Ponte en contacto con el club.'
+        : si ? 'Gracias, hemos anotado que tu hijo/a asistirá a la clase de Speaking.'
+            : 'Hemos anotado que tu hijo/a NO podrá asistir. Gracias por avisar.';
+    const color = !ok ? '#dc2626' : si ? '#0a7d3c' : '#b45309';
+    return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>Speaking · AIM Education</title></head>
+      <body style="font-family:system-ui,sans-serif;background:#f6f5f2;margin:0;padding:40px 16px;color:#1a1a1a">
+        <div style="max-width:460px;margin:0 auto;background:#fff;border-radius:16px;padding:28px;box-shadow:0 6px 24px rgba(0,0,0,.08);text-align:center">
+          <h1 style="font-size:20px;margin:0 0 10px;color:${color}">${titulo}</h1>
+          <p style="font-size:15px;color:#444;line-height:1.5;margin:0">${texto}</p>
+          <p style="font-size:12px;color:#999;margin:20px 0 0">AIM Education · Algeciras</p>
+        </div>
+      </body></html>`;
+}
+// Envía los correos de confirmación a los padres, en segundo plano.
+async function enviarCorreosSpeaking(ids) {
+    if (!ids.length || !mailTransporter) return;
+    const base = (process.env.PUBLIC_BASE_URL || 'https://www.aimeducation.es').replace(/\/+$/, '');
+    const r = await pool.query(
+        `SELECT s.id, s.fecha, s.franjas, s.token, s.student_id,
+                TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno
+         FROM aim_speaking s JOIN users u ON u.user_id = s.student_id WHERE s.id = ANY($1::int[])`, [ids]);
+    for (const row of r.rows) {
+        try {
+            const correos = await emailsFamilia(row.student_id);
+            if (!correos.length) continue;
+            const fechaTxt = new Date(row.fecha).toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
+            const franjasTxt = (row.franjas || []).map(f => FRANJA_HORA[f]).join(', ');
+            const si = `${base}/speaking/${row.token}/si`;
+            const no = `${base}/speaking/${row.token}/no`;
+            await mailTransporter.sendMail({
+                from: process.env.EMAIL_USER, to: correos.join(','),
+                subject: `Clase de Speaking de ${row.alumno} · ${fechaTxt}`,
+                html: `<div style="font-family:system-ui,sans-serif;color:#1a1a1a">
+                  <p>Hola,</p>
+                  <p><b>${row.alumno}</b> está apuntado/a a la clase de <b>Speaking</b> del <b>${fechaTxt}</b>${franjasTxt ? ` (${franjasTxt})` : ''}.</p>
+                  <p>Por favor, confirma si podrá asistir:</p>
+                  <p style="margin:20px 0">
+                    <a href="${si}" style="background:#0a7d3c;color:#fff;text-decoration:none;padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block;margin-right:8px">Sí, asistirá</a>
+                    <a href="${no}" style="background:#eee;color:#333;text-decoration:none;padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block">No podrá</a>
+                  </p>
+                  <p style="font-size:12px;color:#888">AIM Education · Algeciras</p>
+                </div>`,
+            });
+            await pool.query(`UPDATE aim_speaking SET email_enviado = true WHERE id = $1`, [row.id]);
+        } catch (e) { console.error('[speaking mail]', e.message); }
+    }
+}
+
+// El profesor apunta a varios alumnos a una sesión de speaking de un día.
+app.post('/api/admin/speaking', authenticateSession, requireAdmin, async (req, res) => {
+    const { fecha, alumnos } = req.body;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha || ''))) return res.status(400).json({ error: 'Falta el día de la clase.' });
+    if (await fechaEnPasado(fecha)) return res.status(400).json({ error: 'Ese día ya ha pasado.' });
+    const lista = (Array.isArray(alumnos) ? alumnos : []).filter(a => a && a.studentId && normalizaFranjas(a.franjas).length);
+    if (!lista.length) return res.status(400).json({ error: 'Añade al menos un alumno con alguna franja marcada.' });
+    try {
+        const ids = [];
+        for (const a of lista) {
+            const token = crypto.randomBytes(20).toString('hex');
+            const ins = await pool.query(
+                `INSERT INTO aim_speaking (fecha, student_id, franjas, token, created_by)
+                 VALUES ($1::date, $2, $3::smallint[], $4, $5)
+                 ON CONFLICT (fecha, student_id) DO UPDATE SET franjas = EXCLUDED.franjas,
+                    confirmado = NULL, respondido_at = NULL, email_enviado = false
+                 RETURNING id`,
+                [fecha, a.studentId, normalizaFranjas(a.franjas), token, req.userSession.userId]);
+            ids.push(ins.rows[0].id);
+        }
+        // Los correos a los padres van en segundo plano (no bloquean la respuesta).
+        enviarCorreosSpeaking(ids).catch(e => console.error('[speaking mail]', e.message));
+        res.status(201).json({ success: true, creados: ids.length, correo: !!mailTransporter });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Sesiones de speaking desde hoy (o desde una fecha), con el estado de cada alumno
+// y los contactos de la familia para que secretaría llame.
+app.get('/api/admin/speaking', authenticateSession, requireAdmin, async (req, res) => {
+    const desde = /^\d{4}-\d{2}-\d{2}$/.test(req.query.desde || '') ? req.query.desde : null;
+    try {
+        const r = await pool.query(
+            `SELECT s.id, s.fecha, s.franjas, s.confirmado, s.respondido_at, s.llamado, s.email_enviado,
+                    s.student_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno,
+                    (SELECT string_agg(DISTINCT NULLIF(TRIM(CONCAT(fu.name, ' ', COALESCE(fu.surname, ''),
+                              CASE WHEN fu.phone IS NOT NULL AND fu.phone <> '' THEN ' · ' || fu.phone ELSE '' END)), ''), '   ')
+                     FROM aim_familias f JOIN users fu ON fu.user_id = f.familiar_id
+                     WHERE f.persona_id = s.student_id) AS contactos
+             FROM aim_speaking s JOIN users u ON u.user_id = s.student_id
+             WHERE s.fecha >= COALESCE($1::date, CURRENT_DATE)
+             ORDER BY s.fecha, alumno`, [desde]);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            sesiones: r.rows.map(x => ({
+                id: x.id, fecha: x.fecha, franjas: x.franjas || [], confirmado: x.confirmado,
+                respondidoAt: x.respondido_at, llamado: x.llamado, emailEnviado: x.email_enviado,
+                alumno: x.alumno, studentId: x.student_id, contactos: x.contactos || null,
+            })),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Marcar que secretaría ya ha llamado, o cambiar las franjas.
+app.patch('/api/admin/speaking/:id', authenticateSession, requireAdmin, async (req, res) => {
+    const campos = [], vals = [];
+    if (req.body.llamado !== undefined) { vals.push(!!req.body.llamado); campos.push(`llamado = $${vals.length}`); }
+    if (req.body.franjas !== undefined) {
+        const f = normalizaFranjas(req.body.franjas);
+        if (!f.length) return res.status(400).json({ error: 'Marca al menos una franja.' });
+        vals.push(f); campos.push(`franjas = $${vals.length}::smallint[]`);
+    }
+    if (!campos.length) return res.status(400).json({ error: 'Nada que cambiar.' });
+    vals.push(req.params.id);
+    try {
+        const r = await pool.query(`UPDATE aim_speaking SET ${campos.join(', ')} WHERE id = $${vals.length} RETURNING id`, vals);
+        if (!r.rowCount) return res.status(404).json({ error: 'Esa sesión no existe.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/admin/speaking/:id', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        await pool.query('DELETE FROM aim_speaking WHERE id = $1', [req.params.id]);
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Página pública para que los padres confirmen desde el enlace del correo. Se
+// puede confirmar hasta el día de la clase (fecha >= hoy). No necesita login.
+app.get('/speaking/:token/:r', async (req, res) => {
+    const si = req.params.r === 'si' ? true : req.params.r === 'no' ? false : null;
+    if (si === null) return res.status(400).set('Content-Type', 'text/html; charset=utf-8').send(paginaSpeaking(false, false));
+    try {
+        const upd = await pool.query(
+            `UPDATE aim_speaking SET confirmado = $1, respondido_at = NOW()
+             WHERE token = $2 AND fecha >= CURRENT_DATE RETURNING id`,
+            [si, req.params.token]);
+        res.set('Content-Type', 'text/html; charset=utf-8').send(paginaSpeaking(upd.rowCount > 0, si));
+    } catch (err) {
+        res.status(500).set('Content-Type', 'text/html; charset=utf-8').send(paginaSpeaking(false, false));
     }
 });
 
