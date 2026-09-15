@@ -15,6 +15,20 @@ import { COLOR_CUMPLE } from './Shared.jsx';
 
 const hoyISO = () => new Date().toISOString().slice(0, 10);
 const enDias = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+// Fecha local (Madrid en los equipos del club) como 'AAAA-MM-DD', sin el salto de
+// día de toISOString (que es UTC).
+const isoLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+// El próximo día (a partir de mañana) en que toca esa clase, según sus días de la
+// semana (convención aim-tul: 0 = lunes). Para proponerlo como devolución (#244).
+const proximoDiaClase = (days) => {
+  if (!Array.isArray(days) || !days.length) return enDias(7);
+  const d = new Date();
+  for (let i = 0; i < 14; i++) {
+    d.setDate(d.getDate() + 1);
+    if (days.includes((d.getDay() + 6) % 7)) return isoLocal(d);
+  }
+  return enDias(7);
+};
 const fmtDiaCorto = (d) => d ? new Date(String(d).slice(0, 10) + 'T12:00:00').toLocaleDateString('es-ES', { day: 'numeric', month: 'short' }) : '';
 
 const ESTADOS = [
@@ -297,7 +311,12 @@ function MascotaPasarLista({ groupId, alumnos, showToast }) {
   const cargar = useCallback(async () => {
     try {
       const r = await fetch(`/api/admin/groups/${groupId}/mascota`, { credentials: 'include', cache: 'no-store' });
-      if (r.ok) setMascota((await r.json()).mascota);
+      if (r.ok) {
+        const m = (await r.json()).mascota;
+        setMascota(m);
+        // Fecha de devolución propuesta: el próximo día que haya esta clase (#244).
+        if (m && !m.actual) setFechaDev(proximoDiaClase(m.sessionDays));
+      }
     } catch { /* noop */ }
   }, [groupId]);
   useEffect(() => { setMascota(undefined); setSel(''); setFechaDev(enDias(7)); setCreando(false); cargar(); }, [groupId, cargar]);
