@@ -18,6 +18,8 @@ const hms = (seg) => {
 };
 const ETQ = { entrada: 'Entrada', salida: 'Salida', pausa_inicio: 'Inicio de pausa', pausa_fin: 'Fin de pausa' };
 const COLOR_TIPO = { entrada: 'var(--teal)', salida: 'var(--orange)', pausa_inicio: '#FFD526', pausa_fin: 'var(--teal)' };
+const DIAS_SEMANA = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']; // 0 = lunes
+const hm2min = (s) => { const [h, m] = String(s || '').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
 
 export default function Fichaje({ showToast, permisos }) {
   const puedeGestionar = !!permisos?.fichajesGestion;
@@ -58,10 +60,12 @@ function MiFichaje({ showToast }) {
   }, []);
   useEffect(() => { cargar(); }, [cargar]);
 
-  // Cronómetro en vivo mientras está trabajando.
+  // Reloj en vivo: cada segundo si está trabajando (para el cronómetro), y cada
+  // 30 s en otro caso (para que el aviso de "toca fichar" aparezca solo).
   useEffect(() => {
     clearInterval(timer.current);
-    if (est?.estado === 'dentro') { timer.current = setInterval(() => setNow(Date.now()), 1000); }
+    const ms = est?.estado === 'dentro' ? 1000 : 30000;
+    timer.current = setInterval(() => setNow(Date.now()), ms);
     return () => clearInterval(timer.current);
   }, [est?.estado]);
 
@@ -87,15 +91,33 @@ function MiFichaje({ showToast }) {
     : estado === 'pausa' ? { t: 'En pausa', c: '#b45309' }
       : { t: 'Fuera', c: 'var(--ink-3)' };
 
+  // Aviso "toca fichar" según su horario laboral de hoy.
+  const hh = est?.horarioHoy;
+  const nowD = new Date(now);
+  const nowMin = nowD.getHours() * 60 + nowD.getMinutes();
+  let aviso = null;
+  if (hh) {
+    if (estado === 'fuera' && nowMin >= hm2min(hh.entrada)) aviso = `Tu jornada de hoy empieza a las ${hh.entrada}. No olvides fichar tu entrada.`;
+    else if ((estado === 'dentro' || estado === 'pausa') && nowMin >= hm2min(hh.salida)) aviso = `Tu jornada de hoy terminaba a las ${hh.salida}. No olvides fichar tu salida.`;
+  }
+
   return (
     <div style={{ display: 'grid', gap: 16 }}>
+      {aviso && (
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '12px 16px', borderRadius: 12, fontSize: 14, fontWeight: 700,
+          color: 'var(--orange)', background: 'color-mix(in oklab, var(--orange) 10%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--orange) 35%, var(--line))' }}>
+          ⏰ {aviso}
+        </div>
+      )}
       {/* Panel de fichar */}
       <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 20, display: 'grid', gap: 14, justifyItems: 'center', textAlign: 'center' }}>
         <span style={{ fontSize: 12, fontWeight: 800, padding: '4px 14px', borderRadius: 999, color: badge.c, background: `color-mix(in oklab, ${badge.c} 12%, var(--bg-2))` }}>
           ● {badge.t}
         </span>
         <div style={{ fontFamily: 'var(--font-display)', fontSize: 40, fontWeight: 800, letterSpacing: -1 }}>{hms(totalHoy)}</div>
-        <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: -8 }}>trabajado hoy</div>
+        <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: -8 }}>
+          trabajado hoy{hh ? ` · horario ${hh.entrada}–${hh.salida}` : ''}
+        </div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
           {estado === 'fuera' && (
             <button className="btn btn-primary" onClick={() => fichar('entrada')} disabled={fichando} style={{ fontSize: 15, padding: '12px 24px' }}>Fichar entrada</button>
@@ -162,6 +184,7 @@ function GestionFichajes({ showToast }) {
   const [cargando, setCargando] = useState(true);
   const [abierto, setAbierto] = useState(null);
   const [corr, setCorr] = useState(null); // { userId, nombre, tipo, fecha, hora, motivo }
+  const [horario, setHorario] = useState(null); // { userId, nombre, dias:[{dia,trabaja,entrada,salida}] }
 
   const cargar = useCallback(async () => {
     setCargando(true);
@@ -203,6 +226,26 @@ function GestionFichajes({ showToast }) {
     return `/api/admin/fichajes/export.csv?${p}`;
   };
 
+  async function abrirHorario(t) {
+    const r = await fetch(`/api/admin/fichajes/horario/${t.userId}`, { credentials: 'include', cache: 'no-store' });
+    const d = await r.json().catch(() => ({ dias: [] }));
+    const byDia = {};
+    (d.dias || []).forEach(x => { byDia[x.dia] = { entrada: x.entrada, salida: x.salida }; });
+    const dias = [0, 1, 2, 3, 4, 5, 6].map(dia => ({ dia, trabaja: !!byDia[dia], entrada: byDia[dia]?.entrada || '', salida: byDia[dia]?.salida || '' }));
+    setHorario({ userId: t.userId, nombre: t.nombre, dias });
+  }
+  async function guardarHorario(e) {
+    e.preventDefault();
+    const dias = horario.dias.filter(d => d.trabaja && d.entrada && d.salida).map(d => ({ dia: d.dia, entrada: d.entrada, salida: d.salida }));
+    const r = await fetch(`/api/admin/fichajes/horario/${horario.userId}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+      body: JSON.stringify({ dias }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) { showToast?.('Horario guardado.'); setHorario(null); cargar(); }
+    else alert(d.error || 'No se pudo guardar.');
+  }
+
   return (
     <div style={{ display: 'grid', gap: 14 }}>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '12px 16px' }}>
@@ -231,6 +274,7 @@ function GestionFichajes({ showToast }) {
               <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{t.rol || 'Personal'}</div>
             </div>
             <span style={{ fontSize: 14, fontWeight: 800, color: 'var(--teal)' }}>{hms(t.totalSeg)}</span>
+            <button className="btn btn-sm btn-outline" onClick={e => { e.stopPropagation(); abrirHorario(t); }}>Horario</button>
             <button className="btn btn-sm btn-outline" onClick={e => { e.stopPropagation(); setCorr({ userId: t.userId, nombre: t.nombre, tipo: 'entrada', fecha: hoyISO(), hora: '', motivo: '' }); }}>Corregir</button>
             <I.Chevron style={{ transform: abierto === t.userId ? 'rotate(180deg)' : 'none', transition: 'transform .15s', color: 'var(--ink-3)' }} />
           </div>
@@ -276,6 +320,36 @@ function GestionFichajes({ showToast }) {
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button type="button" className="btn btn-outline" onClick={() => setCorr(null)}>Cancelar</button>
               <button type="submit" className="btn btn-primary" disabled={!corr.hora || !corr.motivo.trim()}>Guardar</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Horario laboral del trabajador: base de los recordatorios de fichaje. */}
+      {horario && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.4)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }} onClick={() => setHorario(null)}>
+          <form onClick={e => e.stopPropagation()} onSubmit={guardarHorario}
+            style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 20, display: 'grid', gap: 10, width: 'min(460px, 100%)', maxHeight: '90vh', overflowY: 'auto' }}>
+            <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>Horario laboral · {horario.nombre}</h3>
+            <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Marca los días que trabaja y su hora de entrada y salida. Con esto se le recuerda por correo y en la app que fiche. Un día sin marcar = no trabaja.</p>
+            {horario.dias.map((d, i) => (
+              <div key={d.dia} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', gap: 6, alignItems: 'center', width: 120, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={d.trabaja} onChange={e => setHorario(h => ({ ...h, dias: h.dias.map((x, j) => j === i ? { ...x, trabaja: e.target.checked } : x) }))} />
+                  {DIAS_SEMANA[d.dia]}
+                </label>
+                <input type="time" value={d.entrada} disabled={!d.trabaja} required={d.trabaja}
+                  onChange={e => setHorario(h => ({ ...h, dias: h.dias.map((x, j) => j === i ? { ...x, entrada: e.target.value } : x) }))}
+                  style={{ ...inp, flex: 1, opacity: d.trabaja ? 1 : 0.5, padding: '7px 9px' }} />
+                <span style={{ color: 'var(--ink-3)' }}>–</span>
+                <input type="time" value={d.salida} disabled={!d.trabaja} required={d.trabaja}
+                  onChange={e => setHorario(h => ({ ...h, dias: h.dias.map((x, j) => j === i ? { ...x, salida: e.target.value } : x) }))}
+                  style={{ ...inp, flex: 1, opacity: d.trabaja ? 1 : 0.5, padding: '7px 9px' }} />
+              </div>
+            ))}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
+              <button type="button" className="btn btn-outline" onClick={() => setHorario(null)}>Cancelar</button>
+              <button type="submit" className="btn btn-primary">Guardar horario</button>
             </div>
           </form>
         </div>

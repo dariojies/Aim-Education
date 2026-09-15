@@ -1081,6 +1081,29 @@ async function initDb() {
         await client.query(`CREATE INDEX IF NOT EXISTS ix_fichajes_user_dia ON aim_fichajes (user_id, dia)`);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_fichajes_ts ON aim_fichajes (ts)`);
 
+        // Horario laboral esperado de cada trabajador (ticket #233): a qué hora
+        // entra y sale cada día de la semana. Sirve para recordarle por correo y en
+        // la app que fiche. Sin fila para un día = ese día no trabaja. (0 = lunes.)
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_horario_laboral (
+                user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                dia SMALLINT NOT NULL,
+                entrada VARCHAR(5) NOT NULL,
+                salida VARCHAR(5) NOT NULL,
+                PRIMARY KEY (user_id, dia)
+            )
+        `);
+        // Control de los recordatorios ya enviados, para no repetir el mismo aviso.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_fichaje_avisos (
+                user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                dia DATE NOT NULL,
+                tipo VARCHAR(10) NOT NULL,   -- entrada | salida
+                sent_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (user_id, dia, tipo)
+            )
+        `);
+
         // Anulación de recibos: nunca se borran, se marcan (rastro de auditoría).
         await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_motivo TEXT`);
         await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_por UUID REFERENCES users(user_id) ON DELETE SET NULL`);
@@ -9995,6 +10018,16 @@ async function listadoFichajes({ userId, desde, hasta }) {
 }
 
 // El estado y el resumen de HOY del propio trabajador (para el widget de fichar).
+// Día de la semana de hoy en hora de Madrid (0 = lunes, convención aim-tul).
+const diaSemanaHoy = () => (new Date(hoyMadrid() + 'T12:00:00').getDay() + 6) % 7;
+
+// El horario laboral de un trabajador para un día de la semana concreto (o hoy).
+async function horarioDiaDe(userId, dia = diaSemanaHoy(), cliente = pool) {
+    const r = await cliente.query(
+        `SELECT entrada, salida FROM aim_horario_laboral WHERE user_id = $1 AND dia = $2`, [userId, dia]);
+    return r.rowCount ? { entrada: r.rows[0].entrada, salida: r.rows[0].salida } : null;
+}
+
 app.get('/api/fichaje/estado', authenticateSession, requireAdmin, async (req, res) => {
     try {
         const uid = req.userSession.userId;
@@ -10013,7 +10046,20 @@ app.get('/api/fichaje/estado', authenticateSession, requireAdmin, async (req, re
             enPausaDesde: estado === 'pausa' && ultimo ? ultimo.ts : null,
             trabajadoHoySeg: Math.round(calc.porDia[hoy] || 0),
             apuntesHoy: ap.rows.map(x => ({ id: x.id, tipo: x.tipo, ts: x.ts, corregido: x.corregido })),
+            // Horario esperado de hoy, para el aviso en la app (ticket #233).
+            horarioHoy: await horarioDiaDe(uid),
         });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// El horario laboral semanal del propio trabajador (para verlo en "Mi fichaje").
+app.get('/api/fichaje/mi-horario', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT dia, entrada, salida FROM aim_horario_laboral WHERE user_id = $1 ORDER BY dia`,
+            [req.userSession.userId]);
+        res.set('Cache-Control', 'no-store');
+        res.json({ dias: r.rows });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -10162,6 +10208,124 @@ app.get('/api/admin/fichajes/export.csv', authenticateSession, requireAdmin, req
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Horario laboral (lo gestionan secretaría y dueño del club; el instructor es
+// un trabajador y solo ve el suyo). Es la base de los recordatorios de fichaje. ──
+app.get('/api/admin/fichajes/horario/:userId', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    try {
+        const u = await pool.query(
+            `SELECT TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS nombre FROM users WHERE user_id = $1 AND club_id = $2`,
+            [req.params.userId, AIM_CLUB_ID]);
+        if (!u.rowCount) return res.status(404).json({ error: 'Ese trabajador no es del club.' });
+        const r = await pool.query(
+            `SELECT dia, entrada, salida FROM aim_horario_laboral WHERE user_id = $1 ORDER BY dia`, [req.params.userId]);
+        res.set('Cache-Control', 'no-store');
+        res.json({ nombre: u.rows[0].nombre, dias: r.rows });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/admin/fichajes/horario/:userId', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const dias = Array.isArray(req.body?.dias) ? req.body.dias : [];
+    const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+    // Cada día válido: 0..6, entrada y salida en HH:MM y entrada < salida.
+    const limpios = [];
+    for (const d of dias) {
+        const dia = Number(d?.dia);
+        if (!Number.isInteger(dia) || dia < 0 || dia > 6) continue;
+        const entrada = String(d?.entrada || ''), salida = String(d?.salida || '');
+        if (!HHMM.test(entrada) || !HHMM.test(salida)) continue;
+        if (entrada >= salida) return res.status(400).json({ error: `La salida debe ser posterior a la entrada (día ${dia}).` });
+        limpios.push({ dia, entrada, salida });
+    }
+    const client = await pool.connect();
+    try {
+        const u = await client.query(`SELECT 1 FROM users WHERE user_id = $1 AND club_id = $2`, [req.params.userId, AIM_CLUB_ID]);
+        if (!u.rowCount) { client.release(); return res.status(404).json({ error: 'Ese trabajador no es del club.' }); }
+        await client.query('BEGIN');
+        await client.query(`DELETE FROM aim_horario_laboral WHERE user_id = $1`, [req.params.userId]);
+        for (const d of limpios) {
+            await client.query(
+                `INSERT INTO aim_horario_laboral (user_id, dia, entrada, salida) VALUES ($1, $2, $3, $4)`,
+                [req.params.userId, d.dia, d.entrada, d.salida]);
+        }
+        await client.query('COMMIT');
+        res.json({ success: true, dias: limpios });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+// Recordatorios de fichaje por correo (ticket #233). Cada pocos minutos mira el
+// horario laboral de hoy: a quien le toca entrar y no ha fichado, se le recuerda;
+// a quien ya debería haber salido y sigue dentro, también. Un aviso por tipo y
+// día (aim_fichaje_avisos), así no se repite. El aviso en la app va aparte, en
+// vivo, desde el propio panel de Fichaje.
+const minutosHHMM = (hhmm) => { const [h, m] = String(hhmm || '').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
+let recordatorioFichajeEnCurso = false;
+async function recordatoriosFichaje() {
+    if (recordatorioFichajeEnCurso || !mailTransporter) return;
+    recordatorioFichajeEnCurso = true;
+    try {
+        const hoy = hoyMadrid();
+        const dia = diaSemanaHoy();
+        // Minutos transcurridos hoy en hora de Madrid.
+        const ahoraMin = (() => { const [h, m] = new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/Madrid', hour: '2-digit', minute: '2-digit' }).split(':').map(Number); return h * 60 + m; })();
+        const base = (process.env.PUBLIC_BASE_URL || 'https://aim.aimeducation.es').replace(/\/+$/, '');
+        const r = await pool.query(
+            `SELECT h.user_id, h.entrada, h.salida, u.email,
+                    TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre
+             FROM aim_horario_laboral h JOIN users u ON u.user_id = h.user_id
+             WHERE h.dia = $1 AND u.club_id = $2 AND u.email IS NOT NULL AND u.email <> ''`,
+            [dia, AIM_CLUB_ID]);
+        for (const w of r.rows) {
+            const entradaMin = minutosHHMM(w.entrada), salidaMin = minutosHHMM(w.salida);
+            // ENTRADA: desde su hora de entrada y hasta 90 min después; si no ha
+            // fichado ninguna entrada hoy, se le recuerda una vez.
+            if (ahoraMin >= entradaMin && ahoraMin <= entradaMin + 90) {
+                const yaEntro = await pool.query(
+                    `SELECT 1 FROM aim_fichajes WHERE user_id = $1 AND dia = $2::date AND tipo = 'entrada' AND anulado = false LIMIT 1`,
+                    [w.user_id, hoy]);
+                if (!yaEntro.rowCount) await avisarFichaje(w, 'entrada', hoy, base);
+            }
+            // SALIDA: desde su hora de salida y hasta 3 h después; si sigue fichado
+            // dentro (o en pausa), se le recuerda una vez.
+            if (ahoraMin >= salidaMin && ahoraMin <= salidaMin + 180) {
+                const est = await estadoFichaje(w.user_id);
+                if (est.estado === 'dentro' || est.estado === 'pausa') await avisarFichaje(w, 'salida', hoy, base);
+            }
+        }
+    } catch (e) {
+        console.error('[fichaje recordatorio]', e.message);
+    } finally {
+        recordatorioFichajeEnCurso = false;
+    }
+}
+// Manda un recordatorio, una sola vez por (trabajador, día, tipo). La marca se
+// pone ANTES de enviar (con ON CONFLICT): si ya estaba, no se manda de nuevo.
+async function avisarFichaje(w, tipo, hoy, base) {
+    const marca = await pool.query(
+        `INSERT INTO aim_fichaje_avisos (user_id, dia, tipo) VALUES ($1, $2::date, $3)
+         ON CONFLICT (user_id, dia, tipo) DO NOTHING RETURNING user_id`,
+        [w.user_id, hoy, tipo]);
+    if (!marca.rowCount) return; // ya se avisó
+    try {
+        const esEntrada = tipo === 'entrada';
+        const hora = esEntrada ? w.entrada : w.salida;
+        await mailTransporter.sendMail({
+            from: process.env.EMAIL_USER, to: w.email,
+            subject: esEntrada ? 'Recuerda fichar tu entrada' : 'Recuerda fichar tu salida',
+            html: `<div style="font-family:system-ui,sans-serif;color:#1a1a1a">
+              <p>Hola ${w.nombre},</p>
+              <p>${esEntrada
+                    ? `Tu jornada de hoy empieza a las <b>${hora}</b> y aún no has fichado la <b>entrada</b>.`
+                    : `Tu jornada de hoy terminaba a las <b>${hora}</b> y sigues con la jornada <b>abierta</b>. No olvides fichar la <b>salida</b>.`}</p>
+              <p style="margin:18px 0"><a href="${base}" style="background:#0a7d3c;color:#fff;text-decoration:none;padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block">Ir a fichar</a></p>
+              <p style="font-size:12px;color:#888">AIM Education · Algeciras</p>
+            </div>`,
+        });
+    } catch (e) { console.error('[fichaje mail]', e.message); }
+}
+
 // ── Tickets vinculados ───────────────────────────────────────────────────────
 // Vincular el ticket :id con otro: los dos (y los que ya estuvieran con
 // cualquiera de ellos) pasan a compartir el mismo grupo.
@@ -10294,4 +10458,8 @@ app.listen(port, () => {
     // hora: se comprueba cada 15 min y solo manda una vez por sesión.
     setTimeout(recordatoriosSpeaking, 30 * 1000);
     setInterval(recordatoriosSpeaking, 15 * 60 * 1000);
+    // Recordatorios de fichaje (ticket #233): se revisa cada 5 min quién tiene que
+    // fichar entrada/salida según su horario. Solo manda una vez por tipo y día.
+    setTimeout(recordatoriosFichaje, 45 * 1000);
+    setInterval(recordatoriosFichaje, 5 * 60 * 1000);
 });
