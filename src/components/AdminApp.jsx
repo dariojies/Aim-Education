@@ -1126,9 +1126,44 @@ function FiltroPeriodo({ desde, hasta, onChange }) {
 const MEDIOS_GASTO = ['Tarjeta', 'Transferencia bancaria', 'Domiciliación SEPA', 'Efectivo', 'Bizum', 'Otro'];
 const gastoVacio = () => ({
   fecha: new Date().toISOString().slice(0, 10), importe: '', medioPago: 'Transferencia bancaria',
-  proveedor: '', cif: '', numeroFactura: '', concepto: '', tipo: 'comun', actividad: '',
+  proveedor: '', cif: '', numeroFactura: '', concepto: '', tipo: 'comun', actividad: '', categoria: '',
   pagado: false, comprobadoBanco: false, facturaUrl: '', personaId: null, recurrente: false, esNuevo: true,
 });
+
+// Combobox con buscador (ticket #242): reemplaza a los desplegables de actividad
+// y de persona en el formulario de gastos. Escribes para filtrar y eliges de la
+// lista; funciona igual en Safari (no depende de <datalist>). value es el valor
+// seleccionado; options = [{ value, label }].
+function ComboBuscador({ value, options, onChange, placeholder, required }) {
+  const [q, setQ] = React.useState('');
+  const [abierto, setAbierto] = React.useState(false);
+  const sel = options.find(o => o.value === value) || null;
+  const texto = abierto ? q : (sel ? sel.label : '');
+  const filtro = q.trim().toLowerCase();
+  const matches = (filtro ? options.filter(o => o.label.toLowerCase().includes(filtro)) : options).slice(0, 30);
+  return (
+    <div style={{ position: 'relative' }}>
+      <input
+        value={texto} placeholder={placeholder} required={required && !value}
+        onFocus={() => { setAbierto(true); setQ(''); }}
+        onChange={e => { setQ(e.target.value); setAbierto(true); if (value) onChange(''); }}
+        onBlur={() => setTimeout(() => setAbierto(false), 150)}
+        autoComplete="off"
+      />
+      {abierto && matches.length > 0 && (
+        <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 20, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, marginTop: 2, maxHeight: 240, overflowY: 'auto', boxShadow: 'var(--shadow)' }}>
+          {matches.map(o => (
+            <button key={o.value} type="button"
+              onMouseDown={e => { e.preventDefault(); onChange(o.value); setQ(''); setAbierto(false); }}
+              style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', background: o.value === value ? 'color-mix(in oklab, var(--teal) 10%, var(--bg-2))' : 'none', border: 0, borderBottom: '1px solid var(--line-2)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, color: 'var(--ink)' }}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function AdminGastos({ refreshTrigger, showToast }) {
   const [tab, setTab] = useState('gastos'); // 'gastos' | 'informe'
@@ -1241,12 +1276,13 @@ function AdminGastos({ refreshTrigger, showToast }) {
   return (
     <>
       <div style={{ display: 'flex', gap: 10, marginBottom: 20, borderBottom: '1px solid var(--line-2)', paddingBottom: 14, flexWrap: 'wrap' }}>
-        {[['gastos', `Gastos (${gastos.length})`], ['informe', 'Beneficio por actividad']].map(([id, label]) => (
+        {[['gastos', `Gastos (${gastos.length})`], ['informe', 'Beneficio por actividad'], ['personas', 'Desglose por persona']].map(([id, label]) => (
           <button key={id} className={`filter-pill ${tab === id ? 'is-active' : ''}`} onClick={() => setTab(id)} style={{ borderRadius: 8, padding: '8px 16px' }}>{label}</button>
         ))}
       </div>
 
       {tab === 'informe' && <InformeBeneficios />}
+      {tab === 'personas' && <InformeDesglosePersonas />}
 
       {tab === 'gastos' && (
         <>
@@ -1448,12 +1484,22 @@ function AdminGastos({ refreshTrigger, showToast }) {
               {edit.tipo === 'especifico' && (
                 <div className="field">
                   <label>Actividad</label>
-                  <select value={edit.actividad || ''} onChange={e => setEdit(g => ({ ...g, actividad: e.target.value }))} required>
-                    <option value="">Elige actividad...</option>
-                    {actividades.map(a => <option key={a} value={a}>{a}</option>)}
-                  </select>
+                  <ComboBuscador value={edit.actividad || ''} placeholder="Escribe para buscar la actividad..." required
+                    options={actividades.map(a => ({ value: a, label: a }))}
+                    onChange={v => setEdit(g => ({ ...g, actividad: v }))} />
                 </div>
               )}
+
+              {/* Categoría del gasto (ticket #242): "Material" (p. ej. doboks) u
+                  otras. Es independiente de la actividad: un material puede ser de
+                  una actividad concreta (arriba) o material general. */}
+              <div className="field">
+                <label>Categoría (opcional)</label>
+                <select value={edit.categoria || ''} onChange={e => setEdit(g => ({ ...g, categoria: e.target.value }))}>
+                  <option value="">Sin categoría</option>
+                  {['Material', 'Suministros', 'Alquiler', 'Personal', 'Servicios', 'Otros'].map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
 
               {/* Un gasto común no siempre se reparte igual: la luz no es como
                   el material, así que lo decide cada gasto y no el informe. */}
@@ -1482,10 +1528,12 @@ function AdminGastos({ refreshTrigger, showToast }) {
                   concreto, para desglosar el coste por persona. Opcional. */}
               <div className="field">
                 <label>Persona asociada (opcional)</label>
-                <select value={edit.personaId || ''} onChange={e => setEdit(g => ({ ...g, personaId: e.target.value || null }))}>
-                  <option value="">Sin persona</option>
-                  {personas.map(p => <option key={p.id} value={p.id}>{p.firstName} {p.lastName}</option>)}
-                </select>
+                <ComboBuscador value={edit.personaId || ''} placeholder="Escribe un nombre para buscar..."
+                  options={personas.map(p => ({ value: p.id, label: `${p.firstName} ${p.lastName}`.trim() }))}
+                  onChange={v => setEdit(g => ({ ...g, personaId: v || null }))} />
+                <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--ink-3)' }}>
+                  Si es un gasto de una actividad y no pones persona, se reparte entre todos sus instructores según las horas que trabaja cada uno.
+                </p>
               </div>
 
               <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
@@ -1619,6 +1667,95 @@ function InformeBeneficios() {
             </div>
             {datos.sinActividad > 0 && <div>Hay <b>{eur(datos.sinActividad)}</b> de ingresos sin actividad asignada (ventas de mostrador o cargos antiguos), no incluidos en el reparto.</div>}
           </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Desglose por persona (ticket #242): cuánto le corresponde a cada instructor de
+// los ingresos y gastos. Los ingresos y gastos "sueltos" de cada actividad se
+// reparten entre sus instructores según las horas que trabaja cada uno; los
+// gastos asignados a una persona van enteros a esa persona.
+function InformeDesglosePersonas() {
+  const [datos, setDatos] = useState(null);
+  const [desde, setDesde] = useState('');
+  const [hasta, setHasta] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [abierta, setAbierta] = useState(null);
+
+  async function cargar() {
+    setLoading(true);
+    try {
+      const p = new URLSearchParams();
+      if (desde) p.set('desde', desde);
+      if (hasta) p.set('hasta', hasta);
+      const r = await fetch(`/api/admin/informes/desglose-personas?${p}`, { credentials: 'include' });
+      if (r.ok) setDatos(await r.json());
+    } catch { /* noop */ }
+    finally { setLoading(false); }
+  }
+  useEffect(() => { cargar(); }, [desde, hasta]);
+
+  return (
+    <div style={{ display: 'grid', gap: 14 }}>
+      <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>
+        Reparte los <b>ingresos</b> y los <b>gastos</b> de cada actividad entre sus instructores según las <b>horas</b> que trabaja cada uno en ella. Los gastos asignados a una persona concreta van enteros a esa persona.
+      </p>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '12px 16px' }}>
+        <FiltroPeriodo desde={desde} hasta={hasta} onChange={(a, b) => { setDesde(a); setHasta(b); }} />
+        <label style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>Desde</label>
+        <input type="date" value={desde} onChange={e => setDesde(e.target.value)} style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontFamily: 'inherit' }} />
+        <label style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>Hasta</label>
+        <input type="date" value={hasta} onChange={e => setHasta(e.target.value)} style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontFamily: 'inherit' }} />
+      </div>
+
+      {loading && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Calculando...</p>}
+      {datos && datos.filas.length === 0 && (
+        <div style={{ padding: 28, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>
+          Todavía no hay datos: hacen falta instructores asignados en el horario, cobros y gastos.
+        </div>
+      )}
+      {datos && datos.filas.length > 0 && (
+        <>
+          <div className="data-table">
+            <div className="data-table-head" style={{ gridTemplateColumns: '1.8fr 1fr 1fr 1fr' }}>
+              <span>Instructor</span><span>Ingresos</span><span>Gastos</span><span>Beneficio</span>
+            </div>
+            {datos.filas.map(f => (
+              <React.Fragment key={f.personaId}>
+                <div className="data-table-row" style={{ gridTemplateColumns: '1.8fr 1fr 1fr 1fr', cursor: f.detalle.length ? 'pointer' : 'default', alignItems: 'center' }}
+                  onClick={() => f.detalle.length && setAbierta(abierta === f.personaId ? null : f.personaId)}>
+                  <div className="pri">
+                    {f.detalle.length > 0 && <span style={{ color: 'var(--ink-3)', marginRight: 6 }}>{abierta === f.personaId ? '▾' : '▸'}</span>}
+                    {f.nombre}
+                  </div>
+                  <span style={{ color: 'var(--teal)', fontWeight: 700 }}>{eur(f.ingresos)}</span>
+                  <span className="sec">{eur(f.gastos)}</span>
+                  <span style={{ fontWeight: 800, fontFamily: 'var(--font-display)', color: f.beneficio >= 0 ? 'var(--teal)' : 'var(--orange)' }}>{eur(f.beneficio)}</span>
+                </div>
+                {abierta === f.personaId && f.detalle.map(dt => (
+                  <div key={dt.actividad} className="data-table-row" style={{ gridTemplateColumns: '1.8fr 1fr 1fr 1fr', background: 'var(--bg-3)', fontSize: 12 }}>
+                    <div className="sec" style={{ paddingLeft: 22 }}>{dt.actividad} <span style={{ color: 'var(--ink-3)' }}>· {dt.horas} h/sem</span></div>
+                    <span className="sec">{eur(dt.ingresos)}</span>
+                    <span className="sec">{eur(dt.gastos)}</span>
+                    <span className="sec">{eur(dt.ingresos - dt.gastos)}</span>
+                  </div>
+                ))}
+              </React.Fragment>
+            ))}
+            <div className="data-table-row" style={{ gridTemplateColumns: '1.8fr 1fr 1fr 1fr', background: 'var(--bg-3)', fontWeight: 800 }}>
+              <span>TOTAL</span>
+              <span style={{ color: 'var(--teal)' }}>{eur(datos.totales.ingresos)}</span>
+              <span>{eur(datos.totales.gastos)}</span>
+              <span style={{ fontFamily: 'var(--font-display)' }}>{eur(datos.totales.ingresos - datos.totales.gastos)}</span>
+            </div>
+          </div>
+          {(datos.sinInstructor.ingresos > 0 || datos.sinInstructor.gastos > 0) && (
+            <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+              Hay actividades sin instructor asignado en el horario: <b>{eur(datos.sinInstructor.ingresos)}</b> de ingresos y <b>{eur(datos.sinInstructor.gastos)}</b> de gastos quedan sin repartir. Asígnales monitor en el horario para incluirlos.
+            </div>
+          )}
         </>
       )}
     </div>

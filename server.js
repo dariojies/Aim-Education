@@ -285,6 +285,10 @@ async function initDb() {
             // como recurrente para prever gastos (media de los últimos 12 meses).
             'persona_id UUID REFERENCES users(user_id) ON DELETE SET NULL',
             'recurrente BOOLEAN NOT NULL DEFAULT false',
+            // Categoría del gasto (ticket #242): p. ej. "Material" (doboks…). Es
+            // independiente de la actividad: un material puede ser de taekwondo
+            // (con actividad) o material general (sin actividad).
+            'categoria VARCHAR(40)',
         ]) {
             await client.query(`ALTER TABLE aim_gastos ADD COLUMN IF NOT EXISTS ${col}`);
         }
@@ -7846,6 +7850,7 @@ const mapGasto = (r, conArchivo = false) => ({
     medioPago: r.payment_method, proveedor: r.company, cif: r.cif,
     numeroFactura: r.invoice_number, concepto: r.concept,
     tipo: r.expense_type || 'comun', actividad: r.actividad,
+    categoria: r.categoria || null,
     reparto: r.reparto || 'iguales',
     // Ticket #240: persona asociada al gasto y si es recurrente.
     personaId: r.persona_id || null,
@@ -7861,7 +7866,7 @@ const mapGasto = (r, conArchivo = false) => ({
 // Los filtros del listado de gastos. Van aparte porque la descarga tiene que
 // traer exactamente lo mismo que se está viendo en pantalla: si el papel no
 // cuadra con la pantalla, no hay quien lo cuadre después.
-function filtrosGastos({ desde, hasta, q, pagado, tipo, actividad, persona }) {
+function filtrosGastos({ desde, hasta, q, pagado, tipo, actividad, persona, categoria }) {
     const where = [];
     const vals = [];
     if (desde) { vals.push(desde); where.push(`g.date >= $${vals.length}::date`); }
@@ -7871,6 +7876,7 @@ function filtrosGastos({ desde, hasta, q, pagado, tipo, actividad, persona }) {
     if (tipo) { vals.push(tipo); where.push(`COALESCE(g.expense_type,'comun') = $${vals.length}`); }
     if (actividad) { vals.push(actividad); where.push(`g.actividad = $${vals.length}`); }
     if (persona) { vals.push(persona); where.push(`g.persona_id = $${vals.length}`); }
+    if (categoria) { vals.push(categoria); where.push(`g.categoria = $${vals.length}`); }
     if (q) {
         vals.push(`%${q}%`);
         where.push(`(g.company ILIKE $${vals.length} OR g.cif ILIKE $${vals.length} OR g.concept ILIKE $${vals.length} OR g.invoice_number ILIKE $${vals.length})`);
@@ -7883,7 +7889,7 @@ async function resumenGastos(query) {
     const { sql, vals } = filtrosGastos(query);
     const r = await pool.query(
         `SELECT g.id, g.date, g.amount, g.payment_method, g.company, g.invoice_link, g.cif, g.invoice_number,
-                g.concept, g.expense_type, g.actividad, g.reparto, g.is_paid, g.comprobado_banco, g.factura_nombre, g.factura_mime,
+                g.concept, g.expense_type, g.actividad, g.categoria, g.reparto, g.is_paid, g.comprobado_banco, g.factura_nombre, g.factura_mime,
                 g.persona_id, g.recurrente, TRIM(CONCAT(pu.name, ' ', COALESCE(pu.surname, ''))) AS persona_nombre
          FROM aim_gastos g LEFT JOIN users pu ON pu.user_id = g.persona_id ${sql}
          ORDER BY g.date ASC NULLS LAST, g.created_at ASC`, vals
@@ -7960,7 +7966,7 @@ app.get('/api/admin/gastos', authenticateSession, requireAdmin, async (req, res)
         // No devolvemos el archivo en el listado: pesaría muchísimo.
         const r = await pool.query(
             `SELECT g.id, g.date, g.amount, g.payment_method, g.company, g.invoice_link, g.cif, g.invoice_number,
-                    g.concept, g.expense_type, g.actividad, g.reparto, g.is_paid, g.comprobado_banco, g.factura_nombre, g.factura_mime,
+                    g.concept, g.expense_type, g.actividad, g.categoria, g.reparto, g.is_paid, g.comprobado_banco, g.factura_nombre, g.factura_mime,
                     g.persona_id, g.recurrente, TRIM(CONCAT(pu.name, ' ', COALESCE(pu.surname, ''))) AS persona_nombre
              FROM aim_gastos g LEFT JOIN users pu ON pu.user_id = g.persona_id
              ${sql}
@@ -8012,7 +8018,7 @@ app.post('/api/admin/gastos', authenticateSession, requireAdmin, async (req, res
     const {
         id, fecha, importe, medioPago, proveedor, cif, numeroFactura, concepto,
         tipo, actividad, reparto, pagado, comprobadoBanco, facturaUrl,
-        facturaArchivo, facturaNombre, facturaMime, personaId, recurrente,
+        facturaArchivo, facturaNombre, facturaMime, personaId, recurrente, categoria,
     } = req.body;
     if (!proveedor?.trim()) return res.status(400).json({ error: 'El proveedor es obligatorio.' });
     if (importe == null || isNaN(Number(importe))) return res.status(400).json({ error: 'El importe es obligatorio.' });
@@ -8033,13 +8039,13 @@ app.post('/api/admin/gastos', authenticateSession, requireAdmin, async (req, res
         await client.query(
             `INSERT INTO aim_gastos (id, date, amount, payment_method, company, cif, invoice_number, concept,
                                      expense_type, actividad, reparto, is_paid, comprobado_banco, invoice_link,
-                                     factura_archivo, factura_nombre, factura_mime, persona_id, recurrente)
-             VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$18,$11,$12,$13,$14,$15,$16,$19::uuid,$20)
+                                     factura_archivo, factura_nombre, factura_mime, persona_id, recurrente, categoria)
+             VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$18,$11,$12,$13,$14,$15,$16,$19::uuid,$20,$21)
              ON CONFLICT (id) DO UPDATE SET
                 date = EXCLUDED.date, amount = EXCLUDED.amount, payment_method = EXCLUDED.payment_method,
                 company = EXCLUDED.company, cif = EXCLUDED.cif, invoice_number = EXCLUDED.invoice_number,
                 concept = EXCLUDED.concept, expense_type = EXCLUDED.expense_type, actividad = EXCLUDED.actividad,
-                reparto = EXCLUDED.reparto,
+                reparto = EXCLUDED.reparto, categoria = EXCLUDED.categoria,
                 is_paid = EXCLUDED.is_paid, comprobado_banco = EXCLUDED.comprobado_banco,
                 invoice_link = EXCLUDED.invoice_link,
                 persona_id = EXCLUDED.persona_id, recurrente = EXCLUDED.recurrente,
@@ -8050,7 +8056,7 @@ app.post('/api/admin/gastos', authenticateSession, requireAdmin, async (req, res
              numeroFactura?.trim() || null, concepto?.trim() || null, tipo === 'especifico' ? 'especifico' : 'comun',
              tipo === 'especifico' ? actividad.trim() : null, !!pagado, !!comprobadoBanco, facturaUrl?.trim() || null,
              facturaArchivo || null, facturaNombre?.trim() || null, facturaMime || null, setArchivo, comoReparte,
-             personaId || null, !!recurrente]
+             personaId || null, !!recurrente, (categoria || '').toString().trim().slice(0, 40) || null]
         );
         // El proveedor se guarda en el registro para poder buscarlo la próxima vez.
         await client.query(
@@ -8110,176 +8116,189 @@ app.delete('/api/admin/proveedores/:id', authenticateSession, requireAdmin, asyn
 
 // Informe de beneficios por actividad: ingresos (cargos cobrados en recibos no
 // anulados) menos gastos. Los gastos comunes se reparten según 'reparto'.
+// Reparto de ingresos y gastos por actividad. Se saca a una función porque lo
+// usan dos informes: el de beneficios por actividad y el desglose por persona
+// (ticket #242). Con soloSinPersona se dejan fuera los gastos que van asignados
+// a una persona concreta: en el desglose esos van enteros a esa persona, no se
+// reparten entre los instructores de la actividad.
+async function repartoPorActividad(d, h, { soloSinPersona = false } = {}) {
+    // Ingresos: importe base de cada cargo cobrado, agrupado por actividad.
+    const ing = await pool.query(
+        `SELECT COALESCE(NULLIF(c.actividad,''), 'Sin actividad') AS actividad,
+                COALESCE(SUM(c.importe),0)::numeric AS total
+         FROM aim_cargos c
+         JOIN aim_recibos r ON r.id = c.recibo_id
+         WHERE c.estado = 'cobrado' AND r.estado <> 'anulado'
+           AND ($1::date IS NULL OR r.fecha >= $1::date)
+           AND ($2::date IS NULL OR r.fecha <= $2::date)
+         GROUP BY 1`, [d, h]
+    );
+    const gas = await pool.query(
+        `SELECT COALESCE(expense_type,'comun') AS tipo,
+                COALESCE(NULLIF(actividad,''),'') AS actividad,
+                COALESCE(reparto,'iguales') AS reparto,
+                COALESCE(SUM(amount),0)::numeric AS total
+         FROM aim_gastos
+         WHERE ($1::date IS NULL OR date >= $1::date)
+           AND ($2::date IS NULL OR date <= $2::date)
+           ${soloSinPersona ? 'AND persona_id IS NULL' : ''}
+         GROUP BY 1,2,3`, [d, h]
+    );
+
+    // Los dos repartos que no salen del dinero: cuánta gente tiene cada
+    // actividad y cuántas horas ocupa a la semana.
+    // Las dos cuentas van por separado a propósito: unirlas en una sola
+    // consulta multiplicaba las horas por el número de alumnos del grupo
+    // (Taekwon-Do salía con 186 h a la semana en vez de 18).
+    const pesos = await pool.query(
+        `SELECT a.name AS actividad,
+                COALESCE(al.alumnos, 0)::int AS alumnos,
+                COALESCE(ho.horas, 0)::numeric AS horas
+         FROM tul_activities a
+         LEFT JOIN LATERAL (
+             SELECT COUNT(DISTINCT gs.student_id) AS alumnos
+             FROM tul_groups g
+             JOIN tul_group_students gs ON gs.group_id = g.group_id
+             WHERE g.activity_id = a.activity_id
+         ) al ON true
+         LEFT JOIN LATERAL (
+             SELECT SUM(
+                 (EXTRACT(EPOCH FROM (sess->>'endTime')::time - (sess->>'startTime')::time) / 3600.0)
+                 * COALESCE(jsonb_array_length(sess->'days'), 1)
+             ) AS horas
+             FROM tul_groups g
+             CROSS JOIN LATERAL jsonb_array_elements(COALESCE(g.sessions::jsonb, '[]'::jsonb)) sess
+             WHERE g.activity_id = a.activity_id
+         ) ho ON true
+         WHERE a.club_id = $1`, [AIM_CLUB_ID]
+    );
+    const alumnosDe = {}, horasDe = {};
+    for (const x of pesos.rows) {
+        alumnosDe[x.actividad] = Number(x.alumnos) || 0;
+        horasDe[x.actividad] = Number(x.horas) || 0;
+    }
+
+    // El campamento no está en tul_activities: sus niños viven en su propia
+    // tabla y su horario no son sesiones. Sin esto pesaba cero y le tocaban
+    // 0 € de gastos comunes aunque fuera lo que más factura.
+    const camp = await pool.query(
+        `SELECT COUNT(DISTINCT c.id)::int AS ninos,
+                COUNT(DISTINCT EXTRACT(DOW FROM d.day))::int AS diassemana
+         FROM aim_camp_children c
+         JOIN aim_camp_child_days d ON d.child_id = c.id
+         WHERE ($1::date IS NULL OR d.day >= $1::date)
+           AND ($2::date IS NULL OR d.day <= $2::date)`, [d, h]
+    );
+    alumnosDe[CAMP_ACTIVIDAD] = Number(camp.rows[0]?.ninos) || 0;
+    // Horas de horario semanal, que es la unidad con la que se comparan las
+    // demás actividades: los días de la semana que abre el campamento, a 5
+    // horas cada uno. De lunes a viernes, 25 h. Fuera del verano, cero.
+    horasDe[CAMP_ACTIVIDAD] = (Number(camp.rows[0]?.diassemana) || 0) * CAMP_HORAS_DIA;
+
+    // Los talleres y eventos, igual: su gente son las inscripciones y sus
+    // horas, lo que dura cada evento (los dos por separado, o el JOIN
+    // multiplicaría la duración por el número de inscritos).
+    const evt = await pool.query(
+        `SELECT (SELECT COUNT(*)::int FROM aim_event_registrations r
+                 JOIN aim_eventos e2 ON e2.id = r.event_id
+                 WHERE ($1::date IS NULL OR e2.event_date >= $1::date)
+                   AND ($2::date IS NULL OR e2.event_date <= $2::date)) AS inscritos,
+                COALESCE(SUM(
+                    CASE WHEN e.time ~ '^[0-9]{1,2}:[0-9]{2}' AND e.end_time ~ '^[0-9]{1,2}:[0-9]{2}'
+                         AND e.end_time::time > e.time::time
+                    THEN EXTRACT(EPOCH FROM e.end_time::time - e.time::time) / 3600.0
+                    ELSE 2 END
+                ), 0)::numeric AS horas
+         FROM aim_eventos e
+         WHERE ($1::date IS NULL OR e.event_date >= $1::date)
+           AND ($2::date IS NULL OR e.event_date <= $2::date)`, [d, h]
+    );
+    alumnosDe[EVENTOS_ACTIVIDAD] = Number(evt.rows[0]?.inscritos) || 0;
+    horasDe[EVENTOS_ACTIVIDAD] = Number(evt.rows[0]?.horas) || 0;
+
+    const ingresos = {};
+    for (const r of ing.rows) ingresos[r.actividad] = Number(r.total);
+    const gastosDir = {};
+    // Los comunes se agrupan por su criterio: cada bolsa se reparte a su modo.
+    const bolsas = { iguales: 0, alumnos: 0, horas: 0 };
+    for (const g of gas.rows) {
+        if (g.tipo === 'especifico' && g.actividad) gastosDir[g.actividad] = (gastosDir[g.actividad] || 0) + Number(g.total);
+        else bolsas[g.reparto in bolsas ? g.reparto : 'iguales'] += Number(g.total);
+    }
+    const gastosComunes = bolsas.iguales + bolsas.alumnos + bolsas.horas;
+
+    // Actividades a considerar: las que tienen ingresos, gastos directos o
+    // actividad real en el periodo (niños en el campamento, gente en los
+    // talleres). Si ocupan sala y monitores, les toca parte de lo común.
+    const conVida = [CAMP_ACTIVIDAD, EVENTOS_ACTIVIDAD]
+        .filter(n => (alumnosDe[n] || 0) > 0 || (horasDe[n] || 0) > 0);
+    const nombres = [...new Set([...Object.keys(ingresos), ...Object.keys(gastosDir), ...conVida])]
+        .filter(n => n !== 'Sin actividad');
+
+    // Reparte una bolsa según el peso de cada actividad. Sin pesos (nadie
+    // matriculado, o ninguna hora en el horario) se cae a partes iguales,
+    // que es lo único razonable.
+    const repartir = (bolsa, peso) => {
+        if (bolsa <= 0 || !nombres.length) return nombres.map(() => 0);
+        const ps = nombres.map(peso);
+        const suma = ps.reduce((t, x) => t + x, 0);
+        return suma > 0
+            ? ps.map(x => r2Server(bolsa * (x / suma)))
+            : nombres.map(() => r2Server(bolsa / nombres.length));
+    };
+    const porIguales = repartir(bolsas.iguales, () => 1);
+    const porAlumnos = repartir(bolsas.alumnos, n => alumnosDe[n] || 0);
+    const porHoras = repartir(bolsas.horas, n => horasDe[n] || 0);
+    const cuotas = nombres.map((_, i) => r2Server(porIguales[i] + porAlumnos[i] + porHoras[i]));
+    // Redondear cada cuota por separado deja céntimos sueltos: el sobrante (o
+    // el defecto) se carga a la actividad con la cuota mayor para que la suma
+    // de las filas cuadre exactamente con el total de gastos comunes.
+    const descuadre = r2Server(r2Server(gastosComunes) - cuotas.reduce((s, c) => s + c, 0));
+    if (descuadre !== 0 && cuotas.length > 0) {
+        let mayor = 0;
+        for (let i = 1; i < cuotas.length; i++) if (cuotas[i] > cuotas[mayor]) mayor = i;
+        cuotas[mayor] = r2Server(cuotas[mayor] + descuadre);
+    }
+    const cuotaDe = {};
+    nombres.forEach((n, i) => { cuotaDe[n] = cuotas[i]; });
+
+    return {
+        nombres, ingresos, gastosDir, cuotas, cuotaDe, bolsas, gastosComunes,
+        alumnosDe, horasDe, sinActividad: r2Server(ingresos['Sin actividad'] || 0),
+    };
+}
+
 app.get('/api/admin/informes/beneficios', authenticateSession, requireAdmin, async (req, res) => {
     const { desde, hasta } = req.query;
     try {
-        // Rango de fechas por parámetros ($1 desde, $2 hasta; NULL = sin límite).
         const esFecha = v => /^\d{4}-\d{2}-\d{2}$/.test(v);
         if ((desde && !esFecha(desde)) || (hasta && !esFecha(hasta))) {
             return res.status(400).json({ error: 'Las fechas deben tener el formato AAAA-MM-DD.' });
         }
         const d = desde || null, h = hasta || null;
-        // Ingresos: importe base de cada cargo cobrado, agrupado por actividad.
-        const ing = await pool.query(
-            `SELECT COALESCE(NULLIF(c.actividad,''), 'Sin actividad') AS actividad,
-                    COALESCE(SUM(c.importe),0)::numeric AS total
-             FROM aim_cargos c
-             JOIN aim_recibos r ON r.id = c.recibo_id
-             WHERE c.estado = 'cobrado' AND r.estado <> 'anulado'
-               AND ($1::date IS NULL OR r.fecha >= $1::date)
-               AND ($2::date IS NULL OR r.fecha <= $2::date)
-             GROUP BY 1`, [d, h]
-        );
-        const gas = await pool.query(
-            `SELECT COALESCE(expense_type,'comun') AS tipo,
-                    COALESCE(NULLIF(actividad,''),'') AS actividad,
-                    COALESCE(reparto,'iguales') AS reparto,
-                    COALESCE(SUM(amount),0)::numeric AS total
-             FROM aim_gastos
-             WHERE ($1::date IS NULL OR date >= $1::date)
-               AND ($2::date IS NULL OR date <= $2::date)
-             GROUP BY 1,2,3`, [d, h]
-        );
-
-        // Los dos repartos que no salen del dinero: cuánta gente tiene cada
-        // actividad y cuántas horas ocupa a la semana.
-        // Las dos cuentas van por separado a propósito: unirlas en una sola
-        // consulta multiplicaba las horas por el número de alumnos del grupo
-        // (Taekwon-Do salía con 186 h a la semana en vez de 18).
-        const pesos = await pool.query(
-            `SELECT a.name AS actividad,
-                    COALESCE(al.alumnos, 0)::int AS alumnos,
-                    COALESCE(ho.horas, 0)::numeric AS horas
-             FROM tul_activities a
-             LEFT JOIN LATERAL (
-                 SELECT COUNT(DISTINCT gs.student_id) AS alumnos
-                 FROM tul_groups g
-                 JOIN tul_group_students gs ON gs.group_id = g.group_id
-                 WHERE g.activity_id = a.activity_id
-             ) al ON true
-             LEFT JOIN LATERAL (
-                 SELECT SUM(
-                     (EXTRACT(EPOCH FROM (sess->>'endTime')::time - (sess->>'startTime')::time) / 3600.0)
-                     * COALESCE(jsonb_array_length(sess->'days'), 1)
-                 ) AS horas
-                 FROM tul_groups g
-                 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(g.sessions::jsonb, '[]'::jsonb)) sess
-                 WHERE g.activity_id = a.activity_id
-             ) ho ON true
-             WHERE a.club_id = $1`, [AIM_CLUB_ID]
-        );
-        const alumnosDe = {}, horasDe = {};
-        for (const x of pesos.rows) {
-            alumnosDe[x.actividad] = Number(x.alumnos) || 0;
-            horasDe[x.actividad] = Number(x.horas) || 0;
-        }
-
-        // El campamento no está en tul_activities: sus niños viven en su propia
-        // tabla y su horario no son sesiones. Sin esto pesaba cero y le tocaban
-        // 0 € de gastos comunes aunque fuera lo que más factura.
-        const camp = await pool.query(
-            `SELECT COUNT(DISTINCT c.id)::int AS ninos,
-                    COUNT(DISTINCT EXTRACT(DOW FROM d.day))::int AS diassemana
-             FROM aim_camp_children c
-             JOIN aim_camp_child_days d ON d.child_id = c.id
-             WHERE ($1::date IS NULL OR d.day >= $1::date)
-               AND ($2::date IS NULL OR d.day <= $2::date)`, [d, h]
-        );
-        alumnosDe[CAMP_ACTIVIDAD] = Number(camp.rows[0]?.ninos) || 0;
-        // Horas de horario semanal, que es la unidad con la que se comparan las
-        // demás actividades: los días de la semana que abre el campamento, a 5
-        // horas cada uno. De lunes a viernes, 25 h. Fuera del verano, cero.
-        horasDe[CAMP_ACTIVIDAD] = (Number(camp.rows[0]?.diassemana) || 0) * CAMP_HORAS_DIA;
-
-        // Los talleres y eventos, igual: su gente son las inscripciones y sus
-        // horas, lo que dura cada evento (los dos por separado, o el JOIN
-        // multiplicaría la duración por el número de inscritos).
-        const evt = await pool.query(
-            `SELECT (SELECT COUNT(*)::int FROM aim_event_registrations r
-                     JOIN aim_eventos e2 ON e2.id = r.event_id
-                     WHERE ($1::date IS NULL OR e2.event_date >= $1::date)
-                       AND ($2::date IS NULL OR e2.event_date <= $2::date)) AS inscritos,
-                    COALESCE(SUM(
-                        CASE WHEN e.time ~ '^[0-9]{1,2}:[0-9]{2}' AND e.end_time ~ '^[0-9]{1,2}:[0-9]{2}'
-                             AND e.end_time::time > e.time::time
-                        THEN EXTRACT(EPOCH FROM e.end_time::time - e.time::time) / 3600.0
-                        ELSE 2 END
-                    ), 0)::numeric AS horas
-             FROM aim_eventos e
-             WHERE ($1::date IS NULL OR e.event_date >= $1::date)
-               AND ($2::date IS NULL OR e.event_date <= $2::date)`, [d, h]
-        );
-        alumnosDe[EVENTOS_ACTIVIDAD] = Number(evt.rows[0]?.inscritos) || 0;
-        horasDe[EVENTOS_ACTIVIDAD] = Number(evt.rows[0]?.horas) || 0;
-
-        const ingresos = {};
-        for (const r of ing.rows) ingresos[r.actividad] = Number(r.total);
-        const gastosDir = {};
-        // Los comunes se agrupan por su criterio: cada bolsa se reparte a su modo.
-        const bolsas = { iguales: 0, alumnos: 0, horas: 0 };
-        for (const g of gas.rows) {
-            if (g.tipo === 'especifico' && g.actividad) gastosDir[g.actividad] = (gastosDir[g.actividad] || 0) + Number(g.total);
-            else bolsas[g.reparto in bolsas ? g.reparto : 'iguales'] += Number(g.total);
-        }
-        const gastosComunes = bolsas.iguales + bolsas.alumnos + bolsas.horas;
-
-        // Actividades a considerar: las que tienen ingresos, gastos directos o
-        // actividad real en el periodo (niños en el campamento, gente en los
-        // talleres). Si ocupan sala y monitores, les toca parte de lo común.
-        const conVida = [CAMP_ACTIVIDAD, EVENTOS_ACTIVIDAD]
-            .filter(n => (alumnosDe[n] || 0) > 0 || (horasDe[n] || 0) > 0);
-        const nombres = [...new Set([...Object.keys(ingresos), ...Object.keys(gastosDir), ...conVida])]
-            .filter(n => n !== 'Sin actividad');
-
-        // Reparte una bolsa según el peso de cada actividad. Sin pesos (nadie
-        // matriculado, o ninguna hora en el horario) se cae a partes iguales,
-        // que es lo único razonable.
-        const repartir = (bolsa, peso) => {
-            if (bolsa <= 0 || !nombres.length) return nombres.map(() => 0);
-            const ps = nombres.map(peso);
-            const suma = ps.reduce((t, x) => t + x, 0);
-            return suma > 0
-                ? ps.map(x => r2Server(bolsa * (x / suma)))
-                : nombres.map(() => r2Server(bolsa / nombres.length));
-        };
-        const porIguales = repartir(bolsas.iguales, () => 1);
-        const porAlumnos = repartir(bolsas.alumnos, n => alumnosDe[n] || 0);
-        const porHoras = repartir(bolsas.horas, n => horasDe[n] || 0);
-        const cuotas = nombres.map((_, i) => r2Server(porIguales[i] + porAlumnos[i] + porHoras[i]));
-        // Redondear cada cuota por separado deja céntimos sueltos: el sobrante (o
-        // el defecto) se carga a la actividad con la cuota mayor para que la suma
-        // de las filas cuadre exactamente con el total de gastos comunes.
-        const descuadre = r2Server(r2Server(gastosComunes) - cuotas.reduce((s, c) => s + c, 0));
-        if (descuadre !== 0 && cuotas.length > 0) {
-            let mayor = 0;
-            for (let i = 1; i < cuotas.length; i++) if (cuotas[i] > cuotas[mayor]) mayor = i;
-            cuotas[mayor] = r2Server(cuotas[mayor] + descuadre);
-        }
-        const filas = nombres.map((n, i) => {
-            const ingr = r2Server(ingresos[n] || 0);
-            const dir = r2Server(gastosDir[n] || 0);
+        const R = await repartoPorActividad(d, h);
+        const filas = R.nombres.map(n => {
+            const ingr = r2Server(R.ingresos[n] || 0);
+            const dir = r2Server(R.gastosDir[n] || 0);
             return {
                 actividad: n, ingresos: ingr, gastosDirectos: dir,
-                gastosComunes: cuotas[i], beneficio: r2Server(ingr - dir - cuotas[i]),
+                gastosComunes: R.cuotaDe[n], beneficio: r2Server(ingr - dir - R.cuotaDe[n]),
             };
         }).sort((a, b) => b.beneficio - a.beneficio);
 
         res.set('Cache-Control', 'no-store');
         res.json({
             desde: desde || null, hasta: hasta || null,
-            // Cuánto se ha repartido con cada criterio, para poder explicarlo.
             bolsas: {
-                iguales: r2Server(bolsas.iguales),
-                alumnos: r2Server(bolsas.alumnos),
-                horas: r2Server(bolsas.horas),
+                iguales: r2Server(R.bolsas.iguales),
+                alumnos: r2Server(R.bolsas.alumnos),
+                horas: r2Server(R.bolsas.horas),
             },
-            sinActividad: r2Server(ingresos['Sin actividad'] || 0),
-            totalGastosComunes: r2Server(gastosComunes),
-            // Con qué peso ha entrado cada actividad en el reparto, para poder
-            // explicar en pantalla por qué a una le toca más que a otra.
-            pesos: Object.fromEntries(nombres.map(n => [n, {
-                alumnos: alumnosDe[n] || 0,
-                horas: r2Server(horasDe[n] || 0),
+            sinActividad: R.sinActividad,
+            totalGastosComunes: r2Server(R.gastosComunes),
+            pesos: Object.fromEntries(R.nombres.map(n => [n, {
+                alumnos: R.alumnosDe[n] || 0,
+                horas: r2Server(R.horasDe[n] || 0),
             }])),
             filas,
             totales: {
@@ -8290,6 +8309,135 @@ app.get('/api/admin/informes/beneficios', authenticateSession, requireAdmin, asy
         });
     } catch (err) {
         console.error('Error informe beneficios:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Horas que trabaja cada instructor en cada actividad, sacadas del horario
+// (tul_groups.sessions → instructorId / instructors). Cada sesión suma su
+// duración × nº de días a CADA uno de sus monitores (si la dan dos, los dos la
+// trabajan). Base del reparto por horas del desglose por persona (ticket #242).
+async function horasInstructorPorActividad() {
+    const r = await pool.query(
+        `SELECT a.name AS actividad, g.sessions
+         FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+         WHERE a.club_id = $1`, [AIM_CLUB_ID]);
+    // actividad -> Map(instructorId -> horas)
+    const porAct = new Map();
+    const dur = (s) => {
+        const t = (v) => { const [hh, mm] = String(v || '').split(':').map(Number); return (hh || 0) * 60 + (mm || 0); };
+        const min = t(s.endTime) - t(s.startTime);
+        const dias = Array.isArray(s.days) ? s.days.length : 1;
+        return min > 0 ? (min / 60) * (dias || 1) : 0;
+    };
+    for (const row of r.rows) {
+        const acts = porAct.get(row.actividad) || new Map();
+        for (const s of (Array.isArray(row.sessions) ? row.sessions : [])) {
+            const horas = dur(s);
+            if (horas <= 0) continue;
+            const ids = new Set();
+            if (s.instructorId) ids.add(String(s.instructorId));
+            for (const dcon of (Array.isArray(s.instructors) ? s.instructors : [])) if (dcon?.id) ids.add(String(dcon.id));
+            for (const id of ids) acts.set(id, (acts.get(id) || 0) + horas);
+        }
+        porAct.set(row.actividad, acts);
+    }
+    return porAct;
+}
+
+// Desglose por persona (ticket #242): cuánto le corresponde a cada instructor de
+// los ingresos y gastos. Regla: los ingresos y los gastos "sueltos" de cada
+// actividad (los que NO están asignados a una persona) se reparten entre sus
+// instructores según las horas que trabaja cada uno; y los gastos asignados a
+// una persona van enteros a esa persona. Así, quien más horas echa en una clase,
+// más parte de su beneficio (y de su coste común) asume.
+app.get('/api/admin/informes/desglose-personas', authenticateSession, requireAdmin, async (req, res) => {
+    const { desde, hasta } = req.query;
+    try {
+        const esFecha = v => /^\d{4}-\d{2}-\d{2}$/.test(v);
+        if ((desde && !esFecha(desde)) || (hasta && !esFecha(hasta))) {
+            return res.status(400).json({ error: 'Las fechas deben tener el formato AAAA-MM-DD.' });
+        }
+        const d = desde || null, h = hasta || null;
+        // Reparto por actividad SIN los gastos asignados a persona (esos aparte).
+        const R = await repartoPorActividad(d, h, { soloSinPersona: true });
+        const horasPorAct = await horasInstructorPorActividad();
+
+        // Gastos asignados a una persona: van enteros a esa persona (ticket #240).
+        const gp = await pool.query(
+            `SELECT g.persona_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre,
+                    COALESCE(SUM(g.amount),0)::numeric AS total
+             FROM aim_gastos g JOIN users u ON u.user_id = g.persona_id
+             WHERE g.persona_id IS NOT NULL
+               AND ($1::date IS NULL OR g.date >= $1::date)
+               AND ($2::date IS NULL OR g.date <= $2::date)
+             GROUP BY g.persona_id, nombre`, [d, h]
+        );
+
+        // Nombre de cada instructor que aparezca en el horario (para las filas).
+        const idsInstr = new Set();
+        for (const m of horasPorAct.values()) for (const id of m.keys()) idsInstr.add(id);
+        for (const g of gp.rows) idsInstr.add(String(g.persona_id));
+        const nombres = {};
+        if (idsInstr.size) {
+            const nq = await pool.query(
+                `SELECT user_id, TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS nombre
+                 FROM users WHERE user_id = ANY($1::uuid[])`, [[...idsInstr]]);
+            for (const x of nq.rows) nombres[String(x.user_id)] = x.nombre;
+        }
+
+        // Acumular por persona.
+        const personas = new Map(); // id -> { ingresos, gastos, detalle: Map(act -> {horas, ingresos, gastos}) }
+        const dame = (id) => {
+            if (!personas.has(id)) personas.set(id, { ingresos: 0, gastos: 0, detalle: new Map() });
+            return personas.get(id);
+        };
+        // Actividades sin instructor con horas: su parte queda "sin asignar".
+        let sinInstructor = { ingresos: 0, gastos: 0 };
+
+        for (const act of R.nombres) {
+            const ingr = R.ingresos[act] || 0;
+            const gasto = (R.gastosDir[act] || 0) + (R.cuotaDe[act] || 0); // gastos de la actividad SIN persona
+            const horasMap = horasPorAct.get(act) || new Map();
+            const totalHoras = [...horasMap.values()].reduce((s, x) => s + x, 0);
+            if (totalHoras <= 0) {
+                sinInstructor.ingresos += ingr; sinInstructor.gastos += gasto;
+                continue;
+            }
+            for (const [id, horas] of horasMap) {
+                const frac = horas / totalHoras;
+                const p = dame(id);
+                const iAct = ingr * frac, gAct = gasto * frac;
+                p.ingresos += iAct; p.gastos += gAct;
+                p.detalle.set(act, { horas: r2Server(horas), ingresos: r2Server(iAct), gastos: r2Server(gAct) });
+            }
+        }
+        // Gastos asignados a persona (enteros).
+        for (const g of gp.rows) {
+            const p = dame(String(g.persona_id));
+            p.gastos += Number(g.total);
+        }
+
+        const filas = [...personas.entries()].map(([id, p]) => ({
+            personaId: id, nombre: nombres[id] || 'Instructor',
+            ingresos: r2Server(p.ingresos), gastos: r2Server(p.gastos),
+            beneficio: r2Server(p.ingresos - p.gastos),
+            detalle: [...p.detalle.entries()].map(([actividad, v]) => ({ actividad, ...v }))
+                .sort((a, b) => b.ingresos - a.ingresos),
+        })).sort((a, b) => b.beneficio - a.beneficio);
+
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            desde: desde || null, hasta: hasta || null,
+            filas,
+            sinInstructor: { ingresos: r2Server(sinInstructor.ingresos), gastos: r2Server(sinInstructor.gastos) },
+            totales: {
+                ingresos: r2Server(filas.reduce((s, f) => s + f.ingresos, 0) + sinInstructor.ingresos),
+                gastos: r2Server(filas.reduce((s, f) => s + f.gastos, 0) + sinInstructor.gastos),
+            },
+        });
+    } catch (err) {
+        console.error('Error desglose por persona:', err);
         res.status(500).json({ error: err.message });
     }
 });
