@@ -4586,6 +4586,7 @@ function BillingPendientes({ activa, showToast }) {
   const [cargos, setCargos] = useState([]);
   const [prevision, setPrevision] = useState([]); // meses futuros: lo que se cobrará (sin crear deuda)
   const [cargando, setCargando] = useState(false);
+  const [q, setQ] = useState('');                 // buscador de alumnos
 
   useEffect(() => {
     fetch('/api/admin/billing/mes-a-generar', { credentials: 'include' })
@@ -4621,24 +4622,33 @@ function BillingPendientes({ activa, showToast }) {
     else { const d = await r.json(); alert(d.error || 'No se pudo borrar.'); }
   }
 
+  // Buscador de alumnos: filtra en vivo por nombre y apellidos lo que ya se ha
+  // cargado. Lo que se ve es lo que se exporta.
+  const coincide = (c) => {
+    const t = q.trim().toLowerCase();
+    return !t || `${c.nombre} ${c.apellidos || ''}`.toLowerCase().includes(t);
+  };
+  const cargosF = cargos.filter(coincide);
+  const previsionF = prevision.filter(coincide);
+
   function exportarCargos() {
-    if (!cargos.length && !prevision.length) return;
+    if (!cargosF.length && !previsionF.length) return;
     const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const fila = (c, tipo) => {
       const base = c.precio * (1 - (c.descuentoPct || 0) / 100);
       return [`${c.nombre} ${c.apellidos || ''}`.trim(), c.descripcion, mesLargo(c.mes || mesIso), tipo, c.precio, `${c.descuentoPct || 0}%`, base.toFixed(2)].map(esc).join(';');
     };
-    const filas = [...cargos.map(c => fila(c, 'Pendiente')), ...prevision.map(c => fila(c, 'Previsión'))];
+    const filas = [...cargosF.map(c => fila(c, 'Pendiente')), ...previsionF.map(c => fila(c, 'Previsión'))];
     const csv = '﻿' + ['Alumno;Concepto;Mes;Tipo;Precio;Dto.;Base'].concat(filas).join('\r\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
     const a = document.createElement('a');
-    a.href = url; a.download = `cargos-pendientes-${todos ? 'todos' : mes}.csv`; a.click();
+    a.href = url; a.download = `cargos-pendientes-${todos ? 'todos' : mes}${q.trim() ? '-' + q.trim() : ''}.csv`; a.click();
     URL.revokeObjectURL(url);
   }
 
   if (!activa) return null;
-  const totalPendiente = cargos.reduce((s, c) => s + c.precio * (1 - (c.descuentoPct || 0) / 100), 0);
-  const totalPrevision = prevision.reduce((s, c) => s + c.precio * (1 - (c.descuentoPct || 0) / 100), 0);
+  const totalPendiente = cargosF.reduce((s, c) => s + c.precio * (1 - (c.descuentoPct || 0) / 100), 0);
+  const totalPrevision = previsionF.reduce((s, c) => s + c.precio * (1 - (c.descuentoPct || 0) / 100), 0);
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
@@ -4646,6 +4656,10 @@ function BillingPendientes({ activa, showToast }) {
         Todos los cargos pendientes de cobro. Elige un mes o mira los de todos los meses, y expórtalos a CSV.
         En un mes futuro de la temporada verás además la <b>previsión</b>: lo que se cobrará ese mes, todavía sin generar (no es deuda).
       </p>
+
+      <div style={{ maxWidth: 420 }}>
+        <div className="search-input"><I.Search /><input placeholder="Buscar alumno..." value={q} onChange={e => setQ(e.target.value)} />{q && <button type="button" className="icon-btn" onClick={() => setQ('')} aria-label="Limpiar"><I.X /></button>}</div>
+      </div>
 
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '14px 16px' }}>
         <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, fontWeight: 700, color: 'var(--ink-2)', cursor: 'pointer' }}>
@@ -4661,22 +4675,24 @@ function BillingPendientes({ activa, showToast }) {
         )}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, alignItems: 'center' }}>
           <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--ink-2)' }}>
-            {cargos.length} cargos · base {eur(totalPendiente)}{prevision.length > 0 ? ` · +${prevision.length} en previsión` : ''}
+            {cargosF.length} cargos · base {eur(totalPendiente)}{previsionF.length > 0 ? ` · +${previsionF.length} en previsión` : ''}
           </span>
-          <button className="btn btn-sm btn-outline" onClick={exportarCargos} disabled={!cargos.length && !prevision.length}><I.Download /> Exportar CSV</button>
+          <button className="btn btn-sm btn-outline" onClick={exportarCargos} disabled={!cargosF.length && !previsionF.length}><I.Download /> Exportar CSV</button>
         </div>
       </div>
 
       {cargando && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
-      {!cargando && cargos.length === 0 && prevision.length === 0 && (
-        <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>No hay cargos pendientes {todos ? 'en ningún mes' : `de ${mesLargo(mesIso)}`}.</p>
+      {!cargando && cargosF.length === 0 && previsionF.length === 0 && (
+        <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>
+          {q.trim() ? `Ningún alumno "${q.trim()}" con cargos pendientes ${todos ? '' : `de ${mesLargo(mesIso)}`}.` : `No hay cargos pendientes ${todos ? 'en ningún mes' : `de ${mesLargo(mesIso)}`}.`}
+        </p>
       )}
-      {cargos.length > 0 && (
+      {cargosF.length > 0 && (
         <div className="data-table">
           <div className="data-table-head" style={{ gridTemplateColumns: todos ? '1.6fr 1.6fr 110px 90px 80px 60px' : '1.6fr 1.6fr 90px 80px 60px' }}>
             <span>Alumno</span><span>Concepto</span>{todos && <span>Mes</span>}<span>Precio</span><span>Dto.</span><span></span>
           </div>
-          {cargos.map(c => (
+          {cargosF.map(c => (
             <div key={c.id} className="data-table-row" style={{ gridTemplateColumns: todos ? '1.6fr 1.6fr 110px 90px 80px 60px' : '1.6fr 1.6fr 90px 80px 60px' }}>
               <div className="pri">{c.nombre} {c.apellidos}</div>
               <span style={{ fontSize: 13 }}>{c.descripcion}</span>
@@ -4694,19 +4710,19 @@ function BillingPendientes({ activa, showToast }) {
       {/* Previsión: pagos pendientes futuros de la temporada (sept→ago). Es lo que
           se cobrará ese mes, todavía sin generar: no es deuda ni se le ha apuntado
           a nadie. Solo para un mes concreto (no en "todos los meses"). */}
-      {!todos && prevision.length > 0 && (
+      {!todos && previsionF.length > 0 && (
         <div style={{ display: 'grid', gap: 8 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
             <h3 style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 800, margin: 0, color: 'var(--purple)' }}>
               Previsión de {mesLargo(mesIso)}
             </h3>
-            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Lo que se cobrará ese mes (aún sin generar) · {prevision.length} cargos · base {eur(totalPrevision)}</span>
+            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Lo que se cobrará ese mes (aún sin generar) · {previsionF.length} cargos · base {eur(totalPrevision)}</span>
           </div>
           <div className="data-table" style={{ opacity: .92 }}>
             <div className="data-table-head" style={{ gridTemplateColumns: '1.6fr 1.6fr 90px 80px' }}>
               <span>Alumno</span><span>Concepto</span><span>Precio</span><span>Dto.</span>
             </div>
-            {prevision.map((c, i) => (
+            {previsionF.map((c, i) => (
               <div key={i} className="data-table-row" style={{ gridTemplateColumns: '1.6fr 1.6fr 90px 80px', borderLeft: '3px dashed var(--purple)' }}>
                 <div className="pri">{c.nombre} {c.apellidos}</div>
                 <span style={{ fontSize: 13 }}>{c.descripcion}</span>
