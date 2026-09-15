@@ -451,7 +451,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
             if (temp.rowCount) {
                 await pool.query(
                     `INSERT INTO aim_matriculas (user_id, clase_ref, clase_origen, clase_nombre, actividad, temporada_id, descuento_pct, alta)
-                     VALUES ($1,$2,'aimtul',$3,$4,$5,0,CURRENT_DATE)
+                     VALUES ($1,$2,'aimtul',$3,$4,$5,0,(now() AT TIME ZONE 'Europe/Madrid')::date)
                      ON CONFLICT (user_id, clase_ref, temporada_id) DO UPDATE SET baja = NULL`,
                     [studentId, groupId, group_name, activity_name, temp.rows[0].id]
                 ).catch(() => {});
@@ -825,6 +825,30 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
     // marque aquí lo vea su app y al revés.
     const ESTADOS_ASISTENCIA = ['present', 'absent', 'late'];
 
+    // ¿El alumno era de la clase EN esa fecha? (ticket #246). Antes la lista de un
+    // día se sacaba de tul_group_students (la plantilla de HOY), así que al quitar
+    // a alguien desaparecía también de los días ya pasados, y al añadir a alguien
+    // salía en clases que ya se habían dado. Ahora se reconstruye la plantilla del
+    // día con el histórico de altas y bajas (tul_enrollment_history):
+    //   - el último movimiento hasta esa fecha manda (alta = estaba, baja = no);
+    //   - si no hay ninguno hasta la fecha pero sí después, se mira el primero de
+    //     todos: si el primero es una baja, antes estaba (alta "de siempre", previa
+    //     al histórico); si es un alta, aún no se había apuntado ese día;
+    //   - si no hay histórico ninguno, vale la plantilla actual (alumnos antiguos).
+    // $1 = group_id, $2 = fecha. `sid` es la columna con el id del alumno.
+    const miembroEnFecha = (sid) => `
+      COALESCE(
+        (SELECT h.action FROM tul_enrollment_history h
+          WHERE h.group_id = $1 AND h.student_id = ${sid} AND h.created_at::date <= $2::date
+          ORDER BY h.created_at DESC, h.id DESC LIMIT 1),
+        (SELECT CASE WHEN h.action = 'unenrolled' THEN 'enrolled' ELSE 'unenrolled' END
+          FROM tul_enrollment_history h
+          WHERE h.group_id = $1 AND h.student_id = ${sid}
+          ORDER BY h.created_at ASC, h.id ASC LIMIT 1),
+        CASE WHEN EXISTS (SELECT 1 FROM tul_group_students gs WHERE gs.group_id = $1 AND gs.student_id = ${sid})
+             THEN 'enrolled' ELSE 'unenrolled' END
+      ) = 'enrolled'`;
+
     // Qué clases tocan un día concreto, según los días de sus sesiones.
     router.get('/attendance/dia/:fecha', async (req, res) => {
         const { fecha } = req.params;
@@ -875,19 +899,29 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
         if (await ajeno(req, res, groupId)) return;
         if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) return res.status(400).json({ error: 'Fecha no válida.' });
         try {
+            // Candidatos: los de la plantilla de hoy, los que alguna vez pasaron por
+            // esta clase (histórico) y los que tengan marca ese día. De ese conjunto
+            // se quedan los que eran de la clase EN la fecha (o los que ya se
+            // marcaron ese día, que estaban sí o sí). Ticket #246.
             const r = await pool.query(
-                `SELECT u.user_id AS id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre,
+                `WITH cand AS (
+                     SELECT student_id FROM tul_group_students WHERE group_id = $1
+                     UNION SELECT student_id FROM tul_enrollment_history WHERE group_id = $1
+                     UNION SELECT student_id FROM tul_attendance WHERE group_id = $1 AND date = $2::date
+                 )
+                 SELECT u.user_id AS id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre,
                         COALESCE(u.belt, '') AS cinturon, at.status, at.is_auto AS "isAuto",
                         -- ¿Cumple años el día que se pasa lista? Para la coronita.
                         (u.birthday IS NOT NULL
                          AND EXTRACT(MONTH FROM u.birthday) = EXTRACT(MONTH FROM $2::date)
                          AND EXTRACT(DAY FROM u.birthday) = EXTRACT(DAY FROM $2::date)) AS "cumpleHoy"
-                 FROM tul_group_students gs
-                 JOIN users u ON u.user_id = gs.student_id
-                 JOIN tul_groups g ON g.group_id = gs.group_id
+                 FROM cand c
+                 JOIN users u ON u.user_id = c.student_id
+                 JOIN tul_groups g ON g.group_id = $1
                  JOIN tul_activities a ON a.activity_id = g.activity_id
-                 LEFT JOIN tul_attendance at ON at.group_id = gs.group_id AND at.student_id = gs.student_id AND at.date = $2::date
-                 WHERE gs.group_id = $1 AND a.club_id = $3
+                 LEFT JOIN tul_attendance at ON at.group_id = $1 AND at.student_id = c.student_id AND at.date = $2::date
+                 WHERE a.club_id = $3
+                   AND (at.status IS NOT NULL OR ${miembroEnFecha('c.student_id')})
                  ORDER BY u.surname, u.name`, [groupId, fecha, clubId]
             );
             res.set('Cache-Control', 'no-store');
@@ -930,16 +964,23 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
         if (!ESTADOS_ASISTENCIA.includes(status)) return res.status(400).json({ error: 'Estado no válido.' });
         if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha || '')) return res.status(400).json({ error: 'Fecha no válida.' });
         try {
+            // Se marca a la plantilla que había EN esa fecha, no a la de hoy
+            // (ticket #246): así "Todos" en un día pasado no arrastra a los que se
+            // apuntaron después ni deja fuera a los que ya se dieron de baja.
             const r = await pool.query(
                 `INSERT INTO tul_attendance (group_id, student_id, date, status, is_auto)
-                 SELECT gs.group_id, gs.student_id, $2::date, $3, FALSE
-                 FROM tul_group_students gs
-                 JOIN tul_groups g ON g.group_id = gs.group_id
+                 SELECT $1, c.student_id, $2::date, $3, FALSE
+                 FROM (
+                     SELECT student_id FROM tul_group_students WHERE group_id = $1
+                     UNION SELECT student_id FROM tul_enrollment_history WHERE group_id = $1
+                 ) c
+                 JOIN tul_groups g ON g.group_id = $1
                  JOIN tul_activities a ON a.activity_id = g.activity_id
-                 WHERE gs.group_id = $1 AND a.club_id = $4
+                 WHERE a.club_id = $4
+                   AND ${miembroEnFecha('c.student_id')}
                    AND NOT EXISTS (
                      SELECT 1 FROM tul_attendance at
-                     WHERE at.group_id = gs.group_id AND at.student_id = gs.student_id AND at.date = $2::date)
+                     WHERE at.group_id = $1 AND at.student_id = c.student_id AND at.date = $2::date)
                  RETURNING attendance_id`, [req.params.groupId, fecha, status, clubId]
             );
             res.json({ success: true, marcados: r.rowCount });

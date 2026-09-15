@@ -22,6 +22,16 @@ const __dirname = path.dirname(__filename);
 
 dotenv.config();
 
+// El club está en Algeciras (España): toda la app sigue la hora de Madrid, no la
+// del servidor (en Heroku es UTC). Sin esto, los correos y las fechas que formatea
+// el servidor salían 1–2 horas antes y, de madrugada, hasta con el día cambiado.
+// Se puede sobreescribir con la variable TZ si algún día hiciera falta.
+process.env.TZ = process.env.TZ || 'Europe/Madrid';
+
+// "Hoy" en la hora del club, como 'AAAA-MM-DD'. toISOString() da SIEMPRE UTC, así
+// que de madrugada devolvía el día anterior; esto respeta la zona de Madrid.
+const hoyMadrid = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' });
+
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -1523,8 +1533,8 @@ app.get('/api/users', authenticateSession, async (req, res) => {
                     (u.profile_picture IS NOT NULL) AS tiene_foto,
                     -- ¿Es su cumpleaños hoy? Para la coronita en los listados.
                     (u.birthday IS NOT NULL
-                     AND EXTRACT(MONTH FROM u.birthday) = EXTRACT(MONTH FROM CURRENT_DATE)
-                     AND EXTRACT(DAY FROM u.birthday) = EXTRACT(DAY FROM CURRENT_DATE)) AS cumple_hoy
+                     AND EXTRACT(MONTH FROM u.birthday) = EXTRACT(MONTH FROM (now() AT TIME ZONE 'Europe/Madrid')::date)
+                     AND EXTRACT(DAY FROM u.birthday) = EXTRACT(DAY FROM (now() AT TIME ZONE 'Europe/Madrid')::date)) AS cumple_hoy
              FROM users u
              WHERE u.club_id = $1 AND u.role IN ('student', 'instructor', 'club_owner', 'superadmin')
              ORDER BY u.name, u.surname`,
@@ -2144,7 +2154,7 @@ app.get('/api/events', async (req, res) => {
         const result = await pool.query(
             `SELECT e.*, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS docente
              FROM aim_eventos e LEFT JOIN users u ON u.user_id = e.docente_id
-             ${all ? '' : 'WHERE COALESCE(e.end_date, e.event_date) >= CURRENT_DATE'}
+             ${all ? '' : "WHERE COALESCE(e.end_date, e.event_date) >= (now() AT TIME ZONE 'Europe/Madrid')::date"}
              ORDER BY e.event_date ASC`
         );
         res.set('Cache-Control', 'public, max-age=120, stale-while-revalidate=30');
@@ -2349,7 +2359,7 @@ async function emitirReciboDe(client, { pagadorId, cargoIds, medioPago, userId }
     const num = (await client.query(`SELECT nextval('aim_recibos_numero_seq') AS n`)).rows[0].n;
     const rec = await client.query(
         `INSERT INTO aim_recibos (numero, pagador_id, fecha, importe, medio_pago, entregado, cambio, estado, cobrado_por, cobrado_at)
-         VALUES ($1,$2,CURRENT_DATE,$3,$4,$3,0,'cobrado',$5,NOW()) RETURNING id, numero, fecha, serie`,
+         VALUES ($1,$2,(now() AT TIME ZONE 'Europe/Madrid')::date,$3,$4,$3,0,'cobrado',$5,NOW()) RETURNING id, numero, fecha, serie`,
         [num, pagadorId, calc.total, medioPago, userId]
     );
     const reciboId = rec.rows[0].id;
@@ -2833,7 +2843,7 @@ const HORA_OK = (h) => h == null || h === '' || /^([01]\d|2[0-3]):[0-5]\d$/.test
 // ¿La fecha (YYYY-MM-DD) es de un día ya pasado? Se compara con CURRENT_DATE del
 // servidor para que cuadre con el resto de fechas de la app (ticket #236).
 async function fechaEnPasado(fecha) {
-    const r = await pool.query('SELECT ($1::date < CURRENT_DATE) AS p', [fecha]);
+    const r = await pool.query("SELECT ($1::date < (now() AT TIME ZONE 'Europe/Madrid')::date) AS p", [fecha]);
     return !!r.rows[0].p;
 }
 
@@ -4218,7 +4228,7 @@ app.put('/api/camp/children/:id/days', authenticateSession, async (req, res) => 
         // pero no deshacer lo ya vivido ni lo ya cobrado: eso cambiaría lo que
         // se facturó y lo decide el club.
         if (!req.userSession.canAccessAdmin) {
-            const hoy = new Date().toISOString().slice(0, 10);
+            const hoy = hoyMadrid();
             const quitados = [...current].filter(d => !dayList.includes(d));
             const pasadoQuitado = quitados.find(d => d < hoy);
             if (pasadoQuitado) {
@@ -5236,7 +5246,7 @@ async function sincronizarFichasActivas() {
     const tid = t.rows[0].id;
     await pool.query(
         `INSERT INTO aim_matriculas (user_id, clase_ref, clase_origen, clase_nombre, actividad, temporada_id, descuento_pct, alta)
-         SELECT gs.student_id, g.group_id, 'aimtul', g.name, a.name, $1, 0, CURRENT_DATE
+         SELECT gs.student_id, g.group_id, 'aimtul', g.name, a.name, $1, 0, (now() AT TIME ZONE 'Europe/Madrid')::date
          FROM tul_group_students gs
          JOIN tul_groups g ON g.group_id = gs.group_id
          JOIN tul_activities a ON a.activity_id = g.activity_id
@@ -5244,7 +5254,7 @@ async function sincronizarFichasActivas() {
          ON CONFLICT (user_id, clase_ref, temporada_id) DO UPDATE SET baja = NULL`,
         [tid, AIM_CLUB_ID]);
     await pool.query(
-        `UPDATE aim_matriculas m SET baja = CURRENT_DATE
+        `UPDATE aim_matriculas m SET baja = (now() AT TIME ZONE 'Europe/Madrid')::date
          WHERE m.temporada_id = $1 AND m.clase_origen = 'aimtul' AND m.baja IS NULL
            AND NOT EXISTS (SELECT 1 FROM tul_group_students gs
                            WHERE gs.student_id = m.user_id AND gs.group_id = m.clase_ref)`,
@@ -5289,7 +5299,7 @@ app.post('/api/admin/billing/matriculas', authenticateSession, requireAdmin, asy
         if (!cl) return res.status(400).json({ error: 'Clase no válida.' });
         const r = await pool.query(
             `INSERT INTO aim_matriculas (user_id, clase_ref, clase_origen, clase_nombre, actividad, temporada_id, descuento_pct, alta, baja)
-             VALUES ($1,$2,$3,$4,$5,$6,$7, COALESCE($8::date, CURRENT_DATE), $9::date) RETURNING id`,
+             VALUES ($1,$2,$3,$4,$5,$6,$7, COALESCE($8::date, (now() AT TIME ZONE 'Europe/Madrid')::date), $9::date) RETURNING id`,
             [userId, claseRef, claseOrigen, cl.nombre, cl.actividad, temporadaId, dto, alta || null, baja || null]
         );
         // #231: al crear la ficha, su cobro de este mes queda ya pendiente (si el
@@ -5913,7 +5923,7 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
         const num = (await client.query(`SELECT nextval('aim_recibos_numero_seq') AS n`)).rows[0].n;
         const rec = await client.query(
             `INSERT INTO aim_recibos (numero, pagador_id, fecha, importe, medio_pago, entregado, cambio, estado, cobrado_por, cobrado_at)
-             VALUES ($1,$2,CURRENT_DATE,$3,$4,$5,$6,'cobrado',$7,NOW()) RETURNING id, numero, fecha`,
+             VALUES ($1,$2,(now() AT TIME ZONE 'Europe/Madrid')::date,$3,$4,$5,$6,'cobrado',$7,NOW()) RETURNING id, numero, fecha`,
             [num, pagadorId, total, medioPago, entregadoNum, cambio, req.userSession.userId]
         );
         const reciboId = rec.rows[0].id;
@@ -6242,7 +6252,7 @@ async function emitirRectificativa(client, { orig, quitadas, quedan, metodo, mot
     const nuevo = await client.query(
         `INSERT INTO aim_recibos (numero, serie, tipo, rectifica_id, rect_metodo, rect_motivo,
                                   pagador_id, fecha, importe, medio_pago, entregado, cambio, estado, cobrado_por, cobrado_at)
-         VALUES ($1,'R','rectificativo',$2,$3,$4,$5,CURRENT_DATE,$6,$7,0,0,'cobrado',$8,NOW()) RETURNING id, numero, serie, fecha`,
+         VALUES ($1,'R','rectificativo',$2,$3,$4,$5,(now() AT TIME ZONE 'Europe/Madrid')::date,$6,$7,0,0,'cobrado',$8,NOW()) RETURNING id, numero, serie, fecha`,
         [num, orig.id, metodo, motivo.trim(), orig.pagador_id, importe, orig.medio_pago, userId]
     );
     const nuevoId = nuevo.rows[0].id;
@@ -6361,7 +6371,7 @@ app.get('/api/admin/informes/evolucion', authenticateSession, requireAdmin, asyn
              FROM aim_cargos c
              JOIN aim_recibos rc ON rc.id = c.recibo_id
              WHERE c.estado = 'cobrado' AND rc.estado <> 'anulado'
-               AND rc.fecha >= (DATE_TRUNC('month', CURRENT_DATE) - ($1 || ' months')::interval)
+               AND rc.fecha >= (DATE_TRUNC('month', (now() AT TIME ZONE 'Europe/Madrid')::date) - ($1 || ' months')::interval)
                AND ($2::text IS NULL OR c.actividad = $2)
              GROUP BY 1, 2 ORDER BY 1`, [meses - 1, actividad]
         );
@@ -6409,7 +6419,7 @@ app.get('/api/admin/informes/estimacion-temporada', authenticateSession, require
              FROM aim_cargos c
              JOIN aim_recibos rc ON rc.id = c.recibo_id
              WHERE c.estado = 'cobrado' AND rc.estado <> 'anulado'
-               AND rc.fecha >= (DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '11 months')
+               AND rc.fecha >= (DATE_TRUNC('month', (now() AT TIME ZONE 'Europe/Madrid')::date) - INTERVAL '11 months')
              GROUP BY 1, 2`);
         const porMes = new Map();
         for (const x of r.rows) {
@@ -6445,7 +6455,7 @@ app.get('/api/admin/informes/estimacion-temporada', authenticateSession, require
             `SELECT COALESCE(c.actividad, 'Sin actividad') AS actividad, SUM(c.importe)::numeric AS ingresos
              FROM aim_cargos c JOIN aim_recibos rc ON rc.id = c.recibo_id
              WHERE c.estado = 'cobrado' AND rc.estado <> 'anulado'
-               AND rc.fecha >= (DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '11 months')
+               AND rc.fecha >= (DATE_TRUNC('month', (now() AT TIME ZONE 'Europe/Madrid')::date) - INTERVAL '11 months')
              GROUP BY 1 ORDER BY ingresos DESC`);
         const porActividad = ra.rows.map(a => ({
             actividad: a.actividad, total12m: r2Server(Number(a.ingresos)),
@@ -6610,7 +6620,7 @@ async function movimientosDelDia(fecha) {
 }
 
 app.get('/api/admin/billing/arqueo', authenticateSession, requireAdmin, async (req, res) => {
-    const fecha = /^\d{4}-\d{2}-\d{2}$/.test(req.query.fecha || '') ? req.query.fecha : new Date().toISOString().slice(0, 10);
+    const fecha = /^\d{4}-\d{2}-\d{2}$/.test(req.query.fecha || '') ? req.query.fecha : hoyMadrid();
     try {
         const [esperado, guardado, detalle] = await Promise.all([
             movimientosDelDia(fecha),
@@ -6993,7 +7003,7 @@ async function asentarPago(client, pago, aviso) {
     const num = (await client.query(`SELECT nextval('aim_recibos_numero_seq') AS n`)).rows[0].n;
     const rec = await client.query(
         `INSERT INTO aim_recibos (numero, pagador_id, fecha, importe, medio_pago, entregado, cambio, estado, cobrado_at)
-         VALUES ($1,$2,CURRENT_DATE,$3,'tpv_online',$3,0,'cobrado',NOW()) RETURNING id, numero, fecha, serie`,
+         VALUES ($1,$2,(now() AT TIME ZONE 'Europe/Madrid')::date,$3,'tpv_online',$3,0,'cobrado',NOW()) RETURNING id, numero, fecha, serie`,
         [num, pago.pagador_id, calc.total]);
     const reciboId = rec.rows[0].id;
 
@@ -7994,10 +8004,10 @@ app.get('/api/admin/gastos/prevision', authenticateSession, requireAdmin, async 
                     MAX(COALESCE(NULLIF(concept,''), company)) AS nombre,
                     ROUND(AVG(amount), 2) AS media,
                     COUNT(*)::int AS n,
-                    BOOL_OR(date >= date_trunc('month', CURRENT_DATE)) AS ya_este_mes,
-                    MAX(amount) FILTER (WHERE date >= date_trunc('month', CURRENT_DATE)) AS importe_este_mes
+                    BOOL_OR(date >= date_trunc('month', (now() AT TIME ZONE 'Europe/Madrid')::date)) AS ya_este_mes,
+                    MAX(amount) FILTER (WHERE date >= date_trunc('month', (now() AT TIME ZONE 'Europe/Madrid')::date)) AS importe_este_mes
              FROM aim_gastos
-             WHERE recurrente = true AND date >= (CURRENT_DATE - INTERVAL '12 months')
+             WHERE recurrente = true AND date >= ((now() AT TIME ZONE 'Europe/Madrid')::date - INTERVAL '12 months')
              GROUP BY 1
              ORDER BY nombre`);
         res.set('Cache-Control', 'no-store');
@@ -9163,8 +9173,8 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
             pool.query(
                 `SELECT COUNT(*)::int n, MIN(fecha)::text AS desde FROM (
                    SELECT r.fecha FROM aim_recibos r
-                   WHERE r.estado <> 'anulado' AND r.fecha < CURRENT_DATE
-                     AND r.fecha > CURRENT_DATE - INTERVAL '60 days'
+                   WHERE r.estado <> 'anulado' AND r.fecha < (now() AT TIME ZONE 'Europe/Madrid')::date
+                     AND r.fecha > (now() AT TIME ZONE 'Europe/Madrid')::date - INTERVAL '60 days'
                    GROUP BY r.fecha
                    HAVING NOT EXISTS (SELECT 1 FROM aim_arqueos a WHERE a.fecha = r.fecha)
                  ) t`),
@@ -9297,7 +9307,7 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
             `SELECT COUNT(*) FILTER (WHERE llamado = false AND confirmado IS DISTINCT FROM true)::int AS por_llamar,
                     COUNT(*) FILTER (WHERE confirmado = false)::int AS rechazados,
                     COUNT(*) FILTER (WHERE confirmado = true)::int AS confirmados
-             FROM aim_speaking WHERE fecha >= CURRENT_DATE`);
+             FROM aim_speaking WHERE fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date`);
         const sp = spk.rows[0];
         if (sp.por_llamar) avisos.push({ tipo: 'speaking', texto: `${sp.por_llamar} alumno${sp.por_llamar !== 1 ? 's' : ''} de Speaking por avisar a los padres`, detalle: 'llamar y confirmar asistencia', destino: '/admin/speaking', n: sp.por_llamar });
         if (sp.rechazados) avisos.push({ tipo: 'speaking', texto: `${sp.rechazados} familia${sp.rechazados !== 1 ? 's' : ''} han dicho que NO al Speaking`, detalle: 'revisar la asistencia', destino: '/admin/speaking', n: sp.rechazados });
@@ -9432,7 +9442,7 @@ async function recordatoriosSpeaking() {
     try {
         const r = await pool.query(
             `SELECT id FROM aim_speaking
-             WHERE fecha = CURRENT_DATE + 1
+             WHERE fecha = (now() AT TIME ZONE 'Europe/Madrid')::date + 1
                AND recordatorio_enviado = false
                AND confirmado IS DISTINCT FROM false`);
         const ids = r.rows.map(x => x.id);
@@ -9514,7 +9524,7 @@ app.get('/api/admin/speaking', authenticateSession, requireAdmin, async (req, re
                      WHERE f.persona_id = s.student_id) AS contactos
              FROM aim_speaking s JOIN users u ON u.user_id = s.student_id
              LEFT JOIN tul_groups g ON g.group_id = s.group_id
-             WHERE s.fecha >= COALESCE($1::date, CURRENT_DATE)
+             WHERE s.fecha >= COALESCE($1::date, (now() AT TIME ZONE 'Europe/Madrid')::date)
              ORDER BY s.fecha, alumno`, [desde]);
         res.set('Cache-Control', 'no-store');
         res.json({
@@ -9562,7 +9572,7 @@ app.get('/speaking/:token/:r', async (req, res) => {
     try {
         const upd = await pool.query(
             `UPDATE aim_speaking SET confirmado = $1, respondido_at = NOW()
-             WHERE token = $2 AND fecha >= CURRENT_DATE RETURNING id`,
+             WHERE token = $2 AND fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date RETURNING id`,
             [si, req.params.token]);
         res.set('Content-Type', 'text/html; charset=utf-8').send(paginaSpeaking(upd.rowCount > 0, si));
     } catch (err) {
@@ -9580,7 +9590,7 @@ app.get('/api/me/speaking', authenticateSession, async (req, res) => {
                     TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno
              FROM aim_speaking s JOIN users u ON u.user_id = s.student_id
              LEFT JOIN tul_groups g ON g.group_id = s.group_id
-             WHERE s.student_id = ANY($1::uuid[]) AND s.fecha >= CURRENT_DATE
+             WHERE s.student_id = ANY($1::uuid[]) AND s.fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date
              ORDER BY s.fecha, alumno`, [fam]);
         res.set('Cache-Control', 'no-store');
         res.json({ sesiones: r.rows.map(x => ({ id: x.id, fecha: x.fecha, franjas: x.franjas || [], confirmado: x.confirmado, alumno: x.alumno, clase: x.clase || null, franjasTexto: franjasDeHoras(x.hora_inicio, x.hora_fin) })) });
@@ -9594,7 +9604,7 @@ app.post('/api/me/speaking/:id/confirmar', authenticateSession, async (req, res)
         const fam = await familiaIds(req.userSession.userId);
         const r = await pool.query(
             `UPDATE aim_speaking SET confirmado = $1, respondido_at = NOW()
-             WHERE id = $2 AND student_id = ANY($3::uuid[]) AND fecha >= CURRENT_DATE RETURNING id`,
+             WHERE id = $2 AND student_id = ANY($3::uuid[]) AND fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date RETURNING id`,
             [si, req.params.id, fam]);
         if (!r.rowCount) return res.status(404).json({ error: 'Esa sesión no es de tu familia o ya ha pasado.' });
         res.json({ success: true });
@@ -9635,7 +9645,7 @@ async function prestamoActivo(mascotaId, cliente = pool) {
     return {
         prestamoId: a.id, studentId: a.student_id, alumno: a.alumno,
         fechaPrestamo: a.fecha_prestamo, devolverAntes: a.devolver_antes,
-        vencido: a.devolver_antes ? new Date(a.devolver_antes) < new Date(new Date().toISOString().slice(0, 10)) : false,
+        vencido: a.devolver_antes ? new Date(a.devolver_antes) < new Date(hoyMadrid()) : false,
     };
 }
 
