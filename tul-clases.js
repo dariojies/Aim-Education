@@ -914,7 +914,13 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                         -- ¿Cumple años el día que se pasa lista? Para la coronita.
                         (u.birthday IS NOT NULL
                          AND EXTRACT(MONTH FROM u.birthday) = EXTRACT(MONTH FROM $2::date)
-                         AND EXTRACT(DAY FROM u.birthday) = EXTRACT(DAY FROM $2::date)) AS "cumpleHoy"
+                         AND EXTRACT(DAY FROM u.birthday) = EXTRACT(DAY FROM $2::date)) AS "cumpleHoy",
+                        -- Clases que le quedan de bono para esta actividad (ticket #245),
+                        -- para señalar en la lista a quien viene con bono.
+                        (SELECT MAX(b.clases_total - b.clases_usadas) FROM aim_bonos b
+                          WHERE b.cliente_id = c.student_id AND b.actividad = a.name AND b.clases_usadas < b.clases_total) AS "bonoRestantes",
+                        -- ¿Está en la clase por matrícula ese día, o solo por bono?
+                        ${miembroEnFecha('c.student_id')} AS "esMiembro"
                  FROM cand c
                  JOIN users u ON u.user_id = c.student_id
                  JOIN tul_groups g ON g.group_id = $1
@@ -985,6 +991,111 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
             );
             res.json({ success: true, marcados: r.rowCount });
         } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // Bonos de clases (ticket #245): al pasar lista se puede añadir a alguien que
+    // NO está matriculado pero tiene un bono de la actividad de esta clase. El
+    // buscador solo muestra a esos, con las clases que le quedan.
+    router.get('/groups/:groupId/bonos', async (req, res) => {
+        if (await ajeno(req, res, req.params.groupId)) return;
+        const q = `%${(req.query.q || '').trim()}%`;
+        try {
+            const r = await pool.query(
+                `SELECT b.id AS bono_id, b.cliente_id AS student_id,
+                        TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre,
+                        b.clases_total, b.clases_usadas,
+                        (b.clases_total - b.clases_usadas) AS restantes
+                 FROM aim_bonos b
+                 JOIN users u ON u.user_id = b.cliente_id
+                 JOIN tul_groups g ON g.group_id = $1
+                 JOIN tul_activities a ON a.activity_id = g.activity_id AND a.club_id = $2
+                 WHERE b.actividad = a.name
+                   AND b.clases_usadas < b.clases_total
+                   AND (TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) ILIKE $3 OR $3 = '%%')
+                   -- que no esté ya matriculado en esta clase (ese sale en la lista normal)
+                   AND NOT EXISTS (SELECT 1 FROM tul_group_students gs WHERE gs.group_id = $1 AND gs.student_id = b.cliente_id)
+                 ORDER BY nombre
+                 LIMIT 25`, [req.params.groupId, clubId, q]);
+            res.set('Cache-Control', 'no-store');
+            res.json({ bonos: r.rows.map(x => ({
+                bonoId: x.bono_id, studentId: x.student_id, nombre: x.nombre,
+                total: x.clases_total, usadas: x.clases_usadas, restantes: x.restantes,
+            })) });
+        } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // Marcar la asistencia de un alumno con bono y gastarle una clase (ticket #245).
+    // Un uso por (bono, clase, día): marcar dos veces el mismo día no gasta dos. Si
+    // se cambia a "faltó", se le devuelve la clase de ese día.
+    router.post('/groups/:groupId/attendance/bono', async (req, res) => {
+        if (await ajeno(req, res, req.params.groupId)) return;
+        const { studentId, bonoId, fecha, status } = req.body;
+        if (!studentId) return res.status(400).json({ error: 'Falta el alumno.' });
+        if (!ESTADOS_ASISTENCIA.includes(status)) return res.status(400).json({ error: 'Estado no válido.' });
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha || '')) return res.status(400).json({ error: 'Fecha no válida.' });
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            // El bono del alumno para la actividad de esta clase. Se prefiere el que
+            // ya se usó ese día (para poder cambiar su estado), y si no, uno con
+            // clases disponibles. Todo dentro del club.
+            const b = await client.query(
+                `SELECT b.id, b.cliente_id, b.clases_total, b.clases_usadas
+                 FROM aim_bonos b
+                 JOIN tul_groups g ON g.group_id = $2
+                 JOIN tul_activities a ON a.activity_id = g.activity_id AND a.club_id = $3
+                 WHERE b.cliente_id = $1 AND b.actividad = a.name
+                   AND ($4::int IS NULL OR b.id = $4)
+                 ORDER BY
+                   (EXISTS (SELECT 1 FROM aim_bono_usos bu WHERE bu.bono_id = b.id AND bu.group_id = $2 AND bu.fecha = $5::date)) DESC,
+                   (b.clases_usadas < b.clases_total) DESC,
+                   b.created_at ASC
+                 LIMIT 1 FOR UPDATE OF b`,
+                [studentId, req.params.groupId, clubId, bonoId || null, fecha]);
+            if (!b.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Ese alumno no tiene un bono para esta clase.' }); }
+            const bono = b.rows[0];
+            const usoPrevio = await client.query(
+                `SELECT 1 FROM aim_bono_usos WHERE bono_id = $1 AND group_id = $2 AND fecha = $3::date`,
+                [bono.id, req.params.groupId, fecha]);
+            const yaGastado = usoPrevio.rowCount > 0;
+            const asiste = status === 'present' || status === 'late';
+
+            if (asiste && !yaGastado) {
+                if (bono.clases_usadas >= bono.clases_total) {
+                    await client.query('ROLLBACK');
+                    return res.status(409).json({ error: 'Ese bono ya no tiene clases disponibles.' });
+                }
+                await client.query(
+                    `INSERT INTO aim_bono_usos (bono_id, group_id, fecha, created_by) VALUES ($1,$2,$3::date,$4)
+                     ON CONFLICT (bono_id, group_id, fecha) DO NOTHING`,
+                    [bono.id, req.params.groupId, fecha, req.userSession.userId]);
+                await client.query(`UPDATE aim_bonos SET clases_usadas = clases_usadas + 1 WHERE id = $1`, [bono.id]);
+            } else if (!asiste && yaGastado) {
+                // Cambió a "faltó": se le devuelve la clase de ese día.
+                await client.query(`DELETE FROM aim_bono_usos WHERE bono_id = $1 AND group_id = $2 AND fecha = $3::date`,
+                    [bono.id, req.params.groupId, fecha]);
+                await client.query(`UPDATE aim_bonos SET clases_usadas = GREATEST(0, clases_usadas - 1) WHERE id = $1`, [bono.id]);
+            }
+
+            // Registrar la asistencia (igual que la normal).
+            const existe = await client.query(
+                `SELECT attendance_id FROM tul_attendance WHERE group_id = $1 AND student_id = $2 AND date = $3::date`,
+                [req.params.groupId, studentId, fecha]);
+            if (existe.rowCount) {
+                await client.query(`UPDATE tul_attendance SET status = $1, is_auto = FALSE WHERE attendance_id = $2`,
+                    [status, existe.rows[0].attendance_id]);
+            } else {
+                await client.query(
+                    `INSERT INTO tul_attendance (group_id, student_id, date, status, is_auto) VALUES ($1,$2,$3::date,$4,FALSE)`,
+                    [req.params.groupId, studentId, fecha, status]);
+            }
+            const rest = await client.query(`SELECT clases_total - clases_usadas AS restantes FROM aim_bonos WHERE id = $1`, [bono.id]);
+            await client.query('COMMIT');
+            res.json({ success: true, restantes: rest.rows[0]?.restantes ?? null });
+        } catch (err) {
+            await client.query('ROLLBACK').catch(() => {});
+            res.status(500).json({ error: err.message });
+        } finally { client.release(); }
     });
 
     // ── Reportes ─────────────────────────────────────────────────────────────

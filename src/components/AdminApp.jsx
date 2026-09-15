@@ -3747,6 +3747,8 @@ function SortToggle({ value, onChange }) {
 
 // Concepto del catálogo con el que se registran los anticipos (ticket #221).
 const ANTICIPO_CONCEPTO = '01000';
+// Concepto con el que se registra un bono de clases sueltas (ticket #245).
+const BONO_CONCEPTO = '02000';
 
 // TPV / Cobro: buscar familia → cesta de cargos → cobrar → ticket.
 function BillingTPV({ showToast }) {
@@ -3766,9 +3768,12 @@ function BillingTPV({ showToast }) {
   const [addExtra, setAddExtra] = useState(null);      // { clienteId, concepto }
   const [addAnticipo, setAddAnticipo] = useState(null);// { clienteId, importe, motivo } (registrar anticipo)
   const [aplicarAnt, setAplicarAnt] = useState({});    // anticipoId -> { on, importe } (aplicar anticipos)
+  const [addBono, setAddBono] = useState(null);        // { clienteId, actividad, clases, importe, ivaPct } (vender bono #245)
+  const [actividades, setActividades] = useState([]);  // actividades para el bono
 
   useEffect(() => {
     fetch('/api/admin/billing/precios', { credentials: 'include' }).then(r => r.ok ? r.json() : []).then(setPrecios).catch(() => { });
+    fetch('/api/admin/billing/actividades', { credentials: 'include' }).then(r => r.ok ? r.json() : []).then(d => setActividades(Array.isArray(d) ? d : [])).catch(() => { });
   }, []);
 
   // Buscar personas (a partir de 2 letras).
@@ -3800,7 +3805,7 @@ function BillingTPV({ showToast }) {
   }, []);
 
   async function elegirPagador(p) {
-    setPagador(p); setResultados([]); setQ(''); setExtras([]); setTicket(null); setEntregado(''); setAplicarAnt({}); setAddAnticipo(null);
+    setPagador(p); setResultados([]); setQ(''); setExtras([]); setTicket(null); setEntregado(''); setAplicarAnt({}); setAddAnticipo(null); setAddBono(null);
     await traerCesta(p.id, true);
   }
 
@@ -3847,13 +3852,20 @@ function BillingTPV({ showToast }) {
         body: JSON.stringify({
           pagadorId: pagadorFactura || pagador.id,
           lineas: lineasActivas.map(c => ({ cargoId: c.id, descuentoPct: c.descuentoPct })),
-          extras: extras.map(e => ({ clienteId: e.clienteId, concepto: e.concepto, descuentoPct: Number(e.descuentoPct) || 0, mes: e.mes || null, importe: e.concepto === ANTICIPO_CONCEPTO ? (e.bruto ?? e.precio) : undefined, motivo: e.concepto === ANTICIPO_CONCEPTO ? (e.motivo || '') : undefined, ivaPct: e.concepto === ANTICIPO_CONCEPTO ? (Number(e.ivaPct) || 0) : undefined })),
+          extras: extras.map(e => ({
+            clienteId: e.clienteId, concepto: e.concepto, descuentoPct: Number(e.descuentoPct) || 0, mes: e.mes || null,
+            importe: (e.concepto === ANTICIPO_CONCEPTO || e.esBono) ? (e.bruto ?? e.precio) : undefined,
+            motivo: e.concepto === ANTICIPO_CONCEPTO ? (e.motivo || '') : undefined,
+            ivaPct: (e.concepto === ANTICIPO_CONCEPTO || e.esBono) ? (Number(e.ivaPct) || 0) : undefined,
+            // Bono de clases (ticket #245).
+            esBono: e.esBono || undefined, actividad: e.esBono ? e.actividad : undefined, clases: e.esBono ? e.clases : undefined,
+          })),
           anticipos: antAplicados.map(x => ({ id: x.a.id, importe: x.imp })),
           medioPago,
           entregado: medioPago === 'efectivo' ? (Number(entregado) || total) : total,
         }),
       });
-      if (r.ok) { const d = await r.json(); setTicket(d); showToast?.(`Recibo #${d.recibo.numero} cobrado.`); setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null); }
+      if (r.ok) { const d = await r.json(); setTicket(d); showToast?.(`Recibo #${d.recibo.numero} cobrado.`); setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null); setAddBono(null); }
       else { const d = await r.json(); alert(d.error || 'Error al cobrar.'); }
     } catch { alert('Error de conexión.'); }
     finally { setCobrando(false); }
@@ -3926,7 +3938,7 @@ function BillingTPV({ showToast }) {
                 {pagador.esMenor && <span style={{ color: 'var(--orange)', fontWeight: 700 }}> · ⚠ el pagador es menor</span>}
               </div>
             </div>
-            <button className="btn btn-sm btn-outline" style={{ marginLeft: 'auto' }} onClick={() => { setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null); }}>Cambiar</button>
+            <button className="btn btn-sm btn-outline" style={{ marginLeft: 'auto' }} onClick={() => { setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null); setAddBono(null); }}>Cambiar</button>
           </div>
 
           {/* Menor de edad: la factura debe ir a un adulto de la familia (#219). */}
@@ -3974,7 +3986,7 @@ function BillingTPV({ showToast }) {
               ))}
               {extras.map(e => (
                 <div key={e.key} style={{ display: 'flex', gap: 10, alignItems: 'center', background: 'color-mix(in oklab, var(--purple) 6%, var(--bg-2))', border: '1px solid var(--line)', borderRadius: 12, padding: '10px 14px' }}>
-                  <span style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', color: 'var(--purple)' }}>{e.concepto === ANTICIPO_CONCEPTO ? 'Anticipo' : 'Extra'}</span>
+                  <span style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', color: 'var(--purple)' }}>{e.esBono ? 'Bono' : e.concepto === ANTICIPO_CONCEPTO ? 'Anticipo' : 'Extra'}</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 700, fontSize: 14 }}>{e.descripcion} <span style={{ color: 'var(--ink-3)', fontWeight: 500, fontSize: 12 }}>· {e.nombre}</span></div>
                     <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
@@ -4090,6 +4102,51 @@ function BillingTPV({ showToast }) {
               ) : (
                 <button className="btn btn-sm btn-outline" style={{ justifySelf: 'start' }} onClick={() => setAddAnticipo({ clienteId: pagador.id, importe: '', motivo: '' })}>
                   <I.Plus /> Registrar anticipo (pago a cuenta)
+                </button>
+              )}
+
+              {/* Vender un bono de clases sueltas (ticket #245): el alumno podrá
+                  asistir a esa actividad sin matrícula; los profes lo gastan al
+                  pasar lista. El importe es CON IVA incluido, como el anticipo. */}
+              {addBono ? (
+                <form style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', background: 'color-mix(in oklab, var(--teal) 6%, var(--bg-3))', border: '1px solid var(--line)', borderRadius: 12, padding: 12 }}
+                  onSubmit={ev => {
+                    ev.preventDefault();
+                    const persona = family.find(f => f.id === addBono.clienteId) || pagador;
+                    const imp = Math.round((Number(addBono.importe) + Number.EPSILON) * 100) / 100;
+                    const actividad = (addBono.actividad || '').trim();
+                    const clases = Math.max(1, parseInt(addBono.clases, 10) || 3);
+                    if (!persona || !actividad || !(imp > 0)) return;
+                    const ivaPct = Number(addBono.ivaPct) || 0;
+                    const base = Math.round((imp / (1 + ivaPct / 100) + Number.EPSILON) * 100) / 100;
+                    setExtras(x => [...x, { key: Math.random().toString(36).slice(2), clienteId: persona.id, nombre: persona.nombre, concepto: BONO_CONCEPTO, esBono: true, actividad, clases, descripcion: `Bono ${clases} clases — ${actividad}`, precio: base, bruto: imp, ivaPct, tipo: 'Otros', descuentoPct: 0, mes: null }]);
+                    setAddBono(null);
+                  }}>
+                  <select value={addBono.clienteId} onChange={e => setAddBono(a => ({ ...a, clienteId: e.target.value }))} required style={{ fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
+                    <option value="">¿Para quién?...</option>
+                    {family.map(f => <option key={f.id} value={f.id}>{f.nombre} {f.apellidos}</option>)}
+                  </select>
+                  <select value={addBono.actividad || ''} onChange={e => setAddBono(a => ({ ...a, actividad: e.target.value }))} required style={{ fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
+                    <option value="">Actividad del bono...</option>
+                    {actividades.map(a => <option key={a} value={a}>{a}</option>)}
+                  </select>
+                  <input type="number" min="1" max="50" step="1" placeholder="Clases" title="Nº de clases del bono" value={addBono.clases ?? 3} onChange={e => setAddBono(a => ({ ...a, clases: e.target.value }))}
+                    style={{ width: 80, fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }} />
+                  <input type="number" step="0.01" min="0" placeholder="Importe € (IVA incl.)" value={addBono.importe || ''} onChange={e => setAddBono(a => ({ ...a, importe: e.target.value }))}
+                    required style={{ width: 140, fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }} />
+                  <select value={addBono.ivaPct ?? 0} onChange={e => setAddBono(a => ({ ...a, ivaPct: e.target.value }))}
+                    style={{ fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
+                    <option value="0">Sin IVA</option>
+                    <option value="4">IVA 4%</option>
+                    <option value="10">IVA 10%</option>
+                    <option value="21">IVA 21%</option>
+                  </select>
+                  <button className="btn btn-sm btn-primary" type="submit" disabled={!addBono.clienteId || !addBono.actividad || !(Number(addBono.importe) > 0)}>Añadir bono</button>
+                  <button className="btn btn-sm btn-outline" type="button" onClick={() => setAddBono(null)}>Cancelar</button>
+                </form>
+              ) : (
+                <button className="btn btn-sm btn-outline" style={{ justifySelf: 'start' }} onClick={() => setAddBono({ clienteId: pagador.id, actividad: '', clases: 3, importe: '', ivaPct: 0 })}>
+                  <I.Plus /> Vender bono de clases
                 </button>
               )}
 

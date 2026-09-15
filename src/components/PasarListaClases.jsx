@@ -29,6 +29,10 @@ export default function PasarListaClases({ showToast }) {
   const [clase, setClase] = useState(null);
   const [alumnos, setAlumnos] = useState([]);
   const [cargando, setCargando] = useState(true);
+  // Añadir alumnos con bono (ticket #245).
+  const [buscaBono, setBuscaBono] = useState(false);
+  const [qBono, setQBono] = useState('');
+  const [bonosSug, setBonosSug] = useState([]);
 
   const cargarClases = useCallback(async (f) => {
     setCargando(true);
@@ -51,12 +55,19 @@ export default function PasarListaClases({ showToast }) {
   async function marcar(alumno, status) {
     // Se pinta al momento; si el guardado falla, se recarga y vuelve a lo real.
     setAlumnos(prev => prev.map(a => a.id === alumno.id ? { ...a, status, isAuto: false } : a));
+    // Los que vienen por bono (no matriculados ese día) van por su endpoint, que
+    // además gasta o devuelve una clase del bono según el estado (ticket #245).
+    const porBono = alumno.esMiembro === false;
+    const url = porBono
+      ? `/api/admin/tul/groups/${clase.id}/attendance/bono`
+      : `/api/admin/tul/groups/${clase.id}/attendance`;
     try {
-      const r = await fetch(`/api/admin/tul/groups/${clase.id}/attendance`, {
+      const r = await fetch(url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
         body: JSON.stringify({ studentId: alumno.id, fecha, status }),
       });
-      if (!r.ok) { alert('No se pudo guardar.'); await cargarAlumnos(clase.id, fecha); }
+      if (!r.ok) { const d = await r.json().catch(() => ({})); alert(d.error || 'No se pudo guardar.'); await cargarAlumnos(clase.id, fecha); }
+      else if (porBono) { await cargarAlumnos(clase.id, fecha); } // refresca las clases que le quedan
     } catch { alert('Error de conexión.'); await cargarAlumnos(clase.id, fecha); }
   }
 
@@ -74,6 +85,28 @@ export default function PasarListaClases({ showToast }) {
         showToast?.(`${d.marcados} alumno(s) marcados.`);
       } else alert(d.error || 'No se pudo guardar.');
     } catch { alert('Error de conexión.'); }
+  }
+
+  // Buscar alumnos con bono de la actividad de esta clase (ticket #245).
+  useEffect(() => {
+    if (!clase || !buscaBono) { setBonosSug([]); return; }
+    const t = setTimeout(() => {
+      fetch(`/api/admin/tul/groups/${clase.id}/bonos?q=${encodeURIComponent(qBono.trim())}`, { credentials: 'include', cache: 'no-store' })
+        .then(r => r.ok ? r.json() : { bonos: [] }).then(d => setBonosSug(d.bonos || [])).catch(() => { });
+    }, 200);
+    return () => clearTimeout(t);
+  }, [qBono, clase, buscaBono]);
+
+  async function añadirBono(b) {
+    const r = await fetch(`/api/admin/tul/groups/${clase.id}/attendance/bono`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+      body: JSON.stringify({ studentId: b.studentId, fecha, status: 'present' }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) {
+      showToast?.(`${b.nombre} añadido con bono${d.restantes != null ? ` · le quedan ${d.restantes} clase${d.restantes === 1 ? '' : 's'}` : ''}.`);
+      setQBono(''); setBonosSug([]); setBuscaBono(false); await cargarAlumnos(clase.id, fecha);
+    } else alert(d.error || 'No se pudo añadir.');
   }
 
   function moverDia(delta) {
@@ -170,7 +203,7 @@ export default function PasarListaClases({ showToast }) {
       {clase && (
         <>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button className="btn btn-sm btn-outline" onClick={() => { setClase(null); cargarClases(fecha); }}>← Clases del día</button>
+            <button className="btn btn-sm btn-outline" onClick={() => { setClase(null); cargarClases(fecha); setBuscaBono(false); setQBono(''); }}>← Clases del día</button>
             <h3 style={{ margin: 0, fontSize: 17, fontWeight: 800 }}>{clase.name}</h3>
             <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{clase.activityName} · {clase.horario}</span>
             <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--teal)' }}>{presentes}/{alumnos.length} presentes</span>
@@ -180,8 +213,27 @@ export default function PasarListaClases({ showToast }) {
                 Todos: {l}
               </button>
             ))}
+            <button className="btn btn-sm btn-outline" onClick={() => { setBuscaBono(v => !v); setQBono(''); }} title="Añadir un alumno con bono de esta actividad">🎫 Con bono</button>
             <button className="btn btn-sm btn-outline" onClick={imprimir} disabled={!alumnos.length}><I.Print /> Imprimir</button>
           </div>
+
+          {/* Añadir alguien con bono de esta actividad (ticket #245): solo salen los
+              que tienen bono de la actividad de esta clase, con las clases que les
+              quedan. Al elegirlo se le marca "Vino" y se le gasta una clase. */}
+          {buscaBono && (
+            <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: 12, display: 'grid', gap: 8, maxWidth: 460 }}>
+              <input autoFocus placeholder="Buscar alumno con bono..." value={qBono} onChange={e => setQBono(e.target.value)}
+                style={{ fontFamily: 'inherit', fontSize: 14, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }} />
+              {bonosSug.length === 0 && <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Nadie con bono de <b>{clase.activityName}</b>{qBono.trim() ? ' con ese nombre' : ''}.</p>}
+              {bonosSug.map(b => (
+                <button key={b.bonoId} type="button" onClick={() => añadirBono(b)}
+                  style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between', textAlign: 'left', padding: '8px 12px', background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, color: 'var(--ink)' }}>
+                  <b>{b.nombre}</b>
+                  <span style={{ fontSize: 12, color: 'var(--teal)', fontWeight: 800 }}>{b.restantes}/{b.total} clases</span>
+                </button>
+              ))}
+            </div>
+          )}
 
           {/* Mascota de la clase (ticket #244): se gestiona aquí mismo, sin cambiar
               de pantalla — asignar peluche, sortear a quién le toca, prestar y
@@ -198,6 +250,11 @@ export default function PasarListaClases({ showToast }) {
                     {a.cumpleHoy && <span title="¡Hoy es su cumpleaños!" style={{ marginRight: 3 }}>👑</span>}{a.nombre}{a.cumpleHoy && ' 🎂'}
                   </div>
                   {a.cinturon && <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>{a.cinturon}</div>}
+                  {a.esMiembro === false && (
+                    <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--purple)' }}>
+                      🎫 bono{a.bonoRestantes != null ? ` · ${a.bonoRestantes} rest.` : ''}
+                    </div>
+                  )}
                 </div>
                 <div style={{ display: 'flex', gap: 4 }}>
                   {ESTADOS.map(([v, l, color]) => {

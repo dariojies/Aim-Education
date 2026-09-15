@@ -1021,6 +1021,37 @@ async function initDb() {
         // Como mucho un préstamo activo (sin devolver) por mascota a la vez.
         await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_mascota_activa ON aim_mascota_prestamos (mascota_id) WHERE devuelto_at IS NULL`).catch(() => {});
 
+        // Bonos de clases sueltas (ticket #245): al cobrar un bono de N clases de una
+        // actividad, el alumno puede asistir a ESA actividad sin estar matriculado.
+        // Al pasar lista, el profe lo elige con un buscador (solo salen los que
+        // tienen bono de esa actividad) y cada asistencia gasta una clase del bono.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_bonos (
+                id SERIAL PRIMARY KEY,
+                cliente_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                actividad VARCHAR(255) NOT NULL,
+                clases_total INT NOT NULL DEFAULT 3,
+                clases_usadas INT NOT NULL DEFAULT 0,
+                recibo_id INTEGER REFERENCES aim_recibos(id) ON DELETE SET NULL,
+                created_by UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_bonos_cliente_act ON aim_bonos (cliente_id, actividad) WHERE clases_usadas < clases_total`);
+        // Cada uso de un bono (qué día, en qué clase). El único por (bono, clase,
+        // día) evita gastar dos clases por marcar dos veces la misma sesión.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_bono_usos (
+                id SERIAL PRIMARY KEY,
+                bono_id INTEGER NOT NULL REFERENCES aim_bonos(id) ON DELETE CASCADE,
+                group_id UUID,
+                fecha DATE NOT NULL,
+                created_by UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE (bono_id, group_id, fecha)
+            )
+        `);
+
         // Anulación de recibos: nunca se borran, se marcan (rastro de auditoría).
         await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_motivo TEXT`);
         await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_por UUID REFERENCES users(user_id) ON DELETE SET NULL`);
@@ -5639,6 +5670,8 @@ const MEDIOS_PAGO = ['tarjeta', 'bizum', 'efectivo', 'transferencia'];
 const MEDIO_TPV_ONLINE = 'tpv_online';
 // Concepto del catálogo con el que se registran los anticipos (ticket #221).
 const ANTICIPO_CONCEPTO = '01000';
+// Concepto con el que se registra un bono de clases sueltas (ticket #245).
+const BONO_CONCEPTO = '02000';
 // Tipos de IVA admitidos para un anticipo (ticket #238): los vigentes en España.
 const IVAS_VALIDOS = [0, 4, 10, 21];
 
@@ -5787,6 +5820,7 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
         // Anticipos que se registran nuevos en este cobro (ticket #221): se cobran
         // como un cargo normal y luego se anotan en aim_anticipos con su saldo.
         const anticiposNuevos = [];   // { cargoId, importe, motivo, clienteId }
+        const bonosNuevos = [];       // { clienteId, actividad, clases } (ticket #245)
         for (const ex of extrasArr) {
             // Anticipo (#221): importe MANUAL escrito a mano + motivo. Es el único
             // caso en que el importe lo pone quien cobra; para todo lo demás manda
@@ -5813,6 +5847,28 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
                 // El saldo del anticipo se lleva en BRUTO (con IVA): es lo que la
                 // familia ha dejado a cuenta y lo que se descuenta luego del total.
                 anticiposNuevos.push({ cargoId: ins.rows[0].id, importe: bruto, motivo, clienteId: clienteAnt, ivaPct });
+                continue;
+            }
+            // Bono de N clases de una actividad (ticket #245): importe a mano, como
+            // el anticipo. Se cobra como un cargo normal (cuenta como ingreso de esa
+            // actividad) y luego se anota el bono con sus clases disponibles.
+            if (ex.esBono) {
+                const bruto = r2Server(Number(ex.importe));
+                if (!(bruto > 0)) throw { httP: 400, msg: 'El bono necesita un importe mayor que 0 €.' };
+                const actividad = (ex.actividad || '').toString().trim();
+                if (!actividad) throw { httP: 400, msg: 'Elige la actividad del bono.' };
+                const clases = Math.max(1, Math.min(50, parseInt(ex.clases, 10) || 3));
+                const ivaPct = IVAS_VALIDOS.includes(Number(ex.ivaPct)) ? Number(ex.ivaPct) : 0;
+                const base = baseExactaDesdeBruto(bruto, ivaPct);
+                const clienteBono = ex.clienteId || pagadorId;
+                const desc = `Bono ${clases} clases — ${actividad}`;
+                const ins = await client.query(
+                    `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado, origen, actividad, importe_bruto)
+                     VALUES ($1,$2,$3::date,$4,'Otros',$5,$6,0,'pendiente','bono',$7,$8) RETURNING id`,
+                    [clienteBono, BONO_CONCEPTO, mesActual, desc, base, ivaPct, actividad, bruto]
+                );
+                extraIds.push(ins.rows[0].id);
+                bonosNuevos.push({ clienteId: clienteBono, actividad, clases });
                 continue;
             }
             const pr = await client.query(`SELECT descripcion, tipo, precio, iva_pct FROM aim_precios WHERE concepto = $1 AND activo = true`, [ex.concepto]);
@@ -5958,6 +6014,16 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
                 `INSERT INTO aim_anticipos_aplicaciones (anticipo_id, recibo_id, cargo_id, importe)
                  VALUES ($1,$2,$3,$4)`,
                 [ap.anticipoId, reciboId, ap.cargoId, ap.importe]
+            );
+        }
+
+        // 6c) Bonos de clases (ticket #245): se anota el bono con sus clases, ya
+        // pagado, para que el alumno pueda asistir a esa actividad sin matrícula.
+        for (const b of bonosNuevos) {
+            await client.query(
+                `INSERT INTO aim_bonos (cliente_id, actividad, clases_total, clases_usadas, recibo_id, created_by)
+                 VALUES ($1,$2,$3,0,$4,$5)`,
+                [b.clienteId, b.actividad, b.clases, reciboId, req.userSession.userId]
             );
         }
 
