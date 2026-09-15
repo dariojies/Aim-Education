@@ -14,6 +14,8 @@ import { COLOR_CUMPLE } from './Shared.jsx';
 // ─────────────────────────────────────────────────────────────────────────────
 
 const hoyISO = () => new Date().toISOString().slice(0, 10);
+const enDias = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+const fmtDiaCorto = (d) => d ? new Date(String(d).slice(0, 10) + 'T12:00:00').toLocaleDateString('es-ES', { day: 'numeric', month: 'short' }) : '';
 
 const ESTADOS = [
   ['present', 'Vino', 'var(--teal)'],
@@ -181,6 +183,11 @@ export default function PasarListaClases({ showToast }) {
             <button className="btn btn-sm btn-outline" onClick={imprimir} disabled={!alumnos.length}><I.Print /> Imprimir</button>
           </div>
 
+          {/* Mascota de la clase (ticket #244): se gestiona aquí mismo, sin cambiar
+              de pantalla — asignar peluche, sortear a quién le toca, prestar y
+              marcar devolución. */}
+          <MascotaPasarLista groupId={clase.id} alumnos={alumnos} showToast={showToast} />
+
           {!alumnos.length && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Esta clase no tiene alumnos matriculados.</p>}
           {/* En columnas para que quepan todos de un vistazo */}
           <div className="camp-card-grid">
@@ -214,6 +221,123 @@ export default function PasarListaClases({ showToast }) {
             ))}
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+// Mascota de la clase dentro del "pasar lista" (ticket #244). Se gestiona sin
+// salir de la pantalla: asignar el peluche a la clase, sortear a quién le toca
+// (prioriza a quien menos se lo ha llevado), prestarlo con fecha de devolución y
+// marcar la devolución. Los alumnos salen de la lista ya cargada.
+function MascotaPasarLista({ groupId, alumnos, showToast }) {
+  const [mascota, setMascota] = useState(undefined); // undefined = cargando · null = no hay
+  const [nombre, setNombre] = useState('');
+  const [sel, setSel] = useState('');
+  const [fechaDev, setFechaDev] = useState(enDias(7));
+  const [creando, setCreando] = useState(false);
+
+  const cargar = useCallback(async () => {
+    try {
+      const r = await fetch(`/api/admin/groups/${groupId}/mascota`, { credentials: 'include', cache: 'no-store' });
+      if (r.ok) setMascota((await r.json()).mascota);
+    } catch { /* noop */ }
+  }, [groupId]);
+  useEffect(() => { setMascota(undefined); setSel(''); setFechaDev(enDias(7)); setCreando(false); cargar(); }, [groupId, cargar]);
+
+  async function crear() {
+    const r = await fetch('/api/admin/mascotas', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+      body: JSON.stringify({ groupId, nombre }),
+    });
+    if (r.ok) { setNombre(''); setCreando(false); showToast?.('Mascota asignada a la clase.'); cargar(); }
+    else alert((await r.json()).error || 'No se pudo.');
+  }
+  async function sortear() {
+    const r = await fetch(`/api/admin/mascotas/${mascota.id}/sugerencia`, { credentials: 'include', cache: 'no-store' });
+    const d = await r.json();
+    if (!r.ok) return alert(d.error || 'No se pudo sortear.');
+    setSel(d.sugerido.studentId);
+    showToast?.(`Le toca a ${d.sugerido.alumno}${d.veces > 0 ? ` (se la ha llevado ${d.veces} ${d.veces === 1 ? 'vez' : 'veces'})` : ' (aún no se la ha llevado)'}.`);
+  }
+  async function prestar() {
+    if (!sel) return alert('Elige a quién se la lleva o pulsa Sortear.');
+    const r = await fetch(`/api/admin/mascotas/${mascota.id}/prestar`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+      body: JSON.stringify({ studentId: sel, devolverAntes: fechaDev || null }),
+    });
+    if (r.ok) { setSel(''); showToast?.('¡El peluche se va a casa!'); cargar(); }
+    else alert((await r.json()).error || 'No se pudo.');
+  }
+  async function devolver() {
+    const r = await fetch(`/api/admin/mascotas/${mascota.id}/devolver`, { method: 'POST', credentials: 'include' });
+    if (r.ok) { showToast?.('Devuelta. Ya puede llevársela otro.'); cargar(); }
+    else alert((await r.json()).error || 'No se pudo.');
+  }
+
+  if (mascota === undefined) return null; // cargando: no estorba
+
+  const marco = { background: 'color-mix(in oklab, var(--purple) 5%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--purple) 25%, var(--line))', borderRadius: 12, padding: '10px 14px' };
+
+  // No hay mascota todavía: ofrecer asignarla sin salir de aquí.
+  if (mascota === null) {
+    return (
+      <div style={{ ...marco, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 18 }}>🧸</span>
+        {!creando ? (
+          <>
+            <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>Esta clase no tiene mascota.</span>
+            <button className="btn btn-sm btn-outline" onClick={() => setCreando(true)}>Añadir mascota</button>
+          </>
+        ) : (
+          <>
+            <input placeholder="Nombre del peluche (opcional)" value={nombre} onChange={e => setNombre(e.target.value)}
+              style={{ fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }} />
+            <button className="btn btn-sm btn-primary" onClick={crear}>Guardar</button>
+            <button className="btn btn-sm btn-outline" onClick={() => setCreando(false)}>Cancelar</button>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  // veces por alumno (para ordenar el selector: primero los que menos).
+  const vecesDe = {};
+  (mascota.ranking || []).forEach(x => { vecesDe[x.studentId] = x.veces; });
+  const opciones = alumnos.map(a => ({ id: a.id, nombre: a.nombre, veces: vecesDe[a.id] ?? 0 }))
+    .sort((a, b) => a.veces - b.veces || a.nombre.localeCompare(b.nombre));
+
+  return (
+    <div style={{ ...marco, display: 'grid', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 18 }}>🧸</span>
+        <b style={{ fontSize: 14 }}>{mascota.nombre || 'Mascota de clase'}</b>
+        {mascota.actual ? (
+          <span style={{ fontSize: 12, fontWeight: 800, padding: '3px 10px', borderRadius: 999,
+            color: mascota.actual.vencido ? 'var(--orange)' : 'var(--teal)',
+            background: `color-mix(in oklab, ${mascota.actual.vencido ? 'var(--orange)' : 'var(--teal)'} 12%, var(--bg-2))` }}>
+            La tiene {mascota.actual.alumno}{mascota.actual.devolverAntes ? ` · devolver antes de ${fmtDiaCorto(mascota.actual.devolverAntes)}` : ''}{mascota.actual.vencido ? ' · ¡vencido!' : ''}
+          </span>
+        ) : (
+          <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>En el club</span>
+        )}
+        <div style={{ flex: 1 }} />
+        {mascota.actual && <button className="btn btn-sm btn-primary" onClick={devolver}>Marcar devuelta</button>}
+      </div>
+
+      {!mascota.actual && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button className="btn btn-sm" style={{ background: 'var(--purple)', color: '#fff' }} onClick={sortear}>🎲 Sortear</button>
+          <select value={sel} onChange={e => setSel(e.target.value)}
+            style={{ fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }}>
+            <option value="">Alumno…</option>
+            {opciones.map(o => <option key={o.id} value={o.id}>{o.nombre} — {o.veces} {o.veces === 1 ? 'vez' : 'veces'}</option>)}
+          </select>
+          <label style={{ fontSize: 12, color: 'var(--ink-3)' }}>Devolver antes de</label>
+          <input type="date" value={fechaDev} onChange={e => setFechaDev(e.target.value)}
+            style={{ fontFamily: 'inherit', fontSize: 13, padding: '6px 9px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }} />
+          <button className="btn btn-sm btn-primary" onClick={prestar} disabled={!sel}>Prestar</button>
+        </div>
       )}
     </div>
   );

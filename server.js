@@ -9691,6 +9691,29 @@ app.get('/api/admin/mascotas/:id', authenticateSession, requireAdmin, async (req
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// La mascota de una clase concreta (por group_id), para gestionarla desde el
+// "pasar lista" sin cambiar de pantalla (ticket #244 / integración). Devuelve
+// { mascota: null } si esa clase todavía no tiene mascota.
+app.get('/api/admin/groups/:groupId/mascota', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const m = await pool.query(
+            `SELECT m.id, m.group_id, m.nombre, g.name AS clase, a.name AS actividad
+             FROM aim_mascotas m JOIN tul_groups g ON g.group_id = m.group_id
+             JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE m.group_id = $1 AND a.club_id = $2`, [req.params.groupId, AIM_CLUB_ID]);
+        res.set('Cache-Control', 'no-store');
+        if (!m.rowCount) return res.json({ mascota: null });
+        const mas = m.rows[0];
+        res.json({
+            mascota: {
+                id: mas.id, groupId: mas.group_id, nombre: mas.nombre, clase: mas.clase, actividad: mas.actividad,
+                actual: await prestamoActivo(mas.id),
+                ranking: await rankingMascota(mas.id, mas.group_id),
+            },
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Asignar (o renombrar) la mascota de una clase. Una mascota por clase.
 app.post('/api/admin/mascotas', authenticateSession, requireAdmin, async (req, res) => {
     const { groupId, nombre } = req.body || {};
