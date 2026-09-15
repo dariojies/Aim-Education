@@ -56,6 +56,9 @@ export function permisosDe(rol) {
             // La clase de Speaking la gestionan los profes (apuntar alumnos) y la
             // ve secretaría (llamar a los padres). Ticket #228.
             speaking: true,
+            // El fichaje (registro de jornada) lo usa TODO el personal, también los
+            // instructores: cada uno ficha su jornada (ticket #233).
+            fichaje: true,
             camp: true,
             // Los títulos y las notas de examen los sube el club, no el monitor.
             titulos: !instructor,
@@ -89,6 +92,9 @@ export function permisosDe(rol) {
         pedirEventos: instructor,
         // En soporte ve sus tickets, como cualquiera desde su perfil.
         soporteCompleto: !instructor,
+        // Ver los fichajes de TODO el personal, corregir olvidos y exportar para la
+        // Inspección es cosa de secretaría/dirección; un instructor solo ve el suyo.
+        fichajesGestion: mandaAlMenos(rol, 'secretaria'),
     };
 }
 

@@ -1052,6 +1052,35 @@ async function initDb() {
             )
         `);
 
+        // Registro de jornada / fichaje (ticket #233). Sustituye a la app externa
+        // "Reloj Laboral". Cumple el registro diario de jornada (RDL 8/2019): la
+        // HORA la pone siempre el servidor (no el navegador), y es append-only —
+        // nada se borra. Una corrección de dirección es un apunte nuevo con su
+        // motivo, y "borrar" un apunte equivocado es marcarlo anulado (deja rastro).
+        // Se conserva para poder enseñárselo al trabajador y a la Inspección.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_fichajes (
+                id SERIAL PRIMARY KEY,
+                user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                tipo VARCHAR(12) NOT NULL,           -- entrada | salida | pausa_inicio | pausa_fin
+                ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                dia DATE NOT NULL,                   -- día de la jornada, en hora de Madrid
+                origen VARCHAR(20) NOT NULL DEFAULT 'web',
+                ip VARCHAR(60),
+                -- Corrección de dirección: quién la metió y por qué (NULL = lo fichó
+                -- el propio trabajador). anulado = apunte dejado sin efecto (con rastro).
+                creado_por UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                motivo TEXT,
+                anulado BOOLEAN NOT NULL DEFAULT false,
+                anulado_por UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                anulado_motivo TEXT,
+                anulado_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_fichajes_user_dia ON aim_fichajes (user_id, dia)`);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_fichajes_ts ON aim_fichajes (ts)`);
+
         // Anulación de recibos: nunca se borran, se marcan (rastro de auditoría).
         await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_motivo TEXT`);
         await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_por UUID REFERENCES users(user_id) ON DELETE SET NULL`);
@@ -9879,6 +9908,252 @@ app.get('/api/admin/mascotas/:id/sugerencia', authenticateSession, requireAdmin,
         const elegido = candidatos[Math.floor(Math.random() * candidatos.length)];
         res.set('Cache-Control', 'no-store');
         res.json({ sugerido: elegido, entre: candidatos.length, veces: minVeces });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// REGISTRO DE JORNADA / FICHAJE (ticket #233)
+// Sustituye a la app externa "Reloj Laboral". Cumple el registro diario de
+// jornada (RDL 8/2019): la hora la pone SIEMPRE el servidor, es append-only (nada
+// se borra) y trazable (correcciones con motivo y quién las hizo). Cada trabajador
+// ficha su jornada y ve sus registros; dirección/secretaría ve los de todos,
+// corrige olvidos y exporta para la Inspección.
+// ═════════════════════════════════════════════════════════════════════════════
+const TIPOS_FICHAJE = ['entrada', 'salida', 'pausa_inicio', 'pausa_fin'];
+
+// Estado del trabajador según su último apunte vivo: fuera · dentro · pausa.
+async function estadoFichaje(userId, cliente = pool) {
+    const r = await cliente.query(
+        `SELECT tipo, ts FROM aim_fichajes
+         WHERE user_id = $1 AND anulado = false
+         ORDER BY ts DESC, id DESC LIMIT 1`, [userId]);
+    const ultimo = r.rows[0] || null;
+    let estado = 'fuera';
+    if (ultimo) {
+        if (ultimo.tipo === 'entrada' || ultimo.tipo === 'pausa_fin') estado = 'dentro';
+        else if (ultimo.tipo === 'pausa_inicio') estado = 'pausa';
+    }
+    return { estado, ultimo };
+}
+
+// ¿Encaja fichar 'tipo' estando en 'estado'?
+function transicionFichaje(estado, tipo) {
+    if (tipo === 'entrada') return estado === 'fuera';
+    if (tipo === 'salida') return estado === 'dentro' || estado === 'pausa';
+    if (tipo === 'pausa_inicio') return estado === 'dentro';
+    if (tipo === 'pausa_fin') return estado === 'pausa';
+    return false;
+}
+
+// Suma el tiempo trabajado (sin contar pausas) de una lista de apuntes ordenada
+// por ts, repartido por día (el del inicio de cada tramo). Devuelve segundos.
+function calcularTrabajado(apuntes) {
+    const porDia = {};
+    let desde = null, diaTramo = null;
+    for (const a of apuntes) {
+        const t = new Date(a.ts);
+        if (a.tipo === 'entrada' || a.tipo === 'pausa_fin') {
+            if (desde == null) { desde = t; diaTramo = String(a.dia).slice(0, 10); }
+        } else if (a.tipo === 'salida' || a.tipo === 'pausa_inicio') {
+            if (desde != null) {
+                porDia[diaTramo] = (porDia[diaTramo] || 0) + Math.max(0, (t - desde) / 1000);
+                desde = null; diaTramo = null;
+            }
+        }
+    }
+    const totalSeg = Object.values(porDia).reduce((s, x) => s + x, 0);
+    return { porDia, totalSeg, abierto: desde != null, desdeAbierto: desde };
+}
+
+// Apuntes de un trabajador en un rango, agrupados por día con su total. Lo usan
+// tanto "mis fichajes" como la gestión de dirección.
+async function listadoFichajes({ userId, desde, hasta }) {
+    const ap = await pool.query(
+        `SELECT id, tipo, ts, dia, ip, creado_por, motivo,
+                (creado_por IS NOT NULL) AS corregido
+         FROM aim_fichajes
+         WHERE user_id = $1 AND anulado = false
+           AND ($2::date IS NULL OR dia >= $2::date)
+           AND ($3::date IS NULL OR dia <= $3::date)
+         ORDER BY ts`, [userId, desde || null, hasta || null]);
+    const calc = calcularTrabajado(ap.rows);
+    const porDia = {};
+    for (const a of ap.rows) {
+        const k = String(a.dia).slice(0, 10);
+        (porDia[k] ||= { dia: k, apuntes: [], segundos: 0 }).apuntes.push({
+            id: a.id, tipo: a.tipo, ts: a.ts, corregido: a.corregido, motivo: a.motivo || null,
+        });
+    }
+    for (const k of Object.keys(porDia)) porDia[k].segundos = Math.round(calc.porDia[k] || 0);
+    const dias = Object.values(porDia).sort((a, b) => b.dia.localeCompare(a.dia));
+    return { dias, totalSeg: Math.round(calc.totalSeg) };
+}
+
+// El estado y el resumen de HOY del propio trabajador (para el widget de fichar).
+app.get('/api/fichaje/estado', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const uid = req.userSession.userId;
+        const { estado, ultimo } = await estadoFichaje(uid);
+        const hoy = hoyMadrid();
+        const ap = await pool.query(
+            `SELECT id, tipo, ts, dia, (creado_por IS NOT NULL) AS corregido
+             FROM aim_fichajes WHERE user_id = $1 AND dia = $2::date AND anulado = false
+             ORDER BY ts`, [uid, hoy]);
+        const calc = calcularTrabajado(ap.rows);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            estado, hoy,
+            // Si está trabajando ahora, desde cuándo (para el cronómetro en vivo).
+            trabajandoDesde: estado === 'dentro' && ultimo ? ultimo.ts : null,
+            enPausaDesde: estado === 'pausa' && ultimo ? ultimo.ts : null,
+            trabajadoHoySeg: Math.round(calc.porDia[hoy] || 0),
+            apuntesHoy: ap.rows.map(x => ({ id: x.id, tipo: x.tipo, ts: x.ts, corregido: x.corregido })),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Fichar. La hora la pone el servidor. Se valida contra el estado actual para no
+// dejar secuencias imposibles (dos entradas seguidas, etc.).
+app.post('/api/fichaje', authenticateSession, requireAdmin, async (req, res) => {
+    const tipo = String(req.body?.tipo || '');
+    if (!TIPOS_FICHAJE.includes(tipo)) return res.status(400).json({ error: 'Tipo de fichaje no válido.' });
+    const uid = req.userSession.userId;
+    const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim().slice(0, 60);
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        // Dos pestañas no pueden fichar a la vez y dejar el estado incoherente.
+        await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, ['fichaje:' + uid]);
+        const { estado } = await estadoFichaje(uid, client);
+        if (!transicionFichaje(estado, tipo)) {
+            await client.query('ROLLBACK');
+            const msg = {
+                entrada: 'Ya tienes la entrada fichada.',
+                salida: 'No tienes ninguna entrada abierta que cerrar.',
+                pausa_inicio: 'Solo puedes iniciar una pausa mientras estás trabajando.',
+                pausa_fin: 'No tienes ninguna pausa abierta que reanudar.',
+            }[tipo];
+            return res.status(409).json({ error: msg || 'Ese fichaje no encaja con tu estado actual.' });
+        }
+        const ins = await client.query(
+            `INSERT INTO aim_fichajes (user_id, tipo, dia, origen, ip)
+             VALUES ($1, $2, (now() AT TIME ZONE 'Europe/Madrid')::date, 'web', $3) RETURNING id, ts`,
+            [uid, tipo, ip || null]);
+        await client.query('COMMIT');
+        const est = await estadoFichaje(uid);
+        res.status(201).json({ success: true, id: ins.rows[0].id, ts: ins.rows[0].ts, estado: est.estado });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+// Mis fichajes (derecho del trabajador a ver su registro). Por defecto, 30 días.
+app.get('/api/fichaje/mios', authenticateSession, requireAdmin, async (req, res) => {
+    const esFecha = v => /^\d{4}-\d{2}-\d{2}$/.test(v || '');
+    const hasta = esFecha(req.query.hasta) ? req.query.hasta : hoyMadrid();
+    const desde = esFecha(req.query.desde) ? req.query.desde : null;
+    try {
+        const out = await listadoFichajes({ userId: req.userSession.userId, desde, hasta });
+        res.set('Cache-Control', 'no-store');
+        res.json(out);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Gestión (dirección/secretaría) ──
+// Los trabajadores del club (todo el personal), con su total de horas en el rango.
+app.get('/api/admin/fichajes', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const esFecha = v => /^\d{4}-\d{2}-\d{2}$/.test(v || '');
+    const hasta = esFecha(req.query.hasta) ? req.query.hasta : hoyMadrid();
+    const desde = esFecha(req.query.desde) ? req.query.desde : null;
+    const persona = req.query.persona || null;
+    try {
+        // Personal del club: quien tenga rol de staff (role o dev_role).
+        const staff = await pool.query(
+            `SELECT user_id, TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS nombre, role, dev_role
+             FROM users
+             WHERE club_id = $1
+               AND (LOWER(COALESCE(role,'')) = ANY($2) OR LOWER(COALESCE(dev_role,'')) = ANY($2))
+               AND ($3::uuid IS NULL OR user_id = $3)
+             ORDER BY nombre`, [AIM_CLUB_ID, ROLES_STAFF, persona]);
+        const trabajadores = [];
+        for (const s of staff.rows) {
+            const l = await listadoFichajes({ userId: s.user_id, desde, hasta });
+            const estado = await estadoFichaje(s.user_id);
+            trabajadores.push({
+                userId: s.user_id, nombre: s.nombre,
+                rol: NOMBRE_ROL[rolEfectivo(s.role, s.dev_role)] || null,
+                estado: estado.estado, totalSeg: l.totalSeg, dias: l.dias,
+            });
+        }
+        res.set('Cache-Control', 'no-store');
+        res.json({ desde, hasta, trabajadores });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Corregir/añadir un apunte a mano (olvidos). Queda como corrección, con su
+// motivo y quién la hizo. La hora se interpreta en horario de Madrid.
+app.post('/api/admin/fichajes', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const { userId, tipo, fecha, hora, motivo } = req.body || {};
+    if (!userId) return res.status(400).json({ error: 'Falta el trabajador.' });
+    if (!TIPOS_FICHAJE.includes(String(tipo))) return res.status(400).json({ error: 'Tipo de fichaje no válido.' });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha || ''))) return res.status(400).json({ error: 'Fecha no válida.' });
+    if (!/^\d{2}:\d{2}$/.test(String(hora || ''))) return res.status(400).json({ error: 'Hora no válida (HH:MM).' });
+    if (!String(motivo || '').trim()) return res.status(400).json({ error: 'Indica el motivo de la corrección.' });
+    try {
+        const es = await pool.query(
+            `SELECT 1 FROM users WHERE user_id = $1 AND club_id = $2`, [userId, AIM_CLUB_ID]);
+        if (!es.rowCount) return res.status(404).json({ error: 'Ese trabajador no es del club.' });
+        const ins = await pool.query(
+            `INSERT INTO aim_fichajes (user_id, tipo, ts, dia, origen, creado_por, motivo)
+             VALUES ($1, $2, ($3 || ' ' || $4)::timestamp AT TIME ZONE 'Europe/Madrid', $3::date, 'correccion', $5, $6)
+             RETURNING id`,
+            [userId, tipo, fecha, hora, req.userSession.userId, String(motivo).trim().slice(0, 300)]);
+        res.status(201).json({ success: true, id: ins.rows[0].id });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Anular un apunte equivocado (no se borra: deja rastro con motivo).
+app.post('/api/admin/fichajes/:id/anular', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const motivo = String(req.body?.motivo || '').trim();
+    if (!motivo) return res.status(400).json({ error: 'Indica el motivo de la anulación.' });
+    try {
+        const r = await pool.query(
+            `UPDATE aim_fichajes f SET anulado = true, anulado_por = $2, anulado_motivo = $3, anulado_at = NOW()
+             FROM users u WHERE f.id = $1 AND u.user_id = f.user_id AND u.club_id = $4 AND f.anulado = false
+             RETURNING f.id`,
+            [req.params.id, req.userSession.userId, motivo.slice(0, 300), AIM_CLUB_ID]);
+        if (!r.rowCount) return res.status(404).json({ error: 'Ese apunte no existe o ya estaba anulado.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Exportar el registro de jornada (CSV) para la Inspección o para el trabajador.
+app.get('/api/admin/fichajes/export.csv', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const esFecha = v => /^\d{4}-\d{2}-\d{2}$/.test(v || '');
+    const hasta = esFecha(req.query.hasta) ? req.query.hasta : hoyMadrid();
+    const desde = esFecha(req.query.desde) ? req.query.desde : null;
+    const persona = req.query.persona || null;
+    try {
+        const r = await pool.query(
+            `SELECT TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre,
+                    f.tipo, f.ts, f.dia, f.ip, (f.creado_por IS NOT NULL) AS corregido, f.motivo
+             FROM aim_fichajes f JOIN users u ON u.user_id = f.user_id
+             WHERE u.club_id = $1 AND f.anulado = false
+               AND ($2::date IS NULL OR f.dia >= $2::date)
+               AND ($3::date IS NULL OR f.dia <= $3::date)
+               AND ($4::uuid IS NULL OR f.user_id = $4)
+             ORDER BY nombre, f.ts`, [AIM_CLUB_ID, desde, hasta, persona]);
+        const ETQ = { entrada: 'Entrada', salida: 'Salida', pausa_inicio: 'Inicio pausa', pausa_fin: 'Fin pausa' };
+        const esc = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+        const fmt = ts => new Date(ts).toLocaleString('es-ES', { timeZone: 'Europe/Madrid', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        const lineas = [['Trabajador', 'Día', 'Tipo', 'Fecha y hora', 'Origen', 'Motivo'].map(esc).join(';')];
+        for (const x of r.rows) {
+            lineas.push([x.nombre, String(x.dia).slice(0, 10), ETQ[x.tipo] || x.tipo, fmt(x.ts), x.corregido ? 'Corrección' : 'Fichaje', x.motivo || ''].map(esc).join(';'));
+        }
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="registro-jornada-${desde || 'inicio'}_${hasta}.csv"`);
+        res.send('﻿' + lineas.join('\r\n'));
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

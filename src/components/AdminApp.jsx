@@ -12,6 +12,7 @@ import CampTarifas from './CampTarifas.jsx';
 import BillingArqueo from './BillingArqueo.jsx';
 import BillingAjustes from './BillingAjustes.jsx';
 import PasarListaClases from './PasarListaClases.jsx';
+import Fichaje from './Fichaje.jsx';
 import Campanita from './Campanita.jsx';
 import FichaAlumnoClases, { edadDe, Insignia } from './FichaAlumnoClases.jsx';
 import AdminFamilias from './AdminFamilias.jsx';
@@ -6432,6 +6433,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
       heading: "Tu día", items: [
         { id: "overview", label: "Resumen", icon: <I.Dashboard /> },
         { id: "agenda", label: "Mi día", icon: <I.Check /> },
+        { id: "fichaje", label: "Fichaje", icon: <I.Clock /> },
         { id: "support", label: "Soporte", icon: <I.Bell /> },
       ]
     },
@@ -6589,6 +6591,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           </div>
 
           {ver("agenda") && <AdminAgenda showToast={showToast} user={user} />}
+          {ver("fichaje") && <Fichaje showToast={showToast} permisos={permisos} />}
           {ver("overview") && (permisos.resumenGeneral
             ? <AdminOverview setView={setView} refreshTrigger={refreshTrigger} showToast={showToast} />
             : <ResumenInstructor setView={setView} refreshTrigger={refreshTrigger} />)}
