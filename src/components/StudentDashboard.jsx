@@ -107,6 +107,108 @@ function SpeakingFamilia() {
   );
 }
 
+// Bonos de clases (ticket #253): lo que le queda a cada uno y las plazas libres
+// de la semana abierta para reservar con el bono. Cada domingo se abre la semana
+// siguiente. Reservar gasta la clase del bono; cancelar antes del día la devuelve.
+// Solo se ve si alguien de la familia tiene bono.
+function BonosFamilia() {
+  const [d, setD] = useState(null);
+  const [ocupado, setOcupado] = useState(null);
+  const cargar = useCallback(() => fetch('/api/me/bonos', { credentials: 'include', cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null).then(setD).catch(() => setD(null)), []);
+  useEffect(() => { cargar(); }, [cargar]);
+
+  if (!d || !(d.alumnos || []).length) return null;
+  const fmtDia = (f) => new Date(String(f).slice(0, 10) + 'T12:00:00').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
+
+  async function reservar(a, p) {
+    if (!window.confirm(`¿Reservar ${p.clase} (${p.actividad}) el ${fmtDia(p.fecha)} a las ${p.hora} para ${a.nombre}? Se gasta una clase del bono; si cancelas antes de ese día, se te devuelve.`)) return;
+    setOcupado(`${p.groupId}|${p.fecha}`);
+    try {
+      const r = await fetch('/api/me/bonos/reservas', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ studentId: a.studentId, groupId: p.groupId, fecha: p.fecha }),
+      });
+      const x = await r.json().catch(() => ({}));
+      if (!r.ok) alert(x.error || 'No se pudo reservar.');
+      await cargar();
+    } catch { alert('Error de conexión.'); } finally { setOcupado(null); }
+  }
+  async function cancelar(rv) {
+    if (!window.confirm(`¿Cancelar la reserva de ${rv.clase} del ${fmtDia(rv.fecha)}? Se te devuelve la clase al bono.`)) return;
+    setOcupado(`r${rv.id}`);
+    try {
+      const r = await fetch(`/api/me/bonos/reservas/${rv.id}/cancelar`, { method: 'POST', credentials: 'include' });
+      const x = await r.json().catch(() => ({}));
+      if (!r.ok) alert(x.error || 'No se pudo cancelar.');
+      await cargar();
+    } catch { alert('Error de conexión.'); } finally { setOcupado(null); }
+  }
+
+  return (
+    <div className="panel" style={{marginBottom: 16}}>
+      <h2><I.Calendar /> Bonos de clases</h2>
+      <p className="sub">Cada domingo se abren las plazas libres de la semana siguiente. Reserva el día que quieras venir: se gasta una clase del bono, y si cancelas antes de ese día se te devuelve.</p>
+      <div style={{display: "grid", gap: 14, marginTop: 12}}>
+        {d.alumnos.map(a => {
+          const restantes = a.bonos.reduce((s, b) => s + b.restantes, 0);
+          const plazas = (a.plazas || []).filter(p => !p.reservado);
+          return (
+            <div key={a.studentId} style={{background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 14, padding: 14, display: "grid", gap: 10}}>
+              <div style={{display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap"}}>
+                <b style={{fontSize: 15}}>{a.nombre}</b>
+                <span style={{fontSize: 13, color: restantes ? "var(--teal)" : "var(--ink-3)", fontWeight: 700}}>
+                  {restantes ? `${restantes} clase${restantes !== 1 ? 's' : ''} disponible${restantes !== 1 ? 's' : ''}` : 'Bono agotado'}
+                </span>
+                <span style={{fontSize: 12, color: "var(--ink-3)"}}>
+                  {a.bonos.map(b => `${b.ambito === 'adultos' ? 'Bono adultos' : `Bono ${b.actividad}`}: ${b.restantes}/${b.total}`).join(' · ')}
+                </span>
+              </div>
+
+              {a.reservas.length > 0 && (
+                <div style={{display: "grid", gap: 6}}>
+                  <div style={{fontSize: 12, fontWeight: 800, color: "var(--ink-2)"}}>Tus reservas</div>
+                  {a.reservas.map(rv => (
+                    <div key={rv.id} style={{display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "8px 12px", background: "var(--bg-2)", borderRadius: 10, borderLeft: "3px solid var(--teal)"}}>
+                      <span style={{flex: "1 1 200px", fontSize: 13}}><b>{rv.clase}</b> · {rv.actividad} · <span style={{textTransform: "capitalize"}}>{fmtDia(rv.fecha)}</span>{rv.hora ? ` · ${rv.hora}` : ''}</span>
+                      {rv.puedeCancelar
+                        ? <button className="btn btn-sm btn-outline" disabled={ocupado === `r${rv.id}`} onClick={() => cancelar(rv)}>Cancelar</button>
+                        : <span style={{fontSize: 11, color: "var(--ink-3)"}}>Es hoy: ya no se puede cancelar</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {restantes > 0 && (
+                <div style={{display: "grid", gap: 6}}>
+                  <div style={{fontSize: 12, fontWeight: 800, color: "var(--ink-2)"}}>Plazas libres hasta el {fmtDia(d.ventana.hasta)}</div>
+                  {!plazas.length && <p style={{margin: 0, fontSize: 13, color: "var(--ink-3)"}}>Ahora mismo no hay plazas libres en las clases donde vale tu bono. El domingo se abre la semana siguiente.</p>}
+                  <div style={{display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 8}}>
+                    {plazas.map(p => (
+                      <div key={`${p.groupId}|${p.fecha}`} style={{background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 12, padding: "10px 12px", display: "grid", gap: 6}}>
+                        <div>
+                          <div style={{fontWeight: 800, fontSize: 14}}>{p.clase}</div>
+                          <div style={{fontSize: 12, color: "var(--ink-3)"}}>{p.actividad}</div>
+                          <div style={{fontSize: 13, textTransform: "capitalize"}}>{fmtDia(p.fecha)} · {p.hora}{p.horaFin ? `–${p.horaFin}` : ''}</div>
+                        </div>
+                        <div style={{display: "flex", alignItems: "center", gap: 8}}>
+                          <span style={{fontSize: 12, fontWeight: 700, color: p.libres ? "var(--teal)" : "var(--orange)"}}>{p.libres ? `${p.libres} plaza${p.libres !== 1 ? 's' : ''} libre${p.libres !== 1 ? 's' : ''}` : 'Completa'}</span>
+                          <div style={{flex: 1}} />
+                          <button className="btn btn-sm btn-brand" disabled={!p.libres || ocupado === `${p.groupId}|${p.fecha}`} onClick={() => reservar(a, p)}>Reservar</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function DashOverview({ go, setView }) {
   const [slots, setSlots] = useState([]);
   const [groups, setGroups] = useState([]);
@@ -341,6 +443,7 @@ function DashClasses() {
   if (groups.length === 0) {
     return (
       <>
+      <BonosFamilia />
       {bloqueEspera}
       <div className="panel">
         <h2><I.Calendar /> Mis clases</h2>
@@ -353,6 +456,7 @@ function DashClasses() {
 
   return (
     <>
+      <BonosFamilia />
       {bloqueEspera}
       <div className="panel">
         <h2><I.Calendar /> Clases de la familia</h2>

@@ -15,6 +15,7 @@ import { generarReciboPdf } from './recibo-pdf.js';
 import { generarGastosPdf, gastosCsv, nombrePeriodo } from './gastos-pdf.js';
 import { generarResumenAnualPdf } from './resumen-anual-pdf.js';
 import { generarInformeJornadaPdf, generarResumenMensualPdf } from './fichaje-pdf.js';
+import { plazasConBono, reservarPlazaBono, cancelarReservaBono, ventanaReservas, hoyMadridISO } from './bonos-clases.js';
 import { PassThrough } from 'stream';
 import { escalaDe, escalasDelClub, resultadoDe, baremoDe, matriculaExamenDe } from './rangos.js';
 import { rolEfectivo, permisosDe, mandaAlMenos, ROLES_STAFF, NOMBRE_ROL } from './permisos.js';
@@ -1073,6 +1074,42 @@ async function initDb() {
                 UNIQUE (bono_id, group_id, fecha)
             )
         `);
+
+        // Plazas con bono (ticket #253). Cada clase dice si admite bonos: 'no', el
+        // bono de su actividad ('actividad') o además el bono de adultos, que vale
+        // en todas las clases con esa opción ('adultos'). Inglés nunca admite bonos.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_clase_bonos (
+                group_id UUID PRIMARY KEY,
+                modo VARCHAR(12) NOT NULL DEFAULT 'no',
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_by UUID
+            )
+        `);
+        // Un bono es de una actividad concreta o de adultos (multiactividad).
+        await client.query(`ALTER TABLE aim_bonos ADD COLUMN IF NOT EXISTS ambito VARCHAR(12) NOT NULL DEFAULT 'actividad'`);
+        // Reservas de plaza con bono para un día concreto. Cada domingo se abren las
+        // plazas libres de la semana siguiente. La clase del bono se gasta al
+        // reservar (aim_bono_usos.reserva_id); si se cancela antes del día, vuelve.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_bono_reservas (
+                id SERIAL PRIMARY KEY,
+                bono_id INTEGER NOT NULL REFERENCES aim_bonos(id) ON DELETE CASCADE,
+                student_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                group_id UUID NOT NULL,
+                fecha DATE NOT NULL,
+                estado VARCHAR(12) NOT NULL DEFAULT 'reservada',
+                origen VARCHAR(12) NOT NULL DEFAULT 'familia',
+                devuelta BOOLEAN NOT NULL DEFAULT false,
+                created_by UUID,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                cancelada_at TIMESTAMPTZ,
+                cancelada_por UUID
+            )
+        `);
+        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_bono_reserva_activa ON aim_bono_reservas (student_id, group_id, fecha) WHERE estado = 'reservada'`);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_bono_reservas_clase ON aim_bono_reservas (group_id, fecha) WHERE estado = 'reservada'`);
+        await client.query(`ALTER TABLE aim_bono_usos ADD COLUMN IF NOT EXISTS reserva_id INTEGER`);
 
         // Almacén / inventario del club (ticket #250). Cada fila es un artículo. Si se
         // enlaza a un concepto del catálogo, al venderlo se descuenta 1 de su stock.
@@ -6083,6 +6120,9 @@ const MEDIO_TPV_ONLINE = 'tpv_online';
 const ANTICIPO_CONCEPTO = '01000';
 // Concepto con el que se registra un bono de clases sueltas (ticket #245).
 const BONO_CONCEPTO = '02000';
+// Bono de adultos (#253): en el TPV se elige como si fuera una actividad más.
+const BONO_ADULTOS = '__adultos__';
+const BONO_ADULTOS_NOMBRE = 'Adultos (varias actividades)';
 // Tipos de IVA admitidos para un anticipo (ticket #238): los vigentes en España.
 const IVAS_VALIDOS = [0, 4, 10, 21];
 
@@ -6388,7 +6428,10 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
             if (ex.esBono) {
                 const bruto = r2Server(Number(ex.importe));
                 if (!(bruto > 0)) throw { httP: 400, msg: 'El bono necesita un importe mayor que 0 €.' };
-                const actividad = (ex.actividad || '').toString().trim();
+                // Bono de adultos (#253): vale en todas las clases que admiten el
+                // bono de adultos, de cualquier actividad.
+                const ambito = ex.actividad === BONO_ADULTOS ? 'adultos' : 'actividad';
+                const actividad = ambito === 'adultos' ? BONO_ADULTOS_NOMBRE : (ex.actividad || '').toString().trim();
                 if (!actividad) throw { httP: 400, msg: 'Elige la actividad del bono.' };
                 const clases = Math.max(1, Math.min(50, parseInt(ex.clases, 10) || 3));
                 const ivaPct = IVAS_VALIDOS.includes(Number(ex.ivaPct)) ? Number(ex.ivaPct) : 0;
@@ -6401,7 +6444,7 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
                     [clienteBono, BONO_CONCEPTO, mesActual, desc, base, ivaPct, actividad, bruto]
                 );
                 extraIds.push(ins.rows[0].id);
-                bonosNuevos.push({ clienteId: clienteBono, actividad, clases });
+                bonosNuevos.push({ clienteId: clienteBono, actividad, clases, ambito });
                 continue;
             }
             const pr = await client.query(`SELECT descripcion, tipo, precio, iva_pct FROM aim_precios WHERE concepto = $1 AND activo = true`, [ex.concepto]);
@@ -6619,9 +6662,9 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
             // 6c) Bonos de clases (ticket #245).
             for (const b of bonosNuevos) {
                 await client.query(
-                    `INSERT INTO aim_bonos (cliente_id, actividad, clases_total, clases_usadas, recibo_id, created_by)
-                     VALUES ($1,$2,$3,0,$4,$5)`,
-                    [b.clienteId, b.actividad, b.clases, reciboId, userId]
+                    `INSERT INTO aim_bonos (cliente_id, actividad, clases_total, clases_usadas, recibo_id, created_by, ambito)
+                     VALUES ($1,$2,$3,0,$4,$5,$6)`,
+                    [b.clienteId, b.actividad, b.clases, reciboId, userId, b.ambito || 'actividad']
                 );
             }
         }
@@ -10290,6 +10333,82 @@ app.post('/api/me/speaking/:id/confirmar', authenticateSession, async (req, res)
         if (!r.rowCount) return res.status(404).json({ error: 'Esa sesión no es de tu familia o ya ha pasado.' });
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// BONOS DE LA FAMILIA: reservar plaza en las clases (ticket #253)
+// Cada domingo se abren las plazas libres de la semana siguiente en las clases que
+// admiten bono. Quien tiene bono reserva el día; la clase del bono se gasta al
+// reservar y, si cancela antes del día de la clase, se le devuelve.
+// ═════════════════════════════════════════════════════════════════════════════
+app.get('/api/me/bonos', authenticateSession, async (req, res) => {
+    try {
+        const fam = await familiaIds(req.userSession.userId);
+        const b = await pool.query(
+            `SELECT b.id, b.cliente_id, b.actividad, b.ambito, b.clases_total, b.clases_usadas, b.created_at,
+                    TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre
+             FROM aim_bonos b JOIN users u ON u.user_id = b.cliente_id
+             WHERE b.cliente_id = ANY($1::uuid[])
+               AND (b.clases_usadas < b.clases_total OR b.created_at > NOW() - INTERVAL '60 days')
+             ORDER BY nombre, b.created_at`, [fam]);
+        const alumnos = new Map();
+        for (const x of b.rows) {
+            if (!alumnos.has(x.cliente_id)) alumnos.set(x.cliente_id, { studentId: x.cliente_id, nombre: x.nombre, bonos: [], reservas: [], plazas: [] });
+            alumnos.get(x.cliente_id).bonos.push({
+                id: x.id, actividad: x.actividad, ambito: x.ambito,
+                total: x.clases_total, usadas: x.clases_usadas, restantes: Math.max(0, x.clases_total - x.clases_usadas),
+            });
+        }
+        const ids = [...alumnos.keys()];
+        const hoy = hoyMadridISO();
+        const ventana = ventanaReservas(hoy);
+        if (ids.length) {
+            const rs = await pool.query(
+                `SELECT r.id, r.student_id, r.group_id, r.fecha::text AS fecha, g.name AS clase, a.name AS actividad, g.sessions
+                 FROM aim_bono_reservas r JOIN tul_groups g ON g.group_id = r.group_id JOIN tul_activities a ON a.activity_id = g.activity_id
+                 WHERE r.student_id = ANY($1::uuid[]) AND r.estado = 'reservada' AND r.fecha >= $2::date
+                 ORDER BY r.fecha`, [ids, hoy]);
+            for (const x of rs.rows) {
+                const dia = (new Date(x.fecha + 'T12:00:00Z').getUTCDay() + 6) % 7;
+                const ses = (Array.isArray(x.sessions) ? x.sessions : []).find(s => (s.days || []).map(Number).includes(dia));
+                alumnos.get(x.student_id)?.reservas.push({
+                    id: x.id, groupId: x.group_id, clase: x.clase, actividad: x.actividad, fecha: x.fecha,
+                    hora: ses?.startTime || '', horaFin: ses?.endTime || '', puedeCancelar: x.fecha > hoy,
+                });
+            }
+            for (const a of alumnos.values()) {
+                if (!a.bonos.some(x => x.restantes > 0)) continue;
+                a.plazas = (await plazasConBono(pool, { clubId: AIM_CLUB_ID, desde: ventana.desde, hasta: ventana.hasta, studentId: a.studentId }))
+                    .filter(p => !p.esAlumno);
+            }
+        }
+        res.set('Cache-Control', 'no-store');
+        res.json({ ventana, alumnos: [...alumnos.values()] });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/me/bonos/reservas', authenticateSession, async (req, res) => {
+    const { studentId, groupId, fecha } = req.body || {};
+    try {
+        const fam = await familiaIds(req.userSession.userId);
+        if (!fam.map(String).includes(String(studentId))) return res.status(403).json({ error: 'Esa persona no es de tu familia.' });
+        const r = await reservarPlazaBono(pool, { clubId: AIM_CLUB_ID, studentId, groupId, fecha, actorId: req.userSession.userId, familia: true });
+        res.status(201).json({ success: true, ...r });
+    } catch (err) {
+        if (err && err.httP) return res.status(err.httP).json({ error: err.msg });
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/me/bonos/reservas/:id/cancelar', authenticateSession, async (req, res) => {
+    try {
+        const fam = await familiaIds(req.userSession.userId);
+        await cancelarReservaBono(pool, { reservaId: req.params.id, actorId: req.userSession.userId, familia: true, soloDe: fam });
+        res.json({ success: true });
+    } catch (err) {
+        if (err && err.httP) return res.status(err.httP).json({ error: err.msg });
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

@@ -42,6 +42,7 @@ export default function PasarListaClases({ showToast }) {
   const [clases, setClases] = useState([]);
   const [clase, setClase] = useState(null);
   const [alumnos, setAlumnos] = useState([]);
+  const [meta, setMeta] = useState({}); // { speaking, noVienen, bonoModo } de la lista abierta
   const [cargando, setCargando] = useState(true);
   // Añadir alumnos con bono (ticket #245).
   const [buscaBono, setBuscaBono] = useState(false);
@@ -59,19 +60,24 @@ export default function PasarListaClases({ showToast }) {
 
   const cargarAlumnos = useCallback(async (groupId, f) => {
     try {
-      const r = await fetch(`/api/admin/tul/groups/${groupId}/attendance/${f}`, { credentials: 'include' });
-      if (r.ok) setAlumnos((await r.json()).alumnos || []);
+      const r = await fetch(`/api/admin/tul/groups/${groupId}/attendance/${f}`, { credentials: 'include', cache: 'no-store' });
+      if (r.ok) {
+        const d = await r.json();
+        setAlumnos(d.alumnos || []);
+        setMeta({ speaking: !!d.speaking, noVienen: d.noVienen || 0, bonoModo: d.bonoModo || 'no' });
+      }
     } catch { /* noop */ }
   }, []);
 
-  useEffect(() => { cargarClases(fecha); setClase(null); setAlumnos([]); }, [fecha, cargarClases]);
+  useEffect(() => { cargarClases(fecha); setClase(null); setAlumnos([]); setMeta({}); }, [fecha, cargarClases]);
 
   async function marcar(alumno, status) {
     // Se pinta al momento; si el guardado falla, se recarga y vuelve a lo real.
     setAlumnos(prev => prev.map(a => a.id === alumno.id ? { ...a, status, isAuto: false } : a));
-    // Los que vienen por bono (no matriculados ese día) van por su endpoint, que
-    // además gasta o devuelve una clase del bono según el estado (ticket #245).
-    const porBono = alumno.esMiembro === false;
+    // Los que vienen por bono sin reserva (no matriculados ese día) van por su
+    // endpoint, que además gasta o devuelve una clase del bono según el estado
+    // (ticket #245). Con plaza reservada la clase ya se gastó al reservar (#253).
+    const porBono = alumno.esMiembro === false && !alumno.reservaId;
     const url = porBono
       ? `/api/admin/tul/groups/${clase.id}/attendance/bono`
       : `/api/admin/tul/groups/${clase.id}/attendance`;
@@ -105,22 +111,38 @@ export default function PasarListaClases({ showToast }) {
   useEffect(() => {
     if (!clase || !buscaBono) { setBonosSug([]); return; }
     const t = setTimeout(() => {
-      fetch(`/api/admin/tul/groups/${clase.id}/bonos?q=${encodeURIComponent(qBono.trim())}`, { credentials: 'include', cache: 'no-store' })
+      fetch(`/api/admin/tul/groups/${clase.id}/bonos?fecha=${fecha}&q=${encodeURIComponent(qBono.trim())}`, { credentials: 'include', cache: 'no-store' })
         .then(r => r.ok ? r.json() : { bonos: [] }).then(d => setBonosSug(d.bonos || [])).catch(() => { });
     }, 200);
     return () => clearTimeout(t);
-  }, [qBono, clase, buscaBono]);
+  }, [qBono, clase, buscaBono, fecha]);
 
+  // Un día que aún no ha llegado se le reserva la plaza (#253); el día de la clase
+  // o uno pasado, se le marca que ha venido y se gasta la clase (#245).
+  const esFuturo = fecha > isoLocal(new Date());
   async function añadirBono(b) {
-    const r = await fetch(`/api/admin/tul/groups/${clase.id}/attendance/bono`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-      body: JSON.stringify({ studentId: b.studentId, fecha, status: 'present' }),
-    });
+    const r = esFuturo
+      ? await fetch(`/api/admin/tul/groups/${clase.id}/bono-reservas`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ studentId: b.studentId, fecha }),
+      })
+      : await fetch(`/api/admin/tul/groups/${clase.id}/attendance/bono`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ studentId: b.studentId, fecha, status: 'present' }),
+      });
     const d = await r.json().catch(() => ({}));
     if (r.ok) {
-      showToast?.(`${b.nombre} añadido con bono${d.restantes != null ? ` · le quedan ${d.restantes} clase${d.restantes === 1 ? '' : 's'}` : ''}.`);
+      showToast?.(`${b.nombre}: ${esFuturo ? 'plaza reservada' : 'añadido'} con bono${d.restantes != null ? ` · le quedan ${d.restantes} clase${d.restantes === 1 ? '' : 's'}` : ''}.`);
       setQBono(''); setBonosSug([]); setBuscaBono(false); await cargarAlumnos(clase.id, fecha);
     } else alert(d.error || 'No se pudo añadir.');
+  }
+
+  async function quitarReserva(a) {
+    if (!window.confirm(`¿Quitar la plaza reservada de ${a.nombre}? Se le devuelve la clase al bono.`)) return;
+    const r = await fetch(`/api/admin/tul/bono-reservas/${a.reservaId}/cancelar`, { method: 'POST', credentials: 'include' });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) { showToast?.('Reserva quitada y clase devuelta al bono.'); await cargarAlumnos(clase.id, fecha); }
+    else alert(d.error || 'No se pudo quitar.');
   }
 
   function moverDia(delta) {
@@ -208,6 +230,16 @@ export default function PasarListaClases({ showToast }) {
                   )}
                   {c.instructor && <span style={{ fontSize: 11, color: 'var(--ink-3)', marginLeft: 'auto' }}>{c.instructor}</span>}
                 </div>
+                {c.speaking && (
+                  <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>
+                    Speaking: {c.speaking.si} confirmado{c.speaking.si !== 1 ? 's' : ''}{c.speaking.pendientes ? ` · ${c.speaking.pendientes} sin contestar` : ''}{c.speaking.no ? ` · ${c.speaking.no} no vienen` : ''}
+                  </div>
+                )}
+                {c.bonoModo && c.bonoModo !== 'no' && (c.bonoReservas > 0 || c.bonoLibres != null) && (
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--purple)', marginTop: 4 }}>
+                    🎫 {c.bonoReservas} con bono{c.bonoLibres != null ? ` · ${c.bonoLibres} plaza${c.bonoLibres !== 1 ? 's' : ''} libre${c.bonoLibres !== 1 ? 's' : ''}` : ''}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -227,7 +259,12 @@ export default function PasarListaClases({ showToast }) {
                 Todos: {l}
               </button>
             ))}
-            <button className="btn btn-sm btn-outline" onClick={() => { setBuscaBono(v => !v); setQBono(''); }} title="Añadir un alumno con bono de esta actividad">🎫 Con bono</button>
+            {!meta.speaking && meta.bonoModo !== 'no' && (
+              <button className="btn btn-sm btn-outline" onClick={() => { setBuscaBono(v => !v); setQBono(''); }}
+                title={esFuturo ? 'Reservar plaza a alguien con bono ese día' : 'Añadir un alumno con bono válido para esta clase'}>
+                🎫 {esFuturo ? 'Reservar con bono' : 'Con bono'}
+              </button>
+            )}
             <button className="btn btn-sm btn-outline" onClick={imprimir} disabled={!alumnos.length}><I.Print /> Imprimir</button>
           </div>
 
@@ -238,12 +275,13 @@ export default function PasarListaClases({ showToast }) {
             <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: 12, display: 'grid', gap: 8, maxWidth: 460 }}>
               <input autoFocus placeholder="Buscar alumno con bono..." value={qBono} onChange={e => setQBono(e.target.value)}
                 style={{ fontFamily: 'inherit', fontSize: 14, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }} />
-              {bonosSug.length === 0 && <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Nadie con bono de <b>{clase.activityName}</b>{qBono.trim() ? ' con ese nombre' : ''}.</p>}
+              {bonosSug.length === 0 && <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Nadie con un bono válido para esta clase{meta.bonoModo === 'adultos' ? ` (de ${clase.activityName} o de adultos)` : ` (de ${clase.activityName})`}{qBono.trim() ? ' con ese nombre' : ''}.</p>}
+              {esFuturo && <p style={{ margin: 0, fontSize: 11, color: 'var(--ink-3)' }}>Se le reserva la plaza de ese día y se le gasta ya la clase del bono (si se quita la reserva, se le devuelve).</p>}
               {bonosSug.map(b => (
                 <button key={b.bonoId} type="button" onClick={() => añadirBono(b)}
                   style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between', textAlign: 'left', padding: '8px 12px', background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, color: 'var(--ink)' }}>
                   <b>{b.nombre}</b>
-                  <span style={{ fontSize: 12, color: 'var(--teal)', fontWeight: 800 }}>{b.restantes}/{b.total} clases</span>
+                  <span style={{ fontSize: 12, color: 'var(--teal)', fontWeight: 800 }}>{b.ambito === 'adultos' ? 'Bono adultos · ' : ''}{b.restantes}/{b.total} clases</span>
                 </button>
               ))}
             </div>
@@ -254,44 +292,77 @@ export default function PasarListaClases({ showToast }) {
               marcar devolución. */}
           <MascotaPasarLista groupId={clase.id} alumnos={alumnos} showToast={showToast} />
 
-          {!alumnos.length && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Esta clase no tiene alumnos matriculados.</p>}
-          {/* En columnas para que quepan todos de un vistazo */}
-          <div className="camp-card-grid">
-            {alumnos.map(a => (
-              <div key={a.id} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: '10px 12px', display: 'grid', gap: 8 }}>
-                <div>
-                  <div style={{ fontWeight: a.cumpleHoy ? 800 : 700, fontSize: 13, color: a.cumpleHoy ? COLOR_CUMPLE : (a.status === 'absent' ? 'var(--ink-3)' : 'var(--ink)'), overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {a.cumpleHoy && <span title="¡Hoy es su cumpleaños!" style={{ marginRight: 3 }}>👑</span>}{a.nombre}{a.cumpleHoy && ' 🎂'}
-                  </div>
-                  {a.cinturon && <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>{a.cinturon}</div>}
-                  {a.esMiembro === false && (
-                    <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--purple)' }}>
-                      🎫 bono{a.bonoRestantes != null ? ` · ${a.bonoRestantes} rest.` : ''}
-                    </div>
-                  )}
-                </div>
-                <div style={{ display: 'flex', gap: 4 }}>
-                  {ESTADOS.map(([v, l, color]) => {
-                    const on = a.status === v;
-                    return (
-                      <button key={v} onClick={() => marcar(a, v)}
-                        style={{
-                          flex: 1, minWidth: 0, padding: '5px 0', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit',
-                          fontSize: 11, fontWeight: 800,
-                          border: `1px solid ${on ? color : 'var(--line)'}`,
-                          background: on ? color : 'var(--bg-3)',
-                          color: on ? (v === 'late' ? '#000' : 'white') : 'var(--ink-3)',
-                        }}>{l}</button>
-                    );
-                  })}
-                </div>
-                {a.isAuto && a.status && (
-                  <div style={{ fontSize: 10, color: 'var(--ink-3)' }}>marcado automáticamente</div>
-                )}
+          {meta.speaking && (
+            <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
+              Clase de Speaking: la lista es la de quienes han aceptado la clase de este día.{meta.noVienen ? ` ${meta.noVienen} ${meta.noVienen === 1 ? 'ha dicho' : 'han dicho'} que no ${meta.noVienen === 1 ? 'viene' : 'vienen'}.` : ''}
+            </p>
+          )}
+          {!alumnos.length && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>{meta.speaking ? 'Nadie ha confirmado todavía para este día.' : 'Esta clase no tiene alumnos matriculados.'}</p>}
+          {/* En columnas para que quepan todos de un vistazo. En Speaking, primero los
+              confirmados y aparte los que aún no han contestado (#253). */}
+          {(meta.speaking
+            ? [['Confirmados', alumnos.filter(a => a.speaking !== 'pendiente')], ['Sin contestar (por si vienen)', alumnos.filter(a => a.speaking === 'pendiente')]]
+            : [[null, alumnos]]
+          ).filter(([, lista]) => lista.length).map(([titulo, lista]) => (
+            <div key={titulo || 'todos'} style={{ display: 'grid', gap: 8 }}>
+              {titulo && meta.speaking && <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--ink-2)' }}>{titulo} ({lista.length})</div>}
+              <div className="camp-card-grid">
+                {lista.map(a => <TarjetaAlumno key={a.id} a={a} onMarcar={marcar} onQuitarReserva={quitarReserva} />)}
               </div>
-            ))}
-          </div>
+            </div>
+          ))}
         </>
+      )}
+    </div>
+  );
+}
+
+// Un alumno en la lista del día, con sus marcas: cumpleaños, viene con bono (o
+// tiene la plaza reservada), de baja hasta fin de mes o Speaking confirmado.
+function TarjetaAlumno({ a, onMarcar, onQuitarReserva }) {
+  return (
+    <div style={{ background: 'var(--bg-2)', border: `1px solid ${a.reservaId ? 'color-mix(in oklab, var(--purple) 35%, var(--line))' : 'var(--line)'}`, borderRadius: 12, padding: '10px 12px', display: 'grid', gap: 8 }}>
+      <div>
+        <div style={{ fontWeight: a.cumpleHoy ? 800 : 700, fontSize: 13, color: a.cumpleHoy ? COLOR_CUMPLE : (a.status === 'absent' ? 'var(--ink-3)' : 'var(--ink)'), overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {a.cumpleHoy && <span title="¡Hoy es su cumpleaños!" style={{ marginRight: 3 }}>👑</span>}{a.nombre}{a.cumpleHoy && ' 🎂'}
+        </div>
+        {a.cinturon && <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>{a.cinturon}</div>}
+        {a.reservaId ? (
+          <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--purple)', display: 'flex', gap: 6, alignItems: 'center' }}>
+            🎫 plaza con bono{a.reservaOrigen === 'familia' ? ' (reservada por la familia)' : ''}
+            {onQuitarReserva && <button onClick={() => onQuitarReserva(a)} style={{ fontSize: 10, background: 'none', border: 0, padding: 0, color: 'var(--ink-3)', textDecoration: 'underline', cursor: 'pointer', fontFamily: 'inherit' }}>quitar</button>}
+          </div>
+        ) : a.esMiembro === false && (
+          <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--purple)' }}>
+            🎫 bono{a.bonoRestantes != null ? ` · ${a.bonoRestantes} rest.` : ''}
+          </div>
+        )}
+        {a.deBaja && (
+          <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--orange)' }} title="Se dio de baja con el mes ya pagado: tiene la clase hasta fin de mes">
+            De baja{a.deBaja.desde ? ` el ${fmtDiaCorto(a.deBaja.desde)}` : ''} · hasta fin de mes
+          </div>
+        )}
+        {a.speaking === 'si' && <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--teal)' }}>✓ confirmado{a.franjas ? ` · ${a.franjas}` : ''}</div>}
+        {a.speaking === 'pendiente' && <div style={{ fontSize: 10, fontWeight: 800, color: '#b45309' }}>sin contestar{a.franjas ? ` · ${a.franjas}` : ''}</div>}
+        {a.speaking === 'no' && <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--orange)' }}>dijo que no venía</div>}
+      </div>
+      <div style={{ display: 'flex', gap: 4 }}>
+        {ESTADOS.map(([v, l, color]) => {
+          const on = a.status === v;
+          return (
+            <button key={v} onClick={() => onMarcar(a, v)}
+              style={{
+                flex: 1, minWidth: 0, padding: '5px 0', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit',
+                fontSize: 11, fontWeight: 800,
+                border: `1px solid ${on ? color : 'var(--line)'}`,
+                background: on ? color : 'var(--bg-3)',
+                color: on ? (v === 'late' ? '#000' : 'white') : 'var(--ink-3)',
+              }}>{l}</button>
+          );
+        })}
+      </div>
+      {a.isAuto && a.status && (
+        <div style={{ fontSize: 10, color: 'var(--ink-3)' }}>marcado automáticamente</div>
       )}
     </div>
   );

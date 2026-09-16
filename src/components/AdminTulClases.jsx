@@ -217,8 +217,13 @@ export function ListaClases({ showToast }) {
     setGuardando(true);
     try {
       const body = { ...editGrupo, activityId: actividad.id, time: resumenHorario(editGrupo.sessions) };
-      if (editGrupo.id) await api(`/groups/${editGrupo.id}`, { method: 'PUT', body });
-      else await api('/groups', { method: 'POST', body });
+      let id = editGrupo.id;
+      if (id) await api(`/groups/${id}`, { method: 'PUT', body });
+      else id = (await api('/groups', { method: 'POST', body })).group?.id;
+      // Si admite bonos (#253): va aparte, solo si ha cambiado.
+      if (id && (editGrupo.bonoModo || 'no') !== (editGrupo.bonoModoInicial || 'no')) {
+        await api(`/groups/${id}/bonos-config`, { method: 'PUT', body: { modo: editGrupo.bonoModo } });
+      }
       setEditGrupo(null); await cargar();
       showToast?.('Grupo guardado.');
     } catch (e) { alert(e.message); }
@@ -252,7 +257,7 @@ export function ListaClases({ showToast }) {
           <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>{actividad.name}</h3>
           <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{propios.length} grupo{propios.length !== 1 ? 's' : ''}</span>
           <div style={{ flex: 1 }} />
-          <button className="btn btn-sm btn-primary" onClick={() => setEditGrupo({ name: '', maxStudents: '', minAge: '', maxAge: '', sessions: [] })}><I.Plus /> Nuevo grupo</button>
+          <button className="btn btn-sm btn-primary" onClick={() => setEditGrupo({ name: '', maxStudents: '', minAge: '', maxAge: '', sessions: [], bonoModo: 'no', bonoModoInicial: 'no' })}><I.Plus /> Nuevo grupo</button>
         </div>
         {!propios.length && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Esta actividad aún no tiene grupos.</p>}
         <div style={{ display: 'grid', gap: 10 }}>
@@ -271,6 +276,7 @@ export function ListaClases({ showToast }) {
                   <span style={{ fontWeight: 800, fontSize: 15 }}>{g.name}</span>
                   {lleno && <Etiqueta color="#E5484D">COMPLETA</Etiqueta>}
                   {enEspera > 0 && <Etiqueta color="var(--purple)">{enEspera} en espera</Etiqueta>}
+                  {g.bonoModo && g.bonoModo !== 'no' && <Etiqueta color="var(--teal)">🎫 {g.bonoModo === 'adultos' ? 'BONO ACTIVIDAD O ADULTOS' : 'BONO DE LA ACTIVIDAD'}</Etiqueta>}
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>{resumenSesiones(g)}</div>
                 <div style={{ fontSize: 12, color: 'var(--ink-2)', marginTop: 4, display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -288,7 +294,7 @@ export function ListaClases({ showToast }) {
                 </button>
               )}
               <button className="btn btn-sm btn-outline" onClick={() => setGrupoAlumnos({ ...g, actividadNombre: actividad.name })}><I.Users /> Alumnos</button>
-              <button className="icon-btn" title="Editar" onClick={() => setEditGrupo({ id: g.id, name: g.name, maxStudents: g.maxStudents ?? '', minAge: g.minAge ?? '', maxAge: g.maxAge ?? '', sessions: Array.isArray(g.sessions) ? g.sessions.map(s => ({ ...s })) : [] })}><I.Edit /></button>
+              <button className="icon-btn" title="Editar" onClick={() => setEditGrupo({ id: g.id, name: g.name, maxStudents: g.maxStudents ?? '', minAge: g.minAge ?? '', maxAge: g.maxAge ?? '', sessions: Array.isArray(g.sessions) ? g.sessions.map(s => ({ ...s })) : [], bonoModo: g.bonoModo || 'no', bonoModoInicial: g.bonoModo || 'no' })}><I.Edit /></button>
               <button className="icon-btn danger" title="Eliminar" onClick={() => borrarGrupo(g)}><I.Trash /></button>
             </div>
           );
@@ -309,6 +315,28 @@ export function ListaClases({ showToast }) {
                     <input type="number" min="0" value={editGrupo.minAge} onChange={e => setEditGrupo(x => ({ ...x, minAge: e.target.value }))} /></div>
                   <div className="field"><label>Edad máxima</label>
                     <input type="number" min="0" value={editGrupo.maxAge} onChange={e => setEditGrupo(x => ({ ...x, maxAge: e.target.value }))} /></div>
+                </div>
+
+                {/* Plazas con bono (#253): cada domingo se abren las plazas libres de
+                    la semana para quien tenga un bono válido en esta clase. */}
+                <div className="field">
+                  <label>Bonos</label>
+                  {actividad.activityType === 'ingles' ? (
+                    <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Las clases de inglés no funcionan con bonos.</p>
+                  ) : (
+                    <>
+                      <select value={editGrupo.bonoModo || 'no'} onChange={e => setEditGrupo(x => ({ ...x, bonoModo: e.target.value }))}>
+                        <option value="no">No admite bonos</option>
+                        <option value="actividad">Admite el bono de {actividad.name}</option>
+                        <option value="adultos">Admite el bono de {actividad.name} o el bono de adultos</option>
+                      </select>
+                      <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                        {editGrupo.bonoModo && editGrupo.bonoModo !== 'no'
+                          ? (editGrupo.maxStudents ? 'Cada domingo se abren las plazas libres de la semana siguiente para reservarlas con bono.' : 'Pon un número de plazas: sin él no se pueden abrir plazas con bono.')
+                          : 'El bono de adultos vale en todas las clases que lo admitan, de cualquier actividad.'}
+                      </span>
+                    </>
+                  )}
                 </div>
 
                 <div>
@@ -973,6 +1001,7 @@ export function AdminReportes({ user, permisos = {} }) {
   const [gami, setGami] = useState(null);
   const [asistencia, setAsistencia] = useState([]);
   const [evaluaciones, setEvaluaciones] = useState([]);
+  const [bonos, setBonos] = useState(null); // plazas ocupadas con bono (#253)
   const [cargando, setCargando] = useState(false);
 
   const periodo = useMemo(() => {
@@ -1008,7 +1037,7 @@ export function AdminReportes({ user, permisos = {} }) {
     setCargando(true);
     try {
       const rango = `from=${periodo.from}&to=${periodo.to}`;
-      const [a, ins, ov, rc, ch, gm, at, ev] = await Promise.all([
+      const [a, ins, ov, rc, ch, gm, at, ev, bn] = await Promise.all([
         api('/activities'), api('/instructors'),
         api(`/report/overview?hasta=${periodo.to}${segParams}`),
         api(`/report/roster-changes?${rango}${segParams}`),
@@ -1016,7 +1045,9 @@ export function AdminReportes({ user, permisos = {} }) {
         api(`/report/gamification?x=1${segParams}`),
         api(`/report/attendance?${rango}${segParams}`),
         api(`/report/evaluations?${rango}${segParams}`),
+        api(`/report/bonos?${rango}${segParams}`).catch(() => null),
       ]);
+      setBonos(bn);
       setActividades(a.activities || []);
       setInstructores(ins.instructors || []);
       setOverview(ov); setRoster(rc); setChurn(ch); setGami(gm);
@@ -1125,6 +1156,35 @@ export function AdminReportes({ user, permisos = {} }) {
                 </div>
               );
             })}
+          </div>
+        </Seccion>
+      )}
+
+      {/* Plazas ocupadas con bono (#253): van aparte, sin sumarse a los alumnos que
+          pagan mensualidad ni a la ocupación ni a la asistencia de arriba. */}
+      {bonos && bonos.plazas > 0 && (
+        <Seccion titulo={`Plazas ocupadas con bono · ${periodo.label}`}>
+          <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Se cuentan aparte: no están en los alumnos, la ocupación ni la asistencia de los alumnos de mensualidad.</p>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <Kpi titulo="Plazas con bono" valor={bonos.plazas} sub="clases usadas o reservadas" />
+            <Kpi titulo="Personas" valor={bonos.personas} sub="distintas con bono" />
+            <Kpi titulo="Vinieron" valor={bonos.vinieron} sub="marcadas en la lista" />
+            <Kpi titulo="Reservaron y no vinieron" valor={bonos.noVinieron} sub="la clase se gastó igual" />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 }}>
+            {[['Por actividad', bonos.porActividad], ['Por clase', bonos.porClase]].map(([titulo, lista]) => (
+              <div key={titulo}>
+                <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--purple)', marginBottom: 6 }}>{titulo}</div>
+                <div style={{ display: 'grid', gap: 4, maxHeight: 220, overflowY: 'auto' }}>
+                  {lista.map(x => (
+                    <div key={x.nombre} style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between', gap: 8, padding: '4px 8px', background: 'var(--bg-3)', borderRadius: 8 }}>
+                      <span style={{ fontWeight: 700 }}>{x.nombre}</span>
+                      <span style={{ color: 'var(--ink-3)', textAlign: 'right' }}>{x.plazas} plaza{x.plazas !== 1 ? 's' : ''} · {x.personas} persona{x.personas !== 1 ? 's' : ''}{x.conBonoAdultos ? ` · ${x.conBonoAdultos} con bono adultos` : ''}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
           </div>
         </Seccion>
       )}

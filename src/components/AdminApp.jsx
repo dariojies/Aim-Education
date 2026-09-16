@@ -4164,7 +4164,7 @@ function BillingTPV({ showToast }) {
                     if (!persona || !actividad || !(imp > 0)) return;
                     const ivaPct = Number(addBono.ivaPct) || 0;
                     const base = Math.round((imp / (1 + ivaPct / 100) + Number.EPSILON) * 100) / 100;
-                    setExtras(x => [...x, { key: Math.random().toString(36).slice(2), clienteId: persona.id, nombre: persona.nombre, concepto: BONO_CONCEPTO, esBono: true, actividad, clases, descripcion: `Bono ${clases} clases — ${actividad}`, precio: base, bruto: imp, ivaPct, tipo: 'Otros', descuentoPct: 0, mes: null }]);
+                    setExtras(x => [...x, { key: Math.random().toString(36).slice(2), clienteId: persona.id, nombre: persona.nombre, concepto: BONO_CONCEPTO, esBono: true, actividad, clases, descripcion: `Bono ${clases} clases — ${actividad === '__adultos__' ? 'Adultos (varias actividades)' : actividad}`, precio: base, bruto: imp, ivaPct, tipo: 'Otros', descuentoPct: 0, mes: null }]);
                     setAddBono(null);
                   }}>
                   <select value={addBono.clienteId} onChange={e => setAddBono(a => ({ ...a, clienteId: e.target.value }))} required style={{ fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
@@ -4173,7 +4173,9 @@ function BillingTPV({ showToast }) {
                   </select>
                   <select value={addBono.actividad || ''} onChange={e => setAddBono(a => ({ ...a, actividad: e.target.value }))} required style={{ fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
                     <option value="">Actividad del bono...</option>
-                    {actividades.map(a => <option key={a} value={a}>{a}</option>)}
+                    {/* Bono de adultos (#253): vale en todas las clases que admiten el bono de adultos. */}
+                    <option value="__adultos__">Bono de adultos (varias actividades)</option>
+                    {actividades.filter(a => !/ingl[eé]s/i.test(a)).map(a => <option key={a} value={a}>{a}</option>)}
                   </select>
                   <input type="number" min="1" max="50" step="1" placeholder="Clases" title="Nº de clases del bono" value={addBono.clases ?? 3} onChange={e => setAddBono(a => ({ ...a, clases: e.target.value }))}
                     style={{ width: 80, fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }} />
