@@ -1133,24 +1133,92 @@ async function initDb() {
         await client.query(`CREATE INDEX IF NOT EXISTS ix_fichajes_user_dia ON aim_fichajes (user_id, dia)`);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_fichajes_ts ON aim_fichajes (ts)`);
 
+        // Correcciones con aprobación de la otra parte (ticket #251). Nada cambia en
+        // el registro hasta que se aprueba: si la propone la empresa, la aprueba el
+        // trabajador; si la pide el trabajador, la valida la empresa. Tipos:
+        //   alta      → añadir un fichaje olvidado (tipo + hora)
+        //   anular    → dejar sin efecto un fichaje equivocado (fichaje_id)
+        //   modificar → cambiar la hora/tipo de un fichaje (anula el original y
+        //               añade el nuevo, enlazados; el original no se toca)
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_fichaje_solicitudes (
+                id SERIAL PRIMARY KEY,
+                user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                accion VARCHAR(12) NOT NULL,
+                fichaje_id INTEGER REFERENCES aim_fichajes(id),
+                tipo VARCHAR(12),
+                ts TIMESTAMPTZ,
+                motivo TEXT NOT NULL,
+                origen VARCHAR(12) NOT NULL DEFAULT 'correccion',
+                solicitado_por UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                iniciado_por VARCHAR(10) NOT NULL,      -- trabajador | empresa
+                estado VARCHAR(10) NOT NULL DEFAULT 'pendiente', -- pendiente | aprobada | rechazada | cancelada
+                resuelto_por UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                resuelto_at TIMESTAMPTZ,
+                respuesta TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_fichaje_sol_user ON aim_fichaje_solicitudes (user_id, estado)`);
+        // Un fichaje creado o corregido por una solicitud aprobada queda enlazado a
+        // ella, y el nuevo de una modificación apunta al original que sustituye.
+        await client.query(`ALTER TABLE aim_fichajes ADD COLUMN IF NOT EXISTS solicitud_id INTEGER REFERENCES aim_fichaje_solicitudes(id)`);
+        await client.query(`ALTER TABLE aim_fichajes ADD COLUMN IF NOT EXISTS corrige_id INTEGER REFERENCES aim_fichajes(id)`);
+        // Anulaciones como apuntes aparte (ticket #251): el fichaje original nunca
+        // se modifica; su anulación es otro registro, con quién, cuándo y por qué,
+        // y sigue visible en el histórico y en las descargas.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_fichaje_anulaciones (
+                id SERIAL PRIMARY KEY,
+                fichaje_id INTEGER NOT NULL UNIQUE REFERENCES aim_fichajes(id),
+                solicitud_id INTEGER REFERENCES aim_fichaje_solicitudes(id),
+                anulado_por UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                motivo TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        // Las anulaciones hechas antes (marcadas en la propia fila) pasan a la tabla
+        // de anulaciones, conservando quién, cuándo y el motivo. Idempotente.
+        await client.query(`
+            INSERT INTO aim_fichaje_anulaciones (fichaje_id, anulado_por, motivo, created_at)
+            SELECT id, anulado_por, anulado_motivo, COALESCE(anulado_at, created_at)
+            FROM aim_fichajes WHERE anulado = true
+            ON CONFLICT (fichaje_id) DO NOTHING
+        `);
+
         // Horario laboral esperado de cada trabajador (ticket #233): a qué hora
         // entra y sale cada día de la semana. Sirve para recordarle por correo y en
         // la app que fiche. Sin fila para un día = ese día no trabaja. (0 = lunes.)
+        // Con 'tramo' (ticket #251) un mismo día puede tener turno de mañana (1) y
+        // de tarde (2).
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_horario_laboral (
                 user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
                 dia SMALLINT NOT NULL,
+                tramo SMALLINT NOT NULL DEFAULT 1,
                 entrada VARCHAR(5) NOT NULL,
                 salida VARCHAR(5) NOT NULL,
-                PRIMARY KEY (user_id, dia)
+                PRIMARY KEY (user_id, dia, tramo)
             )
         `);
+        await client.query(`ALTER TABLE aim_horario_laboral ADD COLUMN IF NOT EXISTS tramo SMALLINT NOT NULL DEFAULT 1`);
+        {
+            // La clave antigua era (user_id, dia): se amplía con el tramo.
+            const pk = await client.query(
+                `SELECT conname, pg_get_constraintdef(oid) AS def FROM pg_constraint
+                 WHERE conrelid = 'aim_horario_laboral'::regclass AND contype = 'p'`);
+            if (pk.rowCount && !/tramo/.test(pk.rows[0].def)) {
+                await client.query(`ALTER TABLE aim_horario_laboral DROP CONSTRAINT ${pk.rows[0].conname}`);
+                await client.query(`ALTER TABLE aim_horario_laboral ADD PRIMARY KEY (user_id, dia, tramo)`);
+            }
+        }
         // Control de los recordatorios ya enviados, para no repetir el mismo aviso.
+        // tipo: entrada1/salida1 (mañana), entrada2/salida2 (tarde).
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_fichaje_avisos (
                 user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
                 dia DATE NOT NULL,
-                tipo VARCHAR(10) NOT NULL,   -- entrada | salida
+                tipo VARCHAR(10) NOT NULL,
                 sent_at TIMESTAMPTZ DEFAULT NOW(),
                 PRIMARY KEY (user_id, dia, tipo)
             )
@@ -9687,6 +9755,23 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
             }
         }
 
+        // Fichaje (ticket #251): correcciones que esperan que las apruebe el propio
+        // trabajador, y solicitudes de los trabajadores que tiene que validar
+        // secretaría/dirección. Al que pidió una, se le avisa también de la respuesta.
+        {
+            const fj = await pool.query(
+                `SELECT COUNT(*) FILTER (WHERE s.estado = 'pendiente' AND s.iniciado_por = 'empresa' AND s.user_id = $1)::int AS por_aprobar,
+                        COUNT(*) FILTER (WHERE s.estado = 'pendiente' AND s.iniciado_por = 'trabajador' AND s.user_id <> $1)::int AS por_validar,
+                        COUNT(*) FILTER (WHERE s.estado IN ('aprobada','rechazada') AND s.iniciado_por = 'trabajador'
+                                         AND s.solicitado_por = $1 AND s.resuelto_at > NOW() - INTERVAL '3 days')::int AS resueltas
+                 FROM aim_fichaje_solicitudes s JOIN users w ON w.user_id = s.user_id
+                 WHERE w.club_id = $2`, [yo, AIM_CLUB_ID]);
+            const x = fj.rows[0];
+            if (x.por_aprobar) avisos.push({ tipo: 'fichaje', texto: `${x.por_aprobar} corrección${x.por_aprobar !== 1 ? 'es' : ''} de tu fichaje por aprobar`, detalle: 'no se aplican hasta que las apruebes', destino: '/admin/fichaje', n: x.por_aprobar });
+            if (x.por_validar && mandaAlMenos(req.userSession?.rol, 'secretaria')) avisos.push({ tipo: 'fichaje', texto: `${x.por_validar} solicitud${x.por_validar !== 1 ? 'es' : ''} de corrección de fichaje por validar`, detalle: 'las han pedido los trabajadores', destino: '/admin/fichaje', n: x.por_validar });
+            if (x.resueltas) avisos.push({ tipo: 'fichaje', texto: `${x.resueltas} solicitud${x.resueltas !== 1 ? 'es' : ''} de corrección de fichaje respondida${x.resueltas !== 1 ? 's' : ''}`, detalle: 'mira el resultado en Fichaje', destino: '/admin/fichaje', n: x.resueltas });
+        }
+
         const esp = espera.rows[0];
         if (esp.n) avisos.push({ tipo: 'clases', texto: `${esp.n} clase${esp.n !== 1 ? 's' : ''} con plaza libre y gente esperando`, detalle: 'se puede dar la plaza al primero de la lista', destino: '/admin/clases', n: esp.n });
 
@@ -10257,13 +10342,18 @@ app.get('/api/admin/mascotas/:id/sugerencia', authenticateSession, requireAdmin,
 // corrige olvidos y exporta para la Inspección.
 // ═════════════════════════════════════════════════════════════════════════════
 const TIPOS_FICHAJE = ['entrada', 'salida', 'pausa_inicio', 'pausa_fin'];
+const ETIQUETA_FICHAJE = { entrada: 'Entrada', salida: 'Salida', pausa_inicio: 'Inicio de pausa', pausa_fin: 'Fin de pausa' };
+
+// Un fichaje está vigente si no tiene una anulación (ticket #251). Las
+// anulaciones van en su propia tabla: el fichaje original nunca se modifica.
+const FICHAJE_VIGENTE = (alias) => `NOT EXISTS (SELECT 1 FROM aim_fichaje_anulaciones an WHERE an.fichaje_id = ${alias}.id)`;
 
 // Estado del trabajador según su último apunte vivo: fuera · dentro · pausa.
 async function estadoFichaje(userId, cliente = pool) {
     const r = await cliente.query(
-        `SELECT tipo, ts FROM aim_fichajes
-         WHERE user_id = $1 AND anulado = false
-         ORDER BY ts DESC, id DESC LIMIT 1`, [userId]);
+        `SELECT f.tipo, f.ts FROM aim_fichajes f
+         WHERE f.user_id = $1 AND ${FICHAJE_VIGENTE('f')}
+         ORDER BY f.ts DESC, f.id DESC LIMIT 1`, [userId]);
     const ultimo = r.rows[0] || null;
     let estado = 'fuera';
     if (ultimo) {
@@ -10305,20 +10395,35 @@ function calcularTrabajado(apuntes) {
 // Apuntes de un trabajador en un rango, agrupados por día con su total. Lo usan
 // tanto "mis fichajes" como la gestión de dirección.
 async function listadoFichajes({ userId, desde, hasta }) {
+    // Todos los apuntes, también los anulados (ticket #251): tienen que verse, con
+    // quién los anuló, cuándo y por qué. Para las horas solo cuentan los vigentes.
     const ap = await pool.query(
-        `SELECT id, tipo, ts, dia, ip, creado_por, motivo,
-                (creado_por IS NOT NULL) AS corregido
-         FROM aim_fichajes
-         WHERE user_id = $1 AND anulado = false
-           AND ($2::date IS NULL OR dia >= $2::date)
-           AND ($3::date IS NULL OR dia <= $3::date)
-         ORDER BY ts`, [userId, desde || null, hasta || null]);
-    const calc = calcularTrabajado(ap.rows);
+        `SELECT f.id, f.tipo, f.ts, f.dia, f.origen, f.motivo, f.solicitud_id, f.corrige_id,
+                (f.creado_por IS NOT NULL) AS corregido,
+                TRIM(CONCAT(cu.name, ' ', COALESCE(cu.surname, ''))) AS creado_por_nombre,
+                an.id AS anulacion_id, an.motivo AS anulado_motivo, an.created_at AS anulado_at,
+                TRIM(CONCAT(au.name, ' ', COALESCE(au.surname, ''))) AS anulado_por_nombre,
+                (SELECT s.id FROM aim_fichaje_solicitudes s
+                  WHERE s.fichaje_id = f.id AND s.estado = 'pendiente' LIMIT 1) AS solicitud_pendiente
+         FROM aim_fichajes f
+         LEFT JOIN users cu ON cu.user_id = f.creado_por
+         LEFT JOIN aim_fichaje_anulaciones an ON an.fichaje_id = f.id
+         LEFT JOIN users au ON au.user_id = an.anulado_por
+         WHERE f.user_id = $1
+           AND ($2::date IS NULL OR f.dia >= $2::date)
+           AND ($3::date IS NULL OR f.dia <= $3::date)
+         ORDER BY f.ts, f.id`, [userId, desde || null, hasta || null]);
+    const calc = calcularTrabajado(ap.rows.filter(a => !a.anulacion_id));
     const porDia = {};
     for (const a of ap.rows) {
         const k = String(a.dia).slice(0, 10);
         (porDia[k] ||= { dia: k, apuntes: [], segundos: 0 }).apuntes.push({
-            id: a.id, tipo: a.tipo, ts: a.ts, corregido: a.corregido, motivo: a.motivo || null,
+            id: a.id, tipo: a.tipo, ts: a.ts, origen: a.origen, corregido: a.corregido,
+            motivo: a.motivo || null, creadoPor: a.corregido ? (a.creado_por_nombre || null) : null,
+            corrigeId: a.corrige_id || null,
+            anulado: !!a.anulacion_id,
+            anulacion: a.anulacion_id ? { motivo: a.anulado_motivo || null, por: a.anulado_por_nombre || null, at: a.anulado_at } : null,
+            solicitudPendiente: a.solicitud_pendiente || null,
         });
     }
     for (const k of Object.keys(porDia)) porDia[k].segundos = Math.round(calc.porDia[k] || 0);
@@ -10330,11 +10435,13 @@ async function listadoFichajes({ userId, desde, hasta }) {
 // Día de la semana de hoy en hora de Madrid (0 = lunes, convención aim-tul).
 const diaSemanaHoy = () => (new Date(hoyMadrid() + 'T12:00:00').getDay() + 6) % 7;
 
-// El horario laboral de un trabajador para un día de la semana concreto (o hoy).
+// El horario laboral de un trabajador para un día de la semana concreto (o hoy):
+// sus tramos ordenados (mañana, tarde). Vacío si ese día no trabaja.
 async function horarioDiaDe(userId, dia = diaSemanaHoy(), cliente = pool) {
     const r = await cliente.query(
-        `SELECT entrada, salida FROM aim_horario_laboral WHERE user_id = $1 AND dia = $2`, [userId, dia]);
-    return r.rowCount ? { entrada: r.rows[0].entrada, salida: r.rows[0].salida } : null;
+        `SELECT tramo, entrada, salida FROM aim_horario_laboral WHERE user_id = $1 AND dia = $2 ORDER BY tramo`,
+        [userId, dia]);
+    return r.rows.map(x => ({ tramo: x.tramo, entrada: x.entrada, salida: x.salida }));
 }
 
 app.get('/api/fichaje/estado', authenticateSession, requireAdmin, async (req, res) => {
@@ -10343,10 +10450,14 @@ app.get('/api/fichaje/estado', authenticateSession, requireAdmin, async (req, re
         const { estado, ultimo } = await estadoFichaje(uid);
         const hoy = hoyMadrid();
         const ap = await pool.query(
-            `SELECT id, tipo, ts, dia, (creado_por IS NOT NULL) AS corregido
-             FROM aim_fichajes WHERE user_id = $1 AND dia = $2::date AND anulado = false
-             ORDER BY ts`, [uid, hoy]);
+            `SELECT f.id, f.tipo, f.ts, f.dia, (f.creado_por IS NOT NULL) AS corregido
+             FROM aim_fichajes f WHERE f.user_id = $1 AND f.dia = $2::date AND ${FICHAJE_VIGENTE('f')}
+             ORDER BY f.ts`, [uid, hoy]);
         const calc = calcularTrabajado(ap.rows);
+        // Correcciones que ha propuesto la empresa y esperan su aprobación (#251).
+        const pend = await pool.query(
+            `SELECT COUNT(*)::int n FROM aim_fichaje_solicitudes
+             WHERE user_id = $1 AND iniciado_por = 'empresa' AND estado = 'pendiente'`, [uid]);
         res.set('Cache-Control', 'no-store');
         res.json({
             estado, hoy,
@@ -10355,8 +10466,9 @@ app.get('/api/fichaje/estado', authenticateSession, requireAdmin, async (req, re
             enPausaDesde: estado === 'pausa' && ultimo ? ultimo.ts : null,
             trabajadoHoySeg: Math.round(calc.porDia[hoy] || 0),
             apuntesHoy: ap.rows.map(x => ({ id: x.id, tipo: x.tipo, ts: x.ts, corregido: x.corregido })),
-            // Horario esperado de hoy, para el aviso en la app (ticket #233).
+            // Horario esperado de hoy (tramos de mañana/tarde), para el aviso en la app.
             horarioHoy: await horarioDiaDe(uid),
+            porAprobar: pend.rows[0].n,
         });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -10365,7 +10477,7 @@ app.get('/api/fichaje/estado', authenticateSession, requireAdmin, async (req, re
 app.get('/api/fichaje/mi-horario', authenticateSession, requireAdmin, async (req, res) => {
     try {
         const r = await pool.query(
-            `SELECT dia, entrada, salida FROM aim_horario_laboral WHERE user_id = $1 ORDER BY dia`,
+            `SELECT dia, tramo, entrada, salida FROM aim_horario_laboral WHERE user_id = $1 ORDER BY dia, tramo`,
             [req.userSession.userId]);
         res.set('Cache-Control', 'no-store');
         res.json({ dias: r.rows });
@@ -10451,39 +10563,221 @@ app.get('/api/admin/fichajes', authenticateSession, requireAdmin, requireRol('se
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Corregir/añadir un apunte a mano (olvidos). Queda como corrección, con su
-// motivo y quién la hizo. La hora se interpreta en horario de Madrid.
-app.post('/api/admin/fichajes', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
-    const { userId, tipo, fecha, hora, motivo } = req.body || {};
-    if (!userId) return res.status(400).json({ error: 'Falta el trabajador.' });
-    if (!TIPOS_FICHAJE.includes(String(tipo))) return res.status(400).json({ error: 'Tipo de fichaje no válido.' });
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha || ''))) return res.status(400).json({ error: 'Fecha no válida.' });
-    if (!/^\d{2}:\d{2}$/.test(String(hora || ''))) return res.status(400).json({ error: 'Hora no válida (HH:MM).' });
-    if (!String(motivo || '').trim()) return res.status(400).json({ error: 'Indica el motivo de la corrección.' });
+// ── Correcciones con aprobación (ticket #251) ──
+// Nada se cambia en el registro sin que lo apruebe la otra parte: si la propone
+// la empresa, la aprueba el trabajador; si la pide el trabajador, la valida
+// secretaría/dirección. Mientras está pendiente, vale el fichaje original. Toda
+// propuesta, aprobación y rechazo queda guardado.
+const fmtFechaHoraMadrid = (ts) => new Date(ts).toLocaleString('es-ES', {
+    timeZone: 'Europe/Madrid', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+// ¿Puede quien hace la petición resolver esta solicitud? Nadie se aprueba lo suyo.
+function puedeResolverSolicitud(req, s) {
+    const yo = String(req.userSession.userId);
+    if (String(s.solicitado_por || '') === yo) return false;
+    if (s.iniciado_por === 'empresa') return String(s.user_id) === yo;
+    return mandaAlMenos(req.userSession?.rol, 'secretaria') && String(s.user_id) !== yo;
+}
+
+// Descripción legible de lo que pide una solicitud (para pantallas y correos).
+function describirSolicitud(s) {
+    const nuevo = s.ts ? `${(ETIQUETA_FICHAJE[s.tipo] || s.tipo || '').toLowerCase()} el ${fmtFechaHoraMadrid(s.ts)}` : '';
+    const orig = s.orig_ts ? `${(ETIQUETA_FICHAJE[s.orig_tipo] || s.orig_tipo || '').toLowerCase()} del ${fmtFechaHoraMadrid(s.orig_ts)}` : 'un fichaje';
+    if (s.accion === 'alta') return `Añadir ${nuevo}`;
+    if (s.accion === 'anular') return `Anular ${orig}`;
+    return `Cambiar ${orig} por ${nuevo}`;
+}
+
+const SQL_SOLICITUDES_FICHAJE = `
+    SELECT s.*, TRIM(CONCAT(w.name, ' ', COALESCE(w.surname, ''))) AS trabajador,
+           TRIM(CONCAT(sp.name, ' ', COALESCE(sp.surname, ''))) AS solicitado_por_nombre,
+           TRIM(CONCAT(rp.name, ' ', COALESCE(rp.surname, ''))) AS resuelto_por_nombre,
+           fo.tipo AS orig_tipo, fo.ts AS orig_ts
+    FROM aim_fichaje_solicitudes s
+    JOIN users w ON w.user_id = s.user_id
+    LEFT JOIN users sp ON sp.user_id = s.solicitado_por
+    LEFT JOIN users rp ON rp.user_id = s.resuelto_por
+    LEFT JOIN aim_fichajes fo ON fo.id = s.fichaje_id`;
+
+const mapSolicitudFichaje = (req, s) => ({
+    id: s.id, userId: s.user_id, trabajador: s.trabajador, accion: s.accion, origen: s.origen,
+    fichajeId: s.fichaje_id, tipo: s.tipo, ts: s.ts, origTipo: s.orig_tipo || null, origTs: s.orig_ts || null,
+    descripcion: describirSolicitud(s), motivo: s.motivo,
+    iniciadoPor: s.iniciado_por, solicitadoPor: s.solicitado_por_nombre || null, creadaAt: s.created_at,
+    estado: s.estado, resueltoPor: s.resuelto_por_nombre || null, resueltoAt: s.resuelto_at, respuesta: s.respuesta,
+    puedoResolver: s.estado === 'pendiente' && puedeResolverSolicitud(req, s),
+    puedoCancelar: s.estado === 'pendiente' && String(s.solicitado_por || '') === String(req.userSession.userId),
+});
+
+// Aplica una solicitud aprobada, dentro de la transacción de quien la aprueba.
+// El original nunca se toca: se anota su anulación y, si toca, el fichaje nuevo.
+async function aplicarSolicitudFichaje(client, s) {
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, ['fichaje:' + s.user_id]);
+    if (s.accion === 'anular' || s.accion === 'modificar') {
+        const f = await client.query(
+            `SELECT f.id FROM aim_fichajes f WHERE f.id = $1 AND ${FICHAJE_VIGENTE('f')}`, [s.fichaje_id]);
+        if (!f.rowCount) throw { httP: 409, msg: 'Ese fichaje ya no está vigente: no se puede aplicar la corrección.' };
+        await client.query(
+            `INSERT INTO aim_fichaje_anulaciones (fichaje_id, solicitud_id, anulado_por, motivo) VALUES ($1, $2, $3, $4)`,
+            [s.fichaje_id, s.id, s.solicitado_por, s.motivo]);
+    }
+    if (s.accion === 'alta' || s.accion === 'modificar') {
+        await client.query(
+            `INSERT INTO aim_fichajes (user_id, tipo, ts, dia, origen, creado_por, motivo, solicitud_id, corrige_id)
+             VALUES ($1, $2, $3::timestamptz, ($3::timestamptz AT TIME ZONE 'Europe/Madrid')::date, $4, $5, $6, $7, $8)`,
+            [s.user_id, s.tipo, s.ts, s.origen === 'incidencia' ? 'incidencia' : 'correccion',
+             s.solicitado_por, s.motivo, s.id, s.accion === 'modificar' ? s.fichaje_id : null]);
+    }
+}
+
+// Correos de las correcciones: al trabajador cuando la empresa le propone una, y
+// cuando se resuelve la que pidió él.
+async function correoSolicitudFichaje(solicitudId, momento) {
+    if (!mailTransporter) return;
     try {
-        const es = await pool.query(
-            `SELECT 1 FROM users WHERE user_id = $1 AND club_id = $2`, [userId, AIM_CLUB_ID]);
-        if (!es.rowCount) return res.status(404).json({ error: 'Ese trabajador no es del club.' });
+        const r = await pool.query(`${SQL_SOLICITUDES_FICHAJE} WHERE s.id = $1`, [solicitudId]);
+        const s = r.rows[0];
+        if (!s) return;
+        const w = await pool.query(`SELECT email, name FROM users WHERE user_id = $1`, [s.user_id]);
+        const email = w.rows[0]?.email;
+        if (!email) return;
+        const base = (process.env.PUBLIC_BASE_URL || 'https://aim.aimeducation.es').replace(/\/+$/, '');
+        const propuesta = momento === 'propuesta';
+        const asunto = propuesta ? 'Corrección de tu registro de jornada pendiente de aprobar'
+            : `Tu solicitud de corrección ha sido ${s.estado === 'aprobada' ? 'aprobada' : 'rechazada'}`;
+        const cuerpo = propuesta
+            ? `<p>${s.solicitado_por_nombre || 'Secretaría'} ha propuesto una corrección de tu registro de jornada:</p>
+               <p style="background:#f4f4f4;padding:10px 14px;border-radius:8px"><b>${describirSolicitud(s)}</b><br>Motivo: ${s.motivo}</p>
+               <p>No se aplicará hasta que la apruebes. Entra en <b>Fichaje</b> para aprobarla o rechazarla.</p>`
+            : `<p>Tu solicitud <b>«${describirSolicitud(s)}»</b> ha sido <b>${s.estado}</b>${s.resuelto_por_nombre ? ` por ${s.resuelto_por_nombre}` : ''}.</p>
+               ${s.respuesta ? `<p>Comentario: ${s.respuesta}</p>` : ''}`;
+        await mailTransporter.sendMail({
+            from: process.env.EMAIL_USER, to: email, subject: asunto,
+            html: `<div style="font-family:system-ui,sans-serif;color:#1a1a1a">
+              <p>Hola ${w.rows[0].name || ''},</p>${cuerpo}
+              <p style="margin:18px 0"><a href="${base}/admin" style="background:#0a7d3c;color:#fff;text-decoration:none;padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block">Ir a Fichaje</a></p>
+              <p style="font-size:12px;color:#888">AIM Education · Algeciras</p></div>`,
+        });
+    } catch (e) { console.error('[fichaje solicitud mail]', e.message); }
+}
+
+// Pedir o proponer una corrección. Sin userId (o el propio): la pide el trabajador
+// y la valida la empresa. Con el de otra persona: la propone secretaría/dirección
+// y la aprueba ese trabajador.
+app.post('/api/fichaje/solicitudes', authenticateSession, requireAdmin, async (req, res) => {
+    const yo = req.userSession.userId;
+    const { accion, fichajeId, tipo, fecha, hora, motivo } = req.body || {};
+    const userId = req.body?.userId || yo;
+    const esEmpresa = String(userId) !== String(yo);
+    if (esEmpresa && !mandaAlMenos(req.userSession?.rol, 'secretaria')) {
+        return res.status(403).json({ error: 'Solo secretaría o dirección pueden proponer correcciones del registro de otra persona.' });
+    }
+    if (!['alta', 'anular', 'modificar'].includes(accion)) return res.status(400).json({ error: 'Acción no válida.' });
+    const mot = String(motivo || '').trim().slice(0, 500);
+    if (!mot) return res.status(400).json({ error: 'Indica el motivo de la corrección.' });
+    // Fichaje de incidencia (ticket #252): el trabajador no pudo fichar a su hora.
+    const origen = req.body?.origen === 'incidencia' ? 'incidencia' : 'correccion';
+    try {
+        const u = await pool.query(`SELECT 1 FROM users WHERE user_id = $1 AND club_id = $2`, [userId, AIM_CLUB_ID]);
+        if (!u.rowCount) return res.status(404).json({ error: 'Esa persona no es del club.' });
+        let ts = null, tipoN = null, fid = null;
+        if (accion === 'alta' || accion === 'modificar') {
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha || ''))) return res.status(400).json({ error: 'Fecha no válida.' });
+            if (!/^\d{2}:\d{2}$/.test(String(hora || ''))) return res.status(400).json({ error: 'Hora no válida (HH:MM).' });
+            const t = await pool.query(
+                `SELECT (($1 || ' ' || $2)::timestamp AT TIME ZONE 'Europe/Madrid') AS ts,
+                        (($1 || ' ' || $2)::timestamp AT TIME ZONE 'Europe/Madrid') > NOW() AS futuro`, [fecha, hora]);
+            if (t.rows[0].futuro) return res.status(400).json({ error: 'No se puede registrar un fichaje en una hora que aún no ha llegado.' });
+            ts = t.rows[0].ts;
+        }
+        if (accion === 'anular' || accion === 'modificar') {
+            const f = await pool.query(
+                `SELECT f.id, f.tipo FROM aim_fichajes f WHERE f.id = $1 AND f.user_id = $2 AND ${FICHAJE_VIGENTE('f')}`,
+                [fichajeId, userId]);
+            if (!f.rowCount) return res.status(404).json({ error: 'Ese fichaje no existe o ya está anulado.' });
+            const dup = await pool.query(
+                `SELECT 1 FROM aim_fichaje_solicitudes WHERE fichaje_id = $1 AND estado = 'pendiente'`, [fichajeId]);
+            if (dup.rowCount) return res.status(409).json({ error: 'Ese fichaje ya tiene una corrección pendiente de aprobar.' });
+            fid = f.rows[0].id;
+            if (accion === 'modificar') tipoN = TIPOS_FICHAJE.includes(tipo) ? tipo : f.rows[0].tipo;
+        } else {
+            if (!TIPOS_FICHAJE.includes(tipo)) return res.status(400).json({ error: 'Tipo de fichaje no válido.' });
+            tipoN = tipo;
+        }
         const ins = await pool.query(
-            `INSERT INTO aim_fichajes (user_id, tipo, ts, dia, origen, creado_por, motivo)
-             VALUES ($1, $2, ($3 || ' ' || $4)::timestamp AT TIME ZONE 'Europe/Madrid', $3::date, 'correccion', $5, $6)
-             RETURNING id`,
-            [userId, tipo, fecha, hora, req.userSession.userId, String(motivo).trim().slice(0, 300)]);
-        res.status(201).json({ success: true, id: ins.rows[0].id });
+            `INSERT INTO aim_fichaje_solicitudes (user_id, accion, fichaje_id, tipo, ts, motivo, origen, solicitado_por, iniciado_por)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+            [userId, accion, fid, tipoN, ts, mot, origen, yo, esEmpresa ? 'empresa' : 'trabajador']);
+        if (esEmpresa) correoSolicitudFichaje(ins.rows[0].id, 'propuesta').catch(() => {});
+        res.status(201).json({ success: true, id: ins.rows[0].id, pendienteDe: esEmpresa ? 'trabajador' : 'empresa' });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Anular un apunte equivocado (no se borra: deja rastro con motivo).
-app.post('/api/admin/fichajes/:id/anular', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
-    const motivo = String(req.body?.motivo || '').trim();
-    if (!motivo) return res.status(400).json({ error: 'Indica el motivo de la anulación.' });
+// Las solicitudes del propio trabajador: las que pidió y las que le han propuesto.
+app.get('/api/fichaje/solicitudes', authenticateSession, requireAdmin, async (req, res) => {
     try {
         const r = await pool.query(
-            `UPDATE aim_fichajes f SET anulado = true, anulado_por = $2, anulado_motivo = $3, anulado_at = NOW()
-             FROM users u WHERE f.id = $1 AND u.user_id = f.user_id AND u.club_id = $4 AND f.anulado = false
-             RETURNING f.id`,
-            [req.params.id, req.userSession.userId, motivo.slice(0, 300), AIM_CLUB_ID]);
-        if (!r.rowCount) return res.status(404).json({ error: 'Ese apunte no existe o ya estaba anulado.' });
+            `${SQL_SOLICITUDES_FICHAJE}
+             WHERE s.user_id = $1 AND (s.estado = 'pendiente' OR s.created_at > NOW() - INTERVAL '90 days')
+             ORDER BY (s.estado = 'pendiente') DESC, s.created_at DESC`, [req.userSession.userId]);
+        res.set('Cache-Control', 'no-store');
+        res.json({ solicitudes: r.rows.map(s => mapSolicitudFichaje(req, s)) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Todas las solicitudes (secretaría/dirección), por estado y periodo.
+app.get('/api/admin/fichajes/solicitudes', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const soloPendientes = req.query.estado !== 'todas';
+    try {
+        const r = await pool.query(
+            `${SQL_SOLICITUDES_FICHAJE}
+             WHERE w.club_id = $1 AND ($2::boolean = false OR s.estado = 'pendiente')
+             ORDER BY (s.estado = 'pendiente') DESC, s.created_at DESC LIMIT 300`, [AIM_CLUB_ID, soloPendientes]);
+        res.set('Cache-Control', 'no-store');
+        res.json({ solicitudes: r.rows.map(s => mapSolicitudFichaje(req, s)) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Aprobar o rechazar. Solo la otra parte (nunca quien la pidió).
+app.post('/api/fichaje/solicitudes/:id/resolver', authenticateSession, requireAdmin, async (req, res) => {
+    const aprobar = req.body?.aprobar === true;
+    const respuesta = String(req.body?.respuesta || '').trim().slice(0, 500) || null;
+    if (!aprobar && !respuesta) return res.status(400).json({ error: 'Indica por qué la rechazas.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const r = await client.query(`SELECT * FROM aim_fichaje_solicitudes WHERE id = $1 FOR UPDATE`, [req.params.id]);
+        const s = r.rows[0];
+        if (!s) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Esa solicitud no existe.' }); }
+        if (s.estado !== 'pendiente') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Esa solicitud ya está resuelta.' }); }
+        if (!puedeResolverSolicitud(req, s)) {
+            await client.query('ROLLBACK');
+            return res.status(403).json({ error: s.iniciado_por === 'empresa'
+                ? 'Esta corrección la tiene que aprobar el propio trabajador.'
+                : 'Esta solicitud la tiene que validar secretaría o dirección (y no quien la pidió).' });
+        }
+        if (aprobar) await aplicarSolicitudFichaje(client, s);
+        await client.query(
+            `UPDATE aim_fichaje_solicitudes SET estado = $2, resuelto_por = $3, resuelto_at = NOW(), respuesta = $4 WHERE id = $1`,
+            [s.id, aprobar ? 'aprobada' : 'rechazada', req.userSession.userId, respuesta]);
+        await client.query('COMMIT');
+        if (s.iniciado_por === 'trabajador') correoSolicitudFichaje(s.id, 'resuelta').catch(() => {});
+        res.json({ success: true, estado: aprobar ? 'aprobada' : 'rechazada' });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        if (err && err.httP) return res.status(err.httP).json({ error: err.msg });
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+// Retirar una solicitud propia mientras sigue pendiente (queda como cancelada).
+app.post('/api/fichaje/solicitudes/:id/cancelar', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `UPDATE aim_fichaje_solicitudes SET estado = 'cancelada', resuelto_por = $2, resuelto_at = NOW()
+             WHERE id = $1 AND solicitado_por = $2 AND estado = 'pendiente' RETURNING id`,
+            [req.params.id, req.userSession.userId]);
+        if (!r.rowCount) return res.status(404).json({ error: 'No hay ninguna solicitud tuya pendiente con ese número.' });
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -10495,21 +10789,64 @@ app.get('/api/admin/fichajes/export.csv', authenticateSession, requireAdmin, req
     const desde = esFecha(req.query.desde) ? req.query.desde : null;
     const persona = req.query.persona || null;
     try {
+        // Todo lo que hay en el registro (ticket #251): también lo anulado, con quién,
+        // cuándo y por qué, y las correcciones con quién las propuso y quién las
+        // aprobó. Debajo, el histórico completo de solicitudes de corrección.
         const r = await pool.query(
             `SELECT TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre,
-                    f.tipo, f.ts, f.dia, f.ip, (f.creado_por IS NOT NULL) AS corregido, f.motivo
+                    f.id, f.tipo, f.ts, f.dia, f.ip, f.origen, f.motivo, f.solicitud_id, f.corrige_id,
+                    TRIM(CONCAT(cu.name, ' ', COALESCE(cu.surname, ''))) AS creado_por,
+                    TRIM(CONCAT(ru.name, ' ', COALESCE(ru.surname, ''))) AS aprobado_por,
+                    an.created_at AS anulado_at, an.motivo AS anulado_motivo,
+                    TRIM(CONCAT(au.name, ' ', COALESCE(au.surname, ''))) AS anulado_por,
+                    TRIM(CONCAT(aru.name, ' ', COALESCE(aru.surname, ''))) AS anulacion_aprobada_por
              FROM aim_fichajes f JOIN users u ON u.user_id = f.user_id
-             WHERE u.club_id = $1 AND f.anulado = false
+             LEFT JOIN users cu ON cu.user_id = f.creado_por
+             LEFT JOIN aim_fichaje_solicitudes fs ON fs.id = f.solicitud_id
+             LEFT JOIN users ru ON ru.user_id = fs.resuelto_por
+             LEFT JOIN aim_fichaje_anulaciones an ON an.fichaje_id = f.id
+             LEFT JOIN users au ON au.user_id = an.anulado_por
+             LEFT JOIN aim_fichaje_solicitudes asol ON asol.id = an.solicitud_id
+             LEFT JOIN users aru ON aru.user_id = asol.resuelto_por
+             WHERE u.club_id = $1
                AND ($2::date IS NULL OR f.dia >= $2::date)
                AND ($3::date IS NULL OR f.dia <= $3::date)
                AND ($4::uuid IS NULL OR f.user_id = $4)
-             ORDER BY nombre, f.ts`, [AIM_CLUB_ID, desde, hasta, persona]);
-        const ETQ = { entrada: 'Entrada', salida: 'Salida', pausa_inicio: 'Inicio pausa', pausa_fin: 'Fin pausa' };
+             ORDER BY nombre, f.ts, f.id`, [AIM_CLUB_ID, desde, hasta, persona]);
+        const sols = await pool.query(
+            `${SQL_SOLICITUDES_FICHAJE}
+             WHERE w.club_id = $1 AND ($4::uuid IS NULL OR s.user_id = $4)
+               AND ($2::date IS NULL OR s.created_at >= $2::date)
+               AND ($3::date IS NULL OR s.created_at < ($3::date + 1))
+             ORDER BY trabajador, s.created_at`, [AIM_CLUB_ID, desde, hasta, persona]);
         const esc = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
-        const fmt = ts => new Date(ts).toLocaleString('es-ES', { timeZone: 'Europe/Madrid', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-        const lineas = [['Trabajador', 'Día', 'Tipo', 'Fecha y hora', 'Origen', 'Motivo'].map(esc).join(';')];
+        const fila = (arr) => arr.map(esc).join(';');
+        const ORIGEN = { web: 'Fichaje', correccion: 'Corrección', incidencia: 'Incidencia' };
+        const lineas = [
+            fila([`Registro de jornada · ${desde || 'inicio'} a ${hasta} · generado el ${fmtFechaHoraMadrid(new Date())}`]),
+            '',
+            fila(['Nº', 'Trabajador', 'Día', 'Tipo', 'Fecha y hora', 'Origen', 'Motivo', 'Registrado por', 'Aprobado por',
+                'Sustituye al nº', 'Estado', 'Anulado el', 'Anulación propuesta por', 'Anulación aprobada por', 'Motivo de la anulación']),
+        ];
         for (const x of r.rows) {
-            lineas.push([x.nombre, String(x.dia).slice(0, 10), ETQ[x.tipo] || x.tipo, fmt(x.ts), x.corregido ? 'Corrección' : 'Fichaje', x.motivo || ''].map(esc).join(';'));
+            const corr = x.origen !== 'web';
+            lineas.push(fila([
+                x.id, x.nombre, String(x.dia).slice(0, 10), ETIQUETA_FICHAJE[x.tipo] || x.tipo, fmtFechaHoraMadrid(x.ts),
+                ORIGEN[x.origen] || x.origen, x.motivo || '', corr ? (x.creado_por || '') : '',
+                x.solicitud_id ? (x.aprobado_por || '') : '', x.corrige_id || '',
+                x.anulado_at ? 'Anulado' : 'Vigente', x.anulado_at ? fmtFechaHoraMadrid(x.anulado_at) : '',
+                x.anulado_por || '', x.anulacion_aprobada_por || '', x.anulado_motivo || '',
+            ]));
+        }
+        lineas.push('', fila(['Solicitudes de corrección']),
+            fila(['Nº', 'Trabajador', 'Qué se pide', 'Motivo', 'Pedida por', 'Iniciada por', 'Fecha de la solicitud',
+                'Estado', 'Resuelta por', 'Fecha de resolución', 'Comentario']));
+        for (const s of sols.rows) {
+            lineas.push(fila([
+                s.id, s.trabajador, describirSolicitud(s), s.motivo, s.solicitado_por_nombre || '',
+                s.iniciado_por === 'empresa' ? 'Empresa' : 'Trabajador', fmtFechaHoraMadrid(s.created_at),
+                s.estado, s.resuelto_por_nombre || '', s.resuelto_at ? fmtFechaHoraMadrid(s.resuelto_at) : '', s.respuesta || '',
+            ]));
         }
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', `attachment; filename="registro-jornada-${desde || 'inicio'}_${hasta}.csv"`);
@@ -10526,7 +10863,7 @@ app.get('/api/admin/fichajes/horario/:userId', authenticateSession, requireAdmin
             [req.params.userId, AIM_CLUB_ID]);
         if (!u.rowCount) return res.status(404).json({ error: 'Ese trabajador no es del club.' });
         const r = await pool.query(
-            `SELECT dia, entrada, salida FROM aim_horario_laboral WHERE user_id = $1 ORDER BY dia`, [req.params.userId]);
+            `SELECT dia, tramo, entrada, salida FROM aim_horario_laboral WHERE user_id = $1 ORDER BY dia, tramo`, [req.params.userId]);
         res.set('Cache-Control', 'no-store');
         res.json({ nombre: u.rows[0].nombre, dias: r.rows });
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -10535,15 +10872,24 @@ app.get('/api/admin/fichajes/horario/:userId', authenticateSession, requireAdmin
 app.put('/api/admin/fichajes/horario/:userId', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
     const dias = Array.isArray(req.body?.dias) ? req.body.dias : [];
     const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
-    // Cada día válido: 0..6, entrada y salida en HH:MM y entrada < salida.
+    const NOMBRE_DIA = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
+    // Cada tramo válido: día 0..6, tramo 1 (mañana) o 2 (tarde), entrada < salida,
+    // y la tarde empieza cuando ya ha acabado la mañana (ticket #251).
     const limpios = [];
     for (const d of dias) {
         const dia = Number(d?.dia);
+        const tramo = Number(d?.tramo) === 2 ? 2 : 1;
         if (!Number.isInteger(dia) || dia < 0 || dia > 6) continue;
         const entrada = String(d?.entrada || ''), salida = String(d?.salida || '');
         if (!HHMM.test(entrada) || !HHMM.test(salida)) continue;
-        if (entrada >= salida) return res.status(400).json({ error: `La salida debe ser posterior a la entrada (día ${dia}).` });
-        limpios.push({ dia, entrada, salida });
+        if (entrada >= salida) return res.status(400).json({ error: `El ${NOMBRE_DIA[dia]} (${tramo === 1 ? 'mañana' : 'tarde'}): la salida debe ser posterior a la entrada.` });
+        if (limpios.some(x => x.dia === dia && x.tramo === tramo)) continue;
+        limpios.push({ dia, tramo, entrada, salida });
+    }
+    for (let dia = 0; dia < 7; dia++) {
+        const m = limpios.find(x => x.dia === dia && x.tramo === 1), t = limpios.find(x => x.dia === dia && x.tramo === 2);
+        if (t && !m) return res.status(400).json({ error: `El ${NOMBRE_DIA[dia]} tiene turno de tarde sin turno de mañana: pon el turno en "mañana".` });
+        if (m && t && t.entrada < m.salida) return res.status(400).json({ error: `El ${NOMBRE_DIA[dia]}: el turno de tarde empieza antes de que acabe el de mañana.` });
     }
     const client = await pool.connect();
     try {
@@ -10553,8 +10899,8 @@ app.put('/api/admin/fichajes/horario/:userId', authenticateSession, requireAdmin
         await client.query(`DELETE FROM aim_horario_laboral WHERE user_id = $1`, [req.params.userId]);
         for (const d of limpios) {
             await client.query(
-                `INSERT INTO aim_horario_laboral (user_id, dia, entrada, salida) VALUES ($1, $2, $3, $4)`,
-                [req.params.userId, d.dia, d.entrada, d.salida]);
+                `INSERT INTO aim_horario_laboral (user_id, dia, tramo, entrada, salida) VALUES ($1, $2, $3, $4, $5)`,
+                [req.params.userId, d.dia, d.tramo, d.entrada, d.salida]);
         }
         await client.query('COMMIT');
         res.json({ success: true, dias: limpios });
@@ -10581,26 +10927,34 @@ async function recordatoriosFichaje() {
         const ahoraMin = (() => { const [h, m] = new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/Madrid', hour: '2-digit', minute: '2-digit' }).split(':').map(Number); return h * 60 + m; })();
         const base = (process.env.PUBLIC_BASE_URL || 'https://aim.aimeducation.es').replace(/\/+$/, '');
         const r = await pool.query(
-            `SELECT h.user_id, h.entrada, h.salida, u.email,
+            `SELECT h.user_id, h.tramo, h.entrada, h.salida, u.email,
                     TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre
              FROM aim_horario_laboral h JOIN users u ON u.user_id = h.user_id
-             WHERE h.dia = $1 AND u.club_id = $2 AND u.email IS NOT NULL AND u.email <> ''`,
+             WHERE h.dia = $1 AND u.club_id = $2 AND u.email IS NOT NULL AND u.email <> ''
+             ORDER BY h.user_id, h.tramo`,
             [dia, AIM_CLUB_ID]);
-        for (const w of r.rows) {
-            const entradaMin = minutosHHMM(w.entrada), salidaMin = minutosHHMM(w.salida);
-            // ENTRADA: desde su hora de entrada y hasta 90 min después; si no ha
-            // fichado ninguna entrada hoy, se le recuerda una vez.
-            if (ahoraMin >= entradaMin && ahoraMin <= entradaMin + 90) {
-                const yaEntro = await pool.query(
-                    `SELECT 1 FROM aim_fichajes WHERE user_id = $1 AND dia = $2::date AND tipo = 'entrada' AND anulado = false LIMIT 1`,
-                    [w.user_id, hoy]);
-                if (!yaEntro.rowCount) await avisarFichaje(w, 'entrada', hoy, base);
-            }
-            // SALIDA: desde su hora de salida y hasta 3 h después; si sigue fichado
-            // dentro (o en pausa), se le recuerda una vez.
-            if (ahoraMin >= salidaMin && ahoraMin <= salidaMin + 180) {
-                const est = await estadoFichaje(w.user_id);
-                if (est.estado === 'dentro' || est.estado === 'pausa') await avisarFichaje(w, 'salida', hoy, base);
+        // Por trabajador, con sus tramos del día (mañana y, si tiene, tarde).
+        const porTrabajador = new Map();
+        for (const row of r.rows) {
+            if (!porTrabajador.has(row.user_id)) porTrabajador.set(row.user_id, []);
+            porTrabajador.get(row.user_id).push(row);
+        }
+        for (const [uid, tramos] of porTrabajador) {
+            const est = await estadoFichaje(uid);
+            for (let i = 0; i < tramos.length; i++) {
+                const w = tramos[i], sig = tramos[i + 1];
+                const entradaMin = minutosHHMM(w.entrada), salidaMin = minutosHHMM(w.salida);
+                // ENTRADA: ya es su hora (hasta 90 min después, sin pasar de su salida)
+                // y no está fichado dentro: se le recuerda una vez por tramo.
+                if (ahoraMin >= entradaMin && ahoraMin <= Math.min(entradaMin + 90, salidaMin) && est.estado === 'fuera') {
+                    await avisarFichaje(w, 'entrada', hoy, base, tramos.length > 1);
+                }
+                // SALIDA: ya pasó su hora de salida (hasta 3 h después, o hasta que
+                // empiece su siguiente tramo) y sigue dentro o en pausa.
+                const limite = sig ? Math.min(salidaMin + 180, minutosHHMM(sig.entrada)) : salidaMin + 180;
+                if (ahoraMin >= salidaMin && ahoraMin < limite && (est.estado === 'dentro' || est.estado === 'pausa')) {
+                    await avisarFichaje(w, 'salida', hoy, base, tramos.length > 1);
+                }
             }
         }
     } catch (e) {
@@ -10611,23 +10965,25 @@ async function recordatoriosFichaje() {
 }
 // Manda un recordatorio, una sola vez por (trabajador, día, tipo). La marca se
 // pone ANTES de enviar (con ON CONFLICT): si ya estaba, no se manda de nuevo.
-async function avisarFichaje(w, tipo, hoy, base) {
+async function avisarFichaje(w, tipo, hoy, base, variosTramos = false) {
+    // Una marca por tipo y tramo: entrada1/salida1 (mañana), entrada2/salida2 (tarde).
     const marca = await pool.query(
         `INSERT INTO aim_fichaje_avisos (user_id, dia, tipo) VALUES ($1, $2::date, $3)
          ON CONFLICT (user_id, dia, tipo) DO NOTHING RETURNING user_id`,
-        [w.user_id, hoy, tipo]);
+        [w.user_id, hoy, `${tipo}${w.tramo || 1}`]);
     if (!marca.rowCount) return; // ya se avisó
     try {
         const esEntrada = tipo === 'entrada';
         const hora = esEntrada ? w.entrada : w.salida;
+        const turno = variosTramos ? ` de ${Number(w.tramo) === 2 ? 'tarde' : 'mañana'}` : '';
         await mailTransporter.sendMail({
             from: process.env.EMAIL_USER, to: w.email,
             subject: esEntrada ? 'Recuerda fichar tu entrada' : 'Recuerda fichar tu salida',
             html: `<div style="font-family:system-ui,sans-serif;color:#1a1a1a">
               <p>Hola ${w.nombre},</p>
               <p>${esEntrada
-                    ? `Tu jornada de hoy empieza a las <b>${hora}</b> y aún no has fichado la <b>entrada</b>.`
-                    : `Tu jornada de hoy terminaba a las <b>${hora}</b> y sigues con la jornada <b>abierta</b>. No olvides fichar la <b>salida</b>.`}</p>
+                    ? `Tu turno${turno} de hoy empieza a las <b>${hora}</b> y aún no has fichado la <b>entrada</b>.`
+                    : `Tu turno${turno} de hoy terminaba a las <b>${hora}</b> y sigues con la jornada <b>abierta</b>. No olvides fichar la <b>salida</b>.`}</p>
               <p style="margin:18px 0"><a href="${base}" style="background:#0a7d3c;color:#fff;text-decoration:none;padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block">Ir a fichar</a></p>
               <p style="font-size:12px;color:#888">AIM Education · Algeciras</p>
             </div>`,

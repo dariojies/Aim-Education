@@ -14,6 +14,8 @@ const COLOR = {
   caja: 'var(--orange)',
   campamento: '#00BBF4',
   clases: '#FF99D3',
+  speaking: '#00BBF4',
+  fichaje: 'var(--teal)',
   // Los de la zona de familias.
   pagos: 'var(--orange)',
   soporte: 'var(--purple)',
@@ -25,6 +27,8 @@ const TITULO = {
   caja: 'Caja',
   campamento: 'Campamento',
   clases: 'Clases',
+  speaking: 'Speaking',
+  fichaje: 'Fichaje',
   pagos: 'Pagos',
   soporte: 'Soporte',
   avisos: 'Del club',
