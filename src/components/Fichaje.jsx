@@ -58,16 +58,16 @@ export default function Fichaje({ showToast, permisos }) {
   const puedeGestionar = !!permisos?.fichajesGestion;
   const [tab, setTab] = useState('mi');
 
+  const tabs = [['mi', 'Mi fichaje'], ['calendario', 'Vacaciones y festivos'], ...(puedeGestionar ? [['gestion', 'Registro del personal']] : [])];
   return (
     <div style={{ display: 'grid', gap: 16 }}>
-      {puedeGestionar && (
-        <div style={{ display: 'flex', gap: 8 }}>
-          {[['mi', 'Mi fichaje'], ['gestion', 'Registro del personal']].map(([id, l]) => (
-            <button key={id} className={`filter-pill ${tab === id ? 'is-active' : ''}`} onClick={() => setTab(id)} style={{ borderRadius: 8, padding: '8px 16px' }}>{l}</button>
-          ))}
-        </div>
-      )}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {tabs.map(([id, l]) => (
+          <button key={id} className={`filter-pill ${tab === id ? 'is-active' : ''}`} onClick={() => setTab(id)} style={{ borderRadius: 8, padding: '8px 16px' }}>{l}</button>
+        ))}
+      </div>
       {tab === 'mi' && <MiFichaje showToast={showToast} />}
+      {tab === 'calendario' && <VacacionesYFestivos showToast={showToast} puedeGestionar={puedeGestionar} />}
       {tab === 'gestion' && puedeGestionar && <GestionFichajes showToast={showToast} />}
     </div>
   );
@@ -297,9 +297,15 @@ function ComputoMes({ persona, fondo = 'var(--bg-2)' }) {
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {caja('Trabajadas', horas(c.trabajadas), 'var(--teal)')}
             {caja(c.estado === 'en_curso' ? 'Contratadas hasta hoy' : 'Contratadas', horas(c.contratadas))}
+            {c.contratadas != null && c.justificadas > 0 && caja('Festivos y ausencias', horas(c.justificadas))}
             {c.contratadas != null && caja('Ordinarias', horas(c.ordinarias))}
             {c.contratadas != null && caja(parcial ? 'Complementarias' : 'Por encima de jornada', horas(c.complementarias), c.complementarias > 0 ? 'var(--orange)' : null)}
           </div>
+          {c.noLaborables?.length > 0 && (
+            <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+              🌴 {c.noLaborables.map(x => `${x.dia.slice(8)}/${x.dia.slice(5, 7)} ${x.motivo}`).join(' · ')}
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', fontSize: 12, color: 'var(--ink-3)' }}>
             <span>{c.horasSemana == null ? 'Sin horas contratadas indicadas: solo se cuentan las trabajadas.' : textoJornada(c.jornada, c.horasSemana)}</span>
             {c.semanas?.length > 0 && <button className="btn btn-sm btn-outline" style={{ fontSize: 11, padding: '2px 8px' }} onClick={() => setVerSemanas(v => !v)}>{verSemanas ? 'Ocultar semanas' : 'Ver por semanas'}</button>}
@@ -311,6 +317,7 @@ function ComputoMes({ persona, fondo = 'var(--bg-2)' }) {
                   <tr style={{ color: 'var(--ink-3)', textAlign: 'right' }}>
                     <th style={{ textAlign: 'left', padding: '4px 6px' }}>Semana</th>
                     <th style={{ padding: '4px 6px' }}>Contratadas</th>
+                    <th style={{ padding: '4px 6px' }}>Festivos/aus.</th>
                     <th style={{ padding: '4px 6px' }}>Trabajadas</th>
                     <th style={{ padding: '4px 6px' }}>{parcial ? 'Complementarias' : 'Exceso'}</th>
                   </tr>
@@ -320,6 +327,7 @@ function ComputoMes({ persona, fondo = 'var(--bg-2)' }) {
                     <tr key={s.desde} style={{ borderTop: '1px solid var(--line)', textAlign: 'right' }}>
                       <td style={{ textAlign: 'left', padding: '4px 6px' }}>{s.desde.slice(8)}/{s.desde.slice(5, 7)} – {s.hasta.slice(8)}/{s.hasta.slice(5, 7)}</td>
                       <td style={{ padding: '4px 6px' }}>{c.contratadas == null ? '—' : horas(s.contratadas)}</td>
+                      <td style={{ padding: '4px 6px' }}>{c.contratadas == null ? '—' : horas(s.justificadas || 0)}</td>
                       <td style={{ padding: '4px 6px', fontWeight: 700 }}>{horas(s.trabajadas)}</td>
                       <td style={{ padding: '4px 6px', color: s.exceso > 0 ? 'var(--orange)' : undefined }}>{c.contratadas == null ? '—' : horas(s.exceso)}</td>
                     </tr>
@@ -421,7 +429,9 @@ function MiFichaje({ showToast }) {
   const nowMin = nowD.getHours() * 60 + nowD.getMinutes();
   const actual = [...tramos].reverse().find(t => nowMin >= hm2min(t.entrada));
   let aviso = null;
-  if (actual) {
+  // Festivo o ausencia aprobada hoy (#233): no hay que fichar y no se avisa.
+  const noLab = est?.noLaborableHoy || null;
+  if (actual && !noLab) {
     const turno = tramos.length > 1 ? ` de ${actual.tramo === 2 ? 'tarde' : 'mañana'}` : '';
     if (estado === 'fuera' && nowMin < hm2min(actual.salida)) aviso = `Tu turno${turno} empezó a las ${actual.entrada}. No olvides fichar la entrada.`;
     else if (estado !== 'fuera' && nowMin >= hm2min(actual.salida)) aviso = `Tu turno${turno} terminaba a las ${actual.salida}. No olvides fichar la salida.`;
@@ -454,6 +464,12 @@ function MiFichaje({ showToast }) {
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '12px 16px', borderRadius: 12, fontSize: 14, fontWeight: 700,
           color: 'var(--orange)', background: 'color-mix(in oklab, var(--orange) 10%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--orange) 35%, var(--line))' }}>
           ⏰ {aviso}
+        </div>
+      )}
+      {noLab && (
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '12px 16px', borderRadius: 12, fontSize: 14, fontWeight: 700,
+          color: 'var(--teal)', background: 'color-mix(in oklab, var(--teal) 10%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--teal) 35%, var(--line))' }}>
+          🌴 {noLab.ausencia ? `Hoy tienes ${noLab.ausencia.nombre.toLowerCase()}` : `Hoy es festivo: ${noLab.festivo.nombre}`}. Si aun así trabajas, ficha con normalidad.
         </div>
       )}
 
@@ -519,6 +535,286 @@ function MiFichaje({ showToast }) {
         <ModalSolicitud apunte={modal.apunte} esEmpresa={false} onClose={() => setModal(null)}
           onDone={msg => { setModal(null); showToast?.(msg); cargar(); }} />
       )}
+    </div>
+  );
+}
+
+// ── Vacaciones y festivos (ticket #233, chat con el equipo) ──────────────────
+const ESTADO_AUS = {
+  pendiente: { t: 'Pendiente', c: '#b45309' },
+  aprobada: { t: 'Aprobada', c: 'var(--teal)' },
+  rechazada: { t: 'Rechazada', c: 'var(--orange)' },
+  cancelada: { t: 'Cancelada', c: 'var(--ink-3)' },
+};
+const fmtDiaCorto = (iso) => new Date(String(iso).slice(0, 10) + 'T12:00:00').toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' });
+const textoFechas = (a) => a.desde === a.hasta ? fmtDiaCorto(a.desde) : `${fmtDiaCorto(a.desde)} – ${fmtDiaCorto(a.hasta)} (${a.dias} días)`;
+
+function ListaAusencias({ ausencias, mostrarTrabajador, onCambio, showToast }) {
+  async function resolver(a, aprobar) {
+    let respuesta = null;
+    if (!aprobar) {
+      respuesta = window.prompt('¿Por qué la rechazas? (se le envía al trabajador)');
+      if (!respuesta || !respuesta.trim()) return;
+    } else if (!window.confirm(`¿Aprobar ${a.tipoNombre.toLowerCase()} de ${a.trabajador}: ${textoFechas(a)}?`)) return;
+    try { await enviar(`/api/fichaje/ausencias/${a.id}/resolver`, { aprobar, respuesta }); showToast?.(aprobar ? 'Aprobada.' : 'Rechazada.'); onCambio?.(); }
+    catch (err) { alert(err.message); }
+  }
+  async function cancelar(a) {
+    let motivo = null;
+    if (a.estado === 'aprobada') {
+      motivo = window.prompt('¿Por qué se cancela esta ausencia ya aprobada? (queda registrado)');
+      if (!motivo || !motivo.trim()) return;
+    } else if (!window.confirm('¿Retirar esta petición?')) return;
+    try { await enviar(`/api/fichaje/ausencias/${a.id}/cancelar`, { motivo }); showToast?.('Cancelada.'); onCambio?.(); }
+    catch (err) { alert(err.message); }
+  }
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      {ausencias.map(a => {
+        const e = ESTADO_AUS[a.estado] || ESTADO_AUS.pendiente;
+        return (
+          <div key={a.id} style={{ background: 'var(--bg-2)', border: `1px solid ${a.puedoResolver ? '#b45309' : 'var(--line)'}`, borderRadius: 12, padding: '10px 14px', display: 'grid', gap: 4 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 11, fontWeight: 800, color: e.c }}>● {e.t}</span>
+              {mostrarTrabajador && <b style={{ fontSize: 13 }}>{a.trabajador}</b>}
+              <span style={{ fontSize: 13, fontWeight: 700 }}>{a.tipoNombre}</span>
+              <span style={{ fontSize: 13, textTransform: 'capitalize' }}>{textoFechas(a)}</span>
+              <div style={{ flex: 1 }} />
+              {a.puedoResolver && (
+                <>
+                  <button className="btn btn-sm btn-primary" onClick={() => resolver(a, true)}>Aprobar</button>
+                  <button className="btn btn-sm btn-outline" onClick={() => resolver(a, false)}>Rechazar</button>
+                </>
+              )}
+              {a.puedoCancelar && <button className="btn btn-sm btn-outline" onClick={() => cancelar(a)}>{a.estado === 'pendiente' ? 'Retirar' : 'Cancelar'}</button>}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+              {a.notas ? `${a.notas} · ` : ''}{a.iniciadoPor === 'empresa' ? 'registrada' : 'pedida'} por {a.solicitadoPor || '—'} el {fmtFechaHora(a.creadaAt)}
+              {a.resueltoAt && a.iniciadoPor !== 'empresa' && ` · ${e.t.toLowerCase()} por ${a.resueltoPor || '—'} el ${fmtFechaHora(a.resueltoAt)}`}
+              {a.resueltoAt && a.iniciadoPor === 'empresa' && a.estado === 'cancelada' && ` · cancelada por ${a.resueltoPor || '—'} el ${fmtFechaHora(a.resueltoAt)}`}
+              {a.respuesta && ` · «${a.respuesta}»`}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Pedir (para uno mismo) o registrar (secretaría, para otra persona) una ausencia.
+function ModalAusencia({ tipos, trabajadores, onClose, onDone }) {
+  const esEmpresa = !!trabajadores;
+  const [f, setF] = useState({ userId: '', tipo: 'vacaciones', desde: hoyISO(), hasta: hoyISO(), notas: '' });
+  const [guardando, setGuardando] = useState(false);
+  const set = (k, v) => setF(x => ({ ...x, [k]: v, ...(k === 'desde' && x.hasta < v ? { hasta: v } : {}) }));
+  async function guardar(e) {
+    e.preventDefault();
+    setGuardando(true);
+    try {
+      const d = await enviar('/api/fichaje/ausencias', { ...f, userId: esEmpresa ? f.userId : undefined });
+      onDone?.(d.estado === 'aprobada' ? 'Ausencia registrada.' : 'Petición enviada. Secretaría o dirección tiene que aprobarla.');
+    } catch (err) { alert(err.message); } finally { setGuardando(false); }
+  }
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.4)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }} onClick={onClose}>
+      <form onClick={e => e.stopPropagation()} onSubmit={guardar}
+        style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 20, display: 'grid', gap: 12, width: 'min(460px, 100%)' }}>
+        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>{esEmpresa ? 'Registrar una ausencia' : 'Pedir vacaciones o una ausencia'}</h3>
+        {esEmpresa && (
+          <select value={f.userId} onChange={e => set('userId', e.target.value)} required style={inp}>
+            <option value="">¿Quién?...</option>
+            {trabajadores.map(t => <option key={t.userId} value={t.userId}>{t.nombre}</option>)}
+          </select>
+        )}
+        <select value={f.tipo} onChange={e => set('tipo', e.target.value)} style={inp}>
+          {Object.entries(tipos || {}).map(([v, t]) => <option key={v} value={v}>{t.nombre}</option>)}
+        </select>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input type="date" value={f.desde} onChange={e => set('desde', e.target.value)} required style={{ ...inp, flex: 1 }} />
+          <span style={{ color: 'var(--ink-3)' }}>–</span>
+          <input type="date" value={f.hasta} min={f.desde} onChange={e => set('hasta', e.target.value)} required style={{ ...inp, flex: 1 }} />
+        </div>
+        <textarea placeholder="Notas (opcional)" value={f.notas} onChange={e => set('notas', e.target.value)} rows={2} style={{ ...inp, resize: 'vertical' }} />
+        <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
+          {esEmpresa ? 'Queda aprobada directamente y se le avisa en su Fichaje.' : 'Secretaría o dirección tendrá que aprobarla. Te llegará la respuesta por correo.'}
+          {' '}Esos días no se recuerda fichar{tipos?.[f.tipo]?.justifica ? ' y sus horas previstas cuentan como justificadas' : ''}.
+        </p>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button type="button" className="btn btn-outline" onClick={onClose}>Cancelar</button>
+          <button type="submit" className="btn btn-primary" disabled={guardando || (esEmpresa && !f.userId)}>{guardando ? 'Enviando...' : esEmpresa ? 'Registrar' : 'Pedir'}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function VacacionesYFestivos({ showToast, puedeGestionar }) {
+  const [anio, setAnio] = useState(Number(hoyISO().slice(0, 4)));
+  const [cal, setCal] = useState(null);
+  const [mias, setMias] = useState(null);
+  const [todas, setTodas] = useState([]);
+  const [verTodas, setVerTodas] = useState(false);
+  const [trabajadores, setTrabajadores] = useState([]);
+  const [modal, setModal] = useState(null); // 'pedir' | 'registrar'
+  const [nuevoFestivo, setNuevoFestivo] = useState({ fecha: '', nombre: '', tipo: 'local' });
+
+  const cargar = useCallback(async () => {
+    const get = (u) => fetch(u, { credentials: 'include', cache: 'no-store' }).then(r => r.ok ? r.json() : null).catch(() => null);
+    const [c, m, t, w] = await Promise.all([
+      get(`/api/fichaje/calendario?anio=${anio}`),
+      get('/api/fichaje/ausencias'),
+      puedeGestionar ? get(`/api/admin/fichajes/ausencias?estado=${verTodas ? 'todas' : 'pendientes'}`) : null,
+      puedeGestionar ? get(`/api/admin/fichajes?desde=${hoyISO()}&hasta=${hoyISO()}`) : null,
+    ]);
+    setCal(c); setMias(m);
+    if (t) setTodas(t.ausencias || []);
+    if (w) setTrabajadores((w.trabajadores || []).filter(x => x.enPlantilla));
+  }, [anio, verTodas, puedeGestionar]);
+  useEffect(() => { cargar(); }, [cargar]);
+
+  async function añadirFestivo(e) {
+    e.preventDefault();
+    try {
+      await enviar('/api/admin/fichajes/festivos', nuevoFestivo);
+      showToast?.('Festivo guardado.'); setNuevoFestivo({ fecha: '', nombre: '', tipo: nuevoFestivo.tipo }); cargar();
+    } catch (err) { alert(err.message); }
+  }
+  async function quitarFestivo(f) {
+    if (!window.confirm(`¿Quitar el festivo del ${fmtDiaCorto(f.fecha)} (${f.nombre})?`)) return;
+    try { await enviar(`/api/admin/fichajes/festivos/${f.fecha}`, null, 'DELETE'); showToast?.('Festivo quitado.'); cargar(); }
+    catch (err) { alert(err.message); }
+  }
+
+  const titulo = (t) => <h3 style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 800 }}>{t}</h3>;
+  const pendientesOtros = todas.filter(a => a.puedoResolver);
+
+  return (
+    <div style={{ display: 'grid', gap: 18 }}>
+      {puedeGestionar && (
+        <div style={{ display: 'grid', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            {titulo(<>Vacaciones y ausencias del personal {pendientesOtros.length > 0 && <span style={{ color: '#b45309' }}>· {pendientesOtros.length} por aprobar</span>}</>)}
+            <div style={{ flex: 1 }} />
+            <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, fontWeight: 700, color: 'var(--ink-2)', cursor: 'pointer' }}>
+              <input type="checkbox" checked={verTodas} onChange={e => setVerTodas(e.target.checked)} /> Ver también las pasadas y resueltas
+            </label>
+            <button className="btn btn-sm btn-primary" onClick={() => setModal('registrar')}><I.Plus /> Registrar ausencia</button>
+          </div>
+          {todas.length === 0
+            ? <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>No hay peticiones pendientes ni ausencias próximas.</p>
+            : <ListaAusencias ausencias={todas} mostrarTrabajador onCambio={cargar} showToast={showToast} />}
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          {titulo('Mis vacaciones y ausencias')}
+          <div style={{ flex: 1 }} />
+          <button className="btn btn-sm btn-outline" onClick={() => setModal('pedir')}><I.Plus /> Pedir vacaciones o ausencia</button>
+        </div>
+        {!(mias?.ausencias || []).length
+          ? <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>No tienes vacaciones ni ausencias registradas.</p>
+          : <ListaAusencias ausencias={mias.ausencias} onCambio={cargar} showToast={showToast} />}
+      </div>
+
+      <div style={{ display: 'grid', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          {titulo('Calendario laboral')}
+          <button className="btn btn-sm btn-outline" onClick={() => setAnio(a => a - 1)} aria-label="Año anterior">‹</button>
+          <b style={{ fontSize: 14 }}>{anio}</b>
+          <button className="btn btn-sm btn-outline" onClick={() => setAnio(a => a + 1)} aria-label="Año siguiente">›</button>
+        </div>
+        <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Festivos y días de cierre del centro. Esos días no se recuerda fichar a nadie.</p>
+        {puedeGestionar && (
+          <form onSubmit={añadirFestivo} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: 10 }}>
+            <input type="date" value={nuevoFestivo.fecha} onChange={e => setNuevoFestivo(x => ({ ...x, fecha: e.target.value }))} required style={{ ...inp, padding: '6px 8px' }} />
+            <input placeholder="Nombre (p. ej. Feria de Algeciras)" value={nuevoFestivo.nombre} onChange={e => setNuevoFestivo(x => ({ ...x, nombre: e.target.value }))} required style={{ ...inp, padding: '6px 8px', flex: '1 1 180px' }} />
+            <select value={nuevoFestivo.tipo} onChange={e => setNuevoFestivo(x => ({ ...x, tipo: e.target.value }))} style={{ ...inp, padding: '6px 8px' }}>
+              {Object.entries(cal?.tipos || {}).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+            <button type="submit" className="btn btn-sm btn-primary">Añadir</button>
+          </form>
+        )}
+        {!(cal?.festivos || []).length
+          ? <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>No hay festivos marcados en {anio}.</p>
+          : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 8 }}>
+              {cal.festivos.map(f => (
+                <div key={f.fecha} style={{ display: 'flex', gap: 8, alignItems: 'center', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, padding: '8px 12px' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, textTransform: 'capitalize' }}>{fmtDiaCorto(f.fecha)}</div>
+                    <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{f.nombre} · {f.tipoNombre}</div>
+                  </div>
+                  {puedeGestionar && <button className="icon-btn danger" onClick={() => quitarFestivo(f)} aria-label="Quitar festivo"><I.X /></button>}
+                </div>
+              ))}
+            </div>
+          )}
+      </div>
+
+      {modal && (
+        <ModalAusencia tipos={mias?.tipos} trabajadores={modal === 'registrar' ? trabajadores : null}
+          onClose={() => setModal(null)} onDone={msg => { setModal(null); showToast?.(msg); cargar(); }} />
+      )}
+    </div>
+  );
+}
+
+// Importar los horarios de las clases: para cada profe, sus clases asignadas
+// se convierten en la plantilla de su horario laboral (se puede editar después).
+function ModalImportarHorarios({ onClose, onDone }) {
+  const [profes, setProfes] = useState(null);
+  const [error, setError] = useState(null);
+  const [importando, setImportando] = useState(false);
+  useEffect(() => {
+    fetch('/api/admin/fichajes/horarios/desde-clases', { credentials: 'include', cache: 'no-store' })
+      .then(async r => { const d = await r.json(); if (!r.ok) throw new Error(d.error); setProfes(d.profes || []); })
+      .catch(e => setError(e.message || 'No se pudo cargar.'));
+  }, []);
+  async function importar() {
+    setImportando(true);
+    try {
+      const d = await enviar('/api/admin/fichajes/horarios/desde-clases', {});
+      onDone?.(`Horarios importados: ${d.cambiados} profe${d.cambiados !== 1 ? 's' : ''} actualizado${d.cambiados !== 1 ? 's' : ''}.`);
+    } catch (err) { alert(err.message); } finally { setImportando(false); }
+  }
+  const DIAS_CORTOS = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
+  const resumen = (dias) => [0, 1, 2, 3, 4, 5, 6].map(d => {
+    const t = dias.filter(x => x.dia === d);
+    return t.length ? `${DIAS_CORTOS[d]} ${t.map(x => `${x.entrada}–${x.salida}`).join(' y ')}` : null;
+  }).filter(Boolean).join(' · ');
+  const cambian = (profes || []).filter(p => !p.igual);
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.4)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 20, display: 'grid', gap: 12, width: 'min(640px, 100%)', maxHeight: '90vh', overflowY: 'auto' }}>
+        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>Importar horarios de las clases</h3>
+        <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
+          A cada profe se le pone como horario laboral el de las clases que tiene asignadas (si entre dos clases hay 30 min o menos, cuentan como un mismo bloque).
+          Sustituye el horario que tuviera; después se puede editar en «Horario». Es solo el horario previsto: el registro de jornada sigue siendo lo que cada uno ficha.
+        </p>
+        {!profes && !error && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Calculando...</p>}
+        {error && <p style={{ margin: 0, fontSize: 13, color: 'var(--orange)' }}>{error}</p>}
+        {profes && profes.length === 0 && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Ningún trabajador tiene clases asignadas en el horario.</p>}
+        {(profes || []).map(p => (
+          <div key={p.userId} style={{ background: 'var(--bg-3)', borderRadius: 10, padding: '8px 12px', display: 'grid', gap: 3, opacity: p.igual ? 0.6 : 1 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <b style={{ fontSize: 13 }}>{p.nombre}</b>
+              <span style={{ fontSize: 11, fontWeight: 700, color: p.igual ? 'var(--ink-3)' : p.teniaHorario ? 'var(--orange)' : 'var(--teal)' }}>
+                {p.igual ? 'ya lo tiene así' : p.teniaHorario ? 'se sustituye su horario' : 'horario nuevo'}
+              </span>
+            </div>
+            <div style={{ fontSize: 12 }}>{resumen(p.dias)}</div>
+            <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>{p.clases.join(', ')}</div>
+            {p.avisos.map((a, i) => <div key={i} style={{ fontSize: 11, color: '#b45309' }}>⚠ {a}</div>)}
+          </div>
+        ))}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button className="btn btn-outline" onClick={onClose}>Cancelar</button>
+          <button className="btn btn-primary" onClick={importar} disabled={importando || !cambian.length}>
+            {importando ? 'Importando...' : cambian.length ? `Importar (${cambian.length})` : 'Nada que cambiar'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -649,6 +945,7 @@ function GestionFichajes({ showToast }) {
   const [modal, setModal] = useState(null);     // { destino, apunte? }
   const [horario, setHorario] = useState(null); // { userId, nombre, contrato:{jornada,horasSemana}, dias:[{dia,trabaja,m:{},tarde,t:{}}] }
   const [integridad, setIntegridad] = useState(false);
+  const [importar, setImportar] = useState(false);
 
   const cargar = useCallback(async () => {
     setCargando(true);
@@ -726,6 +1023,7 @@ function GestionFichajes({ showToast }) {
         <label style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>Hasta</label>
         <input type="date" value={hasta} onChange={e => setHasta(e.target.value)} style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontFamily: 'inherit' }} />
         <div style={{ flex: 1 }} />
+        <button className="btn btn-sm btn-outline" onClick={() => setImportar(true)} title="Pone a cada profe el horario de sus clases como plantilla">Importar horarios de las clases</button>
         <button className="btn btn-sm btn-outline" onClick={() => setIntegridad(true)}>Comprobar integridad</button>
         <a className="btn btn-sm btn-outline" href={exportUrl()} target="_blank" rel="noopener noreferrer"><I.Download /> Exportar CSV (Excel)</a>
       </div>
@@ -775,6 +1073,7 @@ function GestionFichajes({ showToast }) {
       )}
 
       {integridad && <ModalIntegridad onClose={() => setIntegridad(false)} />}
+      {importar && <ModalImportarHorarios onClose={() => setImportar(false)} onDone={msg => { setImportar(false); showToast?.(msg); cargar(); }} />}
 
       {/* Horario laboral: mañana y, si hace falta, tarde. Base de los recordatorios. */}
       {horario && (

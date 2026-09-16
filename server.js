@@ -1324,6 +1324,42 @@ async function initDb() {
             )
         `);
 
+        // Calendario laboral (ticket #233, chat del equipo): festivos y días de
+        // cierre del centro. Lo ve todo el personal (el calendario laboral tiene que
+        // estar a la vista, art. 34.6 ET). Ese día no se recuerda fichar y sus horas
+        // previstas cuentan como justificadas en el cómputo.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_calendario_laboral (
+                fecha DATE PRIMARY KEY,
+                nombre VARCHAR(120) NOT NULL,
+                tipo VARCHAR(12) NOT NULL DEFAULT 'local',
+                created_by UUID,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        // Vacaciones y ausencias de cada trabajador. Las pide el trabajador y las
+        // aprueba secretaría/dirección, o secretaría las registra directamente (p. ej.
+        // una baja médica). No se borran: se cancelan, y todo queda en la auditoría.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_ausencias (
+                id SERIAL PRIMARY KEY,
+                user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                tipo VARCHAR(20) NOT NULL,
+                desde DATE NOT NULL,
+                hasta DATE NOT NULL,
+                notas TEXT,
+                estado VARCHAR(12) NOT NULL DEFAULT 'pendiente',
+                iniciado_por VARCHAR(12) NOT NULL DEFAULT 'trabajador',
+                solicitado_por UUID,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                resuelto_por UUID,
+                resuelto_at TIMESTAMPTZ,
+                respuesta TEXT,
+                CHECK (hasta >= desde)
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_ausencias_user ON aim_ausencias (user_id, desde)`);
+
         // Inmutabilidad en la propia base de datos: ni la web ni nadie con acceso a
         // las tablas puede reescribir o borrar el registro. Los fichajes, sus
         // anulaciones y la auditoría no admiten UPDATE ni DELETE; una solicitud solo
@@ -9982,6 +10018,16 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
             if (x.por_aprobar) avisos.push({ tipo: 'fichaje', texto: `${x.por_aprobar} corrección${x.por_aprobar !== 1 ? 'es' : ''} de tu fichaje por aprobar`, detalle: 'no se aplican hasta que las apruebes', destino: '/admin/fichaje', n: x.por_aprobar });
             if (x.por_validar && mandaAlMenos(req.userSession?.rol, 'secretaria')) avisos.push({ tipo: 'fichaje', texto: `${x.por_validar} solicitud${x.por_validar !== 1 ? 'es' : ''} de corrección de fichaje por validar`, detalle: 'las han pedido los trabajadores', destino: '/admin/fichaje', n: x.por_validar });
             if (x.resueltas) avisos.push({ tipo: 'fichaje', texto: `${x.resueltas} solicitud${x.resueltas !== 1 ? 'es' : ''} de corrección de fichaje respondida${x.resueltas !== 1 ? 's' : ''}`, detalle: 'mira el resultado en Fichaje', destino: '/admin/fichaje', n: x.resueltas });
+            // Vacaciones y ausencias (ticket #233): por aprobar (secretaría/dirección,
+            // nunca las propias) y las respondidas al que las pidió.
+            const au = await pool.query(
+                `SELECT COUNT(*) FILTER (WHERE estado = 'pendiente' AND user_id <> $1)::int AS por_aprobar,
+                        COUNT(*) FILTER (WHERE estado IN ('aprobada','rechazada') AND iniciado_por = 'trabajador'
+                                         AND user_id = $1 AND resuelto_at > NOW() - INTERVAL '3 days')::int AS resueltas
+                 FROM aim_ausencias`, [yo]);
+            const y = au.rows[0];
+            if (y.por_aprobar && mandaAlMenos(req.userSession?.rol, 'secretaria')) avisos.push({ tipo: 'fichaje', texto: `${y.por_aprobar} petición${y.por_aprobar !== 1 ? 'es' : ''} de vacaciones o ausencia por aprobar`, detalle: 'las han pedido los trabajadores', destino: '/admin/fichaje', n: y.por_aprobar });
+            if (y.resueltas) avisos.push({ tipo: 'fichaje', texto: `${y.resueltas === 1 ? 'Tu petición' : `${y.resueltas} peticiones`} de vacaciones o ausencia ${y.resueltas === 1 ? 'tiene' : 'tienen'} respuesta`, detalle: 'mírala en Fichaje', destino: '/admin/fichaje', n: y.resueltas });
         }
 
         const esp = espera.rows[0];
@@ -10808,6 +10854,8 @@ app.get('/api/fichaje/estado', authenticateSession, requireAdmin, async (req, re
             apuntesHoy: ap.rows.map(x => ({ id: x.id, tipo: x.tipo, ts: x.ts, corregido: x.corregido })),
             // Horario esperado de hoy (tramos de mañana/tarde), para el aviso en la app.
             horarioHoy: await horarioDiaDe(uid),
+            // Festivo o ausencia aprobada hoy (#233): no se avisa de fichar.
+            noLaborableHoy: (await diasNoLaborables(uid, hoy, hoy))[hoy] || null,
             porAprobar: pend.rows[0].n,
         });
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -11249,6 +11297,25 @@ app.get('/api/admin/fichajes/export.csv', authenticateSession, requireAdmin, req
                 s.estado, s.resuelto_por_nombre || '', s.resuelto_at ? fmtFechaHoraMadrid(s.resuelto_at) : '', s.respuesta || '',
             ]));
         }
+        // Calendario laboral y ausencias del periodo (ticket #233).
+        const fest = await pool.query(
+            `SELECT fecha::text AS fecha, nombre, tipo FROM aim_calendario_laboral
+             WHERE ($1::date IS NULL OR fecha >= $1::date) AND fecha <= $2::date ORDER BY fecha`, [desde, hasta]);
+        lineas.push('', fila(['Festivos y cierres del centro']), fila(['Fecha', 'Nombre', 'Tipo']));
+        for (const f of fest.rows) lineas.push(fila([f.fecha, f.nombre, TIPOS_FESTIVO[f.tipo] || f.tipo]));
+        const aus = await pool.query(
+            `${SQL_AUSENCIAS}
+             WHERE ($1::date IS NULL OR a.hasta >= $1::date) AND a.desde <= $2::date AND ($3::uuid IS NULL OR a.user_id = $3)
+             ORDER BY trabajador, a.desde`, [desde, hasta, persona]);
+        lineas.push('', fila(['Vacaciones y ausencias']),
+            fila(['Nº', 'Trabajador', 'Tipo', 'Desde', 'Hasta', 'Días', 'Notas', 'Estado', 'Pedida/registrada por', 'Resuelta por', 'Fecha de resolución', 'Comentario']));
+        for (const a of aus.rows) {
+            lineas.push(fila([
+                a.id, a.trabajador, TIPOS_AUSENCIA[a.tipo]?.nombre || a.tipo, a.desde_txt, a.hasta_txt, diasEntreISO(a.desde_txt, a.hasta_txt),
+                a.notas || '', a.estado, a.solicitado_por_nombre || '', a.resuelto_por_nombre || '',
+                a.resuelto_at ? fmtFechaHoraMadrid(a.resuelto_at) : '', a.respuesta || '',
+            ]));
+        }
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', `attachment; filename="registro-jornada-${desde || 'inicio'}_${hasta}.csv"`);
         res.send('﻿' + lineas.join('\r\n'));
@@ -11388,22 +11455,36 @@ async function computoMensual(userId, mes) {
          WHERE f.user_id = $1 AND f.dia BETWEEN $2::date AND $3::date AND ${FICHAJE_VIGENTE('f')}
          ORDER BY f.ts, f.id`, [userId, desde, hasta]);
     const calc = calcularTrabajado(ap.rows);
+    // Festivos y ausencias aprobadas (ticket #233): un festivo o una ausencia
+    // retribuida (vacaciones, baja, permiso…) justifica las horas previstas de ese
+    // día; una ausencia no retribuida hace que ese día no se esperara trabajar.
+    const noLab = await diasNoLaborables(userId, desde, hasta);
     const semanas = [], dias = [];
     let semana = null;
     for (let d = 1; d <= nDias; d++) {
         const iso = `${mes}-${String(d).padStart(2, '0')}`;
         const dow = (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7;
-        if (!semana || dow === 0) { semana = { desde: iso, hasta: iso, contratadas: 0, trabajadas: 0 }; semanas.push(semana); }
+        if (!semana || dow === 0) { semana = { desde: iso, hasta: iso, contratadas: 0, trabajadas: 0, justificadas: 0 }; semanas.push(semana); }
         semana.hasta = iso;
         const trab = (calc.porDia[iso] || 0) / 3600;
         // En el mes en curso solo cuenta lo contratado hasta hoy.
-        const contr = reparto && (estado === 'cerrado' || iso <= hoy) ? reparto.dias[dow] : 0;
-        semana.trabajadas += trab; semana.contratadas += contr;
-        if (trab > 0 || contr > 0) dias.push({ dia: iso, trabajadas: r2h(trab), contratadas: r2h(contr) });
+        let contr = reparto && (estado === 'cerrado' || iso <= hoy) ? reparto.dias[dow] : 0;
+        const nl = noLab[iso] || null;
+        const retribuido = !!(nl && (nl.festivo || nl.ausencia?.justifica));
+        let just = 0;
+        if (nl && contr > 0) { if (retribuido) just = contr; else contr = 0; }
+        semana.trabajadas += trab; semana.contratadas += contr; semana.justificadas += just;
+        if (trab > 0 || contr > 0 || nl) {
+            dias.push({
+                dia: iso, trabajadas: r2h(trab), contratadas: r2h(contr), justificadas: r2h(just),
+                motivo: nl ? (nl.ausencia?.nombre || nl.festivo?.nombre) : null,
+            });
+        }
     }
     for (const s of semanas) {
-        s.trabajadas = r2h(s.trabajadas); s.contratadas = r2h(s.contratadas);
-        s.exceso = reparto ? r2h(Math.max(0, s.trabajadas - s.contratadas)) : 0;
+        s.trabajadas = r2h(s.trabajadas); s.contratadas = r2h(s.contratadas); s.justificadas = r2h(s.justificadas);
+        // Lo trabajado más lo justificado que pasa de lo contratado es exceso.
+        s.exceso = reparto ? r2h(Math.max(0, s.trabajadas + s.justificadas - s.contratadas)) : 0;
     }
     const trabajadas = r2h(semanas.reduce((a, s) => a + s.trabajadas, 0));
     const exceso = r2h(semanas.reduce((a, s) => a + s.exceso, 0));
@@ -11411,8 +11492,10 @@ async function computoMensual(userId, mes) {
         mes, desde, hasta, estado, jornada: contrato.jornada, horasSemana: contrato.horasSemana,
         repartoBase: reparto?.base || null,
         contratadas: reparto ? r2h(semanas.reduce((a, s) => a + s.contratadas, 0)) : null,
-        trabajadas, ordinarias: r2h(trabajadas - exceso), complementarias: exceso,
+        justificadas: r2h(semanas.reduce((a, s) => a + s.justificadas, 0)),
+        trabajadas, ordinarias: r2h(Math.max(0, trabajadas - exceso)), complementarias: exceso,
         semanas, dias,
+        noLaborables: dias.filter(x => x.motivo).map(x => ({ dia: x.dia, motivo: x.motivo })),
     };
 }
 
@@ -11508,10 +11591,18 @@ async function informeJornada(req, res, userId) {
             datos: { formato: 'pdf', desde, hasta },
         });
         const integridad = await verificarRegistroJornada();
+        // Festivos y ausencias del periodo (#233).
+        const fest = await pool.query(
+            `SELECT fecha::text AS fecha, nombre, tipo FROM aim_calendario_laboral WHERE fecha BETWEEN $1::date AND $2::date ORDER BY fecha`, [desde, hasta]);
+        const aus = await pool.query(
+            `${SQL_AUSENCIAS} WHERE a.user_id = $1 AND a.estado = 'aprobada' AND a.desde <= $3::date AND a.hasta >= $2::date ORDER BY a.desde`,
+            [userId, desde, hasta]);
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `inline; filename="registro-jornada-${desde}_${hasta}.pdf"`);
         generarInformeJornadaPdf({
             empresa: EMPRESA_TICKET, trabajador: u.rows[0].nombre, desde, hasta, periodo: nombrePeriodo(desde, hasta),
+            festivos: fest.rows.map(f => ({ ...f, tipoNombre: TIPOS_FESTIVO[f.tipo] || f.tipo })),
+            ausencias: aus.rows.map(a => mapAusencia(req, a)),
             dias: l.dias, totalSeg: l.totalSeg, contrato: await contratoDe(userId), meses,
             solicitudes: sols.rows.map(s => mapSolicitudFichaje(req, s)),
             integridad: { ok: integridad.ok, eventos: integridad.eventos, cabeza: integridad.cabeza },
@@ -11790,6 +11881,377 @@ async function selloSemanalRegistro() {
     });
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// Calendario laboral, vacaciones y ausencias, e importar horarios de las clases
+// (ticket #233, chat con el equipo)
+// ═════════════════════════════════════════════════════════════════════════════
+// Tipos de ausencia. `justifica`: es retribuida, así que sus horas previstas
+// cuentan como justificadas en el cómputo; si no, ese día simplemente no se
+// esperaba trabajar (no hay horas contratadas ese día).
+const TIPOS_AUSENCIA = {
+    vacaciones: { nombre: 'Vacaciones', justifica: true },
+    asuntos_propios: { nombre: 'Asuntos propios', justifica: true },
+    permiso: { nombre: 'Permiso retribuido', justifica: true },
+    baja_it: { nombre: 'Baja médica', justifica: true },
+    no_retribuida: { nombre: 'Ausencia no retribuida', justifica: false },
+    otra: { nombre: 'Otra ausencia', justifica: false },
+};
+const TIPOS_FESTIVO = { nacional: 'Fiesta nacional', autonomico: 'Fiesta de Andalucía', local: 'Fiesta local', cierre: 'Cierre del centro' };
+const sumarDiaISO = (iso, n) => { const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+const diasEntreISO = (a, b) => Math.round((new Date(b + 'T12:00:00Z') - new Date(a + 'T12:00:00Z')) / 86400000) + 1;
+
+// Festivos del centro y ausencias aprobadas de un trabajador, día a día, en un
+// rango: { 'AAAA-MM-DD': { festivo?: {nombre, tipo}, ausencia?: {id, tipo, nombre, justifica} } }.
+async function diasNoLaborables(userId, desde, hasta, cliente = pool) {
+    const mapa = {};
+    const f = await cliente.query(
+        `SELECT fecha::text AS fecha, nombre, tipo FROM aim_calendario_laboral WHERE fecha BETWEEN $1::date AND $2::date`, [desde, hasta]);
+    for (const x of f.rows) mapa[x.fecha] = { ...(mapa[x.fecha] || {}), festivo: { nombre: x.nombre, tipo: x.tipo } };
+    if (userId) {
+        const a = await cliente.query(
+            `SELECT id, tipo, desde::text AS desde, hasta::text AS hasta FROM aim_ausencias
+             WHERE user_id = $1 AND estado = 'aprobada' AND desde <= $3::date AND hasta >= $2::date`, [userId, desde, hasta]);
+        for (const x of a.rows) {
+            const fin = x.hasta < hasta ? x.hasta : hasta;
+            for (let d = x.desde > desde ? x.desde : desde; d <= fin; d = sumarDiaISO(d, 1)) {
+                const t = TIPOS_AUSENCIA[x.tipo] || { nombre: x.tipo, justifica: false };
+                mapa[d] = { ...(mapa[d] || {}), ausencia: { id: x.id, tipo: x.tipo, nombre: t.nombre, justifica: t.justifica } };
+            }
+        }
+    }
+    return mapa;
+}
+
+// ── Festivos (calendario laboral del centro) ──
+app.get('/api/fichaje/calendario', authenticateSession, requireAdmin, async (req, res) => {
+    const anio = /^\d{4}$/.test(req.query.anio || '') ? req.query.anio : hoyMadrid().slice(0, 4);
+    try {
+        const r = await pool.query(
+            `SELECT fecha::text AS fecha, nombre, tipo FROM aim_calendario_laboral
+             WHERE fecha BETWEEN $1::date AND $2::date ORDER BY fecha`, [`${anio}-01-01`, `${anio}-12-31`]);
+        res.set('Cache-Control', 'no-store');
+        res.json({ anio, festivos: r.rows.map(x => ({ ...x, tipoNombre: TIPOS_FESTIVO[x.tipo] || x.tipo })), tipos: TIPOS_FESTIVO });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/fichajes/festivos', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const fecha = String(req.body?.fecha || '');
+    const nombre = String(req.body?.nombre || '').trim().slice(0, 120);
+    const tipo = TIPOS_FESTIVO[req.body?.tipo] ? req.body.tipo : 'local';
+    if (!esFechaISO(fecha)) return res.status(400).json({ error: 'Fecha no válida.' });
+    if (!nombre) return res.status(400).json({ error: 'Ponle nombre al festivo.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const antes = await client.query(`SELECT nombre, tipo FROM aim_calendario_laboral WHERE fecha = $1::date`, [fecha]);
+        await client.query(
+            `INSERT INTO aim_calendario_laboral (fecha, nombre, tipo, created_by) VALUES ($1::date, $2, $3, $4)
+             ON CONFLICT (fecha) DO UPDATE SET nombre = EXCLUDED.nombre, tipo = EXCLUDED.tipo`,
+            [fecha, nombre, tipo, req.userSession.userId]);
+        await auditarFichaje(client, {
+            evento: 'festivo', actorId: req.userSession.userId, ip: ipDe(req),
+            datos: { fecha, nombre, tipo, antes: antes.rows[0] || null },
+        });
+        await client.query('COMMIT');
+        res.status(201).json({ success: true });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+app.delete('/api/admin/fichajes/festivos/:fecha', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    if (!esFechaISO(req.params.fecha)) return res.status(400).json({ error: 'Fecha no válida.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const del = await client.query(`DELETE FROM aim_calendario_laboral WHERE fecha = $1::date RETURNING nombre, tipo`, [req.params.fecha]);
+        if (!del.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Ese día no está marcado como festivo.' }); }
+        await auditarFichaje(client, {
+            evento: 'festivo_quitado', actorId: req.userSession.userId, ip: ipDe(req),
+            datos: { fecha: req.params.fecha, ...del.rows[0] },
+        });
+        await client.query('COMMIT');
+        res.json({ success: true });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+// ── Vacaciones y ausencias ──
+const SQL_AUSENCIAS = `
+    SELECT a.*, a.desde::text AS desde_txt, a.hasta::text AS hasta_txt,
+           TRIM(CONCAT(w.name, ' ', COALESCE(w.surname, ''))) AS trabajador,
+           TRIM(CONCAT(sp.name, ' ', COALESCE(sp.surname, ''))) AS solicitado_por_nombre,
+           TRIM(CONCAT(rp.name, ' ', COALESCE(rp.surname, ''))) AS resuelto_por_nombre
+    FROM aim_ausencias a
+    JOIN users w ON w.user_id = a.user_id
+    LEFT JOIN users sp ON sp.user_id = a.solicitado_por
+    LEFT JOIN users rp ON rp.user_id = a.resuelto_por`;
+const mapAusencia = (req, a) => {
+    const yo = String(req.userSession.userId);
+    const gestiona = mandaAlMenos(req.userSession?.rol, 'secretaria');
+    const t = TIPOS_AUSENCIA[a.tipo] || { nombre: a.tipo, justifica: false };
+    return {
+        id: a.id, userId: a.user_id, trabajador: a.trabajador, tipo: a.tipo, tipoNombre: t.nombre, justifica: t.justifica,
+        desde: a.desde_txt, hasta: a.hasta_txt, dias: diasEntreISO(a.desde_txt, a.hasta_txt), notas: a.notas,
+        estado: a.estado, iniciadoPor: a.iniciado_por, solicitadoPor: a.solicitado_por_nombre || null, creadaAt: a.created_at,
+        resueltoPor: a.resuelto_por_nombre || null, resueltoAt: a.resuelto_at, respuesta: a.respuesta,
+        // Nadie se aprueba lo suyo; el que la pidió la retira mientras está pendiente;
+        // una ya aprobada solo la cancela secretaría/dirección (de otra persona).
+        puedoResolver: a.estado === 'pendiente' && gestiona && String(a.user_id) !== yo,
+        puedoCancelar: (a.estado === 'pendiente' && String(a.solicitado_por || '') === yo)
+            || (a.estado === 'aprobada' && gestiona && String(a.user_id) !== yo),
+    };
+};
+
+// Pedir (el trabajador, para sí) o registrar (secretaría/dirección, para otra
+// persona: queda aprobada directamente) una ausencia.
+app.post('/api/fichaje/ausencias', authenticateSession, requireAdmin, async (req, res) => {
+    const yo = req.userSession.userId;
+    const userId = req.body?.userId || yo;
+    const esEmpresa = String(userId) !== String(yo);
+    if (esEmpresa && !mandaAlMenos(req.userSession?.rol, 'secretaria')) {
+        return res.status(403).json({ error: 'Solo secretaría o dirección pueden registrar ausencias de otra persona.' });
+    }
+    const tipo = String(req.body?.tipo || '');
+    const desde = String(req.body?.desde || ''), hasta = String(req.body?.hasta || req.body?.desde || '');
+    const notas = String(req.body?.notas || '').trim().slice(0, 500) || null;
+    if (!TIPOS_AUSENCIA[tipo]) return res.status(400).json({ error: 'Tipo de ausencia no válido.' });
+    if (!esFechaISO(desde) || !esFechaISO(hasta)) return res.status(400).json({ error: 'Fechas no válidas.' });
+    if (hasta < desde) return res.status(400).json({ error: 'La fecha de fin es anterior a la de inicio.' });
+    if (diasEntreISO(desde, hasta) > 366) return res.status(400).json({ error: 'Como mucho un año seguido.' });
+    const client = await pool.connect();
+    try {
+        const u = await client.query(`SELECT 1 FROM users WHERE user_id = $1 AND club_id = $2`, [userId, AIM_CLUB_ID]);
+        if (!u.rowCount) return res.status(404).json({ error: 'Esa persona no es del club.' });
+        await client.query('BEGIN');
+        await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, ['ausencias:' + userId]);
+        const solapa = await client.query(
+            `SELECT 1 FROM aim_ausencias WHERE user_id = $1 AND estado IN ('pendiente', 'aprobada')
+               AND desde <= $3::date AND hasta >= $2::date`, [userId, desde, hasta]);
+        if (solapa.rowCount) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Ya hay una ausencia pedida o aprobada en esas fechas.' }); }
+        const ins = await client.query(
+            `INSERT INTO aim_ausencias (user_id, tipo, desde, hasta, notas, estado, iniciado_por, solicitado_por, resuelto_por, resuelto_at)
+             VALUES ($1, $2, $3::date, $4::date, $5, $6, $7, $8, $9, $10) RETURNING id`,
+            [userId, tipo, desde, hasta, notas, esEmpresa ? 'aprobada' : 'pendiente', esEmpresa ? 'empresa' : 'trabajador',
+             yo, esEmpresa ? yo : null, esEmpresa ? new Date() : null]);
+        await auditarFichaje(client, {
+            evento: esEmpresa ? 'ausencia_registrada' : 'ausencia_pedida', trabajadorId: userId, actorId: yo, ip: ipDe(req),
+            datos: { ausenciaId: ins.rows[0].id, tipo, desde, hasta, notas },
+        });
+        await client.query('COMMIT');
+        res.status(201).json({ success: true, id: ins.rows[0].id, estado: esEmpresa ? 'aprobada' : 'pendiente' });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+app.get('/api/fichaje/ausencias', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `${SQL_AUSENCIAS} WHERE a.user_id = $1 AND (a.estado = 'pendiente' OR a.hasta >= (now() AT TIME ZONE 'Europe/Madrid')::date - 400)
+             ORDER BY a.desde DESC`, [req.userSession.userId]);
+        res.set('Cache-Control', 'no-store');
+        res.json({ ausencias: r.rows.map(a => mapAusencia(req, a)), tipos: TIPOS_AUSENCIA });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/admin/fichajes/ausencias', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const todas = req.query.estado === 'todas';
+    try {
+        const r = await pool.query(
+            `${SQL_AUSENCIAS}
+             WHERE ($1::boolean OR a.estado = 'pendiente'
+                    OR (a.estado = 'aprobada' AND a.hasta >= (now() AT TIME ZONE 'Europe/Madrid')::date))
+             ORDER BY (a.estado = 'pendiente') DESC, a.desde ${todas ? 'DESC' : 'ASC'} LIMIT 300`, [todas]);
+        res.set('Cache-Control', 'no-store');
+        res.json({ ausencias: r.rows.map(a => mapAusencia(req, a)), tipos: TIPOS_AUSENCIA });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Correo al trabajador cuando le responden su petición.
+async function correoAusencia(id) {
+    if (!mailTransporter) return;
+    try {
+        const r = await pool.query(`${SQL_AUSENCIAS} WHERE a.id = $1`, [id]);
+        const a = r.rows[0];
+        if (!a) return;
+        const w = await pool.query(`SELECT email, name FROM users WHERE user_id = $1`, [a.user_id]);
+        if (!w.rows[0]?.email) return;
+        const fecha = (iso) => new Date(iso + 'T12:00:00').toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' });
+        const que = `${(TIPOS_AUSENCIA[a.tipo]?.nombre || a.tipo).toLowerCase()} del ${fecha(a.desde_txt)}${a.hasta_txt !== a.desde_txt ? ` al ${fecha(a.hasta_txt)}` : ''}`;
+        const base = (process.env.PUBLIC_BASE_URL || 'https://aim.aimeducation.es').replace(/\/+$/, '');
+        await mailTransporter.sendMail({
+            from: process.env.EMAIL_USER, to: w.rows[0].email,
+            subject: `Tu petición de ${(TIPOS_AUSENCIA[a.tipo]?.nombre || 'ausencia').toLowerCase()} ha sido ${a.estado}`,
+            html: `<div style="font-family:system-ui,sans-serif;color:#1a1a1a">
+              <p>Hola ${w.rows[0].name || ''},</p>
+              <p>Tu petición de <b>${que}</b> ha sido <b>${a.estado}</b>${a.resuelto_por_nombre ? ` por ${a.resuelto_por_nombre}` : ''}.</p>
+              ${a.respuesta ? `<p>Comentario: ${a.respuesta}</p>` : ''}
+              <p style="margin:18px 0"><a href="${base}/admin/fichaje" style="background:#0a7d3c;color:#fff;text-decoration:none;padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block">Ver en Fichaje</a></p>
+              <p style="font-size:12px;color:#888">AIM Education · Algeciras</p></div>`,
+        });
+    } catch (e) { console.error('[ausencia mail]', e.message); }
+}
+
+app.post('/api/fichaje/ausencias/:id/resolver', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const aprobar = req.body?.aprobar === true;
+    const respuesta = String(req.body?.respuesta || '').trim().slice(0, 500) || null;
+    if (!aprobar && !respuesta) return res.status(400).json({ error: 'Indica por qué la rechazas.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const r = await client.query(`SELECT * FROM aim_ausencias WHERE id = $1 FOR UPDATE`, [req.params.id]);
+        const a = r.rows[0];
+        if (!a) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Esa petición no existe.' }); }
+        if (a.estado !== 'pendiente') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Esa petición ya está resuelta.' }); }
+        if (String(a.user_id) === String(req.userSession.userId)) { await client.query('ROLLBACK'); return res.status(403).json({ error: 'Tus propias ausencias las tiene que aprobar otra persona.' }); }
+        await client.query(
+            `UPDATE aim_ausencias SET estado = $2, resuelto_por = $3, resuelto_at = NOW(), respuesta = $4 WHERE id = $1`,
+            [a.id, aprobar ? 'aprobada' : 'rechazada', req.userSession.userId, respuesta]);
+        await auditarFichaje(client, {
+            evento: aprobar ? 'ausencia_aprobada' : 'ausencia_rechazada', trabajadorId: a.user_id,
+            actorId: req.userSession.userId, ip: ipDe(req), datos: { ausenciaId: a.id, respuesta },
+        });
+        await client.query('COMMIT');
+        correoAusencia(a.id).catch(() => {});
+        res.json({ success: true, estado: aprobar ? 'aprobada' : 'rechazada' });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+app.post('/api/fichaje/ausencias/:id/cancelar', authenticateSession, requireAdmin, async (req, res) => {
+    const motivo = String(req.body?.motivo || '').trim().slice(0, 500) || null;
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const r = await client.query(`SELECT * FROM aim_ausencias WHERE id = $1 FOR UPDATE`, [req.params.id]);
+        const a = r.rows[0];
+        const yo = String(req.userSession.userId);
+        const propiaPendiente = a && a.estado === 'pendiente' && String(a.solicitado_por || '') === yo;
+        const aprobadaAjena = a && a.estado === 'aprobada' && mandaAlMenos(req.userSession?.rol, 'secretaria') && String(a.user_id) !== yo;
+        if (!propiaPendiente && !aprobadaAjena) {
+            await client.query('ROLLBACK');
+            return res.status(a ? 403 : 404).json({ error: a ? 'No puedes cancelar esta ausencia. Si ya está aprobada, habla con secretaría.' : 'Esa ausencia no existe.' });
+        }
+        if (aprobadaAjena && !motivo) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Indica por qué se cancela.' }); }
+        await client.query(
+            `UPDATE aim_ausencias SET estado = 'cancelada', resuelto_por = $2, resuelto_at = NOW(), respuesta = COALESCE($3, respuesta) WHERE id = $1`,
+            [a.id, req.userSession.userId, motivo]);
+        await auditarFichaje(client, {
+            evento: 'ausencia_cancelada', trabajadorId: a.user_id, actorId: req.userSession.userId, ip: ipDe(req),
+            datos: { ausenciaId: a.id, estadoAnterior: a.estado, motivo },
+        });
+        await client.query('COMMIT');
+        res.json({ success: true });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+// ── Importar los horarios de las clases ──
+// Plantilla de horario de cada profe a partir de las clases que tiene asignadas:
+// por día, sus clases unidas en bloques (si entre una y otra hay 30 min o menos,
+// es el mismo bloque), como mucho dos tramos (mañana y tarde; si hay más, se
+// unen los más cercanos). Solo es el horario PREVISTO: el registro de jornada
+// sigue siendo lo que cada uno ficha, que es lo que exige la ley.
+const esDocenteSesion = (s, uid) => String(s?.instructorId || '') === String(uid)
+    || (Array.isArray(s?.instructors) ? s.instructors : []).some(d => String(d?.id || '') === String(uid));
+const NOMBRE_DIA_SEMANA = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
+
+async function horariosDesdeClases() {
+    const staff = await pool.query(
+        `SELECT user_id, TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS nombre FROM users
+         WHERE club_id = $1 AND (LOWER(COALESCE(role,'')) = ANY($2) OR LOWER(COALESCE(dev_role,'')) = ANY($2))
+         ORDER BY nombre`, [AIM_CLUB_ID, ROLES_STAFF]);
+    const grupos = await pool.query(
+        `SELECT g.name, a.name AS actividad, g.sessions FROM tul_groups g
+         JOIN tul_activities a ON a.activity_id = g.activity_id WHERE a.club_id = $1`, [AIM_CLUB_ID]);
+    const actuales = await pool.query(`SELECT user_id, dia, tramo, entrada, salida FROM aim_horario_laboral ORDER BY dia, tramo`);
+    const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+    const hhmm = (n) => `${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`;
+    const out = [];
+    for (const w of staff.rows) {
+        const porDia = [[], [], [], [], [], [], []];
+        const clases = new Set();
+        for (const g of grupos.rows) {
+            for (const s of (Array.isArray(g.sessions) ? g.sessions : [])) {
+                if (!esDocenteSesion(s, w.user_id) || !HHMM.test(s.startTime || '') || !HHMM.test(s.endTime || '')) continue;
+                const ini = minutosHHMM(s.startTime), fin = minutosHHMM(s.endTime);
+                if (fin <= ini) continue;
+                clases.add(`${g.name} (${g.actividad})`);
+                for (const d of (s.days || []).map(Number)) if (d >= 0 && d <= 6) porDia[d].push({ ini, fin });
+            }
+        }
+        if (!clases.size) continue;
+        const dias = [], avisos = [];
+        porDia.forEach((bloques, dia) => {
+            const unidos = [];
+            for (const b of bloques.sort((x, y) => x.ini - y.ini)) {
+                const u = unidos[unidos.length - 1];
+                if (u && b.ini <= u.fin + 30) u.fin = Math.max(u.fin, b.fin); else unidos.push({ ...b });
+            }
+            if (unidos.length > 2) avisos.push(`El ${NOMBRE_DIA_SEMANA[dia]} tiene ${unidos.length} bloques de clases separados: se han unido los más cercanos para dejar dos turnos.`);
+            while (unidos.length > 2) {
+                let k = 0;
+                for (let i = 1; i < unidos.length - 1; i++) if (unidos[i + 1].ini - unidos[i].fin < unidos[k + 1].ini - unidos[k].fin) k = i;
+                unidos.splice(k, 2, { ini: unidos[k].ini, fin: unidos[k + 1].fin });
+            }
+            unidos.forEach((u, i) => dias.push({ dia, tramo: i + 1, entrada: hhmm(u.ini), salida: hhmm(u.fin) }));
+        });
+        const antes = actuales.rows.filter(x => String(x.user_id) === String(w.user_id))
+            .map(x => ({ dia: Number(x.dia), tramo: Number(x.tramo), entrada: x.entrada, salida: x.salida }));
+        const igual = JSON.stringify(antes) === JSON.stringify(dias);
+        out.push({ userId: w.user_id, nombre: w.nombre, clases: [...clases].sort(), dias, antes, teniaHorario: antes.length > 0, igual, avisos });
+    }
+    return out;
+}
+
+app.get('/api/admin/fichajes/horarios/desde-clases', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    try {
+        res.set('Cache-Control', 'no-store');
+        res.json({ profes: await horariosDesdeClases() });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Aplica la plantilla a todos los profes con clases asignadas (sustituye su
+// horario). Después, cada horario se edita como siempre.
+app.post('/api/admin/fichajes/horarios/desde-clases', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    // Opcional: solo a unas personas (por defecto, a todos los profes con clases).
+    const soloIds = Array.isArray(req.body?.userIds) ? req.body.userIds.map(String) : null;
+    const client = await pool.connect();
+    try {
+        const profes = (await horariosDesdeClases()).filter(p => !soloIds || soloIds.includes(String(p.userId)));
+        await client.query('BEGIN');
+        let cambiados = 0;
+        for (const p of profes) {
+            if (p.igual) continue;
+            await client.query(`DELETE FROM aim_horario_laboral WHERE user_id = $1`, [p.userId]);
+            for (const d of p.dias) {
+                await client.query(
+                    `INSERT INTO aim_horario_laboral (user_id, dia, tramo, entrada, salida) VALUES ($1, $2, $3, $4, $5)`,
+                    [p.userId, d.dia, d.tramo, d.entrada, d.salida]);
+            }
+            await auditarFichaje(client, {
+                evento: 'horario', trabajadorId: p.userId, actorId: req.userSession.userId, ip: ipDe(req),
+                datos: { antes: p.antes, despues: p.dias, origen: 'importado de las clases' },
+            });
+            cambiados++;
+        }
+        await client.query('COMMIT');
+        res.json({ success: true, profes: profes.length, cambiados });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
 // Recordatorios de fichaje por correo (ticket #233). Cada pocos minutos mira el
 // horario laboral de hoy: a quien le toca entrar y no ha fichado, se le recuerda;
 // a quien ya debería haber salido y sigue dentro, también. Un aviso por tipo y
@@ -11806,13 +12268,19 @@ async function recordatoriosFichaje() {
         // Minutos transcurridos hoy en hora de Madrid.
         const ahoraMin = (() => { const [h, m] = new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/Madrid', hour: '2-digit', minute: '2-digit' }).split(':').map(Number); return h * 60 + m; })();
         const base = (process.env.PUBLIC_BASE_URL || 'https://aim.aimeducation.es').replace(/\/+$/, '');
+        // Festivo o cierre del centro: hoy no se recuerda fichar a nadie.
+        const festivo = await pool.query(`SELECT 1 FROM aim_calendario_laboral WHERE fecha = $1::date`, [hoy]);
+        if (festivo.rowCount) return;
         const r = await pool.query(
             `SELECT h.user_id, h.tramo, h.entrada, h.salida, u.email,
                     TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre
              FROM aim_horario_laboral h JOIN users u ON u.user_id = h.user_id
              WHERE h.dia = $1 AND u.club_id = $2 AND u.email IS NOT NULL AND u.email <> ''
+               -- de vacaciones o de baja, tampoco
+               AND NOT EXISTS (SELECT 1 FROM aim_ausencias au WHERE au.user_id = h.user_id AND au.estado = 'aprobada'
+                               AND $3::date BETWEEN au.desde AND au.hasta)
              ORDER BY h.user_id, h.tramo`,
-            [dia, AIM_CLUB_ID]);
+            [dia, AIM_CLUB_ID, hoy]);
         // Por trabajador, con sus tramos del día (mañana y, si tiene, tarde).
         const porTrabajador = new Map();
         for (const row of r.rows) {

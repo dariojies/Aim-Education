@@ -168,17 +168,21 @@ export function generarInformeJornadaPdf(t, salida) {
         y = titulo(doc, y, 'Cómputo mensual');
         const parcial = t.contrato?.jornada === 'parcial';
         const cols = [
-            { t: 'Mes', x: izq, w: 165 },
-            { t: 'Contratadas', x: izq + 170, w: 75, der: true },
-            { t: 'Trabajadas', x: izq + 250, w: 75, der: true },
-            { t: 'Ordinarias', x: izq + 330, w: 70, der: true },
-            { t: parcial ? 'Complementarias' : 'Exceso de jornada', x: izq + 405, w: 90, der: true },
+            { t: 'Mes', x: izq, w: 125 },
+            { t: 'Contratadas', x: izq + 128, w: 66, der: true },
+            { t: 'Festivos/aus.', x: izq + 197, w: 66, der: true },
+            { t: 'Trabajadas', x: izq + 266, w: 66, der: true },
+            { t: 'Ordinarias', x: izq + 335, w: 66, der: true },
+            { t: parcial ? 'Complementarias' : 'Exceso', x: izq + 404, w: 91, der: true },
         ];
         y = tabla(doc, y, cols, t.meses.map(m => ({
-            celdas: [cap(nombreMes(m.mes)) + (m.estado === 'en_curso' ? ' (en curso)' : ''), horas(m.contratadas), horas(m.trabajadas),
+            celdas: [cap(nombreMes(m.mes)) + (m.estado === 'en_curso' ? ' (en curso)' : ''), horas(m.contratadas),
+                m.contratadas == null ? '—' : horas(m.justificadas || 0), horas(m.trabajadas),
                 horas(m.ordinarias), m.contratadas == null ? '—' : horas(m.complementarias)],
-            estilos: [{ negrita: true }, {}, { negrita: true }, {}, { color: m.complementarias > 0 ? NARANJA : TINTA }],
+            estilos: [{ negrita: true }, {}, {}, { negrita: true }, {}, { color: m.complementarias > 0 ? NARANJA : TINTA }],
         })), { tam: 8.5 });
+        doc.font('Helvetica').fontSize(7.5).fillColor(SUAVE).text('Festivos/aus.: horas previstas de festivos y ausencias retribuidas (vacaciones, bajas, permisos), que cuentan como justificadas.', izq, y - 4, { width: doc.page.width - 100 });
+        y = doc.y + 8;
         if (t.meses.some(m => m.contratadas == null)) {
             doc.font('Helvetica').fontSize(7.5).fillColor(SUAVE).text('Sin horas contratadas indicadas no se puede separar lo ordinario de lo que excede la jornada.', izq, y - 4);
             y = doc.y + 8;
@@ -221,6 +225,27 @@ export function generarInformeJornadaPdf(t, salida) {
     }
     doc.font('Helvetica-Bold').fontSize(10).fillColor(TINTA).text(`TOTAL TRABAJADO  ${hm(t.totalSeg)}`, izq, y, { width: doc.page.width - 100, align: 'right' });
     y = doc.y + 14;
+
+    // Festivos y ausencias del periodo (calendario laboral y vacaciones).
+    if (t.festivos?.length || t.ausencias?.length) {
+        if (y > doc.page.height - 140) { doc.addPage(); y = 50; }
+        y = titulo(doc, y, 'Festivos, vacaciones y ausencias');
+        const filas = [
+            ...(t.festivos || []).map(f => ({ orden: f.fecha, celdas: [diaLargo(f.fecha), f.nombre, f.tipoNombre || 'Festivo'], estilos: [{ negrita: true }, {}, { color: SUAVE }] })),
+            ...(t.ausencias || []).map(a => ({
+                orden: a.desde,
+                celdas: [a.desde === a.hasta ? diaLargo(a.desde) : `${diaCorto(a.desde)} – ${diaLargo(a.hasta)}`,
+                    `${a.tipoNombre}${a.dias > 1 ? ` (${a.dias} días)` : ''}${a.notas ? ` — ${a.notas}` : ''}`,
+                    `${a.justifica ? 'Retribuida' : 'No retribuida'}${a.resueltoPor ? ` · aprobada por ${a.resueltoPor}` : ''}`],
+                estilos: [{ negrita: true }, {}, { color: SUAVE }],
+            })),
+        ].sort((a, b) => a.orden.localeCompare(b.orden));
+        y = tabla(doc, y, [
+            { t: 'Fecha', x: izq, w: 150 },
+            { t: 'Qué', x: izq + 155, w: 190 },
+            { t: 'Detalle', x: izq + 350, w: 145 },
+        ], filas, { tam: 8 });
+    }
 
     // Solicitudes de corrección del periodo.
     if (t.solicitudes?.length) {
@@ -278,20 +303,29 @@ export function generarResumenMensualPdf(r, salida) {
     ]);
     doc.font('Helvetica').fontSize(8).fillColor(SUAVE).text(
         `Jornada: ${textoJornada(r)}. Las horas contratadas se reparten ${r.detalle?.repartoBase === 'horario' ? 'según su horario laboral' : 'de lunes a viernes'}; `
-        + `en cada semana, lo trabajado por encima de lo contratado se cuenta como ${parcial ? 'horas complementarias' : 'exceso sobre la jornada'}.`,
+        + `en cada semana, lo trabajado (más las horas de festivos y ausencias retribuidas) por encima de lo contratado se cuenta como ${parcial ? 'horas complementarias' : 'exceso sobre la jornada'}.`,
         izq, y - 4, { width: ancho });
     y = doc.y + 12;
 
     y = titulo(doc, y, 'Por semanas');
     y = tabla(doc, y, [
-        { t: 'Semana', x: izq, w: 150 },
-        { t: 'Contratadas', x: izq + 160, w: 100, der: true },
-        { t: 'Trabajadas', x: izq + 270, w: 100, der: true },
-        { t: parcial ? 'Complementarias' : 'Exceso', x: izq + 380, w: 115, der: true },
+        { t: 'Semana', x: izq, w: 120 },
+        { t: 'Contratadas', x: izq + 125, w: 85, der: true },
+        { t: 'Festivos/aus.', x: izq + 215, w: 85, der: true },
+        { t: 'Trabajadas', x: izq + 305, w: 85, der: true },
+        { t: parcial ? 'Complementarias' : 'Exceso', x: izq + 395, w: 100, der: true },
     ], (r.detalle?.semanas || []).map(s => ({
-        celdas: [`${diaCorto(s.desde)} – ${diaCorto(s.hasta)}`, horas(s.contratadas), horas(s.trabajadas), horas(s.exceso)],
-        estilos: [{ negrita: true }, {}, { negrita: true }, { color: s.exceso > 0 ? NARANJA : TINTA }],
+        celdas: [`${diaCorto(s.desde)} – ${diaCorto(s.hasta)}`, horas(s.contratadas), horas(s.justificadas || 0), horas(s.trabajadas), horas(s.exceso)],
+        estilos: [{ negrita: true }, {}, {}, { negrita: true }, { color: s.exceso > 0 ? NARANJA : TINTA }],
     })), { tam: 8.5 });
+
+    // Festivos y ausencias del mes (cuentan como justificadas si son retribuidas).
+    const noLab = (r.detalle?.dias || []).filter(d => d.motivo);
+    if (noLab.length) {
+        doc.font('Helvetica').fontSize(8).fillColor(SUAVE)
+            .text(`Festivos y ausencias: ${noLab.map(d => `${diaCorto(d.dia)} ${d.motivo}`).join(' · ')}.`, izq, y - 2, { width: ancho });
+        y = doc.y + 10;
+    }
 
     const dias = (r.detalle?.dias || []).filter(d => d.trabajadas > 0);
     if (dias.length) {
