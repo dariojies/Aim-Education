@@ -1072,6 +1072,38 @@ async function initDb() {
             )
         `);
 
+        // Almacén / inventario del club (ticket #250). Cada fila es un artículo. Si se
+        // enlaza a un concepto del catálogo, al venderlo se descuenta 1 de su stock.
+        // Las tallas ya son artículos distintos en el catálogo (Dobok talla S, M…),
+        // así que cada concepto se enlaza a UN solo artículo del almacén. Cada cambio
+        // de stock queda anotado en aim_almacen_movimientos (entradas, ventas, ajustes).
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_almacen (
+                id SERIAL PRIMARY KEY,
+                nombre VARCHAR(120) NOT NULL,
+                categoria VARCHAR(60),
+                concepto VARCHAR(100),          -- concepto del catálogo que lo vende (o NULL)
+                stock INTEGER NOT NULL DEFAULT 0,
+                stock_minimo INTEGER NOT NULL DEFAULT 0,
+                notas TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_almacen_concepto ON aim_almacen (concepto) WHERE concepto IS NOT NULL`);
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_almacen_movimientos (
+                id SERIAL PRIMARY KEY,
+                almacen_id INTEGER NOT NULL REFERENCES aim_almacen(id) ON DELETE CASCADE,
+                delta INTEGER NOT NULL,          -- +entrada / −salida
+                motivo VARCHAR(200),
+                recibo_id INTEGER REFERENCES aim_recibos(id) ON DELETE SET NULL,
+                usuario_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_almacen_mov ON aim_almacen_movimientos (almacen_id, id)`);
+
         // Registro de jornada / fichaje (ticket #233). Sustituye a la app externa
         // "Reloj Laboral". Cumple el registro diario de jornada (RDL 8/2019): la
         // HORA la pone siempre el servidor (no el navegador), y es append-only —
@@ -2472,6 +2504,7 @@ async function emitirReciboDe(client, { pagadorId, cargoIds, medioPago, userId }
             [reciboId, d.descuentoMensPct, d.base, d.id]
         );
     }
+    await descontarStockDeCargos(client, cs.rows, reciboId, userId); // almacén (#250)
     const pg = await client.query(`SELECT name, surname FROM users WHERE user_id = $1`, [pagadorId]);
     await registrarFactura(client, {
         recibo: { ...rec.rows[0], id: reciboId, serie: rec.rows[0].serie || 'A', tipo: 'normal' },
@@ -5927,6 +5960,46 @@ app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async
     }
 });
 
+// Al cobrar, descuenta del almacén cada artículo vendido (ticket #250): busca el
+// artículo enlazado al concepto del cargo (cada talla es su propio concepto) y le
+// resta una unidad, dejando el movimiento anotado. Los cargos que no son de
+// almacén (mensualidades, anticipos…) no casan con nada y se ignoran.
+async function descontarStockDeCargos(client, rows, reciboId, userId) {
+    for (const c of rows) {
+        if (!c.concepto) continue;
+        const it = await client.query(
+            `SELECT id FROM aim_almacen WHERE concepto = $1 FOR UPDATE`, [c.concepto]);
+        if (!it.rowCount) continue;
+        await client.query(`UPDATE aim_almacen SET stock = stock - 1, updated_at = NOW() WHERE id = $1`, [it.rows[0].id]);
+        await client.query(
+            `INSERT INTO aim_almacen_movimientos (almacen_id, delta, motivo, recibo_id, usuario_id)
+             VALUES ($1, -1, 'Venta', $2, $3)`,
+            [it.rows[0].id, reciboId, userId]);
+    }
+}
+
+// Repone en el almacén lo que se devuelve en una rectificativa (ticket #250): si la
+// línea salió del almacén al venderse en ese recibo, vuelve una unidad. Así, si
+// la línea vuelve a pendientes y se cobra otra vez, no se descuenta dos veces.
+async function reponerStockDeCargos(client, rows, reciboOrigenId, userId) {
+    for (const c of rows) {
+        if (!c.concepto) continue;
+        const it = await client.query(
+            `SELECT a.id FROM aim_almacen a
+             WHERE a.concepto = $1
+               AND EXISTS (SELECT 1 FROM aim_almacen_movimientos m
+                           WHERE m.almacen_id = a.id AND m.recibo_id = $2 AND m.delta < 0)
+             FOR UPDATE`,
+            [c.concepto, reciboOrigenId]);
+        if (!it.rowCount) continue;
+        await client.query(`UPDATE aim_almacen SET stock = stock + 1, updated_at = NOW() WHERE id = $1`, [it.rows[0].id]);
+        await client.query(
+            `INSERT INTO aim_almacen_movimientos (almacen_id, delta, motivo, recibo_id, usuario_id)
+             VALUES ($1, 1, 'Devolución (rectificativa)', $2, $3)`,
+            [it.rows[0].id, reciboOrigenId, userId]);
+    }
+}
+
 // Emite UNA factura a partir de un conjunto de cargos: número, recibo, desglose
 // del pago, congela los cargos y la anota en el registro encadenado. Devuelve el
 // ticket (con reciboId). Lo usan el cobro normal y el cobro que se parte en dos
@@ -5951,6 +6024,8 @@ async function emitirUnRecibo(client, { pagadorId, rows, pagosG, entregadoG, cam
             [reciboId, d.descuentoMensPct, d.base, d.id]
         );
     }
+    // Descontar del almacén lo que se vende (ticket #250), por concepto.
+    await descontarStockDeCargos(client, rows, reciboId, userId);
     await registrarFactura(client, {
         recibo: { ...rec.rows[0], id: reciboId, serie: rec.rows[0].serie || 'A', tipo: 'normal' },
         receptor: { nombre: receptorNombre },
@@ -7134,6 +7209,8 @@ app.post('/api/admin/billing/recibos/:id/rectificar', authenticateSession, requi
         });
         const nuevoId = rect.id;
         const aDevolver = rect.aDevolver;
+        // Lo devuelto vuelve al almacén (ticket #250).
+        await reponerStockDeCargos(client, quitadas, orig.id, req.userSession.userId);
 
         // La factura original NO se toca: se emitió y se queda como está, con su
         // número y su importe. Lo que cambia son sus líneas, que dejan de contar
@@ -7360,6 +7437,8 @@ async function asentarPago(client, pago, aviso) {
             `UPDATE aim_cargos SET recibo_id = $1, descuento_mens_pct = $2, importe = $3, estado = 'cobrado' WHERE id = $4`,
             [reciboId, d.descuentoMensPct, d.base, d.id]);
     }
+    // Lo vendido sale del almacén también si se paga por internet (ticket #250).
+    await descontarStockDeCargos(client, cs.rows, reciboId, null);
 
     const pg = await client.query(`SELECT name, surname FROM users WHERE user_id = $1`, [pago.pagador_id]);
     await registrarFactura(client, {
@@ -10555,6 +10634,118 @@ async function avisarFichaje(w, tipo, hoy, base) {
         });
     } catch (e) { console.error('[fichaje mail]', e.message); }
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ALMACÉN / INVENTARIO (ticket #250)
+// El club ve lo que tiene en stock. Cada artículo puede enlazarse a un concepto
+// del catálogo (cada talla es su propio artículo): al venderlo se descuenta solo.
+// ═════════════════════════════════════════════════════════════════════════════
+app.get('/api/admin/almacen', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT a.*, p.descripcion AS concepto_desc
+             FROM aim_almacen a
+             LEFT JOIN aim_precios p ON p.concepto = a.concepto
+             ORDER BY a.categoria NULLS LAST, a.nombre`);
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows.map(a => ({
+            id: a.id, nombre: a.nombre, categoria: a.categoria,
+            concepto: a.concepto, conceptoDesc: a.concepto_desc || null,
+            stock: a.stock, stockMinimo: a.stock_minimo, notas: a.notas,
+            bajo: a.stock <= a.stock_minimo,
+        })));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Conceptos del catálogo que se pueden enlazar a un artículo del almacén.
+app.get('/api/admin/almacen/conceptos', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(`SELECT concepto, descripcion FROM aim_precios WHERE activo = true ORDER BY descripcion`);
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows.map(x => ({ concepto: x.concepto, descripcion: x.descripcion })));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Crear o editar un artículo. Al crear se puede dar un stock inicial (se anota
+// como movimiento de entrada).
+app.post('/api/admin/almacen', authenticateSession, requireAdmin, async (req, res) => {
+    const { id, nombre, categoria, concepto, stock, stockMinimo, notas } = req.body || {};
+    if (!nombre?.trim()) return res.status(400).json({ error: 'El nombre es obligatorio.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        if (id) {
+            await client.query(
+                `UPDATE aim_almacen SET nombre=$1, categoria=$2, concepto=$3, stock_minimo=$4, notas=$5, updated_at=NOW() WHERE id=$6`,
+                [nombre.trim(), categoria?.trim() || null, concepto?.trim() || null,
+                 Math.max(0, parseInt(stockMinimo, 10) || 0), notas?.trim() || null, id]);
+            await client.query('COMMIT');
+            return res.json({ success: true, id });
+        }
+        const st = Math.max(0, parseInt(stock, 10) || 0);
+        const ins = await client.query(
+            `INSERT INTO aim_almacen (nombre, categoria, concepto, stock, stock_minimo, notas)
+             VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+            [nombre.trim(), categoria?.trim() || null, concepto?.trim() || null,
+             st, Math.max(0, parseInt(stockMinimo, 10) || 0), notas?.trim() || null]);
+        if (st > 0) {
+            await client.query(
+                `INSERT INTO aim_almacen_movimientos (almacen_id, delta, motivo, usuario_id) VALUES ($1,$2,'Stock inicial',$3)`,
+                [ins.rows[0].id, st, req.userSession.userId]);
+        }
+        await client.query('COMMIT');
+        res.status(201).json({ success: true, id: ins.rows[0].id });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        // Cada concepto del catálogo solo puede estar enlazado a un artículo.
+        if (err.code === '23505') return res.status(409).json({ error: 'Ese concepto del catálogo ya está enlazado a otro artículo del almacén.' });
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+// Ajuste manual de stock (entrada de mercancía, rotura, recuento…), con motivo.
+app.post('/api/admin/almacen/:id/ajuste', authenticateSession, requireAdmin, async (req, res) => {
+    const delta = parseInt(req.body?.delta, 10);
+    const motivo = (req.body?.motivo || '').toString().trim();
+    if (!Number.isInteger(delta) || delta === 0) return res.status(400).json({ error: 'Indica cuántas unidades sumar o restar (no 0).' });
+    if (!motivo) return res.status(400).json({ error: 'Indica el motivo del ajuste.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const a = await client.query(`SELECT stock FROM aim_almacen WHERE id = $1 FOR UPDATE`, [req.params.id]);
+        if (!a.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Ese artículo no existe.' }); }
+        const nuevo = a.rows[0].stock + delta;
+        if (nuevo < 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'No hay tanto stock para restar.' }); }
+        await client.query(`UPDATE aim_almacen SET stock = $1, updated_at = NOW() WHERE id = $2`, [nuevo, req.params.id]);
+        await client.query(
+            `INSERT INTO aim_almacen_movimientos (almacen_id, delta, motivo, usuario_id) VALUES ($1,$2,$3,$4)`,
+            [req.params.id, delta, motivo.slice(0, 200), req.userSession.userId]);
+        await client.query('COMMIT');
+        res.json({ success: true, stock: nuevo });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+app.get('/api/admin/almacen/:id/movimientos', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT m.id, m.delta, m.motivo, m.recibo_id, m.created_at,
+                    TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS usuario
+             FROM aim_almacen_movimientos m LEFT JOIN users u ON u.user_id = m.usuario_id
+             WHERE m.almacen_id = $1 ORDER BY m.id DESC LIMIT 100`, [req.params.id]);
+        res.set('Cache-Control', 'no-store');
+        res.json(r.rows.map(m => ({ id: m.id, delta: m.delta, motivo: m.motivo, reciboId: m.recibo_id, usuario: m.usuario || null, fecha: m.created_at })));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/admin/almacen/:id', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        await pool.query(`DELETE FROM aim_almacen WHERE id = $1`, [req.params.id]);
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 // ── Tickets vinculados ───────────────────────────────────────────────────────
 // Vincular el ticket :id con otro: los dos (y los que ya estuvieran con

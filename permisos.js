@@ -64,6 +64,8 @@ export function permisosDe(rol) {
             titulos: !instructor,
             // Objetos perdidos: lo lleva secretaría/dirección.
             objetos: !instructor,
+            // El almacén (inventario) lo gestiona secretaría/dirección (ticket #250).
+            almacen: !instructor,
             reportes: true,
             events: true,
             news: !instructor,
