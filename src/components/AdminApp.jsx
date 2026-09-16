@@ -4650,6 +4650,7 @@ function BillingPendientes({ activa, showToast }) {
   const [prevision, setPrevision] = useState([]); // meses futuros: lo que se cobrará (sin crear deuda)
   const [cargando, setCargando] = useState(false);
   const [q, setQ] = useState('');                 // buscador de alumnos
+  const [campCargos, setCampCargos] = useState([]); // pendientes de campamento (#248), aparte del mes
 
   useEffect(() => {
     fetch('/api/admin/billing/mes-a-generar', { credentials: 'include' })
@@ -4673,6 +4674,12 @@ function BillingPendientes({ activa, showToast }) {
       ]);
       if (r.ok) setCargos(await r.json());
       setPrevision(rp && rp.ok ? ((await rp.json()).prevision || []) : []);
+      // Los del campamento son de verano: se muestran aparte para que no los tape
+      // el filtro de mes (#248). En "todos los meses" ya salen en la lista normal.
+      if (!todos) {
+        const rc = await fetch('/api/admin/billing/cargos?estado=pendiente&origen=campamento', { credentials: 'include', cache: 'no-store' });
+        setCampCargos(rc.ok ? await rc.json() : []);
+      } else setCampCargos([]);
     } catch { /* noop */ }
     finally { setCargando(false); }
   }, [todos, mesIso]);
@@ -4693,15 +4700,16 @@ function BillingPendientes({ activa, showToast }) {
   };
   const cargosF = cargos.filter(coincide);
   const previsionF = prevision.filter(coincide);
+  const campF = campCargos.filter(coincide);
 
   function exportarCargos() {
-    if (!cargosF.length && !previsionF.length) return;
+    if (!cargosF.length && !previsionF.length && !campF.length) return;
     const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const fila = (c, tipo) => {
       const base = c.precio * (1 - (c.descuentoPct || 0) / 100);
       return [`${c.nombre} ${c.apellidos || ''}`.trim(), c.descripcion, mesLargo(c.mes || mesIso), tipo, c.precio, `${c.descuentoPct || 0}%`, base.toFixed(2)].map(esc).join(';');
     };
-    const filas = [...cargosF.map(c => fila(c, 'Pendiente')), ...previsionF.map(c => fila(c, 'Previsión'))];
+    const filas = [...cargosF.map(c => fila(c, 'Pendiente')), ...campF.map(c => fila(c, 'Campamento')), ...previsionF.map(c => fila(c, 'Previsión'))];
     const csv = '﻿' + ['Alumno;Concepto;Mes;Tipo;Precio;Dto.;Base'].concat(filas).join('\r\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
     const a = document.createElement('a');
@@ -4740,12 +4748,12 @@ function BillingPendientes({ activa, showToast }) {
           <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--ink-2)' }}>
             {cargosF.length} cargos · base {eur(totalPendiente)}{previsionF.length > 0 ? ` · +${previsionF.length} en previsión` : ''}
           </span>
-          <button className="btn btn-sm btn-outline" onClick={exportarCargos} disabled={!cargosF.length && !previsionF.length}><I.Download /> Exportar CSV</button>
+          <button className="btn btn-sm btn-outline" onClick={exportarCargos} disabled={!cargosF.length && !previsionF.length && !campF.length}><I.Download /> Exportar CSV</button>
         </div>
       </div>
 
       {cargando && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
-      {!cargando && cargosF.length === 0 && previsionF.length === 0 && (
+      {!cargando && cargosF.length === 0 && previsionF.length === 0 && campF.length === 0 && (
         <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>
           {q.trim() ? `Ningún alumno "${q.trim()}" con cargos pendientes ${todos ? '' : `de ${mesLargo(mesIso)}`}.` : `No hay cargos pendientes ${todos ? 'en ningún mes' : `de ${mesLargo(mesIso)}`}.`}
         </p>
@@ -4767,6 +4775,32 @@ function BillingPendientes({ activa, showToast }) {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Campamento (ticket #248): sus cargos son de verano, así que se muestran
+          aparte para que el filtro de mes no los tape. En "todos los meses" ya
+          salen arriba. */}
+      {!todos && campF.length > 0 && (
+        <div style={{ display: 'grid', gap: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+            <h3 style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 800, margin: 0, color: 'var(--orange)' }}>Campamento</h3>
+            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{campF.length} cargos · base {eur(campF.reduce((s, c) => s + c.precio * (1 - (c.descuentoPct || 0) / 100), 0))}</span>
+          </div>
+          <div className="data-table">
+            <div className="data-table-head" style={{ gridTemplateColumns: '1.6fr 1.6fr 110px 90px 60px' }}>
+              <span>Alumno</span><span>Concepto</span><span>Mes</span><span>Precio</span><span></span>
+            </div>
+            {campF.map(c => (
+              <div key={c.id} className="data-table-row" style={{ gridTemplateColumns: '1.6fr 1.6fr 110px 90px 60px' }}>
+                <div className="pri">{c.nombre} {c.apellidos}</div>
+                <span style={{ fontSize: 13 }}>{c.descripcion}</span>
+                <span style={{ fontSize: 12, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{mesLargo(c.mes)}</span>
+                <span style={{ fontWeight: 700 }}>{eur(c.precio)}</span>
+                <div className="row-actions"><button className="icon-btn danger" onClick={() => borrarCargo(c.id)} aria-label="Borrar"><I.Trash /></button></div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

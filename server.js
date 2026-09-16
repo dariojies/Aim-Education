@@ -4250,6 +4250,7 @@ app.post('/api/camp/children', authenticateSession, async (req, res) => {
         for (const day of dayList) {
             await pool.query(`INSERT INTO aim_camp_child_days (child_id, day) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [childId, day]);
         }
+        autoCargoCampamento(childId).catch(() => {}); // cargo pendiente automático (#248)
         res.status(201).json({ id: childId });
     } catch (err) {
         console.error('Error enrolling camp child:', err);
@@ -4355,6 +4356,7 @@ app.put('/api/camp/children/:id/days', authenticateSession, async (req, res) => 
         for (const day of dayList) {
             await pool.query(`INSERT INTO aim_camp_child_days (child_id, day) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [child.id, day]);
         }
+        autoCargoCampamento(child.id).catch(() => {}); // cargo pendiente automático (#248)
         res.json({ success: true, days: dayList.sort() });
     } catch (err) {
         console.error('Error setting camp days:', err);
@@ -4504,6 +4506,7 @@ app.post('/api/admin/camp/children/:id/ficha', authenticateSession, requireAdmin
         );
         const alumnoId = nuevo.rows[0].user_id;
         await pool.query('UPDATE aim_camp_children SET alumno_id = $1 WHERE id = $2', [alumnoId, nino.id]);
+        autoCargoCampamento(nino.id).catch(() => {}); // ya se puede cobrar: cargo pendiente (#248)
         res.status(201).json({ alumnoId, email });
     } catch (err) {
         console.error('Error creando ficha desde campamento:', err);
@@ -4537,6 +4540,7 @@ app.post('/api/admin/camp/children', authenticateSession, requireAdmin, async (r
                 [childId, day, !!s.matinal, !!s.custodia]
             );
         }
+        autoCargoCampamento(childId).catch(() => {}); // cargo pendiente automático (#248)
         res.status(201).json({ id: childId });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -4599,6 +4603,7 @@ app.put('/api/admin/camp/children/:id/days', authenticateSession, requireAdmin, 
                 [req.params.id, day, !!s.matinal, !!s.custodia]
             );
         }
+        autoCargoCampamento(Number(req.params.id)).catch(() => {}); // cargo pendiente automático (#248)
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -4808,6 +4813,86 @@ app.get('/api/admin/camp/tarifas', authenticateSession, requireAdmin, async (req
     }
 });
 
+// Crea los cargos de campamento de UN niño según la elección de tarifas 'sel'
+// ({completo, mes, quincena, semana, dia}), repartiendo sus semanas sin reutilizar
+// las que ya cubre un cargo cobrado. Devuelve { creados, importe }. Lo usan la
+// facturación manual y el auto-cargo al inscribirse (ticket #248).
+async function altaCargosCampamento(client, f, sel, cobrado, porConcepto) {
+    let creados = 0, total = 0;
+    const usadas = cobrado.get(f.alumnoId)?.semanasUsadas || new Set();
+    const pendientes = f.semanas.filter(w => !usadas.has(String(w.inicio).slice(0, 10)));
+    if (!pendientes.length) pendientes.push(...f.semanas);
+    const alta = async (clave, cuantas, etiquetaExtra, fecha) => {
+        const t = CAMP_TARIFAS.find(x => x.clave === clave);
+        const info = porConcepto[t.concepto];
+        const importe = r2Server(Number(info.precio) * cuantas);
+        await client.query(
+            `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct,
+                                     descuento_pct, importe, target_nombre, estado, origen, actividad)
+             VALUES ($1,$2,$3,$4,'Otros',$5,$6,0,$5,$7,'pendiente','campamento',$8)`,
+            [f.alumnoId, t.concepto, fecha, `${info.descripcion}${etiquetaExtra ? ` — ${etiquetaExtra}` : ''}`,
+             importe, Number(info.iva_pct ?? 0), t.etiqueta, CAMP_ACTIVIDAD]
+        );
+        creados++; total = r2Server(total + importe);
+    };
+    const primerDia = f.semanas[0]?.inicio || null;
+    if (Number(sel.completo) > 0) {
+        await alta('completo', 1, `${f.totalDias} días`, primerDia);
+        pendientes.length = 0;
+    }
+    for (const clave of ['mes', 'quincena', 'semana']) {
+        const t = CAMP_TARIFAS.find(x => x.clave === clave);
+        for (let i = 0; i < (Number(sel[clave]) || 0); i++) {
+            const bloque = pendientes.splice(0, t.semanas);
+            const fecha = bloque[0]?.inicio || primerDia;
+            const etiqueta = bloque.length
+                ? (bloque.length > 1 ? `${bloque[0].label} a ${bloque[bloque.length - 1].label}` : bloque[0].label)
+                : null;
+            await alta(clave, 1, etiqueta, fecha);
+        }
+    }
+    const sueltos = Number(sel.dia) || 0;
+    if (sueltos > 0) {
+        const fecha = pendientes[0]?.inicio || primerDia;
+        await alta('dia', sueltos, `${sueltos} día${sueltos !== 1 ? 's' : ''} suelto${sueltos !== 1 ? 's' : ''}`, fecha);
+    }
+    return { creados, importe: total };
+}
+
+// Auto-cargo del campamento (ticket #248): al apuntarse/cambiar los días de un
+// niño, se le crea solo su cargo pendiente con la tarifa más barata que le
+// corresponde (la misma que propondría la facturación), para que no se escape
+// ningún pago. Reemplaza sus cargos pendientes de campamento y respeta lo ya
+// cobrado. Si el niño no está vinculado a una ficha de alumno, no se puede cobrar.
+async function autoCargoCampamento(childId) {
+    try {
+        const { porConcepto, faltan } = await preciosTarifas();
+        if (faltan.length) return;
+        const filas = await calcularTarifasCampamento();
+        const f = filas.find(x => x.childId === childId);
+        if (!f || !f.alumnoId) return;
+        const sel = f.sugerencia;
+        if (!CLAVES_TARIFA.some(k => Number(sel[k]) > 0)) return;
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            const cobrado = await cobradoPorAlumnoCampamento(client);
+            // Solo los pendientes de campamento de ESTE alumno (no toca a los demás).
+            await client.query(
+                `DELETE FROM aim_cargos WHERE cliente_id = $1 AND origen = 'campamento'
+                   AND concepto = ANY($2::text[]) AND estado = 'pendiente' AND recibo_id IS NULL`,
+                [f.alumnoId, CAMP_TARIFAS.map(t => t.concepto)]);
+            await altaCargosCampamento(client, f, sel, cobrado, porConcepto);
+            await client.query('COMMIT');
+        } catch (e) {
+            await client.query('ROLLBACK').catch(() => {});
+            throw e;
+        } finally { client.release(); }
+    } catch (e) {
+        console.error('[camp auto-cargo]', e.message);
+    }
+}
+
 // Genera los cargos de los días de campamento con las cantidades que haya
 // elegido secretaría: { [childId]: { completo, mes, quincena, semana, dia } }.
 // Como en matinal y custodia: reemplaza lo pendiente y respeta lo ya cobrado.
@@ -4840,48 +4925,8 @@ app.post('/api/admin/camp/tarifas/facturar', authenticateSession, requireAdmin, 
             if (!f.alumnoId) { sinFicha.push(f.nombre); continue; }
             if (!CLAVES_TARIFA.some(k => Number(sel[k]) > 0)) { omitidos.push(f.nombre); continue; }
 
-            // Las semanas se reparten en orden entre los bloques elegidos, sin
-            // reutilizar las que ya cubre un cargo cobrado.
-            const usadas = cobrado.get(f.alumnoId)?.semanasUsadas || new Set();
-            const pendientes = f.semanas.filter(w => !usadas.has(String(w.inicio).slice(0, 10)));
-            if (!pendientes.length) pendientes.push(...f.semanas);
-            // cuantas > 1 solo lo usan los días sueltos: van en un cargo único por
-            // su importe total en vez de uno por día.
-            const alta = async (clave, cuantas, etiquetaExtra, fecha) => {
-                const t = CAMP_TARIFAS.find(x => x.clave === clave);
-                const info = porConcepto[t.concepto];
-                const importe = r2Server(Number(info.precio) * cuantas);
-                await client.query(
-                    `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct,
-                                             descuento_pct, importe, target_nombre, estado, origen, actividad)
-                     VALUES ($1,$2,$3,$4,'Otros',$5,$6,0,$5,$7,'pendiente','campamento',$8)`,
-                    [f.alumnoId, t.concepto, fecha, `${info.descripcion}${etiquetaExtra ? ` — ${etiquetaExtra}` : ''}`,
-                     importe, Number(info.iva_pct ?? 0), t.etiqueta, CAMP_ACTIVIDAD]
-                );
-                creados++; total = r2Server(total + importe);
-            };
-
-            const primerDia = f.semanas[0]?.inicio || null;
-            if (Number(sel.completo) > 0) {
-                await alta('completo', 1, `${f.totalDias} días`, primerDia);
-                pendientes.length = 0;
-            }
-            for (const clave of ['mes', 'quincena', 'semana']) {
-                const t = CAMP_TARIFAS.find(x => x.clave === clave);
-                for (let i = 0; i < (Number(sel[clave]) || 0); i++) {
-                    const bloque = pendientes.splice(0, t.semanas);
-                    const fecha = bloque[0]?.inicio || primerDia;
-                    const etiqueta = bloque.length
-                        ? (bloque.length > 1 ? `${bloque[0].label} a ${bloque[bloque.length - 1].label}` : bloque[0].label)
-                        : null;
-                    await alta(clave, 1, etiqueta, fecha);
-                }
-            }
-            const sueltos = Number(sel.dia) || 0;
-            if (sueltos > 0) {
-                const fecha = pendientes[0]?.inicio || primerDia;
-                await alta('dia', sueltos, `${sueltos} día${sueltos !== 1 ? 's' : ''} suelto${sueltos !== 1 ? 's' : ''}`, fecha);
-            }
+            const rr = await altaCargosCampamento(client, f, sel, cobrado, porConcepto);
+            creados += rr.creados; total = r2Server(total + rr.importe);
         }
         await client.query('COMMIT');
         res.json({
@@ -5684,12 +5729,15 @@ async function generarCargoInscripcion({ userId, mes }, cliente = pool) {
 
 // Listar cargos (pendientes por defecto), opcionalmente por mes o alumno.
 app.get('/api/admin/billing/cargos', authenticateSession, requireAdmin, async (req, res) => {
-    const { mes, clienteId, estado } = req.query;
+    const { mes, clienteId, estado, origen } = req.query;
     const where = [];
     const vals = [];
     if (mes) { vals.push(normalizaMes(mes)); where.push(`c.mes = $${vals.length}::date`); }
     if (clienteId) { vals.push(clienteId); where.push(`c.cliente_id = $${vals.length}`); }
     if (estado) { vals.push(estado); where.push(`c.estado = $${vals.length}`); }
+    // Filtro por origen (p. ej. 'campamento') para poder mostrarlos aparte (#248).
+    if (origen) { vals.push(origen); where.push(`c.origen = $${vals.length}`); }
+    if (origen === 'campamento') where.push(`c.recibo_id IS NULL`);
     try {
         const r = await pool.query(
             `SELECT c.*, u.name, u.surname
@@ -5704,6 +5752,7 @@ app.get('/api/admin/billing/cargos', authenticateSession, requireAdmin, async (r
             concepto: c.concepto, mes: c.mes, descripcion: c.descripcion, tipo: c.tipo,
             precio: Number(c.precio), ivaPct: Number(c.iva_pct), descuentoPct: Number(c.descuento_pct),
             importe: c.importe == null ? null : Number(c.importe), reciboId: c.recibo_id, estado: c.estado,
+            origen: c.origen,
         })));
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
