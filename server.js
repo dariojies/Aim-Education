@@ -854,6 +854,11 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_recibo_pagos ON aim_recibo_pagos (recibo_id)`);
+        // Cuando un mismo pago se parte en dos facturas (con IVA / exenta) para
+        // justificar por separado ante Hacienda (ticket #249), ambas comparten este
+        // grupo: para el cliente es un solo cobro, pero son dos facturas vinculadas.
+        await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS factura_grupo UUID`);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_recibos_factura_grupo ON aim_recibos (factura_grupo) WHERE factura_grupo IS NOT NULL`);
 
         // Datos fiscales de quien paga: una factura los necesita, y hasta ahora
         // solo se guardaban los del club.
@@ -5922,6 +5927,83 @@ app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async
     }
 });
 
+// Emite UNA factura a partir de un conjunto de cargos: número, recibo, desglose
+// del pago, congela los cargos y la anota en el registro encadenado. Devuelve el
+// ticket (con reciboId). Lo usan el cobro normal y el cobro que se parte en dos
+// facturas (con IVA / exenta) del ticket #249.
+async function emitirUnRecibo(client, { pagadorId, rows, pagosG, entregadoG, cambioG, userId, receptorNombre, grupoId = null }) {
+    const calc = calcularRecibo(rows.map(cargoParaMotor));
+    const total = calc.total;
+    const medioResumen = pagosG.length === 1 ? pagosG[0].medio : 'mixto';
+    const num = (await client.query(`SELECT nextval('aim_recibos_numero_seq') AS n`)).rows[0].n;
+    const rec = await client.query(
+        `INSERT INTO aim_recibos (numero, pagador_id, fecha, importe, medio_pago, entregado, cambio, estado, cobrado_por, cobrado_at, factura_grupo)
+         VALUES ($1,$2,(now() AT TIME ZONE 'Europe/Madrid')::date,$3,$4,$5,$6,'cobrado',$7,NOW(),$8) RETURNING id, numero, fecha, serie`,
+        [num, pagadorId, total, medioResumen, entregadoG, cambioG, userId, grupoId]
+    );
+    const reciboId = rec.rows[0].id;
+    for (const p of pagosG) {
+        await client.query(`INSERT INTO aim_recibo_pagos (recibo_id, medio, importe) VALUES ($1, $2, $3)`, [reciboId, p.medio, p.importe]);
+    }
+    for (const d of calc.detalle) {
+        await client.query(
+            `UPDATE aim_cargos SET recibo_id = $1, descuento_mens_pct = $2, importe = $3, estado = 'cobrado' WHERE id = $4`,
+            [reciboId, d.descuentoMensPct, d.base, d.id]
+        );
+    }
+    await registrarFactura(client, {
+        recibo: { ...rec.rows[0], id: reciboId, serie: rec.rows[0].serie || 'A', tipo: 'normal' },
+        receptor: { nombre: receptorNombre },
+        descripcion: calc.detalle.map(d => d.descripcion).join('; ').slice(0, 500),
+        base: calc.baseTotal, cuota: calc.ivaTotal, total,
+        userId,
+    });
+    return {
+        reciboId,
+        recibo: {
+            id: reciboId, numero: rec.rows[0].numero, fecha: rec.rows[0].fecha,
+            pagador: receptorNombre || '', medioPago: medioResumen, pagos: pagosG,
+            entregado: entregadoG, cambio: cambioG, total,
+        },
+        detalle: calc.detalle.map(d => ({
+            descripcion: d.descripcion, mes: d.mes, precio: d.precio,
+            descuentoPct: d.descuentoPct, descuentoMensPct: d.descuentoMensPct,
+            ivaPct: d.ivaPct, base: d.base, total: d.total,
+        })),
+        basesPorIva: calc.basesPorIva, baseTotal: calc.baseTotal, ivaTotal: calc.ivaTotal, ahorro: calc.ahorro,
+        empresa: EMPRESA_TICKET,
+    };
+}
+
+// Junta dos facturas (con IVA + exenta, ticket #249) en un único ticket para el
+// cliente: mezcla las líneas y las bases, suma los totales y deja constancia de
+// los dos números de factura vinculados (que son cosa nuestra, no del cliente).
+function combinarTickets(tickets, { pagos, entregado, cambio, total, medioResumen, receptorNombre }) {
+    const primero = tickets[0];
+    const gruposIva = new Map();
+    for (const t of tickets) {
+        for (const b of t.basesPorIva) {
+            const g = gruposIva.get(b.ivaPct) || { ivaPct: b.ivaPct, base: 0, iva: 0 };
+            g.base = r2Server(g.base + b.base); g.iva = r2Server(g.iva + b.iva);
+            gruposIva.set(b.ivaPct, g);
+        }
+    }
+    return {
+        recibo: {
+            id: primero.recibo.id, numero: primero.recibo.numero, fecha: primero.recibo.fecha,
+            pagador: receptorNombre || '', medioPago: medioResumen, pagos, entregado, cambio, total,
+        },
+        detalle: tickets.flatMap(t => t.detalle),
+        basesPorIva: [...gruposIva.values()].sort((a, b) => a.ivaPct - b.ivaPct),
+        baseTotal: r2Server(tickets.reduce((s, t) => s + t.baseTotal, 0)),
+        ivaTotal: r2Server(tickets.reduce((s, t) => s + t.ivaTotal, 0)),
+        ahorro: r2Server(tickets.reduce((s, t) => s + t.ahorro, 0)),
+        // Las dos facturas vinculadas (para nosotros; el cliente ve todo junto).
+        facturas: tickets.map(t => ({ id: t.recibo.id, numero: t.recibo.numero, total: t.recibo.total, conIva: t.ivaTotal > 0 })),
+        empresa: EMPRESA_TICKET,
+    };
+}
+
 // Cobrar: crea el recibo, congela los cargos y devuelve el ticket. El importe
 // se calcula SIEMPRE en el servidor (nunca se confía en el cliente).
 app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, async (req, res) => {
@@ -6148,91 +6230,101 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
             pagos = [{ medio: medioPago, importe: total }];
         }
 
-        // 5) Número de recibo por secuencia (atómico).
-        const num = (await client.query(`SELECT nextval('aim_recibos_numero_seq') AS n`)).rows[0].n;
-        const rec = await client.query(
-            `INSERT INTO aim_recibos (numero, pagador_id, fecha, importe, medio_pago, entregado, cambio, estado, cobrado_por, cobrado_at)
-             VALUES ($1,$2,(now() AT TIME ZONE 'Europe/Madrid')::date,$3,$4,$5,$6,'cobrado',$7,NOW()) RETURNING id, numero, fecha`,
-            [num, pagadorId, total, medioResumen, entregadoNum, cambio, req.userSession.userId]
-        );
-        const reciboId = rec.rows[0].id;
-        // Desglose del pago por método.
-        for (const p of pagos) {
-            await client.query(`INSERT INTO aim_recibo_pagos (recibo_id, medio, importe) VALUES ($1, $2, $3)`, [reciboId, p.medio, p.importe]);
-        }
-
-        // 6) Congelar cada cargo en el recibo.
-        for (const d of calc.detalle) {
-            await client.query(
-                `UPDATE aim_cargos SET recibo_id = $1, descuento_mens_pct = $2, importe = $3, estado = 'cobrado' WHERE id = $4`,
-                [reciboId, d.descuentoMensPct, d.base, d.id]
-            );
-        }
-
-        // 6b) Anticipos (ticket #221): anotar los nuevos con su saldo y descontar
-        // de los aplicados, dejando rastro en el ledger para no contarlos dos veces.
-        for (const n of anticiposNuevos) {
-            await client.query(
-                `INSERT INTO aim_anticipos (cliente_id, importe, saldo, motivo, recibo_origen_id, estado, created_by, iva_pct)
-                 VALUES ($1,$2,$2,$3,$4,'disponible',$5,$6)`,
-                [n.clienteId, n.importe, n.motivo || null, reciboId, req.userSession.userId, n.ivaPct || 0]
-            );
-        }
-        for (const ap of aplicaciones) {
-            const upd = await client.query(
-                `UPDATE aim_anticipos
-                    SET saldo = saldo - $2,
-                        estado = CASE WHEN saldo - $2 <= 0.005 THEN 'consumido' ELSE 'disponible' END
-                  WHERE id = $1 RETURNING saldo`,
-                [ap.anticipoId, ap.importe]
-            );
-            if (!upd.rowCount || Number(upd.rows[0].saldo) < -0.005) throw { httP: 409, msg: 'El saldo de un anticipo cambió mientras se cobraba. Refresca e inténtalo de nuevo.' };
-            await client.query(
-                `INSERT INTO aim_anticipos_aplicaciones (anticipo_id, recibo_id, cargo_id, importe)
-                 VALUES ($1,$2,$3,$4)`,
-                [ap.anticipoId, reciboId, ap.cargoId, ap.importe]
-            );
-        }
-
-        // 6c) Bonos de clases (ticket #245): se anota el bono con sus clases, ya
-        // pagado, para que el alumno pueda asistir a esa actividad sin matrícula.
-        for (const b of bonosNuevos) {
-            await client.query(
-                `INSERT INTO aim_bonos (cliente_id, actividad, clases_total, clases_usadas, recibo_id, created_by)
-                 VALUES ($1,$2,$3,0,$4,$5)`,
-                [b.clienteId, b.actividad, b.clases, reciboId, req.userSession.userId]
-            );
-        }
-
-        // Datos del pagador para el ticket.
+        // Nombre del pagador (para el ticket y la factura).
         const pg = await client.query(`SELECT name, surname FROM users WHERE user_id = $1`, [pagadorId]);
+        const receptorNombre = pg.rows[0] ? `${pg.rows[0].name} ${pg.rows[0].surname || ''}`.trim() : null;
+        const userId = req.userSession.userId;
 
-        // La factura queda anotada en el registro encadenado dentro de la misma
-        // transacción: si el registro falla, el cobro no se llega a emitir.
-        await registrarFactura(client, {
-            recibo: { ...rec.rows[0], id: reciboId, serie: rec.rows[0].serie || 'A', tipo: 'normal' },
-            receptor: { nombre: pg.rows[0] ? `${pg.rows[0].name} ${pg.rows[0].surname || ''}`.trim() : null },
-            descripcion: calc.detalle.map(d => d.descripcion).join('; ').slice(0, 500),
-            base: calc.baseTotal, cuota: calc.ivaTotal, total,
-            userId: req.userSession.userId,
-        });
+        // 5) ¿Se parte en DOS facturas, con IVA y exenta? (ticket #249). Para el
+        // cliente es UN solo cobro (ticket con todo junto), pero como entidad
+        // emitimos dos facturas VINCULADAS para justificar por separado ante
+        // Hacienda. Solo en cobros normales: con anticipos o bonos va en una sola.
+        const conIvaRows = cs.rows.filter(c => Number(c.iva_pct) > 0);
+        const exentoRows = cs.rows.filter(c => !(Number(c.iva_pct) > 0));
+        const sinExtras = anticiposNuevos.length === 0 && bonosNuevos.length === 0 && aplicaciones.length === 0;
+        let calcConIva = null, calcExento = null;
+        if (sinExtras && conIvaRows.length && exentoRows.length) {
+            calcConIva = calcularRecibo(conIvaRows.map(cargoParaMotor));
+            calcExento = calcularRecibo(exentoRows.map(cargoParaMotor));
+        }
+        const splitear = calcConIva && calcExento && calcConIva.total > 0 && calcExento.total > 0;
+
+        let tickets;
+        if (splitear) {
+            const grupoId = crypto.randomUUID();
+            const grupos = [
+                { rows: conIvaRows, total: calcConIva.total },
+                { rows: exentoRows, total: calcExento.total },
+            ];
+            // Reparto de los pagos entre las dos facturas, en proporción a su total;
+            // el último grupo se lleva el remanente para que las sumas cuadren.
+            const restante = pagos.map(p => ({ medio: p.medio, importe: p.importe }));
+            tickets = [];
+            for (let gi = 0; gi < grupos.length; gi++) {
+                const g = grupos[gi];
+                let pagosG;
+                if (gi === grupos.length - 1) {
+                    pagosG = restante.map(p => ({ medio: p.medio, importe: r2Server(p.importe) })).filter(p => p.importe > 0);
+                } else {
+                    pagosG = pagos.map((p, pi) => {
+                        const parte = r2Server(p.importe * g.total / total);
+                        restante[pi].importe = r2Server(restante[pi].importe - parte);
+                        return { medio: p.medio, importe: parte };
+                    }).filter(p => p.importe > 0);
+                }
+                if (!pagosG.length) pagosG = [{ medio: pagos[0].medio, importe: g.total }];
+                tickets.push(await emitirUnRecibo(client, {
+                    pagadorId, rows: g.rows, pagosG, entregadoG: g.total, cambioG: 0,
+                    userId, receptorNombre, grupoId,
+                }));
+            }
+        } else {
+            const t = await emitirUnRecibo(client, {
+                pagadorId, rows: cs.rows, pagosG: pagos, entregadoG: entregadoNum, cambioG: cambio,
+                userId, receptorNombre,
+            });
+            tickets = [t];
+            const reciboId = t.reciboId;
+            // 6b) Anticipos (ticket #221): anotar los nuevos con su saldo y descontar
+            // de los aplicados, dejando rastro en el ledger para no contarlos dos veces.
+            for (const n of anticiposNuevos) {
+                await client.query(
+                    `INSERT INTO aim_anticipos (cliente_id, importe, saldo, motivo, recibo_origen_id, estado, created_by, iva_pct)
+                     VALUES ($1,$2,$2,$3,$4,'disponible',$5,$6)`,
+                    [n.clienteId, n.importe, n.motivo || null, reciboId, userId, n.ivaPct || 0]
+                );
+            }
+            for (const ap of aplicaciones) {
+                const upd = await client.query(
+                    `UPDATE aim_anticipos
+                        SET saldo = saldo - $2,
+                            estado = CASE WHEN saldo - $2 <= 0.005 THEN 'consumido' ELSE 'disponible' END
+                      WHERE id = $1 RETURNING saldo`,
+                    [ap.anticipoId, ap.importe]
+                );
+                if (!upd.rowCount || Number(upd.rows[0].saldo) < -0.005) throw { httP: 409, msg: 'El saldo de un anticipo cambió mientras se cobraba. Refresca e inténtalo de nuevo.' };
+                await client.query(
+                    `INSERT INTO aim_anticipos_aplicaciones (anticipo_id, recibo_id, cargo_id, importe)
+                     VALUES ($1,$2,$3,$4)`,
+                    [ap.anticipoId, reciboId, ap.cargoId, ap.importe]
+                );
+            }
+            // 6c) Bonos de clases (ticket #245).
+            for (const b of bonosNuevos) {
+                await client.query(
+                    `INSERT INTO aim_bonos (cliente_id, actividad, clases_total, clases_usadas, recibo_id, created_by)
+                     VALUES ($1,$2,$3,0,$4,$5)`,
+                    [b.clienteId, b.actividad, b.clases, reciboId, userId]
+                );
+            }
+        }
 
         await client.query('COMMIT');
 
-        res.json({
-            recibo: {
-                id: reciboId, numero: rec.rows[0].numero, fecha: rec.rows[0].fecha,
-                pagador: pg.rows[0] ? `${pg.rows[0].name} ${pg.rows[0].surname}` : '',
-                medioPago: medioResumen, pagos, entregado: entregadoNum, cambio, total,
-            },
-            detalle: calc.detalle.map(d => ({
-                descripcion: d.descripcion, mes: d.mes, precio: d.precio,
-                descuentoPct: d.descuentoPct, descuentoMensPct: d.descuentoMensPct,
-                ivaPct: d.ivaPct, base: d.base, total: d.total,
-            })),
-            basesPorIva: calc.basesPorIva, baseTotal: calc.baseTotal, ivaTotal: calc.ivaTotal, ahorro: calc.ahorro,
-            empresa: EMPRESA_TICKET,
-        });
+        // Para el cliente, todo junto: si son dos facturas, se combinan las líneas y
+        // las bases en un único ticket (con los dos números vinculados anotados).
+        res.json(tickets.length === 1 ? tickets[0]
+            : combinarTickets(tickets, { pagos, entregado: entregadoNum, cambio, total, medioResumen, receptorNombre }));
     } catch (err) {
         await client.query('ROLLBACK');
         if (err && err.httP) return res.status(err.httP).json({ error: err.msg });

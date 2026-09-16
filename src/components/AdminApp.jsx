@@ -3926,6 +3926,12 @@ function BillingTPV({ showToast }) {
           <div style={{ flex: 1, minWidth: 200 }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: 'var(--teal)' }}>Recibo #{ticket.recibo.numero} cobrado — {eur(ticket.recibo.total)}</div>
             <div style={{ fontSize: 13, color: 'var(--ink-2)' }}>{ticket.recibo.pagador} · {(ticket.recibo.pagos && ticket.recibo.pagos.length > 1) ? ticket.recibo.pagos.map(p => `${p.medio} ${eur(p.importe)}`).join(' + ') : ticket.recibo.medioPago}{ticket.recibo.cambio > 0 ? ` · cambio ${eur(ticket.recibo.cambio)}` : ''}</div>
+            {/* Dos facturas vinculadas (con IVA / exenta) — interno, ticket #249. */}
+            {ticket.facturas && ticket.facturas.length > 1 && (
+              <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>
+                Facturas vinculadas: {ticket.facturas.map(f => `nº ${f.numero} (${f.conIva ? 'con IVA' : 'exenta'}, ${eur(f.total)})`).join(' · ')}
+              </div>
+            )}
           </div>
           <button className="btn btn-sm btn-primary" onClick={imprimirTicket}><I.Print /> Imprimir ticket</button>
           <button className="btn btn-sm btn-outline" onClick={() => setTicket(null)}>Nuevo cobro</button>
