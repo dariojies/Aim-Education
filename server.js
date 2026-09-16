@@ -14,6 +14,8 @@ import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
 import { generarGastosPdf, gastosCsv, nombrePeriodo } from './gastos-pdf.js';
 import { generarResumenAnualPdf } from './resumen-anual-pdf.js';
+import { generarInformeJornadaPdf, generarResumenMensualPdf } from './fichaje-pdf.js';
+import { PassThrough } from 'stream';
 import { escalaDe, escalasDelClub, resultadoDe, baremoDe, matriculaExamenDe } from './rangos.js';
 import { rolEfectivo, permisosDe, mandaAlMenos, ROLES_STAFF, NOMBRE_ROL } from './permisos.js';
 
@@ -1224,6 +1226,163 @@ async function initDb() {
             )
         `);
 
+        // ── Blindaje del registro de jornada (ticket #252) ──
+        // Auditoría encadenada: cada cosa que pasa en el registro (fichar, pedir,
+        // aprobar o rechazar una corrección, anular, cambiar horario o contrato,
+        // generar o confirmar un resumen, descargar) deja un apunte con su huella
+        // SHA-256, que incluye la huella del apunte anterior. Si alguien tocara un
+        // apunte antiguo, la cadena se rompería a partir de ahí. Sin claves
+        // foráneas a propósito: el rastro no desaparece aunque se borre una cuenta.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_fichaje_auditoria (
+                id BIGSERIAL PRIMARY KEY,
+                evento VARCHAR(40) NOT NULL,
+                trabajador_id UUID,
+                actor_id UUID,
+                ip VARCHAR(60),
+                ts_iso TEXT NOT NULL,
+                datos TEXT NOT NULL,
+                hash_anterior TEXT,
+                hash TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_fichaje_audit_trab ON aim_fichaje_auditoria (trabajador_id, id)`);
+        // Jornada contratada de cada trabajador: completa o parcial y horas a la
+        // semana. Base del cómputo de horas ordinarias y complementarias.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_fichaje_contratos (
+                user_id UUID PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                jornada VARCHAR(10) NOT NULL DEFAULT 'completa',
+                horas_semana NUMERIC(5,2),
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_by UUID REFERENCES users(user_id) ON DELETE SET NULL
+            )
+        `);
+        // Resumen mensual de horas (tiempo parcial) con la evidencia de su entrega:
+        // cuándo se envió, a dónde, y cuándo y desde dónde confirmó el trabajador que
+        // lo había recibido. Si después se corrige el mes, se genera otra versión y
+        // la anterior se conserva.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_fichaje_resumenes (
+                id SERIAL PRIMARY KEY,
+                user_id UUID NOT NULL REFERENCES users(user_id),
+                mes DATE NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                jornada VARCHAR(10) NOT NULL,
+                horas_semana NUMERIC(5,2),
+                horas_contratadas NUMERIC(7,2) NOT NULL,
+                horas_trabajadas NUMERIC(7,2) NOT NULL,
+                horas_ordinarias NUMERIC(7,2) NOT NULL,
+                horas_complementarias NUMERIC(7,2) NOT NULL,
+                detalle TEXT NOT NULL,
+                hash TEXT NOT NULL,
+                generado_por UUID,
+                generado_at TIMESTAMPTZ DEFAULT NOW(),
+                enviado_at TIMESTAMPTZ,
+                enviado_a TEXT,
+                confirmado_at TIMESTAMPTZ,
+                confirmado_ip VARCHAR(60),
+                UNIQUE (user_id, mes, version)
+            )
+        `);
+
+        // Inmutabilidad en la propia base de datos: ni la web ni nadie con acceso a
+        // las tablas puede reescribir o borrar el registro. Los fichajes, sus
+        // anulaciones y la auditoría no admiten UPDATE ni DELETE; una solicitud solo
+        // se puede resolver mientras está pendiente (sin cambiar lo que pide) y un
+        // resumen solo admite anotar su envío y su confirmación. Esto también impide
+        // borrar la cuenta de alguien con registro de jornada (hay que conservarlo).
+        await client.query(`
+            CREATE OR REPLACE FUNCTION aim_fichaje_inmutable() RETURNS trigger AS $f$
+            BEGIN
+                RAISE EXCEPTION 'REGISTRO_JORNADA_INMUTABLE: % no se puede modificar ni borrar', TG_TABLE_NAME;
+            END; $f$ LANGUAGE plpgsql
+        `);
+        for (const t of ['aim_fichajes', 'aim_fichaje_anulaciones', 'aim_fichaje_auditoria']) {
+            await client.query(`DROP TRIGGER IF EXISTS trg_${t}_inmutable ON ${t}`);
+            await client.query(`CREATE TRIGGER trg_${t}_inmutable BEFORE UPDATE OR DELETE ON ${t} FOR EACH ROW EXECUTE FUNCTION aim_fichaje_inmutable()`);
+        }
+        await client.query(`
+            CREATE OR REPLACE FUNCTION aim_fichaje_solicitud_guarda() RETURNS trigger AS $f$
+            BEGIN
+                IF TG_OP = 'DELETE' THEN
+                    RAISE EXCEPTION 'REGISTRO_JORNADA_INMUTABLE: una solicitud de corrección no se puede borrar';
+                END IF;
+                IF OLD.estado <> 'pendiente' THEN
+                    RAISE EXCEPTION 'REGISTRO_JORNADA_INMUTABLE: una solicitud ya resuelta no se puede cambiar';
+                END IF;
+                IF NEW.user_id IS DISTINCT FROM OLD.user_id OR NEW.accion IS DISTINCT FROM OLD.accion
+                   OR NEW.fichaje_id IS DISTINCT FROM OLD.fichaje_id OR NEW.tipo IS DISTINCT FROM OLD.tipo
+                   OR NEW.ts IS DISTINCT FROM OLD.ts OR NEW.motivo IS DISTINCT FROM OLD.motivo
+                   OR NEW.origen IS DISTINCT FROM OLD.origen OR NEW.solicitado_por IS DISTINCT FROM OLD.solicitado_por
+                   OR NEW.iniciado_por IS DISTINCT FROM OLD.iniciado_por OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+                    RAISE EXCEPTION 'REGISTRO_JORNADA_INMUTABLE: solo se puede resolver la solicitud, no cambiar lo que pide';
+                END IF;
+                RETURN NEW;
+            END; $f$ LANGUAGE plpgsql
+        `);
+        await client.query(`DROP TRIGGER IF EXISTS trg_fichaje_solicitudes_guarda ON aim_fichaje_solicitudes`);
+        await client.query(`CREATE TRIGGER trg_fichaje_solicitudes_guarda BEFORE UPDATE OR DELETE ON aim_fichaje_solicitudes FOR EACH ROW EXECUTE FUNCTION aim_fichaje_solicitud_guarda()`);
+        await client.query(`
+            CREATE OR REPLACE FUNCTION aim_fichaje_resumen_guarda() RETURNS trigger AS $f$
+            BEGIN
+                IF TG_OP = 'DELETE' THEN
+                    RAISE EXCEPTION 'REGISTRO_JORNADA_INMUTABLE: un resumen mensual no se puede borrar';
+                END IF;
+                IF NEW.user_id IS DISTINCT FROM OLD.user_id OR NEW.mes IS DISTINCT FROM OLD.mes
+                   OR NEW.version IS DISTINCT FROM OLD.version OR NEW.horas_trabajadas IS DISTINCT FROM OLD.horas_trabajadas
+                   OR NEW.horas_ordinarias IS DISTINCT FROM OLD.horas_ordinarias
+                   OR NEW.horas_complementarias IS DISTINCT FROM OLD.horas_complementarias
+                   OR NEW.horas_contratadas IS DISTINCT FROM OLD.horas_contratadas OR NEW.detalle IS DISTINCT FROM OLD.detalle
+                   OR NEW.hash IS DISTINCT FROM OLD.hash OR NEW.generado_at IS DISTINCT FROM OLD.generado_at
+                   OR (OLD.confirmado_at IS NOT NULL AND NEW.confirmado_at IS DISTINCT FROM OLD.confirmado_at) THEN
+                    RAISE EXCEPTION 'REGISTRO_JORNADA_INMUTABLE: de un resumen solo se anota su envío y su confirmación';
+                END IF;
+                RETURN NEW;
+            END; $f$ LANGUAGE plpgsql
+        `);
+        await client.query(`DROP TRIGGER IF EXISTS trg_fichaje_resumenes_guarda ON aim_fichaje_resumenes`);
+        await client.query(`CREATE TRIGGER trg_fichaje_resumenes_guarda BEFORE UPDATE OR DELETE ON aim_fichaje_resumenes FOR EACH ROW EXECUTE FUNCTION aim_fichaje_resumen_guarda()`);
+
+        // Los fichajes y anulaciones que ya existían entran en la cadena de
+        // auditoría (una sola vez), para que la comprobación de integridad los cubra.
+        {
+            await client.query('BEGIN');
+            try {
+                const faltan = await client.query(
+                    `SELECT f.id, f.user_id, f.tipo, f.ts, f.dia, f.origen, f.creado_por, f.motivo
+                     FROM aim_fichajes f
+                     WHERE NOT EXISTS (SELECT 1 FROM aim_fichaje_auditoria a
+                                       WHERE a.evento IN ('fichaje', 'fichaje_corregido', 'migracion_fichaje')
+                                         AND (a.datos::jsonb->>'fichajeId')::int = f.id)
+                     ORDER BY f.id`);
+                for (const f of faltan.rows) {
+                    await auditarFichaje(client, {
+                        evento: 'migracion_fichaje', trabajadorId: f.user_id, actorId: f.creado_por,
+                        datos: datosFichajeAuditoria(f),
+                    });
+                }
+                const faltanAn = await client.query(
+                    `SELECT an.fichaje_id, an.anulado_por, an.motivo, an.created_at, f.user_id
+                     FROM aim_fichaje_anulaciones an JOIN aim_fichajes f ON f.id = an.fichaje_id
+                     WHERE NOT EXISTS (SELECT 1 FROM aim_fichaje_auditoria a
+                                       WHERE a.evento IN ('anulacion', 'migracion_anulacion')
+                                         AND (a.datos::jsonb->>'fichajeId')::int = an.fichaje_id)
+                     ORDER BY an.id`);
+                for (const an of faltanAn.rows) {
+                    await auditarFichaje(client, {
+                        evento: 'migracion_anulacion', trabajadorId: an.user_id, actorId: an.anulado_por,
+                        datos: { fichajeId: an.fichaje_id, motivo: an.motivo || null, at: new Date(an.created_at).toISOString() },
+                    });
+                }
+                await client.query('COMMIT');
+            } catch (e) {
+                await client.query('ROLLBACK').catch(() => {});
+                console.error('[fichaje auditoría migración]', e.message);
+            }
+        }
+
         // Anulación de recibos: nunca se borran, se marcan (rastro de auditoría).
         await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_motivo TEXT`);
         await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS anulado_por UUID REFERENCES users(user_id) ON DELETE SET NULL`);
@@ -1977,6 +2136,11 @@ app.delete('/api/users/:id', authenticateSession, requirePermiso('editarAlumnos'
         await pool.query('DELETE FROM users WHERE user_id = $1', [id]);
         res.json({ success: true, borrado: true });
     } catch (err) {
+        // Con registro de jornada no se puede borrar la cuenta (ticket #252): hay
+        // que conservarlo cuatro años. Se saca del club y el registro sigue.
+        if (/REGISTRO_JORNADA_INMUTABLE/.test(err.message || '') || (err.code === '23503' && /aim_fichaje/.test(err.constraint || err.table || err.detail || ''))) {
+            return res.status(409).json({ error: 'Esta persona tiene registro de jornada (fichajes), que hay que conservar al menos cuatro años: no se puede borrar su cuenta. Sácala del club en su lugar.' });
+        }
         res.status(500).json({ error: err.message });
     }
 });
@@ -9764,9 +9928,14 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                         COUNT(*) FILTER (WHERE s.estado = 'pendiente' AND s.iniciado_por = 'trabajador' AND s.user_id <> $1)::int AS por_validar,
                         COUNT(*) FILTER (WHERE s.estado IN ('aprobada','rechazada') AND s.iniciado_por = 'trabajador'
                                          AND s.solicitado_por = $1 AND s.resuelto_at > NOW() - INTERVAL '3 days')::int AS resueltas
-                 FROM aim_fichaje_solicitudes s JOIN users w ON w.user_id = s.user_id
-                 WHERE w.club_id = $2`, [yo, AIM_CLUB_ID]);
+                 FROM aim_fichaje_solicitudes s`, [yo]);
             const x = fj.rows[0];
+            // Resumen mensual de horas pendiente de que lo confirme (ticket #252).
+            const rs = await pool.query(
+                `SELECT COUNT(*)::int n FROM aim_fichaje_resumenes r
+                 WHERE r.user_id = $1 AND r.confirmado_at IS NULL
+                   AND r.version = (SELECT MAX(v.version) FROM aim_fichaje_resumenes v WHERE v.user_id = r.user_id AND v.mes = r.mes)`, [yo]);
+            if (rs.rows[0].n) avisos.push({ tipo: 'fichaje', texto: `${rs.rows[0].n === 1 ? 'Un resumen' : `${rs.rows[0].n} resúmenes`} de horas por confirmar`, detalle: 'confirma que lo has recibido', destino: '/admin/fichaje', n: rs.rows[0].n });
             if (x.por_aprobar) avisos.push({ tipo: 'fichaje', texto: `${x.por_aprobar} corrección${x.por_aprobar !== 1 ? 'es' : ''} de tu fichaje por aprobar`, detalle: 'no se aplican hasta que las apruebes', destino: '/admin/fichaje', n: x.por_aprobar });
             if (x.por_validar && mandaAlMenos(req.userSession?.rol, 'secretaria')) avisos.push({ tipo: 'fichaje', texto: `${x.por_validar} solicitud${x.por_validar !== 1 ? 'es' : ''} de corrección de fichaje por validar`, detalle: 'las han pedido los trabajadores', destino: '/admin/fichaje', n: x.por_validar });
             if (x.resueltas) avisos.push({ tipo: 'fichaje', texto: `${x.resueltas} solicitud${x.resueltas !== 1 ? 'es' : ''} de corrección de fichaje respondida${x.resueltas !== 1 ? 's' : ''}`, detalle: 'mira el resultado en Fichaje', destino: '/admin/fichaje', n: x.resueltas });
@@ -10344,6 +10513,58 @@ app.get('/api/admin/mascotas/:id/sugerencia', authenticateSession, requireAdmin,
 const TIPOS_FICHAJE = ['entrada', 'salida', 'pausa_inicio', 'pausa_fin'];
 const ETIQUETA_FICHAJE = { entrada: 'Entrada', salida: 'Salida', pausa_inicio: 'Inicio de pausa', pausa_fin: 'Fin de pausa' };
 
+// ── Auditoría encadenada (ticket #252) ──
+// Huella de un apunte: SHA-256 de sus campos y de la huella del anterior.
+function huellaAuditoria({ evento, trabajadorId, actorId, ip, tsIso, datosTxt, hashAnterior }) {
+    return crypto.createHash('sha256')
+        .update([evento, trabajadorId || '', actorId || '', ip || '', tsIso, datosTxt, hashAnterior || ''].join('|'), 'utf8')
+        .digest('hex');
+}
+// Anota un apunte en la auditoría. Tiene que ir dentro de la transacción de lo que
+// se audita: si el apunte falla, la operación no se hace. El bloqueo evita que dos
+// operaciones a la vez se encadenen del mismo eslabón.
+async function auditarFichaje(client, { evento, trabajadorId = null, actorId = null, ip = null, datos = {} }) {
+    await client.query('LOCK TABLE aim_fichaje_auditoria IN EXCLUSIVE MODE');
+    const prev = await client.query('SELECT hash FROM aim_fichaje_auditoria ORDER BY id DESC LIMIT 1');
+    const hashAnterior = prev.rows[0]?.hash || null;
+    const tsIso = new Date().toISOString();
+    const datosTxt = JSON.stringify(datos);
+    const ipTxt = ip ? String(ip).slice(0, 60) : null;
+    const hash = huellaAuditoria({ evento, trabajadorId, actorId, ip: ipTxt, tsIso, datosTxt, hashAnterior });
+    await client.query(
+        `INSERT INTO aim_fichaje_auditoria (evento, trabajador_id, actor_id, ip, ts_iso, datos, hash_anterior, hash)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [evento, trabajadorId, actorId, ipTxt, tsIso, datosTxt, hashAnterior, hash]);
+    return hash;
+}
+// Lo que se firma de un fichaje: justo lo que luego se contrasta con la tabla.
+function datosFichajeAuditoria(f) {
+    return {
+        fichajeId: f.id, tipo: f.tipo, ts: new Date(f.ts).toISOString(), dia: String(f.dia).slice(0, 10),
+        origen: f.origen, motivo: f.motivo || null,
+    };
+}
+const ipDe = (req) => (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim().slice(0, 60) || null;
+// Un apunte suelto (lo que no va dentro de otra operación, p. ej. una descarga).
+async function auditarSuelto(apunte) {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const h = await auditarFichaje(client, apunte);
+        await client.query('COMMIT');
+        return h;
+    } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw e;
+    } finally { client.release(); }
+}
+// Jornada contratada de un trabajador (completa sin horas si no se ha indicado).
+async function contratoDe(userId, cliente = pool) {
+    const r = await cliente.query(`SELECT jornada, horas_semana FROM aim_fichaje_contratos WHERE user_id = $1`, [userId]);
+    const c = r.rows[0];
+    return { jornada: c?.jornada || 'completa', horasSemana: c?.horas_semana == null ? null : Number(c.horas_semana), indicado: !!c };
+}
+
 // Un fichaje está vigente si no tiene una anulación (ticket #251). Las
 // anulaciones van en su propia tabla: el fichaje original nunca se modifica.
 const FICHAJE_VIGENTE = (alias) => `NOT EXISTS (SELECT 1 FROM aim_fichaje_anulaciones an WHERE an.fichaje_id = ${alias}.id)`;
@@ -10509,8 +10730,12 @@ app.post('/api/fichaje', authenticateSession, requireAdmin, async (req, res) => 
         }
         const ins = await client.query(
             `INSERT INTO aim_fichajes (user_id, tipo, dia, origen, ip)
-             VALUES ($1, $2, (now() AT TIME ZONE 'Europe/Madrid')::date, 'web', $3) RETURNING id, ts`,
+             VALUES ($1, $2, (now() AT TIME ZONE 'Europe/Madrid')::date, 'web', $3) RETURNING id, tipo, ts, dia, origen, motivo`,
             [uid, tipo, ip || null]);
+        await auditarFichaje(client, {
+            evento: 'fichaje', trabajadorId: uid, actorId: uid, ip,
+            datos: { ...datosFichajeAuditoria(ins.rows[0]), dispositivo: String(req.headers['user-agent'] || '').slice(0, 200) || null },
+        });
         await client.query('COMMIT');
         const est = await estadoFichaje(uid);
         res.status(201).json({ success: true, id: ins.rows[0].id, ts: ins.rows[0].ts, estado: est.estado });
@@ -10540,14 +10765,20 @@ app.get('/api/admin/fichajes', authenticateSession, requireAdmin, requireRol('se
     const desde = esFecha(req.query.desde) ? req.query.desde : null;
     const persona = req.query.persona || null;
     try {
-        // Personal del club: quien tenga rol de staff (role o dev_role).
+        // Personal del club: quien tenga rol de staff (role o dev_role). También
+        // quien ya no está pero tiene fichajes en el periodo (ticket #252): su
+        // registro se conserva y tiene que poder consultarse y exportarse.
         const staff = await pool.query(
-            `SELECT user_id, TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS nombre, role, dev_role
-             FROM users
-             WHERE club_id = $1
-               AND (LOWER(COALESCE(role,'')) = ANY($2) OR LOWER(COALESCE(dev_role,'')) = ANY($2))
-               AND ($3::uuid IS NULL OR user_id = $3)
-             ORDER BY nombre`, [AIM_CLUB_ID, ROLES_STAFF, persona]);
+            `SELECT u.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre, u.role, u.dev_role,
+                    (u.club_id = $1 AND (LOWER(COALESCE(u.role,'')) = ANY($2) OR LOWER(COALESCE(u.dev_role,'')) = ANY($2))) AS en_plantilla,
+                    c.jornada, c.horas_semana
+             FROM users u
+             LEFT JOIN aim_fichaje_contratos c ON c.user_id = u.user_id
+             WHERE ((u.club_id = $1 AND (LOWER(COALESCE(u.role,'')) = ANY($2) OR LOWER(COALESCE(u.dev_role,'')) = ANY($2)))
+                    OR EXISTS (SELECT 1 FROM aim_fichajes f WHERE f.user_id = u.user_id
+                               AND ($4::date IS NULL OR f.dia >= $4::date) AND f.dia <= $5::date))
+               AND ($3::uuid IS NULL OR u.user_id = $3)
+             ORDER BY nombre`, [AIM_CLUB_ID, ROLES_STAFF, persona, desde, hasta]);
         const trabajadores = [];
         for (const s of staff.rows) {
             const l = await listadoFichajes({ userId: s.user_id, desde, hasta });
@@ -10555,6 +10786,8 @@ app.get('/api/admin/fichajes', authenticateSession, requireAdmin, requireRol('se
             trabajadores.push({
                 userId: s.user_id, nombre: s.nombre,
                 rol: NOMBRE_ROL[rolEfectivo(s.role, s.dev_role)] || null,
+                enPlantilla: !!s.en_plantilla,
+                jornada: s.jornada || null, horasSemana: s.horas_semana == null ? null : Number(s.horas_semana),
                 estado: estado.estado, totalSeg: l.totalSeg, dias: l.dias,
             });
         }
@@ -10611,22 +10844,35 @@ const mapSolicitudFichaje = (req, s) => ({
 
 // Aplica una solicitud aprobada, dentro de la transacción de quien la aprueba.
 // El original nunca se toca: se anota su anulación y, si toca, el fichaje nuevo.
-async function aplicarSolicitudFichaje(client, s) {
+async function aplicarSolicitudFichaje(client, s, { actorId = null, ip = null } = {}) {
     await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, ['fichaje:' + s.user_id]);
+    let original = null;
     if (s.accion === 'anular' || s.accion === 'modificar') {
         const f = await client.query(
-            `SELECT f.id FROM aim_fichajes f WHERE f.id = $1 AND ${FICHAJE_VIGENTE('f')}`, [s.fichaje_id]);
+            `SELECT f.id, f.tipo, f.ts FROM aim_fichajes f WHERE f.id = $1 AND ${FICHAJE_VIGENTE('f')}`, [s.fichaje_id]);
         if (!f.rowCount) throw { httP: 409, msg: 'Ese fichaje ya no está vigente: no se puede aplicar la corrección.' };
+        original = { fichajeId: f.rows[0].id, tipo: f.rows[0].tipo, ts: new Date(f.rows[0].ts).toISOString() };
         await client.query(
             `INSERT INTO aim_fichaje_anulaciones (fichaje_id, solicitud_id, anulado_por, motivo) VALUES ($1, $2, $3, $4)`,
             [s.fichaje_id, s.id, s.solicitado_por, s.motivo]);
+        // Traza: dato original, motivo, quién lo propuso y quién lo aprobó.
+        await auditarFichaje(client, {
+            evento: 'anulacion', trabajadorId: s.user_id, actorId, ip,
+            datos: { fichajeId: s.fichaje_id, solicitudId: s.id, original, motivo: s.motivo, propuestoPor: s.solicitado_por, aprobadoPor: actorId },
+        });
     }
     if (s.accion === 'alta' || s.accion === 'modificar') {
-        await client.query(
+        const ins = await client.query(
             `INSERT INTO aim_fichajes (user_id, tipo, ts, dia, origen, creado_por, motivo, solicitud_id, corrige_id)
-             VALUES ($1, $2, $3::timestamptz, ($3::timestamptz AT TIME ZONE 'Europe/Madrid')::date, $4, $5, $6, $7, $8)`,
+             VALUES ($1, $2, $3::timestamptz, ($3::timestamptz AT TIME ZONE 'Europe/Madrid')::date, $4, $5, $6, $7, $8)
+             RETURNING id, tipo, ts, dia, origen, motivo`,
             [s.user_id, s.tipo, s.ts, s.origen === 'incidencia' ? 'incidencia' : 'correccion',
              s.solicitado_por, s.motivo, s.id, s.accion === 'modificar' ? s.fichaje_id : null]);
+        // Traza: dato corregido (y el original si lo sustituye).
+        await auditarFichaje(client, {
+            evento: 'fichaje_corregido', trabajadorId: s.user_id, actorId, ip,
+            datos: { ...datosFichajeAuditoria(ins.rows[0]), solicitudId: s.id, corrige: original, propuestoPor: s.solicitado_por, aprobadoPor: actorId },
+        });
     }
 }
 
@@ -10678,7 +10924,10 @@ app.post('/api/fichaje/solicitudes', authenticateSession, requireAdmin, async (r
     // Fichaje de incidencia (ticket #252): el trabajador no pudo fichar a su hora.
     const origen = req.body?.origen === 'incidencia' ? 'incidencia' : 'correccion';
     try {
-        const u = await pool.query(`SELECT 1 FROM users WHERE user_id = $1 AND club_id = $2`, [userId, AIM_CLUB_ID]);
+        // Del club, o que ya no esté pero tenga registro (se le puede corregir).
+        const u = await pool.query(
+            `SELECT 1 FROM users u WHERE u.user_id = $1
+               AND (u.club_id = $2 OR EXISTS (SELECT 1 FROM aim_fichajes f WHERE f.user_id = u.user_id))`, [userId, AIM_CLUB_ID]);
         if (!u.rowCount) return res.status(404).json({ error: 'Esa persona no es del club.' });
         let ts = null, tipoN = null, fid = null;
         if (accion === 'alta' || accion === 'modificar') {
@@ -10704,12 +10953,26 @@ app.post('/api/fichaje/solicitudes', authenticateSession, requireAdmin, async (r
             if (!TIPOS_FICHAJE.includes(tipo)) return res.status(400).json({ error: 'Tipo de fichaje no válido.' });
             tipoN = tipo;
         }
-        const ins = await pool.query(
-            `INSERT INTO aim_fichaje_solicitudes (user_id, accion, fichaje_id, tipo, ts, motivo, origen, solicitado_por, iniciado_por)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-            [userId, accion, fid, tipoN, ts, mot, origen, yo, esEmpresa ? 'empresa' : 'trabajador']);
-        if (esEmpresa) correoSolicitudFichaje(ins.rows[0].id, 'propuesta').catch(() => {});
-        res.status(201).json({ success: true, id: ins.rows[0].id, pendienteDe: esEmpresa ? 'trabajador' : 'empresa' });
+        const client = await pool.connect();
+        let nuevaId;
+        try {
+            await client.query('BEGIN');
+            const ins = await client.query(
+                `INSERT INTO aim_fichaje_solicitudes (user_id, accion, fichaje_id, tipo, ts, motivo, origen, solicitado_por, iniciado_por)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+                [userId, accion, fid, tipoN, ts, mot, origen, yo, esEmpresa ? 'empresa' : 'trabajador']);
+            nuevaId = ins.rows[0].id;
+            await auditarFichaje(client, {
+                evento: 'solicitud_creada', trabajadorId: userId, actorId: yo, ip: ipDe(req),
+                datos: { solicitudId: nuevaId, accion, fichajeId: fid, tipo: tipoN, ts: ts ? new Date(ts).toISOString() : null, motivo: mot, origen, iniciadoPor: esEmpresa ? 'empresa' : 'trabajador' },
+            });
+            await client.query('COMMIT');
+        } catch (e) {
+            await client.query('ROLLBACK').catch(() => {});
+            throw e;
+        } finally { client.release(); }
+        if (esEmpresa) correoSolicitudFichaje(nuevaId, 'propuesta').catch(() => {});
+        res.status(201).json({ success: true, id: nuevaId, pendienteDe: esEmpresa ? 'trabajador' : 'empresa' });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -10729,10 +10992,12 @@ app.get('/api/fichaje/solicitudes', authenticateSession, requireAdmin, async (re
 app.get('/api/admin/fichajes/solicitudes', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
     const soloPendientes = req.query.estado !== 'todas';
     try {
+        // Sin filtrar por club: el registro es solo de AIM y quien ya no está en el
+        // club conserva sus solicitudes (ticket #252).
         const r = await pool.query(
             `${SQL_SOLICITUDES_FICHAJE}
-             WHERE w.club_id = $1 AND ($2::boolean = false OR s.estado = 'pendiente')
-             ORDER BY (s.estado = 'pendiente') DESC, s.created_at DESC LIMIT 300`, [AIM_CLUB_ID, soloPendientes]);
+             WHERE ($1::boolean = false OR s.estado = 'pendiente')
+             ORDER BY (s.estado = 'pendiente') DESC, s.created_at DESC LIMIT 300`, [soloPendientes]);
         res.set('Cache-Control', 'no-store');
         res.json({ solicitudes: r.rows.map(s => mapSolicitudFichaje(req, s)) });
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -10756,10 +11021,14 @@ app.post('/api/fichaje/solicitudes/:id/resolver', authenticateSession, requireAd
                 ? 'Esta corrección la tiene que aprobar el propio trabajador.'
                 : 'Esta solicitud la tiene que validar secretaría o dirección (y no quien la pidió).' });
         }
-        if (aprobar) await aplicarSolicitudFichaje(client, s);
+        if (aprobar) await aplicarSolicitudFichaje(client, s, { actorId: req.userSession.userId, ip: ipDe(req) });
         await client.query(
             `UPDATE aim_fichaje_solicitudes SET estado = $2, resuelto_por = $3, resuelto_at = NOW(), respuesta = $4 WHERE id = $1`,
             [s.id, aprobar ? 'aprobada' : 'rechazada', req.userSession.userId, respuesta]);
+        await auditarFichaje(client, {
+            evento: aprobar ? 'solicitud_aprobada' : 'solicitud_rechazada', trabajadorId: s.user_id,
+            actorId: req.userSession.userId, ip: ipDe(req), datos: { solicitudId: s.id, respuesta },
+        });
         await client.query('COMMIT');
         if (s.iniciado_por === 'trabajador') correoSolicitudFichaje(s.id, 'resuelta').catch(() => {});
         res.json({ success: true, estado: aprobar ? 'aprobada' : 'rechazada' });
@@ -10772,14 +11041,24 @@ app.post('/api/fichaje/solicitudes/:id/resolver', authenticateSession, requireAd
 
 // Retirar una solicitud propia mientras sigue pendiente (queda como cancelada).
 app.post('/api/fichaje/solicitudes/:id/cancelar', authenticateSession, requireAdmin, async (req, res) => {
+    const client = await pool.connect();
     try {
-        const r = await pool.query(
+        await client.query('BEGIN');
+        const r = await client.query(
             `UPDATE aim_fichaje_solicitudes SET estado = 'cancelada', resuelto_por = $2, resuelto_at = NOW()
-             WHERE id = $1 AND solicitado_por = $2 AND estado = 'pendiente' RETURNING id`,
+             WHERE id = $1 AND solicitado_por = $2 AND estado = 'pendiente' RETURNING id, user_id`,
             [req.params.id, req.userSession.userId]);
-        if (!r.rowCount) return res.status(404).json({ error: 'No hay ninguna solicitud tuya pendiente con ese número.' });
+        if (!r.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'No hay ninguna solicitud tuya pendiente con ese número.' }); }
+        await auditarFichaje(client, {
+            evento: 'solicitud_cancelada', trabajadorId: r.rows[0].user_id, actorId: req.userSession.userId,
+            ip: ipDe(req), datos: { solicitudId: r.rows[0].id },
+        });
+        await client.query('COMMIT');
         res.json({ success: true });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
 });
 
 // Exportar el registro de jornada (CSV) para la Inspección o para el trabajador.
@@ -10808,17 +11087,20 @@ app.get('/api/admin/fichajes/export.csv', authenticateSession, requireAdmin, req
              LEFT JOIN users au ON au.user_id = an.anulado_por
              LEFT JOIN aim_fichaje_solicitudes asol ON asol.id = an.solicitud_id
              LEFT JOIN users aru ON aru.user_id = asol.resuelto_por
-             WHERE u.club_id = $1
-               AND ($2::date IS NULL OR f.dia >= $2::date)
-               AND ($3::date IS NULL OR f.dia <= $3::date)
-               AND ($4::uuid IS NULL OR f.user_id = $4)
-             ORDER BY nombre, f.ts, f.id`, [AIM_CLUB_ID, desde, hasta, persona]);
+             WHERE ($1::date IS NULL OR f.dia >= $1::date)
+               AND ($2::date IS NULL OR f.dia <= $2::date)
+               AND ($3::uuid IS NULL OR f.user_id = $3)
+             ORDER BY nombre, f.ts, f.id`, [desde, hasta, persona]);
         const sols = await pool.query(
             `${SQL_SOLICITUDES_FICHAJE}
-             WHERE w.club_id = $1 AND ($4::uuid IS NULL OR s.user_id = $4)
-               AND ($2::date IS NULL OR s.created_at >= $2::date)
-               AND ($3::date IS NULL OR s.created_at < ($3::date + 1))
-             ORDER BY trabajador, s.created_at`, [AIM_CLUB_ID, desde, hasta, persona]);
+             WHERE ($3::uuid IS NULL OR s.user_id = $3)
+               AND ($1::date IS NULL OR s.created_at >= $1::date)
+               AND ($2::date IS NULL OR s.created_at < ($2::date + 1))
+             ORDER BY trabajador, s.created_at`, [desde, hasta, persona]);
+        await auditarSuelto({
+            evento: 'exportacion', trabajadorId: persona, actorId: req.userSession.userId, ip: ipDe(req),
+            datos: { formato: 'csv', desde, hasta, filas: r.rowCount },
+        });
         const esc = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
         const fila = (arr) => arr.map(esc).join(';');
         const ORIGEN = { web: 'Fichaje', correccion: 'Corrección', incidencia: 'Incidencia' };
@@ -10865,7 +11147,7 @@ app.get('/api/admin/fichajes/horario/:userId', authenticateSession, requireAdmin
         const r = await pool.query(
             `SELECT dia, tramo, entrada, salida FROM aim_horario_laboral WHERE user_id = $1 ORDER BY dia, tramo`, [req.params.userId]);
         res.set('Cache-Control', 'no-store');
-        res.json({ nombre: u.rows[0].nombre, dias: r.rows });
+        res.json({ nombre: u.rows[0].nombre, dias: r.rows, contrato: await contratoDe(req.params.userId) });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -10891,16 +11173,54 @@ app.put('/api/admin/fichajes/horario/:userId', authenticateSession, requireAdmin
         if (t && !m) return res.status(400).json({ error: `El ${NOMBRE_DIA[dia]} tiene turno de tarde sin turno de mañana: pon el turno en "mañana".` });
         if (m && t && t.entrada < m.salida) return res.status(400).json({ error: `El ${NOMBRE_DIA[dia]}: el turno de tarde empieza antes de que acabe el de mañana.` });
     }
+    // Jornada contratada (ticket #252), si viene con el horario.
+    const contrato = req.body?.contrato || null;
+    let jornada = null, hs = null;
+    if (contrato) {
+        jornada = contrato.jornada === 'parcial' ? 'parcial' : 'completa';
+        hs = contrato.horasSemana === '' || contrato.horasSemana == null ? null : Number(String(contrato.horasSemana).replace(',', '.'));
+        if (hs != null && (!Number.isFinite(hs) || hs <= 0 || hs > 60)) return res.status(400).json({ error: 'Las horas a la semana tienen que estar entre 0 y 60.' });
+        if (hs != null) hs = Math.round(hs * 100) / 100;
+        if (jornada === 'parcial' && hs == null) return res.status(400).json({ error: 'Para una jornada a tiempo parcial indica las horas contratadas a la semana.' });
+    }
     const client = await pool.connect();
     try {
         const u = await client.query(`SELECT 1 FROM users WHERE user_id = $1 AND club_id = $2`, [req.params.userId, AIM_CLUB_ID]);
-        if (!u.rowCount) { client.release(); return res.status(404).json({ error: 'Ese trabajador no es del club.' }); }
+        if (!u.rowCount) return res.status(404).json({ error: 'Ese trabajador no es del club.' });
         await client.query('BEGIN');
+        const antes = await client.query(
+            `SELECT dia, tramo, entrada, salida FROM aim_horario_laboral WHERE user_id = $1 ORDER BY dia, tramo`, [req.params.userId]);
         await client.query(`DELETE FROM aim_horario_laboral WHERE user_id = $1`, [req.params.userId]);
         for (const d of limpios) {
             await client.query(
                 `INSERT INTO aim_horario_laboral (user_id, dia, tramo, entrada, salida) VALUES ($1, $2, $3, $4, $5)`,
                 [req.params.userId, d.dia, d.tramo, d.entrada, d.salida]);
+        }
+        // Queda anotado el horario de antes y el de después, si ha cambiado.
+        const clave = (l) => JSON.stringify(l.map(x => [Number(x.dia), Number(x.tramo), x.entrada, x.salida])
+            .sort((a, b) => a[0] - b[0] || a[1] - b[1]));
+        if (clave(antes.rows) !== clave(limpios)) {
+            await auditarFichaje(client, {
+                evento: 'horario', trabajadorId: req.params.userId, actorId: req.userSession.userId, ip: ipDe(req),
+                datos: { antes: antes.rows, despues: limpios },
+            });
+        }
+        if (contrato) {
+            const prev = await client.query(`SELECT jornada, horas_semana FROM aim_fichaje_contratos WHERE user_id = $1`, [req.params.userId]);
+            const p = prev.rows[0];
+            const cambia = !p || p.jornada !== jornada || (p.horas_semana == null ? null : Number(p.horas_semana)) !== hs;
+            if (cambia) {
+                await client.query(
+                    `INSERT INTO aim_fichaje_contratos (user_id, jornada, horas_semana, updated_at, updated_by)
+                     VALUES ($1, $2, $3, NOW(), $4)
+                     ON CONFLICT (user_id) DO UPDATE SET jornada = EXCLUDED.jornada, horas_semana = EXCLUDED.horas_semana,
+                         updated_at = NOW(), updated_by = EXCLUDED.updated_by`,
+                    [req.params.userId, jornada, hs, req.userSession.userId]);
+                await auditarFichaje(client, {
+                    evento: 'contrato', trabajadorId: req.params.userId, actorId: req.userSession.userId, ip: ipDe(req),
+                    datos: { antes: p ? { jornada: p.jornada, horasSemana: p.horas_semana == null ? null : Number(p.horas_semana) } : null, despues: { jornada, horasSemana: hs } },
+                });
+            }
         }
         await client.query('COMMIT');
         res.json({ success: true, dias: limpios });
@@ -10909,6 +11229,447 @@ app.put('/api/admin/fichajes/horario/:userId', authenticateSession, requireAdmin
         res.status(500).json({ error: err.message });
     } finally { client.release(); }
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Cómputo mensual, informes, resúmenes de tiempo parcial e integridad (#252)
+// ═════════════════════════════════════════════════════════════════════════════
+const r2h = (n) => Math.round(Number(n || 0) * 100) / 100;
+const esMesISO = (v) => /^\d{4}-(0[1-9]|1[0-2])$/.test(String(v || ''));
+const esFechaISO = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''));
+const mesSiguiente = (mes) => { const [y, m] = mes.split('-').map(Number); return new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 7); };
+const mesAnteriorMadrid = () => { const [y, m] = hoyMadrid().split('-').map(Number); return new Date(Date.UTC(y, m - 2, 1)).toISOString().slice(0, 7); };
+const NOMBRE_MES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+const nombreMesISO = (mes) => { const [y, m] = mes.split('-').map(Number); return `${NOMBRE_MES[m - 1]} de ${y}`; };
+
+// Horas contratadas de cada día de la semana (0 = lunes). Si tiene horario, las
+// horas de la semana se reparten según ese horario; si no, de lunes a viernes.
+async function repartoContrato(userId, horasSemana, cliente = pool) {
+    if (horasSemana == null) return null;
+    const h = await cliente.query(`SELECT dia, entrada, salida FROM aim_horario_laboral WHERE user_id = $1`, [userId]);
+    const porDia = [0, 0, 0, 0, 0, 0, 0];
+    for (const x of h.rows) porDia[Number(x.dia)] += Math.max(0, minutosHHMM(x.salida) - minutosHHMM(x.entrada)) / 60;
+    const total = porDia.reduce((s, x) => s + x, 0);
+    if (total > 0) return { base: 'horario', dias: porDia.map(x => x * horasSemana / total) };
+    return { base: 'lunes_viernes', dias: porDia.map((_, i) => (i < 5 ? horasSemana / 5 : 0)) };
+}
+
+// Cómputo de un mes: horas trabajadas (solo fichajes vigentes) frente a las
+// contratadas, semana a semana. Lo que en una semana pasa de lo contratado son
+// horas complementarias (tiempo parcial) o exceso sobre la jornada (completa).
+async function computoMensual(userId, mes) {
+    const [y, m] = mes.split('-').map(Number);
+    const nDias = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const desde = `${mes}-01`, hasta = `${mes}-${String(nDias).padStart(2, '0')}`;
+    const hoy = hoyMadrid();
+    const estado = hoy > hasta ? 'cerrado' : hoy >= desde ? 'en_curso' : 'futuro';
+    const contrato = await contratoDe(userId);
+    const reparto = await repartoContrato(userId, contrato.horasSemana);
+    const ap = await pool.query(
+        `SELECT f.tipo, f.ts, f.dia FROM aim_fichajes f
+         WHERE f.user_id = $1 AND f.dia BETWEEN $2::date AND $3::date AND ${FICHAJE_VIGENTE('f')}
+         ORDER BY f.ts, f.id`, [userId, desde, hasta]);
+    const calc = calcularTrabajado(ap.rows);
+    const semanas = [], dias = [];
+    let semana = null;
+    for (let d = 1; d <= nDias; d++) {
+        const iso = `${mes}-${String(d).padStart(2, '0')}`;
+        const dow = (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7;
+        if (!semana || dow === 0) { semana = { desde: iso, hasta: iso, contratadas: 0, trabajadas: 0 }; semanas.push(semana); }
+        semana.hasta = iso;
+        const trab = (calc.porDia[iso] || 0) / 3600;
+        // En el mes en curso solo cuenta lo contratado hasta hoy.
+        const contr = reparto && (estado === 'cerrado' || iso <= hoy) ? reparto.dias[dow] : 0;
+        semana.trabajadas += trab; semana.contratadas += contr;
+        if (trab > 0 || contr > 0) dias.push({ dia: iso, trabajadas: r2h(trab), contratadas: r2h(contr) });
+    }
+    for (const s of semanas) {
+        s.trabajadas = r2h(s.trabajadas); s.contratadas = r2h(s.contratadas);
+        s.exceso = reparto ? r2h(Math.max(0, s.trabajadas - s.contratadas)) : 0;
+    }
+    const trabajadas = r2h(semanas.reduce((a, s) => a + s.trabajadas, 0));
+    const exceso = r2h(semanas.reduce((a, s) => a + s.exceso, 0));
+    return {
+        mes, desde, hasta, estado, jornada: contrato.jornada, horasSemana: contrato.horasSemana,
+        repartoBase: reparto?.base || null,
+        contratadas: reparto ? r2h(semanas.reduce((a, s) => a + s.contratadas, 0)) : null,
+        trabajadas, ordinarias: r2h(trabajadas - exceso), complementarias: exceso,
+        semanas, dias,
+    };
+}
+
+// El trabajador ve su cómputo; secretaría/dirección, el de cualquiera.
+app.get('/api/fichaje/mes', authenticateSession, requireAdmin, async (req, res) => {
+    const mes = esMesISO(req.query.mes) ? req.query.mes : hoyMadrid().slice(0, 7);
+    const otro = req.query.persona && String(req.query.persona) !== String(req.userSession.userId) ? req.query.persona : null;
+    if (otro && !mandaAlMenos(req.userSession?.rol, 'secretaria')) return res.status(403).json({ error: 'Solo puedes ver tu propio cómputo.' });
+    try {
+        res.set('Cache-Control', 'no-store');
+        res.json(await computoMensual(otro || req.userSession.userId, mes));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Integridad ──
+// Rehace la cadena de huellas desde el principio y contrasta cada fichaje y cada
+// anulación con su apunte original. Detecta lo que se hubiera tocado directamente
+// en la base de datos (saltándose la web y las protecciones).
+const PROTECCIONES_FICHAJE = ['trg_aim_fichajes_inmutable', 'trg_aim_fichaje_anulaciones_inmutable',
+    'trg_aim_fichaje_auditoria_inmutable', 'trg_fichaje_solicitudes_guarda', 'trg_fichaje_resumenes_guarda'];
+async function verificarRegistroJornada() {
+    const ev = await pool.query(
+        `SELECT id, evento, trabajador_id, actor_id, ip, ts_iso, datos, hash_anterior, hash FROM aim_fichaje_auditoria ORDER BY id`);
+    const roturas = [];
+    const trazaFichaje = new Map(), trazaAnulacion = new Set();
+    let prev = null;
+    for (const e of ev.rows) {
+        if ((e.hash_anterior || null) !== prev) roturas.push({ id: Number(e.id), evento: e.evento, motivo: 'No enlaza con el apunte anterior: falta alguno o se ha cambiado.' });
+        const h = huellaAuditoria({ evento: e.evento, trabajadorId: e.trabajador_id, actorId: e.actor_id, ip: e.ip, tsIso: e.ts_iso, datosTxt: e.datos, hashAnterior: e.hash_anterior });
+        if (h !== e.hash) roturas.push({ id: Number(e.id), evento: e.evento, motivo: 'Su contenido ya no corresponde con su huella: se ha modificado.' });
+        prev = e.hash;
+        let d = null;
+        try { d = JSON.parse(e.datos); } catch { /* se detecta por la huella */ }
+        if (d && ['fichaje', 'fichaje_corregido', 'migracion_fichaje'].includes(e.evento)) trazaFichaje.set(Number(d.fichajeId), { d, trabajador: e.trabajador_id });
+        if (d && ['anulacion', 'migracion_anulacion'].includes(e.evento)) trazaAnulacion.add(Number(d.fichajeId));
+    }
+    const f = await pool.query(`SELECT id, user_id, tipo, ts, dia, origen, motivo FROM aim_fichajes ORDER BY id`);
+    const sinTraza = [], alterados = [], desaparecidos = [];
+    const ids = new Set();
+    for (const x of f.rows) {
+        ids.add(Number(x.id));
+        const t = trazaFichaje.get(Number(x.id));
+        if (!t) { sinTraza.push({ tipo: 'fichaje', id: x.id }); continue; }
+        const actual = datosFichajeAuditoria(x);
+        const campos = Object.keys(actual).filter(k => String(actual[k] ?? '') !== String(t.d[k] ?? ''));
+        if (String(t.trabajador || '') !== String(x.user_id)) campos.push('trabajador');
+        if (campos.length) alterados.push({ id: x.id, campos });
+    }
+    for (const id of trazaFichaje.keys()) if (!ids.has(id)) desaparecidos.push({ tipo: 'fichaje', id });
+    const an = await pool.query(`SELECT fichaje_id FROM aim_fichaje_anulaciones`);
+    const anIds = new Set(an.rows.map(r => Number(r.fichaje_id)));
+    for (const id of anIds) if (!trazaAnulacion.has(id)) sinTraza.push({ tipo: 'anulación', id });
+    for (const id of trazaAnulacion) if (!anIds.has(id)) desaparecidos.push({ tipo: 'anulación', id });
+    const trg = await pool.query(
+        `SELECT tgname FROM pg_trigger WHERE NOT tgisinternal AND tgenabled <> 'D' AND tgname = ANY($1)`, [PROTECCIONES_FICHAJE]);
+    const faltanProtecciones = PROTECCIONES_FICHAJE.filter(n => !trg.rows.some(r => r.tgname === n));
+    return {
+        ok: !roturas.length && !sinTraza.length && !alterados.length && !desaparecidos.length && !faltanProtecciones.length,
+        eventos: ev.rowCount, fichajes: f.rowCount, anulaciones: an.rowCount, cabeza: prev,
+        roturas: roturas.slice(0, 50), sinTraza: sinTraza.slice(0, 50), alterados: alterados.slice(0, 50),
+        desaparecidos: desaparecidos.slice(0, 50), faltanProtecciones, comprobadoAt: new Date().toISOString(),
+    };
+}
+
+app.get('/api/admin/fichajes/integridad', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    try {
+        res.set('Cache-Control', 'no-store');
+        res.json(await verificarRegistroJornada());
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Informe por trabajador y periodo (PDF) ──
+async function informeJornada(req, res, userId) {
+    const hasta = esFechaISO(req.query.hasta) ? req.query.hasta : hoyMadrid();
+    const desde = esFechaISO(req.query.desde) ? req.query.desde : `${hasta.slice(0, 7)}-01`;
+    if (desde > hasta) return res.status(400).json({ error: 'La fecha de inicio es posterior a la de fin.' });
+    try {
+        const u = await pool.query(`SELECT TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS nombre FROM users WHERE user_id = $1`, [userId]);
+        if (!u.rowCount) return res.status(404).json({ error: 'Esa persona no existe.' });
+        const yo = await pool.query(`SELECT TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS nombre FROM users WHERE user_id = $1`, [req.userSession.userId]);
+        const l = await listadoFichajes({ userId, desde, hasta });
+        const meses = [];
+        for (let mes = desde.slice(0, 7); mes <= hasta.slice(0, 7) && meses.length < 24; mes = mesSiguiente(mes)) {
+            meses.push(await computoMensual(userId, mes));
+        }
+        const sols = await pool.query(
+            `${SQL_SOLICITUDES_FICHAJE}
+             WHERE s.user_id = $1 AND (s.created_at >= $2::date OR (s.ts IS NOT NULL AND s.ts >= $2::date))
+               AND s.created_at < ($3::date + 1)
+             ORDER BY s.created_at`, [userId, desde, hasta]);
+        await auditarSuelto({
+            evento: 'exportacion', trabajadorId: userId, actorId: req.userSession.userId, ip: ipDe(req),
+            datos: { formato: 'pdf', desde, hasta },
+        });
+        const integridad = await verificarRegistroJornada();
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="registro-jornada-${desde}_${hasta}.pdf"`);
+        generarInformeJornadaPdf({
+            empresa: EMPRESA_TICKET, trabajador: u.rows[0].nombre, desde, hasta, periodo: nombrePeriodo(desde, hasta),
+            dias: l.dias, totalSeg: l.totalSeg, contrato: await contratoDe(userId), meses,
+            solicitudes: sols.rows.map(s => mapSolicitudFichaje(req, s)),
+            integridad: { ok: integridad.ok, eventos: integridad.eventos, cabeza: integridad.cabeza },
+            generadoAt: new Date(), generadoPor: yo.rows[0]?.nombre || null,
+        }, res);
+    } catch (err) {
+        if (!res.headersSent) res.status(500).json({ error: err.message });
+    }
+}
+app.get('/api/fichaje/informe.pdf', authenticateSession, requireAdmin, (req, res) => informeJornada(req, res, req.userSession.userId));
+app.get('/api/admin/fichajes/informe.pdf', authenticateSession, requireAdmin, requireRol('secretaria'), (req, res) => {
+    if (!req.query.persona) return res.status(400).json({ error: 'Elige un trabajador.' });
+    return informeJornada(req, res, req.query.persona);
+});
+
+// ── Resumen mensual de horas (tiempo parcial) con constancia de entrega ──
+// Se genera solo el día 1 para quien tiene jornada parcial (y a mano cuando haga
+// falta). Queda fijo: si luego se corrige el mes, se genera otra versión y la
+// anterior se conserva. Se envía por correo con el PDF y el trabajador confirma
+// desde su cuenta que lo ha recibido (queda la fecha y la IP).
+async function generarResumenMensual({ userId, mes, generadoPor = null, ip = null }) {
+    const c = await computoMensual(userId, mes);
+    if (c.estado !== 'cerrado') throw { httP: 400, msg: 'El resumen se genera cuando el mes ya ha terminado.' };
+    if (c.horasSemana == null) throw { httP: 400, msg: 'Falta indicar las horas contratadas a la semana (en su Horario).' };
+    const detalle = JSON.stringify({ semanas: c.semanas, dias: c.dias, repartoBase: c.repartoBase });
+    const huella = crypto.createHash('sha256').update(JSON.stringify({
+        userId, mes, jornada: c.jornada, horasSemana: c.horasSemana, contratadas: c.contratadas,
+        trabajadas: c.trabajadas, ordinarias: c.ordinarias, complementarias: c.complementarias, detalle,
+    }), 'utf8').digest('hex');
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`resumen:${userId}:${mes}`]);
+        const last = await client.query(
+            `SELECT * FROM aim_fichaje_resumenes WHERE user_id = $1 AND mes = $2::date ORDER BY version DESC LIMIT 1`, [userId, `${mes}-01`]);
+        if (last.rowCount && last.rows[0].hash === huella) {
+            await client.query('ROLLBACK');
+            return { resumen: last.rows[0], nuevo: false };
+        }
+        const ins = await client.query(
+            `INSERT INTO aim_fichaje_resumenes (user_id, mes, version, jornada, horas_semana, horas_contratadas, horas_trabajadas,
+                 horas_ordinarias, horas_complementarias, detalle, hash, generado_por)
+             VALUES ($1, $2::date, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+            [userId, `${mes}-01`, (last.rows[0]?.version || 0) + 1, c.jornada, c.horasSemana, c.contratadas, c.trabajadas,
+             c.ordinarias, c.complementarias, detalle, huella, generadoPor]);
+        const r = ins.rows[0];
+        await auditarFichaje(client, {
+            evento: 'resumen_generado', trabajadorId: userId, actorId: generadoPor, ip,
+            datos: { resumenId: r.id, mes, version: r.version, hash: huella, contratadas: c.contratadas, trabajadas: c.trabajadas, ordinarias: c.ordinarias, complementarias: c.complementarias },
+        });
+        await client.query('COMMIT');
+        return { resumen: r, nuevo: true };
+    } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw e;
+    } finally { client.release(); }
+}
+
+const SQL_RESUMENES = `
+    SELECT r.*, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre, u.email, u.name AS nombre_pila,
+           (r.version = (SELECT MAX(x.version) FROM aim_fichaje_resumenes x WHERE x.user_id = r.user_id AND x.mes = r.mes)) AS ultima
+    FROM aim_fichaje_resumenes r JOIN users u ON u.user_id = r.user_id`;
+const mapResumen = (x) => ({
+    id: x.id, userId: x.user_id, trabajador: x.nombre, mes: String(x.mes).slice(0, 7), version: x.version, ultima: !!x.ultima,
+    jornada: x.jornada, horasSemana: x.horas_semana == null ? null : Number(x.horas_semana),
+    contratadas: Number(x.horas_contratadas), trabajadas: Number(x.horas_trabajadas),
+    ordinarias: Number(x.horas_ordinarias), complementarias: Number(x.horas_complementarias),
+    generadoAt: x.generado_at, enviadoAt: x.enviado_at, enviadoA: x.enviado_a, confirmadoAt: x.confirmado_at,
+});
+const datosPdfResumen = (x) => ({
+    ...mapResumen(x), empresa: EMPRESA_TICKET, detalle: JSON.parse(x.detalle || '{}'), hash: x.hash, confirmadoIp: x.confirmado_ip,
+});
+
+// Un PDF en memoria (para adjuntarlo a un correo).
+function pdfEnMemoria(generar) {
+    return new Promise((resolve, reject) => {
+        const trozos = [];
+        const salida = new PassThrough();
+        salida.on('data', c => trozos.push(c));
+        salida.on('end', () => resolve(Buffer.concat(trozos)));
+        salida.on('error', reject);
+        try { generar(salida); } catch (e) { reject(e); }
+    });
+}
+
+async function enviarResumenMensual(resumenId, { actorId = null, ip = null } = {}) {
+    if (!mailTransporter) return false;
+    const r = await pool.query(`${SQL_RESUMENES} WHERE r.id = $1`, [resumenId]);
+    const x = r.rows[0];
+    if (!x?.email) return false;
+    const mes = String(x.mes).slice(0, 7);
+    const pdf = await pdfEnMemoria(salida => generarResumenMensualPdf(datosPdfResumen(x), salida));
+    const base = (process.env.PUBLIC_BASE_URL || 'https://aim.aimeducation.es').replace(/\/+$/, '');
+    const h = (n) => `${Number(n).toFixed(2).replace('.', ',')} h`;
+    await mailTransporter.sendMail({
+        from: process.env.EMAIL_USER, to: x.email,
+        subject: `Tu resumen de horas de ${nombreMesISO(mes)}`,
+        html: `<div style="font-family:system-ui,sans-serif;color:#1a1a1a">
+          <p>Hola ${x.nombre_pila || ''},</p>
+          <p>Te enviamos el resumen de tus horas de <b>${nombreMesISO(mes)}</b>${x.version > 1 ? ` (versión ${x.version}, sustituye a la anterior)` : ''}:</p>
+          <table style="border-collapse:collapse;font-size:14px">
+            <tr><td style="padding:4px 14px 4px 0">Horas ordinarias</td><td style="font-weight:700">${h(x.horas_ordinarias)}</td></tr>
+            <tr><td style="padding:4px 14px 4px 0">Horas ${x.jornada === 'parcial' ? 'complementarias' : 'por encima de la jornada'}</td><td style="font-weight:700">${h(x.horas_complementarias)}</td></tr>
+            <tr><td style="padding:4px 14px 4px 0">Total trabajado</td><td style="font-weight:700">${h(x.horas_trabajadas)}</td></tr>
+          </table>
+          <p>Tienes el detalle en el PDF adjunto. Entra en <b>Fichaje</b> y pulsa <b>«Confirmar que lo he recibido»</b>.</p>
+          <p style="margin:18px 0"><a href="${base}/admin/fichaje" style="background:#0a7d3c;color:#fff;text-decoration:none;padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block">Ver y confirmar</a></p>
+          <p style="font-size:12px;color:#888">AIM Education · Algeciras</p></div>`,
+        attachments: [{ filename: `resumen-horas-${mes}.pdf`, content: pdf, contentType: 'application/pdf' }],
+    });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query(`UPDATE aim_fichaje_resumenes SET enviado_at = NOW(), enviado_a = $2 WHERE id = $1`, [x.id, x.email]);
+        await auditarFichaje(client, {
+            evento: 'resumen_enviado', trabajadorId: x.user_id, actorId, ip,
+            datos: { resumenId: x.id, mes, version: x.version, a: x.email },
+        });
+        await client.query('COMMIT');
+    } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw e;
+    } finally { client.release(); }
+    return true;
+}
+
+app.get('/api/fichaje/resumenes', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(`${SQL_RESUMENES} WHERE r.user_id = $1 ORDER BY r.mes DESC, r.version DESC LIMIT 36`, [req.userSession.userId]);
+        res.set('Cache-Control', 'no-store');
+        res.json({ resumenes: r.rows.map(mapResumen) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/admin/fichajes/resumenes', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const mes = esMesISO(req.query.mes) ? req.query.mes : mesAnteriorMadrid();
+    try {
+        const r = await pool.query(`${SQL_RESUMENES} WHERE r.mes = $1::date ORDER BY nombre, r.version DESC`, [`${mes}-01`]);
+        // Quién debería tenerlo (jornada parcial con horas) y aún no lo tiene.
+        const faltan = await pool.query(
+            `SELECT c.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre
+             FROM aim_fichaje_contratos c JOIN users u ON u.user_id = c.user_id
+             WHERE c.jornada = 'parcial' AND c.horas_semana IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM aim_fichaje_resumenes x WHERE x.user_id = c.user_id AND x.mes = $1::date)
+             ORDER BY nombre`, [`${mes}-01`]);
+        res.set('Cache-Control', 'no-store');
+        res.json({ mes, resumenes: r.rows.map(mapResumen), sinResumen: faltan.rows.map(x => ({ userId: x.user_id, nombre: x.nombre })) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Generar (y enviar) los resúmenes de un mes: de una persona o de todo el
+// personal a tiempo parcial. Si el mes no ha cambiado, no se crea otra versión.
+app.post('/api/admin/fichajes/resumenes/generar', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const mes = esMesISO(req.body?.mes) ? req.body.mes : null;
+    if (!mes) return res.status(400).json({ error: 'Elige el mes.' });
+    try {
+        const destinos = req.body?.userId
+            ? [{ user_id: req.body.userId }]
+            : (await pool.query(`SELECT user_id FROM aim_fichaje_contratos WHERE jornada = 'parcial' AND horas_semana IS NOT NULL`)).rows;
+        if (!destinos.length) return res.status(400).json({ error: 'No hay nadie con jornada a tiempo parcial y horas contratadas indicadas.' });
+        const resultado = [];
+        for (const d of destinos) {
+            try {
+                const g = await generarResumenMensual({ userId: d.user_id, mes, generadoPor: req.userSession.userId, ip: ipDe(req) });
+                let enviado = false;
+                if (g.nuevo) enviado = await enviarResumenMensual(g.resumen.id, { actorId: req.userSession.userId, ip: ipDe(req) }).catch(() => false);
+                resultado.push({ userId: d.user_id, id: g.resumen.id, version: g.resumen.version, nuevo: g.nuevo, enviado });
+            } catch (e) {
+                resultado.push({ userId: d.user_id, error: e.msg || e.message });
+            }
+        }
+        res.json({ success: true, resultado });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/fichajes/resumenes/:id/enviar', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    try {
+        if (!mailTransporter) return res.status(503).json({ error: 'El correo no está configurado.' });
+        const ok = await enviarResumenMensual(req.params.id, { actorId: req.userSession.userId, ip: ipDe(req) });
+        if (!ok) return res.status(400).json({ error: 'No se pudo enviar: ese trabajador no tiene correo.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// El trabajador confirma desde su cuenta que ha recibido el resumen.
+app.post('/api/fichaje/resumenes/:id/confirmar', authenticateSession, requireAdmin, async (req, res) => {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const r = await client.query(`SELECT * FROM aim_fichaje_resumenes WHERE id = $1 FOR UPDATE`, [req.params.id]);
+        const x = r.rows[0];
+        if (!x || String(x.user_id) !== String(req.userSession.userId)) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Ese resumen no es tuyo.' }); }
+        if (x.confirmado_at) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Ya confirmaste este resumen.' }); }
+        const nueva = await client.query(`SELECT 1 FROM aim_fichaje_resumenes WHERE user_id = $1 AND mes = $2 AND version > $3`, [x.user_id, x.mes, x.version]);
+        if (nueva.rowCount) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Hay una versión más reciente de este resumen: confirma esa.' }); }
+        const ip = ipDe(req);
+        await client.query(`UPDATE aim_fichaje_resumenes SET confirmado_at = NOW(), confirmado_ip = $2 WHERE id = $1`, [x.id, ip]);
+        await auditarFichaje(client, {
+            evento: 'resumen_confirmado', trabajadorId: x.user_id, actorId: req.userSession.userId, ip,
+            datos: { resumenId: x.id, mes: String(x.mes).slice(0, 7), version: x.version, hash: x.hash },
+        });
+        await client.query('COMMIT');
+        res.json({ success: true });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+app.get('/api/fichaje/resumenes/:id/pdf', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(`${SQL_RESUMENES} WHERE r.id = $1`, [req.params.id]);
+        const x = r.rows[0];
+        const esSuyo = x && String(x.user_id) === String(req.userSession.userId);
+        if (!x || (!esSuyo && !mandaAlMenos(req.userSession?.rol, 'secretaria'))) return res.status(404).json({ error: 'Ese resumen no existe.' });
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="resumen-horas-${String(x.mes).slice(0, 7)}-v${x.version}.pdf"`);
+        generarResumenMensualPdf(datosPdfResumen(x), res);
+    } catch (err) {
+        if (!res.headersSent) res.status(500).json({ error: err.message });
+    }
+});
+
+// Tarea periódica: resúmenes del mes anterior (tiempo parcial) y sello semanal.
+let tareasJornadaEnCurso = false;
+async function tareasRegistroJornada() {
+    if (tareasJornadaEnCurso) return;
+    tareasJornadaEnCurso = true;
+    try {
+        const hora = Number(new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/Madrid', hour: '2-digit', hour12: false }).slice(0, 2));
+        if (hora >= 9) {
+            const mes = mesAnteriorMadrid();
+            const r = await pool.query(
+                `SELECT c.user_id FROM aim_fichaje_contratos c
+                 WHERE c.jornada = 'parcial' AND c.horas_semana IS NOT NULL
+                   AND NOT EXISTS (SELECT 1 FROM aim_fichaje_resumenes x WHERE x.user_id = c.user_id AND x.mes = $1::date)
+                   AND EXISTS (SELECT 1 FROM aim_fichajes f WHERE f.user_id = c.user_id
+                               AND f.dia >= $1::date AND f.dia < ($1::date + INTERVAL '1 month'))`, [`${mes}-01`]);
+            for (const x of r.rows) {
+                try {
+                    const g = await generarResumenMensual({ userId: x.user_id, mes });
+                    if (g.nuevo) await enviarResumenMensual(g.resumen.id);
+                } catch (e) { console.error('[fichaje resumen automático]', e.msg || e.message); }
+            }
+        }
+        await selloSemanalRegistro();
+    } catch (e) {
+        console.error('[fichaje tareas]', e.message);
+    } finally {
+        tareasJornadaEnCurso = false;
+    }
+}
+
+// Sello semanal: los lunes se anota la huella final de la cadena y se manda por
+// correo al buzón del club. Ese correo queda fuera de la base de datos: si alguien
+// reescribiera el registro, la huella ya no coincidiría con la del correo.
+async function selloSemanalRegistro() {
+    if (!mailTransporter || diaSemanaHoy() !== 0) return;
+    const ult = await pool.query(`SELECT evento FROM aim_fichaje_auditoria ORDER BY id DESC LIMIT 1`);
+    if (!ult.rowCount || ult.rows[0].evento === 'sello') return; // nada nuevo desde el último
+    const reciente = await pool.query(`SELECT 1 FROM aim_fichaje_auditoria WHERE evento = 'sello' AND created_at > NOW() - INTERVAL '6 days' LIMIT 1`);
+    if (reciente.rowCount) return;
+    const v = await verificarRegistroJornada();
+    const huella = await auditarSuelto({ evento: 'sello', datos: { eventos: v.eventos, cabezaAnterior: v.cabeza, integro: v.ok } });
+    const destino = process.env.FICHAJE_SELLO_EMAIL || process.env.EMAIL_USER;
+    if (!destino) return;
+    await mailTransporter.sendMail({
+        from: process.env.EMAIL_USER, to: destino,
+        subject: `Sello semanal del registro de jornada · ${hoyMadrid()}`,
+        html: `<div style="font-family:system-ui,sans-serif;color:#1a1a1a">
+          <p>Huella del registro de jornada a ${fmtFechaHoraMadrid(new Date())}:</p>
+          <p style="font-family:monospace;background:#f4f4f4;padding:10px 14px;border-radius:8px;word-break:break-all">${huella}</p>
+          <p>Apuntes en la cadena: <b>${v.eventos + 1}</b> · Comprobación: <b style="color:${v.ok ? '#0a7d3c' : '#c62828'}">${v.ok ? 'íntegro' : 'con diferencias (revísalo en Fichaje)'}</b></p>
+          <p style="font-size:12px;color:#666">No hace falta hacer nada. Conserva este correo: sirve para demostrar que el registro no se ha reescrito después de esta fecha.</p>
+          <p style="font-size:12px;color:#888">AIM Education · Algeciras</p></div>`,
+    });
+}
 
 // Recordatorios de fichaje por correo (ticket #233). Cada pocos minutos mira el
 // horario laboral de hoy: a quien le toca entrar y no ha fichado, se le recuerda;
@@ -11239,4 +12000,8 @@ app.listen(port, () => {
     // fichar entrada/salida según su horario. Solo manda una vez por tipo y día.
     setTimeout(recordatoriosFichaje, 45 * 1000);
     setInterval(recordatoriosFichaje, 5 * 60 * 1000);
+    // Registro de jornada (ticket #252): resúmenes mensuales de tiempo parcial y
+    // sello semanal de la cadena de auditoría. Cada hora basta.
+    setTimeout(tareasRegistroJornada, 60 * 1000);
+    setInterval(tareasRegistroJornada, 60 * 60 * 1000);
 });

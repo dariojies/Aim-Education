@@ -23,6 +23,8 @@ const hms = (seg) => {
   return h > 0 ? `${h} h ${String(m).padStart(2, '0')} min` : `${m} min`;
 };
 const ETQ = { entrada: 'Entrada', salida: 'Salida', pausa_inicio: 'Inicio de pausa', pausa_fin: 'Fin de pausa' };
+// Un botón para cada cosa (ticket #252).
+const BOTON = { entrada: 'Iniciar jornada', pausa_inicio: 'Iniciar pausa', pausa_fin: 'Finalizar pausa', salida: 'Finalizar jornada' };
 const COLOR_TIPO = { entrada: 'var(--teal)', salida: 'var(--orange)', pausa_inicio: '#b45309', pausa_fin: 'var(--teal)' };
 const DIAS_SEMANA = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']; // 0 = lunes
 const hm2min = (s) => { const [h, m] = String(s || '').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
@@ -34,6 +36,13 @@ const ESTADO_SOL = {
   cancelada: { t: 'Cancelada', c: 'var(--ink-3)' },
 };
 const textoTramos = (tramos) => (tramos || []).map(t => `${t.entrada}–${t.salida}`).join(' y ');
+const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+const nombreMes = (mes) => { const [y, m] = String(mes).split('-').map(Number); return `${MESES[m - 1]} de ${y}`; };
+const moverMes = (mes, delta) => { const [y, m] = mes.split('-').map(Number); const d = new Date(y, m - 1 + delta, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
+const horas = (n) => n == null ? '—' : `${Number(n).toFixed(2).replace('.', ',')} h`;
+const textoJornada = (jornada, horasSemana) => jornada
+  ? `${jornada === 'parcial' ? 'Tiempo parcial' : 'Jornada completa'}${horasSemana != null ? ` · ${String(horasSemana).replace('.', ',')} h/sem` : ''}`
+  : null;
 
 async function enviar(url, body, method = 'POST') {
   const r = await fetch(url, {
@@ -121,8 +130,8 @@ function DiaRegistro({ d, onCorregir, fondo = 'var(--bg-2)' }) {
 // corrige un fichaje concreto (cambiar su hora o anularlo); si no, es añadir uno.
 function ModalSolicitud({ destino, apunte, esEmpresa, onClose, onDone }) {
   const [f, setF] = useState(() => apunte
-    ? { accion: 'modificar', tipo: apunte.tipo, fecha: isoDeTs(apunte.ts), hora: fmtHora(apunte.ts), motivo: '' }
-    : { accion: 'alta', tipo: 'entrada', fecha: hoyISO(), hora: '', motivo: '' });
+    ? { accion: 'modificar', tipo: apunte.tipo, fecha: isoDeTs(apunte.ts), hora: fmtHora(apunte.ts), motivo: '', incidencia: false }
+    : { accion: 'alta', tipo: 'entrada', fecha: hoyISO(), hora: '', motivo: '', incidencia: false });
   const [guardando, setGuardando] = useState(false);
   const set = (k, v) => setF(x => ({ ...x, [k]: v }));
 
@@ -133,6 +142,7 @@ function ModalSolicitud({ destino, apunte, esEmpresa, onClose, onDone }) {
       await enviar('/api/fichaje/solicitudes', {
         userId: esEmpresa ? destino.userId : undefined,
         accion: f.accion, fichajeId: apunte?.id, tipo: f.tipo, fecha: f.fecha, hora: f.hora, motivo: f.motivo,
+        origen: f.incidencia && f.accion !== 'anular' ? 'incidencia' : 'correccion',
       });
       onDone?.(esEmpresa ? 'Corrección propuesta. El trabajador tiene que aprobarla.' : 'Solicitud enviada. Secretaría o dirección tiene que validarla.');
     } catch (err) { alert(err.message); } finally { setGuardando(false); }
@@ -167,6 +177,14 @@ function ModalSolicitud({ destino, apunte, esEmpresa, onClose, onDone }) {
               <input type="date" value={f.fecha} max={hoyISO()} onChange={e => set('fecha', e.target.value)} required style={{ ...inp, flex: 1 }} />
               <input type="time" value={f.hora} onChange={e => set('hora', e.target.value)} required style={{ ...inp, flex: 1 }} />
             </div>
+            {/* Procedimiento alternativo (#252): si no se pudo fichar a la hora por
+                una caída de internet o un fallo, se incorpora después como incidencia. */}
+            <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13, cursor: 'pointer' }}>
+              <input type="checkbox" checked={f.incidencia} onChange={e => set('incidencia', e.target.checked)} style={{ marginTop: 2 }} />
+              <span>No se pudo fichar a su hora por un fallo técnico (sin conexión, la web no cargaba...)
+                <span style={{ display: 'block', fontSize: 11, color: 'var(--ink-3)' }}>Queda registrado como incidencia, con la hora real indicada y la hora en que se anota.</span>
+              </span>
+            </label>
           </>
         )}
         <textarea placeholder="Motivo (obligatorio)" value={f.motivo} onChange={e => set('motivo', e.target.value)} required rows={2} style={{ ...inp, resize: 'vertical' }} />
@@ -238,11 +256,119 @@ function ListaSolicitudes({ solicitudes, mostrarTrabajador, onCambio, showToast 
   );
 }
 
+// Cómputo de un mes (ticket #252): trabajadas frente a contratadas, semana a
+// semana, y el informe en PDF de ese mes. Sin 'persona', el del propio trabajador.
+function ComputoMes({ persona, fondo = 'var(--bg-2)' }) {
+  const [mes, setMes] = useState(hoyISO().slice(0, 7));
+  const [c, setC] = useState(null);
+  const [verSemanas, setVerSemanas] = useState(false);
+  useEffect(() => {
+    let vivo = true;
+    setC(null);
+    fetch(`/api/fichaje/mes?mes=${mes}${persona ? `&persona=${persona}` : ''}`, { credentials: 'include', cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null).then(d => { if (vivo) setC(d); }).catch(() => {});
+    return () => { vivo = false; };
+  }, [mes, persona]);
+
+  const parcial = c?.jornada === 'parcial';
+  const pdf = c ? (persona
+    ? `/api/admin/fichajes/informe.pdf?persona=${persona}&desde=${c.desde}&hasta=${c.hasta}`
+    : `/api/fichaje/informe.pdf?desde=${c.desde}&hasta=${c.hasta}`) : null;
+  const caja = (t, v, color) => (
+    <div style={{ flex: '1 1 120px', background: 'var(--bg-3)', borderRadius: 10, padding: '8px 12px' }}>
+      <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--ink-3)' }}>{t}</div>
+      <div style={{ fontSize: 17, fontWeight: 800, color: color || 'var(--ink)' }}>{v}</div>
+    </div>
+  );
+
+  return (
+    <div style={{ background: fondo, border: '1px solid var(--line)', borderRadius: 14, padding: 14, display: 'grid', gap: 10 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <b style={{ fontSize: 14 }}>Cómputo mensual</b>
+        <button className="btn btn-sm btn-outline" onClick={() => setMes(m => moverMes(m, -1))} aria-label="Mes anterior">‹</button>
+        <span style={{ fontSize: 13, fontWeight: 700, minWidth: 130, textAlign: 'center', textTransform: 'capitalize' }}>{nombreMes(mes)}</span>
+        <button className="btn btn-sm btn-outline" onClick={() => setMes(m => moverMes(m, 1))} disabled={mes >= hoyISO().slice(0, 7)} aria-label="Mes siguiente">›</button>
+        <div style={{ flex: 1 }} />
+        {pdf && <a className="btn btn-sm btn-outline" href={pdf} target="_blank" rel="noopener noreferrer"><I.Download /> Informe PDF</a>}
+      </div>
+      {!c && <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>Cargando...</span>}
+      {c && (
+        <>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {caja('Trabajadas', horas(c.trabajadas), 'var(--teal)')}
+            {caja(c.estado === 'en_curso' ? 'Contratadas hasta hoy' : 'Contratadas', horas(c.contratadas))}
+            {c.contratadas != null && caja('Ordinarias', horas(c.ordinarias))}
+            {c.contratadas != null && caja(parcial ? 'Complementarias' : 'Por encima de jornada', horas(c.complementarias), c.complementarias > 0 ? 'var(--orange)' : null)}
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', fontSize: 12, color: 'var(--ink-3)' }}>
+            <span>{c.horasSemana == null ? 'Sin horas contratadas indicadas: solo se cuentan las trabajadas.' : textoJornada(c.jornada, c.horasSemana)}</span>
+            {c.semanas?.length > 0 && <button className="btn btn-sm btn-outline" style={{ fontSize: 11, padding: '2px 8px' }} onClick={() => setVerSemanas(v => !v)}>{verSemanas ? 'Ocultar semanas' : 'Ver por semanas'}</button>}
+          </div>
+          {verSemanas && (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ color: 'var(--ink-3)', textAlign: 'right' }}>
+                    <th style={{ textAlign: 'left', padding: '4px 6px' }}>Semana</th>
+                    <th style={{ padding: '4px 6px' }}>Contratadas</th>
+                    <th style={{ padding: '4px 6px' }}>Trabajadas</th>
+                    <th style={{ padding: '4px 6px' }}>{parcial ? 'Complementarias' : 'Exceso'}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {c.semanas.map(s => (
+                    <tr key={s.desde} style={{ borderTop: '1px solid var(--line)', textAlign: 'right' }}>
+                      <td style={{ textAlign: 'left', padding: '4px 6px' }}>{s.desde.slice(8)}/{s.desde.slice(5, 7)} – {s.hasta.slice(8)}/{s.hasta.slice(5, 7)}</td>
+                      <td style={{ padding: '4px 6px' }}>{c.contratadas == null ? '—' : horas(s.contratadas)}</td>
+                      <td style={{ padding: '4px 6px', fontWeight: 700 }}>{horas(s.trabajadas)}</td>
+                      <td style={{ padding: '4px 6px', color: s.exceso > 0 ? 'var(--orange)' : undefined }}>{c.contratadas == null ? '—' : horas(s.exceso)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// Resúmenes mensuales del propio trabajador, para confirmar que los ha recibido.
+function MisResumenes({ resumenes, onCambio, showToast }) {
+  async function confirmar(r) {
+    if (!window.confirm(`¿Confirmas que has recibido el resumen de horas de ${nombreMes(r.mes)}? Queda registrado.`)) return;
+    try { await enviar(`/api/fichaje/resumenes/${r.id}/confirmar`); showToast?.('Recepción confirmada.'); onCambio?.(); }
+    catch (err) { alert(err.message); }
+  }
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      {resumenes.map(r => (
+        <div key={r.id} style={{ background: 'var(--bg-2)', border: `1px solid ${r.ultima && !r.confirmadoAt ? '#b45309' : 'var(--line)'}`, borderRadius: 12, padding: '10px 14px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', opacity: r.ultima ? 1 : 0.65 }}>
+          <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+            <b style={{ fontSize: 13, textTransform: 'capitalize' }}>{nombreMes(r.mes)}</b>
+            {r.version > 1 && <span style={{ fontSize: 11, color: 'var(--ink-3)' }}> · versión {r.version}</span>}
+            {!r.ultima && <span style={{ fontSize: 11, color: 'var(--ink-3)' }}> · sustituida</span>}
+            <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+              {horas(r.ordinarias)} ordinarias · {horas(r.complementarias)} {r.jornada === 'parcial' ? 'complementarias' : 'por encima de jornada'} · {horas(r.trabajadas)} en total
+            </div>
+          </div>
+          <a className="btn btn-sm btn-outline" href={`/api/fichaje/resumenes/${r.id}/pdf`} target="_blank" rel="noopener noreferrer"><I.Download /> PDF</a>
+          {r.confirmadoAt
+            ? <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--teal)' }}>✓ Recibido el {fmtFechaHora(r.confirmadoAt)}</span>
+            : r.ultima && <button className="btn btn-sm btn-primary" onClick={() => confirmar(r)}>Confirmar que lo he recibido</button>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Mi fichaje ───────────────────────────────────────────────────────────────
 function MiFichaje({ showToast }) {
   const [est, setEst] = useState(null);
   const [hist, setHist] = useState(null);
   const [sols, setSols] = useState([]);
+  const [resumenes, setResumenes] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [fichando, setFichando] = useState(false);
   const [modal, setModal] = useState(null); // { apunte? }
@@ -251,12 +377,13 @@ function MiFichaje({ showToast }) {
 
   const cargar = useCallback(async () => {
     try {
-      const [e, h, s] = await Promise.all([
+      const [e, h, s, rs] = await Promise.all([
         fetch('/api/fichaje/estado', { credentials: 'include', cache: 'no-store' }).then(r => r.ok ? r.json() : null),
         fetch('/api/fichaje/mios', { credentials: 'include', cache: 'no-store' }).then(r => r.ok ? r.json() : null),
         fetch('/api/fichaje/solicitudes', { credentials: 'include', cache: 'no-store' }).then(r => r.ok ? r.json() : { solicitudes: [] }),
+        fetch('/api/fichaje/resumenes', { credentials: 'include', cache: 'no-store' }).then(r => r.ok ? r.json() : { resumenes: [] }),
       ]);
-      setEst(e); setHist(h); setSols(s.solicitudes || []);
+      setEst(e); setHist(h); setSols(s.solicitudes || []); setResumenes(rs.resumenes || []);
     } catch { /* noop */ } finally { setCargando(false); }
   }, []);
   useEffect(() => { cargar(); }, [cargar]);
@@ -274,7 +401,7 @@ function MiFichaje({ showToast }) {
     setFichando(true);
     try {
       const d = await enviar('/api/fichaje', { tipo });
-      showToast?.(`${ETQ[tipo]} fichada a las ${fmtHora(d.ts)}.`); await cargar();
+      showToast?.(`${BOTON[tipo]}: registrado a las ${fmtHora(d.ts)}.`); await cargar();
     } catch (err) { alert(err.message); } finally { setFichando(false); }
   }
 
@@ -302,9 +429,18 @@ function MiFichaje({ showToast }) {
 
   const porAprobar = sols.filter(s => s.puedoResolver);
   const otras = sols.filter(s => !s.puedoResolver);
+  const sinConfirmar = resumenes.filter(r => r.ultima && !r.confirmadoAt);
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
+      {sinConfirmar.length > 0 && (
+        <div style={{ display: 'grid', gap: 8, padding: 14, borderRadius: 14, background: 'color-mix(in oklab, #b45309 8%, var(--bg-2))', border: '1px solid color-mix(in oklab, #b45309 35%, var(--line))' }}>
+          <b style={{ fontSize: 14 }}>Tienes {sinConfirmar.length === 1 ? 'un resumen de horas' : `${sinConfirmar.length} resúmenes de horas`} por confirmar</b>
+          <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Revísalo y confirma que lo has recibido.</span>
+          <MisResumenes resumenes={sinConfirmar} onCambio={cargar} showToast={showToast} />
+        </div>
+      )}
+
       {/* Correcciones que ha propuesto la empresa: no se aplican sin su aprobación. */}
       {porAprobar.length > 0 && (
         <div style={{ display: 'grid', gap: 8, padding: 14, borderRadius: 14, background: 'color-mix(in oklab, #b45309 8%, var(--bg-2))', border: '1px solid color-mix(in oklab, #b45309 35%, var(--line))' }}>
@@ -332,22 +468,24 @@ function MiFichaje({ showToast }) {
         </div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
           {estado === 'fuera' && (
-            <button className="btn btn-primary" onClick={() => fichar('entrada')} disabled={fichando} style={{ fontSize: 15, padding: '12px 24px' }}>Fichar entrada</button>
+            <button className="btn btn-primary" onClick={() => fichar('entrada')} disabled={fichando} style={{ fontSize: 15, padding: '12px 24px' }}>{BOTON.entrada}</button>
           )}
           {estado === 'dentro' && (
             <>
-              <button className="btn btn-outline" onClick={() => fichar('pausa_inicio')} disabled={fichando}>Iniciar pausa</button>
-              <button className="btn btn-primary" onClick={() => fichar('salida')} disabled={fichando} style={{ background: 'var(--orange)' }}>Fichar salida</button>
+              <button className="btn btn-outline" onClick={() => fichar('pausa_inicio')} disabled={fichando}>{BOTON.pausa_inicio}</button>
+              <button className="btn btn-primary" onClick={() => fichar('salida')} disabled={fichando} style={{ background: 'var(--orange)' }}>{BOTON.salida}</button>
             </>
           )}
           {estado === 'pausa' && (
             <>
-              <button className="btn btn-primary" onClick={() => fichar('pausa_fin')} disabled={fichando}>Reanudar</button>
-              <button className="btn btn-outline" onClick={() => fichar('salida')} disabled={fichando}>Fichar salida</button>
+              <button className="btn btn-primary" onClick={() => fichar('pausa_fin')} disabled={fichando}>{BOTON.pausa_fin}</button>
+              <button className="btn btn-outline" onClick={() => fichar('salida')} disabled={fichando}>{BOTON.salida}</button>
             </>
           )}
         </div>
       </div>
+
+      <ComputoMes />
 
       {/* Mi historial */}
       <div>
@@ -370,10 +508,130 @@ function MiFichaje({ showToast }) {
         </div>
       )}
 
+      {resumenes.length > sinConfirmar.length && (
+        <div>
+          <h3 style={{ margin: '0 0 8px', fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 800 }}>Mis resúmenes mensuales</h3>
+          <MisResumenes resumenes={resumenes.filter(r => !(r.ultima && !r.confirmadoAt))} onCambio={cargar} showToast={showToast} />
+        </div>
+      )}
+
       {modal && (
         <ModalSolicitud apunte={modal.apunte} esEmpresa={false} onClose={() => setModal(null)}
           onDone={msg => { setModal(null); showToast?.(msg); cargar(); }} />
       )}
+    </div>
+  );
+}
+
+// Resúmenes mensuales de horas del personal a tiempo parcial (ticket #252): se
+// generan solos el día 1; aquí se ve si se enviaron y si cada uno lo confirmó.
+function ResumenesGestion({ showToast }) {
+  const [mes, setMes] = useState(moverMes(hoyISO().slice(0, 7), -1));
+  const [d, setD] = useState(null);
+  const [generando, setGenerando] = useState(false);
+  const cargar = useCallback(async () => {
+    const r = await fetch(`/api/admin/fichajes/resumenes?mes=${mes}`, { credentials: 'include', cache: 'no-store' });
+    setD(r.ok ? await r.json() : { resumenes: [], sinResumen: [] });
+  }, [mes]);
+  useEffect(() => { cargar(); }, [cargar]);
+
+  async function generar() {
+    if (!window.confirm(`¿Generar los resúmenes de ${nombreMes(mes)} del personal a tiempo parcial? Si alguno ya existe y el mes no ha cambiado, no se duplica; si ha cambiado, se crea una versión nueva y se le envía.`)) return;
+    setGenerando(true);
+    try {
+      const r = await enviar('/api/admin/fichajes/resumenes/generar', { mes });
+      const nuevos = r.resultado.filter(x => x.nuevo).length;
+      const errores = r.resultado.filter(x => x.error);
+      showToast?.(`${nuevos} resumen${nuevos !== 1 ? 'es' : ''} nuevo${nuevos !== 1 ? 's' : ''}.${errores.length ? ` ${errores.length} con problemas: ${errores[0].error}` : ''}`);
+      cargar();
+    } catch (err) { alert(err.message); } finally { setGenerando(false); }
+  }
+  async function reenviar(r) {
+    try { await enviar(`/api/admin/fichajes/resumenes/${r.id}/enviar`); showToast?.('Resumen enviado.'); cargar(); }
+    catch (err) { alert(err.message); }
+  }
+
+  const futuro = mes >= hoyISO().slice(0, 7);
+  return (
+    <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: 14, display: 'grid', gap: 10 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <b style={{ fontSize: 14 }}>Resúmenes mensuales (tiempo parcial)</b>
+        <button className="btn btn-sm btn-outline" onClick={() => setMes(m => moverMes(m, -1))} aria-label="Mes anterior">‹</button>
+        <span style={{ fontSize: 13, fontWeight: 700, minWidth: 130, textAlign: 'center', textTransform: 'capitalize' }}>{nombreMes(mes)}</span>
+        <button className="btn btn-sm btn-outline" onClick={() => setMes(m => moverMes(m, 1))} disabled={futuro} aria-label="Mes siguiente">›</button>
+        <div style={{ flex: 1 }} />
+        <button className="btn btn-sm btn-primary" onClick={generar} disabled={generando || futuro}>{generando ? 'Generando...' : 'Generar y enviar'}</button>
+      </div>
+      {futuro && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>El resumen se genera cuando el mes ha terminado.</span>}
+      {d && d.resumenes.length === 0 && d.sinResumen.length === 0 && (
+        <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>Nadie tiene jornada a tiempo parcial con horas indicadas. Se indica en el «Horario» de cada trabajador.</span>
+      )}
+      {d?.resumenes.map(r => (
+        <div key={r.id} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '8px 12px', background: 'var(--bg-3)', borderRadius: 10, opacity: r.ultima ? 1 : 0.6 }}>
+          <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+            <b style={{ fontSize: 13 }}>{r.trabajador}</b>
+            <span style={{ fontSize: 11, color: 'var(--ink-3)' }}> · v{r.version}{!r.ultima ? ' (sustituida)' : ''}</span>
+            <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{horas(r.ordinarias)} ordinarias · {horas(r.complementarias)} complementarias · {horas(r.trabajadas)} total</div>
+          </div>
+          <span style={{ fontSize: 11, fontWeight: 700, color: r.enviadoAt ? 'var(--ink-2)' : 'var(--orange)' }}>
+            {r.enviadoAt ? `Enviado ${fmtFechaHora(r.enviadoAt)}` : 'Sin enviar'}
+          </span>
+          <span style={{ fontSize: 11, fontWeight: 800, color: r.confirmadoAt ? 'var(--teal)' : '#b45309' }}>
+            {r.confirmadoAt ? `✓ Confirmado ${fmtFechaHora(r.confirmadoAt)}` : 'Sin confirmar'}
+          </span>
+          {r.ultima && !r.confirmadoAt && <button className="btn btn-sm btn-outline" onClick={() => reenviar(r)}>{r.enviadoAt ? 'Reenviar' : 'Enviar'}</button>}
+          <a className="btn btn-sm btn-outline" href={`/api/fichaje/resumenes/${r.id}/pdf`} target="_blank" rel="noopener noreferrer"><I.Download /> PDF</a>
+        </div>
+      ))}
+      {d?.sinResumen.length > 0 && !futuro && (
+        <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Sin resumen de este mes: {d.sinResumen.map(x => x.nombre).join(', ')}.</span>
+      )}
+    </div>
+  );
+}
+
+// Resultado de la comprobación de integridad del registro.
+function ModalIntegridad({ onClose }) {
+  const [v, setV] = useState(null);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    fetch('/api/admin/fichajes/integridad', { credentials: 'include', cache: 'no-store' })
+      .then(async r => { const d = await r.json(); if (!r.ok) throw new Error(d.error); setV(d); })
+      .catch(e => setError(e.message || 'No se pudo comprobar.'));
+  }, []);
+  const lista = (titulo, items, fmt) => items?.length > 0 && (
+    <div style={{ fontSize: 12 }}>
+      <b>{titulo}</b>
+      <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>{items.map((x, i) => <li key={i}>{fmt(x)}</li>)}</ul>
+    </div>
+  );
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.4)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 20, display: 'grid', gap: 12, width: 'min(520px, 100%)', maxHeight: '90vh', overflowY: 'auto' }}>
+        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>Integridad del registro de jornada</h3>
+        {!v && !error && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Comprobando toda la cadena...</p>}
+        {error && <p style={{ margin: 0, fontSize: 13, color: 'var(--orange)' }}>{error}</p>}
+        {v && (
+          <>
+            <div style={{ padding: '10px 14px', borderRadius: 12, fontWeight: 800, fontSize: 14,
+              color: v.ok ? 'var(--teal)' : 'var(--orange)', background: `color-mix(in oklab, ${v.ok ? 'var(--teal)' : 'var(--orange)'} 10%, var(--bg-2))` }}>
+              {v.ok ? '✓ Íntegro: nada se ha modificado ni borrado.' : '⚠ Se han encontrado diferencias.'}
+            </div>
+            <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
+              {v.eventos} apuntes en la cadena de auditoría · {v.fichajes} fichajes · {v.anulaciones} anulaciones. Cada apunte lleva una huella SHA-256 que incluye la del anterior: si alguien cambiara o borrara algo directamente en la base de datos, se detectaría aquí.
+            </p>
+            {lista('Apuntes de la cadena alterados', v.roturas, x => `Nº ${x.id} (${x.evento}): ${x.motivo}`)}
+            {lista('Fichajes cambiados respecto a su apunte original', v.alterados, x => `Fichaje nº ${x.id}: ${x.campos.join(', ')}`)}
+            {lista('Registros sin apunte en la auditoría', v.sinTraza, x => `${x.tipo} nº ${x.id}`)}
+            {lista('Registros que han desaparecido', v.desaparecidos, x => `${x.tipo} nº ${x.id}`)}
+            {lista('Protecciones de la base de datos desactivadas', v.faltanProtecciones, x => x)}
+            <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>Huella actual: <code style={{ wordBreak: 'break-all' }}>{v.cabeza || '—'}</code></div>
+          </>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button className="btn btn-outline" onClick={onClose}>Cerrar</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -389,7 +647,8 @@ function GestionFichajes({ showToast }) {
   const [cargando, setCargando] = useState(true);
   const [abierto, setAbierto] = useState(null);
   const [modal, setModal] = useState(null);     // { destino, apunte? }
-  const [horario, setHorario] = useState(null); // { userId, nombre, dias:[{dia,trabaja,m:{},tarde,t:{}}] }
+  const [horario, setHorario] = useState(null); // { userId, nombre, contrato:{jornada,horasSemana}, dias:[{dia,trabaja,m:{},tarde,t:{}}] }
+  const [integridad, setIntegridad] = useState(false);
 
   const cargar = useCallback(async () => {
     setCargando(true);
@@ -421,7 +680,10 @@ function GestionFichajes({ showToast }) {
       const t2 = (d.dias || []).find(x => x.dia === dia && Number(x.tramo) === 2);
       return { dia, trabaja: !!m, m: { entrada: m?.entrada || '', salida: m?.salida || '' }, tarde: !!t2, t: { entrada: t2?.entrada || '', salida: t2?.salida || '' } };
     });
-    setHorario({ userId: t.userId, nombre: t.nombre, dias });
+    setHorario({
+      userId: t.userId, nombre: t.nombre, dias,
+      contrato: { jornada: d.contrato?.jornada || 'completa', horasSemana: d.contrato?.horasSemana == null ? '' : String(d.contrato.horasSemana) },
+    });
   }
   const setDia = (i, cambio) => setHorario(h => ({ ...h, dias: h.dias.map((x, j) => j === i ? { ...x, ...cambio } : x) }));
   async function guardarHorario(e) {
@@ -433,8 +695,8 @@ function GestionFichajes({ showToast }) {
       if (d.tarde && d.t.entrada && d.t.salida) dias.push({ dia: d.dia, tramo: 2, entrada: d.t.entrada, salida: d.t.salida });
     }
     try {
-      await enviar(`/api/admin/fichajes/horario/${horario.userId}`, { dias }, 'PUT');
-      showToast?.('Horario guardado.'); setHorario(null);
+      await enviar(`/api/admin/fichajes/horario/${horario.userId}`, { dias, contrato: horario.contrato }, 'PUT');
+      showToast?.('Horario y jornada guardados.'); setHorario(null); cargar();
     } catch (err) { alert(err.message); }
   }
 
@@ -464,8 +726,11 @@ function GestionFichajes({ showToast }) {
         <label style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>Hasta</label>
         <input type="date" value={hasta} onChange={e => setHasta(e.target.value)} style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontFamily: 'inherit' }} />
         <div style={{ flex: 1 }} />
-        <a className="btn btn-sm btn-outline" href={exportUrl()} target="_blank" rel="noopener noreferrer"><I.Download /> Exportar CSV</a>
+        <button className="btn btn-sm btn-outline" onClick={() => setIntegridad(true)}>Comprobar integridad</button>
+        <a className="btn btn-sm btn-outline" href={exportUrl()} target="_blank" rel="noopener noreferrer"><I.Download /> Exportar CSV (Excel)</a>
       </div>
+
+      <ResumenesGestion showToast={showToast} />
 
       {cargando && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
       {!cargando && (data?.trabajadores || []).length === 0 && (
@@ -481,15 +746,21 @@ function GestionFichajes({ showToast }) {
                 {t.estado === 'dentro' && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 800, color: 'var(--teal)' }}>● trabajando</span>}
                 {t.estado === 'pausa' && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 800, color: '#b45309' }}>● en pausa</span>}
               </div>
-              <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{t.rol || 'Personal'}</div>
+              <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                {t.enPlantilla ? (t.rol || 'Personal') : <span style={{ color: 'var(--orange)', fontWeight: 700 }}>Ya no está en el club (se conserva su registro)</span>}
+                {t.jornada && ` · ${textoJornada(t.jornada, t.horasSemana)}`}
+              </div>
             </div>
             <span style={{ fontSize: 14, fontWeight: 800, color: 'var(--teal)' }}>{hms(t.totalSeg)}</span>
-            <button className="btn btn-sm btn-outline" onClick={e => { e.stopPropagation(); abrirHorario(t); }}>Horario</button>
+            <a className="btn btn-sm btn-outline" onClick={e => e.stopPropagation()} target="_blank" rel="noopener noreferrer"
+              href={`/api/admin/fichajes/informe.pdf?persona=${t.userId}&desde=${desde || ''}&hasta=${hasta || ''}`}><I.Download /> PDF</a>
+            {t.enPlantilla && <button className="btn btn-sm btn-outline" onClick={e => { e.stopPropagation(); abrirHorario(t); }}>Horario</button>}
             <button className="btn btn-sm btn-outline" onClick={e => { e.stopPropagation(); setModal({ destino: t }); }}>Añadir fichaje</button>
             <I.Chevron style={{ transform: abierto === t.userId ? 'rotate(180deg)' : 'none', transition: 'transform .15s', color: 'var(--ink-3)' }} />
           </div>
           {abierto === t.userId && (
             <div style={{ borderTop: '1px solid var(--line)', padding: 14, display: 'grid', gap: 8 }}>
+              <ComputoMes persona={t.userId} fondo="var(--bg-3)" />
               <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Pulsa un fichaje para proponer que se cambie o se anule. El trabajador tendrá que aprobarlo.</p>
               {t.dias.length === 0 && <p style={{ margin: 0, color: 'var(--ink-3)', fontSize: 13 }}>Sin fichajes en este periodo.</p>}
               {t.dias.map(d => <DiaRegistro key={d.dia} d={d} fondo="var(--bg-3)" onCorregir={a => setModal({ destino: t, apunte: a })} />)}
@@ -503,12 +774,31 @@ function GestionFichajes({ showToast }) {
           onDone={msg => { setModal(null); showToast?.(msg); cargar(); }} />
       )}
 
+      {integridad && <ModalIntegridad onClose={() => setIntegridad(false)} />}
+
       {/* Horario laboral: mañana y, si hace falta, tarde. Base de los recordatorios. */}
       {horario && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.4)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }} onClick={() => setHorario(null)}>
           <form onClick={e => e.stopPropagation()} onSubmit={guardarHorario}
             style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 20, display: 'grid', gap: 10, width: 'min(560px, 100%)', maxHeight: '90vh', overflowY: 'auto' }}>
             <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>Horario laboral · {horario.nombre}</h3>
+            <div style={{ display: 'grid', gap: 8, padding: '10px 12px', background: 'var(--bg-3)', borderRadius: 12 }}>
+              <b style={{ fontSize: 13 }}>Jornada contratada</b>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                {[['completa', 'Completa'], ['parcial', 'Tiempo parcial']].map(([v, l]) => (
+                  <button key={v} type="button" className={`filter-pill ${horario.contrato.jornada === v ? 'is-active' : ''}`}
+                    onClick={() => setHorario(h => ({ ...h, contrato: { ...h.contrato, jornada: v } }))}>{l}</button>
+                ))}
+                <input type="number" min="0.5" max="60" step="0.25" placeholder="h/semana" value={horario.contrato.horasSemana}
+                  required={horario.contrato.jornada === 'parcial'}
+                  onChange={e => { const v = e.target.value; setHorario(h => ({ ...h, contrato: { ...h.contrato, horasSemana: v } })); }}
+                  style={{ ...inp, padding: '6px 8px', width: 100 }} />
+                <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>horas a la semana</span>
+              </div>
+              <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                Con las horas contratadas se calculan cada mes las horas ordinarias y las complementarias. A tiempo parcial, el día 1 se le genera y envía su resumen del mes anterior para que confirme que lo ha recibido.
+              </span>
+            </div>
             <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Marca los días que trabaja con su turno de mañana y, si también trabaja por la tarde, añade el turno de tarde. Con esto se le recuerda por correo y en la app que fiche.</p>
             {horario.dias.map((d, i) => (
               <div key={d.dia} style={{ display: 'grid', gap: 6, paddingBottom: 8, borderBottom: '1px solid var(--line-2)' }}>
@@ -540,7 +830,7 @@ function GestionFichajes({ showToast }) {
             ))}
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
               <button type="button" className="btn btn-outline" onClick={() => setHorario(null)}>Cancelar</button>
-              <button type="submit" className="btn btn-primary">Guardar horario</button>
+              <button type="submit" className="btn btn-primary">Guardar</button>
             </div>
           </form>
         </div>
