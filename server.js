@@ -840,6 +840,21 @@ async function initDb() {
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
+        // Desglose del pago cuando se cobra con VARIOS métodos a la vez (ticket
+        // #247): p. ej. 20 € en efectivo + 100 € en tarjeta. Cada fila es la parte
+        // pagada con ese método (la suma es el total). Si hay un solo método, se
+        // guarda igual una fila. El resumen sigue en aim_recibos.medio_pago
+        // ('mixto' si hay varios).
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_recibo_pagos (
+                id SERIAL PRIMARY KEY,
+                recibo_id INTEGER NOT NULL REFERENCES aim_recibos(id) ON DELETE CASCADE,
+                medio VARCHAR(30) NOT NULL,
+                importe NUMERIC(10,2) NOT NULL
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_recibo_pagos ON aim_recibo_pagos (recibo_id)`);
+
         // Datos fiscales de quien paga: una factura los necesita, y hasta ahora
         // solo se guardaban los del club.
         await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS dni VARCHAR(20)`);
@@ -5705,6 +5720,31 @@ app.delete('/api/admin/billing/cargos/:id', authenticateSession, requireAdmin, a
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Guardar un extra del TPV como cargo PENDIENTE en la persona (ticket #247): si
+// no se cobra ahora (lo paga otro día), no se pierde y aparece en sus cargos
+// pendientes para cobrarlo luego. Solo conceptos del catálogo (no anticipos/bonos).
+app.post('/api/admin/billing/cargos/extra', authenticateSession, requireAdmin, async (req, res) => {
+    const { clienteId, concepto, mes, descuentoPct } = req.body || {};
+    if (!clienteId || !concepto) return res.status(400).json({ error: 'Faltan datos del cargo.' });
+    if (concepto === ANTICIPO_CONCEPTO || concepto === BONO_CONCEPTO) return res.status(400).json({ error: 'Los anticipos y bonos no se guardan como cargo pendiente.' });
+    try {
+        const pr = await pool.query(`SELECT descripcion, tipo, precio, iva_pct FROM aim_precios WHERE concepto = $1 AND activo = true`, [concepto]);
+        if (!pr.rowCount) return res.status(400).json({ error: 'Concepto no válido.' });
+        const p = pr.rows[0];
+        const d = Math.min(100, Math.max(0, Number(descuentoPct) || 0));
+        const periodico = p.tipo === 'Mensualidad';
+        const mesPedido = /^\d{4}-\d{2}(-01)?$/.test(String(mes || '')) ? String(mes).slice(0, 7) + '-01' : null;
+        if (periodico && !mesPedido) return res.status(400).json({ error: `Indica a qué mes corresponde "${p.descripcion}".` });
+        const mesCargo = mesPedido || (hoyMadrid().slice(0, 7) + '-01');
+        const act = await actividadDeConcepto(concepto);
+        const ins = await pool.query(
+            `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado, origen, actividad)
+             VALUES ($1,$2,$3::date,$4,$5,$6,$7,$8,'pendiente','manual',$9) RETURNING id`,
+            [clienteId, concepto, mesCargo, p.descripcion, p.tipo, p.precio, p.iva_pct, d, act]);
+        res.status(201).json({ success: true, id: ins.rows[0].id });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── TPV / Cobro ──
 // Datos fiscales del emisor para el ticket (autónomo del club).
 const EMPRESA_TICKET = {
@@ -5836,9 +5876,12 @@ app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async
 // Cobrar: crea el recibo, congela los cargos y devuelve el ticket. El importe
 // se calcula SIEMPRE en el servidor (nunca se confía en el cliente).
 app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, async (req, res) => {
-    const { pagadorId, lineas, extras, anticipos, medioPago, entregado } = req.body;
+    const { pagadorId, lineas, extras, anticipos, medioPago, entregado, efectivoEntregado } = req.body;
+    // Pago con varios métodos a la vez (ticket #247). Si no viene, se usa el
+    // medioPago único de siempre.
+    const pagosIn = Array.isArray(req.body.pagos) ? req.body.pagos.filter(p => p && MEDIOS_PAGO.includes(p.medio)) : null;
     if (!pagadorId) return res.status(400).json({ error: 'Falta el pagador.' });
-    if (!MEDIOS_PAGO.includes(medioPago)) return res.status(400).json({ error: 'Medio de pago no válido.' });
+    if (!(pagosIn && pagosIn.length) && !MEDIOS_PAGO.includes(medioPago)) return res.status(400).json({ error: 'Medio de pago no válido.' });
     // La factura no puede ir a nombre de un menor (#219): tiene que emitirse a un
     // adulto de su familia (padre, madre o tutor/a).
     {
@@ -6023,18 +6066,51 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
         const calc = calcularRecibo(cs.rows.map(cargoParaMotor));
         const total = calc.total;
         if (total < 0) throw { httP: 400, msg: 'Los anticipos aplicados superan el importe a cobrar. Ajusta el importe a aplicar.' };
-        const entregadoNum = medioPago === 'efectivo' ? (Number(entregado) || total) : total;
-        const cambio = r2Server(entregadoNum - total);
-        if (cambio < 0) throw { httP: 400, msg: 'El importe entregado es menor que el total.' };
+
+        // 4b) Reparto del pago entre métodos (ticket #247). Cada 'pago' es la parte
+        // pagada con ese método. Un método puede ir SIN importe: se le asigna lo que
+        // falte ("se le cobra entero con ese método"). Si se usa efectivo, es
+        // obligatorio decir cuánto dan (para calcular el cambio).
+        let pagos, medioResumen, entregadoNum, cambio;
+        if (pagosIn && pagosIn.length) {
+            const tiene = p => p.importe != null && p.importe !== '' && !isNaN(Number(p.importe));
+            const conImp = pagosIn.filter(tiene), sinImp = pagosIn.filter(p => !tiene(p));
+            if (sinImp.length > 1) throw { httP: 400, msg: 'Solo un método puede ir sin importe (se le asigna el resto).' };
+            let suma = r2Server(conImp.reduce((s, p) => s + Number(p.importe), 0));
+            if (suma > total + 0.005) throw { httP: 400, msg: `Los importes (${suma} €) superan el total (${total} €).` };
+            pagos = conImp.map(p => ({ medio: p.medio, importe: r2Server(Number(p.importe)) }));
+            if (sinImp.length === 1) pagos.push({ medio: sinImp[0].medio, importe: r2Server(total - suma) });
+            else if (Math.abs(suma - total) > 0.005) throw { httP: 400, msg: `Los pagos suman ${suma} € y el total es ${total} €.` };
+            pagos = pagos.filter(p => p.importe > 0);
+            if (!pagos.length) throw { httP: 400, msg: 'No hay ningún importe que cobrar.' };
+            const efec = pagos.find(p => p.medio === 'efectivo');
+            if (efec) {
+                const dado = Number(efectivoEntregado);
+                if (!(dado >= efec.importe - 0.005)) throw { httP: 400, msg: `Indica cuánto te dan en efectivo (al menos ${efec.importe} €).` };
+                entregadoNum = r2Server(dado);
+                cambio = r2Server(dado - efec.importe);
+            } else { entregadoNum = total; cambio = 0; }
+            medioResumen = pagos.length === 1 ? pagos[0].medio : 'mixto';
+        } else {
+            entregadoNum = medioPago === 'efectivo' ? (Number(entregado) || total) : total;
+            cambio = r2Server(entregadoNum - total);
+            if (cambio < 0) throw { httP: 400, msg: 'El importe entregado es menor que el total.' };
+            medioResumen = medioPago;
+            pagos = [{ medio: medioPago, importe: total }];
+        }
 
         // 5) Número de recibo por secuencia (atómico).
         const num = (await client.query(`SELECT nextval('aim_recibos_numero_seq') AS n`)).rows[0].n;
         const rec = await client.query(
             `INSERT INTO aim_recibos (numero, pagador_id, fecha, importe, medio_pago, entregado, cambio, estado, cobrado_por, cobrado_at)
              VALUES ($1,$2,(now() AT TIME ZONE 'Europe/Madrid')::date,$3,$4,$5,$6,'cobrado',$7,NOW()) RETURNING id, numero, fecha`,
-            [num, pagadorId, total, medioPago, entregadoNum, cambio, req.userSession.userId]
+            [num, pagadorId, total, medioResumen, entregadoNum, cambio, req.userSession.userId]
         );
         const reciboId = rec.rows[0].id;
+        // Desglose del pago por método.
+        for (const p of pagos) {
+            await client.query(`INSERT INTO aim_recibo_pagos (recibo_id, medio, importe) VALUES ($1, $2, $3)`, [reciboId, p.medio, p.importe]);
+        }
 
         // 6) Congelar cada cargo en el recibo.
         for (const d of calc.detalle) {
@@ -6098,7 +6174,7 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
             recibo: {
                 id: reciboId, numero: rec.rows[0].numero, fecha: rec.rows[0].fecha,
                 pagador: pg.rows[0] ? `${pg.rows[0].name} ${pg.rows[0].surname}` : '',
-                medioPago, entregado: entregadoNum, cambio, total,
+                medioPago: medioResumen, pagos, entregado: entregadoNum, cambio, total,
             },
             detalle: calc.detalle.map(d => ({
                 descripcion: d.descripcion, mes: d.mes, precio: d.precio,
@@ -6199,6 +6275,8 @@ async function ticketDeRecibo(reciboId) {
         grupos.set(d.ivaPct, g);
     }
     for (const g of grupos.values()) g.iva = r2Server(g.base * g.ivaPct / 100);
+    // Desglose del pago por método, si se cobró con varios (ticket #247).
+    const pg = await pool.query(`SELECT medio, importe FROM aim_recibo_pagos WHERE recibo_id = $1 ORDER BY id`, [reciboId]);
     return {
         recibo: {
             id: rec.id, numero: numeroVisible(rec), serie: rec.serie, tipo: rec.tipo, fecha: rec.fecha,
@@ -6207,7 +6285,8 @@ async function ticketDeRecibo(reciboId) {
             pagadorDni: rec.dni || null,
             pagadorDomicilio: [rec.domicilio, [rec.cp, rec.poblacion].filter(Boolean).join(' ')]
                 .filter(Boolean).join(', ') || null,
-            medioPago: rec.medio_pago, entregado: Number(rec.entregado ?? 0), cambio: Number(rec.cambio ?? 0),
+            medioPago: rec.medio_pago, pagos: pg.rows.map(p => ({ medio: p.medio, importe: Number(p.importe) })),
+            entregado: Number(rec.entregado ?? 0), cambio: Number(rec.cambio ?? 0),
             total: Number(rec.importe ?? 0), estado: rec.estado,
             anuladoMotivo: rec.anulado_motivo, anuladoAt: rec.anulado_at,
             rectMetodo: rec.rect_metodo, rectMotivo: rec.rect_motivo,
@@ -6719,15 +6798,25 @@ app.post('/api/admin/billing/vaciar-pruebas', authenticateSession, requireAdmin,
 // Lo cobrado de un día por medio de pago. Un rectificativo del mismo día resta,
 // porque ese dinero ha salido de la caja.
 async function movimientosDelDia(fecha) {
+    // Los cobros con varios métodos (ticket #247) tienen el desglose por método en
+    // aim_recibo_pagos: hay que repartir su importe por método, no contar todo el
+    // recibo como uno solo (si no, un cobro 'mixto' caía entero en efectivo). Los
+    // recibos sin desglose (rectificativas, online, etc.) van por su medio_pago.
     const r = await pool.query(
-        `SELECT medio_pago, tipo, COALESCE(SUM(importe), 0)::numeric AS total, COUNT(*)::int AS n
-         FROM aim_recibos
-         WHERE fecha = $1::date AND estado <> 'anulado'
-         GROUP BY medio_pago, tipo`, [fecha]
+        `SELECT rp.medio, r.tipo, COALESCE(SUM(rp.importe), 0)::numeric AS total, COUNT(DISTINCT r.id)::int AS n
+           FROM aim_recibos r JOIN aim_recibo_pagos rp ON rp.recibo_id = r.id
+          WHERE r.fecha = $1::date AND r.estado <> 'anulado'
+          GROUP BY rp.medio, r.tipo
+         UNION ALL
+         SELECT r.medio_pago AS medio, r.tipo, COALESCE(SUM(r.importe), 0)::numeric AS total, COUNT(*)::int AS n
+           FROM aim_recibos r
+          WHERE r.fecha = $1::date AND r.estado <> 'anulado'
+            AND NOT EXISTS (SELECT 1 FROM aim_recibo_pagos rp WHERE rp.recibo_id = r.id)
+          GROUP BY r.medio_pago, r.tipo`, [fecha]
     );
     const porMedio = Object.fromEntries(MEDIOS_PAGO.map(m => [m, { cobrado: 0, devuelto: 0, neto: 0, n: 0 }]));
     for (const x of r.rows) {
-        const medio = MEDIOS_PAGO.includes(x.medio_pago) ? x.medio_pago : 'efectivo';
+        const medio = MEDIOS_PAGO.includes(x.medio) ? x.medio : 'efectivo';
         const importe = Number(x.total);
         if (importe < 0 || x.tipo === 'rectificativo') porMedio[medio].devuelto = r2Server(porMedio[medio].devuelto + Math.abs(importe));
         else porMedio[medio].cobrado = r2Server(porMedio[medio].cobrado + importe);

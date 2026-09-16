@@ -3762,8 +3762,10 @@ function BillingTPV({ showToast }) {
   const [extras, setExtras] = useState([]);            // { key, clienteId, nombre, concepto, descripcion, precio, ivaPct, tipo, descuentoPct }
   const [totales, setTotales] = useState(null);
   const [precios, setPrecios] = useState([]);
-  const [medioPago, setMedioPago] = useState('tarjeta');
-  const [entregado, setEntregado] = useState('');
+  // Métodos de pago (ticket #247): se puede repartir el cobro entre varios
+  // (p. ej. 20 € efectivo + 100 € tarjeta). Un método sin importe = "el resto".
+  const [pagos, setPagos] = useState([{ medio: 'tarjeta', importe: '' }]);
+  const [efectivoEntregado, setEfectivoEntregado] = useState(''); // cuánto dan en efectivo
   const [cobrando, setCobrando] = useState(false);
   const [ticket, setTicket] = useState(null);
   const [addExtra, setAddExtra] = useState(null);      // { clienteId, concepto }
@@ -3806,7 +3808,7 @@ function BillingTPV({ showToast }) {
   }, []);
 
   async function elegirPagador(p) {
-    setPagador(p); setResultados([]); setQ(''); setExtras([]); setTicket(null); setEntregado(''); setAplicarAnt({}); setAddAnticipo(null); setAddBono(null);
+    setPagador(p); setResultados([]); setQ(''); setExtras([]); setTicket(null); setPagos([{ medio: 'tarjeta', importe: '' }]); setEfectivoEntregado(''); setAplicarAnt({}); setAddAnticipo(null); setAddBono(null);
     await traerCesta(p.id, true);
   }
 
@@ -3844,6 +3846,25 @@ function BillingTPV({ showToast }) {
 
   const total = totales?.total || 0;
 
+  // Reparto del pago entre métodos (ticket #247). Un método sin importe recibe "el
+  // resto" (total − lo asignado a los demás). Con efectivo se pide cuánto dan.
+  const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+  const tieneImporte = (p) => p.importe !== '' && !isNaN(Number(p.importe));
+  const sumaAsignada = round2(pagos.filter(tieneImporte).reduce((s, p) => s + Number(p.importe), 0));
+  const nBlancos = pagos.filter(p => !tieneImporte(p)).length;
+  const resto = round2(total - sumaAsignada);
+  const porcionDe = (p) => tieneImporte(p) ? round2(Number(p.importe)) : resto; // la del resto va al blanco
+  const efectivoLine = pagos.find(p => p.medio === 'efectivo');
+  const hayEfectivo = !!efectivoLine;
+  const efectivoPortion = hayEfectivo ? Math.max(0, porcionDe(efectivoLine)) : 0;
+  const efectivoDado = Number(efectivoEntregado || efectivoPortion);
+  const cambioEfectivo = hayEfectivo ? round2(efectivoDado - efectivoPortion) : 0;
+  // ¿Es válido el reparto? Suma cuadra, como mucho un método sin importe, y si hay
+  // efectivo, lo entregado cubre su parte.
+  const pagoValido = total > 0 && nBlancos <= 1 && sumaAsignada <= total + 0.005
+    && (nBlancos === 1 || Math.abs(sumaAsignada - total) < 0.005)
+    && (!hayEfectivo || efectivoDado >= efectivoPortion - 0.005);
+
   async function cobrar() {
     if (!total) return;
     setCobrando(true);
@@ -3862,14 +3883,27 @@ function BillingTPV({ showToast }) {
             esBono: e.esBono || undefined, actividad: e.esBono ? e.actividad : undefined, clases: e.esBono ? e.clases : undefined,
           })),
           anticipos: antAplicados.map(x => ({ id: x.a.id, importe: x.imp })),
-          medioPago,
-          entregado: medioPago === 'efectivo' ? (Number(entregado) || total) : total,
+          // Reparto del pago entre métodos (ticket #247). Importe vacío = "el resto".
+          pagos: pagos.map(p => ({ medio: p.medio, importe: p.importe === '' ? null : Number(p.importe) })),
+          efectivoEntregado: hayEfectivo ? Number(efectivoEntregado || efectivoPortion) : undefined,
         }),
       });
       if (r.ok) { const d = await r.json(); setTicket(d); showToast?.(`Recibo #${d.recibo.numero} cobrado.`); setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null); setAddBono(null); }
       else { const d = await r.json(); alert(d.error || 'Error al cobrar.'); }
     } catch { alert('Error de conexión.'); }
     finally { setCobrando(false); }
+  }
+
+  // Guardar un extra como cargo PENDIENTE en la persona (ticket #247): si no se
+  // cobra ahora, no se pierde y queda para cobrarlo otro día.
+  async function dejarPendiente(e) {
+    const r = await fetch('/api/admin/billing/cargos/extra', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+      body: JSON.stringify({ clienteId: e.clienteId, concepto: e.concepto, mes: e.mes || null, descuentoPct: Number(e.descuentoPct) || 0 }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) { setExtras(x => x.filter(y => y.key !== e.key)); showToast?.('Guardado como cargo pendiente.'); traerCesta(pagador.id); }
+    else alert(d.error || 'No se pudo guardar.');
   }
 
   const imprimirTicket = () => imprimirTicketRecibo(ticket);
@@ -3891,7 +3925,7 @@ function BillingTPV({ showToast }) {
         <div style={{ background: 'color-mix(in oklab, var(--teal) 10%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--teal) 35%, transparent)', borderRadius: 14, padding: '16px 18px', display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
           <div style={{ flex: 1, minWidth: 200 }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: 'var(--teal)' }}>Recibo #{ticket.recibo.numero} cobrado — {eur(ticket.recibo.total)}</div>
-            <div style={{ fontSize: 13, color: 'var(--ink-2)' }}>{ticket.recibo.pagador} · {ticket.recibo.medioPago}{ticket.recibo.medioPago === 'efectivo' ? ` · cambio ${eur(ticket.recibo.cambio)}` : ''}</div>
+            <div style={{ fontSize: 13, color: 'var(--ink-2)' }}>{ticket.recibo.pagador} · {(ticket.recibo.pagos && ticket.recibo.pagos.length > 1) ? ticket.recibo.pagos.map(p => `${p.medio} ${eur(p.importe)}`).join(' + ') : ticket.recibo.medioPago}{ticket.recibo.cambio > 0 ? ` · cambio ${eur(ticket.recibo.cambio)}` : ''}</div>
           </div>
           <button className="btn btn-sm btn-primary" onClick={imprimirTicket}><I.Print /> Imprimir ticket</button>
           <button className="btn btn-sm btn-outline" onClick={() => setTicket(null)}>Nuevo cobro</button>
@@ -3997,6 +4031,9 @@ function BillingTPV({ showToast }) {
                     </div>
                   </div>
                   <div style={{ fontWeight: 800, fontFamily: 'var(--font-display)', minWidth: 66, textAlign: 'right' }}>{eur(e.bruto ?? e.precio)}{e.concepto === ANTICIPO_CONCEPTO && e.ivaPct > 0 ? <span style={{ display: 'block', fontSize: 10, fontWeight: 500, color: 'var(--ink-3)' }}>IVA {e.ivaPct}% incl.</span> : null}</div>
+                  {!e.esBono && e.concepto !== ANTICIPO_CONCEPTO && (
+                    <button className="btn btn-sm btn-outline" style={{ fontSize: 11, padding: '4px 8px', whiteSpace: 'nowrap' }} onClick={() => dejarPendiente(e)} title="Guardar como cargo pendiente para cobrarlo otro día">Dejar pendiente</button>
+                  )}
                   <button className="icon-btn danger" style={{ width: 26, height: 26 }} onClick={() => setExtras(x => x.filter(y => y.key !== e.key))} aria-label="Quitar"><I.X /></button>
                 </div>
               ))}
@@ -4201,21 +4238,47 @@ function BillingTPV({ showToast }) {
                 <span style={{ fontWeight: 800, fontSize: 15 }}>TOTAL</span>
                 <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 28, letterSpacing: '-.02em' }}>{eur(total)}</span>
               </div>
-              <div style={{ display: 'flex', gap: 6 }}>
-                {['tarjeta', 'bizum', 'efectivo'].map(m => (
-                  <button key={m} onClick={() => setMedioPago(m)} className={`filter-pill ${medioPago === m ? 'is-active' : ''}`} style={{ flex: 1, justifyContent: 'center', textTransform: 'capitalize' }}>{m}</button>
+              {/* Métodos de pago (ticket #247): uno o varios. Un método sin importe
+                  recibe "el resto". Con efectivo se indica cuánto dan (cambio). */}
+              <div style={{ display: 'grid', gap: 6 }}>
+                {pagos.map((p, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <select value={p.medio} onChange={e => setPagos(x => x.map((y, j) => j === i ? { ...y, medio: e.target.value } : y))}
+                      style={{ fontFamily: 'inherit', fontSize: 14, fontWeight: 700, padding: '9px 10px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', textTransform: 'capitalize' }}>
+                      {['tarjeta', 'bizum', 'efectivo', 'transferencia'].map(m => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                    <input type="number" step="0.01" min="0" value={p.importe}
+                      placeholder={pagos.length === 1 ? `Todo (${eur(total)})` : `Importe · vacío = resto`}
+                      onChange={e => setPagos(x => x.map((y, j) => j === i ? { ...y, importe: e.target.value } : y))}
+                      style={{ flex: 1, minWidth: 0, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', fontSize: 15, fontWeight: 700 }} />
+                    {pagos.length > 1 && <button className="icon-btn danger" onClick={() => setPagos(x => x.filter((_, j) => j !== i))} aria-label="Quitar"><I.X /></button>}
+                  </div>
                 ))}
+                {pagos.length < 4 && (
+                  <button type="button" className="btn btn-sm btn-outline" style={{ justifySelf: 'start' }}
+                    onClick={() => { const noUsados = ['tarjeta', 'bizum', 'efectivo', 'transferencia'].filter(m => !pagos.some(p => p.medio === m)); setPagos(x => [...x, { medio: noUsados[0] || 'efectivo', importe: '' }]); }}>
+                    <I.Plus /> Añadir método
+                  </button>
+                )}
               </div>
-              {medioPago === 'efectivo' && (
+              {hayEfectivo && (
                 <div>
-                  <input type="number" step="0.01" min="0" placeholder={`Entregado (${eur(total)})`} value={entregado} onChange={e => setEntregado(e.target.value)}
+                  <input type="number" step="0.01" min="0" placeholder={`Entregado en efectivo (parte: ${eur(efectivoPortion)})`} value={efectivoEntregado} onChange={e => setEfectivoEntregado(e.target.value)}
                     style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', fontSize: 15, fontWeight: 700 }} />
-                  {Number(entregado) > 0 && Number(entregado) >= total && (
-                    <div style={{ textAlign: 'right', marginTop: 6, fontSize: 14, fontWeight: 700, color: 'var(--teal)' }}>Cambio: {eur(Number(entregado) - total)}</div>
+                  {efectivoDado >= efectivoPortion && efectivoPortion >= 0 && (
+                    <div style={{ textAlign: 'right', marginTop: 6, fontSize: 14, fontWeight: 700, color: 'var(--teal)' }}>Cambio: {eur(cambioEfectivo)}</div>
                   )}
                 </div>
               )}
-              <button className="btn btn-primary btn-block" disabled={cobrando || !total || (pagador.esMenor && !pagadorFactura)} onClick={cobrar} style={{ fontSize: 15, padding: '13px 0' }}>
+              {total > 0 && !pagoValido && (
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--orange)' }}>
+                  {nBlancos > 1 ? 'Solo un método puede ir sin importe.'
+                    : sumaAsignada > total + 0.005 ? 'Los importes superan el total.'
+                      : hayEfectivo && efectivoDado < efectivoPortion ? 'El efectivo entregado no cubre su parte.'
+                        : `Falta por asignar ${eur(round2(total - sumaAsignada))}.`}
+                </div>
+              )}
+              <button className="btn btn-primary btn-block" disabled={cobrando || !pagoValido || (pagador.esMenor && !pagadorFactura)} onClick={cobrar} style={{ fontSize: 15, padding: '13px 0' }}>
                 {cobrando ? 'Cobrando...' : `Cobrar ${eur(total)}`}
               </button>
             </div>
@@ -4248,7 +4311,7 @@ function imprimirTicketRecibo(t) {
     <table><thead><tr><td><b>Descripción</b></td><td style="text-align:right"><b>IVA</b></td><td style="text-align:right"><b>Importe</b></td></tr></thead>
     <tbody>${filas}${bases}</tbody></table>
     <div class="tot">TOTAL: ${Number(t.recibo.total).toFixed(2)} €</div>
-    <div style="text-align:right">${t.recibo.medioPago || ''}${t.recibo.medioPago === 'efectivo' ? ` · entregado ${Number(t.recibo.entregado).toFixed(2)} · cambio ${Number(t.recibo.cambio).toFixed(2)}` : ''}</div>
+    <div style="text-align:right">${(t.recibo.pagos && t.recibo.pagos.length > 1) ? t.recibo.pagos.map(p => `${p.medio} ${Number(p.importe).toFixed(2)}`).join(' + ') : (t.recibo.medioPago || '')}${t.recibo.cambio > 0 ? ` · cambio ${Number(t.recibo.cambio).toFixed(2)}` : ''}</div>
     ${t.ahorro > 0 ? `<div style="text-align:right;color:#0a0">Ahorro: ${t.ahorro.toFixed(2)} €</div>` : ''}
     <p style="text-align:center;margin-top:10px"><b>¡Gracias!</b></p>
     <script>window.onload=()=>window.print()</script></body></html>`);
