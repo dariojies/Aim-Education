@@ -2885,6 +2885,7 @@ async function emitirReciboDe(client, { pagadorId, cargoIds, medioPago, userId }
         receptor: { nombre: pg.rows[0] ? `${pg.rows[0].name} ${pg.rows[0].surname || ''}`.trim() : null },
         descripcion: calc.detalle.map(d => d.descripcion).join('; ').slice(0, 500),
         base: calc.baseTotal, cuota: calc.ivaTotal, total: calc.total,
+        basesPorIva: calc.basesPorIva,
         userId,
     });
     return { reciboId, numero: rec.rows[0].numero, total: calc.total };
@@ -6510,11 +6511,9 @@ async function crearBonosDeCargos(client, rows, reciboId, userId) {
             `SELECT descripcion, bono_clases FROM aim_precios WHERE concepto = $1 AND es_bono = true`, [c.concepto]);
         if (!p.rowCount) continue;
         const clases = Math.max(1, parseInt(p.rows[0].bono_clases, 10) || 1);
-        // Un bono por línea cobrada, y sin repetir si ya se creó para ese recibo.
-        const ya = await client.query(
-            `SELECT 1 FROM aim_bonos WHERE recibo_id = $1 AND cliente_id = $2 AND concepto = $3`,
-            [reciboId, c.cliente_id, c.concepto]);
-        if (ya.rowCount) continue;
+        // Un bono por cada línea cobrada: si en el mismo ticket se venden dos
+        // bonos iguales, salen dos bonos. Esto se ejecuta una sola vez por
+        // factura, dentro de su transacción, así que no se repite.
         await client.query(
             `INSERT INTO aim_bonos (cliente_id, actividad, ambito, concepto, clases_total, clases_usadas, recibo_id, created_by)
              VALUES ($1, $2, 'catalogo', $3, $4, 0, $5, $6)`,
@@ -6590,6 +6589,7 @@ async function emitirUnRecibo(client, { pagadorId, rows, pagosG, entregadoG, cam
         receptor: { nombre: receptorNombre },
         descripcion: calc.detalle.map(d => d.descripcion).join('; ').slice(0, 500),
         base: calc.baseTotal, cuota: calc.ivaTotal, total,
+        basesPorIva: calc.basesPorIva,
         userId,
     });
     return {
@@ -7161,6 +7161,14 @@ async function registrarFactura(client, { recibo, receptor, descripcion, base, c
         desglose, cuotaTotal: cuota, importeTotal: total,
         huellaAnterior: ant?.huella_aeat || null, anteriorNif: ant?.nif_emisor || null,
         anteriorNumSerie: ant?.num_serie || null, anteriorFecha: ant ? verifactu.fechaAEAT(ant.fecha) : null,
+        // Si es rectificativa, a qué factura corrige y por qué método (I = por
+        // diferencias, S = por sustitución).
+        rectificaA: original ? {
+            nif: fila.nif_emisor,
+            numSerie: numeroVisible({ serie: original.serie, numero: original.numero, fecha: original.fecha }),
+            fecha: verifactu.fechaAEAT(original.fecha),
+        } : null,
+        tipoRectificativa: original?.metodo === 'sustitucion' ? 'S' : 'I',
         sif: cfg.sif, fechaHoraHuso: fechaHuso, huella: huellaAeat,
     });
     const qrUrl = verifactu.urlQR({
@@ -7231,8 +7239,8 @@ app.get('/api/admin/billing/verifactu', authenticateSession, requireAdmin, async
             `SELECT COUNT(*) FILTER (WHERE estado_envio = 'pendiente')::int AS pendientes,
                     COUNT(*) FILTER (WHERE estado_envio = 'enviado')::int AS enviados,
                     COUNT(*) FILTER (WHERE estado_envio = 'error')::int AS errores,
-                    COUNT(*) FILTER (WHERE huella_aeat IS NOT NULL)::int AS registros
-             FROM aim_factura_registro`);
+                    COUNT(*)::int AS registros
+             FROM aim_factura_registro WHERE huella_aeat IS NOT NULL`);
         const ultimas = await pool.query(
             `SELECT id, num_serie, fecha_expedicion::text AS fecha, total, estado_envio, aeat_respuesta, aeat_csv, huella_aeat
              FROM aim_factura_registro WHERE huella_aeat IS NOT NULL ORDER BY id DESC LIMIT 10`);
@@ -7396,13 +7404,23 @@ async function emitirRectificativa(client, { orig, quitadas, quedan, metodo, mot
     // Anotar el rectificativo en el registro encadenado, referenciando a la
     // factura que corrige.
     const baseTotal = r2Server(lineas.reduce((s, l) => s + l.base, 0));
+    // Desglose por tipo de IVA de lo que se rectifica, para el registro de la AEAT.
+    const porIva = new Map();
+    for (const l of lineas) {
+        const pct = Number(l.c.iva_pct) || 0;
+        const g = porIva.get(pct) || { ivaPct: pct, base: 0, iva: 0 };
+        g.base = r2Server(g.base + l.base);
+        g.iva = r2Server(g.iva + (l.bruto != null ? l.bruto - l.base : l.base * pct / 100));
+        porIva.set(pct, g);
+    }
     const pag = await client.query('SELECT name, surname FROM users WHERE user_id = $1', [orig.pagador_id]);
     await registrarFactura(client, {
         recibo: { ...nuevo.rows[0], tipo: 'rectificativo' },
         receptor: { nombre: pag.rows[0] ? `${pag.rows[0].name} ${pag.rows[0].surname || ''}`.trim() : null },
         descripcion: `Rectificativa de ${orig.serie || 'A'}-${orig.numero}: ${motivo.trim()}`,
         base: baseTotal, cuota: r2Server(importe - baseTotal), total: importe,
-        original: { serie: orig.serie || 'A', numero: orig.numero, fecha: orig.fecha },
+        basesPorIva: [...porIva.values()].sort((a, b) => a.ivaPct - b.ivaPct),
+        original: { serie: orig.serie || 'A', numero: orig.numero, fecha: orig.fecha, metodo },
         userId,
     });
 
@@ -8163,6 +8181,7 @@ async function asentarPago(client, pago, aviso) {
         receptor: { nombre: pg.rows[0] ? `${pg.rows[0].name} ${pg.rows[0].surname || ''}`.trim() : null },
         descripcion: calc.detalle.map(d => d.descripcion).join('; ').slice(0, 500),
         base: calc.baseTotal, cuota: calc.ivaTotal, total: calc.total,
+        basesPorIva: calc.basesPorIva,
         userId: pago.pagador_id,
     });
 

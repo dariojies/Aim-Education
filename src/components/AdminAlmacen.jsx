@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { I } from './Icons.jsx';
+import { textoPlano, coincideBusqueda } from './Shared.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Almacén / inventario (ticket #250). El club ve lo que tiene en stock. Cada
@@ -67,8 +68,7 @@ export default function AdminAlmacen({ showToast }) {
     if (r.ok) { showToast?.('Artículo quitado.'); cargar(); }
   }
 
-  const t = q.trim().toLowerCase();
-  const filtrados = items.filter(x => !t || `${x.nombre} ${x.categoria || ''} ${x.conceptoDesc || ''}`.toLowerCase().includes(t));
+  const filtrados = items.filter(x => coincideBusqueda(q, x.nombre, x.categoria, x.conceptoDesc));
   const bajos = items.filter(x => x.bajo).length;
 
   return (
@@ -124,21 +124,53 @@ export default function AdminAlmacen({ showToast }) {
             <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-2)' }}>Categoría
               <input placeholder="p. ej. Taekwondo" value={edit.categoria || ''} onChange={e => setEdit(x => ({ ...x, categoria: e.target.value }))} style={{ ...inp, width: '100%', marginTop: 4 }} />
             </label>
-            <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-2)' }}>Se vende como (artículo del catálogo)
-              <select value={edit.concepto || ''} onChange={e => {
-                const c = conceptos.find(x => x.concepto === e.target.value);
-                // Si aún no tiene nombre, se propone el del catálogo.
-                setEdit(x => ({ ...x, concepto: e.target.value, nombre: x.nombre || c?.descripcion || '' }));
-              }} style={{ ...inp, width: '100%', marginTop: 4 }}>
-                <option value="">— No se vende (solo inventario) —</option>
-                {conceptos
-                  .filter(c => c.concepto === edit.concepto || !items.some(it => it.concepto === c.concepto && it.id !== edit.id))
-                  .map(c => <option key={c.concepto} value={c.concepto}>{c.descripcion}</option>)}
-              </select>
+            {/* Buscador de conceptos, no un desplegable: se escribe y va ofreciendo
+                las opciones, igual que en el TPV (ticket #229). */}
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-2)' }}>Se vende como (artículo del catálogo)
+              {(() => {
+                const libres = conceptos.filter(c => c.concepto === edit.concepto || !items.some(it => it.concepto === c.concepto && it.id !== edit.id));
+                const elegido = libres.find(c => c.concepto === edit.concepto) || null;
+                const escrito = (edit.qConcepto ?? (elegido ? `${elegido.descripcion} (${elegido.concepto})` : '')).trim();
+                const busca = textoPlano(escrito);
+                const opciones = (!edit.concepto && busca)
+                  ? libres.filter(c => textoPlano(`${c.descripcion} ${c.concepto}`).includes(busca)).slice(0, 8)
+                  : [];
+                return (
+                  <div style={{ position: 'relative', marginTop: 4 }}>
+                    <input
+                      placeholder="Buscar artículo del catálogo (nombre o código)..."
+                      value={edit.qConcepto ?? (elegido ? `${elegido.descripcion} (${elegido.concepto})` : '')}
+                      onChange={e => setEdit(x => ({ ...x, qConcepto: e.target.value, concepto: '' }))}
+                      style={{ ...inp, width: '100%', fontWeight: 500, borderColor: edit.concepto ? 'var(--teal)' : 'var(--line)' }} />
+                    {edit.concepto && (
+                      <button type="button" onClick={() => setEdit(x => ({ ...x, concepto: '', qConcepto: '' }))}
+                        title="Quitar el enlace con el catálogo"
+                        style={{ position: 'absolute', right: 6, top: 6, background: 'none', border: 0, cursor: 'pointer', color: 'var(--ink-3)', fontFamily: 'inherit', fontSize: 12 }}>✕</button>
+                    )}
+                    {opciones.length > 0 && (
+                      <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 6, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, marginTop: 2, overflow: 'hidden', maxHeight: 240, overflowY: 'auto', boxShadow: 'var(--shadow)' }}>
+                        {opciones.map(c => (
+                          <button key={c.concepto} type="button"
+                            onMouseDown={ev => {
+                              ev.preventDefault();
+                              // Si aún no tiene nombre, se propone el del catálogo.
+                              setEdit(x => ({ ...x, concepto: c.concepto, qConcepto: `${c.descripcion} (${c.concepto})`, nombre: x.nombre || c.descripcion }));
+                            }}
+                            style={{ display: 'flex', justifyContent: 'space-between', gap: 8, width: '100%', textAlign: 'left', padding: '8px 12px', background: 'none', border: 0, borderBottom: '1px solid var(--line-2)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, color: 'var(--ink)' }}>
+                            <span>{c.descripcion}</span>
+                            <span style={{ color: 'var(--ink-3)', fontSize: 11 }}>{c.concepto}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
               <span style={{ display: 'block', fontSize: 11, fontWeight: 500, color: 'var(--ink-3)', marginTop: 4 }}>
-                Cada talla es su propio artículo en el catálogo (p. ej. "Dobok talla S"): enlaza cada una con su artículo del almacén.
+                Déjalo vacío si es solo inventario y no se vende. Cada talla es su propio artículo en el catálogo
+                (p. ej. "Dobok talla S"): enlaza cada una con su artículo del almacén.
               </span>
-            </label>
+            </div>
             <div style={{ display: 'flex', gap: 8 }}>
               {!edit.id && (
                 <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-2)', flex: 1 }}>Stock inicial

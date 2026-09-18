@@ -136,6 +136,18 @@ export function xmlRegistroAlta(r) {
       </IDDestinatario>
     </Destinatarios>\n`
         : '';
+    // Una rectificativa (R1..R5) tiene que decir por qué método rectifica y a qué
+    // factura corrige; sin esto la AEAT la rechaza.
+    const rectificada = r.rectificaA
+        ? `    <TipoRectificativa>${esc(r.tipoRectificativa || 'I')}</TipoRectificativa>
+    <FacturasRectificadas>
+      <IDFacturaRectificada>
+        <IDEmisorFactura>${esc(r.rectificaA.nif)}</IDEmisorFactura>
+        <NumSerieFactura>${esc(r.rectificaA.numSerie)}</NumSerieFactura>
+        <FechaExpedicionFactura>${esc(r.rectificaA.fecha)}</FechaExpedicionFactura>
+      </IDFacturaRectificada>
+    </FacturasRectificadas>\n`
+        : '';
     return `  <RegistroAlta>
     <IDVersion>1.0</IDVersion>
     <IDFactura>
@@ -145,7 +157,7 @@ export function xmlRegistroAlta(r) {
     </IDFactura>
     <NombreRazonEmisor>${esc(r.nombreEmisor)}</NombreRazonEmisor>
     <TipoFactura>${esc(r.tipoFactura)}</TipoFactura>
-    <DescripcionOperacion>${esc(r.descripcion)}</DescripcionOperacion>
+${rectificada}    <DescripcionOperacion>${esc(r.descripcion)}</DescripcionOperacion>
 ${destinatario}    <Desglose>
 ${r.desglose.map(lineaDesglose).join('\n')}
     </Desglose>

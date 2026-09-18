@@ -4629,8 +4629,6 @@ function BillingPendientes({ activa, showToast }) {
   const [cargando, setCargando] = useState(false);
   const [q, setQ] = useState('');                 // buscador de alumnos
   const [campCargos, setCampCargos] = useState([]); // pendientes de campamento (#248), aparte del mes
-  const [preview, setPreview] = useState(null);   // previsualizar la generación (#231)
-  const [generando, setGenerando] = useState(false);
 
   useEffect(() => {
     fetch('/api/admin/billing/mes-a-generar', { credentials: 'include' })
@@ -4664,34 +4662,6 @@ function BillingPendientes({ activa, showToast }) {
     finally { setCargando(false); }
   }, [todos, mesIso]);
   useEffect(() => { cargar(); }, [cargar]);
-
-  // Previsualizar la generación del mes: qué cargos se crearían, sin crear nada
-  // (ticket #231: el botón no hacía nada porque no llamaba a ningún sitio).
-  async function previsualizar() {
-    setPreview({ cargando: true });
-    try {
-      const r = await fetch(`/api/admin/billing/generar/preview?mes=${mesIso}`, { credentials: 'include', cache: 'no-store' });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || 'No se pudo previsualizar.');
-      setPreview(d);
-    } catch (e) { setPreview(null); alert(e.message); }
-  }
-
-  async function generarAhora() {
-    if (!window.confirm(`¿Generar ya los cargos de ${mesLargo(mesIso)}? Solo se crean los que falten: repetirlo no duplica nada.`)) return;
-    setGenerando(true);
-    try {
-      const r = await fetch('/api/admin/billing/generar', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-        body: JSON.stringify({ mes: mesIso }),
-      });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || 'No se pudo generar.');
-      showToast?.(`${d.creados} cargo(s) generados de ${mesLargo(d.mes)}.`);
-      setPreview(null);
-      await cargar();
-    } catch (e) { alert(e.message); } finally { setGenerando(false); }
-  }
 
   const exportarPdfUrl = () => {
     const p = new URLSearchParams();
@@ -4736,7 +4706,8 @@ function BillingPendientes({ activa, showToast }) {
   return (
     <div style={{ display: 'grid', gap: 16 }}>
       <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>
-        Todos los cargos pendientes de cobro. Elige un mes o mira los de todos los meses, y expórtalos a CSV o PDF.
+        Todos los cargos pendientes de cobro. Los cargos del mes se generan solos, sin darle a ningún botón.
+        Elige un mes o mira los de todos los meses, y expórtalos a CSV o PDF.
         En un mes futuro de la temporada verás además la <b>previsión</b>: lo que se cobrará ese mes, todavía sin generar (no es deuda).
       </p>
 
@@ -4762,53 +4733,8 @@ function BillingPendientes({ activa, showToast }) {
           </span>
           <button className="btn btn-sm btn-outline" onClick={exportarCargos} disabled={!cargosF.length && !previsionF.length && !campF.length}><I.Download /> CSV</button>
           <a className="btn btn-sm btn-outline" href={exportarPdfUrl()} target="_blank" rel="noopener noreferrer"><I.Download /> PDF</a>
-          {!todos && <button className="btn btn-sm btn-outline" onClick={previsualizar}>Previsualizar</button>}
         </div>
       </div>
-
-      {/* Previsualizar la generación del mes (ticket #231): qué se crearía, sin
-          crear nada, y el botón para generarlo ya si cuadra. */}
-      {preview && (
-        <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: 16, display: 'grid', gap: 10 }}>
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-            <b style={{ fontSize: 14 }}>Si se generan los cargos de {mesLargo(mesIso)}</b>
-            <div style={{ flex: 1 }} />
-            <button className="icon-btn" onClick={() => setPreview(null)} aria-label="Cerrar"><I.X /></button>
-          </div>
-          {preview.cargando && <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>Calculando...</span>}
-          {!preview.cargando && (
-            <>
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                {[['Se crearían', preview.nuevos], ['Alumnos', preview.totalAlumnos], ['Ya estaban', preview.yaExistian], ['Base', eur(preview.importeBase)]].map(([t, v]) => (
-                  <div key={t} style={{ flex: '1 1 120px', background: 'var(--bg-3)', borderRadius: 10, padding: '8px 12px' }}>
-                    <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--ink-3)' }}>{t}</div>
-                    <div style={{ fontSize: 17, fontWeight: 800 }}>{v}</div>
-                  </div>
-                ))}
-              </div>
-              {preview.detalle?.length > 0 && (
-                <div style={{ display: 'grid', gap: 3, maxHeight: 220, overflowY: 'auto' }}>
-                  {preview.detalle.map((d, i) => (
-                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, padding: '4px 8px', background: 'var(--bg-3)', borderRadius: 8 }}>
-                      <span style={{ fontWeight: 700 }}>{d.nombre}</span>
-                      <span style={{ color: 'var(--ink-3)' }}>{d.concepto} · {eur(d.precio * (1 - (d.descuentoPct || 0) / 100))}{d.descuentoPct ? ` (dto ${d.descuentoPct}%)` : ''}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
-                  Los cargos se generan solos cada poco; esto es para adelantarlo. Repetirlo no duplica nada.
-                </span>
-                <div style={{ flex: 1 }} />
-                <button className="btn btn-sm btn-primary" onClick={generarAhora} disabled={generando || !preview.nuevos}>
-                  {generando ? 'Generando...' : preview.nuevos ? `Generar ${preview.nuevos} cargo(s)` : 'No hay nada que generar'}
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      )}
 
       {cargando && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
       {!cargando && cargosF.length === 0 && previsionF.length === 0 && campF.length === 0 && (
