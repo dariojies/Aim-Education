@@ -1510,8 +1510,43 @@ async function initDb() {
         await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS rect_motivo TEXT`);
         // La numeración es correlativa DENTRO de cada serie, no global.
         await client.query(`ALTER TABLE aim_recibos DROP CONSTRAINT IF EXISTS aim_recibos_numero_key`);
-        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_aim_recibos_serie_numero ON aim_recibos (serie, numero)`);
         await client.query(`CREATE SEQUENCE IF NOT EXISTS aim_recibos_rect_numero_seq START 1`);
+        // ── Series de facturación (ticket #291) ──
+        // Un mismo cobro se reparte en varias facturas, una por bloque fiscal
+        // (material, servicios con IVA, enseñanza exenta), cada una con su serie y
+        // su numeración propia. Y la numeración se reinicia cada ejercicio, así que
+        // el número solo es único dentro de (serie, ejercicio).
+        await client.query(`ALTER TABLE aim_recibos ALTER COLUMN serie TYPE VARCHAR(12)`);
+        await client.query(`ALTER TABLE aim_recibos ADD COLUMN IF NOT EXISTS ejercicio INTEGER`);
+        await client.query(`UPDATE aim_recibos SET ejercicio = EXTRACT(YEAR FROM fecha)::int WHERE ejercicio IS NULL`);
+        await client.query(`DROP INDEX IF EXISTS uq_aim_recibos_serie_numero`);
+        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_aim_recibos_serie_ej_numero ON aim_recibos (serie, ejercicio, numero)`);
+        await client.query(`ALTER TABLE aim_factura_registro ALTER COLUMN serie TYPE VARCHAR(12)`);
+        await client.query(`ALTER TABLE aim_factura_registro ADD COLUMN IF NOT EXISTS ejercicio INTEGER`);
+        await client.query(`UPDATE aim_factura_registro SET ejercicio = EXTRACT(YEAR FROM fecha_expedicion)::int WHERE ejercicio IS NULL`);
+        await client.query(`ALTER TABLE aim_factura_registro DROP CONSTRAINT IF EXISTS aim_factura_registro_serie_numero_key`);
+        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_factura_registro_serie_ej_numero ON aim_factura_registro (serie, ejercicio, numero)`);
+        // Contador de cada serie. Se incrementa DENTRO de la transacción que emite
+        // la factura: si el cobro se cae, el número se devuelve solo y la serie no
+        // queda con un hueco que luego no se sabe explicar (antes venía de una
+        // secuencia, que no se deshace al abortar).
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_serie_contador (
+                serie VARCHAR(12) NOT NULL,
+                ejercicio INTEGER NOT NULL,
+                ultimo INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (serie, ejercicio)
+            )
+        `);
+        // Arranque del contador desde lo ya emitido (las facturas de prueba).
+        await client.query(
+            `INSERT INTO aim_serie_contador (serie, ejercicio, ultimo)
+             SELECT serie, ejercicio, MAX(numero) FROM aim_recibos
+              WHERE serie IS NOT NULL AND ejercicio IS NOT NULL GROUP BY serie, ejercicio
+             ON CONFLICT (serie, ejercicio) DO NOTHING`);
+        // A qué serie factura cada concepto del catálogo. Si va en blanco se
+        // deduce del tipo y del IVA, que es lo que vale para casi todo.
+        await client.query(`ALTER TABLE aim_precios ADD COLUMN IF NOT EXISTS serie_fiscal VARCHAR(12)`);
         // Líneas del rectificativo: son correcciones, no cargos. Se guardan
         // como copia para que el documento quede fijo aunque cambie el original.
         await client.query(`
@@ -2850,45 +2885,28 @@ async function pagadorDe(client, alumnoId) {
     return r.rowCount ? r.rows[0].id : alumnoId;
 }
 
-// Emite el recibo de unos cargos ya pendientes: es el mismo camino que el cobro
-// de mostrador (recibo numerado + registro encadenado de facturación), pero sin
-// la cesta ni los descuentos del TPV, que aquí no pintan nada.
+// Emite las facturas de unos cargos ya pendientes: es el mismo camino que el
+// cobro de mostrador (facturas numeradas por serie + registro encadenado), pero
+// sin la cesta ni los descuentos del TPV, que aquí no pintan nada.
 async function emitirReciboDe(client, { pagadorId, cargoIds, medioPago, userId }) {
     const cs = await client.query(
-        `SELECT c.*, u.name, u.surname FROM aim_cargos c
+        `SELECT c.*, p.serie_fiscal, u.name, u.surname FROM aim_cargos c
          JOIN users u ON u.user_id = c.cliente_id
+         LEFT JOIN aim_precios p ON p.concepto = c.concepto
          WHERE c.id = ANY($1::int[]) AND c.estado = 'pendiente' AND c.recibo_id IS NULL
          FOR UPDATE OF c`, [cargoIds]
     );
     if (cs.rowCount !== cargoIds.length) {
         throw { httP: 409, msg: 'Alguno de los cargos ya no está pendiente. Recarga la pantalla.' };
     }
-    const calc = calcularRecibo(cs.rows.map(cargoParaMotor));
-    const num = (await client.query(`SELECT nextval('aim_recibos_numero_seq') AS n`)).rows[0].n;
-    const rec = await client.query(
-        `INSERT INTO aim_recibos (numero, pagador_id, fecha, importe, medio_pago, entregado, cambio, estado, cobrado_por, cobrado_at)
-         VALUES ($1,$2,(now() AT TIME ZONE 'Europe/Madrid')::date,$3,$4,$3,0,'cobrado',$5,NOW()) RETURNING id, numero, fecha, serie`,
-        [num, pagadorId, calc.total, medioPago, userId]
-    );
-    const reciboId = rec.rows[0].id;
-    for (const d of calc.detalle) {
-        await client.query(
-            `UPDATE aim_cargos SET recibo_id = $1, descuento_mens_pct = $2, importe = $3, estado = 'cobrado' WHERE id = $4`,
-            [reciboId, d.descuentoMensPct, d.base, d.id]
-        );
-    }
-    await descontarStockDeCargos(client, cs.rows, reciboId, userId); // almacén (#250)
-    await crearBonosDeCargos(client, cs.rows, reciboId, userId);     // bonos (#231)
-    const pg = await client.query(`SELECT name, surname FROM users WHERE user_id = $1`, [pagadorId]);
-    await registrarFactura(client, {
-        recibo: { ...rec.rows[0], id: reciboId, serie: rec.rows[0].serie || 'A', tipo: 'normal' },
-        receptor: { nombre: pg.rows[0] ? `${pg.rows[0].name} ${pg.rows[0].surname || ''}`.trim() : null },
-        descripcion: calc.detalle.map(d => d.descripcion).join('; ').slice(0, 500),
-        base: calc.baseTotal, cuota: calc.ivaTotal, total: calc.total,
-        basesPorIva: calc.basesPorIva,
-        userId,
+    const total = calcularRecibo(cs.rows.map(cargoParaMotor)).total;
+    const receptor = await receptorDeFactura(client, pagadorId);
+    exigirNifSiHaceFalta(receptor, total);
+    const { tickets } = await emitirFacturasDeCargos(client, {
+        pagadorId, rows: cs.rows, pagos: [{ medio: medioPago, importe: total }],
+        entregado: total, cambio: 0, userId, receptor,
     });
-    return { reciboId, numero: rec.rows[0].numero, total: calc.total };
+    return { reciboId: tickets[0].reciboId, numero: tickets[0].recibo.numero, total, facturas: tickets.length };
 }
 
 // Admin: listar inscritos de un evento.
@@ -5572,11 +5590,24 @@ app.get('/api/admin/billing/precios', authenticateSession, requireAdmin, async (
             tipo: p.tipo, ivaPct: Number(p.iva_pct), activo: p.activo,
             // Bonos de clases (ticket #231): el concepto dice cuántas clases da.
             esBono: !!p.es_bono, bonoClases: p.bono_clases == null ? null : Number(p.bono_clases),
+            // En qué serie se factura (ticket #291). Si está en blanco, la que le
+            // toque por su tipo y su IVA.
+            serieFiscal: p.serie_fiscal || null,
+            serieEfectiva: serieDeCargo({ serie_fiscal: p.serie_fiscal, tipo: p.tipo, iva_pct: p.iva_pct }),
         })));
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 const TIPOS_CONCEPTO = ['Mensualidad', 'Material', 'Otros'];
+
+// Serie en la que factura un concepto. En blanco = la que le toque por su tipo y
+// su IVA, que es lo que vale para casi todo (ticket #291).
+const serieDelBody = (body) => {
+    const s = String(body?.serieFiscal ?? '').trim();
+    if (!s) return null;
+    if (!SERIES_FACTURA.some(x => x.codigo === s)) return undefined;   // no vale
+    return s;
+};
 
 // Bono de clases: el concepto lleva cuántas clases da (ticket #231).
 const datosBono = (body) => {
@@ -5588,13 +5619,15 @@ const datosBono = (body) => {
 app.post('/api/admin/billing/precios', authenticateSession, requireAdmin, async (req, res) => {
     const { concepto, descripcion, precio, tipo, ivaPct } = req.body;
     const { esBono, clasesBono } = datosBono(req.body);
+    const serieFiscal = serieDelBody(req.body);
+    if (serieFiscal === undefined) return res.status(400).json({ error: 'Esa serie de facturación no existe.' });
     if (!concepto?.trim() || !descripcion?.trim()) return res.status(400).json({ error: 'Código y descripción son obligatorios.' });
     if (!TIPOS_CONCEPTO.includes(tipo)) return res.status(400).json({ error: `Tipo no válido. Debe ser: ${TIPOS_CONCEPTO.join(', ')}.` });
     if (Number(precio) < 0) return res.status(400).json({ error: 'El precio no puede ser negativo.' });
     try {
         await pool.query(
-            `INSERT INTO aim_precios (concepto, descripcion, precio, tipo, iva_pct, es_bono, bono_clases) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-            [concepto.trim(), descripcion.trim(), Number(precio) || 0, tipo, Number(ivaPct) || 0, esBono, clasesBono]
+            `INSERT INTO aim_precios (concepto, descripcion, precio, tipo, iva_pct, es_bono, bono_clases, serie_fiscal) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            [concepto.trim(), descripcion.trim(), Number(precio) || 0, tipo, Number(ivaPct) || 0, esBono, clasesBono, serieFiscal]
         );
         res.status(201).json({ concepto: concepto.trim() });
     } catch (err) {
@@ -5606,6 +5639,8 @@ app.post('/api/admin/billing/precios', authenticateSession, requireAdmin, async 
 app.put('/api/admin/billing/precios/:concepto', authenticateSession, requireAdmin, async (req, res) => {
     const { descripcion, precio, tipo, ivaPct, activo } = req.body;
     const { esBono, clasesBono } = datosBono(req.body);
+    const serieFiscal = serieDelBody(req.body);
+    if (serieFiscal === undefined) return res.status(400).json({ error: 'Esa serie de facturación no existe.' });
     if (!descripcion?.trim()) return res.status(400).json({ error: 'La descripción es obligatoria.' });
     if (!TIPOS_CONCEPTO.includes(tipo)) return res.status(400).json({ error: `Tipo no válido. Debe ser: ${TIPOS_CONCEPTO.join(', ')}.` });
     if (Number(precio) < 0) return res.status(400).json({ error: 'El precio no puede ser negativo.' });
@@ -5613,9 +5648,10 @@ app.put('/api/admin/billing/precios/:concepto', authenticateSession, requireAdmi
         // Cambiar el precio aquí NO altera los cargos ya generados: cada cargo
         // guarda su propio precio congelado.
         const r = await pool.query(
-            `UPDATE aim_precios SET descripcion=$1, precio=$2, tipo=$3, iva_pct=$4, activo=$5, es_bono=$7, bono_clases=$8, updated_at=NOW()
+            `UPDATE aim_precios SET descripcion=$1, precio=$2, tipo=$3, iva_pct=$4, activo=$5, es_bono=$7, bono_clases=$8,
+                    serie_fiscal=$9, updated_at=NOW()
              WHERE concepto=$6 RETURNING concepto`,
-            [descripcion.trim(), Number(precio) || 0, tipo, Number(ivaPct) || 0, activo !== false, req.params.concepto, esBono, clasesBono]
+            [descripcion.trim(), Number(precio) || 0, tipo, Number(ivaPct) || 0, activo !== false, req.params.concepto, esBono, clasesBono, serieFiscal]
         );
         if (r.rowCount === 0) return res.status(404).json({ error: 'Concepto no encontrado.' });
         res.json({ success: true });
@@ -6215,13 +6251,21 @@ async function generarCargosDeMatricula({ userId, claseRef, actividad, temporada
 // ── Ajustes de facturación (ticket #289) ──
 // Día de corte para el alta: hasta ese día se cobra el mes en curso; a partir de
 // él, el mes siguiente. Se guarda en aim_ajustes y se puede cambiar en pantalla.
-let AJUSTES_FACT = { diaCorteAlta: 20 };
+// Y el tope de la factura simplificada (ticket #291): por debajo de ese importe
+// se puede facturar sin identificar al cliente (art. 4 del RD 1619/2012, que lo
+// deja en 400 €; sube a 3.000 € en unas cuantas actividades, entre ellas la
+// "utilización de instalaciones deportivas" — eso lo confirma la gestoría).
+let AJUSTES_FACT = { diaCorteAlta: 20, limiteSimplificada: 400 };
 async function cargarAjustesFacturacion() {
     try {
         const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'facturacion'`);
         const v = r.rows[0]?.valor || {};
         const d = Number(v.diaCorteAlta);
-        AJUSTES_FACT = { diaCorteAlta: Number.isInteger(d) && d >= 1 && d <= 28 ? d : 20 };
+        const lim = Number(v.limiteSimplificada);
+        AJUSTES_FACT = {
+            diaCorteAlta: Number.isInteger(d) && d >= 1 && d <= 28 ? d : 20,
+            limiteSimplificada: lim > 0 && lim <= 3000 ? lim : 400,
+        };
     } catch (e) { console.error('[ajustes facturación]', e.message); }
     return AJUSTES_FACT;
 }
@@ -6234,13 +6278,15 @@ app.get('/api/admin/billing/config', authenticateSession, requireAdmin, async (r
 });
 
 app.put('/api/admin/billing/config', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
-    const d = Number(req.body?.diaCorteAlta);
+    const d = Number(req.body?.diaCorteAlta ?? AJUSTES_FACT.diaCorteAlta);
     if (!Number.isInteger(d) || d < 1 || d > 28) return res.status(400).json({ error: 'El día de corte tiene que estar entre 1 y 28.' });
+    const lim = Number(req.body?.limiteSimplificada ?? AJUSTES_FACT.limiteSimplificada);
+    if (!(lim > 0) || lim > 3000) return res.status(400).json({ error: 'El tope de la factura simplificada tiene que estar entre 1 y 3.000 €.' });
     try {
         await pool.query(
             `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('facturacion', $1::jsonb, NOW(), $2)
              ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
-            [JSON.stringify({ diaCorteAlta: d }), req.userSession.userId]);
+            [JSON.stringify({ diaCorteAlta: d, limiteSimplificada: lim }), req.userSession.userId]);
         await cargarAjustesFacturacion();
         res.json({ success: true, ...AJUSTES_FACT, mesDeAltaHoy: mesParaAlta() });
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -6471,7 +6517,7 @@ app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async
             // Anticipos disponibles de la familia, para poder aplicarlos (ticket #221).
             pool.query(
                 `SELECT a.id, a.cliente_id, a.importe, a.saldo, a.motivo, a.iva_pct, a.created_at, u.name, u.surname,
-                        o.numero AS orig_numero, o.serie AS orig_serie, o.fecha AS orig_fecha
+                        o.numero AS orig_numero, o.serie AS orig_serie, o.ejercicio AS orig_ejercicio, o.fecha AS orig_fecha
                  FROM aim_anticipos a JOIN users u ON u.user_id = a.cliente_id
                  LEFT JOIN aim_recibos o ON o.id = a.recibo_origen_id
                  WHERE a.cliente_id = ANY($1::uuid[]) AND a.estado = 'disponible' AND a.saldo > 0
@@ -6490,7 +6536,7 @@ app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async
                 id: a.id, clienteId: a.cliente_id, nombre: a.name, apellidos: a.surname,
                 importe: Number(a.importe), saldo: Number(a.saldo), motivo: a.motivo, fecha: a.created_at,
                 ivaPct: Number(a.iva_pct) || 0,
-                facturaOrigen: a.orig_numero != null ? numeroVisible({ serie: a.orig_serie, numero: a.orig_numero, fecha: a.orig_fecha }) : null,
+                facturaOrigen: a.orig_numero != null ? numeroVisible({ serie: a.orig_serie, numero: a.orig_numero, ejercicio: a.orig_ejercicio, fecha: a.orig_fecha }) : null,
             })),
             cargos: cargos.rows.map(c => ({
                 id: c.id, clienteId: c.cliente_id, nombre: c.name, apellidos: c.surname,
@@ -6568,17 +6614,19 @@ async function reponerStockDeCargos(client, rows, reciboOrigenId, userId) {
 
 // Emite UNA factura a partir de un conjunto de cargos: número, recibo, desglose
 // del pago, congela los cargos y la anota en el registro encadenado. Devuelve el
-// ticket (con reciboId). Lo usan el cobro normal y el cobro que se parte en dos
-// facturas (con IVA / exenta) del ticket #249.
-async function emitirUnRecibo(client, { pagadorId, rows, pagosG, entregadoG, cambioG, userId, receptorNombre, grupoId = null }) {
+// ticket (con reciboId). Lo usa el cobro, que reparte los cargos entre las series
+// de facturación y llama a esto una vez por serie (ticket #291).
+async function emitirUnRecibo(client, { pagadorId, rows, pagosG, entregadoG, cambioG, userId, receptor, grupoId = null, serie = SERIE_POR_DEFECTO }) {
+    const receptorNombre = receptor?.nombre || null;
     const calc = calcularRecibo(rows.map(cargoParaMotor));
     const total = calc.total;
     const medioResumen = pagosG.length === 1 ? pagosG[0].medio : 'mixto';
-    const num = (await client.query(`SELECT nextval('aim_recibos_numero_seq') AS n`)).rows[0].n;
+    const ejercicio = Number(hoyMadrid().slice(0, 4));
+    const num = await siguienteNumeroSerie(client, serie, ejercicio);
     const rec = await client.query(
-        `INSERT INTO aim_recibos (numero, pagador_id, fecha, importe, medio_pago, entregado, cambio, estado, cobrado_por, cobrado_at, factura_grupo)
-         VALUES ($1,$2,(now() AT TIME ZONE 'Europe/Madrid')::date,$3,$4,$5,$6,'cobrado',$7,NOW(),$8) RETURNING id, numero, fecha, serie`,
-        [num, pagadorId, total, medioResumen, entregadoG, cambioG, userId, grupoId]
+        `INSERT INTO aim_recibos (numero, serie, ejercicio, pagador_id, fecha, importe, medio_pago, entregado, cambio, estado, cobrado_por, cobrado_at, factura_grupo)
+         VALUES ($1,$2,$3,$4,(now() AT TIME ZONE 'Europe/Madrid')::date,$5,$6,$7,$8,'cobrado',$9,NOW(),$10) RETURNING id, numero, serie, ejercicio, fecha`,
+        [num, serie, ejercicio, pagadorId, total, medioResumen, entregadoG, cambioG, userId, grupoId]
     );
     const reciboId = rec.rows[0].id;
     for (const p of pagosG) {
@@ -6593,9 +6641,9 @@ async function emitirUnRecibo(client, { pagadorId, rows, pagosG, entregadoG, cam
     // Descontar del almacén lo que se vende (ticket #250), por concepto.
     await descontarStockDeCargos(client, rows, reciboId, userId);
     await crearBonosDeCargos(client, rows, reciboId, userId);
-    await registrarFactura(client, {
-        recibo: { ...rec.rows[0], id: reciboId, serie: rec.rows[0].serie || 'A', tipo: 'normal' },
-        receptor: { nombre: receptorNombre },
+    const reg = await registrarFactura(client, {
+        recibo: { ...rec.rows[0], id: reciboId, serie: rec.rows[0].serie, tipo: 'normal' },
+        receptor,
         descripcion: calc.detalle.map(d => d.descripcion).join('; ').slice(0, 500),
         base: calc.baseTotal, cuota: calc.ivaTotal, total,
         basesPorIva: calc.basesPorIva,
@@ -6605,6 +6653,7 @@ async function emitirUnRecibo(client, { pagadorId, rows, pagosG, entregadoG, cam
         reciboId,
         recibo: {
             id: reciboId, numero: rec.rows[0].numero, fecha: rec.rows[0].fecha,
+            serie: rec.rows[0].serie, numeroVisible: reg.numSerie, tipoFactura: reg.tipoFactura,
             pagador: receptorNombre || '', medioPago: medioResumen, pagos: pagosG,
             entregado: entregadoG, cambio: cambioG, total,
         },
@@ -6618,9 +6667,9 @@ async function emitirUnRecibo(client, { pagadorId, rows, pagosG, entregadoG, cam
     };
 }
 
-// Junta dos facturas (con IVA + exenta, ticket #249) en un único ticket para el
-// cliente: mezcla las líneas y las bases, suma los totales y deja constancia de
-// los dos números de factura vinculados (que son cosa nuestra, no del cliente).
+// Junta las facturas de un mismo cobro (una por serie, ticket #291) en un único
+// ticket para el cliente: mezcla las líneas y las bases, suma los totales y deja
+// constancia de los números vinculados (que son cosa nuestra, no del cliente).
 function combinarTickets(tickets, { pagos, entregado, cambio, total, medioResumen, receptorNombre }) {
     const primero = tickets[0];
     const gruposIva = new Map();
@@ -6641,8 +6690,12 @@ function combinarTickets(tickets, { pagos, entregado, cambio, total, medioResume
         baseTotal: r2Server(tickets.reduce((s, t) => s + t.baseTotal, 0)),
         ivaTotal: r2Server(tickets.reduce((s, t) => s + t.ivaTotal, 0)),
         ahorro: r2Server(tickets.reduce((s, t) => s + t.ahorro, 0)),
-        // Las dos facturas vinculadas (para nosotros; el cliente ve todo junto).
-        facturas: tickets.map(t => ({ id: t.recibo.id, numero: t.recibo.numero, total: t.recibo.total, conIva: t.ivaTotal > 0 })),
+        // Las facturas vinculadas (para nosotros; el cliente ve todo junto).
+        facturas: tickets.map(t => ({
+            id: t.recibo.id, numero: t.recibo.numero, numeroVisible: t.recibo.numeroVisible,
+            serie: t.recibo.serie, serieNombre: SERIES_FACTURA.find(s => s.codigo === t.recibo.serie)?.nombre || t.recibo.serie,
+            tipoFactura: t.recibo.tipoFactura, total: t.recibo.total, conIva: t.ivaTotal > 0,
+        })),
         empresa: EMPRESA_TICKET,
     };
 }
@@ -6755,7 +6808,7 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
                 // (ticket #238), para arrastrar el IVA y mostrar el nº en el ticket.
                 const a = await client.query(
                     `SELECT an.id, an.cliente_id, an.saldo, an.motivo, an.iva_pct,
-                            o.numero AS orig_numero, o.serie AS orig_serie, o.fecha AS orig_fecha
+                            o.numero AS orig_numero, o.serie AS orig_serie, o.ejercicio AS orig_ejercicio, o.fecha AS orig_fecha
                      FROM aim_anticipos an
                      LEFT JOIN aim_recibos o ON o.id = an.recibo_origen_id
                      WHERE an.id = $1 AND an.cliente_id = ANY($2::uuid[]) AND an.estado = 'disponible' FOR UPDATE OF an`,
@@ -6769,7 +6822,7 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
                 const motivo = anRow.motivo ? ` — ${anRow.motivo}` : '';
                 // Nº de la factura donde se abonó el anticipo, p. ej. "Factura 202600005".
                 const factOrigen = anRow.orig_numero != null
-                    ? ` · Factura ${numeroVisible({ serie: anRow.orig_serie, numero: anRow.orig_numero, fecha: anRow.orig_fecha })}`
+                    ? ` · Factura ${numeroVisible({ serie: anRow.orig_serie, numero: anRow.orig_numero, ejercicio: anRow.orig_ejercicio, fecha: anRow.orig_fecha })}`
                     : '';
                 // Base que, grosada de vuelta, da el importe aplicado exacto (#243).
                 const baseAplic = baseExactaDesdeBruto(imp, ivaAnt); // el IVA lo pone el motor
@@ -6801,8 +6854,13 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
             };
         }
 
+        // Se trae también a qué serie factura cada concepto (ticket #291), para
+        // poder repartir el cobro entre las facturas que toquen.
         const cs = await client.query(
-            `SELECT * FROM aim_cargos WHERE id = ANY($1::int[]) AND estado = 'pendiente' AND recibo_id IS NULL FOR UPDATE`,
+            `SELECT c.*, p.serie_fiscal FROM aim_cargos c
+             LEFT JOIN aim_precios p ON p.concepto = c.concepto
+             WHERE c.id = ANY($1::int[]) AND c.estado = 'pendiente' AND c.recibo_id IS NULL
+             FOR UPDATE OF c`,
             [allIds]
         );
         if (cs.rowCount === 0) throw { httP: 409, msg: 'Los cargos ya no están disponibles.' };
@@ -6850,85 +6908,45 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
             pagos = [{ medio: medioPago, importe: total }];
         }
 
-        // Nombre del pagador (para el ticket y la factura).
-        const pg = await client.query(`SELECT name, surname FROM users WHERE user_id = $1`, [pagadorId]);
-        const receptorNombre = pg.rows[0] ? `${pg.rows[0].name} ${pg.rows[0].surname || ''}`.trim() : null;
+        // Datos del pagador para el ticket y para la factura.
+        const receptor = await receptorDeFactura(client, pagadorId);
+        const receptorNombre = receptor.nombre;
         const userId = req.userSession.userId;
+        exigirNifSiHaceFalta(receptor, total);
 
-        // 5) ¿Se parte en DOS facturas, con IVA y exenta? (ticket #249). Para el
-        // cliente es UN solo cobro (ticket con todo junto), pero como entidad
-        // emitimos dos facturas VINCULADAS para justificar por separado ante
-        // Hacienda. Solo en cobros normales: con anticipos o bonos va en una sola.
-        const conIvaRows = cs.rows.filter(c => Number(c.iva_pct) > 0);
-        const exentoRows = cs.rows.filter(c => !(Number(c.iva_pct) > 0));
-        const sinExtras = anticiposNuevos.length === 0 && aplicaciones.length === 0;
-        let calcConIva = null, calcExento = null;
-        if (sinExtras && conIvaRows.length && exentoRows.length) {
-            calcConIva = calcularRecibo(conIvaRows.map(cargoParaMotor));
-            calcExento = calcularRecibo(exentoRows.map(cargoParaMotor));
+        // 5) Reparto en facturas por serie (ticket #291). Para la familia es UN solo
+        // cobro —un ticket con todo junto—, pero como entidad emitimos una factura
+        // por bloque fiscal (material, servicios con IVA, enseñanza exenta), todas
+        // vinculadas entre sí, para poder justificar cada cosa por separado.
+        const { tickets, reciboDeCargo } = await emitirFacturasDeCargos(client, {
+            pagadorId, rows: cs.rows, pagos, entregado: entregadoNum, cambio, userId, receptor,
+        });
+
+        // 6b) Anticipos (ticket #221): anotar los nuevos con su saldo y descontar
+        // de los aplicados, dejando rastro en el ledger para no contarlos dos veces.
+        // Cada uno se apunta a la factura donde ha caído su línea, que con el
+        // reparto por series ya no tiene por qué ser la única del cobro.
+        for (const n of anticiposNuevos) {
+            await client.query(
+                `INSERT INTO aim_anticipos (cliente_id, importe, saldo, motivo, recibo_origen_id, estado, created_by, iva_pct)
+                 VALUES ($1,$2,$2,$3,$4,'disponible',$5,$6)`,
+                [n.clienteId, n.importe, n.motivo || null, reciboDeCargo.get(n.cargoId) || tickets[0].reciboId, userId, n.ivaPct || 0]
+            );
         }
-        const splitear = calcConIva && calcExento && calcConIva.total > 0 && calcExento.total > 0;
-
-        let tickets;
-        if (splitear) {
-            const grupoId = crypto.randomUUID();
-            const grupos = [
-                { rows: conIvaRows, total: calcConIva.total },
-                { rows: exentoRows, total: calcExento.total },
-            ];
-            // Reparto de los pagos entre las dos facturas, en proporción a su total;
-            // el último grupo se lleva el remanente para que las sumas cuadren.
-            const restante = pagos.map(p => ({ medio: p.medio, importe: p.importe }));
-            tickets = [];
-            for (let gi = 0; gi < grupos.length; gi++) {
-                const g = grupos[gi];
-                let pagosG;
-                if (gi === grupos.length - 1) {
-                    pagosG = restante.map(p => ({ medio: p.medio, importe: r2Server(p.importe) })).filter(p => p.importe > 0);
-                } else {
-                    pagosG = pagos.map((p, pi) => {
-                        const parte = r2Server(p.importe * g.total / total);
-                        restante[pi].importe = r2Server(restante[pi].importe - parte);
-                        return { medio: p.medio, importe: parte };
-                    }).filter(p => p.importe > 0);
-                }
-                if (!pagosG.length) pagosG = [{ medio: pagos[0].medio, importe: g.total }];
-                tickets.push(await emitirUnRecibo(client, {
-                    pagadorId, rows: g.rows, pagosG, entregadoG: g.total, cambioG: 0,
-                    userId, receptorNombre, grupoId,
-                }));
-            }
-        } else {
-            const t = await emitirUnRecibo(client, {
-                pagadorId, rows: cs.rows, pagosG: pagos, entregadoG: entregadoNum, cambioG: cambio,
-                userId, receptorNombre,
-            });
-            tickets = [t];
-            const reciboId = t.reciboId;
-            // 6b) Anticipos (ticket #221): anotar los nuevos con su saldo y descontar
-            // de los aplicados, dejando rastro en el ledger para no contarlos dos veces.
-            for (const n of anticiposNuevos) {
-                await client.query(
-                    `INSERT INTO aim_anticipos (cliente_id, importe, saldo, motivo, recibo_origen_id, estado, created_by, iva_pct)
-                     VALUES ($1,$2,$2,$3,$4,'disponible',$5,$6)`,
-                    [n.clienteId, n.importe, n.motivo || null, reciboId, userId, n.ivaPct || 0]
-                );
-            }
-            for (const ap of aplicaciones) {
-                const upd = await client.query(
-                    `UPDATE aim_anticipos
-                        SET saldo = saldo - $2,
-                            estado = CASE WHEN saldo - $2 <= 0.005 THEN 'consumido' ELSE 'disponible' END
-                      WHERE id = $1 RETURNING saldo`,
-                    [ap.anticipoId, ap.importe]
-                );
-                if (!upd.rowCount || Number(upd.rows[0].saldo) < -0.005) throw { httP: 409, msg: 'El saldo de un anticipo cambió mientras se cobraba. Refresca e inténtalo de nuevo.' };
-                await client.query(
-                    `INSERT INTO aim_anticipos_aplicaciones (anticipo_id, recibo_id, cargo_id, importe)
-                     VALUES ($1,$2,$3,$4)`,
-                    [ap.anticipoId, reciboId, ap.cargoId, ap.importe]
-                );
-            }
+        for (const ap of aplicaciones) {
+            const upd = await client.query(
+                `UPDATE aim_anticipos
+                    SET saldo = saldo - $2,
+                        estado = CASE WHEN saldo - $2 <= 0.005 THEN 'consumido' ELSE 'disponible' END
+                  WHERE id = $1 RETURNING saldo`,
+                [ap.anticipoId, ap.importe]
+            );
+            if (!upd.rowCount || Number(upd.rows[0].saldo) < -0.005) throw { httP: 409, msg: 'El saldo de un anticipo cambió mientras se cobraba. Refresca e inténtalo de nuevo.' };
+            await client.query(
+                `INSERT INTO aim_anticipos_aplicaciones (anticipo_id, recibo_id, cargo_id, importe)
+                 VALUES ($1,$2,$3,$4)`,
+                [ap.anticipoId, reciboDeCargo.get(ap.cargoId) || tickets[0].reciboId, ap.cargoId, ap.importe]
+            );
         }
 
         await client.query('COMMIT');
@@ -6955,30 +6973,186 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
 // es configurable desde Ajustes de facturación y no está incrustado aquí:
 //   prefijo + (año si lleva) + secuencial rellenado a 'digitos'.
 // Mientras no se configure, se sigue viendo como hasta ahora (1, 2, R-1...).
+// ── Series de facturación (ticket #291) ─────────────────────────────────────
+// Un cobro es UNO para la familia, pero para Hacienda se reparte en varias
+// facturas, cada una en su serie, según qué se está vendiendo:
+//   MAT  entregas de bienes (material, equipación), siempre con IVA
+//   IVA  servicios sujetos y no exentos (robótica, campamentos, eventos…)
+//   SIVA enseñanza exenta del artículo 20.Uno.9º de la Ley del IVA
+// Cada una con su numeración correlativa e independiente, que es lo que pide el
+// artículo 6.1.a del RD 1619/2012. Las rectificativas van en serie aparte (eso
+// sí es obligatorio), y una por cada serie: rectificar una factura exenta no
+// puede acabar en el mismo saco que rectificar una de material.
+const SERIES_FACTURA = [
+    { codigo: 'MAT', nombre: 'Material y venta de bienes', rect: 'MATR', bloque: 'Entregas de bienes sujetas al 21 %' },
+    { codigo: 'IVA', nombre: 'Servicios con IVA', rect: 'IVAR', bloque: 'Prestaciones de servicios sujetas y no exentas' },
+    { codigo: 'SIVA', nombre: 'Enseñanza exenta de IVA', rect: 'SIVAR', bloque: 'Exentas por el art. 20.Uno.9º de la Ley 37/1992' },
+];
+const SERIE_POR_DEFECTO = 'SIVA';
+// Todas las series, incluidas las rectificativas, en el orden en que se enseñan.
+const TODAS_LAS_SERIES = [
+    ...SERIES_FACTURA.map(s => ({ codigo: s.codigo, nombre: s.nombre, bloque: s.bloque, rectificaDe: null })),
+    ...SERIES_FACTURA.map(s => ({ codigo: s.rect, nombre: `Rectificativas · ${s.nombre}`, bloque: `Corrigen facturas de la serie ${s.codigo}`, rectificaDe: s.codigo })),
+];
+const SERIE_RECTIFICATIVA = Object.fromEntries(SERIES_FACTURA.map(s => [s.codigo, s.rect]));
+const esSerieRectificativa = (serie) => TODAS_LAS_SERIES.some(s => s.codigo === serie && s.rectificaDe);
+
+// Formato del número de cada serie: prefijo + año + separador + secuencial.
+// 'anio' es 'no', '2' o '4' (cuántas cifras del año entran en el número).
+const formatoDe = (prefijo) => ({ prefijo, anio: '2', sep: '-', digitos: 5 });
 let FORMATO_NUMERACION = {
-    A: { prefijo: '', anio: false, digitos: 0 },
-    R: { prefijo: 'R-', anio: false, digitos: 0 },
+    // Las dos de antes de las series, para que las facturas ya emitidas se sigan
+    // viendo igual que el día que se emitieron.
+    A: { prefijo: '', anio: 'no', sep: '', digitos: 0 },
+    R: { prefijo: 'R-', anio: 'no', sep: '', digitos: 0 },
+    MAT: formatoDe('AimMat'), IVA: formatoDe('AimIVA'), SIVA: formatoDe('AimSIVA'),
+    MATR: formatoDe('AimMatR'), IVAR: formatoDe('AimIVAR'), SIVAR: formatoDe('AimSIVAR'),
 };
+
+// Lo guardado puede venir del formato viejo, donde 'anio' era un sí/no.
+const normalizaFormato = (f = {}) => ({
+    prefijo: String(f.prefijo ?? ''),
+    anio: f.anio === true ? '4' : (['no', '2', '4'].includes(String(f.anio)) ? String(f.anio) : 'no'),
+    sep: String(f.sep ?? ''),
+    digitos: Math.min(12, Math.max(0, Number(f.digitos) || 0)),
+});
 
 async function cargarFormatoNumeracion() {
     try {
         const r = await pool.query("SELECT valor FROM aim_ajustes WHERE clave = 'numeracion'");
-        if (r.rowCount) FORMATO_NUMERACION = { ...FORMATO_NUMERACION, ...r.rows[0].valor };
+        if (r.rowCount) {
+            for (const [serie, f] of Object.entries(r.rows[0].valor || {})) {
+                FORMATO_NUMERACION[serie] = normalizaFormato(f);
+            }
+        }
     } catch { /* si aún no existe la tabla, se usa el formato de siempre */ }
 }
 
 const numeroVisible = (rec) => {
-    const f = FORMATO_NUMERACION[rec.serie === 'R' ? 'R' : 'A'] || {};
-    const anio = f.anio ? new Date(rec.fecha || Date.now()).getFullYear() : '';
+    const f = FORMATO_NUMERACION[rec.serie] || FORMATO_NUMERACION.A;
+    const ej = rec.ejercicio || new Date(rec.fecha || Date.now()).getFullYear();
+    const anio = f.anio === '4' ? String(ej) : f.anio === '2' ? String(ej).slice(-2) : '';
     const sec = f.digitos > 0 ? String(rec.numero).padStart(f.digitos, '0') : String(rec.numero);
-    return `${f.prefijo ?? ''}${anio}${sec}`;
+    return `${f.prefijo ?? ''}${anio}${anio ? (f.sep ?? '') : ''}${sec}`;
 };
+
+// El siguiente número de una serie, dentro de la misma transacción que emite la
+// factura. Si la transacción se deshace, el contador vuelve atrás con ella: la
+// serie nunca se queda con un salto.
+async function siguienteNumeroSerie(client, serie, ejercicio) {
+    const r = await client.query(
+        `INSERT INTO aim_serie_contador (serie, ejercicio, ultimo) VALUES ($1, $2, 1)
+         ON CONFLICT (serie, ejercicio) DO UPDATE SET ultimo = aim_serie_contador.ultimo + 1
+         RETURNING ultimo`,
+        [serie, ejercicio]
+    );
+    return Number(r.rows[0].ultimo);
+}
+
+// A qué serie va un cargo. Manda lo que diga su concepto del catálogo; si no lo
+// dice, se deduce: el material es entrega de bienes, y del resto separa el IVA.
+const serieDeCargo = (c) => {
+    const fijada = (c.serie_fiscal || '').trim();
+    if (fijada && TODAS_LAS_SERIES.some(s => s.codigo === fijada && !s.rectificaDe)) return fijada;
+    if (c.tipo === 'Material') return 'MAT';
+    return Number(c.iva_pct ?? c.ivaPct) > 0 ? 'IVA' : SERIE_POR_DEFECTO;
+};
+
+// Los datos del pagador que van en la factura. El NIF es lo que decide si puede
+// ser completa (F1) o tiene que ir simplificada (F2).
+async function receptorDeFactura(client, pagadorId) {
+    const r = await client.query(
+        `SELECT name, surname, dni, domicilio, cp, poblacion FROM users WHERE user_id = $1`, [pagadorId]);
+    const u = r.rows[0] || null;
+    return {
+        nombre: u ? `${u.name} ${u.surname || ''}`.trim() : null,
+        nif: (u?.dni || '').trim() || null,
+        domicilio: u?.domicilio || null, cp: u?.cp || null, poblacion: u?.poblacion || null,
+    };
+}
+
+// Reparte unos cargos entre las series de facturación y emite UNA factura por
+// serie (ticket #291), todas vinculadas por el mismo grupo. Es el único camino
+// por el que se emiten facturas: mostrador, pago por internet y cobro de cargos
+// sueltos pasan todos por aquí, así que las tres siguen la misma regla.
+async function emitirFacturasDeCargos(client, { pagadorId, rows, pagos, entregado, cambio, userId, receptor }) {
+    const total = calcularRecibo(rows.map(cargoParaMotor)).total;
+    const porSerie = new Map();
+    for (const c of rows) {
+        const s = serieDeCargo(c);
+        if (!porSerie.has(s)) porSerie.set(s, []);
+        porSerie.get(s).push(c);
+    }
+    const grupos = SERIES_FACTURA.map(s => s.codigo).filter(s => porSerie.has(s)).map(serie => {
+        const filas = porSerie.get(serie);
+        return { serie, rows: filas, total: calcularRecibo(filas.map(cargoParaMotor)).total };
+    });
+    // Un anticipo descuenta de la serie que le corresponde por su IVA. Si se
+    // aplica contra algo de otra serie, esa factura saldría en negativo: se avisa
+    // en vez de emitir un disparate.
+    const negativa = grupos.find(g => g.total < -0.005);
+    if (negativa) {
+        const nombre = SERIES_FACTURA.find(s => s.codigo === negativa.serie)?.nombre || negativa.serie;
+        throw {
+            httP: 400,
+            msg: 'El anticipo que estás aplicando no es del mismo tipo de IVA que lo que se cobra: dejaría en negativo '
+                + `la factura de «${nombre}». Un anticipo solo puede descontar de lo que sea de su mismo tipo.`,
+        };
+    }
+
+    const grupoId = grupos.length > 1 ? crypto.randomUUID() : null;
+    // Reparto de los pagos entre las facturas, en proporción a su total; la
+    // última se lleva el remanente para que las sumas cuadren al céntimo.
+    const restante = pagos.map(p => ({ medio: p.medio, importe: p.importe }));
+    const tickets = [];
+    for (let gi = 0; gi < grupos.length; gi++) {
+        const g = grupos[gi];
+        let pagosG;
+        if (grupos.length === 1) {
+            pagosG = pagos;
+        } else if (gi === grupos.length - 1) {
+            pagosG = restante.map(p => ({ medio: p.medio, importe: r2Server(p.importe) })).filter(p => p.importe > 0);
+        } else {
+            pagosG = pagos.map((p, pi) => {
+                const parte = total > 0 ? r2Server(p.importe * g.total / total) : 0;
+                restante[pi].importe = r2Server(restante[pi].importe - parte);
+                return { medio: p.medio, importe: parte };
+            }).filter(p => p.importe > 0);
+        }
+        if (!pagosG.length) pagosG = [{ medio: pagos[0].medio, importe: g.total }];
+        tickets.push(await emitirUnRecibo(client, {
+            pagadorId, rows: g.rows, pagosG, serie: g.serie,
+            entregadoG: grupos.length === 1 ? entregado : g.total,
+            cambioG: grupos.length === 1 ? cambio : 0,
+            userId, receptor, grupoId,
+        }));
+    }
+    // Para poder anotar cada anticipo en la factura donde ha caído su línea.
+    const reciboDeCargo = new Map();
+    grupos.forEach((g, i) => g.rows.forEach(r => reciboDeCargo.set(r.id, tickets[i].reciboId)));
+    return { tickets, reciboDeCargo, total };
+}
+
+// Sin NIF solo se puede facturar por debajo del tope de la simplificada, y se
+// mira contra el TOTAL del cobro, no contra cada factura: partir un cobro en
+// varias para colarse por debajo del tope sería justo lo que no se puede hacer,
+// y no queremos ni que lo parezca.
+function exigirNifSiHaceFalta(receptor, total) {
+    const tope = Number(AJUSTES_FACT.limiteSimplificada);
+    if (receptor?.nif || total <= tope + 0.005) return;
+    throw {
+        httP: 400,
+        msg: `Para cobrar ${Number(total).toFixed(2)} € hace falta el NIF de ${receptor?.nombre || 'la persona que paga'}: `
+            + `por encima de ${tope.toFixed(2)} € la factura tiene que ser completa. Añádelo en su ficha y vuelve a intentarlo.`,
+    };
+}
 
 // Monta el objeto de ticket (mismo formato que devuelve el cobro).
 async function ticketDeRecibo(reciboId) {
     const r = await pool.query(
         `SELECT rc.*, u.name, u.surname, u.dni, u.domicilio, u.cp, u.poblacion,
-                o.numero AS orig_numero, o.serie AS orig_serie, o.fecha AS orig_fecha
+                o.numero AS orig_numero, o.serie AS orig_serie, o.ejercicio AS orig_ejercicio, o.fecha AS orig_fecha,
+                (SELECT fr.tipo_factura FROM aim_factura_registro fr WHERE fr.recibo_id = rc.id ORDER BY fr.id LIMIT 1) AS tipo_factura
          FROM aim_recibos rc
          LEFT JOIN users u ON u.user_id = rc.pagador_id
          LEFT JOIN aim_recibos o ON o.id = rc.rectifica_id
@@ -7032,7 +7206,9 @@ async function ticketDeRecibo(reciboId) {
     const pg = await pool.query(`SELECT medio, importe FROM aim_recibo_pagos WHERE recibo_id = $1 ORDER BY id`, [reciboId]);
     return {
         recibo: {
-            id: rec.id, numero: numeroVisible(rec), serie: rec.serie, tipo: rec.tipo, fecha: rec.fecha,
+            id: rec.id, numero: numeroVisible(rec), numeroVisible: numeroVisible(rec),
+            serie: rec.serie, serieNombre: TODAS_LAS_SERIES.find(x => x.codigo === rec.serie)?.nombre || null,
+            ejercicio: rec.ejercicio, tipo: rec.tipo, tipoFactura: rec.tipo_factura || 'F1', fecha: rec.fecha,
             pagador: rec.name ? `${rec.name} ${rec.surname || ''}`.trim() : '(sin pagador)',
             // Datos fiscales de quien recibe la factura, que la ley exige.
             pagadorDni: rec.dni || null,
@@ -7043,7 +7219,8 @@ async function ticketDeRecibo(reciboId) {
             total: Number(rec.importe ?? 0), estado: rec.estado,
             anuladoMotivo: rec.anulado_motivo, anuladoAt: rec.anulado_at,
             rectMetodo: rec.rect_metodo, rectMotivo: rec.rect_motivo,
-            rectificaNumero: rec.orig_numero == null ? null : numeroVisible({ serie: rec.orig_serie, numero: rec.orig_numero }),
+            rectificaNumero: rec.orig_numero == null ? null
+                : numeroVisible({ serie: rec.orig_serie, numero: rec.orig_numero, ejercicio: rec.orig_ejercicio, fecha: rec.orig_fecha }),
             rectificaFecha: rec.orig_fecha,
         },
         detalle,
@@ -7069,7 +7246,7 @@ app.get('/api/admin/billing/recibos', authenticateSession, requireAdmin, async (
     try {
         const r = await pool.query(
             `SELECT rc.*, u.name, u.surname,
-                    o.numero AS orig_numero, o.serie AS orig_serie,
+                    o.numero AS orig_numero, o.serie AS orig_serie, o.ejercicio AS orig_ejercicio, o.fecha AS orig_fecha_v,
                     (SELECT COUNT(*) FROM aim_cargos c WHERE c.recibo_id = rc.id)::int
                       + (SELECT COUNT(*) FROM aim_recibo_rect_lineas l WHERE l.recibo_id = rc.id)::int AS n_lineas
              FROM aim_recibos rc
@@ -7086,7 +7263,7 @@ app.get('/api/admin/billing/recibos', authenticateSession, requireAdmin, async (
             importe: Number(rc.importe ?? 0), medioPago: rc.medio_pago, estado: rc.estado,
             nLineas: rc.n_lineas, anuladoMotivo: rc.anulado_motivo,
             rectMotivo: rc.rect_motivo, rectMetodo: rc.rect_metodo,
-            rectificaNumero: rc.orig_numero == null ? null : numeroVisible({ serie: rc.orig_serie, numero: rc.orig_numero }),
+            rectificaNumero: rc.orig_numero == null ? null : numeroVisible({ serie: rc.orig_serie, numero: rc.orig_numero, ejercicio: rc.orig_ejercicio, fecha: rc.orig_fecha_v }),
         })));
     } catch (err) {
         console.error('Error listando recibos:', err);
@@ -7131,12 +7308,20 @@ async function registrarFactura(client, { recibo, receptor, descripcion, base, c
     // El bloqueo evita que dos cobros a la vez se encadenen del mismo eslabón.
     await client.query('LOCK TABLE aim_factura_registro IN EXCLUSIVE MODE');
     const prev = await client.query(`SELECT huella FROM aim_factura_registro ORDER BY id DESC LIMIT 1`);
+    // Completa (F1) o simplificada (F2). Una factura completa tiene que llevar los
+    // datos del destinatario; sin NIF la AEAT la rechaza, así que cuando no lo hay
+    // y el importe está por debajo del tope, se emite simplificada, que es
+    // justo para lo que existe. Una rectificativa hereda el tipo de la que
+    // corrige: R1 si corrige una completa, R5 si corrige una simplificada.
+    const tipoFactura = recibo.tipo === 'rectificativo'
+        ? (original?.tipoFactura === 'F2' ? 'R5' : 'R1')
+        : (receptor?.nif ? 'F1' : 'F2');
     const fila = {
         nif_emisor: EMPRESA_TICKET.nif,
         serie: recibo.serie, numero: recibo.numero,
+        ejercicio: recibo.ejercicio || Number(String(recibo.fecha).slice(0, 4)),
         fecha_expedicion: String(recibo.fecha).slice(0, 10),
-        // F1 factura completa; R1 rectificativa por error fundado en derecho.
-        tipo_factura: recibo.tipo === 'rectificativo' ? 'R1' : 'F1',
+        tipo_factura: tipoFactura,
         cuota, total,
         huella_anterior: prev.rows[0]?.huella || null,
         emitido_at: new Date().toISOString(),
@@ -7167,6 +7352,9 @@ async function registrarFactura(client, { recibo, receptor, descripcion, base, c
         nifEmisor: fila.nif_emisor, nombreEmisor: EMPRESA_TICKET.nombre, numSerie, fechaExpedicion: fechaExp,
         tipoFactura: fila.tipo_factura, descripcion: (descripcion || 'Servicios y material del club').slice(0, 500),
         receptorNombre: receptor?.nombre || null, receptorNif: receptor?.nif || null,
+        // Marca de "factura sin identificación del destinatario": la AEAT solo la
+        // admite en F2 y R5, y es la que evita el tope de 3.000 € (error 1150).
+        sinDestinatario: ['F2', 'R5'].includes(tipoFactura),
         desglose, cuotaTotal: cuota, importeTotal: total,
         huellaAnterior: ant?.huella_aeat || null, anteriorNif: ant?.nif_emisor || null,
         anteriorNumSerie: ant?.num_serie || null, anteriorFecha: ant ? verifactu.fechaAEAT(ant.fecha) : null,
@@ -7174,7 +7362,7 @@ async function registrarFactura(client, { recibo, receptor, descripcion, base, c
         // diferencias, S = por sustitución).
         rectificaA: original ? {
             nif: fila.nif_emisor,
-            numSerie: numeroVisible({ serie: original.serie, numero: original.numero, fecha: original.fecha }),
+            numSerie: numeroVisible({ serie: original.serie, numero: original.numero, ejercicio: original.ejercicio, fecha: original.fecha }),
             fecha: verifactu.fechaAEAT(original.fecha),
         } : null,
         tipoRectificativa: original?.metodo === 'sustitucion' ? 'S' : 'I',
@@ -7186,16 +7374,16 @@ async function registrarFactura(client, { recibo, receptor, descripcion, base, c
     });
     const r = await client.query(
         `INSERT INTO aim_factura_registro
-           (recibo_id, tipo_factura, serie, numero, fecha_expedicion, nif_emisor, nombre_emisor,
+           (recibo_id, tipo_factura, serie, ejercicio, numero, fecha_expedicion, nif_emisor, nombre_emisor,
             nif_receptor, nombre_receptor, descripcion, base, cuota, total,
             rectifica_serie, rectifica_numero, rectifica_fecha,
             huella_anterior, huella, software_nombre, software_version, emitido_por, emitido_at,
             num_serie, huella_aeat, huella_aeat_anterior, fecha_hora_huso, desglose, xml, qr_url,
             estado_envio, modo, entorno)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
-                 $23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
+                 $23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
          RETURNING id`,
-        [recibo.id, fila.tipo_factura, fila.serie, fila.numero, fila.fecha_expedicion,
+        [recibo.id, fila.tipo_factura, fila.serie, fila.ejercicio, fila.numero, fila.fecha_expedicion,
          fila.nif_emisor, EMPRESA_TICKET.nombre,
          receptor?.nif || null, receptor?.nombre || null, descripcion || null,
          base, cuota, total,
@@ -7211,7 +7399,7 @@ async function registrarFactura(client, { recibo, receptor, descripcion, base, c
          VALUES ($1,$2,$3,$4,$5)`,
         ['alta_factura', r.rows[0].id, recibo.id, `${fila.serie}-${fila.numero} · ${Number(total).toFixed(2)} €`, userId || null]
     );
-    return { id: r.rows[0].id, huella: fila.huella, huellaAeat, qrUrl, numSerie };
+    return { id: r.rows[0].id, huella: fila.huella, huellaAeat, qrUrl, numSerie, tipoFactura };
 }
 
 // ── Ajustes y envío de VERI*FACTU (ticket #232) ─────────────────────────────
@@ -7394,12 +7582,17 @@ async function emitirRectificativa(client, { orig, quitadas, quedan, metodo, mot
     const importe = r2Server(lineas.reduce((s, l) =>
         s + (l.bruto != null ? l.bruto : l.base * (1 + Number(l.c.iva_pct) / 100)), 0));
 
-    const num = (await client.query(`SELECT nextval('aim_recibos_rect_numero_seq') AS n`)).rows[0].n;
+    // Cada serie tiene la suya (ticket #291): rectificar una factura exenta no
+    // puede acabar en el mismo saco que rectificar una de material.
+    const serieRect = SERIE_RECTIFICATIVA[orig.serie] || 'R';
+    const ejercicio = Number(hoyMadrid().slice(0, 4));
+    const num = await siguienteNumeroSerie(client, serieRect, ejercicio);
     const nuevo = await client.query(
-        `INSERT INTO aim_recibos (numero, serie, tipo, rectifica_id, rect_metodo, rect_motivo,
+        `INSERT INTO aim_recibos (numero, serie, ejercicio, tipo, rectifica_id, rect_metodo, rect_motivo,
                                   pagador_id, fecha, importe, medio_pago, entregado, cambio, estado, cobrado_por, cobrado_at)
-         VALUES ($1,'R','rectificativo',$2,$3,$4,$5,(now() AT TIME ZONE 'Europe/Madrid')::date,$6,$7,0,0,'cobrado',$8,NOW()) RETURNING id, numero, serie, fecha`,
-        [num, orig.id, metodo, motivo.trim(), orig.pagador_id, importe, orig.medio_pago, userId]
+         VALUES ($1,$2,$3,'rectificativo',$4,$5,$6,$7,(now() AT TIME ZONE 'Europe/Madrid')::date,$8,$9,0,0,'cobrado',$10,NOW())
+         RETURNING id, numero, serie, ejercicio, fecha`,
+        [num, serieRect, ejercicio, orig.id, metodo, motivo.trim(), orig.pagador_id, importe, orig.medio_pago, userId]
     );
     const nuevoId = nuevo.rows[0].id;
     for (const l of lineas) {
@@ -7422,14 +7615,22 @@ async function emitirRectificativa(client, { orig, quitadas, quedan, metodo, mot
         g.iva = r2Server(g.iva + (l.bruto != null ? l.bruto - l.base : l.base * pct / 100));
         porIva.set(pct, g);
     }
-    const pag = await client.query('SELECT name, surname FROM users WHERE user_id = $1', [orig.pagador_id]);
+    const receptor = await receptorDeFactura(client, orig.pagador_id);
+    // Una rectificativa hereda el tipo de la que corrige: si la original salió
+    // simplificada (F2), esta tiene que ser R5 y no R1.
+    const tipoOrig = await client.query(
+        `SELECT tipo_factura FROM aim_factura_registro WHERE recibo_id = $1 ORDER BY id LIMIT 1`, [orig.id]);
+    const numOrig = numeroVisible({ serie: orig.serie, numero: orig.numero, ejercicio: orig.ejercicio, fecha: orig.fecha });
     await registrarFactura(client, {
         recibo: { ...nuevo.rows[0], tipo: 'rectificativo' },
-        receptor: { nombre: pag.rows[0] ? `${pag.rows[0].name} ${pag.rows[0].surname || ''}`.trim() : null },
-        descripcion: `Rectificativa de ${orig.serie || 'A'}-${orig.numero}: ${motivo.trim()}`,
+        receptor,
+        descripcion: `Rectificativa de ${numOrig}: ${motivo.trim()}`,
         base: baseTotal, cuota: r2Server(importe - baseTotal), total: importe,
         basesPorIva: [...porIva.values()].sort((a, b) => a.ivaPct - b.ivaPct),
-        original: { serie: orig.serie || 'A', numero: orig.numero, fecha: orig.fecha, metodo },
+        original: {
+            serie: orig.serie || 'A', numero: orig.numero, ejercicio: orig.ejercicio,
+            fecha: orig.fecha, metodo, tipoFactura: tipoOrig.rows[0]?.tipo_factura || 'F1',
+        },
         userId,
     });
 
@@ -7629,69 +7830,80 @@ app.get('/api/admin/informes/estimacion-temporada', authenticateSession, require
 });
 
 // ── Numeración de facturas ───────────────────────────────────────────────────
-// El formato y el número por el que sigue cada serie se configuran aquí, para
-// que el día que el club fije su numeración real (2026000946, R-202600001…) no
-// haya que tocar código.
+// Cada serie se numera por su cuenta y de forma correlativa (artículo 6.1.a del
+// RD 1619/2012), y el formato del número se configura aquí: prefijo, año y
+// cuántas cifras lleva el secuencial. La cuenta se reinicia cada ejercicio.
 app.get('/api/admin/billing/numeracion', authenticateSession, requireAdmin, async (req, res) => {
     try {
         await cargarFormatoNumeracion();
-        // El siguiente número sin consumirlo: la secuencia en sí expone is_called,
-        // que dice si last_value ya se ha entregado. pg_sequences no lo trae.
-        const siguienteDe = async (seq) => {
-            const q = await pool.query(`SELECT last_value, is_called FROM ${seq}`);
-            const { last_value, is_called } = q.rows[0];
-            return is_called ? Number(last_value) + 1 : Number(last_value);
-        };
-        const [sigA, sigR] = await Promise.all([
-            siguienteDe('aim_recibos_numero_seq'), siguienteDe('aim_recibos_rect_numero_seq'),
-        ]);
-        const valor = s => (s === 'aim_recibos_numero_seq' ? sigA : sigR);
+        const ejercicio = Number(hoyMadrid().slice(0, 4));
+        const cont = await pool.query(
+            `SELECT serie, ultimo FROM aim_serie_contador WHERE ejercicio = $1`, [ejercicio]);
+        const ultimoDe = Object.fromEntries(cont.rows.map(r => [r.serie, Number(r.ultimo)]));
         const emitidas = await pool.query(
-            `SELECT COALESCE(serie,'A') AS serie, COUNT(*)::int n FROM aim_recibos GROUP BY 1`
-        );
+            `SELECT serie, COUNT(*)::int n FROM aim_recibos WHERE ejercicio = $1 GROUP BY serie`, [ejercicio]);
+        const nDe = Object.fromEntries(emitidas.rows.map(x => [x.serie, x.n]));
         res.set('Cache-Control', 'no-store');
         res.json({
-            formato: FORMATO_NUMERACION,
-            siguiente: { A: valor('aim_recibos_numero_seq'), R: valor('aim_recibos_rect_numero_seq') },
-            emitidas: Object.fromEntries(emitidas.rows.map(x => [x.serie, x.n])),
-            ejemplo: {
-                A: numeroVisible({ serie: 'A', numero: valor('aim_recibos_numero_seq'), fecha: new Date() }),
-                R: numeroVisible({ serie: 'R', numero: valor('aim_recibos_rect_numero_seq'), fecha: new Date() }),
-            },
+            ejercicio,
+            series: TODAS_LAS_SERIES.map(s => {
+                const siguiente = (ultimoDe[s.codigo] || 0) + 1;
+                return {
+                    ...s,
+                    formato: FORMATO_NUMERACION[s.codigo] || normalizaFormato({}),
+                    siguiente,
+                    emitidas: nDe[s.codigo] || 0,
+                    ejemplo: numeroVisible({ serie: s.codigo, numero: siguiente, ejercicio }),
+                };
+            }),
+            // Lo emitido antes de las series, por si queda algo de las pruebas.
+            antiguas: Object.entries(nDe).filter(([s]) => !TODAS_LAS_SERIES.some(x => x.codigo === s))
+                .map(([serie, n]) => ({ serie, emitidas: n })),
         });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.put('/api/admin/billing/numeracion', authenticateSession, requireAdmin, async (req, res) => {
     const { formato, siguiente } = req.body;
-    const SERIES = [['A', 'aim_recibos_numero_seq'], ['R', 'aim_recibos_rect_numero_seq']];
+    const ejercicio = Number(hoyMadrid().slice(0, 4));
     const client = await pool.connect();
     try {
         // Primero se comprueba TODO y solo después se aplica: si una serie no vale,
         // no puede quedar la otra ya cambiada.
         const cambios = [];
-        for (const [serie, seq] of SERIES) {
-            const n = Number(siguiente?.[serie]);
+        for (const s of TODAS_LAS_SERIES) {
+            const n = Number(siguiente?.[s.codigo]);
             if (!Number.isInteger(n) || n < 1) continue;
             const max = await client.query(
-                `SELECT COALESCE(MAX(numero), 0)::int AS m FROM aim_recibos WHERE COALESCE(serie,'A') = $1`, [serie]
-            );
+                `SELECT COALESCE(MAX(numero), 0)::int AS m FROM aim_recibos WHERE serie = $1 AND ejercicio = $2`,
+                [s.codigo, ejercicio]);
             if (n <= max.rows[0].m) {
-                return res.status(409).json({ error: `La serie ${serie} ya tiene emitida la factura nº ${max.rows[0].m}. El siguiente número debe ser mayor.` });
+                return res.status(409).json({
+                    error: `La serie «${s.nombre}» ya tiene emitida la factura nº ${max.rows[0].m} de ${ejercicio}. El siguiente número debe ser mayor.`,
+                });
             }
-            cambios.push([seq, n]);
+            cambios.push([s.codigo, n]);
         }
 
         let limpio = null;
         if (formato) {
-            limpio = {};
-            for (const [serie] of SERIES) {
-                const f = formato[serie] || {};
-                limpio[serie] = {
-                    prefijo: String(f.prefijo ?? '').slice(0, 10),
-                    anio: !!f.anio,
-                    digitos: Math.min(12, Math.max(0, Number(f.digitos) || 0)),
-                };
+            limpio = { ...FORMATO_NUMERACION };
+            for (const s of TODAS_LAS_SERIES) {
+                if (formato[s.codigo]) limpio[s.codigo] = normalizaFormato(formato[s.codigo]);
+            }
+            // Dos series no pueden numerar igual: si el prefijo, el año y los
+            // dígitos coinciden, los números se repetirían entre series y el libro
+            // registro dejaría de distinguirlas.
+            const vistos = new Map();
+            for (const s of TODAS_LAS_SERIES) {
+                const f = limpio[s.codigo];
+                const clave = `${f.prefijo}|${f.anio}|${f.sep}|${f.digitos}`;
+                if (vistos.has(clave)) {
+                    return res.status(409).json({
+                        error: `«${s.nombre}» y «${vistos.get(clave)}» quedarían con el mismo formato de número. Cada serie necesita el suyo.`,
+                    });
+                }
+                vistos.set(clave, s.nombre);
             }
         }
 
@@ -7703,7 +7915,12 @@ app.put('/api/admin/billing/numeracion', authenticateSession, requireAdmin, asyn
                 [JSON.stringify(limpio), req.userSession.userId]
             );
         }
-        for (const [seq, n] of cambios) await client.query('SELECT setval($1, $2, false)', [seq, n]);
+        for (const [serie, n] of cambios) {
+            await client.query(
+                `INSERT INTO aim_serie_contador (serie, ejercicio, ultimo) VALUES ($1,$2,$3)
+                 ON CONFLICT (serie, ejercicio) DO UPDATE SET ultimo = EXCLUDED.ultimo`,
+                [serie, ejercicio, n - 1]);
+        }
         await client.query('COMMIT');
 
         await cargarFormatoNumeracion();
@@ -7744,6 +7961,8 @@ app.post('/api/admin/billing/vaciar-pruebas', authenticateSession, requireAdmin,
         await client.query('DELETE FROM aim_arqueos');
         await client.query("SELECT setval('aim_recibos_numero_seq', 1, false)");
         await client.query("SELECT setval('aim_recibos_rect_numero_seq', 1, false)");
+        // Y los contadores de cada serie vuelven a cero (ticket #291).
+        await client.query('DELETE FROM aim_serie_contador');
         await client.query('COMMIT');
         res.json({ success: true, borrados: antes });
     } catch (err) {
@@ -7807,7 +8026,7 @@ app.get('/api/admin/billing/arqueo', authenticateSession, requireAdmin, async (r
                 esperado: arq.esperado, contado: arq.contado, comentario: arq.comentario, cerradoAt: arq.cerrado_at,
             } : null,
             detalle: detalle.rows.map(d => ({
-                numero: `${d.serie || 'A'}-${d.numero}`, tipo: d.tipo, importe: Number(d.importe),
+                numero: numeroVisible(d), serie: d.serie, tipo: d.tipo, importe: Number(d.importe),
                 medioPago: d.medio_pago, pagador: (d.pagador || '').trim(), hora: d.cobrado_at,
             })),
         });
@@ -8101,6 +8320,20 @@ app.post('/api/me/pagos/iniciar', authenticateSession, async (req, res) => {
             pagadorFactura = adulto;
         }
 
+        // Y el NIF se pide ANTES de cobrar, no después (ticket #291): una vez
+        // pasada la tarjeta hay que emitir factura sí o sí, y sin NIF por encima
+        // del tope de la simplificada no se podría emitir en condiciones.
+        {
+            const receptor = await receptorDeFactura(client, pagadorFactura);
+            if (!receptor.nif && calc.total > Number(AJUSTES_FACT.limiteSimplificada) + 0.005) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({
+                    error: `Para pagar ${calc.total.toFixed(2)} € por internet necesitamos el NIF de ${receptor.nombre || 'quien paga'}: `
+                        + 'por encima de ese importe la factura tiene que ser completa. Escríbelo en la ficha o avisa al club.',
+                });
+            }
+        }
+
         const concepto = calc.detalle.map(d => d.descripcion).join(', ').slice(0, 120) || 'AIM Education';
         const ins = await client.query(
             `INSERT INTO aim_tpv_pagos (pagador_id, importe, concepto, cargo_ids, entorno)
@@ -8152,7 +8385,9 @@ app.post('/api/me/pagos/iniciar', authenticateSession, async (req, res) => {
 // llega dos veces (Redsys reintenta), la segunda no cobra otra vez.
 async function asentarPago(client, pago, aviso) {
     const cs = await client.query(
-        `SELECT * FROM aim_cargos WHERE id = ANY($1::int[]) AND estado = 'pendiente' AND recibo_id IS NULL FOR UPDATE`,
+        `SELECT c.*, p.serie_fiscal FROM aim_cargos c
+         LEFT JOIN aim_precios p ON p.concepto = c.concepto
+         WHERE c.id = ANY($1::int[]) AND c.estado = 'pendiente' AND c.recibo_id IS NULL FOR UPDATE OF c`,
         [pago.cargo_ids]);
 
     // Si mientras pagaba se le cobró por mostrador, el dinero está cobrado pero
@@ -8167,39 +8402,23 @@ async function asentarPago(client, pago, aviso) {
         return { revisar: true };
     }
 
-    const calc = calcularRecibo(cs.rows.map(cargoParaMotor));
-    const num = (await client.query(`SELECT nextval('aim_recibos_numero_seq') AS n`)).rows[0].n;
-    const rec = await client.query(
-        `INSERT INTO aim_recibos (numero, pagador_id, fecha, importe, medio_pago, entregado, cambio, estado, cobrado_at)
-         VALUES ($1,$2,(now() AT TIME ZONE 'Europe/Madrid')::date,$3,'tpv_online',$3,0,'cobrado',NOW()) RETURNING id, numero, fecha, serie`,
-        [num, pago.pagador_id, calc.total]);
-    const reciboId = rec.rows[0].id;
-
-    for (const d of calc.detalle) {
-        await client.query(
-            `UPDATE aim_cargos SET recibo_id = $1, descuento_mens_pct = $2, importe = $3, estado = 'cobrado' WHERE id = $4`,
-            [reciboId, d.descuentoMensPct, d.base, d.id]);
-    }
-    // Lo vendido sale del almacén también si se paga por internet (ticket #250).
-    await descontarStockDeCargos(client, cs.rows, reciboId, null);
-    await crearBonosDeCargos(client, cs.rows, reciboId, null);
-
-    const pg = await client.query(`SELECT name, surname FROM users WHERE user_id = $1`, [pago.pagador_id]);
-    await registrarFactura(client, {
-        recibo: { ...rec.rows[0], id: reciboId, serie: rec.rows[0].serie || 'A', tipo: 'normal' },
-        receptor: { nombre: pg.rows[0] ? `${pg.rows[0].name} ${pg.rows[0].surname || ''}`.trim() : null },
-        descripcion: calc.detalle.map(d => d.descripcion).join('; ').slice(0, 500),
-        base: calc.baseTotal, cuota: calc.ivaTotal, total: calc.total,
-        basesPorIva: calc.basesPorIva,
-        userId: pago.pagador_id,
+    const total = calcularRecibo(cs.rows.map(cargoParaMotor)).total;
+    const receptor = await receptorDeFactura(client, pago.pagador_id);
+    // Aquí NO se puede rechazar por falta de NIF: el dinero ya está cobrado y la
+    // factura hay que emitirla. El NIF se exige antes de empezar el pago.
+    const { tickets } = await emitirFacturasDeCargos(client, {
+        pagadorId: pago.pagador_id, rows: cs.rows,
+        pagos: [{ medio: 'tpv_online', importe: total }],
+        entregado: total, cambio: 0, userId: pago.pagador_id, receptor,
     });
+    const reciboId = tickets[0].reciboId;
 
     await client.query(
         `UPDATE aim_tpv_pagos SET estado = 'pagado', pagado_at = NOW(), recibo_id = $2,
                 ds_response = $3, ds_autorizacion = $4, tarjeta = $5, notificacion = $6, importe = $7
           WHERE id = $1`,
         [pago.id, reciboId, aviso.Ds_Response, aviso.Ds_AuthorisationCode,
-         aviso.Ds_Card_Brand ? `**** ${aviso.Ds_Card_Number || ''}`.trim() : null, aviso, calc.total]);
+         aviso.Ds_Card_Brand ? `**** ${aviso.Ds_Card_Number || ''}`.trim() : null, aviso, total]);
 
     // Si la familia autorizó el cobro mensual, Redsys devuelve la referencia.
     if (aviso.Ds_Merchant_Identifier) {
@@ -8211,7 +8430,7 @@ async function asentarPago(client, pago, aviso) {
             [pago.pagador_id, aviso.Ds_Merchant_Identifier, aviso.Ds_Merchant_Cof_Txnid || null,
              aviso.Ds_Card_Number ? `**** ${aviso.Ds_Card_Number}` : null, aviso.Ds_ExpiryDate || null, pago.id]);
     }
-    return { reciboId, numero: rec.rows[0].numero };
+    return { reciboId, numero: tickets[0].recibo.numero, facturas: tickets.length };
 }
 
 // La notificación de Redsys. No lleva sesión: viene de sus servidores. Lo único
@@ -8294,7 +8513,7 @@ app.get('/api/me/recibos/:id/pdf', authenticateSession, async (req, res) => {
         if (!t) return res.status(404).send('Recibo no encontrado.');
         // QR tributario de VERI*FACTU (ticket #232), si está encendido.
         t.verifactu = await datosVerifactuDeFactura(id);
-        const nombre = `recibo-${t.recibo.serie || 'A'}-${t.recibo.numero}.pdf`;
+        const nombre = `factura-${(t.recibo.numeroVisible || `${t.recibo.serie}-${t.recibo.numero}`).replace(/[^\w.-]/g, '')}.pdf`;
         res.setHeader('Content-Type', 'application/pdf');
         // Con ?descargar=1 el navegador lo guarda en vez de enseñarlo.
         res.setHeader('Content-Disposition',

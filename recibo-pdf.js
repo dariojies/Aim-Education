@@ -59,10 +59,18 @@ export function generarReciboPdf(t, salida) {
             .text(t.verifactu.leyenda || 'VERI*FACTU', x, yQr + lado + 3, { width: lado, align: 'center' });
     }
 
+    // Una factura simplificada (F2) es otro documento distinto de una completa y
+    // tiene que decirlo (art. 4 y 7 del RD 1619/2012).
+    const simplificada = ['F2', 'R5'].includes(t.recibo.tipoFactura);
     let y = Math.max(yFranja + 22, t.verifactu?.qr ? 165 : 0);
     doc.fillColor(TINTA).font('Helvetica-Bold').fontSize(15)
-        .text(rect ? 'Factura rectificativa' : 'Factura', izq, y);
-    y = doc.y + 6;
+        .text(`${rect ? 'Factura rectificativa' : 'Factura'}${simplificada ? ' simplificada' : ''}`, izq, y);
+    y = doc.y + 2;
+    if (t.recibo.serieNombre) {
+        doc.font('Helvetica').fontSize(9).fillColor(SUAVE).text(t.recibo.serieNombre, izq, y, { width: ancho });
+        y = doc.y;
+    }
+    y += 6;
 
     if (anulado) {
         doc.rect(izq, y, ancho, 22).fillAndStroke('#FEE', '#C00');
@@ -74,7 +82,7 @@ export function generarReciboPdf(t, salida) {
     // ── Datos del documento ──
     doc.font('Helvetica').fontSize(10).fillColor(TINTA);
     const datos = [
-        ['Número', `${t.recibo.serie || 'A'}-${t.recibo.numero}`],
+        ['Número', t.recibo.numeroVisible || `${t.recibo.serie || 'A'}-${t.recibo.numero}`],
         ['Fecha', fecha(t.recibo.fecha)],
         ['Forma de pago', nombreMedio(t.recibo.medioPago)],
     ];
@@ -105,7 +113,10 @@ export function generarReciboPdf(t, salida) {
         doc.fillColor(TINTA).text(t.recibo.pagadorDomicilio, izq, y, { width: ancho });
         y = doc.y;
     } else { falta.push('el domicilio'); }
-    if (falta.length) {
+    // En una simplificada no falta nada: la ley no pide identificar al cliente.
+    // En una completa sí, y entonces se dice a las claras en vez de dejar el
+    // hueco en blanco.
+    if (falta.length && !simplificada) {
         doc.fillColor('#C2410C').fontSize(9)
             .text(`Faltan ${falta.join(' y ')} del pagador en su ficha.`, izq, y, { width: ancho });
         y = doc.y;

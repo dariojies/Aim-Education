@@ -10,12 +10,10 @@ import React, { useState, useEffect, useCallback } from 'react';
 // de cero con la numeración buena.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SERIES = [['A', 'Facturas'], ['R', 'Rectificativas']];
-
 export default function BillingAjustes({ showToast }) {
   const [datos, setDatos] = useState(null);
-  const [formato, setFormato] = useState(null);
-  const [siguiente, setSiguiente] = useState({});
+  const [formato, setFormato] = useState(null);      // codigo -> { prefijo, anio, sep, digitos }
+  const [siguiente, setSiguiente] = useState({});    // codigo -> nº por el que sigue
   const [guardando, setGuardando] = useState(false);
   const [confirmacion, setConfirmacion] = useState('');
   const [vaciando, setVaciando] = useState(false);
@@ -31,8 +29,8 @@ export default function BillingAjustes({ showToast }) {
       if (!r.ok) return;
       const d = await r.json();
       setDatos(d);
-      setFormato(d.formato);
-      setSiguiente(d.siguiente);
+      setFormato(Object.fromEntries(d.series.map(x => [x.codigo, x.formato])));
+      setSiguiente(Object.fromEntries(d.series.map(x => [x.codigo, x.siguiente])));
       const c = await fetch('/api/admin/billing/config', { credentials: 'include', cache: 'no-store' });
       if (c.ok) setCorte(await c.json());
       const v = await fetch('/api/admin/billing/verifactu', { credentials: 'include', cache: 'no-store' });
@@ -42,12 +40,12 @@ export default function BillingAjustes({ showToast }) {
 
   // Día de corte del alta (ticket #289): hasta ese día, mes en curso; a partir
   // de él, mes siguiente.
-  async function guardarCorte(dia) {
+  async function guardarCorte(cambios) {
     setGuardandoCorte(true);
     try {
       const r = await fetch('/api/admin/billing/config', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-        body: JSON.stringify({ diaCorteAlta: dia }),
+        body: JSON.stringify({ diaCorteAlta: corte?.diaCorteAlta, limiteSimplificada: corte?.limiteSimplificada, ...cambios }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || 'No se pudo guardar.');
@@ -87,10 +85,13 @@ export default function BillingAjustes({ showToast }) {
   function ejemplo(serie) {
     const f = formato?.[serie] || {};
     const n = Number(siguiente?.[serie]) || 1;
-    const anio = f.anio ? new Date().getFullYear() : '';
+    const ej = String(datos?.ejercicio || new Date().getFullYear());
+    const anio = f.anio === '4' ? ej : f.anio === '2' ? ej.slice(-2) : '';
     const sec = f.digitos > 0 ? String(n).padStart(f.digitos, '0') : String(n);
-    return `${f.prefijo || ''}${anio}${sec}`;
+    return `${f.prefijo || ''}${anio}${anio ? (f.sep || '') : ''}${sec}`;
   }
+  const cambiar = (serie, campo, valor) =>
+    setFormato(f => ({ ...f, [serie]: { ...f[serie], [campo]: valor } }));
 
   async function guardar() {
     setGuardando(true);
@@ -129,7 +130,8 @@ export default function BillingAjustes({ showToast }) {
   }
 
   if (!datos || !formato) return <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>;
-  const totalEmitidas = Object.values(datos.emitidas || {}).reduce((s, n) => s + n, 0);
+  const totalEmitidas = (datos.series || []).reduce((s, x) => s + (x.emitidas || 0), 0)
+    + (datos.antiguas || []).reduce((s, x) => s + (x.emitidas || 0), 0);
 
   return (
     <div style={{ display: 'grid', gap: 20, maxWidth: 720 }}>
@@ -147,12 +149,34 @@ export default function BillingAjustes({ showToast }) {
           <input type="number" min="1" max="28" value={corte?.diaCorteAlta ?? 20} disabled={guardandoCorte}
             onChange={e => setCorte(c => ({ ...c, diaCorteAlta: Number(e.target.value) }))}
             style={{ width: 80, fontFamily: 'inherit', fontSize: 14, padding: '8px 10px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }} />
-          <button className="btn btn-sm btn-primary" disabled={guardandoCorte || !corte?.diaCorteAlta} onClick={() => guardarCorte(Number(corte.diaCorteAlta))}>Guardar</button>
+          <button className="btn btn-sm btn-primary" disabled={guardandoCorte || !corte?.diaCorteAlta} onClick={() => guardarCorte({ diaCorteAlta: Number(corte.diaCorteAlta) })}>Guardar</button>
           {corte?.mesDeAltaHoy && (
             <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
               Hoy, a quien se apunte se le cobraría <b>{new Date(corte.mesDeAltaHoy + 'T12:00:00').toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })}</b>.
             </span>
           )}
+        </div>
+      </div>
+
+      {/* Tope de la factura simplificada (ticket #291) */}
+      <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 16, display: 'grid', gap: 10 }}>
+        <div>
+          <h3 style={{ margin: 0, fontSize: 15, fontWeight: 800 }}>Cuándo hace falta el NIF</h3>
+          <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.6 }}>
+            Por debajo de este importe se puede emitir <b>factura simplificada</b>, que no lleva los datos del cliente.
+            Por encima, la factura tiene que ser <b>completa</b> y entonces el NIF es obligatorio: si falta, el TPV no
+            deja cobrar y lo pide. El reglamento lo deja en 400 €, y lo sube a 3.000 € en unas cuantas actividades,
+            entre ellas la utilización de instalaciones deportivas. Confirmad con la gestoría cuál os aplica.
+          </p>
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <label style={{ fontSize: 13, fontWeight: 700 }}>Tope</label>
+          <input type="number" min="1" max="3000" step="1" value={corte?.limiteSimplificada ?? 400} disabled={guardandoCorte}
+            onChange={e => setCorte(c => ({ ...c, limiteSimplificada: Number(e.target.value) }))}
+            style={{ width: 100, fontFamily: 'inherit', fontSize: 14, padding: '8px 10px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }} />
+          <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>€</span>
+          <button className="btn btn-sm btn-primary" disabled={guardandoCorte || !corte?.limiteSimplificada}
+            onClick={() => guardarCorte({ limiteSimplificada: Number(corte.limiteSimplificada) })}>Guardar</button>
         </div>
       </div>
 
@@ -225,47 +249,59 @@ export default function BillingAjustes({ showToast }) {
 
       <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 16, display: 'grid', gap: 14 }}>
         <div>
-          <h3 style={{ margin: 0, fontSize: 15, fontWeight: 800 }}>Numeración de facturas</h3>
-          <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--ink-3)' }}>
-            Cómo se numeran las facturas que se emiten. Cuando tengáis los números definitivos, se ponen aquí:
-            no hace falta tocar nada más.
+          <h3 style={{ margin: 0, fontSize: 15, fontWeight: 800 }}>Series y numeración de facturas</h3>
+          <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.6 }}>
+            Un cobro es uno solo para la familia, pero se factura repartido en varias facturas vinculadas, una por
+            bloque fiscal. Cada serie se numera por su cuenta y de forma correlativa, y la cuenta vuelve a empezar
+            cada año. Aquí se decide cómo se llama cada una.
+          </p>
+          <p style={{ margin: '6px 0 0', fontSize: 12, color: 'var(--ink-3)' }}>
+            Ejercicio en curso: <b>{datos.ejercicio}</b>
           </p>
         </div>
 
-        {SERIES.map(([serie, etiqueta]) => (
-          <div key={serie} style={{ display: 'grid', gap: 8, padding: 12, background: 'var(--bg-3)', borderRadius: 12 }}>
+        {datos.series.map(s => (
+          <div key={s.codigo} style={{
+            display: 'grid', gap: 8, padding: 12, borderRadius: 12,
+            background: s.rectificaDe ? 'color-mix(in oklab, var(--orange) 6%, var(--bg-3))' : 'var(--bg-3)',
+          }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-              <span style={{ fontWeight: 800, fontSize: 13 }}>{etiqueta}</span>
-              <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
-                {datos.emitidas?.[serie] ? `${datos.emitidas[serie]} emitida(s)` : 'ninguna emitida'}
-              </span>
+              <span style={{ fontWeight: 800, fontSize: 13 }}>{s.nombre}</span>
+              <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>{s.bloque}</span>
               <div style={{ flex: 1 }} />
-              <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>La siguiente sería</span>
-              <code style={{ fontWeight: 800, fontSize: 14, color: 'var(--purple)', background: 'var(--bg-2)', padding: '2px 10px', borderRadius: 6 }}>{ejemplo(serie)}</code>
+              <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                {s.emitidas ? `${s.emitidas} este año · la siguiente` : 'ninguna aún · la primera'}
+              </span>
+              <code style={{ fontWeight: 800, fontSize: 14, color: 'var(--purple)', background: 'var(--bg-2)', padding: '2px 10px', borderRadius: 6 }}>{ejemplo(s.codigo)}</code>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 10 }}>
               <label style={{ fontSize: 12, display: 'grid', gap: 4 }}>
-                <span style={{ color: 'var(--ink-2)', fontWeight: 600 }}>Prefijo</span>
-                <input value={formato[serie].prefijo} placeholder="(ninguno)"
-                  onChange={e => setFormato(f => ({ ...f, [serie]: { ...f[serie], prefijo: e.target.value } }))}
-                  style={inp} />
+                <span style={{ color: 'var(--ink-2)', fontWeight: 600 }}>Nombre</span>
+                <input value={formato[s.codigo].prefijo} placeholder="(ninguno)"
+                  onChange={e => cambiar(s.codigo, 'prefijo', e.target.value)} style={inp} />
+              </label>
+              <label style={{ fontSize: 12, display: 'grid', gap: 4 }}>
+                <span style={{ color: 'var(--ink-2)', fontWeight: 600 }}>Año</span>
+                <select value={formato[s.codigo].anio} onChange={e => cambiar(s.codigo, 'anio', e.target.value)} style={inp}>
+                  <option value="no">Sin año</option>
+                  <option value="2">2 cifras ({String(datos.ejercicio).slice(-2)})</option>
+                  <option value="4">4 cifras ({datos.ejercicio})</option>
+                </select>
+              </label>
+              <label style={{ fontSize: 12, display: 'grid', gap: 4 }}>
+                <span style={{ color: 'var(--ink-2)', fontWeight: 600 }}>Separador</span>
+                <input value={formato[s.codigo].sep} placeholder="(ninguno)" maxLength={3}
+                  onChange={e => cambiar(s.codigo, 'sep', e.target.value)} style={inp} />
               </label>
               <label style={{ fontSize: 12, display: 'grid', gap: 4 }}>
                 <span style={{ color: 'var(--ink-2)', fontWeight: 600 }}>Dígitos</span>
-                <input type="number" min="0" max="12" value={formato[serie].digitos}
-                  onChange={e => setFormato(f => ({ ...f, [serie]: { ...f[serie], digitos: Number(e.target.value) || 0 } }))}
-                  style={inp} />
+                <input type="number" min="0" max="12" value={formato[s.codigo].digitos}
+                  onChange={e => cambiar(s.codigo, 'digitos', Number(e.target.value) || 0)} style={inp} />
               </label>
               <label style={{ fontSize: 12, display: 'grid', gap: 4 }}>
                 <span style={{ color: 'var(--ink-2)', fontWeight: 600 }}>Empieza en</span>
-                <input type="number" min="1" value={siguiente[serie] ?? 1}
-                  onChange={e => setSiguiente(s => ({ ...s, [serie]: Number(e.target.value) || 1 }))}
-                  style={inp} />
-              </label>
-              <label style={{ fontSize: 12, display: 'flex', alignItems: 'flex-end', gap: 6, paddingBottom: 8 }}>
-                <input type="checkbox" checked={!!formato[serie].anio}
-                  onChange={e => setFormato(f => ({ ...f, [serie]: { ...f[serie], anio: e.target.checked } }))} />
-                <span style={{ color: 'var(--ink-2)', fontWeight: 600 }}>Lleva el año</span>
+                <input type="number" min="1" value={siguiente[s.codigo] ?? 1}
+                  onChange={e => setSiguiente(x => ({ ...x, [s.codigo]: Number(e.target.value) || 1 }))} style={inp} />
               </label>
             </div>
           </div>
@@ -273,7 +309,7 @@ export default function BillingAjustes({ showToast }) {
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
-            El número de inicio solo se puede cambiar si no hay ya una factura con ese número o mayor.
+            El número de inicio solo se puede cambiar si este año no hay ya una factura con ese número o mayor.
           </span>
           <div style={{ flex: 1 }} />
           <button className="btn btn-sm btn-primary" disabled={guardando} onClick={guardar}>

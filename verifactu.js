@@ -128,6 +128,13 @@ export function lineaDesglose({ ivaPct, base, cuota, exenta, causaExencion = 'E1
 
 // Registro de alta en XML (el que se manda dentro de RegFactuSistemaFacturacion).
 export function xmlRegistroAlta(r) {
+    // Factura sin identificación del destinatario (art. 6.1.d del RD 1619/2012).
+    // El orden de los elementos dentro de RegistroAlta lo fija el esquema de la
+    // AEAT: esto va justo detrás de DescripcionOperacion y delante de
+    // Destinatarios. Solo se admite en F2 y R5.
+    const sinDestinatario = (r.sinDestinatario && !r.receptorNif)
+        ? '    <FacturaSinIdentifDestinatarioArt61d>S</FacturaSinIdentifDestinatarioArt61d>\n'
+        : '';
     const destinatario = r.receptorNif
         ? `    <Destinatarios>
       <IDDestinatario>
@@ -158,7 +165,7 @@ export function xmlRegistroAlta(r) {
     <NombreRazonEmisor>${esc(r.nombreEmisor)}</NombreRazonEmisor>
     <TipoFactura>${esc(r.tipoFactura)}</TipoFactura>
 ${rectificada}    <DescripcionOperacion>${esc(r.descripcion)}</DescripcionOperacion>
-${destinatario}    <Desglose>
+${sinDestinatario}${destinatario}    <Desglose>
 ${r.desglose.map(lineaDesglose).join('\n')}
     </Desglose>
     <CuotaTotal>${importeAEAT(r.cuotaTotal)}</CuotaTotal>

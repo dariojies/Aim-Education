@@ -3747,6 +3747,17 @@ function SortToggle({ value, onChange }) {
 
 // Concepto del catálogo con el que se registran los anticipos (ticket #221).
 const ANTICIPO_CONCEPTO = '01000';
+
+// Series de facturación (ticket #291): en qué factura sale cada concepto.
+const SERIES_FACTURA = [
+  ['MAT', 'Material y venta de bienes'],
+  ['IVA', 'Servicios con IVA'],
+  ['SIVA', 'Enseñanza exenta de IVA'],
+];
+const nombreSerie = (cod) => SERIES_FACTURA.find(([c]) => c === cod)?.[1] || cod;
+// La que le tocaría si no se fija a mano: el material es entrega de bienes, y
+// del resto manda el IVA.
+const serieAutomatica = (p) => (p?.tipo === 'Material' ? 'MAT' : (Number(p?.ivaPct) > 0 ? 'IVA' : 'SIVA'));
 // Concepto con el que se registra un bono de clases sueltas (ticket #245).
 const BONO_CONCEPTO = '02000';
 
@@ -3924,10 +3935,18 @@ function BillingTPV({ showToast }) {
           <div style={{ flex: 1, minWidth: 200 }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: 'var(--teal)' }}>Recibo #{ticket.recibo.numero} cobrado — {eur(ticket.recibo.total)}</div>
             <div style={{ fontSize: 13, color: 'var(--ink-2)' }}>{ticket.recibo.pagador} · {(ticket.recibo.pagos && ticket.recibo.pagos.length > 1) ? ticket.recibo.pagos.map(p => `${p.medio} ${eur(p.importe)}`).join(' + ') : ticket.recibo.medioPago}{ticket.recibo.cambio > 0 ? ` · cambio ${eur(ticket.recibo.cambio)}` : ''}</div>
-            {/* Dos facturas vinculadas (con IVA / exenta) — interno, ticket #249. */}
+            {/* Las facturas vinculadas del cobro, una por serie — interno (#291).
+                El cliente ve un solo ticket; esto es para el mostrador. */}
             {ticket.facturas && ticket.facturas.length > 1 && (
-              <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>
-                Facturas vinculadas: {ticket.facturas.map(f => `nº ${f.numero} (${f.conIva ? 'con IVA' : 'exenta'}, ${eur(f.total)})`).join(' · ')}
+              <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 4, display: 'grid', gap: 2 }}>
+                <span style={{ fontWeight: 700 }}>Se han emitido {ticket.facturas.length} facturas vinculadas:</span>
+                {ticket.facturas.map(f => (
+                  <span key={f.id}>
+                    <b style={{ color: 'var(--purple)' }}>{f.numeroVisible || `nº ${f.numero}`}</b>
+                    {' — '}{f.serieNombre}{' · '}{eur(f.total)}
+                    {f.tipoFactura === 'F2' ? ' · simplificada' : ''}
+                  </span>
+                ))}
               </div>
             )}
           </div>
@@ -4969,8 +4988,9 @@ function AdminBilling({ showToast }) {
           ? precios.filter(p => `${p.concepto} ${p.descripcion}`.toLowerCase().includes(q))
           : precios;
         const exportarCatalogo = () => {
-          const filas = [['Código', 'Concepto', 'Tipo', 'Precio base', 'IVA %', 'Estado'],
-            ...preciosFiltrados.map(p => [p.concepto, p.descripcion, p.tipo, Number(p.precio).toFixed(2), p.ivaPct, p.activo ? 'Activo' : 'Inactivo'])];
+          const filas = [['Código', 'Concepto', 'Tipo', 'Precio base', 'IVA %', 'Se factura en', 'Estado'],
+            ...preciosFiltrados.map(p => [p.concepto, p.descripcion, p.tipo, Number(p.precio).toFixed(2), p.ivaPct,
+              nombreSerie(p.serieEfectiva || serieAutomatica(p)), p.activo ? 'Activo' : 'Inactivo'])];
           const csv = '﻿' + filas.map(f => f.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(';')).join('\r\n');
           const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
           const a = document.createElement('a');
@@ -4998,11 +5018,11 @@ function AdminBilling({ showToast }) {
           )}
           {preciosFiltrados.length > 0 && (
             <div className="data-table">
-              <div className="data-table-head" style={{ gridTemplateColumns: '1.6fr 100px 110px 90px 90px 80px' }}>
-                <span>Concepto</span><span>Tipo</span><span>Precio (base)</span><span>IVA</span><span>Estado</span><span></span>
+              <div className="data-table-head" style={{ gridTemplateColumns: '1.5fr 95px 100px 70px 150px 85px 70px' }}>
+                <span>Concepto</span><span>Tipo</span><span>Precio (base)</span><span>IVA</span><span>Se factura en</span><span>Estado</span><span></span>
               </div>
               {preciosFiltrados.map(p => (
-                <div key={p.concepto} className="data-table-row" style={{ gridTemplateColumns: '1.6fr 100px 110px 90px 90px 80px', opacity: p.activo ? 1 : .5 }}>
+                <div key={p.concepto} className="data-table-row" style={{ gridTemplateColumns: '1.5fr 95px 100px 70px 150px 85px 70px', opacity: p.activo ? 1 : .5 }}>
                   <div>
                     <div className="pri">{p.descripcion}</div>
                     <div className="sec">{p.concepto}</div>
@@ -5010,6 +5030,10 @@ function AdminBilling({ showToast }) {
                   <span style={{ fontSize: 12 }}>{p.tipo}</span>
                   <span style={{ fontWeight: 700 }}>{eur(p.precio)}</span>
                   <span style={{ fontSize: 12, fontWeight: 700, color: p.ivaPct > 0 ? 'var(--orange)' : 'var(--ink-3)' }}>{p.ivaPct}%</span>
+                  <span style={{ fontSize: 11, color: p.serieFiscal ? 'var(--purple)' : 'var(--ink-3)', fontWeight: p.serieFiscal ? 700 : 400 }}
+                    title={p.serieFiscal ? 'Fijado a mano' : 'Automático, por su tipo y su IVA'}>
+                    {nombreSerie(p.serieEfectiva || serieAutomatica(p))}
+                  </span>
                   <span className={`status-pill ${p.activo ? 'ok' : 'pending'}`}>{p.activo ? 'Activo' : 'Inactivo'}</span>
                   <div className="row-actions">
                     <button className="icon-btn" onClick={() => setEditPrecio({ ...p })} aria-label="Editar"><I.Edit /></button>
@@ -5236,6 +5260,20 @@ function AdminBilling({ showToast }) {
               <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
                 El IVA se suma encima del precio. Cambiar el precio aquí <b>no</b> toca los cargos ya generados: cada uno guarda el suyo.
               </p>
+              {/* Serie de facturación (ticket #291): en qué factura sale este
+                  concepto cuando se cobra junto con otras cosas. */}
+              <div className="field">
+                <label>Se factura en</label>
+                <select value={editPrecio.serieFiscal || ''}
+                  onChange={e => setEditPrecio(p => ({ ...p, serieFiscal: e.target.value || null }))}>
+                  <option value="">Automático — {nombreSerie(serieAutomatica(editPrecio))}</option>
+                  {SERIES_FACTURA.map(([cod, nom]) => <option key={cod} value={cod}>{nom}</option>)}
+                </select>
+                <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                  Cada cobro se reparte en una factura por serie. En automático va por el tipo y el IVA, que es lo
+                  que vale para casi todo; se fija a mano solo si algo tiene que ir por otro lado.
+                </span>
+              </div>
               {/* Bonos de clases (ticket #231): el concepto dice cuántas clases da.
                   Al venderlo no se pregunta nada más, y vale en cualquier clase que
                   admita bonos, sea de la actividad que sea. */}
