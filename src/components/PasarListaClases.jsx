@@ -275,13 +275,13 @@ export default function PasarListaClases({ showToast }) {
             <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: 12, display: 'grid', gap: 8, maxWidth: 460 }}>
               <input autoFocus placeholder="Buscar alumno con bono..." value={qBono} onChange={e => setQBono(e.target.value)}
                 style={{ fontFamily: 'inherit', fontSize: 14, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }} />
-              {bonosSug.length === 0 && <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Nadie con un bono válido para esta clase{meta.bonoModo === 'adultos' ? ` (de ${clase.activityName} o de adultos)` : ` (de ${clase.activityName})`}{qBono.trim() ? ' con ese nombre' : ''}.</p>}
+              {bonosSug.length === 0 && <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Nadie con clases de bono disponibles{qBono.trim() ? ' con ese nombre' : ''}.</p>}
               {esFuturo && <p style={{ margin: 0, fontSize: 11, color: 'var(--ink-3)' }}>Se le reserva la plaza de ese día y se le gasta ya la clase del bono (si se quita la reserva, se le devuelve).</p>}
               {bonosSug.map(b => (
                 <button key={b.bonoId} type="button" onClick={() => añadirBono(b)}
                   style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between', textAlign: 'left', padding: '8px 12px', background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, color: 'var(--ink)' }}>
                   <b>{b.nombre}</b>
-                  <span style={{ fontSize: 12, color: 'var(--teal)', fontWeight: 800 }}>{b.ambito === 'adultos' ? 'Bono adultos · ' : ''}{b.restantes}/{b.total} clases</span>
+                  <span style={{ fontSize: 12, color: 'var(--teal)', fontWeight: 800 }}>{b.restantes}/{b.total} clases</span>
                 </button>
               ))}
             </div>

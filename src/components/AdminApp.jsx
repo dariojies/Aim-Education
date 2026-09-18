@@ -3770,7 +3770,6 @@ function BillingTPV({ showToast }) {
   const [addExtra, setAddExtra] = useState(null);      // { clienteId, concepto }
   const [addAnticipo, setAddAnticipo] = useState(null);// { clienteId, importe, motivo } (registrar anticipo)
   const [aplicarAnt, setAplicarAnt] = useState({});    // anticipoId -> { on, importe } (aplicar anticipos)
-  const [addBono, setAddBono] = useState(null);        // { clienteId, actividad, clases, importe, ivaPct } (vender bono #245)
   const [actividades, setActividades] = useState([]);  // actividades para el bono
 
   useEffect(() => {
@@ -3875,11 +3874,10 @@ function BillingTPV({ showToast }) {
           lineas: lineasActivas.map(c => ({ cargoId: c.id, descuentoPct: c.descuentoPct })),
           extras: extras.map(e => ({
             clienteId: e.clienteId, concepto: e.concepto, descuentoPct: Number(e.descuentoPct) || 0, mes: e.mes || null,
-            importe: (e.concepto === ANTICIPO_CONCEPTO || e.esBono) ? (e.bruto ?? e.precio) : undefined,
+            importe: e.concepto === ANTICIPO_CONCEPTO ? (e.bruto ?? e.precio) : undefined,
             motivo: e.concepto === ANTICIPO_CONCEPTO ? (e.motivo || '') : undefined,
-            ivaPct: (e.concepto === ANTICIPO_CONCEPTO || e.esBono) ? (Number(e.ivaPct) || 0) : undefined,
+            ivaPct: e.concepto === ANTICIPO_CONCEPTO ? (Number(e.ivaPct) || 0) : undefined,
             // Bono de clases (ticket #245).
-            esBono: e.esBono || undefined, actividad: e.esBono ? e.actividad : undefined, clases: e.esBono ? e.clases : undefined,
           })),
           anticipos: antAplicados.map(x => ({ id: x.a.id, importe: x.imp })),
           // Reparto del pago entre métodos (ticket #247). Importe vacío = "el resto".
@@ -3913,7 +3911,8 @@ function BillingTPV({ showToast }) {
   // primer adulto de la familia (hay que elegirlo antes de cobrar). #219.
   useEffect(() => {
     if (!pagador || !cesta) { setPagadorFactura(''); return; }
-    setPagadorFactura(pagador.esMenor ? (adultos[0]?.id || '') : pagador.id);
+    // Ticket #231: con un solo adulto se pone él; con varios hay que elegir a mano.
+    setPagadorFactura(pagador.esMenor ? (adultos.length === 1 ? adultos[0].id : '') : pagador.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pagador?.id, cesta]);
 
@@ -3984,7 +3983,9 @@ function BillingTPV({ showToast }) {
           {/* Menor de edad: la factura debe ir a un adulto de la familia (#219). */}
           {pagador.esMenor && (
             <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '10px 14px', borderRadius: 12, background: 'color-mix(in oklab, var(--orange) 10%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--orange) 35%, var(--line))' }}>
-              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--orange)' }}>⚠ El alumno es menor. Factura a nombre de:</span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--orange)' }}>
+                ⚠ El alumno es menor. {adultos.length > 1 ? 'Elige quién paga:' : 'Factura a nombre de:'}
+              </span>
               {adultos.length ? (
                 <select value={pagadorFactura} onChange={e => setPagadorFactura(e.target.value)}
                   style={{ fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)' }}>
@@ -3992,7 +3993,9 @@ function BillingTPV({ showToast }) {
                   {adultos.map(a => <option key={a.id} value={a.id}>{a.nombre} {a.apellidos}{a.edad != null ? ` (${a.edad})` : ''}</option>)}
                 </select>
               ) : (
-                <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>No hay ningún adulto en su familia. Añádelo en <b>Familias</b> antes de cobrar.</span>
+                <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>
+                  No se puede cobrar: un menor necesita un adulto responsable (padre, madre o tutor/a). Añádelo en <b>Familias</b> y vuelve.
+                </span>
               )}
             </div>
           )}
@@ -4026,7 +4029,7 @@ function BillingTPV({ showToast }) {
               ))}
               {extras.map(e => (
                 <div key={e.key} style={{ display: 'flex', gap: 10, alignItems: 'center', background: 'color-mix(in oklab, var(--purple) 6%, var(--bg-2))', border: '1px solid var(--line)', borderRadius: 12, padding: '10px 14px' }}>
-                  <span style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', color: 'var(--purple)' }}>{e.esBono ? 'Bono' : e.concepto === ANTICIPO_CONCEPTO ? 'Anticipo' : 'Extra'}</span>
+                  <span style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', color: 'var(--purple)' }}>{e.concepto === ANTICIPO_CONCEPTO ? 'Anticipo' : e.esBonoCatalogo ? 'Bono' : 'Extra'}</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 700, fontSize: 14 }}>{e.descripcion} <span style={{ color: 'var(--ink-3)', fontWeight: 500, fontSize: 12 }}>· {e.nombre}</span></div>
                     <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
@@ -4036,7 +4039,7 @@ function BillingTPV({ showToast }) {
                     </div>
                   </div>
                   <div style={{ fontWeight: 800, fontFamily: 'var(--font-display)', minWidth: 66, textAlign: 'right' }}>{eur(e.bruto ?? e.precio)}{e.concepto === ANTICIPO_CONCEPTO && e.ivaPct > 0 ? <span style={{ display: 'block', fontSize: 10, fontWeight: 500, color: 'var(--ink-3)' }}>IVA {e.ivaPct}% incl.</span> : null}</div>
-                  {!e.esBono && e.concepto !== ANTICIPO_CONCEPTO && (
+                  {e.concepto !== ANTICIPO_CONCEPTO && (
                     <button className="btn btn-sm btn-outline" style={{ fontSize: 11, padding: '4px 8px', whiteSpace: 'nowrap' }} onClick={() => dejarPendiente(e)} title="Guardar como cargo pendiente para cobrarlo otro día">Dejar pendiente</button>
                   )}
                   <button className="icon-btn danger" style={{ width: 26, height: 26 }} onClick={() => setExtras(x => x.filter(y => y.key !== e.key))} aria-label="Quitar"><I.X /></button>
@@ -4047,6 +4050,7 @@ function BillingTPV({ showToast }) {
                 const pSel = precios.find(x => x.concepto === addExtra.concepto);
                 const periodico = pSel?.tipo === 'Mensualidad';
                 const faltaMes = periodico && !addExtra.mes;
+                const esBonoSel = !!pSel?.esBono;
                 return (
                 <form style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 12, padding: 12 }}
                   onSubmit={ev => {
@@ -4055,7 +4059,7 @@ function BillingTPV({ showToast }) {
                     const persona = family.find(f => f.id === addExtra.clienteId) || pagador;
                     if (!p || !persona) return;
                     if (p.tipo === 'Mensualidad' && !addExtra.mes) return;
-                    setExtras(x => [...x, { key: Math.random().toString(36).slice(2), clienteId: persona.id, nombre: persona.nombre, concepto: p.concepto, descripcion: p.descripcion, precio: p.precio, ivaPct: p.ivaPct, tipo: p.tipo, descuentoPct: 0, mes: p.tipo === 'Mensualidad' ? addExtra.mes + '-01' : null }]);
+                    setExtras(x => [...x, { key: Math.random().toString(36).slice(2), clienteId: persona.id, nombre: persona.nombre, concepto: p.concepto, descripcion: p.descripcion, precio: p.precio, ivaPct: p.ivaPct, tipo: p.tipo, descuentoPct: 0, mes: p.tipo === 'Mensualidad' ? addExtra.mes + '-01' : null, esBonoCatalogo: !!p.esBono, bonoClases: p.bonoClases }]);
                     setAddExtra(null);
                   }}>
                   <select value={addExtra.clienteId} onChange={e => setAddExtra(a => ({ ...a, clienteId: e.target.value }))} required style={{ fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
@@ -4092,6 +4096,11 @@ function BillingTPV({ showToast }) {
                       ese mes se cobraría dos veces (ticket #220). */}
                   {periodico && (
                     <MesAnioInput value={addExtra.mes || ''} onChange={mv => setAddExtra(a => ({ ...a, mes: mv }))} />
+                  )}
+                  {esBonoSel && (
+                    <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--purple)' }}>
+                      🎫 Bono de {pSel.bonoClases || 1} clase{(pSel.bonoClases || 1) !== 1 ? 's' : ''} · vale en cualquier clase que admita bonos
+                    </span>
                   )}
                   <button className="btn btn-sm btn-primary" type="submit" disabled={!addExtra.concepto || !addExtra.clienteId || faltaMes}>Añadir</button>
                   <button className="btn btn-sm btn-outline" type="button" onClick={() => setAddExtra(null)}>Cancelar</button>
@@ -4148,52 +4157,9 @@ function BillingTPV({ showToast }) {
                 </button>
               )}
 
-              {/* Vender un bono de clases sueltas (ticket #245): el alumno podrá
-                  asistir a esa actividad sin matrícula; los profes lo gastan al
-                  pasar lista. El importe es CON IVA incluido, como el anticipo. */}
-              {addBono ? (
-                <form style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', background: 'color-mix(in oklab, var(--teal) 6%, var(--bg-3))', border: '1px solid var(--line)', borderRadius: 12, padding: 12 }}
-                  onSubmit={ev => {
-                    ev.preventDefault();
-                    const persona = family.find(f => f.id === addBono.clienteId) || pagador;
-                    const imp = Math.round((Number(addBono.importe) + Number.EPSILON) * 100) / 100;
-                    const actividad = (addBono.actividad || '').trim();
-                    const clases = Math.max(1, parseInt(addBono.clases, 10) || 3);
-                    if (!persona || !actividad || !(imp > 0)) return;
-                    const ivaPct = Number(addBono.ivaPct) || 0;
-                    const base = Math.round((imp / (1 + ivaPct / 100) + Number.EPSILON) * 100) / 100;
-                    setExtras(x => [...x, { key: Math.random().toString(36).slice(2), clienteId: persona.id, nombre: persona.nombre, concepto: BONO_CONCEPTO, esBono: true, actividad, clases, descripcion: `Bono ${clases} clases — ${actividad === '__adultos__' ? 'Adultos (varias actividades)' : actividad}`, precio: base, bruto: imp, ivaPct, tipo: 'Otros', descuentoPct: 0, mes: null }]);
-                    setAddBono(null);
-                  }}>
-                  <select value={addBono.clienteId} onChange={e => setAddBono(a => ({ ...a, clienteId: e.target.value }))} required style={{ fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
-                    <option value="">¿Para quién?...</option>
-                    {family.map(f => <option key={f.id} value={f.id}>{f.nombre} {f.apellidos}</option>)}
-                  </select>
-                  <select value={addBono.actividad || ''} onChange={e => setAddBono(a => ({ ...a, actividad: e.target.value }))} required style={{ fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
-                    <option value="">Actividad del bono...</option>
-                    {/* Bono de adultos (#253): vale en todas las clases que admiten el bono de adultos. */}
-                    <option value="__adultos__">Bono de adultos (varias actividades)</option>
-                    {actividades.filter(a => !/ingl[eé]s/i.test(a)).map(a => <option key={a} value={a}>{a}</option>)}
-                  </select>
-                  <input type="number" min="1" max="50" step="1" placeholder="Clases" title="Nº de clases del bono" value={addBono.clases ?? 3} onChange={e => setAddBono(a => ({ ...a, clases: e.target.value }))}
-                    style={{ width: 80, fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }} />
-                  <input type="number" step="0.01" min="0" placeholder="Importe € (IVA incl.)" value={addBono.importe || ''} onChange={e => setAddBono(a => ({ ...a, importe: e.target.value }))}
-                    required style={{ width: 140, fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }} />
-                  <select value={addBono.ivaPct ?? 0} onChange={e => setAddBono(a => ({ ...a, ivaPct: e.target.value }))}
-                    style={{ fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
-                    <option value="0">Sin IVA</option>
-                    <option value="4">IVA 4%</option>
-                    <option value="10">IVA 10%</option>
-                    <option value="21">IVA 21%</option>
-                  </select>
-                  <button className="btn btn-sm btn-primary" type="submit" disabled={!addBono.clienteId || !addBono.actividad || !(Number(addBono.importe) > 0)}>Añadir bono</button>
-                  <button className="btn btn-sm btn-outline" type="button" onClick={() => setAddBono(null)}>Cancelar</button>
-                </form>
-              ) : (
-                <button className="btn btn-sm btn-outline" style={{ justifySelf: 'start' }} onClick={() => setAddBono({ clienteId: pagador.id, actividad: '', clases: 3, importe: '', ivaPct: 0 })}>
-                  <I.Plus /> Vender bono de clases
-                </button>
-              )}
+              {/* Los bonos son conceptos del catálogo (ticket #231, chat del equipo):
+                  se venden como cualquier otro extra, con "Añadir extra", y al
+                  cobrarlos se le crea el bono con las clases que diga el catálogo. */}
 
               {/* Anticipos ya guardados de la familia: se pueden aplicar ahora,
                   restándolos del total (el dinero ya entró; ticket #221). */}
@@ -4663,6 +4629,8 @@ function BillingPendientes({ activa, showToast }) {
   const [cargando, setCargando] = useState(false);
   const [q, setQ] = useState('');                 // buscador de alumnos
   const [campCargos, setCampCargos] = useState([]); // pendientes de campamento (#248), aparte del mes
+  const [preview, setPreview] = useState(null);   // previsualizar la generación (#231)
+  const [generando, setGenerando] = useState(false);
 
   useEffect(() => {
     fetch('/api/admin/billing/mes-a-generar', { credentials: 'include' })
@@ -4696,6 +4664,41 @@ function BillingPendientes({ activa, showToast }) {
     finally { setCargando(false); }
   }, [todos, mesIso]);
   useEffect(() => { cargar(); }, [cargar]);
+
+  // Previsualizar la generación del mes: qué cargos se crearían, sin crear nada
+  // (ticket #231: el botón no hacía nada porque no llamaba a ningún sitio).
+  async function previsualizar() {
+    setPreview({ cargando: true });
+    try {
+      const r = await fetch(`/api/admin/billing/generar/preview?mes=${mesIso}`, { credentials: 'include', cache: 'no-store' });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'No se pudo previsualizar.');
+      setPreview(d);
+    } catch (e) { setPreview(null); alert(e.message); }
+  }
+
+  async function generarAhora() {
+    if (!window.confirm(`¿Generar ya los cargos de ${mesLargo(mesIso)}? Solo se crean los que falten: repetirlo no duplica nada.`)) return;
+    setGenerando(true);
+    try {
+      const r = await fetch('/api/admin/billing/generar', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ mes: mesIso }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'No se pudo generar.');
+      showToast?.(`${d.creados} cargo(s) generados de ${mesLargo(d.mes)}.`);
+      setPreview(null);
+      await cargar();
+    } catch (e) { alert(e.message); } finally { setGenerando(false); }
+  }
+
+  const exportarPdfUrl = () => {
+    const p = new URLSearchParams();
+    if (todos) p.set('todos', 'true'); else p.set('mes', mesIso);
+    if (q.trim()) p.set('q', q.trim());
+    return `/api/admin/billing/cargos/export.pdf?${p}`;
+  };
 
   async function borrarCargo(id) {
     if (!window.confirm('¿Borrar este cargo pendiente?')) return;
@@ -4733,7 +4736,7 @@ function BillingPendientes({ activa, showToast }) {
   return (
     <div style={{ display: 'grid', gap: 16 }}>
       <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>
-        Todos los cargos pendientes de cobro. Elige un mes o mira los de todos los meses, y expórtalos a CSV.
+        Todos los cargos pendientes de cobro. Elige un mes o mira los de todos los meses, y expórtalos a CSV o PDF.
         En un mes futuro de la temporada verás además la <b>previsión</b>: lo que se cobrará ese mes, todavía sin generar (no es deuda).
       </p>
 
@@ -4757,9 +4760,55 @@ function BillingPendientes({ activa, showToast }) {
           <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--ink-2)' }}>
             {cargosF.length} cargos · base {eur(totalPendiente)}{previsionF.length > 0 ? ` · +${previsionF.length} en previsión` : ''}
           </span>
-          <button className="btn btn-sm btn-outline" onClick={exportarCargos} disabled={!cargosF.length && !previsionF.length && !campF.length}><I.Download /> Exportar CSV</button>
+          <button className="btn btn-sm btn-outline" onClick={exportarCargos} disabled={!cargosF.length && !previsionF.length && !campF.length}><I.Download /> CSV</button>
+          <a className="btn btn-sm btn-outline" href={exportarPdfUrl()} target="_blank" rel="noopener noreferrer"><I.Download /> PDF</a>
+          {!todos && <button className="btn btn-sm btn-outline" onClick={previsualizar}>Previsualizar</button>}
         </div>
       </div>
+
+      {/* Previsualizar la generación del mes (ticket #231): qué se crearía, sin
+          crear nada, y el botón para generarlo ya si cuadra. */}
+      {preview && (
+        <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: 16, display: 'grid', gap: 10 }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <b style={{ fontSize: 14 }}>Si se generan los cargos de {mesLargo(mesIso)}</b>
+            <div style={{ flex: 1 }} />
+            <button className="icon-btn" onClick={() => setPreview(null)} aria-label="Cerrar"><I.X /></button>
+          </div>
+          {preview.cargando && <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>Calculando...</span>}
+          {!preview.cargando && (
+            <>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                {[['Se crearían', preview.nuevos], ['Alumnos', preview.totalAlumnos], ['Ya estaban', preview.yaExistian], ['Base', eur(preview.importeBase)]].map(([t, v]) => (
+                  <div key={t} style={{ flex: '1 1 120px', background: 'var(--bg-3)', borderRadius: 10, padding: '8px 12px' }}>
+                    <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--ink-3)' }}>{t}</div>
+                    <div style={{ fontSize: 17, fontWeight: 800 }}>{v}</div>
+                  </div>
+                ))}
+              </div>
+              {preview.detalle?.length > 0 && (
+                <div style={{ display: 'grid', gap: 3, maxHeight: 220, overflowY: 'auto' }}>
+                  {preview.detalle.map((d, i) => (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, padding: '4px 8px', background: 'var(--bg-3)', borderRadius: 8 }}>
+                      <span style={{ fontWeight: 700 }}>{d.nombre}</span>
+                      <span style={{ color: 'var(--ink-3)' }}>{d.concepto} · {eur(d.precio * (1 - (d.descuentoPct || 0) / 100))}{d.descuentoPct ? ` (dto ${d.descuentoPct}%)` : ''}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                  Los cargos se generan solos cada poco; esto es para adelantarlo. Repetirlo no duplica nada.
+                </span>
+                <div style={{ flex: 1 }} />
+                <button className="btn btn-sm btn-primary" onClick={generarAhora} disabled={generando || !preview.nuevos}>
+                  {generando ? 'Generando...' : preview.nuevos ? `Generar ${preview.nuevos} cargo(s)` : 'No hay nada que generar'}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {cargando && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
       {!cargando && cargosF.length === 0 && previsionF.length === 0 && campF.length === 0 && (
@@ -5244,6 +5293,27 @@ function AdminBilling({ showToast }) {
               <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
                 El IVA se suma encima del precio. Cambiar el precio aquí <b>no</b> toca los cargos ya generados: cada uno guarda el suyo.
               </p>
+              {/* Bonos de clases (ticket #231): el concepto dice cuántas clases da.
+                  Al venderlo no se pregunta nada más, y vale en cualquier clase que
+                  admita bonos, sea de la actividad que sea. */}
+              <div style={{ display: 'grid', gap: 8, padding: 12, background: 'var(--bg-3)', borderRadius: 12 }}>
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, cursor: 'pointer', fontWeight: 700 }}>
+                  <input type="checkbox" checked={!!editPrecio.esBono}
+                    onChange={e => setEditPrecio(p => ({ ...p, esBono: e.target.checked, bonoClases: e.target.checked ? (p.bonoClases || 5) : null, tipo: e.target.checked ? 'Otros' : p.tipo }))} />
+                  Es un bono de clases
+                </label>
+                {editPrecio.esBono && (
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <label style={{ fontSize: 13 }}>Clases que da</label>
+                    <input type="number" min="1" max="200" value={editPrecio.bonoClases ?? 5}
+                      onChange={e => setEditPrecio(p => ({ ...p, bonoClases: Number(e.target.value) }))}
+                      style={{ width: 90, fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }} />
+                    <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                      Al cobrarlo se le crea el bono. Se gasta una clase por cada sesión a la que venga, de la actividad que sea.
+                    </span>
+                  </div>
+                )}
+              </div>
               {!editPrecio.esNuevo && (
                 <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, cursor: 'pointer' }}>
                   <input type="checkbox" checked={editPrecio.activo !== false} onChange={e => setEditPrecio(p => ({ ...p, activo: e.target.checked }))} />

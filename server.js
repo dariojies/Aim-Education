@@ -15,6 +15,7 @@ import { generarReciboPdf } from './recibo-pdf.js';
 import { generarGastosPdf, gastosCsv, nombrePeriodo } from './gastos-pdf.js';
 import { generarResumenAnualPdf } from './resumen-anual-pdf.js';
 import { generarInformeJornadaPdf, generarResumenMensualPdf } from './fichaje-pdf.js';
+import { generarPendientesPdf } from './pendientes-pdf.js';
 import { plazasConBono, reservarPlazaBono, cancelarReservaBono, ventanaReservas, hoyMadridISO } from './bonos-clases.js';
 import { filtroNombreSQL } from './buscar.js';
 import { PassThrough } from 'stream';
@@ -1076,9 +1077,8 @@ async function initDb() {
             )
         `);
 
-        // Plazas con bono (ticket #253). Cada clase dice si admite bonos: 'no', el
-        // bono de su actividad ('actividad') o además el bono de adultos, que vale
-        // en todas las clases con esa opción ('adultos'). Inglés nunca admite bonos.
+        // Plazas con bono (ticket #253, ajustado en el #231 con el chat del equipo):
+        // cada clase dice solo si admite bonos ('si') o no ('no'). Inglés nunca.
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_clase_bonos (
                 group_id UUID PRIMARY KEY,
@@ -1087,8 +1087,17 @@ async function initDb() {
                 updated_by UUID
             )
         `);
-        // Un bono es de una actividad concreta o de adultos (multiactividad).
-        await client.query(`ALTER TABLE aim_bonos ADD COLUMN IF NOT EXISTS ambito VARCHAR(12) NOT NULL DEFAULT 'actividad'`);
+        // Las que se hubieran configurado con el modelo anterior (por actividad o
+        // de adultos) pasan a admitir bonos sin más.
+        await client.query(`UPDATE aim_clase_bonos SET modo = 'si' WHERE modo IN ('actividad', 'adultos')`);
+        // Los bonos son conceptos del catálogo (#231, chat del equipo): el concepto
+        // dice el precio y cuántas clases da, y el bono vale en cualquier clase que
+        // admita bonos, de la actividad que sea.
+        await client.query(`ALTER TABLE aim_bonos ADD COLUMN IF NOT EXISTS ambito VARCHAR(12) NOT NULL DEFAULT 'catalogo'`);
+        await client.query(`ALTER TABLE aim_bonos ADD COLUMN IF NOT EXISTS concepto VARCHAR(100)`);
+        await client.query(`UPDATE aim_bonos SET ambito = 'catalogo' WHERE ambito <> 'catalogo'`);
+        await client.query(`ALTER TABLE aim_precios ADD COLUMN IF NOT EXISTS es_bono BOOLEAN NOT NULL DEFAULT false`);
+        await client.query(`ALTER TABLE aim_precios ADD COLUMN IF NOT EXISTS bono_clases INTEGER`);
         // Reservas de plaza con bono para un día concreto. Cada domingo se abren las
         // plazas libres de la semana siguiente. La clase del bono se gasta al
         // reservar (aim_bono_usos.reserva_id); si se cancela antes del día, vuelve.
@@ -2855,6 +2864,7 @@ async function emitirReciboDe(client, { pagadorId, cargoIds, medioPago, userId }
         );
     }
     await descontarStockDeCargos(client, cs.rows, reciboId, userId); // almacén (#250)
+    await crearBonosDeCargos(client, cs.rows, reciboId, userId);     // bonos (#231)
     const pg = await client.query(`SELECT name, surname FROM users WHERE user_id = $1`, [pagadorId]);
     await registrarFactura(client, {
         recibo: { ...rec.rows[0], id: reciboId, serie: rec.rows[0].serie || 'A', tipo: 'normal' },
@@ -5545,21 +5555,31 @@ app.get('/api/admin/billing/precios', authenticateSession, requireAdmin, async (
         res.json(r.rows.map(p => ({
             concepto: p.concepto, descripcion: p.descripcion, precio: Number(p.precio),
             tipo: p.tipo, ivaPct: Number(p.iva_pct), activo: p.activo,
+            // Bonos de clases (ticket #231): el concepto dice cuántas clases da.
+            esBono: !!p.es_bono, bonoClases: p.bono_clases == null ? null : Number(p.bono_clases),
         })));
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 const TIPOS_CONCEPTO = ['Mensualidad', 'Material', 'Otros'];
 
+// Bono de clases: el concepto lleva cuántas clases da (ticket #231).
+const datosBono = (body) => {
+    const esBono = body?.esBono === true;
+    const n = parseInt(body?.bonoClases, 10);
+    return { esBono, clasesBono: esBono ? Math.max(1, Math.min(200, Number.isFinite(n) ? n : 1)) : null };
+};
+
 app.post('/api/admin/billing/precios', authenticateSession, requireAdmin, async (req, res) => {
     const { concepto, descripcion, precio, tipo, ivaPct } = req.body;
+    const { esBono, clasesBono } = datosBono(req.body);
     if (!concepto?.trim() || !descripcion?.trim()) return res.status(400).json({ error: 'Código y descripción son obligatorios.' });
     if (!TIPOS_CONCEPTO.includes(tipo)) return res.status(400).json({ error: `Tipo no válido. Debe ser: ${TIPOS_CONCEPTO.join(', ')}.` });
     if (Number(precio) < 0) return res.status(400).json({ error: 'El precio no puede ser negativo.' });
     try {
         await pool.query(
-            `INSERT INTO aim_precios (concepto, descripcion, precio, tipo, iva_pct) VALUES ($1,$2,$3,$4,$5)`,
-            [concepto.trim(), descripcion.trim(), Number(precio) || 0, tipo, Number(ivaPct) || 0]
+            `INSERT INTO aim_precios (concepto, descripcion, precio, tipo, iva_pct, es_bono, bono_clases) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+            [concepto.trim(), descripcion.trim(), Number(precio) || 0, tipo, Number(ivaPct) || 0, esBono, clasesBono]
         );
         res.status(201).json({ concepto: concepto.trim() });
     } catch (err) {
@@ -5570,6 +5590,7 @@ app.post('/api/admin/billing/precios', authenticateSession, requireAdmin, async 
 
 app.put('/api/admin/billing/precios/:concepto', authenticateSession, requireAdmin, async (req, res) => {
     const { descripcion, precio, tipo, ivaPct, activo } = req.body;
+    const { esBono, clasesBono } = datosBono(req.body);
     if (!descripcion?.trim()) return res.status(400).json({ error: 'La descripción es obligatoria.' });
     if (!TIPOS_CONCEPTO.includes(tipo)) return res.status(400).json({ error: `Tipo no válido. Debe ser: ${TIPOS_CONCEPTO.join(', ')}.` });
     if (Number(precio) < 0) return res.status(400).json({ error: 'El precio no puede ser negativo.' });
@@ -5577,9 +5598,9 @@ app.put('/api/admin/billing/precios/:concepto', authenticateSession, requireAdmi
         // Cambiar el precio aquí NO altera los cargos ya generados: cada cargo
         // guarda su propio precio congelado.
         const r = await pool.query(
-            `UPDATE aim_precios SET descripcion=$1, precio=$2, tipo=$3, iva_pct=$4, activo=$5, updated_at=NOW()
+            `UPDATE aim_precios SET descripcion=$1, precio=$2, tipo=$3, iva_pct=$4, activo=$5, es_bono=$7, bono_clases=$8, updated_at=NOW()
              WHERE concepto=$6 RETURNING concepto`,
-            [descripcion.trim(), Number(precio) || 0, tipo, Number(ivaPct) || 0, activo !== false, req.params.concepto]
+            [descripcion.trim(), Number(precio) || 0, tipo, Number(ivaPct) || 0, activo !== false, req.params.concepto, esBono, clasesBono]
         );
         if (r.rowCount === 0) return res.status(404).json({ error: 'Concepto no encontrado.' });
         res.json({ success: true });
@@ -5827,6 +5848,10 @@ app.post('/api/admin/billing/matriculas', authenticateSession, requireAdmin, asy
         // Snapshot del nombre/actividad, para no depender de aim-tul al facturar.
         const cl = await resolverClase(claseRef, claseOrigen);
         if (!cl) return res.status(400).json({ error: 'Clase no válida.' });
+        // ¿Le toca inscripción? Se mira ANTES de crear la ficha (#290).
+        const yaTeniaFicha = await pool.query(
+            `SELECT 1 FROM aim_matriculas WHERE user_id = $1 AND (baja IS NULL OR baja >= (now() AT TIME ZONE 'Europe/Madrid')::date) LIMIT 1`, [userId]);
+        const tocaInscripcion = !yaTeniaFicha.rowCount && (await debeInscripcion(userId)).debe;
         const r = await pool.query(
             `INSERT INTO aim_matriculas (user_id, clase_ref, clase_origen, clase_nombre, actividad, temporada_id, descuento_pct, alta, baja)
              VALUES ($1,$2,$3,$4,$5,$6,$7, COALESCE($8::date, (now() AT TIME ZONE 'Europe/Madrid')::date), $9::date) RETURNING id`,
@@ -5838,7 +5863,12 @@ app.post('/api/admin/billing/matriculas', authenticateSession, requireAdmin, asy
         try {
             cargosCreados = await generarCargosDeMatricula({ userId, claseRef, actividad: cl.actividad, temporadaId, descuentoPct: dto });
         } catch (e) { console.error('[#231 cargo ficha]', e.message); }
-        res.status(201).json({ id: r.rows[0].id, cargosCreados });
+        // Y la matrícula/inscripción, si es de los que la pagan (#231 y #290).
+        let inscripcionCreada = false;
+        try {
+            if (tocaInscripcion) inscripcionCreada = (await generarCargoInscripcion({ userId, yaComprobado: true })) > 0;
+        } catch (e) { console.error('[#231 inscripción ficha]', e.message); }
+        res.status(201).json({ id: r.rows[0].id, cargosCreados, inscripcionCreada });
     } catch (err) {
         if (err.code === '23505') return res.status(409).json({ error: 'Ese alumno ya tiene ficha en esa clase esta temporada.' });
         if (err.code === '22P02') return res.status(400).json({ error: 'Clase no válida.' });
@@ -5993,6 +6023,75 @@ app.get('/api/admin/billing/cargos/prevision', authenticateSession, requireAdmin
         res.status(500).json({ error: err.message });
     }
 });
+
+// Los cargos pendientes en PDF (ticket #231), con el mismo mes y el mismo
+// buscador que se estén viendo en pantalla: lo que se ve es lo que se exporta.
+app.get('/api/admin/billing/cargos/export.pdf', authenticateSession, requireAdmin, async (req, res) => {
+    const todos = req.query.todos === 'true' || req.query.todos === '1';
+    const q = String(req.query.q || '').trim();
+    try {
+        const mes = todos ? null : normalizaMes(req.query.mes);
+        const vals = [];
+        const where = [`c.estado = 'pendiente'`, 'c.recibo_id IS NULL'];
+        if (!todos) { vals.push(mes); where.push(`c.mes = $${vals.length}::date`); }
+        const filtro = filtroNombreSQL(q, `(u.name || ' ' || COALESCE(u.surname,''))`, vals);
+        if (filtro) where.push(filtro);
+        const lista = async (extra, valsExtra = []) => (await pool.query(
+            `SELECT c.concepto, c.descripcion, c.mes::text AS mes, c.precio, c.descuento_pct, c.origen,
+                    TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno
+             FROM aim_cargos c JOIN users u ON u.user_id = c.cliente_id
+             WHERE ${[...where, ...extra].join(' AND ')}
+             ORDER BY u.surname, u.name, c.mes`, [...vals, ...valsExtra])).rows.map(c => ({
+            alumno: c.alumno, descripcion: c.descripcion,
+            // La inscripción no lleva mes (ticket #289).
+            mes: c.concepto === CONCEPTO_INSCRIPCION || c.origen === 'inscripcion' ? null : c.mes,
+            precio: Number(c.precio), descuentoPct: Number(c.descuento_pct),
+            base: r2Server(Number(c.precio) * (1 - Number(c.descuento_pct) / 100)),
+        }));
+        const cargos = await lista([]);
+        // Los del campamento van aparte y no dependen del mes elegido (#248).
+        const campamento = todos ? [] : await lista([`c.origen = 'campamento'`, `c.mes <> $${vals.length + 1}::date`], [mes]);
+        // Previsión del mes elegido: lo que se cobrará y aún no está generado.
+        let prevision = [];
+        if (!todos) {
+            const temp = await pool.query('SELECT id, nombre FROM aim_temporadas WHERE activa = true');
+            if (temp.rowCount) {
+                const rango = mesesDeTemporada(temp.rows[0].nombre);
+                if (!rango || (mes >= rango.inicio && mes <= rango.fin)) {
+                    const rows = await candidatosGeneracion(temp.rows[0].id, mes);
+                    prevision = rows.filter(r => !r.ya_existe)
+                        .map(r => ({
+                            alumno: `${r.name} ${r.surname || ''}`.trim(), descripcion: r.descripcion, mes,
+                            precio: Number(r.precio), descuentoPct: Number(r.descuento_pct),
+                            base: r2Server(Number(r.precio) * (1 - Number(r.descuento_pct) / 100)),
+                        }))
+                        .filter(x => !q || textoPlanoServidor(x.alumno).includes(textoPlanoServidor(q))
+                            || textoPlanoServidor(q).split(/\s+/).every(p => textoPlanoServidor(x.alumno).includes(p)));
+                }
+            }
+        }
+        const suma = (l) => r2Server(l.reduce((s, x) => s + x.base, 0));
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="cargos-pendientes-${todos ? 'todos' : mes.slice(0, 7)}.pdf"`);
+        generarPendientesPdf({
+            empresa: EMPRESA_TICKET,
+            periodo: todos ? 'Todos los meses' : nombreMesLargo(mes),
+            filtros: q ? [`Buscando "${q}"`] : [],
+            cargos, campamento, prevision,
+            totalPendiente: suma(cargos) + suma(campamento), totalPrevision: suma(prevision),
+            generadoEl: fmtFechaHoraMadrid(new Date()),
+        }, res);
+    } catch (err) {
+        console.error('Error exportando pendientes:', err);
+        if (!res.headersSent) res.status(500).json({ error: err.message });
+    }
+});
+const textoPlanoServidor = (t) => String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+const nombreMesLargo = (iso) => {
+    const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+    const [y, m] = String(iso).slice(0, 7).split('-');
+    return `${MESES[Number(m) - 1].replace(/^./, c => c.toUpperCase())} de ${y}`;
+};
 
 // Generar: inserta los cargos que falten (idempotente por (cliente, concepto, mes)).
 // Genera los cargos del mes de todas las fichas vigentes de la temporada activa.
@@ -6272,9 +6371,6 @@ const MEDIO_TPV_ONLINE = 'tpv_online';
 const ANTICIPO_CONCEPTO = '01000';
 // Concepto con el que se registra un bono de clases sueltas (ticket #245).
 const BONO_CONCEPTO = '02000';
-// Bono de adultos (#253): en el TPV se elige como si fuera una actividad más.
-const BONO_ADULTOS = '__adultos__';
-const BONO_ADULTOS_NOMBRE = 'Adultos (varias actividades)';
 // Tipos de IVA admitidos para un anticipo (ticket #238): los vigentes en España.
 const IVAS_VALIDOS = [0, 4, 10, 21];
 
@@ -6389,6 +6485,29 @@ app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async
 // artículo enlazado al concepto del cargo (cada talla es su propio concepto) y le
 // resta una unidad, dejando el movimiento anotado. Los cargos que no son de
 // almacén (mensualidades, anticipos…) no casan con nada y se ignoran.
+// Bonos de clases (ticket #231, chat del equipo): los bonos son conceptos del
+// catálogo. Al cobrar una línea cuyo concepto está marcado como bono, se le crea
+// el bono con las clases que diga el catálogo. Vale en cualquier clase que admita
+// bonos, sea de la actividad que sea.
+async function crearBonosDeCargos(client, rows, reciboId, userId) {
+    for (const c of rows) {
+        if (!c.concepto) continue;
+        const p = await client.query(
+            `SELECT descripcion, bono_clases FROM aim_precios WHERE concepto = $1 AND es_bono = true`, [c.concepto]);
+        if (!p.rowCount) continue;
+        const clases = Math.max(1, parseInt(p.rows[0].bono_clases, 10) || 1);
+        // Un bono por línea cobrada, y sin repetir si ya se creó para ese recibo.
+        const ya = await client.query(
+            `SELECT 1 FROM aim_bonos WHERE recibo_id = $1 AND cliente_id = $2 AND concepto = $3`,
+            [reciboId, c.cliente_id, c.concepto]);
+        if (ya.rowCount) continue;
+        await client.query(
+            `INSERT INTO aim_bonos (cliente_id, actividad, ambito, concepto, clases_total, clases_usadas, recibo_id, created_by)
+             VALUES ($1, $2, 'catalogo', $3, $4, 0, $5, $6)`,
+            [c.cliente_id, p.rows[0].descripcion, c.concepto, clases, reciboId, userId]);
+    }
+}
+
 async function descontarStockDeCargos(client, rows, reciboId, userId) {
     for (const c of rows) {
         if (!c.concepto) continue;
@@ -6451,6 +6570,7 @@ async function emitirUnRecibo(client, { pagadorId, rows, pagosG, entregadoG, cam
     }
     // Descontar del almacén lo que se vende (ticket #250), por concepto.
     await descontarStockDeCargos(client, rows, reciboId, userId);
+    await crearBonosDeCargos(client, rows, reciboId, userId);
     await registrarFactura(client, {
         recibo: { ...rec.rows[0], id: reciboId, serie: rec.rows[0].serie || 'A', tipo: 'normal' },
         receptor: { nombre: receptorNombre },
@@ -6519,7 +6639,7 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
         const rp = await pool.query(`SELECT birthday FROM users WHERE user_id = $1`, [pagadorId]);
         const edadPag = rp.rowCount ? edadDe(rp.rows[0].birthday) : null;
         if (edadPag != null && edadPag < 18) {
-            return res.status(400).json({ error: 'El pagador es menor de edad. La factura debe emitirse a un adulto de la familia (padre, madre o tutor/a): selecciónalo arriba.' });
+            return res.status(400).json({ error: 'No se puede cobrar a un menor: la factura tiene que ir a un adulto responsable de su familia (padre, madre o tutor/a). Elígelo arriba, o añádelo en Familias si no lo tiene.' });
         }
     }
     const idsSel = Array.isArray(lineas) ? lineas.map(l => l.cargoId).filter(Boolean) : [];
@@ -6546,7 +6666,6 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
         // Anticipos que se registran nuevos en este cobro (ticket #221): se cobran
         // como un cargo normal y luego se anotan en aim_anticipos con su saldo.
         const anticiposNuevos = [];   // { cargoId, importe, motivo, clienteId }
-        const bonosNuevos = [];       // { clienteId, actividad, clases } (ticket #245)
         for (const ex of extrasArr) {
             // Anticipo (#221): importe MANUAL escrito a mano + motivo. Es el único
             // caso en que el importe lo pone quien cobra; para todo lo demás manda
@@ -6573,31 +6692,6 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
                 // El saldo del anticipo se lleva en BRUTO (con IVA): es lo que la
                 // familia ha dejado a cuenta y lo que se descuenta luego del total.
                 anticiposNuevos.push({ cargoId: ins.rows[0].id, importe: bruto, motivo, clienteId: clienteAnt, ivaPct });
-                continue;
-            }
-            // Bono de N clases de una actividad (ticket #245): importe a mano, como
-            // el anticipo. Se cobra como un cargo normal (cuenta como ingreso de esa
-            // actividad) y luego se anota el bono con sus clases disponibles.
-            if (ex.esBono) {
-                const bruto = r2Server(Number(ex.importe));
-                if (!(bruto > 0)) throw { httP: 400, msg: 'El bono necesita un importe mayor que 0 €.' };
-                // Bono de adultos (#253): vale en todas las clases que admiten el
-                // bono de adultos, de cualquier actividad.
-                const ambito = ex.actividad === BONO_ADULTOS ? 'adultos' : 'actividad';
-                const actividad = ambito === 'adultos' ? BONO_ADULTOS_NOMBRE : (ex.actividad || '').toString().trim();
-                if (!actividad) throw { httP: 400, msg: 'Elige la actividad del bono.' };
-                const clases = Math.max(1, Math.min(50, parseInt(ex.clases, 10) || 3));
-                const ivaPct = IVAS_VALIDOS.includes(Number(ex.ivaPct)) ? Number(ex.ivaPct) : 0;
-                const base = baseExactaDesdeBruto(bruto, ivaPct);
-                const clienteBono = ex.clienteId || pagadorId;
-                const desc = `Bono ${clases} clases — ${actividad}`;
-                const ins = await client.query(
-                    `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado, origen, actividad, importe_bruto)
-                     VALUES ($1,$2,$3::date,$4,'Otros',$5,$6,0,'pendiente','bono',$7,$8) RETURNING id`,
-                    [clienteBono, BONO_CONCEPTO, mesActual, desc, base, ivaPct, actividad, bruto]
-                );
-                extraIds.push(ins.rows[0].id);
-                bonosNuevos.push({ clienteId: clienteBono, actividad, clases, ambito });
                 continue;
             }
             const pr = await client.query(`SELECT descripcion, tipo, precio, iva_pct FROM aim_precios WHERE concepto = $1 AND activo = true`, [ex.concepto]);
@@ -6744,7 +6838,7 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
         // Hacienda. Solo en cobros normales: con anticipos o bonos va en una sola.
         const conIvaRows = cs.rows.filter(c => Number(c.iva_pct) > 0);
         const exentoRows = cs.rows.filter(c => !(Number(c.iva_pct) > 0));
-        const sinExtras = anticiposNuevos.length === 0 && bonosNuevos.length === 0 && aplicaciones.length === 0;
+        const sinExtras = anticiposNuevos.length === 0 && aplicaciones.length === 0;
         let calcConIva = null, calcExento = null;
         if (sinExtras && conIvaRows.length && exentoRows.length) {
             calcConIva = calcularRecibo(conIvaRows.map(cargoParaMotor));
@@ -6810,14 +6904,6 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
                     `INSERT INTO aim_anticipos_aplicaciones (anticipo_id, recibo_id, cargo_id, importe)
                      VALUES ($1,$2,$3,$4)`,
                     [ap.anticipoId, reciboId, ap.cargoId, ap.importe]
-                );
-            }
-            // 6c) Bonos de clases (ticket #245).
-            for (const b of bonosNuevos) {
-                await client.query(
-                    `INSERT INTO aim_bonos (cliente_id, actividad, clases_total, clases_usadas, recibo_id, created_by, ambito)
-                     VALUES ($1,$2,$3,0,$4,$5,$6)`,
-                    [b.clienteId, b.actividad, b.clases, reciboId, userId, b.ambito || 'actividad']
                 );
             }
         }
@@ -7867,6 +7953,7 @@ async function asentarPago(client, pago, aviso) {
     }
     // Lo vendido sale del almacén también si se paga por internet (ticket #250).
     await descontarStockDeCargos(client, cs.rows, reciboId, null);
+    await crearBonosDeCargos(client, cs.rows, reciboId, null);
 
     const pg = await client.query(`SELECT name, surname FROM users WHERE user_id = $1`, [pago.pagador_id]);
     await registrarFactura(client, {

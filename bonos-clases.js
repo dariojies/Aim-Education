@@ -12,7 +12,7 @@
 //   reservar; si cancela antes del día de la clase, se le devuelve.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const MODOS_BONO = ['no', 'actividad', 'adultos'];
+export const MODOS_BONO = ['no', 'si'];
 
 const TZ = 'Europe/Madrid';
 export const hoyMadridISO = () => new Date().toLocaleDateString('en-CA', { timeZone: TZ });
@@ -62,12 +62,11 @@ export const sqlMiembroEnFecha = (o) => `((${sqlMatriculadoEnFecha(o)}) OR (${sq
 export const sqlModoBono = (cb = 'cb', a = 'a') =>
     `(CASE WHEN ${a}.activity_type = 'ingles' THEN 'no' ELSE COALESCE(${cb}.modo, 'no') END)`;
 
-// ¿El bono `b` vale en una clase con ese modo y esa actividad?
-export const sqlBonoValeEn = (b, modo, actividad) => `(
-  ${modo} IN ('actividad', 'adultos')
-  AND ((${b}.ambito = 'actividad' AND ${b}.actividad = ${actividad})
-       OR (${modo} = 'adultos' AND ${b}.ambito = 'adultos'))
-)`;
+// ¿El bono `b` vale en una clase con ese modo? Desde el #231 (chat del equipo)
+// los bonos no van por actividad: valen en cualquier clase que admita bonos, así
+// que con una hora en taekwondo, otra en ballet y otra en robótica se gastan tres.
+// eslint-disable-next-line no-unused-vars
+export const sqlBonoValeEn = (b, modo, actividad) => `(${modo} = 'si')`;
 
 // Ventana de reservas para las familias: desde hoy hasta el domingo de la semana
 // abierta. El domingo se abre la semana siguiente entera (lunes a domingo).
@@ -160,7 +159,7 @@ export async function reservarPlazaBono(pool, { clubId, studentId, groupId, fech
                  LEFT JOIN aim_clase_bonos cb ON cb.group_id = g.group_id WHERE g.group_id = $1 AND a.club_id = $2`, [groupId, clubId]);
             const i = info.rows[0];
             if (!i) throw { httP: 404, msg: 'Esa clase no existe.' };
-            if (i.modo === 'no') throw { httP: 400, msg: 'Esa clase no admite bonos.' };
+            if (i.modo !== 'si') throw { httP: 400, msg: 'Esa clase no admite bonos.' };
             if (!i.max_students) throw { httP: 400, msg: 'Esa clase no tiene un número de plazas fijado: no se pueden reservar plazas con bono.' };
             throw { httP: 400, msg: 'Ese día no hay esa clase, ya ha empezado o no tiene un bono válido para ella.' };
         }
@@ -177,7 +176,7 @@ export async function reservarPlazaBono(pool, { clubId, studentId, groupId, fech
              WHERE b.cliente_id = $1 AND b.clases_usadas < b.clases_total
                AND ${sqlBonoValeEn('b', sqlModoBono(), 'a.name')}
                AND NOT EXISTS (SELECT 1 FROM aim_bono_usos u WHERE u.bono_id = b.id AND u.group_id = $2 AND u.fecha = $3::date)
-             ORDER BY (b.ambito = 'actividad') DESC, b.created_at ASC
+             ORDER BY b.created_at ASC
              LIMIT 1 FOR UPDATE OF b`, [studentId, groupId, fecha]);
         if (!b.rowCount) throw { httP: 400, msg: 'No le quedan clases en un bono válido para esa clase.' };
         const bono = b.rows[0];

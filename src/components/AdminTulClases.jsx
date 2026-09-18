@@ -276,7 +276,7 @@ export function ListaClases({ showToast }) {
                   <span style={{ fontWeight: 800, fontSize: 15 }}>{g.name}</span>
                   {lleno && <Etiqueta color="#E5484D">COMPLETA</Etiqueta>}
                   {enEspera > 0 && <Etiqueta color="var(--purple)">{enEspera} en espera</Etiqueta>}
-                  {g.bonoModo && g.bonoModo !== 'no' && <Etiqueta color="var(--teal)">🎫 {g.bonoModo === 'adultos' ? 'BONO ACTIVIDAD O ADULTOS' : 'BONO DE LA ACTIVIDAD'}</Etiqueta>}
+                  {g.bonoModo && g.bonoModo !== 'no' && <Etiqueta color="var(--teal)">🎫 ADMITE BONOS</Etiqueta>}
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>{resumenSesiones(g)}</div>
                 <div style={{ fontSize: 12, color: 'var(--ink-2)', marginTop: 4, display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -325,15 +325,15 @@ export function ListaClases({ showToast }) {
                     <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Las clases de inglés no funcionan con bonos.</p>
                   ) : (
                     <>
-                      <select value={editGrupo.bonoModo || 'no'} onChange={e => setEditGrupo(x => ({ ...x, bonoModo: e.target.value }))}>
-                        <option value="no">No admite bonos</option>
-                        <option value="actividad">Admite el bono de {actividad.name}</option>
-                        <option value="adultos">Admite el bono de {actividad.name} o el bono de adultos</option>
-                      </select>
+                      <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, cursor: 'pointer' }}>
+                        <input type="checkbox" checked={editGrupo.bonoModo === 'si'}
+                          onChange={e => setEditGrupo(x => ({ ...x, bonoModo: e.target.checked ? 'si' : 'no' }))} />
+                        Admite bonos
+                      </label>
                       <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
-                        {editGrupo.bonoModo && editGrupo.bonoModo !== 'no'
+                        {editGrupo.bonoModo === 'si'
                           ? (editGrupo.maxStudents ? 'Cada domingo se abren las plazas libres de la semana siguiente para reservarlas con bono.' : 'Pon un número de plazas: sin él no se pueden abrir plazas con bono.')
-                          : 'El bono de adultos vale en todas las clases que lo admitan, de cualquier actividad.'}
+                          : 'Un bono vale en cualquier clase que los admita, de la actividad que sea.'}
                       </span>
                     </>
                   )}

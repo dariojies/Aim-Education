@@ -161,7 +161,7 @@ function BonosFamilia() {
                   {restantes ? `${restantes} clase${restantes !== 1 ? 's' : ''} disponible${restantes !== 1 ? 's' : ''}` : 'Bono agotado'}
                 </span>
                 <span style={{fontSize: 12, color: "var(--ink-3)"}}>
-                  {a.bonos.map(b => `${b.ambito === 'adultos' ? 'Bono adultos' : `Bono ${b.actividad}`}: ${b.restantes}/${b.total}`).join(' · ')}
+                  {a.bonos.map(b => `${b.actividad || 'Bono'}: ${b.restantes}/${b.total}`).join(' · ')}
                 </span>
               </div>
 

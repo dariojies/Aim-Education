@@ -226,7 +226,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
     // club, no el monitor. Inglés nunca admite bonos.
     router.put('/groups/:groupId/bonos-config', async (req, res) => {
         if (soloSuyos(req)) return res.status(403).json({ error: 'Esto lo decide secretaría o dirección.' });
-        const modo = String(req.body?.modo || '');
+        const modo = req.body?.modo === true || req.body?.modo === 'si' ? 'si' : String(req.body?.modo || 'no');
         if (!MODOS_BONO.includes(modo)) return res.status(400).json({ error: 'Opción de bonos no válida.' });
         try {
             const g = await pool.query(
@@ -1162,7 +1162,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                      AND NOT (${sqlMiembroEnFecha({ g: '$1', f: '$3', sid: 'b.cliente_id' })})
                      AND NOT EXISTS (SELECT 1 FROM aim_bono_reservas rv WHERE rv.group_id = $1 AND rv.fecha = $3::date
                                      AND rv.student_id = b.cliente_id AND rv.estado = 'reservada')
-                   ORDER BY b.cliente_id, (b.ambito = 'actividad') DESC, b.created_at
+                   ORDER BY b.cliente_id, b.created_at
                  ) x
                  ORDER BY nombre
                  LIMIT 25`, vals);
