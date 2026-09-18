@@ -5817,7 +5817,12 @@ async function sincronizarFichasActivas() {
          JOIN tul_groups g ON g.group_id = gs.group_id
          JOIN tul_activities a ON a.activity_id = g.activity_id
          WHERE a.club_id = $2
-         ON CONFLICT (user_id, clase_ref, temporada_id) DO UPDATE SET baja = NULL`,
+         -- El WHERE del final importa: sin él, cada pasada volvía a escribir las
+         -- 245 fichas aunque no hubiera cambiado ninguna (y esto se ejecuta cada
+         -- 45 s y en cada carga de Facturación). Así solo se toca lo que hay que
+         -- reabrir de verdad.
+         ON CONFLICT (user_id, clase_ref, temporada_id) DO UPDATE SET baja = NULL
+            WHERE aim_matriculas.baja IS NOT NULL`,
         [tid, AIM_CLUB_ID]);
     await pool.query(
         `UPDATE aim_matriculas m SET baja = (now() AT TIME ZONE 'Europe/Madrid')::date
@@ -6449,27 +6454,31 @@ app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async
     if (!pagadorId) return res.status(400).json({ error: 'Falta el pagador.' });
     try {
         const fam = await familiaIds(pagadorId);
-        const cargos = await pool.query(
-            `SELECT c.*, u.name, u.surname FROM aim_cargos c JOIN users u ON u.user_id = c.cliente_id
-             WHERE c.cliente_id = ANY($1::uuid[]) AND c.estado = 'pendiente' AND c.recibo_id IS NULL
-               AND ${SQL_NO_RESERVADO}
-             ORDER BY u.surname, u.name, c.mes`,
-            [fam]
-        );
-        const familia = await pool.query(
-            `SELECT user_id, name, surname, birthday FROM users WHERE user_id = ANY($1::uuid[]) ORDER BY birthday NULLS FIRST`,
-            [fam]
-        );
-        // Anticipos disponibles de la familia, para poder aplicarlos (ticket #221).
-        const anticipos = await pool.query(
-            `SELECT a.id, a.cliente_id, a.importe, a.saldo, a.motivo, a.iva_pct, a.created_at, u.name, u.surname,
-                    o.numero AS orig_numero, o.serie AS orig_serie, o.fecha AS orig_fecha
-             FROM aim_anticipos a JOIN users u ON u.user_id = a.cliente_id
-             LEFT JOIN aim_recibos o ON o.id = a.recibo_origen_id
-             WHERE a.cliente_id = ANY($1::uuid[]) AND a.estado = 'disponible' AND a.saldo > 0
-             ORDER BY a.created_at`,
-            [fam]
-        );
+        // Las tres a la vez: no dependen unas de otras y así la cesta se abre en
+        // un viaje a la base en vez de en tres.
+        const [cargos, familia, anticipos] = await Promise.all([
+            pool.query(
+                `SELECT c.*, u.name, u.surname FROM aim_cargos c JOIN users u ON u.user_id = c.cliente_id
+                 WHERE c.cliente_id = ANY($1::uuid[]) AND c.estado = 'pendiente' AND c.recibo_id IS NULL
+                   AND ${SQL_NO_RESERVADO}
+                 ORDER BY u.surname, u.name, c.mes`,
+                [fam]
+            ),
+            pool.query(
+                `SELECT user_id, name, surname, birthday FROM users WHERE user_id = ANY($1::uuid[]) ORDER BY birthday NULLS FIRST`,
+                [fam]
+            ),
+            // Anticipos disponibles de la familia, para poder aplicarlos (ticket #221).
+            pool.query(
+                `SELECT a.id, a.cliente_id, a.importe, a.saldo, a.motivo, a.iva_pct, a.created_at, u.name, u.surname,
+                        o.numero AS orig_numero, o.serie AS orig_serie, o.fecha AS orig_fecha
+                 FROM aim_anticipos a JOIN users u ON u.user_id = a.cliente_id
+                 LEFT JOIN aim_recibos o ON o.id = a.recibo_origen_id
+                 WHERE a.cliente_id = ANY($1::uuid[]) AND a.estado = 'disponible' AND a.saldo > 0
+                 ORDER BY a.created_at`,
+                [fam]
+            ),
+        ]);
         const preview = calcularRecibo(cargos.rows.map(cargoParaMotor));
         res.set('Cache-Control', 'no-store');
         res.json({

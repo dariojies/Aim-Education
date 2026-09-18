@@ -4830,6 +4830,7 @@ function AdminBilling({ showToast }) {
   const [matriculas, setMatriculas] = useState([]);
   const [alumnos, setAlumnos] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [cargandoFichas, setCargandoFichas] = useState(false); // segunda tanda: conceptos y fichas
 
   const [editPrecio, setEditPrecio] = useState(null);
   const [editClase, setEditClase] = useState(null);
@@ -4842,6 +4843,10 @@ function AdminBilling({ showToast }) {
 
   const activa = temporadas.find(t => t.activa) || null;
 
+  // Se carga en dos tandas. La primera es lo que necesita la barra de pestañas;
+  // en cuanto llega se pinta todo. Los conceptos y las fichas (que son lo lento:
+  // la de fichas sincroniza con aim-tul antes de responder) van después, por
+  // detrás, para no tener el TPV esperando a una pantalla que no se ha abierto.
   async function loadAll() {
     try {
       const [t, p, cl, ac] = await Promise.all([
@@ -4851,8 +4856,10 @@ function AdminBilling({ showToast }) {
         fetch('/api/admin/billing/actividades', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
       ]);
       setTemporadas(t); setPrecios(p); setClases(cl); setActividades(ac);
+      setLoading(false);
       const act = t.find(x => x.activa);
       if (act) {
+        setCargandoFichas(true);
         const [c, m] = await Promise.all([
           fetch(`/api/admin/billing/conceptos?temporadaId=${act.id}`, { credentials: 'include' }).then(r => r.ok ? r.json() : []),
           fetch(`/api/admin/billing/matriculas?temporadaId=${act.id}`, { credentials: 'include' }).then(r => r.ok ? r.json() : []),
@@ -4860,13 +4867,18 @@ function AdminBilling({ showToast }) {
         setConceptos(c); setMatriculas(m);
       } else { setConceptos([]); setMatriculas([]); }
     } catch { /* noop */ }
-    finally { setLoading(false); }
+    finally { setLoading(false); setCargandoFichas(false); }
   }
   useEffect(() => { loadAll(); }, []);
   useEffect(() => {
-    fetch('/api/users', { credentials: 'include' }).then(r => r.ok ? r.json() : []).then(u => setAlumnos(Array.isArray(u) ? u : [])).catch(() => { });
     fetch('/api/admin/billing/aimtul', { credentials: 'include' }).then(r => r.ok ? r.json() : { activities: [], groups: [] }).then(setAimtul).catch(() => { });
   }, []);
+  // La lista de gente (cientos de personas) solo hace falta en Fichas, para
+  // elegir a quién se le abre una. Se pide al entrar ahí, no antes.
+  useEffect(() => {
+    if (tab !== 'fichas' || alumnos.length) return;
+    fetch('/api/users', { credentials: 'include' }).then(r => r.ok ? r.json() : []).then(u => setAlumnos(Array.isArray(u) ? u : [])).catch(() => { });
+  }, [tab]);
 
   async function api(url, opts, okMsg) {
     setSaving(true);
@@ -4921,7 +4933,7 @@ function AdminBilling({ showToast }) {
   return (
     <>
       <div style={{ display: 'flex', gap: 10, marginBottom: 22, borderBottom: '1px solid var(--line-2)', paddingBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-        {[['cobrar', 'Cobrar (TPV)'], ['recibos', 'Recibos'], ['arqueo', 'Arqueo de caja'], ['catalogo', `Catálogo (${precios.length})`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra (${clasesMerged.length})`], ['fichas', `Fichas (${matriculas.length})`], ['pendientes', 'Cargos pendientes'], ['ajustes', 'Ajustes y Verifactu']].map(([id, label]) => (
+        {[['cobrar', 'Cobrar (TPV)'], ['recibos', 'Recibos'], ['arqueo', 'Arqueo de caja'], ['catalogo', `Catálogo${precios.length ? ` (${precios.length})` : ''}`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra${clasesMerged.length ? ` (${clasesMerged.length})` : ''}`], ['fichas', `Fichas${matriculas.length ? ` (${matriculas.length})` : ''}`], ['pendientes', 'Cargos pendientes'], ['ajustes', 'Ajustes y Verifactu']].map(([id, label]) => (
           <button key={id} className={`filter-pill ${tab === id ? 'is-active' : ''}`} onClick={() => setTab(id)} style={{ borderRadius: 8, padding: '8px 16px' }}>{label}</button>
         ))}
         <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: activa ? 'var(--teal)' : 'var(--orange)' }}>
@@ -4929,7 +4941,12 @@ function AdminBilling({ showToast }) {
         </span>
       </div>
 
-      {loading && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
+      {/* El TPV, el arqueo, los recibos y los ajustes se pintan solos: no esperan
+          a nada de aquí, así que tampoco enseñan el "Cargando...". */}
+      {loading && !['cobrar', 'arqueo', 'ajustes', 'recibos'].includes(tab) && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
+      {!loading && cargandoFichas && ['conceptos', 'fichas'].includes(tab) && (
+        <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>
+      )}
 
       {!loading && !activa && ['conceptos', 'fichas'].includes(tab) && (
         <div style={{ padding: 24, background: 'color-mix(in oklab, var(--orange) 8%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--orange) 30%, transparent)', borderRadius: 14, marginBottom: 16, fontSize: 14, color: 'var(--ink-2)' }}>
@@ -4938,12 +4955,12 @@ function AdminBilling({ showToast }) {
       )}
 
       {/* ── Cobrar (TPV) ── */}
-      {!loading && tab === 'cobrar' && <BillingTPV showToast={showToast} />}
-      {!loading && tab === 'arqueo' && <BillingArqueo showToast={showToast} />}
-      {!loading && tab === 'ajustes' && <BillingAjustes showToast={showToast} />}
+      {tab === 'cobrar' && <BillingTPV showToast={showToast} />}
+      {tab === 'arqueo' && <BillingArqueo showToast={showToast} />}
+      {tab === 'ajustes' && <BillingAjustes showToast={showToast} />}
 
       {/* ── Recibos (histórico) ── */}
-      {!loading && tab === 'recibos' && <BillingRecibos showToast={showToast} />}
+      {tab === 'recibos' && <BillingRecibos showToast={showToast} />}
 
       {/* ── Catálogo ── */}
       {!loading && tab === 'catalogo' && (() => {
