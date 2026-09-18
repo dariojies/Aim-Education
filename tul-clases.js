@@ -4,6 +4,7 @@ import {
     MODOS_BONO, esSpeaking, sqlMatriculadoEnFecha, sqlMiembroEnFecha, sqlModoBono, sqlBonoValeEn,
     plazasConBono, reservarPlazaBono, cancelarReservaBono, hoyMadridISO,
 } from './bonos-clases.js';
+import { filtroNombreSQL } from './buscar.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Gestión de clases y reportes de Aim-Tul, portados a Aim Education.
@@ -383,18 +384,20 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
 
     // Buscar alumnos del club para matricular.
     router.get('/students', async (req, res) => {
-        const q = `%${(req.query.q || '').trim()}%`;
         const act = req.query.activityId || null;
         try {
+            // Por palabras sueltas y sin tildes (ticket #254).
+            const vals = [clubId, act];
+            const filtro = filtroNombreSQL(req.query.q, `(u.name || ' ' || COALESCE(u.surname,''))`, vals, 'u.email') || 'true';
             const result = await pool.query(
                 `SELECT u.user_id as id, CONCAT(u.name, ' ', COALESCE(u.surname, '')) as name, u.email,
                         u.birthday, up.level_order AS "levelOrder", up.level_name AS "levelName"
                  FROM users u
                  LEFT JOIN tul_user_progression up
-                        ON up.user_id = u.user_id AND up.activity_id = $3::uuid
+                        ON up.user_id = u.user_id AND up.activity_id = $2::uuid
                  WHERE u.club_id = $1 AND u.role IN ('student', 'instructor', 'club_owner')
-                   AND (u.name ILIKE $2 OR u.surname ILIKE $2 OR CONCAT(u.name,' ',COALESCE(u.surname,'')) ILIKE $2 OR u.email ILIKE $2)
-                 ORDER BY u.surname, u.name LIMIT 25`, [clubId, q, act]);
+                   AND ${filtro}
+                 ORDER BY u.surname, u.name LIMIT 25`, vals);
             res.json({ success: true, students: result.rows.map(s => ({ ...s, name: s.name.trim() })) });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
@@ -969,7 +972,10 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                         -- ¿Cumple años el día que se pasa lista? Para la coronita.
                         (u.birthday IS NOT NULL
                          AND EXTRACT(MONTH FROM u.birthday) = EXTRACT(MONTH FROM $2::date)
-                         AND EXTRACT(DAY FROM u.birthday) = EXTRACT(DAY FROM $2::date)) AS "cumpleHoy"`;
+                         AND EXTRACT(DAY FROM u.birthday) = EXTRACT(DAY FROM $2::date)) AS "cumpleHoy",
+                        -- Salud (ticket #254): alergias y demás, a la vista del profe.
+                        NULLIF(CONCAT_WS(' · ', NULLIF(sa.alergias, ''), NULLIF(sa.enfermedades, ''),
+                               NULLIF(sa.medicacion, ''), NULLIF(sa.notas, '')), '') AS salud`;
             res.set('Cache-Control', 'no-store');
 
             // Speaking (ticket #253): la lista del día es la de quienes han aceptado
@@ -986,6 +992,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                      JOIN users u ON u.user_id = c.student_id
                      LEFT JOIN aim_speaking s ON s.group_id = $1 AND s.fecha = $2::date AND s.student_id = c.student_id
                      LEFT JOIN tul_attendance at ON at.group_id = $1 AND at.student_id = c.student_id AND at.date = $2::date
+                     LEFT JOIN aim_salud sa ON sa.user_id = c.student_id
                      WHERE s.confirmado IS DISTINCT FROM false OR at.status IS NOT NULL
                      ORDER BY (s.confirmado IS TRUE) DESC, u.surname, u.name`, [groupId, fecha]);
                 const no = await pool.query(
@@ -1026,6 +1033,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                  FROM cand c
                  JOIN users u ON u.user_id = c.student_id
                  LEFT JOIN tul_attendance at ON at.group_id = $1 AND at.student_id = c.student_id AND at.date = $2::date
+                 LEFT JOIN aim_salud sa ON sa.user_id = c.student_id
                  LEFT JOIN aim_bono_reservas rv ON rv.group_id = $1 AND rv.fecha = $2::date AND rv.student_id = c.student_id AND rv.estado = 'reservada'
                  WHERE at.status IS NOT NULL OR rv.id IS NOT NULL OR ${miembroEnFecha('c.student_id')}
                  ORDER BY u.surname, u.name`, [groupId, fecha, info.modo, info.actividad]
@@ -1122,9 +1130,10 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
     // buscador solo muestra a esos, con las clases que le quedan.
     router.get('/groups/:groupId/bonos', async (req, res) => {
         if (await ajeno(req, res, req.params.groupId)) return;
-        const q = `%${(req.query.q || '').trim()}%`;
         const fecha = /^\d{4}-\d{2}-\d{2}$/.test(req.query.fecha || '') ? req.query.fecha : hoyMadridISO();
         try {
+            const vals = [req.params.groupId, clubId, fecha];
+            const filtro = filtroNombreSQL(req.query.q, `(u.name || ' ' || COALESCE(u.surname,''))`, vals) || 'true';
             // Solo bonos que valen en esta clase según su ajuste (#253): el de su
             // actividad y, si la clase lo admite, el de adultos. Uno por persona.
             const r = await pool.query(
@@ -1140,15 +1149,15 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                    LEFT JOIN aim_clase_bonos cb ON cb.group_id = g.group_id
                    WHERE ${sqlBonoValeEn('b', sqlModoBono(), 'a.name')}
                      AND b.clases_usadas < b.clases_total
-                     AND (TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) ILIKE $3 OR $3 = '%%')
+                     AND ${filtro}
                      -- que no esté ya en esta clase ese día (ese sale en la lista normal)
-                     AND NOT (${sqlMiembroEnFecha({ g: '$1', f: '$4', sid: 'b.cliente_id' })})
-                     AND NOT EXISTS (SELECT 1 FROM aim_bono_reservas rv WHERE rv.group_id = $1 AND rv.fecha = $4::date
+                     AND NOT (${sqlMiembroEnFecha({ g: '$1', f: '$3', sid: 'b.cliente_id' })})
+                     AND NOT EXISTS (SELECT 1 FROM aim_bono_reservas rv WHERE rv.group_id = $1 AND rv.fecha = $3::date
                                      AND rv.student_id = b.cliente_id AND rv.estado = 'reservada')
                    ORDER BY b.cliente_id, (b.ambito = 'actividad') DESC, b.created_at
                  ) x
                  ORDER BY nombre
-                 LIMIT 25`, [req.params.groupId, clubId, q, fecha]);
+                 LIMIT 25`, vals);
             res.set('Cache-Control', 'no-store');
             res.json({ bonos: r.rows.map(x => ({
                 bonoId: x.bono_id, studentId: x.student_id, nombre: x.nombre, ambito: x.ambito,

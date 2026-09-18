@@ -616,3 +616,14 @@ export function CoronaCumple({ size = 16, title = '¡Hoy es su cumpleaños!' }) 
     }}>👑</span>
   );
 }
+
+// Buscar por el nombre a medias (ticket #254): "Juan Manuel Borrego" encuentra a
+// "Juan Manuel Marín Borrego". Cada palabra tecleada tiene que aparecer en algún
+// sitio del texto, en cualquier orden y sin que estorben las tildes.
+export const textoPlano = (t) => String(t ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+export function coincideBusqueda(busqueda, ...textos) {
+  const palabras = textoPlano(busqueda).trim().split(/\s+/).filter(Boolean);
+  if (!palabras.length) return true;
+  const donde = textoPlano(textos.filter(Boolean).join(' '));
+  return palabras.every(p => donde.includes(p));
+}

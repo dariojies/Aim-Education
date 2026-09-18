@@ -16,6 +16,7 @@ import { generarGastosPdf, gastosCsv, nombrePeriodo } from './gastos-pdf.js';
 import { generarResumenAnualPdf } from './resumen-anual-pdf.js';
 import { generarInformeJornadaPdf, generarResumenMensualPdf } from './fichaje-pdf.js';
 import { plazasConBono, reservarPlazaBono, cancelarReservaBono, ventanaReservas, hoyMadridISO } from './bonos-clases.js';
+import { filtroNombreSQL } from './buscar.js';
 import { PassThrough } from 'stream';
 import { escalaDe, escalasDelClub, resultadoDe, baremoDe, matriculaExamenDe } from './rangos.js';
 import { rolEfectivo, permisosDe, mandaAlMenos, ROLES_STAFF, NOMBRE_ROL } from './permisos.js';
@@ -1324,6 +1325,24 @@ async function initDb() {
             )
         `);
 
+        // Salud del alumno (ticket #254): alergias, enfermedades, medicación y a
+        // quién llamar si pasa algo. Va en su propia tabla (no en users, que la
+        // comparten varias apps) porque es un dato sensible: solo lo ve el
+        // personal del club.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_salud (
+                user_id UUID PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                alergias TEXT,
+                enfermedades TEXT,
+                medicacion TEXT,
+                notas TEXT,
+                contacto_nombre VARCHAR(120),
+                contacto_telefono VARCHAR(40),
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_by UUID
+            )
+        `);
+
         // Calendario laboral (ticket #233, chat del equipo): festivos y días de
         // cierre del centro. Lo ve todo el personal (el calendario laboral tiene que
         // estar a la vista, art. 34.6 ET). Ese día no se recuerda fichar y sus horas
@@ -2009,9 +2028,12 @@ app.get('/api/users', authenticateSession, async (req, res) => {
 app.get('/api/users/:id', authenticateSession, requireAdmin, async (req, res) => {
     try {
         const r = await pool.query(
-            `SELECT user_id, name, surname, email, belt, dev_role, role, profile_picture,
-                    phone, birthday, dni, domicilio, cp, poblacion
-             FROM users WHERE user_id = $1 AND club_id = $2`,
+            `SELECT u.user_id, u.name, u.surname, u.email, u.belt, u.dev_role, u.role, u.profile_picture,
+                    u.phone, u.birthday, u.dni, u.domicilio, u.cp, u.poblacion,
+                    s.alergias, s.enfermedades, s.medicacion, s.notas AS salud_notas,
+                    s.contacto_nombre, s.contacto_telefono
+             FROM users u LEFT JOIN aim_salud s ON s.user_id = u.user_id
+             WHERE u.user_id = $1 AND u.club_id = $2`,
             [req.params.id, AIM_CLUB_ID]
         );
         if (!r.rowCount) return res.status(404).json({ error: 'Esa persona no es del club.' });
@@ -2021,6 +2043,11 @@ app.get('/api/users/:id', authenticateSession, requireAdmin, async (req, res) =>
             id: u.user_id, firstName: u.name, lastName: u.surname, email: u.email,
             belt: u.belt, phone: u.phone, birthday: u.birthday,
             dni: u.dni, domicilio: u.domicilio, cp: u.cp, poblacion: u.poblacion,
+            // Salud (ticket #254): alergias y demás, para tenerlo a mano en clase.
+            salud: {
+                alergias: u.alergias || '', enfermedades: u.enfermedades || '', medicacion: u.medicacion || '',
+                notas: u.salud_notas || '', contactoNombre: u.contacto_nombre || '', contactoTelefono: u.contacto_telefono || '',
+            },
             avatar: u.profile_picture, role: u.role,
             esInstructor: (u.role === 'instructor' || u.role === 'club_owner'),
             isSuperAdmin: (u.dev_role === 'superadmin' || u.role === 'superadmin'),
@@ -2168,6 +2195,24 @@ app.put('/api/users/:id', authenticateSession, requirePermiso('editarAlumnos'), 
              phone?.trim() || null, birthday || null, id,
              dni?.trim() || null, domicilio?.trim() || null, cp?.trim() || null, poblacion?.trim() || null]
         );
+        // Salud (ticket #254). Si todo va vacío, se borra la fila: no se guarda
+        // un dato de salud vacío solo por haber abierto la ficha.
+        if (req.body.salud) {
+            const s = req.body.salud;
+            const txt = (v, n = 1000) => (v == null ? null : String(v).trim().slice(0, n) || null);
+            const campos = [txt(s.alergias), txt(s.enfermedades), txt(s.medicacion), txt(s.notas), txt(s.contactoNombre, 120), txt(s.contactoTelefono, 40)];
+            if (campos.some(Boolean)) {
+                await pool.query(
+                    `INSERT INTO aim_salud (user_id, alergias, enfermedades, medicacion, notas, contacto_nombre, contacto_telefono, updated_at, updated_by)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,NOW(),$8)
+                     ON CONFLICT (user_id) DO UPDATE SET alergias = EXCLUDED.alergias, enfermedades = EXCLUDED.enfermedades,
+                        medicacion = EXCLUDED.medicacion, notas = EXCLUDED.notas, contacto_nombre = EXCLUDED.contacto_nombre,
+                        contacto_telefono = EXCLUDED.contacto_telefono, updated_at = NOW(), updated_by = EXCLUDED.updated_by`,
+                    [id, ...campos, req.userSession.userId]);
+            } else {
+                await pool.query(`DELETE FROM aim_salud WHERE user_id = $1`, [id]);
+            }
+        }
         res.json({ id, firstName, lastName, email, belt, isSuperAdmin });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -4803,17 +4848,16 @@ app.get('/api/admin/camp/children', authenticateSession, requireAdmin, async (re
 app.get('/api/admin/camp/fichas', authenticateSession, requireAdmin, async (req, res) => {
     const termino = (req.query.q || '').trim();
     if (termino.length < 2) return res.json([]);
-    const q = `%${termino}%`;
     try {
+        const vals = [AIM_CLUB_ID];
+        const filtro = filtroNombreSQL(termino, `(u.name || ' ' || COALESCE(u.surname,''))`, vals, 'u.email');
         const r = await pool.query(
             `SELECT u.user_id, u.name, u.surname, u.email, u.phone, u.birthday, u.media_consent,
                     EXISTS (SELECT 1 FROM aim_camp_children c WHERE c.alumno_id = u.user_id) AS ya_inscrito
              FROM users u
-             WHERE u.club_id = $1
-               AND (u.name ILIKE $2 OR u.surname ILIKE $2
-                    OR (u.name || ' ' || COALESCE(u.surname,'')) ILIKE $2 OR u.email ILIKE $2)
+             WHERE u.club_id = $1 AND ${filtro}
              ORDER BY u.surname, u.name LIMIT 20`,
-            [AIM_CLUB_ID, q]
+            vals
         );
         res.set('Cache-Control', 'no-store');
         res.json(r.rows.map(u => ({
@@ -6190,8 +6234,9 @@ const cargoParaMotor = (c) => ({
 // cuántos cargos pendientes tiene su familia: con cuentas duplicadas (mismo
 // nombre) es la única forma de saber cuál es la buena antes de seleccionarla.
 app.get('/api/admin/billing/tpv/buscar', authenticateSession, requireAdmin, async (req, res) => {
-    const q = `%${(req.query.q || '').trim()}%`;
     try {
+        const vals = [AIM_CLUB_ID];
+        const filtro = filtroNombreSQL(req.query.q, `(u.name || ' ' || COALESCE(u.surname,''))`, vals) || 'true';
         const r = await pool.query(
             `SELECT u.user_id, u.name, u.surname, u.email, u.birthday,
                     (SELECT COUNT(*) FROM aim_cargos c
@@ -6200,9 +6245,9 @@ app.get('/api/admin/billing/tpv/buscar', authenticateSession, requireAdmin, asyn
                           OR c.cliente_id IN (SELECT familiar_id FROM aim_familias WHERE persona_id = u.user_id)
                           OR c.cliente_id IN (SELECT persona_id FROM aim_familias WHERE familiar_id = u.user_id)))::int AS pendientes
              FROM users u
-             WHERE u.club_id = $1 AND (u.name ILIKE $2 OR u.surname ILIKE $2 OR (u.name || ' ' || u.surname) ILIKE $2)
+             WHERE u.club_id = $1 AND ${filtro}
              ORDER BY pendientes DESC, u.surname, u.name LIMIT 25`,
-            [AIM_CLUB_ID, q]
+            vals
         );
         res.set('Cache-Control', 'no-store');
         res.json(r.rows.map(u => {
@@ -8240,8 +8285,9 @@ app.get('/api/admin/familias', authenticateSession, requireAdmin, async (req, re
 app.get('/api/admin/personas/existentes', authenticateSession, requireAdmin, async (req, res) => {
     const texto = String(req.query.q || '').trim();
     if (texto.length < 3) return res.json([]);
-    const q = `%${texto}%`;
     try {
+        const vals = [AIM_CLUB_ID];
+        const filtro = filtroNombreSQL(texto, `(u.name || ' ' || COALESCE(u.surname,''))`, vals, 'u.email');
         const r = await pool.query(
             `SELECT u.user_id AS id,
                     TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre,
@@ -8251,11 +8297,10 @@ app.get('/api/admin/personas/existentes', authenticateSession, requireAdmin, asy
                     COALESCE(u.club_id = $1, false) AS "enEsteClub",
                     COALESCE(u.club_id IS NOT NULL AND u.club_id <> $1, false) AS "enOtroClub"
              FROM users u
-             WHERE u.email ILIKE $2 OR u.name ILIKE $2 OR u.surname ILIKE $2
-                OR CONCAT(u.name, ' ', COALESCE(u.surname, '')) ILIKE $2
+             WHERE ${filtro}
              ORDER BY (u.club_id = $1) DESC, u.surname, u.name
              LIMIT 8`,
-            [AIM_CLUB_ID, q]
+            vals
         );
         res.set('Cache-Control', 'no-store');
         res.json(r.rows);
@@ -8264,19 +8309,18 @@ app.get('/api/admin/personas/existentes', authenticateSession, requireAdmin, asy
 
 // Buscador de personas del club para enlazar parentescos desde la ficha.
 app.get('/api/admin/personas', authenticateSession, requireAdmin, async (req, res) => {
-    const q = `%${(req.query.q || '').trim()}%`;
     try {
+        const vals = [AIM_CLUB_ID];
+        const filtro = filtroNombreSQL(req.query.q, `(u.name || ' ' || COALESCE(u.surname,''))`, vals, 'u.email') || 'true';
         const r = await pool.query(
             `SELECT u.user_id AS id, TRIM(u.name || ' ' || COALESCE(u.surname, '')) AS nombre,
                     u.email, u.role, u.birthday,
                     EXISTS (SELECT 1 FROM aim_familias f
                              WHERE f.persona_id = u.user_id OR f.familiar_id = u.user_id) AS "tieneFamilia"
              FROM users u
-             WHERE u.club_id = $1
-               AND (u.name ILIKE $2 OR u.surname ILIKE $2
-                    OR CONCAT(u.name, ' ', COALESCE(u.surname, '')) ILIKE $2 OR u.email ILIKE $2)
+             WHERE u.club_id = $1 AND ${filtro}
              ORDER BY u.surname, u.name LIMIT 25`,
-            [AIM_CLUB_ID, q]
+            vals
         );
         res.set('Cache-Control', 'no-store');
         res.json(r.rows);

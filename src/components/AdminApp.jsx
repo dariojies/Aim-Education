@@ -3,7 +3,7 @@ import { I } from './Icons.jsx';
 import { permisosDe, NOMBRE_ROL } from '../../permisos.js';
 import { useEnVivo } from '../envivo.js';
 import { ListaClases, AdminReportes, colorOcupacion } from './AdminTulClases.jsx';
-import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong, campDayParts, nombreMedioPago, CoronaCumple, COLOR_CUMPLE } from './Shared.jsx';
+import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong, campDayParts, nombreMedioPago, CoronaCumple, COLOR_CUMPLE, coincideBusqueda } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 import { AdminSupport } from './AdminSupport.jsx';
 import AdminAgenda from './AdminAgenda.jsx';
@@ -468,9 +468,8 @@ function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos }) {
     // Estado (matrícula/actividad vigente): activo = tiene alguna actividad.
     if (estado === "activos" && !u.activo) return false;
     if (estado === "inactivos" && u.activo) return false;
-    if (!search) return true;
-    const q = search.toLowerCase();
-    return `${u.firstName} ${u.lastName} ${u.email}`.toLowerCase().includes(q);
+    // Por palabras sueltas y sin tildes (ticket #254).
+    return coincideBusqueda(search, u.firstName, u.lastName, u.email);
   });
   const nInstructores = users.filter(u => u.esInstructor).length;
   const nTutores = users.filter(u => u.esTutor).length;
@@ -2727,9 +2726,8 @@ function AdminInstructores({ refreshTrigger, showToast, onEditUser, onNuevoInstr
   }
 
   const visible = gente.filter(u => {
-    if (!search) return true;
-    const q = search.toLowerCase();
-    return `${u.firstName} ${u.lastName} ${u.email}`.toLowerCase().includes(q);
+    // Por palabras sueltas y sin tildes (ticket #254).
+    return coincideBusqueda(search, u.firstName, u.lastName, u.email);
   });
 
   const cols = "2.4fr 2fr 1.2fr 2fr 130px";
@@ -4703,10 +4701,7 @@ function BillingPendientes({ activa, showToast }) {
 
   // Buscador de alumnos: filtra en vivo por nombre y apellidos lo que ya se ha
   // cargado. Lo que se ve es lo que se exporta.
-  const coincide = (c) => {
-    const t = q.trim().toLowerCase();
-    return !t || `${c.nombre} ${c.apellidos || ''}`.toLowerCase().includes(t);
-  };
+  const coincide = (c) => coincideBusqueda(q, c.nombre, c.apellidos);
   const cargosF = cargos.filter(coincide);
   const previsionF = prevision.filter(coincide);
   const campF = campCargos.filter(coincide);
@@ -6945,6 +6940,49 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                             <input value={editingItem.poblacion || ''} onChange={e => setEditingItem({ ...editingItem, poblacion: e.target.value })} placeholder="Algeciras" />
                           </div>
                         </div>
+                      </div>
+
+                      {/* Salud (ticket #254): alergias y demás. Lo ve el personal del
+                          club y sale avisado al pasar lista. */}
+                      <div style={{ background: esEdit ? 'var(--bg-3)' : 'transparent', borderRadius: esEdit ? 14 : 0, padding: esEdit ? 16 : 0 }}>
+                        {esEdit && <p style={fichaCardTitulo}>Salud</p>}
+                        {(() => {
+                          const s = editingItem.salud || {};
+                          const setS = (k, v) => setEditingItem({ ...editingItem, salud: { ...s, [k]: v } });
+                          return (
+                            <>
+                              <div className="field">
+                                <label>Alergias</label>
+                                <input value={s.alergias || ''} onChange={e => setS('alergias', e.target.value)} placeholder="Ej. frutos secos, polen..." />
+                              </div>
+                              <div className="field-row">
+                                <div className="field">
+                                  <label>Enfermedades o condiciones</label>
+                                  <input value={s.enfermedades || ''} onChange={e => setS('enfermedades', e.target.value)} placeholder="Ej. asma, diabetes..." />
+                                </div>
+                                <div className="field">
+                                  <label>Medicación</label>
+                                  <input value={s.medicacion || ''} onChange={e => setS('medicacion', e.target.value)} placeholder="Ej. inhalador en la mochila" />
+                                </div>
+                              </div>
+                              <div className="field">
+                                <label>Otras indicaciones</label>
+                                <input value={s.notas || ''} onChange={e => setS('notas', e.target.value)} placeholder="Lo que haya que tener en cuenta en clase" />
+                              </div>
+                              <div className="field-row">
+                                <div className="field">
+                                  <label>Contacto de emergencia</label>
+                                  <input value={s.contactoNombre || ''} onChange={e => setS('contactoNombre', e.target.value)} placeholder="Nombre" />
+                                </div>
+                                <div className="field">
+                                  <label>Teléfono de emergencia</label>
+                                  <input type="tel" value={s.contactoTelefono || ''} onChange={e => setS('contactoTelefono', e.target.value)} placeholder="600 123 456" />
+                                </div>
+                              </div>
+                              {esEdit && <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Es un dato sensible: solo lo ve el personal del club, y sale avisado en el pasar lista.</span>}
+                            </>
+                          );
+                        })()}
                       </div>
                     </div>
                   </div>

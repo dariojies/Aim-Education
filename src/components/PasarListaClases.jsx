@@ -327,6 +327,12 @@ function TarjetaAlumno({ a, onMarcar, onQuitarReserva }) {
           {a.cumpleHoy && <span title="¡Hoy es su cumpleaños!" style={{ marginRight: 3 }}>👑</span>}{a.nombre}{a.cumpleHoy && ' 🎂'}
         </div>
         {a.cinturon && <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>{a.cinturon}</div>}
+        {/* Salud (ticket #254): alergias y demás, a la vista de quien da la clase. */}
+        {a.salud && (
+          <div title={a.salud} style={{ fontSize: 10, fontWeight: 800, color: 'var(--orange)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            ⚕ {a.salud}
+          </div>
+        )}
         {a.reservaId ? (
           <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--purple)', display: 'flex', gap: 6, alignItems: 'center' }}>
             🎫 plaza con bono{a.reservaOrigen === 'familia' ? ' (reservada por la familia)' : ''}
