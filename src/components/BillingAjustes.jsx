@@ -19,6 +19,8 @@ export default function BillingAjustes({ showToast }) {
   const [guardando, setGuardando] = useState(false);
   const [confirmacion, setConfirmacion] = useState('');
   const [vaciando, setVaciando] = useState(false);
+  const [corte, setCorte] = useState(null);       // día de corte del alta (#289)
+  const [guardandoCorte, setGuardandoCorte] = useState(false);
 
   const cargar = useCallback(async () => {
     try {
@@ -28,8 +30,26 @@ export default function BillingAjustes({ showToast }) {
       setDatos(d);
       setFormato(d.formato);
       setSiguiente(d.siguiente);
+      const c = await fetch('/api/admin/billing/config', { credentials: 'include', cache: 'no-store' });
+      if (c.ok) setCorte(await c.json());
     } catch { /* noop */ }
   }, []);
+
+  // Día de corte del alta (ticket #289): hasta ese día, mes en curso; a partir
+  // de él, mes siguiente.
+  async function guardarCorte(dia) {
+    setGuardandoCorte(true);
+    try {
+      const r = await fetch('/api/admin/billing/config', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ diaCorteAlta: dia }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'No se pudo guardar.');
+      setCorte(d);
+      showToast?.('Día de corte guardado.');
+    } catch (e) { alert(e.message); } finally { setGuardandoCorte(false); }
+  }
   useEffect(() => { cargar(); }, [cargar]);
 
   // Cómo se vería el próximo número con lo que hay escrito ahora mismo.
@@ -82,6 +102,29 @@ export default function BillingAjustes({ showToast }) {
 
   return (
     <div style={{ display: 'grid', gap: 20, maxWidth: 720 }}>
+      {/* Día de corte del alta (ticket #289) */}
+      <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 16, display: 'grid', gap: 10 }}>
+        <div>
+          <h3 style={{ margin: 0, fontSize: 15, fontWeight: 800 }}>Alta a mitad de mes</h3>
+          <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--ink-3)' }}>
+            Cuando se apunta a alguien a una clase, hasta este día se le cobra la mensualidad del mes en curso.
+            A partir de él, la del mes siguiente. La inscripción no lleva mes: se cobra al entrar.
+          </p>
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <label style={{ fontSize: 13, fontWeight: 700 }}>Día de corte</label>
+          <input type="number" min="1" max="28" value={corte?.diaCorteAlta ?? 20} disabled={guardandoCorte}
+            onChange={e => setCorte(c => ({ ...c, diaCorteAlta: Number(e.target.value) }))}
+            style={{ width: 80, fontFamily: 'inherit', fontSize: 14, padding: '8px 10px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }} />
+          <button className="btn btn-sm btn-primary" disabled={guardandoCorte || !corte?.diaCorteAlta} onClick={() => guardarCorte(Number(corte.diaCorteAlta))}>Guardar</button>
+          {corte?.mesDeAltaHoy && (
+            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+              Hoy, a quien se apunte se le cobraría <b>{new Date(corte.mesDeAltaHoy + 'T12:00:00').toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })}</b>.
+            </span>
+          )}
+        </div>
+      </div>
+
       <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 16, display: 'grid', gap: 14 }}>
         <div>
           <h3 style={{ margin: 0, fontSize: 15, fontWeight: 800 }}>Numeración de facturas</h3>

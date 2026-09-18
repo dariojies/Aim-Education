@@ -148,3 +148,12 @@ export function mesAGenerar(hoy = new Date()) {
     d.setUTCMonth(d.getUTCMonth() + 1);
     return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-01`;
 }
+
+// Mes que le toca a quien se apunta HOY a una clase (ticket #289). Los primeros
+// días del mes se le cobra el mes en curso; a partir del día de corte (por
+// defecto el 20, configurable en Facturación > Ajustes), el mes siguiente.
+export function mesDeAlta(hoy = new Date(), corte = 20) {
+    const d = new Date(Date.UTC(hoy.getFullYear(), hoy.getMonth(), 1));
+    if (hoy.getDate() >= corte) d.setUTCMonth(d.getUTCMonth() + 1);
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-01`;
+}

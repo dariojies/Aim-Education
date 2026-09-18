@@ -8,7 +8,7 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { GoogleGenAI, Type } from '@google/genai';
 import nodemailer from 'nodemailer';
-import { calcularRecibo, mesAGenerar } from './billing.js';
+import { calcularRecibo, mesAGenerar, mesDeAlta } from './billing.js';
 import { crearRouterTulClases } from './tul-clases.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
@@ -6072,7 +6072,9 @@ async function generacionAutomatica() {
 // no duplica lo que ya exista de ese concepto y mes. Devuelve cuántos creó.
 async function generarCargosDeMatricula({ userId, claseRef, actividad, temporadaId, descuentoPct = 0, mes }, cliente = pool) {
     if (!userId || !temporadaId) return 0;
-    const m = normalizaMes(mes || mesAGenerar());
+    // Ticket #289: al apuntarse, la mensualidad es la del mes en curso si aún no
+    // se ha pasado el día de corte; a partir de ese día, la del mes siguiente.
+    const m = normalizaMes(mes || mesParaAlta());
     const r = await cliente.query(
         `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, target_ref, target_nombre, actividad, estado)
          SELECT $1::uuid, ct.concepto, $2::date, p.descripcion, p.tipo, p.precio, p.iva_pct, $3::numeric,
@@ -6091,6 +6093,40 @@ async function generarCargosDeMatricula({ userId, claseRef, actividad, temporada
     return r.rowCount;
 }
 
+// ── Ajustes de facturación (ticket #289) ──
+// Día de corte para el alta: hasta ese día se cobra el mes en curso; a partir de
+// él, el mes siguiente. Se guarda en aim_ajustes y se puede cambiar en pantalla.
+let AJUSTES_FACT = { diaCorteAlta: 20 };
+async function cargarAjustesFacturacion() {
+    try {
+        const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'facturacion'`);
+        const v = r.rows[0]?.valor || {};
+        const d = Number(v.diaCorteAlta);
+        AJUSTES_FACT = { diaCorteAlta: Number.isInteger(d) && d >= 1 && d <= 28 ? d : 20 };
+    } catch (e) { console.error('[ajustes facturación]', e.message); }
+    return AJUSTES_FACT;
+}
+// El mes que le corresponde a quien se apunta hoy a una clase.
+const mesParaAlta = () => mesDeAlta(new Date(hoyMadrid() + 'T12:00:00'), AJUSTES_FACT.diaCorteAlta);
+
+app.get('/api/admin/billing/config', authenticateSession, requireAdmin, async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json({ ...AJUSTES_FACT, mesDeAltaHoy: mesParaAlta() });
+});
+
+app.put('/api/admin/billing/config', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const d = Number(req.body?.diaCorteAlta);
+    if (!Number.isInteger(d) || d < 1 || d > 28) return res.status(400).json({ error: 'El día de corte tiene que estar entre 1 y 28.' });
+    try {
+        await pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('facturacion', $1::jsonb, NOW(), $2)
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+            [JSON.stringify({ diaCorteAlta: d }), req.userSession.userId]);
+        await cargarAjustesFacturacion();
+        res.json({ success: true, ...AJUSTES_FACT, mesDeAltaHoy: mesParaAlta() });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Concepto de la cuota de inscripción/matrícula de temporada (ticket #231).
 const CONCEPTO_INSCRIPCION = '00000';
 // Genera el cargo pendiente de la matrícula/inscripción cuando entra un alumno
@@ -6099,7 +6135,9 @@ const CONCEPTO_INSCRIPCION = '00000';
 // cuántos creó (0 o 1).
 async function generarCargoInscripcion({ userId, mes }, cliente = pool) {
     if (!userId) return 0;
-    const m = normalizaMes(mes || mesAGenerar());
+    // La inscripción no es de ningún mes (ticket #289): se cobra al entrar. Se
+    // guarda con el mes en curso (la tabla lo pide) pero en pantalla no sale.
+    const m = normalizaMes(mes || `${hoyMadrid().slice(0, 7)}-01`);
     const r = await cliente.query(
         `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado, origen, actividad)
          SELECT $1::uuid, p.concepto, $2::date, p.descripcion, p.tipo, p.precio, p.iva_pct, 0, 'pendiente', 'inscripcion', NULL
@@ -12617,6 +12655,8 @@ app.get('*', (req, res) => {
 app.listen(port, () => {
     // El formato de numeración vive en la base: se carga al arrancar.
     cargarFormatoNumeracion();
+    // Y el día de corte del alta (ticket #289).
+    cargarAjustesFacturacion();
     console.log(`Server is running at http://localhost:${port}`);
     // Los cargos del mes se generan solos cada poco, sin darle a ningún botón.
     // Se hace una primera pasada al arrancar (con un pequeño margen para que la

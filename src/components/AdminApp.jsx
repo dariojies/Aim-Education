@@ -4015,7 +4015,7 @@ function BillingTPV({ showToast }) {
                   <input type="checkbox" checked={!!sel[c.id]?.on} onChange={e => setSel(s => ({ ...s, [c.id]: { ...s[c.id], on: e.target.checked } }))} style={{ width: 18, height: 18, accentColor: 'var(--teal)' }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 700, fontSize: 14 }}>{c.descripcion} <span style={{ color: 'var(--ink-3)', fontWeight: 500, fontSize: 12 }}>· {c.nombre}</span></div>
-                    <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{mesLargo(c.mes)}{c.tipo === 'Material' ? ` · +${c.ivaPct}% IVA` : ''}</div>
+                    <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{mesDeCargo(c)}{c.tipo === 'Material' ? ` · +${c.ivaPct}% IVA` : ''}</div>
                   </div>
                   <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 12, color: 'var(--ink-3)' }}>
                     dto
@@ -4472,7 +4472,7 @@ function BillingRecibos({ showToast }) {
                 <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 13, padding: '6px 0', borderBottom: '1px solid var(--line-2)' }}>
                   <div>
                     <div style={{ fontWeight: 700 }}>{d.descripcion}</div>
-                    <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>{d.cliente} · {mesLargo(d.mes)}{d.descuentoMensPct ? ` · dto ${d.descuentoMensPct}%` : ''}{d.ivaPct ? ` · IVA ${d.ivaPct}%` : ''}</div>
+                    <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>{[d.cliente, mesDeCargo(d)].filter(Boolean).join(' · ')}{d.descuentoMensPct ? ` · dto ${d.descuentoMensPct}%` : ''}{d.ivaPct ? ` · IVA ${d.ivaPct}%` : ''}</div>
                   </div>
                   <div style={{ fontWeight: 700, whiteSpace: 'nowrap' }}>{eur(d.total)}</div>
                 </div>
@@ -4539,7 +4539,7 @@ function BillingRecibos({ showToast }) {
                       <input type="checkbox" checked={!!R.sel[l.cargoId]} onChange={e => setRectificando(x => ({ ...x, sel: { ...x.sel, [l.cargoId]: e.target.checked } }))} style={{ width: 16, height: 16, accentColor: 'var(--purple)' }} />
                       <span style={{ flex: 1, minWidth: 0 }}>
                         <span style={{ display: 'block', fontSize: 13, fontWeight: 700 }}>{l.descripcion}</span>
-                        <span style={{ display: 'block', fontSize: 11, color: 'var(--ink-3)' }}>{l.cliente} · {mesLargo(l.mes)}</span>
+                        <span style={{ display: 'block', fontSize: 11, color: 'var(--ink-3)' }}>{[l.cliente, mesDeCargo(l)].filter(Boolean).join(' · ')}</span>
                       </span>
                       <span style={{ fontWeight: 700, fontSize: 13 }}>{eur(l.total)}</span>
                     </label>
@@ -4609,6 +4609,11 @@ function AutocompletarConcepto({ precios, onElegir, placeholder = 'Escribe para 
   );
 }
 const MESES_ES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+// La inscripción no es de ningún mes (ticket #289): se cobra al entrar, así que
+// en pantalla no se le pone mes. El resto de cargos, como siempre.
+const CONCEPTO_INSCRIPCION = '00000';
+const sinMes = (c) => c?.concepto === CONCEPTO_INSCRIPCION || c?.origen === 'inscripcion';
+const mesDeCargo = (c) => sinMes(c) ? '' : mesLargo(c?.mes);
 function mesLargo(iso) {
   if (!iso) return '';
   const [y, m] = String(iso).slice(0, 7).split('-');
@@ -4711,7 +4716,7 @@ function BillingPendientes({ activa, showToast }) {
     const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const fila = (c, tipo) => {
       const base = c.precio * (1 - (c.descuentoPct || 0) / 100);
-      return [`${c.nombre} ${c.apellidos || ''}`.trim(), c.descripcion, mesLargo(c.mes || mesIso), tipo, c.precio, `${c.descuentoPct || 0}%`, base.toFixed(2)].map(esc).join(';');
+      return [`${c.nombre} ${c.apellidos || ''}`.trim(), c.descripcion, sinMes(c) ? '' : mesLargo(c.mes || mesIso), tipo, c.precio, `${c.descuentoPct || 0}%`, base.toFixed(2)].map(esc).join(';');
     };
     const filas = [...cargosF.map(c => fila(c, 'Pendiente')), ...campF.map(c => fila(c, 'Campamento')), ...previsionF.map(c => fila(c, 'Previsión'))];
     const csv = '﻿' + ['Alumno;Concepto;Mes;Tipo;Precio;Dto.;Base'].concat(filas).join('\r\n');
@@ -4771,7 +4776,7 @@ function BillingPendientes({ activa, showToast }) {
             <div key={c.id} className="data-table-row" style={{ gridTemplateColumns: todos ? '1.6fr 1.6fr 110px 90px 80px 60px' : '1.6fr 1.6fr 90px 80px 60px' }}>
               <div className="pri">{c.nombre} {c.apellidos}</div>
               <span style={{ fontSize: 13 }}>{c.descripcion}</span>
-              {todos && <span style={{ fontSize: 12, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{mesLargo(c.mes)}</span>}
+              {todos && <span style={{ fontSize: 12, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{mesDeCargo(c)}</span>}
               <span style={{ fontWeight: 700 }}>{eur(c.precio)}</span>
               <span style={{ color: c.descuentoPct > 0 ? 'var(--teal)' : 'var(--ink-3)', fontWeight: 700 }}>{c.descuentoPct}%</span>
               <div className="row-actions">
@@ -4799,7 +4804,7 @@ function BillingPendientes({ activa, showToast }) {
               <div key={c.id} className="data-table-row" style={{ gridTemplateColumns: '1.6fr 1.6fr 110px 90px 60px' }}>
                 <div className="pri">{c.nombre} {c.apellidos}</div>
                 <span style={{ fontSize: 13 }}>{c.descripcion}</span>
-                <span style={{ fontSize: 12, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{mesLargo(c.mes)}</span>
+                <span style={{ fontSize: 12, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{mesDeCargo(c)}</span>
                 <span style={{ fontWeight: 700 }}>{eur(c.precio)}</span>
                 <div className="row-actions"><button className="icon-btn danger" onClick={() => borrarCargo(c.id)} aria-label="Borrar"><I.Trash /></button></div>
               </div>
