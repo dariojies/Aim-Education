@@ -73,7 +73,7 @@ async function aplicarCinturonTKD(db, studentId, levelOrder, levelName) {
         [studentId, levelOrder]);
 }
 
-export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSuyo, generarCargosDeMatricula, generarCargoInscripcion }) {
+export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSuyo, generarCargosDeMatricula, generarCargoInscripcion, debeInscripcion }) {
     const router = express.Router();
 
     // Un instructor solo ve y toca las clases que lleva él. De quién es una
@@ -421,14 +421,19 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                 }
             }
             const activoAntes = await tieneActividadActiva(studentId);
+            // Ticket #290: si le toca inscripción se mira ANTES de apuntarle, que al
+            // apuntarle se le reabre la matrícula y ya no se vería su baja.
+            const tocaInscripcion = !activoAntes && debeInscripcion ? (await debeInscripcion(studentId)).debe : false;
             await matricular(req.params.groupId, studentId);
             if (levelOrder != null && levelOrder !== '') await fijarNivel(req.params.groupId, studentId, levelOrder);
             // Alumno nuevo (no tenía ninguna actividad): se le crea ya el cobro de
             // matrícula/inscripción pendiente (ticket #231), además de la cuota.
-            if (!activoAntes && generarCargoInscripcion) {
-                await generarCargoInscripcion({ userId: studentId }).catch(e => console.error('[#231 inscripción]', e.message));
+            // Ticket #290: solo se le cobra si es nuevo o vuelve tras una baja.
+            let inscripcion = 0;
+            if (tocaInscripcion && generarCargoInscripcion) {
+                inscripcion = await generarCargoInscripcion({ userId: studentId, yaComprobado: true }).catch(e => { console.error('[#231 inscripción]', e.message); return 0; });
             }
-            res.json({ success: true, matriculaNueva: !activoAntes });
+            res.json({ success: true, matriculaNueva: !activoAntes, inscripcionCreada: inscripcion > 0 });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
@@ -680,6 +685,8 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                 return res.status(409).json({ error: `Esa clase está llena (${info.n}/${info.max_students}). Puedes apuntarle a la lista de espera.` });
             }
             const activoAntes = await tieneActividadActiva(req.params.studentId);
+            // Igual que al inscribir desde la clase (#290): se mira antes del alta.
+            const tocaInscripcion = !activoAntes && debeInscripcion ? (await debeInscripcion(req.params.studentId)).debe : false;
             await matricular(groupId, req.params.studentId);
             if (levelOrder != null && levelOrder !== '') {
                 const escala = await escalaDe(info.activity_type, pool);
@@ -697,10 +704,11 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                 }
             }
             // Alumno nuevo: se le crea ya el cobro de matrícula/inscripción (#231).
-            if (!activoAntes && generarCargoInscripcion) {
-                await generarCargoInscripcion({ userId: req.params.studentId }).catch(e => console.error('[#231 inscripción]', e.message));
+            let inscripcion = 0;
+            if (tocaInscripcion && generarCargoInscripcion) {
+                inscripcion = await generarCargoInscripcion({ userId: req.params.studentId, yaComprobado: true }).catch(e => { console.error('[#231 inscripción]', e.message); return 0; });
             }
-            res.json({ success: true, matriculaNueva: !activoAntes });
+            res.json({ success: true, matriculaNueva: !activoAntes, inscripcionCreada: inscripcion > 0 });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
 

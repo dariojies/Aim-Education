@@ -3586,7 +3586,7 @@ function requireRol(minimo) {
 // Gestión de clases y reportes de Aim-Tul (mismas tablas tul_*, mismo SQL),
 // portados a nuestro panel. Ver tul-clases.js.
 app.use('/api/admin/tul', authenticateSession, requireAdmin,
-    crearRouterTulClases({ pool, clubId: AIM_CLUB_ID, permisos, gruposDe, grupoSuyo, generarCargosDeMatricula, generarCargoInscripcion }));
+    crearRouterTulClases({ pool, clubId: AIM_CLUB_ID, permisos, gruposDe, grupoSuyo, generarCargosDeMatricula, generarCargoInscripcion, debeInscripcion }));
 
 // =============================================================================
 // OBJETOS PERDIDOS (ticket #208)
@@ -6133,8 +6133,42 @@ const CONCEPTO_INSCRIPCION = '00000';
 // NUEVO (que no tenía ninguna actividad). Toma el importe del catálogo (concepto
 // 00000). No lo crea si el alumno ya tiene una inscripción pendiente. Devuelve
 // cuántos creó (0 o 1).
-async function generarCargoInscripcion({ userId, mes }, cliente = pool) {
+// ¿Le toca pagar inscripción? (ticket #290). Si ya pagó una y desde entonces ha
+// seguido apuntado mes a mes, no se le vuelve a cobrar aunque empiece un curso
+// nuevo. Si hubo algún mes sin ninguna clase (se dio de baja), al volver sí.
+// Julio y agosto no cuentan: el club para en verano y eso no es una baja.
+async function debeInscripcion(userId, cliente = pool) {
+    const ult = await cliente.query(
+        `SELECT mes::text AS mes FROM aim_cargos
+         WHERE cliente_id = $1 AND concepto = $2 AND estado <> 'anulado'
+         ORDER BY mes DESC, id DESC LIMIT 1`, [userId, CONCEPTO_INSCRIPCION]);
+    if (!ult.rowCount) return { debe: true, motivo: 'nunca ha pagado inscripción' };
+    const r = await cliente.query(
+        `WITH meses AS (
+             -- Hasta el mes pasado: el mes en el que vuelve no cuenta como hueco,
+             -- que es justo cuando se le está apuntando.
+             SELECT generate_series($2::date, (date_trunc('month', (now() AT TIME ZONE 'Europe/Madrid')) - INTERVAL '1 month')::date, INTERVAL '1 month')::date AS m
+         )
+         SELECT MIN(m)::text AS hueco, COUNT(*)::int AS huecos FROM meses
+         WHERE EXTRACT(MONTH FROM m) NOT IN (7, 8)
+           AND NOT EXISTS (
+               SELECT 1 FROM aim_matriculas mt
+               WHERE mt.user_id = $1
+                 AND mt.alta <= (m + INTERVAL '1 month' - INTERVAL '1 day')::date
+                 AND (mt.baja IS NULL OR mt.baja >= m))`,
+        [userId, ult.rows[0].mes]);
+    const { hueco, huecos } = r.rows[0];
+    return huecos > 0
+        ? { debe: true, motivo: `estuvo de baja (${huecos} mes${huecos !== 1 ? 'es' : ''} sin clase desde ${hueco.slice(0, 7)})` }
+        : { debe: false, motivo: 'ha seguido apuntado desde su última inscripción' };
+}
+
+async function generarCargoInscripcion({ userId, mes, yaComprobado = false }, cliente = pool) {
     if (!userId) return 0;
+    // Ticket #290: si viene de seguido, no paga inscripción otra vez. Quien da el
+    // alta lo comprueba ANTES de apuntarle (al apuntarle se reabre su matrícula y
+    // ya no se vería la baja); en ese caso llega con yaComprobado.
+    if (!yaComprobado && !(await debeInscripcion(userId, cliente)).debe) return 0;
     // La inscripción no es de ningún mes (ticket #289): se cobra al entrar. Se
     // guarda con el mes en curso (la tabla lo pide) pero en pantalla no sale.
     const m = normalizaMes(mes || `${hoyMadrid().slice(0, 7)}-01`);

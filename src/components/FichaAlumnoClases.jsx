@@ -521,7 +521,9 @@ export default function FichaAlumnoClases({ studentId, nombre, nacimiento, showT
         const d = await api(`/students/${studentId}/clases`, { method: 'POST', body: { groupId: grupo.id, levelOrder } });
         showToast?.(`Apuntado a ${grupo.name}.`);
         // #219: incorporación nueva (no tenía ninguna actividad) -> matrícula.
-        if (d?.matriculaNueva) showToast?.('⚠ No tenía matrícula vigente: recuérdale cobrar la matrícula.', 'warn');
+        if (d?.matriculaNueva) showToast?.(d.inscripcionCreada
+          ? 'Inscripción añadida a sus cargos pendientes.'
+          : 'Vuelve sin pagar inscripción: ha seguido apuntado desde la última.', d.inscripcionCreada ? 'warn' : undefined);
       }
       setAnadiendo(false);
       await cargar();

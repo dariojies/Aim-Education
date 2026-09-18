@@ -563,7 +563,9 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
     try {
       const d = await api(`/groups/${grupo.id}/students/enroll`, { method: 'POST', body: { studentId: s.id } });
       showToast?.(`${s.name} promocionado a ${grupo.name}.`);
-      if (d?.matriculaNueva) showToast?.(`⚠ ${s.name} no tenía matrícula vigente: recuérdale cobrar la matrícula.`, 'warn');
+      if (d?.matriculaNueva) showToast?.(d.inscripcionCreada
+        ? `${s.name}: inscripción añadida a sus cargos pendientes.`
+        : `${s.name} vuelve sin pagar inscripción: ha seguido apuntado desde la última.`, d.inscripcionCreada ? 'warn' : undefined);
       await cargar();
     } catch (e) { alert(e.message); }
     finally { setPromoviendo(null); }
@@ -632,7 +634,9 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
         showToast?.(`${alta.name} matriculado en ${grupo.name}.`);
         // #219: si no tenía ninguna actividad, es una incorporación nueva y hay
         // que cobrarle matrícula (es única por alumno y se mantiene con continuidad).
-        if (d?.matriculaNueva) showToast?.(`⚠ ${alta.name} no tenía matrícula vigente: recuérdale cobrar la matrícula.`, 'warn');
+        if (d?.matriculaNueva) showToast?.(d.inscripcionCreada
+          ? `${alta.name}: inscripción añadida a sus cargos pendientes.`
+          : `${alta.name} vuelve sin pagar inscripción: ha seguido apuntado desde la última.`, d.inscripcionCreada ? 'warn' : undefined);
       }
       setAlta(null);
       await cargar(); await cargarEspera();
