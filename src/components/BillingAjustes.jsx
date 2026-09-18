@@ -21,6 +21,9 @@ export default function BillingAjustes({ showToast }) {
   const [vaciando, setVaciando] = useState(false);
   const [corte, setCorte] = useState(null);       // día de corte del alta (#289)
   const [guardandoCorte, setGuardandoCorte] = useState(false);
+  const [vf, setVf] = useState(null);            // VERI*FACTU (#232)
+  const [guardandoVf, setGuardandoVf] = useState(false);
+  const [enviando, setEnviando] = useState(false);
 
   const cargar = useCallback(async () => {
     try {
@@ -32,6 +35,8 @@ export default function BillingAjustes({ showToast }) {
       setSiguiente(d.siguiente);
       const c = await fetch('/api/admin/billing/config', { credentials: 'include', cache: 'no-store' });
       if (c.ok) setCorte(await c.json());
+      const v = await fetch('/api/admin/billing/verifactu', { credentials: 'include', cache: 'no-store' });
+      if (v.ok) setVf(await v.json());
     } catch { /* noop */ }
   }, []);
 
@@ -49,6 +54,32 @@ export default function BillingAjustes({ showToast }) {
       setCorte(d);
       showToast?.('Día de corte guardado.');
     } catch (e) { alert(e.message); } finally { setGuardandoCorte(false); }
+  }
+
+  // VERI*FACTU (ticket #232): modo, entorno y datos del sistema de facturación.
+  async function guardarVf(cambios) {
+    setGuardandoVf(true);
+    try {
+      const r = await fetch('/api/admin/billing/verifactu', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ ...vf, ...cambios }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'No se pudo guardar.');
+      setVf(x => ({ ...x, ...d }));
+      showToast?.('Ajustes de VERI*FACTU guardados.');
+      cargar();
+    } catch (e) { alert(e.message); } finally { setGuardandoVf(false); }
+  }
+
+  async function enviarAhora() {
+    setEnviando(true);
+    try {
+      const r = await fetch('/api/admin/billing/verifactu/enviar', { method: 'POST', credentials: 'include' });
+      const d = await r.json();
+      showToast?.(d.enviados ? `${d.enviados} registro(s) enviados a la AEAT.` : `No se ha enviado nada: ${d.motivo || d.error || 'sin detalle'}.`);
+      cargar();
+    } catch (e) { alert(e.message); } finally { setEnviando(false); }
   }
   useEffect(() => { cargar(); }, [cargar]);
 
@@ -124,6 +155,73 @@ export default function BillingAjustes({ showToast }) {
           )}
         </div>
       </div>
+
+      {/* VERI*FACTU (ticket #232) */}
+      {vf && (
+        <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 16, display: 'grid', gap: 12 }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 800 }}>VERI*FACTU (AEAT)</h3>
+            <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--ink-3)' }}>
+              Con esto encendido, cada factura genera su registro oficial encadenado, sale con el QR tributario
+              y se remite a la AEAT. Los registros se generan siempre; el envío necesita el certificado digital.
+            </p>
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            {[['apagado', 'Apagado'], ['verifactu', 'VERI*FACTU encendido']].map(([v, l]) => (
+              <button key={v} className={`filter-pill ${vf.modo === v ? 'is-active' : ''}`} disabled={guardandoVf}
+                onClick={() => guardarVf({ modo: v })}>{l}</button>
+            ))}
+            <span style={{ width: 12 }} />
+            {[['pruebas', 'Entorno de pruebas'], ['produccion', 'Producción']].map(([v, l]) => (
+              <button key={v} className={`filter-pill ${vf.entorno === v ? 'is-active' : ''}`} disabled={guardandoVf}
+                onClick={() => guardarVf({ entorno: v })}>{l}</button>
+            ))}
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            {[['Registros', vf.registros], ['Pendientes de enviar', vf.pendientes], ['Enviados', vf.enviados], ['Con error', vf.errores]].map(([t, v]) => (
+              <div key={t} style={{ flex: '1 1 120px', background: 'var(--bg-3)', borderRadius: 10, padding: '8px 12px' }}>
+                <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--ink-3)' }}>{t}</div>
+                <div style={{ fontSize: 17, fontWeight: 800 }}>{v ?? 0}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', fontSize: 12 }}>
+            <span style={{ fontWeight: 700, color: vf.certificado ? 'var(--teal)' : 'var(--orange)' }}>
+              {vf.certificado ? '✓ Certificado configurado' : '⚠ Sin certificado: los registros se quedan en cola'}
+            </span>
+            <span style={{ color: 'var(--ink-3)' }}>
+              El certificado se pone en Heroku (VERIFACTU_CERT_P12 y VERIFACTU_CERT_PASS), nunca aquí.
+            </span>
+            <div style={{ flex: 1 }} />
+            <button className="btn btn-sm btn-outline" disabled={enviando || !vf.pendientes} onClick={enviarAhora}>
+              {enviando ? 'Enviando...' : 'Enviar pendientes'}
+            </button>
+          </div>
+
+          {vf.ultimas?.length > 0 && (
+            <div style={{ display: 'grid', gap: 3 }}>
+              <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--ink-2)' }}>Últimos registros</div>
+              {vf.ultimas.map(u => (
+                <div key={u.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, padding: '4px 8px', background: 'var(--bg-3)', borderRadius: 8 }}>
+                  <b style={{ minWidth: 90 }}>{u.numero}</b>
+                  <span style={{ color: 'var(--ink-3)' }}>{u.fecha}</span>
+                  <span>{Number(u.total).toFixed(2)} €</span>
+                  <span style={{ fontWeight: 700, color: u.estado === 'enviado' ? 'var(--teal)' : u.estado === 'error' ? 'var(--orange)' : 'var(--ink-3)' }}>
+                    {{ enviado: 'enviado', error: 'error', pendiente: 'en cola', no_aplica: 'solo guardado' }[u.estado] || u.estado}
+                  </span>
+                  <div style={{ flex: 1 }} />
+                  <span title={u.huella} style={{ fontFamily: 'monospace', fontSize: 10, color: 'var(--ink-3)' }}>{String(u.huella || '').slice(0, 12)}…</span>
+                  <a className="btn btn-sm btn-outline" style={{ fontSize: 10, padding: '2px 6px' }}
+                    href={`/api/admin/billing/verifactu/${u.id}/xml`} target="_blank" rel="noopener noreferrer">XML</a>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 16, display: 'grid', gap: 14 }}>
         <div>

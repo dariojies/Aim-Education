@@ -16,6 +16,7 @@ import { generarGastosPdf, gastosCsv, nombrePeriodo } from './gastos-pdf.js';
 import { generarResumenAnualPdf } from './resumen-anual-pdf.js';
 import { generarInformeJornadaPdf, generarResumenMensualPdf } from './fichaje-pdf.js';
 import { generarPendientesPdf } from './pendientes-pdf.js';
+import * as verifactu from './verifactu.js';
 import { plazasConBono, reservarPlazaBono, cancelarReservaBono, ventanaReservas, hoyMadridISO } from './bonos-clases.js';
 import { filtroNombreSQL } from './buscar.js';
 import { PassThrough } from 'stream';
@@ -165,6 +166,19 @@ async function initDb() {
                 UNIQUE (serie, numero)
             )
         `);
+        // VERI*FACTU (ticket #232): lo que la AEAT pide de cada factura. Va en la
+        // misma tabla del registro para que la cadena sea una sola: num_serie es el
+        // número tal y como sale impreso, huella_aeat la del formato oficial
+        // (SHA-256 en mayúsculas), y el XML queda guardado tal cual se remite.
+        for (const col of [
+            'num_serie VARCHAR(60)', 'huella_aeat CHAR(64)', 'huella_aeat_anterior CHAR(64)',
+            'fecha_hora_huso VARCHAR(30)', 'desglose TEXT', 'xml TEXT', 'qr_url TEXT',
+            'aeat_enviado_at TIMESTAMPTZ', 'aeat_csv VARCHAR(40)', 'modo VARCHAR(20)', 'entorno VARCHAR(12)',
+        ]) {
+            await client.query(`ALTER TABLE aim_factura_registro ADD COLUMN IF NOT EXISTS ${col}`);
+        }
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_factura_registro_envio ON aim_factura_registro (estado_envio) WHERE estado_envio <> 'enviado'`);
+
         // Registro de eventos: qué se ha hecho y cuándo, también solo de añadir.
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_factura_eventos (
@@ -7104,7 +7118,7 @@ function huellaRegistro(r) {
 
 // Anota una factura en el registro. Va dentro de la misma transacción que la
 // emite: si el registro falla, la factura no se emite.
-async function registrarFactura(client, { recibo, receptor, descripcion, base, cuota, total, original, userId }) {
+async function registrarFactura(client, { recibo, receptor, descripcion, base, cuota, total, original, userId, basesPorIva }) {
     // El bloqueo evita que dos cobros a la vez se encadenen del mismo eslabón.
     await client.query('LOCK TABLE aim_factura_registro IN EXCLUSIVE MODE');
     const prev = await client.query(`SELECT huella FROM aim_factura_registro ORDER BY id DESC LIMIT 1`);
@@ -7119,13 +7133,50 @@ async function registrarFactura(client, { recibo, receptor, descripcion, base, c
         emitido_at: new Date().toISOString(),
     };
     fila.huella = huellaRegistro(fila);
+    // ── VERI*FACTU (ticket #232) ──
+    // El mismo registro, además, en el formato que pide la AEAT: el número tal y
+    // como sale impreso, la huella SHA-256 oficial encadenada con la anterior, el
+    // QR de cotejo y el XML listo para remitir. Si el modo está apagado se guarda
+    // igual (marcado como que no aplica), para no perder nada al encenderlo.
+    const cfg = AJUSTES_VERIFACTU;
+    const numSerie = numeroVisible(recibo);
+    const fechaExp = verifactu.fechaAEAT(recibo.fecha);
+    const fechaHuso = verifactu.fechaHoraHusoAEAT();
+    const prevAeat = await client.query(
+        `SELECT num_serie, fecha_expedicion::text AS fecha, huella_aeat, nif_emisor
+         FROM aim_factura_registro WHERE huella_aeat IS NOT NULL ORDER BY id DESC LIMIT 1`);
+    const ant = prevAeat.rows[0] || null;
+    const { huella: huellaAeat } = verifactu.huellaAlta({
+        nifEmisor: fila.nif_emisor, numSerie, fechaExpedicion: fechaExp, tipoFactura: fila.tipo_factura,
+        cuotaTotal: cuota, importeTotal: total, huellaAnterior: ant?.huella_aeat || '', fechaHoraHuso: fechaHuso,
+    });
+    // Desglose: el material lleva IVA y las clases van exentas (art. 20.1.9 de la
+    // Ley del IVA, enseñanza). Si no llega desglosado, se deduce del total.
+    const desglose = ((basesPorIva && basesPorIva.length) ? basesPorIva : [{ ivaPct: Number(cuota) > 0 ? 21 : 0, base, iva: cuota }])
+        .map(g => ({ ivaPct: Number(g.ivaPct) || 0, base: Number(g.base) || 0, cuota: Number(g.iva ?? g.cuota) || 0, exenta: !Number(g.ivaPct), causaExencion: 'E1' }));
+    const xmlAeat = verifactu.xmlRegistroAlta({
+        nifEmisor: fila.nif_emisor, nombreEmisor: EMPRESA_TICKET.nombre, numSerie, fechaExpedicion: fechaExp,
+        tipoFactura: fila.tipo_factura, descripcion: (descripcion || 'Servicios y material del club').slice(0, 500),
+        receptorNombre: receptor?.nombre || null, receptorNif: receptor?.nif || null,
+        desglose, cuotaTotal: cuota, importeTotal: total,
+        huellaAnterior: ant?.huella_aeat || null, anteriorNif: ant?.nif_emisor || null,
+        anteriorNumSerie: ant?.num_serie || null, anteriorFecha: ant ? verifactu.fechaAEAT(ant.fecha) : null,
+        sif: cfg.sif, fechaHoraHuso: fechaHuso, huella: huellaAeat,
+    });
+    const qrUrl = verifactu.urlQR({
+        nif: fila.nif_emisor, numSerie, fechaExpedicion: fechaExp, importeTotal: total,
+        verificable: cfg.modo === 'verifactu', entorno: cfg.entorno,
+    });
     const r = await client.query(
         `INSERT INTO aim_factura_registro
            (recibo_id, tipo_factura, serie, numero, fecha_expedicion, nif_emisor, nombre_emisor,
             nif_receptor, nombre_receptor, descripcion, base, cuota, total,
             rectifica_serie, rectifica_numero, rectifica_fecha,
-            huella_anterior, huella, software_nombre, software_version, emitido_por, emitido_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+            huella_anterior, huella, software_nombre, software_version, emitido_por, emitido_at,
+            num_serie, huella_aeat, huella_aeat_anterior, fecha_hora_huso, desglose, xml, qr_url,
+            estado_envio, modo, entorno)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
+                 $23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
          RETURNING id`,
         [recibo.id, fila.tipo_factura, fila.serie, fila.numero, fila.fecha_expedicion,
          fila.nif_emisor, EMPRESA_TICKET.nombre,
@@ -7134,15 +7185,166 @@ async function registrarFactura(client, { recibo, receptor, descripcion, base, c
          original?.serie || null, original?.numero || null,
          original?.fecha ? String(original.fecha).slice(0, 10) : null,
          fila.huella_anterior, fila.huella,
-         SOFTWARE_FACTURACION.nombre, SOFTWARE_FACTURACION.version, userId || null, fila.emitido_at]
+         SOFTWARE_FACTURACION.nombre, SOFTWARE_FACTURACION.version, userId || null, fila.emitido_at,
+         numSerie, huellaAeat, ant?.huella_aeat || null, fechaHuso, JSON.stringify(desglose), xmlAeat, qrUrl,
+         cfg.modo === 'verifactu' ? 'pendiente' : 'no_aplica', cfg.modo, cfg.entorno]
     );
     await client.query(
         `INSERT INTO aim_factura_eventos (tipo, registro_id, recibo_id, detalle, usuario_id)
          VALUES ($1,$2,$3,$4,$5)`,
         ['alta_factura', r.rows[0].id, recibo.id, `${fila.serie}-${fila.numero} · ${Number(total).toFixed(2)} €`, userId || null]
     );
-    return { id: r.rows[0].id, huella: fila.huella };
+    return { id: r.rows[0].id, huella: fila.huella, huellaAeat, qrUrl, numSerie };
 }
+
+// ── Ajustes y envío de VERI*FACTU (ticket #232) ─────────────────────────────
+// El sistema informático de facturación (SIF) se identifica ante la AEAT en cada
+// registro. El certificado para remitir va en variables de entorno (nunca en la
+// base ni en el repositorio): VERIFACTU_CERT_P12 (en base64) y VERIFACTU_CERT_PASS.
+let AJUSTES_VERIFACTU = {
+    modo: 'apagado',            // apagado · verifactu
+    entorno: 'pruebas',         // pruebas · produccion
+    envioAutomatico: true,
+    sif: {
+        nombreRazon: EMPRESA_TICKET.nombre, nif: EMPRESA_TICKET.nif,
+        nombre: 'AIM Education', id: '01', version: SOFTWARE_FACTURACION.version, instalacion: 'AIM-01',
+    },
+};
+async function cargarAjustesVerifactu() {
+    try {
+        const r = await pool.query("SELECT valor FROM aim_ajustes WHERE clave = 'verifactu'");
+        const v = r.rows[0]?.valor || {};
+        AJUSTES_VERIFACTU = {
+            modo: v.modo === 'verifactu' ? 'verifactu' : 'apagado',
+            entorno: v.entorno === 'produccion' ? 'produccion' : 'pruebas',
+            envioAutomatico: v.envioAutomatico !== false,
+            sif: { ...AJUSTES_VERIFACTU.sif, ...(v.sif || {}) },
+        };
+    } catch (e) { console.error('[verifactu ajustes]', e.message); }
+    return AJUSTES_VERIFACTU;
+}
+const hayCertificadoVerifactu = () => !!(process.env.VERIFACTU_CERT_P12 && process.env.VERIFACTU_CERT_PASS);
+
+app.get('/api/admin/billing/verifactu', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT COUNT(*) FILTER (WHERE estado_envio = 'pendiente')::int AS pendientes,
+                    COUNT(*) FILTER (WHERE estado_envio = 'enviado')::int AS enviados,
+                    COUNT(*) FILTER (WHERE estado_envio = 'error')::int AS errores,
+                    COUNT(*) FILTER (WHERE huella_aeat IS NOT NULL)::int AS registros
+             FROM aim_factura_registro`);
+        const ultimas = await pool.query(
+            `SELECT id, num_serie, fecha_expedicion::text AS fecha, total, estado_envio, aeat_respuesta, aeat_csv, huella_aeat
+             FROM aim_factura_registro WHERE huella_aeat IS NOT NULL ORDER BY id DESC LIMIT 10`);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            ...AJUSTES_VERIFACTU, certificado: hayCertificadoVerifactu(), ...r.rows[0],
+            ultimas: ultimas.rows.map(x => ({
+                id: x.id, numero: x.num_serie, fecha: x.fecha, total: Number(x.total),
+                estado: x.estado_envio, respuesta: x.aeat_respuesta, csv: x.aeat_csv, huella: x.huella_aeat,
+            })),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/admin/billing/verifactu', authenticateSession, requireAdmin, requireRol('club_owner'), async (req, res) => {
+    const v = req.body || {};
+    const limpio = {
+        modo: v.modo === 'verifactu' ? 'verifactu' : 'apagado',
+        entorno: v.entorno === 'produccion' ? 'produccion' : 'pruebas',
+        envioAutomatico: v.envioAutomatico !== false,
+        sif: {
+            nombreRazon: String(v.sif?.nombreRazon || EMPRESA_TICKET.nombre).slice(0, 120),
+            nif: String(v.sif?.nif || EMPRESA_TICKET.nif).slice(0, 20),
+            nombre: String(v.sif?.nombre || 'AIM Education').slice(0, 60),
+            id: String(v.sif?.id || '01').slice(0, 2),
+            version: String(v.sif?.version || SOFTWARE_FACTURACION.version).slice(0, 20),
+            instalacion: String(v.sif?.instalacion || 'AIM-01').slice(0, 60),
+        },
+    };
+    try {
+        await pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('verifactu', $1::jsonb, NOW(), $2)
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+            [JSON.stringify(limpio), req.userSession.userId]);
+        await cargarAjustesVerifactu();
+        res.json({ success: true, ...AJUSTES_VERIFACTU, certificado: hayCertificadoVerifactu() });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Remite a la AEAT los registros pendientes. Sin certificado no hace nada: se
+// quedan en cola, ya generados y encadenados, listos para cuando lo haya.
+let envioVerifactuEnCurso = false;
+async function enviarRegistrosVerifactu({ forzar = false } = {}) {
+    if (envioVerifactuEnCurso) return { enviados: 0, motivo: 'ya hay un envío en curso' };
+    if (AJUSTES_VERIFACTU.modo !== 'verifactu') return { enviados: 0, motivo: 'VERI*FACTU está apagado' };
+    if (!forzar && !AJUSTES_VERIFACTU.envioAutomatico) return { enviados: 0, motivo: 'el envío automático está apagado' };
+    if (!hayCertificadoVerifactu()) return { enviados: 0, motivo: 'falta el certificado (VERIFACTU_CERT_P12)' };
+    envioVerifactuEnCurso = true;
+    try {
+        const pend = await pool.query(
+            `SELECT id, xml FROM aim_factura_registro WHERE estado_envio = 'pendiente' AND xml IS NOT NULL ORDER BY id LIMIT 100`);
+        if (!pend.rowCount) return { enviados: 0, motivo: 'no hay nada pendiente' };
+        const sobre = verifactu.xmlEnvio({
+            emisor: { nombre: EMPRESA_TICKET.nombre, nif: EMPRESA_TICKET.nif },
+            registros: pend.rows.map(x => x.xml),
+        });
+        const { Agent } = await import('undici');
+        const agente = new Agent({
+            connect: { pfx: Buffer.from(process.env.VERIFACTU_CERT_P12, 'base64'), passphrase: process.env.VERIFACTU_CERT_PASS },
+        });
+        const r = await fetch(verifactu.ENDPOINTS[AJUSTES_VERIFACTU.entorno], {
+            method: 'POST', headers: { 'Content-Type': 'text/xml; charset=utf-8' }, body: sobre, dispatcher: agente,
+        });
+        const texto = await r.text();
+        const ok = r.ok && /Correcto|AceptadoConErrores/i.test(texto);
+        const csv = (texto.match(/<CSV>([^<]+)<\/CSV>/i) || [])[1] || null;
+        await pool.query(
+            `UPDATE aim_factura_registro SET estado_envio = $2, aeat_respuesta = $3, aeat_csv = $4,
+                    aeat_enviado_at = CASE WHEN $2 = 'enviado' THEN NOW() ELSE aeat_enviado_at END
+             WHERE id = ANY($1::int[])`,
+            [pend.rows.map(x => x.id), ok ? 'enviado' : 'error', texto.slice(0, 4000), csv]);
+        return { enviados: ok ? pend.rowCount : 0, errores: ok ? 0 : pend.rowCount, respuesta: texto.slice(0, 400) };
+    } catch (e) {
+        console.error('[verifactu envío]', e.message);
+        return { enviados: 0, error: e.message };
+    } finally { envioVerifactuEnCurso = false; }
+}
+
+app.post('/api/admin/billing/verifactu/enviar', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    try {
+        res.json({ success: true, ...(await enviarRegistrosVerifactu({ forzar: true })) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// El QR tributario que lleva la factura (ticket #232): la imagen ya lista para
+// pintarla y la frase que va debajo. Si VERI*FACTU está apagado, no lleva nada.
+async function datosVerifactuDeFactura(reciboId) {
+    try {
+        const r = await pool.query(
+            `SELECT qr_url, modo FROM aim_factura_registro
+             WHERE recibo_id = $1 AND qr_url IS NOT NULL ORDER BY id DESC LIMIT 1`, [reciboId]);
+        const fila = r.rows[0];
+        if (!fila || fila.modo !== 'verifactu') return null;
+        const QRCode = (await import('qrcode')).default;
+        const png = await QRCode.toBuffer(fila.qr_url, { errorCorrectionLevel: 'M', margin: 1, width: 300 });
+        return { qr: png, url: fila.qr_url, titulo: verifactu.TEXTO_QR, leyenda: verifactu.LEYENDA_VERIFACTU };
+    } catch (e) {
+        console.error('[verifactu qr]', e.message);
+        return null;
+    }
+}
+
+// El XML tal y como se remite (o se remitiría), para poder revisarlo.
+app.get('/api/admin/billing/verifactu/:id/xml', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    try {
+        const r = await pool.query('SELECT xml, num_serie FROM aim_factura_registro WHERE id = $1', [req.params.id]);
+        if (!r.rowCount || !r.rows[0].xml) return res.status(404).json({ error: 'Ese registro no tiene XML.' });
+        res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+        res.setHeader('Content-Disposition', `inline; filename="verifactu-${r.rows[0].num_serie}.xml"`);
+        res.send(r.rows[0].xml);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 // Líneas de un recibo que siguen vivas: ni devueltas al cliente (recibo_id a NULL)
 // ni ya rectificadas antes. Es lo que se puede rectificar en una nueva pasada.
@@ -8062,6 +8264,8 @@ app.get('/api/me/recibos/:id/pdf', authenticateSession, async (req, res) => {
         }
         const t = await ticketDeRecibo(id);
         if (!t) return res.status(404).send('Recibo no encontrado.');
+        // QR tributario de VERI*FACTU (ticket #232), si está encendido.
+        t.verifactu = await datosVerifactuDeFactura(id);
         const nombre = `recibo-${t.recibo.serie || 'A'}-${t.recibo.numero}.pdf`;
         res.setHeader('Content-Type', 'application/pdf');
         // Con ?descargar=1 el navegador lo guarda en vez de enseñarlo.
@@ -12778,6 +12982,11 @@ app.listen(port, () => {
     cargarFormatoNumeracion();
     // Y el día de corte del alta (ticket #289).
     cargarAjustesFacturacion();
+    // VERI*FACTU (ticket #232): ajustes y reintento de los envíos pendientes.
+    cargarAjustesVerifactu().then(() => {
+        setTimeout(() => enviarRegistrosVerifactu().catch(() => {}), 90 * 1000);
+        setInterval(() => enviarRegistrosVerifactu().catch(() => {}), 10 * 60 * 1000);
+    });
     console.log(`Server is running at http://localhost:${port}`);
     // Los cargos del mes se generan solos cada poco, sin darle a ningún botón.
     // Se hace una primera pasada al arrancar (con un pequeño margen para que la

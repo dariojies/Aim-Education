@@ -45,7 +45,21 @@ export function generarReciboPdf(t, salida) {
     degradado.stop(0, '#5233A8').stop(.3, '#FF99D3').stop(.6, '#FFD526').stop(1, '#21B668');
     doc.rect(izq, yFranja, ancho, 3).fill(degradado);
 
-    let y = yFranja + 22;
+    // QR tributario (ticket #232, VERI*FACTU): va arriba de la factura, con el
+    // texto que lo identifica encima y la frase de factura verificable debajo,
+    // tal y como pide la especificación de la AEAT.
+    if (t.verifactu?.qr) {
+        const lado = 95;                       // ~33 mm, dentro de lo que pide la AEAT
+        const x = izq + ancho - lado;
+        const yQr = 50;
+        doc.fillColor(SUAVE).font('Helvetica').fontSize(8)
+            .text(t.verifactu.titulo || 'QR tributario:', x, yQr - 11, { width: lado, align: 'center' });
+        doc.image(t.verifactu.qr, x, yQr, { width: lado, height: lado });
+        doc.fillColor(TINTA).font('Helvetica-Bold').fontSize(8)
+            .text(t.verifactu.leyenda || 'VERI*FACTU', x, yQr + lado + 3, { width: lado, align: 'center' });
+    }
+
+    let y = Math.max(yFranja + 22, t.verifactu?.qr ? 165 : 0);
     doc.fillColor(TINTA).font('Helvetica-Bold').fontSize(15)
         .text(rect ? 'Factura rectificativa' : 'Factura', izq, y);
     y = doc.y + 6;
