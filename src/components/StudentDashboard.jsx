@@ -209,6 +209,52 @@ function BonosFamilia() {
   );
 }
 
+// Días de cierre del centro (#256): festivos, vacaciones y cierres, para que las
+// familias sepan de antemano qué días no hay clase. Si no hay ninguno marcado, no
+// se enseña nada.
+const fmtCierre = (iso) => new Date(String(iso).slice(0, 10) + 'T12:00:00').toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' });
+const etiquetaCierre = (tipo) => (tipo === 'vacaciones' ? 'Vacaciones' : tipo === 'cierre' ? 'Cierre' : 'Festivo');
+
+function CierresCentro() {
+  const [periodos, setPeriodos] = useState(null);
+  const [verTodos, setVerTodos] = useState(false);
+  useEffect(() => {
+    fetch('/api/cierres').then(r => r.ok ? r.json() : null).then(d => setPeriodos(d?.periodos || [])).catch(() => setPeriodos([]));
+  }, []);
+  if (!periodos?.length) return null;
+  const hoy = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' });
+  const visibles = verTodos ? periodos : periodos.slice(0, 5);
+  return (
+    <div className="panel" style={{ marginTop: 22 }}>
+      <h2><I.Calendar /> Días de cierre del centro</h2>
+      <p className="sub">Esos días no hay clases. Tenlo en cuenta al organizarte.</p>
+      <div style={{ display: 'grid', gap: 8 }}>
+        {visibles.map(p => {
+          const ahora = p.desde <= hoy && hoy <= p.hasta;
+          return (
+            <div key={p.desde} style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '10px 12px', borderRadius: 12, background: ahora ? 'color-mix(in oklab, var(--orange) 10%, var(--bg-2))' : 'var(--bg-2)', border: '1px solid var(--line)' }}>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontSize: 14, fontWeight: 800, textTransform: 'capitalize' }}>
+                  {p.desde === p.hasta ? fmtCierre(p.desde) : `${fmtCierre(p.desde)} – ${fmtCierre(p.hasta)}`}
+                </div>
+                <div style={{ fontSize: 13, color: 'var(--ink-2)' }}>{p.nombre}</div>
+              </div>
+              <span style={{ fontSize: 11, fontWeight: 800, padding: '3px 10px', borderRadius: 999, whiteSpace: 'nowrap', background: p.tipo === 'vacaciones' ? 'color-mix(in oklab, var(--teal) 15%, transparent)' : 'color-mix(in oklab, var(--orange) 15%, transparent)', color: p.tipo === 'vacaciones' ? 'var(--teal)' : 'var(--orange)' }}>
+                {ahora ? 'Cerrado ahora' : etiquetaCierre(p.tipo)}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      {periodos.length > 5 && (
+        <button className="btn btn-sm btn-outline" style={{ marginTop: 10 }} onClick={() => setVerTodos(v => !v)}>
+          {verTodos ? 'Ver menos' : `Ver los ${periodos.length}`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function DashOverview({ go, setView }) {
   const [slots, setSlots] = useState([]);
   const [groups, setGroups] = useState([]);
@@ -387,6 +433,8 @@ function DashOverview({ go, setView }) {
           desc="Escribe al club y te contestamos por aquí."
           color="#5233A8" icon={<I.Shield />} onClick={() => setView("support")} />
       </div>
+
+      <CierresCentro />
     </>
   );
 }

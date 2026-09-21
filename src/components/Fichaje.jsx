@@ -656,7 +656,8 @@ function VacacionesYFestivos({ showToast, puedeGestionar }) {
   const [verTodas, setVerTodas] = useState(false);
   const [trabajadores, setTrabajadores] = useState([]);
   const [modal, setModal] = useState(null); // 'pedir' | 'registrar'
-  const [nuevoFestivo, setNuevoFestivo] = useState({ fecha: '', nombre: '', tipo: 'local' });
+  // Un día suelto o un periodo entero (#256): si "hasta" va vacío, es un solo día.
+  const [nuevoFestivo, setNuevoFestivo] = useState({ desde: '', hasta: '', nombre: '', tipo: 'local' });
 
   const cargar = useCallback(async () => {
     const get = (u) => fetch(u, { credentials: 'include', cache: 'no-store' }).then(r => r.ok ? r.json() : null).catch(() => null);
@@ -674,15 +675,28 @@ function VacacionesYFestivos({ showToast, puedeGestionar }) {
 
   async function añadirFestivo(e) {
     e.preventDefault();
+    const { desde, nombre, tipo } = nuevoFestivo;
+    const hasta = nuevoFestivo.hasta || desde;
     try {
-      await enviar('/api/admin/fichajes/festivos', nuevoFestivo);
-      showToast?.('Festivo guardado.'); setNuevoFestivo({ fecha: '', nombre: '', tipo: nuevoFestivo.tipo }); cargar();
+      const d = await enviar('/api/admin/fichajes/festivos', { desde, hasta, nombre, tipo });
+      // Si el periodo pisa festivos que ya estaban (p. ej. Navidad sobre el 25 de
+      // diciembre), se dice: pasan a contar como lo que se acaba de marcar.
+      if (d.sustituidos?.length) {
+        alert(`Guardado. Dentro del periodo había ${d.sustituidos.length} día${d.sustituidos.length === 1 ? '' : 's'} ya marcado${d.sustituidos.length === 1 ? '' : 's'}, que ahora cuenta${d.sustituidos.length === 1 ? '' : 'n'} como «${nombre}»:\n\n`
+          + d.sustituidos.map(x => `· ${fmtDiaCorto(x.fecha)}: ${x.nombre} (${x.tipoNombre})`).join('\n'));
+      }
+      showToast?.(d.dias > 1 ? `Periodo guardado (${d.dias} días).` : 'Día guardado.');
+      setNuevoFestivo({ desde: '', hasta: '', nombre: '', tipo });
+      cargar();
     } catch (err) { alert(err.message); }
   }
-  async function quitarFestivo(f) {
-    if (!window.confirm(`¿Quitar el festivo del ${fmtDiaCorto(f.fecha)} (${f.nombre})?`)) return;
-    try { await enviar(`/api/admin/fichajes/festivos/${f.fecha}`, null, 'DELETE'); showToast?.('Festivo quitado.'); cargar(); }
-    catch (err) { alert(err.message); }
+  async function quitarPeriodo(p) {
+    const cuando = p.desde === p.hasta ? `el ${fmtDiaCorto(p.desde)}` : `del ${fmtDiaCorto(p.desde)} al ${fmtDiaCorto(p.hasta)} (${p.dias} días)`;
+    if (!window.confirm(`¿Quitar «${p.nombre}» ${cuando}?`)) return;
+    try {
+      await enviar(`/api/admin/fichajes/festivos?desde=${p.desde}&hasta=${p.hasta}`, null, 'DELETE');
+      showToast?.('Quitado del calendario.'); cargar();
+    } catch (err) { alert(err.message); }
   }
 
   const titulo = (t) => <h3 style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 800 }}>{t}</h3>;
@@ -724,28 +738,50 @@ function VacacionesYFestivos({ showToast, puedeGestionar }) {
           <b style={{ fontSize: 14 }}>{anio}</b>
           <button className="btn btn-sm btn-outline" onClick={() => setAnio(a => a + 1)} aria-label="Año siguiente">›</button>
         </div>
-        <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Festivos y días de cierre del centro. Esos días no se recuerda fichar a nadie.</p>
+        <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.6 }}>
+          Los días que cierra el centro. Esos días no se recuerda fichar a nadie, y <b>las familias los ven en su panel</b> como
+          días de cierre. Un <b>festivo</b> (nacional, de Andalucía o local) no son vacaciones del personal; las <b>vacaciones del
+          centro</b> (Navidad, Semana Santa…) sí, aunque caiga algún festivo por medio.
+        </p>
         {puedeGestionar && (
           <form onSubmit={añadirFestivo} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: 10 }}>
-            <input type="date" value={nuevoFestivo.fecha} onChange={e => setNuevoFestivo(x => ({ ...x, fecha: e.target.value }))} required style={{ ...inp, padding: '6px 8px' }} />
-            <input placeholder="Nombre (p. ej. Feria de Algeciras)" value={nuevoFestivo.nombre} onChange={e => setNuevoFestivo(x => ({ ...x, nombre: e.target.value }))} required style={{ ...inp, padding: '6px 8px', flex: '1 1 180px' }} />
+            <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, color: 'var(--ink-2)' }}>
+              Desde
+              <input type="date" value={nuevoFestivo.desde} required style={{ ...inp, padding: '6px 8px' }}
+                onChange={e => setNuevoFestivo(x => ({ ...x, desde: e.target.value, hasta: x.hasta && x.hasta < e.target.value ? '' : x.hasta }))} />
+            </label>
+            <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, color: 'var(--ink-2)' }}>
+              Hasta
+              <input type="date" value={nuevoFestivo.hasta} min={nuevoFestivo.desde || undefined} style={{ ...inp, padding: '6px 8px' }}
+                title="Déjalo vacío si es un solo día"
+                onChange={e => setNuevoFestivo(x => ({ ...x, hasta: e.target.value }))} />
+            </label>
+            <input placeholder="Nombre (p. ej. Vacaciones de Navidad)" value={nuevoFestivo.nombre} onChange={e => setNuevoFestivo(x => ({ ...x, nombre: e.target.value }))} required style={{ ...inp, padding: '6px 8px', flex: '1 1 180px' }} />
             <select value={nuevoFestivo.tipo} onChange={e => setNuevoFestivo(x => ({ ...x, tipo: e.target.value }))} style={{ ...inp, padding: '6px 8px' }}>
               {Object.entries(cal?.tipos || {}).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
             </select>
             <button type="submit" className="btn btn-sm btn-primary">Añadir</button>
+            <span style={{ flexBasis: '100%', fontSize: 11, color: 'var(--ink-3)' }}>
+              «Hasta» vacío = un solo día. Con fecha de fin se marca el periodo entero de una vez.
+            </span>
           </form>
         )}
-        {!(cal?.festivos || []).length
-          ? <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>No hay festivos marcados en {anio}.</p>
+        {!(cal?.periodos || []).length
+          ? <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>No hay días de cierre marcados en {anio}.</p>
           : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 8 }}>
-              {cal.festivos.map(f => (
-                <div key={f.fecha} style={{ display: 'flex', gap: 8, alignItems: 'center', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, padding: '8px 12px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 8 }}>
+              {cal.periodos.map(p => (
+                <div key={p.desde} style={{ display: 'flex', gap: 8, alignItems: 'center', background: 'var(--bg-2)', border: '1px solid var(--line)', borderLeft: `4px solid ${p.vacacionesPersonal ? 'var(--teal)' : 'var(--orange)'}`, borderRadius: 10, padding: '8px 12px' }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 800, textTransform: 'capitalize' }}>{fmtDiaCorto(f.fecha)}</div>
-                    <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{f.nombre} · {f.tipoNombre}</div>
+                    <div style={{ fontSize: 13, fontWeight: 800, textTransform: 'capitalize' }}>
+                      {p.desde === p.hasta ? fmtDiaCorto(p.desde) : `${fmtDiaCorto(p.desde)} – ${fmtDiaCorto(p.hasta)}`}
+                      {p.dias > 1 && <span style={{ fontWeight: 600, color: 'var(--ink-3)', textTransform: 'none' }}> · {p.dias} días</span>}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                      {p.nombre} · {p.tipoNombre}{p.vacacionesPersonal ? ' (vacaciones del personal)' : ''}
+                    </div>
                   </div>
-                  {puedeGestionar && <button className="icon-btn danger" onClick={() => quitarFestivo(f)} aria-label="Quitar festivo"><I.X /></button>}
+                  {puedeGestionar && <button className="icon-btn danger" onClick={() => quitarPeriodo(p)} aria-label="Quitar del calendario"><I.X /></button>}
                 </div>
               ))}
             </div>

@@ -12752,7 +12752,36 @@ const TIPOS_AUSENCIA = {
     no_retribuida: { nombre: 'Ausencia no retribuida', justifica: false },
     otra: { nombre: 'Otra ausencia', justifica: false },
 };
-const TIPOS_FESTIVO = { nacional: 'Fiesta nacional', autonomico: 'Fiesta de Andalucía', local: 'Fiesta local', cierre: 'Cierre del centro' };
+// Tipos de día de cierre (#233 y #256). Todos cierran el centro y las familias los
+// ven igual, como días de cierre. La diferencia es para el personal: un festivo
+// (nacional, de Andalucía o local) NO son vacaciones suyas, y las "vacaciones del
+// centro" (Navidad, Semana Santa… que se rigen por el calendario escolar) SÍ lo
+// son, aunque caiga algún festivo por medio.
+const TIPOS_FESTIVO = {
+    nacional: 'Fiesta nacional', autonomico: 'Fiesta de Andalucía', local: 'Fiesta local',
+    vacaciones: 'Vacaciones del centro', cierre: 'Cierre del centro',
+};
+const TIPOS_SON_VACACIONES = new Set(['vacaciones']);
+// Un periodo de cierre, como mucho (el verano entero cabe de sobra).
+const MAX_DIAS_CIERRE = 120;
+
+// Junta los días de cierre seguidos que tienen el mismo nombre y tipo en un solo
+// periodo: la Navidad se guarda día a día, pero se enseña como "22 dic – 7 ene".
+function periodosDeCierre(dias) {
+    const periodos = [];
+    for (const d of [...dias].sort((a, b) => a.fecha.localeCompare(b.fecha))) {
+        const ult = periodos[periodos.length - 1];
+        if (ult && ult.nombre === d.nombre && ult.tipo === d.tipo && sumarDiaISO(ult.hasta, 1) === d.fecha) {
+            ult.hasta = d.fecha; ult.dias += 1;
+        } else {
+            periodos.push({
+                desde: d.fecha, hasta: d.fecha, dias: 1, nombre: d.nombre, tipo: d.tipo,
+                tipoNombre: TIPOS_FESTIVO[d.tipo] || d.tipo, vacacionesPersonal: TIPOS_SON_VACACIONES.has(d.tipo),
+            });
+        }
+    }
+    return periodos;
+}
 const sumarDiaISO = (iso, n) => { const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 const diasEntreISO = (a, b) => Math.round((new Date(b + 'T12:00:00Z') - new Date(a + 'T12:00:00Z')) / 86400000) + 1;
 
@@ -12782,38 +12811,110 @@ async function diasNoLaborables(userId, desde, hasta, cliente = pool) {
 app.get('/api/fichaje/calendario', authenticateSession, requireAdmin, async (req, res) => {
     const anio = /^\d{4}$/.test(req.query.anio || '') ? req.query.anio : hoyMadrid().slice(0, 4);
     try {
+        const ini = `${anio}-01-01`, fin = `${anio}-12-31`;
+        // Con margen por los dos lados: la Navidad cruza de año, y tiene que verse
+        // (y poder quitarse) entera tanto desde un año como desde el otro.
         const r = await pool.query(
             `SELECT fecha::text AS fecha, nombre, tipo FROM aim_calendario_laboral
-             WHERE fecha BETWEEN $1::date AND $2::date ORDER BY fecha`, [`${anio}-01-01`, `${anio}-12-31`]);
+             WHERE fecha BETWEEN ($1::date - INTERVAL '${MAX_DIAS_CIERRE} days') AND ($2::date + INTERVAL '${MAX_DIAS_CIERRE} days')
+             ORDER BY fecha`, [ini, fin]);
+        const delAnio = r.rows.filter(x => x.fecha >= ini && x.fecha <= fin);
         res.set('Cache-Control', 'no-store');
-        res.json({ anio, festivos: r.rows.map(x => ({ ...x, tipoNombre: TIPOS_FESTIVO[x.tipo] || x.tipo })), tipos: TIPOS_FESTIVO });
+        res.json({
+            anio,
+            festivos: delAnio.map(x => ({ ...x, tipoNombre: TIPOS_FESTIVO[x.tipo] || x.tipo })),
+            periodos: periodosDeCierre(r.rows).filter(p => p.hasta >= ini && p.desde <= fin),
+            tipos: TIPOS_FESTIVO,
+        });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/admin/fichajes/festivos', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
-    const fecha = String(req.body?.fecha || '');
+    // Un día suelto (fecha) o un periodo (desde-hasta), p. ej. toda la Navidad de
+    // una vez en vez de día a día (#256).
+    const desde = String(req.body?.desde || req.body?.fecha || '');
+    const hasta = String(req.body?.hasta || desde);
     const nombre = String(req.body?.nombre || '').trim().slice(0, 120);
     const tipo = TIPOS_FESTIVO[req.body?.tipo] ? req.body.tipo : 'local';
-    if (!esFechaISO(fecha)) return res.status(400).json({ error: 'Fecha no válida.' });
-    if (!nombre) return res.status(400).json({ error: 'Ponle nombre al festivo.' });
+    if (!esFechaISO(desde) || !esFechaISO(hasta)) return res.status(400).json({ error: 'Fecha no válida.' });
+    if (hasta < desde) return res.status(400).json({ error: 'La fecha de fin es anterior a la de inicio.' });
+    if (diasEntreISO(desde, hasta) > MAX_DIAS_CIERRE) {
+        return res.status(400).json({ error: `Un periodo de cierre no puede pasar de ${MAX_DIAS_CIERRE} días.` });
+    }
+    if (!nombre) return res.status(400).json({ error: 'Ponle nombre (p. ej. Vacaciones de Navidad).' });
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        const antes = await client.query(`SELECT nombre, tipo FROM aim_calendario_laboral WHERE fecha = $1::date`, [fecha]);
+        // Lo que había esos días. Si se marca un periodo de vacaciones del centro,
+        // los festivos que caigan dentro pasan a contar como vacaciones: así lo pide
+        // el calendario escolar (#256). Se dice cuáles para que no pille por sorpresa.
+        const antes = await client.query(
+            `SELECT fecha::text AS fecha, nombre, tipo FROM aim_calendario_laboral
+             WHERE fecha BETWEEN $1::date AND $2::date ORDER BY fecha`, [desde, hasta]);
         await client.query(
-            `INSERT INTO aim_calendario_laboral (fecha, nombre, tipo, created_by) VALUES ($1::date, $2, $3, $4)
+            `INSERT INTO aim_calendario_laboral (fecha, nombre, tipo, created_by)
+             SELECT d::date, $3, $4, $5 FROM generate_series($1::date, $2::date, INTERVAL '1 day') AS d
              ON CONFLICT (fecha) DO UPDATE SET nombre = EXCLUDED.nombre, tipo = EXCLUDED.tipo`,
-            [fecha, nombre, tipo, req.userSession.userId]);
+            [desde, hasta, nombre, tipo, req.userSession.userId]);
+        const sustituidos = antes.rows.filter(x => x.nombre !== nombre || x.tipo !== tipo);
         await auditarFichaje(client, {
             evento: 'festivo', actorId: req.userSession.userId, ip: ipDe(req),
-            datos: { fecha, nombre, tipo, antes: antes.rows[0] || null },
+            datos: desde === hasta
+                ? { fecha: desde, nombre, tipo, antes: antes.rows[0] ? { nombre: antes.rows[0].nombre, tipo: antes.rows[0].tipo } : null }
+                : { desde, hasta, dias: diasEntreISO(desde, hasta), nombre, tipo, antes: antes.rows },
         });
         await client.query('COMMIT');
-        res.status(201).json({ success: true });
+        res.status(201).json({
+            success: true, dias: diasEntreISO(desde, hasta),
+            sustituidos: sustituidos.map(x => ({ ...x, tipoNombre: TIPOS_FESTIVO[x.tipo] || x.tipo })),
+        });
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
         res.status(500).json({ error: err.message });
     } finally { client.release(); }
+});
+
+// Quitar un periodo entero de golpe (desde-hasta), el mismo que se marcó.
+app.delete('/api/admin/fichajes/festivos', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const { desde, hasta } = req.query;
+    if (!esFechaISO(desde) || !esFechaISO(hasta) || hasta < desde) return res.status(400).json({ error: 'Periodo no válido.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const del = await client.query(
+            `DELETE FROM aim_calendario_laboral WHERE fecha BETWEEN $1::date AND $2::date
+             RETURNING fecha::text AS fecha, nombre, tipo`, [desde, hasta]);
+        if (!del.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'No hay días de cierre en ese periodo.' }); }
+        await auditarFichaje(client, {
+            evento: 'festivo_quitado', actorId: req.userSession.userId, ip: ipDe(req),
+            datos: { desde, hasta, quitados: del.rows },
+        });
+        await client.query('COMMIT');
+        res.json({ success: true, dias: del.rowCount });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+// Los días que el centro está cerrado, para las familias (#256): festivos,
+// vacaciones y cierres, juntos por periodos. Es información pública (la verán
+// también en la web), así que no pide sesión, y solo lleva fechas y nombres.
+app.get('/api/cierres', async (req, res) => {
+    const hoy = hoyMadrid();
+    const desde = esFechaISO(req.query.desde) ? req.query.desde : hoy;
+    const hasta = esFechaISO(req.query.hasta) ? req.query.hasta : sumarDiaISO(desde, 365);
+    try {
+        // Se cogen también los días de antes de "desde" que sigan en el mismo
+        // periodo, para que unas vacaciones ya empezadas salgan con su inicio real.
+        const r = await pool.query(
+            `SELECT fecha::text AS fecha, nombre, tipo FROM aim_calendario_laboral
+             WHERE fecha BETWEEN ($1::date - INTERVAL '${MAX_DIAS_CIERRE} days') AND $2::date ORDER BY fecha`, [desde, hasta]);
+        const periodos = periodosDeCierre(r.rows).filter(p => p.hasta >= desde)
+            .map(({ desde: d, hasta: h, dias, nombre, tipo, tipoNombre }) => ({ desde: d, hasta: h, dias, nombre, tipo, tipoNombre }));
+        res.set('Cache-Control', 'public, max-age=300');
+        res.json({ desde, hasta, periodos });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.delete('/api/admin/fichajes/festivos/:fecha', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
