@@ -3910,16 +3910,12 @@ function BillingTPV({ showToast }) {
       } else if (d?.error) {
         alert(d.error);
       } else {
-        alert(`El servidor no ha contestado bien (error ${r.status}) y no se sabe si el cobro ha llegado a hacerse.
-
-Antes de volver a cobrar, mira en «Recibos» si aparece. La lista de pendientes se actualiza ahora.`);
+        alert(`El servidor no ha contestado bien (error ${r.status}) y no se sabe si el cobro ha llegado a hacerse.\n\nAntes de volver a cobrar, mira en «Recibos» si aparece. La lista de pendientes se actualiza ahora.`);
         traerCesta(pagador.id, false);
       }
     } catch {
       // Sin respuesta: la petición pudo llegar y el cobro hacerse igual.
-      alert('Se ha cortado la conexión mientras se cobraba y no se sabe si el cobro ha llegado a hacerse.
-
-Antes de volver a cobrar, mira en «Recibos» si aparece. La lista de pendientes se actualiza ahora.');
+      alert('Se ha cortado la conexión mientras se cobraba y no se sabe si el cobro ha llegado a hacerse.\n\nAntes de volver a cobrar, mira en «Recibos» si aparece. La lista de pendientes se actualiza ahora.');
       if (pagador) traerCesta(pagador.id, false);
     }
     finally { setCobrando(false); }
