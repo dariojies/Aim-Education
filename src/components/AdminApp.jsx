@@ -3897,9 +3897,31 @@ function BillingTPV({ showToast }) {
           efectivoEntregado: hayEfectivo ? Number(efectivoEntregado || efectivoPortion) : undefined,
         }),
       });
-      if (r.ok) { const d = await r.json(); setTicket(d); showToast?.(`Recibo #${d.recibo.numero} cobrado.`); setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null); setAddBono(null); }
-      else { const d = await r.json(); alert(d.error || 'Error al cobrar.'); }
-    } catch { alert('Error de conexión.'); }
+      // Se lee como texto y luego se interpreta: si el servidor no contesta con
+      // JSON (p. ej. porque se ha pasado de tiempo), antes saltaba un "error de
+      // conexión" genérico y no se sabía si se había cobrado o no (#293).
+      const texto = await r.text();
+      let d = null;
+      try { d = JSON.parse(texto); } catch { /* no es JSON */ }
+      if (r.ok && d?.recibo) {
+        setTicket(d);
+        showToast?.(d.facturas?.length > 1 ? `Cobrado: ${d.facturas.length} facturas emitidas.` : `Factura ${d.recibo.numeroVisible || d.recibo.numero} cobrada.`);
+        setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null); setAddBono(null);
+      } else if (d?.error) {
+        alert(d.error);
+      } else {
+        alert(`El servidor no ha contestado bien (error ${r.status}) y no se sabe si el cobro ha llegado a hacerse.
+
+Antes de volver a cobrar, mira en «Recibos» si aparece. La lista de pendientes se actualiza ahora.`);
+        traerCesta(pagador.id, false);
+      }
+    } catch {
+      // Sin respuesta: la petición pudo llegar y el cobro hacerse igual.
+      alert('Se ha cortado la conexión mientras se cobraba y no se sabe si el cobro ha llegado a hacerse.
+
+Antes de volver a cobrar, mira en «Recibos» si aparece. La lista de pendientes se actualiza ahora.');
+      if (pagador) traerCesta(pagador.id, false);
+    }
     finally { setCobrando(false); }
   }
 
@@ -3934,7 +3956,7 @@ function BillingTPV({ showToast }) {
       {ticket && (
         <div style={{ background: 'color-mix(in oklab, var(--teal) 10%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--teal) 35%, transparent)', borderRadius: 14, padding: '16px 18px', display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
           <div style={{ flex: 1, minWidth: 200 }}>
-            <div style={{ fontWeight: 800, fontSize: 16, color: 'var(--teal)' }}>Recibo #{ticket.recibo.numero} cobrado — {eur(ticket.recibo.total)}</div>
+            <div style={{ fontWeight: 800, fontSize: 16, color: 'var(--teal)' }}>{ticket.facturas?.length > 1 ? 'Cobrado' : `Factura ${ticket.recibo.numeroVisible || ticket.recibo.numero} cobrada`} — {eur(ticket.recibo.total)}</div>
             <div style={{ fontSize: 13, color: 'var(--ink-2)' }}>{ticket.recibo.pagador} · {(ticket.recibo.pagos && ticket.recibo.pagos.length > 1) ? ticket.recibo.pagos.map(p => `${p.medio} ${eur(p.importe)}`).join(' + ') : ticket.recibo.medioPago}{ticket.recibo.cambio > 0 ? ` · cambio ${eur(ticket.recibo.cambio)}` : ''}</div>
             {/* Las facturas vinculadas del cobro, una por serie — interno (#291).
                 El cliente ve un solo ticket; esto es para el mostrador. */}
@@ -3999,26 +4021,6 @@ function BillingTPV({ showToast }) {
             </div>
             <button className="btn btn-sm btn-outline" style={{ marginLeft: 'auto' }} onClick={() => { setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null); setAddBono(null); }}>Cambiar</button>
           </div>
-
-          {/* Menor de edad: la factura debe ir a un adulto de la familia (#219). */}
-          {pagador.esMenor && (
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '10px 14px', borderRadius: 12, background: 'color-mix(in oklab, var(--orange) 10%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--orange) 35%, var(--line))' }}>
-              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--orange)' }}>
-                ⚠ El alumno es menor. {adultos.length > 1 ? 'Elige quién paga:' : 'Factura a nombre de:'}
-              </span>
-              {adultos.length ? (
-                <select value={pagadorFactura} onChange={e => setPagadorFactura(e.target.value)}
-                  style={{ fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)' }}>
-                  <option value="">Elige un adulto...</option>
-                  {adultos.map(a => <option key={a.id} value={a.id}>{a.nombre} {a.apellidos}{a.edad != null ? ` (${a.edad})` : ''}</option>)}
-                </select>
-              ) : (
-                <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>
-                  No se puede cobrar: un menor necesita un adulto responsable (padre, madre o tutor/a). Añádelo en <b>Familias</b> y vuelve.
-                </span>
-              )}
-            </div>
-          )}
 
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.7fr) minmax(240px, 1fr)', gap: 16, alignItems: 'start' }}>
             {/* Líneas */}
@@ -4231,6 +4233,38 @@ function BillingTPV({ showToast }) {
                 <span style={{ fontWeight: 800, fontSize: 15 }}>TOTAL</span>
                 <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 28, letterSpacing: '-.02em' }}>{eur(total)}</span>
               </div>
+              {/* Las facturas que se van a emitir (una por serie, #291). El cliente
+                  se lleva un solo ticket; esto es para quien cobra. */}
+              {totales?.facturas?.length > 1 && (
+                <div style={{ fontSize: 11, color: 'var(--ink-3)', display: 'grid', gap: 2 }}>
+                  <span style={{ fontWeight: 700 }}>Se emitirán {totales.facturas.length} facturas:</span>
+                  {totales.facturas.map(f => (
+                    <span key={f.serie} style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span>{nombreSerie(f.serie)}</span><span>{eur(f.total)}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+              {/* Menor de edad: la factura tiene que ir a un adulto de la familia
+                  (#219). Va aquí, junto al pago, para que no se pase por alto (#293). */}
+              {pagador.esMenor && (
+                <div style={{ display: 'grid', gap: 6, padding: 10, borderRadius: 12, background: 'color-mix(in oklab, var(--orange) 10%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--orange) 45%, var(--line))' }}>
+                  <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--orange)' }}>
+                    ⚠ El alumno es menor: {adultos.length > 1 ? '¿quién paga?' : 'la factura va a nombre de'}
+                  </span>
+                  {adultos.length ? (
+                    <select value={pagadorFactura} onChange={e => setPagadorFactura(e.target.value)}
+                      style={{ fontFamily: 'inherit', fontSize: 14, fontWeight: 700, padding: '9px 10px', borderRadius: 10, border: `1px solid ${pagadorFactura ? 'var(--line)' : 'var(--orange)'}`, background: 'var(--bg-2)', color: 'var(--ink)' }}>
+                      <option value="">Elige un adulto...</option>
+                      {adultos.map(a => <option key={a.id} value={a.id}>{a.nombre} {a.apellidos}{a.edad != null ? ` (${a.edad})` : ''}</option>)}
+                    </select>
+                  ) : (
+                    <span style={{ fontSize: 12, color: 'var(--ink-2)' }}>
+                      No se puede cobrar: un menor necesita un adulto responsable (padre, madre o tutor/a). Añádelo en <b>Familias</b> y vuelve.
+                    </span>
+                  )}
+                </div>
+              )}
               {/* Métodos de pago (ticket #247): uno o varios. Un método sin importe
                   recibe "el resto". Con efectivo se indica cuánto dan (cambio). */}
               <div style={{ display: 'grid', gap: 6 }}>
@@ -4271,6 +4305,9 @@ function BillingTPV({ showToast }) {
                         : `Falta por asignar ${eur(round2(total - sumaAsignada))}.`}
                 </div>
               )}
+              {pagador.esMenor && !pagadorFactura && adultos.length > 0 && (
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--orange)' }}>Elige arriba quién paga para poder cobrar.</div>
+              )}
               <button className="btn btn-primary btn-block" disabled={cobrando || !pagoValido || (pagador.esMenor && !pagadorFactura)} onClick={cobrar} style={{ fontSize: 15, padding: '13px 0' }}>
                 {cobrando ? 'Cobrando...' : `Cobrar ${eur(total)}`}
               </button>
@@ -4300,7 +4337,7 @@ function imprimirTicketRecibo(t) {
     <div class="c">CIF: ${t.empresa.nif}<br>${t.empresa.direccion}<br>${t.empresa.cp}<br>${t.empresa.tel} · ${t.empresa.web}</div>
     ${anulado ? `<div class="anul">RECIBO ANULADO${t.recibo.anuladoMotivo ? `<br><small style="color:#c00">${t.recibo.anuladoMotivo}</small>` : ''}</div>` : ''}
     ${rect ? `<div class="rect">FACTURA RECTIFICATIVA<br><small>Rectifica al nº ${t.recibo.rectificaNumero || '—'}${t.recibo.rectificaFecha ? ` de ${fmtFecha(t.recibo.rectificaFecha)}` : ''}<br>Por ${t.recibo.rectMetodo === 'diferencias' ? 'diferencias' : 'sustitución'}${t.recibo.rectMotivo ? `<br>Motivo: ${t.recibo.rectMotivo}` : ''}</small></div>` : (anulado ? '' : '<hr>')}
-    <div>${rect ? 'Rectificativa' : 'Recibo'} nº <b>${t.recibo.numero}</b><br>Fecha: ${fmtFecha(t.recibo.fecha)}<br>Pagador: ${t.recibo.pagador}</div>
+    <div>${rect ? 'Rectificativa nº' : t.facturas?.length > 1 ? 'Facturas nº' : 'Factura nº'} <b>${t.facturas?.length > 1 ? t.facturas.map(f => f.numeroVisible || f.numero).join(' · ') : (t.recibo.numeroVisible || t.recibo.numero)}</b><br>Fecha: ${fmtFecha(t.recibo.fecha)}<br>Pagador: ${t.recibo.pagador}</div>
     <table><thead><tr><td><b>Descripción</b></td><td style="text-align:right"><b>IVA</b></td><td style="text-align:right"><b>Importe</b></td></tr></thead>
     <tbody>${filas}${bases}</tbody></table>
     <div class="tot">TOTAL: ${Number(t.recibo.total).toFixed(2)} €</div>

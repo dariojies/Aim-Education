@@ -8,7 +8,7 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { GoogleGenAI, Type } from '@google/genai';
 import nodemailer from 'nodemailer';
-import { calcularRecibo, mesAGenerar, mesDeAlta } from './billing.js';
+import { calcularRecibo, calcularCobro, serieDeLinea, mesAGenerar, mesDeAlta } from './billing.js';
 import { crearRouterTulClases } from './tul-clases.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
@@ -2900,7 +2900,7 @@ async function emitirReciboDe(client, { pagadorId, cargoIds, medioPago, userId }
     if (cs.rowCount !== cargoIds.length) {
         throw { httP: 409, msg: 'Alguno de los cargos ya no está pendiente. Recarga la pantalla.' };
     }
-    const total = calcularRecibo(cs.rows.map(cargoParaMotor)).total;
+    const total = calcularCobro(cs.rows.map(cargoParaMotor)).total;
     const receptor = await receptorDeFactura(client, pagadorId);
     exigirNifSiHaceFalta(receptor, total);
     const { tickets } = await emitirFacturasDeCargos(client, {
@@ -5503,11 +5503,15 @@ app.get('/api/admin/camp/roster', authenticateSession, requireAdmin, async (req,
 
 // Admin: recalcular un recibo a partir de sus líneas, sin guardar nada.
 // Es lo que usará el TPV para refrescar totales según se añaden/quitan líneas.
-app.post('/api/admin/billing/simular', authenticateSession, requireAdmin, (req, res) => {
+app.post('/api/admin/billing/simular', authenticateSession, requireAdmin, async (req, res) => {
     const { lineas } = req.body;
     if (!Array.isArray(lineas)) return res.status(400).json({ error: 'lineas debe ser un array.' });
     try {
-        res.json(calcularRecibo(lineas));
+        // La misma cuenta con la que luego se cobra y se factura (#293), con la
+        // serie de cada concepto sacada del catálogo, no de lo que mande la pantalla.
+        const fijadas = await pool.query(`SELECT concepto, serie_fiscal FROM aim_precios WHERE serie_fiscal IS NOT NULL`);
+        const serieDe = new Map(fijadas.rows.map(r => [r.concepto, r.serie_fiscal]));
+        res.json(calcularCobro(lineas.map(l => ({ ...l, serieFiscal: serieDe.get(l.concepto) }))));
     } catch (err) {
         console.error('Error simulando recibo:', err);
         res.status(500).json({ error: err.message });
@@ -6466,6 +6470,10 @@ const cargoParaMotor = (c) => ({
     mes: c.mes, precio: Number(c.precio), ivaPct: Number(c.iva_pct), descuentoPct: Number(c.descuento_pct),
     // Anticipos (ticket #243): total exacto de la línea, si viene fijado.
     brutoFijo: c.importe_bruto != null ? Number(c.importe_bruto) : undefined,
+    // Serie en la que factura su concepto (#291) y, al emitir, el tramo de
+    // descuento ya contado sobre el cobro entero (#293).
+    serieFiscal: c.serie_fiscal || undefined,
+    descuentoMensPctFijo: c.descuento_mens_fijo != null ? Number(c.descuento_mens_fijo) : undefined,
 });
 
 // Buscar personas del club por nombre/apellidos. Devuelve también el email y
@@ -6508,7 +6516,8 @@ app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async
         // un viaje a la base en vez de en tres.
         const [cargos, familia, anticipos] = await Promise.all([
             pool.query(
-                `SELECT c.*, u.name, u.surname FROM aim_cargos c JOIN users u ON u.user_id = c.cliente_id
+                `SELECT c.*, p.serie_fiscal, u.name, u.surname FROM aim_cargos c JOIN users u ON u.user_id = c.cliente_id
+                 LEFT JOIN aim_precios p ON p.concepto = c.concepto
                  WHERE c.cliente_id = ANY($1::uuid[]) AND c.estado = 'pendiente' AND c.recibo_id IS NULL
                    AND ${SQL_NO_RESERVADO}
                  ORDER BY u.surname, u.name, c.mes`,
@@ -6529,7 +6538,7 @@ app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async
                 [fam]
             ),
         ]);
-        const preview = calcularRecibo(cargos.rows.map(cargoParaMotor));
+        const preview = calcularCobro(cargos.rows.map(cargoParaMotor));
         res.set('Cache-Control', 'no-store');
         res.json({
             familia: familia.rows.map(u => {
@@ -6656,7 +6665,9 @@ async function emitirUnRecibo(client, { pagadorId, rows, pagosG, entregadoG, cam
     return {
         reciboId,
         recibo: {
-            id: reciboId, numero: rec.rows[0].numero, fecha: rec.rows[0].fecha,
+            // El número tal y como sale en la factura (AIMSP26-00001), no el
+            // secuencial suelto: es lo que se enseña y se imprime.
+            id: reciboId, numero: reg.numSerie, fecha: rec.rows[0].fecha,
             serie: rec.rows[0].serie, numeroVisible: reg.numSerie, tipoFactura: reg.tipoFactura,
             pagador: receptorNombre || '', medioPago: medioResumen, pagos: pagosG,
             entregado: entregadoG, cambio: cambioG, total,
@@ -6715,12 +6726,16 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
     if (!(pagosIn && pagosIn.length) && !MEDIOS_PAGO.includes(medioPago)) return res.status(400).json({ error: 'Medio de pago no válido.' });
     // La factura no puede ir a nombre de un menor (#219): tiene que emitirse a un
     // adulto de su familia (padre, madre o tutor/a).
-    {
+    try {
         const rp = await pool.query(`SELECT birthday FROM users WHERE user_id = $1`, [pagadorId]);
         const edadPag = rp.rowCount ? edadDe(rp.rows[0].birthday) : null;
         if (edadPag != null && edadPag < 18) {
-            return res.status(400).json({ error: 'No se puede cobrar a un menor: la factura tiene que ir a un adulto responsable de su familia (padre, madre o tutor/a). Elígelo arriba, o añádelo en Familias si no lo tiene.' });
+            return res.status(400).json({ error: 'No se puede cobrar a un menor: la factura tiene que ir a un adulto responsable de su familia (padre, madre o tutor/a). Elige quién paga junto a los métodos de pago, o añádelo en Familias si no lo tiene.' });
         }
+    } catch (err) {
+        // Sin este catch, un fallo aquí dejaba la petición sin respuesta hasta que
+        // Heroku la cortaba, y en el TPV salía un "error de conexión" (#293).
+        return res.status(400).json({ error: `No se ha podido comprobar quién paga: ${err.message}` });
     }
     const idsSel = Array.isArray(lineas) ? lineas.map(l => l.cargoId).filter(Boolean) : [];
     const extrasArr = Array.isArray(extras) ? extras : [];
@@ -6876,7 +6891,7 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
 
         // 4) Calcular importes (autoritativo). Las líneas de anticipo aplicado ya
         // van dentro (negativas), así que 'total' es lo que se cobra de verdad.
-        const calc = calcularRecibo(cs.rows.map(cargoParaMotor));
+        const calc = calcularCobro(cs.rows.map(cargoParaMotor));
         const total = calc.total;
         if (total < 0) throw { httP: 400, msg: 'Los anticipos aplicados superan el importe a cobrar. Ajusta el importe a aplicar.' };
 
@@ -6960,7 +6975,9 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
         res.json(tickets.length === 1 ? tickets[0]
             : combinarTickets(tickets, { pagos, entregado: entregadoNum, cambio, total, medioResumen, receptorNombre }));
     } catch (err) {
-        await client.query('ROLLBACK');
+        // Si la conexión se ha roto, el ROLLBACK también falla; aun así hay que
+        // contestar, o el TPV se queda esperando y acaba en "error de conexión".
+        await client.query('ROLLBACK').catch(() => {});
         if (err && err.httP) return res.status(err.httP).json({ error: err.msg });
         console.error('Error cobrando:', err);
         res.status(500).json({ error: err.message });
@@ -7055,12 +7072,7 @@ async function siguienteNumeroSerie(client, serie, ejercicio) {
 
 // A qué serie va un cargo. Manda lo que diga su concepto del catálogo; si no lo
 // dice, se deduce: el material es entrega de bienes, y del resto separa el IVA.
-const serieDeCargo = (c) => {
-    const fijada = (c.serie_fiscal || '').trim();
-    if (fijada && TODAS_LAS_SERIES.some(s => s.codigo === fijada && !s.rectificaDe)) return fijada;
-    if (c.tipo === 'Material') return 'MAT';
-    return Number(c.iva_pct ?? c.ivaPct) > 0 ? 'IVA' : SERIE_POR_DEFECTO;
-};
+const serieDeCargo = (c) => serieDeLinea(c);
 
 // Los datos del pagador que van en la factura. El NIF es lo que decide si puede
 // ser completa (F1) o tiene que ir simplificada (F2).
@@ -7080,17 +7092,16 @@ async function receptorDeFactura(client, pagadorId) {
 // por el que se emiten facturas: mostrador, pago por internet y cobro de cargos
 // sueltos pasan todos por aquí, así que las tres siguen la misma regla.
 async function emitirFacturasDeCargos(client, { pagadorId, rows, pagos, entregado, cambio, userId, receptor }) {
-    const total = calcularRecibo(rows.map(cargoParaMotor)).total;
-    const porSerie = new Map();
-    for (const c of rows) {
-        const s = serieDeCargo(c);
-        if (!porSerie.has(s)) porSerie.set(s, []);
-        porSerie.get(s).push(c);
-    }
-    const grupos = SERIES_FACTURA.map(s => s.codigo).filter(s => porSerie.has(s)).map(serie => {
-        const filas = porSerie.get(serie);
-        return { serie, rows: filas, total: calcularRecibo(filas.map(cargoParaMotor)).total };
-    });
+    // La misma cuenta que ha visto el TPV (#293): el tramo de descuento se cuenta
+    // sobre TODO el cobro y cada factura lo lleva ya fijado, así que las facturas
+    // suman exactamente lo que se ha cobrado.
+    const cobro = calcularCobro(rows.map(cargoParaMotor));
+    const total = cobro.total;
+    const grupos = cobro.facturas.map(f => ({
+        serie: f.serie,
+        total: f.total,
+        rows: f.indices.map((i, k) => ({ ...rows[i], descuento_mens_fijo: f.detalle[k].descuentoMensPct })),
+    }));
     // Un anticipo descuenta de la serie que le corresponde por su IVA. Si se
     // aplica contra algo de otra serie, esa factura saldría en negativo: se avisa
     // en vez de emitir un disparate.
@@ -8435,8 +8446,9 @@ const SQL_NO_RESERVADO = `NOT EXISTS (
 async function cargosPendientesDe(personaId) {
     const fam = await familiaIds(personaId);
     const r = await pool.query(
-        `SELECT c.*, u.name, u.surname FROM aim_cargos c
+        `SELECT c.*, p.serie_fiscal, u.name, u.surname FROM aim_cargos c
          JOIN users u ON u.user_id = c.cliente_id
+         LEFT JOIN aim_precios p ON p.concepto = c.concepto
          WHERE c.cliente_id = ANY($1::uuid[]) AND c.estado = 'pendiente' AND c.recibo_id IS NULL
            AND ${SQL_NO_RESERVADO}
          ORDER BY u.surname, u.name, c.mes`, [fam]);
@@ -8447,7 +8459,7 @@ async function cargosPendientesDe(personaId) {
 app.get('/api/me/cargos', authenticateSession, async (req, res) => {
     try {
         const cargos = await cargosPendientesDe(req.userSession.userId);
-        const calc = calcularRecibo(cargos.map(cargoParaMotor));
+        const calc = calcularCobro(cargos.map(cargoParaMotor));
         const porId = Object.fromEntries(cargos.map(c => [c.id, c]));
         res.set('Cache-Control', 'no-store');
         res.json({
@@ -8479,17 +8491,18 @@ app.post('/api/me/pagos/iniciar', authenticateSession, async (req, res) => {
         // Los cargos tienen que ser suyos, estar pendientes y no reservados.
         const fam = await familiaIds(me);
         const cs = await client.query(
-            `SELECT c.* FROM aim_cargos c
+            `SELECT c.*, p.serie_fiscal FROM aim_cargos c
+             LEFT JOIN aim_precios p ON p.concepto = c.concepto
              WHERE c.id = ANY($1::int[]) AND c.cliente_id = ANY($2::uuid[])
                AND c.estado = 'pendiente' AND c.recibo_id IS NULL
                AND ${SQL_NO_RESERVADO}
-             FOR UPDATE`, [pedidos, fam]);
+             FOR UPDATE OF c`, [pedidos, fam]);
         if (cs.rowCount !== pedidos.length) {
             await client.query('ROLLBACK');
             return res.status(409).json({ error: 'Alguno de esos recibos ya no está disponible. Vuelve a cargar la página.' });
         }
 
-        const calc = calcularRecibo(cs.rows.map(cargoParaMotor));
+        const calc = calcularCobro(cs.rows.map(cargoParaMotor));
         if (!(calc.total > 0)) {
             await client.query('ROLLBACK');
             return res.status(400).json({ error: 'El importe a pagar es cero.' });
@@ -8591,7 +8604,7 @@ async function asentarPago(client, pago, aviso) {
         return { revisar: true };
     }
 
-    const total = calcularRecibo(cs.rows.map(cargoParaMotor)).total;
+    const total = calcularCobro(cs.rows.map(cargoParaMotor)).total;
     const receptor = await receptorDeFactura(client, pago.pagador_id);
     // Aquí NO se puede rechazar por falta de NIF: el dinero ya está cobrado y la
     // factura hay que emitirla. El NIF se exige antes de empezar el pago.
@@ -8850,7 +8863,7 @@ app.get('/api/me/notificaciones', authenticateSession, async (req, res) => {
         // 1) Lo que hay por pagar, contando lo de toda la familia.
         const cargos = await cargosPendientesDe(me);
         if (cargos.length) {
-            const calc = calcularRecibo(cargos.map(cargoParaMotor));
+            const calc = calcularCobro(cargos.map(cargoParaMotor));
             avisos.push({
                 tipo: 'pagos', destino: 'payments',
                 texto: `Tienes ${calc.total.toFixed(2)} € por pagar`,

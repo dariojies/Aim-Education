@@ -78,9 +78,16 @@ export function calcularRecibo(lineas) {
     const detalle = items.map(l => {
         const precio = num(l.precio);
         const descuentoPct = num(l.descuentoPct);
-        const descuentoMensPct = l.tipo === 'Mensualidad'
-            ? tramoPorMensualidades(mensualidadesPorMes[mesKey(l.mes)] || 0)
-            : 0;
+        // El tramo puede venir ya fijado desde fuera (ticket #293): cuando un cobro
+        // se reparte en varias facturas, el tramo se cuenta sobre el cobro ENTERO
+        // y cada factura lo recibe hecho; si se contara factura a factura, pagar
+        // juntas una actividad con IVA y otra exenta perdería el descuento.
+        const fijado = l.descuentoMensPctFijo;
+        const descuentoMensPct = (fijado != null && Number.isFinite(Number(fijado)))
+            ? num(fijado)
+            : l.tipo === 'Mensualidad'
+                ? tramoPorMensualidades(mensualidadesPorMes[mesKey(l.mes)] || 0)
+                : 0;
 
         const trasManual = precio * (1 - descuentoPct / 100);
         const base = r2(trasManual * (1 - descuentoMensPct / 100));
@@ -136,6 +143,61 @@ export function calcularRecibo(lineas) {
         ivaTotal,
         total: r2(baseTotal + ivaTotal),
         ahorro: r2(detalle.reduce((s, d) => s + d.ahorro, 0)),
+    };
+}
+
+// ── Un cobro repartido en facturas por serie (tickets #291 y #293) ──────────
+// Para la familia es un solo cobro; para Hacienda, una factura por bloque fiscal.
+// Esta es la ÚNICA cuenta que vale para cobrar: la usan la pantalla del TPV, el
+// cobro, el pago por internet y la emisión de las facturas, así que lo que se ve,
+// lo que se cobra y lo que suman las facturas es siempre lo mismo, al céntimo.
+export const SERIES_COBRO = ['MAT', 'IVA', 'SIVA'];
+
+// A qué serie va una línea: la que fije su concepto y, si no, el material es
+// entrega de bienes y del resto decide el IVA.
+export function serieDeLinea(l) {
+    const fijada = String(l?.serieFiscal ?? l?.serie_fiscal ?? '').trim();
+    if (SERIES_COBRO.includes(fijada)) return fijada;
+    if (l?.tipo === 'Material') return 'MAT';
+    return num(l?.ivaPct ?? l?.iva_pct) > 0 ? 'IVA' : 'SIVA';
+}
+
+export function calcularCobro(lineas) {
+    const items = Array.isArray(lineas) ? lineas : [];
+    // 1) El tramo de descuento de cada línea, contado sobre TODO el cobro.
+    const todo = calcularRecibo(items);
+    const conTramo = items.map((l, i) => ({ ...l, descuentoMensPctFijo: todo.detalle[i].descuentoMensPct }));
+    // 2) Una factura por serie, cada una con el tramo ya fijado.
+    const porSerie = new Map();
+    conTramo.forEach((l, i) => {
+        const s = serieDeLinea(l);
+        if (!porSerie.has(s)) porSerie.set(s, []);
+        porSerie.get(s).push({ l, i });
+    });
+    const facturas = SERIES_COBRO.filter(s => porSerie.has(s)).map(serie => {
+        const filas = porSerie.get(serie);
+        return { serie, indices: filas.map(f => f.i), ...calcularRecibo(filas.map(f => f.l)) };
+    });
+    // 3) El cobro es la suma de sus facturas (cada una redondea su propio IVA).
+    const grupos = new Map();
+    for (const f of facturas) {
+        for (const b of f.basesPorIva) {
+            const g = grupos.get(b.ivaPct) || { ivaPct: b.ivaPct, base: 0, iva: 0 };
+            g.base = r2(g.base + b.base); g.iva = r2(g.iva + b.iva);
+            grupos.set(b.ivaPct, g);
+        }
+    }
+    // El detalle en el orden en que vinieron las líneas.
+    const detalle = new Array(items.length);
+    for (const f of facturas) f.indices.forEach((idx, k) => { detalle[idx] = f.detalle[k]; });
+    return {
+        facturas,
+        detalle,
+        basesPorIva: [...grupos.values()].sort((a, b) => a.ivaPct - b.ivaPct),
+        baseTotal: r2(facturas.reduce((s, f) => s + f.baseTotal, 0)),
+        ivaTotal: r2(facturas.reduce((s, f) => s + f.ivaTotal, 0)),
+        total: r2(facturas.reduce((s, f) => s + f.total, 0)),
+        ahorro: r2(facturas.reduce((s, f) => s + f.ahorro, 0)),
     };
 }
 
