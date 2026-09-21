@@ -1321,6 +1321,12 @@ async function initDb() {
                 updated_by UUID REFERENCES users(user_id) ON DELETE SET NULL
             )
         `);
+        // Vacaciones de cada trabajador: días naturales al año (30 por defecto, el
+        // mínimo del art. 38 del Estatuto) y las fechas de alta y baja, para la
+        // parte proporcional de quien entra o sale a mitad de año.
+        await client.query(`ALTER TABLE aim_fichaje_contratos ADD COLUMN IF NOT EXISTS vacaciones_dias INTEGER NOT NULL DEFAULT 30`);
+        await client.query(`ALTER TABLE aim_fichaje_contratos ADD COLUMN IF NOT EXISTS fecha_alta DATE`);
+        await client.query(`ALTER TABLE aim_fichaje_contratos ADD COLUMN IF NOT EXISTS fecha_baja DATE`);
         // Resumen mensual de horas (tiempo parcial) con la evidencia de su entrega:
         // cuándo se envió, a dónde, y cuándo y desde dónde confirmó el trabajador que
         // lo había recibido. Si después se corrige el mes, se genera otra versión y
@@ -1380,6 +1386,16 @@ async function initDb() {
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
+        // Si ese día de cierre se resta de las vacaciones de todo el personal o no
+        // (lo decide quien lo marca). La primera vez, las "vacaciones del centro"
+        // que ya hubiera quedan restando, que es lo que significaban hasta ahora;
+        // después ya no se toca, para no pisar lo que se haya decidido a mano.
+        {
+            const ya = await client.query(`SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'aim_calendario_laboral' AND column_name = 'resta_vacaciones'`);
+            await client.query(`ALTER TABLE aim_calendario_laboral ADD COLUMN IF NOT EXISTS resta_vacaciones BOOLEAN NOT NULL DEFAULT false`);
+            if (!ya.rowCount) await client.query(`UPDATE aim_calendario_laboral SET resta_vacaciones = true WHERE tipo = 'vacaciones'`);
+        }
         // Vacaciones y ausencias de cada trabajador. Las pide el trabajador y las
         // aprueba secretaría/dirección, o secretaría las registra directamente (p. ej.
         // una baja médica). No se borran: se cancelan, y todo queda en la auditoría.
@@ -11581,9 +11597,15 @@ async function auditarSuelto(apunte) {
 }
 // Jornada contratada de un trabajador (completa sin horas si no se ha indicado).
 async function contratoDe(userId, cliente = pool) {
-    const r = await cliente.query(`SELECT jornada, horas_semana FROM aim_fichaje_contratos WHERE user_id = $1`, [userId]);
+    const r = await cliente.query(
+        `SELECT jornada, horas_semana, vacaciones_dias, fecha_alta::text AS fecha_alta, fecha_baja::text AS fecha_baja
+         FROM aim_fichaje_contratos WHERE user_id = $1`, [userId]);
     const c = r.rows[0];
-    return { jornada: c?.jornada || 'completa', horasSemana: c?.horas_semana == null ? null : Number(c.horas_semana), indicado: !!c };
+    return {
+        jornada: c?.jornada || 'completa', horasSemana: c?.horas_semana == null ? null : Number(c.horas_semana), indicado: !!c,
+        vacacionesDias: c?.vacaciones_dias == null ? 30 : Number(c.vacaciones_dias),
+        fechaAlta: c?.fecha_alta || null, fechaBaja: c?.fecha_baja || null,
+    };
 }
 
 // Un fichaje está vigente si no tiene una anulación (ticket #251). Las
@@ -12225,6 +12247,15 @@ app.put('/api/admin/fichajes/horario/:userId', authenticateSession, requireAdmin
         if (hs != null) hs = Math.round(hs * 100) / 100;
         if (jornada === 'parcial' && hs == null) return res.status(400).json({ error: 'Para una jornada a tiempo parcial indica las horas contratadas a la semana.' });
     }
+    // Vacaciones del contrato: días naturales al año y fechas de alta y baja.
+    let vacDias = 30, fAlta = null, fBaja = null;
+    if (contrato) {
+        vacDias = contrato.vacacionesDias === '' || contrato.vacacionesDias == null ? 30 : Number(contrato.vacacionesDias);
+        if (!Number.isInteger(vacDias) || vacDias < 0 || vacDias > 60) return res.status(400).json({ error: 'Los días de vacaciones al año tienen que ser un número entero entre 0 y 60.' });
+        fAlta = esFechaISO(contrato.fechaAlta) ? contrato.fechaAlta : null;
+        fBaja = esFechaISO(contrato.fechaBaja) ? contrato.fechaBaja : null;
+        if (fAlta && fBaja && fBaja < fAlta) return res.status(400).json({ error: 'La fecha de baja es anterior a la de alta.' });
+    }
     const client = await pool.connect();
     try {
         const u = await client.query(`SELECT 1 FROM users WHERE user_id = $1 AND club_id = $2`, [req.params.userId, AIM_CLUB_ID]);
@@ -12248,19 +12279,29 @@ app.put('/api/admin/fichajes/horario/:userId', authenticateSession, requireAdmin
             });
         }
         if (contrato) {
-            const prev = await client.query(`SELECT jornada, horas_semana FROM aim_fichaje_contratos WHERE user_id = $1`, [req.params.userId]);
+            const prev = await client.query(
+                `SELECT jornada, horas_semana, vacaciones_dias, fecha_alta::text AS fecha_alta, fecha_baja::text AS fecha_baja
+                 FROM aim_fichaje_contratos WHERE user_id = $1`, [req.params.userId]);
             const p = prev.rows[0];
-            const cambia = !p || p.jornada !== jornada || (p.horas_semana == null ? null : Number(p.horas_semana)) !== hs;
+            const cambia = !p || p.jornada !== jornada || (p.horas_semana == null ? null : Number(p.horas_semana)) !== hs
+                || Number(p.vacaciones_dias) !== vacDias || (p.fecha_alta || null) !== fAlta || (p.fecha_baja || null) !== fBaja;
             if (cambia) {
                 await client.query(
-                    `INSERT INTO aim_fichaje_contratos (user_id, jornada, horas_semana, updated_at, updated_by)
-                     VALUES ($1, $2, $3, NOW(), $4)
+                    `INSERT INTO aim_fichaje_contratos (user_id, jornada, horas_semana, vacaciones_dias, fecha_alta, fecha_baja, updated_at, updated_by)
+                     VALUES ($1, $2, $3, $4, $5::date, $6::date, NOW(), $7)
                      ON CONFLICT (user_id) DO UPDATE SET jornada = EXCLUDED.jornada, horas_semana = EXCLUDED.horas_semana,
+                         vacaciones_dias = EXCLUDED.vacaciones_dias, fecha_alta = EXCLUDED.fecha_alta, fecha_baja = EXCLUDED.fecha_baja,
                          updated_at = NOW(), updated_by = EXCLUDED.updated_by`,
-                    [req.params.userId, jornada, hs, req.userSession.userId]);
+                    [req.params.userId, jornada, hs, vacDias, fAlta, fBaja, req.userSession.userId]);
                 await auditarFichaje(client, {
                     evento: 'contrato', trabajadorId: req.params.userId, actorId: req.userSession.userId, ip: ipDe(req),
-                    datos: { antes: p ? { jornada: p.jornada, horasSemana: p.horas_semana == null ? null : Number(p.horas_semana) } : null, despues: { jornada, horasSemana: hs } },
+                    datos: {
+                        antes: p ? {
+                            jornada: p.jornada, horasSemana: p.horas_semana == null ? null : Number(p.horas_semana),
+                            vacacionesDias: Number(p.vacaciones_dias), fechaAlta: p.fecha_alta || null, fechaBaja: p.fecha_baja || null,
+                        } : null,
+                        despues: { jornada, horasSemana: hs, vacacionesDias: vacDias, fechaAlta: fAlta, fechaBaja: fBaja },
+                    },
                 });
             }
         }
@@ -12761,6 +12802,8 @@ const TIPOS_FESTIVO = {
     nacional: 'Fiesta nacional', autonomico: 'Fiesta de Andalucía', local: 'Fiesta local',
     vacaciones: 'Vacaciones del centro', cierre: 'Cierre del centro',
 };
+// Qué tipos restan de las vacaciones del personal si no se dice otra cosa. Al
+// marcar un cierre se puede cambiar: es una casilla, no depende solo del tipo.
 const TIPOS_SON_VACACIONES = new Set(['vacaciones']);
 // Un periodo de cierre, como mucho (el verano entero cabe de sobra).
 const MAX_DIAS_CIERRE = 120;
@@ -12771,12 +12814,13 @@ function periodosDeCierre(dias) {
     const periodos = [];
     for (const d of [...dias].sort((a, b) => a.fecha.localeCompare(b.fecha))) {
         const ult = periodos[periodos.length - 1];
-        if (ult && ult.nombre === d.nombre && ult.tipo === d.tipo && sumarDiaISO(ult.hasta, 1) === d.fecha) {
+        if (ult && ult.nombre === d.nombre && ult.tipo === d.tipo && ult.vacacionesPersonal === !!d.resta_vacaciones
+            && sumarDiaISO(ult.hasta, 1) === d.fecha) {
             ult.hasta = d.fecha; ult.dias += 1;
         } else {
             periodos.push({
                 desde: d.fecha, hasta: d.fecha, dias: 1, nombre: d.nombre, tipo: d.tipo,
-                tipoNombre: TIPOS_FESTIVO[d.tipo] || d.tipo, vacacionesPersonal: TIPOS_SON_VACACIONES.has(d.tipo),
+                tipoNombre: TIPOS_FESTIVO[d.tipo] || d.tipo, vacacionesPersonal: !!d.resta_vacaciones,
             });
         }
     }
@@ -12815,7 +12859,7 @@ app.get('/api/fichaje/calendario', authenticateSession, requireAdmin, async (req
         // Con margen por los dos lados: la Navidad cruza de año, y tiene que verse
         // (y poder quitarse) entera tanto desde un año como desde el otro.
         const r = await pool.query(
-            `SELECT fecha::text AS fecha, nombre, tipo FROM aim_calendario_laboral
+            `SELECT fecha::text AS fecha, nombre, tipo, resta_vacaciones FROM aim_calendario_laboral
              WHERE fecha BETWEEN ($1::date - INTERVAL '${MAX_DIAS_CIERRE} days') AND ($2::date + INTERVAL '${MAX_DIAS_CIERRE} days')
              ORDER BY fecha`, [ini, fin]);
         const delAnio = r.rows.filter(x => x.fecha >= ini && x.fecha <= fin);
@@ -12823,6 +12867,7 @@ app.get('/api/fichaje/calendario', authenticateSession, requireAdmin, async (req
         res.json({
             anio,
             festivos: delAnio.map(x => ({ ...x, tipoNombre: TIPOS_FESTIVO[x.tipo] || x.tipo })),
+            restanPorDefecto: [...TIPOS_SON_VACACIONES],
             periodos: periodosDeCierre(r.rows).filter(p => p.hasta >= ini && p.desde <= fin),
             tipos: TIPOS_FESTIVO,
         });
@@ -12836,6 +12881,9 @@ app.post('/api/admin/fichajes/festivos', authenticateSession, requireAdmin, requ
     const hasta = String(req.body?.hasta || desde);
     const nombre = String(req.body?.nombre || '').trim().slice(0, 120);
     const tipo = TIPOS_FESTIVO[req.body?.tipo] ? req.body.tipo : 'local';
+    // ¿Resta de las vacaciones de todos los trabajadores? Si no se dice, lo que
+    // toque por el tipo (las vacaciones del centro sí; un festivo no).
+    const resta = typeof req.body?.restaVacaciones === 'boolean' ? req.body.restaVacaciones : TIPOS_SON_VACACIONES.has(tipo);
     if (!esFechaISO(desde) || !esFechaISO(hasta)) return res.status(400).json({ error: 'Fecha no válida.' });
     if (hasta < desde) return res.status(400).json({ error: 'La fecha de fin es anterior a la de inicio.' });
     if (diasEntreISO(desde, hasta) > MAX_DIAS_CIERRE) {
@@ -12849,19 +12897,19 @@ app.post('/api/admin/fichajes/festivos', authenticateSession, requireAdmin, requ
         // los festivos que caigan dentro pasan a contar como vacaciones: así lo pide
         // el calendario escolar (#256). Se dice cuáles para que no pille por sorpresa.
         const antes = await client.query(
-            `SELECT fecha::text AS fecha, nombre, tipo FROM aim_calendario_laboral
+            `SELECT fecha::text AS fecha, nombre, tipo, resta_vacaciones FROM aim_calendario_laboral
              WHERE fecha BETWEEN $1::date AND $2::date ORDER BY fecha`, [desde, hasta]);
         await client.query(
-            `INSERT INTO aim_calendario_laboral (fecha, nombre, tipo, created_by)
-             SELECT d::date, $3, $4, $5 FROM generate_series($1::date, $2::date, INTERVAL '1 day') AS d
-             ON CONFLICT (fecha) DO UPDATE SET nombre = EXCLUDED.nombre, tipo = EXCLUDED.tipo`,
-            [desde, hasta, nombre, tipo, req.userSession.userId]);
-        const sustituidos = antes.rows.filter(x => x.nombre !== nombre || x.tipo !== tipo);
+            `INSERT INTO aim_calendario_laboral (fecha, nombre, tipo, resta_vacaciones, created_by)
+             SELECT d::date, $3, $4, $5, $6 FROM generate_series($1::date, $2::date, INTERVAL '1 day') AS d
+             ON CONFLICT (fecha) DO UPDATE SET nombre = EXCLUDED.nombre, tipo = EXCLUDED.tipo, resta_vacaciones = EXCLUDED.resta_vacaciones`,
+            [desde, hasta, nombre, tipo, resta, req.userSession.userId]);
+        const sustituidos = antes.rows.filter(x => x.nombre !== nombre || x.tipo !== tipo || x.resta_vacaciones !== resta);
         await auditarFichaje(client, {
             evento: 'festivo', actorId: req.userSession.userId, ip: ipDe(req),
             datos: desde === hasta
-                ? { fecha: desde, nombre, tipo, antes: antes.rows[0] ? { nombre: antes.rows[0].nombre, tipo: antes.rows[0].tipo } : null }
-                : { desde, hasta, dias: diasEntreISO(desde, hasta), nombre, tipo, antes: antes.rows },
+                ? { fecha: desde, nombre, tipo, restaVacaciones: resta, antes: antes.rows[0] || null }
+                : { desde, hasta, dias: diasEntreISO(desde, hasta), nombre, tipo, restaVacaciones: resta, antes: antes.rows },
         });
         await client.query('COMMIT');
         res.status(201).json({
@@ -12883,7 +12931,7 @@ app.delete('/api/admin/fichajes/festivos', authenticateSession, requireAdmin, re
         await client.query('BEGIN');
         const del = await client.query(
             `DELETE FROM aim_calendario_laboral WHERE fecha BETWEEN $1::date AND $2::date
-             RETURNING fecha::text AS fecha, nombre, tipo`, [desde, hasta]);
+             RETURNING fecha::text AS fecha, nombre, tipo, resta_vacaciones`, [desde, hasta]);
         if (!del.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'No hay días de cierre en ese periodo.' }); }
         await auditarFichaje(client, {
             evento: 'festivo_quitado', actorId: req.userSession.userId, ip: ipDe(req),
@@ -12897,6 +12945,74 @@ app.delete('/api/admin/fichajes/festivos', authenticateSession, requireAdmin, re
     } finally { client.release(); }
 });
 
+// ── Saldo de vacaciones ──
+// Días naturales. A cada trabajador le tocan los de su contrato (30 por defecto),
+// en proporción a los días del año que ha estado de alta, redondeando hacia
+// arriba (a su favor). Se le restan los días de cierre del centro marcados como
+// "resta de las vacaciones" que caigan mientras está de alta, y sus propias
+// vacaciones aprobadas; un día que es a la vez cierre del centro y vacación suya
+// cuenta una sola vez. Las que ha pedido y aún no están aprobadas se dan aparte.
+async function saldoVacaciones(userId, anio, cliente = pool) {
+    const c = await contratoDe(userId, cliente);
+    const ini = `${anio}-01-01`, fin = `${anio}-12-31`;
+    const desde = c.fechaAlta && c.fechaAlta > ini ? c.fechaAlta : ini;
+    const hasta = c.fechaBaja && c.fechaBaja < fin ? c.fechaBaja : fin;
+    const base = { anio: Number(anio), diasContrato: c.vacacionesDias, fechaAlta: c.fechaAlta, fechaBaja: c.fechaBaja };
+    if (desde > hasta) {
+        return { ...base, deAlta: false, derecho: 0, proporcional: false, centro: 0, propias: 0, pendientes: 0, quedan: 0 };
+    }
+    const diasAnio = diasEntreISO(ini, fin);
+    const diasDeAlta = diasEntreISO(desde, hasta);
+    const derecho = Math.ceil(c.vacacionesDias * diasDeAlta / diasAnio - 1e-9);
+    const cierres = await cliente.query(
+        `SELECT fecha::text AS fecha FROM aim_calendario_laboral
+         WHERE resta_vacaciones AND fecha BETWEEN $1::date AND $2::date`, [desde, hasta]);
+    const delCentro = new Set(cierres.rows.map(x => x.fecha));
+    const aus = await cliente.query(
+        `SELECT desde::text AS desde, hasta::text AS hasta, estado FROM aim_ausencias
+         WHERE user_id = $1 AND tipo = 'vacaciones' AND estado IN ('aprobada', 'pendiente')
+           AND desde <= $3::date AND hasta >= $2::date`, [userId, desde, hasta]);
+    const propias = new Set(), pedidas = new Set();
+    for (const a of aus.rows) {
+        const f = a.hasta < hasta ? a.hasta : hasta;
+        for (let d = a.desde > desde ? a.desde : desde; d <= f; d = sumarDiaISO(d, 1)) {
+            if (delCentro.has(d)) continue;
+            (a.estado === 'aprobada' ? propias : pedidas).add(d);
+        }
+    }
+    for (const d of propias) pedidas.delete(d);
+    const quedan = derecho - delCentro.size - propias.size;
+    return {
+        ...base, deAlta: true, derecho, proporcional: diasDeAlta < diasAnio, diasDeAlta,
+        centro: delCentro.size, propias: propias.size, pendientes: pedidas.size, quedan,
+    };
+}
+
+// Mi saldo de vacaciones.
+app.get('/api/fichaje/vacaciones', authenticateSession, requireAdmin, async (req, res) => {
+    const anio = /^\d{4}$/.test(req.query.anio || '') ? Number(req.query.anio) : Number(hoyMadrid().slice(0, 4));
+    try {
+        res.set('Cache-Control', 'no-store');
+        res.json(await saldoVacaciones(req.userSession.userId, anio));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// El saldo de toda la plantilla, para dirección y secretaría.
+app.get('/api/admin/fichajes/vacaciones', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const anio = /^\d{4}$/.test(req.query.anio || '') ? Number(req.query.anio) : Number(hoyMadrid().slice(0, 4));
+    try {
+        const staff = await pool.query(
+            `SELECT u.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre
+             FROM users u
+             WHERE u.club_id = $1 AND (LOWER(COALESCE(u.role,'')) = ANY($2) OR LOWER(COALESCE(u.dev_role,'')) = ANY($2))
+             ORDER BY nombre`, [AIM_CLUB_ID, ROLES_STAFF]);
+        const trabajadores = [];
+        for (const s of staff.rows) trabajadores.push({ userId: s.user_id, nombre: s.nombre, ...(await saldoVacaciones(s.user_id, anio)) });
+        res.set('Cache-Control', 'no-store');
+        res.json({ anio, trabajadores });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Los días que el centro está cerrado, para las familias (#256): festivos,
 // vacaciones y cierres, juntos por periodos. Es información pública (la verán
 // también en la web), así que no pide sesión, y solo lleva fechas y nombres.
@@ -12908,7 +13024,7 @@ app.get('/api/cierres', async (req, res) => {
         // Se cogen también los días de antes de "desde" que sigan en el mismo
         // periodo, para que unas vacaciones ya empezadas salgan con su inicio real.
         const r = await pool.query(
-            `SELECT fecha::text AS fecha, nombre, tipo FROM aim_calendario_laboral
+            `SELECT fecha::text AS fecha, nombre, tipo, resta_vacaciones FROM aim_calendario_laboral
              WHERE fecha BETWEEN ($1::date - INTERVAL '${MAX_DIAS_CIERRE} days') AND $2::date ORDER BY fecha`, [desde, hasta]);
         const periodos = periodosDeCierre(r.rows).filter(p => p.hasta >= desde)
             .map(({ desde: d, hasta: h, dias, nombre, tipo, tipoNombre }) => ({ desde: d, hasta: h, dias, nombre, tipo, tipoNombre }));

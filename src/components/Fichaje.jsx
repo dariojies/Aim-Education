@@ -648,6 +648,68 @@ function ModalAusencia({ tipos, trabajadores, onClose, onDone }) {
   );
 }
 
+// Saldo de vacaciones de un trabajador en un año (días naturales).
+const plural = (n, uno, varios) => `${n} ${n === 1 ? uno : varios}`;
+function SaldoVacaciones({ s }) {
+  const caja = (t, v, color) => (
+    <div style={{ flex: '1 1 120px', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, padding: '8px 12px' }}>
+      <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--ink-3)' }}>{t}</div>
+      <div style={{ fontSize: 18, fontWeight: 800, color: color || 'var(--ink)' }}>{v}</div>
+    </div>
+  );
+  return (
+    <div style={{ display: 'grid', gap: 6 }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {caja(`Te tocan en ${s.anio}`, plural(s.derecho, 'día', 'días'))}
+        {caja('Cierres del centro', plural(s.centro, 'día', 'días'))}
+        {caja('Tus vacaciones', plural(s.propias, 'día', 'días'))}
+        {caja('Te quedan', plural(s.quedan, 'día', 'días'), s.quedan < 0 ? 'var(--orange)' : 'var(--teal)')}
+      </div>
+      <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+        Días naturales.{s.proporcional ? ` Proporcional a los días de alta este año (${s.diasContrato} al año completo).` : ''}
+        {s.pendientes > 0 ? ` Además tienes ${plural(s.pendientes, 'día pedido', 'días pedidos')} sin aprobar todavía.` : ''}
+        {s.quedan < 0 ? ' Has pasado de los días que te tocan: habla con secretaría.' : ''}
+      </span>
+    </div>
+  );
+}
+
+function TablaSaldos({ datos }) {
+  const th = { textAlign: 'right', fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', color: 'var(--ink-3)', padding: '6px 8px' };
+  const td = { textAlign: 'right', fontSize: 13, padding: '6px 8px', borderTop: '1px solid var(--line-2)' };
+  return (
+    <div style={{ display: 'grid', gap: 6, marginTop: 6 }}>
+      <b style={{ fontSize: 13 }}>Vacaciones de la plantilla en {datos.anio}</b>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead><tr>
+            <th style={{ ...th, textAlign: 'left' }}>Trabajador</th><th style={th}>Le tocan</th><th style={th}>Cierres</th>
+            <th style={th}>Suyas</th><th style={th}>Pedidas</th><th style={th}>Quedan</th>
+          </tr></thead>
+          <tbody>
+            {datos.trabajadores.map(t => (
+              <tr key={t.userId}>
+                <td style={{ ...td, textAlign: 'left' }}>
+                  {t.nombre}
+                  {!t.deAlta && <span style={{ fontSize: 11, color: 'var(--ink-3)' }}> · no está de alta este año</span>}
+                  {t.deAlta && t.proporcional && <span style={{ fontSize: 11, color: 'var(--ink-3)' }}> · proporcional</span>}
+                </td>
+                <td style={td}>{t.derecho}</td><td style={td}>{t.centro}</td><td style={td}>{t.propias}</td>
+                <td style={{ ...td, color: t.pendientes ? '#b45309' : 'var(--ink-3)' }}>{t.pendientes}</td>
+                <td style={{ ...td, fontWeight: 800, color: t.quedan < 0 ? 'var(--orange)' : 'var(--teal)' }}>{t.quedan}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+        Días naturales. Los días al año, y las fechas de alta y baja para la parte proporcional, se ponen en el
+        «Horario» de cada trabajador (Registro del personal).
+      </span>
+    </div>
+  );
+}
+
 function VacacionesYFestivos({ showToast, puedeGestionar }) {
   const [anio, setAnio] = useState(Number(hoyISO().slice(0, 4)));
   const [cal, setCal] = useState(null);
@@ -657,17 +719,22 @@ function VacacionesYFestivos({ showToast, puedeGestionar }) {
   const [trabajadores, setTrabajadores] = useState([]);
   const [modal, setModal] = useState(null); // 'pedir' | 'registrar'
   // Un día suelto o un periodo entero (#256): si "hasta" va vacío, es un solo día.
-  const [nuevoFestivo, setNuevoFestivo] = useState({ desde: '', hasta: '', nombre: '', tipo: 'local' });
+  const [nuevoFestivo, setNuevoFestivo] = useState({ desde: '', hasta: '', nombre: '', tipo: 'local', restaVacaciones: false });
+  // Saldo de vacaciones: el mío y, para quien gestiona, el de toda la plantilla.
+  const [miSaldo, setMiSaldo] = useState(null);
+  const [saldos, setSaldos] = useState(null);
 
   const cargar = useCallback(async () => {
     const get = (u) => fetch(u, { credentials: 'include', cache: 'no-store' }).then(r => r.ok ? r.json() : null).catch(() => null);
-    const [c, m, t, w] = await Promise.all([
+    const [c, m, t, w, ms, ss] = await Promise.all([
       get(`/api/fichaje/calendario?anio=${anio}`),
       get('/api/fichaje/ausencias'),
       puedeGestionar ? get(`/api/admin/fichajes/ausencias?estado=${verTodas ? 'todas' : 'pendientes'}`) : null,
       puedeGestionar ? get(`/api/admin/fichajes?desde=${hoyISO()}&hasta=${hoyISO()}`) : null,
+      get(`/api/fichaje/vacaciones?anio=${anio}`),
+      puedeGestionar ? get(`/api/admin/fichajes/vacaciones?anio=${anio}`) : null,
     ]);
-    setCal(c); setMias(m);
+    setCal(c); setMias(m); setMiSaldo(ms); setSaldos(ss);
     if (t) setTodas(t.ausencias || []);
     if (w) setTrabajadores((w.trabajadores || []).filter(x => x.enPlantilla));
   }, [anio, verTodas, puedeGestionar]);
@@ -675,10 +742,10 @@ function VacacionesYFestivos({ showToast, puedeGestionar }) {
 
   async function añadirFestivo(e) {
     e.preventDefault();
-    const { desde, nombre, tipo } = nuevoFestivo;
+    const { desde, nombre, tipo, restaVacaciones } = nuevoFestivo;
     const hasta = nuevoFestivo.hasta || desde;
     try {
-      const d = await enviar('/api/admin/fichajes/festivos', { desde, hasta, nombre, tipo });
+      const d = await enviar('/api/admin/fichajes/festivos', { desde, hasta, nombre, tipo, restaVacaciones });
       // Si el periodo pisa festivos que ya estaban (p. ej. Navidad sobre el 25 de
       // diciembre), se dice: pasan a contar como lo que se acaba de marcar.
       if (d.sustituidos?.length) {
@@ -686,7 +753,7 @@ function VacacionesYFestivos({ showToast, puedeGestionar }) {
           + d.sustituidos.map(x => `· ${fmtDiaCorto(x.fecha)}: ${x.nombre} (${x.tipoNombre})`).join('\n'));
       }
       showToast?.(d.dias > 1 ? `Periodo guardado (${d.dias} días).` : 'Día guardado.');
-      setNuevoFestivo({ desde: '', hasta: '', nombre: '', tipo });
+      setNuevoFestivo({ desde: '', hasta: '', nombre: '', tipo, restaVacaciones });
       cargar();
     } catch (err) { alert(err.message); }
   }
@@ -717,6 +784,7 @@ function VacacionesYFestivos({ showToast, puedeGestionar }) {
           {todas.length === 0
             ? <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>No hay peticiones pendientes ni ausencias próximas.</p>
             : <ListaAusencias ausencias={todas} mostrarTrabajador onCambio={cargar} showToast={showToast} />}
+          {saldos?.trabajadores?.length > 0 && <TablaSaldos datos={saldos} />}
         </div>
       )}
 
@@ -726,6 +794,7 @@ function VacacionesYFestivos({ showToast, puedeGestionar }) {
           <div style={{ flex: 1 }} />
           <button className="btn btn-sm btn-outline" onClick={() => setModal('pedir')}><I.Plus /> Pedir vacaciones o ausencia</button>
         </div>
+        {miSaldo?.deAlta && <SaldoVacaciones s={miSaldo} />}
         {!(mias?.ausencias || []).length
           ? <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>No tienes vacaciones ni ausencias registradas.</p>
           : <ListaAusencias ausencias={mias.ausencias} onCambio={cargar} showToast={showToast} />}
@@ -757,12 +826,22 @@ function VacacionesYFestivos({ showToast, puedeGestionar }) {
                 onChange={e => setNuevoFestivo(x => ({ ...x, hasta: e.target.value }))} />
             </label>
             <input placeholder="Nombre (p. ej. Vacaciones de Navidad)" value={nuevoFestivo.nombre} onChange={e => setNuevoFestivo(x => ({ ...x, nombre: e.target.value }))} required style={{ ...inp, padding: '6px 8px', flex: '1 1 180px' }} />
-            <select value={nuevoFestivo.tipo} onChange={e => setNuevoFestivo(x => ({ ...x, tipo: e.target.value }))} style={{ ...inp, padding: '6px 8px' }}>
+            <select value={nuevoFestivo.tipo} style={{ ...inp, padding: '6px 8px' }}
+              onChange={e => { const tipo = e.target.value; setNuevoFestivo(x => ({ ...x, tipo, restaVacaciones: (cal?.restanPorDefecto || ['vacaciones']).includes(tipo) })); }}>
               {Object.entries(cal?.tipos || {}).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
             </select>
             <button type="submit" className="btn btn-sm btn-primary">Añadir</button>
+            {/* Si esos días se restan de las vacaciones de toda la plantilla o no.
+                Por defecto, sí en las vacaciones del centro y no en los festivos. */}
+            <label style={{ flexBasis: '100%', display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, fontWeight: 700, cursor: 'pointer',
+              padding: '6px 10px', borderRadius: 10, background: nuevoFestivo.restaVacaciones ? 'color-mix(in oklab, var(--teal) 10%, transparent)' : 'transparent' }}>
+              <input type="checkbox" checked={!!nuevoFestivo.restaVacaciones}
+                onChange={e => setNuevoFestivo(x => ({ ...x, restaVacaciones: e.target.checked }))} />
+              Restar estos días de las vacaciones de todos los trabajadores
+            </label>
             <span style={{ flexBasis: '100%', fontSize: 11, color: 'var(--ink-3)' }}>
-              «Hasta» vacío = un solo día. Con fecha de fin se marca el periodo entero de una vez.
+              «Hasta» vacío = un solo día. Con fecha de fin se marca el periodo entero de una vez. Si se restan, a cada
+              trabajador se le descuentan los días naturales del periodo que caigan mientras está de alta.
             </span>
           </form>
         )}
@@ -778,7 +857,7 @@ function VacacionesYFestivos({ showToast, puedeGestionar }) {
                       {p.dias > 1 && <span style={{ fontWeight: 600, color: 'var(--ink-3)', textTransform: 'none' }}> · {p.dias} días</span>}
                     </div>
                     <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
-                      {p.nombre} · {p.tipoNombre}{p.vacacionesPersonal ? ' (vacaciones del personal)' : ''}
+                      {p.nombre} · {p.tipoNombre} · <b style={{ color: p.vacacionesPersonal ? 'var(--teal)' : 'var(--ink-3)' }}>{p.vacacionesPersonal ? 'resta vacaciones a la plantilla' : 'no resta vacaciones'}</b>
                     </div>
                   </div>
                   {puedeGestionar && <button className="icon-btn danger" onClick={() => quitarPeriodo(p)} aria-label="Quitar del calendario"><I.X /></button>}
@@ -1015,7 +1094,11 @@ function GestionFichajes({ showToast }) {
     });
     setHorario({
       userId: t.userId, nombre: t.nombre, dias,
-      contrato: { jornada: d.contrato?.jornada || 'completa', horasSemana: d.contrato?.horasSemana == null ? '' : String(d.contrato.horasSemana) },
+      contrato: {
+        jornada: d.contrato?.jornada || 'completa', horasSemana: d.contrato?.horasSemana == null ? '' : String(d.contrato.horasSemana),
+        vacacionesDias: d.contrato?.vacacionesDias == null ? '30' : String(d.contrato.vacacionesDias),
+        fechaAlta: d.contrato?.fechaAlta || '', fechaBaja: d.contrato?.fechaBaja || '',
+      },
     });
   }
   const setDia = (i, cambio) => setHorario(h => ({ ...h, dias: h.dias.map((x, j) => j === i ? { ...x, ...cambio } : x) }));
@@ -1132,6 +1215,34 @@ function GestionFichajes({ showToast }) {
               </div>
               <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
                 Con las horas contratadas se calculan cada mes las horas ordinarias y las complementarias. A tiempo parcial, el día 1 se le genera y envía su resumen del mes anterior para que confirme que lo ha recibido.
+              </span>
+            </div>
+            {/* Vacaciones: días naturales al año y fechas de alta y baja. */}
+            <div style={{ display: 'grid', gap: 8, padding: '10px 12px', background: 'var(--bg-3)', borderRadius: 12 }}>
+              <b style={{ fontSize: 13 }}>Vacaciones</b>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', fontSize: 12, color: 'var(--ink-2)' }}>
+                <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <input type="number" min="0" max="60" step="1" value={horario.contrato.vacacionesDias}
+                    onChange={e => { const v = e.target.value; setHorario(h => ({ ...h, contrato: { ...h.contrato, vacacionesDias: v } })); }}
+                    style={{ ...inp, padding: '6px 8px', width: 70 }} />
+                  días naturales al año
+                </label>
+                <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  Alta
+                  <input type="date" value={horario.contrato.fechaAlta}
+                    onChange={e => { const v = e.target.value; setHorario(h => ({ ...h, contrato: { ...h.contrato, fechaAlta: v } })); }}
+                    style={{ ...inp, padding: '6px 8px' }} />
+                </label>
+                <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  Baja
+                  <input type="date" value={horario.contrato.fechaBaja} min={horario.contrato.fechaAlta || undefined}
+                    onChange={e => { const v = e.target.value; setHorario(h => ({ ...h, contrato: { ...h.contrato, fechaBaja: v } })); }}
+                    style={{ ...inp, padding: '6px 8px' }} />
+                </label>
+              </div>
+              <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                30 es el mínimo legal. Si entra o sale a mitad de año, le toca la parte proporcional a los días de alta
+                (redondeando a su favor). Sin fecha de alta se entiende que está todo el año.
               </span>
             </div>
             <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Marca los días que trabaja con su turno de mañana y, si también trabaja por la tarde, añade el turno de tarde. Con esto se le recuerda por correo y en la app que fiche.</p>
