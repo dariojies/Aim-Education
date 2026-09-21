@@ -34,7 +34,7 @@ export function generarReciboPdf(t, salida) {
     doc.fillColor(TINTA).font('Helvetica-Bold').fontSize(20)
         .text(t.empresa?.nombre || 'AIM Education', izq, 50);
     doc.font('Helvetica').fontSize(9).fillColor(SUAVE);
-    for (const linea of [t.empresa?.nif, t.empresa?.direccion, t.empresa?.cp, [t.empresa?.tel, t.empresa?.web].filter(Boolean).join(' · ')]) {
+    for (const linea of [t.empresa?.nif ? `CIF: ${t.empresa.nif}` : null, t.empresa?.direccion, t.empresa?.cp, [t.empresa?.tel, t.empresa?.web].filter(Boolean).join(' · ')]) {
         if (linea) doc.text(linea, izq, doc.y);
     }
 

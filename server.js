@@ -6421,9 +6421,12 @@ app.post('/api/admin/billing/cargos/extra', authenticateSession, requireAdmin, a
 
 // ── TPV / Cobro ──
 // Datos fiscales del emisor para el ticket (autónomo del club).
+// Quien emite las facturas (ticket #296): la sociedad, no el autónomo. Sale en
+// las facturas y tickets, en el registro de VERI*FACTU (el NIF del emisor), en
+// los informes de jornada (la empresa que emplea) y en el resto de documentos.
 const EMPRESA_TICKET = {
-    nombre: 'Darío Francisco Jiménez España',
-    nif: '75896712R',
+    nombre: 'AIM Deporte y Educación S.L.',
+    nif: 'B93870103',
     direccion: 'Urb. Terrazas de Doña Lola, Local 1',
     cp: '11203 Algeciras (Cádiz)',
     web: 'www.aimeducation.es',
@@ -7416,15 +7419,27 @@ let AJUSTES_VERIFACTU = {
         nombre: 'AIM Education', id: '01', version: SOFTWARE_FACTURACION.version, instalacion: 'AIM-01',
     },
 };
+// El NIF del autónomo con el que se facturaba antes de la sociedad (ticket #296).
+const NIF_AUTONOMO_ANTERIOR = '75896712R';
 async function cargarAjustesVerifactu() {
     try {
         const r = await pool.query("SELECT valor FROM aim_ajustes WHERE clave = 'verifactu'");
         const v = r.rows[0]?.valor || {};
+        const sif = { ...AJUSTES_VERIFACTU.sif, ...(v.sif || {}) };
+        // Los ajustes se guardaron cuando se facturaba como autónomo. Si aún llevan
+        // sus datos, pasan a los de la sociedad, y se guarda para que no vuelvan.
+        if (sif.nif === NIF_AUTONOMO_ANTERIOR) {
+            sif.nif = EMPRESA_TICKET.nif;
+            sif.nombreRazon = EMPRESA_TICKET.nombre;
+            await pool.query(
+                `UPDATE aim_ajustes SET valor = jsonb_set(valor, '{sif}', $1::jsonb), actualizado_at = NOW() WHERE clave = 'verifactu'`,
+                [JSON.stringify(sif)]);
+        }
         AJUSTES_VERIFACTU = {
             modo: v.modo === 'verifactu' ? 'verifactu' : 'apagado',
             entorno: v.entorno === 'produccion' ? 'produccion' : 'pruebas',
             envioAutomatico: v.envioAutomatico !== false,
-            sif: { ...AJUSTES_VERIFACTU.sif, ...(v.sif || {}) },
+            sif,
         };
     } catch (e) { console.error('[verifactu ajustes]', e.message); }
     return AJUSTES_VERIFACTU;

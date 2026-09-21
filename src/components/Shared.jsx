@@ -343,7 +343,7 @@ function AimFooter() {
         </div>
 
         <div className="foot-bottom">
-          <span>© 2026 Aim Education · Darío Francisco Jiménez España</span>
+          <span>© 2026 Aim Education · AIM Deporte y Educación S.L. · CIF B93870103</span>
           <span>Algeciras · Innovación, Excelencia y Pasión</span>
         </div>
       </div>

@@ -4297,7 +4297,7 @@ function imprimirTicketRecibo(t) {
     .anul{text-align:center;color:#c00;font-weight:800;border:2px solid #c00;padding:4px;margin:6px 0}
     .rect{text-align:center;font-weight:800;border:2px solid #111;padding:4px;margin:6px 0;font-size:12px}</style></head><body>
     <h2>${t.empresa.nombre}</h2>
-    <div class="c">${t.empresa.nif}<br>${t.empresa.direccion}<br>${t.empresa.cp}<br>${t.empresa.tel} · ${t.empresa.web}</div>
+    <div class="c">CIF: ${t.empresa.nif}<br>${t.empresa.direccion}<br>${t.empresa.cp}<br>${t.empresa.tel} · ${t.empresa.web}</div>
     ${anulado ? `<div class="anul">RECIBO ANULADO${t.recibo.anuladoMotivo ? `<br><small style="color:#c00">${t.recibo.anuladoMotivo}</small>` : ''}</div>` : ''}
     ${rect ? `<div class="rect">FACTURA RECTIFICATIVA<br><small>Rectifica al nº ${t.recibo.rectificaNumero || '—'}${t.recibo.rectificaFecha ? ` de ${fmtFecha(t.recibo.rectificaFecha)}` : ''}<br>Por ${t.recibo.rectMetodo === 'diferencias' ? 'diferencias' : 'sustitución'}${t.recibo.rectMotivo ? `<br>Motivo: ${t.recibo.rectMotivo}` : ''}</small></div>` : (anulado ? '' : '<hr>')}
     <div>${rect ? 'Rectificativa' : 'Recibo'} nº <b>${t.recibo.numero}</b><br>Fecha: ${fmtFecha(t.recibo.fecha)}<br>Pagador: ${t.recibo.pagador}</div>
