@@ -44,6 +44,9 @@ export default function PasarListaClases({ showToast }) {
   const [alumnos, setAlumnos] = useState([]);
   const [meta, setMeta] = useState({}); // { speaking, noVienen, bonoModo } de la lista abierta
   const [cargando, setCargando] = useState(true);
+  // Si la lista no se puede cargar, se dice. Antes el fallo se tragaba y la clase
+  // salía vacía, que es justo lo que hizo que un error pasara por "no hay nadie".
+  const [errorLista, setErrorLista] = useState(null);
   // Añadir alumnos con bono (ticket #245).
   const [buscaBono, setBuscaBono] = useState(false);
   const [qBono, setQBono] = useState('');
@@ -65,11 +68,15 @@ export default function PasarListaClases({ showToast }) {
         const d = await r.json();
         setAlumnos(d.alumnos || []);
         setMeta({ speaking: !!d.speaking, noVienen: d.noVienen || 0, bonoModo: d.bonoModo || 'no' });
+        setErrorLista(null);
+      } else {
+        const d = await r.json().catch(() => ({}));
+        setErrorLista(d.error || `Error ${r.status}`);
       }
-    } catch { /* noop */ }
+    } catch { setErrorLista('No hay conexión con el servidor.'); }
   }, []);
 
-  useEffect(() => { cargarClases(fecha); setClase(null); setAlumnos([]); setMeta({}); }, [fecha, cargarClases]);
+  useEffect(() => { cargarClases(fecha); setClase(null); setAlumnos([]); setMeta({}); setErrorLista(null); }, [fecha, cargarClases]);
 
   async function marcar(alumno, status) {
     // Se pinta al momento; si el guardado falla, se recarga y vuelve a lo real.
@@ -297,7 +304,12 @@ export default function PasarListaClases({ showToast }) {
               Clase de Speaking: la lista es la de quienes han aceptado la clase de este día.{meta.noVienen ? ` ${meta.noVienen} ${meta.noVienen === 1 ? 'ha dicho' : 'han dicho'} que no ${meta.noVienen === 1 ? 'viene' : 'vienen'}.` : ''}
             </p>
           )}
-          {!alumnos.length && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>{meta.speaking ? 'Nadie ha confirmado todavía para este día.' : 'Esta clase no tiene alumnos matriculados.'}</p>}
+          {errorLista && (
+            <div style={{ padding: 12, borderRadius: 12, fontSize: 13, background: 'color-mix(in oklab, var(--orange) 10%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--orange) 40%, transparent)', color: 'var(--ink-2)' }}>
+              <b style={{ color: 'var(--orange)' }}>No se ha podido cargar la lista de esta clase.</b> Vuelve a intentarlo en un momento; si sigue igual, avisa con este mensaje: <code style={{ fontSize: 11 }}>{errorLista}</code>
+            </div>
+          )}
+          {!errorLista && !alumnos.length && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>{meta.speaking ? 'Nadie ha confirmado todavía para este día.' : 'Esta clase no tiene alumnos matriculados.'}</p>}
           {/* En columnas para que quepan todos de un vistazo. En Speaking, primero los
               confirmados y aparte los que aún no han contestado (#253). */}
           {(meta.speaking

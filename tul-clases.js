@@ -1030,7 +1030,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                         -- Clases que le quedan en un bono válido para esta clase (#245/#253).
                         (SELECT MAX(b.clases_total - b.clases_usadas) FROM aim_bonos b
                           WHERE b.cliente_id = c.student_id AND b.clases_usadas < b.clases_total
-                            AND ${sqlBonoValeEn('b', '$3::text', '$4::text')}) AS "bonoRestantes",
+                            AND ${sqlBonoValeEn('b', '$3::text')}) AS "bonoRestantes",
                         -- ¿Está en la clase por matrícula ese día, o solo por bono?
                         ${miembroEnFecha('c.student_id')} AS "esMiembro",
                         ${matriculadoEnFecha('c.student_id')} AS matriculado,
@@ -1044,7 +1044,11 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                  LEFT JOIN aim_salud sa ON sa.user_id = c.student_id
                  LEFT JOIN aim_bono_reservas rv ON rv.group_id = $1 AND rv.fecha = $2::date AND rv.student_id = c.student_id AND rv.estado = 'reservada'
                  WHERE at.status IS NOT NULL OR rv.id IS NOT NULL OR ${miembroEnFecha('c.student_id')}
-                 ORDER BY u.surname, u.name`, [groupId, fecha, info.modo, info.actividad]
+                 ORDER BY u.surname, u.name`,
+                // Solo tres: desde #231 el bono vale según el ajuste de la clase y ya
+                // no mira la actividad. Mandar un cuarto parámetro que la consulta no
+                // usa hace que Postgres la rechace entera y la lista no carga.
+                [groupId, fecha, info.modo]
             );
             res.json({
                 fecha, bonoModo: info.modo,
