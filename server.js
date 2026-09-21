@@ -19,6 +19,7 @@ import { generarPendientesPdf } from './pendientes-pdf.js';
 import * as verifactu from './verifactu.js';
 import { plazasConBono, reservarPlazaBono, cancelarReservaBono, ventanaReservas, hoyMadridISO } from './bonos-clases.js';
 import { filtroNombreSQL } from './buscar.js';
+import { filasLibroRegistro, generarLibroRegistro, prorrataDe, TIPOS_OPERACION_DEFECTO } from './libro-registro.js';
 import { PassThrough } from 'stream';
 import { escalaDe, escalasDelClub, resultadoDe, baremoDe, matriculaExamenDe } from './rangos.js';
 import { rolEfectivo, permisosDe, mandaAlMenos, ROLES_STAFF, NOMBRE_ROL } from './permisos.js';
@@ -7930,6 +7931,179 @@ app.put('/api/admin/billing/numeracion', authenticateSession, requireAdmin, asyn
         console.error('Error guardando la numeración:', err);
         res.status(500).json({ error: err.message });
     } finally { client.release(); }
+});
+
+// ── Libro registro de facturas expedidas y prorrata (ticket #292) ───────────
+// El libro sale en la plantilla de la gestoría, con los datos tal y como se
+// registraron al emitir cada factura (aim_factura_registro), que es lo que vale
+// ante Hacienda: no se recalcula nada a partir de los cargos.
+const FECHA_ISO = /^\d{4}-\d{2}-\d{2}$/;
+
+// Lo que va en "TIPO OPERACIÓN" para cada serie. Por defecto, una descripción;
+// si la gestoría quiere códigos, se ponen sus códigos desde la pantalla.
+async function tiposOperacionLibro() {
+    try {
+        const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'libro_registro'`);
+        return { ...TIPOS_OPERACION_DEFECTO, ...(r.rows[0]?.valor?.tipos || {}) };
+    } catch { return { ...TIPOS_OPERACION_DEFECTO }; }
+}
+
+// Las facturas emitidas entre dos fechas, ambas incluidas, en el orden del libro.
+async function registrosEntre(desde, hasta) {
+    const r = await pool.query(
+        `SELECT fr.id, fr.serie, fr.ejercicio, fr.numero, fr.num_serie, fr.fecha_expedicion::text AS fecha,
+                fr.tipo_factura, fr.nif_receptor, fr.nombre_receptor, fr.base, fr.cuota, fr.total, fr.desglose
+         FROM aim_factura_registro fr
+         WHERE fr.fecha_expedicion BETWEEN $1::date AND $2::date
+         ORDER BY fr.fecha_expedicion, fr.serie, fr.ejercicio, fr.numero, fr.id`, [desde, hasta]);
+    // Las de antes de VERI*FACTU no guardaban el número tal y como sale impreso.
+    return r.rows.map(x => ({
+        ...x,
+        num_serie: x.num_serie || numeroVisible({ serie: x.serie, numero: x.numero, ejercicio: x.ejercicio, fecha: x.fecha }),
+    }));
+}
+
+const rangoLibro = (q) => {
+    const { desde, hasta } = q || {};
+    if (!FECHA_ISO.test(desde || '') || !FECHA_ISO.test(hasta || '') || desde > hasta) return null;
+    return { desde, hasta };
+};
+
+// Vista previa: cuántas facturas entran, totales por tipo y avisos.
+app.get('/api/admin/billing/libro-registro', authenticateSession, requireAdmin, async (req, res) => {
+    const rango = rangoLibro(req.query);
+    if (!rango) return res.status(400).json({ error: 'Indica un periodo válido (desde y hasta).' });
+    try {
+        const regs = await registrosEntre(rango.desde, rango.hasta);
+        const filas = filasLibroRegistro(regs, await tiposOperacionLibro());
+        const suma = (xs, k) => Math.round(xs.reduce((s, x) => s + Number(x[k] || 0), 0) * 100) / 100;
+        const porTipo = new Map();
+        for (const f of filas) {
+            const g = porTipo.get(f.tipo) || { tipo: f.tipo, filas: [] };
+            g.filas.push(f); porTipo.set(f.tipo, g);
+        }
+        // Una factura completa (F1/R1) sin NIF es una factura mal hecha: se avisa
+        // para que la gestoría no se la encuentre al importar.
+        const sinNif = regs.filter(x => ['F1', 'R1'].includes(x.tipo_factura) && !x.nif_receptor).map(x => x.num_serie);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            ...rango,
+            facturas: regs.length,
+            filas: filas.slice(0, 300),
+            totalFilas: filas.length,
+            totales: { base: suma(filas, 'base'), cuota: suma(filas, 'cuota'), total: suma(filas, 'total') },
+            porTipo: [...porTipo.values()].map(g => ({
+                tipo: g.tipo, filas: g.filas.length,
+                base: suma(g.filas, 'base'), cuota: suma(g.filas, 'cuota'), total: suma(g.filas, 'total'),
+            })),
+            simplificadas: regs.filter(x => ['F2', 'R5'].includes(x.tipo_factura)).length,
+            completasSinNif: sinNif,
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// El Excel, en la plantilla de la gestoría.
+app.get('/api/admin/billing/libro-registro.xlsx', authenticateSession, requireAdmin, async (req, res) => {
+    const rango = rangoLibro(req.query);
+    if (!rango) return res.status(400).json({ error: 'Indica un periodo válido (desde y hasta).' });
+    try {
+        const filas = filasLibroRegistro(await registrosEntre(rango.desde, rango.hasta), await tiposOperacionLibro());
+        const nombre = `libro-registro-emitidas_${rango.desde}_${rango.hasta}.xlsx`;
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="${nombre}"`);
+        res.setHeader('Cache-Control', 'no-store');
+        await generarLibroRegistro(filas, res);
+        res.end();
+    } catch (err) {
+        console.error('Error generando el libro registro:', err);
+        if (!res.headersSent) res.status(500).json({ error: err.message });
+        else res.end();
+    }
+});
+
+app.get('/api/admin/billing/libro-registro/config', authenticateSession, requireAdmin, async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json({
+        tipos: await tiposOperacionLibro(),
+        defecto: TIPOS_OPERACION_DEFECTO,
+        series: TODAS_LAS_SERIES.map(s => ({ codigo: s.codigo, nombre: s.nombre })),
+    });
+});
+
+app.put('/api/admin/billing/libro-registro/config', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const entrada = req.body?.tipos || {};
+    const tipos = {};
+    for (const s of TODAS_LAS_SERIES) {
+        const v = String(entrada[s.codigo] ?? '').trim().slice(0, 60);
+        tipos[s.codigo] = v || TIPOS_OPERACION_DEFECTO[s.codigo];
+    }
+    try {
+        await pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('libro_registro', $1::jsonb, NOW(), $2)
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+            [JSON.stringify({ tipos }), req.userSession.userId]);
+        res.json({ success: true, tipos });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Prorrata ──
+// Con actividad exenta (la enseñanza) y sujeta a la vez (material, servicios con
+// IVA), del IVA de las compras solo se deduce el porcentaje que corresponde a lo
+// sujeto (art. 102-106 de la Ley 37/1992). Durante el año se aplica una
+// PROVISIONAL, que es la definitiva del año anterior; al cerrar el año se calcula
+// la DEFINITIVA y la diferencia se regulariza en la última declaración.
+async function prorrataManual() {
+    try {
+        const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'prorrata'`);
+        return r.rows[0]?.valor?.provisional || {};
+    } catch { return {}; }
+}
+
+app.get('/api/admin/billing/prorrata', authenticateSession, requireAdmin, async (req, res) => {
+    const hoy = hoyMadrid();
+    const ej = Number(req.query.ejercicio) || Number(hoy.slice(0, 4));
+    if (ej < 2000 || ej > 2100) return res.status(400).json({ error: 'Ejercicio no válido.' });
+    try {
+        const [este, anterior, manual] = await Promise.all([
+            registrosEntre(`${ej}-01-01`, `${ej}-12-31`).then(prorrataDe),
+            registrosEntre(`${ej - 1}-01-01`, `${ej - 1}-12-31`).then(prorrataDe),
+            prorrataManual(),
+        ]);
+        // La provisional: la que se haya fijado a mano (la que dé la gestoría, o la
+        // que haya autorizado la AEAT) y, si no, la definitiva del año anterior.
+        const fijada = manual[String(ej)];
+        const provisional = fijada != null
+            ? { pct: Number(fijada), origen: 'manual' }
+            : anterior.pct != null ? { pct: anterior.pct, origen: 'anterior' } : { pct: null, origen: null };
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            ejercicio: ej,
+            cerrado: ej < Number(hoy.slice(0, 4)),
+            provisional,
+            definitiva: este,
+            anterior: { ejercicio: ej - 1, pct: anterior.pct, sujeta: anterior.sujeta, exenta: anterior.exenta },
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/admin/billing/prorrata/provisional', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const ej = Number(req.body?.ejercicio);
+    const pct = req.body?.pct;
+    if (!(ej >= 2000 && ej <= 2100)) return res.status(400).json({ error: 'Ejercicio no válido.' });
+    const quitar = pct === null || pct === '';
+    const n = Number(pct);
+    if (!quitar && !(Number.isInteger(n) && n >= 0 && n <= 100)) {
+        return res.status(400).json({ error: 'La prorrata es un porcentaje entero entre 0 y 100.' });
+    }
+    try {
+        const actual = await prorrataManual();
+        if (quitar) delete actual[String(ej)]; else actual[String(ej)] = n;
+        await pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('prorrata', $1::jsonb, NOW(), $2)
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+            [JSON.stringify({ provisional: actual }), req.userSession.userId]);
+        res.json({ success: true, provisional: actual });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // Vacía las facturas de prueba para empezar de cero con la numeración real.

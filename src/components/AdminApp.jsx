@@ -11,6 +11,7 @@ import { fmtFecha, fmtFechaHora, fmtFechaLarga, fmtFechaCorta } from '../fechas.
 import CampTarifas from './CampTarifas.jsx';
 import BillingArqueo from './BillingArqueo.jsx';
 import BillingAjustes from './BillingAjustes.jsx';
+import BillingHacienda from './BillingHacienda.jsx';
 import PasarListaClases from './PasarListaClases.jsx';
 import Fichaje from './Fichaje.jsx';
 import Campanita from './Campanita.jsx';
@@ -4952,7 +4953,7 @@ function AdminBilling({ showToast }) {
   return (
     <>
       <div style={{ display: 'flex', gap: 10, marginBottom: 22, borderBottom: '1px solid var(--line-2)', paddingBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-        {[['cobrar', 'Cobrar (TPV)'], ['recibos', 'Recibos'], ['arqueo', 'Arqueo de caja'], ['catalogo', `Catálogo${precios.length ? ` (${precios.length})` : ''}`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra${clasesMerged.length ? ` (${clasesMerged.length})` : ''}`], ['fichas', `Fichas${matriculas.length ? ` (${matriculas.length})` : ''}`], ['pendientes', 'Cargos pendientes'], ['ajustes', 'Ajustes y Verifactu']].map(([id, label]) => (
+        {[['cobrar', 'Cobrar (TPV)'], ['recibos', 'Recibos'], ['arqueo', 'Arqueo de caja'], ['catalogo', `Catálogo${precios.length ? ` (${precios.length})` : ''}`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra${clasesMerged.length ? ` (${clasesMerged.length})` : ''}`], ['fichas', `Fichas${matriculas.length ? ` (${matriculas.length})` : ''}`], ['pendientes', 'Cargos pendientes'], ['hacienda', 'Libro registro y prorrata'], ['ajustes', 'Ajustes y Verifactu']].map(([id, label]) => (
           <button key={id} className={`filter-pill ${tab === id ? 'is-active' : ''}`} onClick={() => setTab(id)} style={{ borderRadius: 8, padding: '8px 16px' }}>{label}</button>
         ))}
         <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: activa ? 'var(--teal)' : 'var(--orange)' }}>
@@ -4962,7 +4963,7 @@ function AdminBilling({ showToast }) {
 
       {/* El TPV, el arqueo, los recibos y los ajustes se pintan solos: no esperan
           a nada de aquí, así que tampoco enseñan el "Cargando...". */}
-      {loading && !['cobrar', 'arqueo', 'ajustes', 'recibos'].includes(tab) && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
+      {loading && !['cobrar', 'arqueo', 'ajustes', 'recibos', 'hacienda'].includes(tab) && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
       {!loading && cargandoFichas && ['conceptos', 'fichas'].includes(tab) && (
         <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>
       )}
@@ -4977,6 +4978,7 @@ function AdminBilling({ showToast }) {
       {tab === 'cobrar' && <BillingTPV showToast={showToast} />}
       {tab === 'arqueo' && <BillingArqueo showToast={showToast} />}
       {tab === 'ajustes' && <BillingAjustes showToast={showToast} />}
+      {tab === 'hacienda' && <BillingHacienda showToast={showToast} />}
 
       {/* ── Recibos (histórico) ── */}
       {tab === 'recibos' && <BillingRecibos showToast={showToast} />}
