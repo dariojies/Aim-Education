@@ -12,6 +12,8 @@ import CampTarifas from './CampTarifas.jsx';
 import BillingArqueo from './BillingArqueo.jsx';
 import BillingAjustes from './BillingAjustes.jsx';
 import BillingHacienda from './BillingHacienda.jsx';
+// El ticket para la impresora de tickets del mostrador (XP-58IIH, #292).
+import { imprimirTicketRecibo } from '../ticket-recibo.js';
 import PasarListaClases from './PasarListaClases.jsx';
 import Fichaje from './Fichaje.jsx';
 import Campanita from './Campanita.jsx';
@@ -4313,35 +4315,6 @@ function BillingTPV({ showToast }) {
       )}
     </div>
   );
-}
-
-// Imprime un ticket a partir del objeto que devuelven cobrar / detalle de recibo.
-function imprimirTicketRecibo(t) {
-  const anulado = t.recibo.estado === 'anulado';
-  const rect = t.recibo.tipo === 'rectificativo';
-  const filas = t.detalle.map(d => `<tr><td>${d.descripcion}${d.cliente ? `<br><small>${d.cliente}</small>` : ''}${(d.descuentoPct || d.descuentoMensPct) ? `<br><small>dto ${(d.descuentoPct || 0)}%${d.descuentoMensPct ? ` +${d.descuentoMensPct}%` : ''}</small>` : ''}</td><td style="text-align:right">${d.ivaPct}%</td><td style="text-align:right">${Number(d.total).toFixed(2)}</td></tr>`).join('');
-  const bases = t.basesPorIva.map(b => `<tr><td colspan="2">Base ${b.ivaPct}% IVA</td><td style="text-align:right">${b.base.toFixed(2)} (${b.iva.toFixed(2)})</td></tr>`).join('');
-  const w = window.open('', '_blank', 'width=380,height=640');
-  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Recibo ${t.recibo.numero}</title>
-    <style>body{font-family:sans-serif;width:280px;margin:0 auto;padding:10px;color:#111;font-size:12px}
-    h2{text-align:center;font-size:14px;margin:2px 0}.c{text-align:center;color:#555;font-size:11px;line-height:1.4}
-    table{width:100%;border-collapse:collapse;margin-top:8px}td{padding:3px 0;border-bottom:1px solid #eee;vertical-align:top}
-    .tot{font-size:15px;font-weight:800;text-align:right;margin-top:6px}small{color:#777}
-    .anul{text-align:center;color:#c00;font-weight:800;border:2px solid #c00;padding:4px;margin:6px 0}
-    .rect{text-align:center;font-weight:800;border:2px solid #111;padding:4px;margin:6px 0;font-size:12px}</style></head><body>
-    <h2>${t.empresa.nombre}</h2>
-    <div class="c">CIF: ${t.empresa.nif}<br>${t.empresa.direccion}<br>${t.empresa.cp}<br>${t.empresa.tel} · ${t.empresa.web}</div>
-    ${anulado ? `<div class="anul">RECIBO ANULADO${t.recibo.anuladoMotivo ? `<br><small style="color:#c00">${t.recibo.anuladoMotivo}</small>` : ''}</div>` : ''}
-    ${rect ? `<div class="rect">FACTURA RECTIFICATIVA<br><small>Rectifica al nº ${t.recibo.rectificaNumero || '—'}${t.recibo.rectificaFecha ? ` de ${fmtFecha(t.recibo.rectificaFecha)}` : ''}<br>Por ${t.recibo.rectMetodo === 'diferencias' ? 'diferencias' : 'sustitución'}${t.recibo.rectMotivo ? `<br>Motivo: ${t.recibo.rectMotivo}` : ''}</small></div>` : (anulado ? '' : '<hr>')}
-    <div>${rect ? 'Rectificativa nº' : t.facturas?.length > 1 ? 'Facturas nº' : 'Factura nº'} <b>${t.facturas?.length > 1 ? t.facturas.map(f => f.numeroVisible || f.numero).join(' · ') : (t.recibo.numeroVisible || t.recibo.numero)}</b><br>Fecha: ${fmtFecha(t.recibo.fecha)}<br>Pagador: ${t.recibo.pagador}</div>
-    <table><thead><tr><td><b>Descripción</b></td><td style="text-align:right"><b>IVA</b></td><td style="text-align:right"><b>Importe</b></td></tr></thead>
-    <tbody>${filas}${bases}</tbody></table>
-    <div class="tot">TOTAL: ${Number(t.recibo.total).toFixed(2)} €</div>
-    <div style="text-align:right">${(t.recibo.pagos && t.recibo.pagos.length > 1) ? t.recibo.pagos.map(p => `${p.medio} ${Number(p.importe).toFixed(2)}`).join(' + ') : (t.recibo.medioPago || '')}${t.recibo.cambio > 0 ? ` · cambio ${Number(t.recibo.cambio).toFixed(2)}` : ''}</div>
-    ${t.ahorro > 0 ? `<div style="text-align:right;color:#0a0">Ahorro: ${t.ahorro.toFixed(2)} €</div>` : ''}
-    <p style="text-align:center;margin-top:10px"><b>¡Gracias!</b></p>
-    <script>window.onload=()=>window.print()</script></body></html>`);
-  w.document.close();
 }
 
 // Histórico de facturas: buscar, reimprimir y emitir rectificativos.

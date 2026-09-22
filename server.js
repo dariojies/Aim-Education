@@ -6670,6 +6670,10 @@ async function emitirUnRecibo(client, { pagadorId, rows, pagosG, entregadoG, cam
     // Descontar del almacén lo que se vende (ticket #250), por concepto.
     await descontarStockDeCargos(client, rows, reciboId, userId);
     await crearBonosDeCargos(client, rows, reciboId, userId);
+    const alumnos = await client.query(
+        `SELECT user_id, TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS nombre FROM users WHERE user_id = ANY($1::uuid[])`,
+        [[...new Set(rows.map(r => r.cliente_id))]]);
+    const nombreAlumno = new Map(alumnos.rows.map(x => [x.user_id, x.nombre]));
     const reg = await registrarFactura(client, {
         recibo: { ...rec.rows[0], id: reciboId, serie: rec.rows[0].serie, tipo: 'normal' },
         receptor,
@@ -6686,10 +6690,16 @@ async function emitirUnRecibo(client, { pagadorId, rows, pagosG, entregadoG, cam
             id: reciboId, numero: reg.numSerie, fecha: rec.rows[0].fecha,
             serie: rec.rows[0].serie, numeroVisible: reg.numSerie, tipoFactura: reg.tipoFactura,
             pagador: receptorNombre || '', medioPago: medioResumen, pagos: pagosG,
+            // Para el ticket (#292): una factura completa lleva el NIF y el domicilio.
+            pagadorDni: receptor?.nif || null,
+            pagadorDomicilio: [receptor?.domicilio, [receptor?.cp, receptor?.poblacion].filter(Boolean).join(' ')].filter(Boolean).join(', ') || null,
             entregado: entregadoG, cambio: cambioG, total,
         },
+        qrTributario: await qrTicket(reg.qrUrl),
         detalle: calc.detalle.map(d => ({
-            descripcion: d.descripcion, mes: d.mes, precio: d.precio,
+            descripcion: d.descripcion, mes: d.mes, precio: d.precio, tipo: d.tipo,
+            // De qué alumno es cada línea, como en la reimpresión (#292).
+            cliente: nombreAlumno.get(rows.find(r => r.id === d.id)?.cliente_id) || '',
             descuentoPct: d.descuentoPct, descuentoMensPct: d.descuentoMensPct,
             ivaPct: d.ivaPct, base: d.base, total: d.total,
         })),
@@ -6715,6 +6725,8 @@ function combinarTickets(tickets, { pagos, entregado, cambio, total, medioResume
         recibo: {
             id: primero.recibo.id, numero: primero.recibo.numero, fecha: primero.recibo.fecha,
             pagador: receptorNombre || '', medioPago: medioResumen, pagos, entregado, cambio, total,
+            tipoFactura: primero.recibo.tipoFactura,
+            pagadorDni: primero.recibo.pagadorDni, pagadorDomicilio: primero.recibo.pagadorDomicilio,
         },
         detalle: tickets.flatMap(t => t.detalle),
         basesPorIva: [...gruposIva.values()].sort((a, b) => a.ivaPct - b.ivaPct),
@@ -6726,6 +6738,7 @@ function combinarTickets(tickets, { pagos, entregado, cambio, total, medioResume
             id: t.recibo.id, numero: t.recibo.numero, numeroVisible: t.recibo.numeroVisible,
             serie: t.recibo.serie, serieNombre: SERIES_FACTURA.find(s => s.codigo === t.recibo.serie)?.nombre || t.recibo.serie,
             tipoFactura: t.recibo.tipoFactura, total: t.recibo.total, conIva: t.ivaTotal > 0,
+            qrTributario: t.qrTributario || null,
         })),
         empresa: EMPRESA_TICKET,
     };
@@ -7215,7 +7228,7 @@ async function ticketDeRecibo(reciboId) {
             const base = Number(c.importe ?? 0);
             const ivaPct = Number(c.iva_pct);
             return {
-                cargoId: c.id,
+                cargoId: c.id, tipo: c.tipo,
                 descripcion: c.descripcion, cliente: `${c.name} ${c.surname}`, mes: c.mes,
                 precio: Number(c.precio), descuentoPct: Number(c.descuento_pct),
                 descuentoMensPct: c.descuento_mens_pct == null ? 0 : Number(c.descuento_mens_pct),
@@ -7307,6 +7320,11 @@ app.get('/api/admin/billing/recibos/:id', authenticateSession, requireAdmin, asy
     try {
         const t = await ticketDeRecibo(req.params.id);
         if (!t) return res.status(404).json({ error: 'Recibo no encontrado.' });
+        // El QR tributario, para reimprimir el ticket igual que salió (#292).
+        const vf = await pool.query(
+            `SELECT qr_url FROM aim_factura_registro WHERE recibo_id = $1 AND qr_url IS NOT NULL AND modo = 'verifactu' ORDER BY id DESC LIMIT 1`,
+            [req.params.id]);
+        t.qrTributario = vf.rowCount ? await qrTicket(vf.rows[0].qr_url).catch(() => null) : null;
         res.set('Cache-Control', 'no-store');
         res.json(t);
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -7581,6 +7599,16 @@ async function datosVerifactuDeFactura(reciboId) {
         console.error('[verifactu qr]', e.message);
         return null;
     }
+}
+
+// El QR tributario como imagen para el ticket de la impresora (#292), o null
+// si VERI*FACTU está apagado.
+async function qrTicket(qrUrl) {
+    if (!qrUrl || AJUSTES_VERIFACTU.modo !== 'verifactu') return null;
+    try {
+        const QRCode = (await import('qrcode')).default;
+        return await QRCode.toDataURL(qrUrl, { errorCorrectionLevel: 'M', margin: 1, width: 300 });
+    } catch (e) { console.error('[verifactu qr ticket]', e.message); return null; }
 }
 
 // El XML tal y como se remite (o se remitiría), para poder revisarlo.
