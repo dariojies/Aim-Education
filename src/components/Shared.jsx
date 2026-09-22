@@ -2,6 +2,8 @@ import React, { useState, useEffect, createContext, useContext } from 'react';
 import { I } from './Icons.jsx';
 import { useRouter } from '../App.jsx';
 import { fmtFechaLarga } from '../fechas.js';
+import { abrirConfiguracionCookies } from './Cookies.jsx';
+import { DOCS_LEGALES } from '../legal/textos.js';
 
 // La dirección del club, y el enlace para abrirla en el mapa. En un móvil, ese
 // enlace lo recoge la aplicación de mapas que tenga puesta cada uno.
@@ -186,6 +188,7 @@ function AimHeader({ route } = {}) {
     if (path === '/campamento') return 'camp';
     if (path === '/calendario') return 'calendar';
     if (path === '/noticias') return 'news';
+    if (path === '/contacto') return 'contact';
     return '';
   })();
 
@@ -195,6 +198,7 @@ function AimHeader({ route } = {}) {
     { id: "camp", label: "Campamento", href: "/campamento" },
     { id: "calendar", label: "Calendario", href: "/calendario" },
     { id: "news", label: "Noticias", href: "/noticias" },
+    { id: "contact", label: "Contacto", href: "/contacto" },
   ];
 
   return (
@@ -317,6 +321,17 @@ function AimFooter() {
               </li>
               <li><a href="mailto:info@aimeducation.es">info@aimeducation.es</a></li>
               <li><a href="tel:+34956742216">+34 956 742 216</a></li>
+              <li><a onClick={(e) => { e.preventDefault(); go("/contacto"); }} href="/contacto">Escríbenos</a></li>
+            </ul>
+          </div>
+          {/* Textos legales (ticket #295). */}
+          <div>
+            <h5>Legal</h5>
+            <ul>
+              {DOCS_LEGALES.map(d => (
+                <li key={d.id}><a onClick={(e) => { e.preventDefault(); go(`/legal/${d.id}`); }} href={`/legal/${d.id}`}>{d.titulo}</a></li>
+              ))}
+              <li><button type="button" className="enlace-pie" onClick={abrirConfiguracionCookies}>Configurar cookies</button></li>
             </ul>
           </div>
         </div>

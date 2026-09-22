@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { I } from './Icons.jsx';
 import { AimHeader, AimFooter, ACTIVITIES, ACT_BY_ID, MagicText } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
+import { ContenidoExterno, useCookiesExternas } from './Cookies.jsx';
 
 const CAT_COLOR = { taekwondo: '#21B668', ballet: '#FF99D3', ingles: '#00BBF4', robotica: '#FFD526', baile: '#AF99FF', pintura: '#5233A8', funcional: '#FF4F15', pilates: '#BFD300', camaleon: '#25D8BA', competicion: '#21B668', club: '#5233A8', general: '#5233A8', shelfie: '#FF99D3' };
 const catColor = c => CAT_COLOR[c] || '#5233A8';
@@ -45,9 +46,12 @@ function Testimonios({ lista }) {
 function TrabajaConNosotros({ empleo }) {
   const montado = useRef(false);
   const { activo, hubspotPortalId, hubspotFormId, hubspotRegion } = empleo || {};
+  // HubSpot pone sus propias cookies: su formulario no se carga hasta que se
+  // aceptan los contenidos externos (ticket #295).
+  const externosOk = useCookiesExternas();
 
   useEffect(() => {
-    if (!activo || !hubspotPortalId || !hubspotFormId || montado.current) return;
+    if (!externosOk || !activo || !hubspotPortalId || !hubspotFormId || montado.current) return;
     montado.current = true;
     const pintar = () => window.hbspt?.forms?.create({
       portalId: hubspotPortalId, formId: hubspotFormId,
@@ -59,7 +63,7 @@ function TrabajaConNosotros({ empleo }) {
     sc.async = true;
     sc.onload = pintar;
     document.body.appendChild(sc);
-  }, [activo, hubspotPortalId, hubspotFormId, hubspotRegion]);
+  }, [externosOk, activo, hubspotPortalId, hubspotFormId, hubspotRegion]);
 
   if (!activo) return null;
   return (
@@ -72,6 +76,9 @@ function TrabajaConNosotros({ empleo }) {
             <p className="section-lede" style={{marginTop: 10}}>{empleo.texto}</p>
           </div>
           <div id="form-empleo" className="empleo-form">
+            {hubspotPortalId && hubspotFormId && !externosOk && (
+              <ContenidoExterno servicio="HubSpot" que="el formulario" />
+            )}
             {(!hubspotPortalId || !hubspotFormId) && (
               <p style={{fontSize: 13, color: "var(--ink-3)", margin: 0}}>
                 El formulario todavía no está configurado.
@@ -303,13 +310,19 @@ export default function PublicLanding() {
                   border: "1px solid var(--line)",
                   background: "var(--ink)",
                 }}>
-                  <iframe
-                    src="https://www.youtube.com/embed/_roTJYMv1R4?rel=0&modestbranding=1"
-                    title="Aim Education — vídeo de presentación"
-                    style={{position: "absolute", inset: 0, width: "100%", height: "100%", border: 0}}
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                    allowFullScreen
-                  />
+                  {/* YouTube pone cookies: el vídeo no se carga hasta que se
+                      aceptan los contenidos externos (ticket #295). Se usa además
+                      el dominio «nocookie» de YouTube, que pone menos. */}
+                  <ContenidoExterno servicio="YouTube" que="el vídeo"
+                    style={{position: "absolute", inset: 0, borderRadius: 0, border: 0, background: "var(--bg-3)"}}>
+                    <iframe
+                      src="https://www.youtube-nocookie.com/embed/_roTJYMv1R4?rel=0&modestbranding=1"
+                      title="Aim Education — vídeo de presentación"
+                      style={{position: "absolute", inset: 0, width: "100%", height: "100%", border: 0}}
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                      allowFullScreen
+                    />
+                  </ContenidoExterno>
                 </div>
                 <div style={{display: "flex", alignItems: "center", gap: 8, marginTop: 10, fontSize: 12, color: "var(--ink-3)"}}>
                   <I.Sparkle style={{color: "var(--teal)"}}/>

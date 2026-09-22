@@ -25,6 +25,7 @@ import FichaAlumno360 from './FichaAlumno360.jsx';
 import AdminObjetosPerdidos from './AdminObjetosPerdidos.jsx';
 import AdminSpeaking from './AdminSpeaking.jsx';
 import AdminAlmacen from './AdminAlmacen.jsx';
+import AdminContactos from './AdminContactos.jsx';
 
 const fichaCardTitulo = { margin: '0 0 12px', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--ink-3)' };
 
@@ -45,6 +46,7 @@ function sectionLabel(id) {
     instructors: "Instructores",
     agenda: "Mi día",
     portada: "Portada de la web",
+    contactos: "Consultas web",
     settings: "Ajustes del club",
     objetos: "Objetos perdidos",
     support: "Panel de soporte",
@@ -6661,6 +6663,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
       heading: "Web pública", items: [
         { id: "portada", label: "Portada", icon: <I.Portada /> },
         { id: "news", label: "Noticias / Foro", icon: <I.Newspaper /> },
+        { id: "contactos", label: "Consultas web", icon: <I.Mail /> },
       ]
     },
     {
@@ -6766,7 +6769,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
               <Campanita onIr={(destino) => go(destino)} />
               <button className="btn btn-icon" onClick={() => alert("Función de búsqueda global disponible próximamente.")}><I.Search /></button>
-              {!['classes', 'events', 'support', 'camp', 'billing', 'payments', 'reportes'].includes(view) && (
+              {!['classes', 'events', 'support', 'camp', 'billing', 'payments', 'reportes', 'contactos'].includes(view) && (
                 <button
                   className="btn btn-primary"
                   onClick={() => {
@@ -6792,6 +6795,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("agenda") && <AdminAgenda showToast={showToast} user={user} />}
           {ver("fichaje") && <Fichaje showToast={showToast} permisos={permisos} />}
           {ver("equipo_it") && <EquipoIT showToast={showToast} />}
+          {ver("contactos") && <AdminContactos showToast={showToast} />}
           {ver("overview") && (permisos.resumenGeneral
             ? <AdminOverview setView={setView} refreshTrigger={refreshTrigger} showToast={showToast} />
             : <ResumenInstructor setView={setView} refreshTrigger={refreshTrigger} />)}

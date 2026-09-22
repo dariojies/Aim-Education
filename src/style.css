@@ -1600,7 +1600,7 @@ html[data-actaccents="off"] .act-card.solid {
 
 .foot-grid {
   display: grid;
-  grid-template-columns: 1.6fr 1fr 1fr 1fr;
+  grid-template-columns: 1.6fr 1fr 1fr 1fr 1fr;
   gap: 36px;
   margin-bottom: 40px;
 }
@@ -3879,4 +3879,23 @@ html[data-theme="dark"] .dash-nav button.is-active {
 
   .hero-datos .v { font-size: 28px; }
   .hero-datos .l { font-size: 12px; }
+}
+
+/* Textos legales (ticket #295): índice a la izquierda; en el móvil, arriba. */
+.legal-grid { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); gap: 36px; align-items: start; }
+.legal-indice { position: sticky; top: 110px; display: grid; gap: 4px; }
+@media (max-width: 760px) {
+  .legal-grid { grid-template-columns: 1fr; gap: 20px; }
+  .legal-indice { position: static; }
+}
+/* El pie con la columna «Legal»: en pantallas medianas, de tres en tres. */
+@media (max-width: 1100px) and (min-width: 761px) {
+  .foot-grid { grid-template-columns: 1.4fr 1fr 1fr; }
+}
+.foot-grid button.enlace-pie { background: none; border: none; padding: 0; font: inherit; color: inherit; cursor: pointer; text-align: left; opacity: .8; }
+.foot-grid button.enlace-pie:hover { opacity: 1; }
+/* Contacto (ticket #295): datos a la izquierda, formulario a la derecha. */
+.contacto-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 40px; align-items: start; padding-top: 30px; }
+@media (max-width: 860px) {
+  .contacto-grid { grid-template-columns: 1fr; gap: 26px; }
 }

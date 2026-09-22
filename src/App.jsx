@@ -7,6 +7,9 @@ import AuthScreen from './components/AuthScreen';
 import StudentDashboard from './components/StudentDashboard';
 import AdminApp from './components/AdminApp';
 import PublicCalendar from './components/PublicCalendar';
+import PublicLegal from './components/PublicLegal';
+import PublicContacto from './components/PublicContacto';
+import { CookieBanner } from './components/Cookies';
 
 export const RouterContext = createContext({ path: '/', go: () => {}, user: null });
 export const useRouter = () => useContext(RouterContext);
@@ -71,6 +74,11 @@ export default function App() {
     screen = <PublicCamp />;
   } else if (pathname === '/calendario') {
     screen = <PublicCalendar />;
+  } else if (seg[0] === 'legal') {
+    // Textos legales (ticket #295): /legal/aviso-legal, /legal/privacidad…
+    screen = <PublicLegal id={seg[1] || 'aviso-legal'} />;
+  } else if (pathname === '/contacto') {
+    screen = <PublicContacto />;
   } else if (pathname === '/noticias') {
     screen = <PublicNews />;
   } else if (seg[0] === 'noticias' && seg[1]) {
@@ -87,7 +95,7 @@ export default function App() {
     if (!userChecked) return null;
     if (!user || !user.canAccessAdmin) { go('/auth'); return null; }
     // 'recibos' se mantiene como alias antiguo: esa sección ahora son los gastos del club.
-    const adminSub = { campamento: 'camp', alumnos: 'students', familias: 'familias', clases: 'classes', eventos: 'events', noticias: 'news', gastos: 'payments', recibos: 'payments', facturacion: 'billing', soporte: 'support', reportes: 'reportes', fichaje: 'fichaje', speaking: 'speaking', almacen: 'almacen' }[seg[1]] || 'overview';
+    const adminSub = { campamento: 'camp', alumnos: 'students', familias: 'familias', clases: 'classes', eventos: 'events', noticias: 'news', gastos: 'payments', recibos: 'payments', facturacion: 'billing', soporte: 'support', reportes: 'reportes', fichaje: 'fichaje', speaking: 'speaking', almacen: 'almacen', consultas: 'contactos' }[seg[1]] || 'overview';
     // /admin/soporte/180 abre ese ticket directamente, para poder pasar el enlace.
     const ticketId = seg[1] === 'soporte' && /^\d+$/.test(seg[2] || '') ? Number(seg[2]) : null;
     screen = <AdminApp user={user} onLogout={handleLogout} subroute={adminSub} ticketId={ticketId} />;
@@ -98,6 +106,9 @@ export default function App() {
   return (
     <RouterContext.Provider value={{ path, go, user }}>
       {screen}
+      {/* El aviso de cookies, en toda la web salvo el panel de administración
+          (allí solo está la cookie de la sesión, que no pide consentimiento). */}
+      {!pathname.startsWith('/admin') && <CookieBanner />}
     </RouterContext.Provider>
   );
 }

@@ -103,6 +103,9 @@ function RegisterForm({ onLoginSuccess }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [form, setForm] = useState({ firstName: "", lastName: "", email: "", phone: "", password: "" });
+  // Lo que acepta al registrarse (ticket #255): se manda y queda anotado.
+  const [acepta, setAcepta] = useState(false);
+  const [comunicaciones, setComunicaciones] = useState(false);
   const [showPw, setShowPw] = useState(false);
 
   function upd(key) { return (e) => setForm(f => ({ ...f, [key]: e.target.value })); }
@@ -117,7 +120,7 @@ function RegisterForm({ onLoginSuccess }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ firstName: form.firstName, lastName: form.lastName, email: form.email, phone: form.phone, password: form.password })
+        body: JSON.stringify({ firstName: form.firstName, lastName: form.lastName, email: form.email, phone: form.phone, password: form.password, aceptaCondiciones: acepta, comunicaciones })
       });
       const data = await r.json();
       if (!r.ok) {
@@ -206,13 +209,26 @@ function RegisterForm({ onLoginSuccess }) {
             <input placeholder="AIM-XXXXX" />
           </div>
           <label style={{display: "flex", gap: 10, alignItems: "flex-start", fontSize: 13, color: "var(--ink-2)", marginTop: 8, lineHeight: 1.5}}>
-            <input type="checkbox" required style={{marginTop: 3, accentColor: "var(--purple)"}} />
-            <span>Acepto los términos y condiciones, el reglamento interno y la política de privacidad.</span>
+            <input type="checkbox" required checked={acepta} onChange={e => setAcepta(e.target.checked)} style={{marginTop: 3, accentColor: "var(--purple)"}} />
+            <span>
+              He leído y acepto los <a href="/legal/terminos" target="_blank" rel="noopener">términos y condiciones</a>,
+              el <a href="/legal/reglamento" target="_blank" rel="noopener">reglamento interno</a> y
+              la <a href="/legal/privacidad" target="_blank" rel="noopener">política de privacidad</a>.
+            </span>
           </label>
           <label style={{display: "flex", gap: 10, alignItems: "flex-start", fontSize: 13, color: "var(--ink-2)", marginTop: 10, lineHeight: 1.5}}>
-            <input type="checkbox" style={{marginTop: 3, accentColor: "var(--purple)"}} />
-            <span>Quiero recibir comunicaciones del club (noticias, eventos, descuentos).</span>
+            <input type="checkbox" checked={comunicaciones} onChange={e => setComunicaciones(e.target.checked)} style={{marginTop: 3, accentColor: "var(--purple)"}} />
+            <span>Quiero recibir comunicaciones del club (noticias, eventos, descuentos). Es opcional y lo puedes retirar cuando quieras.</span>
           </label>
+          {/* Información básica de protección de datos (art. 13 RGPD), junto al
+              formulario; la completa, en la política de privacidad. */}
+          <div style={{marginTop: 14, padding: "10px 12px", borderRadius: 10, background: "var(--bg-3)", fontSize: 11.5, color: "var(--ink-3)", lineHeight: 1.55}}>
+            <b>Protección de datos.</b> Responsable: AIM Deporte y Educación S.L. Finalidad: gestionar tu cuenta,
+            las inscripciones y los pagos y, si lo marcas, enviarte comunicaciones del club. Legitimación: el contrato
+            y, para las comunicaciones, tu consentimiento. No se ceden datos salvo obligación legal. Puedes ejercer tus
+            derechos de acceso, rectificación, supresión y demás en info@aimeducation.es.
+            Más información en la <a href="/legal/privacidad" target="_blank" rel="noopener">política de privacidad</a>.
+          </div>
         </>
       )}
 

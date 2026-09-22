@@ -19,6 +19,7 @@ import { generarPendientesPdf } from './pendientes-pdf.js';
 import * as verifactu from './verifactu.js';
 import { plazasConBono, reservarPlazaBono, cancelarReservaBono, ventanaReservas, hoyMadridISO } from './bonos-clases.js';
 import { filtroNombreSQL } from './buscar.js';
+import { VERSION_LEGAL } from './src/legal/textos.js';
 import { filasLibroRegistro, generarLibroRegistro, prorrataDe, TIPOS_OPERACION_DEFECTO } from './libro-registro.js';
 import { PassThrough } from 'stream';
 import { escalaDe, escalasDelClub, resultadoDe, baremoDe, matriculaExamenDe } from './rangos.js';
@@ -1321,6 +1322,43 @@ async function initDb() {
                 updated_by UUID REFERENCES users(user_id) ON DELETE SET NULL
             )
         `);
+        // Consentimientos (ticket #255): quién aceptó qué, cuándo, desde dónde y
+        // con qué versión de los textos. El RGPD exige poder DEMOSTRAR el
+        // consentimiento, así que no basta con una casilla marcada en pantalla.
+        // Nunca se borra ni se cambia una fila: si alguien lo retira, se añade otra.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_consentimientos (
+                id SERIAL PRIMARY KEY,
+                user_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                email VARCHAR(255),
+                tipo VARCHAR(30) NOT NULL,
+                otorgado BOOLEAN NOT NULL,
+                version VARCHAR(20),
+                origen VARCHAR(40),
+                ip VARCHAR(60),
+                user_agent VARCHAR(300),
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_consentimientos_user ON aim_consentimientos (user_id, tipo, created_at)`);
+        // Consultas del formulario de contacto de la web (ticket #295): quedan
+        // aquí para atenderlas desde el panel, además del aviso por correo.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_contactos (
+                id SERIAL PRIMARY KEY,
+                nombre VARCHAR(120) NOT NULL,
+                email VARCHAR(255) NOT NULL,
+                telefono VARCHAR(40),
+                mensaje TEXT NOT NULL,
+                estado VARCHAR(12) NOT NULL DEFAULT 'nuevo',
+                notas TEXT,
+                atendido_por UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                atendido_at TIMESTAMPTZ,
+                ip VARCHAR(60),
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_contactos_estado ON aim_contactos (estado, created_at DESC)`);
         // Rango de cada persona DENTRO de Aim Education, para los que solo existen
         // aquí (trabajador, secretaría, equipo IT). La cuenta de users la comparten
         // otras apps (Aim-Tul solo conoce alumno, instructor y dueño), así que no se
@@ -2000,6 +2038,11 @@ app.post('/api/register', async (req, res) => {
     if (!firstName || !email || !password) {
         return res.status(400).json({ error: 'Nombre, email y contraseña son obligatorios.' });
     }
+    // Sin aceptar los términos, el reglamento y la política de privacidad no se
+    // crea la cuenta (ticket #255).
+    if (req.body.aceptaCondiciones !== true) {
+        return res.status(400).json({ error: 'Para crear la cuenta tienes que aceptar los términos y condiciones, el reglamento interno y la política de privacidad.' });
+    }
     if (password.length < 8) {
         return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres.' });
     }
@@ -2017,6 +2060,9 @@ app.post('/api/register', async (req, res) => {
             [firstName.trim(), (lastName || '').trim(), emailLower, hash]
         );
         const newUser = result.rows[0];
+        // Lo que ha aceptado, para poder demostrarlo (ticket #255).
+        await anotarConsentimiento(pool, req, { userId: newUser.user_id, email: emailLower, tipo: 'condiciones', otorgado: true, origen: 'registro' });
+        await anotarConsentimiento(pool, req, { userId: newUser.user_id, email: emailLower, tipo: 'comunicaciones', otorgado: req.body.comunicaciones === true, origen: 'registro' });
         const now = Date.now();
         const token = crypto.randomBytes(32).toString('hex');
         sessions.set(token, {
@@ -3337,6 +3383,17 @@ app.delete('/api/admin/events/:id/registrations/:regId', authenticateSession, re
 function requireAdmin(req, res, next) {
     if (!req.userSession?.canAccessAdmin) return res.status(403).json({ error: 'Acceso solo para administradores.' });
     next();
+}
+
+// Anota un consentimiento (ticket #255): tipo 'condiciones' (términos,
+// reglamento y privacidad), 'comunicaciones' (publicidad) o 'contacto'.
+async function anotarConsentimiento(cliente, req, { userId = null, email = null, tipo, otorgado, origen }) {
+    const ip = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim().slice(0, 60) || null;
+    const ua = String(req.headers['user-agent'] || '').slice(0, 300) || null;
+    await cliente.query(
+        `INSERT INTO aim_consentimientos (user_id, email, tipo, otorgado, version, origen, ip, user_agent)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [userId, email, tipo, !!otorgado, VERSION_LEGAL, origen, ip, ua]);
 }
 
 // El rango de una persona en Aim Education, en SQL: el propio (aim_rangos) si lo
@@ -13242,6 +13299,90 @@ app.post('/api/admin/equipo-it/copiar', authenticateSession, requireSeccion('equ
              RETURNING id`,
             [antes, lunes, (await miembrosEquipoIT()).map(m => m.userId), req.userSession.userId]);
         res.json({ success: true, copiados: r.rowCount });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Formulario de contacto de la web (ticket #295) ─────────────────────────
+// La consulta se guarda para atenderla desde el panel («Consultas web») y se
+// avisa por correo a secretaría. A quién se avisa: CONTACTO_EMAIL, o info@.
+const CONTACTO_EMAIL = process.env.CONTACTO_EMAIL || 'info@aimeducation.es';
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+// Freno contra el spam: como mucho 5 consultas por IP y hora.
+const contactosPorIp = new Map();
+const escHtml = (t) => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+app.post('/api/contacto', async (req, res) => {
+    const b = req.body || {};
+    // Campo trampa: invisible para las personas; si viene relleno, es un robot. Se
+    // le contesta que todo ha ido bien para no darle pistas, pero no se guarda.
+    if (String(b.web || '').trim()) return res.status(201).json({ success: true });
+    const nombre = String(b.nombre || '').trim().slice(0, 120);
+    const email = String(b.email || '').trim().toLowerCase().slice(0, 255);
+    const telefono = String(b.telefono || '').trim().slice(0, 40) || null;
+    const mensaje = String(b.mensaje || '').trim().slice(0, 3000);
+    if (!nombre) return res.status(400).json({ error: 'Dinos tu nombre.' });
+    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Ese correo no parece válido.' });
+    if (mensaje.length < 5) return res.status(400).json({ error: 'Escribe tu consulta.' });
+    if (b.aceptaPrivacidad !== true) return res.status(400).json({ error: 'Para enviarnos la consulta tienes que aceptar la política de privacidad.' });
+    const ip = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim().slice(0, 60);
+    const ahora = Date.now();
+    const recientes = (contactosPorIp.get(ip) || []).filter(t => ahora - t < 3600_000);
+    if (recientes.length >= 5) return res.status(429).json({ error: 'Has enviado varias consultas seguidas. Espera un rato o llámanos al 956 742 216.' });
+    contactosPorIp.set(ip, [...recientes, ahora]);
+    try {
+        const r = await pool.query(
+            `INSERT INTO aim_contactos (nombre, email, telefono, mensaje, ip) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+            [nombre, email, telefono, mensaje, ip || null]);
+        await anotarConsentimiento(pool, req, { email, tipo: 'contacto', otorgado: true, origen: 'formulario de contacto' });
+        // El aviso a secretaría. Si el correo falla, la consulta ya está guardada y
+        // se ve en el panel: no se le da error a quien la ha enviado.
+        if (mailTransporter) {
+            mailTransporter.sendMail({
+                from: process.env.EMAIL_USER, to: CONTACTO_EMAIL, replyTo: email,
+                subject: `Nueva consulta en la web: ${nombre}`,
+                html: `<p>Han escrito desde el formulario de contacto de la web:</p>
+                       <p><b>${escHtml(nombre)}</b> · <a href="mailto:${escHtml(email)}">${escHtml(email)}</a>${telefono ? ` · ${escHtml(telefono)}` : ''}</p>
+                       <blockquote style="border-left:3px solid #5233A8;margin:0;padding:6px 12px;white-space:pre-wrap">${escHtml(mensaje)}</blockquote>
+                       <p>Puedes contestar directamente a este correo. La consulta está también en el panel, en «Consultas web».</p>`,
+            }).catch(e => console.error('[contacto] aviso por correo:', e.message));
+        }
+        res.status(201).json({ success: true, id: r.rows[0].id });
+    } catch (err) { res.status(500).json({ error: 'No se ha podido enviar. Inténtalo de nuevo o llámanos al 956 742 216.' }); }
+});
+
+app.get('/api/admin/contactos', authenticateSession, requireSeccion('contactos'), async (req, res) => {
+    const estado = ['nuevo', 'atendido'].includes(req.query.estado) ? req.query.estado : null;
+    try {
+        const r = await pool.query(
+            `SELECT c.*, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS atendido_por_nombre
+             FROM aim_contactos c LEFT JOIN users u ON u.user_id = c.atendido_por
+             WHERE ($1::text IS NULL OR c.estado = $1) ORDER BY c.created_at DESC LIMIT 300`, [estado]);
+        const n = await pool.query(`SELECT COUNT(*)::int n FROM aim_contactos WHERE estado = 'nuevo'`);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            nuevos: n.rows[0].n,
+            contactos: r.rows.map(c => ({
+                id: c.id, nombre: c.nombre, email: c.email, telefono: c.telefono, mensaje: c.mensaje,
+                estado: c.estado, notas: c.notas || '', fecha: c.created_at,
+                atendidoPor: c.atendido_por_nombre || null, atendidoAt: c.atendido_at,
+            })),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/admin/contactos/:id', authenticateSession, requireSeccion('contactos'), async (req, res) => {
+    const estado = ['nuevo', 'atendido'].includes(req.body?.estado) ? req.body.estado : null;
+    const notas = req.body?.notas == null ? null : String(req.body.notas).slice(0, 2000);
+    try {
+        const r = await pool.query(
+            `UPDATE aim_contactos SET
+                estado = COALESCE($2, estado),
+                notas = COALESCE($3, notas),
+                atendido_por = CASE WHEN $2 = 'atendido' THEN $4::uuid WHEN $2 = 'nuevo' THEN NULL ELSE atendido_por END,
+                atendido_at = CASE WHEN $2 = 'atendido' THEN NOW() WHEN $2 = 'nuevo' THEN NULL ELSE atendido_at END
+             WHERE id = $1 RETURNING id`, [Number(req.params.id) || 0, estado, notas, req.userSession.userId]);
+        if (!r.rowCount) return res.status(404).json({ error: 'Esa consulta no existe.' });
+        res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
