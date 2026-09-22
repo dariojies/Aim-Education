@@ -6649,7 +6649,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
     },
     {
       heading: "Club", items: [
-        { id: "almacen", label: "Almacén", icon: <I.Glove /> },
+        { id: "almacen", label: "Almacén", icon: <I.Package /> },
         { id: "objetos", label: "Objetos perdidos", icon: <I.Search /> },
         { id: "settings", label: "Ajustes", icon: <I.Settings /> },
       ]
