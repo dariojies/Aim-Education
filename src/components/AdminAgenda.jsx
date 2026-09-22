@@ -22,6 +22,8 @@ const ahoraHHMM = () => { const d = new Date(); return `${String(d.getHours()).p
 const RECURRENCIAS_TAREA = [['', 'No se repite'], ['diaria', 'Cada día'], ['semanal', 'Cada semana'], ['mensual', 'Cada mes']];
 const nombreRecurrencia = (r) => ({ diaria: 'Cada día', semanal: 'Cada semana', quincenal: 'Cada 15 días', mensual: 'Cada mes', anual: 'Cada año' }[r] || null);
 const comoHora = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+// El color de cada cosa que ocupa el día: clases, eventos y las horas del Equipo IT.
+const colorOcupado = (tipo) => tipo === 'clase' ? 'var(--purple)' : tipo === 'it' ? 'var(--c-ingles)' : 'var(--teal)';
 
 const fechaLarga = (f) => new Date(f + 'T12:00:00')
     .toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
@@ -206,6 +208,9 @@ export default function AdminAgenda({ showToast, user }) {
     const ocupado = [
         ...(datos?.clases || []).map(c => ({ ...c, tipo: 'clase', nombre: c.grupo, detalle: [c.actividad, c.aula].filter(Boolean).join(' · ') })),
         ...(datos?.eventos || []).map(e => ({ ...e, tipo: 'evento', nombre: e.titulo, detalle: e.lugar })),
+        // Las horas del Equipo IT, tal y como se planificaron en su apartado: ese
+        // rato está ocupado y es lo que hay que fichar.
+        ...(datos?.it || []).map(x => ({ ...x, tipo: 'it', nombre: 'Equipo IT', detalle: x.nota || 'Horas planificadas' })),
     ].filter(x => x.hora);
 
     const conHora = (datos?.tareas || []).filter(t => t.hora);
@@ -291,10 +296,8 @@ export default function AdminAgenda({ showToast, user }) {
                                 <div style={{ padding: '6px 12px 6px 0', display: 'grid', gap: 6, alignContent: 'center' }}>
                                     {f.ocupado.map(o => (
                                         <div key={o.id} style={{
-                                            background: o.tipo === 'clase'
-                                                ? 'color-mix(in oklab, var(--purple) 12%, var(--bg-2))'
-                                                : 'color-mix(in oklab, var(--teal) 12%, var(--bg-2))',
-                                            borderLeft: `3px solid ${o.tipo === 'clase' ? 'var(--purple)' : 'var(--teal)'}`,
+                                            background: `color-mix(in oklab, ${colorOcupado(o.tipo)} 12%, var(--bg-2))`,
+                                            borderLeft: `3px solid ${colorOcupado(o.tipo)}`,
                                             borderRadius: 8, padding: '8px 10px',
                                         }}>
                                             <div style={{ fontWeight: 800, fontSize: 13 }}>{o.nombre}</div>

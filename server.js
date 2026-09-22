@@ -3564,6 +3564,12 @@ app.get('/api/me/agenda', authenticateSession, requireAdmin, async (req, res) =>
             `SELECT id, title, time, end_time, venue FROM aim_eventos
              WHERE docente_id = $1 AND event_date = $2::date ORDER BY time`, [yo, fecha]
         );
+        // Las horas que tenga planificadas en «Equipo IT» ese día: ese rato está
+        // ocupado, igual que una clase, y es lo que tiene que fichar.
+        const it = await pool.query(
+            `SELECT id, to_char(inicio, 'HH24:MI') AS inicio, to_char(fin, 'HH24:MI') AS fin, nota
+             FROM aim_it_planificacion WHERE user_id = $1 AND fecha = $2::date ORDER BY inicio`, [yo, fecha]
+        );
         const SEL_TAREA = `t.*, s.subject AS ticket_asunto, s.status AS ticket_estado, s.priority AS ticket_prioridad
              FROM aim_tareas t
              LEFT JOIN tickets_registrosoporte s ON s.id = t.ticket_id`;
@@ -3597,6 +3603,7 @@ app.get('/api/me/agenda', authenticateSession, requireAdmin, async (req, res) =>
             eventos: eventos.rows.map(e => ({
                 id: e.id, titulo: e.title, hora: e.time, horaFin: e.end_time, lugar: e.venue,
             })),
+            it: it.rows.map(x => ({ id: `it-${x.id}`, hora: x.inicio, horaFin: x.fin, nota: x.nota || null })),
             tareas: tareas.rows.map(mapTarea),
             vencidas: vencidas.rows.map(mapTarea),
         });
@@ -11950,8 +11957,9 @@ async function listadoFichajes({ userId, desde, hasta }) {
 }
 
 // El estado y el resumen de HOY del propio trabajador (para el widget de fichar).
-// Día de la semana de hoy en hora de Madrid (0 = lunes, convención aim-tul).
-const diaSemanaHoy = () => (new Date(hoyMadrid() + 'T12:00:00').getDay() + 6) % 7;
+// Día de la semana de una fecha en hora de Madrid (0 = lunes, convención aim-tul).
+const diaSemanaDe = (fecha) => (new Date(fecha + 'T12:00:00').getDay() + 6) % 7;
+const diaSemanaHoy = () => diaSemanaDe(hoyMadrid());
 
 // El horario laboral de un trabajador para un día de la semana concreto (o hoy):
 // sus tramos ordenados (mañana, tarde). Vacío si ese día no trabaja.
@@ -11962,11 +11970,31 @@ async function horarioDiaDe(userId, dia = diaSemanaHoy(), cliente = pool) {
     return r.rows.map(x => ({ tramo: x.tramo, entrada: x.entrada, salida: x.salida }));
 }
 
+// Lo que hay que fichar un DÍA concreto. El Equipo IT se planifica la semana en
+// su apartado, y esas horas son las suyas: mandan sobre el horario semanal. Los
+// días que no tenga nada planificado, y el resto del personal, siguen con su
+// horario de siempre. Esto lo usan el widget de fichar, los recordatorios por
+// correo y «Mi día», para que los tres digan lo mismo.
+async function horarioDeFecha(userId, fecha, cliente = pool) {
+    const it = await cliente.query(
+        `SELECT to_char(inicio, 'HH24:MI') AS entrada, to_char(fin, 'HH24:MI') AS salida, nota
+         FROM aim_it_planificacion WHERE user_id = $1 AND fecha = $2::date ORDER BY inicio`,
+        [userId, fecha]);
+    if (it.rowCount) {
+        return {
+            origen: 'it',
+            tramos: it.rows.map((x, i) => ({ tramo: i + 1, entrada: x.entrada, salida: x.salida, nota: x.nota || null })),
+        };
+    }
+    return { origen: 'contrato', tramos: await horarioDiaDe(userId, diaSemanaDe(fecha), cliente) };
+}
+
 app.get('/api/fichaje/estado', authenticateSession, requireAdmin, async (req, res) => {
     try {
         const uid = req.userSession.userId;
         const { estado, ultimo } = await estadoFichaje(uid);
         const hoy = hoyMadrid();
+        const horarioHoy = await horarioDeFecha(uid, hoy);
         const ap = await pool.query(
             `SELECT f.id, f.tipo, f.ts, f.dia, (f.creado_por IS NOT NULL) AS corregido
              FROM aim_fichajes f WHERE f.user_id = $1 AND f.dia = $2::date AND ${FICHAJE_VIGENTE('f')}
@@ -11984,8 +12012,10 @@ app.get('/api/fichaje/estado', authenticateSession, requireAdmin, async (req, re
             enPausaDesde: estado === 'pausa' && ultimo ? ultimo.ts : null,
             trabajadoHoySeg: Math.round(calc.porDia[hoy] || 0),
             apuntesHoy: ap.rows.map(x => ({ id: x.id, tipo: x.tipo, ts: x.ts, corregido: x.corregido })),
-            // Horario esperado de hoy (tramos de mañana/tarde), para el aviso en la app.
-            horarioHoy: await horarioDiaDe(uid),
+            // Horario esperado de hoy (tramos de mañana/tarde), para el aviso en la
+            // app. Para el Equipo IT, lo que tenga planificado hoy en su apartado.
+            horarioHoy: horarioHoy.tramos,
+            horarioOrigen: horarioHoy.origen,
             // Festivo o ausencia aprobada hoy (#233): no se avisa de fichar.
             noLaborableHoy: (await diasNoLaborables(uid, hoy, hoy))[hoy] || null,
             porAprobar: pend.rows[0].n,
@@ -11993,14 +12023,22 @@ app.get('/api/fichaje/estado', authenticateSession, requireAdmin, async (req, re
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// El horario laboral semanal del propio trabajador (para verlo en "Mi fichaje").
+// El horario laboral semanal del propio trabajador (para verlo en "Mi fichaje"),
+// y lo que tenga planificado en «Equipo IT» de aquí a dos semanas, que en esos
+// días es lo que tiene que fichar.
 app.get('/api/fichaje/mi-horario', authenticateSession, requireAdmin, async (req, res) => {
     try {
-        const r = await pool.query(
-            `SELECT dia, tramo, entrada, salida FROM aim_horario_laboral WHERE user_id = $1 ORDER BY dia, tramo`,
-            [req.userSession.userId]);
+        const uid = req.userSession.userId;
+        const [r, it] = await Promise.all([
+            pool.query(`SELECT dia, tramo, entrada, salida FROM aim_horario_laboral WHERE user_id = $1 ORDER BY dia, tramo`, [uid]),
+            pool.query(
+                `SELECT fecha::text AS fecha, to_char(inicio, 'HH24:MI') AS inicio, to_char(fin, 'HH24:MI') AS fin, nota
+                 FROM aim_it_planificacion
+                 WHERE user_id = $1 AND fecha BETWEEN $2::date AND ($2::date + 13)
+                 ORDER BY fecha, inicio`, [uid, hoyMadrid()]),
+        ]);
         res.set('Cache-Control', 'no-store');
-        res.json({ dias: r.rows });
+        res.json({ dias: r.rows, it: it.rows.map(x => ({ ...x, nota: x.nota || null })) });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -13935,6 +13973,22 @@ async function recordatoriosFichaje() {
         for (const row of r.rows) {
             if (!porTrabajador.has(row.user_id)) porTrabajador.set(row.user_id, []);
             porTrabajador.get(row.user_id).push(row);
+        }
+        // El Equipo IT ficha lo que se haya planificado en su apartado: esas horas
+        // sustituyen a las del horario semanal el día que las tenga puestas.
+        const itHoy = await pool.query(
+            `SELECT p.user_id, to_char(p.inicio, 'HH24:MI') AS entrada, to_char(p.fin, 'HH24:MI') AS salida,
+                    u.email, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre
+             FROM aim_it_planificacion p JOIN users u ON u.user_id = p.user_id
+             WHERE p.fecha = $1::date AND u.club_id = $2 AND u.email IS NOT NULL AND u.email <> ''
+               AND NOT EXISTS (SELECT 1 FROM aim_ausencias au WHERE au.user_id = p.user_id AND au.estado = 'aprobada'
+                               AND $1::date BETWEEN au.desde AND au.hasta)
+             ORDER BY p.user_id, p.inicio`, [hoy, AIM_CLUB_ID]);
+        const conPlanIT = new Set();
+        for (const row of itHoy.rows) {
+            if (!conPlanIT.has(row.user_id)) { conPlanIT.add(row.user_id); porTrabajador.set(row.user_id, []); }
+            const suyos = porTrabajador.get(row.user_id);
+            suyos.push({ ...row, tramo: suyos.length + 1 });
         }
         for (const [uid, tramos] of porTrabajador) {
             const est = await estadoFichaje(uid);

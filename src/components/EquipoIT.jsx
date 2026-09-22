@@ -99,6 +99,10 @@ export default function EquipoIT({ showToast }) {
           ? 'Toca un día para añadir un tramo, o un tramo para cambiarlo o quitarlo. «Copiar la semana anterior» solo rellena a quien aún no tenga nada esta semana.'
           : 'Solo el Equipo IT puede cambiar esta planificación.'}
       </p>
+      <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
+        Lo que se ponga aquí son las horas que cada uno tiene que fichar ese día —mandan sobre su horario
+        semanal— y salen como ocupadas en «Mi día».
+      </p>
 
       {!datos.miembros.length ? (
         <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Nadie tiene el rango de Equipo IT todavía.</p>

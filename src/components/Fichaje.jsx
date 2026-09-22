@@ -371,6 +371,46 @@ function MisResumenes({ resumenes, onCambio, showToast }) {
   );
 }
 
+// Lo que le toca fichar al Equipo IT los próximos días, tal y como se ha
+// planificado en su apartado: ahí se pone una vez y de ahí sale todo.
+function ProximasHorasIT({ plan }) {
+  if (!plan?.length) return null;
+  const porDia = [];
+  for (const t of plan) {
+    const ult = porDia[porDia.length - 1];
+    if (ult && ult.fecha === t.fecha) ult.tramos.push(t);
+    else porDia.push({ fecha: t.fecha, tramos: [t] });
+  }
+  const hoy = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' });
+  return (
+    <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 16, display: 'grid', gap: 10 }}>
+      <div>
+        <b style={{ fontSize: 14 }}>Tus horas del Equipo IT</b>
+        <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+          Lo planificado en «Equipo IT»: esas son las horas que tienes que fichar, y salen como ocupadas en «Mi día».
+        </div>
+      </div>
+      <div style={{ display: 'grid', gap: 6 }}>
+        {porDia.slice(0, 10).map(d => (
+          <div key={d.fecha} style={{
+            display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', fontSize: 13,
+            padding: '7px 10px', borderRadius: 10, background: 'var(--bg-3)',
+            outline: d.fecha === hoy ? '2px solid color-mix(in oklab, var(--purple) 45%, transparent)' : 'none',
+          }}>
+            <b style={{ textTransform: 'capitalize', minWidth: 150 }}>
+              {d.fecha === hoy ? 'Hoy' : fmtDiaCorto(d.fecha)}
+            </b>
+            <span>{d.tramos.map(t => `${t.inicio}–${t.fin}`).join(' y ')}</span>
+            {d.tramos.some(t => t.nota) && (
+              <span style={{ color: 'var(--ink-3)' }}>· {d.tramos.map(t => t.nota).filter(Boolean).join(' · ')}</span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Mi fichaje ───────────────────────────────────────────────────────────────
 function MiFichaje({ showToast }) {
   const [est, setEst] = useState(null);
@@ -380,18 +420,21 @@ function MiFichaje({ showToast }) {
   const [cargando, setCargando] = useState(true);
   const [fichando, setFichando] = useState(false);
   const [modal, setModal] = useState(null); // { apunte? }
+  // Lo que tiene planificado en «Equipo IT»: esos días son sus horas de fichaje.
+  const [planIT, setPlanIT] = useState([]);
   const [now, setNow] = useState(Date.now());
   const timer = useRef(null);
 
   const cargar = useCallback(async () => {
     try {
-      const [e, h, s, rs] = await Promise.all([
+      const [e, h, s, rs, ho] = await Promise.all([
         fetch('/api/fichaje/estado', { credentials: 'include', cache: 'no-store' }).then(r => r.ok ? r.json() : null),
         fetch('/api/fichaje/mios', { credentials: 'include', cache: 'no-store' }).then(r => r.ok ? r.json() : null),
         fetch('/api/fichaje/solicitudes', { credentials: 'include', cache: 'no-store' }).then(r => r.ok ? r.json() : { solicitudes: [] }),
         fetch('/api/fichaje/resumenes', { credentials: 'include', cache: 'no-store' }).then(r => r.ok ? r.json() : { resumenes: [] }),
+        fetch('/api/fichaje/mi-horario', { credentials: 'include', cache: 'no-store' }).then(r => r.ok ? r.json() : { it: [] }),
       ]);
-      setEst(e); setHist(h); setSols(s.solicitudes || []); setResumenes(rs.resumenes || []);
+      setEst(e); setHist(h); setSols(s.solicitudes || []); setResumenes(rs.resumenes || []); setPlanIT(ho.it || []);
     } catch { /* noop */ } finally { setCargando(false); }
   }, []);
   useEffect(() => { cargar(); }, [cargar]);
@@ -428,11 +471,13 @@ function MiFichaje({ showToast }) {
   const nowD = new Date(now);
   const nowMin = nowD.getHours() * 60 + nowD.getMinutes();
   const actual = [...tramos].reverse().find(t => nowMin >= hm2min(t.entrada));
+  // Los días planificados en «Equipo IT» mandan sobre el horario semanal.
+  const horarioEsIT = est?.horarioOrigen === 'it';
   let aviso = null;
   // Festivo o ausencia aprobada hoy (#233): no hay que fichar y no se avisa.
   const noLab = est?.noLaborableHoy || null;
   if (actual && !noLab) {
-    const turno = tramos.length > 1 ? ` de ${actual.tramo === 2 ? 'tarde' : 'mañana'}` : '';
+    const turno = horarioEsIT ? ' del Equipo IT' : tramos.length > 1 ? ` de ${actual.tramo === 2 ? 'tarde' : 'mañana'}` : '';
     if (estado === 'fuera' && nowMin < hm2min(actual.salida)) aviso = `Tu turno${turno} empezó a las ${actual.entrada}. No olvides fichar la entrada.`;
     else if (estado !== 'fuera' && nowMin >= hm2min(actual.salida)) aviso = `Tu turno${turno} terminaba a las ${actual.salida}. No olvides fichar la salida.`;
   }
@@ -480,7 +525,7 @@ function MiFichaje({ showToast }) {
         </span>
         <div style={{ fontFamily: 'var(--font-display)', fontSize: 40, fontWeight: 800, letterSpacing: -1 }}>{hms(totalHoy)}</div>
         <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: -8 }}>
-          trabajado hoy{tramos.length ? ` · horario ${textoTramos(tramos)}` : ''}
+          trabajado hoy{tramos.length ? ` · ${horarioEsIT ? 'hoy, según el Equipo IT' : 'horario'} ${textoTramos(tramos)}` : ''}
         </div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
           {estado === 'fuera' && (
@@ -500,6 +545,8 @@ function MiFichaje({ showToast }) {
           )}
         </div>
       </div>
+
+      <ProximasHorasIT plan={planIT} />
 
       <ComputoMes />
 
