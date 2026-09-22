@@ -9,69 +9,100 @@
 // el servidor. Lo de aquí sirve para que la pantalla enseñe solo lo que hay.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// De menos a más mando. 'secretaria' está por encima de los instructores y por
-// debajo del dueño del club; su panel propio está por hacer, de momento ve lo
-// mismo que el dueño salvo los ajustes del club.
-export const RANGO = { instructor: 1, secretaria: 2, club_owner: 3, superadmin: 4 };
+// De menos a más mando. El trabajador (personal que no da clase: limpieza,
+// recepción…) está por debajo del instructor y por encima del alumno: entra al
+// panel para fichar. 'secretaria' va por encima de los instructores y por debajo
+// del dueño del club, que ve lo mismo salvo los ajustes. El Equipo IT tiene los
+// mismos privilegios que el dueño del club.
+export const RANGO = { trabajador: 1, instructor: 2, secretaria: 3, club_owner: 4, equipo_it: 4, superadmin: 5 };
 export const ROLES_STAFF = Object.keys(RANGO);
 
 export const NOMBRE_ROL = {
+    trabajador: 'Trabajador',
     instructor: 'Instructor',
     secretaria: 'Secretaría',
     club_owner: 'Dueño del club',
+    equipo_it: 'Equipo IT',
     superadmin: 'Superadmin',
 };
 
-// El rol con el que se entra al panel. El dev_role manda por encima del role:
-// hay instructores que además llevan el desarrollo y tienen que verlo todo.
-export function rolEfectivo(role, devRole) {
-    const r = String(role || '').toLowerCase();
-    const d = String(devRole || '').toLowerCase();
-    if (r === 'superadmin' || d === 'superadmin') return 'superadmin';
-    const suyos = [r, d].filter(x => RANGO[x]);
-    if (!suyos.length) return null; // no es personal del club
-    return suyos.sort((a, b) => RANGO[b] - RANGO[a])[0];
+// Rangos que solo existen en Aim Education. La cuenta la comparten otras apps
+// (Aim-Tul solo conoce alumno, instructor y dueño), así que estos no se escriben
+// en ella: van en la tabla aim_rangos, y allí cada uno sigue con el suyo.
+export const RANGOS_PROPIOS = ['trabajador', 'secretaria', 'equipo_it'];
+// Los que se pueden dar desde el panel. El superadmin no: es un rango de
+// desarrollo, para gente concreta, y no se muestra en ningún sitio.
+export const RANGOS_ASIGNABLES = ['student', 'trabajador', 'instructor', 'secretaria', 'club_owner', 'equipo_it'];
+export const NOMBRE_RANGO = {
+    student: 'Alumno', trabajador: 'Trabajador', instructor: 'Instructor', secretaria: 'Secretaría',
+    club_owner: 'Dueño del club', equipo_it: 'Equipo IT',
+};
+
+// El rango de alguien en Aim Education: el propio (aim_rangos) si lo tiene y, si
+// no, el de su cuenta.
+const rangoBase = (role, rangoAim) => String(rangoAim || role || '').toLowerCase();
+
+// El rol con el que se entra al panel y que decide qué se puede hacer. El
+// superadmin (dev_role) manda por encima de todo, pero no cambia el rango que se
+// ve: es invisible.
+export function rolEfectivo(role, devRole, rangoAim) {
+    const base = rangoBase(role, rangoAim);
+    if (base === 'superadmin' || String(devRole || '').toLowerCase() === 'superadmin'
+        || String(role || '').toLowerCase() === 'superadmin') return 'superadmin';
+    return RANGO[base] ? base : null; // null: no es personal del club
+}
+
+// El rango que se enseña. Nunca "superadmin": ese poder existe, pero no se ve.
+export function rolVisible(role, rangoAim) {
+    const base = rangoBase(role, rangoAim);
+    return NOMBRE_RANGO[base] ? base : null;
 }
 
 export const mandaAlMenos = (rol, minimo) => (RANGO[rol] || 0) >= (RANGO[minimo] || 99);
 
 // Qué puede hacer cada rol. Se parte de que todo está permitido y se recorta
-// para los instructores, que son los únicos con el panel limitado por ahora.
+// para los instructores y, más todavía, para los trabajadores.
 export function permisosDe(rol) {
-    const instructor = rol === 'instructor';
+    // El trabajador solo entra a lo suyo: fichar, su día y soporte.
+    const trabajador = rol === 'trabajador';
+    // Lo que no ve un instructor tampoco lo ve un trabajador.
+    const instructor = rol === 'instructor' || trabajador;
     const jefe = mandaAlMenos(rol, 'club_owner');
 
     return {
         rol,
         // ── Secciones del menú ──
         secciones: {
-            overview: true,
+            overview: !trabajador,
             // La agenda es de cada uno: la tiene todo el que entra al panel.
             agenda: true,
-            students: true,
+            students: !trabajador,
             familias: !instructor,
             billing: !instructor,
             payments: !instructor,     // gastos del club
-            classes: true,
+            classes: !trabajador,
             // La clase de Speaking la gestionan los profes (apuntar alumnos) y la
             // ve secretaría (llamar a los padres). Ticket #228.
-            speaking: true,
+            speaking: !trabajador,
             // El fichaje (registro de jornada) lo usa TODO el personal, también los
-            // instructores: cada uno ficha su jornada (ticket #233).
+            // instructores y los trabajadores: cada uno ficha su jornada (#233).
             fichaje: true,
-            camp: true,
+            camp: !trabajador,
             // Los títulos y las notas de examen los sube el club, no el monitor.
             titulos: !instructor,
             // Objetos perdidos: lo lleva secretaría/dirección.
             objetos: !instructor,
             // El almacén (inventario) lo gestiona secretaría/dirección (ticket #250).
             almacen: !instructor,
-            reportes: true,
-            events: true,
+            reportes: !trabajador,
+            events: !trabajador,
             news: !instructor,
-            groups: true,
+            groups: !trabajador,
             instructors: !instructor,
             portada: !instructor,
+            // La planificación del Equipo IT: la ven secretaría y dirección; solo
+            // la tocan el propio equipo y los superadmin (editarEquipoIT).
+            equipo_it: mandaAlMenos(rol, 'secretaria'),
             settings: jefe,            // los ajustes del club son cosa del club
             support: true,
         },
@@ -91,16 +122,21 @@ export function permisosDe(rol) {
         editarEventos: !instructor,
         verDineroEventos: !instructor,
         // Un instructor pide que se cree un evento; lo aprueba el club.
-        pedirEventos: instructor,
+        pedirEventos: rol === 'instructor',
         // En soporte ve sus tickets, como cualquiera desde su perfil.
         soporteCompleto: !instructor,
         // Ver los fichajes de TODO el personal, corregir olvidos y exportar para la
         // Inspección es cosa de secretaría/dirección; un instructor solo ve el suyo.
         fichajesGestion: mandaAlMenos(rol, 'secretaria'),
+        // Planificar las semanas del Equipo IT: el equipo y los superadmin.
+        editarEquipoIT: rol === 'equipo_it' || rol === 'superadmin',
+        // Dar o quitar rangos del club (dueño del club y por encima).
+        cambiarRangos: jefe,
     };
 }
 
-// Lo que se manda a la pantalla al entrar.
-export function sesionDe(rol) {
-    return { rol, nombreRol: NOMBRE_ROL[rol] || null, permisos: permisosDe(rol) };
+// Lo que se manda a la pantalla al entrar. El nombre es el del rango VISIBLE,
+// no el efectivo: un superadmin ve su rango de verdad (p. ej. Secretaría).
+export function sesionDe(rol, visible) {
+    return { rol, nombreRol: NOMBRE_ROL[visible] || null, permisos: permisosDe(rol) };
 }

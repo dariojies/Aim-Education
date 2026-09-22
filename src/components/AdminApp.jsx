@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { I } from './Icons.jsx';
-import { permisosDe, NOMBRE_ROL } from '../../permisos.js';
+import { permisosDe, NOMBRE_ROL, NOMBRE_RANGO } from '../../permisos.js';
+import EquipoIT from './EquipoIT.jsx';
 import { useEnVivo } from '../envivo.js';
 import { ListaClases, AdminReportes, colorOcupacion } from './AdminTulClases.jsx';
 import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong, campDayParts, nombreMedioPago, CoronaCumple, COLOR_CUMPLE, coincideBusqueda } from './Shared.jsx';
@@ -196,7 +197,7 @@ function AdminOverview({ setView, refreshTrigger, showToast }) {
       .catch(() => { });
     fetch('/api/users', { credentials: 'include' })
       .then(r => r.ok ? r.json() : [])
-      .then(u => setUserCount(u.filter(x => !x.esInstructor).length))
+      .then(u => setUserCount(u.filter(x => !(x.esPersonal ?? x.esInstructor)).length))
       .catch(() => { });
     fetch('/api/admin/gastos', { credentials: 'include' })
       .then(r => r.ok ? r.json() : [])
@@ -301,10 +302,13 @@ function AdminOverview({ setView, refreshTrigger, showToast }) {
 }
 
 // Como se llama cada uno en la lista: quien imparte, quien dirige y quien asiste.
+// El rango de alguien en el club. El superadmin no se enseña nunca: es de
+// desarrollo y no es un rango del club.
 function etiquetaRol(u) {
-  if (u.role === "club_owner") return "Dirección";
-  if (u.role === "instructor") return "Instructor/a";
-  return u.isSuperAdmin ? "Admin" : "Alumno";
+  const r = u.rango || u.role;
+  if (r === "club_owner") return "Dirección";
+  if (r === "instructor") return "Instructor/a";
+  return NOMBRE_RANGO[r] || "Alumno";
 }
 
 // Cambios de DNI o domicilio que ha pedido una familia. Se autorizan aquí
@@ -463,18 +467,19 @@ function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos }) {
 
   // Los filtros no son excluyentes: un padre que además da clase o entrena sale
   // en varias listas. Alumno = participa en actividades, o cuenta sin otro rol.
-  const esAlumno = (u) => u.activo || (!u.esInstructor && !u.esTutor);
+  const esPersonal = (u) => u.esPersonal ?? u.esInstructor;
+  const esAlumno = (u) => u.activo || (!esPersonal(u) && !u.esTutor);
   const visible = users.filter(u => {
     if (tipo === "alumnos" && !esAlumno(u)) return false;
     if (tipo === "tutores" && !u.esTutor) return false;
-    if (tipo === "instructores" && !u.esInstructor) return false;
+    if (tipo === "instructores" && !esPersonal(u)) return false;
     // Estado (matrícula/actividad vigente): activo = tiene alguna actividad.
     if (estado === "activos" && !u.activo) return false;
     if (estado === "inactivos" && u.activo) return false;
     // Por palabras sueltas y sin tildes (ticket #254).
     return coincideBusqueda(search, u.firstName, u.lastName, u.email);
   });
-  const nInstructores = users.filter(u => u.esInstructor).length;
+  const nInstructores = users.filter(esPersonal).length;
   const nTutores = users.filter(u => u.esTutor).length;
   const nAlumnos = users.filter(esAlumno).length;
 
@@ -551,9 +556,7 @@ function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos }) {
                 <div className="pri" style={u.cumpleHoy ? { color: COLOR_CUMPLE, fontWeight: 800 } : undefined}>
                   {u.firstName || ""} {u.lastName || ""}{u.cumpleHoy && " 🎂"}
                 </div>
-                {u.esInstructor
-                  ? <div className="sec">{u.role === "club_owner" ? "Dirección" : "Instructor/a"} del club</div>
-                  : u.isSuperAdmin && <div className="sec">Superadmin</div>}
+                {esPersonal(u) && <div className="sec">{etiquetaRol(u)} del club</div>}
               </div>
             </div>
             <div className="sec">{u.email}</div>
@@ -566,8 +569,7 @@ function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos }) {
               {!(rangos[u.id] || []).length && <span style={{ color: "var(--ink-3)" }}>—</span>}
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-              <span className={`status-pill ${u.esInstructor ? "ok" : "upcoming"}`}>{etiquetaRol(u)}</span>
-              {u.esInstructor && u.isSuperAdmin && <span className="status-pill">Admin</span>}
+              <span className={`status-pill ${esPersonal(u) ? "ok" : "upcoming"}`}>{etiquetaRol(u)}</span>
             </div>
             <div className="row-actions">
               <button className="icon-btn" aria-label="Ver" onClick={() => onEditUser(u)}><I.Eye /></button>
@@ -2684,7 +2686,7 @@ function AdminSettings() {
 // Instructores: es la misma gente que en Alumnos, filtrada por rol. Hay quien
 // imparte una actividad y es alumno de otra, asi que se gestionan con la misma
 // ficha (clases, rangos, familia) en vez de con un formulario aparte.
-function AdminInstructores({ refreshTrigger, showToast, onEditUser, onNuevoInstructor }) {
+function AdminInstructores({ refreshTrigger, showToast, onEditUser, onNuevoInstructor, puedeCambiarRangos }) {
   const [gente, setGente] = useState([]);
   const [clases, setClases] = useState({});
   const [loading, setLoading] = useState(true);
@@ -2693,7 +2695,7 @@ function AdminInstructores({ refreshTrigger, showToast, onEditUser, onNuevoInstr
   const cargar = useCallback(() => {
     fetch('/api/users', { credentials: 'include', cache: 'no-store' })
       .then(r => r.ok ? r.json() : [])
-      .then(u => { setGente(u.filter(x => x.esInstructor)); setLoading(false); })
+      .then(u => { setGente(u.filter(x => x.esPersonal ?? x.esInstructor)); setLoading(false); })
       .catch(() => setLoading(false));
   }, []);
   useEffect(() => { cargar(); }, [cargar, refreshTrigger]);
@@ -2715,7 +2717,7 @@ function AdminInstructores({ refreshTrigger, showToast, onEditUser, onNuevoInstr
   async function cambiarRol(u, rol) {
     const texto = rol === 'student'
       ? `¿${u.firstName} deja de ser ${etiquetaRol(u).toLowerCase()} del club?\nSeguirá como alumno, con sus clases y sus rangos intactos.`
-      : `¿Pasar a ${u.firstName} a Dirección?`;
+      : `¿Pasar a ${u.firstName} a ${NOMBRE_RANGO[rol] || rol}?`;
     if (!window.confirm(texto)) return;
     try {
       const r = await fetch(`/api/users/${u.id}/rol`, {
@@ -2723,7 +2725,7 @@ function AdminInstructores({ refreshTrigger, showToast, onEditUser, onNuevoInstr
         credentials: 'include', body: JSON.stringify({ rol }),
       });
       if (!r.ok) { const d = await r.json(); return alert(d.error || 'Error.'); }
-      showToast(rol === 'student' ? `${u.firstName} ya no es instructor/a.` : 'Rol actualizado.');
+      showToast(rol === 'student' ? `${u.firstName} ya no es del personal.` : `${u.firstName} ahora es ${NOMBRE_RANGO[rol] || rol}.`);
       cargar();
     } catch { alert('Error de conexión.'); }
   }
@@ -2743,7 +2745,7 @@ function AdminInstructores({ refreshTrigger, showToast, onEditUser, onNuevoInstr
           <input placeholder="Buscar por nombre o email..." value={search} onChange={e => setSearch(e.target.value)} />
         </div>
         <div style={{ flex: 1 }} />
-        <button className="btn btn-primary btn-sm" onClick={onNuevoInstructor}><I.Plus /> Nuevo Instructor</button>
+        <button className="btn btn-primary btn-sm" onClick={onNuevoInstructor}><I.Plus /> Nuevo miembro del personal</button>
       </div>
 
       <div className="data-table">
@@ -2758,7 +2760,7 @@ function AdminInstructores({ refreshTrigger, showToast, onEditUser, onNuevoInstr
           <div style={{ padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>Cargando...</div>
         )}
         {!loading && visible.length === 0 && (
-          <div style={{ padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>No hay instructores.</div>
+          <div style={{ padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>No hay nadie en el personal.</div>
         )}
         {!loading && visible.map(u => (
           <div key={u.id} className="data-table-row" style={{ gridTemplateColumns: cols }}>
@@ -2773,7 +2775,13 @@ function AdminInstructores({ refreshTrigger, showToast, onEditUser, onNuevoInstr
                 <div className="pri" style={u.cumpleHoy ? { color: COLOR_CUMPLE, fontWeight: 800 } : undefined}>
                   {u.firstName || ""} {u.lastName || ""}{u.cumpleHoy && " 🎂"}
                 </div>
-                <div className="sec">{etiquetaRol(u)}</div>
+                {/* El rango, y quien puede cambiarlo (dirección) lo cambia aquí. */}
+                {puedeCambiarRangos ? (
+                  <select value={u.rango || 'instructor'} onChange={e => cambiarRol(u, e.target.value)}
+                    style={{ marginTop: 2, fontFamily: 'inherit', fontSize: 12, padding: '2px 6px', borderRadius: 6, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink-2)' }}>
+                    {['trabajador', 'instructor', 'secretaria', 'club_owner', 'equipo_it'].map(r => <option key={r} value={r}>{NOMBRE_RANGO[r]}</option>)}
+                  </select>
+                ) : <div className="sec">{etiquetaRol(u)}</div>}
               </div>
             </div>
             <div className="sec">{u.email || <span style={{ color: "var(--ink-3)" }}>—</span>}</div>
@@ -2785,8 +2793,8 @@ function AdminInstructores({ refreshTrigger, showToast, onEditUser, onNuevoInstr
             </div>
             <div className="row-actions">
               <button className="icon-btn" aria-label="Abrir ficha" title="Abrir su ficha" onClick={() => onEditUser(u)}><I.Edit /></button>
-              <button className="icon-btn danger" aria-label="Dejar de ser instructor"
-                title="Dejar de ser instructor/a (sigue como alumno)" onClick={() => cambiarRol(u, 'student')}><I.Trash /></button>
+              <button className="icon-btn danger" aria-label="Sacar del personal"
+                title="Deja de ser del personal (sigue como alumno)" onClick={() => cambiarRol(u, 'student')}><I.Trash /></button>
             </div>
           </div>
         ))}
@@ -6407,7 +6415,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
       return { res, d };
     };
 
-    const quien = editingItem.rol === 'instructor' ? 'Instructor' : 'Alumno';
+    const quien = editingItem.rol ? (NOMBRE_RANGO[editingItem.rol] || 'Personal') : 'Alumno';
     try {
       let { res, d } = await enviar(false);
 
@@ -6605,6 +6613,14 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
   // Una sección solo se pinta si además de estar abierta se puede ver: escribir
   // la ruta a mano no debe colar.
   const ver = (id) => view === id && !!permisos.secciones[id];
+  // Un trabajador, por ejemplo, no tiene "Resumen": al entrar se le lleva a la
+  // primera sección que sí tiene, en vez de a una pantalla vacía.
+  useEffect(() => {
+    if (permisos.secciones[view]) return;
+    const orden = ['overview', 'agenda', 'fichaje', 'support'];
+    const primera = orden.find(id => permisos.secciones[id]) || Object.keys(permisos.secciones).find(id => permisos.secciones[id]);
+    if (primera) setView(primera);
+  }, [view, permisos]);
 
   const sections = [
     {
@@ -6650,6 +6666,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
     {
       heading: "Club", items: [
         { id: "almacen", label: "Almacén", icon: <I.Package /> },
+        { id: "equipo_it", label: "Equipo IT", icon: <I.Monitor /> },
         { id: "objetos", label: "Objetos perdidos", icon: <I.Search /> },
         { id: "settings", label: "Ajustes", icon: <I.Settings /> },
       ]
@@ -6693,7 +6710,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
               <div className="name">{adminName}</div>
               {/* Con qué perfil ha entrado: poner "Admin" a un instructor confunde
                   sobre lo que puede hacer. */}
-              <div className="role-tag">{NOMBRE_ROL[user?.rol] || (user?.isSuperAdmin ? "Superadmin" : "Admin")}</div>
+              <div className="role-tag">{user?.nombreRol || (user?.rol !== 'superadmin' && NOMBRE_ROL[user?.rol]) || 'Personal del club'}</div>
             </div>
           </div>
 
@@ -6774,6 +6791,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
 
           {ver("agenda") && <AdminAgenda showToast={showToast} user={user} />}
           {ver("fichaje") && <Fichaje showToast={showToast} permisos={permisos} />}
+          {ver("equipo_it") && <EquipoIT showToast={showToast} />}
           {ver("overview") && (permisos.resumenGeneral
             ? <AdminOverview setView={setView} refreshTrigger={refreshTrigger} showToast={showToast} />
             : <ResumenInstructor setView={setView} refreshTrigger={refreshTrigger} />)}
@@ -6817,9 +6835,10 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("instructors") && (
             <AdminInstructores
               refreshTrigger={refreshTrigger} showToast={showToast}
+              puedeCambiarRangos={!!permisos.cambiarRangos}
               onEditUser={abrirFicha}
               onNuevoInstructor={() => {
-                setEditingItem({ firstName: '', lastName: '', email: '', rol: 'instructor', isSuperAdmin: false });
+                setEditingItem({ firstName: '', lastName: '', email: '', rol: 'instructor' });
                 setActiveModal('new-student');
               }} />
           )}
@@ -6893,7 +6912,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                   }}>
                     <div style={{ fontSize: 11, fontWeight: 700, opacity: .85, textTransform: 'uppercase', letterSpacing: '.1em' }}>{titulo}</div>
                     <div style={{ fontSize: 26, fontWeight: 800, marginTop: 3, lineHeight: 1.1 }}>
-                      {esEdit ? (nombre || 'Sin nombre') : (editingItem.rol === 'instructor' ? 'Nuevo instructor' : 'Nuevo alumno')}
+                      {esEdit ? (nombre || 'Sin nombre') : (editingItem.rol ? `Nuevo: ${(NOMBRE_RANGO[editingItem.rol] || 'personal').toLowerCase()}` : 'Nuevo alumno')}
                     </div>
                     {esEdit && (
                       <div style={{ fontSize: 13, opacity: .92, marginTop: 3 }}>
@@ -6910,6 +6929,18 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
 
                   {/* Al dar de alta se busca primero: casi siempre la persona ya
                       tiene cuenta de otra app y no hay nada que teclear. */}
+                  {/* Alta de personal: con qué rango entra. Los altos (secretaría,
+                      dirección, equipo IT) solo los da la dirección. */}
+                  {!esEdit && editingItem.rol && (
+                    <label style={{ display: 'grid', gap: 4, fontSize: 13, fontWeight: 700 }}>
+                      Rango en el club
+                      <select value={editingItem.rol} onChange={e => setEditingItem({ ...editingItem, rol: e.target.value })}
+                        style={{ fontFamily: 'inherit', fontSize: 14, padding: '9px 11px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }}>
+                        {['trabajador', 'instructor', ...(permisos.cambiarRangos ? ['secretaria', 'club_owner', 'equipo_it'] : [])]
+                          .map(r => <option key={r} value={r}>{NOMBRE_RANGO[r]}</option>)}
+                      </select>
+                    </label>
+                  )}
                   {!esEdit && permisos.editarAlumnos && (
                     <>
                       <BuscarCuentaExistente rol={editingItem.rol} onMeter={meterEnElClub} />
@@ -7061,13 +7092,17 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                     </div>
                   )}
 
-                  <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer', fontSize: 14, fontWeight: 700, color: 'var(--ink)', borderTop: '1px solid var(--line)', paddingTop: 16 }}>
-                    <input type="checkbox" checked={!!editingItem.isSuperAdmin} onChange={e => setEditingItem({ ...editingItem, isSuperAdmin: e.target.checked })} style={{ width: 18, height: 18 }} />
-                    ¿Tiene permisos de Administrador?
-                  </label>
-                  {editingItem.esInstructor && (
-                    <p style={{ margin: '-8px 0 0', fontSize: 12, color: 'var(--ink-3)' }}>
-                      Es {etiquetaRol(editingItem).toLowerCase()} del club: guardar aquí no le quita ese rol.
+                  {/* El superadmin es de desarrollo: solo lo ve y lo toca otro
+                      superadmin, y no se enseña como rango en ningún sitio. */}
+                  {user?.isSuperAdmin && (
+                    <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer', fontSize: 14, fontWeight: 700, color: 'var(--ink)', borderTop: '1px solid var(--line)', paddingTop: 16 }}>
+                      <input type="checkbox" checked={!!editingItem.isSuperAdmin} onChange={e => setEditingItem({ ...editingItem, isSuperAdmin: e.target.checked })} style={{ width: 18, height: 18 }} />
+                      Superadmin (acceso total; no se muestra como rango)
+                    </label>
+                  )}
+                  {(editingItem.esPersonal ?? editingItem.esInstructor) && (
+                    <p style={{ margin: user?.isSuperAdmin ? '-8px 0 0' : 0, fontSize: 12, color: 'var(--ink-3)' }}>
+                      Es {etiquetaRol(editingItem).toLowerCase()} del club: guardar aquí no le cambia el rango.
                     </p>
                   )}
                 </>

@@ -22,7 +22,7 @@ import { filtroNombreSQL } from './buscar.js';
 import { filasLibroRegistro, generarLibroRegistro, prorrataDe, TIPOS_OPERACION_DEFECTO } from './libro-registro.js';
 import { PassThrough } from 'stream';
 import { escalaDe, escalasDelClub, resultadoDe, baremoDe, matriculaExamenDe } from './rangos.js';
-import { rolEfectivo, permisosDe, mandaAlMenos, ROLES_STAFF, NOMBRE_ROL } from './permisos.js';
+import { rolEfectivo, rolVisible, permisosDe, mandaAlMenos, ROLES_STAFF, NOMBRE_ROL, NOMBRE_RANGO, RANGOS_PROPIOS, RANGOS_ASIGNABLES } from './permisos.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1321,6 +1321,34 @@ async function initDb() {
                 updated_by UUID REFERENCES users(user_id) ON DELETE SET NULL
             )
         `);
+        // Rango de cada persona DENTRO de Aim Education, para los que solo existen
+        // aquí (trabajador, secretaría, equipo IT). La cuenta de users la comparten
+        // otras apps (Aim-Tul solo conoce alumno, instructor y dueño), así que no se
+        // les cambia el role: si lo hiciéramos, allí se quedarían sin menú.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_rangos (
+                user_id UUID PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                rango VARCHAR(20) NOT NULL,
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_by UUID REFERENCES users(user_id) ON DELETE SET NULL
+            )
+        `);
+        // Planificación semanal del Equipo IT: qué días y a qué horas trabaja cada
+        // uno. Bloques sueltos (un día puede tener varios).
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_it_planificacion (
+                id SERIAL PRIMARY KEY,
+                user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                fecha DATE NOT NULL,
+                inicio TIME NOT NULL,
+                fin TIME NOT NULL,
+                nota VARCHAR(200),
+                created_by UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_it_plan_fecha ON aim_it_planificacion (fecha)`);
         // Vacaciones de cada trabajador: días naturales al año (30 por defecto, el
         // mínimo del art. 38 del Estatuto) y las fechas de alta y baja, para la
         // parte proporcional de quien entra o sale a mitad de año.
@@ -1910,10 +1938,15 @@ app.post('/api/login', async (req, res) => {
 
         const userRole = (user.role || '').toLowerCase();
         const devRole = (user.dev_role || '').toLowerCase();
+        // Su rango propio de Aim Education, si lo tiene (trabajador, secretaría,
+        // equipo IT): manda sobre el de la cuenta, que es el de las otras apps.
+        const ra = await pool.query(`SELECT rango FROM aim_rangos WHERE user_id = $1`, [user.user_id]);
+        const rangoAim = ra.rows[0]?.rango || null;
         // El rol manda en todo el panel: qué secciones se ven y qué se puede
-        // tocar en cada una. Un instructor que además lleva el desarrollo
-        // (dev_role superadmin) sigue viéndolo todo.
-        const rol = rolEfectivo(userRole, devRole);
+        // tocar en cada una. Un superadmin (dev_role) lo ve todo, pero su rango
+        // visible sigue siendo el suyo.
+        const rol = rolEfectivo(userRole, devRole, rangoAim);
+        const visible = rolVisible(userRole, rangoAim);
         const canAccessAdmin = !!rol;
         const isSuperAdmin = rol === 'superadmin';
 
@@ -1927,6 +1960,8 @@ app.post('/api/login', async (req, res) => {
             isSuperAdmin,
             canAccessAdmin,
             rol,
+            rolVisible: visible,
+            nombreRol: NOMBRE_ROL[visible] || null,
             permisos: permisosDe(rol),
             expiresAt: now + SESSION_DURATION_MS
         });
@@ -1950,6 +1985,7 @@ app.post('/api/login', async (req, res) => {
                 isSuperAdmin,
                 canAccessAdmin,
                 rol,
+                nombreRol: NOMBRE_ROL[visible] || null,
                 permisos: permisosDe(rol),
             }
         });
@@ -2024,6 +2060,7 @@ app.get('/api/me', authenticateSession, (req, res) => {
         isSuperAdmin: s.isSuperAdmin,
         canAccessAdmin: s.canAccessAdmin,
         rol: s.rol || null,
+        nombreRol: s.nombreRol || null,
         permisos: s.permisos || null,
     });
 });
@@ -2049,6 +2086,7 @@ app.get('/api/users', authenticateSession, async (req, res) => {
         // consulta en si tarda un milisegundo. Lo demas se pide al abrir la ficha.
         const result = await pool.query(
             `SELECT u.user_id, u.name, u.surname, u.email, u.belt, u.dev_role, u.role,
+                    ${sqlRango('u')} AS rango,
                     -- #219 (9): es responsable/tutor de alguien (para distinguir
                     -- tutores de alumnos).
                     EXISTS (SELECT 1 FROM aim_familias f
@@ -2065,9 +2103,9 @@ app.get('/api/users', authenticateSession, async (req, res) => {
                      AND EXTRACT(MONTH FROM u.birthday) = EXTRACT(MONTH FROM (now() AT TIME ZONE 'Europe/Madrid')::date)
                      AND EXTRACT(DAY FROM u.birthday) = EXTRACT(DAY FROM (now() AT TIME ZONE 'Europe/Madrid')::date)) AS cumple_hoy
              FROM users u
-             WHERE u.club_id = $1 AND u.role IN ('student', 'instructor', 'club_owner', 'superadmin')
+             WHERE u.club_id = $1 AND LOWER(${sqlRango('u')}) = ANY($2)
              ORDER BY u.name, u.surname`,
-            [AIM_CLUB_ID]
+            [AIM_CLUB_ID, ['student', ...ROLES_STAFF]]
         );
         const mapped = result.rows.map(u => {
             const esInstructor = (u.role === 'instructor' || u.role === 'club_owner');
@@ -2082,12 +2120,18 @@ app.get('/api/users', authenticateSession, async (req, res) => {
                 email: u.email,
                 belt: u.belt,
                 role: u.role,
+                // Su rango en Aim Education (el propio o el de la cuenta) y si es
+                // del personal del club, dé clase o no.
+                rango: String(u.rango || 'student').toLowerCase(),
+                nombreRango: NOMBRE_RANGO[String(u.rango || 'student').toLowerCase()] || 'Alumno',
+                esPersonal: ROLES_STAFF.includes(String(u.rango || '').toLowerCase()),
                 esInstructor,
                 esTutor,
                 activo: !!u.activo,
                 tieneFoto: !!u.tiene_foto,
                 cumpleHoy: !!u.cumple_hoy,
-                isSuperAdmin: (u.dev_role === 'superadmin' || u.role === 'superadmin' || u.role === 'SuperAdmin'),
+                // El superadmin no se enseña: solo lo sabe otro superadmin.
+                ...(req.userSession.isSuperAdmin ? { isSuperAdmin: (u.dev_role === 'superadmin' || u.role === 'superadmin') } : {}),
             };
         });
         // Sin cache: al meter o sacar a alguien el cambio tiene que verse ya, y
@@ -2104,6 +2148,7 @@ app.get('/api/users/:id', authenticateSession, requireAdmin, async (req, res) =>
     try {
         const r = await pool.query(
             `SELECT u.user_id, u.name, u.surname, u.email, u.belt, u.dev_role, u.role, u.profile_picture,
+                    ${sqlRango('u')} AS rango,
                     u.phone, u.birthday, u.dni, u.domicilio, u.cp, u.poblacion,
                     s.alergias, s.enfermedades, s.medicacion, s.notas AS salud_notas,
                     s.contacto_nombre, s.contacto_telefono
@@ -2124,8 +2169,11 @@ app.get('/api/users/:id', authenticateSession, requireAdmin, async (req, res) =>
                 notas: u.salud_notas || '', contactoNombre: u.contacto_nombre || '', contactoTelefono: u.contacto_telefono || '',
             },
             avatar: u.profile_picture, role: u.role,
+            rango: String(u.rango || 'student').toLowerCase(),
+            nombreRango: NOMBRE_RANGO[String(u.rango || 'student').toLowerCase()] || 'Alumno',
+            esPersonal: ROLES_STAFF.includes(String(u.rango || '').toLowerCase()),
             esInstructor: (u.role === 'instructor' || u.role === 'club_owner'),
-            isSuperAdmin: (u.dev_role === 'superadmin' || u.role === 'superadmin'),
+            ...(req.userSession.isSuperAdmin ? { isSuperAdmin: (u.dev_role === 'superadmin' || u.role === 'superadmin') } : {}),
         });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -2161,13 +2209,26 @@ app.post('/api/users', authenticateSession, requirePermiso('editarAlumnos'), asy
     }
     const emailLower = email.toLowerCase().trim();
 
-    // Qué rol se le pone. Subir a alguien a direccion o secretaria es cosa de la
-    // direccion: si no, cualquiera con acceso al panel podria hacerse jefe.
-    const rolPedido = ['instructor', 'secretaria', 'club_owner'].includes(rol) ? rol : null;
-    if (['secretaria', 'club_owner'].includes(rolPedido) && !mandaAlMenos(req.userSession.rol, 'club_owner')) {
-        return res.status(403).json({ error: 'Solo la direccion puede dar ese rol.' });
+    // Qué rango se le pone. Subir a alguien a secretaría, dirección o equipo IT
+    // es cosa de la dirección: si no, cualquiera con acceso al panel podría
+    // hacerse jefe.
+    const rolPedido = RANGOS_ASIGNABLES.includes(rol) && rol !== 'student' ? rol : null;
+    if (['secretaria', 'club_owner', 'equipo_it'].includes(rolPedido) && !mandaAlMenos(req.userSession.rol, 'club_owner')) {
+        return res.status(403).json({ error: 'Solo la dirección puede dar ese rango.' });
     }
-    const role = rolPedido || (isSuperAdmin ? 'superadmin' : 'student');
+    // Los rangos solo de Aim Education no van en la cuenta (la comparten otras
+    // apps): la cuenta queda como alumno y el rango va en aim_rangos.
+    const propio = RANGOS_PROPIOS.includes(rolPedido);
+    const role = (!propio && rolPedido) || 'student';
+    // El superadmin solo lo puede dar otro superadmin, y va en dev_role.
+    const devRoleNuevo = (isSuperAdmin && req.userSession.isSuperAdmin) ? 'superadmin' : null;
+    const ponerRangoPropio = async (userId) => {
+        if (!propio) return;
+        await pool.query(
+            `INSERT INTO aim_rangos (user_id, rango, updated_by) VALUES ($1, $2, $3)
+             ON CONFLICT (user_id) DO UPDATE SET rango = EXCLUDED.rango, updated_at = NOW(), updated_by = EXCLUDED.updated_by`,
+            [userId, rolPedido, req.userSession.userId]);
+    };
 
     try {
         // La base la comparten varias apps y quien esta en el club se sabe por su
@@ -2210,8 +2271,9 @@ app.post('/api/users', authenticateSession, requirePermiso('editarAlumnos'), asy
                 `UPDATE users SET club_id = $1, role = COALESCE($2, role)
                  WHERE user_id = $3
                  RETURNING user_id, name, surname, email, role`,
-                [AIM_CLUB_ID, rolPedido, u.user_id]
+                [AIM_CLUB_ID, propio ? null : rolPedido, u.user_id]
             );
+            await ponerRangoPropio(u.user_id);
             const a = r.rows[0];
             return res.status(200).json({
                 adoptado: true, id: a.user_id,
@@ -2224,13 +2286,14 @@ app.post('/api/users', authenticateSession, requirePermiso('editarAlumnos'), asy
         
         await pool.query(
             `INSERT INTO users (user_id, name, surname, email, password, belt, role,
-                                phone, birthday, dni, domicilio, cp, poblacion, club_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+                                phone, birthday, dni, domicilio, cp, poblacion, club_id, dev_role)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
             [user_id, firstName.trim(), (lastName || '').trim(), emailLower, hash, belt || null, role,
              phone?.trim() || null, birthday || null,
              dni?.trim() || null, domicilio?.trim() || null, cp?.trim() || null, poblacion?.trim() || null,
-             AIM_CLUB_ID]
+             AIM_CLUB_ID, devRoleNuevo]
         );
+        await ponerRangoPropio(user_id);
         res.status(201).json({ id: user_id, firstName, lastName, email, belt, isSuperAdmin });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -2246,21 +2309,28 @@ app.put('/api/users/:id', authenticateSession, requirePermiso('editarAlumnos'), 
     }
     const emailLower = email.toLowerCase().trim();
     try {
-        const dev_role = isSuperAdmin ? 'superadmin' : null;
+        // El superadmin es de desarrollo y solo lo da o lo quita otro superadmin.
+        // Antes cualquiera que pudiera editar fichas podía marcárselo (incluso a
+        // sí mismo) y quedar por encima del dueño del club.
+        let dev_role;
+        if (req.userSession.isSuperAdmin && typeof isSuperAdmin === 'boolean') {
+            dev_role = isSuperAdmin ? 'superadmin' : null;
+        } else {
+            const actual = await pool.query(`SELECT dev_role FROM users WHERE user_id = $1`, [id]);
+            dev_role = actual.rows[0]?.dev_role ?? null;
+        }
         // El cinturón lo lleva el bloque de rangos de la ficha, que escribe en
         // tul_user_progression. Aquí solo se toca si viene en la petición, para
         // no borrarlo desde un formulario que ya no lo pregunta.
-        // El rol de instructor o de direccion no se toca desde aqui: quien da
-        // clase de una actividad y la recibe de otra sale en ambas listas, y
-        // guardar su ficha no puede degradarle a alumno.
+        // El rango NO se toca desde aquí: se cambia con su propio botón. Antes
+        // esto convertía en alumno a cualquiera que no fuera instructor o dueño
+        // (p. ej. Secretaría), y marcar "Administrador" escribía superadmin en el
+        // rango de la cuenta.
         await pool.query(
             `UPDATE users
              SET name = $1, surname = $2, email = $3, dev_role = $4,
-                 role = CASE
-                          WHEN role IN ('instructor', 'club_owner') THEN role
-                          WHEN $5::boolean THEN 'superadmin'
-                          ELSE 'student'
-                        END,
+                 -- El rango se queda como está ($5 sigue aquí solo para no renumerar).
+                 role = CASE WHEN $5::boolean THEN role ELSE role END,
                  belt = CASE WHEN $6::boolean THEN $7 ELSE belt END,
                  phone = $8, birthday = $9,
                  dni = $11, domicilio = $12, cp = $13, poblacion = $14
@@ -2294,19 +2364,33 @@ app.put('/api/users/:id', authenticateSession, requirePermiso('editarAlumnos'), 
     }
 });
 
-// Secretaría va por encima de los instructores y por debajo de la dirección.
-const ROLES_CLUB = ['student', 'instructor', 'secretaria', 'club_owner'];
+// Cambiar el rango de alguien en el club. Los de Aim-Tul (alumno, instructor,
+// dueño) se escriben en la cuenta, como siempre; los que solo existen aquí
+// (trabajador, secretaría, equipo IT) van en aim_rangos, para que en las otras
+// apps esa persona siga con el suyo.
 app.put('/api/users/:id/rol', authenticateSession, requireAdmin, requireRol('club_owner'), async (req, res) => {
     const { rol } = req.body;
-    if (!ROLES_CLUB.includes(rol)) return res.status(400).json({ error: 'Ese rol no existe.' });
+    if (!RANGOS_ASIGNABLES.includes(rol)) return res.status(400).json({ error: 'Ese rango no existe.' });
+    const client = await pool.connect();
     try {
-        const r = await pool.query(
-            `UPDATE users SET role = $1 WHERE user_id = $2 AND club_id = $3 RETURNING role`,
-            [rol, req.params.id, AIM_CLUB_ID]
-        );
-        if (!r.rowCount) return res.status(404).json({ error: 'Esa persona no es de este club.' });
-        res.json({ success: true, rol: r.rows[0].role });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+        await client.query('BEGIN');
+        const u = await client.query(`SELECT user_id FROM users WHERE user_id = $1 AND club_id = $2 FOR UPDATE`, [req.params.id, AIM_CLUB_ID]);
+        if (!u.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Esa persona no es de este club.' }); }
+        if (RANGOS_PROPIOS.includes(rol)) {
+            await client.query(
+                `INSERT INTO aim_rangos (user_id, rango, updated_by) VALUES ($1, $2, $3)
+                 ON CONFLICT (user_id) DO UPDATE SET rango = EXCLUDED.rango, updated_at = NOW(), updated_by = EXCLUDED.updated_by`,
+                [req.params.id, rol, req.userSession.userId]);
+        } else {
+            await client.query(`UPDATE users SET role = $1 WHERE user_id = $2`, [rol, req.params.id]);
+            await client.query(`DELETE FROM aim_rangos WHERE user_id = $1`, [req.params.id]);
+        }
+        await client.query('COMMIT');
+        res.json({ success: true, rol, nombreRango: NOMBRE_RANGO[rol] });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
 });
 
 // Ojo con esto: la tabla users la comparten TODAS las apps, asi que un DELETE
@@ -3254,6 +3338,10 @@ function requireAdmin(req, res, next) {
     if (!req.userSession?.canAccessAdmin) return res.status(403).json({ error: 'Acceso solo para administradores.' });
     next();
 }
+
+// El rango de una persona en Aim Education, en SQL: el propio (aim_rangos) si lo
+// tiene y, si no, el de su cuenta. `a` es el alias (o el nombre) de la tabla users.
+const sqlRango = (a = 'u') => `COALESCE((SELECT ar.rango FROM aim_rangos ar WHERE ar.user_id = ${a}.user_id), ${a}.role)`;
 
 // Exige poder ver una sección del panel.
 function requireSeccion(id) {
@@ -11843,11 +11931,12 @@ app.get('/api/admin/fichajes', authenticateSession, requireAdmin, requireRol('se
         // registro se conserva y tiene que poder consultarse y exportarse.
         const staff = await pool.query(
             `SELECT u.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre, u.role, u.dev_role,
-                    (u.club_id = $1 AND (LOWER(COALESCE(u.role,'')) = ANY($2) OR LOWER(COALESCE(u.dev_role,'')) = ANY($2))) AS en_plantilla,
+                    (u.club_id = $1 AND (LOWER(COALESCE(${sqlRango('u')},'')) = ANY($2) OR LOWER(COALESCE(u.dev_role,'')) = ANY($2))) AS en_plantilla,
+                    ${sqlRango('u')} AS rango,
                     c.jornada, c.horas_semana
              FROM users u
              LEFT JOIN aim_fichaje_contratos c ON c.user_id = u.user_id
-             WHERE ((u.club_id = $1 AND (LOWER(COALESCE(u.role,'')) = ANY($2) OR LOWER(COALESCE(u.dev_role,'')) = ANY($2)))
+             WHERE ((u.club_id = $1 AND (LOWER(COALESCE(${sqlRango('u')},'')) = ANY($2) OR LOWER(COALESCE(u.dev_role,'')) = ANY($2)))
                     OR EXISTS (SELECT 1 FROM aim_fichajes f WHERE f.user_id = u.user_id
                                AND ($4::date IS NULL OR f.dia >= $4::date) AND f.dia <= $5::date))
                AND ($3::uuid IS NULL OR u.user_id = $3)
@@ -11858,7 +11947,8 @@ app.get('/api/admin/fichajes', authenticateSession, requireAdmin, requireRol('se
             const estado = await estadoFichaje(s.user_id);
             trabajadores.push({
                 userId: s.user_id, nombre: s.nombre,
-                rol: NOMBRE_ROL[rolEfectivo(s.role, s.dev_role)] || null,
+                // El rango que se ve (nunca "superadmin").
+                rol: NOMBRE_ROL[rolVisible(s.role, s.rango)] || null,
                 enPlantilla: !!s.en_plantilla,
                 jornada: s.jornada || null, horasSemana: s.horas_semana == null ? null : Number(s.horas_semana),
                 estado: estado.estado, totalSeg: l.totalSeg, dias: l.dias,
@@ -13032,12 +13122,126 @@ app.get('/api/admin/fichajes/vacaciones', authenticateSession, requireAdmin, req
         const staff = await pool.query(
             `SELECT u.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre
              FROM users u
-             WHERE u.club_id = $1 AND (LOWER(COALESCE(u.role,'')) = ANY($2) OR LOWER(COALESCE(u.dev_role,'')) = ANY($2))
+             WHERE u.club_id = $1 AND (LOWER(COALESCE(${sqlRango('u')},'')) = ANY($2) OR LOWER(COALESCE(u.dev_role,'')) = ANY($2))
              ORDER BY nombre`, [AIM_CLUB_ID, ROLES_STAFF]);
         const trabajadores = [];
         for (const s of staff.rows) trabajadores.push({ userId: s.user_id, nombre: s.nombre, ...(await saldoVacaciones(s.user_id, anio)) });
         res.set('Cache-Control', 'no-store');
         res.json({ anio, trabajadores });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Equipo IT: planificación semanal ────────────────────────────────────────
+// Cada semana el Equipo IT se planifica qué días y a qué horas trabaja. Lo editan
+// el propio equipo y los superadmin; secretaría y dirección lo ven sin tocarlo.
+const HHMM_IT = /^([01]\d|2[0-3]):[0-5]\d$/;
+// El lunes de la semana de una fecha.
+const lunesDe = (iso) => {
+    const d = new Date(`${iso}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+    return d.toISOString().slice(0, 10);
+};
+
+async function miembrosEquipoIT(cliente = pool) {
+    const r = await cliente.query(
+        `SELECT u.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre
+         FROM users u WHERE u.club_id = $1 AND LOWER(${sqlRango('u')}) = 'equipo_it' ORDER BY nombre`, [AIM_CLUB_ID]);
+    return r.rows.map(x => ({ userId: x.user_id, nombre: x.nombre }));
+}
+
+app.get('/api/admin/equipo-it', authenticateSession, requireSeccion('equipo_it'), async (req, res) => {
+    const lunes = lunesDe(esFechaISO(req.query.semana) ? req.query.semana : hoyMadrid());
+    const domingo = sumarDiaISO(lunes, 6);
+    try {
+        const [miembros, b] = await Promise.all([
+            miembrosEquipoIT(),
+            pool.query(
+                `SELECT id, user_id, fecha::text AS fecha, to_char(inicio, 'HH24:MI') AS inicio, to_char(fin, 'HH24:MI') AS fin, nota
+                 FROM aim_it_planificacion WHERE fecha BETWEEN $1::date AND $2::date ORDER BY fecha, inicio`, [lunes, domingo]),
+        ]);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            semana: lunes,
+            dias: [0, 1, 2, 3, 4, 5, 6].map(i => sumarDiaISO(lunes, i)),
+            miembros,
+            bloques: b.rows.map(x => ({ id: x.id, userId: x.user_id, fecha: x.fecha, inicio: x.inicio, fin: x.fin, nota: x.nota || '' })),
+            puedeEditar: !!permisos(req).editarEquipoIT,
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Comprueba un tramo antes de guardarlo: que sea de alguien del equipo, con horas
+// válidas y sin pisarse con otro suyo del mismo día.
+async function validarTramoIT(body, excluirId = null) {
+    const userId = String(body?.userId || '');
+    const fecha = String(body?.fecha || '');
+    const inicio = String(body?.inicio || ''), fin = String(body?.fin || '');
+    const nota = String(body?.nota || '').trim().slice(0, 200) || null;
+    if (!esFechaISO(fecha)) return { error: 'Fecha no válida.' };
+    if (!HHMM_IT.test(inicio) || !HHMM_IT.test(fin)) return { error: 'Pon la hora de inicio y la de fin (hh:mm).' };
+    if (fin <= inicio) return { error: 'La hora de fin tiene que ser posterior a la de inicio.' };
+    const miembros = await miembrosEquipoIT();
+    if (!miembros.some(m => m.userId === userId)) return { error: 'Esa persona no es del Equipo IT.' };
+    const pisa = await pool.query(
+        `SELECT to_char(inicio, 'HH24:MI') AS inicio, to_char(fin, 'HH24:MI') AS fin FROM aim_it_planificacion
+         WHERE user_id = $1 AND fecha = $2::date AND inicio < $4::time AND fin > $3::time AND id <> COALESCE($5::int, -1)
+         LIMIT 1`, [userId, fecha, inicio, fin, excluirId]);
+    if (pisa.rowCount) return { error: `Se pisa con otro tramo de ese día (${pisa.rows[0].inicio}–${pisa.rows[0].fin}).` };
+    return { userId, fecha, inicio, fin, nota };
+}
+
+app.post('/api/admin/equipo-it/tramos', authenticateSession, requireSeccion('equipo_it'), requirePermiso('editarEquipoIT'), async (req, res) => {
+    try {
+        const t = await validarTramoIT(req.body);
+        if (t.error) return res.status(400).json({ error: t.error });
+        const r = await pool.query(
+            `INSERT INTO aim_it_planificacion (user_id, fecha, inicio, fin, nota, created_by)
+             VALUES ($1, $2::date, $3::time, $4::time, $5, $6) RETURNING id`,
+            [t.userId, t.fecha, t.inicio, t.fin, t.nota, req.userSession.userId]);
+        res.status(201).json({ success: true, id: r.rows[0].id });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/admin/equipo-it/tramos/:id', authenticateSession, requireSeccion('equipo_it'), requirePermiso('editarEquipoIT'), async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Tramo no válido.' });
+    try {
+        const t = await validarTramoIT(req.body, id);
+        if (t.error) return res.status(400).json({ error: t.error });
+        const r = await pool.query(
+            `UPDATE aim_it_planificacion SET user_id = $1, fecha = $2::date, inicio = $3::time, fin = $4::time, nota = $5, updated_at = NOW()
+             WHERE id = $6 RETURNING id`, [t.userId, t.fecha, t.inicio, t.fin, t.nota, id]);
+        if (!r.rowCount) return res.status(404).json({ error: 'Ese tramo ya no existe.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/admin/equipo-it/tramos/:id', authenticateSession, requireSeccion('equipo_it'), requirePermiso('editarEquipoIT'), async (req, res) => {
+    try {
+        const r = await pool.query(`DELETE FROM aim_it_planificacion WHERE id = $1 RETURNING id`, [Number(req.params.id) || 0]);
+        if (!r.rowCount) return res.status(404).json({ error: 'Ese tramo ya no existe.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Copiar la semana anterior a esta, para no empezar de cero cada lunes. Solo a
+// quien aún no tenga nada planificado esta semana: no pisa lo ya puesto.
+app.post('/api/admin/equipo-it/copiar', authenticateSession, requireSeccion('equipo_it'), requirePermiso('editarEquipoIT'), async (req, res) => {
+    if (!esFechaISO(req.body?.semana)) return res.status(400).json({ error: 'Semana no válida.' });
+    const lunes = lunesDe(req.body.semana);
+    const antes = sumarDiaISO(lunes, -7);
+    try {
+        const r = await pool.query(
+            `INSERT INTO aim_it_planificacion (user_id, fecha, inicio, fin, nota, created_by)
+             SELECT p.user_id, p.fecha + 7, p.inicio, p.fin, p.nota, $4
+             FROM aim_it_planificacion p
+             WHERE p.fecha BETWEEN $1::date AND ($1::date + 6)
+               AND p.user_id = ANY($3::uuid[])
+               AND NOT EXISTS (SELECT 1 FROM aim_it_planificacion q
+                               WHERE q.user_id = p.user_id AND q.fecha BETWEEN $2::date AND ($2::date + 6))
+             RETURNING id`,
+            [antes, lunes, (await miembrosEquipoIT()).map(m => m.userId), req.userSession.userId]);
+        res.json({ success: true, copiados: r.rowCount });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -13269,7 +13473,7 @@ const NOMBRE_DIA_SEMANA = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes',
 async function horariosDesdeClases() {
     const staff = await pool.query(
         `SELECT user_id, TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS nombre FROM users
-         WHERE club_id = $1 AND (LOWER(COALESCE(role,'')) = ANY($2) OR LOWER(COALESCE(dev_role,'')) = ANY($2))
+         WHERE club_id = $1 AND (LOWER(COALESCE(${sqlRango('users')},'')) = ANY($2) OR LOWER(COALESCE(dev_role,'')) = ANY($2))
          ORDER BY nombre`, [AIM_CLUB_ID, ROLES_STAFF]);
     const grupos = await pool.query(
         `SELECT g.name, a.name AS actividad, g.sessions FROM tul_groups g
