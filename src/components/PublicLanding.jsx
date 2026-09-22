@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { I } from './Icons.jsx';
-import { AimHeader, AimFooter, ACTIVITIES, ACT_BY_ID, MagicText } from './Shared.jsx';
+import { AimHeader, AimFooter, ACT_BY_ID, MagicText } from './Shared.jsx';
+import { TarjetaActividad } from './PublicActivity.jsx';
+import { useClasesPublicas, fichasWeb } from './clasesPublicas.js';
 import { useRouter } from '../App.jsx';
 import { ContenidoExterno, useCookiesExternas } from './Cookies.jsx';
 
@@ -141,21 +143,6 @@ function BrandTile({ hueco, go }) {
   );
 }
 
-function ActivityCard({ act, go, delay = 0 }) {
-  return (
-    <div className={`act-card ${act.className} fade-up d${delay}`} onClick={() => go(`/actividades/${act.id}`)}>
-      <div className="icon-tile">
-        <img src={act.iconAsset} alt={act.name} />
-      </div>
-      <h3>{act.name}</h3>
-      <p>{act.lede}</p>
-      <a className="more" href="#" onClick={(e) => e.preventDefault()}>
-        Saber más <I.Arrow />
-      </a>
-    </div>
-  );
-}
-
 function NewsCard({ cat, color, img, ph, title, date, body }) {
   return (
     <div className="news-card">
@@ -178,6 +165,9 @@ function NewsCard({ cat, color, img, ph, title, date, body }) {
 
 export default function PublicLanding() {
   const { go } = useRouter();
+  // Las actividades de verdad (las del panel), con los iconos del panel (#295).
+  const { actividades } = useClasesPublicas();
+  const destacadas = fichasWeb(actividades).slice(0, 6);
   const [posts, setPosts] = useState([]);
   const [events, setEvents] = useState([]);
   // Lo que el club puede cambiar de la portada, y los números del club. Se
@@ -332,8 +322,8 @@ export default function PublicLanding() {
             </div>
 
             <div className="act-grid">
-              {ACTIVITIES.slice(0, 6).map((a, i) => (
-                <ActivityCard key={a.id} act={a} go={go} delay={i % 4 + 1} />
+              {destacadas.map((a, i) => (
+                <TarjetaActividad key={a.id} act={a} delay={i % 4 + 1} />
               ))}
             </div>
 

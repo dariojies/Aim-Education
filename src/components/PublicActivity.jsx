@@ -1,197 +1,213 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { I } from './Icons.jsx';
-import { AimHeader, AimFooter, ACT_BY_ID } from './Shared.jsx';
+import { AimHeader, AimFooter, ActIcono } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
+import {
+  useClasesPublicas, fichasWeb, horarioGrupo, monitoresGrupo, edadGrupo, edadesActividad,
+  ordenarGrupos, cursoActual, PLAZAS,
+} from './clasesPublicas.js';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// La página de una actividad o de un programa (#295). Los grupos salen como en
+// «Clases y horarios → Lista de clases»: cada grupo una vez, con todos sus días
+// y horas, en vez de un renglón por cada hueco del horario (que repetía el mismo
+// grupo tantas veces como días tenía). Nada de precios inventados: se pregunta.
+// ─────────────────────────────────────────────────────────────────────────────
 
 function InfoRow({ label, value }) {
   return (
-    <div style={{display: "flex", justifyContent: "space-between", gap: 12, fontSize: 13, paddingBottom: 12, borderBottom: "1px dashed var(--line)"}}>
-      <span style={{color: "var(--ink-3)", fontWeight: 600}}>{label}</span>
-      <span style={{color: "var(--ink)", fontWeight: 700, textAlign: "right"}}>{value}</span>
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 13, paddingBottom: 12, borderBottom: "1px dashed var(--line)" }}>
+      <span style={{ color: "var(--ink-3)", fontWeight: 600 }}>{label}</span>
+      <span style={{ color: "var(--ink)", fontWeight: 700, textAlign: "right" }}>{value}</span>
     </div>
   );
 }
 
-const PILL_BY_ID = {
-  taekwondo: "", ballet: "pink", ingles: "blue", robotica: "yellow",
-  funcional: "orange", pintura: "purple", baile: "pink", gimnasia: "",
-  kickboxing: "orange", pilates: "purple",
-};
+// Una tarjeta de la lista de actividades. La usan también la portada y el
+// listado completo.
+export function TarjetaActividad({ act, delay = 0 }) {
+  const { go } = useRouter();
+  const destino = act.enlace || `/actividades/${act.id}`;
+  const n = act.grupos?.length;
+  const edades = edadesActividad(act.grupos);
+  return (
+    <div className={`act-card ${act.className || ''} fade-up d${delay}`} style={{ '--act': act.color }} onClick={() => go(destino)}>
+      <div className={`icon-tile suave${act.logo ? ' con-logo' : ''}`}><ActIcono act={act} size={act.logo ? 44 : 38} /></div>
+      <h3>{act.name}</h3>
+      <p>{act.lede}</p>
+      {n > 0 && (
+        <div style={{ fontSize: 12, color: 'var(--ink-3)', fontWeight: 600 }}>
+          {n} grupo{n !== 1 ? 's' : ''}{edades ? ` · ${edades.charAt(0).toLowerCase()}${edades.slice(1)}` : ''}
+        </div>
+      )}
+      <a className="more" href={destino} onClick={(e) => e.preventDefault()}>Saber más <I.Arrow /></a>
+    </div>
+  );
+}
 
-const LEARN = {
-  taekwondo: [
-    "Técnica completa: poomsae, sparring, defensa personal",
-    "Valores de respeto, disciplina y autocontrol",
-    "Preparación para exámenes oficiales ITF",
-    "Confianza, equilibrio y resistencia física",
-  ],
-  ballet: [
-    "Técnica clásica con metodología RAD",
-    "Musicalidad, expresión y memoria coreográfica",
-    "Preparación para exámenes oficiales RAD",
-    "Postura, flexibilidad y fuerza corporal",
-  ],
-  ingles: [
-    "Speaking, listening, reading y writing",
-    "Preparación para exámenes Cambridge oficiales",
-    "Vocabulario y gramática progresivos",
-    "Confianza para hablar inglés con fluidez",
-  ],
-  robotica: [
-    "Pensamiento computacional y lógica",
-    "Construcción mecánica con LEGO Education",
-    "Programación por bloques (Scratch, mBlock)",
-    "Resolución creativa de problemas",
-  ],
-  funcional: [
-    "Fuerza funcional y movilidad articular",
-    "Trabajo de core y postura",
-    "Resistencia cardiovascular",
-    "Técnica correcta para prevenir lesiones",
-  ],
-  pintura: [
-    "Técnicas: acuarela, óleo, mixtas",
-    "Teoría del color y composición",
-    "Dibujo del natural y observación",
-    "Expresión personal y creatividad",
-  ],
-  kickboxing: [
-    "Técnica de boxeo y patadas",
-    "Cardio de alta intensidad",
-    "Autodefensa práctica",
-    "Coordinación, agilidad y reflejos",
-  ],
-  baile: [
-    "Estilos urbanos contemporáneos",
-    "Coreografía y trabajo en grupo",
-    "Expresión corporal y musicalidad",
-    "Resistencia y coordinación",
-  ],
-  pilates: [
-    "Trabajo de core profundo",
-    "Postura y alineación corporal",
-    "Flexibilidad y movilidad",
-    "Respiración consciente",
-  ],
-  gimnasia: [
-    "Manejo de aparatos (aro, cinta, mazas, pelota)",
-    "Coreografía y musicalidad",
-    "Flexibilidad y fuerza",
-    "Preparación para competición autonómica",
-  ],
-};
-
-const DAY_NAMES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
+function Grupo({ g, act, conActividad }) {
+  const { go } = useRouter();
+  const horario = horarioGrupo(g);
+  const monitores = monitoresGrupo(g);
+  const edad = edadGrupo(g);
+  const plazas = PLAZAS[g.plazas] || PLAZAS.libres;
+  const sobre = encodeURIComponent(`${g.nombre} (${g.actividad})`);
+  return (
+    <div className="grupo-web" style={{ borderLeftColor: plazas.color, '--act': act.color }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+          <b style={{ fontSize: 16 }}>{g.nombre}</b>
+          {conActividad && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{g.actividad}</span>}
+          {edad && <span className="level-tag">{edad}</span>}
+        </div>
+        <div style={{ display: 'grid', gap: 3, marginTop: 6, fontSize: 14, color: 'var(--ink-2)' }}>
+          {horario.length ? horario.map((h, i) => (
+            <span key={i} style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+              <I.Clock width={14} height={14} style={{ flexShrink: 0, color: 'var(--act)' }} />
+              <span><b style={{ color: 'var(--ink)' }}>{h.dias}</b> · {h.hora}</span>
+            </span>
+          )) : <span style={{ color: 'var(--ink-3)' }}>Horario por confirmar</span>}
+          {monitores.length > 0 && <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>Con {monitores.join(' y ')}</span>}
+        </div>
+      </div>
+      <div style={{ display: 'grid', gap: 8, justifyItems: 'end', alignContent: 'center' }}>
+        <span style={{ fontSize: 12, fontWeight: 800, color: plazas.color, whiteSpace: 'nowrap' }}>{plazas.texto}</span>
+        {g.plazas === 'completo'
+          ? <button className="btn btn-sm btn-outline" onClick={() => go(`/contacto?sobre=${sobre}`)}>Pedir plaza</button>
+          : <button className="btn btn-sm" style={{ background: 'var(--act)', color: 'white' }} onClick={() => go('/auth?mode=register')}>Reservar</button>}
+      </div>
+    </div>
+  );
+}
 
 export default function PublicActivity({ id }) {
   const { go } = useRouter();
-  const act = ACT_BY_ID[id] || ACT_BY_ID["taekwondo"];
+  const { cargando, actividades } = useClasesPublicas();
+  const fichas = fichasWeb(actividades);
+  const act = fichas.find(f => f.id === id);
 
-  const [classes, setClasses] = useState([]);
-  const [loading, setLoading] = useState(true);
+  if (!act) {
+    return (
+      <>
+        <AimHeader route="activities" />
+        <main style={{ paddingTop: 0 }}>
+          <section className="block tight">
+            <div className="container" style={{ textAlign: 'center', padding: '70px 0' }}>
+              {cargando ? <p style={{ color: 'var(--ink-3)' }}>Cargando…</p> : (
+                <>
+                  <h1 className="title-display">Esa actividad no existe</h1>
+                  <p style={{ color: 'var(--ink-3)', marginTop: 12 }}>Puede que haya cambiado de nombre o que ya no la ofrezcamos.</p>
+                  <button className="btn btn-outline" style={{ marginTop: 26 }} onClick={() => go('/actividades')}>← Ver todas las actividades</button>
+                </>
+              )}
+            </div>
+          </section>
+          <AimFooter />
+        </main>
+      </>
+    );
+  }
 
-  useEffect(() => {
-    setLoading(true);
-    fetch('/api/classes')
-      .then(r => r.ok ? r.json() : [])
-      .then(data => {
-        const filtered = data.filter(c => c.act === id);
-        // Sort by day index, then by start hour
-        filtered.sort((a, b) => {
-          if (a.d !== b.d) return a.d - b.d;
-          return a.s - b.s;
-        });
-        setClasses(filtered);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, [id]);
+  const grupos = ordenarGrupos(act.grupos);
+  const edades = edadesActividad(act.grupos) || act.ages;
+  const sobre = encodeURIComponent(act.name);
+  // Las tres siguientes del catálogo, para que no salgan siempre las mismas.
+  const lista = fichas.filter(f => !f.enlace);
+  const yo = lista.findIndex(f => f.id === act.id);
+  const otras = [1, 2, 3].map(k => lista[(yo + k + lista.length) % lista.length])
+    .filter((f, i, arr) => f && f.id !== act.id && arr.indexOf(f) === i);
+  // En un programa los grupos pueden ser de varias actividades: se dice de cuál.
+  const variasActividades = new Set(grupos.map(g => g.actividad)).size > 1 || act.programa;
 
   return (
     <>
       <AimHeader route="activities" />
-      <main style={{paddingTop: 0}}>
-        <section className={`act-hero ${act.className}`}>
+      {/* El color de la actividad, para toda la página: tiñe botones, iconos y fondos. */}
+      <main style={{ paddingTop: 0, '--act': act.color }}>
+        <section className={`act-hero ${act.className || ''}`}>
           <div className="container">
             <div className="act-hero-grid">
               <div className="fade-up">
                 <div className="breadcrumb">
-                  <a href="#" onClick={(e) => { e.preventDefault(); go("/actividades"); }} style={{color: "rgba(255,255,255,.85)"}}>Actividades</a>
+                  <a href="/actividades" onClick={(e) => { e.preventDefault(); go("/actividades"); }} style={{ color: "rgba(255,255,255,.85)" }}>Actividades</a>
                   <span> · </span><b>{act.name}</b>
                 </div>
                 <h1>{act.name}</h1>
                 <p className="lede">{act.lede}</p>
 
                 <div className="quick-stats">
-                  <div className="qs"><div className="v">{act.levels.length}</div><div className="l">Grupos por niveles</div></div>
-                  <div className="qs"><div className="v">8 – 12</div><div className="l">Alumnos por grupo</div></div>
-                  <div className="qs"><div className="v">2026</div><div className="l">Plazas curso actual</div></div>
+                  {/* Un «0» enorme no dice nada bueno: si aún no hay grupos, «pronto». */}
+                  <div className="qs">
+                    <div className="v" style={act.grupos?.length ? null : { fontSize: 20 }}>{act.grupos?.length || (act.grupos ? 'Pronto' : '—')}</div>
+                    <div className="l">{act.grupos?.length === 1 ? 'Grupo este curso' : 'Grupos este curso'}</div>
+                  </div>
+                  <div className="qs"><div className="v" style={{ fontSize: 20 }}>{edades || '—'}</div><div className="l">Edades</div></div>
+                  <div className="qs"><div className="v">{cursoActual()}</div><div className="l">Curso</div></div>
                 </div>
 
-                <div style={{display: "flex", gap: 12, marginTop: 28, flexWrap: "wrap"}}>
-                  <button className="btn btn-lg" style={{background: "var(--ink)", color: "white"}} onClick={() => go("/auth?mode=register")}>
+                <div style={{ display: "flex", gap: 12, marginTop: 28, flexWrap: "wrap" }}>
+                  <button className="btn btn-lg" style={{ background: "var(--ink)", color: "white" }} onClick={() => go("/auth?mode=register")}>
                     Reservar plaza <I.Arrow />
                   </button>
-                  <button className="btn btn-lg" style={{background: "rgba(255,255,255,.18)", color: "white", border: "1px solid rgba(255,255,255,.4)"}}>
-                    Clase de prueba gratis
+                  <button className="btn btn-lg" style={{ background: "rgba(255,255,255,.18)", color: "white", border: "1px solid rgba(255,255,255,.4)" }}
+                    onClick={() => go(`/contacto?sobre=${sobre}`)}>
+                    Pedir información
                   </button>
                 </div>
               </div>
 
-              <div className="fade-up d2">
-                <div className="act-photo-frame">
-                  <div className="ph-text">foto · {act.name.toLowerCase()}</div>
+              <div className="fade-up d2 act-hero-icono">
+                <div className={`icon-tile suave grande${act.logo ? ' con-logo' : ''}`}>
+                  <ActIcono act={act} size={act.logo ? 110 : 150} />
                 </div>
               </div>
             </div>
           </div>
         </section>
 
-        {/* Descripción + datos clave */}
+        {/* Qué es + datos */}
         <section className="block tight">
           <div className="container">
-            <div style={{display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 36, alignItems: "start"}}>
+            <div className="act-info-grid">
               <div>
                 <span className="eyebrow purple">Qué es</span>
-                <h2 className="section-title">Sobre {act.name.toLowerCase()}</h2>
-                <p style={{fontSize: 17, color: "var(--ink-2)", lineHeight: 1.6, marginTop: 16}}>
-                  {act.long}
-                </p>
+                <h2 className="section-title">Sobre {act.name}</h2>
+                <p style={{ fontSize: 17, color: "var(--ink-2)", lineHeight: 1.6, marginTop: 16 }}>{act.long}</p>
 
-                <div style={{marginTop: 36}}>
-                  <h3 style={{fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 800, letterSpacing: "-.02em", margin: "0 0 18px"}}>
-                    Lo que aprenderás
-                  </h3>
-                  <div style={{display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14}}>
-                    {LEARN[act.id]?.map((item, i) => (
-                      <div key={i} style={{display: "flex", gap: 12, alignItems: "flex-start", padding: 14, background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 12}}>
-                        <div className={`${act.className}`} style={{width: 32, height: 32, borderRadius: 8, display: "grid", placeItems: "center", background: "color-mix(in oklab, var(--act) 16%, var(--bg-2))", color: "var(--act)", flexShrink: 0}}>
-                          <I.Check />
+                {act.aprender?.length > 0 && (
+                  <div style={{ marginTop: 36 }}>
+                    <h3 style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 800, letterSpacing: "-.02em", margin: "0 0 18px" }}>
+                      Lo que aprenderás
+                    </h3>
+                    <div className="aprender-grid">
+                      {act.aprender.map((item, i) => (
+                        <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: 14, background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 12 }}>
+                          <div style={{ width: 32, height: 32, borderRadius: 8, display: "grid", placeItems: "center", background: "color-mix(in oklab, var(--act) 16%, var(--bg-2))", color: "var(--act)", flexShrink: 0 }}>
+                            <I.Check />
+                          </div>
+                          <div style={{ fontSize: 14, fontWeight: 600, color: "var(--ink)", lineHeight: 1.4 }}>{item}</div>
                         </div>
-                        <div style={{fontSize: 14, fontWeight: 600, color: "var(--ink)", lineHeight: 1.4}}>{item}</div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
 
-              <aside style={{position: "sticky", top: 120, background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 18, padding: 24}}>
-                <div className={`pill-badge ${PILL_BY_ID[act.id] || "purple"}`} style={{marginBottom: 14}}>{act.tag}</div>
-                <h3 style={{fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 800, letterSpacing: "-.02em", margin: 0}}>
+              <aside className="act-datos">
+                <div className="pill-badge purple" style={{ marginBottom: 14 }}>{act.tag}</div>
+                <h3 style={{ fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 800, letterSpacing: "-.02em", margin: 0 }}>
                   Datos del programa
                 </h3>
-                <div style={{display: "grid", gap: 14, marginTop: 18}}>
-                  <InfoRow label="Edad" value={act.ages} />
-                  <InfoRow label="Duración" value="Curso completo · sept–junio" />
-                  <InfoRow label="Mensualidad" value="Desde 49€/mes" />
-                  <InfoRow label="Matrícula" value="35€ (única)" />
-                  <InfoRow label="Material" value="Incluido (uniforme aparte)" />
-                  <InfoRow label="Hermanos" value="-15% en mensualidad" />
+                <div style={{ display: "grid", gap: 14, marginTop: 18 }}>
+                  <InfoRow label="Edad" value={edades || 'Consúltanos'} />
+                  {act.grupos && <InfoRow label="Grupos" value={act.grupos.length ? `${act.grupos.length} este curso` : 'Próximamente'} />}
+                  <InfoRow label="Curso" value={`${cursoActual()} · septiembre a junio`} />
+                  <InfoRow label="Precios" value="Te informamos sin compromiso" />
                 </div>
-                <button className={`btn btn-block btn-lg ${act.className}`} style={{marginTop: 22, background: "var(--act)", color: "white"}} onClick={() => go("/auth?mode=register")}>
+                <button className="btn btn-block btn-lg" style={{ marginTop: 22, background: "var(--act)", color: "white" }} onClick={() => go("/auth?mode=register")}>
                   Reservar mi plaza
                 </button>
-                <button className="btn btn-block btn-outline" style={{marginTop: 10}}>
+                <button className="btn btn-block btn-outline" style={{ marginTop: 10 }} onClick={() => go(`/contacto?sobre=${sobre}`)}>
                   Solicitar más info
                 </button>
               </aside>
@@ -199,91 +215,43 @@ export default function PublicActivity({ id }) {
           </div>
         </section>
 
-        {/* Horarios */}
-        <section className="block tight" style={{background: "var(--bg-3)"}}>
+        {/* Grupos y horarios */}
+        <section className="block tight" style={{ background: "var(--bg-3)" }}>
           <div className="container">
             <span className="eyebrow purple">Grupos y horarios</span>
-            <h2 className="section-title">Horarios del curso 2025-2026</h2>
-            <p className="section-lede" style={{marginTop: 8, marginBottom: 26}}>
-              Encuentra el grupo que mejor encaje con tu edad y nivel. Las plazas se asignan
-              por orden de inscripción.
+            <h2 className="section-title">Horarios del curso {cursoActual()}</h2>
+            <p className="section-lede" style={{ marginTop: 8, marginBottom: 26 }}>
+              Encuentra el grupo que mejor encaje con tu edad y nivel. Las plazas se asignan por orden de inscripción.
             </p>
 
-            {loading ? (
-              <div style={{padding: 40, textAlign: "center", color: "var(--ink-3)", fontSize: 16}}>
-                Cargando horarios de la base de datos...
-              </div>
-            ) : classes.length === 0 ? (
-              <div style={{padding: 40, textAlign: "center", background: "var(--bg-2)", border: "1px dashed var(--line)", borderRadius: 14, color: "var(--ink-3)"}}>
-                No hay horarios disponibles para esta actividad actualmente.
+            {cargando ? (
+              <div style={{ padding: 40, textAlign: "center", color: "var(--ink-3)", fontSize: 16 }}>Cargando horarios…</div>
+            ) : !act.grupos ? (
+              <div className="grupos-vacio">No hemos podido cargar los horarios. Vuelve a intentarlo en un momento o llámanos al 956 742 216.</div>
+            ) : grupos.length === 0 ? (
+              <div className="grupos-vacio">
+                Todavía no hay grupos publicados para este curso. <a href={`/contacto?sobre=${sobre}`} onClick={(e) => { e.preventDefault(); go(`/contacto?sobre=${sobre}`); }}>Escríbenos</a> y te avisamos.
               </div>
             ) : (
-              <table className={`schedule-table ${act.className}`}>
-                <thead>
-                  <tr>
-                    <th>Día</th>
-                    <th>Horario</th>
-                    <th>Grupo</th>
-                    <th>Sala</th>
-                    <th>Profesor/a</th>
-                    <th style={{textAlign: "right"}}>Plazas</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {classes.map((c, i) => {
-                    const parts = c.students.split('/');
-                    const current = parseInt(parts[0], 10);
-                    const max = parseInt(parts[1], 10);
-                    const left = max - current;
-                    const spotsText = left <= 0 ? "Completo" : left <= 3 ? `${left} plazas libres` : "Disponible";
-                    const spotsColor = left <= 0 ? "var(--orange)" : left <= 3 ? "var(--orange-soft)" : "var(--teal)";
-
-                    return (
-                      <tr key={i}>
-                        <td style={{fontWeight: 700}}>{DAY_NAMES[c.d] || "—"}</td>
-                        <td>
-                          <span style={{display: "inline-flex", gap: 6, alignItems: "center"}}>
-                            <I.Clock width={14} height={14}/> {c.time || `${c.s}:00`}
-                          </span>
-                        </td>
-                        <td>{c.title}</td>
-                        <td><span className="level-tag">{c.room}</span></td>
-                        <td style={{color: "var(--ink-2)"}}>{c.monitor || "—"}</td>
-                        <td style={{textAlign: "right", fontWeight: 700, color: spotsColor}}>
-                          {spotsText}
-                        </td>
-                        <td>
-                          <button className={`btn btn-sm ${act.className}`} style={{background: "var(--act)", color: "white"}} onClick={() => go("/auth?mode=register")}>
-                            Reservar
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+              <div style={{ display: 'grid', gap: 12 }}>
+                {grupos.map(g => <Grupo key={g.id} g={g} act={act} conActividad={variasActividades} />)}
+              </div>
             )}
           </div>
         </section>
 
         {/* Otras actividades */}
-        <section className="block tight">
-          <div className="container">
-            <span className="eyebrow purple">Mira también</span>
-            <h2 className="section-title">Otras actividades del club</h2>
-            <div className="act-grid" style={{marginTop: 24}}>
-              {Object.values(ACT_BY_ID).filter(a => a.id !== act.id).slice(0, 3).map((a) => (
-                <div key={a.id} className={`act-card ${a.className}`} onClick={() => go(`/actividades/${a.id}`)}>
-                  <div className="icon-tile"><img src={a.iconAsset} alt={a.name} /></div>
-                  <h3>{a.name}</h3>
-                  <p>{a.lede}</p>
-                  <a className="more" href="#" onClick={(e) => e.preventDefault()}>Saber más <I.Arrow /></a>
-                </div>
-              ))}
+        {otras.length > 0 && (
+          <section className="block tight">
+            <div className="container">
+              <span className="eyebrow purple">Mira también</span>
+              <h2 className="section-title">Otras actividades del club</h2>
+              <div className="act-grid" style={{ marginTop: 24 }}>
+                {otras.map((a) => <TarjetaActividad key={a.id} act={a} />)}
+              </div>
             </div>
-          </div>
-        </section>
+          </section>
+        )}
 
         <AimFooter />
       </main>

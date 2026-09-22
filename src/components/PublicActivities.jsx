@@ -1,26 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { I } from './Icons.jsx';
-import { AimHeader, AimFooter, ACTIVITIES, ACT_BY_ID, MagicText } from './Shared.jsx';
+import { AimHeader, AimFooter, MagicText } from './Shared.jsx';
+import { TarjetaActividad } from './PublicActivity.jsx';
+import { useClasesPublicas, fichasWeb } from './clasesPublicas.js';
 import { useRouter } from '../App.jsx';
 
 const CAT_COLOR = { taekwondo: '#21B668', ballet: '#FF99D3', ingles: '#00BBF4', robotica: '#FFD526', baile: '#AF99FF', pintura: '#5233A8', funcional: '#FF4F15', pilates: '#BFD300', camaleon: '#25D8BA', competicion: '#21B668', club: '#5233A8', general: '#5233A8', shelfie: '#FF99D3' };
 const catColor = c => CAT_COLOR[c] || '#5233A8';
 const MONTH_ABBR = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
-
-function ActivityCard({ act, go, delay = 0 }) {
-  return (
-    <div className={`act-card ${act.className} fade-up d${delay}`} onClick={() => go(`/actividades/${act.id}`)}>
-      <div className="icon-tile">
-        <img src={act.iconAsset} alt={act.name} />
-      </div>
-      <h3>{act.name}</h3>
-      <p>{act.lede}</p>
-      <a className="more" href="#" onClick={(e) => e.preventDefault()}>
-        Saber más <I.Arrow />
-      </a>
-    </div>
-  );
-}
 
 function NewsCard({ cat, color = '#5233A8', img, ph, title, date, body, href }) {
   const inner = (
@@ -46,10 +33,12 @@ function NewsCard({ cat, color = '#5233A8', img, ph, title, date, body, href }) 
 }
 
 export function PublicActivities() {
-  const { go } = useRouter();
   const [filter, setFilter] = useState("all");
-  const tags = ["all", ...Array.from(new Set(ACTIVITIES.map(a => a.tag)))];
-  const visible = filter === "all" ? ACTIVITIES : ACTIVITIES.filter(a => a.tag === filter);
+  // Las que hay de verdad (las del panel) y los programas (#295).
+  const { cargando, actividades } = useClasesPublicas();
+  const fichas = fichasWeb(actividades);
+  const tags = ["all", ...Array.from(new Set(fichas.map(a => a.tag)))];
+  const visible = filter === "all" ? fichas : fichas.filter(a => a.tag === filter);
 
   return (
     <>
@@ -80,11 +69,15 @@ export function PublicActivities() {
               ))}
             </div>
 
-            <div className="act-grid" style={{marginTop: 32}}>
-              {visible.map((a, i) => (
-                <ActivityCard key={a.id} act={a} go={go} delay={(i % 4) + 1} />
-              ))}
-            </div>
+            {cargando ? (
+              <p style={{textAlign: "center", color: "var(--ink-3)", marginTop: 40}}>Cargando actividades…</p>
+            ) : (
+              <div className="act-grid" style={{marginTop: 32}}>
+                {visible.map((a, i) => (
+                  <TarjetaActividad key={a.id} act={a} delay={(i % 4) + 1} />
+                ))}
+              </div>
+            )}
           </div>
         </section>
 

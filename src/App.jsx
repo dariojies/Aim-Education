@@ -9,6 +9,7 @@ import AdminApp from './components/AdminApp';
 import PublicCalendar from './components/PublicCalendar';
 import PublicLegal from './components/PublicLegal';
 import PublicContacto from './components/PublicContacto';
+import PublicConocenos from './components/PublicConocenos';
 import { CookieBanner } from './components/Cookies';
 
 export const RouterContext = createContext({ path: '/', go: () => {}, user: null });
@@ -79,6 +80,8 @@ export default function App() {
     screen = <PublicLegal id={seg[1] || 'aviso-legal'} />;
   } else if (pathname === '/contacto') {
     screen = <PublicContacto />;
+  } else if (pathname === '/conocenos') {
+    screen = <PublicConocenos />;
   } else if (pathname === '/noticias') {
     screen = <PublicNews />;
   } else if (seg[0] === 'noticias' && seg[1]) {

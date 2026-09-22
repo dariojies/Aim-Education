@@ -4,134 +4,235 @@ import { useRouter } from '../App.jsx';
 import { fmtFechaLarga } from '../fechas.js';
 import { abrirConfiguracionCookies } from './Cookies.jsx';
 import { DOCS_LEGALES } from '../legal/textos.js';
+import { IconoActividad } from './IconoActividad.jsx';
 
 // La dirección del club, y el enlace para abrirla en el mapa. En un móvil, ese
 // enlace lo recoge la aplicación de mapas que tenga puesta cada uno.
 export const DIRECCION = 'Urb. Terrazas de Doña Lola, Local 1, 11203 Algeciras (Cádiz)';
 export const MAPA_URL = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent('AIM Education, ' + DIRECCION)}`;
 
-// ---------- Activity catalog (the source of truth) ----------
+// ---------- Catálogo de actividades de la web ----------
+// Los textos de cada actividad. Qué actividades hay, sus grupos, edades y
+// horarios NO van aquí: salen del panel (Clases y horarios → Lista de clases),
+// por /api/publico/clases (#295). Una actividad nueva creada en el panel sale
+// en la web sola, con su icono; si además tiene ficha aquí, con sus textos.
+//
+// - icon: el icono de la actividad en el panel (IconoActividad), o logo si es
+//   un programa con logo propio.
+// - iconAsset: el logo de color, para el mosaico de la portada.
+// - programa: páginas propias que reúnen grupos de otras actividades por su
+//   nombre (grupos). El Programa Camaleón, p. ej., es un grupo de Taekwon-Do.
+// - enlace: la ficha lleva a otra página (el campamento tiene la suya).
+// No cambiar las id: con ellas se guardan colores, eventos y la portada.
 const ACTIVITIES = [
   {
-    id: "taekwondo", name: "Taekwondo", color: "#21B668", className: "act-taekwondo", icon: "Glove",
+    id: "taekwondo", name: "Taekwon-Do ITF", color: "#21B668", className: "act-taekwondo", icon: "karate",
     iconAsset: "/src/submarcas/simple/ArtesMarciales.png",
     fullAsset: "/src/submarcas/ArtesMarciales.png",
     tag: "Artes marciales", lede: "Despierta tu fuerza interior y supera tus límites.",
-    long: "Disciplina coreana que combina técnica, valores y trabajo físico. Trabajamos respeto, tolerancia y superación en cada clase.",
-    ages: "Desde 4 años · ITF España",
-    levels: [
-      { day: "Lunes y Miércoles", time: "17:00 – 18:00", group: "Cinturones blancos · 4 a 7 años", level: "Iniciación" },
-      { day: "Lunes y Miércoles", time: "18:00 – 19:00", group: "Cinturones de color · 8 a 12 años", level: "Intermedio" },
-      { day: "Martes y Jueves", time: "19:00 – 20:30", group: "Cinturones avanzados y adultos", level: "Avanzado" },
-      { day: "Sábado", time: "10:00 – 12:00", group: "Equipo de competición", level: "Competición" },
-    ]
+    long: "Arte marcial tradicional de origen coreano en el que se usan las piernas y las manos, con cinco principios: cortesía, integridad, autocontrol, perseverancia y espíritu indomable. Incluye técnicas de defensa personal fáciles de aprender y una filosofía de no violencia y autodisciplina que también ayuda fuera del tatami. Clases en un ambiente seguro y divertido para todas las edades; quien quiere, además, compite.",
+    ages: "Desde 3 años · ITF España",
+    aprender: [
+      "Técnica completa: formas (tul), combate y defensa personal",
+      "Cortesía, integridad, autocontrol y perseverancia",
+      "Preparación para los exámenes de cinturón de la ITF",
+      "Confianza, equilibrio y resistencia física",
+    ],
   },
   {
-    id: "ballet", name: "Ballet Clásico", color: "#FF99D3", className: "act-ballet", icon: "Slipper",
+    id: "ballet", name: "Ballet Clásico", color: "#FF99D3", className: "act-ballet", icon: "shoe-ballet",
     iconAsset: "/src/submarcas/simple/Ballet.png",
     fullAsset: "/src/submarcas/Ballet.png",
     tag: "Danza", lede: "Déjate llevar por la magia de la danza y la precisión.",
-    long: "Programa oficial de la Royal Academy of Dance — formación técnica, musical y artística con exámenes oficiales anuales.",
+    long: "Formación técnica, musical y artística con el programa de la Royal Academy of Dance, con grupos por edades y niveles y exámenes oficiales.",
     ages: "Desde 3 años · Royal Academy of Dance",
-    levels: [
-      { day: "Lunes y Miércoles", time: "17:00 – 18:00", group: "Pre-primary · 3 a 5 años", level: "Iniciación" },
-      { day: "Martes y Jueves", time: "17:00 – 18:00", group: "Primary · 6 a 8 años", level: "Inicial" },
-      { day: "Martes y Jueves", time: "18:00 – 19:30", group: "Grades 1-3 · 9 a 12 años", level: "Intermedio" },
-      { day: "Viernes", time: "18:00 – 20:00", group: "Vocational · 13+", level: "Avanzado" },
-    ]
+    aprender: [
+      "Técnica clásica con el método de la RAD",
+      "Musicalidad, expresión y memoria coreográfica",
+      "Preparación para los exámenes oficiales de la RAD",
+      "Postura, flexibilidad y fuerza",
+    ],
   },
   {
-    id: "baile", name: "Baile Urbano", color: "#AF99FF", className: "act-baile", icon: "Spark",
+    id: "baile", name: "Baile Moderno", color: "#AF99FF", className: "act-baile", icon: "yoga",
     iconAsset: "/src/submarcas/simple/BaileModerno.png",
     fullAsset: "/src/submarcas/BaileModerno.png",
     tag: "Danza", lede: "Exprésate con cada movimiento.",
-    long: "Estilos urbanos y modernos — desde commercial dance hasta hip-hop. Coreografías que se presentan en el festival anual.",
-    ages: "Desde 7 años",
-    levels: [
-      { day: "Miércoles", time: "18:00 – 19:30", group: "Junior crew · 7 a 11 años", level: "Iniciación" },
-      { day: "Viernes", time: "18:30 – 20:00", group: "Teens crew · 12 a 17 años", level: "Intermedio" },
-    ]
+    long: "Estilos modernos y urbanos para bailar en grupo: coreografías, ritmo y expresión corporal, adaptados a cada edad.",
+    ages: "Infantil",
+    aprender: [
+      "Coreografía y trabajo en grupo",
+      "Expresión corporal y musicalidad",
+      "Coordinación y resistencia",
+      "Estilos modernos y urbanos",
+    ],
   },
   {
-    id: "ingles", name: "Inglés", color: "#00BBF4", className: "act-ingles", icon: "Globe",
+    id: "ingles", name: "Inglés", color: "#00BBF4", className: "act-ingles", icon: "translate",
     iconAsset: "/src/submarcas/simple/English.png",
     fullAsset: "/src/submarcas/English.png",
     tag: "Idiomas", lede: "Amplía tus horizontes y comunica tus sueños al mundo.",
-    long: "Academia preparadora oficial de Cambridge English Qualifications. Grupos reducidos, exámenes oficiales y materiales originales.",
-    ages: "Desde 5 años · Cambridge Qualifications 2025-2026",
-    levels: [
-      { day: "Lunes y Miércoles", time: "16:30 – 17:30", group: "Starters · 5 a 7 años", level: "A1" },
-      { day: "Martes y Jueves", time: "16:30 – 17:30", group: "Movers / Flyers · 8 a 11 años", level: "A2" },
-      { day: "Martes y Jueves", time: "18:30 – 20:00", group: "B1 Preliminary · 12 a 16 años", level: "B1" },
-      { day: "Viernes", time: "19:00 – 21:00", group: "B2 First / C1 Advanced", level: "B2 / C1" },
-    ]
+    long: "Inglés por niveles, desde infantil hasta C1, en grupos reducidos. Preparamos los exámenes oficiales de Cambridge English y tenemos grupos de refuerzo y de conversación (Speaking).",
+    ages: "Desde 3 años · Cambridge English",
+    aprender: [
+      "Speaking, listening, reading y writing",
+      "Preparación para los exámenes oficiales de Cambridge",
+      "Vocabulario y gramática progresivos",
+      "Confianza para hablar inglés con soltura",
+    ],
   },
   {
-    id: "robotica", name: "Robótica", color: "#FFD526", className: "act-robotica", icon: "Robot",
+    id: "robotica", name: "Robótica y STEM", color: "#FFD526", className: "act-robotica", icon: "robot",
     iconAsset: "/src/submarcas/simple/Robotica.png",
     fullAsset: "/src/submarcas/Robotica.png",
-    tag: "STEAM", lede: "Construye el futuro hoy con nuestras clases de tecnología.",
-    long: "Construcción, programación y pensamiento computacional con LEGO Education y mBot. Forma parte del Programa Camaleón.",
-    ages: "Desde 6 años · Programa Camaleón",
-    levels: [
-      { day: "Lunes", time: "17:30 – 19:00", group: "Junior · 6 a 8 años", level: "Iniciación" },
-      { day: "Miércoles", time: "17:30 – 19:00", group: "Builders · 9 a 11 años", level: "Intermedio" },
-      { day: "Viernes", time: "17:00 – 19:00", group: "Coders · 12 a 16 años", level: "Avanzado" },
-    ]
+    tag: "STEM", lede: "Construye el futuro hoy con nuestras clases de tecnología.",
+    long: "Construcción, programación y pensamiento computacional: los alumnos diseñan, montan y programan sus propios proyectos, en equipo y por niveles.",
+    ages: "Desde 7 años",
+    aprender: [
+      "Pensamiento computacional y lógica",
+      "Construcción y mecánica",
+      "Programación por bloques",
+      "Resolución creativa de problemas en equipo",
+    ],
   },
   {
-    id: "camaleon", name: "Programa Camaleón", color: "#25D8BA", className: "act-camaleon", icon: "Star",
+    id: "camaleon", name: "Programa Camaleón", color: "#25D8BA", className: "act-camaleon", icon: "karate",
+    logo: "/src/logos/camaleon.png",
     iconAsset: "/src/submarcas/simple/Camaleon.png",
     fullAsset: "/src/submarcas/Camaleon.png",
-    tag: "Artes marciales", lede: "Aprende a aprender. Nuestra metodología educativa.",
-    long: "Programa transversal que combina pensamiento computacional, creatividad y trabajo cooperativo. Es el hilo conductor de las actividades STEAM del club.",
-    ages: "Integrado en robótica e inglés",
-    levels: [
-      { day: "Integrado", time: "—", group: "Aplicado en clases de robótica", level: "Metodología" },
-      { day: "Talleres trimestrales", time: "Sábados puntuales", group: "Familias + alumnos", level: "Abierto" },
-    ]
+    programa: true, grupoPatron: /camale/i,
+    tag: "Programas", lede: "Los más pequeños empiezan en el Taekwon-Do jugando.",
+    long: "Nuestro programa de iniciación para los más pequeños, de 3 a 5 años: psicomotricidad, coordinación y primeros pasos en el Taekwon-Do a través del juego, con los valores de siempre: respeto, cortesía y autocontrol.",
+    ages: "De 3 a 5 años",
+    aprender: [
+      "Equilibrio, coordinación y psicomotricidad",
+      "Primeras técnicas de Taekwon-Do, jugando",
+      "Normas, turnos y trabajo en grupo",
+      "Respeto, cortesía y autocontrol",
+    ],
   },
   {
-    id: "funcional", name: "Entrenamiento Funcional", color: "#FF4F15", className: "act-funcional", icon: "Dumbbell",
+    id: "funcional", name: "Entrenamiento Funcional", color: "#FF4F15", className: "act-funcional", icon: "weight-lifter",
     iconAsset: "/src/submarcas/simple/Entrenamiento.png",
     fullAsset: "/src/submarcas/Entrenamiento.png",
     tag: "Deporte", lede: "Activa tu cuerpo y supera tus metas con nuestro funcional.",
-    long: "Entrenamiento integral para adultos: fuerza, movilidad, cardio y trabajo de core en sesiones dinámicas de 50 minutos.",
-    ages: "Adultos (18+)",
-    levels: [
-      { day: "L-M-V", time: "07:30 – 08:30", group: "Funcional matinal", level: "Todos los niveles" },
-      { day: "L-M-V", time: "19:00 – 20:00", group: "Funcional tarde", level: "Todos los niveles" },
-      { day: "Sábado", time: "10:00 – 11:30", group: "Bootcamp", level: "Avanzado" },
-    ]
+    long: "Entrenamiento integral: fuerza, movilidad, resistencia y trabajo de core en sesiones dinámicas.",
+    ages: "Adultos",
+    aprender: [
+      "Fuerza funcional y movilidad",
+      "Trabajo de core y postura",
+      "Resistencia cardiovascular",
+      "Técnica correcta para prevenir lesiones",
+    ],
   },
   {
-    id: "pilates", name: "Pilates", color: "#BFD300", className: "act-pilates", icon: "Sun2",
+    id: "pilates", name: "Pilates", color: "#BFD300", className: "act-pilates", icon: "meditation",
     iconAsset: "/src/submarcas/simple/Pilates.png",
     fullAsset: "/src/submarcas/Pilates.png",
     tag: "Salud", lede: "Fortalece cuerpo y mente desde la base.",
-    long: "Sesiones de pilates suelo enfocadas en postura, flexibilidad y core. Grupos reducidos de máximo 8 personas.",
-    ages: "Adultos (18+)",
-    levels: [
-      { day: "Lunes y Miércoles", time: "09:00 – 10:00", group: "Pilates suelo", level: "Todos los niveles" },
-      { day: "Martes y Jueves", time: "10:30 – 11:30", group: "Pilates terapéutico", level: "Lesiones / mayores" },
-    ]
+    long: "Pilates suelo centrado en la postura, la flexibilidad y el trabajo de core, en grupos reducidos: de adultos, por la mañana y por la tarde, y también infantil.",
+    ages: "Infantil y adultos",
+    aprender: [
+      "Trabajo de core profundo",
+      "Postura y alineación corporal",
+      "Flexibilidad y movilidad",
+      "Respiración consciente",
+    ],
   },
   {
-    id: "pintura", name: "Pintura", color: "#5233A8", className: "act-pintura", icon: "Brush",
+    id: "pintura", name: "Pintura", color: "#5233A8", className: "act-pintura", icon: "palette",
     iconAsset: "/src/submarcas/simple/Pintura.png",
     fullAsset: "/src/submarcas/Pintura.png",
     tag: "Arte", lede: "Da vida a tus ideas en cada trazo. Descubre tu talento.",
-    long: "Taller de expresión artística — acuarela, óleo, técnicas mixtas y dibujo. Adaptado a la edad y nivel del alumno.",
-    ages: "Desde 6 años",
-    levels: [
-      { day: "Martes", time: "17:00 – 18:30", group: "Pequeños creadores · 6 a 9 años", level: "Iniciación" },
-      { day: "Jueves", time: "18:00 – 19:30", group: "Estudio joven · 10 a 16 años", level: "Intermedio" },
-      { day: "Viernes", time: "19:00 – 21:00", group: "Atelier adultos", level: "Libre" },
-    ]
+    long: "Taller de expresión artística: dibujo, color y distintas técnicas, adaptado a la edad de cada alumno.",
+    ages: "Infantil",
+    aprender: [
+      "Dibujo y observación",
+      "Teoría del color y composición",
+      "Distintas técnicas y materiales",
+      "Creatividad y expresión personal",
+    ],
+  },
+  // ── Añadidas con el #295 ──
+  {
+    id: "kickboxing", name: "Kick Boxing", color: "#E53935", className: "act-kickboxing", icon: "boxing-glove",
+    iconAsset: "/src/submarcas/simple/ArtesMarciales.png",
+    fullAsset: "/src/submarcas/ArtesMarciales.png",
+    tag: "Artes marciales", lede: "Energía, técnica y confianza en cada golpe.",
+    long: "Deporte de contacto que combina técnicas de boxeo con patadas. Mejora la condición física, la coordinación y la confianza, con grupos para jóvenes y para adultos.",
+    ages: "Desde 10 años",
+    aprender: [
+      "Técnica de puños y patadas",
+      "Trabajo cardiovascular",
+      "Defensa personal práctica",
+      "Coordinación, agilidad y reflejos",
+    ],
+  },
+  {
+    id: "defensa", name: "Defensa Personal", color: "#475569", className: "act-defensa", icon: "shield-half-full",
+    iconAsset: "/src/submarcas/simple/ArtesMarciales.png",
+    fullAsset: "/src/submarcas/ArtesMarciales.png",
+    tag: "Artes marciales", lede: "Aprende a protegerte con seguridad y confianza.",
+    long: "Técnicas sencillas y eficaces para prevenir y salir de situaciones de riesgo, trabajando la confianza y el autocontrol.",
+    ages: "Desde 7 años",
+    aprender: [
+      "Prevención y lectura de situaciones de riesgo",
+      "Técnicas de liberación y protección",
+      "Confianza y seguridad en uno mismo",
+      "Autocontrol",
+    ],
+  },
+  {
+    id: "brickslab", name: "Brickslab", color: "#FFD526", className: "act-robotica", icon: "robot",
+    iconAsset: "/src/submarcas/simple/Robotica.png",
+    fullAsset: "/src/submarcas/Robotica.png",
+    programa: true, grupoPatron: /brick/i,
+    tag: "Programas", lede: "Construye, experimenta y aprende jugando con bloques.",
+    long: "Nuestro taller STEM con bloques de construcción: los alumnos diseñan y montan sus propios proyectos y aprenden ciencia, tecnología y matemáticas haciendo.",
+    ages: "Infantil",
+    aprender: [
+      "Construcción y diseño de proyectos",
+      "Ciencia y tecnología a través del juego",
+      "Lógica y resolución de problemas",
+      "Trabajo en equipo",
+    ],
+  },
+  {
+    id: "playkick", name: "Play&Kick", color: "#E53935", className: "act-kickboxing", icon: "boxing-glove",
+    logo: "/src/logos/palyandkick.png",
+    iconAsset: "/src/submarcas/simple/ArtesMarciales.png",
+    fullAsset: "/src/submarcas/ArtesMarciales.png",
+    programa: true, grupoPatron: /play\s*(&|and|y)?\s*kick/i,
+    tag: "Programas", lede: "Kick boxing para peques: jugar, moverse y aprender.",
+    long: "Nuestro programa de iniciación al kick boxing a través del juego: coordinación, psicomotricidad y valores, en un entorno seguro y adaptado a cada edad.",
+    ages: "Infantil",
+    aprender: [
+      "Coordinación y psicomotricidad",
+      "Primeras técnicas de kick boxing, jugando",
+      "Respeto y autocontrol",
+      "Trabajo en grupo",
+    ],
+  },
+  {
+    id: "campamento", name: "Campamento de verano", color: "#F99B35", className: "act-campamento", icon: "run",
+    iconAsset: "/src/submarcas/simple/CampVerano.png",
+    fullAsset: "/src/submarcas/CampVerano.png",
+    programa: true, enlace: "/campamento",
+    tag: "Programas", lede: "Semanas de aventura, aprendizaje y diversión en verano.",
+    long: "Deporte por la mañana e inglés y talleres creativos por la tarde, con una temática distinta cada semana.",
+    ages: "De 4 a 14 años",
+    aprender: [],
   },
 ];
 
 const ACT_BY_ID = Object.fromEntries(ACTIVITIES.map(a => [a.id, a]));
+
+// El icono de una actividad en su tarjeta: el mismo que en el panel o, si es un
+// programa con logo propio, su logo.
+function ActIcono({ act, icon, size = 40 }) {
+  if (act?.logo) return <img src={act.logo} alt="" style={{ height: size, width: 'auto', maxWidth: size * 2.4, objectFit: 'contain', display: 'block' }} />;
+  return <IconoActividad icon={icon || act?.icon} size={size} style={{ color: '#3c3c3b' }} />;
+}
 
 // ---------- Aim logo (real brand asset) ----------
 function AimLogo({ size = "md", variant = "black", sub = false, auto = false, onClick }) {
@@ -189,6 +290,7 @@ function AimHeader({ route } = {}) {
     if (path === '/calendario') return 'calendar';
     if (path === '/noticias') return 'news';
     if (path === '/contacto') return 'contact';
+    if (path === '/conocenos') return 'about';
     return '';
   })();
 
@@ -198,6 +300,7 @@ function AimHeader({ route } = {}) {
     { id: "camp", label: "Campamento", href: "/campamento" },
     { id: "calendar", label: "Calendario", href: "/calendario" },
     { id: "news", label: "Noticias", href: "/noticias" },
+    { id: "about", label: "Conócenos", href: "/conocenos" },
     { id: "contact", label: "Contacto", href: "/contacto" },
   ];
 
@@ -296,6 +399,7 @@ function AimFooter() {
               <li><a onClick={(e) => { e.preventDefault(); go("/calendario"); }} href="/calendario">Calendario</a></li>
               <li><a onClick={(e) => { e.preventDefault(); go("/campamento"); }} href="/campamento">Campamento</a></li>
               <li><a onClick={(e) => { e.preventDefault(); go("/noticias"); }} href="/noticias">Noticias</a></li>
+              <li><a onClick={(e) => { e.preventDefault(); go("/conocenos"); }} href="/conocenos">Conócenos</a></li>
             </ul>
           </div>
           <div>
@@ -594,7 +698,7 @@ function MagicText({ children }) {
   );
 }
 
-export { AimLogo, AimHeader, AimFooter, ACTIVITIES, ACT_BY_ID, ActIcon, Placeholder, MagicText, CampDayPicker, campDayParts, campFmtLong };
+export { AimLogo, AimHeader, AimFooter, ACTIVITIES, ACT_BY_ID, ActIcono, ActIcon, Placeholder, MagicText, CampDayPicker, campDayParts, campFmtLong };
 
 // Como se llama cada medio de pago para las personas. 'tpv_online' es el TPV
 // virtual del banco: la familia paga por la web, no por el datafono.

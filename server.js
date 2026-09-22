@@ -1341,6 +1341,21 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_consentimientos_user ON aim_consentimientos (user_id, tipo, created_at)`);
+        // Perfil de cada miembro del personal en la web, en «Conócenos» (#295).
+        // Solo sale quien tiene visible = true, que se marca con su permiso: su
+        // nombre, su foto y su presentación son datos personales.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_perfil_web (
+                user_id UUID PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                visible BOOLEAN NOT NULL DEFAULT false,
+                cargo VARCHAR(120),
+                bio TEXT,
+                con_foto BOOLEAN NOT NULL DEFAULT true,
+                orden INTEGER NOT NULL DEFAULT 100,
+                actualizado_por UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                actualizado_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
         // Consultas del formulario de contacto de la web (ticket #295): quedan
         // aquí para atenderlas desde el panel, además del aviso por correo.
         await client.query(`
@@ -2479,23 +2494,38 @@ const AIM_CLUB_ID = 'b68ca873-5086-474f-a296-fe60b149b8a2';
 const ACT_COLORS = {
     taekwondo: '#21B668', ballet: '#FF99D3', baile: '#AF99FF', ingles: '#00BBF4',
     robotica: '#FFD526', camaleon: '#25D8BA', funcional: '#FF4F15', pilates: '#BFD300', pintura: '#5233A8',
+    kickboxing: '#E53935', defensa: '#475569',
 };
 
-// Mapea una actividad real del club a la id estática del frontend (para color/clase CSS).
-function mapActivityId(name = '', type = '') {
+// Cuál de las actividades de la web (id estática del frontend: color, clase CSS
+// y página pública) es una actividad real del club. null si no es ninguna.
+// Antes STEM y Kick Boxing caían en «Entrenamiento Funcional» y Defensa Personal
+// en Taekwondo, y la web enseñaba sus grupos en la página que no era (#295).
+function idActividadConocida(name = '', type = '') {
     const n = (name || '').toLowerCase();
     const t = (type || '').toLowerCase();
     if (t === 'taekwondo_itf' || n.includes('taekwon')) return 'taekwondo';
     if (t === 'ballet' || n.includes('ballet')) return 'ballet';
     if (t === 'ingles' || n.includes('inglé') || n.includes('ingles') || n.includes('english')) return 'ingles';
     if (n.includes('baile') || n.includes('danza')) return 'baile';
-    if (n.includes('robót') || n.includes('robot')) return 'robotica';
+    // STEM es la robótica (Brickslab es uno de sus grupos).
+    if (n.includes('robót') || n.includes('robot') || /\bstem\b/.test(n) || n.includes('brick')) return 'robotica';
     if (n.includes('pilates')) return 'pilates';
     if (n.includes('pintura')) return 'pintura';
-    if (n.includes('defensa')) return 'taekwondo';
-    if (n.includes('kick') || n.includes('box')) return 'funcional';
-    return 'funcional';
+    if (n.includes('defensa')) return 'defensa';
+    if (n.includes('kick') || n.includes('box')) return 'kickboxing';
+    if (n.includes('funcional')) return 'funcional';
+    return null;
 }
+
+// Lo mismo para pintar: una actividad desconocida se pinta con un color cualquiera.
+function mapActivityId(name = '', type = '') {
+    return idActividadConocida(name, type) || 'funcional';
+}
+
+// La dirección de una actividad nueva en la web: «Ajedrez» → /actividades/ajedrez.
+const slugWeb = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
 function hourFloat(hhmm) {
     const [h, m] = String(hhmm || '0:0').split(':').map(Number);
@@ -2581,6 +2611,53 @@ app.get('/api/classes', async (req, res) => {
     } catch (err) {
         console.error('Error fetching classes:', err);
         res.status(500).json({ error: err.message });
+    }
+});
+
+// Actividades y grupos para la web pública (#295). Igual que «Clases y horarios
+// → Lista de clases» del panel: cada actividad con sus grupos, y cada grupo UNA
+// vez con todas sus sesiones. Antes la web montaba las páginas desde el horario,
+// un hueco por día y sesión, y el mismo grupo salía repetido tantas veces como
+// días tenía. Aquí no va cuántos alumnos hay: a la web solo le importa si queda sitio.
+app.get('/api/publico/clases', async (req, res) => {
+    try {
+        const r = await pool.query(`
+            SELECT a.activity_id, a.name AS actividad, a.activity_type, a.icon,
+                   g.group_id, g.name, g.sessions, g.max_students, g.min_age, g.max_age,
+                   (SELECT COUNT(*)::int FROM tul_group_students gs WHERE gs.group_id = g.group_id) AS alumnos
+            FROM tul_activities a
+            LEFT JOIN tul_groups g ON g.activity_id = a.activity_id
+            WHERE a.club_id = $1
+            ORDER BY a.name, g.name`, [AIM_CLUB_ID]);
+        const porActividad = new Map();
+        for (const f of r.rows) {
+            if (!porActividad.has(f.activity_id)) {
+                porActividad.set(f.activity_id, {
+                    id: f.activity_id, nombre: f.actividad, icon: f.icon,
+                    act: idActividadConocida(f.actividad, f.activity_type) || slugWeb(f.actividad),
+                    grupos: [],
+                });
+            }
+            if (!f.group_id) continue;
+            const sesiones = (Array.isArray(f.sessions) ? f.sessions : [])
+                .map(x => ({
+                    dias: (Array.isArray(x.days) ? x.days : []).map(Number).filter(d => d >= 0 && d <= 6).sort((a, b) => a - b),
+                    inicio: x.startTime || null,
+                    fin: x.endTime || null,
+                    monitores: nombresDocentes(x),
+                }))
+                .filter(x => x.dias.length && x.inicio);
+            const libres = f.max_students != null ? f.max_students - f.alumnos : null;
+            porActividad.get(f.activity_id).grupos.push({
+                id: f.group_id, nombre: f.name, minAge: f.min_age, maxAge: f.max_age, sesiones,
+                plazas: libres == null ? 'libres' : libres <= 0 ? 'completo' : libres < 3 ? 'pocas' : 'libres',
+            });
+        }
+        res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=60');
+        res.json({ actividades: [...porActividad.values()] });
+    } catch (err) {
+        console.error('[publico/clases]', err.message);
+        res.status(500).json({ error: 'No se pudieron cargar las clases.' });
     }
 });
 
@@ -4531,6 +4608,8 @@ const PORTADA_POR_DEFECTO = {
     ctaTexto: 'Campamento de verano',
     ctaUrl: '/campamento',
     anoFundacion: 2008,
+    // La historia breve de «Conócenos» (#295). Vacía: la web pone un texto base.
+    historia: '',
     mosaico: MOSAICO_POR_DEFECTO,
     testimonios: TESTIMONIOS_POR_DEFECTO,
     empleo: EMPLEO_POR_DEFECTO,
@@ -4576,6 +4655,7 @@ app.get('/api/landing', async (req, res) => {
         res.json({
             cta: { texto: cfg.ctaTexto, url: cfg.ctaUrl },
             anoFundacion: cfg.anoFundacion,
+            historia: cfg.historia || '',
             mosaico: cfg.mosaico,
             columnas: cfg.columnas, filas: cfg.filas,
             testimonios: cfg.testimonios,
@@ -4639,7 +4719,7 @@ app.get('/api/admin/landing', authenticateSession, requireAdmin, async (req, res
 });
 
 app.put('/api/admin/landing', authenticateSession, requireAdmin, async (req, res) => {
-    const { ctaTexto, ctaUrl, anoFundacion, mosaico, testimonios, empleo } = req.body;
+    const { ctaTexto, ctaUrl, anoFundacion, mosaico, testimonios, empleo, historia } = req.body;
     if (!ctaTexto?.trim()) return res.status(400).json({ error: 'El botón necesita un texto.' });
     const url = String(ctaUrl || '').trim();
     if (!urlValida(url)) {
@@ -4712,6 +4792,7 @@ app.put('/api/admin/landing', authenticateSession, requireAdmin, async (req, res
              ON CONFLICT (clave) DO UPDATE SET valor = $1, actualizado_at = NOW(), actualizado_por = $2`,
             [JSON.stringify({
                 ctaTexto: ctaTexto.trim(), ctaUrl: url, anoFundacion: ano, mosaico: piezas,
+                historia: String(historia || '').trim().slice(0, 1500),
                 testimonios: (Array.isArray(testimonios) ? testimonios : []).slice(0, 24).map(t => ({
                     id: String(t.id || '').slice(0, 40) || `t${Date.now()}${Math.random().toString(36).slice(2, 6)}`,
                     nombre: String(t.nombre || '').trim().slice(0, 80),
@@ -13382,6 +13463,128 @@ app.put('/api/admin/contactos/:id', authenticateSession, requireSeccion('contact
                 atendido_at = CASE WHEN $2 = 'atendido' THEN NOW() WHEN $2 = 'nuevo' THEN NULL ELSE atendido_at END
              WHERE id = $1 RETURNING id`, [Number(req.params.id) || 0, estado, notas, req.userSession.userId]);
         if (!r.rowCount) return res.status(404).json({ error: 'Esa consulta no existe.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── El equipo en «Conócenos» (ticket #295) ──────────────────────────────────
+// Sale solo quien tiene el perfil marcado como visible en el panel (Personas →
+// Instructores → Web). Lo que da se saca solo del horario: nadie tiene que
+// acordarse de actualizarlo. Si deja de ser personal del club, deja de salir.
+const RANGOS_EQUIPO_WEB = ROLES_STAFF.filter(r => r !== 'superadmin');
+// Solo fotos subidas de verdad: las de ejemplo (enlaces a bancos de imágenes)
+// no son de la persona.
+const FOTO_PROPIA_SQL = `COALESCE(u.profile_picture, '') ~ '^data:image/(png|jpe?g|webp|gif);base64,'`;
+
+async function clasesQueDa() {
+    const g = await pool.query(
+        `SELECT a.name AS actividad, g.sessions FROM tul_groups g
+         JOIN tul_activities a ON a.activity_id = g.activity_id WHERE a.club_id = $1`, [AIM_CLUB_ID]);
+    const porPersona = new Map();
+    for (const f of g.rows) {
+        for (const x of (Array.isArray(f.sessions) ? f.sessions : [])) {
+            const ids = (Array.isArray(x.instructors) && x.instructors.length ? x.instructors.map(d => d?.id) : [x.instructorId]).filter(Boolean);
+            for (const id of ids) {
+                if (!porPersona.has(id)) porPersona.set(id, new Set());
+                porPersona.get(id).add(f.actividad);
+            }
+        }
+    }
+    return porPersona;
+}
+
+app.get('/api/publico/equipo', async (req, res) => {
+    try {
+        const [r, clases] = await Promise.all([
+            pool.query(
+                `SELECT u.user_id, u.name, u.surname, p.cargo, p.bio,
+                        (p.con_foto AND ${FOTO_PROPIA_SQL}) AS tiene_foto,
+                        md5(COALESCE(u.profile_picture, '')) AS version
+                 FROM aim_perfil_web p JOIN users u ON u.user_id = p.user_id
+                 WHERE p.visible AND ${sqlRango('u')} = ANY($1::text[])
+                 ORDER BY p.orden, u.name`, [RANGOS_EQUIPO_WEB]),
+            clasesQueDa(),
+        ]);
+        res.set('Cache-Control', 'public, max-age=60');
+        res.json({
+            equipo: r.rows.map(x => ({
+                id: x.user_id,
+                nombre: `${x.name || ''} ${x.surname || ''}`.trim(),
+                cargo: x.cargo || '',
+                bio: x.bio || '',
+                foto: x.tiene_foto ? `/api/publico/equipo/${x.user_id}/foto?v=${x.version.slice(0, 10)}` : null,
+                actividades: [...(clases.get(x.user_id) || [])].sort((a, b) => a.localeCompare(b, 'es')),
+            })),
+        });
+    } catch (err) {
+        console.error('[publico/equipo]', err.message);
+        res.status(500).json({ error: 'No se pudo cargar el equipo.' });
+    }
+});
+
+app.get('/api/publico/equipo/:id/foto', async (req, res) => {
+    if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) return res.status(404).end();
+    try {
+        const r = await pool.query(
+            `SELECT u.profile_picture FROM aim_perfil_web p JOIN users u ON u.user_id = p.user_id
+             WHERE p.user_id = $1 AND p.visible AND p.con_foto AND ${FOTO_PROPIA_SQL}
+               AND ${sqlRango('u')} = ANY($2::text[])`, [req.params.id, RANGOS_EQUIPO_WEB]);
+        if (!r.rowCount) return res.status(404).end();
+        const m = /^data:(image\/[a-z]+);base64,(.+)$/is.exec(r.rows[0].profile_picture);
+        if (!m) return res.status(404).end();
+        res.set('Content-Type', m[1].toLowerCase());
+        res.set('Cache-Control', 'public, max-age=86400');
+        res.send(Buffer.from(m[2], 'base64'));
+    } catch (err) { res.status(500).end(); }
+});
+
+// Los perfiles, para el panel. Va bajo /api/admin/instructores: la sección de
+// Instructores ya cierra esa ruta a quien no la tiene.
+app.get('/api/admin/instructores/perfiles-web', async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT p.user_id, p.visible, p.cargo, p.bio, p.con_foto, p.orden, ${FOTO_PROPIA_SQL} AS tiene_foto
+             FROM aim_perfil_web p JOIN users u ON u.user_id = p.user_id`);
+        const fotos = await pool.query(
+            `SELECT u.user_id FROM users u WHERE ${sqlRango('u')} = ANY($1::text[]) AND ${FOTO_PROPIA_SQL}`, [RANGOS_EQUIPO_WEB]);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            perfiles: Object.fromEntries(r.rows.map(x => [x.user_id, {
+                visible: x.visible, cargo: x.cargo || '', bio: x.bio || '', conFoto: x.con_foto, orden: x.orden,
+            }])),
+            conFoto: fotos.rows.map(x => x.user_id),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/admin/instructores/:id/perfil-web', async (req, res) => {
+    const b = req.body || {};
+    const visible = b.visible === true;
+    const cargo = String(b.cargo || '').trim().slice(0, 120) || null;
+    const bio = String(b.bio || '').trim().slice(0, 700) || null;
+    const conFoto = b.conFoto !== false;
+    const orden = Math.min(Math.max(Number.parseInt(b.orden, 10) || 100, 0), 999);
+    try {
+        const u = await pool.query(
+            `SELECT u.user_id, u.email, ${sqlRango('u')} AS rango FROM users u WHERE u.user_id = $1`, [req.params.id]);
+        if (!u.rowCount) return res.status(404).json({ error: 'Esa persona no existe.' });
+        if (visible && !RANGOS_EQUIPO_WEB.includes(u.rows[0].rango)) {
+            return res.status(400).json({ error: 'Solo puede salir en la web quien es del personal del club.' });
+        }
+        const antes = await pool.query(`SELECT visible FROM aim_perfil_web WHERE user_id = $1`, [req.params.id]);
+        await pool.query(
+            `INSERT INTO aim_perfil_web (user_id, visible, cargo, bio, con_foto, orden, actualizado_por, actualizado_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+             ON CONFLICT (user_id) DO UPDATE SET visible = $2, cargo = $3, bio = $4, con_foto = $5, orden = $6,
+                 actualizado_por = $7, actualizado_at = NOW()`,
+            [req.params.id, visible, cargo, bio, conFoto, orden, req.userSession.userId]);
+        // Publicarle o dejar de publicarle queda anotado, como cualquier otro
+        // consentimiento: quién lo marcó y cuándo.
+        if ((antes.rows[0]?.visible || false) !== visible) {
+            await anotarConsentimiento(pool, req, {
+                userId: req.params.id, email: u.rows[0].email, tipo: 'perfil_web', otorgado: visible, origen: 'panel (Instructores)',
+            });
+        }
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });

@@ -11,7 +11,12 @@ import { AimHeader, AimFooter, MagicText, MAPA_URL } from './Shared.jsx';
 const inp = { width: '100%', fontFamily: 'inherit', fontSize: 15, padding: '12px 14px', borderRadius: 12, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)' };
 
 export default function PublicContacto() {
-  const [f, setF] = useState({ nombre: '', email: '', telefono: '', mensaje: '', web: '' });
+  // Desde una actividad o un grupo se llega con ?sobre=…: el mensaje ya viene empezado.
+  const sobre = new URLSearchParams(window.location.search).get('sobre');
+  const [f, setF] = useState({
+    nombre: '', email: '', telefono: '', web: '',
+    mensaje: sobre ? `Hola, quería información sobre ${sobre.slice(0, 120)}.` : '',
+  });
   const [acepta, setAcepta] = useState(false);
   const [enviando, setEnviando] = useState(false);
   const [hecho, setHecho] = useState(false);

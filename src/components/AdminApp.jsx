@@ -2487,6 +2487,16 @@ function AjustesPortada({ showToast }) {
         </span>
       </div>
 
+      <div className="field">
+        <label>Nuestra historia (página «Conócenos»)</label>
+        <textarea rows={5} maxLength={1500} value={cfg.historia || ''}
+          onChange={e => setCfg({ ...cfg, historia: e.target.value })}
+          placeholder={`Desde ${cfg.anoFundacion || 2008} acompañamos a niños, jóvenes y adultos de Algeciras en su formación…`} />
+        <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+          Muy breve: dos o tres frases. Vacío, sale un texto base. Deja una línea en blanco para separar párrafos.
+        </span>
+      </div>
+
       <div style={{ background: 'var(--bg-3)', borderRadius: 12, padding: 14 }}>
         <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--ink-3)', marginBottom: 8 }}>
           Así queda
@@ -2693,6 +2703,17 @@ function AdminInstructores({ refreshTrigger, showToast, onEditUser, onNuevoInstr
   const [clases, setClases] = useState({});
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  // Su perfil en «Conócenos» (#295): quién sale en la web y con qué.
+  const [perfiles, setPerfiles] = useState({ perfiles: {}, conFoto: [] });
+  const [perfilDe, setPerfilDe] = useState(null);
+
+  const cargarPerfiles = useCallback(() => {
+    fetch('/api/admin/instructores/perfiles-web', { credentials: 'include', cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setPerfiles(d); })
+      .catch(() => {});
+  }, []);
+  useEffect(() => { cargarPerfiles(); }, [cargarPerfiles, refreshTrigger]);
 
   const cargar = useCallback(() => {
     fetch('/api/users', { credentials: 'include', cache: 'no-store' })
@@ -2776,6 +2797,9 @@ function AdminInstructores({ refreshTrigger, showToast, onEditUser, onNuevoInstr
               <div>
                 <div className="pri" style={u.cumpleHoy ? { color: COLOR_CUMPLE, fontWeight: 800 } : undefined}>
                   {u.firstName || ""} {u.lastName || ""}{u.cumpleHoy && " 🎂"}
+                  {perfiles.perfiles[u.id]?.visible && (
+                    <span title="Sale en «Conócenos» de la web" style={{ marginLeft: 6, fontSize: 10, fontWeight: 800, padding: '1px 7px', borderRadius: 999, background: 'color-mix(in oklab, var(--teal) 16%, var(--bg-2))', color: 'var(--teal)', verticalAlign: 'middle' }}>EN LA WEB</span>
+                  )}
                 </div>
                 {/* El rango, y quien puede cambiarlo (dirección) lo cambia aquí. */}
                 {puedeCambiarRangos ? (
@@ -2795,6 +2819,7 @@ function AdminInstructores({ refreshTrigger, showToast, onEditUser, onNuevoInstr
             </div>
             <div className="row-actions">
               <button className="icon-btn" aria-label="Abrir ficha" title="Abrir su ficha" onClick={() => onEditUser(u)}><I.Edit /></button>
+              <button className="icon-btn" aria-label="Perfil en la web" title="Su perfil en «Conócenos» de la web" onClick={() => setPerfilDe(u)}><I.Globe /></button>
               <button className="icon-btn danger" aria-label="Sacar del personal"
                 title="Deja de ser del personal (sigue como alumno)" onClick={() => cambiarRol(u, 'student')}><I.Trash /></button>
             </div>
@@ -2806,7 +2831,83 @@ function AdminInstructores({ refreshTrigger, showToast, onEditUser, onNuevoInstr
         {visible.length} de {gente.length} · Se gestionan con la misma ficha que los alumnos: quien imparte una
         actividad y recibe otra sale en las dos listas.
       </div>
+
+      {perfilDe && (
+        <PerfilWeb u={perfilDe} perfil={perfiles.perfiles[perfilDe.id]} tieneFoto={perfiles.conFoto.includes(perfilDe.id)}
+          clases={clases[perfilDe.id]}
+          onCerrar={() => setPerfilDe(null)}
+          onGuardado={(msg) => { setPerfilDe(null); cargarPerfiles(); showToast(msg); }} />
+      )}
     </>
+  );
+}
+
+// El perfil de alguien del personal en «Conócenos» (#295). Solo sale si se marca,
+// y se marca con su permiso: su nombre, su foto y lo que cuenta de sí mismo son
+// datos personales. Lo que da no se escribe: sale solo del horario.
+function PerfilWeb({ u, perfil, tieneFoto, onCerrar, onGuardado }) {
+  const [f, setF] = useState({
+    visible: perfil?.visible || false, cargo: perfil?.cargo || '', bio: perfil?.bio || '',
+    conFoto: perfil?.conFoto !== false, orden: perfil?.orden ?? 100,
+  });
+  const [guardando, setGuardando] = useState(false);
+  async function guardar(e) {
+    e.preventDefault();
+    setGuardando(true);
+    try {
+      const r = await fetch(`/api/admin/instructores/${u.id}/perfil-web`, {
+        method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(f),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || 'No se pudo guardar.');
+      onGuardado(f.visible ? `${u.firstName} sale en «Conócenos».` : `${u.firstName} no sale en la web.`);
+    } catch (err) { alert(err.message); } finally { setGuardando(false); }
+  }
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 2100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+      onClick={e => { if (e.target === e.currentTarget) onCerrar(); }}>
+      <form onSubmit={guardar} className="scroll-oculto" style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 560, maxHeight: '90vh', overflowY: 'auto', padding: 24, display: 'grid', gap: 14 }}>
+        <div>
+          <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>{u.firstName} {u.lastName} en la web</h3>
+          <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--ink-3)' }}>
+            Así sale en la página «Conócenos». Lo que da se pone solo, según el horario.
+          </p>
+        </div>
+        <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>
+          <input type="checkbox" checked={f.visible} onChange={e => setF({ ...f, visible: e.target.checked })} style={{ marginTop: 3 }} />
+          <span>
+            Publicar su perfil en la web
+            <span style={{ display: 'block', fontSize: 12, fontWeight: 500, color: 'var(--ink-3)' }}>
+              Solo con su permiso: su nombre, su foto y su presentación los verá cualquiera. Queda anotado quién lo marca y cuándo.
+            </span>
+          </span>
+        </label>
+        <div className="field">
+          <label>Cargo o titulación</label>
+          <input value={f.cargo} maxLength={120} onChange={e => setF({ ...f, cargo: e.target.value })}
+            placeholder="Ej.: Instructor internacional de Taekwon-Do ITF · V Dan" />
+        </div>
+        <div className="field">
+          <label>Presentación</label>
+          <textarea value={f.bio} maxLength={700} rows={5} onChange={e => setF({ ...f, bio: e.target.value })}
+            placeholder="Dos o tres frases: su trayectoria, qué le gusta de enseñar…" />
+          <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>{f.bio.length}/700</span>
+        </div>
+        <label style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 13, cursor: tieneFoto ? 'pointer' : 'default', color: tieneFoto ? 'var(--ink)' : 'var(--ink-3)' }}>
+          <input type="checkbox" disabled={!tieneFoto} checked={tieneFoto && f.conFoto} onChange={e => setF({ ...f, conFoto: e.target.checked })} />
+          {tieneFoto ? 'Con la foto de su perfil' : 'No tiene foto en su perfil: saldrán sus iniciales'}
+        </label>
+        <div className="field" style={{ maxWidth: 160 }}>
+          <label>Orden</label>
+          <input type="number" min="0" max="999" value={f.orden} onChange={e => setF({ ...f, orden: e.target.value })} />
+          <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Menor, antes.</span>
+        </div>
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+          <button type="button" className="btn btn-outline" onClick={onCerrar}>Cancelar</button>
+          <button type="submit" className="btn btn-primary" disabled={guardando}>{guardando ? 'Guardando…' : 'Guardar'}</button>
+        </div>
+      </form>
+    </div>
   );
 }
 

@@ -3899,3 +3899,71 @@ html[data-theme="dark"] .dash-nav button.is-active {
 @media (max-width: 860px) {
   .contacto-grid { grid-template-columns: 1fr; gap: 26px; }
 }
+
+/* Actividades de la web (#295): el icono es el del panel, sobre una baldosa
+   clarita del color de la actividad (también en el tema oscuro: los iconos son
+   oscuros). Los programas con logo propio lo llevan sobre blanco. */
+:root { --c-defensa: #475569; }
+.act-defensa { --act: var(--c-defensa); }
+.icon-tile.suave {
+  width: 64px; height: 64px; border-radius: 16px;
+  background: color-mix(in oklab, var(--act, var(--teal)) 24%, #fff);
+  display: grid; place-items: center;
+}
+.icon-tile.suave.con-logo { width: auto; min-width: 64px; padding: 0 12px; background: #fff; border: 1px solid var(--line); }
+.icon-tile.suave.grande {
+  width: min(260px, 70vw); height: min(260px, 70vw); border-radius: 36px;
+  background: color-mix(in oklab, var(--act, var(--teal)) 18%, #fff);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .18);
+}
+.icon-tile.suave.grande.con-logo { width: min(320px, 80vw); padding: 0 24px; }
+.act-hero-icono { display: flex; justify-content: center; }
+.act-info-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 36px; align-items: start; }
+.act-datos { position: sticky; top: 120px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 18px; padding: 24px; }
+.aprender-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.grupo-web {
+  background: var(--bg-2); border: 1px solid var(--line); border-left: 5px solid var(--teal);
+  border-radius: 14px; padding: 14px 16px;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px;
+}
+.grupos-vacio { padding: 36px; text-align: center; background: var(--bg-2); border: 1px dashed var(--line); border-radius: 14px; color: var(--ink-3); }
+@media (max-width: 860px) {
+  .act-info-grid { grid-template-columns: 1fr; }
+  .act-datos { position: static; }
+  .act-hero-icono { display: none; }
+}
+@media (max-width: 560px) {
+  .aprender-grid { grid-template-columns: 1fr; }
+  .grupo-web { grid-template-columns: 1fr; }
+  .grupo-web > div:last-child { grid-auto-flow: column; justify-content: space-between; align-items: center; justify-items: start; }
+}
+
+/* Conócenos (#295) */
+.conocenos-grid { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 44px; align-items: start; padding-top: 30px; }
+.mision-web { margin: 26px 0 0; padding: 14px 18px; border-left: 4px solid var(--purple); background: var(--bg-2); border-radius: 0 12px 12px 0; font-size: 16px; line-height: 1.55; color: var(--ink-2); font-style: italic; }
+.valor-web { display: grid; gap: 4px; padding: 16px 18px; border-radius: 16px; background: var(--bg-2); border: 1px solid var(--line); border-top: 4px solid var(--c); }
+.valor-web b { font-family: var(--font-display); font-size: 18px; font-weight: 800; }
+.valor-web span { font-size: 14px; color: var(--ink-2); }
+.datos-web { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.datos-web > div { padding: 14px; border-radius: 14px; background: var(--bg-3); }
+.datos-web .v { font-family: var(--font-display); font-size: 26px; font-weight: 800; letter-spacing: -.02em; }
+.datos-web .l { font-size: 12px; color: var(--ink-3); }
+.equipo-web { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; margin-top: 28px; }
+.miembro-web { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 16px; align-items: start; background: var(--bg-2); border: 1px solid var(--line); border-radius: 18px; padding: 18px; }
+.miembro-web .foto { width: 84px; height: 84px; border-radius: 50%; overflow: hidden; background: var(--grad-aim); display: grid; place-items: center; color: #fff; font-weight: 800; font-size: 26px; }
+.miembro-web .foto img { width: 100%; height: 100%; object-fit: cover; display: block; }
+@media (max-width: 860px) {
+  .conocenos-grid { grid-template-columns: 1fr; gap: 26px; }
+}
+
+/* La cabecera de una actividad en el móvil: los tres datos no caben en fila y
+   se salían por el lado (#295). */
+@media (max-width: 620px) {
+  .act-hero { padding: 40px 0 56px; }
+  .act-hero .quick-stats { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .act-hero .qs { padding: 12px; }
+  .act-hero .qs .v { font-size: 22px; }
+  .act-hero .qs .l { font-size: 10px; }
+  .act-hero p.lede { font-size: 17px; }
+  .act-hero .btn-lg { flex: 1 1 100%; justify-content: center; }
+}
