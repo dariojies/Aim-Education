@@ -13,6 +13,11 @@
 // VERI*FACTU encendido, además, el QR tributario de cada factura.
 // ─────────────────────────────────────────────────────────────────────────────
 import { fmtFecha } from './fechas.js';
+// El logo en negro (ticket #297). Va metido en el propio ticket (data:), así no
+// hay que esperar a descargarlo antes de imprimir. Es el de los iconos con
+// detalle; en la térmica un gris sale flojo o a puntos, así que se imprime en
+// negro puro (ver .logo img).
+import logoTicket from './brand/logo-ticket.js';
 
 const esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const eur = (n) => `${(Number(n) || 0).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
@@ -39,6 +44,8 @@ const CSS = `
     -webkit-print-color-adjust: exact; print-color-adjust: exact;
   }
   .c { text-align: center; }
+  .logo { text-align: center; margin: 0 0 3px; }
+  .logo img { width: 22mm; height: auto; display: inline-block; filter: grayscale(1) contrast(1000%); }
   .emp { font-size: 13px; font-weight: 800; text-align: center; line-height: 1.2; }
   .dat { text-align: center; font-size: 10.5px; }
   .sep { border-top: 1px dashed #000; margin: 5px 0; }
@@ -107,6 +114,7 @@ export function htmlTicketRecibo(t) {
   return `<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>${esc(titulo)} ${esc(numero || '')}</title>
 <style>${CSS}</style></head><body>
+  <div class="logo"><img src="${logoTicket}" alt="AIM Education"></div>
   <div class="emp">${esc(e.nombre)}</div>
   <div class="dat">CIF ${esc(e.nif)}<br>${esc(e.direccion)}<br>${esc(e.cp)}${e.tel || e.web ? `<br>${esc([e.tel, e.web].filter(Boolean).join(' · '))}` : ''}</div>
   <div class="sep"></div>
@@ -154,7 +162,12 @@ export function imprimirTicketRecibo(t) {
     w.onafterprint = () => w.close();
     w.print();
   };
-  // Se espera a que carguen las imágenes (los QR) antes de medir.
-  if (w.document.readyState === 'complete') setTimeout(imprimir, 50);
-  else w.addEventListener('load', () => setTimeout(imprimir, 50));
+  // Se espera a que carguen las imágenes (el logo y los QR) antes de medir: si
+  // no, el largo del papel se calcula sin ellas y el ticket sale cortado.
+  const cuandoCarguen = () => Promise.all([...w.document.images].map(img => (img.complete
+    ? (img.decode ? img.decode().catch(() => {}) : null)
+    : new Promise(r => { img.onload = img.onerror = r; }))));
+  const lanzar = () => cuandoCarguen().then(() => setTimeout(imprimir, 50));
+  if (w.document.readyState === 'complete') lanzar();
+  else w.addEventListener('load', lanzar);
 }
