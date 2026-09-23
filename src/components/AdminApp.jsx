@@ -4051,10 +4051,20 @@ function BillingTPV({ showToast }) {
   const adultos = family.filter(f => !f.esMenor);
   // Por defecto la factura va al propio pagador si es adulto; si es menor, al
   // primer adulto de la familia (hay que elegirlo antes de cobrar). #219.
+  // La cesta se refresca sola cada pocos segundos: lo elegido a mano se respeta
+  // mientras se siga cobrando a la misma persona y ese adulto siga en su familia.
+  // Antes cada refresco volvía a poner el valor por defecto y, con dos padres,
+  // la elección se borraba a los pocos segundos.
+  const pagadorFacturaDe = useRef(null);
   useEffect(() => {
-    if (!pagador || !cesta) { setPagadorFactura(''); return; }
-    // Ticket #231: con un solo adulto se pone él; con varios hay que elegir a mano.
-    setPagadorFactura(pagador.esMenor ? (adultos.length === 1 ? adultos[0].id : '') : pagador.id);
+    if (!pagador || !cesta) { setPagadorFactura(''); pagadorFacturaDe.current = null; return; }
+    const mismaPersona = pagadorFacturaDe.current === pagador.id;
+    pagadorFacturaDe.current = pagador.id;
+    setPagadorFactura(prev => {
+      if (mismaPersona && prev && (prev === pagador.id || adultos.some(a => a.id === prev))) return prev;
+      // Ticket #231: con un solo adulto se pone él; con varios hay que elegir a mano.
+      return pagador.esMenor ? (adultos.length === 1 ? adultos[0].id : '') : pagador.id;
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pagador?.id, cesta]);
 
