@@ -1453,6 +1453,24 @@ async function initDb() {
                 updated_by UUID
             )
         `);
+        // La salud es ahora UN solo campo de texto libre (la columna notas): eran
+        // demasiados campos para lo que se rellena. Lo que alguien tuviera en los
+        // de antes se junta ahí, cada cosa con su etiqueta, y esos se vacían. Si
+        // otra app escribiera aún en ellos, se volvería a juntar al arrancar.
+        await client.query(`
+            UPDATE aim_salud SET
+                notas = NULLIF(CONCAT_WS(E'\n',
+                    CASE WHEN COALESCE(alergias, '') <> '' THEN 'Alergias: ' || alergias END,
+                    CASE WHEN COALESCE(enfermedades, '') <> '' THEN 'Enfermedades: ' || enfermedades END,
+                    CASE WHEN COALESCE(medicacion, '') <> '' THEN 'Medicación: ' || medicacion END,
+                    NULLIF(notas, ''),
+                    CASE WHEN COALESCE(contacto_nombre, '') <> '' OR COALESCE(contacto_telefono, '') <> ''
+                         THEN 'Contacto de emergencia: ' || CONCAT_WS(' · ', NULLIF(contacto_nombre, ''), NULLIF(contacto_telefono, '')) END
+                ), ''),
+                alergias = NULL, enfermedades = NULL, medicacion = NULL, contacto_nombre = NULL, contacto_telefono = NULL
+            WHERE COALESCE(alergias, '') <> '' OR COALESCE(enfermedades, '') <> '' OR COALESCE(medicacion, '') <> ''
+               OR COALESCE(contacto_nombre, '') <> '' OR COALESCE(contacto_telefono, '') <> ''
+        `);
 
         // Calendario laboral (ticket #233, chat del equipo): festivos y días de
         // cierre del centro. Lo ve todo el personal (el calendario laboral tiene que
@@ -2211,8 +2229,7 @@ app.get('/api/users/:id', authenticateSession, requireAdmin, async (req, res) =>
             `SELECT u.user_id, u.name, u.surname, u.email, u.belt, u.dev_role, u.role, u.profile_picture,
                     ${sqlRango('u')} AS rango,
                     u.phone, u.birthday, u.dni, u.domicilio, u.cp, u.poblacion,
-                    s.alergias, s.enfermedades, s.medicacion, s.notas AS salud_notas,
-                    s.contacto_nombre, s.contacto_telefono
+                    s.notas AS salud
              FROM users u LEFT JOIN aim_salud s ON s.user_id = u.user_id
              WHERE u.user_id = $1 AND u.club_id = $2`,
             [req.params.id, AIM_CLUB_ID]
@@ -2224,11 +2241,8 @@ app.get('/api/users/:id', authenticateSession, requireAdmin, async (req, res) =>
             id: u.user_id, firstName: u.name, lastName: u.surname, email: u.email,
             belt: u.belt, phone: u.phone, birthday: u.birthday,
             dni: u.dni, domicilio: u.domicilio, cp: u.cp, poblacion: u.poblacion,
-            // Salud (ticket #254): alergias y demás, para tenerlo a mano en clase.
-            salud: {
-                alergias: u.alergias || '', enfermedades: u.enfermedades || '', medicacion: u.medicacion || '',
-                notas: u.salud_notas || '', contactoNombre: u.contacto_nombre || '', contactoTelefono: u.contacto_telefono || '',
-            },
+            // Salud (ticket #254): un solo campo de texto, para tenerlo a mano en clase.
+            salud: u.salud || '',
             avatar: u.profile_picture, role: u.role,
             rango: String(u.rango || 'student').toLowerCase(),
             nombreRango: NOMBRE_RANGO[String(u.rango || 'student').toLowerCase()] || 'Alumno',
@@ -2261,6 +2275,25 @@ app.get('/api/users/:id/avatar', authenticateSession, requireAdmin, async (req, 
         return res.status(404).end();
     } catch (err) { console.error('[AVATAR]', err.message); res.status(500).end(); }
 });
+
+// La salud de una persona (ticket #254): un solo texto libre. Si va vacío se
+// borra la fila: no se guarda un dato de salud vacío por haber abierto la ficha.
+// Llega como texto; se acepta también el objeto de antes, por si alguna pantalla
+// abierta aún lo manda así.
+async function guardarSalud(userId, salud, autor) {
+    const texto = String(typeof salud === 'object' && salud ? (salud.texto ?? salud.notas ?? '') : (salud ?? ''))
+        .trim().slice(0, 2000) || null;
+    if (!texto) {
+        await pool.query(`DELETE FROM aim_salud WHERE user_id = $1`, [userId]);
+        return;
+    }
+    await pool.query(
+        `INSERT INTO aim_salud (user_id, notas, updated_at, updated_by) VALUES ($1, $2, NOW(), $3)
+         ON CONFLICT (user_id) DO UPDATE SET notas = EXCLUDED.notas,
+            alergias = NULL, enfermedades = NULL, medicacion = NULL, contacto_nombre = NULL, contacto_telefono = NULL,
+            updated_at = NOW(), updated_by = EXCLUDED.updated_by`,
+        [userId, texto, autor]);
+}
 
 app.post('/api/users', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
     const { firstName, lastName, email, belt, phone, birthday, isSuperAdmin, rol,
@@ -2355,6 +2388,9 @@ app.post('/api/users', authenticateSession, requirePermiso('editarAlumnos'), asy
              AIM_CLUB_ID, devRoleNuevo]
         );
         await ponerRangoPropio(user_id);
+        // Lo que se escriba en Salud al darle de alta también se guarda: antes
+        // solo se guardaba al editar, y en el alta se perdía sin avisar.
+        if (req.body.salud !== undefined) await guardarSalud(user_id, req.body.salud, req.userSession.userId);
         res.status(201).json({ id: user_id, firstName, lastName, email, belt, isSuperAdmin });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -2401,24 +2437,7 @@ app.put('/api/users/:id', authenticateSession, requirePermiso('editarAlumnos'), 
              phone?.trim() || null, birthday || null, id,
              dni?.trim() || null, domicilio?.trim() || null, cp?.trim() || null, poblacion?.trim() || null]
         );
-        // Salud (ticket #254). Si todo va vacío, se borra la fila: no se guarda
-        // un dato de salud vacío solo por haber abierto la ficha.
-        if (req.body.salud) {
-            const s = req.body.salud;
-            const txt = (v, n = 1000) => (v == null ? null : String(v).trim().slice(0, n) || null);
-            const campos = [txt(s.alergias), txt(s.enfermedades), txt(s.medicacion), txt(s.notas), txt(s.contactoNombre, 120), txt(s.contactoTelefono, 40)];
-            if (campos.some(Boolean)) {
-                await pool.query(
-                    `INSERT INTO aim_salud (user_id, alergias, enfermedades, medicacion, notas, contacto_nombre, contacto_telefono, updated_at, updated_by)
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,NOW(),$8)
-                     ON CONFLICT (user_id) DO UPDATE SET alergias = EXCLUDED.alergias, enfermedades = EXCLUDED.enfermedades,
-                        medicacion = EXCLUDED.medicacion, notas = EXCLUDED.notas, contacto_nombre = EXCLUDED.contacto_nombre,
-                        contacto_telefono = EXCLUDED.contacto_telefono, updated_at = NOW(), updated_by = EXCLUDED.updated_by`,
-                    [id, ...campos, req.userSession.userId]);
-            } else {
-                await pool.query(`DELETE FROM aim_salud WHERE user_id = $1`, [id]);
-            }
-        }
+        if (req.body.salud !== undefined) await guardarSalud(id, req.body.salud, req.userSession.userId);
         res.json({ id, firstName, lastName, email, belt, isSuperAdmin });
     } catch (err) {
         res.status(500).json({ error: err.message });

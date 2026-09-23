@@ -7142,47 +7142,18 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                         </div>
                       </div>
 
-                      {/* Salud (ticket #254): alergias y demás. Lo ve el personal del
-                          club y sale avisado al pasar lista. */}
+                      {/* Salud (ticket #254): un solo campo de texto libre. Lo ve el
+                          personal del club y sale avisado al pasar lista. */}
                       <div style={{ background: esEdit ? 'var(--bg-3)' : 'transparent', borderRadius: esEdit ? 14 : 0, padding: esEdit ? 16 : 0 }}>
                         {esEdit && <p style={fichaCardTitulo}>Salud</p>}
-                        {(() => {
-                          const s = editingItem.salud || {};
-                          const setS = (k, v) => setEditingItem({ ...editingItem, salud: { ...s, [k]: v } });
-                          return (
-                            <>
-                              <div className="field">
-                                <label>Alergias</label>
-                                <input value={s.alergias || ''} onChange={e => setS('alergias', e.target.value)} placeholder="Ej. frutos secos, polen..." />
-                              </div>
-                              <div className="field-row">
-                                <div className="field">
-                                  <label>Enfermedades o condiciones</label>
-                                  <input value={s.enfermedades || ''} onChange={e => setS('enfermedades', e.target.value)} placeholder="Ej. asma, diabetes..." />
-                                </div>
-                                <div className="field">
-                                  <label>Medicación</label>
-                                  <input value={s.medicacion || ''} onChange={e => setS('medicacion', e.target.value)} placeholder="Ej. inhalador en la mochila" />
-                                </div>
-                              </div>
-                              <div className="field">
-                                <label>Otras indicaciones</label>
-                                <input value={s.notas || ''} onChange={e => setS('notas', e.target.value)} placeholder="Lo que haya que tener en cuenta en clase" />
-                              </div>
-                              <div className="field-row">
-                                <div className="field">
-                                  <label>Contacto de emergencia</label>
-                                  <input value={s.contactoNombre || ''} onChange={e => setS('contactoNombre', e.target.value)} placeholder="Nombre" />
-                                </div>
-                                <div className="field">
-                                  <label>Teléfono de emergencia</label>
-                                  <input type="tel" value={s.contactoTelefono || ''} onChange={e => setS('contactoTelefono', e.target.value)} placeholder="600 123 456" />
-                                </div>
-                              </div>
-                              {esEdit && <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Es un dato sensible: solo lo ve el personal del club, y sale avisado en el pasar lista.</span>}
-                            </>
-                          );
-                        })()}
+                        <div className="field">
+                          {!esEdit && <label>Salud</label>}
+                          <textarea rows={3} maxLength={2000}
+                            value={typeof editingItem.salud === 'string' ? editingItem.salud : ''}
+                            onChange={e => setEditingItem({ ...editingItem, salud: e.target.value })}
+                            placeholder="Alergias, enfermedades, medicación, contacto de emergencia… lo que haya que tener en cuenta en clase" />
+                        </div>
+                        {esEdit && <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Es un dato sensible: solo lo ve el personal del club, y sale avisado en el pasar lista.</span>}
                       </div>
                     </div>
                   </div>
