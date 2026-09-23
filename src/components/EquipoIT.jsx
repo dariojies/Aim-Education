@@ -195,6 +195,72 @@ export default function EquipoIT({ showToast }) {
           </form>
         </div>
       )}
+
+      {puede && <EstadoServidor />}
+    </div>
+  );
+}
+
+// Estado del servidor (ticket #298): cómo va ahora y qué peticiones han tardado
+// más de 2 s desde el último arranque. Para saber, si algo vuelve a ir lento,
+// qué fue y si estaba esperando conexión a la base.
+function EstadoServidor() {
+  const [d, setD] = useState(null);
+  const [error, setError] = useState(null);
+  const cargar = useCallback(async () => {
+    try {
+      const r = await fetch('/api/admin/diagnostico', { credentials: 'include', cache: 'no-store' });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || 'No se pudo cargar.');
+      setD(j); setError(null);
+    } catch (e) { setError(e.message); }
+  }, []);
+  useEffect(() => { cargar(); }, [cargar]);
+  const dato = (t, v, aviso) => (
+    <div style={{ padding: '8px 12px', borderRadius: 10, background: 'var(--bg-3)', minWidth: 120 }}>
+      <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>{t}</div>
+      <div style={{ fontSize: 16, fontWeight: 800, color: aviso ? 'var(--orange)' : 'var(--ink)' }}>{v}</div>
+    </div>
+  );
+  return (
+    <div style={{ borderTop: '1px solid var(--line)', paddingTop: 14, display: 'grid', gap: 10 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <b style={{ fontSize: 15 }}>Estado del servidor</b>
+        <button className="btn btn-sm btn-outline" onClick={cargar}>Actualizar</button>
+      </div>
+      {error && <p style={{ margin: 0, fontSize: 13, color: 'var(--orange)' }}>{error}</p>}
+      {d && (
+        <>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {dato('Arrancado hace', d.arrancadoHaceMin >= 60 ? `${Math.floor(d.arrancadoHaceMin / 60)} h ${d.arrancadoHaceMin % 60} min` : `${d.arrancadoHaceMin} min`)}
+            {dato('Memoria', `${d.memoriaMb} MB`, d.memoriaMb > 450)}
+            {dato('Respuesta de la base', `${d.baseMs} ms`, d.baseMs > 500)}
+            {dato('Conexiones propias', `${d.pool.total} de ${d.pool.max} · ${d.pool.libres} libres`)}
+            {dato('Esperando conexión', String(d.pool.esperando), d.pool.esperando > 0)}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+            En la base (20 como máximo, compartidas con Aim-Tul):{' '}
+            {d.conexionesBase.map(c => `${c.n} ${c.state || '?'} desde ${c.ip || 'local'}`).join(' · ') || '—'}
+          </div>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>Peticiones que han tardado más de 2 s</div>
+            {!d.lentas.length ? (
+              <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Ninguna desde el último arranque.</p>
+            ) : (
+              <div style={{ display: 'grid', gap: 3, fontSize: 12, fontFamily: 'var(--font-mono, monospace)', maxHeight: 260, overflowY: 'auto' }}>
+                {d.lentas.map((l, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                    <span style={{ color: 'var(--ink-3)' }}>{new Date(l.cuando).toLocaleString('es-ES', { timeZone: 'Europe/Madrid' })}</span>
+                    <b style={{ color: l.ms > 10000 ? 'var(--orange)' : 'var(--ink)' }}>{(l.ms / 1000).toFixed(1)} s</b>
+                    <span>{l.metodo} {l.ruta} → {l.estado}</span>
+                    <span style={{ color: 'var(--ink-3)' }}>base: {l.pool.total} abiertas, {l.pool.libres} libres, {l.pool.esperando} esperando</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }

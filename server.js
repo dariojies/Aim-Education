@@ -20,6 +20,7 @@ import * as verifactu from './verifactu.js';
 import { plazasConBono, reservarPlazaBono, cancelarReservaBono, ventanaReservas, hoyMadridISO } from './bonos-clases.js';
 import { filtroNombreSQL } from './buscar.js';
 import { VERSION_LEGAL } from './src/legal/textos.js';
+import compression from 'compression';
 import { filasLibroRegistro, generarLibroRegistro, prorrataDe, TIPOS_OPERACION_DEFECTO } from './libro-registro.js';
 import { PassThrough } from 'stream';
 import { escalaDe, escalasDelClub, resultadoDe, baremoDe, matriculaExamenDe } from './rangos.js';
@@ -63,15 +64,22 @@ pg.types.setTypeParser(1114, v => (v == null ? v : new Date(v.replace(' ', 'T') 
 
 // Heroku Postgres provee DATABASE_URL automáticamente.
 // En local se usan las variables individuales del .env.
+// Límites del pool (ticket #298). La base admite 20 conexiones en total y la
+// comparte con Aim-Tul, que abre hasta 10: con 8 aquí queda sitio para un
+// despliegue o una consulta a mano. Si en 20 s no hay ninguna libre, la petición
+// falla con un error claro en vez de quedarse colgada hasta que Heroku la corte
+// (que en un cobro dejaba sin saber si se había cobrado o no).
+const LIMITES_POOL = { max: 8, idleTimeoutMillis: 30000, connectionTimeoutMillis: 20000 };
 const pool = process.env.DATABASE_URL
-    ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } })
+    ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, ...LIMITES_POOL })
     : new Pool({
         host: process.env.DB_HOST,
         port: Number(process.env.DB_PORT) || 5432,
         user: process.env.DB_USER,
         password: process.env.DB_PASSWORD,
         database: process.env.DB_NAME,
-        ssl: { rejectUnauthorized: false }
+        ssl: { rejectUnauthorized: false },
+        ...LIMITES_POOL,
     });
 
 pool.on('error', (err) => {
@@ -1963,6 +1971,34 @@ app.use(cors({
     credentials: true
 }));
 app.use(express.json({ limit: '6mb' })); // 6mb para permitir subir el cartel de eventos (base64)
+
+// Respuestas comprimidas (ticket #298): el JavaScript de la web pesaba 908 KB en
+// cada carga; comprimido, unos 220 KB. Con la wifi del club o con datos se nota.
+app.use(compression());
+
+// Peticiones lentas (ticket #298). Toda respuesta que tarde más de 2 s se anota
+// —en el registro de Heroku y en memoria, las últimas 100— con cómo estaba en
+// ese momento la cola de conexiones a la base. Si un cobro vuelve a tardar, se
+// ve qué petición fue y si estaba esperando conexión. Sin la parte de ?… de la
+// dirección, que puede llevar lo que se buscaba (nombres).
+const PETICIONES_LENTAS = [];
+const UMBRAL_LENTA_MS = 2000;
+app.use((req, res, next) => {
+    const inicio = process.hrtime.bigint();
+    res.on('finish', () => {
+        const ms = Number(process.hrtime.bigint() - inicio) / 1e6;
+        if (ms < UMBRAL_LENTA_MS) return;
+        const fila = {
+            cuando: new Date().toISOString(), metodo: req.method, ruta: req.originalUrl.split('?')[0],
+            estado: res.statusCode, ms: Math.round(ms),
+            pool: { total: pool.totalCount, libres: pool.idleCount, esperando: pool.waitingCount },
+        };
+        PETICIONES_LENTAS.push(fila);
+        if (PETICIONES_LENTAS.length > 100) PETICIONES_LENTAS.shift();
+        console.warn(`[lenta] ${fila.metodo} ${fila.ruta} → ${fila.estado} en ${fila.ms} ms · base: ${fila.pool.total} conexiones, ${fila.pool.libres} libres, ${fila.pool.esperando} esperando`);
+    });
+    next();
+});
 // Redsys manda su notificación como formulario, no como JSON.
 app.use(express.urlencoded({ extended: false, limit: '256kb' }));
 
@@ -7040,6 +7076,11 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
+        // Las facturas se encadenan una detrás de otra, así que dos cobros a la
+        // vez esperan su turno para emitir. Esa espera tiene tope (ticket #298):
+        // si en 15 s no llega su turno, se deshace todo y se avisa, en vez de
+        // pasarse de los 30 s de Heroku y no saber si se cobró.
+        await client.query(`SET LOCAL lock_timeout = '15s'`);
 
         // 1) Overrides de descuento en líneas existentes.
         for (const l of (lineas || [])) {
@@ -7274,6 +7315,9 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
         // contestar, o el TPV se queda esperando y acaba en "error de conexión".
         await client.query('ROLLBACK').catch(() => {});
         if (err && err.httP) return res.status(err.httP).json({ error: err.msg });
+        if (err?.code === '55P03') {
+            return res.status(409).json({ error: 'Ahora mismo se está emitiendo otra factura y no ha llegado su turno. No se ha cobrado nada: vuelve a pulsar «Cobrar» en unos segundos.' });
+        }
         console.error('Error cobrando:', err);
         res.status(500).json({ error: err.message });
     } finally {
@@ -13345,6 +13389,30 @@ app.get('/api/admin/fichajes/vacaciones', authenticateSession, requireAdmin, req
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Estado del servidor, para el Equipo IT (ticket #298) ────────────────────
+// Cómo está el servidor ahora (memoria, conexiones a la base) y las peticiones
+// que han tardado más de 2 s desde el último arranque.
+app.get('/api/admin/diagnostico', authenticateSession, requireSeccion('equipo_it'), requirePermiso('editarEquipoIT'), async (req, res) => {
+    try {
+        const a = process.hrtime.bigint();
+        const conexiones = await pool.query(
+            `SELECT COALESCE(application_name, '') AS app, client_addr::text AS ip, state, COUNT(*)::int AS n
+             FROM pg_stat_activity WHERE usename = current_user AND pid <> pg_backend_pid()
+             GROUP BY 1, 2, 3 ORDER BY 2, 3`);
+        const pingMs = Math.round(Number(process.hrtime.bigint() - a) / 1e6);
+        const mem = process.memoryUsage();
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            arrancadoHaceMin: Math.round(process.uptime() / 60),
+            memoriaMb: Math.round(mem.rss / 1048576),
+            pool: { max: LIMITES_POOL.max, total: pool.totalCount, libres: pool.idleCount, esperando: pool.waitingCount },
+            baseMs: pingMs,
+            conexionesBase: conexiones.rows,
+            lentas: [...PETICIONES_LENTAS].reverse(),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── Equipo IT: planificación semanal ────────────────────────────────────────
 // Cada semana el Equipo IT se planifica qué días y a qué horas trabaja. Lo editan
 // el propio equipo y los superadmin; secretaría y dirección lo ven sin tocarlo.
@@ -14284,7 +14352,9 @@ if (process.env.NODE_ENV !== 'production') {
     });
 } else {
     // Prod: serve src/ images and dist/ built files
-    app.use('/src', express.static(path.join(__dirname, 'src')));
+    // Imágenes y logos: un día de caché (ticket #298); si se cambia uno, se ve
+    // al día siguiente como muy tarde.
+    app.use('/src', express.static(path.join(__dirname, 'src'), { maxAge: '1d' }));
 
     // /admin lo gestiona la SPA principal (interfaz nueva). Debe ir ANTES del
     // express.static para que no sirva el index del antiguo dist/admin/ por indexado.
@@ -14292,7 +14362,16 @@ if (process.env.NODE_ENV !== 'production') {
         res.sendFile(path.join(__dirname, 'dist/index.html'));
     });
 
-    app.use(express.static(path.join(__dirname, 'dist')));
+    // Los archivos de /assets llevan una huella en el nombre (main-DZJIYPzA.js):
+    // si cambian, cambia el nombre. Se pueden guardar un año sin preguntar
+    // (ticket #298); el index.html, en cambio, se pide siempre, que es el que
+    // apunta a los nuevos tras un despliegue.
+    app.use(express.static(path.join(__dirname, 'dist'), {
+        setHeaders(res, ruta) {
+            if (/[\\/]assets[\\/]/.test(ruta)) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+            else if (ruta.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache');
+        },
+    }));
 }
 
 app.get('/', (req, res) => {

@@ -1,11 +1,14 @@
-import React, { useState, useEffect, useCallback, createContext, useContext } from 'react';
+import React, { useState, useEffect, useCallback, createContext, useContext, lazy, Suspense } from 'react';
 import PublicLanding from './components/PublicLanding';
 import { PublicActivities, PublicNews, PublicNewsDetail } from './components/PublicActivities';
 import PublicActivity from './components/PublicActivity';
 import PublicCamp from './components/PublicCamp';
 import AuthScreen from './components/AuthScreen';
-import StudentDashboard from './components/StudentDashboard';
-import AdminApp from './components/AdminApp';
+// El panel de administración y el área de familias son lo más pesado de la web
+// y la mayoría de visitas no los abre: se descargan aparte, al entrar en ellos
+// (ticket #298). La web pública carga así bastante menos.
+const StudentDashboard = lazy(() => import('./components/StudentDashboard'));
+const AdminApp = lazy(() => import('./components/AdminApp'));
 import PublicCalendar from './components/PublicCalendar';
 import PublicLegal from './components/PublicLegal';
 import PublicContacto from './components/PublicContacto';
@@ -108,7 +111,9 @@ export default function App() {
 
   return (
     <RouterContext.Provider value={{ path, go, user }}>
-      {screen}
+      <Suspense fallback={<div style={{ padding: 40, textAlign: 'center', color: 'var(--ink-3)', fontSize: 14 }}>Cargando…</div>}>
+        {screen}
+      </Suspense>
       {/* El aviso de cookies, en toda la web salvo el panel de administración
           (allí solo está la cookie de la sesión, que no pide consentimiento). */}
       {!pathname.startsWith('/admin') && <CookieBanner />}
