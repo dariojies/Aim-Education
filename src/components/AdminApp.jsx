@@ -3931,7 +3931,7 @@ function BillingTPV({ showToast }) {
   }, []);
 
   async function elegirPagador(p) {
-    setPagador(p); setResultados([]); setQ(''); setExtras([]); setTicket(null); setPagos([{ medio: 'tarjeta', importe: '' }]); setEfectivoEntregado(''); setAplicarAnt({}); setAddAnticipo(null); setAddBono(null);
+    setPagador(p); setResultados([]); setQ(''); setExtras([]); setTicket(null); setPagos([{ medio: 'tarjeta', importe: '' }]); setEfectivoEntregado(''); setAplicarAnt({}); setAddAnticipo(null);
     await traerCesta(p.id, true);
   }
 
@@ -4019,7 +4019,7 @@ function BillingTPV({ showToast }) {
       if (r.ok && d?.recibo) {
         setTicket(d);
         showToast?.(d.facturas?.length > 1 ? `Cobrado: ${d.facturas.length} facturas emitidas.` : `Factura ${d.recibo.numeroVisible || d.recibo.numero} cobrada.`);
-        setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null); setAddBono(null);
+        setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null);
       } else if (d?.error) {
         alert(d.error);
       } else {
@@ -4034,16 +4034,15 @@ function BillingTPV({ showToast }) {
     finally { setCobrando(false); }
   }
 
-  // Guardar un extra como cargo PENDIENTE en la persona (ticket #247): si no se
-  // cobra ahora, no se pierde y queda para cobrarlo otro día.
-  async function dejarPendiente(e) {
-    const r = await fetch('/api/admin/billing/cargos/extra', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-      body: JSON.stringify({ clienteId: e.clienteId, concepto: e.concepto, mes: e.mes || null, descuentoPct: Number(e.descuentoPct) || 0 }),
-    });
+  // Quitar un concepto añadido a mano (ticket #247): como al añadirlo ya se
+  // guardó como cargo pendiente, quitarlo es borrar ese cargo.
+  async function quitarCargo(c) {
+    if (!window.confirm(`¿Quitar «${c.descripcion}» de ${c.nombre}? Deja de estar pendiente.`)) return;
+    const r = await fetch(`/api/admin/billing/cargos/${c.id}`, { method: 'DELETE', credentials: 'include' });
     const d = await r.json().catch(() => ({}));
-    if (r.ok) { setExtras(x => x.filter(y => y.key !== e.key)); showToast?.('Guardado como cargo pendiente.'); traerCesta(pagador.id); }
-    else alert(d.error || 'No se pudo guardar.');
+    if (!r.ok) { alert(d.error || 'No se pudo quitar.'); return; }
+    showToast?.(`«${c.descripcion}» quitado.`);
+    await traerCesta(pagador.id, false);
   }
 
   const imprimirTicket = () => imprimirTicketRecibo(ticket);
@@ -4128,7 +4127,7 @@ function BillingTPV({ showToast }) {
                 {pagador.esMenor && <span style={{ color: 'var(--orange)', fontWeight: 700 }}> · ⚠ el pagador es menor</span>}
               </div>
             </div>
-            <button className="btn btn-sm btn-outline" style={{ marginLeft: 'auto' }} onClick={() => { setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null); setAddBono(null); }}>Cambiar</button>
+            <button className="btn btn-sm btn-outline" style={{ marginLeft: 'auto' }} onClick={() => { setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null); }}>Cambiar</button>
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.7fr) minmax(240px, 1fr)', gap: 16, alignItems: 'start' }}>
@@ -4148,7 +4147,10 @@ function BillingTPV({ showToast }) {
                 <div key={c.id} style={{ display: 'flex', gap: 10, alignItems: 'center', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: '10px 14px', opacity: sel[c.id]?.on ? 1 : .5 }}>
                   <input type="checkbox" checked={!!sel[c.id]?.on} onChange={e => setSel(s => ({ ...s, [c.id]: { ...s[c.id], on: e.target.checked } }))} style={{ width: 18, height: 18, accentColor: 'var(--teal)' }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14 }}>{c.descripcion} <span style={{ color: 'var(--ink-3)', fontWeight: 500, fontSize: 12 }}>· {c.nombre}</span></div>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>
+                      {c.origen === 'manual' && <span style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', color: 'var(--purple)', marginRight: 6 }}>Extra</span>}
+                      {c.descripcion} <span style={{ color: 'var(--ink-3)', fontWeight: 500, fontSize: 12 }}>· {c.nombre}</span>
+                    </div>
                     <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{mesDeCargo(c)}{c.tipo === 'Material' ? ` · +${c.ivaPct}% IVA` : ''}</div>
                   </div>
                   <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 12, color: 'var(--ink-3)' }}>
@@ -4156,6 +4158,10 @@ function BillingTPV({ showToast }) {
                     <input type="number" min="0" max="100" value={sel[c.id]?.descuentoPct ?? 0} onChange={e => setSel(s => ({ ...s, [c.id]: { ...s[c.id], descuentoPct: e.target.value } }))} style={{ width: 48, padding: '4px 6px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontSize: 13, textAlign: 'center' }} />%
                   </label>
                   <div style={{ fontWeight: 800, fontFamily: 'var(--font-display)', minWidth: 66, textAlign: 'right' }}>{eurPrecio(c.precio)}</div>
+                  {c.origen === 'manual' ? (
+                    <button className="icon-btn danger" style={{ width: 28, height: 28 }} onClick={() => quitarCargo(c)}
+                      aria-label="Quitar este concepto" title="Quitar este concepto (deja de estar pendiente)"><I.Trash /></button>
+                  ) : <span style={{ width: 28 }} />}
                 </div>
               ))}
               {extras.map(e => (
@@ -4170,9 +4176,6 @@ function BillingTPV({ showToast }) {
                     </div>
                   </div>
                   <div style={{ fontWeight: 800, fontFamily: 'var(--font-display)', minWidth: 66, textAlign: 'right' }}>{eur(e.bruto ?? e.precio)}{e.concepto === ANTICIPO_CONCEPTO && e.ivaPct > 0 ? <span style={{ display: 'block', fontSize: 10, fontWeight: 500, color: 'var(--ink-3)' }}>IVA {e.ivaPct}% incl.</span> : null}</div>
-                  {e.concepto !== ANTICIPO_CONCEPTO && (
-                    <button className="btn btn-sm btn-outline" style={{ fontSize: 11, padding: '4px 8px', whiteSpace: 'nowrap' }} onClick={() => dejarPendiente(e)} title="Guardar como cargo pendiente para cobrarlo otro día">Dejar pendiente</button>
-                  )}
                   <button className="icon-btn danger" style={{ width: 26, height: 26 }} onClick={() => setExtras(x => x.filter(y => y.key !== e.key))} aria-label="Quitar"><I.X /></button>
                 </div>
               ))}
@@ -4184,14 +4187,24 @@ function BillingTPV({ showToast }) {
                 const esBonoSel = !!pSel?.esBono;
                 return (
                 <form style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 12, padding: 12 }}
-                  onSubmit={ev => {
+                  onSubmit={async ev => {
                     ev.preventDefault();
                     const p = precios.find(x => x.concepto === addExtra.concepto);
                     const persona = family.find(f => f.id === addExtra.clienteId) || pagador;
                     if (!p || !persona) return;
                     if (p.tipo === 'Mensualidad' && !addExtra.mes) return;
-                    setExtras(x => [...x, { key: Math.random().toString(36).slice(2), clienteId: persona.id, nombre: persona.nombre, concepto: p.concepto, descripcion: p.descripcion, precio: p.precio, ivaPct: p.ivaPct, tipo: p.tipo, descuentoPct: 0, mes: p.tipo === 'Mensualidad' ? addExtra.mes + '-01' : null, esBonoCatalogo: !!p.esBono, bonoClases: p.bonoClases }]);
+                    // Se guarda en el momento como cargo PENDIENTE de esa persona:
+                    // si al final no se cobra, no se pierde, y no hay que acordarse
+                    // de darle a «dejar pendiente». Si sobra, se quita con la papelera.
+                    const r = await fetch('/api/admin/billing/cargos/extra', {
+                      method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+                      body: JSON.stringify({ clienteId: persona.id, concepto: p.concepto, mes: p.tipo === 'Mensualidad' ? addExtra.mes + '-01' : null, descuentoPct: 0 }),
+                    });
+                    const d = await r.json().catch(() => ({}));
+                    if (!r.ok) { alert(d.error || 'No se pudo añadir.'); return; }
                     setAddExtra(null);
+                    await traerCesta(pagador.id, false);
+                    showToast?.(`«${p.descripcion}» añadido. Queda pendiente hasta que se cobre.`);
                   }}>
                   <select value={addExtra.clienteId} onChange={e => setAddExtra(a => ({ ...a, clienteId: e.target.value }))} required style={{ fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
                     <option value="">¿Para quién?...</option>

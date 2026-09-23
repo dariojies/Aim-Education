@@ -6873,6 +6873,8 @@ app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async
                 id: c.id, clienteId: c.cliente_id, nombre: c.name, apellidos: c.surname,
                 concepto: c.concepto, descripcion: c.descripcion, tipo: c.tipo, mes: c.mes,
                 precio: Number(c.precio), ivaPct: Number(c.iva_pct), descuentoPct: Number(c.descuento_pct),
+                // 'manual': añadido en el TPV; se puede quitar con la papelera.
+                origen: c.origen || null,
             })),
             preview,
         });
