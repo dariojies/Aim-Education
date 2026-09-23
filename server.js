@@ -8,7 +8,7 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { GoogleGenAI, Type } from '@google/genai';
 import nodemailer from 'nodemailer';
-import { calcularRecibo, calcularCobro, serieDeLinea, mesAGenerar, mesDeAlta } from './billing.js';
+import { calcularRecibo, calcularCobro, serieDeLinea, mesAGenerar, mesDeAlta, tieneMilesimas, brutoMilesimas } from './billing.js';
 import { crearRouterTulClases } from './tul-clases.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
@@ -1724,6 +1724,17 @@ async function initDb() {
         // céntimo), toma este total exacto y calcula el IVA como bruto − base, para
         // que lo que paga la familia cuadre al céntimo. NULL en el resto de cargos.
         await client.query(`ALTER TABLE aim_cargos ADD COLUMN IF NOT EXISTS importe_bruto NUMERIC(12,2)`);
+        // Precios con milésimas (ticket #301): el catálogo, y el precio que se
+        // congela en cada cargo, admiten 3 decimales para que el precio final
+        // salga redondo (35,496 + IVA = 42,95). Lo facturado sigue en céntimos.
+        // Solo se amplía si aún tiene 2: ampliar la escala no toca los valores.
+        for (const tabla of ['aim_precios', 'aim_cargos']) {
+            const col = await client.query(
+                `SELECT numeric_scale FROM information_schema.columns WHERE table_name = $1 AND column_name = 'precio'`, [tabla]);
+            if (col.rowCount && Number(col.rows[0].numeric_scale) < 3) {
+                await client.query(`ALTER TABLE ${tabla} ALTER COLUMN precio TYPE NUMERIC(10,3)`);
+            }
+        }
         // Único por (cliente, concepto, mes, destino) SOLO para los generados: así la
         // generación mensual no duplica, pero sí se puede vender el mismo artículo
         // varias veces en el mismo mes en el mostrador.
@@ -5882,6 +5893,9 @@ const serieDelBody = (body) => {
     return s;
 };
 
+// Precio del catálogo: hasta milésimas (#301), que es lo que guarda la columna.
+const precioCatalogo = (v) => Math.round((Number(v) || 0) * 1000) / 1000;
+
 // Bono de clases: el concepto lleva cuántas clases da (ticket #231).
 const datosBono = (body) => {
     const esBono = body?.esBono === true;
@@ -5900,7 +5914,7 @@ app.post('/api/admin/billing/precios', authenticateSession, requireAdmin, async 
     try {
         await pool.query(
             `INSERT INTO aim_precios (concepto, descripcion, precio, tipo, iva_pct, es_bono, bono_clases, serie_fiscal) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-            [concepto.trim(), descripcion.trim(), Number(precio) || 0, tipo, Number(ivaPct) || 0, esBono, clasesBono, serieFiscal]
+            [concepto.trim(), descripcion.trim(), precioCatalogo(precio), tipo, Number(ivaPct) || 0, esBono, clasesBono, serieFiscal]
         );
         res.status(201).json({ concepto: concepto.trim() });
     } catch (err) {
@@ -5924,7 +5938,7 @@ app.put('/api/admin/billing/precios/:concepto', authenticateSession, requireAdmi
             `UPDATE aim_precios SET descripcion=$1, precio=$2, tipo=$3, iva_pct=$4, activo=$5, es_bono=$7, bono_clases=$8,
                     serie_fiscal=$9, updated_at=NOW()
              WHERE concepto=$6 RETURNING concepto`,
-            [descripcion.trim(), Number(precio) || 0, tipo, Number(ivaPct) || 0, activo !== false, req.params.concepto, esBono, clasesBono, serieFiscal]
+            [descripcion.trim(), precioCatalogo(precio), tipo, Number(ivaPct) || 0, activo !== false, req.params.concepto, esBono, clasesBono, serieFiscal]
         );
         if (r.rowCount === 0) return res.status(404).json({ error: 'Concepto no encontrado.' });
         res.json({ success: true });
@@ -7889,18 +7903,23 @@ async function lineasVivasDeRecibo(client, reciboId) {
 // devuelve { id, importe, aDevolver }. No decide qué pasa con los cargos: de eso
 // se encarga quien la llama, porque anular y rectificar no hacen lo mismo.
 async function emitirRectificativa(client, { orig, quitadas, quedan, metodo, motivo, userId }) {
-    // Los anticipos llevan bruto fijo (ticket #243): su total con IVA es el importe
-    // bruto guardado, no base × (1+IVA), para que no baile un céntimo tampoco aquí.
-    const conIva = c => c.importe_bruto != null
+    // Hay líneas con el total con IVA cerrado, que no es base × (1+IVA): los
+    // anticipos, con su bruto guardado (#243), y las de precio con milésimas, que
+    // se rehacen con la misma cuenta que al cobrar (#301). Así no baila un céntimo
+    // tampoco al rectificar.
+    const brutoCerrado = c => c.importe_bruto != null
         ? r2Server(Number(c.importe_bruto))
-        : r2Server(Number(c.importe ?? 0) * (1 + Number(c.iva_pct) / 100));
+        : tieneMilesimas(c.precio)
+            ? brutoMilesimas({ precio: c.precio, descuentoPct: c.descuento_pct, descuentoMensPct: c.descuento_mens_pct, ivaPct: c.iva_pct })
+            : null;
+    const conIva = c => brutoCerrado(c) ?? r2Server(Number(c.importe ?? 0) * (1 + Number(c.iva_pct) / 100));
     const aDevolver = r2Server(quitadas.reduce((s, c) => s + conIva(c), 0));
     // Por diferencias: lo rectificado en negativo. Por sustitución: lo que queda correcto.
     const signo = metodo === 'diferencias' ? -1 : 1;
     const lineas = (metodo === 'diferencias' ? quitadas : quedan).map(c => ({
         c,
         base: r2Server(signo * Number(c.importe ?? 0)),
-        bruto: c.importe_bruto != null ? r2Server(signo * Number(c.importe_bruto)) : null,
+        bruto: brutoCerrado(c) != null ? r2Server(signo * brutoCerrado(c)) : null,
     }));
     const importe = r2Server(lineas.reduce((s, l) =>
         s + (l.bruto != null ? l.bruto : l.base * (1 + Number(l.c.iva_pct) / 100)), 0));

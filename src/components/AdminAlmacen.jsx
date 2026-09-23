@@ -133,7 +133,7 @@ export default function AdminAlmacen({ showToast }) {
                 const escrito = (edit.qConcepto ?? (elegido ? `${elegido.descripcion} (${elegido.concepto})` : '')).trim();
                 const busca = textoPlano(escrito);
                 const opciones = (!edit.concepto && busca)
-                  ? libres.filter(c => textoPlano(`${c.descripcion} ${c.concepto}`).includes(busca)).slice(0, 8)
+                  ? libres.filter(c => textoPlano(`${c.descripcion} ${c.concepto}`).includes(busca))
                   : [];
                 return (
                   <div style={{ position: 'relative', marginTop: 4 }}>
@@ -148,7 +148,8 @@ export default function AdminAlmacen({ showToast }) {
                         style={{ position: 'absolute', right: 6, top: 6, background: 'none', border: 0, cursor: 'pointer', color: 'var(--ink-3)', fontFamily: 'inherit', fontSize: 12 }}>✕</button>
                     )}
                     {opciones.length > 0 && (
-                      <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 6, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, marginTop: 2, overflow: 'hidden', maxHeight: 240, overflowY: 'auto', boxShadow: 'var(--shadow)' }}>
+                      <div onMouseDown={ev => ev.preventDefault()}
+                        style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 6, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, marginTop: 2, maxHeight: 300, overflowY: 'auto', boxShadow: 'var(--shadow)' }}>
                         {opciones.map(c => (
                           <button key={c.concepto} type="button"
                             onMouseDown={ev => {

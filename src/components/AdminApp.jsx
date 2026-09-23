@@ -4155,7 +4155,7 @@ function BillingTPV({ showToast }) {
                     dto
                     <input type="number" min="0" max="100" value={sel[c.id]?.descuentoPct ?? 0} onChange={e => setSel(s => ({ ...s, [c.id]: { ...s[c.id], descuentoPct: e.target.value } }))} style={{ width: 48, padding: '4px 6px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontSize: 13, textAlign: 'center' }} />%
                   </label>
-                  <div style={{ fontWeight: 800, fontFamily: 'var(--font-display)', minWidth: 66, textAlign: 'right' }}>{eur(c.precio)}</div>
+                  <div style={{ fontWeight: 800, fontFamily: 'var(--font-display)', minWidth: 66, textAlign: 'right' }}>{eurPrecio(c.precio)}</div>
                 </div>
               ))}
               {extras.map(e => (
@@ -4204,19 +4204,30 @@ function BillingTPV({ showToast }) {
                       onChange={e => setAddExtra(a => ({ ...a, q: e.target.value, concepto: '' }))}
                       style={{ width: '100%', fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: `1px solid ${addExtra.concepto ? 'var(--teal)' : 'var(--line)'}`, background: 'var(--bg-2)' }} />
                     {(() => {
-                      const qc = (addExtra.q || '').trim().toLowerCase();
-                      if (!qc || addExtra.concepto) return null;
-                      const opts = precios.filter(p => p.concepto !== ANTICIPO_CONCEPTO
-                        && (p.descripcion.toLowerCase().includes(qc) || String(p.concepto).toLowerCase().includes(qc))).slice(0, 8);
+                      // Todos los que coincidan, sin tope (tickets #300 y #301: antes
+                      // solo salían 8 y había artículos que no había forma de cobrar).
+                      // Sin escribir nada salen todos, para poder recorrer el catálogo.
+                      if (addExtra.concepto) return null;
+                      const qc = (addExtra.q || '').trim();
+                      const opts = precios
+                        .filter(p => p.concepto !== ANTICIPO_CONCEPTO && coincideBusqueda(qc, p.descripcion, p.concepto))
+                        .sort((a, b) => a.descripcion.localeCompare(b.descripcion, 'es', { numeric: true }));
                       if (!opts.length) return null;
                       return (
-                        <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 6, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, marginTop: 2, overflow: 'hidden', maxHeight: 240, overflowY: 'auto', boxShadow: 'var(--shadow)' }}>
+                        <div onMouseDown={e => e.preventDefault()}
+                          style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 6, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, marginTop: 2, maxHeight: 320, overflowY: 'auto', boxShadow: 'var(--shadow)' }}>
+                          <div style={{ padding: '6px 12px', fontSize: 11, color: 'var(--ink-3)', borderBottom: '1px solid var(--line-2)', position: 'sticky', top: 0, background: 'var(--bg-2)' }}>
+                            {opts.length} artículo{opts.length !== 1 ? 's' : ''}{qc ? '' : ' · escribe para filtrar'}
+                          </div>
                           {opts.map(p => (
                             <button key={p.concepto} type="button"
-                              onMouseDown={e => { e.preventDefault(); setAddExtra(a => ({ ...a, concepto: p.concepto, q: `${p.descripcion} (${eur(p.precio)})` })); }}
+                              onMouseDown={e => { e.preventDefault(); setAddExtra(a => ({ ...a, concepto: p.concepto, q: `${p.descripcion} (${eur(conIvaCatalogo(p))})` })); }}
                               style={{ display: 'flex', justifyContent: 'space-between', gap: 8, width: '100%', textAlign: 'left', padding: '8px 12px', background: 'none', border: 0, borderBottom: '1px solid var(--line-2)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13 }}>
                               <span>{p.descripcion} <span style={{ color: 'var(--ink-3)', fontSize: 11 }}>· {p.concepto}</span></span>
-                              <b>{eur(p.precio)}</b>
+                              <span style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                <b>{eur(conIvaCatalogo(p))}</b>
+                                {Number(p.ivaPct) > 0 && <span style={{ display: 'block', fontSize: 10, color: 'var(--ink-3)' }}>{eurPrecio(p.precio)} + {p.ivaPct}%</span>}
+                              </span>
                             </button>
                           ))}
                         </div>
@@ -4681,15 +4692,30 @@ function BillingRecibos({ showToast }) {
 
 const TIPOS_CONCEPTO = ['Mensualidad', 'Material', 'Otros'];
 const eur = (n) => `${Number(n || 0).toFixed(2)} €`;
+// Precios del catálogo: pueden llevar milésimas (#301) para que el precio final
+// salga redondo; se enseñan con 3 decimales solo cuando los tienen.
+const conMilesimas = (n) => { const c = Math.abs(Number(n) || 0) * 100; return Math.abs(c - Math.round(c)) > 1e-6; };
+const eurPrecio = (n) => (conMilesimas(n) ? `${Number(n).toFixed(3)} €` : eur(n));
+// Lo que paga la familia por un concepto del catálogo: la misma cuenta que el
+// motor de cobro (con milésimas, redondeando solo al final).
+const conIvaCatalogo = (p) => {
+  const pct = Number(p.ivaPct ?? p.iva_pct) || 0;
+  const precio = Number(p.precio) || 0;
+  const base = conMilesimas(precio) ? precio : Math.round(precio * 100) / 100;
+  return conMilesimas(precio)
+    ? Math.round(Number((precio * (1 + pct / 100) * 100).toFixed(6))) / 100
+    : Math.round(Number((base * 100).toFixed(6))) / 100 + Math.round(Number((base * pct).toFixed(6))) / 100;
+};
 
 // Buscador de concepto con autocompletado (#220, punto 11): en vez de un
 // desplegable con cientos de conceptos, se escribe y filtra por código o nombre.
 function AutocompletarConcepto({ precios, onElegir, placeholder = 'Escribe para buscar un concepto...' }) {
   const [q, setQ] = useState('');
   const [abierto, setAbierto] = useState(false);
-  const ql = q.trim().toLowerCase();
-  const matches = ql
-    ? precios.filter(p => p.activo && `${p.concepto} ${p.descripcion}`.toLowerCase().includes(ql)).slice(0, 12)
+  // Todos los que coincidan, sin tope (antes 12): con tope había conceptos que
+  // no aparecían nunca (#301).
+  const matches = q.trim()
+    ? precios.filter(p => p.activo && coincideBusqueda(q, p.concepto, p.descripcion))
     : [];
   return (
     <div style={{ position: 'relative', flex: 1, minWidth: 220 }}>
@@ -4698,12 +4724,15 @@ function AutocompletarConcepto({ precios, onElegir, placeholder = 'Escribe para 
         placeholder={placeholder}
         style={{ width: '100%', fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)' }} />
       {abierto && matches.length > 0 && (
-        <div style={{ position: 'absolute', zIndex: 30, top: '100%', left: 0, right: 0, marginTop: 4, background: 'var(--bg-1)', border: '1px solid var(--line)', borderRadius: 10, maxHeight: 240, overflowY: 'auto', boxShadow: '0 8px 24px rgba(0,0,0,.12)' }}>
+        // Pinchar en la barra para bajar no quita el foco del campo: si lo quitara,
+        // la lista se cerraba y no había forma de llegar a los de abajo (#300).
+        <div onMouseDown={e => e.preventDefault()}
+          style={{ position: 'absolute', zIndex: 30, top: '100%', left: 0, right: 0, marginTop: 4, background: 'var(--bg-1)', border: '1px solid var(--line)', borderRadius: 10, maxHeight: 300, overflowY: 'auto', boxShadow: '0 8px 24px rgba(0,0,0,.12)' }}>
           {matches.map(p => (
             <button key={p.concepto} type="button"
               onMouseDown={e => { e.preventDefault(); onElegir(p.concepto); setQ(''); setAbierto(false); }}
               style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', cursor: 'pointer', border: 'none', borderBottom: '1px solid var(--line)', background: 'transparent', fontFamily: 'inherit', fontSize: 13, color: 'var(--ink)' }}>
-              <b>{p.descripcion}</b> <span style={{ color: 'var(--ink-3)' }}>· {p.concepto} · {eur(p.precio)}</span>
+              <b>{p.descripcion}</b> <span style={{ color: 'var(--ink-3)' }}>· {p.concepto} · {eurPrecio(p.precio)}</span>
             </button>
           ))}
         </div>
@@ -5108,7 +5137,7 @@ function AdminBilling({ showToast }) {
           : precios;
         const exportarCatalogo = () => {
           const filas = [['Código', 'Concepto', 'Tipo', 'Precio base', 'IVA %', 'Se factura en', 'Estado'],
-            ...preciosFiltrados.map(p => [p.concepto, p.descripcion, p.tipo, Number(p.precio).toFixed(2), p.ivaPct,
+            ...preciosFiltrados.map(p => [p.concepto, p.descripcion, p.tipo, Number(p.precio).toFixed(conMilesimas(p.precio) ? 3 : 2), p.ivaPct,
               nombreSerie(p.serieEfectiva || serieAutomatica(p)), p.activo ? 'Activo' : 'Inactivo'])];
           const csv = '﻿' + filas.map(f => f.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(';')).join('\r\n');
           const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
@@ -5147,7 +5176,10 @@ function AdminBilling({ showToast }) {
                     <div className="sec">{p.concepto}</div>
                   </div>
                   <span style={{ fontSize: 12 }}>{p.tipo}</span>
-                  <span style={{ fontWeight: 700 }}>{eur(p.precio)}</span>
+                  <span style={{ fontWeight: 700 }} title={p.ivaPct > 0 ? `Con IVA: ${eur(conIvaCatalogo(p))}` : undefined}>
+                    {eurPrecio(p.precio)}
+                    {p.ivaPct > 0 && <span style={{ display: 'block', fontSize: 10, fontWeight: 500, color: 'var(--ink-3)' }}>{eur(conIvaCatalogo(p))} con IVA</span>}
+                  </span>
                   <span style={{ fontSize: 12, fontWeight: 700, color: p.ivaPct > 0 ? 'var(--orange)' : 'var(--ink-3)' }}>{p.ivaPct}%</span>
                   <span style={{ fontSize: 11, color: p.serieFiscal ? 'var(--purple)' : 'var(--ink-3)', fontWeight: p.serieFiscal ? 700 : 400 }}
                     title={p.serieFiscal ? 'Fijado a mano' : 'Automático, por su tipo y su IVA'}>
@@ -5366,18 +5398,39 @@ function AdminBilling({ showToast }) {
               <div className="field-row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                 <div className="field">
                   <label>Precio sin IVA (base)</label>
-                  <input type="number" step="0.01" min="0" value={editPrecio.precio} onChange={e => setEditPrecio(p => ({ ...p, precio: e.target.value }))} required />
+                  {/* Hasta milésimas (#301): 35,496 + 21 % = 42,95. */}
+                  <input type="number" step="0.001" min="0" value={editPrecio.precio}
+                    onChange={e => setEditPrecio(p => ({ ...p, precio: e.target.value, pvp: undefined }))} required />
                 </div>
                 <div className="field">
                   <label>IVA %</label>
-                  <select value={editPrecio.ivaPct} onChange={e => setEditPrecio(p => ({ ...p, ivaPct: Number(e.target.value) }))}>
+                  <select value={editPrecio.ivaPct} onChange={e => setEditPrecio(p => ({ ...p, ivaPct: Number(e.target.value), pvp: undefined }))}>
                     <option value={0}>0% (exento)</option>
                     <option value={21}>21%</option>
                   </select>
                 </div>
               </div>
+              {/* El precio final: se ve lo que pagará la familia y, si se escribe
+                  aquí, se calcula la base con las milésimas que hagan falta para
+                  que salga justo ese precio (#300). */}
+              {Number(editPrecio.ivaPct) > 0 && (
+                <div className="field" style={{ maxWidth: 260 }}>
+                  <label>Precio final con IVA</label>
+                  <input type="number" step="0.01" min="0"
+                    value={editPrecio.pvp ?? (editPrecio.precio === '' || editPrecio.precio == null ? '' : conIvaCatalogo(editPrecio).toFixed(2))}
+                    onChange={e => {
+                      const v = e.target.value;
+                      const pct = Number(editPrecio.ivaPct) || 0;
+                      const baseCalc = v === '' ? '' : String(Math.round(Number(v) / (1 + pct / 100) * 1000) / 1000);
+                      setEditPrecio(p => ({ ...p, pvp: v, precio: baseCalc }));
+                    }}
+                    onBlur={() => setEditPrecio(p => ({ ...p, pvp: undefined }))} />
+                  <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Escribe aquí el precio que quieres cobrar y se calcula la base.</span>
+                </div>
+              )}
               <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
-                El IVA se suma encima del precio. Cambiar el precio aquí <b>no</b> toca los cargos ya generados: cada uno guarda el suyo.
+                El IVA se suma encima del precio. La base admite hasta 3 decimales para que el precio final salga redondo;
+                en recibos y facturas todo va en céntimos. Cambiar el precio aquí <b>no</b> toca los cargos ya generados: cada uno guarda el suyo.
               </p>
               {/* Serie de facturación (ticket #291): en qué factura sale este
                   concepto cuando se cobra junto con otras cosas. */}

@@ -14,6 +14,11 @@
 //      se aplica sobre esos 80€ → 76€.
 //   4. El IVA de cada línea sale de su propio iva_pct (congelado en el cargo).
 //      El precio guardado es SIEMPRE base imponible: el IVA se suma encima.
+//   5. El catálogo admite milésimas (ticket #301) para que el precio final salga
+//      redondo: 35,496 + 21 % = 42,95. Lo facturado sigue en céntimos, pero el
+//      total de esas líneas se saca del precio SIN redondear y el IVA es la
+//      diferencia con la base, como con los anticipos (#243). Si se redondeara
+//      la base primero saldría 35,50 + 7,46 = 42,96.
 // =============================================================================
 
 // Redondeo a 2 decimales, medio céntimo hacia arriba (ticket #243): si el tercer
@@ -36,6 +41,20 @@ export function r2(n) {
 function num(v) {
     const n = Number(v);
     return Number.isFinite(n) ? n : 0;
+}
+
+// ¿El precio lleva milésimas (35,496) y no solo céntimos? (regla 5, #301)
+export function tieneMilesimas(precio) {
+    const centimos = Math.abs(num(precio)) * 100;
+    return Math.abs(centimos - Math.round(centimos)) > 1e-6;
+}
+
+// El total con IVA de una línea con milésimas: del precio sin redondear, con
+// sus descuentos, y redondeado solo al final. Lo usan el motor y la rectificativa,
+// para que un mismo cargo cueste lo mismo al cobrarlo y al rectificarlo.
+export function brutoMilesimas({ precio, descuentoPct = 0, descuentoMensPct = 0, ivaPct = 0 }) {
+    const sinRedondear = num(precio) * (1 - num(descuentoPct) / 100) * (1 - num(descuentoMensPct) / 100);
+    return r2(sinRedondear * (1 + num(ivaPct) / 100));
 }
 
 // Los meses pueden venir como Date o como 'YYYY-MM-DD'; agrupamos por año-mes.
@@ -93,12 +112,16 @@ export function calcularRecibo(lineas) {
         const base = r2(trasManual * (1 - descuentoMensPct / 100));
         const ivaPct = num(l.ivaPct);
 
-        // Total FIJO de la línea (ticket #243, solo anticipos): en vez de grosar la
-        // base (base × (1+IVA), que puede bailar un céntimo), se respeta el bruto
-        // exacto y el IVA sale de restar (bruto − base). Así lo que paga la familia
-        // cuadra al céntimo aunque el desglose no case con base × tipo justo.
+        // Total FIJO de la línea: en vez de grosar la base (base × (1+IVA), que
+        // puede bailar un céntimo), se respeta el bruto exacto y el IVA sale de
+        // restar (bruto − base). Así lo que paga la familia cuadra al céntimo
+        // aunque el desglose no case con base × tipo justo. Lo llevan los
+        // anticipos (#243) y los precios con milésimas (regla 5, #301).
         const brutoFijo = (l.brutoFijo !== undefined && Number.isFinite(Number(l.brutoFijo)))
-            ? r2(Number(l.brutoFijo)) : null;
+            ? r2(Number(l.brutoFijo))
+            : tieneMilesimas(precio)
+                ? brutoMilesimas({ precio, descuentoPct, descuentoMensPct, ivaPct })
+                : null;
         const iva = brutoFijo != null ? r2(brutoFijo - base) : r2(base * ivaPct / 100);
         const total = brutoFijo != null ? brutoFijo : r2(base + iva);
 
