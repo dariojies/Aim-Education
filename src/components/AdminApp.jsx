@@ -447,7 +447,7 @@ const etiquetaRolSimple = (r) => ({
   club_owner: 'dirección', superadmin: 'admin',
 }[r] || r || 'alumno');
 
-function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos }) {
+function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos, onNuevo }) {
   const [users, setUsers] = useState([]);
   const [rangos, setRangos] = useState({});
   const [loading, setLoading] = useState(true);
@@ -528,6 +528,10 @@ function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos }) {
         </div>
         <div style={{ flex: 1 }} />
         <button className="btn btn-outline btn-sm" onClick={handleExportCSV}>Exportar CSV</button>
+        {/* Dar de alta, solo quien puede editar fichas (un instructor las ve, no las toca). */}
+        {onNuevo && permisos?.editarAlumnos !== false && (
+          <button className="btn btn-primary btn-sm" onClick={onNuevo}><I.Plus /> Nuevo alumno</button>
+        )}
       </div>
 
       <div className="data-table">
@@ -1770,7 +1774,7 @@ function InformeDesglosePersonas() {
   );
 }
 
-function AdminNews({ refreshTrigger, onEditPost }) {
+function AdminNews({ refreshTrigger, onEditPost, onNuevo }) {
   const [posts, setPosts] = useState([]);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -1817,6 +1821,7 @@ function AdminNews({ refreshTrigger, onEditPost }) {
         <button className={`filter-pill ${statusFilter === "published" ? "is-active" : ""}`} onClick={() => setStatusFilter("published")}>Publicados · {published}</button>
         <button className={`filter-pill ${statusFilter === "draft" ? "is-active" : ""}`} onClick={() => setStatusFilter("draft")}>Borradores · {drafts}</button>
         <div style={{ flex: 1 }} />
+        {onNuevo && <button className="btn btn-primary btn-sm" onClick={onNuevo}><I.Plus /> Nueva noticia</button>}
       </div>
 
       <div className="data-table">
@@ -6945,28 +6950,11 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
               </div>
             </div>
             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              {/* Arriba solo va la campanita. Había una lupa que nunca se llegó a
+                  hacer (solo avisaba de «próximamente») y un «Nuevo» que solo
+                  servía en Alumnos y en Noticias y en el resto no hacía nada:
+                  ahora cada apartado que crea algo lleva su propio botón. */}
               <Campanita onIr={(destino) => go(destino)} />
-              <button className="btn btn-icon" onClick={() => alert("Función de búsqueda global disponible próximamente.")}><I.Search /></button>
-              {!['classes', 'events', 'support', 'camp', 'billing', 'payments', 'reportes', 'contactos'].includes(view) && (
-                <button
-                  className="btn btn-primary"
-                  onClick={() => {
-                    if (view === 'students') {
-                      setEditingItem({ firstName: '', lastName: '', email: '', isSuperAdmin: false });
-                      setActiveModal('new-student');
-                    } else if (view === 'news') {
-                      setEditingItem({ title: '', slug: '', excerpt: '', content: '', coverImageUrl: '', category: 'general', status: 'draft' });
-                      setActiveModal('new-post');
-                    } else if (view === 'groups') {
-                      setEditingItem({ name: '', activity: 'taekwondo', studentIds: [] });
-                      setActiveModal('new-group');
-                    }
-                  }}
-                  disabled={['overview', 'settings'].includes(view)}
-                >
-                  <I.Plus /> Nuevo
-                </button>
-              )}
             </div>
           </div>
 
@@ -6978,6 +6966,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
             ? <AdminOverview setView={setView} refreshTrigger={refreshTrigger} showToast={showToast} />
             : <ResumenInstructor setView={setView} refreshTrigger={refreshTrigger} />)}
           {ver("students") && <AdminStudents refreshTrigger={refreshTrigger} showToast={showToast} permisos={permisos}
+            onNuevo={() => { setEditingItem({ firstName: '', lastName: '', email: '', isSuperAdmin: false }); setActiveModal('new-student'); }}
             onEditUser={abrirFicha} />}
           {ver("familias") && (
             <AdminFamilias showToast={showToast} onEditUser={async (p) => {
@@ -7009,7 +6998,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
             />
           )}
           {ver("payments") && <AdminGastos refreshTrigger={refreshTrigger} showToast={showToast} />}
-          {ver("news") && <AdminNews refreshTrigger={refreshTrigger} onEditPost={(p) => { setEditingItem({ ...p, coverImageUrl: p.cover_image_url }); setActiveModal('edit-post'); }} />}
+          {ver("news") && <AdminNews refreshTrigger={refreshTrigger} onEditPost={(p) => { setEditingItem({ ...p, coverImageUrl: p.cover_image_url }); setActiveModal('edit-post'); }}
+            onNuevo={() => { setEditingItem({ title: '', slug: '', excerpt: '', content: '', coverImageUrl: '', category: 'general', status: 'draft' }); setActiveModal('new-post'); }} />}
           {ver("events") && <AdminEvents showToast={showToast} permisos={permisos} />}
           {ver("camp") && <AdminCamp showToast={showToast} permisos={permisos} />}
           {ver("billing") && <AdminBilling showToast={showToast} />}
