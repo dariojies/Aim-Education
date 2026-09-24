@@ -23,7 +23,19 @@ function franjasDe(inicio, fin) {
   const paso = (b - a) / 3;
   return [1, 2, 3].map(n => ({ n, label: `${hhmm(Math.round(a + paso * (n - 1)))}–${hhmm(Math.round(a + paso * n))}` }));
 }
-const franjasTxt = (arr) => !arr ? '' : arr.length === 3 ? 'Hora entera' : arr.map(f => f.label || f).join(', ');
+// Una franja como texto. El servidor las manda como { n, desde, hasta } (o con
+// label si la sesión no tiene horas); antes se pintaba el objeto tal cual y en la
+// lista salía «[object Object]».
+const franjaTxt = (f) => (typeof f === 'string' ? f
+  : f?.label || (f?.desde ? `${f.desde}–${f.hasta}` : f?.n ? `${f.n}ª franja` : ''));
+const franjasTxt = (arr) => {
+  if (!arr?.length) return '';
+  if (arr.length === 3) {
+    const [a, , c] = arr;
+    return a?.desde && c?.hasta ? `Hora entera (${a.desde}–${c.hasta})` : 'Hora entera';
+  }
+  return arr.map(franjaTxt).join(', ');
+};
 
 export default function AdminSpeaking({ showToast }) {
   const [clases, setClases] = useState([]);
