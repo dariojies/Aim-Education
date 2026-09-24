@@ -138,8 +138,8 @@ export default function PublicActivity({ id }) {
                 <div className="quick-stats">
                   {/* Un «0» enorme no dice nada bueno: si aún no hay grupos, «pronto». */}
                   <div className="qs">
-                    <div className="v" style={act.grupos?.length ? null : { fontSize: 20 }}>{act.grupos?.length || (act.grupos ? 'Pronto' : '—')}</div>
-                    <div className="l">{act.grupos?.length === 1 ? 'Grupo este curso' : 'Grupos este curso'}</div>
+                    <div className="v" style={act.grupos?.length ? null : { fontSize: 20 }}>{act.grupos?.length || (act.sinHorario ? 'A medida' : act.grupos ? 'Pronto' : '—')}</div>
+                    <div className="l">{!act.grupos?.length && act.sinHorario ? 'Horario' : act.grupos?.length === 1 ? 'Grupo este curso' : 'Grupos este curso'}</div>
                   </div>
                   <div className="qs"><div className="v" style={{ fontSize: 20 }}>{edades || '—'}</div><div className="l">Edades</div></div>
                   <div className="qs"><div className="v">{cursoActual()}</div><div className="l">Curso</div></div>
@@ -200,9 +200,10 @@ export default function PublicActivity({ id }) {
                 </h3>
                 <div style={{ display: "grid", gap: 14, marginTop: 18 }}>
                   <InfoRow label="Edad" value={edades || 'Consúltanos'} />
-                  {act.grupos && <InfoRow label="Grupos" value={act.grupos.length ? `${act.grupos.length} este curso` : 'Próximamente'} />}
+                  {act.grupos && <InfoRow label="Grupos" value={act.grupos.length ? `${act.grupos.length} este curso` : act.sinHorario ? 'Horario a medida' : 'Próximamente'} />}
                   <InfoRow label="Curso" value={`${cursoActual()} · septiembre a junio`} />
                   <InfoRow label="Precios" value="Te informamos sin compromiso" />
+                  <InfoRow label="Para probar" value="Pase Explorador: 3 sesiones" />
                 </div>
                 <button className="btn btn-block btn-lg" style={{ marginTop: 22, background: "var(--act)", color: "white" }} onClick={() => go("/auth?mode=register")}>
                   Reservar mi plaza
@@ -228,6 +229,10 @@ export default function PublicActivity({ id }) {
               <div style={{ padding: 40, textAlign: "center", color: "var(--ink-3)", fontSize: 16 }}>Cargando horarios…</div>
             ) : !act.grupos ? (
               <div className="grupos-vacio">No hemos podido cargar los horarios. Vuelve a intentarlo en un momento o llámanos al 956 742 216.</div>
+            ) : grupos.length === 0 && act.sinHorario ? (
+              <div className="grupos-vacio">
+                {act.sinHorario} <a href={`/contacto?sobre=${sobre}`} onClick={(e) => { e.preventDefault(); go(`/contacto?sobre=${sobre}`); }}>Pedir información</a>
+              </div>
             ) : grupos.length === 0 ? (
               <div className="grupos-vacio">
                 Todavía no hay grupos publicados para este curso. <a href={`/contacto?sobre=${sobre}`} onClick={(e) => { e.preventDefault(); go(`/contacto?sobre=${sobre}`); }}>Escríbenos</a> y te avisamos.

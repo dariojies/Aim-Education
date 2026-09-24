@@ -113,11 +113,14 @@ const ACTIVITIES = [
   },
   {
     id: "funcional", name: "Entrenamiento Funcional", color: "#FF4F15", className: "act-funcional", icon: "weight-lifter",
+    // Se ofrece aunque no esté en el horario del panel (#303): sale en la web
+    // igualmente, con su página, y cuenta entre las actividades.
+    siempre: true, sinHorario: "Los horarios del entrenamiento funcional se organizan a medida. Escríbenos y te contamos.",
     iconAsset: "/src/submarcas/simple/Entrenamiento.png",
     fullAsset: "/src/submarcas/Entrenamiento.png",
     tag: "Deporte", lede: "Activa tu cuerpo y supera tus metas con nuestro funcional.",
     long: "Entrenamiento integral: fuerza, movilidad, resistencia y trabajo de core en sesiones dinámicas.",
-    ages: "Adultos",
+    ages: null,
     aprender: [
       "Fuerza funcional y movilidad",
       "Trabajo de core y postura",
@@ -218,8 +221,8 @@ const ACTIVITIES = [
     iconAsset: "/src/submarcas/simple/CampVerano.png",
     fullAsset: "/src/submarcas/CampVerano.png",
     programa: true, enlace: "/campamento",
-    tag: "Programas", lede: "Semanas de aventura, aprendizaje y diversión en verano.",
-    long: "Deporte por la mañana e inglés y talleres creativos por la tarde, con una temática distinta cada semana.",
+    tag: "Programas", lede: "Todo el verano de aventura, aprendizaje y diversión.",
+    long: "Desde que acaba el cole hasta que empieza en septiembre, cada semana con su tema: deporte, inglés y talleres creativos, solo por la mañana.",
     ages: "De 4 a 14 años",
     aprender: [],
   },
@@ -462,7 +465,7 @@ function AimFooter() {
         </div>
 
         <div className="foot-bottom">
-          <span>© 2026 Aim Education · AIM Deporte y Educación S.L. · CIF B93870103</span>
+          <span>© 2026 Aim Education · AIM Deporte y Educación S.L.</span>
           <span>Algeciras · Innovación, Excelencia y Pasión</span>
         </div>
       </div>

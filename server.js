@@ -2589,6 +2589,10 @@ function mapActivityId(name = '', type = '') {
     return idActividadConocida(name, type) || 'funcional';
 }
 
+// Actividades que se ofrecen aunque no estén en el horario del panel (#303):
+// cuentan en la portada y tienen su página en la web.
+const ACTIVIDADES_SIN_HORARIO = ['funcional'];
+
 // La dirección de una actividad nueva en la web: «Ajedrez» → /actividades/ajedrez.
 const slugWeb = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -4714,21 +4718,46 @@ async function leerPortada() {
 app.get('/api/landing', async (req, res) => {
     try {
         const cfg = await leerPortada();
-        // Los números salen de la base: si se inventan, envejecen mal.
-        const [alumnos, profes, acts] = await Promise.all([
-            pool.query(`SELECT COUNT(*)::int n FROM users WHERE club_id = $1 AND role = 'student'`, [AIM_CLUB_ID]),
-            pool.query(`SELECT COUNT(*)::int n FROM users WHERE club_id = $1 AND role IN ('instructor','club_owner')`, [AIM_CLUB_ID]),
-            pool.query(`SELECT COUNT(*)::int n FROM tul_activities WHERE club_id = $1`, [AIM_CLUB_ID]),
+        // Los números salen de la base y dicen lo que hay (#303): nada de
+        // venirse arriba.
+        //  - Alumnos: los que están ahora en alguna clase, no todas las cuentas
+        //    que se han creado alguna vez (eso daba 850+ con ~200 en clase).
+        //    Redondeado a la decena de arriba.
+        //  - Profesores: quienes dan alguna clase según el horario.
+        //  - Actividades: las del horario, más las que se ofrecen sin estar en
+        //    él (Entrenamiento Funcional).
+        const [alumnos, profes, acts, pase] = await Promise.all([
+            pool.query(
+                `SELECT COUNT(DISTINCT gs.student_id)::int n FROM tul_group_students gs
+                 JOIN tul_groups g ON g.group_id = gs.group_id
+                 JOIN tul_activities a ON a.activity_id = g.activity_id WHERE a.club_id = $1`, [AIM_CLUB_ID]),
+            pool.query(
+                `SELECT COUNT(DISTINCT d)::int n FROM (
+                    SELECT COALESCE(i->>'id', s->>'instructorId') AS d
+                    FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+                    CROSS JOIN LATERAL jsonb_array_elements(COALESCE(g.sessions::jsonb, '[]'::jsonb)) s
+                    LEFT JOIN LATERAL jsonb_array_elements(COALESCE(s->'instructors', '[]'::jsonb)) i ON true
+                    WHERE a.club_id = $1) x
+                 WHERE d IS NOT NULL AND d <> ''`, [AIM_CLUB_ID]),
+            pool.query(`SELECT name, activity_type FROM tul_activities WHERE club_id = $1`, [AIM_CLUB_ID]),
+            // El Pase Explorador (#304): 3 sesiones para probar. Su precio, del catálogo.
+            pool.query(`SELECT precio, iva_pct FROM aim_precios WHERE concepto = '00015' AND activo = true`),
         ]);
         const anos = new Date().getFullYear() - cfg.anoFundacion;
-        // Se redondea a la baja en centenas para que no cante que baje un día.
-        const redondo = (n) => (n >= 100 ? `${Math.floor(n / 50) * 50}+` : String(n));
+        const decenaArriba = (n) => String(n > 0 ? Math.ceil(n / 10) * 10 : 0);
+        const actividades = new Set(acts.rows.map(r => idActividadConocida(r.name, r.activity_type) || slugWeb(r.name)));
+        for (const id of ACTIVIDADES_SIN_HORARIO) actividades.add(id);
+        const p = pase.rows[0];
+        const precioPase = p ? Math.round(Number(p.precio) * (1 + Number(p.iva_pct) / 100) * 100) / 100 : null;
 
         res.set('Cache-Control', 'no-store');
         res.json({
             cta: { texto: cfg.ctaTexto, url: cfg.ctaUrl },
             anoFundacion: cfg.anoFundacion,
             historia: cfg.historia || '',
+            paseExplorador: precioPase != null
+                ? `${precioPase.toLocaleString('es-ES', { minimumFractionDigits: precioPase % 1 ? 2 : 0, maximumFractionDigits: 2 })} €`
+                : null,
             mosaico: cfg.mosaico,
             columnas: cfg.columnas, filas: cfg.filas,
             testimonios: cfg.testimonios,
@@ -4737,9 +4766,9 @@ app.get('/api/landing', async (req, res) => {
             empleo: cfg.empleo?.activo ? cfg.empleo : { activo: false },
             datos: [
                 { v: `${anos}`, l: 'Años de experiencia' },
-                { v: redondo(alumnos.rows[0].n), l: 'Alumnos y alumnas' },
-                { v: String(profes.rows[0].n), l: 'Profesores titulados' },
-                { v: String(acts.rows[0].n), l: 'Actividades distintas' },
+                { v: decenaArriba(alumnos.rows[0].n), l: 'Alumnos y alumnas' },
+                { v: String(profes.rows[0].n), l: 'Profesores' },
+                { v: String(actividades.size), l: 'Actividades distintas' },
             ],
         });
     } catch (err) { res.status(500).json({ error: err.message }); }

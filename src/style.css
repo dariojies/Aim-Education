@@ -900,6 +900,9 @@ html[data-actaccents="off"] [class*="act-"] {
   bottom: 12px;
 }
 
+/* El icono SVG de la actividad, centrado en su bloque (#302). */
+.tile-icon-svg { display: grid; place-items: center; }
+
 .tile-icon {
   width: 100%;
   height: 100%;

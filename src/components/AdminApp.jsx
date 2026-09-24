@@ -26,6 +26,7 @@ import AdminObjetosPerdidos from './AdminObjetosPerdidos.jsx';
 import AdminSpeaking from './AdminSpeaking.jsx';
 import AdminAlmacen from './AdminAlmacen.jsx';
 import AdminContactos from './AdminContactos.jsx';
+import { IconoActividad } from './IconoActividad.jsx';
 
 const fichaCardTitulo = { margin: '0 0 12px', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--ink-3)' };
 
@@ -1986,7 +1987,7 @@ function VistaBloque({ b, pequeno }) {
             : { maxWidth: '76%', maxHeight: '70%', objectFit: 'contain', borderRadius: 4 }} />
         : b.tipo === 'patron'
           ? <span style={{ fontSize: 9, fontWeight: 800, color: 'var(--ink-3)' }}>PATRÓN</span>
-          : act ? <img src={act.iconAsset} alt="" draggable={false} style={{ width: '52%', maxWidth: 46, maxHeight: 46 }} />
+          : act ? <IconoActividad icon={act.icon} sobreColor draggable={false} style={{ width: '52%', height: '52%', maxWidth: 46, maxHeight: 46 }} />
           : null}
       {b.titulo && (
         <span style={{

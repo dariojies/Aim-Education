@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { I } from './Icons.jsx';
 import { AimHeader, AimFooter, ACT_BY_ID, MagicText } from './Shared.jsx';
+import { IconoActividad } from './IconoActividad.jsx';
 import { TarjetaActividad } from './PublicActivity.jsx';
 import { useClasesPublicas, fichasWeb } from './clasesPublicas.js';
 import { useRouter } from '../App.jsx';
@@ -135,7 +136,11 @@ function BrandTile({ hueco, go }) {
       {conPatron && <div className="tile-foto tile-patron" />}
 
       {!conImagen && !conPatron && a && (
-        <span className="tile-icon-hueco"><img className="tile-icon" src={a.iconAsset} alt={a.name} /></span>
+        // El icono de la actividad, el mismo SVG del panel, sin el cuadro de color
+        // de los logos de antes (#302).
+        <span className="tile-icon-hueco tile-icon-svg" aria-label={a.name}>
+          <IconoActividad icon={a.icon} sobreColor style={{ width: '56%', height: '56%', maxWidth: 150, maxHeight: 150 }} />
+        </span>
       )}
 
       {hueco.titulo && <span className="label">{hueco.titulo}</span>}
@@ -470,7 +475,8 @@ export default function PublicLanding() {
                   ¿Listo para empezar este curso?
                 </h2>
                 <p style={{fontSize: 18, maxWidth: 540, margin: "18px auto 0", color: "rgba(255,255,255,.92)"}}>
-                  Reserva tu plaza online. Tu primera clase es de prueba y sin compromiso.
+                  Reserva tu plaza online. ¿Quieres probar antes? Con el <b>Pase Explorador</b>{portada.paseExplorador ? ` (${portada.paseExplorador})` : ''} tienes
+                  un bono de 3 sesiones para probar las actividades que quieras y ver en cuál te apuntas.
                 </p>
                 <div style={{display: "flex", gap: 12, justifyContent: "center", marginTop: 28, flexWrap: "wrap"}}>
                   <button className="btn btn-lg" style={{background: "var(--ink)", color: "white"}} onClick={() => go("/auth?mode=register")}>

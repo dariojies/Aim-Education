@@ -250,9 +250,9 @@ export default function PublicCamp() {
                 <span className="pill-day">🌞 Verano 2026 · Algeciras</span>
                 <h1>Campamento<br />de verano Aim.</h1>
                 <p>
-                  {WEEKS.length || 'Varias'} semanas de aventura, aprendizaje y diversión, cada una con su tema.
-                  Deporte por la mañana, inglés y talleres creativos por la tarde.
-                  Para niños y niñas de <b>4 a 14 años</b>.
+                  Todo el verano, desde que acaba el cole hasta que empieza en septiembre: aventura,
+                  aprendizaje y diversión, cada semana con su tema. Solo por la mañana, para niños y
+                  niñas de <b>4 a 14 años</b>.
                 </p>
                 <div style={{ display: "flex", gap: 12, marginTop: 32, flexWrap: "wrap" }}>
                   <button className="btn btn-lg" style={{ background: "var(--ink)", color: "white" }} onClick={reserve}>

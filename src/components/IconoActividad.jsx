@@ -67,16 +67,21 @@ const SVG_ACTIVIDAD = {
 // no se verían, así que se oscurecen para que salgan como los demás.
 const SVG_BLANCO = new Set(['palette', 'karate', 'boxing-glove', 'shield-half-full']);
 
-export function IconoActividad({ icon, size = 20, style, ...resto }) {
+// sobreColor: para pintarlo sobre el color de la actividad (los bloques de la
+// portada, #302). Cada SVG va entonces con su color de origen, que es el que le
+// pega a su fondo: los de fondo claro (ballet, inglés, pilates, robótica) son
+// oscuros y los de fondo fuerte (Taekwon-Do, pintura, kick boxing), blancos. Los
+// que no tienen SVG se dibujan en blanco.
+export function IconoActividad({ icon, size = 20, style, sobreColor = false, ...resto }) {
   const svg = SVG_ACTIVIDAD[icon];
   if (svg) {
     return <img src={svg} alt="" style={{
       width: size, height: size, objectFit: 'contain', display: 'block',
-      ...(SVG_BLANCO.has(icon) ? { filter: 'brightness(0.23)' } : null),
+      ...(!sobreColor && SVG_BLANCO.has(icon) ? { filter: 'brightness(0.23)' } : null),
       ...style,
     }} {...resto} />;
   }
   const Dibujo = dibujoDe(icon);
-  return <Dibujo width={size} height={size} style={style} {...resto} />;
+  return <Dibujo width={size} height={size} style={sobreColor ? { color: '#fff', ...style } : style} {...resto} />;
 }
 

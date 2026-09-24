@@ -45,7 +45,7 @@ const ordenCatalogo = (id) => {
 // cual, sin grupos: grupos = null quiere decir «no se sabe», no «no hay».
 export function fichasWeb(actividades) {
   if (!actividades) {
-    return ACTIVITIES.filter(a => a.id !== 'funcional').map(a => ({ ...a, grupos: null }));
+    return ACTIVITIES.map(a => ({ ...a, grupos: null }));
   }
   const porId = new Map();
   for (const a of actividades) {
@@ -61,6 +61,11 @@ export function fichasWeb(actividades) {
     porId.get(a.act).grupos.push(...a.grupos.map(g => ({ ...g, actividad: a.nombre })));
   }
   const todos = actividades.flatMap(a => a.grupos.map(g => ({ ...g, actividad: a.nombre })));
+  // Las que se ofrecen aunque no estén en el horario (Entrenamiento Funcional,
+  // #303): salen igual, sin grupos, con su página.
+  for (const a of ACTIVITIES) {
+    if (a.siempre && !porId.has(a.id)) porId.set(a.id, { ...a, grupos: [] });
+  }
   const reales = [...porId.values()].sort((x, y) => (ordenCatalogo(x.id) - ordenCatalogo(y.id)) || x.name.localeCompare(y.name, 'es'));
   const programas = ACTIVITIES.filter(p => p.programa).map(p => ({
     ...p, grupos: p.grupoPatron ? todos.filter(g => p.grupoPatron.test(g.nombre)) : [],
