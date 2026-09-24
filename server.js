@@ -6208,9 +6208,9 @@ app.post('/api/admin/billing/simular', authenticateSession, requireAdmin, async 
     }
 });
 
-// Admin: qué mes toca generar hoy (por adelantado, con corte el día 5).
+// Admin: qué mes toca generar hoy (el siguiente, a partir del día 25).
 app.get('/api/admin/billing/mes-a-generar', authenticateSession, requireAdmin, (req, res) => {
-    res.json({ mes: mesAGenerar() });
+    res.json({ mes: mesAGenerar(new Date(hoyMadrid() + 'T12:00:00')) });
 });
 
 // ── Temporadas ──
@@ -6658,9 +6658,9 @@ app.delete('/api/admin/billing/matriculas/:id', authenticateSession, requireAdmi
 // el descuento manual de la ficha. El descuento por nº de mensualidades NO se
 // congela: se calcula al cobrar (depende de la composición del recibo).
 function normalizaMes(mes) {
-    if (!mes) return mesAGenerar();
+    if (!mes) return mesAGenerar(new Date(hoyMadrid() + 'T12:00:00'));
     const s = String(mes).slice(0, 10);
-    return /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s.slice(0, 7)}-01` : mesAGenerar();
+    return /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s.slice(0, 7)}-01` : mesAGenerar(new Date(hoyMadrid() + 'T12:00:00'));
 }
 
 // Una temporada va de SEPTIEMBRE a AGOSTO: la "2026/2027" son septiembre 2026 →
@@ -6910,7 +6910,7 @@ async function generacionAutomatica() {
         // ya pasó de junio pero el club aún no ha cambiado de temporada, no se
         // generan cargos de la siguiente: se espera a que le den a cambiarla.
         const rango = mesesDeTemporada(temp.rows[0].nombre);
-        const mes = mesAGenerar();
+        const mes = mesAGenerar(new Date(hoyMadrid() + 'T12:00:00'));
         if (rango && (mes < rango.inicio || mes > rango.fin)) return;
         const out = await ejecutarGeneracionCargos(mes);
         if (out.creados > 0) console.log(`[GEN auto] ${out.creados} cargo(s) generados de ${out.mes}`);

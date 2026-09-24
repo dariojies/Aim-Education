@@ -224,13 +224,13 @@ export function calcularCobro(lineas) {
     };
 }
 
-// Mes que toca generar: se factura por adelantado con corte el día 5.
-// Días 1-5 -> mes en curso; día 6 en adelante -> mes siguiente.
-// (Replica el 'hoy - 5 días + 1 mes' del sistema antiguo, pero explícito.)
+// Mes que toca generar. Los cargos del mes siguiente solo se generan a partir
+// del día 25 del mes anterior (lo pidió el club): del 1 al 24, el mes en curso;
+// del 25 en adelante, el siguiente. Antes era a partir del día 6.
+export const DIA_GENERAR_SIGUIENTE = 25;
 export function mesAGenerar(hoy = new Date()) {
-    const d = new Date(Date.UTC(hoy.getFullYear(), hoy.getMonth(), hoy.getDate()));
-    d.setUTCDate(d.getUTCDate() - 5);
-    d.setUTCMonth(d.getUTCMonth() + 1);
+    const d = new Date(Date.UTC(hoy.getFullYear(), hoy.getMonth(), 1));
+    if (hoy.getDate() >= DIA_GENERAR_SIGUIENTE) d.setUTCMonth(d.getUTCMonth() + 1);
     return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-01`;
 }
 
