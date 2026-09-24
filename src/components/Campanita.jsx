@@ -6,7 +6,21 @@ import { useEnVivo } from '../envivo.js';
 // Campanita de avisos: lo que hay pendiente de atender ahora mismo, agrupado
 // por sitio (soporte, cobros, caja y campamento). Cada aviso lleva a donde se
 // resuelve. Se recalcula al abrirla y cada pocos minutos.
+//
+// El número rojo cuenta solo lo NUEVO: al pinchar un aviso (o «marcar todo como
+// visto») deja de contar hasta que haya algo más (otro mensaje en ese ticket, o
+// que suba lo pendiente). Lo ya visto sigue en la lista, más apagado.
 // ─────────────────────────────────────────────────────────────────────────────
+
+// Apuntar avisos como vistos. Si falla, no pasa nada: seguirán contando.
+export function marcarAvisosVistos(avisos) {
+  const lista = (avisos || []).filter(a => a?.clave).map(a => ({ clave: a.clave, n: a.n || 0 }));
+  if (!lista.length) return Promise.resolve();
+  return fetch('/api/avisos/vistos', {
+    method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ avisos: lista }),
+  }).catch(() => {});
+}
 
 const COLOR = {
   tickets: 'var(--purple)',
@@ -61,6 +75,13 @@ export default function Campanita({ onIr, url = '/api/admin/notificaciones', vac
   }, [abierta]);
 
   const avisos = datos?.avisos || [];
+  // Lo nuevo. Si el servidor aún no sabe de vistos, cuenta todo como antes.
+  const nuevos = avisos.filter(a => a.nuevo !== false);
+  const verVisto = (lista) => {
+    const claves = new Set(lista.map(a => a.clave));
+    setDatos(d => d ? { ...d, avisos: d.avisos.map(a => (claves.has(a.clave) ? { ...a, nuevo: false } : a)) } : d);
+    marcarAvisosVistos(lista);
+  };
   const porTipo = avisos.reduce((acc, a) => {
     (acc[a.tipo] = acc[a.tipo] || []).push(a);
     return acc;
@@ -69,14 +90,14 @@ export default function Campanita({ onIr, url = '/api/admin/notificaciones', vac
   return (
     <div ref={caja} style={{ position: 'relative' }}>
       <button className="btn btn-icon" onClick={() => { setAbierta(a => !a); if (!abierta) cargar(); }}
-        aria-label={avisos.length ? `${avisos.length} avisos` : 'Avisos'} style={{ position: 'relative' }}>
+        aria-label={nuevos.length ? `${nuevos.length} avisos nuevos` : 'Avisos'} style={{ position: 'relative' }}>
         <I.Bell />
-        {avisos.length > 0 && (
+        {nuevos.length > 0 && (
           <span style={{
             position: 'absolute', top: 2, right: 2, minWidth: 16, height: 16, padding: '0 4px',
             borderRadius: 999, background: 'var(--orange)', color: 'white',
             fontSize: 10, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>{avisos.length}</span>
+          }}>{nuevos.length}</span>
         )}
       </button>
 
@@ -90,6 +111,9 @@ export default function Campanita({ onIr, url = '/api/admin/notificaciones', vac
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontWeight: 800, fontSize: 13 }}>Avisos</span>
             <div style={{ flex: 1 }} />
+            {nuevos.length > 0 && (
+              <button className="btn btn-sm btn-outline" onClick={() => verVisto(nuevos)} style={{ fontSize: 11, padding: '3px 8px' }}>Marcar todo como visto</button>
+            )}
             <button className="btn btn-sm btn-outline" onClick={cargar} style={{ fontSize: 11, padding: '3px 8px' }}>Actualizar</button>
           </div>
 
@@ -103,13 +127,18 @@ export default function Campanita({ onIr, url = '/api/admin/notificaciones', vac
                 {TITULO[tipo] || tipo}
               </div>
               {lista.map((a, i) => (
-                <button key={i} onClick={() => { setAbierta(false); onIr?.(a.destino); }}
+                <button key={a.clave || i} onClick={() => { if (a.nuevo !== false) verVisto([a]); setAbierta(false); onIr?.(a.destino); }}
                   style={{
                     textAlign: 'left', background: 'var(--bg-3)', border: '1px solid var(--line)',
                     borderLeft: `3px solid ${COLOR[tipo]}`, borderRadius: 10, padding: '8px 10px',
                     cursor: 'pointer', fontFamily: 'inherit',
+                    // Lo ya visto sigue ahí (es trabajo pendiente), pero apagado.
+                    opacity: a.nuevo === false ? 0.6 : 1,
                   }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink)' }}>{a.texto}</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink)', display: 'flex', gap: 6, alignItems: 'center' }}>
+                    {a.nuevo !== false && <span aria-label="nuevo" style={{ width: 7, height: 7, borderRadius: 99, background: 'var(--orange)', flexShrink: 0 }} />}
+                    <span>{a.texto}</span>
+                  </div>
                   {a.detalle && <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{a.detalle}</div>}
                 </button>
               ))}

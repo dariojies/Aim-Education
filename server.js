@@ -69,7 +69,9 @@ pg.types.setTypeParser(1114, v => (v == null ? v : new Date(v.replace(' ', 'T') 
 // despliegue o una consulta a mano. Si en 20 s no hay ninguna libre, la petición
 // falla con un error claro en vez de quedarse colgada hasta que Heroku la corte
 // (que en un cobro dejaba sin saber si se había cobrado o no).
-const LIMITES_POOL = { max: 8, idleTimeoutMillis: 30000, connectionTimeoutMillis: 20000 };
+// PG_POOL_MAX permite ajustarlo sin tocar el código (p. ej. si otra app que
+// comparte la base acapara conexiones).
+const LIMITES_POOL = { max: Math.min(Math.max(Number(process.env.PG_POOL_MAX) || 8, 1), 15), idleTimeoutMillis: 30000, connectionTimeoutMillis: 20000 };
 const pool = process.env.DATABASE_URL
     ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, ...LIMITES_POOL })
     : new Pool({
@@ -1349,6 +1351,18 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_consentimientos_user ON aim_consentimientos (user_id, tipo, created_at)`);
+        // Avisos de la campanita que cada persona ya ha visto. Un aviso visto no
+        // cuenta en el número rojo hasta que haya algo nuevo: un mensaje más en
+        // ese ticket (marca) o que su contador suba (n).
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_avisos_vistos (
+                user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                clave VARCHAR(200) NOT NULL,
+                n INTEGER NOT NULL DEFAULT 0,
+                visto_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (user_id, clave)
+            )
+        `);
         // Enlaces para restablecer la contraseña. Solo se guarda la huella
         // (SHA-256) del enlace, no el enlace: quien leyera la base no podría
         // usarlos. Caducan en 1 hora y sirven una sola vez.
@@ -9534,6 +9548,7 @@ app.get('/api/me/notificaciones', authenticateSession, async (req, res) => {
                 tipo: 'pagos', destino: 'payments',
                 texto: `Tienes ${calc.total.toFixed(2)} € por pagar`,
                 detalle: cargos.length === 1 ? cargos[0].descripcion : `${cargos.length} recibos pendientes`,
+                clave: 'pagos', n: cargos.length,
             });
         }
 
@@ -9576,6 +9591,7 @@ app.get('/api/me/notificaciones', authenticateSession, async (req, res) => {
                 tipo: 'soporte', destino: 'support',
                 texto: `Te han contestado en soporte`,
                 detalle: t.subject,
+                clave: `ticket:${t.id}`, marca: t.ultima,
             });
         }
 
@@ -9585,11 +9601,12 @@ app.get('/api/me/notificaciones', authenticateSession, async (req, res) => {
              WHERE status = 'published' AND published_at > NOW() - INTERVAL '15 days'
              ORDER BY published_at DESC LIMIT 3`);
         for (const n of posts.rows) {
-            avisos.push({ tipo: 'avisos', destino: 'overview', texto: n.title, detalle: 'Aviso del club' });
+            avisos.push({ tipo: 'avisos', destino: 'overview', texto: n.title, detalle: 'Aviso del club', clave: `post:${n.title}`.slice(0, 200) });
         }
 
+        await conVistos(me, avisos);
         res.set('Cache-Control', 'no-store');
-        res.json({ avisos });
+        res.json({ avisos, sinLeer: avisos.filter(a => a.nuevo).length });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -11391,6 +11408,60 @@ app.get('/api/support/mios', authenticateSession, async (req, res) => {
 const CUENTA_SOPORTE = 'soporte@aimeducation.es';
 const AVISO_SOPORTE_PARA = 'cm8175@gmail.com';
 
+// ── Avisos vistos ────────────────────────────────────────────────────────────
+// La campanita calcula en cada momento lo que hay pendiente, pero antes no sabía
+// qué había visto ya cada uno: el número no bajaba nunca, aunque se entrara en
+// el aviso. Ahora cada aviso tiene una clave y se apunta cuándo se vio:
+//  - con «marca» (la fecha de lo último, p. ej. el último mensaje de un
+//    ticket), vuelve a ser nuevo si hay algo posterior;
+//  - sin ella, es un contador (cargos por cobrar…): vuelve a ser nuevo solo si
+//    sube. Si baja, lo visto baja con él, para notar la próxima subida.
+// La clave, si el aviso no la trae, sale de su texto sin los números y con cada
+// palabra recortada, para que «1 cargo pendiente» y «3 cargos pendientes» sean
+// el mismo aviso.
+const sinTildes = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+function claveAviso(a) {
+    if (a.clave) return String(a.clave).slice(0, 200);
+    const palabras = sinTildes(a.texto).toLowerCase().replace(/[0-9.,€º%]+/g, ' ').split(/[^a-z«»]+/)
+        .filter(w => w.length > 3).map(w => w.slice(0, 5));
+    return `${a.tipo}|${a.destino}|${palabras.join(' ')}`.slice(0, 200);
+}
+async function conVistos(userId, avisos) {
+    for (const a of avisos) { a.clave = claveAviso(a); a.n = Number(a.n) || 1; }
+    if (!avisos.length) return avisos;
+    const r = await pool.query(
+        `SELECT clave, n, visto_at FROM aim_avisos_vistos WHERE user_id = $1 AND clave = ANY($2::text[])`,
+        [userId, avisos.map(a => a.clave)]);
+    const vistos = new Map(r.rows.map(x => [x.clave, x]));
+    for (const a of avisos) {
+        const v = vistos.get(a.clave);
+        if (!v) { a.nuevo = true; continue; }
+        if (a.marca) { a.nuevo = new Date(a.marca) > new Date(v.visto_at); continue; }
+        a.nuevo = a.n > v.n;
+        if (a.n < v.n) {
+            await pool.query(`UPDATE aim_avisos_vistos SET n = $3 WHERE user_id = $1 AND clave = $2`, [userId, a.clave, a.n]);
+        }
+    }
+    return avisos;
+}
+
+// Marcar avisos como vistos: al pinchar uno, al pulsar «marcar todo como visto»
+// o al abrir el ticket del que avisaban.
+app.post('/api/avisos/vistos', authenticateSession, async (req, res) => {
+    const lista = (Array.isArray(req.body?.avisos) ? req.body.avisos : []).slice(0, 100)
+        .map(a => ({ clave: String(a?.clave || '').slice(0, 200), n: Math.max(0, Math.min(1e6, Number.parseInt(a?.n, 10) || 0)) }))
+        .filter(a => a.clave);
+    try {
+        for (const a of lista) {
+            await pool.query(
+                `INSERT INTO aim_avisos_vistos (user_id, clave, n, visto_at) VALUES ($1, $2, $3, NOW())
+                 ON CONFLICT (user_id, clave) DO UPDATE SET n = GREATEST(EXCLUDED.n, aim_avisos_vistos.n), visto_at = NOW()`,
+                [req.userSession.userId, a.clave, a.n]);
+        }
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── Campanita de avisos ──────────────────────────────────────────────────────
 // Lo que hay pendiente de atender ahora mismo, agrupado por sitio. Cada aviso
 // lleva a dónde resolverlo. Nada de esto se guarda: se calcula al abrirla.
@@ -11473,6 +11544,8 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                 detalle: [t.quien ? `de ${t.quien}` : null, `ticket #${t.id}`].filter(Boolean).join(' · '),
                 destino: `/admin/soporte/${t.id}`,
                 n: t.n,
+                // Visto al entrar en el ticket; vuelve a ser nuevo con otro mensaje.
+                clave: `ticket:${t.id}`, marca: t.ultimo,
             });
         }
         if (mensajes.rows.length > TOPE_TICKETS) {
@@ -11605,7 +11678,8 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         if (sp.rechazados) avisos.push({ tipo: 'speaking', texto: `${sp.rechazados} familia${sp.rechazados !== 1 ? 's' : ''} han dicho que NO al Speaking`, detalle: 'revisar la asistencia', destino: '/admin/speaking', n: sp.rechazados });
 
         res.set('Cache-Control', 'no-store');
-        res.json({ total: avisos.reduce((s, a) => s + a.n, 0), avisos });
+        await conVistos(yo, avisos);
+        res.json({ total: avisos.reduce((s, a) => s + a.n, 0), sinLeer: avisos.filter(a => a.nuevo).length, avisos });
     } catch (err) {
         console.error('Error calculando los avisos:', err);
         res.status(500).json({ error: err.message });

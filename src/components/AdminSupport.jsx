@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { marcarAvisosVistos } from './Campanita.jsx';
 import { I } from './Icons.jsx';
 import { fmtFecha, fmtFechaHora, fmtHora as fmtHoraCorta } from '../fechas.js';
 
@@ -234,6 +235,9 @@ function TicketChat({ ticketId, canal, alto = 260 }) {
         if (!r.ok || !vivo) return;
         const d = await r.json();
         if (vivo) añadir(d.mensajes || []);
+        // Se están viendo los mensajes: el aviso de la campanita de este ticket
+        // queda visto (y vuelve si llega otro cuando no se está mirando).
+        if (vivo && (d.mensajes || []).length) marcarAvisosVistos([{ clave: `ticket:${ticketId}` }]);
       } catch { /* si falla una consulta, la siguiente lo arregla */ }
     }
     traer();
