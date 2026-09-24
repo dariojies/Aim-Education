@@ -982,7 +982,9 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                          AND EXTRACT(MONTH FROM u.birthday) = EXTRACT(MONTH FROM $2::date)
                          AND EXTRACT(DAY FROM u.birthday) = EXTRACT(DAY FROM $2::date)) AS "cumpleHoy",
                         -- Salud (ticket #254): un solo campo, a la vista del profe.
-                        NULLIF(sa.notas, '') AS salud`;
+                        NULLIF(sa.notas, '') AS salud,
+                        -- Si puede salir en fotos y redes (ticket #170).
+                        COALESCE(u.media_consent, false) AS fotos`;
             res.set('Cache-Control', 'no-store');
 
             // Speaking (ticket #253): la lista del día es la de quienes han aceptado

@@ -1226,6 +1226,112 @@ function timeAgo(dateStr) {
   return `Hace ${Math.floor(d / 7)} semana${Math.floor(d / 7) > 1 ? "s" : ""}`;
 }
 
+// Permisos y comunicaciones (ticket #170), de uno mismo y de sus hijos. Las
+// comunicaciones se cambian al momento; el permiso de fotos se SOLICITA y lo
+// confirma el club (hasta entonces sigue como estaba).
+function SiNoFamilia({ valor, onCambio, disabled }) {
+  const b = (v, t, color) => (
+    <button type="button" disabled={disabled} aria-pressed={valor === v} onClick={() => onCambio(v)}
+      style={{ padding: '6px 16px', fontSize: 13, fontWeight: 800, fontFamily: 'inherit', border: 0, cursor: 'pointer',
+        background: valor === v ? color : 'transparent', color: valor === v ? '#fff' : 'var(--ink-2)' }}>{t}</button>
+  );
+  return (
+    <div style={{ display: 'inline-flex', border: '1px solid var(--line)', borderRadius: 999, overflow: 'hidden', background: 'var(--bg-2)', flexShrink: 0 }}>
+      {b(true, 'Sí', 'var(--teal)')}{b(false, 'No', 'var(--orange)')}
+    </div>
+  );
+}
+
+function PermisosFamilia() {
+  const [personas, setPersonas] = useState(null);
+  const [aviso, setAviso] = useState('');
+  const [ocupado, setOcupado] = useState(null);
+  const cargar = useCallback(() => fetch('/api/me/permisos', { credentials: 'include', cache: 'no-store' })
+    .then(r => (r.ok ? r.json() : null)).then(d => d && setPersonas(d.personas || [])).catch(() => {}), []);
+  useEffect(() => { cargar(); }, [cargar]);
+
+  async function cambiar(p, campo, v) {
+    setPersonas(prev => prev.map(x => (x.id === p.id ? { ...x, [campo]: v } : x)));
+    const r = await fetch(`/api/me/permisos/${p.id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+      body: JSON.stringify({ [campo]: v }),
+    }).catch(() => null);
+    setAviso(r?.ok ? 'Guardado.' : 'No se ha podido guardar. Vuelve a intentarlo.');
+    if (!r?.ok) cargar();
+  }
+  async function pedirFotos(p, otorgar) {
+    setOcupado(p.id);
+    try {
+      const r = await fetch(`/api/me/permisos/${p.id}/fotos`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ otorgar }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setAviso(d.error || 'No se ha podido enviar.'); return; }
+      setAviso(d.anulada ? 'Solicitud anulada.' : 'Solicitud enviada. El club la revisará y te la confirmará.');
+      await cargar();
+    } catch { setAviso('No hay conexión con el servidor.'); }
+    finally { setOcupado(null); }
+  }
+
+  if (!personas?.length) return null;
+  const fmt = (f) => new Date(f).toLocaleDateString('es-ES', { day: 'numeric', month: 'long' });
+  const fila = { display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' };
+
+  return (
+    <div style={{ marginTop: 24, borderTop: '1px solid var(--line)', paddingTop: 18 }}>
+      <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--ink-3)' }}>
+        Permisos y comunicaciones
+      </div>
+      <p style={{ margin: '6px 0 0', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.55 }}>
+        Las comunicaciones las puedes cambiar cuando quieras y se aplican al momento.
+        El permiso de fotos se solicita al club, y cambia cuando el club lo confirma.
+      </p>
+      <div style={{ display: 'grid', gap: 12, marginTop: 14 }}>
+        {personas.map(p => (
+          <div key={p.id} style={{ border: '1px solid var(--line)', borderRadius: 14, padding: 14, display: 'grid', gap: 12, background: 'var(--bg-2)' }}>
+            <div style={{ fontWeight: 800, fontSize: 15 }}>{p.nombre}{p.yo ? ' (tú)' : ''}</div>
+            {[
+              ['comActividades', 'Comunicaciones de sus actividades', 'Avisos e información de las actividades en las que está apuntado/a (Speaking, exámenes…).'],
+              ['comComerciales', 'Comunicaciones comerciales', 'Novedades, eventos y ofertas de otras actividades del club.'],
+            ].map(([campo, titulo, ayuda]) => (
+              <div key={campo} style={fila}>
+                <div style={{ flex: '1 1 240px', minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>{titulo}</div>
+                  <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{ayuda}{p[campo] == null ? ' Aún no nos has dicho nada.' : ''}</div>
+                </div>
+                <SiNoFamilia valor={p[campo]} onCambio={v => cambiar(p, campo, v)} />
+              </div>
+            ))}
+            <div style={fila}>
+              <div style={{ flex: '1 1 240px', minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>Fotos y redes sociales</div>
+                <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                  Salir en fotos y vídeos que el club publica en sus redes y su web. Ahora mismo:{' '}
+                  <b style={{ color: p.fotosRedes ? 'var(--teal)' : 'var(--orange)' }}>{p.fotosRedes ? 'con permiso' : 'sin permiso'}</b>.
+                </div>
+                {p.solicitudFotos && (
+                  <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--orange)', marginTop: 4 }}>
+                    Has solicitado {p.solicitudFotos.otorgar ? 'DAR' : 'QUITAR'} el permiso el {fmt(p.solicitudFotos.at)}. Pendiente de que el club lo confirme.
+                  </div>
+                )}
+              </div>
+              {p.solicitudFotos ? (
+                <button className="btn btn-sm btn-outline" disabled={ocupado === p.id} onClick={() => pedirFotos(p, null)}>Anular solicitud</button>
+              ) : (
+                <button className="btn btn-sm btn-outline" disabled={ocupado === p.id} onClick={() => pedirFotos(p, !p.fotosRedes)}>
+                  {p.fotosRedes ? 'Solicitar quitar el permiso' : 'Solicitar dar el permiso'}
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+      {aviso && <div style={{ marginTop: 10, fontSize: 13, fontWeight: 700, color: 'var(--teal)' }}>{aviso}</div>}
+    </div>
+  );
+}
+
 function DashProfile({ user }) {
   const [datos, setDatos] = useState(null);
   const [form, setForm] = useState(null);
@@ -1335,8 +1441,10 @@ function DashProfile({ user }) {
         {aviso && <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--teal)' }}>{aviso}</span>}
       </div>
 
+      <PermisosFamilia />
+
       <p style={{ marginTop: 22, fontSize: 13, color: 'var(--ink-3)' }}>
-        Para cambiar los datos de tus hijos, habla con el club.
+        Para cambiar otros datos de tus hijos, habla con el club.
       </p>
     </div>
   );
@@ -1346,23 +1454,9 @@ function DashSettings() {
   return (
     <div className="panel">
       <h2><I.Settings /> Ajustes</h2>
-      <p className="sub">Notificaciones, idioma, seguridad y datos.</p>
-
-      <div style={{display: "grid", gap: 12, marginTop: 18}}>
-        {[
-          { t: "Avisos del club por email", desc: "Eventos, convocatorias y noticias." },
-          { t: "Avisos de mi actividad por email", desc: "Solo las clases que sigo." },
-          { t: "Newsletter mensual", desc: "Lo más destacado del mes." },
-        ].map((s, i) => (
-          <label key={i} style={{display: "flex", justifyContent: "space-between", alignItems: "center", padding: 16, background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 14, cursor: "pointer"}}>
-            <div>
-              <div style={{fontWeight: 700}}>{s.t}</div>
-              <div style={{fontSize: 12, color: "var(--ink-3)", marginTop: 2}}>{s.desc}</div>
-            </div>
-            <input type="checkbox" defaultChecked={i < 2} style={{width: 36, height: 20, accentColor: "var(--teal)"}} />
-          </label>
-        ))}
-      </div>
+      <p className="sub">Qué comunicaciones quieres recibir y el permiso de fotos.</p>
+      {/* Antes aquí había unos interruptores que no guardaban nada (#170). */}
+      <PermisosFamilia />
     </div>
   );
 }

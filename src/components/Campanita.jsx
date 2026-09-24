@@ -30,6 +30,7 @@ const COLOR = {
   clases: '#FF99D3',
   speaking: '#00BBF4',
   fichaje: 'var(--teal)',
+  permisos: 'var(--purple)',
   // Los de la zona de familias.
   pagos: 'var(--orange)',
   soporte: 'var(--purple)',
@@ -43,6 +44,7 @@ const TITULO = {
   clases: 'Clases',
   speaking: 'Speaking',
   fichaje: 'Fichaje',
+  permisos: 'Permisos',
   pagos: 'Pagos',
   soporte: 'Soporte',
   avisos: 'Del club',

@@ -338,7 +338,7 @@ function ElegirClase({ grupos, actPorId, yaApuntado, edad, rangos, onElegir, onC
 }
 
 // ── Familia ──────────────────────────────────────────────────────────────────
-function Familia({ personaId, nombre, showToast }) {
+function Familia({ personaId, nombre, showToast, onAbrirFamiliar }) {
   const [lista, setLista] = useState([]);
   const [anadiendo, setAnadiendo] = useState(false);
   const [q, setQ] = useState('');
@@ -398,15 +398,19 @@ function Familia({ personaId, nombre, showToast }) {
       <div style={{ display: 'grid', gap: 6 }}>
         {lista.map(f => (
           <div key={f.id} style={fila}>
-            <div style={{ flex: 1, minWidth: 0 }}>
+            {/* Pinchando en el familiar se abre su ficha (y desde allí se puede volver). */}
+            <button type="button" className="ficha-familiar" disabled={!onAbrirFamiliar} onClick={() => onAbrirFamiliar?.(f)}
+              title={onAbrirFamiliar ? `Abrir la ficha de ${f.nombre}` : undefined}
+              style={{ flex: 1, minWidth: 0, textAlign: 'left', background: 'none', border: 0, padding: 0, fontFamily: 'inherit', color: 'inherit', cursor: onAbrirFamiliar ? 'pointer' : 'default' }}>
               <div style={{ fontWeight: 700, fontSize: 13 }}>
-                {f.nombre} {f.apellidos || ''}
+                <span className="ficha-familiar-nombre">{f.nombre} {f.apellidos || ''}</span>
                 <span style={{ fontWeight: 600, color: 'var(--ink-3)' }}> · {f.tipo}</span>
+                {onAbrirFamiliar && <span style={{ fontWeight: 700, color: 'var(--purple)', fontSize: 12 }}> · Ver ficha →</span>}
               </div>
               <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>
                 {f.email}{f.nacimiento ? ` · nac. ${fmtFecha(f.nacimiento)}` : ''}
               </div>
-            </div>
+            </button>
             <button type="button" className="icon-btn danger" title="Quitar parentesco" onClick={() => quitar(f)}><I.Trash /></button>
           </div>
         ))}
@@ -469,7 +473,7 @@ function Familia({ personaId, nombre, showToast }) {
 }
 
 // ── Clases y rangos ──────────────────────────────────────────────────────────
-export default function FichaAlumnoClases({ studentId, nombre, nacimiento, showToast }) {
+export default function FichaAlumnoClases({ studentId, nombre, nacimiento, showToast, onAbrirFamiliar }) {
   const [escalas, setEscalas] = useState([]);
   const [ficha, setFicha] = useState(null);
   const [grupos, setGrupos] = useState([]);
@@ -600,7 +604,7 @@ export default function FichaAlumnoClases({ studentId, nombre, nacimiento, showT
         </div>
       </Seccion>
 
-      <Familia personaId={studentId} nombre={nombre} showToast={showToast} />
+      <Familia personaId={studentId} nombre={nombre} showToast={showToast} onAbrirFamiliar={onAbrirFamiliar} />
     </div>
   );
 }

@@ -2566,13 +2566,21 @@ app.get('/api/users/:id', authenticateSession, requireAdmin, async (req, res) =>
             `SELECT u.user_id, u.name, u.surname, u.email, u.belt, u.dev_role, u.role, u.profile_picture,
                     ${sqlRango('u')} AS rango,
                     u.phone, u.birthday, u.dni, u.domicilio, u.cp, u.poblacion,
-                    s.notas AS salud
+                    s.notas AS salud, COALESCE(u.media_consent, false) AS media_consent,
+                    -- Lo último que consta de cada consentimiento (ticket #170).
+                    (SELECT json_object_agg(k.tipo, json_build_object('otorgado', k.otorgado, 'at', k.created_at))
+                     FROM (SELECT DISTINCT ON (tipo) tipo, otorgado, created_at FROM aim_consentimientos
+                           WHERE user_id = u.user_id AND tipo = ANY($3::text[])
+                           ORDER BY tipo, created_at DESC, id DESC) k) AS consentimientos,
+                    sf.otorgado AS sol_otorgar, sf.created_at AS sol_at, sf.email AS sol_email
              FROM users u LEFT JOIN aim_salud s ON s.user_id = u.user_id
+             LEFT JOIN (${SQL_SOLICITUD_FOTOS}) sf ON sf.user_id = u.user_id
              WHERE u.user_id = $1 AND u.club_id = $2`,
-            [req.params.id, AIM_CLUB_ID]
+            [req.params.id, AIM_CLUB_ID, Object.values(TIPO_PERMISO)]
         );
         if (!r.rowCount) return res.status(404).json({ error: 'Esa persona no es del club.' });
         const u = r.rows[0];
+        const k = u.consentimientos || {};
         res.set('Cache-Control', 'no-store');
         res.json({
             id: u.user_id, firstName: u.name, lastName: u.surname, email: u.email,
@@ -2580,6 +2588,14 @@ app.get('/api/users/:id', authenticateSession, requireAdmin, async (req, res) =>
             dni: u.dni, domicilio: u.domicilio, cp: u.cp, poblacion: u.poblacion,
             // Salud (ticket #254): un solo campo de texto, para tenerlo a mano en clase.
             salud: u.salud || '',
+            // Permisos (ticket #170). Las fotos van en users.media_consent, el mismo
+            // campo que usa Aim-Tul; las comunicaciones, en el registro de
+            // consentimientos (null = aún no consta ni sí ni no).
+            fotosRedes: !!u.media_consent,
+            comActividades: k.actividades ? k.actividades.otorgado : null,
+            comComerciales: k.comunicaciones ? k.comunicaciones.otorgado : null,
+            permisosAt: { fotosRedes: k.imagen?.at || null, comActividades: k.actividades?.at || null, comComerciales: k.comunicaciones?.at || null },
+            solicitudFotos: u.sol_at ? { otorgar: u.sol_otorgar, at: u.sol_at, pedidoPor: u.sol_email } : null,
             avatar: u.profile_picture, role: u.role,
             rango: String(u.rango || 'student').toLowerCase(),
             nombreRango: NOMBRE_RANGO[String(u.rango || 'student').toLowerCase()] || 'Alumno',
@@ -2617,6 +2633,31 @@ app.get('/api/users/:id/avatar', authenticateSession, requireAdmin, async (req, 
 // borra la fila: no se guarda un dato de salud vacío por haber abierto la ficha.
 // Llega como texto; se acepta también el objeto de antes, por si alguna pantalla
 // abierta aún lo manda así.
+// Permisos de la ficha (ticket #170): salir en fotos y redes, comunicaciones de
+// sus actividades y comunicaciones comerciales. Cada cambio queda anotado en el
+// registro de consentimientos (quién no, pero sí cuándo y desde dónde). Solo se
+// toca lo que venga como sí/no y haya cambiado.
+const TIPO_PERMISO = { fotosRedes: 'imagen', comActividades: 'actividades', comComerciales: 'comunicaciones' };
+async function guardarPermisos(req, userId, email) {
+    const pedidos = Object.keys(TIPO_PERMISO).filter(c => typeof req.body[c] === 'boolean');
+    if (!pedidos.length) return;
+    const r = await pool.query(
+        `SELECT COALESCE(u.media_consent, false) AS fotos,
+                (SELECT json_object_agg(k.tipo, k.otorgado) FROM (
+                    SELECT DISTINCT ON (tipo) tipo, otorgado FROM aim_consentimientos
+                    WHERE user_id = u.user_id ORDER BY tipo, created_at DESC, id DESC) k) AS k
+         FROM users u WHERE u.user_id = $1`, [userId]);
+    if (!r.rowCount) return;
+    const actual = { fotosRedes: r.rows[0].fotos, ...Object.fromEntries(
+        ['comActividades', 'comComerciales'].map(c => [c, r.rows[0].k?.[TIPO_PERMISO[c]] ?? null])) };
+    for (const c of pedidos) {
+        const v = req.body[c];
+        if (actual[c] === v) continue;
+        if (c === 'fotosRedes') await pool.query(`UPDATE users SET media_consent = $1 WHERE user_id = $2`, [v, userId]);
+        await anotarConsentimiento(pool, req, { userId, email, tipo: TIPO_PERMISO[c], otorgado: v, origen: 'ficha (panel)' });
+    }
+}
+
 async function guardarSalud(userId, salud, autor) {
     const texto = String(typeof salud === 'object' && salud ? (salud.texto ?? salud.notas ?? '') : (salud ?? ''))
         .trim().slice(0, 2000) || null;
@@ -2775,6 +2816,7 @@ app.put('/api/users/:id', authenticateSession, requirePermiso('editarAlumnos'), 
              dni?.trim() || null, domicilio?.trim() || null, cp?.trim() || null, poblacion?.trim() || null]
         );
         if (req.body.salud !== undefined) await guardarSalud(id, req.body.salud, req.userSession.userId);
+        await guardarPermisos(req, id, emailLower);
         res.json({ id, firstName, lastName, email, belt, isSuperAdmin });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -4787,6 +4829,10 @@ app.post('/api/admin/examenes/:id/comunicar', authenticateSession, requireAdmin,
         const emails = dest.rows.map(x => x.email).filter(Boolean);
         if (!emails.length) return res.status(400).json({ error: 'No hay ningún correo al que enviar el resultado.' });
 
+        // Si ha dicho que no quiere comunicaciones de sus actividades (#170), no se manda.
+        if (await sinComunicacionesActividades(e.alumno_id)) {
+            return res.status(409).json({ error: 'Ha pedido no recibir comunicaciones de sus actividades (consta en su ficha): no se le envía el correo.' });
+        }
         const asunto = `Resultado de examen · ${e.actividad} · ${e.alumno_nombre}`;
         await mailTransporter.sendMail({
             from: process.env.EMAIL_USER, to: emails,
@@ -9411,6 +9457,143 @@ const CAMPOS_FISCALES = ['dni', 'domicilio', 'cp', 'poblacion'];
 const limpia = (v) => (typeof v === 'string' ? v.trim() : '') || null;
 
 // Sus propios datos, y si tiene un cambio esperando el visto bueno del club.
+// ── Permisos desde el perfil de la familia (ticket #170) ────────────────────
+// Las comunicaciones (de sus actividades y comerciales) las cambia la familia y
+// valen al momento. Las fotos no: la familia SOLICITA darlo o quitarlo y
+// secretaría lo confirma desde el panel. Todo va al registro de consentimientos:
+//   'imagen_solicitud'   lo que ha pedido la familia (email = quién lo pidió)
+//   'imagen'             lo que vale (y users.media_consent, que lee Aim-Tul)
+//   'imagen_descartada'  solicitud anulada por la familia o descartada por el club
+// Hay una solicitud pendiente si lo último de esos tres es una solicitud.
+const SQL_SOLICITUD_FOTOS = `
+    SELECT * FROM (
+        SELECT DISTINCT ON (c.user_id) c.user_id, c.tipo, c.otorgado, c.email, c.created_at
+        FROM aim_consentimientos c
+        WHERE c.tipo IN ('imagen_solicitud', 'imagen', 'imagen_descartada') AND c.user_id IS NOT NULL
+        ORDER BY c.user_id, c.created_at DESC, c.id DESC
+    ) sf WHERE sf.tipo = 'imagen_solicitud'`;
+const sqlUltimoConsentimiento = (col, tipo) => `(SELECT k.otorgado FROM aim_consentimientos k
+    WHERE k.user_id = ${col} AND k.tipo = '${tipo}' ORDER BY k.created_at DESC, k.id DESC LIMIT 1)`;
+
+// ¿Ha dicho que NO a las comunicaciones de sus actividades? (Speaking, exámenes…)
+async function sinComunicacionesActividades(userId) {
+    const r = await pool.query(`SELECT ${sqlUltimoConsentimiento('$1::uuid', 'actividades')} AS v`, [userId]);
+    return r.rows[0]?.v === false;
+}
+
+// A quién le puede tocar los permisos cada cual: a sí mismo y a sus hijos (de
+// los que consta como madre, padre o tutor, o que constan como sus hijos).
+async function personasAMiCargo(me) {
+    const r = await pool.query(
+        `SELECT persona_id AS id FROM aim_familias WHERE familiar_id = $1 AND tipo IN ('Madre', 'Padre', 'Tutor/a', 'Tutor', 'Tutora')
+         UNION SELECT familiar_id FROM aim_familias WHERE persona_id = $1 AND tipo ILIKE 'hij%'`, [me]);
+    return [me, ...r.rows.map(x => x.id).filter(id => id !== me)];
+}
+
+app.get('/api/me/permisos', authenticateSession, async (req, res) => {
+    const me = req.userSession.userId;
+    try {
+        const ids = await personasAMiCargo(me);
+        const r = await pool.query(
+            `SELECT u.user_id, u.name, u.surname, COALESCE(u.media_consent, false) AS fotos,
+                    ${sqlUltimoConsentimiento('u.user_id', 'actividades')} AS actividades,
+                    ${sqlUltimoConsentimiento('u.user_id', 'comunicaciones')} AS comerciales,
+                    sf.otorgado AS sol_otorgar, sf.created_at AS sol_at
+             FROM users u
+             LEFT JOIN (${SQL_SOLICITUD_FOTOS}) sf ON sf.user_id = u.user_id
+             WHERE u.user_id = ANY($1::uuid[])
+             ORDER BY (u.user_id = $2) DESC, u.name`, [ids, me]);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            personas: r.rows.map(x => ({
+                id: x.user_id, nombre: `${x.name || ''} ${x.surname || ''}`.trim(), yo: x.user_id === me,
+                fotosRedes: x.fotos, comActividades: x.actividades, comComerciales: x.comerciales,
+                solicitudFotos: x.sol_at ? { otorgar: x.sol_otorgar, at: x.sol_at } : null,
+            })),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Comunicaciones: valen al momento.
+app.put('/api/me/permisos/:id', authenticateSession, async (req, res) => {
+    const me = req.userSession.userId;
+    try {
+        if (!(await personasAMiCargo(me)).includes(req.params.id)) return res.status(403).json({ error: 'No puedes cambiar los permisos de esa persona.' });
+        const quien = await pool.query(`SELECT email FROM users WHERE user_id = $1`, [me]);
+        for (const [campo, tipo] of [['comActividades', 'actividades'], ['comComerciales', 'comunicaciones']]) {
+            const v = req.body?.[campo];
+            if (typeof v !== 'boolean') continue;
+            const act = await pool.query(`SELECT ${sqlUltimoConsentimiento('$1::uuid', tipo)} AS v`, [req.params.id]);
+            if (act.rows[0].v === v) continue;
+            await anotarConsentimiento(pool, req, { userId: req.params.id, email: quien.rows[0]?.email || null, tipo, otorgado: v, origen: 'perfil (familia)' });
+        }
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Fotos: se solicita (otorgar true/false) o se anula la solicitud (null).
+app.post('/api/me/permisos/:id/fotos', authenticateSession, async (req, res) => {
+    const me = req.userSession.userId;
+    const otorgar = req.body?.otorgar;
+    if (otorgar !== null && typeof otorgar !== 'boolean') return res.status(400).json({ error: 'Falta qué quieres pedir.' });
+    try {
+        if (!(await personasAMiCargo(me)).includes(req.params.id)) return res.status(403).json({ error: 'No puedes cambiar los permisos de esa persona.' });
+        const r = await pool.query(
+            `SELECT COALESCE(u.media_consent, false) AS fotos, sf.otorgado AS sol
+             FROM users u LEFT JOIN (${SQL_SOLICITUD_FOTOS}) sf ON sf.user_id = u.user_id WHERE u.user_id = $1`, [req.params.id]);
+        if (!r.rowCount) return res.status(404).json({ error: 'No encontrado.' });
+        const { fotos, sol } = r.rows[0];
+        const quien = await pool.query(`SELECT email FROM users WHERE user_id = $1`, [me]);
+        const email = quien.rows[0]?.email || null;
+        // Anular, o pedir lo que ya hay: se quita la solicitud pendiente, si la hay.
+        if (otorgar === null || otorgar === fotos) {
+            if (sol == null) return res.status(400).json({ error: otorgar === null ? 'No hay ninguna solicitud pendiente.' : 'Ya está así.' });
+            await anotarConsentimiento(pool, req, { userId: req.params.id, email, tipo: 'imagen_descartada', otorgado: fotos, origen: 'anulada por la familia' });
+            return res.json({ success: true, anulada: true });
+        }
+        if (sol === otorgar) return res.json({ success: true, yaPedida: true });
+        await anotarConsentimiento(pool, req, { userId: req.params.id, email, tipo: 'imagen_solicitud', otorgado: otorgar, origen: 'perfil (familia)' });
+        res.json({ success: true, pendiente: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Secretaría: las solicitudes de fotos pendientes, y confirmarlas o descartarlas.
+app.get('/api/admin/permisos/solicitudes', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT sf.user_id, sf.otorgado, sf.email, sf.created_at, u.name, u.surname,
+                    COALESCE(u.media_consent, false) AS fotos
+             FROM (${SQL_SOLICITUD_FOTOS}) sf JOIN users u ON u.user_id = sf.user_id
+             WHERE u.club_id = $1 ORDER BY sf.created_at`, [AIM_CLUB_ID]);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            solicitudes: r.rows.map(x => ({
+                userId: x.user_id, nombre: `${x.name || ''} ${x.surname || ''}`.trim(), otorgar: x.otorgado,
+                actual: x.fotos, pedidoPor: x.email, at: x.created_at,
+            })),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/permisos/solicitudes/:userId', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
+    const confirmar = req.body?.confirmar === true;
+    try {
+        const r = await pool.query(
+            `SELECT sf.otorgado, u.email, COALESCE(u.media_consent, false) AS fotos
+             FROM (${SQL_SOLICITUD_FOTOS}) sf JOIN users u ON u.user_id = sf.user_id
+             WHERE sf.user_id = $1 AND u.club_id = $2`, [req.params.userId, AIM_CLUB_ID]);
+        if (!r.rowCount) return res.status(404).json({ error: 'Esa solicitud ya no está pendiente.' });
+        const s = r.rows[0];
+        if (confirmar) {
+            await pool.query(`UPDATE users SET media_consent = $1 WHERE user_id = $2`, [s.otorgado, req.params.userId]);
+            await anotarConsentimiento(pool, req, { userId: req.params.userId, email: s.email, tipo: 'imagen', otorgado: s.otorgado, origen: 'solicitud confirmada (panel)' });
+        } else {
+            await anotarConsentimiento(pool, req, { userId: req.params.userId, email: s.email, tipo: 'imagen_descartada', otorgado: s.fotos, origen: 'descartada por el club' });
+        }
+        res.json({ success: true, fotosRedes: confirmar ? s.otorgado : s.fotos });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/me/perfil', authenticateSession, async (req, res) => {
     const me = req.userSession.userId;
     try {
@@ -9600,6 +9783,9 @@ app.get('/api/me/notificaciones', authenticateSession, async (req, res) => {
             `SELECT title, published_at FROM aim_education_posts
              WHERE status = 'published' AND published_at > NOW() - INTERVAL '15 days'
              ORDER BY published_at DESC LIMIT 3`);
+        // Si ha dicho que no a las comunicaciones comerciales (#170), no se le enseñan.
+        const sinComerciales = (await pool.query(`SELECT ${sqlUltimoConsentimiento('$1::uuid', 'comunicaciones')} IS FALSE AS no`, [me])).rows[0].no;
+        if (sinComerciales) posts.rows = [];
         for (const n of posts.rows) {
             avisos.push({ tipo: 'avisos', destino: 'overview', texto: n.title, detalle: 'Aviso del club', clave: `post:${n.title}`.slice(0, 200) });
         }
@@ -11675,6 +11861,12 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
              FROM aim_speaking WHERE fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date`);
         const sp = spk.rows[0];
         if (sp.por_llamar) avisos.push({ tipo: 'speaking', texto: `${sp.por_llamar} alumno${sp.por_llamar !== 1 ? 's' : ''} de Speaking por avisar a los padres`, detalle: 'llamar y confirmar asistencia', destino: '/admin/speaking', n: sp.por_llamar });
+        // Solicitudes de las familias para dar o quitar el permiso de fotos (#170).
+        if (permisosYo.editarAlumnos) {
+            const sf = (await pool.query(
+                `SELECT COUNT(*)::int n FROM (${SQL_SOLICITUD_FOTOS}) s JOIN users u ON u.user_id = s.user_id WHERE u.club_id = $1`, [AIM_CLUB_ID])).rows[0].n;
+            if (sf) avisos.push({ tipo: 'permisos', texto: `${sf} solicitud${sf !== 1 ? 'es' : ''} de permiso de fotos`, detalle: 'confirmar o descartar en Gestión de alumnos', destino: '/admin/alumnos', n: sf });
+        }
         if (sp.rechazados) avisos.push({ tipo: 'speaking', texto: `${sp.rechazados} familia${sp.rechazados !== 1 ? 's' : ''} han dicho que NO al Speaking`, detalle: 'revisar la asistencia', destino: '/admin/speaking', n: sp.rechazados });
 
         res.set('Cache-Control', 'no-store');
@@ -11779,6 +11971,7 @@ async function enviarCorreosSpeaking(ids, { tipo = 'inicial' } = {}) {
     const r = await pool.query(
         `SELECT s.id, s.fecha, s.franjas, s.token, s.student_id, s.hora_inicio, s.hora_fin,
                 ${sqlLimiteSpeaking('s.')} AS limite, ${sqlLimiteSpeaking('s.')} = ${SQL_HOY_MADRID} AS limite_hoy,
+                ${sqlUltimoConsentimiento('s.student_id', 'actividades')} IS FALSE AS sin_avisos,
                 TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno
          FROM aim_speaking s JOIN users u ON u.user_id = s.student_id WHERE s.id = ANY($1::int[])`, [ids]);
     // En paralelo: cada correo abría antes su conexión y se enviaban de uno en uno,
@@ -11786,6 +11979,8 @@ async function enviarCorreosSpeaking(ids, { tipo = 'inicial' } = {}) {
     // Promise.all salen a la vez.
     await Promise.all(r.rows.map(async (row) => {
         try {
+            // No quiere comunicaciones de sus actividades (#170): secretaría llama.
+            if (row.sin_avisos) return;
             const correos = await emailsFamilia(row.student_id);
             if (!correos.length) return;
             const fechaTxt = new Date(row.fecha).toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
@@ -11917,6 +12112,7 @@ app.get('/api/admin/speaking', authenticateSession, requireAdmin, async (req, re
             `SELECT s.id, s.fecha, s.franjas, s.confirmado, s.respondido_at, s.llamado, s.email_enviado,
                     s.student_id, s.hora_inicio, s.hora_fin, g.name AS clase,
                     ${sqlLimiteSpeaking('s.')} AS limite, ${sqlLimiteSpeaking('s.')} >= ${SQL_HOY_MADRID} AS plazo_abierto,
+                    ${sqlUltimoConsentimiento('s.student_id', 'actividades')} IS FALSE AS sin_avisos,
                     TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno,
                     (SELECT string_agg(DISTINCT NULLIF(TRIM(CONCAT(fu.name, ' ', COALESCE(fu.surname, ''),
                               CASE WHEN fu.phone IS NOT NULL AND fu.phone <> '' THEN ' · ' || fu.phone ELSE '' END)), ''), '   ')
@@ -11931,7 +12127,7 @@ app.get('/api/admin/speaking', authenticateSession, requireAdmin, async (req, re
             sesiones: r.rows.map(x => ({
                 id: x.id, fecha: x.fecha, franjas: x.franjas || [], confirmado: x.confirmado,
                 respondidoAt: x.respondido_at, llamado: x.llamado, emailEnviado: x.email_enviado,
-                limite: x.limite, plazoAbierto: x.plazo_abierto,
+                limite: x.limite, plazoAbierto: x.plazo_abierto, sinAvisos: x.sin_avisos,
                 // Sin confirmar y fuera de plazo: ha perdido ese día.
                 perdida: x.confirmado === null && !x.plazo_abierto,
                 alumno: x.alumno, studentId: x.student_id, contactos: x.contactos || null,

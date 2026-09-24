@@ -154,7 +154,7 @@ export default function AdminSpeaking({ showToast }) {
   const estado = (s) => s.perdida ? { t: '⌛ Plaza perdida', c: 'var(--danger, #dc2626)' }
     : s.confirmado === true ? { t: '✓ Confirmado', c: 'var(--teal)' }
     : s.confirmado === false ? { t: '✗ No puede', c: 'var(--orange)' }
-      : { t: s.emailEnviado ? 'Esperando respuesta' : 'Sin correo', c: 'var(--ink-3)' };
+      : { t: s.emailEnviado ? 'Esperando respuesta' : s.sinAvisos ? 'Sin correo · no quiere avisos' : 'Sin correo', c: 'var(--ink-3)' };
   const franjasFila = (s) => franjasTxt((s.franjasTexto || []).filter(f => (s.franjas || []).includes(f.n)));
 
   return (

@@ -30,6 +30,29 @@ import { IconoActividad } from './IconoActividad.jsx';
 
 const fichaCardTitulo = { margin: '0 0 12px', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--ink-3)' };
 
+// Permisos de la ficha (ticket #170): un Sí / No. Si aún no consta nada, no
+// sale ninguno marcado.
+const PERMISOS_FICHA = [
+  { campo: 'fotosRedes', titulo: 'Fotos y redes sociales', ayuda: 'Se le pueden hacer fotos y vídeos y publicarlos en las redes y la web del club. Sale también al pasar lista.' },
+  { campo: 'comActividades', titulo: 'Comunicaciones de sus actividades', ayuda: 'Avisos e información de las actividades en las que está apuntado.' },
+  { campo: 'comComerciales', titulo: 'Comunicaciones comerciales', ayuda: 'Publicidad de otras actividades, eventos y ofertas del club.' },
+];
+function ElegirSiNo({ valor, onCambio, disabled }) {
+  const boton = (v, texto, color) => (
+    <button type="button" disabled={disabled} onClick={() => onCambio(v)} aria-pressed={valor === v}
+      style={{
+        padding: '5px 14px', fontSize: 12, fontWeight: 800, fontFamily: 'inherit', cursor: disabled ? 'default' : 'pointer',
+        border: 0, background: valor === v ? color : 'transparent', color: valor === v ? '#fff' : 'var(--ink-2)',
+      }}>{texto}</button>
+  );
+  return (
+    <div style={{ display: 'inline-flex', border: '1px solid var(--line)', borderRadius: 999, overflow: 'hidden', background: 'var(--bg-2)', flexShrink: 0 }}>
+      {boton(true, 'Sí', 'var(--teal)')}
+      {boton(false, 'No', 'var(--danger, #dc2626)')}
+    </div>
+  );
+}
+
 function sectionLabel(id) {
   return ({
     overview: "Resumen",
@@ -447,6 +470,60 @@ const etiquetaRolSimple = (r) => ({
   club_owner: 'dirección', superadmin: 'admin',
 }[r] || r || 'alumno');
 
+// Solicitudes de las familias para dar o quitar el permiso de fotos (ticket
+// #170). No cambia nada hasta que secretaría la confirma. Solo sale si hay alguna.
+async function resolverSolicitudFotos(userId, confirmar) {
+  const r = await fetch(`/api/admin/permisos/solicitudes/${userId}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+    body: JSON.stringify({ confirmar }),
+  }).catch(() => null);
+  const d = await r?.json().catch(() => ({}));
+  if (!r?.ok) throw new Error(d?.error || 'No se ha podido guardar.');
+  return d;
+}
+function SolicitudesFotos({ showToast, onAbrir, puedeEditar }) {
+  const [lista, setLista] = useState([]);
+  const cargar = useCallback(() => fetch('/api/admin/permisos/solicitudes', { credentials: 'include', cache: 'no-store' })
+    .then(r => (r.ok ? r.json() : { solicitudes: [] })).then(d => setLista(d.solicitudes || [])).catch(() => {}), []);
+  useEffect(() => { cargar(); }, [cargar]);
+  if (!lista.length) return null;
+  async function resolver(s, confirmar) {
+    try {
+      await resolverSolicitudFotos(s.userId, confirmar);
+      showToast(confirmar ? `Hecho: ${s.nombre} ${s.otorgar ? 'ya tiene' : 'ya no tiene'} permiso de fotos.` : 'Solicitud descartada.');
+      cargar();
+    } catch (e) { alert(e.message); }
+  }
+  return (
+    <div className="panel" style={{ marginBottom: 16, borderColor: 'color-mix(in oklab, var(--purple) 35%, var(--line))' }}>
+      <h2 style={{ fontSize: 16 }}>📷 Solicitudes de permiso de fotos ({lista.length})</h2>
+      <p className="sub">Las familias lo piden desde su perfil. No cambia nada hasta que lo confirmas.</p>
+      <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
+        {lista.map(s => (
+          <div key={s.userId} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '10px 12px', borderRadius: 12, background: 'var(--bg-3)' }}>
+            <div style={{ flex: '1 1 260px', minWidth: 0 }}>
+              <button type="button" onClick={() => onAbrir({ id: s.userId })}
+                style={{ background: 'none', border: 0, padding: 0, fontFamily: 'inherit', fontWeight: 800, fontSize: 14, color: 'var(--ink)', cursor: 'pointer', textAlign: 'left' }}>
+                {s.nombre}
+              </button>
+              <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                Pide <b style={{ color: s.otorgar ? 'var(--teal)' : 'var(--danger, #dc2626)' }}>{s.otorgar ? 'DAR' : 'QUITAR'}</b> el permiso
+                {s.pedidoPor ? ` · lo pidió ${s.pedidoPor}` : ''} · {fmtFecha(s.at)}
+              </div>
+            </div>
+            {puedeEditar && (
+              <>
+                <button className="btn btn-sm btn-primary" onClick={() => resolver(s, true)}>Confirmar</button>
+                <button className="btn btn-sm btn-outline" onClick={() => resolver(s, false)}>Descartar</button>
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos, onNuevo }) {
   const [users, setUsers] = useState([]);
   const [rangos, setRangos] = useState({});
@@ -505,6 +582,7 @@ function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos, onNuev
   return (
     <>
       <CambiosFiscales showToast={showToast} />
+      <SolicitudesFotos key={refreshTrigger} showToast={showToast} onAbrir={onEditUser} puedeEditar={permisos?.editarAlumnos} />
       <div className="toolbar">
         <div className="search-input">
           <I.Search />
@@ -6534,6 +6612,11 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
   const [notification, setNotification] = useState(null);
   const [activeModal, setActiveModal] = useState(null); // 'new-student' | 'edit-student' | 'new-post' | 'edit-post' | 'new-group' | 'edit-group' | 'new-class' | 'add-activity-or-aula' | 'new-aula' | 'new-activity'
   const [editingItem, setEditingItem] = useState(null);
+  // Moverse entre familiares desde la ficha: de dónde se viene, para volver.
+  const [pilaFichas, setPilaFichas] = useState([]);
+  // La ficha tal y como llegó, para saber si hay cambios sin guardar al saltar.
+  const fichaOriginal = useRef(null);
+  useEffect(() => { if (activeModal !== 'edit-student') setPilaFichas([]); }, [activeModal]);
 
   const [studentsList, setStudentsList] = useState([]);
   const [classSlots, setClassSlots] = useState([]);
@@ -6646,14 +6729,43 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
   const abrirFicha = async (u) => {
     setEditingItem(u);
     setActiveModal('edit-student');
+    setPilaFichas([]);
+    fichaOriginal.current = null;
     try {
       const r = await fetch(`/api/users/${u.id}`, { credentials: 'include', cache: 'no-store' });
       if (r.ok) {
         const completa = await r.json();
         // Si mientras llegaba se ha cerrado o se ha abierto otra, no se pisa.
-        setEditingItem(prev => (prev && prev.id === completa.id ? { ...prev, ...completa } : prev));
+        setEditingItem(prev => {
+          if (!prev || prev.id !== completa.id) return prev;
+          const junta = { ...prev, ...completa };
+          fichaOriginal.current = junta;
+          return junta;
+        });
       }
     } catch { /* se queda con lo que traia la lista */ }
+  };
+
+  // Ir a la ficha de un familiar sin cerrar (o volver a la anterior). Se pide la
+  // ficha entera ANTES de enseñarla: con datos a medias, guardar borraría lo que
+  // faltase. Si hay cambios sin guardar en la actual, se pregunta.
+  const saltarAFicha = async (destino, { volver = false } = {}) => {
+    if (!destino?.id || destino.id === editingItem?.id) return;
+    const cambios = fichaOriginal.current && JSON.stringify(editingItem) !== JSON.stringify(fichaOriginal.current);
+    if (cambios && !window.confirm('Tienes cambios sin guardar en esta ficha. Si cambias de ficha se perderán. ¿Seguir?')) return;
+    try {
+      const r = await fetch(`/api/users/${destino.id}`, { credentials: 'include', cache: 'no-store' });
+      if (!r.ok) {
+        showToast(r.status === 404 ? `${destino.nombre || 'Esa persona'} no es del club: no tiene ficha aquí.` : 'No se ha podido abrir la ficha.');
+        return;
+      }
+      const completa = await r.json();
+      const actual = { id: editingItem.id, nombre: `${editingItem.firstName || ''} ${editingItem.lastName || ''}`.trim() };
+      setPilaFichas(p => (volver ? p.slice(0, -1) : [...p, actual]));
+      fichaOriginal.current = completa;
+      setEditingItem(completa);
+      document.querySelector('.ficha-modal')?.scrollTo({ top: 0 });
+    } catch { showToast('No se ha podido abrir la ficha.'); }
   };
 
   // Meter en el club a alguien que ya tiene cuenta. Va directo con 'adoptar',
@@ -6973,7 +7085,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
               // La tarjeta solo trae el id: se pide la ficha entera para abrirla.
               const todos = await fetch('/api/users', { credentials: 'include', cache: 'no-store' }).then(r => r.ok ? r.json() : []).catch(() => []);
               const u = todos.find(x => x.id === p.id);
-              if (u) { setEditingItem(u); setActiveModal('edit-student'); }
+              if (u) abrirFicha(u);
             }} />
           )}
           {ver("classes") && (
@@ -7073,9 +7185,16 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                 editingItem.belt && ['Cinturón', editingItem.belt],
                 editingItem.phone && ['Teléfono', editingItem.phone],
                 editingItem.poblacion && ['Población', editingItem.poblacion],
+                editingItem.fotosRedes !== undefined && ['Fotos', editingItem.fotosRedes ? '📷 Sí, en redes' : '🚫 No'],
               ].filter(Boolean) : [];
               return (
                 <>
+                  {esEdit && pilaFichas.length > 0 && (
+                    <button type="button" onClick={() => saltarAFicha(pilaFichas[pilaFichas.length - 1], { volver: true })}
+                      style={{ justifySelf: 'start', background: 'none', border: 0, padding: 0, cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, fontWeight: 700, color: 'var(--purple)' }}>
+                      ← Volver a la ficha de {pilaFichas[pilaFichas.length - 1].nombre || 'la anterior'}
+                    </button>
+                  )}
                   {/* Cabecera de color con el nombre, como una ficha de perfil. */}
                   <div className="ficha-cabecera" style={{
                     padding: '22px 40px 20px',
@@ -7222,13 +7341,61 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                         </div>
                         {esEdit && <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Es un dato sensible: solo lo ve el personal del club, y sale avisado en el pasar lista.</span>}
                       </div>
+
+                      {/* Permisos y comunicaciones (ticket #170). Cada cambio queda
+                          anotado en el registro de consentimientos al guardar. */}
+                      {esEdit && editingItem.fotosRedes !== undefined && (
+                        <div style={{ background: 'var(--bg-3)', borderRadius: 14, padding: 16 }}>
+                          <p style={fichaCardTitulo}>Permisos y comunicaciones</p>
+                          {editingItem.solicitudFotos && (
+                            <div style={{ marginBottom: 12, padding: '10px 12px', borderRadius: 10, background: 'color-mix(in oklab, var(--purple) 10%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--purple) 30%, transparent)', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                              <div style={{ flex: '1 1 240px', fontSize: 12.5 }}>
+                                <b>La familia pide {editingItem.solicitudFotos.otorgar ? 'DAR' : 'QUITAR'} el permiso de fotos</b>
+                                <div style={{ color: 'var(--ink-3)' }}>
+                                  {editingItem.solicitudFotos.pedidoPor ? `Lo pidió ${editingItem.solicitudFotos.pedidoPor} · ` : ''}{fmtFecha(editingItem.solicitudFotos.at)}
+                                </div>
+                              </div>
+                              {permisos.editarAlumnos && [true, false].map(conf => (
+                                <button key={String(conf)} type="button" className={`btn btn-sm ${conf ? 'btn-primary' : 'btn-outline'}`}
+                                  onClick={async () => {
+                                    try {
+                                      const d = await resolverSolicitudFotos(editingItem.id, conf);
+                                      const cambio = { fotosRedes: d.fotosRedes, solicitudFotos: null };
+                                      // Se aplica ya: que la ficha no crea que hay cambios sin guardar por esto.
+                                      if (fichaOriginal.current) fichaOriginal.current = { ...fichaOriginal.current, ...cambio };
+                                      setEditingItem(prev => ({ ...prev, ...cambio }));
+                                      showToast(conf ? 'Solicitud confirmada.' : 'Solicitud descartada.');
+                                    } catch (e) { alert(e.message); }
+                                  }}>{conf ? 'Confirmar' : 'Descartar'}</button>
+                              ))}
+                            </div>
+                          )}
+                          <div style={{ display: 'grid', gap: 12 }}>
+                            {PERMISOS_FICHA.map(p => (
+                              <div key={p.campo} style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+                                <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+                                  <div style={{ fontSize: 13.5, fontWeight: 700 }}>{p.titulo}</div>
+                                  <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                                    {p.ayuda}
+                                    {editingItem[p.campo] == null && <b style={{ color: 'var(--orange)' }}> · Aún no consta.</b>}
+                                    {editingItem.permisosAt?.[p.campo] && ` · Anotado el ${fmtFecha(editingItem.permisosAt[p.campo])}.`}
+                                  </div>
+                                </div>
+                                <ElegirSiNo valor={editingItem[p.campo]} disabled={!permisos.editarAlumnos}
+                                  onCambio={v => setEditingItem({ ...editingItem, [p.campo]: v })} />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
 
                   {esEdit && editingItem.id && (
                     <div style={{ borderTop: '1px solid var(--line)', paddingTop: 16 }}>
-                      <FichaAlumnoClases studentId={editingItem.id} nacimiento={editingItem.birthday}
-                        nombre={nombre} showToast={showToast} />
+                      <FichaAlumnoClases key={editingItem.id} studentId={editingItem.id} nacimiento={editingItem.birthday}
+                        nombre={nombre} showToast={showToast}
+                        onAbrirFamiliar={f => saltarAFicha({ id: f.familiarId, nombre: `${f.nombre} ${f.apellidos || ''}`.trim() })} />
                       {/* Ficha 360º (ticket #222): económico, asistencia y resumen anual.
                           Lleva dinero, así que solo el personal del club. */}
                       {permisos.editarAlumnos && <FichaAlumno360 studentId={editingItem.id} />}
