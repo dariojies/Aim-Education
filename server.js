@@ -41,6 +41,15 @@ process.env.TZ = process.env.TZ || 'Europe/Madrid';
 // que de madrugada devolvía el día anterior; esto respeta la zona de Madrid.
 const hoyMadrid = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' });
 
+// Pausa de cargos: SOLO septiembre de 2026, mientras el club arranca con la app
+// (lo pidió el club). Esos días no se genera ningún cargo pendiente: ni la
+// mensualidad automática (ni la de septiembre ni la de octubre), ni al dar de
+// alta (mensualidad e inscripción), ni los del campamento. El 1 de octubre de
+// 2026 todo vuelve a ser como siempre (y septiembre de 2027 es normal). Las
+// ventas sueltas (TPV, exámenes, anticipos) no se tocan.
+const PAUSA_CARGOS = { desde: '2026-09-01', hasta: '2026-09-30' };
+const cargosEnPausa = () => { const h = hoyMadrid(); return h >= PAUSA_CARGOS.desde && h <= PAUSA_CARGOS.hasta; };
+
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -5976,6 +5985,7 @@ async function altaCargosCampamento(client, f, sel, cobrado, porConcepto) {
 // ningún pago. Reemplaza sus cargos pendientes de campamento y respeta lo ya
 // cobrado. Si el niño no está vinculado a una ficha de alumno, no se puede cobrar.
 async function autoCargoCampamento(childId) {
+    if (cargosEnPausa()) return;
     try {
         const { porConcepto, faltan } = await preciosTarifas();
         if (faltan.length) return;
@@ -6842,6 +6852,7 @@ const nombreMesLargo = (iso) => {
 // Idempotente (no duplica). La usan tanto el botón manual como el job automático
 // (ticket: los cargos se generan solos cada poco, sin darle a "Generar").
 async function ejecutarGeneracionCargos(mesPedido) {
+    if (cargosEnPausa()) return { creados: 0, mes: normalizaMes(mesPedido), pausa: true };
     await sincronizarFichasActivas().catch(e => console.error('[FICHAS sync]', e.message));
     const temp = await pool.query('SELECT id, nombre FROM aim_temporadas WHERE activa = true');
     if (temp.rowCount === 0) return { creados: 0, mes: null, temporada: null, sinTemporada: true };
@@ -6874,6 +6885,7 @@ async function ejecutarGeneracionCargos(mesPedido) {
 app.post('/api/admin/billing/generar', authenticateSession, requireAdmin, async (req, res) => {
     try {
         const out = await ejecutarGeneracionCargos(req.body.mes);
+        if (out.pausa) return res.status(409).json({ error: 'En septiembre de 2026 no se generan cargos (pausa de arranque). Vuelven solos el 1 de octubre.' });
         if (out.sinTemporada) return res.status(400).json({ error: 'No hay temporada activa.' });
         res.json({ success: true, mes: out.mes, creados: out.creados });
     } catch (err) {
@@ -6889,7 +6901,7 @@ app.post('/api/admin/billing/generar', authenticateSession, requireAdmin, async 
 const INTERVALO_GENERACION_MS = 45 * 1000; // cada 45 segundos
 let generacionEnCurso = false;
 async function generacionAutomatica() {
-    if (generacionEnCurso) return;
+    if (generacionEnCurso || cargosEnPausa()) return;
     generacionEnCurso = true;
     try {
         const temp = await pool.query('SELECT nombre FROM aim_temporadas WHERE activa = true');
@@ -6914,7 +6926,7 @@ async function generacionAutomatica() {
 // aparece pendiente al momento, sin esperar al "generar" mensual. Idempotente:
 // no duplica lo que ya exista de ese concepto y mes. Devuelve cuántos creó.
 async function generarCargosDeMatricula({ userId, claseRef, actividad, temporadaId, descuentoPct = 0, mes }, cliente = pool) {
-    if (!userId || !temporadaId) return 0;
+    if (!userId || !temporadaId || cargosEnPausa()) return 0;
     // Ticket #289: al apuntarse, la mensualidad es la del mes en curso si aún no
     // se ha pasado el día de corte; a partir de ese día, la del mes siguiente.
     const m = normalizaMes(mes || mesParaAlta());
@@ -7017,7 +7029,7 @@ async function debeInscripcion(userId, cliente = pool) {
 }
 
 async function generarCargoInscripcion({ userId, mes, yaComprobado = false }, cliente = pool) {
-    if (!userId) return 0;
+    if (!userId || cargosEnPausa()) return 0;
     // Ticket #290: si viene de seguido, no paga inscripción otra vez. Quien da el
     // alta lo comprueba ANTES de apuntarle (al apuntarle se reabre su matrícula y
     // ya no se vería la baja); en ese caso llega con yaComprobado.
