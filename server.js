@@ -1349,6 +1349,21 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_consentimientos_user ON aim_consentimientos (user_id, tipo, created_at)`);
+        // Enlaces para restablecer la contraseña. Solo se guarda la huella
+        // (SHA-256) del enlace, no el enlace: quien leyera la base no podría
+        // usarlos. Caducan en 1 hora y sirven una sola vez.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_password_resets (
+                id SERIAL PRIMARY KEY,
+                user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                token_hash VARCHAR(64) NOT NULL UNIQUE,
+                expires_at TIMESTAMPTZ NOT NULL,
+                used_at TIMESTAMPTZ,
+                ip VARCHAR(60),
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_password_resets_user ON aim_password_resets (user_id)`);
         // Perfil de cada miembro del personal en la web, en «Conócenos» (#295).
         // Solo sale quien tiene visible = true, que se marca con su permiso: su
         // nombre, su foto y su presentación son datos personales.
@@ -1757,12 +1772,28 @@ async function initDb() {
         client.release();
     }
 }
-initDb().catch(err => console.error('DB init error:', err));
+// Si la base está llena de conexiones al arrancar (admite 20 y las comparte con
+// Aim-Tul), las migraciones fallaban y no se volvían a intentar: las tablas
+// nuevas no se creaban hasta el siguiente reinicio. Ahora se reintenta.
+function initDbConReintentos(intento = 1) {
+    initDb().catch(err => {
+        if (err?.code === '53300' && intento < 30) {
+            console.warn(`[initDb] la base no admite más conexiones; se reintenta en 10 s (intento ${intento})`);
+            setTimeout(() => initDbConReintentos(intento + 1), 10_000);
+            return;
+        }
+        console.error('DB init error:', err);
+    });
+}
+initDbConReintentos();
 
 // --- Session store ---
 
 const sessions = new Map();
 const SESSION_DURATION_MS = 24 * 60 * 60 * 1000;
+// «Mantenerme conectado»: 30 días. Sin marcarlo, la sesión acaba al cerrar el
+// navegador (y, como mucho, a las 24 h).
+const SESSION_RECORDAR_MS = 30 * 24 * 60 * 60 * 1000;
 
 setInterval(() => {
     const now = Date.now();
@@ -1803,6 +1834,66 @@ function authenticateSession(req, res, next) {
     req.userSession = session;
     req.sessionToken = token;
     next();
+}
+
+// Abre la sesión de alguien que ya ha demostrado quién es (con su contraseña o
+// con Google) y devuelve lo que la pantalla necesita saber de él.
+async function abrirSesion(res, user, { recordar = true } = {}) {
+    const userRole = (user.role || '').toLowerCase();
+    const devRole = (user.dev_role || '').toLowerCase();
+    // Su rango propio de Aim Education, si lo tiene (trabajador, secretaría,
+    // equipo IT): manda sobre el de la cuenta, que es el de las otras apps.
+    const ra = await pool.query(`SELECT rango FROM aim_rangos WHERE user_id = $1`, [user.user_id]);
+    const rangoAim = ra.rows[0]?.rango || null;
+    // El rol manda en todo el panel: qué secciones se ven y qué se puede
+    // tocar en cada una. Un superadmin (dev_role) lo ve todo, pero su rango
+    // visible sigue siendo el suyo.
+    const rol = rolEfectivo(userRole, devRole, rangoAim);
+    const visible = rolVisible(userRole, rangoAim);
+    const canAccessAdmin = !!rol;
+    const isSuperAdmin = rol === 'superadmin';
+    const duracion = recordar ? SESSION_RECORDAR_MS : SESSION_DURATION_MS;
+
+    const token = crypto.randomBytes(32).toString('hex');
+    sessions.set(token, {
+        userId: user.user_id,
+        email: user.email,
+        firstName: user.name,
+        lastName: user.surname,
+        avatar: user.profile_picture,
+        isSuperAdmin,
+        canAccessAdmin,
+        rol,
+        rolVisible: visible,
+        nombreRol: NOMBRE_ROL[visible] || null,
+        permisos: permisosDe(rol),
+        expiresAt: Date.now() + duracion,
+    });
+    res.cookie('aim_session', token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict',
+        path: '/',
+        // Sin maxAge, la cookie se borra al cerrar el navegador.
+        ...(recordar ? { maxAge: duracion } : {}),
+    });
+    return {
+        id: user.user_id,
+        firstName: user.name,
+        lastName: user.surname,
+        email: user.email,
+        avatar: user.profile_picture,
+        isSuperAdmin,
+        canAccessAdmin,
+        rol,
+        nombreRol: NOMBRE_ROL[visible] || null,
+        permisos: permisosDe(rol),
+    };
+}
+
+// Cierra todas las sesiones abiertas de una persona (al cambiar su contraseña).
+function cerrarSesionesDe(userId) {
+    for (const [t, ses] of sessions) if (ses.userId === userId) sessions.delete(t);
 }
 
 function recordEmailFailure(emailLower, now) {
@@ -2054,67 +2145,228 @@ app.post('/api/login', async (req, res) => {
         emailLoginFailures.delete(emailLower);
         emailBlocks.delete(emailLower);
 
-        const userRole = (user.role || '').toLowerCase();
-        const devRole = (user.dev_role || '').toLowerCase();
-        // Su rango propio de Aim Education, si lo tiene (trabajador, secretaría,
-        // equipo IT): manda sobre el de la cuenta, que es el de las otras apps.
-        const ra = await pool.query(`SELECT rango FROM aim_rangos WHERE user_id = $1`, [user.user_id]);
-        const rangoAim = ra.rows[0]?.rango || null;
-        // El rol manda en todo el panel: qué secciones se ven y qué se puede
-        // tocar en cada una. Un superadmin (dev_role) lo ve todo, pero su rango
-        // visible sigue siendo el suyo.
-        const rol = rolEfectivo(userRole, devRole, rangoAim);
-        const visible = rolVisible(userRole, rangoAim);
-        const canAccessAdmin = !!rol;
-        const isSuperAdmin = rol === 'superadmin';
-
-        const token = crypto.randomBytes(32).toString('hex');
-        sessions.set(token, {
-            userId: user.user_id,
-            email: user.email,
-            firstName: user.name,
-            lastName: user.surname,
-            avatar: user.profile_picture,
-            isSuperAdmin,
-            canAccessAdmin,
-            rol,
-            rolVisible: visible,
-            nombreRol: NOMBRE_ROL[visible] || null,
-            permisos: permisosDe(rol),
-            expiresAt: now + SESSION_DURATION_MS
-        });
-
-        res.cookie('aim_session', token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'strict',
-            maxAge: SESSION_DURATION_MS,
-            path: '/'
-        });
-
-        res.json({
-            success: true,
-            user: {
-                id: user.user_id,
-                firstName: user.name,
-                lastName: user.surname,
-                email: user.email,
-                avatar: user.profile_picture,
-                isSuperAdmin,
-                canAccessAdmin,
-                rol,
-                nombreRol: NOMBRE_ROL[visible] || null,
-                permisos: permisosDe(rol),
-            }
-        });
+        // «Mantenerme conectado»: si no se marca, la sesión acaba al cerrar el navegador.
+        const datos = await abrirSesion(res, user, { recordar: req.body.recordar !== false });
+        res.json({ success: true, user: datos });
     } catch (err) {
         console.error('Login Error:', err);
         res.status(500).json({ error: 'Error del servidor al intentar iniciar sesión.' });
     }
 });
 
+// ── Restablecer la contraseña ───────────────────────────────────────────────
+// 1) Se pide con el correo: si hay una cuenta, le llega un enlace. La respuesta es
+//    siempre la misma, exista o no, para no descubrir qué correos están dados de
+//    alta. 2) El enlace lleva a la web, donde se pone la nueva. Sirve una vez y
+//    caduca en 1 hora. La cuenta la comparten las apps de AIM, así que la
+//    contraseña nueva vale también en ellas.
+const baseWeb = (req) => (process.env.PUBLIC_BASE_URL
+    || `${String(req.headers['x-forwarded-proto'] || req.protocol).split(',')[0]}://${req.get('host')}`).replace(/\/+$/, '');
+const huellaEnlace = (t) => crypto.createHash('sha256').update(String(t)).digest('hex');
+const OLVIDO_POR_IP = new Map();
+const OLVIDO_POR_EMAIL = new Map();
+function frenar(mapa, clave, max, ventanaMs) {
+    const ahora = Date.now();
+    const recientes = (mapa.get(clave) || []).filter(t => ahora - t < ventanaMs);
+    if (recientes.length >= max) return true;
+    mapa.set(clave, [...recientes, ahora]);
+    return false;
+}
+
+app.post('/api/password/olvido', async (req, res) => {
+    const email = String(req.body?.email || '').trim().toLowerCase().slice(0, 255);
+    const respuesta = { success: true, mensaje: 'Si hay una cuenta con ese correo, te acabamos de enviar un enlace para poner una contraseña nueva. Mira también en correo no deseado.' };
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return res.status(400).json({ error: 'Escribe tu correo electrónico.' });
+    if (frenar(OLVIDO_POR_IP, ipDe(req), 10, 3600_000)) return res.status(429).json({ error: 'Has pedido muchos enlaces seguidos. Espera un rato y vuelve a intentarlo.' });
+    // Por correo, como mucho 3 por hora: callado, para no revelar si existe.
+    if (frenar(OLVIDO_POR_EMAIL, email, 3, 3600_000)) return res.json(respuesta);
+    try {
+        const u = await pool.query(`SELECT user_id, name, email FROM users WHERE LOWER(email) = $1`, [email]);
+        if (u.rowCount) {
+            const persona = u.rows[0];
+            const token = crypto.randomBytes(32).toString('base64url');
+            await pool.query(
+                `INSERT INTO aim_password_resets (user_id, token_hash, expires_at, ip) VALUES ($1, $2, NOW() + INTERVAL '1 hour', $3)`,
+                [persona.user_id, huellaEnlace(token), ipDe(req) || null]);
+            const enlace = `${baseWeb(req)}/auth?mode=restablecer&token=${encodeURIComponent(token)}`;
+            if (mailTransporter) {
+                await mailTransporter.sendMail({
+                    from: process.env.EMAIL_USER, to: persona.email,
+                    subject: 'Restablecer tu contraseña de AIM Education',
+                    html: `<div style="font-family:system-ui,sans-serif;color:#1a1a1a;max-width:520px">
+                      <p>Hola ${escHtml(persona.name || '')},</p>
+                      <p>Nos han pedido poner una contraseña nueva en tu cuenta de AIM Education. Si has sido tú, entra aquí:</p>
+                      <p style="margin:22px 0"><a href="${enlace}" style="background:#5233A8;color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:700;display:inline-block">Poner una contraseña nueva</a></p>
+                      <p style="font-size:13px;color:#555">El enlace sirve una sola vez y caduca en 1 hora. Si no lo has pedido tú, ignora este correo: tu contraseña sigue siendo la misma.</p>
+                      <p style="font-size:12px;color:#888">AIM Education · Algeciras</p></div>`,
+                }).catch(e => console.error('[olvido] correo:', e.message));
+            } else {
+                console.warn('[olvido] sin correo configurado: no se ha podido mandar el enlace a', persona.email);
+            }
+        }
+        res.json(respuesta);
+    } catch (err) {
+        console.error('[olvido]', err.message);
+        res.status(500).json({ error: 'No se ha podido enviar. Inténtalo de nuevo en un momento.' });
+    }
+});
+
+// ¿Sirve aún este enlace? Para avisar nada más abrirlo, y no después de escribir la contraseña.
+app.get('/api/password/restablecer/:token', async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT u.email FROM aim_password_resets p JOIN users u ON u.user_id = p.user_id
+             WHERE p.token_hash = $1 AND p.used_at IS NULL AND p.expires_at > NOW()`, [huellaEnlace(req.params.token)]);
+        res.set('Cache-Control', 'no-store');
+        if (!r.rowCount) return res.json({ valido: false });
+        // El correo, a medias: «ju***@gmail.com».
+        const [usu, dom] = String(r.rows[0].email).split('@');
+        res.json({ valido: true, email: `${usu.slice(0, 2)}***@${dom}` });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/password/restablecer', async (req, res) => {
+    const token = String(req.body?.token || '');
+    const password = String(req.body?.password || '');
+    if (password.length < 8) return res.status(400).json({ error: 'La contraseña tiene que tener al menos 8 caracteres.' });
+    if (password.length > 200) return res.status(400).json({ error: 'Esa contraseña es demasiado larga.' });
+    if (frenar(OLVIDO_POR_IP, 'r:' + ipDe(req), 20, 3600_000)) return res.status(429).json({ error: 'Demasiados intentos. Espera un rato.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const r = await client.query(
+            `SELECT p.id, p.user_id, u.email, u.name FROM aim_password_resets p JOIN users u ON u.user_id = p.user_id
+             WHERE p.token_hash = $1 AND p.used_at IS NULL AND p.expires_at > NOW() FOR UPDATE OF p`, [huellaEnlace(token)]);
+        if (!r.rowCount) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'Este enlace ya no sirve: ha caducado o ya se usó. Pide otro desde «¿Olvidaste tu contraseña?».' });
+        }
+        const { id, user_id: userId, email, name } = r.rows[0];
+        const hash = await bcrypt.hash(password, 12);
+        await client.query(`UPDATE users SET password = $1, requires_password_change = false WHERE user_id = $2`, [hash, userId]);
+        await client.query(`UPDATE aim_password_resets SET used_at = NOW() WHERE id = $1`, [id]);
+        // Los demás enlaces que tuviera pedidos dejan de valer.
+        await client.query(`UPDATE aim_password_resets SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL`, [userId]);
+        await client.query('COMMIT');
+        // Quien tuviera abierta su cuenta con la contraseña vieja, fuera.
+        cerrarSesionesDe(userId);
+        if (mailTransporter) {
+            mailTransporter.sendMail({
+                from: process.env.EMAIL_USER, to: email,
+                subject: 'Tu contraseña de AIM Education ha cambiado',
+                html: `<div style="font-family:system-ui,sans-serif;color:#1a1a1a;max-width:520px">
+                  <p>Hola ${escHtml(name || '')},</p>
+                  <p>La contraseña de tu cuenta de AIM Education se acaba de cambiar. Es la misma cuenta de las apps de AIM, así que la nueva vale también en ellas.</p>
+                  <p>Si no has sido tú, escríbenos cuanto antes a info@aimeducation.es o llámanos al 956 742 216.</p>
+                  <p style="font-size:12px;color:#888">AIM Education · Algeciras</p></div>`,
+            }).catch(e => console.error('[restablecer] aviso:', e.message));
+        }
+        res.json({ success: true });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('[restablecer]', err.message);
+        res.status(500).json({ error: 'No se ha podido cambiar. Inténtalo de nuevo.' });
+    } finally {
+        client.release();
+    }
+});
+
+// ── Entrar con Google (solo el personal) ────────────────────────────────────
+// Solo cuentas de Google de @aimeducation.es o @allegro.in-mae.es, y solo si ya
+// hay una cuenta con ese correo: no crea cuentas. Va por el servidor (flujo con
+// código): la web no carga ningún script de Google. Necesita GOOGLE_CLIENT_ID y
+// GOOGLE_CLIENT_SECRET; sin ellas el botón no sale.
+const GOOGLE_DOMINIOS = ['aimeducation.es', 'allegro.in-mae.es'];
+const googleActivo = () => !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
+const ESTADOS_GOOGLE = new Map();   // state → { recordar, creado }
+const MINUTOS_ESTADO_GOOGLE = 10;
+
+app.get('/api/auth/config', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json({ google: googleActivo(), dominiosGoogle: GOOGLE_DOMINIOS });
+});
+
+app.get('/api/auth/google', (req, res) => {
+    if (!googleActivo()) return res.redirect('/auth?error=google-apagado');
+    const ahora = Date.now();
+    for (const [k, v] of ESTADOS_GOOGLE) if (ahora - v.creado > MINUTOS_ESTADO_GOOGLE * 60_000) ESTADOS_GOOGLE.delete(k);
+    const state = crypto.randomBytes(24).toString('base64url');
+    ESTADOS_GOOGLE.set(state, { recordar: req.query.recordar !== '0', creado: ahora });
+    // Lax, no Strict: la vuelta desde Google es una navegación desde otro sitio.
+    res.cookie('aim_oauth', state, {
+        httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax',
+        maxAge: MINUTOS_ESTADO_GOOGLE * 60_000, path: '/api/auth/google',
+    });
+    const q = new URLSearchParams({
+        client_id: process.env.GOOGLE_CLIENT_ID,
+        redirect_uri: `${baseWeb(req)}/api/auth/google/callback`,
+        response_type: 'code', scope: 'openid email profile', state, prompt: 'select_account',
+    });
+    res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${q}`);
+});
+
+app.get('/api/auth/google/callback', async (req, res) => {
+    const volver = (motivo) => res.redirect(`/auth?error=${motivo}`);
+    const { code, state, error } = req.query;
+    const cookie = parseCookies(req.headers.cookie).aim_oauth;
+    res.clearCookie('aim_oauth', { path: '/api/auth/google' });
+    if (error) return volver('google-cancelado');
+    const guardado = state ? ESTADOS_GOOGLE.get(String(state)) : null;
+    if (state) ESTADOS_GOOGLE.delete(String(state));
+    if (!code || !guardado || cookie !== state || Date.now() - guardado.creado > MINUTOS_ESTADO_GOOGLE * 60_000) return volver('google-caducado');
+    try {
+        const t = await fetch('https://oauth2.googleapis.com/token', {
+            method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                code: String(code), client_id: process.env.GOOGLE_CLIENT_ID, client_secret: process.env.GOOGLE_CLIENT_SECRET,
+                redirect_uri: `${baseWeb(req)}/api/auth/google/callback`, grant_type: 'authorization_code',
+            }),
+        });
+        const tj = await t.json().catch(() => ({}));
+        if (!t.ok || !tj.id_token) return volver('google-fallo');
+        // Google comprueba la firma del token; aquí, que sea para esta web, de
+        // Google, no caducado, con el correo verificado y de uno de los dominios.
+        const v = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(tj.id_token)}`);
+        const c = await v.json().catch(() => ({}));
+        if (!v.ok || c.aud !== process.env.GOOGLE_CLIENT_ID
+            || !['accounts.google.com', 'https://accounts.google.com'].includes(c.iss)
+            || Number(c.exp) * 1000 < Date.now()) return volver('google-fallo');
+        const email = String(c.email || '').toLowerCase();
+        const dominio = email.split('@')[1] || '';
+        if (String(c.email_verified) !== 'true' || !GOOGLE_DOMINIOS.includes(dominio)
+            || (c.hd && !GOOGLE_DOMINIOS.includes(String(c.hd).toLowerCase()))) return volver('google-dominio');
+        const u = await pool.query('SELECT * FROM users WHERE LOWER(email) = $1', [email]);
+        if (!u.rowCount) return volver('google-sin-cuenta');
+        const datos = await abrirSesion(res, u.rows[0], { recordar: guardado.recordar });
+        res.redirect(datos.canAccessAdmin ? '/admin' : '/dashboard');
+    } catch (e) {
+        console.error('[google]', e.message);
+        volver('google-fallo');
+    }
+});
+
+// DNI o NIE con su letra de control. Vacío vale: es opcional al registrarse.
+function dniValido(v) {
+    const d = String(v || '').toUpperCase().replace(/[\s.-]/g, '');
+    if (!d) return true;
+    const m = /^([0-9]{8}|[XYZ][0-9]{7})([A-Z])$/.exec(d);
+    if (!m) return false;
+    const num = Number(m[1].replace(/^X/, '0').replace(/^Y/, '1').replace(/^Z/, '2'));
+    return 'TRWAGMYFPDXBNJZSQVHLCKE'[num % 23] === m[2];
+}
+
 app.post('/api/register', async (req, res) => {
-    const { firstName, lastName, email, phone, password, activities } = req.body;
+    const { firstName, lastName, email, phone, password } = req.body;
+    const dni = String(req.body.dni || '').toUpperCase().replace(/[\s.-]/g, '') || null;
+    // Los hijos que la familia quiere apuntar (paso 2 del registro). No se crean
+    // aquí sus fichas: los da de alta secretaría, que los pone en su grupo y su
+    // matrícula. Le llegan como una consulta en «Consultas web».
+    const hijos = (Array.isArray(req.body.hijos) ? req.body.hijos : []).slice(0, 8).map(h => ({
+        nombre: String(h?.nombre || '').trim().slice(0, 80),
+        apellidos: String(h?.apellidos || '').trim().slice(0, 120),
+        nacimiento: /^\d{4}-\d{2}-\d{2}$/.test(String(h?.nacimiento || '')) ? h.nacimiento : null,
+        actividad: String(h?.actividad || '').trim().slice(0, 80),
+    })).filter(h => h.nombre);
     if (!firstName || !email || !password) {
         return res.status(400).json({ error: 'Nombre, email y contraseña son obligatorios.' });
     }
@@ -2126,6 +2378,9 @@ app.post('/api/register', async (req, res) => {
     if (password.length < 8) {
         return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres.' });
     }
+    if (!dniValido(dni)) {
+        return res.status(400).json({ error: 'Ese DNI/NIE no es válido: revisa los números y la letra.' });
+    }
     const emailLower = email.toLowerCase().trim();
     try {
         const exists = await pool.query('SELECT user_id FROM users WHERE LOWER(email) = $1', [emailLower]);
@@ -2134,15 +2389,36 @@ app.post('/api/register', async (req, res) => {
         }
         const hash = await bcrypt.hash(password, 12);
         const result = await pool.query(
-            `INSERT INTO users (name, surname, email, password, role)
-             VALUES ($1, $2, $3, $4, 'student')
+            // El teléfono se pedía y no se guardaba; ahora se guarda, con el DNI.
+            `INSERT INTO users (name, surname, email, password, role, phone, dni)
+             VALUES ($1, $2, $3, $4, 'student', $5, $6)
              RETURNING user_id, name, surname, email`,
-            [firstName.trim(), (lastName || '').trim(), emailLower, hash]
+            [firstName.trim(), (lastName || '').trim(), emailLower, hash, String(phone || '').trim().slice(0, 40) || null, dni]
         );
         const newUser = result.rows[0];
         // Lo que ha aceptado, para poder demostrarlo (ticket #255).
         await anotarConsentimiento(pool, req, { userId: newUser.user_id, email: emailLower, tipo: 'condiciones', otorgado: true, origen: 'registro' });
         await anotarConsentimiento(pool, req, { userId: newUser.user_id, email: emailLower, tipo: 'comunicaciones', otorgado: req.body.comunicaciones === true, origen: 'registro' });
+        if (hijos.length) {
+            const nombreTutor = `${firstName.trim()} ${(lastName || '').trim()}`.trim();
+            const lineas = hijos.map(h => `- ${h.nombre} ${h.apellidos}`.trim()
+                + (h.nacimiento ? ` (nacido/a el ${h.nacimiento.split('-').reverse().join('/')})` : '')
+                + (h.actividad ? ` · quiere: ${h.actividad}` : ''));
+            const mensaje = `Se ha registrado en la web y quiere apuntar a ${hijos.length === 1 ? 'su hijo/a' : 'sus hijos'}:\n${lineas.join('\n')}\n\nHay que darles de alta, ponerlos en su grupo y enlazarlos con su familia.`;
+            await pool.query(
+                `INSERT INTO aim_contactos (nombre, email, telefono, mensaje, ip) VALUES ($1, $2, $3, $4, $5)`,
+                [nombreTutor, emailLower, String(phone || '').trim().slice(0, 40) || null, mensaje,
+                 String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim().slice(0, 60) || null]);
+            if (mailTransporter) {
+                mailTransporter.sendMail({
+                    from: process.env.EMAIL_USER, to: CONTACTO_EMAIL, replyTo: emailLower,
+                    subject: `Alta en la web: ${nombreTutor} quiere apuntar a ${hijos.length === 1 ? 'un hijo/a' : `${hijos.length} hijos`}`,
+                    html: `<p><b>${escHtml(nombreTutor)}</b> (${escHtml(emailLower)}${phone ? ` · ${escHtml(phone)}` : ''}) se ha registrado en la web y quiere apuntar a:</p>
+                           <ul>${hijos.map(h => `<li>${escHtml(`${h.nombre} ${h.apellidos}`.trim())}${h.nacimiento ? ` · ${escHtml(h.nacimiento.split('-').reverse().join('/'))}` : ''}${h.actividad ? ` · ${escHtml(h.actividad)}` : ''}</li>`).join('')}</ul>
+                           <p>Está también en el panel, en «Consultas web».</p>`,
+                }).catch(e => console.error('[registro] aviso a secretaría:', e.message));
+            }
+        }
         const now = Date.now();
         const token = crypto.randomBytes(32).toString('hex');
         sessions.set(token, {

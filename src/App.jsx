@@ -91,7 +91,7 @@ export default function App() {
     screen = <PublicNewsDetail slug={seg[1]} />;
   } else if (pathname === '/auth') {
     const mode = params.get('mode') || 'login';
-    screen = <AuthScreen mode={mode} onLoginSuccess={handleLoginSuccess} />;
+    screen = <AuthScreen key={mode} mode={mode} onLoginSuccess={handleLoginSuccess} />;
   } else if (pathname.startsWith('/dashboard')) {
     if (!userChecked) return null;
     if (!user) { go('/auth'); return null; }
