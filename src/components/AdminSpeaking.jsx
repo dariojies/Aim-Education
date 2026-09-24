@@ -133,6 +133,15 @@ export default function AdminSpeaking({ showToast }) {
       body: JSON.stringify({ llamado: !s.llamado }),
     }).catch(() => { });
   }
+  // La respuesta de la familia dada por teléfono (solo después de llamar).
+  async function marcarRespuesta(s, confirmado) {
+    setSesiones(prev => prev.map(x => x.id === s.id ? { ...x, confirmado } : x));
+    const r = await fetch(`/api/admin/speaking/${s.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+      body: JSON.stringify({ confirmado }),
+    }).catch(() => null);
+    if (!r?.ok) { showToast?.('No se ha podido guardar. Vuelve a intentarlo.'); await cargar(); }
+  }
   async function borrar(s) {
     if (!window.confirm(`¿Quitar a ${s.alumno} de la sesión del ${fmtDia(s.fecha)}?`)) return;
     const r = await fetch(`/api/admin/speaking/${s.id}`, { method: 'DELETE', credentials: 'include' });
@@ -142,7 +151,8 @@ export default function AdminSpeaking({ showToast }) {
   const porDia = {};
   for (const s of sesiones) (porDia[String(s.fecha).slice(0, 10)] ||= []).push(s);
   const dias = Object.keys(porDia).sort();
-  const estado = (s) => s.confirmado === true ? { t: '✓ Confirmado', c: 'var(--teal)' }
+  const estado = (s) => s.perdida ? { t: '⌛ Plaza perdida', c: 'var(--danger, #dc2626)' }
+    : s.confirmado === true ? { t: '✓ Confirmado', c: 'var(--teal)' }
     : s.confirmado === false ? { t: '✗ No puede', c: 'var(--orange)' }
       : { t: s.emailEnviado ? 'Esperando respuesta' : 'Sin correo', c: 'var(--ink-3)' };
   const franjasFila = (s) => franjasTxt((s.franjasTexto || []).filter(f => (s.franjas || []).includes(f.n)));
@@ -243,20 +253,45 @@ export default function AdminSpeaking({ showToast }) {
             {fmtDia(dia)} <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-3)' }}>· {porDia[dia][0]?.clase || 'Speaking'}</span>
           </h3>
           <div className="data-table">
-            <div className="data-table-head" style={{ gridTemplateColumns: '1.3fr 140px 1.5fr 130px 120px 60px' }}>
+            <div className="data-table-head" style={{ gridTemplateColumns: '1.3fr 140px 1.4fr 190px 120px 60px' }}>
               <span>Alumno</span><span>Franjas</span><span>Contacto familia</span><span>Confirmación</span><span>Secretaría</span><span></span>
             </div>
             {porDia[dia].map(s => {
               const e = estado(s);
               return (
-                <div key={s.id} className="data-table-row" style={{ gridTemplateColumns: '1.3fr 140px 1.5fr 130px 120px 60px', alignItems: 'center' }}>
+                <div key={s.id} className="data-table-row" style={{ gridTemplateColumns: '1.3fr 140px 1.4fr 190px 120px 60px', alignItems: 'center' }}>
                   <div className="pri">{s.alumno}</div>
                   <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--purple)' }}>{franjasFila(s)}</span>
                   <span style={{ fontSize: 12, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.contactos || 'sin contacto'}</span>
-                  <span style={{ fontSize: 12, fontWeight: 800, color: e.c }}>{e.t}</span>
-                  {/* Si la familia ya confirmó (sí), no hay que llamar (ticket #241). */}
-                  {s.confirmado === true ? (
-                    <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink-3)' }}>No hace falta llamar</span>
+                  {/* Lo normal es que confirme la familia desde el correo. Si
+                      secretaría ya ha llamado y aún no hay respuesta, puede
+                      apuntar lo que le han dicho por teléfono. */}
+                  {s.llamado && s.confirmado == null && !s.perdida ? (
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                      <button onClick={() => marcarRespuesta(s, true)} title="Por teléfono han dicho que sí viene"
+                        style={{ fontSize: 11, fontWeight: 800, padding: '4px 8px', borderRadius: 999, cursor: 'pointer', border: '1px solid color-mix(in oklab, var(--teal) 40%, transparent)', color: 'var(--teal)', background: 'color-mix(in oklab, var(--teal) 10%, var(--bg-2))', fontFamily: 'inherit' }}>
+                        ✓ Confirmada
+                      </button>
+                      <button onClick={() => marcarRespuesta(s, false)} title="Por teléfono han dicho que no puede venir"
+                        style={{ fontSize: 11, fontWeight: 800, padding: '4px 8px', borderRadius: 999, cursor: 'pointer', border: '1px solid color-mix(in oklab, var(--orange) 40%, transparent)', color: 'var(--orange)', background: 'color-mix(in oklab, var(--orange) 10%, var(--bg-2))', fontFamily: 'inherit' }}>
+                        ✗ No puede
+                      </button>
+                    </div>
+                  ) : (
+                    <span style={{ fontSize: 12, fontWeight: 800, color: e.c }}>
+                      {e.t}
+                      {s.llamado && s.confirmado != null && s.plazoAbierto !== false && (
+                        <button onClick={() => marcarRespuesta(s, null)} title="Volver a dejarla sin respuesta"
+                          style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, color: 'var(--ink-3)', background: 'none', border: 0, padding: 0, textDecoration: 'underline', cursor: 'pointer', fontFamily: 'inherit' }}>
+                          cambiar
+                        </button>
+                      )}
+                    </span>
+                  )}
+                  {/* Si la familia ya confirmó (sí), no hay que llamar (ticket #241).
+                      Y si se acabó el plazo sin confirmar, ya no hay nada que hacer. */}
+                  {(s.confirmado === true && !s.llamado) || s.perdida ? (
+                    <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink-3)' }}>{s.perdida ? 'Fuera de plazo' : 'No hace falta llamar'}</span>
                   ) : (
                     <button onClick={() => marcarLlamado(s)} title="Marcar que ya has llamado a los padres"
                       style={{ fontSize: 11, fontWeight: 800, padding: '4px 10px', borderRadius: 999, cursor: 'pointer', border: '1px solid',

@@ -81,18 +81,23 @@ function SpeakingFamilia() {
   return (
     <div className="panel">
       <h2><I.Calendar /> Clase de Speaking</h2>
-      <p className="sub">Confirma si tu hijo/a podrá asistir a estas clases.</p>
+      <p className="sub">Confirma si tu hijo/a podrá asistir a estas clases. Hay que confirmar como tarde 2 días antes de la clase; si no, se pierde la plaza de ese día.</p>
       <div style={{ display: 'grid', gap: 10 }}>
         {sesiones.map(s => (
           <div key={s.id} style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', padding: '12px 14px', borderRadius: 12, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
             <div style={{ flex: '1 1 220px', minWidth: 0 }}>
               <div style={{ fontWeight: 800, fontSize: 15 }}>{s.alumno}{s.clase ? ` · ${s.clase}` : ''}</div>
               <div style={{ fontSize: 13, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{fmt(s.fecha)} · {franjas(s)}</div>
+              {s.confirmado == null && s.limite && !s.perdida && (
+                <div style={{ fontSize: 12, color: 'var(--orange)', fontWeight: 700, marginTop: 2 }}>Confirma como tarde el {fmt(s.limite)}</div>
+              )}
             </div>
-            {s.confirmado === true ? (
+            {s.perdida ? (
+              <span style={{ fontWeight: 800, color: 'var(--ink-3)', fontSize: 13, maxWidth: 260 }}>⌛ No se confirmó a tiempo: esta clase se ha perdido.</span>
+            ) : s.confirmado === true ? (
               <span style={{ fontWeight: 800, color: 'var(--teal)', fontSize: 14 }}>✓ Confirmado <button onClick={() => responder(s, false)} style={{ marginLeft: 8, fontSize: 12, background: 'none', border: 0, color: 'var(--ink-3)', textDecoration: 'underline', cursor: 'pointer' }}>cambiar</button></span>
             ) : s.confirmado === false ? (
-              <span style={{ fontWeight: 800, color: 'var(--orange)', fontSize: 14 }}>✗ No asistirá <button onClick={() => responder(s, true)} style={{ marginLeft: 8, fontSize: 12, background: 'none', border: 0, color: 'var(--ink-3)', textDecoration: 'underline', cursor: 'pointer' }}>cambiar</button></span>
+              <span style={{ fontWeight: 800, color: 'var(--orange)', fontSize: 14 }}>✗ No asistirá {s.plazoAbierto !== false && <button onClick={() => responder(s, true)} style={{ marginLeft: 8, fontSize: 12, background: 'none', border: 0, color: 'var(--ink-3)', textDecoration: 'underline', cursor: 'pointer' }}>cambiar</button>}</span>
             ) : (
               <div style={{ display: 'flex', gap: 8 }}>
                 <button className="btn btn-sm" disabled={guardando === s.id} onClick={() => responder(s, true)}

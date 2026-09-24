@@ -11669,7 +11669,7 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         // Ya confirmados no cuentan como "por llamar" (ticket #241): si la familia
         // ya dijo que sí desde el correo/web, no hay que llamarles para confirmar.
         const spk = await pool.query(
-            `SELECT COUNT(*) FILTER (WHERE llamado = false AND confirmado IS DISTINCT FROM true)::int AS por_llamar,
+            `SELECT COUNT(*) FILTER (WHERE llamado = false AND confirmado IS NULL AND ${sqlLimiteSpeaking()} >= ${SQL_HOY_MADRID})::int AS por_llamar,
                     COUNT(*) FILTER (WHERE confirmado = false)::int AS rechazados,
                     COUNT(*) FILTER (WHERE confirmado = true)::int AS confirmados
              FROM aim_speaking WHERE fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date`);
@@ -11735,13 +11735,26 @@ async function emailsFamilia(studentId) {
         [ids]);
     return r.rows.map(x => x.email);
 }
-function paginaSpeaking(ok, si) {
-    const titulo = !ok ? 'Enlace caducado o no válido'
-        : si ? '¡Asistencia confirmada!' : 'Asistencia rechazada';
-    const texto = !ok ? 'Es posible que la clase ya haya pasado o que el enlace no sea correcto. Ponte en contacto con el club.'
-        : si ? 'Gracias, hemos anotado que tu hijo/a asistirá a la clase de Speaking.'
-            : 'Hemos anotado que tu hijo/a NO podrá asistir. Gracias por avisar.';
-    const color = !ok ? '#dc2626' : si ? '#0a7d3c' : '#b45309';
+// Plazo para confirmar el Speaking: hasta 2 días antes de la clase, ese día
+// incluido (clase el jueves → hasta el martes). Si para entonces la familia no ha
+// dicho que sí, pierde ese día. A quien se apunta ya dentro de esos 2 días se le
+// deja confirmar hasta el final del día en que se le apunta. Decir que NO se
+// puede siempre hasta el día de la clase (es solo avisar de que no viene).
+const SPEAKING_DIAS_PLAZO = 2;
+const SQL_HOY_MADRID = `(now() AT TIME ZONE 'Europe/Madrid')::date`;
+const sqlLimiteSpeaking = (t = '') => `LEAST(${t}fecha, GREATEST(${t}fecha - ${SPEAKING_DIAS_PLAZO},
+    COALESCE((${t}created_at AT TIME ZONE 'Europe/Madrid')::date, ${t}fecha - ${SPEAKING_DIAS_PLAZO})))`;
+const fechaLarga = (d) => new Date(d).toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
+
+function paginaSpeaking(ok, si, limitePerdido = null) {
+    const titulo = limitePerdido ? 'Plazo de confirmación cerrado'
+        : !ok ? 'Enlace caducado o no válido'
+            : si ? '¡Asistencia confirmada!' : 'Asistencia rechazada';
+    const texto = limitePerdido ? `La asistencia había que confirmarla como tarde el ${fechaLarga(limitePerdido)}. Como no nos llegó a tiempo, esta clase de Speaking se ha perdido. Si tienes cualquier duda, ponte en contacto con el club.`
+        : !ok ? 'Es posible que la clase ya haya pasado o que el enlace no sea correcto. Ponte en contacto con el club.'
+            : si ? 'Gracias, hemos anotado que tu hijo/a asistirá a la clase de Speaking.'
+                : 'Hemos anotado que tu hijo/a NO podrá asistir. Gracias por avisar.';
+    const color = limitePerdido || !ok ? '#dc2626' : si ? '#0a7d3c' : '#b45309';
     return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
       <title>Speaking · AIM Education</title></head>
       <body style="font-family:system-ui,sans-serif;background:#f6f5f2;margin:0;padding:40px 16px;color:#1a1a1a">
@@ -11752,9 +11765,12 @@ function paginaSpeaking(ok, si) {
         </div>
       </body></html>`;
 }
-// Envía los correos de confirmación, en segundo plano. Con recordatorio=true es
-// el segundo aviso del día antes (ticket #241): mismo enlace, otro asunto/texto.
-async function enviarCorreosSpeaking(ids, { recordatorio = false } = {}) {
+// Envía los correos de confirmación, en segundo plano. tipo:
+//  · 'inicial'    al apuntarle, con el plazo para confirmar.
+//  · 'ultimoDia'  el último día del plazo, a quien aún no ha contestado.
+//  · 'manana'     el día antes de la clase, a quien ya ha confirmado (ticket #241).
+async function enviarCorreosSpeaking(ids, { tipo = 'inicial' } = {}) {
+    const recordatorio = tipo !== 'inicial';
     if (!ids.length || !mailTransporter) return;
     // La app (con la página pública /speaking) vive en el subdominio de Heroku
     // aim.aimeducation.es; aimeducation.es es otro sitio (IONOS) y no tiene esta
@@ -11762,6 +11778,7 @@ async function enviarCorreosSpeaking(ids, { recordatorio = false } = {}) {
     const base = (process.env.PUBLIC_BASE_URL || 'https://aim.aimeducation.es').replace(/\/+$/, '');
     const r = await pool.query(
         `SELECT s.id, s.fecha, s.franjas, s.token, s.student_id, s.hora_inicio, s.hora_fin,
+                ${sqlLimiteSpeaking('s.')} AS limite, ${sqlLimiteSpeaking('s.')} = ${SQL_HOY_MADRID} AS limite_hoy,
                 TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno
          FROM aim_speaking s JOIN users u ON u.user_id = s.student_id WHERE s.id = ANY($1::int[])`, [ids]);
     // En paralelo: cada correo abría antes su conexión y se enviaban de uno en uno,
@@ -11775,17 +11792,26 @@ async function enviarCorreosSpeaking(ids, { recordatorio = false } = {}) {
             const franjasTxt = franjasTexto(row.hora_inicio, row.hora_fin, row.franjas || []);
             const si = `${base}/speaking/${row.token}/si`;
             const no = `${base}/speaking/${row.token}/no`;
-            const intro = recordatorio
-                ? `<p>Te recordamos que <b>mañana</b> es la clase de <b>Speaking</b> de <b>${row.alumno}</b> (<b>${fechaTxt}</b>${franjasTxt ? ` · ${franjasTxt}` : ''}).</p><p>Si aún no lo has hecho, confirma la asistencia:</p>`
-                : `<p><b>${row.alumno}</b> está apuntado/a a la clase de <b>Speaking</b> del <b>${fechaTxt}</b>${franjasTxt ? ` (${franjasTxt})` : ''}.</p><p>Por favor, confirma si podrá asistir:</p>`;
+            const limiteTxt = row.limite_hoy ? 'hoy' : `el <b>${fechaLarga(row.limite)}</b>`;
+            // El plazo, bien visible: si no confirman a tiempo pierden la clase.
+            const plazo = `<p style="background:#fff4e5;border-left:4px solid #b45309;padding:10px 14px;border-radius:6px;margin:16px 0">
+                    <b>Importante:</b> tienes hasta ${limiteTxt} (incluido) para confirmar.
+                    Si para entonces no has confirmado, <b>se pierde la plaza</b> de ese día.</p>`;
+            const intro = tipo === 'manana'
+                ? `<p>Te recordamos que <b>mañana</b> es la clase de <b>Speaking</b> de <b>${row.alumno}</b> (<b>${fechaTxt}</b>${franjasTxt ? ` · ${franjasTxt}` : ''}). ¡Os esperamos!</p><p>Si al final no puede venir, avísanos:</p>`
+                : tipo === 'ultimoDia'
+                    ? `<p><b>${row.alumno}</b> está apuntado/a a la clase de <b>Speaking</b> del <b>${fechaTxt}</b>${franjasTxt ? ` (${franjasTxt})` : ''} y todavía no nos has confirmado si podrá asistir.</p>
+                       <p style="background:#fff4e5;border-left:4px solid #b45309;padding:10px 14px;border-radius:6px;margin:16px 0"><b>Hoy es el último día para confirmar.</b> Si no lo haces hoy, se pierde la plaza de ese día.</p>`
+                    : `<p><b>${row.alumno}</b> está apuntado/a a la clase de <b>Speaking</b> del <b>${fechaTxt}</b>${franjasTxt ? ` (${franjasTxt})` : ''}.</p><p>Por favor, confirma si podrá asistir:</p>${plazo}`;
+            const botonSi = `<a href="${si}" style="background:#0a7d3c;color:#fff;text-decoration:none;padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block;margin-right:8px">Sí, asistirá</a>`;
             await mailTransporter.sendMail({
                 from: process.env.EMAIL_USER, to: correos.join(','),
-                subject: `${recordatorio ? 'Recordatorio · ' : ''}Clase de Speaking de ${row.alumno} · ${fechaTxt}`,
+                subject: `${tipo === 'ultimoDia' ? 'Último día para confirmar · ' : recordatorio ? 'Recordatorio · ' : ''}Clase de Speaking de ${row.alumno} · ${fechaTxt}`,
                 html: `<div style="font-family:system-ui,sans-serif;color:#1a1a1a">
                   <p>Hola,</p>
                   ${intro}
                   <p style="margin:20px 0">
-                    <a href="${si}" style="background:#0a7d3c;color:#fff;text-decoration:none;padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block;margin-right:8px">Sí, asistirá</a>
+                    ${tipo === 'manana' ? '' : botonSi}
                     <a href="${no}" style="background:#eee;color:#333;text-decoration:none;padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block">No podrá</a>
                   </p>
                   <p style="font-size:12px;color:#888">AIM Education · Algeciras</p>
@@ -11798,24 +11824,30 @@ async function enviarCorreosSpeaking(ids, { recordatorio = false } = {}) {
     }));
 }
 
-// Segundo aviso automático (ticket #241): el día antes de la clase se reenvía la
-// confirmación a quien no haya dicho que NO y no se le haya recordado ya. Guardado
-// por recordatorio_enviado, así que aunque se llame a menudo solo manda una vez.
+// Segundo aviso automático (ticket #241), uno solo por alumno y sesión (guardado
+// por recordatorio_enviado, así que aunque se llame a menudo solo manda una vez).
+// Con el plazo de confirmación: el último día del plazo se avisa a quien aún no
+// ha contestado; y el día antes de la clase, a quien ya ha confirmado. A quien se
+// apuntó ese mismo día no se le repite (acaba de recibir el primero). Desde las 9.
 let recordatorioSpeakingEnCurso = false;
 async function recordatoriosSpeaking() {
     if (recordatorioSpeakingEnCurso || !mailTransporter) return;
     recordatorioSpeakingEnCurso = true;
     try {
         const r = await pool.query(
-            `SELECT id FROM aim_speaking
-             WHERE fecha = (now() AT TIME ZONE 'Europe/Madrid')::date + 1
-               AND recordatorio_enviado = false
-               AND confirmado IS DISTINCT FROM false`);
-        const ids = r.rows.map(x => x.id);
-        if (ids.length) {
-            await enviarCorreosSpeaking(ids, { recordatorio: true });
-            console.log(`[speaking] ${ids.length} recordatorio(s) enviados`);
-        }
+            `SELECT id, (confirmado IS NULL) AS pendiente FROM aim_speaking
+             WHERE recordatorio_enviado = false
+               AND EXTRACT(HOUR FROM now() AT TIME ZONE 'Europe/Madrid') >= 9
+               AND (
+                 (confirmado IS NULL AND ${sqlLimiteSpeaking()} = ${SQL_HOY_MADRID}
+                    AND (created_at AT TIME ZONE 'Europe/Madrid')::date < ${SQL_HOY_MADRID})
+                 OR (confirmado = true AND fecha = ${SQL_HOY_MADRID} + 1)
+               )`);
+        const pendientes = r.rows.filter(x => x.pendiente).map(x => x.id);
+        const confirmados = r.rows.filter(x => !x.pendiente).map(x => x.id);
+        if (pendientes.length) await enviarCorreosSpeaking(pendientes, { tipo: 'ultimoDia' });
+        if (confirmados.length) await enviarCorreosSpeaking(confirmados, { tipo: 'manana' });
+        if (r.rows.length) console.log(`[speaking] ${pendientes.length} aviso(s) de último día y ${confirmados.length} recordatorio(s) de mañana`);
     } catch (e) {
         console.error('[speaking recordatorio]', e.message);
     } finally {
@@ -11864,7 +11896,8 @@ app.post('/api/admin/speaking', authenticateSession, requireAdmin, async (req, r
                  VALUES ($1::date, $2, $3::smallint[], $4, $5, $6::uuid, $7, $8)
                  ON CONFLICT (fecha, student_id) DO UPDATE SET franjas = EXCLUDED.franjas,
                     group_id = EXCLUDED.group_id, hora_inicio = EXCLUDED.hora_inicio, hora_fin = EXCLUDED.hora_fin,
-                    confirmado = NULL, respondido_at = NULL, email_enviado = false
+                    confirmado = NULL, respondido_at = NULL, email_enviado = false,
+                    recordatorio_enviado = false, created_at = NOW()
                  RETURNING id`,
                 [fecha, a.studentId, normalizaFranjas(a.franjas), token, req.userSession.userId, groupId, ses.startTime, ses.endTime]);
             ids.push(ins.rows[0].id);
@@ -11883,6 +11916,7 @@ app.get('/api/admin/speaking', authenticateSession, requireAdmin, async (req, re
         const r = await pool.query(
             `SELECT s.id, s.fecha, s.franjas, s.confirmado, s.respondido_at, s.llamado, s.email_enviado,
                     s.student_id, s.hora_inicio, s.hora_fin, g.name AS clase,
+                    ${sqlLimiteSpeaking('s.')} AS limite, ${sqlLimiteSpeaking('s.')} >= ${SQL_HOY_MADRID} AS plazo_abierto,
                     TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno,
                     (SELECT string_agg(DISTINCT NULLIF(TRIM(CONCAT(fu.name, ' ', COALESCE(fu.surname, ''),
                               CASE WHEN fu.phone IS NOT NULL AND fu.phone <> '' THEN ' · ' || fu.phone ELSE '' END)), ''), '   ')
@@ -11897,6 +11931,9 @@ app.get('/api/admin/speaking', authenticateSession, requireAdmin, async (req, re
             sesiones: r.rows.map(x => ({
                 id: x.id, fecha: x.fecha, franjas: x.franjas || [], confirmado: x.confirmado,
                 respondidoAt: x.respondido_at, llamado: x.llamado, emailEnviado: x.email_enviado,
+                limite: x.limite, plazoAbierto: x.plazo_abierto,
+                // Sin confirmar y fuera de plazo: ha perdido ese día.
+                perdida: x.confirmado === null && !x.plazo_abierto,
                 alumno: x.alumno, studentId: x.student_id, contactos: x.contactos || null,
                 clase: x.clase || null, horaInicio: x.hora_inicio || null, horaFin: x.hora_fin || null,
                 franjasTexto: franjasDeHoras(x.hora_inicio, x.hora_fin),
@@ -11905,10 +11942,17 @@ app.get('/api/admin/speaking', authenticateSession, requireAdmin, async (req, re
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Marcar que secretaría ya ha llamado, o cambiar las franjas.
+// Marcar que secretaría ya ha llamado, o cambiar las franjas. Y, si al llamar
+// la familia contesta, apuntar su respuesta (Confirmada / No puede) sin esperar
+// a que pulse el enlace del correo. null la deja otra vez pendiente.
 app.patch('/api/admin/speaking/:id', authenticateSession, requireAdmin, async (req, res) => {
     const campos = [], vals = [];
     if (req.body.llamado !== undefined) { vals.push(!!req.body.llamado); campos.push(`llamado = $${vals.length}`); }
+    if (req.body.confirmado !== undefined) {
+        const c = req.body.confirmado === null ? null : req.body.confirmado === true;
+        vals.push(c); campos.push(`confirmado = $${vals.length}::boolean`);
+        campos.push(c === null ? 'respondido_at = NULL' : 'respondido_at = NOW()');
+    }
     if (req.body.franjas !== undefined) {
         const f = normalizaFranjas(req.body.franjas);
         if (!f.length) return res.status(400).json({ error: 'Marca al menos una franja.' });
@@ -11917,6 +11961,15 @@ app.patch('/api/admin/speaking/:id', authenticateSession, requireAdmin, async (r
     if (!campos.length) return res.status(400).json({ error: 'Nada que cambiar.' });
     vals.push(req.params.id);
     try {
+        if (req.body.confirmado === true) {
+            const p = await pool.query(
+                `SELECT confirmado, ${sqlLimiteSpeaking()} AS limite, ${sqlLimiteSpeaking()} >= ${SQL_HOY_MADRID} AS abierto
+                 FROM aim_speaking WHERE id = $1`, [req.params.id]);
+            const x = p.rows[0];
+            if (x && x.confirmado !== true && !x.abierto) {
+                return res.status(409).json({ error: `El plazo para confirmar acabó el ${fechaLarga(x.limite)}: esa clase se ha perdido.` });
+            }
+        }
         const r = await pool.query(`UPDATE aim_speaking SET ${campos.join(', ')} WHERE id = $${vals.length} RETURNING id`, vals);
         if (!r.rowCount) return res.status(404).json({ error: 'Esa sesión no existe.' });
         res.json({ success: true });
@@ -11930,17 +11983,27 @@ app.delete('/api/admin/speaking/:id', authenticateSession, requireAdmin, async (
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Página pública para que los padres confirmen desde el enlace del correo. Se
-// puede confirmar hasta el día de la clase (fecha >= hoy). No necesita login.
+// Página pública para que los padres confirmen desde el enlace del correo. No
+// necesita login. Decir que sí, solo dentro del plazo (ver SPEAKING_DIAS_PLAZO);
+// decir que no, hasta el día de la clase.
 app.get('/speaking/:token/:r', async (req, res) => {
     const si = req.params.r === 'si' ? true : req.params.r === 'no' ? false : null;
     if (si === null) return res.status(400).set('Content-Type', 'text/html; charset=utf-8').send(paginaSpeaking(false, false));
     try {
         const upd = await pool.query(
             `UPDATE aim_speaking SET confirmado = $1, respondido_at = NOW()
-             WHERE token = $2 AND fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date RETURNING id`,
+             WHERE token = $2 AND fecha >= ${SQL_HOY_MADRID}
+               AND ($1 = false OR confirmado = true OR ${sqlLimiteSpeaking()} >= ${SQL_HOY_MADRID})
+             RETURNING id`,
             [si, req.params.token]);
-        res.set('Content-Type', 'text/html; charset=utf-8').send(paginaSpeaking(upd.rowCount > 0, si));
+        let limitePerdido = null;
+        if (!upd.rowCount && si) {
+            const p = await pool.query(
+                `SELECT ${sqlLimiteSpeaking()} AS limite FROM aim_speaking WHERE token = $1 AND fecha >= ${SQL_HOY_MADRID}`,
+                [req.params.token]);
+            limitePerdido = p.rows[0]?.limite || null;
+        }
+        res.set('Content-Type', 'text/html; charset=utf-8').send(paginaSpeaking(upd.rowCount > 0, si, limitePerdido));
     } catch (err) {
         res.status(500).set('Content-Type', 'text/html; charset=utf-8').send(paginaSpeaking(false, false));
     }
@@ -11953,13 +12016,14 @@ app.get('/api/me/speaking', authenticateSession, async (req, res) => {
         const fam = await familiaIds(req.userSession.userId);
         const r = await pool.query(
             `SELECT s.id, s.fecha, s.franjas, s.confirmado, s.hora_inicio, s.hora_fin, g.name AS clase,
+                    ${sqlLimiteSpeaking('s.')} AS limite, ${sqlLimiteSpeaking('s.')} >= ${SQL_HOY_MADRID} AS plazo_abierto,
                     TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno
              FROM aim_speaking s JOIN users u ON u.user_id = s.student_id
              LEFT JOIN tul_groups g ON g.group_id = s.group_id
              WHERE s.student_id = ANY($1::uuid[]) AND s.fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date
              ORDER BY s.fecha, alumno`, [fam]);
         res.set('Cache-Control', 'no-store');
-        res.json({ sesiones: r.rows.map(x => ({ id: x.id, fecha: x.fecha, franjas: x.franjas || [], confirmado: x.confirmado, alumno: x.alumno, clase: x.clase || null, franjasTexto: franjasDeHoras(x.hora_inicio, x.hora_fin) })) });
+        res.json({ sesiones: r.rows.map(x => ({ id: x.id, fecha: x.fecha, franjas: x.franjas || [], confirmado: x.confirmado, alumno: x.alumno, clase: x.clase || null, franjasTexto: franjasDeHoras(x.hora_inicio, x.hora_fin), limite: x.limite, plazoAbierto: x.plazo_abierto, perdida: x.confirmado === null && !x.plazo_abierto })) });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -11970,9 +12034,17 @@ app.post('/api/me/speaking/:id/confirmar', authenticateSession, async (req, res)
         const fam = await familiaIds(req.userSession.userId);
         const r = await pool.query(
             `UPDATE aim_speaking SET confirmado = $1, respondido_at = NOW()
-             WHERE id = $2 AND student_id = ANY($3::uuid[]) AND fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date RETURNING id`,
+             WHERE id = $2 AND student_id = ANY($3::uuid[]) AND fecha >= ${SQL_HOY_MADRID}
+               AND ($1 = false OR confirmado = true OR ${sqlLimiteSpeaking()} >= ${SQL_HOY_MADRID})
+             RETURNING id`,
             [si, req.params.id, fam]);
-        if (!r.rowCount) return res.status(404).json({ error: 'Esa sesión no es de tu familia o ya ha pasado.' });
+        if (!r.rowCount) {
+            const p = await pool.query(
+                `SELECT ${sqlLimiteSpeaking()} AS limite FROM aim_speaking
+                 WHERE id = $1 AND student_id = ANY($2::uuid[]) AND fecha >= ${SQL_HOY_MADRID}`, [req.params.id, fam]);
+            if (p.rows[0] && si) return res.status(409).json({ error: `El plazo para confirmar acabó el ${fechaLarga(p.rows[0].limite)}: esa clase se ha perdido.` });
+            return res.status(404).json({ error: 'Esa sesión no es de tu familia o ya ha pasado.' });
+        }
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
