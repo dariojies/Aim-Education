@@ -61,6 +61,7 @@ const CSS = `
   .qr { text-align: center; margin: 4px 0 2px; }
   .qr img { width: 32mm; height: 32mm; image-rendering: pixelated; }
   .peq { font-size: 10px; }
+  .ley { font-size: 10px; text-align: center; line-height: 1.35; margin: 2px 0; }
   b { font-weight: 800; }
 `;
 
@@ -76,6 +77,17 @@ export function htmlTicketRecibo(t) {
   const simplificada = ['F2', 'R5'].includes(tipoFactura);
   const titulo = rect ? 'FACTURA RECTIFICATIVA' : simplificada ? 'FACTURA SIMPLIFICADA' : 'FACTURA';
   const hayExento = (t.detalle || []).some(d => !(Number(d.ivaPct) > 0));
+  // La nota de la exención, centrada y en líneas cortas que no se partan a mitad
+  // de la cita legal. Si el ticket junta facturas con y sin IVA, se dice cuál es
+  // la exenta: antes ponía «Operación exenta» aunque parte llevara IVA.
+  const cita = '(art.&nbsp;20.Uno.9º Ley&nbsp;37/1992)';
+  const exentas = facturas ? facturas.filter(f => f.conIva === false) : [];
+  const hayConIva = (t.detalle || []).some(d => Number(d.ivaPct) > 0);
+  const notaExencion = exentas.length && exentas.length < facturas.length
+    ? `<div class="ley">${exentas.length === 1 ? 'Factura' : 'Facturas'} <b>${exentas.map(f => esc(f.numeroVisible || f.numero)).join(', ')}</b>:<br>exenta${exentas.length === 1 ? '' : 's'} de IVA por enseñanza<br>${cita}</div>`
+    : hayConIva
+      ? `<div class="ley">Las líneas marcadas «Exento» son enseñanza,<br>exenta de IVA ${cita}</div>`
+      : `<div class="ley">Exenta de IVA por enseñanza<br>${cita}</div>`;
 
   const qr = (src, numero) => src ? `
     <div class="qr"><div class="peq"><b>QR tributario:</b></div><img src="${src}" alt="QR"><div><b>VERI*FACTU</b></div>${numero ? `<div class="peq">${esc(numero)}</div>` : ''}</div>` : '';
@@ -137,7 +149,7 @@ export function htmlTicketRecibo(t) {
   ${facturas ? `<div class="sep"></div>
     <div class="peq"><b>Este ticket reúne ${facturas.length} facturas:</b></div>
     ${facturas.map(f => `<div class="fila peq"><span>${esc(f.numeroVisible || f.numero)}</span><span>${num(f.total)}</span></div>${qr(f.qrTributario, f.numeroVisible || f.numero)}`).join('')}` : ''}
-  ${hayExento ? `<div class="sep"></div><div class="peq">Operación exenta de IVA (art. 20.Uno.9º de la Ley 37/1992, servicios de enseñanza).</div>` : ''}
+  ${hayExento ? `<div class="sep"></div>${notaExencion}` : ''}
   ${simplificada && !rect && (t.detalle || []).some(d => Number(d.ivaPct) > 0) ? '<div class="peq">IVA incluido.</div>' : ''}
   <div class="sep"></div>
   <div class="c"><b>¡Gracias!</b></div>
