@@ -7147,7 +7147,9 @@ function edadDe(birthday) {
     if (!birthday) return null;
     const b = new Date(birthday);
     const diff = Date.now() - b.getTime();
-    return Math.floor(diff / (365.25 * 24 * 3600 * 1000));
+    const edad = Math.floor(diff / (365.25 * 24 * 3600 * 1000));
+    // Una fecha mal tecleada (año 0013 en vez de 2013) daría «2012 años»: no se enseña.
+    return Number.isFinite(edad) && edad >= 0 && edad <= 110 ? edad : null;
 }
 
 // Cluster familiar de una persona (ambos sentidos del parentesco) + ella misma.
@@ -11873,6 +11875,21 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
              FROM aim_speaking WHERE fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date`);
         const sp = spk.rows[0];
         if (sp.por_llamar) avisos.push({ tipo: 'speaking', texto: `${sp.por_llamar} alumno${sp.por_llamar !== 1 ? 's' : ''} de Speaking por avisar a los padres`, detalle: 'llamar y confirmar asistencia', destino: '/admin/speaking', n: sp.por_llamar });
+        // Faltas seguidas: a partir de 4, hay que llamar a la familia. Un aviso por
+        // alumno y clase; vuelve a encenderse si sigue faltando (sube el número) o
+        // si empieza otra racha (la clave lleva el día en que empezó).
+        if (permisosYo.secciones.faltas) {
+            const faltas = await rachasDeFaltas({ minimo: FALTAS_PARA_LLAMAR });
+            for (const f of faltas.slice(0, 10)) {
+                avisos.push({
+                    tipo: 'faltas', destino: '/admin/faltas', n: f.racha,
+                    clave: `faltas:${f.studentId}:${f.groupId}:${new Date(f.desde).toISOString().slice(0, 10)}`,
+                    texto: `${f.alumno} lleva ${f.racha} faltas seguidas`,
+                    detalle: `${f.clase} · llamar a la familia`,
+                });
+            }
+            if (faltas.length > 10) avisos.push({ tipo: 'faltas', destino: '/admin/faltas', n: faltas.length, clave: 'faltas:resto', texto: `Y ${faltas.length - 10} alumno${faltas.length - 10 !== 1 ? 's' : ''} más con 4 o más faltas seguidas` });
+        }
         // Solicitudes de las familias para dar o quitar el permiso de fotos (#170).
         if (permisosYo.editarAlumnos) {
             const sf = (await pool.query(
@@ -12147,6 +12164,72 @@ app.get('/api/admin/speaking', authenticateSession, requireAdmin, async (req, re
                 franjasTexto: franjasDeHoras(x.hora_inicio, x.hora_fin),
             })),
         });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Faltas seguidas ─────────────────────────────────────────────────────────
+// Para que secretaría llame a las familias: de cada alumno en cada una de sus
+// clases (las que tiene ahora), cuántas clases seguidas lleva faltando, contando
+// hacia atrás desde la última lista pasada hasta la última vez que vino (o llegó
+// tarde). Solo cuenta lo que el profe ha marcado: una clase sin lista no suma ni
+// corta. «rachaMes» es la misma cuenta pero solo con las faltas de este mes.
+const FALTAS_PARA_LLAMAR = 4;
+async function rachasDeFaltas({ minimo = 1 } = {}) {
+    const r = await pool.query(
+        `WITH marcas AS (
+             SELECT at.student_id, at.group_id, at.date, at.status,
+                    ROW_NUMBER() OVER (PARTITION BY at.student_id, at.group_id ORDER BY at.date DESC) AS rn
+             FROM tul_attendance at
+             JOIN tul_group_students gs ON gs.group_id = at.group_id AND gs.student_id = at.student_id
+             JOIN tul_groups g ON g.group_id = at.group_id
+             JOIN tul_activities ac ON ac.activity_id = g.activity_id AND ac.club_id = $1
+             WHERE at.date <= ${SQL_HOY_MADRID}
+         ),
+         corte AS (
+             SELECT student_id, group_id,
+                    MIN(rn) FILTER (WHERE status <> 'absent') AS rn_vino,
+                    MAX(date) FILTER (WHERE status <> 'absent') AS ultima_vez
+             FROM marcas GROUP BY 1, 2
+         ),
+         rachas AS (
+             SELECT m.student_id, m.group_id, COUNT(*)::int AS racha,
+                    COUNT(*) FILTER (WHERE m.date >= date_trunc('month', ${SQL_HOY_MADRID}))::int AS racha_mes,
+                    MIN(m.date) AS desde, MAX(m.date) AS ultima_falta
+             FROM marcas m JOIN corte c USING (student_id, group_id)
+             WHERE m.status = 'absent' AND (c.rn_vino IS NULL OR m.rn < c.rn_vino)
+             GROUP BY 1, 2
+         )
+         SELECT r.*, c.ultima_vez, g.name AS clase, ac.name AS actividad,
+                TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno, u.phone, u.birthday,
+                (SELECT COUNT(*)::int FROM tul_attendance x WHERE x.student_id = r.student_id AND x.group_id = r.group_id
+                   AND x.status = 'absent' AND x.date >= date_trunc('month', ${SQL_HOY_MADRID}) AND x.date <= ${SQL_HOY_MADRID}) AS faltas_mes,
+                (SELECT COUNT(*)::int FROM tul_attendance x WHERE x.student_id = r.student_id AND x.group_id = r.group_id
+                   AND x.date >= date_trunc('month', ${SQL_HOY_MADRID}) AND x.date <= ${SQL_HOY_MADRID}) AS clases_mes,
+                (SELECT string_agg(DISTINCT NULLIF(TRIM(CONCAT(fu.name, ' ', COALESCE(fu.surname, ''),
+                          CASE WHEN fu.phone IS NOT NULL AND fu.phone <> '' THEN ' · ' || fu.phone ELSE '' END)), ''), '   ')
+                 FROM aim_familias f JOIN users fu ON fu.user_id = f.familiar_id
+                 WHERE f.persona_id = r.student_id) AS contactos
+         FROM rachas r
+         JOIN corte c USING (student_id, group_id)
+         JOIN users u ON u.user_id = r.student_id
+         JOIN tul_groups g ON g.group_id = r.group_id
+         JOIN tul_activities ac ON ac.activity_id = g.activity_id
+         WHERE r.racha >= $2
+         ORDER BY r.racha DESC, r.ultima_falta DESC, alumno`, [AIM_CLUB_ID, Math.max(1, minimo)]);
+    return r.rows.map(x => ({
+        studentId: x.student_id, groupId: x.group_id, alumno: x.alumno, telefono: x.phone || null,
+        edad: edadDe(x.birthday), clase: x.clase, actividad: x.actividad,
+        racha: x.racha, rachaMes: x.racha_mes, desde: x.desde, ultimaFalta: x.ultima_falta,
+        ultimaVez: x.ultima_vez, faltasMes: x.faltas_mes, clasesMes: x.clases_mes,
+        contactos: x.contactos || null, llamar: x.racha >= FALTAS_PARA_LLAMAR,
+    }));
+}
+
+app.get('/api/admin/faltas', authenticateSession, requireSeccion('faltas'), async (req, res) => {
+    try {
+        const minimo = Number.parseInt(req.query.minimo, 10) || 1;
+        res.set('Cache-Control', 'no-store');
+        res.json({ paraLlamar: FALTAS_PARA_LLAMAR, filas: await rachasDeFaltas({ minimo }) });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

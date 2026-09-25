@@ -24,6 +24,7 @@ import AdminExamenes from './AdminExamenes.jsx';
 import FichaAlumno360 from './FichaAlumno360.jsx';
 import AdminObjetosPerdidos from './AdminObjetosPerdidos.jsx';
 import AdminSpeaking from './AdminSpeaking.jsx';
+import AdminFaltas from './AdminFaltas.jsx';
 import AdminAlmacen from './AdminAlmacen.jsx';
 import AdminContactos from './AdminContactos.jsx';
 import { IconoActividad } from './IconoActividad.jsx';
@@ -74,6 +75,7 @@ function sectionLabel(id) {
     settings: "Ajustes del club",
     objetos: "Objetos perdidos",
     support: "Panel de soporte",
+    faltas: "Faltas seguidas",
   })[id] || "Panel";
 }
 
@@ -6935,6 +6937,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
       heading: "Personas", items: [
         { id: "students", label: "Alumnos", icon: <I.Users /> },
         { id: "familias", label: "Familias", icon: <I.Heart /> },
+        { id: "faltas", label: "Faltas", icon: <I.Phone /> },
         { id: "instructors", label: "Instructores", icon: <I.Whistle /> },
       ]
     },
@@ -7141,6 +7144,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("almacen") && <AdminAlmacen showToast={showToast} />}
           {ver("objetos") && <AdminObjetosPerdidos showToast={showToast} />}
           {ver("speaking") && <AdminSpeaking showToast={showToast} />}
+          {ver("faltas") && <AdminFaltas onAbrirFicha={abrirFicha} />}
           {ver("support") && <AdminSupport user={user} ticketId={ticketId} />}
         </div>
       </div>

@@ -103,6 +103,9 @@ export function permisosDe(rol) {
             // Las consultas del formulario de contacto de la web (ticket #295):
             // las atienden secretaría y dirección.
             contactos: mandaAlMenos(rol, 'secretaria'),
+            // Faltas seguidas de los alumnos, para llamar a las familias: secretaría
+            // y dirección.
+            faltas: mandaAlMenos(rol, 'secretaria'),
             // La planificación del Equipo IT: la ven secretaría y dirección; solo
             // la tocan el propio equipo y los superadmin (editarEquipoIT).
             equipo_it: mandaAlMenos(rol, 'secretaria'),
