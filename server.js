@@ -14897,8 +14897,50 @@ async function avisarFichaje(w, tipo, hoy, base, variosTramos = false) {
 // El club ve lo que tiene en stock. Cada artículo puede enlazarse a un concepto
 // del catálogo (cada talla es su propio artículo): al venderlo se descuenta solo.
 // ═════════════════════════════════════════════════════════════════════════════
+// Los artículos de MATERIAL del catálogo entran solos en el almacén (con stock 0,
+// enlazados a su concepto), para no tener que darlos de alta a mano uno a uno.
+// Cada concepto entra una sola vez: los ya traídos se apuntan en aim_ajustes, así
+// que si el club quita uno del almacén no vuelve a aparecer. Los que se añadan
+// al catálogo más adelante entran solos la próxima vez que se abra el almacén.
+const PAPELERIA = ['bolígrafo', 'boligrafo', 'lápiz', 'lapiz', 'libreta', 'cuaderno', 'goma'];
+function categoriaAlmacen(descripcion) {
+    const w = String(descripcion || '').trim().split(/\s+/)[0] || '';
+    if (PAPELERIA.includes(w.toLowerCase())) return 'Papelería';
+    return w ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : null;
+}
+async function traerMaterialAlAlmacen() {
+    const aj = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'almacen_importados'`);
+    const ya = new Set(Array.isArray(aj.rows[0]?.valor) ? aj.rows[0].valor : []);
+    const r = await pool.query(
+        `SELECT p.concepto, p.descripcion FROM aim_precios p
+         WHERE p.activo = true AND p.tipo ILIKE 'material'
+           AND NOT EXISTS (SELECT 1 FROM aim_almacen a WHERE a.concepto = p.concepto)`);
+    const nuevos = r.rows.filter(x => !ya.has(x.concepto));
+    if (nuevos.length) {
+        await pool.query(
+            `INSERT INTO aim_almacen (nombre, categoria, concepto, stock, stock_minimo)
+             SELECT t.nombre, t.categoria, t.concepto, 0, 0
+             FROM unnest($1::text[], $2::text[], $3::text[]) AS t(nombre, categoria, concepto)
+             ON CONFLICT (concepto) WHERE concepto IS NOT NULL DO NOTHING`,
+            [nuevos.map(x => String(x.descripcion).slice(0, 120)), nuevos.map(x => categoriaAlmacen(x.descripcion)), nuevos.map(x => x.concepto)]);
+    }
+    // Se apuntan como traídos todos los de material que ya están en el almacén.
+    const enlazados = await pool.query(
+        `SELECT a.concepto FROM aim_almacen a JOIN aim_precios p ON p.concepto = a.concepto WHERE p.tipo ILIKE 'material'`);
+    const todos = [...new Set([...ya, ...enlazados.rows.map(x => x.concepto)])];
+    if (todos.length !== ya.size) {
+        await pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at) VALUES ('almacen_importados', $1::jsonb, NOW())
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW()`,
+            [JSON.stringify(todos)]);
+    }
+    return nuevos.length;
+}
+
 app.get('/api/admin/almacen', authenticateSession, requireAdmin, async (req, res) => {
     try {
+        const traidos = await traerMaterialAlAlmacen().catch(e => { console.error('[almacén] material:', e.message); return 0; });
+        if (traidos) res.set('X-Almacen-Traidos', String(traidos));
         const r = await pool.query(
             `SELECT a.*, p.descripcion AS concepto_desc
              FROM aim_almacen a
@@ -14909,7 +14951,8 @@ app.get('/api/admin/almacen', authenticateSession, requireAdmin, async (req, res
             id: a.id, nombre: a.nombre, categoria: a.categoria,
             concepto: a.concepto, conceptoDesc: a.concepto_desc || null,
             stock: a.stock, stockMinimo: a.stock_minimo, notas: a.notas,
-            bajo: a.stock <= a.stock_minimo,
+            // Solo si se ha puesto un mínimo: recién traídos del catálogo están a 0.
+            bajo: a.stock_minimo > 0 && a.stock <= a.stock_minimo,
         })));
     } catch (err) { res.status(500).json({ error: err.message }); }
 });

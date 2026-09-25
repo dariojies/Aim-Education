@@ -25,7 +25,12 @@ export default function AdminAlmacen({ showToast }) {
     setCargando(true);
     try {
       const r = await fetch('/api/admin/almacen', { credentials: 'include', cache: 'no-store' });
-      if (r.ok) setItems(await r.json());
+      if (r.ok) {
+        setItems(await r.json());
+        // Material del catálogo que acaba de entrar solo (con stock 0).
+        const traidos = Number(r.headers.get('X-Almacen-Traidos')) || 0;
+        if (traidos) showToast?.(`${traidos} artículo${traidos !== 1 ? 's' : ''} de material del catálogo añadido${traidos !== 1 ? 's' : ''} al almacén. Pon cuántos hay de cada.`);
+      }
     } catch { /* noop */ } finally { setCargando(false); }
   }, []);
   useEffect(() => { cargar(); }, [cargar]);
@@ -58,6 +63,28 @@ export default function AdminAlmacen({ showToast }) {
     if (r.ok) { showToast?.('Stock ajustado.'); cargar(); }
     else alert(d.error || 'No se pudo ajustar.');
   }
+  // Recuento: se escribe cuántos hay y se anota la diferencia como ajuste.
+  async function recuento(it, valor) {
+    const n = parseInt(valor, 10);
+    if (!Number.isInteger(n) || n < 0 || n === it.stock) return;
+    const r = await fetch(`/api/admin/almacen/${it.id}/ajuste`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+      body: JSON.stringify({ delta: n - it.stock, motivo: 'Recuento' }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) { setItems(prev => prev.map(x => (x.id === it.id ? { ...x, stock: n, bajo: x.stockMinimo > 0 && n <= x.stockMinimo } : x))); }
+    else { alert(d.error || 'No se pudo guardar.'); cargar(); }
+  }
+  async function cambiarMinimo(it, valor) {
+    const n = Math.max(0, parseInt(valor, 10) || 0);
+    if (n === it.stockMinimo) return;
+    const r = await fetch('/api/admin/almacen', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+      body: JSON.stringify({ ...it, stockMinimo: n }),
+    });
+    if (r.ok) setItems(prev => prev.map(x => (x.id === it.id ? { ...x, stockMinimo: n, bajo: n > 0 && x.stock <= n } : x)));
+    else { const d = await r.json().catch(() => ({})); alert(d.error || 'No se pudo guardar.'); cargar(); }
+  }
   async function verMovs(it) {
     const r = await fetch(`/api/admin/almacen/${it.id}/movimientos`, { credentials: 'include', cache: 'no-store' });
     if (r.ok) setMovs({ item: it, lista: await r.json() });
@@ -89,18 +116,31 @@ export default function AdminAlmacen({ showToast }) {
 
       {filtrados.length > 0 && (
         <div className="data-table">
-          <div className="data-table-head" style={{ gridTemplateColumns: '1.6fr 90px 1.2fr 150px' }}>
-            <span>Artículo</span><span>Stock</span><span>Se vende como</span><span></span>
+          <div className="data-table-head" style={{ gridTemplateColumns: '1.6fr 100px 100px 1.2fr 150px' }}>
+            <span>Artículo</span><span>Hay</span><span>Avisar si ≤</span><span>Se vende como</span><span></span>
           </div>
-          {filtrados.map(it => (
-            <div key={it.id} className="data-table-row" style={{ gridTemplateColumns: '1.6fr 90px 1.2fr 150px', alignItems: 'center' }}>
+          {filtrados.map((it, i) => (
+            <React.Fragment key={it.id}>
+            {/* Un título por categoría, que con decenas de tallas se pierde uno. */}
+            {(i === 0 || filtrados[i - 1].categoria !== it.categoria) && (
+              <div style={{ padding: '10px 16px 4px', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--purple)', background: 'var(--bg-3)' }}>
+                {it.categoria || 'Sin categoría'}
+              </div>
+            )}
+            <div className="data-table-row" style={{ gridTemplateColumns: '1.6fr 100px 100px 1.2fr 150px', alignItems: 'center' }}>
               <div>
                 <div className="pri">{it.nombre}</div>
-                {it.categoria && <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>{it.categoria}</div>}
               </div>
-              <span style={{ fontSize: 15, fontWeight: 800, color: it.bajo ? 'var(--orange)' : 'var(--ink)' }}>
-                {it.stock}{it.bajo && <span title={`Mínimo ${it.stockMinimo}`} style={{ fontSize: 11 }}> ⚠️</span>}
+              {/* Recuento directo: se escribe cuántos hay y al salir se guarda. */}
+              <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <input key={`s${it.id}:${it.stock}`} type="number" min="0" defaultValue={it.stock} aria-label={`Unidades de ${it.nombre}`}
+                  onBlur={e => recuento(it, e.target.value)} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                  style={{ ...inp, width: 64, padding: '6px 8px', fontWeight: 800, color: it.bajo ? 'var(--orange)' : 'var(--ink)' }} />
+                {it.bajo && <span title={`Mínimo ${it.stockMinimo}`} style={{ fontSize: 12 }}>⚠️</span>}
               </span>
+              <input key={`m${it.id}:${it.stockMinimo}`} type="number" min="0" defaultValue={it.stockMinimo} aria-label={`Aviso bajo mínimo de ${it.nombre}`}
+                onBlur={e => cambiarMinimo(it, e.target.value)} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                style={{ ...inp, width: 64, padding: '6px 8px' }} />
               <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{it.conceptoDesc || (it.concepto ? it.concepto : '— (no se vende)')}</span>
               <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
                 <button className="btn btn-sm btn-outline" style={{ fontSize: 11, padding: '4px 8px' }} onClick={() => ajustar(it)}>± Stock</button>
@@ -109,6 +149,7 @@ export default function AdminAlmacen({ showToast }) {
                 <button className="icon-btn danger" onClick={() => borrar(it)} aria-label="Quitar"><I.Trash /></button>
               </div>
             </div>
+            </React.Fragment>
           ))}
         </div>
       )}

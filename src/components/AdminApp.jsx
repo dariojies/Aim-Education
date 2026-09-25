@@ -76,6 +76,10 @@ function sectionLabel(id) {
     objetos: "Objetos perdidos",
     support: "Panel de soporte",
     faltas: "Faltas seguidas",
+    speaking: "Speaking",
+    fichaje: "Fichaje",
+    almacen: "Almacén",
+    equipo_it: "Equipo IT",
   })[id] || "Panel";
 }
 
