@@ -75,7 +75,7 @@ function sectionLabel(id) {
     settings: "Ajustes del club",
     objetos: "Objetos perdidos",
     support: "Panel de soporte",
-    faltas: "Faltas seguidas",
+    faltas: "Faltas",
     speaking: "Speaking",
     fichaje: "Fichaje",
     almacen: "Almacén",

@@ -12233,6 +12233,64 @@ app.get('/api/admin/faltas', authenticateSession, requireSeccion('faltas'), asyn
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Resumen de un mes (por defecto, el actual): de cada alumno con alguna falta,
+// el total de faltas sumando todas sus clases, lo que vino, y si no ha venido
+// NINGÚN día. Como el resto, solo cuenta lo marcado al pasar lista (y hasta hoy).
+app.get('/api/admin/faltas/mes', authenticateSession, requireSeccion('faltas'), async (req, res) => {
+    const mes = /^\d{4}-\d{2}$/.test(req.query.mes || '') ? `${req.query.mes}-01` : `${hoyMadrid().slice(0, 7)}-01`;
+    try {
+        const r = await pool.query(
+            `SELECT at.student_id, at.group_id, g.name AS clase, ac.name AS actividad,
+                    COUNT(*) FILTER (WHERE at.status = 'absent')::int AS faltas,
+                    COUNT(*) FILTER (WHERE at.status <> 'absent')::int AS vino,
+                    COUNT(*)::int AS clases,
+                    MAX(at.date) FILTER (WHERE at.status = 'absent') AS ultima_falta,
+                    EXISTS (SELECT 1 FROM tul_group_students gs WHERE gs.group_id = at.group_id AND gs.student_id = at.student_id) AS sigue
+             FROM tul_attendance at
+             JOIN tul_groups g ON g.group_id = at.group_id
+             JOIN tul_activities ac ON ac.activity_id = g.activity_id AND ac.club_id = $1
+             WHERE at.date >= $2::date AND at.date < ($2::date + INTERVAL '1 month') AND at.date <= ${SQL_HOY_MADRID}
+             GROUP BY 1, 2, 3, 4`, [AIM_CLUB_ID, mes]);
+        // Por alumno: sus clases del mes y los totales.
+        const porAlumno = new Map();
+        for (const x of r.rows) {
+            const a = porAlumno.get(x.student_id) || { studentId: x.student_id, faltas: 0, vino: 0, clases: 0, detalle: [] };
+            a.faltas += x.faltas; a.vino += x.vino; a.clases += x.clases;
+            a.detalle.push({ groupId: x.group_id, clase: x.clase, actividad: x.actividad, faltas: x.faltas, vino: x.vino, clases: x.clases, ultimaFalta: x.ultima_falta, sigue: x.sigue });
+            porAlumno.set(x.student_id, a);
+        }
+        const conFaltas = [...porAlumno.values()].filter(a => a.faltas > 0);
+        const datos = conFaltas.length ? await pool.query(
+            `SELECT u.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno, u.phone, u.birthday,
+                    (SELECT string_agg(DISTINCT NULLIF(TRIM(CONCAT(fu.name, ' ', COALESCE(fu.surname, ''),
+                              CASE WHEN fu.phone IS NOT NULL AND fu.phone <> '' THEN ' · ' || fu.phone ELSE '' END)), ''), '   ')
+                     FROM aim_familias f JOIN users fu ON fu.user_id = f.familiar_id
+                     WHERE f.persona_id = u.user_id) AS contactos
+             FROM users u WHERE u.user_id = ANY($1::uuid[])`, [conFaltas.map(a => a.studentId)]) : { rows: [] };
+        const info = new Map(datos.rows.map(x => [x.user_id, x]));
+        const alumnos = conFaltas.map(a => {
+            const u = info.get(a.studentId) || {};
+            return {
+                ...a, alumno: u.alumno || '—', telefono: u.phone || null, edad: edadDe(u.birthday), contactos: u.contactos || null,
+                // Tiene faltas y ni un solo día que viniera (a ninguna de sus clases).
+                nuncaVino: a.vino === 0,
+                detalle: a.detalle.sort((x, y) => y.faltas - x.faltas),
+            };
+        }).sort((x, y) => (y.nuncaVino - x.nuncaVino) || (y.faltas - x.faltas) || x.alumno.localeCompare(y.alumno));
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            mes: mes.slice(0, 7),
+            resumen: {
+                faltas: alumnos.reduce((s, a) => s + a.faltas, 0),
+                alumnosConFaltas: alumnos.length,
+                nuncaVinieron: alumnos.filter(a => a.nuncaVino).length,
+                alumnosConLista: porAlumno.size,
+            },
+            alumnos,
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Marcar que secretaría ya ha llamado, o cambiar las franjas. Y, si al llamar
 // la familia contesta, apuntar su respuesta (Confirmada / No puede) sin esperar
 // a que pulse el enlace del correo. null la deja otra vez pendiente.
