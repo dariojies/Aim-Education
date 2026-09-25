@@ -3970,3 +3970,93 @@ html[data-theme="dark"] .dash-nav button.is-active {
   .act-hero p.lede { font-size: 17px; }
   .act-hero .btn-lg { flex: 1 1 100%; justify-content: center; }
 }
+
+/* ═════════════════════════════════════════════════════════════════════════
+   Móvil y tablet (ticket #299)
+   ═════════════════════════════════════════════════════════════════════════ */
+/* La columna del contenido puede encoger. Sin esto, cualquier cosa ancha de
+   dentro (el horario, una tabla, un desplegable con nombres largos) estiraba
+   la página entera y aparecía desplazamiento lateral en el móvil. */
+.admin-main, .dash-main { min-width: 0; }
+/* Ningún campo más ancho que su hueco. */
+input, select, textarea { max-width: 100%; }
+/* Las tablas: si no caben, se desplazan dentro de sí mismas en vez de cortar
+   columnas sin avisar (antes llevaban overflow: hidden). */
+.data-table { overflow-x: auto; overflow-y: hidden; }
+/* En tablet vertical y móvil, cada fila de tabla pasa a ser una ficha. */
+@media (max-width: 860px) {
+  .data-table-head,
+  .data-table-row {
+    grid-template-columns: 1fr !important;
+    gap: 8px;
+  }
+  .data-table-head { display: none; }
+}
+
+/* Rejillas de maquetación escritas en el propio componente (paneles lado a
+   lado, pares de campos): en pantallas estrechas se ponen una debajo de otra.
+   Se reconocen por el valor exacto de su estilo, tal como lo escribe el
+   navegador; si se cambia uno de esos valores en un componente, hay que
+   cambiarlo aquí también. Las tablas no entran: esas se desplazan. */
+@media (max-width: 860px) {
+  [style*="grid-template-columns: 1.5fr 1fr;"],
+  [style*="grid-template-columns: 1.4fr 1fr;"],
+  [style*="grid-template-columns: 1.3fr 1fr;"],
+  [style*="grid-template-columns: 1.2fr 1fr;"],
+  [style*="grid-template-columns: 1fr 1.2fr;"],
+  [style*="grid-template-columns: 1fr 1fr 1fr;"],
+  [style*="grid-template-columns: 1fr 1fr 1.4fr;"],
+  [style*="grid-template-columns: repeat(3, 1fr);"],
+  [style*="grid-template-columns: minmax(240px, 340px) 1fr;"],
+  [style*="grid-template-columns: minmax(0px, 2fr) minmax(240px, 1fr);"],
+  [style*="grid-template-columns: minmax(0px, 1.7fr) minmax(240px, 1fr);"],
+  [style*="grid-template-columns: minmax(0px, 1.6fr) minmax(0px, 1fr);"] {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  [style*="grid-template-columns: repeat(4, 1fr);"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+@media (max-width: 640px) {
+  [style*="grid-template-columns: 1fr 1fr;"],
+  [style*="grid-template-columns: repeat(2, 1fr);"],
+  [style*="grid-template-columns: minmax(0px, 1fr) minmax(0px, 1fr);"],
+  [style*="grid-template-columns: 1.4fr 1fr 110px 130px auto;"],
+  [style*="grid-template-columns: 1fr 1.4fr 110px;"],
+  [style*="grid-template-columns: minmax(180px, 1fr) 2fr;"],
+  [style*="grid-template-columns: repeat(4, 1fr);"] {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .solo-escritorio { display: none !important; }
+}
+
+/* Contenedores de una sola columna escritos en el componente (display: grid sin
+   columnas): su columna puede encoger. Si no, el elemento más ancho de dentro
+   (un enlace largo, una fila de botones) ensanchaba toda la sección en el
+   móvil. Con :where() no pesa nada: cualquier clase con columnas propias manda. */
+:where([style*="display: grid"]:not([style*="grid-template-columns"])) {
+  grid-template-columns: minmax(0, 1fr);
+}
+/* Las palabras larguísimas (enlaces, correos) se parten antes que salirse. */
+body { overflow-wrap: break-word; }
+
+/* Etiquetas que solo hacen falta cuando la tabla se apila (sin cabecera). */
+.solo-movil { display: none; }
+@media (max-width: 860px) {
+  .solo-movil { display: inline; }
+}
+/* Buscador junto a botones: en el móvil ocupa toda la fila y los botones bajan
+   a la siguiente, en vez de quedarse el buscador en «Bus…». */
+@media (max-width: 640px) {
+  :has(> .search-input) { flex-wrap: wrap; }
+  .search-input { flex: 1 1 100% !important; max-width: 100% !important; }
+}
+
+/* Ficha de alumno en el móvil: la foto, pequeña (antes era un cuadrado del
+   ancho de la pantalla) y la ventana casi a pantalla completa. */
+@media (max-width: 860px) {
+  .ficha-modal .ficha-foto { max-width: 132px; }
+}
+@media (max-width: 640px) {
+  .ficha-fondo { padding: 8px !important; }
+}

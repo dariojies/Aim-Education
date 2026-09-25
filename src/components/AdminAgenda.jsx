@@ -286,7 +286,7 @@ export default function AdminAgenda({ showToast, user }) {
                         const libre = !f.ocupado.length && !f.tareas.length;
                         return (
                             <div key={f.hora} style={{
-                                display: 'grid', gridTemplateColumns: '56px 1fr', gap: 12,
+                                display: 'grid', gridTemplateColumns: '56px minmax(0, 1fr)', gap: 12,
                                 borderTop: i ? '1px solid var(--line)' : 'none',
                                 minHeight: 46, alignItems: 'stretch',
                             }}>

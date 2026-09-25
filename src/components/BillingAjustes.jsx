@@ -229,7 +229,7 @@ export default function BillingAjustes({ showToast }) {
             <div style={{ display: 'grid', gap: 3 }}>
               <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--ink-2)' }}>Últimos registros</div>
               {vf.ultimas.map(u => (
-                <div key={u.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, padding: '4px 8px', background: 'var(--bg-3)', borderRadius: 8 }}>
+                <div key={u.id} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12, padding: '4px 8px', background: 'var(--bg-3)', borderRadius: 8 }}>
                   <b style={{ minWidth: 90 }}>{u.numero}</b>
                   <span style={{ color: 'var(--ink-3)' }}>{u.fecha}</span>
                   <span>{Number(u.total).toFixed(2)} €</span>

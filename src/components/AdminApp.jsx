@@ -970,9 +970,13 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
         )}
       </div>
 
+      {/* En móvil y tablet el horario se desplaza de lado dentro de su recuadro:
+          seis días no caben en el ancho de un teléfono (#299). */}
+      <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch", borderRadius: 18 }}>
       <div style={{
         display: "grid",
-        gridTemplateColumns: "64px repeat(6, 1fr)",
+        gridTemplateColumns: "64px repeat(6, minmax(110px, 1fr))",
+        minWidth: 740,
         gap: 0,
         background: "var(--bg-2)",
         border: "1px solid var(--line)",
@@ -1088,6 +1092,7 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
             })}
           </React.Fragment>
         ))}
+      </div>
       </div>
 
       {/* Legend list of activities by color with '+' button */}
@@ -4244,16 +4249,17 @@ function BillingTPV({ showToast }) {
                 </div>
               )}
               {cesta.cargos.map(c => (
-                <div key={c.id} style={{ display: 'flex', gap: 10, alignItems: 'center', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: '10px 14px', opacity: sel[c.id]?.on ? 1 : .5 }}>
+                <div key={c.id} style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: '10px 14px', opacity: sel[c.id]?.on ? 1 : .5 }}>
                   <input type="checkbox" checked={!!sel[c.id]?.on} onChange={e => setSel(s => ({ ...s, [c.id]: { ...s[c.id], on: e.target.checked } }))} style={{ width: 18, height: 18, accentColor: 'var(--teal)' }} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
+                  {/* En el móvil el nombre va en su línea y el dto, el precio y la papelera bajan. */}
+                  <div style={{ flex: '1 1 180px', minWidth: 0 }}>
                     <div style={{ fontWeight: 700, fontSize: 14 }}>
                       {c.origen === 'manual' && <span style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', color: 'var(--purple)', marginRight: 6 }}>Extra</span>}
                       {c.descripcion} <span style={{ color: 'var(--ink-3)', fontWeight: 500, fontSize: 12 }}>· {c.nombre}</span>
                     </div>
                     <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{mesDeCargo(c)}{c.tipo === 'Material' ? ` · +${c.ivaPct}% IVA` : ''}</div>
                   </div>
-                  <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 12, color: 'var(--ink-3)' }}>
+                  <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 12, color: 'var(--ink-3)', marginLeft: 'auto' }}>
                     dto
                     <input type="number" min="0" max="100" value={sel[c.id]?.descuentoPct ?? 0} onChange={e => setSel(s => ({ ...s, [c.id]: { ...s[c.id], descuentoPct: e.target.value } }))} style={{ width: 48, padding: '4px 6px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontSize: 13, textAlign: 'center' }} />%
                   </label>
@@ -4265,9 +4271,9 @@ function BillingTPV({ showToast }) {
                 </div>
               ))}
               {extras.map(e => (
-                <div key={e.key} style={{ display: 'flex', gap: 10, alignItems: 'center', background: 'color-mix(in oklab, var(--purple) 6%, var(--bg-2))', border: '1px solid var(--line)', borderRadius: 12, padding: '10px 14px' }}>
+                <div key={e.key} style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', background: 'color-mix(in oklab, var(--purple) 6%, var(--bg-2))', border: '1px solid var(--line)', borderRadius: 12, padding: '10px 14px' }}>
                   <span style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', color: 'var(--purple)' }}>{e.concepto === ANTICIPO_CONCEPTO ? 'Anticipo' : e.esBonoCatalogo ? 'Bono' : 'Extra'}</span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ flex: '1 1 180px', minWidth: 0 }}>
                     <div style={{ fontWeight: 700, fontSize: 14 }}>{e.descripcion} <span style={{ color: 'var(--ink-3)', fontWeight: 500, fontSize: 12 }}>· {e.nombre}</span></div>
                     <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
                       {e.mes ? new Date(e.mes).toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }) : ''}
@@ -5801,7 +5807,7 @@ function CampAgenda({ weeks, children }) {
             <span style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 800, minWidth: 160, textAlign: 'center' }}>{MONTHS[ym.m]} {ym.y}</span>
             <button className="btn btn-icon" onClick={() => { setYm(v => v.m === 11 ? { y: v.y + 1, m: 0 } : { y: v.y, m: v.m + 1 }); setSelDay(null); }} aria-label="Mes siguiente">{chevR}</button>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 6 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 6 }}>
             {WD_HEAD.map(d => <div key={d} style={{ textAlign: 'center', fontSize: 11, fontWeight: 800, letterSpacing: '.06em', color: 'var(--ink-3)', textTransform: 'uppercase' }}>{d}</div>)}
             {cells.map((day, i) => {
               if (!day) return <div key={i} />;
@@ -7168,7 +7174,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
 
       {/* --- MODAL NUEVO / EDITAR ALUMNO --- */}
       {(activeModal === 'new-student' || activeModal === 'edit-student') && (
-        <div onClick={() => setActiveModal(null)} style={{
+        <div className="ficha-fondo" onClick={() => setActiveModal(null)} style={{
           position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
           backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(8px)',
           display: 'grid', placeItems: 'center', zIndex: 1000, padding: 20
@@ -7255,7 +7261,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                     {/* Columna izquierda: foto + datos clave (solo al editar). */}
                     {esEdit && (
                       <aside style={{ display: 'grid', gap: 14 }}>
-                        <div style={{
+                        <div className="ficha-foto" style={{
                           width: '100%', aspectRatio: '1 / 1', borderRadius: 16, overflow: 'hidden',
                           background: 'var(--bg-3)', display: 'grid', placeItems: 'center', border: '1px solid var(--line)',
                         }}>

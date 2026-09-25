@@ -172,8 +172,8 @@ export default function BillingArqueo({ showToast }) {
         <button className="btn btn-sm btn-outline" onClick={imprimir}><I.Print /> Imprimir cierre</button>
       </div>
 
-      <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 16, display: 'grid', gap: 10 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr repeat(5, minmax(0,1fr))', gap: 8, fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--ink-3)' }}>
+      <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 16, display: 'grid', gap: 10, overflowX: 'auto' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr repeat(5, minmax(0,1fr))', minWidth: 520, gap: 8, fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--ink-3)' }}>
           <span>Medio de pago</span>
           <span style={{ textAlign: 'right' }}>Cobrado</span>
           <span style={{ textAlign: 'right' }}>Devuelto</span>
@@ -185,7 +185,7 @@ export default function BillingArqueo({ showToast }) {
           const e = datos.esperado[m];
           const d = descuadres[m];
           return (
-            <div key={m} style={{ display: 'grid', gridTemplateColumns: '1.2fr repeat(5, minmax(0,1fr))', gap: 8, alignItems: 'center', fontSize: 13 }}>
+            <div key={m} style={{ display: 'grid', gridTemplateColumns: '1.2fr repeat(5, minmax(0,1fr))', minWidth: 520, gap: 8, alignItems: 'center', fontSize: 13 }}>
               <span style={{ fontWeight: 700 }}>{ETIQUETA[m] || m}{e.n ? <span style={{ color: 'var(--ink-3)', fontWeight: 400 }}> · {e.n}</span> : ''}</span>
               <span style={{ textAlign: 'right', color: 'var(--ink-3)' }}>{eur(e.cobrado)}</span>
               <span style={{ textAlign: 'right', color: e.devuelto ? 'var(--orange)' : 'var(--ink-3)' }}>{e.devuelto ? `−${eur(e.devuelto)}` : '—'}</span>
@@ -199,7 +199,7 @@ export default function BillingArqueo({ showToast }) {
             </div>
           );
         })}
-        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr repeat(5, minmax(0,1fr))', gap: 8, alignItems: 'center', fontSize: 14, fontWeight: 800, borderTop: '2px solid var(--line)', paddingTop: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr repeat(5, minmax(0,1fr))', minWidth: 520, gap: 8, alignItems: 'center', fontSize: 14, fontWeight: 800, borderTop: '2px solid var(--line)', paddingTop: 10 }}>
           <span>TOTAL</span><span /><span />
           <span style={{ textAlign: 'right' }}>{eur(datos.totalEsperado)}</span>
           <span style={{ textAlign: 'right' }}>{eur(totalContado)}</span>

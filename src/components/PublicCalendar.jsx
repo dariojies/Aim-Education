@@ -194,12 +194,12 @@ export default function PublicCalendar() {
                 <div className="cal-main-grid" style={{display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 24}}>
                   {/* Calendar grid */}
                   <div style={{background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 18, padding: 22}}>
-                    <div style={{display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8, marginBottom: 12}}>
+                    <div style={{display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 8, marginBottom: 12}}>
                       {DAY_LABELS.map(d => (
                         <div key={d} style={{textAlign: "center", fontSize: 11, fontWeight: 800, letterSpacing: ".1em", color: "var(--ink-3)", textTransform: "uppercase"}}>{d}</div>
                       ))}
                     </div>
-                    <div style={{display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6}}>
+                    <div style={{display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 6}}>
                       {cells.map((day, i) => {
                         const dayEvents = day ? EVENTS.filter(e => {
                           const d = new Date(e.date);
@@ -236,7 +236,7 @@ export default function PublicCalendar() {
                       })}
                     </div>
 
-                    <div style={{marginTop: 22, display: "flex", gap: 6, alignItems: "center", padding: "12px 14px", background: "var(--bg-3)", border: "1px dashed var(--line)", borderRadius: 12, fontSize: 13, color: "var(--ink-2)"}}>
+                    <div style={{marginTop: 22, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", padding: "12px 14px", background: "var(--bg-3)", border: "1px dashed var(--line)", borderRadius: 12, fontSize: 13, color: "var(--ink-2)"}}>
                       <I.Calendar width={16} height={16} />
                       <span>Suscríbete:</span>
                       <code style={{fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--purple)", fontWeight: 600}}>aimeducation.es/feed.ics</code>

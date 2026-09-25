@@ -335,7 +335,7 @@ function AimHeader({ route } = {}) {
               {/* Quien trabaja en el club también puede ser familia: desde aquí
                   entra a lo suyo sin pasar por el panel. */}
               {user.canAccessAdmin && (
-                <button className="btn btn-brand" onClick={() => go('/dashboard')}>Perfil</button>
+                <button className="btn btn-brand solo-escritorio" onClick={() => go('/dashboard')}>Perfil</button>
               )}
               <button className="btn btn-gradient" onClick={() => go(user.canAccessAdmin ? '/admin' : '/dashboard')}>
                 {user.canAccessAdmin ? 'Panel Admin' : 'Mi cuenta'}

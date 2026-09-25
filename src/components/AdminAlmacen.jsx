@@ -133,14 +133,18 @@ export default function AdminAlmacen({ showToast }) {
               </div>
               {/* Recuento directo: se escribe cuántos hay y al salir se guarda. */}
               <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <span className="solo-movil" style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-3)', minWidth: 84 }}>Hay</span>
                 <input key={`s${it.id}:${it.stock}`} type="number" min="0" defaultValue={it.stock} aria-label={`Unidades de ${it.nombre}`}
                   onBlur={e => recuento(it, e.target.value)} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
                   style={{ ...inp, width: 64, padding: '6px 8px', fontWeight: 800, color: it.bajo ? 'var(--orange)' : 'var(--ink)' }} />
                 {it.bajo && <span title={`Mínimo ${it.stockMinimo}`} style={{ fontSize: 12 }}>⚠️</span>}
               </span>
-              <input key={`m${it.id}:${it.stockMinimo}`} type="number" min="0" defaultValue={it.stockMinimo} aria-label={`Aviso bajo mínimo de ${it.nombre}`}
-                onBlur={e => cambiarMinimo(it, e.target.value)} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-                style={{ ...inp, width: 64, padding: '6px 8px' }} />
+              <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <span className="solo-movil" style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-3)', minWidth: 84 }}>Avisar si ≤</span>
+                <input key={`m${it.id}:${it.stockMinimo}`} type="number" min="0" defaultValue={it.stockMinimo} aria-label={`Aviso bajo mínimo de ${it.nombre}`}
+                  onBlur={e => cambiarMinimo(it, e.target.value)} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                  style={{ ...inp, width: 64, padding: '6px 8px' }} />
+              </span>
               <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{it.conceptoDesc || (it.concepto ? it.concepto : '— (no se vende)')}</span>
               <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
                 <button className="btn btn-sm btn-outline" style={{ fontSize: 11, padding: '4px 8px' }} onClick={() => ajustar(it)}>± Stock</button>

@@ -653,18 +653,18 @@ export function AdminSupport({ user, ticketId = null }) {
       )}
 
       {/* Tabs */}
-      <div style={{display: "flex", gap: 6, marginBottom: 22}}>
+      <div style={{display: "flex", gap: 6, marginBottom: 22, flexWrap: "wrap", alignItems: "center"}}>
         {[
           { id: "list", label: `Ver tickets · ${filtered.length}` },
           { id: "recientes", label: `Hechos (72 h) · ${recientes.length}` },
           { id: "create", label: "Crear ticket" },
         ].map(t => (
-          <button key={t.id} className={`filter-pill ${activeTab === t.id ? "is-active" : ""}`} onClick={() => setActiveTab(t.id)}>
+          <button key={t.id} className={`filter-pill ${activeTab === t.id ? "is-active" : ""}`} onClick={() => setActiveTab(t.id)} style={{whiteSpace: "nowrap"}}>
             {t.label}
           </button>
         ))}
         <div style={{flex: 1}} />
-        <div style={{display: "flex", gap: 10, alignItems: "center", fontSize: 13, color: "var(--ink-3)"}}>
+        <div style={{display: "flex", gap: 10, alignItems: "center", fontSize: 13, color: "var(--ink-3)", flexWrap: "wrap"}}>
           {/* Se dice de dónde sale cada número, que era justo lo que faltaba. */}
           <span title={`${tickets.length} en total, contando los ya resueltos`}>
             {filtered.length} de {tickets.length}

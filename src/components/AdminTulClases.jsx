@@ -1024,7 +1024,7 @@ export function AdminReportes({ user, permisos = {} }) {
         ))}
         <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginLeft: 8 }}>
           <button className="btn btn-icon" onClick={() => mover(-1)} aria-label="Anterior">‹</button>
-          <span style={{ fontWeight: 800, fontSize: 14, minWidth: 180, textAlign: 'center', textTransform: 'capitalize' }}>{periodo.label}</span>
+          <span style={{ fontWeight: 800, fontSize: 14, minWidth: 'min(180px, 44vw)', textAlign: 'center', textTransform: 'capitalize' }}>{periodo.label}</span>
           <button className="btn btn-icon" onClick={() => mover(1)} aria-label="Siguiente">›</button>
         </div>
         {cargando && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Cargando...</span>}

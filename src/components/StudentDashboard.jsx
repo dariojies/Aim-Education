@@ -9,10 +9,10 @@ import { fmtFecha } from '../fechas.js';
 
 function EmptyState({ icon, text, accion, onAccion }) {
   return (
-    <div style={{display: "flex", alignItems: "center", gap: 14, padding: "18px 16px", color: "var(--ink-3)",
+    <div style={{display: "flex", alignItems: "center", flexWrap: "wrap", gap: 14, padding: "18px 16px", color: "var(--ink-3)",
                  background: "var(--bg-3)", border: "1px dashed var(--line)", borderRadius: 14}}>
       {icon && <span style={{opacity: .5, flexShrink: 0, display: "grid", placeItems: "center"}}>{icon}</span>}
-      <p style={{margin: 0, fontSize: 14, lineHeight: 1.5, flex: 1, minWidth: 0}}>{text}</p>
+      <p style={{margin: 0, fontSize: 14, lineHeight: 1.5, flex: "1 1 200px", minWidth: 0}}>{text}</p>
       {accion && (
         <button className="btn btn-brand btn-sm" style={{flexShrink: 0}} onClick={onAccion}>{accion}</button>
       )}
@@ -536,6 +536,7 @@ function DashClasses() {
       <div className="panel">
         <h2><I.Calendar /> Mi horario semanal</h2>
         <p className="sub">Tus clases distribuidas en la semana.</p>
+        <div className="schedule-scroll-wrap">
         <div className="week-grid" style={{gridTemplateColumns: "80px repeat(6, 1fr)"}}>
           <div className="hdr"></div>
           {days.map(d => <div key={d} className="hdr">{d}</div>)}
@@ -563,6 +564,7 @@ function DashClasses() {
               })}
             </React.Fragment>
           ))}
+        </div>
         </div>
       </div>
 
