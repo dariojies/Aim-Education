@@ -1379,6 +1379,41 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_comunicaciones_persona ON aim_comunicaciones (persona_id, created_at DESC)`);
+        // CRM 5 (#314): campañas a un segmento y un envío por destinatario (con su
+        // código para la baja y los clics). Salen en cola, poco a poco.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_campanas (
+                id SERIAL PRIMARY KEY,
+                nombre VARCHAR(120) NOT NULL,
+                asunto TEXT NOT NULL DEFAULT '',
+                cuerpo TEXT NOT NULL DEFAULT '',
+                tipo VARCHAR(20) NOT NULL DEFAULT 'comercial',
+                filtros JSONB NOT NULL DEFAULT '{}'::jsonb,
+                segmento_nombre VARCHAR(80),
+                estado VARCHAR(20) NOT NULL DEFAULT 'borrador',
+                creada_por UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                lanzada_at TIMESTAMPTZ,
+                terminada_at TIMESTAMPTZ
+            )
+        `);
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_campana_envios (
+                id SERIAL PRIMARY KEY,
+                campana_id INTEGER NOT NULL REFERENCES aim_campanas(id) ON DELETE CASCADE,
+                persona_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                destinatario_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                email TEXT NOT NULL,
+                token CHAR(32) NOT NULL UNIQUE,
+                estado VARCHAR(20) NOT NULL DEFAULT 'pendiente',
+                error TEXT,
+                enviado_at TIMESTAMPTZ,
+                clics INTEGER NOT NULL DEFAULT 0,
+                primer_clic_at TIMESTAMPTZ,
+                baja_at TIMESTAMPTZ
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_campana_envios_estado ON aim_campana_envios (campana_id, estado)`);
         // Avisos de la campanita que cada persona ya ha visto. Un aviso visto no
         // cuenta en el número rojo hasta que haya algo nuevo: un mensaje más en
         // ese ticket (marca) o que su contador suba (n).
@@ -9836,15 +9871,20 @@ async function contextoCorreo(personaId) {
     };
 }
 const rellenarPlantilla = (texto, v) => String(texto || '').replace(/\{(\w+)\}/g, (m, k) => (v[k] !== undefined ? v[k] : m));
-function htmlCorreoClub(cuerpo, { comercial = false } = {}) {
+function htmlCorreoClub(cuerpo, { comercial = false, rastrear = null, pie = '' } = {}) {
+    // rastrear(url) → la dirección con seguimiento de clics (campañas, #314).
+    const enlace = (visible, destino) => {
+        const d = destino.replace(/&amp;/g, '&');
+        return `<a href="${escHtml(rastrear ? rastrear(d) : d)}">${visible}</a>`;
+    };
     const texto = escHtml(cuerpo)
-        .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1">$1</a>')
-        .replace(/(^|[\s(])(www\.[^\s<]+)/g, '$1<a href="https://$2">$2</a>')
+        .replace(/(https?:\/\/[^\s<]+)/g, (m) => enlace(m, m))
+        .replace(/(^|[\s(])(www\.[^\s<]+)/g, (m, a, w) => a + enlace(w, `https://${w}`))
         .replace(/\n/g, '<br>');
     return `<div style="font-family:system-ui,-apple-system,sans-serif;color:#1a1a1a;max-width:600px">
       <div style="font-size:15px;line-height:1.6">${texto}</div>
       <p style="font-size:12px;color:#888;margin-top:28px;border-top:1px solid #eee;padding-top:10px">AIM Education · Algeciras · 956 742 216 · <a href="${URL_PUBLICA_WEB}" style="color:#888">www.aimeducation.es</a></p>
-      ${comercial ? `<p style="font-size:11px;color:#999">Recibes este correo porque aceptaste las comunicaciones comerciales del club. Puedes darte de baja cuando quieras desde tu perfil: <a href="${URL_PUBLICA_WEB}/dashboard" style="color:#999">${URL_PUBLICA_WEB.replace(/^https?:\/\//, '')}/dashboard</a>.</p>` : ''}
+      ${pie || (comercial ? `<p style="font-size:11px;color:#999">Recibes este correo porque aceptaste las comunicaciones comerciales del club. Puedes darte de baja cuando quieras desde tu perfil: <a href="${URL_PUBLICA_WEB}/dashboard" style="color:#999">${URL_PUBLICA_WEB.replace(/^https?:\/\//, '')}/dashboard</a>.</p>` : '')}
     </div>`;
 }
 
@@ -9999,8 +10039,8 @@ async function resolverSegmento(f) {
     const destino = f?.destino === 'alumno' ? 'alumno' : 'familia';
     const real = (e) => (e && !esCorreoInterno(e) ? e : null);
     const alumnos = r.rows.map(x => {
-        const propio = { nombre: `${x.name || ''} ${x.surname || ''}`.trim(), relacion: 'Alumno/a', email: real(x.email), com: x.com };
-        const tutores = (tutoresDe.get(x.user_id) || []).map(t => ({ nombre: `${t.name || ''} ${t.surname || ''}`.trim(), relacion: t.tipo, email: real(t.email), com: t.com }));
+        const propio = { id: x.user_id, nombre: `${x.name || ''} ${x.surname || ''}`.trim(), relacion: 'Alumno/a', email: real(x.email), com: x.com };
+        const tutores = (tutoresDe.get(x.user_id) || []).map(t => ({ id: t.user_id, nombre: `${t.name || ''} ${t.surname || ''}`.trim(), relacion: t.tipo, email: real(t.email), com: t.com }));
         let para = destino === 'alumno' ? [propio] : (tutores.some(t => t.email) ? tutores : [propio]);
         para = para.filter(d => d.email);
         let fuera = null;
@@ -10012,7 +10052,7 @@ async function resolverSegmento(f) {
         }
         return {
             id: x.user_id, nombre: propio.nombre, edad: edadDe(x.birthday), clases: x.clases || '',
-            destinatarios: fuera ? [] : para.map(d => ({ nombre: d.nombre, relacion: d.relacion, email: d.email })), fuera,
+            destinatarios: fuera ? [] : para.map(d => ({ id: d.id, nombre: d.nombre, relacion: d.relacion, email: d.email })), fuera,
         };
     });
     const dentro = alumnos.filter(a => !a.fuera);
@@ -10070,6 +10110,278 @@ app.put('/api/admin/segmentos', authenticateSession, requireSeccion('comunicacio
             [JSON.stringify(limpios), req.userSession.userId]);
         res.json({ success: true, segmentos: limpios });
     } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── CRM 5 · Campañas (#314) ───────────────────────────────────────────────────
+// Un correo a todo un segmento. Sale por el buzón del club (Gmail), uno por
+// destinatario y poco a poco (uno cada 4 s, ~900/h: Workspace admite unos 2.000
+// al día), personalizado con los datos de su alumno. Cada uno lleva su enlace de
+// baja y los enlaces del texto cuentan los clics. La cola vive en la base: si el
+// servidor se reinicia, sigue por donde iba. Cuando llegue un proveedor de envío
+// (#318) se cambia aquí, en enviarSiguienteDeCampana, sin tocar lo demás.
+const INTERVALO_CAMPANAS_MS = 4000;
+const urlClic = (token, destino) => `${URL_PUBLICA_WEB}/c/${token}?u=${encodeURIComponent(destino)}`;
+const urlBaja = (token) => `${URL_PUBLICA_WEB}/baja/${token}`;
+const pieBaja = (tipo, token) => tipo === 'servicio' ? '' : `<p style="font-size:11px;color:#999">${tipo === 'comercial'
+    ? 'Recibes este correo porque aceptaste las comunicaciones comerciales del club.'
+    : 'Recibes este correo por las actividades en las que está apuntado tu familia.'} Si no quieres recibir más, <a href="${urlBaja(token)}" style="color:#999">date de baja aquí</a>.</p>`;
+
+async function resumenCampanas(where = 'TRUE', vals = []) {
+    const r = await pool.query(
+        `SELECT c.*, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS quien,
+                COUNT(e.id)::int AS total,
+                COUNT(e.id) FILTER (WHERE e.estado = 'pendiente')::int AS pendientes,
+                COUNT(e.id) FILTER (WHERE e.estado = 'enviado')::int AS enviados,
+                COUNT(e.id) FILTER (WHERE e.estado = 'error')::int AS errores,
+                COUNT(e.id) FILTER (WHERE e.estado = 'omitido')::int AS omitidos,
+                COUNT(e.id) FILTER (WHERE e.clics > 0)::int AS con_clic,
+                COUNT(e.id) FILTER (WHERE e.baja_at IS NOT NULL)::int AS bajas
+         FROM aim_campanas c LEFT JOIN users u ON u.user_id = c.creada_por
+         LEFT JOIN aim_campana_envios e ON e.campana_id = c.id
+         WHERE ${where} GROUP BY c.id, u.name, u.surname ORDER BY c.created_at DESC LIMIT 100`, vals);
+    return r.rows.map(c => ({
+        id: c.id, nombre: c.nombre, asunto: c.asunto, cuerpo: c.cuerpo, tipo: c.tipo, filtros: c.filtros,
+        segmentoNombre: c.segmento_nombre, estado: c.estado, quien: c.quien || null,
+        creadaAt: c.created_at, lanzadaAt: c.lanzada_at, terminadaAt: c.terminada_at,
+        cuentas: { total: c.total, pendientes: c.pendientes, enviados: c.enviados, errores: c.errores, omitidos: c.omitidos, conClic: c.con_clic, bajas: c.bajas },
+    }));
+}
+
+app.get('/api/admin/campanas', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try { res.set('Cache-Control', 'no-store'); res.json({ campanas: await resumenCampanas(), correoActivo: !!mailTransporter }); }
+    catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/admin/campanas/:id', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try {
+        const [c] = await resumenCampanas('c.id = $1', [Number(req.params.id)]);
+        if (!c) return res.status(404).json({ error: 'Esa campaña no existe.' });
+        const e = await pool.query(
+            `SELECT e.id, e.email, e.estado, e.error, e.enviado_at, e.clics, e.primer_clic_at, e.baja_at,
+                    TRIM(CONCAT(p.name, ' ', COALESCE(p.surname, ''))) AS alumno, p.user_id AS alumno_id,
+                    TRIM(CONCAT(d.name, ' ', COALESCE(d.surname, ''))) AS destinatario
+             FROM aim_campana_envios e LEFT JOIN users p ON p.user_id = e.persona_id LEFT JOIN users d ON d.user_id = e.destinatario_id
+             WHERE e.campana_id = $1 ORDER BY e.id`, [c.id]);
+        res.set('Cache-Control', 'no-store');
+        res.json({ campana: c, envios: e.rows.map(x => ({
+            id: x.id, email: x.email, estado: x.estado, error: x.error, enviadoAt: x.enviado_at, clics: x.clics,
+            primerClicAt: x.primer_clic_at, bajaAt: x.baja_at, alumno: x.alumno, alumnoId: x.alumno_id, destinatario: x.destinatario,
+        })) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Crear o guardar un borrador.
+app.post('/api/admin/campanas', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    const { id, nombre, asunto, cuerpo, tipo, filtros, segmentoNombre } = req.body || {};
+    if (!String(nombre || '').trim()) return res.status(400).json({ error: 'Ponle un nombre a la campaña.' });
+    const t = TIPOS_CORREO.includes(tipo) ? tipo : 'comercial';
+    const vals = [String(nombre).trim().slice(0, 120), String(asunto || '').slice(0, 200), String(cuerpo || '').slice(0, 20000), t,
+        JSON.stringify(filtros && typeof filtros === 'object' ? filtros : {}), segmentoNombre ? String(segmentoNombre).slice(0, 80) : null];
+    try {
+        if (id) {
+            const r = await pool.query(
+                `UPDATE aim_campanas SET nombre = $1, asunto = $2, cuerpo = $3, tipo = $4, filtros = $5::jsonb, segmento_nombre = $6
+                 WHERE id = $7 AND estado = 'borrador' RETURNING id`, [...vals, Number(id)]);
+            if (!r.rowCount) return res.status(409).json({ error: 'Solo se puede cambiar una campaña que aún no se ha lanzado.' });
+            return res.json({ success: true, id: r.rows[0].id });
+        }
+        const r = await pool.query(
+            `INSERT INTO aim_campanas (nombre, asunto, cuerpo, tipo, filtros, segmento_nombre, creada_por)
+             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7) RETURNING id`, [...vals, req.userSession.userId]);
+        res.status(201).json({ success: true, id: r.rows[0].id });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/admin/campanas/:id', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try {
+        const r = await pool.query(`DELETE FROM aim_campanas WHERE id = $1 AND estado = 'borrador'`, [Number(req.params.id)]);
+        if (!r.rowCount) return res.status(409).json({ error: 'Solo se puede borrar una campaña que aún no se ha lanzado.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Una prueba a quien la está preparando, con los datos del primer alumno del segmento.
+app.post('/api/admin/campanas/:id/prueba', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    if (!mailTransporter) return res.status(503).json({ error: 'El correo no está configurado en el servidor.' });
+    try {
+        const c = (await pool.query(`SELECT * FROM aim_campanas WHERE id = $1`, [Number(req.params.id)])).rows[0];
+        if (!c) return res.status(404).json({ error: 'Esa campaña no existe.' });
+        const yo = (await pool.query(`SELECT email FROM users WHERE user_id = $1`, [req.userSession.userId])).rows[0]?.email;
+        if (!yo || esCorreoInterno(yo)) return res.status(400).json({ error: 'Tu cuenta no tiene correo al que mandarte la prueba.' });
+        const seg = await resolverSegmento({ ...(c.filtros || {}), tipo: c.tipo });
+        const primero = seg.alumnos.find(a => !a.fuera);
+        const vars = primero ? (await contextoCorreo(primero.id))?.variables || {} : {};
+        const cuerpo = rellenarPlantilla(c.cuerpo, vars);
+        await mailTransporter.sendMail({
+            from: `AIM Education <${process.env.EMAIL_USER}>`, replyTo: process.env.EMAIL_USER, to: yo,
+            subject: `[Prueba] ${rellenarPlantilla(c.asunto, vars)}`, text: cuerpo,
+            html: htmlCorreoClub(cuerpo, { pie: pieBaja(c.tipo, '0'.repeat(32)) }),
+        });
+        res.json({ success: true, enviadaA: yo, ejemplo: primero?.nombre || null });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Lanzar: se calcula el segmento en ese momento y se ponen en cola los envíos
+// (una dirección, un envío, aunque tenga varios hijos en el segmento).
+app.post('/api/admin/campanas/:id/lanzar', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    if (!mailTransporter) return res.status(503).json({ error: 'El correo no está configurado en el servidor.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const c = (await client.query(`SELECT * FROM aim_campanas WHERE id = $1 FOR UPDATE`, [Number(req.params.id)])).rows[0];
+        if (!c) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Esa campaña no existe.' }); }
+        if (c.estado !== 'borrador') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Esa campaña ya se lanzó.' }); }
+        if (!c.asunto.trim() || !c.cuerpo.trim()) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Falta el asunto o el texto.' }); }
+        const seg = await resolverSegmento({ ...(c.filtros || {}), tipo: c.tipo });
+        const vistos = new Set(); const filas = [];
+        for (const a of seg.alumnos) {
+            if (a.fuera) continue;
+            for (const d of a.destinatarios) {
+                const k = d.email.toLowerCase();
+                if (vistos.has(k)) continue;
+                vistos.add(k); filas.push([a.id, d.id || null, d.email, crypto.randomBytes(16).toString('hex')]);
+            }
+        }
+        if (!filas.length) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'El segmento no tiene a nadie a quien escribir.' }); }
+        await client.query(
+            `INSERT INTO aim_campana_envios (campana_id, persona_id, destinatario_id, email, token)
+             SELECT $1, t.p, t.d, t.e, t.k FROM unnest($2::uuid[], $3::uuid[], $4::text[], $5::text[]) AS t(p, d, e, k)`,
+            [c.id, filas.map(f => f[0]), filas.map(f => f[1]), filas.map(f => f[2]), filas.map(f => f[3])]);
+        await client.query(`UPDATE aim_campanas SET estado = 'enviando', lanzada_at = NOW() WHERE id = $1`, [c.id]);
+        await client.query('COMMIT');
+        res.json({ success: true, envios: filas.length, minutos: Math.ceil(filas.length * INTERVALO_CAMPANAS_MS / 60000) });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+// Pausar o reanudar una campaña en marcha.
+app.post('/api/admin/campanas/:id/:accion(pausar|reanudar)', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    const [de, a] = req.params.accion === 'pausar' ? ['enviando', 'pausada'] : ['pausada', 'enviando'];
+    try {
+        const r = await pool.query(`UPDATE aim_campanas SET estado = $1 WHERE id = $2 AND estado = $3 RETURNING id`, [a, Number(req.params.id), de]);
+        if (!r.rowCount) return res.status(409).json({ error: req.params.accion === 'pausar' ? 'Esa campaña no se está enviando.' : 'Esa campaña no está en pausa.' });
+        res.json({ success: true, estado: a });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// La cola: un envío cada vez. Comprueba el permiso otra vez (pudo darse de baja
+// mientras tanto) y rellena el texto con los datos de su alumno.
+let campanaEnCurso = false;
+async function enviarSiguienteDeCampana() {
+    if (campanaEnCurso || !mailTransporter) return;
+    campanaEnCurso = true;
+    let client = null;
+    try {
+        client = await pool.connect();
+        await client.query('BEGIN');
+        const r = await client.query(
+            `SELECT e.*, c.asunto, c.cuerpo, c.tipo FROM aim_campana_envios e JOIN aim_campanas c ON c.id = e.campana_id
+             WHERE e.estado = 'pendiente' AND c.estado = 'enviando' ORDER BY e.id LIMIT 1 FOR UPDATE OF e SKIP LOCKED`);
+        if (!r.rowCount) {
+            await client.query(
+                `UPDATE aim_campanas c SET estado = 'enviada', terminada_at = NOW()
+                 WHERE estado = 'enviando' AND NOT EXISTS (SELECT 1 FROM aim_campana_envios e WHERE e.campana_id = c.id AND e.estado = 'pendiente')`);
+            await client.query('COMMIT');
+            return;
+        }
+        const e = r.rows[0];
+        let omitir = null;
+        if (e.tipo === 'comercial' && e.destinatario_id) {
+            const v = (await client.query(`SELECT ${sqlUltimoConsentimiento('$1::uuid', 'comunicaciones')} AS v`, [e.destinatario_id])).rows[0].v;
+            if (v !== true) omitir = 'ya no acepta comunicaciones comerciales';
+        }
+        if (e.tipo === 'actividades' && e.persona_id) {
+            const v = (await client.query(`SELECT ${sqlUltimoConsentimiento('$1::uuid', 'actividades')} AS v`, [e.persona_id])).rows[0].v;
+            if (v === false) omitir = 'ya no quiere comunicaciones de sus actividades';
+        }
+        if (omitir) {
+            await client.query(`UPDATE aim_campana_envios SET estado = 'omitido', error = $1 WHERE id = $2`, [omitir, e.id]);
+            await client.query('COMMIT');
+            return;
+        }
+        const vars = e.persona_id ? (await contextoCorreo(e.persona_id))?.variables || {} : {};
+        const cuerpo = rellenarPlantilla(e.cuerpo, vars);
+        let estado = 'enviado', error = null;
+        try {
+            await mailTransporter.sendMail({
+                from: `AIM Education <${process.env.EMAIL_USER}>`, replyTo: process.env.EMAIL_USER, to: e.email,
+                subject: rellenarPlantilla(e.asunto, vars).slice(0, 200), text: cuerpo,
+                html: htmlCorreoClub(cuerpo, { rastrear: (u) => urlClic(e.token, u), pie: pieBaja(e.tipo, e.token) }),
+                headers: e.tipo === 'servicio' ? {} : { 'List-Unsubscribe': `<${urlBaja(e.token)}>` },
+            });
+        } catch (err) { estado = 'error'; error = String(err.message || err).slice(0, 500); }
+        await client.query(`UPDATE aim_campana_envios SET estado = $1, error = $2, enviado_at = NOW() WHERE id = $3`, [estado, error, e.id]);
+        await client.query('COMMIT');
+    } catch (err) {
+        if (client) await client.query('ROLLBACK').catch(() => {});
+        if (!/aim_campana/.test(err.message || '')) console.error('[campañas]', err.message);
+    } finally {
+        if (client) client.release();
+        campanaEnCurso = false;
+    }
+}
+
+function paginaCorreo(titulo, texto, extra = '') {
+    return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>${escHtml(titulo)} · AIM Education</title></head>
+      <body style="font-family:system-ui,sans-serif;background:#f6f5f2;margin:0;padding:40px 16px;color:#1a1a1a">
+        <div style="max-width:460px;margin:0 auto;background:#fff;border-radius:16px;padding:28px;box-shadow:0 6px 24px rgba(0,0,0,.08);text-align:center">
+          <h1 style="font-size:20px;margin:0 0 10px">${escHtml(titulo)}</h1>
+          <p style="font-size:15px;color:#444;line-height:1.5;margin:0">${texto}</p>
+          ${extra}
+          <p style="font-size:12px;color:#999;margin:20px 0 0">AIM Education · Algeciras</p>
+        </div>
+      </body></html>`;
+}
+
+// Clic en un enlace de una campaña: se cuenta y se va a su destino. Solo a
+// enlaces que están en el texto de esa campaña (si no, cualquiera podría usar la
+// web para redirigir a donde quisiera).
+app.get('/c/:token', async (req, res) => {
+    const destino = String(req.query.u || '');
+    try {
+        const r = await pool.query(
+            `SELECT e.id, c.cuerpo FROM aim_campana_envios e JOIN aim_campanas c ON c.id = e.campana_id WHERE e.token = $1`, [req.params.token]);
+        const e = r.rows[0];
+        const valido = /^https?:\/\//i.test(destino) && e && (e.cuerpo.includes(destino) || e.cuerpo.includes(destino.replace(/^https:\/\//, '')));
+        if (!valido) return res.redirect(302, URL_PUBLICA_WEB);
+        await pool.query(`UPDATE aim_campana_envios SET clics = clics + 1, primer_clic_at = COALESCE(primer_clic_at, NOW()) WHERE id = $1`, [e.id]);
+        res.redirect(302, destino);
+    } catch { res.redirect(302, URL_PUBLICA_WEB); }
+});
+
+// Baja desde el correo. Primero se pregunta (algunos programas de correo abren
+// los enlaces solos y darían de baja sin querer); al confirmar, cambia el permiso
+// en su ficha: comerciales de quien lo recibe, o las de actividades de su alumno.
+app.get('/baja/:token', async (req, res) => {
+    res.set('Content-Type', 'text/html; charset=utf-8');
+    try {
+        const r = await pool.query(
+            `SELECT e.email, e.baja_at, c.tipo FROM aim_campana_envios e JOIN aim_campanas c ON c.id = e.campana_id WHERE e.token = $1`, [req.params.token]);
+        const e = r.rows[0];
+        if (!e || e.tipo === 'servicio') return res.status(404).send(paginaCorreo('Enlace no válido', 'Este enlace de baja no es correcto o ha caducado. Si quieres dejar de recibir correos, cámbialo en tu perfil de la web o escríbenos.'));
+        if (e.baja_at) return res.send(paginaCorreo('Ya estás dado de baja', `No volverás a recibir estas comunicaciones en <b>${escHtml(e.email)}</b>. Puedes cambiarlo cuando quieras desde tu perfil en la web.`));
+        const que = e.tipo === 'comercial' ? 'las comunicaciones comerciales (novedades, eventos y ofertas)' : 'las comunicaciones de sus actividades';
+        res.send(paginaCorreo('¿Darte de baja?', `Dejarás de recibir ${que} del club en <b>${escHtml(e.email)}</b>.`,
+            `<form method="post" style="margin-top:18px"><button type="submit" style="background:#5233A8;color:#fff;border:0;border-radius:10px;padding:12px 20px;font-weight:700;font-size:15px;cursor:pointer">Sí, darme de baja</button></form>`));
+    } catch { res.status(500).send(paginaCorreo('Algo ha fallado', 'Vuelve a intentarlo en un rato.')); }
+});
+app.post('/baja/:token', async (req, res) => {
+    res.set('Content-Type', 'text/html; charset=utf-8');
+    try {
+        const r = await pool.query(
+            `SELECT e.id, e.email, e.persona_id, e.destinatario_id, e.baja_at, c.tipo FROM aim_campana_envios e JOIN aim_campanas c ON c.id = e.campana_id WHERE e.token = $1`, [req.params.token]);
+        const e = r.rows[0];
+        if (!e || e.tipo === 'servicio') return res.status(404).send(paginaCorreo('Enlace no válido', 'Este enlace de baja no es correcto.'));
+        if (!e.baja_at) {
+            const quien = e.tipo === 'comercial' ? e.destinatario_id : e.persona_id;
+            if (quien) await anotarConsentimiento(pool, req, { userId: quien, email: e.email, tipo: e.tipo === 'comercial' ? 'comunicaciones' : 'actividades', otorgado: false, origen: 'baja desde correo' });
+            await pool.query(`UPDATE aim_campana_envios SET baja_at = NOW() WHERE id = $1`, [e.id]);
+        }
+        res.send(paginaCorreo('Hecho: te has dado de baja', `No volverás a recibir estas comunicaciones en <b>${escHtml(e.email)}</b>. Si cambias de idea, puedes volver a activarlas desde tu perfil en la web.`));
+    } catch { res.status(500).send(paginaCorreo('Algo ha fallado', 'Vuelve a intentarlo en un rato.')); }
 });
 
 // Historial: lo enviado desde su ficha y lo que le llegó a su correo desde otras.
@@ -15756,6 +16068,8 @@ app.listen(port, () => {
     // hora: se comprueba cada 15 min y solo manda una vez por sesión.
     setTimeout(recordatoriosSpeaking, 30 * 1000);
     setInterval(recordatoriosSpeaking, 15 * 60 * 1000);
+    // Campañas (CRM 5, #314): la cola saca un envío cada 4 s.
+    setInterval(enviarSiguienteDeCampana, INTERVALO_CAMPANAS_MS);
     // Recordatorios de fichaje (ticket #233): se revisa cada 5 min quién tiene que
     // fichar entrada/salida según su horario. Solo manda una vez por tipo y día.
     setTimeout(recordatoriosFichaje, 45 * 1000);

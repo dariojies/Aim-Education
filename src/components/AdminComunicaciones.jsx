@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { I } from './Icons.jsx';
+import AdminCampanas from './AdminCampanas.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Comunicaciones (CRM). De momento, los segmentos (ticket #313): a quién va una
@@ -32,7 +33,21 @@ function Fila({ titulo, children }) {
   );
 }
 
+// Comunicaciones: pestañas de segmentos (#313) y campañas (#314).
 export default function AdminComunicaciones({ showToast, onAbrirFicha }) {
+  const [pestana, setPestana] = useState('segmentos');
+  return (
+    <div style={{ display: 'grid', gap: 16 }}>
+      <div style={{ ...grupoPastillas, justifySelf: 'start' }}>
+        <button type="button" style={{ ...pastilla(pestana === 'segmentos'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('segmentos')}>Segmentos</button>
+        <button type="button" style={{ ...pastilla(pestana === 'campanas'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('campanas')}>Campañas</button>
+      </div>
+      {pestana === 'segmentos' ? <Segmentos showToast={showToast} onAbrirFicha={onAbrirFicha} /> : <AdminCampanas showToast={showToast} onAbrirFicha={onAbrirFicha} />}
+    </div>
+  );
+}
+
+function Segmentos({ showToast, onAbrirFicha }) {
   const [opciones, setOpciones] = useState({ actividades: [], clases: [] });
   const [f, setF] = useState(VACIO);
   const [res, setRes] = useState(null);
