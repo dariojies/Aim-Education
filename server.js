@@ -1904,7 +1904,7 @@ async function abrirSesion(res, user, { recordar = true } = {}) {
         id: user.user_id,
         firstName: user.name,
         lastName: user.surname,
-        email: user.email,
+        email: correoVisible(user.email),
         avatar: user.profile_picture,
         isSuperAdmin,
         canAccessAdmin,
@@ -2078,6 +2078,47 @@ const mailTransporter = (process.env.EMAIL_USER && process.env.EMAIL_PASS)
     })
     : null;
 
+// Personas sin correo (#321): la tabla de usuarios la comparten todas las apps y
+// exige un correo único, así que a quien solo tiene teléfono se le pone uno
+// interno en un dominio que no existe (.invalid no puede recibir nada). Nunca se
+// le envía nada y en pantalla sale «sin correo». Entra con su usuario o su teléfono.
+const DOMINIO_SIN_CORREO = 'sin-correo.invalid';
+const esCorreoInterno = (e) => String(e || '').toLowerCase().endsWith('@' + DOMINIO_SIN_CORREO);
+const correoVisible = (e) => (esCorreoInterno(e) ? '' : e);
+// Filtro central: de cualquier correo que se mande se quitan esas direcciones; si
+// no queda nadie, no se envía (y no da error).
+if (mailTransporter) {
+    const enviarOriginal = mailTransporter.sendMail.bind(mailTransporter);
+    const limpiar = (v) => {
+        const lista = (Array.isArray(v) ? v : String(v || '').split(',')).map(x => String(x).trim()).filter(Boolean);
+        return lista.filter(x => !esCorreoInterno(x.replace(/^.*<([^>]+)>.*$/, '$1')));
+    };
+    mailTransporter.sendMail = (opts, ...resto) => {
+        const o = { ...opts };
+        for (const k of ['to', 'cc', 'bcc']) if (o[k]) o[k] = limpiar(o[k]);
+        if (![...(o.to || []), ...(o.cc || []), ...(o.bcc || [])].length) return Promise.resolve({ omitido: true });
+        return enviarOriginal(o, ...resto);
+    };
+}
+
+// Un nombre de usuario sencillo y único (ana.garcia, ana.garcia2…) para quien se
+// da de alta sin correo: con él entra en la web.
+const limpiaUsuario = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+async function usuarioLibre(nombre, apellidos) {
+    const base = [limpiaUsuario(nombre), limpiaUsuario(String(apellidos || '').split(' ')[0])].filter(Boolean).join('.') || 'usuario';
+    for (let i = 1; i < 500; i++) {
+        const u = i === 1 ? base : `${base}${i}`;
+        const r = await pool.query(`SELECT 1 FROM users WHERE LOWER(username) = $1 OR LOWER(email) = $2`, [u, `${u}@${DOMINIO_SIN_CORREO}`]);
+        if (!r.rowCount) return u;
+    }
+    return `${base}.${crypto.randomBytes(3).toString('hex')}`;
+}
+const soloDigitos = (t) => {
+    let d = String(t || '').replace(/\D/g, '');
+    if (d.startsWith('0034')) d = d.slice(4); else if (d.startsWith('34') && d.length === 11) d = d.slice(2);
+    return d;
+};
+
 // --- Middleware ---
 
 app.use(cors({
@@ -2144,10 +2185,10 @@ app.use(express.urlencoded({ extended: false, limit: '256kb' }));
 app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) {
-        return res.status(400).json({ error: 'Email y contraseña son requeridos.' });
+        return res.status(400).json({ error: 'Escribe tu correo, usuario o teléfono y la contraseña.' });
     }
 
-    const emailLower = email.toLowerCase();
+    const emailLower = String(email).toLowerCase().trim();
     const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
     const now = Date.now();
 
@@ -2173,18 +2214,31 @@ app.post('/api/login', async (req, res) => {
     ipLoginAttempts.set(ip, ipData);
 
     try {
-        const userRes = await pool.query('SELECT * FROM users WHERE LOWER(email) = $1', [emailLower]);
-        if (userRes.rowCount === 0) {
+        // Se entra con el correo, el nombre de usuario o el teléfono (#321).
+        // Varias cuentas pueden compartir teléfono (padres e hijos): se entra en
+        // la que tenga esa contraseña; si la tienen varias, se pide el usuario.
+        const digitos = soloDigitos(emailLower);
+        let candidatos;
+        if (emailLower.includes('@')) {
+            candidatos = (await pool.query('SELECT * FROM users WHERE LOWER(email) = $1', [emailLower])).rows;
+        } else if (/^[+\d\s().-]+$/.test(emailLower) && digitos.length >= 9) {
+            candidatos = (await pool.query(
+                `SELECT * FROM users WHERE phone IS NOT NULL
+                   AND right(regexp_replace(phone, '\\D', '', 'g'), 9) = right($1, 9) LIMIT 15`, [digitos])).rows;
+        } else {
+            candidatos = (await pool.query('SELECT * FROM users WHERE LOWER(username) = $1', [emailLower])).rows;
+        }
+        const validos = [];
+        for (const c of candidatos) if (await bcrypt.compare(password, c.password)) validos.push(c);
+        if (!validos.length) {
             recordEmailFailure(emailLower, now);
             return res.status(401).json({ error: 'Usuario o contraseña incorrectos.' });
+        }
+        if (validos.length > 1) {
+            return res.status(409).json({ error: 'Hay varias cuentas con ese teléfono y esa contraseña. Entra con tu nombre de usuario o tu correo.' });
         }
 
-        const user = userRes.rows[0];
-        const match = await bcrypt.compare(password, user.password);
-        if (!match) {
-            recordEmailFailure(emailLower, now);
-            return res.status(401).json({ error: 'Usuario o contraseña incorrectos.' });
-        }
+        const user = validos[0];
 
         emailLoginFailures.delete(emailLower);
         emailBlocks.delete(emailLower);
@@ -2501,7 +2555,7 @@ app.get('/api/me', authenticateSession, (req, res) => {
         id: s.userId,
         firstName: s.firstName,
         lastName: s.lastName,
-        email: s.email,
+        email: correoVisible(s.email),
         avatar: s.avatar,
         isSuperAdmin: s.isSuperAdmin,
         canAccessAdmin: s.canAccessAdmin,
@@ -2563,7 +2617,7 @@ app.get('/api/users', authenticateSession, async (req, res) => {
                 id: u.user_id,
                 firstName: u.name,
                 lastName: u.surname,
-                email: u.email,
+                email: correoVisible(u.email),
                 belt: u.belt,
                 role: u.role,
                 // Su rango en Aim Education (el propio o el de la cuenta) y si es
@@ -2593,7 +2647,7 @@ app.get('/api/users', authenticateSession, async (req, res) => {
 app.get('/api/users/:id', authenticateSession, requireAdmin, async (req, res) => {
     try {
         const r = await pool.query(
-            `SELECT u.user_id, u.name, u.surname, u.email, u.belt, u.dev_role, u.role, u.profile_picture,
+            `SELECT u.user_id, u.name, u.surname, u.email, u.belt, u.dev_role, u.role, u.profile_picture, u.username,
                     ${sqlRango('u')} AS rango,
                     u.phone, u.birthday, u.dni, u.domicilio, u.cp, u.poblacion,
                     s.notas AS salud, COALESCE(u.media_consent, false) AS media_consent,
@@ -2613,7 +2667,8 @@ app.get('/api/users/:id', authenticateSession, requireAdmin, async (req, res) =>
         const k = u.consentimientos || {};
         res.set('Cache-Control', 'no-store');
         res.json({
-            id: u.user_id, firstName: u.name, lastName: u.surname, email: u.email,
+            id: u.user_id, firstName: u.name, lastName: u.surname, email: correoVisible(u.email),
+            sinCorreo: esCorreoInterno(u.email), usuario: u.username || null,
             belt: u.belt, phone: u.phone, birthday: u.birthday,
             dni: u.dni, domicilio: u.domicilio, cp: u.cp, poblacion: u.poblacion,
             // Salud (ticket #254): un solo campo de texto, para tenerlo a mano en clase.
@@ -2706,10 +2761,13 @@ async function guardarSalud(userId, salud, autor) {
 app.post('/api/users', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
     const { firstName, lastName, email, belt, phone, birthday, isSuperAdmin, rol,
             dni, domicilio, cp, poblacion } = req.body;
-    if (!firstName || !email) {
-        return res.status(400).json({ error: 'Nombre y email son requeridos.' });
-    }
-    const emailLower = email.toLowerCase().trim();
+    // Hace falta el correo o el teléfono (#321): con ninguno de los dos no hay
+    // forma de contactar ni de que entre.
+    if (!firstName?.trim()) return res.status(400).json({ error: 'El nombre es obligatorio.' });
+    if (!email?.trim() && !phone?.trim()) return res.status(400).json({ error: 'Pon al menos el correo o el teléfono.' });
+    let usuarioNuevo = null;
+    if (!email?.trim()) usuarioNuevo = await usuarioLibre(firstName, lastName);
+    const emailLower = usuarioNuevo ? `${usuarioNuevo}@${DOMINIO_SIN_CORREO}` : email.toLowerCase().trim();
 
     // Qué rango se le pone. Subir a alguien a secretaría, dirección o equipo IT
     // es cosa de la dirección: si no, cualquiera con acceso al panel podría
@@ -2788,18 +2846,18 @@ app.post('/api/users', authenticateSession, requirePermiso('editarAlumnos'), asy
         
         await pool.query(
             `INSERT INTO users (user_id, name, surname, email, password, belt, role,
-                                phone, birthday, dni, domicilio, cp, poblacion, club_id, dev_role)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+                                phone, birthday, dni, domicilio, cp, poblacion, club_id, dev_role, username)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
             [user_id, firstName.trim(), (lastName || '').trim(), emailLower, hash, belt || null, role,
              phone?.trim() || null, birthday || null,
              dni?.trim() || null, domicilio?.trim() || null, cp?.trim() || null, poblacion?.trim() || null,
-             AIM_CLUB_ID, devRoleNuevo]
+             AIM_CLUB_ID, devRoleNuevo, usuarioNuevo]
         );
         await ponerRangoPropio(user_id);
         // Lo que se escriba en Salud al darle de alta también se guarda: antes
         // solo se guardaba al editar, y en el alta se perdía sin avisar.
         if (req.body.salud !== undefined) await guardarSalud(user_id, req.body.salud, req.userSession.userId);
-        res.status(201).json({ id: user_id, firstName, lastName, email, belt, isSuperAdmin });
+        res.status(201).json({ id: user_id, firstName, lastName, email: correoVisible(emailLower), usuario: usuarioNuevo, belt, isSuperAdmin });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -2809,10 +2867,21 @@ app.put('/api/users/:id', authenticateSession, requirePermiso('editarAlumnos'), 
     const { firstName, lastName, email, belt, phone, birthday, isSuperAdmin,
             dni, domicilio, cp, poblacion } = req.body;
     const { id } = req.params;
-    if (!firstName || !email) {
-        return res.status(400).json({ error: 'Nombre y email son requeridos.' });
+    if (!firstName?.trim()) return res.status(400).json({ error: 'El nombre es obligatorio.' });
+    if (!email?.trim() && !phone?.trim()) return res.status(400).json({ error: 'Pon al menos el correo o el teléfono.' });
+    // Sin correo (#321): se conserva el interno que ya tuviera o se le crea uno
+    // (con su usuario, para que pueda entrar).
+    let emailLower = email?.trim() ? email.toLowerCase().trim() : null;
+    if (!emailLower) {
+        const act = await pool.query(`SELECT email, username FROM users WHERE user_id = $1`, [id]);
+        const a = act.rows[0];
+        if (a && esCorreoInterno(a.email)) emailLower = a.email;
+        else {
+            const u = a?.username && !/\s/.test(a.username) ? a.username.toLowerCase() : await usuarioLibre(firstName, lastName);
+            emailLower = `${u}@${DOMINIO_SIN_CORREO}`;
+            if (!a?.username || /\s/.test(a.username)) await pool.query(`UPDATE users SET username = $1 WHERE user_id = $2`, [u, id]);
+        }
     }
-    const emailLower = email.toLowerCase().trim();
     try {
         // El superadmin es de desarrollo y solo lo da o lo quita otro superadmin.
         // Antes cualquiera que pudiera editar fichas podía marcárselo (incluso a
@@ -5615,7 +5684,7 @@ app.get('/api/admin/camp/fichas', authenticateSession, requireAdmin, async (req,
         );
         res.set('Cache-Control', 'no-store');
         res.json(r.rows.map(u => ({
-            id: u.user_id, nombre: u.name, apellidos: u.surname || '', email: u.email,
+            id: u.user_id, nombre: u.name, apellidos: u.surname || '', email: correoVisible(u.email),
             contacto: u.phone || '', edad: edadDe(u.birthday), fotosRrss: !!u.media_consent,
             yaInscrito: u.ya_inscrito,
         })));
@@ -6662,7 +6731,19 @@ app.put('/api/admin/billing/matriculas/:id', authenticateSession, requireAdmin, 
             [dto, alta || null, baja || null, req.params.id]
         );
         if (r.rowCount === 0) return res.status(404).json({ error: 'Ficha no encontrada.' });
-        res.json({ success: true });
+        // Si pasa a 100% de descuento (#320), los cargos que esa ficha ya tenía
+        // generados y sin cobrar sobran: no va a pagar nada.
+        let quitados = 0;
+        if (dto >= 100) {
+            quitados = (await pool.query(
+                `DELETE FROM aim_cargos c USING aim_matriculas m
+                 WHERE m.id = $1 AND c.cliente_id = m.user_id AND c.estado = 'pendiente' AND c.recibo_id IS NULL
+                   AND c.origen = 'generado' AND ${SQL_NO_RESERVADO}
+                   AND ((m.clase_ref IS NOT NULL AND c.target_ref = m.clase_ref)
+                        OR (c.target_ref IS NULL AND c.actividad IS NOT DISTINCT FROM m.actividad))`,
+                [req.params.id])).rowCount;
+        }
+        res.json({ success: true, cargosQuitados: quitados });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -6887,6 +6968,8 @@ async function ejecutarGeneracionCargos(mesPedido) {
          JOIN aim_precios p ON p.concepto = ct.concepto AND p.activo = true
          ${SQL_JOIN_FICHA}
          WHERE ct.temporada_id = $1 AND ${SQL_FILTRO_VIGENTE}
+           -- Con un 100% de descuento no paga nada: no se genera cargo (#320).
+           AND COALESCE(m.descuento_pct, 0) < 100
            -- No duplicar lo ya cobrado por adelantado: si el alumno ya tiene
            -- un cargo vivo de ese concepto y mes (p. ej. una mensualidad que
            -- pagó adelantada en el TPV), no se genera otro (ticket #220).
@@ -6947,7 +7030,8 @@ async function generacionAutomatica() {
 // aparece pendiente al momento, sin esperar al "generar" mensual. Idempotente:
 // no duplica lo que ya exista de ese concepto y mes. Devuelve cuántos creó.
 async function generarCargosDeMatricula({ userId, claseRef, actividad, temporadaId, descuentoPct = 0, mes }, cliente = pool) {
-    if (!userId || !temporadaId || cargosEnPausa()) return 0;
+    // Con un 100% de descuento no paga nada: no se genera cargo (#320).
+    if (!userId || !temporadaId || cargosEnPausa() || Number(descuentoPct) >= 100) return 0;
     // Ticket #289: al apuntarse, la mensualidad es la del mes en curso si aún no
     // se ha pasado el día de corte; a partir de ese día, la del mes siguiente.
     const m = normalizaMes(mes || mesParaAlta());
@@ -7217,7 +7301,7 @@ app.get('/api/admin/billing/tpv/buscar', authenticateSession, requireAdmin, asyn
         res.json(r.rows.map(u => {
             const edad = edadDe(u.birthday);
             return {
-                id: u.user_id, nombre: u.name, apellidos: u.surname, email: u.email,
+                id: u.user_id, nombre: u.name, apellidos: u.surname, email: correoVisible(u.email),
                 edad, esMenor: edad != null && edad < 18, pendientes: u.pendientes,
             };
         }));
@@ -7625,6 +7709,21 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
         // resto por lo bajo: quien está en el mostrador tiene que saberlo.
         if (cs.rowCount !== allIds.length) {
             throw { httP: 409, msg: 'Alguno de esos recibos acaba de cobrarse. La lista ya se ha puesto al día.' };
+        }
+
+        // Descuento del 100% (#320): no pagan nada, así que no entran en ninguna
+        // factura. Quedan como 'exento' (así la generación no vuelve a crear ese
+        // mes) y, si no queda nada más que cobrar, no se emite factura.
+        const exentos = cs.rows.filter(c => Number(c.descuento_pct) >= 100 && Number(c.precio) >= 0);
+        if (exentos.length) {
+            await client.query(
+                `UPDATE aim_cargos SET estado = 'exento', anulado_motivo = 'Descuento del 100%' WHERE id = ANY($1::int[])`,
+                [exentos.map(c => c.id)]);
+            cs.rows = cs.rows.filter(c => !exentos.includes(c));
+            if (!cs.rows.length) {
+                await client.query('COMMIT');
+                return res.json({ success: true, sinFactura: true, exentos: exentos.length });
+            }
         }
 
         // 4) Calcular importes (autoritativo). Las líneas de anticipo aplicado ya
@@ -8968,7 +9067,7 @@ async function movimientosDelDia(fecha) {
 app.get('/api/admin/billing/arqueo', authenticateSession, requireAdmin, async (req, res) => {
     const fecha = /^\d{4}-\d{2}-\d{2}$/.test(req.query.fecha || '') ? req.query.fecha : hoyMadrid();
     try {
-        const [esperado, guardado, detalle] = await Promise.all([
+        const [esperado, guardado, detalle, anterior] = await Promise.all([
             movimientosDelDia(fecha),
             pool.query('SELECT * FROM aim_arqueos WHERE fecha = $1::date', [fecha]),
             pool.query(
@@ -8977,8 +9076,14 @@ app.get('/api/admin/billing/arqueo', authenticateSession, requireAdmin, async (r
                  FROM aim_recibos r LEFT JOIN users u ON u.user_id = r.pagador_id
                  WHERE r.fecha = $1::date AND r.estado <> 'anulado'
                  ORDER BY r.cobrado_at NULLS LAST, r.id`, [fecha]),
+            // Caja de efectivo (#323): con lo que quedó al cerrar el último día
+            // anterior se abre este.
+            pool.query(
+                `SELECT fecha, contado->'caja' AS caja FROM aim_arqueos
+                 WHERE fecha < $1::date AND contado ? 'caja' ORDER BY fecha DESC LIMIT 1`, [fecha]),
         ]);
         const arq = guardado.rows[0] || null;
+        const ant = anterior.rows[0] || null;
         res.set('Cache-Control', 'no-store');
         res.json({
             fecha, medios: MEDIOS_PAGO, esperado,
@@ -8986,6 +9091,11 @@ app.get('/api/admin/billing/arqueo', authenticateSession, requireAdmin, async (r
             cerrado: arq ? {
                 esperado: arq.esperado, contado: arq.contado, comentario: arq.comentario, cerradoAt: arq.cerrado_at,
             } : null,
+            caja: {
+                guardada: arq?.contado?.caja || null,
+                fondoAnterior: ant ? Number(ant.caja?.queda || 0) : null,
+                fondoAnteriorFecha: ant ? ant.fecha : null,
+            },
             detalle: detalle.rows.map(d => ({
                 numero: numeroVisible(d), serie: d.serie, tipo: d.tipo, importe: Number(d.importe),
                 medioPago: d.medio_pago, pagador: (d.pagador || '').trim(), hora: d.cobrado_at,
@@ -9000,7 +9110,7 @@ app.get('/api/admin/billing/arqueo', authenticateSession, requireAdmin, async (r
 // Cierra el día. Se puede volver a guardar (una corrección del recuento es
 // normal), pero queda constancia de cuándo se hizo y de quién.
 app.post('/api/admin/billing/arqueo', authenticateSession, requireAdmin, async (req, res) => {
-    const { fecha, contado, comentario } = req.body;
+    const { fecha, contado, comentario, caja } = req.body;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha || '')) return res.status(400).json({ error: 'Falta la fecha del arqueo.' });
     // Un día que no ha llegado no se puede cerrar: no ha habido caja que contar,
     // y el cierre taparía los cobros que se hagan ese día cuando llegue.
@@ -9013,6 +9123,17 @@ app.post('/api/admin/billing/arqueo', authenticateSession, requireAdmin, async (
         const esperado = await movimientosDelDia(fecha);
         const cont = {};
         for (const m of MEDIOS_PAGO) cont[m] = r2Server(Number(contado?.[m]) || 0);
+        // Caja de efectivo (#323): con qué se abrió, lo que entró en efectivo, lo
+        // que se lleva al banco y lo que se queda para cambio (con eso se abre el
+        // día siguiente). Va dentro del recuento, junto a los medios de pago.
+        if (caja) {
+            const fondo = r2Server(Number(caja.fondo) || 0);
+            const banco = r2Server(Number(caja.banco) || 0);
+            const total = r2Server(fondo + cont.efectivo);
+            if (fondo < 0 || banco < 0) return res.status(400).json({ error: 'Los importes de la caja no pueden ser negativos.' });
+            if (banco > total + 0.005) return res.status(400).json({ error: `No se puede llevar al banco más de lo que hay en caja (${total.toFixed(2)} €).` });
+            cont.caja = { fondo, efectivoDia: cont.efectivo, total, banco, queda: r2Server(total - banco) };
+        }
         await pool.query(
             `INSERT INTO aim_arqueos (fecha, esperado, contado, comentario, cerrado_por)
              VALUES ($1::date, $2::jsonb, $3::jsonb, $4, $5)
@@ -9045,6 +9166,7 @@ app.get('/api/admin/billing/arqueos', authenticateSession, requireAdmin, async (
             return {
                 fecha: a.fecha, esperado, contado, descuadre: r2Server(contado - esperado),
                 comentario: a.comentario, cerradoAt: a.cerrado_at, quien: (a.quien || '').trim(),
+                caja: a.contado?.caja || null,
             };
         }));
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -10039,7 +10161,7 @@ app.get('/api/admin/personas', authenticateSession, requireAdmin, async (req, re
             vals
         );
         res.set('Cache-Control', 'no-store');
-        res.json(r.rows);
+        res.json(r.rows.map(x => ({ ...x, email: correoVisible(x.email) })));
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -10191,7 +10313,7 @@ app.get('/api/admin/alumnos/:id/ficha360', authenticateSession, requirePermiso('
         res.set('Cache-Control', 'no-store');
         res.json({
             persona: {
-                id: u.user_id, nombre: u.name, apellidos: u.surname, email: u.email, telefono: u.phone,
+                id: u.user_id, nombre: u.name, apellidos: u.surname, email: correoVisible(u.email), telefono: u.phone,
                 nacimiento: u.birthday, dni: u.dni, domicilio: u.domicilio, cp: u.cp, poblacion: u.poblacion, belt: u.belt,
             },
             tutores: tut.rows,
@@ -11896,6 +12018,21 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
              FROM aim_speaking WHERE fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date`);
         const sp = spk.rows[0];
         if (sp.por_llamar) avisos.push({ tipo: 'speaking', texto: `${sp.por_llamar} alumno${sp.por_llamar !== 1 ? 's' : ''} de Speaking por avisar a los padres`, detalle: 'llamar y confirmar asistencia', destino: '/admin/speaking', n: sp.por_llamar });
+        // Almacén (#322): artículos en o por debajo de su mínimo de aviso. La clave
+        // lleva cuáles son, así que si baja otro distinto vuelve a encenderse.
+        if (permisosYo.secciones.almacen) {
+            const bajos = (await pool.query(
+                `SELECT id, nombre, stock, stock_minimo FROM aim_almacen
+                 WHERE stock_minimo > 0 AND stock <= stock_minimo ORDER BY stock - stock_minimo, nombre`)).rows;
+            if (bajos.length) {
+                avisos.push({
+                    tipo: 'almacen', destino: '/admin/almacen', n: bajos.length,
+                    clave: `almacen:bajo:${bajos.map(b => b.id).sort((a, b) => a - b).join(',')}`.slice(0, 200),
+                    texto: `${bajos.length} artículo${bajos.length !== 1 ? 's' : ''} del almacén por debajo del mínimo`,
+                    detalle: bajos.slice(0, 3).map(b => `${b.nombre}: ${b.stock}`).join(' · ') + (bajos.length > 3 ? ' · …' : ''),
+                });
+            }
+        }
         // Faltas seguidas: a partir de 4, hay que llamar a la familia. Un aviso por
         // alumno y clase; vuelve a encenderse si sigue faltando (sube el número) o
         // si empieza otra racha (la clave lleva el día en que empezó).

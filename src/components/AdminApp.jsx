@@ -4083,8 +4083,12 @@ function BillingTPV({ showToast }) {
     && (nBlancos === 1 || Math.abs(sumaAsignada - total) < 0.005)
     && (!hayEfectivo || efectivoDado >= efectivoPortion - 0.005);
 
+  // Todo lo marcado con 100% de descuento (#320): se cierra sin factura.
+  const todoExento = !total && !extras.length && lineasActivas.length > 0
+    && lineasActivas.every(c => Number(c.descuentoPct) >= 100);
+
   async function cobrar() {
-    if (!total) return;
+    if (!total && !todoExento) return;
     setCobrando(true);
     try {
       const r = await fetch('/api/admin/billing/tpv/cobrar', {
@@ -4111,7 +4115,10 @@ function BillingTPV({ showToast }) {
       const texto = await r.text();
       let d = null;
       try { d = JSON.parse(texto); } catch { /* no es JSON */ }
-      if (r.ok && d?.recibo) {
+      if (r.ok && d?.sinFactura) {
+        showToast?.(`${d.exentos} cargo${d.exentos !== 1 ? 's' : ''} con 100% de descuento cerrado${d.exentos !== 1 ? 's' : ''} sin factura.`);
+        setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null);
+      } else if (r.ok && d?.recibo) {
         setTicket(d);
         showToast?.(d.facturas?.length > 1 ? `Cobrado: ${d.facturas.length} facturas emitidas.` : `Factura ${d.recibo.numeroVisible || d.recibo.numero} cobrada.`);
         setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null);
@@ -4547,9 +4554,15 @@ function BillingTPV({ showToast }) {
               {pagador.esMenor && !pagadorFactura && adultos.length > 0 && (
                 <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--orange)' }}>Elige arriba quién paga para poder cobrar.</div>
               )}
-              <button className="btn btn-primary btn-block" disabled={cobrando || !pagoValido || (pagador.esMenor && !pagadorFactura)} onClick={cobrar} style={{ fontSize: 15, padding: '13px 0' }}>
-                {cobrando ? 'Cobrando...' : `Cobrar ${eur(total)}`}
-              </button>
+              {todoExento ? (
+                <button className="btn btn-primary btn-block" disabled={cobrando} onClick={cobrar} style={{ fontSize: 15, padding: '13px 0' }}>
+                  {cobrando ? 'Cerrando...' : 'Cerrar sin factura (100% de descuento)'}
+                </button>
+              ) : (
+                <button className="btn btn-primary btn-block" disabled={cobrando || !pagoValido || (pagador.esMenor && !pagadorFactura)} onClick={cobrar} style={{ fontSize: 15, padding: '13px 0' }}>
+                  {cobrando ? 'Cobrando...' : `Cobrar ${eur(total)}`}
+                </button>
+              )}
             </div>
           </div>
         </>
@@ -6673,6 +6686,11 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
   // Modals Submit Handlers
   const handleUserSubmit = async (e) => {
     e.preventDefault();
+    // Hace falta el correo o el teléfono (#321).
+    if (!String(editingItem.email || '').trim() && !String(editingItem.phone || '').trim()) {
+      alert('Pon al menos el correo o el teléfono.');
+      return;
+    }
     const isEdit = activeModal === 'edit-student';
     const url = isEdit ? `/api/users/${editingItem.id}` : '/api/users';
     const method = isEdit ? 'PUT' : 'POST';
@@ -6724,7 +6742,9 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           d?.adoptado
             ? `${d.firstName || quien} ya estaba en la base: se le ha metido en el club${d.rol && d.rol !== 'student' ? ` como ${d.rol}` : ''}.`
             : isEdit ? `${quien} modificado con éxito.`
-            : `${quien} creado con éxito (contraseña por defecto: aim123456).`
+            : d?.usuario
+              ? `${quien} creado sin correo: entra con el usuario «${d.usuario}» o su teléfono, y la contraseña aim123456.`
+              : `${quien} creado con éxito (contraseña por defecto: aim123456).`
         );
         setRefreshTrigger(p => p + 1);
         setActiveModal(null);
@@ -7198,6 +7218,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                 ['Rol', etiquetaRol(editingItem)],
                 editingItem.belt && ['Cinturón', editingItem.belt],
                 editingItem.phone && ['Teléfono', editingItem.phone],
+                editingItem.usuario && !/\s/.test(editingItem.usuario) && ['Usuario', editingItem.usuario],
                 editingItem.poblacion && ['Población', editingItem.poblacion],
                 editingItem.fotosRedes !== undefined && ['Fotos', editingItem.fotosRedes ? '📷 Sí, en redes' : '🚫 No'],
               ].filter(Boolean) : [];
@@ -7298,7 +7319,14 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                         </div>
                         <div className="field">
                           <label>Correo electrónico</label>
-                          <input type="email" value={editingItem.email || ''} onChange={e => setEditingItem({ ...editingItem, email: e.target.value })} required />
+                          <input type="email" value={editingItem.email || ''} onChange={e => setEditingItem({ ...editingItem, email: e.target.value })}
+                            placeholder="Si no tiene, déjalo vacío y pon el teléfono" />
+                          {/* Sin correo (#321): entra con su usuario o su teléfono. */}
+                          {!editingItem.email && (
+                            <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                              Sin correo: basta con el teléfono. Entrará con {editingItem.usuario ? <>su usuario <b>{editingItem.usuario}</b></> : 'un usuario que se le crea al guardar'} o con su teléfono.
+                            </span>
+                          )}
                         </div>
                         <div className="field-row">
                           <div className="field">

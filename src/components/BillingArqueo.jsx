@@ -23,6 +23,10 @@ export default function BillingArqueo({ showToast }) {
   const [guardando, setGuardando] = useState(false);
   const [historico, setHistorico] = useState([]);
   const [verDetalle, setVerDetalle] = useState(false);
+  // Caja de efectivo (#323): con qué se abrió el día y cuánto se lleva al banco.
+  const [fondo, setFondo] = useState('');
+  const [banco, setBanco] = useState('');
+  const [verHistCaja, setVerHistCaja] = useState(false);
 
   const cargar = useCallback(async (f) => {
     try {
@@ -36,6 +40,9 @@ export default function BillingArqueo({ showToast }) {
       for (const m of d.medios) base[m] = d.cerrado ? Number(d.cerrado.contado?.[m] ?? 0) : d.esperado[m].neto;
       setContado(base);
       setComentario(d.cerrado?.comentario || '');
+      const cg = d.caja?.guardada;
+      setFondo(String(cg ? cg.fondo : (d.caja?.fondoAnterior ?? 0)));
+      setBanco(String(cg ? cg.banco : 0));
     } catch { /* noop */ }
   }, []);
 
@@ -63,6 +70,18 @@ export default function BillingArqueo({ showToast }) {
   // ni mirar ni cerrar: si se cerrara, taparía los cobros que se hagan ese día.
   const esFuturo = fecha > hoyISO();
 
+  // La caja de efectivo: lo que hay = con lo que se abrió + lo contado en efectivo.
+  const r2 = (n) => Math.round(Number(n || 0) * 100) / 100;
+  const cajaTotal = r2(Number(fondo || 0) + Number(contado.efectivo || 0));
+  const cajaQueda = r2(cajaTotal - Number(banco || 0));
+  const cajaMal = Number(banco || 0) < 0 || Number(fondo || 0) < 0 || cajaQueda < 0;
+  // Historial de caja hasta el día que se mira (de más antiguo a más reciente).
+  const histCaja = useMemo(() => historico
+    .filter(h => h.caja && String(h.fecha).slice(0, 10) <= fecha)
+    .sort((a, b) => String(a.fecha).localeCompare(String(b.fecha))), [historico, fecha]);
+  const mesSel = fecha.slice(0, 7);
+  const bancoMes = r2(histCaja.filter(h => String(h.fecha).slice(0, 7) === mesSel).reduce((s, h) => s + Number(h.caja.banco || 0), 0));
+
   function moverDia(delta) {
     const d = new Date(fecha + 'T12:00:00');
     d.setDate(d.getDate() + delta);
@@ -76,16 +95,19 @@ export default function BillingArqueo({ showToast }) {
     if (Math.abs(descuadreTotal) > 0 && !comentario.trim()) {
       if (!window.confirm(`Hay un descuadre de ${eur(descuadreTotal)} y no has escrito ningún comentario.\n¿Cerrar el día igualmente?`)) return;
     }
+    if (cajaMal) return alert('Revisa la caja de efectivo: no se puede llevar al banco más de lo que hay.');
     setGuardando(true);
     try {
       const r = await fetch('/api/admin/billing/arqueo', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-        body: JSON.stringify({ fecha, contado, comentario }),
+        body: JSON.stringify({ fecha, contado, comentario, caja: { fondo: Number(fondo || 0), banco: Number(banco || 0) } }),
       });
       const d = await r.json();
       if (r.ok) {
-        showToast?.(`Caja del ${fmtFecha(fecha)} cerrada${d.descuadre ? ` · descuadre ${eur(d.descuadre)}` : ' sin descuadre'}.`);
+        showToast?.(`Caja del ${fmtFecha(fecha)} cerrada${d.descuadre ? ` · descuadre ${eur(d.descuadre)}` : ' sin descuadre'}. Quedan ${eur(cajaQueda)} en caja.`);
         await cargar(fecha); await cargarHistorico();
+        // Al cerrar, el historial de caja hasta ese día (#323).
+        setVerHistCaja(true);
       } else alert(d.error || 'No se pudo guardar el arqueo.');
     } catch { alert('Error de conexión.'); }
     finally { setGuardando(false); }
@@ -131,6 +153,22 @@ export default function BillingArqueo({ showToast }) {
           <td class="n ${descuadreTotal ? (descuadreTotal < 0 ? 'mal' : 'sobra') : ''}">${descuadreTotal ? (descuadreTotal > 0 ? '+' : '') + eur(descuadreTotal) : '—'}</td>
         </tr></tfoot>
       </table>
+      <table>
+        <thead><tr><th colspan="2">Caja de efectivo</th></tr></thead>
+        <tbody>
+          <tr><td>Se abrió con</td><td class="n">${eur(fondo)}</td></tr>
+          <tr><td>+ Efectivo del día</td><td class="n">${eur(contado.efectivo || 0)}</td></tr>
+          <tr><td><b>= Hay en caja</b></td><td class="n"><b>${eur(cajaTotal)}</b></td></tr>
+          <tr><td>Se lleva al banco</td><td class="n">${eur(banco)}</td></tr>
+          <tr><td><b>Se queda en caja para cambio</b></td><td class="n"><b>${eur(cajaQueda)}</b></td></tr>
+        </tbody>
+      </table>
+      ${histCaja.length ? `<p style="font-size:12px;font-weight:bold;margin:0 0 6px">Historial de caja hasta el ${fmtFecha(fecha)}</p>
+      <table>
+        <thead><tr><th>Día</th><th class="n">Se abrió con</th><th class="n">Efectivo del día</th><th class="n">Al banco</th><th class="n">Quedó en caja</th></tr></thead>
+        <tbody>${histCaja.slice(-31).map(h => `<tr><td>${fmtFecha(h.fecha)}</td><td class="n">${eur(h.caja.fondo)}</td><td class="n">${eur(h.caja.efectivoDia)}</td><td class="n">${eur(h.caja.banco)}</td><td class="n"><b>${eur(h.caja.queda)}</b></td></tr>`).join('')}</tbody>
+        <tfoot><tr><td colspan="3">Llevado al banco en el mes</td><td class="n">${eur(bancoMes)}</td><td></td></tr></tfoot>
+      </table>` : ''}
       <p style="font-size:12px;font-weight:bold;margin:0 0 6px">Observaciones del día</p>
       <div class="coment">${esc(comentario) || '—'}</div>
       <div class="firma"><span>Cerrado por: ______________________</span><span>Firma: ______________________</span></div>`;
@@ -209,6 +247,32 @@ export default function BillingArqueo({ showToast }) {
         </div>
       </div>
 
+      {/* Caja de efectivo (#323): con qué se abrió, cuánto va al banco y cuánto
+          se queda para cambio (con eso se abre el día siguiente). */}
+      <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 16, display: 'grid', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+          <b style={{ fontSize: 14 }}>Caja de efectivo</b>
+          {datos.caja?.fondoAnteriorFecha && !datos.caja?.guardada && (
+            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>se abre con lo que quedó el {fmtFecha(datos.caja.fondoAnteriorFecha)}</span>
+          )}
+        </div>
+        {[
+          ['Se abrió con', <input key="f" type="number" step="0.01" min="0" value={fondo} onChange={e => setFondo(e.target.value)} aria-label="Se abrió con" />],
+          ['+ Efectivo del día (lo contado arriba)', <b key="e">{eur(contado.efectivo || 0)}</b>],
+          ['= Hay en caja', <b key="t" style={{ fontSize: 15 }}>{eur(cajaTotal)}</b>],
+          ['Se lleva al banco', <input key="b" type="number" step="0.01" min="0" value={banco} onChange={e => setBanco(e.target.value)} aria-label="Se lleva al banco" />],
+          ['Se queda en caja para cambio', <b key="q" style={{ fontSize: 15, color: cajaQueda < 0 ? 'var(--orange)' : 'var(--teal)' }}>{eur(cajaQueda)}</b>],
+        ].map(([t, v]) => (
+          <div key={t} style={{ display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'space-between', fontSize: 13, flexWrap: 'wrap' }}>
+            <span style={{ color: 'var(--ink-2)' }}>{t}</span>
+            {React.isValidElement(v) && v.type === 'input'
+              ? React.cloneElement(v, { style: { width: 120, textAlign: 'right', fontFamily: 'inherit', fontSize: 13, padding: '6px 8px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' } })
+              : v}
+          </div>
+        ))}
+        {cajaQueda < 0 && <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--orange)' }}>No se puede llevar al banco más de lo que hay en caja.</div>}
+      </div>
+
       <div className="field">
         <label>Observaciones del día</label>
         <textarea rows={2} value={comentario} onChange={e => setComentario(e.target.value)}
@@ -238,6 +302,35 @@ export default function BillingArqueo({ showToast }) {
               <span style={{ fontWeight: 700, color: d.tipo === 'rectificativo' ? 'var(--orange)' : 'var(--ink)', minWidth: 70, textAlign: 'right' }}>{eur(d.importe)}</span>
             </div>
           ))}
+        </div>
+      )}
+
+      {histCaja.length > 0 && (
+        <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 16, display: 'grid', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <b style={{ fontSize: 14 }}>Historial de caja hasta el {fmtFecha(fecha)}</b>
+            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Llevado al banco este mes: <b>{eur(bancoMes)}</b></span>
+            <div style={{ flex: 1 }} />
+            <button className="btn btn-sm btn-outline" onClick={() => setVerHistCaja(v => !v)}>{verHistCaja ? 'Ocultar' : 'Ver'}</button>
+          </div>
+          {verHistCaja && (
+            <div style={{ overflowX: 'auto' }}>
+              <div style={{ minWidth: 520, display: 'grid', gap: 4, fontSize: 12 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1.1fr repeat(4, minmax(0,1fr))', gap: 8, fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--ink-3)' }}>
+                  <span>Día</span><span style={{ textAlign: 'right' }}>Se abrió con</span><span style={{ textAlign: 'right' }}>Efectivo del día</span><span style={{ textAlign: 'right' }}>Al banco</span><span style={{ textAlign: 'right' }}>Quedó en caja</span>
+                </div>
+                {histCaja.slice().reverse().map(h => (
+                  <div key={h.fecha} style={{ display: 'grid', gridTemplateColumns: '1.1fr repeat(4, minmax(0,1fr))', gap: 8, padding: '5px 0', borderTop: '1px solid var(--line-2)' }}>
+                    <span style={{ fontWeight: 700 }}>{fmtFecha(h.fecha)}</span>
+                    <span style={{ textAlign: 'right' }}>{eur(h.caja.fondo)}</span>
+                    <span style={{ textAlign: 'right' }}>{eur(h.caja.efectivoDia)}</span>
+                    <span style={{ textAlign: 'right', color: 'var(--purple)' }}>{eur(h.caja.banco)}</span>
+                    <span style={{ textAlign: 'right', fontWeight: 800 }}>{eur(h.caja.queda)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

@@ -32,6 +32,7 @@ const COLOR = {
   fichaje: 'var(--teal)',
   permisos: 'var(--purple)',
   faltas: 'var(--danger, #dc2626)',
+  almacen: 'var(--orange)',
   // Los de la zona de familias.
   pagos: 'var(--orange)',
   soporte: 'var(--purple)',
@@ -47,6 +48,7 @@ const TITULO = {
   fichaje: 'Fichaje',
   permisos: 'Permisos',
   faltas: 'Faltas',
+  almacen: 'Almacén',
   pagos: 'Pagos',
   soporte: 'Soporte',
   avisos: 'Del club',

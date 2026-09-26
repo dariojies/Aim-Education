@@ -78,8 +78,9 @@ function LoginForm({ onLoginSuccess, onOlvido, onRegistro, recordar, setRecordar
       <p className="hint">Bienvenido/a a Aim Education. Entra a tu panel.</p>
       {error && <Aviso>{error}</Aviso>}
       <div className="field">
-        <label htmlFor="email">Correo electrónico</label>
-        <input id="email" name="email" type="email" placeholder="tu@email.com" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="username" />
+        {/* Se entra con el correo, el usuario o el teléfono (#321). */}
+        <label htmlFor="email">Correo, usuario o teléfono</label>
+        <input id="email" name="email" type="text" placeholder="tu@email.com, tu usuario o tu teléfono" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="username" autoCapitalize="none" spellCheck={false} />
       </div>
       <div className="field">
         <label htmlFor="pw">Contraseña</label>
