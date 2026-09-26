@@ -1360,6 +1360,25 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_consentimientos_user ON aim_consentimientos (user_id, tipo, created_at)`);
+        // CRM (tickets #310/#311): los correos que el club envía desde la ficha,
+        // para verlos en su historial. persona_id es la ficha desde la que se
+        // escribió (el alumno); los destinatarios, las direcciones a las que fue.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_comunicaciones (
+                id SERIAL PRIMARY KEY,
+                persona_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+                destinatarios TEXT[] NOT NULL,
+                asunto TEXT NOT NULL,
+                cuerpo TEXT NOT NULL,
+                plantilla VARCHAR(80),
+                tipo VARCHAR(20) NOT NULL DEFAULT 'servicio',
+                estado VARCHAR(20) NOT NULL DEFAULT 'enviado',
+                error TEXT,
+                enviado_por UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_comunicaciones_persona ON aim_comunicaciones (persona_id, created_at DESC)`);
         // Avisos de la campanita que cada persona ya ha visto. Un aviso visto no
         // cuenta en el número rojo hasta que haya algo nuevo: un mensaje más en
         // ese ticket (marca) o que su contador suba (n).
@@ -9748,6 +9767,185 @@ app.post('/api/admin/permisos/solicitudes/:userId', authenticateSession, require
             await anotarConsentimiento(pool, req, { userId: req.params.userId, email: s.email, tipo: 'imagen_descartada', otorgado: s.fotos, origen: 'descartada por el club' });
         }
         res.json({ success: true, fotosRedes: confirmar ? s.otorgado : s.fotos });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// CRM · Correos desde la ficha (#310) e historial de comunicaciones (#311)
+// Sale desde el buzón del club (EMAIL_USER) por Gmail, así que queda en sus
+// «Enviados» y las respuestas llegan a Gmail como siempre. Cada envío se apunta
+// en aim_comunicaciones. Se respetan los permisos de la ficha: «servicio» (pagos,
+// avisos necesarios) siempre; «actividades» si el alumno no lo ha rechazado;
+// «comercial» solo a quien lo acepta, y con el aviso de cómo darse de baja.
+// ═════════════════════════════════════════════════════════════════════════════
+const TIPOS_CORREO = ['servicio', 'actividades', 'comercial'];
+const PLANTILLAS_POR_DEFECTO = [
+    { id: 'recordatorio-pago', nombre: 'Recordatorio de pago', tipo: 'servicio',
+      asunto: 'Recibos pendientes de {alumno}',
+      cuerpo: 'Hola,\n\nOs escribimos para recordaros que hay {pendiente} pendientes de pago en AIM Education.\n\nPodéis pagarlo en el club o desde vuestra área de familia en www.aimeducation.es.\n\nSi ya lo habéis pagado, no hagáis caso de este correo.\n\nUn saludo,\nAIM Education' },
+    { id: 'bienvenida', nombre: 'Bienvenida', tipo: 'actividades',
+      asunto: '¡Bienvenido/a a AIM Education, {nombre}!',
+      cuerpo: 'Hola,\n\n¡Qué alegría tener a {nombre} con nosotros! Está apuntado/a a: {clases}.\n\nEn vuestra área de familia (www.aimeducation.es) podéis ver el horario, la asistencia y los pagos.\n\nCualquier duda, aquí estamos.\n\nUn saludo,\nAIM Education' },
+    { id: 'faltas', nombre: 'Faltas a clase', tipo: 'actividades',
+      asunto: '{nombre} lleva unos días sin venir',
+      cuerpo: 'Hola,\n\nHemos notado que {nombre} lleva varias clases sin venir a {clases}. ¿Va todo bien?\n\nSi necesitáis cambiar de horario o hay cualquier cosa en la que podamos ayudar, contadnos.\n\nUn saludo,\nAIM Education' },
+    { id: 'aviso', nombre: 'Aviso general', tipo: 'servicio',
+      asunto: 'Aviso de AIM Education',
+      cuerpo: 'Hola,\n\n\n\nUn saludo,\nAIM Education' },
+];
+async function plantillasCorreo() {
+    const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'plantillas_correo'`);
+    return Array.isArray(r.rows[0]?.valor) ? r.rows[0].valor : PLANTILLAS_POR_DEFECTO;
+}
+
+// A quién se le puede escribir desde la ficha de una persona: ella misma y sus
+// tutores (madre, padre, tutor/a), con correo de verdad, y lo que ha dicho de
+// cada tipo de comunicación. También lo que rellena las plantillas.
+async function contextoCorreo(personaId) {
+    const p = await pool.query(
+        `SELECT u.user_id, u.name, u.surname, u.email, ${sqlUltimoConsentimiento('u.user_id', 'actividades')} AS act,
+                ${sqlUltimoConsentimiento('u.user_id', 'comunicaciones')} AS com
+         FROM users u WHERE u.user_id = $1 AND u.club_id = $2`, [personaId, AIM_CLUB_ID]);
+    if (!p.rowCount) return null;
+    const alumno = p.rows[0];
+    const t = await pool.query(
+        `SELECT DISTINCT ON (u.user_id) u.user_id, u.name, u.surname, u.email, f.tipo,
+                ${sqlUltimoConsentimiento('u.user_id', 'comunicaciones')} AS com
+         FROM aim_familias f JOIN users u ON u.user_id = f.familiar_id
+         WHERE f.persona_id = $1 AND f.tipo IN ('Madre', 'Padre', 'Tutor/a', 'Tutor', 'Tutora')`, [personaId]);
+    const persona = (u, rel) => ({
+        personaId: u.user_id, nombre: `${u.name || ''} ${u.surname || ''}`.trim(), relacion: rel,
+        email: esCorreoInterno(u.email) ? null : u.email, comerciales: u.com,
+    });
+    const destinatarios = [persona(alumno, 'Alumno/a'), ...t.rows.map(u => persona(u, u.tipo))];
+    const clases = (await pool.query(
+        `SELECT string_agg(DISTINCT g.name, ', ') AS c FROM tul_group_students gs
+         JOIN tul_groups g ON g.group_id = gs.group_id WHERE gs.student_id = $1`, [personaId])).rows[0].c || '';
+    const pend = await cargosPendientesDe(personaId).catch(() => []);
+    const pendiente = pend.length ? calcularCobro(pend.map(cargoParaMotor)).total : 0;
+    return {
+        alumno: { id: alumno.user_id, nombre: alumno.name || '', completo: `${alumno.name || ''} ${alumno.surname || ''}`.trim() },
+        actividadesRechazadas: alumno.act === false,
+        destinatarios,
+        variables: {
+            alumno: `${alumno.name || ''} ${alumno.surname || ''}`.trim(), nombre: alumno.name || '',
+            clases: clases || 'sus clases', pendiente: `${pendiente.toFixed(2).replace('.', ',')} €`,
+            mes: new Date(hoyMadrid() + 'T12:00:00').toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }),
+            club: 'AIM Education',
+        },
+    };
+}
+const rellenarPlantilla = (texto, v) => String(texto || '').replace(/\{(\w+)\}/g, (m, k) => (v[k] !== undefined ? v[k] : m));
+function htmlCorreoClub(cuerpo, { comercial = false } = {}) {
+    const texto = escHtml(cuerpo)
+        .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1">$1</a>')
+        .replace(/(^|[\s(])(www\.[^\s<]+)/g, '$1<a href="https://$2">$2</a>')
+        .replace(/\n/g, '<br>');
+    return `<div style="font-family:system-ui,-apple-system,sans-serif;color:#1a1a1a;max-width:600px">
+      <div style="font-size:15px;line-height:1.6">${texto}</div>
+      <p style="font-size:12px;color:#888;margin-top:28px;border-top:1px solid #eee;padding-top:10px">AIM Education · Algeciras · 956 742 216 · <a href="${URL_PUBLICA_WEB}" style="color:#888">www.aimeducation.es</a></p>
+      ${comercial ? `<p style="font-size:11px;color:#999">Recibes este correo porque aceptaste las comunicaciones comerciales del club. Puedes darte de baja cuando quieras desde tu perfil: <a href="${URL_PUBLICA_WEB}/dashboard" style="color:#999">${URL_PUBLICA_WEB.replace(/^https?:\/\//, '')}/dashboard</a>.</p>` : ''}
+    </div>`;
+}
+
+app.get('/api/admin/comunicaciones/plantillas', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
+    try { res.set('Cache-Control', 'no-store'); res.json({ plantillas: await plantillasCorreo() }); }
+    catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/admin/comunicaciones/plantillas', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
+    const lista = Array.isArray(req.body?.plantillas) ? req.body.plantillas.slice(0, 40) : null;
+    if (!lista) return res.status(400).json({ error: 'Faltan las plantillas.' });
+    const limpias = [];
+    for (const p of lista) {
+        const nombre = String(p?.nombre || '').trim().slice(0, 80);
+        if (!nombre) return res.status(400).json({ error: 'Cada plantilla necesita un nombre.' });
+        limpias.push({
+            id: String(p.id || '').trim().slice(0, 60) || `p${Date.now().toString(36)}${limpias.length}`,
+            nombre, tipo: TIPOS_CORREO.includes(p.tipo) ? p.tipo : 'servicio',
+            asunto: String(p.asunto || '').slice(0, 200), cuerpo: String(p.cuerpo || '').slice(0, 8000),
+        });
+    }
+    try {
+        await pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('plantillas_correo', $1::jsonb, NOW(), $2)
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+            [JSON.stringify(limpias), req.userSession.userId]);
+        res.json({ success: true, plantillas: limpias });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/admin/comunicaciones/:personaId/contexto', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
+    try {
+        const ctx = await contextoCorreo(req.params.personaId);
+        if (!ctx) return res.status(404).json({ error: 'Esa persona no es del club.' });
+        res.set('Cache-Control', 'no-store');
+        res.json({ ...ctx, correoActivo: !!mailTransporter, remitente: process.env.EMAIL_USER || null });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/comunicaciones/:personaId/enviar', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
+    const { destinatarios, asunto, cuerpo, plantilla, tipo } = req.body || {};
+    const t = TIPOS_CORREO.includes(tipo) ? tipo : 'servicio';
+    if (!mailTransporter) return res.status(503).json({ error: 'El correo no está configurado en el servidor.' });
+    if (!String(asunto || '').trim()) return res.status(400).json({ error: 'Falta el asunto.' });
+    if (!String(cuerpo || '').trim()) return res.status(400).json({ error: 'El correo está vacío.' });
+    try {
+        const ctx = await contextoCorreo(req.params.personaId);
+        if (!ctx) return res.status(404).json({ error: 'Esa persona no es del club.' });
+        if (t === 'actividades' && ctx.actividadesRechazadas) {
+            return res.status(409).json({ error: 'Ha pedido no recibir comunicaciones de sus actividades (consta en su ficha). Si es algo necesario, envíalo como «de servicio».' });
+        }
+        // Solo a las direcciones de su ficha y su familia; en los comerciales,
+        // solo a quien los acepta.
+        const pedidas = new Set((Array.isArray(destinatarios) ? destinatarios : []).map(e => String(e).toLowerCase().trim()));
+        const validos = ctx.destinatarios.filter(d => d.email && pedidas.has(d.email.toLowerCase()));
+        const quitados = t === 'comercial' ? validos.filter(d => d.comerciales !== true) : [];
+        const a = validos.filter(d => !quitados.includes(d)).map(d => d.email);
+        if (!a.length) {
+            return res.status(400).json({ error: t === 'comercial' && quitados.length
+                ? 'Ninguno de los elegidos acepta comunicaciones comerciales.' : 'Elige al menos un destinatario con correo.' });
+        }
+        const asuntoFinal = rellenarPlantilla(String(asunto).trim(), ctx.variables).slice(0, 200);
+        const cuerpoFinal = rellenarPlantilla(String(cuerpo), ctx.variables).slice(0, 8000);
+        let estado = 'enviado', error = null;
+        try {
+            await mailTransporter.sendMail({
+                from: `AIM Education <${process.env.EMAIL_USER}>`, replyTo: process.env.EMAIL_USER,
+                to: a.join(','), subject: asuntoFinal, text: cuerpoFinal,
+                html: htmlCorreoClub(cuerpoFinal, { comercial: t === 'comercial' }),
+            });
+        } catch (e) { estado = 'error'; error = String(e.message || e).slice(0, 500); }
+        const ins = await pool.query(
+            `INSERT INTO aim_comunicaciones (persona_id, destinatarios, asunto, cuerpo, plantilla, tipo, estado, error, enviado_por)
+             VALUES ($1, $2::text[], $3, $4, $5, $6, $7, $8, $9) RETURNING id, created_at`,
+            [req.params.personaId, a, asuntoFinal, cuerpoFinal, plantilla ? String(plantilla).slice(0, 80) : null, t, estado, error, req.userSession.userId]);
+        if (estado === 'error') return res.status(502).json({ error: `No se ha podido enviar: ${error}`, id: ins.rows[0].id });
+        res.json({ success: true, id: ins.rows[0].id, enviadoA: a, omitidos: quitados.map(d => d.nombre) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Historial: lo enviado desde su ficha y lo que le llegó a su correo desde otras.
+app.get('/api/admin/comunicaciones/:personaId', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT c.id, c.persona_id, c.destinatarios, c.asunto, c.cuerpo, c.plantilla, c.tipo, c.estado, c.error, c.created_at,
+                    TRIM(CONCAT(e.name, ' ', COALESCE(e.surname, ''))) AS quien,
+                    TRIM(CONCAT(p.name, ' ', COALESCE(p.surname, ''))) AS ficha
+             FROM aim_comunicaciones c
+             LEFT JOIN users e ON e.user_id = c.enviado_por
+             LEFT JOIN users p ON p.user_id = c.persona_id
+             WHERE c.persona_id = $1
+                OR (SELECT LOWER(email) FROM users WHERE user_id = $1) = ANY(SELECT LOWER(x) FROM unnest(c.destinatarios) x)
+             ORDER BY c.created_at DESC LIMIT 100`, [req.params.personaId]);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            comunicaciones: r.rows.map(x => ({
+                id: x.id, fecha: x.created_at, asunto: x.asunto, cuerpo: x.cuerpo, plantilla: x.plantilla, tipo: x.tipo,
+                estado: x.estado, error: x.error, destinatarios: x.destinatarios, quien: x.quien || null,
+                desdeOtraFicha: x.persona_id !== req.params.personaId ? x.ficha : null,
+            })),
+        });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

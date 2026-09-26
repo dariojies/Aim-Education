@@ -22,6 +22,7 @@ import FichaAlumnoClases, { edadDe, Insignia } from './FichaAlumnoClases.jsx';
 import AdminFamilias from './AdminFamilias.jsx';
 import AdminExamenes from './AdminExamenes.jsx';
 import FichaAlumno360 from './FichaAlumno360.jsx';
+import FichaComunicaciones from './FichaComunicaciones.jsx';
 import AdminObjetosPerdidos from './AdminObjetosPerdidos.jsx';
 import AdminSpeaking from './AdminSpeaking.jsx';
 import AdminFaltas from './AdminFaltas.jsx';
@@ -7441,6 +7442,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                       {/* Ficha 360º (ticket #222): económico, asistencia y resumen anual.
                           Lleva dinero, así que solo el personal del club. */}
                       {permisos.editarAlumnos && <FichaAlumno360 studentId={editingItem.id} />}
+                      {/* CRM (#310/#311): escribirle y ver lo que se le ha enviado. */}
+                      {permisos.editarAlumnos && <FichaComunicaciones key={`com-${editingItem.id}`} personaId={editingItem.id} showToast={showToast} />}
                     </div>
                   )}
 
