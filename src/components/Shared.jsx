@@ -444,7 +444,7 @@ function AimFooter() {
         </div>
 
         <div className="certs" style={{ display: "flex", gap: "24px", flexWrap: "wrap", alignItems: "center" }}>
-          <a href="https://aim.aimeducation.es/actividades/camaleon" target="_blank" rel="noopener noreferrer" className="cert-chip" style={{ display: "inline-block", transition: "transform 0.2s", textDecoration: "none" }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.05)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}>
+          <a href="/actividades/camaleon" className="cert-chip" style={{ display: "inline-block", transition: "transform 0.2s", textDecoration: "none" }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.05)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}>
             <img src="/src/logos/camaleon.png" alt="Programa Camaleón" style={{ height: "48px", width: "auto", objectFit: "contain", display: "block" }} />
           </a>
           <a href="https://www.taekwondoitf.es" target="_blank" rel="noopener noreferrer" className="cert-chip" style={{ display: "inline-block", transition: "transform 0.2s", textDecoration: "none" }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.05)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}>

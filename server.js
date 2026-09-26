@@ -2090,6 +2090,27 @@ app.use(express.json({ limit: '6mb' })); // 6mb para permitir subir el cartel de
 // cada carga; comprimido, unos 220 KB. Con la wifi del club o con datos se nota.
 app.use(compression());
 
+// Dominio principal de la web. Con CANONICAL_HOST (p. ej. www.aimeducation.es),
+// quien entre por otro nombre del dominio (aim.aimeducation.es, el de antes, o
+// el que no es el principal) va al principal con la misma ruta: así siguen
+// valiendo los enlaces de correos ya enviados y los marcadores. No se redirige
+// /api (avisos de pago de Redsys, llamadas de la propia app) ni lo que no sea
+// GET/HEAD. Sin la variable no hace nada.
+// La dirección de la web para los enlaces de los correos (Speaking, avisos…).
+// Al cambiar de dominio basta con poner PUBLIC_BASE_URL en Heroku.
+const URL_PUBLICA_WEB = (process.env.PUBLIC_BASE_URL || 'https://aim.aimeducation.es').replace(/\/+$/, '');
+const HOST_PRINCIPAL = String(process.env.CANONICAL_HOST || '').toLowerCase().trim();
+app.use((req, res, next) => {
+    if (!HOST_PRINCIPAL || !['GET', 'HEAD'].includes(req.method) || req.path.startsWith('/api/')) return next();
+    const host = String(req.headers.host || '').toLowerCase().split(':')[0];
+    const proto = String(req.headers['x-forwarded-proto'] || req.protocol).split(',')[0];
+    const delDominio = host === 'aimeducation.es' || host.endsWith('.aimeducation.es');
+    if (delDominio && (host !== HOST_PRINCIPAL || proto === 'http')) {
+        return res.redirect(301, `https://${HOST_PRINCIPAL}${req.originalUrl}`);
+    }
+    next();
+});
+
 // Peticiones lentas (ticket #298). Toda respuesta que tarde más de 2 s se anota
 // —en el registro de Heroku y en memoria, las últimas 100— con cómo estaba en
 // ese momento la cola de conexiones a la base. Si un cobro vuelve a tardar, se
@@ -11993,10 +12014,8 @@ function paginaSpeaking(ok, si, limitePerdido = null) {
 async function enviarCorreosSpeaking(ids, { tipo = 'inicial' } = {}) {
     const recordatorio = tipo !== 'inicial';
     if (!ids.length || !mailTransporter) return;
-    // La app (con la página pública /speaking) vive en el subdominio de Heroku
-    // aim.aimeducation.es; aimeducation.es es otro sitio (IONOS) y no tiene esta
-    // ruta. Se puede cambiar con PUBLIC_BASE_URL si algún día cambia el dominio.
-    const base = (process.env.PUBLIC_BASE_URL || 'https://aim.aimeducation.es').replace(/\/+$/, '');
+    // Los enlaces de los correos van a la web pública (URL_PUBLICA_WEB).
+    const base = URL_PUBLICA_WEB;
     const r = await pool.query(
         `SELECT s.id, s.fecha, s.franjas, s.token, s.student_id, s.hora_inicio, s.hora_fin,
                 ${sqlLimiteSpeaking('s.')} AS limite, ${sqlLimiteSpeaking('s.')} = ${SQL_HOY_MADRID} AS limite_hoy,
@@ -13110,7 +13129,7 @@ async function correoSolicitudFichaje(solicitudId, momento) {
         const w = await pool.query(`SELECT email, name FROM users WHERE user_id = $1`, [s.user_id]);
         const email = w.rows[0]?.email;
         if (!email) return;
-        const base = (process.env.PUBLIC_BASE_URL || 'https://aim.aimeducation.es').replace(/\/+$/, '');
+        const base = URL_PUBLICA_WEB;
         const propuesta = momento === 'propuesta';
         const asunto = propuesta ? 'Corrección de tu registro de jornada pendiente de aprobar'
             : `Tu solicitud de corrección ha sido ${s.estado === 'aprobada' ? 'aprobada' : 'rechazada'}`;
@@ -13770,7 +13789,7 @@ async function enviarResumenMensual(resumenId, { actorId = null, ip = null } = {
     if (!x?.email) return false;
     const mes = String(x.mes).slice(0, 7);
     const pdf = await pdfEnMemoria(salida => generarResumenMensualPdf(datosPdfResumen(x), salida));
-    const base = (process.env.PUBLIC_BASE_URL || 'https://aim.aimeducation.es').replace(/\/+$/, '');
+    const base = URL_PUBLICA_WEB;
     const h = (n) => `${Number(n).toFixed(2).replace('.', ',')} h`;
     await mailTransporter.sendMail({
         from: process.env.EMAIL_USER, to: x.email,
@@ -14678,7 +14697,7 @@ async function correoAusencia(id) {
         if (!w.rows[0]?.email) return;
         const fecha = (iso) => new Date(iso + 'T12:00:00').toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' });
         const que = `${(TIPOS_AUSENCIA[a.tipo]?.nombre || a.tipo).toLowerCase()} del ${fecha(a.desde_txt)}${a.hasta_txt !== a.desde_txt ? ` al ${fecha(a.hasta_txt)}` : ''}`;
-        const base = (process.env.PUBLIC_BASE_URL || 'https://aim.aimeducation.es').replace(/\/+$/, '');
+        const base = URL_PUBLICA_WEB;
         await mailTransporter.sendMail({
             from: process.env.EMAIL_USER, to: w.rows[0].email,
             subject: `Tu petición de ${(TIPOS_AUSENCIA[a.tipo]?.nombre || 'ausencia').toLowerCase()} ha sido ${a.estado}`,
@@ -14862,7 +14881,7 @@ async function recordatoriosFichaje() {
         const dia = diaSemanaHoy();
         // Minutos transcurridos hoy en hora de Madrid.
         const ahoraMin = (() => { const [h, m] = new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/Madrid', hour: '2-digit', minute: '2-digit' }).split(':').map(Number); return h * 60 + m; })();
-        const base = (process.env.PUBLIC_BASE_URL || 'https://aim.aimeducation.es').replace(/\/+$/, '');
+        const base = URL_PUBLICA_WEB;
         // Festivo o cierre del centro: hoy no se recuerda fichar a nadie.
         const festivo = await pool.query(`SELECT 1 FROM aim_calendario_laboral WHERE fecha = $1::date`, [hoy]);
         if (festivo.rowCount) return;
