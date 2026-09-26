@@ -239,13 +239,16 @@ export default function FichaComunicaciones({ personaId, showToast }) {
               <span style={{ fontSize: 12, color: 'var(--ink-3)', minWidth: 110 }}>{fmtFechaHora(c.fecha)}</span>
               <span style={{ fontWeight: 700, fontSize: 13, flex: '1 1 200px', minWidth: 0 }}>{c.asunto}</span>
               <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--purple)' }}>{NOMBRE_TIPO[c.tipo] || c.tipo}</span>
-              <span style={{ fontSize: 11, fontWeight: 800, color: c.estado === 'enviado' ? 'var(--teal)' : 'var(--orange)' }}>{c.estado === 'enviado' ? '✓ enviado' : '✗ error'}</span>
+              <span style={{ fontSize: 11, fontWeight: 800, color: c.estado === 'enviado' ? 'var(--teal)' : c.estado === 'omitido' ? 'var(--ink-3)' : 'var(--orange)' }}>
+                {{ enviado: '✓ enviado', omitido: 'no enviado', error: '✗ error' }[c.estado] || c.estado}
+              </span>
             </button>
             {abiertoId === c.id && (
               <div style={{ padding: '0 12px 12px', display: 'grid', gap: 6, fontSize: 12, color: 'var(--ink-2)' }}>
-                <span>Para: {c.destinatarios.join(', ')}{c.quien ? ` · lo envió ${c.quien}` : ''}{c.plantilla ? ` · plantilla «${c.plantilla}»` : ''}</span>
+                <span>Para: {c.destinatarios.join(', ')}{c.quien ? ` · lo envió ${c.quien}` : ''}{c.plantilla && !c.plantilla.startsWith('auto:') ? ` · plantilla «${c.plantilla}»` : ''}</span>
                 {c.desdeOtraFicha && <span>Enviado desde la ficha de {c.desdeOtraFicha}.</span>}
-                {c.error && <span style={{ color: 'var(--orange)' }}>Error: {c.error}</span>}
+                {c.plantilla?.startsWith('auto:') && <span>Automático.</span>}
+                {c.error && <span style={{ color: 'var(--orange)' }}>{c.estado === 'omitido' ? 'No se envió: ' : 'Error: '}{c.error}</span>}
                 <div style={{ whiteSpace: 'pre-wrap', background: 'var(--bg-3)', borderRadius: 8, padding: 10, fontSize: 13, color: 'var(--ink)' }}>{c.cuerpo}</div>
               </div>
             )}

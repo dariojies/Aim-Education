@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { I } from './Icons.jsx';
 import AdminCampanas from './AdminCampanas.jsx';
+import AdminAutomatismos from './AdminAutomatismos.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Comunicaciones (CRM). De momento, los segmentos (ticket #313): a quién va una
@@ -41,8 +42,11 @@ export default function AdminComunicaciones({ showToast, onAbrirFicha }) {
       <div style={{ ...grupoPastillas, justifySelf: 'start' }}>
         <button type="button" style={{ ...pastilla(pestana === 'segmentos'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('segmentos')}>Segmentos</button>
         <button type="button" style={{ ...pastilla(pestana === 'campanas'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('campanas')}>Campañas</button>
+        <button type="button" style={{ ...pastilla(pestana === 'automatismos'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('automatismos')}>Automatismos</button>
       </div>
-      {pestana === 'segmentos' ? <Segmentos showToast={showToast} onAbrirFicha={onAbrirFicha} /> : <AdminCampanas showToast={showToast} onAbrirFicha={onAbrirFicha} />}
+      {pestana === 'segmentos' && <Segmentos showToast={showToast} onAbrirFicha={onAbrirFicha} />}
+      {pestana === 'campanas' && <AdminCampanas showToast={showToast} onAbrirFicha={onAbrirFicha} />}
+      {pestana === 'automatismos' && <AdminAutomatismos showToast={showToast} onAbrirFicha={onAbrirFicha} />}
     </div>
   );
 }

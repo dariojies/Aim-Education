@@ -9946,22 +9946,240 @@ app.post('/api/admin/comunicaciones/:personaId/enviar', authenticateSession, req
             return res.status(400).json({ error: t === 'comercial' && quitados.length
                 ? 'Ninguno de los elegidos acepta comunicaciones comerciales.' : 'Elige al menos un destinatario con correo.' });
         }
-        const asuntoFinal = rellenarPlantilla(String(asunto).trim(), ctx.variables).slice(0, 200);
-        const cuerpoFinal = rellenarPlantilla(String(cuerpo), ctx.variables).slice(0, 8000);
-        let estado = 'enviado', error = null;
-        try {
-            await mailTransporter.sendMail({
-                from: `AIM Education <${process.env.EMAIL_USER}>`, replyTo: process.env.EMAIL_USER,
-                to: a.join(','), subject: asuntoFinal, text: cuerpoFinal,
-                html: htmlCorreoClub(cuerpoFinal, { comercial: t === 'comercial' }),
+        const env = await enviarYApuntar({
+            personaId: req.params.personaId, a, asunto, cuerpo, tipo: t, variables: ctx.variables,
+            plantilla, enviadoPor: req.userSession.userId,
+        });
+        if (env.estado === 'error') return res.status(502).json({ error: `No se ha podido enviar: ${env.error}`, id: env.id });
+        res.json({ success: true, id: env.id, enviadoA: a, omitidos: quitados.map(d => d.nombre) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Envía un correo de la ficha y lo apunta en su historial (lo usan la ficha y
+// los automatismos). 'plantilla' guarda de dónde salió; en los automatismos es
+// su marca (auto:…), que sirve para no mandarlo dos veces.
+async function enviarYApuntar({ personaId, a, asunto, cuerpo, tipo, variables, plantilla = null, enviadoPor = null }) {
+    const asuntoFinal = rellenarPlantilla(String(asunto).trim(), variables).slice(0, 200);
+    const cuerpoFinal = rellenarPlantilla(String(cuerpo), variables).slice(0, 8000);
+    let estado = 'enviado', error = null;
+    try {
+        await mailTransporter.sendMail({
+            from: `AIM Education <${process.env.EMAIL_USER}>`, replyTo: process.env.EMAIL_USER,
+            to: a.join(','), subject: asuntoFinal, text: cuerpoFinal,
+            html: htmlCorreoClub(cuerpoFinal, { comercial: tipo === 'comercial' }),
+        });
+    } catch (e) { estado = 'error'; error = String(e.message || e).slice(0, 500); }
+    const ins = await pool.query(
+        `INSERT INTO aim_comunicaciones (persona_id, destinatarios, asunto, cuerpo, plantilla, tipo, estado, error, enviado_por)
+         VALUES ($1, $2::text[], $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+        [personaId, a, asuntoFinal, cuerpoFinal, plantilla ? String(plantilla).slice(0, 80) : null, tipo, estado, error, enviadoPor]);
+    return { id: ins.rows[0].id, estado, error };
+}
+
+// ── CRM 7 · Automatismos (#316) ──────────────────────────────────────────────
+// Correos que salen solos: bienvenida al entrar en una clase por primera vez,
+// aviso a la familia con 4 faltas seguidas y felicitación de cumpleaños. Todos
+// vienen apagados y se encienden desde Comunicaciones → Automatismos. Al
+// encender uno solo cuenta lo que pase desde ese momento (no se escribe de golpe
+// a todos los que ya estaban). Cada uno sale una vez por persona y ocasión (la
+// marca va en aim_comunicaciones.plantilla), a la familia (tutores; si no tiene,
+// al alumno) y respetando si rechazó las comunicaciones de sus actividades.
+const AUTOMATISMOS = {
+    bienvenida: {
+        nombre: 'Bienvenida al darse de alta',
+        descripcion: 'Cuando alguien entra por primera vez en una clase del club.',
+        asunto: '¡Bienvenido/a a AIM Education, {nombre}!',
+        cuerpo: 'Hola,\n\n¡Qué alegría tener a {nombre} con nosotros! Está apuntado/a a: {clases}.\n\nEn vuestra área de familia (www.aimeducation.es) podéis ver el horario, la asistencia y los pagos.\n\nCualquier duda, aquí estamos.\n\nUn saludo,\nAIM Education',
+    },
+    faltas: {
+        nombre: '4 faltas seguidas',
+        descripcion: 'Cuando un alumno lleva 4 clases seguidas sin venir a una de sus clases (además del aviso a secretaría).',
+        asunto: '{nombre} lleva unos días sin venir a {clase}',
+        cuerpo: 'Hola,\n\nHemos notado que {nombre} lleva {faltas} clases seguidas sin venir a {clase}. ¿Va todo bien?\n\nSi necesitáis cambiar de horario o hay cualquier cosa en la que podamos ayudar, contadnos.\n\nUn saludo,\nAIM Education',
+    },
+    cumple: {
+        nombre: 'Felicitación de cumpleaños',
+        descripcion: 'El día de su cumpleaños, a partir de las 9:00.',
+        asunto: '¡Feliz cumpleaños, {nombre}!',
+        cuerpo: 'Hola,\n\nDesde AIM Education queremos desearle a {nombre} un feliz cumpleaños. ¡Que cumpla muchos más con nosotros!\n\nUn abrazo,\nAIM Education',
+    },
+};
+async function configAutomatismos() {
+    const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'automatismos_crm'`);
+    const g = r.rows[0]?.valor || {};
+    return Object.fromEntries(Object.entries(AUTOMATISMOS).map(([id, def]) => [id, {
+        activo: !!g[id]?.activo, activadoAt: g[id]?.activadoAt || null,
+        asunto: g[id]?.asunto ?? def.asunto, cuerpo: g[id]?.cuerpo ?? def.cuerpo,
+    }]));
+}
+
+// Quién toca ahora en cada automatismo: [{ personaId, marca, extra }].
+async function candidatosAutomatismo(id, cfg) {
+    const desde = cfg.activadoAt || new Date().toISOString();
+    if (id === 'bienvenida') {
+        const r = await pool.query(
+            `SELECT h.student_id AS persona_id, MIN(h.created_at) AS primera
+             FROM tul_enrollment_history h
+             WHERE h.club_id = $1 AND h.action = 'enrolled'
+             GROUP BY h.student_id
+             HAVING MIN(h.created_at) >= $2::timestamptz AND MIN(h.created_at) > NOW() - INTERVAL '14 days'`,
+            [AIM_CLUB_ID, desde]);
+        return r.rows.map(x => ({ personaId: x.persona_id, marca: 'auto:bienvenida', extra: {} }));
+    }
+    if (id === 'faltas') {
+        const rachas = await rachasDeFaltas({ minimo: FALTAS_PARA_LLAMAR });
+        const limite = String(desde).slice(0, 10);
+        return rachas
+            .filter(f => String(new Date(f.ultimaFalta).toISOString()).slice(0, 10) >= limite)
+            .map(f => ({
+                personaId: f.studentId,
+                marca: `auto:faltas:${f.groupId}:${new Date(f.desde).toISOString().slice(0, 10)}`,
+                extra: { clase: f.clase, faltas: String(f.racha) },
+            }));
+    }
+    if (id === 'cumple') {
+        const hoy = hoyMadrid();
+        const hora = Number(new Date().toLocaleString('en-GB', { timeZone: 'Europe/Madrid', hour: '2-digit', hour12: false }));
+        if (hora < 9) return [];
+        const r = await pool.query(
+            `SELECT u.user_id, EXTRACT(YEAR FROM age($2::date, u.birthday))::int AS edad FROM users u
+             WHERE u.club_id = $1 AND u.birthday IS NOT NULL
+               AND to_char(u.birthday, 'MM-DD') = to_char($2::date, 'MM-DD')
+               AND EXISTS (SELECT 1 FROM tul_group_students s WHERE s.student_id = u.user_id)`, [AIM_CLUB_ID, hoy]);
+        return r.rows.map(x => ({ personaId: x.user_id, marca: `auto:cumple:${hoy.slice(0, 4)}`, extra: { edad: String(x.edad) } }));
+    }
+    return [];
+}
+
+// A quién se escribe (la familia; si no tiene correo, el alumno) y si queda fuera.
+async function destinoAutomatismo(personaId) {
+    const ctx = await contextoCorreo(personaId);
+    if (!ctx) return { fuera: 'ya no es del club' };
+    if (ctx.actividadesRechazadas) return { ctx, fuera: 'no quiere comunicaciones de sus actividades' };
+    const tutores = ctx.destinatarios.filter(d => d.relacion !== 'Alumno/a' && d.email);
+    const para = tutores.length ? tutores : ctx.destinatarios.filter(d => d.email);
+    if (!para.length) return { ctx, fuera: 'sin correo' };
+    return { ctx, para };
+}
+
+// Lo que saldría ahora (sin enviar nada): para «Quién lo recibiría ahora».
+async function pendientesAutomatismo(id, cfg) {
+    const cands = await candidatosAutomatismo(id, cfg);
+    if (!cands.length) return [];
+    const ya = new Set((await pool.query(
+        `SELECT persona_id || '|' || plantilla AS k FROM aim_comunicaciones WHERE plantilla = ANY($1::text[])`,
+        [[...new Set(cands.map(c => c.marca))]])).rows.map(x => x.k));
+    return cands.filter(c => !ya.has(`${c.personaId}|${c.marca}`));
+}
+
+let automatismosEnCurso = false;
+async function ejecutarAutomatismos() {
+    if (automatismosEnCurso || !mailTransporter) return;
+    automatismosEnCurso = true;
+    try {
+        const cfg = await configAutomatismos();
+        for (const [id, c] of Object.entries(cfg)) {
+            if (!c.activo) continue;
+            const lista = (await pendientesAutomatismo(id, c)).slice(0, 25);
+            for (const cand of lista) {
+                const d = await destinoAutomatismo(cand.personaId);
+                // Si queda fuera (sin correo, lo rechazó) también se apunta, para
+                // no volver a mirarlo en cada pasada.
+                if (d.fuera) {
+                    await pool.query(
+                        `INSERT INTO aim_comunicaciones (persona_id, destinatarios, asunto, cuerpo, plantilla, tipo, estado, error)
+                         VALUES ($1, '{}', $2, '', $3, 'actividades', 'omitido', $4)`,
+                        [cand.personaId, AUTOMATISMOS[id].nombre, cand.marca, d.fuera]);
+                    continue;
+                }
+                await enviarYApuntar({
+                    personaId: cand.personaId, a: d.para.map(x => x.email), asunto: c.asunto, cuerpo: c.cuerpo,
+                    tipo: 'actividades', variables: { ...d.ctx.variables, ...cand.extra }, plantilla: cand.marca,
+                });
+            }
+            if (lista.length) console.log(`[automatismos] ${id}: ${lista.length} revisado(s)`);
+        }
+    } catch (e) { console.error('[automatismos]', e.message); }
+    finally { automatismosEnCurso = false; }
+}
+
+app.get('/api/admin/automatismos', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try {
+        const cfg = await configAutomatismos();
+        const recientes = await pool.query(
+            `SELECT c.id, c.persona_id, c.plantilla, c.asunto, c.estado, c.error, c.destinatarios, c.created_at,
+                    TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno
+             FROM aim_comunicaciones c LEFT JOIN users u ON u.user_id = c.persona_id
+             WHERE c.plantilla LIKE 'auto:%' ORDER BY c.created_at DESC LIMIT 150`);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            correoActivo: !!mailTransporter,
+            automatismos: Object.entries(AUTOMATISMOS).map(([id, def]) => ({
+                id, nombre: def.nombre, descripcion: def.descripcion, ...cfg[id],
+                recientes: recientes.rows.filter(x => x.plantilla.split(':')[1] === id).slice(0, 30).map(x => ({
+                    id: x.id, personaId: x.persona_id, alumno: x.alumno, asunto: x.asunto, estado: x.estado,
+                    error: x.error, destinatarios: x.destinatarios, fecha: x.created_at,
+                })),
+            })),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/admin/automatismos/:id', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    const id = req.params.id;
+    if (!AUTOMATISMOS[id]) return res.status(404).json({ error: 'Ese automatismo no existe.' });
+    try {
+        const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'automatismos_crm'`);
+        const g = r.rows[0]?.valor || {};
+        const antes = g[id] || {};
+        const activo = typeof req.body?.activo === 'boolean' ? req.body.activo : !!antes.activo;
+        g[id] = {
+            activo,
+            // Al encenderlo se apunta cuándo: solo cuenta lo que pase desde ahí.
+            activadoAt: activo ? (antes.activo ? antes.activadoAt : new Date().toISOString()) : null,
+            asunto: typeof req.body?.asunto === 'string' ? req.body.asunto.slice(0, 200) : antes.asunto,
+            cuerpo: typeof req.body?.cuerpo === 'string' ? req.body.cuerpo.slice(0, 8000) : antes.cuerpo,
+        };
+        await pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('automatismos_crm', $1::jsonb, NOW(), $2)
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+            [JSON.stringify(g), req.userSession.userId]);
+        res.json({ success: true, ...(await configAutomatismos())[id] });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Revisar ya, sin esperar a la pasada de cada 15 minutos.
+app.post('/api/admin/automatismos/ejecutar', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    if (!mailTransporter) return res.status(503).json({ error: 'El correo no está configurado en el servidor.' });
+    try {
+        const antes = (await pool.query(`SELECT COUNT(*)::int n FROM aim_comunicaciones WHERE plantilla LIKE 'auto:%'`)).rows[0].n;
+        await ejecutarAutomatismos();
+        const despues = (await pool.query(`SELECT COUNT(*)::int n FROM aim_comunicaciones WHERE plantilla LIKE 'auto:%'`)).rows[0].n;
+        res.json({ success: true, nuevos: despues - antes });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Quién lo recibiría ahora mismo (si estuviera encendido desde hoy), sin enviar.
+app.get('/api/admin/automatismos/:id/vista', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    const id = req.params.id;
+    if (!AUTOMATISMOS[id]) return res.status(404).json({ error: 'Ese automatismo no existe.' });
+    try {
+        const cfg = (await configAutomatismos())[id];
+        // Apagado: lo que pasaría si se encendiera ahora mismo (la bienvenida solo
+        // es para quien se apunte a partir de ese momento, así que ahí no sale nadie).
+        const c = cfg.activo ? cfg : { ...cfg, activadoAt: new Date().toISOString() };
+        const lista = await pendientesAutomatismo(id, c);
+        const filas = [];
+        for (const cand of lista.slice(0, 40)) {
+            const d = await destinoAutomatismo(cand.personaId);
+            filas.push({
+                personaId: cand.personaId, alumno: d.ctx?.alumno?.completo || '—', fuera: d.fuera || null,
+                para: (d.para || []).map(x => `${x.nombre} (${x.relacion})`),
+                asunto: d.ctx ? rellenarPlantilla(cfg.asunto, { ...d.ctx.variables, ...cand.extra }) : '',
             });
-        } catch (e) { estado = 'error'; error = String(e.message || e).slice(0, 500); }
-        const ins = await pool.query(
-            `INSERT INTO aim_comunicaciones (persona_id, destinatarios, asunto, cuerpo, plantilla, tipo, estado, error, enviado_por)
-             VALUES ($1, $2::text[], $3, $4, $5, $6, $7, $8, $9) RETURNING id, created_at`,
-            [req.params.personaId, a, asuntoFinal, cuerpoFinal, plantilla ? String(plantilla).slice(0, 80) : null, t, estado, error, req.userSession.userId]);
-        if (estado === 'error') return res.status(502).json({ error: `No se ha podido enviar: ${error}`, id: ins.rows[0].id });
-        res.json({ success: true, id: ins.rows[0].id, enviadoA: a, omitidos: quitados.map(d => d.nombre) });
+        }
+        res.set('Cache-Control', 'no-store');
+        res.json({ total: lista.length, filas, comoSiEncendido: !cfg.activo });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -16070,6 +16288,9 @@ app.listen(port, () => {
     setInterval(recordatoriosSpeaking, 15 * 60 * 1000);
     // Campañas (CRM 5, #314): la cola saca un envío cada 4 s.
     setInterval(enviarSiguienteDeCampana, INTERVALO_CAMPANAS_MS);
+    // Automatismos (CRM 7, #316): bienvenida, faltas y cumpleaños, cada 15 min.
+    setTimeout(ejecutarAutomatismos, 60 * 1000);
+    setInterval(ejecutarAutomatismos, 15 * 60 * 1000);
     // Recordatorios de fichaje (ticket #233): se revisa cada 5 min quién tiene que
     // fichar entrada/salida según su horario. Solo manda una vez por tipo y día.
     setTimeout(recordatoriosFichaje, 45 * 1000);
