@@ -9925,6 +9925,153 @@ app.post('/api/admin/comunicaciones/:personaId/enviar', authenticateSession, req
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── CRM 4 · Segmentos (#313) ─────────────────────────────────────────────────
+// A quién va una comunicación, sacado de los datos del club: actividad o clase
+// (está / la dejó / cualquiera), edad, recibos pendientes, faltas del mes,
+// campamento. Y a quién se escribe (la familia o el propio alumno), respetando
+// lo que cada uno ha dicho de cada tipo de comunicación. Los segmentos guardados
+// van en aim_ajustes ('segmentos_crm').
+function sqlSegmento(f, vals) {
+    const p = (v) => { vals.push(v); return `$${vals.length}`; };
+    const w = [`u.club_id = $1`,
+        // Solo alumnos (no personal del club).
+        `COALESCE(u.role, 'student') NOT IN ('instructor', 'club_owner', 'superadmin')`,
+        `NOT EXISTS (SELECT 1 FROM aim_rangos rg WHERE rg.user_id = u.user_id AND rg.rango IN ('trabajador', 'secretaria', 'equipo_it'))`,
+        `(EXISTS (SELECT 1 FROM tul_group_students s WHERE s.student_id = u.user_id)
+          OR EXISTS (SELECT 1 FROM tul_enrollment_history h WHERE h.student_id = u.user_id AND h.club_id = $1)
+          OR EXISTS (SELECT 1 FROM aim_camp_children cc WHERE cc.alumno_id = u.user_id))`];
+    const acts = (Array.isArray(f.actividades) ? f.actividades : []).map(String).filter(Boolean).slice(0, 30);
+    const clases = (Array.isArray(f.clases) ? f.clases : []).map(String).filter(x => /^[0-9a-f-]{36}$/i.test(x)).slice(0, 60);
+    // Si se eligen clases concretas, mandan ellas (afinan dentro de la
+    // actividad); si no, las actividades. Una sola vez cada lista: las usan tanto
+    // «está ahora» como «la dejó».
+    const pClases = clases.length ? p(clases) : null;
+    const pActs = !pClases && acts.length ? p(acts) : null;
+    const filtroG = [];
+    if (pActs) filtroG.push(`a.name = ANY(${pActs}::text[])`);
+    if (pClases) filtroG.push(`g.group_id = ANY(${pClases}::uuid[])`);
+    const condG = filtroG.length ? `AND (${filtroG.join(' OR ')})` : '';
+    const ahora = `EXISTS (SELECT 1 FROM tul_group_students s JOIN tul_groups g ON g.group_id = s.group_id
+                     JOIN tul_activities a ON a.activity_id = g.activity_id
+                   WHERE s.student_id = u.user_id AND a.club_id = $1 ${condG})`;
+    const filtroH = [];
+    if (pActs) filtroH.push(`h.activity_name = ANY(${pActs}::text[])`);
+    if (pClases) filtroH.push(`h.group_id = ANY(${pClases}::uuid[])`);
+    const antes = `EXISTS (SELECT 1 FROM tul_enrollment_history h WHERE h.student_id = u.user_id AND h.club_id = $1
+                   ${filtroH.length ? `AND (${filtroH.join(' OR ')})` : ''})`;
+    const estado = ['activos', 'baja', 'todos'].includes(f.estado) ? f.estado : 'activos';
+    if (estado === 'activos') w.push(ahora);
+    else if (estado === 'baja') w.push(`${antes} AND NOT ${ahora}`);
+    else if (pActs || pClases) w.push(`(${ahora} OR ${antes})`);
+    const edadMin = Number.parseInt(f.edadMin, 10), edadMax = Number.parseInt(f.edadMax, 10);
+    const edad = `EXTRACT(YEAR FROM age(${SQL_HOY_MADRID}, u.birthday))`;
+    if (Number.isFinite(edadMin)) w.push(`u.birthday IS NOT NULL AND ${edad} >= ${p(edadMin)}`);
+    if (Number.isFinite(edadMax)) w.push(`u.birthday IS NOT NULL AND ${edad} <= ${p(edadMax)}`);
+    if (f.pendientes) w.push(`EXISTS (SELECT 1 FROM aim_cargos c WHERE c.cliente_id = u.user_id AND c.estado = 'pendiente')`);
+    const faltas = Number.parseInt(f.faltasMin, 10);
+    if (faltas > 0) w.push(`(SELECT COUNT(*) FROM tul_attendance t WHERE t.student_id = u.user_id AND t.status = 'absent'
+                              AND t.date >= date_trunc('month', ${SQL_HOY_MADRID}) AND t.date <= ${SQL_HOY_MADRID}) >= ${p(faltas)}`);
+    if (f.campamento) w.push(`EXISTS (SELECT 1 FROM aim_camp_children cc WHERE cc.alumno_id = u.user_id)`);
+    return w.join('\n       AND ');
+}
+
+// Las personas del segmento con sus destinatarios, ya filtrados por permisos.
+async function resolverSegmento(f) {
+    const vals = [AIM_CLUB_ID];
+    const where = sqlSegmento(f || {}, vals);
+    const r = await pool.query(
+        `SELECT u.user_id, u.name, u.surname, u.email, u.birthday,
+                ${sqlUltimoConsentimiento('u.user_id', 'actividades')} AS act,
+                ${sqlUltimoConsentimiento('u.user_id', 'comunicaciones')} AS com,
+                (SELECT string_agg(DISTINCT g.name, ', ') FROM tul_group_students s JOIN tul_groups g ON g.group_id = s.group_id
+                  WHERE s.student_id = u.user_id) AS clases
+         FROM users u WHERE ${where}
+         ORDER BY u.surname, u.name LIMIT 2000`, vals);
+    const idsAl = r.rows.map(x => x.user_id);
+    const tut = idsAl.length ? (await pool.query(
+        `SELECT f.persona_id, u.user_id, u.name, u.surname, u.email, f.tipo,
+                ${sqlUltimoConsentimiento('u.user_id', 'comunicaciones')} AS com
+         FROM aim_familias f JOIN users u ON u.user_id = f.familiar_id
+         WHERE f.persona_id = ANY($1::uuid[]) AND f.tipo IN ('Madre', 'Padre', 'Tutor/a', 'Tutor', 'Tutora')`, [idsAl])).rows : [];
+    const tutoresDe = new Map();
+    for (const t of tut) { if (!tutoresDe.has(t.persona_id)) tutoresDe.set(t.persona_id, []); tutoresDe.get(t.persona_id).push(t); }
+    const tipo = TIPOS_CORREO.includes(f?.tipo) ? f.tipo : 'servicio';
+    const destino = f?.destino === 'alumno' ? 'alumno' : 'familia';
+    const real = (e) => (e && !esCorreoInterno(e) ? e : null);
+    const alumnos = r.rows.map(x => {
+        const propio = { nombre: `${x.name || ''} ${x.surname || ''}`.trim(), relacion: 'Alumno/a', email: real(x.email), com: x.com };
+        const tutores = (tutoresDe.get(x.user_id) || []).map(t => ({ nombre: `${t.name || ''} ${t.surname || ''}`.trim(), relacion: t.tipo, email: real(t.email), com: t.com }));
+        let para = destino === 'alumno' ? [propio] : (tutores.some(t => t.email) ? tutores : [propio]);
+        para = para.filter(d => d.email);
+        let fuera = null;
+        if (!para.length) fuera = 'sin correo';
+        else if (tipo === 'actividades' && x.act === false) fuera = 'no quiere comunicaciones de sus actividades';
+        else if (tipo === 'comercial') {
+            para = para.filter(d => d.com === true);
+            if (!para.length) fuera = 'no acepta comerciales';
+        }
+        return {
+            id: x.user_id, nombre: propio.nombre, edad: edadDe(x.birthday), clases: x.clases || '',
+            destinatarios: fuera ? [] : para.map(d => ({ nombre: d.nombre, relacion: d.relacion, email: d.email })), fuera,
+        };
+    });
+    const dentro = alumnos.filter(a => !a.fuera);
+    const direcciones = [...new Set(dentro.flatMap(a => a.destinatarios.map(d => d.email.toLowerCase())))];
+    return {
+        tipo, destino, alumnos,
+        resumen: {
+            alumnos: alumnos.length, conDestinatario: dentro.length, direcciones: direcciones.length,
+            sinCorreo: alumnos.filter(a => a.fuera === 'sin correo').length,
+            porPermisos: alumnos.filter(a => a.fuera && a.fuera !== 'sin correo').length,
+            limite: r.rows.length >= 2000,
+        },
+    };
+}
+
+app.get('/api/admin/segmentos/opciones', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT g.group_id, g.name, a.name AS actividad FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE a.club_id = $1 ORDER BY a.name, g.name`, [AIM_CLUB_ID]);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            actividades: [...new Set(r.rows.map(x => x.actividad))],
+            clases: r.rows.map(x => ({ id: x.group_id, nombre: x.name, actividad: x.actividad })),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/segmentos/vista', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try { res.json(await resolverSegmento(req.body?.filtros || {})); }
+    catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/admin/segmentos', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try {
+        const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'segmentos_crm'`);
+        res.set('Cache-Control', 'no-store');
+        res.json({ segmentos: Array.isArray(r.rows[0]?.valor) ? r.rows[0].valor : [] });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/admin/segmentos', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    const lista = Array.isArray(req.body?.segmentos) ? req.body.segmentos.slice(0, 60) : null;
+    if (!lista) return res.status(400).json({ error: 'Faltan los segmentos.' });
+    const limpios = [];
+    for (const s of lista) {
+        const nombre = String(s?.nombre || '').trim().slice(0, 80);
+        if (!nombre) return res.status(400).json({ error: 'Cada segmento necesita un nombre.' });
+        limpios.push({ id: String(s.id || '').slice(0, 60) || `s${Date.now().toString(36)}${limpios.length}`, nombre, filtros: s.filtros && typeof s.filtros === 'object' ? s.filtros : {} });
+    }
+    try {
+        await pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('segmentos_crm', $1::jsonb, NOW(), $2)
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+            [JSON.stringify(limpios), req.userSession.userId]);
+        res.json({ success: true, segmentos: limpios });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Historial: lo enviado desde su ficha y lo que le llegó a su correo desde otras.
 app.get('/api/admin/comunicaciones/:personaId', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
     try {

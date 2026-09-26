@@ -26,6 +26,7 @@ import FichaComunicaciones from './FichaComunicaciones.jsx';
 import AdminObjetosPerdidos from './AdminObjetosPerdidos.jsx';
 import AdminSpeaking from './AdminSpeaking.jsx';
 import AdminFaltas from './AdminFaltas.jsx';
+import AdminComunicaciones from './AdminComunicaciones.jsx';
 import AdminAlmacen from './AdminAlmacen.jsx';
 import AdminContactos from './AdminContactos.jsx';
 import { IconoActividad } from './IconoActividad.jsx';
@@ -77,6 +78,7 @@ function sectionLabel(id) {
     objetos: "Objetos perdidos",
     support: "Panel de soporte",
     faltas: "Faltas",
+    comunicaciones: "Comunicaciones",
     speaking: "Speaking",
     fichaje: "Fichaje",
     almacen: "Almacén",
@@ -6969,6 +6971,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "students", label: "Alumnos", icon: <I.Users /> },
         { id: "familias", label: "Familias", icon: <I.Heart /> },
         { id: "faltas", label: "Faltas", icon: <I.Phone /> },
+        { id: "comunicaciones", label: "Comunicaciones", icon: <I.Mail /> },
         { id: "instructors", label: "Instructores", icon: <I.Whistle /> },
       ]
     },
@@ -7176,6 +7179,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("objetos") && <AdminObjetosPerdidos showToast={showToast} />}
           {ver("speaking") && <AdminSpeaking showToast={showToast} />}
           {ver("faltas") && <AdminFaltas onAbrirFicha={abrirFicha} />}
+          {ver("comunicaciones") && <AdminComunicaciones showToast={showToast} onAbrirFicha={abrirFicha} />}
           {ver("support") && <AdminSupport user={user} ticketId={ticketId} />}
         </div>
       </div>

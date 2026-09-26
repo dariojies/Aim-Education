@@ -106,6 +106,8 @@ export function permisosDe(rol) {
             // Faltas seguidas de los alumnos, para llamar a las familias: secretaría
             // y dirección.
             faltas: mandaAlMenos(rol, 'secretaria'),
+            // CRM: segmentos, campañas y correo del club (tickets #310-#316).
+            comunicaciones: mandaAlMenos(rol, 'secretaria'),
             // La planificación del Equipo IT: la ven secretaría y dirección; solo
             // la tocan el propio equipo y los superadmin (editarEquipoIT).
             equipo_it: mandaAlMenos(rol, 'secretaria'),
