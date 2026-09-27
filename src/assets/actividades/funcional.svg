@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Icono de Entrenamiento Funcional: la mancuerna del logotipo de la submarca
+     (info/SVG/Aim_Entrenamiento.svg), sola y en blanco como el de Taekwon-Do. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="8.5 4.5 56 56">
+  <defs>
+    <style>
+      .cls-1, .cls-2 { fill: none; stroke: #fff; stroke-width: 1.78px; stroke-linecap: round; stroke-linejoin: round; }
+      .cls-4 { fill: #fff; }
+    </style>
+  </defs>
+  <g id="gym">
+        <rect class="cls-4" x="28.1" y="29.51" width="17.7" height="7.47" transform="translate(-12.68 35.87) rotate(-45)"/>
+        <rect class="cls-2" x="21.96" y="24.23" width="9.68" height="36.43" rx="4.84" ry="4.84" transform="translate(-22.16 31.38) rotate(-45)"/>
+        <rect class="cls-2" x="41.32" y="4.87" width="9.68" height="36.43" rx="4.84" ry="4.84" transform="translate(-2.81 39.4) rotate(-45)"/>
+        <path class="cls-1" d="m43.34,8.91h0c1.25-1.25,3.27-1.25,4.51,0l12.47,12.47c1.25,1.25,1.25,3.27,0,4.51h0c-1.25,1.25-3.27,1.25-4.51,0l-12.47-12.47c-1.25-1.25-1.25-3.27,0-4.51Z"/>
+        <path class="cls-1" d="m12.62,39.63h0c1.25-1.25,3.27-1.25,4.51,0l12.47,12.47c1.25,1.25,1.25,3.27,0,4.51h0c-1.25,1.25-3.27,1.25-4.51,0l-12.47-12.47c-1.25-1.25-1.25-3.27,0-4.51Z"/>
+        <path class="cls-4" d="m14.18,50.73l2.51-2.51h0l4.33,4.33h0l-2.51,2.51c-.69.69-1.82.69-2.51,0l-1.81-1.81c-.69-.69-.69-1.82,0-2.51Z"/>
+        <path class="cls-4" d="m51.93,12.99l2.51-2.51c.69-.69,1.82-.69,2.51,0h0l1.81,1.81c.69.69.69,1.82,0,2.51l-2.51,2.51h0l-4.33-4.33h0Z"/>
+      </g>
+</svg>

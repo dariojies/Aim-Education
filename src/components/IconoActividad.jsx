@@ -1,6 +1,7 @@
 import React from 'react';
 import { I } from './Icons.jsx';
 import svgBallet from '../assets/actividades/ballet.svg';
+import svgFuncional from '../assets/actividades/funcional.svg';
 import svgIngles from '../assets/actividades/ingles.svg';
 import svgPilates from '../assets/actividades/pilates.svg';
 import svgPintura from '../assets/actividades/pintura.svg';
@@ -50,7 +51,7 @@ export function dibujoDe(icon) {
 
 // Los iconos cuadrados de AIM (info/SVG, los que no llevan "Aim_"), por el
 // nombre de icono que tiene guardado cada actividad. No hay versión cuadrada de
-// Baile Moderno, Kick Boxing ni Defensa Personal: esas se quedan con el dibujo.
+// Kick Boxing ni Defensa Personal. Funcional sale de su logotipo de submarca.
 // El campo 'icon' NO se toca: esto es solo cómo se pinta aquí.
 const SVG_ACTIVIDAD = {
   'shoe-ballet': svgBallet,
@@ -59,13 +60,18 @@ const SVG_ACTIVIDAD = {
   'palette': svgPintura,
   'robot': svgRobotica,
   'karate': svgTkd,
+  // Entrenamiento Funcional: la mancuerna de su logotipo de submarca.
+  'weight-lifter': svgFuncional,
+  'dumbbell': svgFuncional,
+  // Baile Moderno, por ahora con las zapatillas de ballet (en su tarjeta morada).
+  'yoga': svgBallet,
   // Kick Boxing y Defensa Personal comparten el icono de Taekwon-Do (#220).
   'boxing-glove': svgTkd,
   'shield-half-full': svgTkd,
 };
 // Estos vienen dibujados en blanco (para fondo oscuro): sobre la tarjeta blanca
 // no se verían, así que se oscurecen para que salgan como los demás.
-const SVG_BLANCO = new Set(['palette', 'karate', 'boxing-glove', 'shield-half-full']);
+const SVG_BLANCO = new Set(['palette', 'karate', 'boxing-glove', 'shield-half-full', 'weight-lifter', 'dumbbell']);
 
 // sobreColor: para pintarlo sobre el color de la actividad (los bloques de la
 // portada, #302). Cada SVG va entonces con su color de origen, que es el que le

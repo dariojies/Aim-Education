@@ -9365,6 +9365,11 @@ function configTpv() {
     };
 }
 
+// El pago con tarjeta desde el área de familias está cerrado («Próximamente»)
+// hasta que el club lo abra poniendo PAGOS_ONLINE=si en el entorno. Mientras
+// tanto la familia ve lo que tiene pendiente, pero no se crea ningún pedido.
+const pagosOnlineAbiertos = () => process.env.PAGOS_ONLINE === 'si';
+
 // La URL pública desde la que Redsys nos alcanza. En local no existe, así que
 // la notificación no llega y el pago se comprueba consultando su estado.
 function urlPublica(req) {
@@ -9401,6 +9406,7 @@ app.get('/api/me/cargos', authenticateSession, async (req, res) => {
         res.set('Cache-Control', 'no-store');
         res.json({
             activo: true,
+            pagoOnline: pagosOnlineAbiertos(),
             lineas: calc.detalle.map(d => ({
                 cargoId: d.id, descripcion: d.descripcion, mes: d.mes,
                 alumno: `${porId[d.id]?.name || ''} ${porId[d.id]?.surname || ''}`.trim(),
@@ -9420,6 +9426,7 @@ app.post('/api/me/pagos/iniciar', authenticateSession, async (req, res) => {
     const pedidos = Array.isArray(req.body.cargoIds) ? req.body.cargoIds.map(Number).filter(Boolean) : [];
     const guardarTarjeta = !!req.body.guardarTarjeta;
     if (!pedidos.length) return res.status(400).json({ error: 'No has elegido nada que pagar.' });
+    if (!pagosOnlineAbiertos()) return res.status(503).json({ proximamente: true, error: 'El pago con tarjeta por internet estará disponible próximamente. Mientras tanto puedes pagar en secretaría.' });
 
     const cfg = configTpv();
     const client = await pool.connect();

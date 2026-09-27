@@ -747,6 +747,7 @@ function PagoPendiente({ onPagado, onPagoHecho }) {
   const [sel, setSel] = useState(new Set());
   const [yendo, setYendo] = useState(false);
   const [error, setError] = useState('');
+  const [proximamente, setProximamente] = useState(false);
 
   const cargar = useCallback(() => {
     fetch('/api/me/cargos', { credentials: 'include', cache: 'no-store' })
@@ -796,6 +797,8 @@ function PagoPendiente({ onPagado, onPagoHecho }) {
 
   // Se va al banco con un formulario: es como exige el TPV virtual.
   async function pagar() {
+    // Mientras el club no abra el pago por internet, solo se avisa.
+    if (!datos?.pagoOnline) { setProximamente(true); return; }
     setYendo(true); setError('');
     try {
       const r = await fetch('/api/me/pagos/iniciar', {
@@ -803,6 +806,7 @@ function PagoPendiente({ onPagado, onPagoHecho }) {
         body: JSON.stringify({ cargoIds: [...sel] }),
       });
       const d = await r.json();
+      if (d.proximamente) { setProximamente(true); setYendo(false); return; }
       if (!r.ok) { setError(d.error || 'No se ha podido iniciar el pago.'); setYendo(false); return; }
       const form = document.createElement('form');
       form.method = 'POST';
@@ -832,7 +836,29 @@ function PagoPendiente({ onPagado, onPagoHecho }) {
   return (
     <div className="panel">
       <h2><I.CreditCard /> Pendiente de pago</h2>
-      <p className="sub">Elige lo que quieres pagar. La tarjeta se introduce en la pasarela del banco: aquí no se guarda.</p>
+      <p className="sub">
+        {datos.pagoOnline
+          ? 'Elige lo que quieres pagar. La tarjeta se introduce en la pasarela del banco: aquí no se guarda.'
+          : 'Esto es lo que tenéis pendiente. Muy pronto podréis pagarlo desde aquí con tarjeta; de momento, en secretaría.'}
+      </p>
+      {proximamente && (
+        <div role="dialog" aria-modal="true" aria-labelledby="pago-proximamente"
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 2000, display: 'grid', placeItems: 'center', padding: 20 }}
+          onClick={() => setProximamente(false)}>
+          <div className="panel" style={{ maxWidth: 420, width: '100%', margin: 0, textAlign: 'center' }} onClick={e => e.stopPropagation()}>
+            <span style={{
+              width: 56, height: 56, borderRadius: 999, margin: '0 auto 12px', display: 'grid', placeItems: 'center',
+              background: 'color-mix(in oklab, var(--purple) 16%, transparent)', color: 'var(--purple)',
+            }}><I.CreditCard width={26} height={26} /></span>
+            <h2 id="pago-proximamente" style={{ margin: '0 0 6px', justifyContent: 'center' }}>Próximamente</h2>
+            <p className="sub" style={{ margin: '0 0 18px' }}>
+              Estamos terminando de preparar el pago con tarjeta por internet. Mientras tanto, podéis pagar
+              lo pendiente en secretaría.
+            </p>
+            <button type="button" className="btn btn-primary" autoFocus onClick={() => setProximamente(false)}>Entendido</button>
+          </div>
+        </div>
+      )}
 
       {error && (
         <p style={{ color: '#E5484D', fontWeight: 600, fontSize: 14, marginTop: 0 }}>{error}</p>
