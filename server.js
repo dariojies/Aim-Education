@@ -465,6 +465,9 @@ async function initDb() {
         await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS priority VARCHAR(20) DEFAULT 'low'`);
         await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS due_date TIMESTAMP`);
         await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS assigned_to UUID REFERENCES users(user_id) ON DELETE SET NULL`);
+        // Varios encargados a la vez: el principal sigue en assigned_to (que es lo
+        // que lee Aim-Tul) y los demás van aquí.
+        await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS asignados_extra UUID[] NOT NULL DEFAULT '{}'`);
         await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS app_label TEXT[] DEFAULT ARRAY['Aim Education']`);
         // Recurrencia del ticket (ticket #215): cuando uno recurrente se cierra,
         // se genera solo el siguiente con la fecha límite corrida.
@@ -4335,14 +4338,15 @@ async function ticketEnlazable(req, ticketId, coger) {
     const yo = req.userSession.userId;
     const suyos = !permisos(req).soporteCompleto;
     const r = await pool.query(
-        `SELECT id, assigned_to FROM tickets_registrosoporte
-         WHERE id = $1 ${suyos ? 'AND (user_id = $2 OR assigned_to = $2)' : ''}`,
+        `SELECT id, assigned_to, asignados_extra FROM tickets_registrosoporte
+         WHERE id = $1 ${suyos ? 'AND (user_id = $2 OR assigned_to = $2 OR $2 = ANY(asignados_extra))' : ''}`,
         suyos ? [id, yo] : [id]
     );
     if (!r.rowCount) throw { httP: 404, msg: 'Ese ticket no existe o no es tuyo.' };
-    if (coger && !r.rows[0].assigned_to) {
+    if (coger && !r.rows[0].assigned_to && !r.rows[0].asignados_extra?.length) {
         await pool.query(
-            `UPDATE tickets_registrosoporte SET assigned_to = $1 WHERE id = $2 AND assigned_to IS NULL`,
+            `UPDATE tickets_registrosoporte SET assigned_to = $1
+             WHERE id = $2 AND assigned_to IS NULL AND cardinality(asignados_extra) = 0`,
             [yo, id]
         );
     }
@@ -12355,6 +12359,15 @@ function siguienteFechaRecurrente(base, recurrencia) {
     return d;
 }
 
+// Encargados de un ticket, que pueden ser varios: llegan en orden en
+// 'assignedIds' (el primero es el principal y va a assigned_to, el resto a
+// asignados_extra). Si no viene la lista vale el 'assignedTo' de siempre.
+function encargadosDe(b) {
+    const lista = Array.isArray(b.assignedIds) ? b.assignedIds : (b.assignedTo ? [b.assignedTo] : []);
+    const ids = [...new Set(lista.map(String).filter(x => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(x)))];
+    return { principal: ids[0] || null, extra: ids.slice(1) };
+}
+
 app.post('/api/support', authenticateSession, async (req, res) => {
     const { subject, description, adjunto, adjuntoNombre, adjuntoMime } = req.body;
     const userId = req.userSession.userId;
@@ -12370,7 +12383,7 @@ app.post('/api/support', authenticateSession, async (req, res) => {
     const staff = !!req.userSession.canAccessAdmin;
     const b = req.body || {};
     const priority = staff && ['low', 'medium', 'high'].includes(b.priority) ? b.priority : 'low';
-    const assignedTo = staff && b.assignedTo ? b.assignedTo : null;
+    const enc = staff ? encargadosDe(b) : { principal: null, extra: [] };
     const dueDate = staff && b.dueDate ? b.dueDate : null;
     const appLabel = staff && Array.isArray(b.appLabel) && b.appLabel.length ? b.appLabel : ['Aim Education'];
     const recurrencia = staff && RECURRENCIAS.includes(b.recurrencia) ? b.recurrencia : null;
@@ -12378,10 +12391,10 @@ app.post('/api/support', authenticateSession, async (req, res) => {
         const result = await pool.query(
             `INSERT INTO tickets_registrosoporte
                (user_id, subject, description, app_label, adjunto, adjunto_nombre, adjunto_mime,
-                priority, assigned_to, due_date, recurrencia)
-             VALUES ($1,$2,$3,$4::TEXT[],$5,$6,$7,$8,$9,$10::date,$11) RETURNING id`,
+                priority, assigned_to, due_date, recurrencia, asignados_extra)
+             VALUES ($1,$2,$3,$4::TEXT[],$5,$6,$7,$8,$9,$10::date,$11,$12::uuid[]) RETURNING id`,
             [userId, subject, description, appLabel, adjunto || null, adjuntoNombre || null, adjuntoMime || null,
-             priority, assignedTo, dueDate, recurrencia]
+             priority, enc.principal, dueDate, recurrencia, enc.extra]
         );
         const ticketId = result.rows[0].id;
         if (mailTransporter) {
@@ -12421,13 +12434,23 @@ app.get('/api/support', authenticateSession, async (req, res) => {
                    assignee.name as assignee_name,
                    assignee.surname as assignee_surname,
                    (SELECT COUNT(*) FROM tickets_mensajes m WHERE m.ticket_id = s.id AND m.canal = 'equipo')::int AS msgs_equipo,
-                   (SELECT COUNT(*) FROM tickets_mensajes m WHERE m.ticket_id = s.id AND m.canal = 'creador')::int AS msgs_creador
+                   (SELECT COUNT(*) FROM tickets_mensajes m WHERE m.ticket_id = s.id AND m.canal = 'creador')::int AS msgs_creador,
+                   -- Todos los encargados, el principal primero.
+                   COALESCE((SELECT json_agg(json_build_object('id', e.user_id, 'name', e.name, 'surname', e.surname) ORDER BY a.o)
+                             FROM unnest(array_prepend(s.assigned_to, s.asignados_extra)) WITH ORDINALITY a(id, o)
+                             JOIN users e ON e.user_id = a.id), '[]') AS asignados
             FROM tickets_registrosoporte s
             LEFT JOIN users u ON s.user_id = u.user_id
             LEFT JOIN users assignee ON s.assigned_to = assignee.user_id
-            ${soloMios ? 'WHERE s.user_id = $1 OR s.assigned_to = $1' : ''}
+            ${soloMios ? 'WHERE s.user_id = $1 OR s.assigned_to = $1 OR $1 = ANY(s.asignados_extra)' : ''}
             ORDER BY s.created_at DESC
         `, soloMios ? [req.userSession.userId] : []);
+        // Aim-Tul solo cambia assigned_to: si pone de principal a quien ya
+        // estaba entre los demás, que no salga dos veces.
+        for (const t of result.rows) {
+            const vistos = new Set();
+            t.asignados = t.asignados.filter(a => !vistos.has(a.id) && vistos.add(a.id));
+        }
         res.json({ success: true, tickets: result.rows, soloMios });
     } catch (err) {
         console.error('[SUPPORT] Fetch error:', err);
@@ -12440,7 +12463,7 @@ app.put('/api/support/:id', authenticateSession, async (req, res) => {
         return res.status(403).json({ error: 'Sin permisos.' });
     if (!permisos(req).soporteCompleto) {
         const mio = await pool.query(
-            `SELECT 1 FROM tickets_registrosoporte WHERE id = $1 AND (user_id = $2 OR assigned_to = $2)`,
+            `SELECT 1 FROM tickets_registrosoporte WHERE id = $1 AND (user_id = $2 OR assigned_to = $2 OR $2 = ANY(asignados_extra))`,
             [req.params.id, req.userSession.userId]
         );
         if (!mio.rowCount) return res.status(403).json({ error: 'Ese ticket no es tuyo.' });
@@ -12451,7 +12474,7 @@ app.put('/api/support/:id', authenticateSession, async (req, res) => {
     try {
         await client.query('BEGIN');
         const prev = await client.query(
-            `SELECT user_id, subject, description, due_date, recurrencia FROM tickets_registrosoporte WHERE id = $1 FOR UPDATE`,
+            `SELECT user_id, subject, description, due_date, recurrencia, asignados_extra FROM tickets_registrosoporte WHERE id = $1 FOR UPDATE`,
             [req.params.id]);
         if (!prev.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Ese ticket no existe.' }); }
         const p = prev.rows[0];
@@ -12465,6 +12488,11 @@ app.put('/api/support/:id', authenticateSession, async (req, res) => {
         // deja de ser recurrente, para no volver a generarlo si se reabre y cierra.
         const generar = esFinal && !!recEfectiva;
         const recGuardar = generar ? null : recEfectiva;
+        // Con 'assignedIds' se fijan todos los encargados; con el 'assignedTo'
+        // de antes solo cambia el principal y los demás se quedan.
+        const enc = req.body.assignedIds !== undefined
+            ? encargadosDe(req.body)
+            : { principal: assignedTo || null, extra: (p.asignados_extra || []).filter(x => x !== assignedTo) };
 
         // resolved_at se sella la primera vez que pasa a resuelto/cerrado y se borra
         // si vuelve a abrirse, para que "cuánto tardó" siga siendo cierto. El estado
@@ -12474,11 +12502,11 @@ app.put('/api/support/:id', authenticateSession, async (req, res) => {
             `UPDATE tickets_registrosoporte
              SET status = $1, dev_response = $2, priority = $3,
                  due_date = $4, assigned_to = $5, app_label = $6::TEXT[],
-                 recurrencia = $9, updated_at = NOW(),
+                 recurrencia = $9, asignados_extra = $10::uuid[], updated_at = NOW(),
                  resolved_at = CASE WHEN $8 THEN COALESCE(resolved_at, NOW()) ELSE NULL END
              WHERE id = $7`,
-            [nuevoEstado, devResponse || '', priority || 'low', dueDate || null, assignedTo || null,
-             finalAppLabels, req.params.id, esFinal, recGuardar]
+            [nuevoEstado, devResponse || '', priority || 'low', dueDate || null, enc.principal,
+             finalAppLabels, req.params.id, esFinal, recGuardar, enc.extra]
         );
 
         let siguienteId = null;
@@ -12486,10 +12514,10 @@ app.put('/api/support/:id', authenticateSession, async (req, res) => {
             const sig = siguienteFechaRecurrente(dueDate || p.due_date, recEfectiva);
             const nuevo = await client.query(
                 `INSERT INTO tickets_registrosoporte
-                   (user_id, subject, description, app_label, priority, assigned_to, due_date, recurrencia)
-                 VALUES ($1,$2,$3,$4::TEXT[],$5,$6,$7,$8) RETURNING id`,
+                   (user_id, subject, description, app_label, priority, assigned_to, due_date, recurrencia, asignados_extra)
+                 VALUES ($1,$2,$3,$4::TEXT[],$5,$6,$7,$8,$9::uuid[]) RETURNING id`,
                 [p.user_id, p.subject, p.description, finalAppLabels, priority || 'low',
-                 assignedTo || null, sig ? sig.toISOString() : null, recEfectiva]);
+                 enc.principal, sig ? sig.toISOString() : null, recEfectiva, enc.extra]);
             siguienteId = nuevo.rows[0].id;
         }
         await client.query('COMMIT');
@@ -12700,8 +12728,8 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         const misGrupos = permisosYo.soloSusGrupos ? await gruposDe(req.userSession.userId) : null;
         const [tickets, mensajes, cobros, cajas, camp, espera] = await Promise.all([
             pool.query(
-                `SELECT COUNT(*) FILTER (WHERE assigned_to IS NULL)::int AS sin_asignar,
-                        COUNT(*) FILTER (WHERE assigned_to = $1)::int AS mios,
+                `SELECT COUNT(*) FILTER (WHERE assigned_to IS NULL AND cardinality(asignados_extra) = 0)::int AS sin_asignar,
+                        COUNT(*) FILTER (WHERE assigned_to = $1 OR $1 = ANY(asignados_extra))::int AS mios,
                         COUNT(*) FILTER (WHERE priority = 'high')::int AS urgentes
                  FROM tickets_registrosoporte WHERE status = 'open'`, [yo]),
             // Mensajes de otros en las últimas 48 h, que es lo que hay sin leer
@@ -12718,7 +12746,7 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                  WHERE m.created_at > NOW() - INTERVAL '48 hours'
                    AND COALESCE(m.autor_id::text, '') <> $1 AND t.status = 'open'
                    -- A un instructor solo se le avisa de sus propios tickets.
-                   AND ($2::boolean OR t.user_id::text = $1 OR t.assigned_to::text = $1)
+                   AND ($2::boolean OR t.user_id::text = $1 OR t.assigned_to::text = $1 OR $1 = ANY(t.asignados_extra::text[]))
                  GROUP BY t.id, t.subject
                  ORDER BY MAX(m.created_at) DESC`, [String(yo), !!permisosYo.soporteCompleto]),
             pool.query(
@@ -12875,8 +12903,10 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         if (String(req.userSession.email || '').toLowerCase() === AVISO_SOPORTE_PARA) {
             const s = await pool.query(
                 `SELECT COUNT(*)::int n, COUNT(*) FILTER (WHERE t.priority = 'high')::int urgentes
-                 FROM tickets_registrosoporte t JOIN users u ON u.user_id = t.assigned_to
-                 WHERE t.status = 'open' AND LOWER(u.email) = $1`, [CUENTA_SOPORTE]
+                 FROM tickets_registrosoporte t
+                 WHERE t.status = 'open' AND EXISTS (
+                     SELECT 1 FROM users u WHERE LOWER(u.email) = $1
+                        AND (u.user_id = t.assigned_to OR u.user_id = ANY(t.asignados_extra)))`, [CUENTA_SOPORTE]
             );
             const n = s.rows[0]?.n || 0;
             if (n) {

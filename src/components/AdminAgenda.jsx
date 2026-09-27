@@ -50,8 +50,8 @@ function ElegirTicket({ valor, onElegir, coger, onCoger, yo }) {
         return tickets
             .filter(t => t.status !== 'done' && t.status !== 'resolved')
             .filter(t => ambito === 'todos'
-                || (ambito === 'mios' && (t.assigned_to === yo || t.user_id === yo))
-                || (ambito === 'sinDuenio' && !t.assigned_to))
+                || (ambito === 'mios' && (t.assigned_to === yo || t.user_id === yo || t.asignados?.some(a => a.id === yo)))
+                || (ambito === 'sinDuenio' && !t.assigned_to && !t.asignados?.length))
             .filter(t => !q || `${t.id} ${t.subject}`.toLowerCase().includes(q))
             .slice(0, 40);
     }, [tickets, ambito, busca, yo]);
@@ -90,7 +90,7 @@ function ElegirTicket({ valor, onElegir, coger, onCoger, yo }) {
                         <b>#{t.id}</b> {t.subject}
                         <span style={{ color: 'var(--ink-3)' }}>
                             {' · '}{t.priority === 'high' ? 'alta' : t.priority === 'medium' ? 'media' : 'baja'}
-                            {!t.assigned_to ? ' · sin dueño' : ''}
+                            {!t.assigned_to && !t.asignados?.length ? ' · sin dueño' : ''}
                         </span>
                     </button>
                 ))}

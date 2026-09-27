@@ -67,6 +67,14 @@ function tardanza(t) {
   return `${dias} días`;
 }
 
+// Los encargados de un ticket (pueden ser varios; el principal va primero).
+const encargadosDe = t => (t.asignados?.length ? t.asignados
+  : t.assigned_to ? [{ id: t.assigned_to, name: t.assignee_name, surname: t.assignee_surname }] : []);
+const nombresEncargados = t => encargadosDe(t).map(a => `${a.name || ''} ${a.surname || ''}`.trim()).join(', ');
+const esEncargado = (t, id) => !!id && encargadosDe(t).some(a => a.id === id);
+// Marcar o desmarcar a alguien sin perder el orden de los demás.
+const alternarEn = (lista, id) => (lista.includes(id) ? lista.filter(x => x !== id) : [...lista, id]);
+
 // Texto de un ticket. Lo usan tanto "copiar este ticket" como el listado completo,
 // para que los dos formatos no se separen con el tiempo.
 function ticketATexto(t) {
@@ -76,7 +84,7 @@ function ticketATexto(t) {
   s += `Apps: ${apps}\n`;
   s += `Creado: ${fmtDateTime(t.created_at)}${hace(t.created_at) ? ` (${hace(t.created_at)})` : ''}\n`;
   s += `Creado por: ${t.name} ${t.surname || ''} (${t.email})\n`;
-  s += `Asignado: ${t.assignee_name ? `${t.assignee_name} ${t.assignee_surname || ''}` : 'Sin asignar'}\n`;
+  s += `Encargados: ${nombresEncargados(t) || 'Sin asignar'}\n`;
   s += `Vence: ${t.due_date ? fmtDate(t.due_date) : 'N/A'}\n`;
   s += `Descripción: ${t.description}\n`;
   if (t.dev_response) s += `Respuesta: ${t.dev_response}\n`;
@@ -367,7 +375,7 @@ export function AdminSupport({ user, ticketId = null }) {
   const [imagenAlta, setImagenAlta] = useState(null);
   // Gestión interna al crear el ticket (ticket #214).
   const [nuevaPrioridad, setNuevaPrioridad] = useState('low');
-  const [nuevoAsignado, setNuevoAsignado] = useState('');
+  const [nuevosAsignados, setNuevosAsignados] = useState([]);
   const [nuevaFecha, setNuevaFecha] = useState('');
   const [nuevasApps, setNuevasApps] = useState(['Aim Education']);
   const [nuevaRecurrencia, setNuevaRecurrencia] = useState('');
@@ -385,7 +393,7 @@ export function AdminSupport({ user, ticketId = null }) {
   const [devResponse, setDevResponse] = useState('');
   const [ticketPriority, setTicketPriority] = useState('low');
   const [ticketDueDate, setTicketDueDate] = useState('');
-  const [ticketAssignedId, setTicketAssignedId] = useState('');
+  const [ticketAsignados, setTicketAsignados] = useState([]);
   const [ticketAppLabels, setTicketAppLabels] = useState(['Aim Education']);
   const [ticketRecurrencia, setTicketRecurrencia] = useState('');
   const [updating, setUpdating] = useState(false);
@@ -453,7 +461,7 @@ export function AdminSupport({ user, ticketId = null }) {
     setDevResponse(t.dev_response || '');
     setTicketPriority(t.priority || 'low');
     setTicketDueDate(fmtDue(t.due_date) || '');
-    setTicketAssignedId(t.assigned_to || '');
+    setTicketAsignados(encargadosDe(t).map(a => a.id));
     setTicketRecurrencia(t.recurrencia || '');
     setTicketAppLabels(Array.isArray(t.app_label) ? t.app_label : ['Aim Education']);
     setUpdateMsg('');
@@ -469,7 +477,7 @@ export function AdminSupport({ user, ticketId = null }) {
       devResponse,
       priority: ticketPriority,
       dueDate: parseInputDate(ticketDueDate),
-      assignedTo: ticketAssignedId || null,
+      assignedIds: ticketAsignados,
       appLabel: ticketAppLabels,
       recurrencia: ticketRecurrencia || null,
     };
@@ -500,7 +508,7 @@ export function AdminSupport({ user, ticketId = null }) {
           subject, description,
           adjunto: imagenAlta?.data || null, adjuntoNombre: imagenAlta?.nombre || null, adjuntoMime: imagenAlta?.mime || null,
           priority: nuevaPrioridad,
-          assignedTo: nuevoAsignado || null,
+          assignedIds: nuevosAsignados,
           dueDate: parseInputDate(nuevaFecha),
           appLabel: nuevasApps.length ? nuevasApps : ['Aim Education'],
           recurrencia: nuevaRecurrencia || null,
@@ -510,7 +518,7 @@ export function AdminSupport({ user, ticketId = null }) {
       if (d.success) {
         setSubmitMsg('Ticket #' + d.ticketId + ' creado correctamente.');
         setSubject(''); setDescription(''); setImagenAlta(null);
-        setNuevaPrioridad('low'); setNuevoAsignado(''); setNuevaFecha(''); setNuevasApps(['Aim Education']); setNuevaRecurrencia('');
+        setNuevaPrioridad('low'); setNuevosAsignados([]); setNuevaFecha(''); setNuevasApps(['Aim Education']); setNuevaRecurrencia('');
         fetchTickets();
         setTimeout(() => setActiveTab('list'), 1500);
       } else { setSubmitMsg(d.error || 'Error al crear el ticket.'); }
@@ -542,7 +550,7 @@ export function AdminSupport({ user, ticketId = null }) {
         <div style="font-size:14px;line-height:1.6;white-space:pre-wrap">${t.description}</div>
         <div class="meta">
           <div><strong>Creado por:</strong><br>${t.name} ${t.surname||''}<br><span style="font-size:11px">${t.email}</span></div>
-          <div><strong>Asignado a:</strong><br>${t.assignee_name ? `${t.assignee_name} ${t.assignee_surname||''}` : 'Sin asignar'}</div>
+          <div><strong>Encargados:</strong><br>${nombresEncargados(t) || 'Sin asignar'}</div>
           <div><strong>Fecha creación:</strong><br>${fmtDate(t.created_at)}</div>
           <div><strong>Fecha límite:</strong><br>${t.due_date ? fmtDate(t.due_date) : 'Sin fecha'}</div>
         </div>
@@ -595,7 +603,7 @@ export function AdminSupport({ user, ticketId = null }) {
       if (!q) return true;
       if (q.replace('#', '') === String(t.id)) return true;
       return [t.subject, t.description, t.dev_response, t.name, t.surname, t.email,
-        t.assignee_name, t.assignee_surname]
+        nombresEncargados(t)]
         .some(v => (v || '').toString().toLowerCase().includes(q));
     };
     return tickets
@@ -604,7 +612,7 @@ export function AdminSupport({ user, ticketId = null }) {
         (filterPriority === 'all' || t.priority === filterPriority) &&
         (filterApp === 'all' || (Array.isArray(t.app_label) ? t.app_label.includes(filterApp) : t.app_label === filterApp)) &&
         (filterStatus === 'all' || t.status === filterStatus) &&
-        (!filterOnlyMe || t.assigned_to === user?.id)
+        (!filterOnlyMe || esEncargado(t, user?.id))
       )
       .sort((a, b) => {
         const peso = { high: 3, medium: 2, low: 1 };
@@ -719,13 +727,14 @@ export function AdminSupport({ user, ticketId = null }) {
               </div>
 
               <div>
-                <p style={cabecillaCss}>Responsable</p>
+                <p style={cabecillaCss}>Encargados <span style={{textTransform: "none", letterSpacing: 0, fontWeight: 600}}>· puedes marcar varios</span></p>
                 <div style={{display: "flex", gap: 8, flexWrap: "wrap"}}>
-                  <button type="button" onClick={() => setNuevoAsignado('')}
-                    style={pillCss(!nuevoAsignado)}>Sin asignar</button>
+                  <button type="button" onClick={() => setNuevosAsignados([])}
+                    style={pillCss(!nuevosAsignados.length)}>Sin asignar</button>
                   {superadmins.map(sa => (
-                    <button key={sa.id} type="button" onClick={() => setNuevoAsignado(sa.id)}
-                      style={pillCss(nuevoAsignado === sa.id)}>{sa.name} {sa.surname || ''}</button>
+                    <button key={sa.id} type="button" aria-pressed={nuevosAsignados.includes(sa.id)}
+                      onClick={() => setNuevosAsignados(l => alternarEn(l, sa.id))}
+                      style={pillCss(nuevosAsignados.includes(sa.id))}>{sa.name} {sa.surname || ''}</button>
                   ))}
                 </div>
               </div>
@@ -807,7 +816,7 @@ export function AdminSupport({ user, ticketId = null }) {
                   <div style={{fontSize: 12, color: "var(--ink-3)", marginTop: 4}}>
                     De: {t.name} {t.surname || ''}
                     {tardo ? ` · tardó ${tardo}` : ''}
-                    {t.assignee_name ? ` · lo hizo ${t.assignee_name} ${t.assignee_surname || ''}` : ''}
+                    {nombresEncargados(t) ? ` · lo hizo ${nombresEncargados(t)}` : ''}
                   </div>
                 </div>
               );
@@ -910,8 +919,8 @@ export function AdminSupport({ user, ticketId = null }) {
                       <span title={fmtDateTime(t.created_at)}>Creado: {fmtDate(t.created_at)}{hace(t.created_at) ? ` · ${hace(t.created_at)}` : ''}</span>
                       {t.due_date && <span style={{color: "var(--orange)", fontWeight: 700}}>Vence: {fmtDue(t.due_date)}</span>}
                     </div>
-                    {t.assignee_name && (
-                      <span style={{fontWeight: 600}}>→ {t.assignee_name} {t.assignee_surname || ''}</span>
+                    {nombresEncargados(t) && (
+                      <span style={{fontWeight: 600}}>→ {nombresEncargados(t)}</span>
                     )}
                   </div>
                 </div>
@@ -1084,15 +1093,15 @@ export function AdminSupport({ user, ticketId = null }) {
 
               {/* Assignee */}
               <div style={{marginBottom: 16}}>
-                <p style={{margin: "0 0 8px", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--ink-3)"}}>Asignado a (superadmins)</p>
+                <p style={{margin: "0 0 8px", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--ink-3)"}}>Encargados <span style={{textTransform: "none", letterSpacing: 0, fontWeight: 600}}>· puedes marcar varios</span></p>
                 <div style={{display: "flex", gap: 8, flexWrap: "wrap"}}>
-                  <button onClick={() => setTicketAssignedId('')}
-                    style={{padding: "6px 14px", borderRadius: 8, border: "1px solid var(--line)", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit", background: !ticketAssignedId ? "var(--purple)" : "var(--bg-3)", color: !ticketAssignedId ? "white" : "var(--ink-2)"}}>
+                  <button onClick={() => setTicketAsignados([])}
+                    style={{padding: "6px 14px", borderRadius: 8, border: "1px solid var(--line)", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit", background: !ticketAsignados.length ? "var(--purple)" : "var(--bg-3)", color: !ticketAsignados.length ? "white" : "var(--ink-2)"}}>
                     Sin asignar
                   </button>
                   {superadmins.map(sa => (
-                    <button key={sa.id} onClick={() => setTicketAssignedId(sa.id)}
-                      style={{padding: "6px 14px", borderRadius: 8, border: "1px solid var(--line)", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit", background: ticketAssignedId === sa.id ? "var(--purple)" : "var(--bg-3)", color: ticketAssignedId === sa.id ? "white" : "var(--ink-2)"}}>
+                    <button key={sa.id} aria-pressed={ticketAsignados.includes(sa.id)} onClick={() => setTicketAsignados(l => alternarEn(l, sa.id))}
+                      style={{padding: "6px 14px", borderRadius: 8, border: "1px solid var(--line)", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit", background: ticketAsignados.includes(sa.id) ? "var(--purple)" : "var(--bg-3)", color: ticketAsignados.includes(sa.id) ? "white" : "var(--ink-2)"}}>
                       {sa.name} {sa.surname || ''}
                     </button>
                   ))}
