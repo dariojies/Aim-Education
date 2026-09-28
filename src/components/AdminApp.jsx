@@ -6634,7 +6634,10 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
   useEffect(() => { setView(subroute); }, [subroute]);
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  function navTo(id) { setView(id); setSidebarOpen(false); }
+  // La pestaña del CRM (segmentos, campañas, automatismos) se elige también
+  // desde el menú, así que vive aquí y no dentro de Comunicaciones.
+  const [pestanaCrm, setPestanaCrm] = useState('segmentos');
+  function navTo(id, pestana) { setView(id); if (pestana) setPestanaCrm(pestana); setSidebarOpen(false); }
 
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [notification, setNotification] = useState(null);
@@ -6971,8 +6974,17 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "students", label: "Alumnos", icon: <I.Users /> },
         { id: "familias", label: "Familias", icon: <I.Heart /> },
         { id: "faltas", label: "Faltas", icon: <I.Phone /> },
-        { id: "comunicaciones", label: "Comunicaciones", icon: <I.Mail /> },
         { id: "instructors", label: "Instructores", icon: <I.Whistle /> },
+      ]
+    },
+    {
+      // El CRM tiene su propio apartado: cada pestaña de Comunicaciones es una
+      // entrada, y las consultas que llegan por la web son contactos nuevos.
+      heading: "CRM", items: [
+        { id: "comunicaciones", pestana: "segmentos", label: "Segmentos", icon: <I.Filter width={18} height={18} /> },
+        { id: "comunicaciones", pestana: "campanas", label: "Campañas", icon: <I.Mail /> },
+        { id: "comunicaciones", pestana: "automatismos", label: "Automatismos", icon: <I.Spark width={18} height={18} /> },
+        { id: "contactos", label: "Consultas web", icon: <I.Globe width={18} height={18} /> },
       ]
     },
     {
@@ -6995,7 +7007,6 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
       heading: "Web pública", items: [
         { id: "portada", label: "Portada", icon: <I.Portada /> },
         { id: "news", label: "Noticias / Foro", icon: <I.Newspaper /> },
-        { id: "contactos", label: "Consultas web", icon: <I.Mail /> },
       ]
     },
     {
@@ -7012,6 +7023,16 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
     .map(g => ({ ...g, items: g.items.filter(i => permisos.secciones[i.id]) }))
     .filter(g => g.items.length > 0);
 
+  // Menú en acordeón: solo se ve abierto un grupo, el de la sección en la que
+  // se está, y los demás se quedan en su título. Tocando un título se abre ese
+  // (y se cierra el anterior); tocando el abierto se cierra. Si alguien solo
+  // tiene un grupo, se queda siempre abierto.
+  const esActivo = (it) => view === it.id && (!it.pestana || it.pestana === pestanaCrm);
+  const grupoDeVista = sections.find(g => g.items.some(esActivo))?.heading || null;
+  const [grupoAbierto, setGrupoAbierto] = useState(grupoDeVista);
+  useEffect(() => { if (grupoDeVista) setGrupoAbierto(grupoDeVista); }, [grupoDeVista]);
+  const plegable = sections.length > 1;
+
   async function handleLogout() {
     if (onLogout) await onLogout();
     else go("/");
@@ -7027,17 +7048,32 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
             <span className="role">Panel admin</span>
           </div>
 
-          {sections.map((s, i) => (
-            <div key={i} className="admin-nav">
-              <div className="heading">{s.heading}</div>
-              {s.items.map(it => (
-                <button key={it.id} className={view === it.id ? "is-active" : ""} onClick={() => navTo(it.id)}>
-                  {it.icon}
-                  <span>{it.label}</span>
-                </button>
-              ))}
-            </div>
-          ))}
+          {sections.map((s, i) => {
+            const abierto = !plegable || grupoAbierto === s.heading;
+            const aqui = s.heading === grupoDeVista;
+            return (
+              <div key={i} className={`admin-nav${abierto ? ' is-open' : ''}`}>
+                {plegable ? (
+                  <button type="button" className={`heading${aqui ? ' is-here' : ''}`} aria-expanded={abierto}
+                    onClick={() => setGrupoAbierto(abierto ? null : s.heading)}>
+                    <span>{s.heading}</span>
+                    {!abierto && aqui && <span className="dot" aria-label="Estás aquí" />}
+                    <I.Chevron width={13} height={13} className="chev" />
+                  </button>
+                ) : <div className="heading">{s.heading}</div>}
+                <div className="grupo" inert={!abierto}>
+                  <div>
+                    {s.items.map(it => (
+                      <button key={`${it.id}:${it.pestana || ''}`} className={esActivo(it) ? "is-active" : ""} onClick={() => navTo(it.id, it.pestana)}>
+                        {it.icon}
+                        <span>{it.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
 
           <div className="me">
             <div className="avatar" style={{ width: 36, height: 36, fontSize: 13 }}>{adminInitials}</div>
@@ -7179,7 +7215,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("objetos") && <AdminObjetosPerdidos showToast={showToast} />}
           {ver("speaking") && <AdminSpeaking showToast={showToast} />}
           {ver("faltas") && <AdminFaltas onAbrirFicha={abrirFicha} />}
-          {ver("comunicaciones") && <AdminComunicaciones showToast={showToast} onAbrirFicha={abrirFicha} />}
+          {ver("comunicaciones") && <AdminComunicaciones showToast={showToast} onAbrirFicha={abrirFicha} pestana={pestanaCrm} onPestana={setPestanaCrm} />}
           {ver("support") && <AdminSupport user={user} ticketId={ticketId} />}
         </div>
       </div>

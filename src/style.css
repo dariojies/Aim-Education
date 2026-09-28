@@ -2677,6 +2677,88 @@ html[data-theme="dark"] .dash-nav button.is-active {
   padding-top: 8px;
 }
 
+/* Menú en acordeón: el título de cada grupo es un botón que lo abre o lo
+   cierra. Plegado, el grupo ocupa solo su título. */
+.admin-nav button.heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: .14em;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, .45);
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.admin-nav button.heading:hover,
+.admin-nav button.heading:focus-visible {
+  background: rgba(255, 255, 255, .06);
+  color: white;
+}
+
+.admin-nav.is-open button.heading,
+.admin-nav button.heading.is-here {
+  color: rgba(255, 255, 255, .8);
+}
+
+.admin-nav button.heading .chev {
+  margin-left: auto;
+  flex-shrink: 0;
+  transform: rotate(-90deg);
+  transition: transform var(--tx-fast) ease;
+}
+
+.admin-nav.is-open button.heading .chev {
+  transform: rotate(0deg);
+}
+
+/* Punto que marca el grupo plegado donde está la sección abierta. */
+.admin-nav button.heading .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #FF99D3;
+}
+
+.admin-nav .grupo {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows .22s ease;
+}
+
+.admin-nav.is-open .grupo {
+  grid-template-rows: 1fr;
+}
+
+.admin-nav .grupo > div {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.admin-nav.is-open .grupo > div {
+  padding-top: 4px;
+}
+
+/* Plegados, los grupos van más juntos: solo se ven sus títulos. */
+.admin-nav:not(.is-open) + .admin-nav {
+  margin-top: 6px;
+  padding-top: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-nav .grupo,
+  .admin-nav button.heading .chev {
+    transition: none;
+  }
+}
+
 .admin-nav button {
   display: flex;
   align-items: center;

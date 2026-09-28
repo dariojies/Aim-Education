@@ -35,8 +35,12 @@ function Fila({ titulo, children }) {
 }
 
 // Comunicaciones: pestañas de segmentos (#313) y campañas (#314).
-export default function AdminComunicaciones({ showToast, onAbrirFicha }) {
-  const [pestana, setPestana] = useState('segmentos');
+// La pestaña la lleva el panel (se elige también desde el menú del CRM); si no
+// se la pasan, la guarda ella misma.
+export default function AdminComunicaciones({ showToast, onAbrirFicha, pestana: pestanaFuera, onPestana }) {
+  const [pestanaDentro, setPestanaDentro] = useState('segmentos');
+  const pestana = pestanaFuera || pestanaDentro;
+  const setPestana = onPestana || setPestanaDentro;
   return (
     <div style={{ display: 'grid', gap: 16 }}>
       <div style={{ ...grupoPastillas, justifySelf: 'start' }}>
