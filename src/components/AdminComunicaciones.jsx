@@ -205,10 +205,10 @@ function EditorSegmento({ inicial, opciones, guardados, guardarLista, onAbrirFic
       <div className="seg-editor">
         <div className="panel" style={{ display: 'grid', gap: 26, margin: 0 }}>
           <Paso n={1} titulo="¿Qué alumnos?">
-            <div style={grupoPastillas} role="radiogroup" aria-label="Qué alumnos">
-              {[['activos', 'Los que vienen ahora'], ['baja', 'Los que ya no vienen'], ['todos', 'Los dos']].map(([k, t]) => (
-                <button key={k} type="button" role="radio" aria-checked={f.estado === k} style={pastilla(f.estado === k)} onClick={() => cambia('estado', k)}>{t}</button>
-              ))}
+            <div role="radiogroup" aria-label="Qué alumnos" style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <Opcion activa={f.estado === 'activos'} onClick={() => cambia('estado', 'activos')} titulo="Alumnos actuales" texto="Apuntados ahora a alguna clase." />
+              <Opcion activa={f.estado === 'baja'} onClick={() => cambia('estado', 'baja')} titulo="Antiguos alumnos" texto="Estuvieron apuntados y ya no vienen." />
+              <Opcion activa={f.estado === 'todos'} onClick={() => cambia('estado', 'todos')} titulo="Actuales y antiguos" texto="Todos los que han pasado por el club." />
             </div>
             <div style={{ display: 'grid', gap: 6 }}>
               <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-2)' }}>De qué actividades</span>
@@ -262,9 +262,9 @@ function EditorSegmento({ inicial, opciones, guardados, guardarLista, onAbrirFic
           <Paso n={3} titulo="¿A quién le escribimos?">
             <div role="radiogroup" aria-label="A quién se escribe" style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               <Opcion activa={f.destino !== 'alumno'} onClick={() => cambia('destino', 'familia')} titulo="A sus padres o tutores"
-                texto="Lo normal con menores. Si un alumno no tiene tutores con correo, se le escribe a él." />
+                texto="Lo habitual. Si un alumno no tiene padres o tutores con correo, se le escribe a él." />
               <Opcion activa={f.destino === 'alumno'} onClick={() => cambia('destino', 'alumno')} titulo="Al propio alumno"
-                texto="Para alumnos adultos, a su propio correo." />
+                texto="A su propio correo, también si es menor: sus padres lo autorizan al firmar la matrícula." />
             </div>
           </Paso>
         </div>

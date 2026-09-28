@@ -68,7 +68,7 @@ function sectionLabel(id) {
     events: "Eventos y talleres",
     camp: "Campamento de verano",
     titulos: "Títulos y exámenes",
-    billing: "Facturación",
+    billing: "Ingresos",
     groups: "Grupos",
     instructors: "Instructores",
     agenda: "Mi día",
@@ -4566,6 +4566,16 @@ function BillingTPV({ showToast }) {
                   {cobrando ? 'Cobrando...' : `Cobrar ${eur(total)}`}
                 </button>
               )}
+              {/* En qué está apuntado cada uno: por si quieren pagar algo por
+                  adelantado, se ve sin tener que abrir las fichas. */}
+              <div style={{ fontSize: 11, color: 'var(--ink-3)', lineHeight: 1.5, display: 'grid', gap: 2 }}>
+                <span style={{ fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em' }}>Apuntados ahora</span>
+                {family.some(f => f.clases?.length)
+                  ? family.filter(f => f.clases?.length).map(f => (
+                    <span key={f.id}><b style={{ color: 'var(--ink-2)' }}>{f.nombre}</b>: {f.clases.map(c => `${c.actividad} (${c.grupo})`).join(', ')}</span>
+                  ))
+                  : <span>Nadie de la familia está apuntado a ninguna clase ahora.</span>}
+              </div>
             </div>
           </div>
         </>
@@ -6998,8 +7008,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
       ]
     },
     {
-      heading: "Dinero", items: [
-        { id: "billing", label: "Facturación", icon: <I.CreditCard /> },
+      heading: "Facturación", items: [
+        { id: "billing", label: "Ingresos", icon: <I.CreditCard /> },
         { id: "payments", label: "Gastos", icon: <I.Wallet /> },
       ]
     },

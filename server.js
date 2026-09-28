@@ -7384,8 +7384,15 @@ app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async
                 [fam]
             ),
             pool.query(
-                `SELECT user_id, name, surname, birthday FROM users WHERE user_id = ANY($1::uuid[]) ORDER BY birthday NULLS FIRST`,
-                [fam]
+                // Con sus clases de ahora, para saber qué está pagando (o qué
+                // podría pagar por adelantado) sin salir del cobro.
+                `SELECT u.user_id, u.name, u.surname, u.birthday,
+                        (SELECT json_agg(json_build_object('actividad', a.name, 'grupo', g.name) ORDER BY a.name, g.name)
+                         FROM tul_group_students s JOIN tul_groups g ON g.group_id = s.group_id
+                         JOIN tul_activities a ON a.activity_id = g.activity_id
+                         WHERE s.student_id = u.user_id AND a.club_id = $2) AS clases
+                 FROM users u WHERE u.user_id = ANY($1::uuid[]) ORDER BY u.birthday NULLS FIRST`,
+                [fam, AIM_CLUB_ID]
             ),
             // Anticipos disponibles de la familia, para poder aplicarlos (ticket #221).
             pool.query(
@@ -7403,7 +7410,7 @@ app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async
         res.json({
             familia: familia.rows.map(u => {
                 const edad = edadDe(u.birthday);
-                return { id: u.user_id, nombre: u.name, apellidos: u.surname, edad, esMenor: edad != null && edad < 18 };
+                return { id: u.user_id, nombre: u.name, apellidos: u.surname, edad, esMenor: edad != null && edad < 18, clases: u.clases || [] };
             }),
             anticipos: anticipos.rows.map(a => ({
                 id: a.id, clienteId: a.cliente_id, nombre: a.name, apellidos: a.surname,
