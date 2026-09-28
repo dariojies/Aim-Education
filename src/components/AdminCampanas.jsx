@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { I } from './Icons.jsx';
 import { fmtFechaHora } from '../fechas.js';
 import { useEnVivo } from '../envivo.js';
+import { TIPOS_CORREO } from './crmTextos.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Campañas (CRM 5, ticket #314): un correo a todo un segmento guardado. Sale por
@@ -10,8 +11,9 @@ import { useEnVivo } from '../envivo.js';
 // una prueba a uno mismo, pausar y reanudar, y ver el detalle de cada envío.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const TIPOS = [['comercial', 'Comercial'], ['actividades', 'De sus actividades'], ['servicio', 'De servicio']];
-const NOMBRE_TIPO = Object.fromEntries(TIPOS);
+// Mismos nombres que en Segmentos; primero la publicidad, que es lo habitual.
+const TIPOS = ['comercial', 'actividades', 'servicio'].map(id => TIPOS_CORREO.find(t => t.id === id));
+const NOMBRE_TIPO = Object.fromEntries(TIPOS.map(t => [t.id, t.nombre]));
 const ESTADO = { borrador: ['Borrador', 'var(--ink-3)'], enviando: ['Enviándose', 'var(--purple)'], pausada: ['En pausa', 'var(--orange)'], enviada: ['Enviada', 'var(--teal)'] };
 const VARIABLES = ['{nombre}', '{alumno}', '{clases}', '{pendiente}', '{mes}'];
 const campo = { fontFamily: 'inherit', fontSize: 14, padding: '9px 11px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', width: '100%' };
@@ -80,9 +82,10 @@ function Editor({ inicial, segmentos, plantillas, onGuardada, onCerrar, showToas
           {segmentos.map(s => <option key={s.id} value={s.nombre}>{s.nombre}</option>)}
         </select>
         <div style={{ display: 'inline-flex', flexWrap: 'wrap', border: '1px solid var(--line)', borderRadius: 999, overflow: 'hidden', background: 'var(--bg-3)' }}>
-          {TIPOS.map(([k, t]) => <button key={k} type="button" style={pastilla(c.tipo === k)} onClick={() => cambia('tipo', k)}>{t}</button>)}
+          {TIPOS.map(t => <button key={t.id} type="button" style={pastilla(c.tipo === t.id)} onClick={() => cambia('tipo', t.id)}>{t.nombre}</button>)}
         </div>
       </div>
+      {(() => { const t = TIPOS.find(x => x.id === c.tipo); return t && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{t.ejemplo} {t.quien}</span>; })()}
       {!segmentos.length && <span style={{ fontSize: 12, color: 'var(--orange)' }}>Primero guarda un segmento en la pestaña «Segmentos».</span>}
       {cuantos && (
         <span style={{ fontSize: 13 }}>
@@ -170,7 +173,7 @@ function Detalle({ id, onVolver, onAbrirFicha, showToast }) {
   );
 }
 
-export default function AdminCampanas({ showToast, onAbrirFicha }) {
+export default function AdminCampanas({ showToast, onAbrirFicha, nuevaConSegmento, onEmpezada }) {
   const [lista, setLista] = useState(null);
   const [segmentos, setSegmentos] = useState([]);
   const [plantillas, setPlantillas] = useState([]);
@@ -183,6 +186,14 @@ export default function AdminCampanas({ showToast, onAbrirFicha }) {
     api('/api/admin/comunicaciones/plantillas').then(d => setPlantillas(d.plantillas || [])).catch(() => {});
   }, [cargar]);
   useEnVivo(cargar, { cada: 8000, activo: !editando && !viendo && (lista || []).some(c => c.estado === 'enviando') });
+  // Desde un segmento, «Usar en una campaña»: se abre una nueva con él puesto.
+  useEffect(() => {
+    if (!nuevaConSegmento) return;
+    api('/api/admin/segmentos').then(d => setSegmentos(d.segmentos || [])).catch(() => {});
+    setViendo(null);
+    setEditando({ nombre: '', asunto: '', cuerpo: '', tipo: 'comercial', segmentoNombre: nuevaConSegmento });
+    onEmpezada?.();
+  }, [nuevaConSegmento, onEmpezada]);
 
   if (editando) return <Editor inicial={editando} segmentos={segmentos} plantillas={plantillas} showToast={showToast}
     onCerrar={() => { setEditando(null); cargar(); }} onGuardada={(id) => { setEditando(null); setViendo(id); cargar(); }} />;

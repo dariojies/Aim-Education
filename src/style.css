@@ -2948,6 +2948,30 @@ html[data-theme="dark"] .dash-nav button.is-active {
   border-color: var(--ink);
 }
 
+/* Editor de segmentos del CRM: los pasos a la izquierda y el resumen al lado,
+   quieto mientras se baja. En pantallas estrechas, uno debajo del otro. */
+.seg-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 16px;
+  align-items: start;
+}
+
+.seg-editor .seg-resumen {
+  position: sticky;
+  top: 16px;
+}
+
+@media (max-width: 1000px) {
+  .seg-editor {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .seg-editor .seg-resumen {
+    position: static;
+  }
+}
+
 /* Data table */
 .data-table {
   background: var(--bg-2);

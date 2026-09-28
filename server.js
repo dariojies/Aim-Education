@@ -10267,21 +10267,33 @@ async function resolverSegmento(f) {
     const tipo = TIPOS_CORREO.includes(f?.tipo) ? f.tipo : 'servicio';
     const destino = f?.destino === 'alumno' ? 'alumno' : 'familia';
     const real = (e) => (e && !esCorreoInterno(e) ? e : null);
+    // A quién se escribe con cada tipo de correo: el de servicio llega a todos
+    // los que tienen correo; los otros dos respetan lo que ha dicho cada uno.
+    const conTipo = (x, para, tp) => {
+        if (!para.length) return { para, fuera: 'sin correo' };
+        if (tp === 'actividades' && x.act === false) return { para: [], fuera: 'no quiere comunicaciones de sus actividades' };
+        if (tp === 'comercial') {
+            const si = para.filter(d => d.com === true);
+            return si.length ? { para: si, fuera: null } : { para: [], fuera: 'no acepta comerciales' };
+        }
+        return { para, fuera: null };
+    };
+    const porTipo = Object.fromEntries(TIPOS_CORREO.map(tp => [tp, { alumnos: 0, correos: new Set() }]));
     const alumnos = r.rows.map(x => {
         const propio = { id: x.user_id, nombre: `${x.name || ''} ${x.surname || ''}`.trim(), relacion: 'Alumno/a', email: real(x.email), com: x.com };
         const tutores = (tutoresDe.get(x.user_id) || []).map(t => ({ id: t.user_id, nombre: `${t.name || ''} ${t.surname || ''}`.trim(), relacion: t.tipo, email: real(t.email), com: t.com }));
-        let para = destino === 'alumno' ? [propio] : (tutores.some(t => t.email) ? tutores : [propio]);
-        para = para.filter(d => d.email);
-        let fuera = null;
-        if (!para.length) fuera = 'sin correo';
-        else if (tipo === 'actividades' && x.act === false) fuera = 'no quiere comunicaciones de sus actividades';
-        else if (tipo === 'comercial') {
-            para = para.filter(d => d.com === true);
-            if (!para.length) fuera = 'no acepta comerciales';
+        const para = (destino === 'alumno' ? [propio] : (tutores.some(t => t.email) ? tutores : [propio])).filter(d => d.email);
+        // Qué recibiría con cada tipo, para enseñarlo sin tener que ir probando.
+        const recibe = {};
+        for (const tp of TIPOS_CORREO) {
+            const c = conTipo(x, para, tp);
+            recibe[tp] = !c.fuera;
+            if (!c.fuera) { porTipo[tp].alumnos++; for (const d of c.para) porTipo[tp].correos.add(d.email.toLowerCase()); }
         }
+        const { para: paraTipo, fuera } = conTipo(x, para, tipo);
         return {
-            id: x.user_id, nombre: propio.nombre, edad: edadDe(x.birthday), clases: x.clases || '',
-            destinatarios: fuera ? [] : para.map(d => ({ id: d.id, nombre: d.nombre, relacion: d.relacion, email: d.email })), fuera,
+            id: x.user_id, nombre: propio.nombre, edad: edadDe(x.birthday), clases: x.clases || '', recibe,
+            destinatarios: fuera ? [] : paraTipo.map(d => ({ id: d.id, nombre: d.nombre, relacion: d.relacion, email: d.email })), fuera,
         };
     });
     const dentro = alumnos.filter(a => !a.fuera);
@@ -10293,6 +10305,7 @@ async function resolverSegmento(f) {
             sinCorreo: alumnos.filter(a => a.fuera === 'sin correo').length,
             porPermisos: alumnos.filter(a => a.fuera && a.fuera !== 'sin correo').length,
             limite: r.rows.length >= 2000,
+            porTipo: Object.fromEntries(TIPOS_CORREO.map(tp => [tp, { alumnos: porTipo[tp].alumnos, correos: porTipo[tp].correos.size }])),
         },
     };
 }
