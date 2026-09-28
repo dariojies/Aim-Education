@@ -3,6 +3,7 @@ import { I } from './Icons.jsx';
 import AdminCampanas from './AdminCampanas.jsx';
 import AdminAutomatismos from './AdminAutomatismos.jsx';
 import { TIPOS_CORREO, describirSegmento } from './crmTextos.js';
+import { Paso, Opcion } from './CrmPiezas.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Comunicaciones (CRM). Los segmentos (ticket #313) son grupos de alumnos a los
@@ -41,7 +42,7 @@ export default function AdminComunicaciones({ showToast, onAbrirFicha, pestana: 
       {pestana === 'segmentos' && <Segmentos showToast={showToast} onAbrirFicha={onAbrirFicha}
         onUsarEnCampana={(nombre) => { setCampanaCon(nombre); setPestana('campanas'); }} />}
       {pestana === 'campanas' && <AdminCampanas showToast={showToast} onAbrirFicha={onAbrirFicha}
-        nuevaConSegmento={campanaCon} onEmpezada={() => setCampanaCon(null)} />}
+        nuevaConSegmento={campanaCon} onEmpezada={() => setCampanaCon(null)} onIrASegmentos={() => setPestana('segmentos')} />}
       {pestana === 'automatismos' && <AdminAutomatismos showToast={showToast} onAbrirFicha={onAbrirFicha} />}
     </div>
   );
@@ -108,35 +109,6 @@ function Segmentos({ showToast, onAbrirFicha, onUsarEnCampana }) {
         </div>
       )}
     </div>
-  );
-}
-
-function Paso({ n, titulo, ayuda, children }) {
-  return (
-    <section style={{ display: 'grid', gridTemplateColumns: '30px minmax(0, 1fr)', gap: 12 }}>
-      <span aria-hidden="true" style={{ width: 28, height: 28, borderRadius: 999, background: 'var(--purple)', color: '#fff', display: 'grid', placeItems: 'center', fontWeight: 800, fontSize: 13 }}>{n}</span>
-      <div style={{ display: 'grid', gap: 10, minWidth: 0 }}>
-        <div>
-          <h3 style={{ margin: 0, fontSize: 16 }}>{titulo}</h3>
-          {ayuda && <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--ink-3)' }}>{ayuda}</p>}
-        </div>
-        {children}
-      </div>
-    </section>
-  );
-}
-
-// Una opción grande con su explicación, para elegir una de dos o tres.
-function Opcion({ activa, titulo, texto, onClick }) {
-  return (
-    <button type="button" role="radio" aria-checked={activa} onClick={onClick} style={{
-      flex: '1 1 200px', textAlign: 'left', padding: '12px 14px', borderRadius: 12, cursor: 'pointer', fontFamily: 'inherit',
-      border: `2px solid ${activa ? 'var(--purple)' : 'var(--line)'}`,
-      background: activa ? 'color-mix(in oklab, var(--purple) 8%, var(--bg-2))' : 'var(--bg-2)',
-    }}>
-      <span style={{ display: 'block', fontWeight: 800, fontSize: 14, color: 'var(--ink)' }}>{titulo}</span>
-      <span style={{ display: 'block', fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>{texto}</span>
-    </button>
   );
 }
 

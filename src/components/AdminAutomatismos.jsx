@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { I } from './Icons.jsx';
 import { fmtFechaHora } from '../fechas.js';
+import { Variables, meterEnCursor } from './CrmPiezas.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Automatismos (CRM 7, ticket #316): correos que salen solos. Cada uno se
@@ -28,6 +29,9 @@ function Tarjeta({ a, onCambio, onAbrirFicha, showToast }) {
   const [cuerpo, setCuerpo] = useState(a.cuerpo);
   const [vista, setVista] = useState(null);
   const [verEnviados, setVerEnviados] = useState(false);
+  const asuntoRef = useRef(null), cuerpoRef = useRef(null);
+  const [ultimo, setUltimo] = useState('cuerpo');
+  const meter = (v) => (ultimo === 'asunto' ? setAsunto(x => meterEnCursor(asuntoRef.current, x, v)) : setCuerpo(x => meterEnCursor(cuerpoRef.current, x, v)));
 
   async function guardar(cambios, aviso) {
     try { await api(`/api/admin/automatismos/${a.id}`, { method: 'PUT', body: cambios }); showToast?.(aviso); onCambio(); }
@@ -61,17 +65,17 @@ function Tarjeta({ a, onCambio, onAbrirFicha, showToast }) {
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <button type="button" className="btn btn-sm btn-outline" onClick={() => setEditar(e => !e)}><I.Edit /> {editar ? 'Cerrar el texto' : 'Editar el texto'}</button>
-        <button type="button" className="btn btn-sm btn-outline" onClick={verQuien}>Quién lo recibiría ahora</button>
+        <button type="button" className="btn btn-sm btn-outline" onClick={verQuien}>¿A quién le llegaría ahora?</button>
         <button type="button" className="btn btn-sm btn-outline" onClick={() => setVerEnviados(v => !v)} disabled={!a.recientes.length}>
-          {verEnviados ? 'Ocultar enviados' : `Enviados (${a.recientes.length})`}
+          {verEnviados ? 'Ocultar los enviados' : `Ya enviados (${a.recientes.length})`}
         </button>
       </div>
 
       {editar && (
         <div style={{ display: 'grid', gap: 8 }}>
-          <input style={campo} value={asunto} onChange={e => setAsunto(e.target.value)} aria-label={`Asunto de ${a.nombre}`} />
-          <textarea style={{ ...campo, minHeight: 150, resize: 'vertical' }} value={cuerpo} onChange={e => setCuerpo(e.target.value)} aria-label={`Texto de ${a.nombre}`} />
-          <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Se rellenan solas: {VARS[a.id].map(v => <code key={v} style={{ marginRight: 6 }}>{v}</code>)}</span>
+          <input ref={asuntoRef} style={campo} value={asunto} onFocus={() => setUltimo('asunto')} onChange={e => setAsunto(e.target.value)} aria-label={`Asunto de ${a.nombre}`} placeholder="Asunto" />
+          <textarea ref={cuerpoRef} style={{ ...campo, minHeight: 150, resize: 'vertical' }} value={cuerpo} onFocus={() => setUltimo('cuerpo')} onChange={e => setCuerpo(e.target.value)} aria-label={`Texto de ${a.nombre}`} />
+          <Variables vars={VARS[a.id]} onMeter={meter} />
           <div style={{ display: 'flex', gap: 8 }}>
             <div style={{ flex: 1 }} />
             <button type="button" className="btn btn-sm btn-primary" onClick={() => guardar({ asunto, cuerpo }, 'Texto guardado.')}>Guardar texto</button>
@@ -124,15 +128,16 @@ export default function AdminAutomatismos({ showToast, onAbrirFicha }) {
       <div className="panel">
         <h2><I.Settings /> Automatismos</h2>
         <p className="sub">
-          Correos que salen solos a las familias (a sus tutores; si no tiene, al alumno), una sola vez por persona y ocasión.
-          Respetan si rechazó las comunicaciones de sus actividades y quedan en el historial de su ficha. Se revisa cada 15 minutos.
+          Correos que se envían solos cuando pasa algo: cuando alguien se apunta, cuando un alumno falta 4 veces seguidas o el día
+          de su cumpleaños. Enciende los que quieras. A cada familia le llega una sola vez por cada ocasión, no le llega a quien
+          no quiere novedades de sus clases, y queda apuntado en su ficha.
         </p>
         {!d.correoActivo && <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: 'var(--orange)' }}>El correo no está configurado en el servidor: aunque se enciendan, no saldrán.</p>}
         {d.correoActivo && d.automatismos.some(a => a.activo) && (
           <button type="button" className="btn btn-sm btn-outline" style={{ marginTop: 10 }} onClick={async () => {
             try { const r = await api('/api/admin/automatismos/ejecutar', { method: 'POST' }); showToast?.(r.nuevos ? `${r.nuevos} correo${r.nuevos !== 1 ? 's' : ''} automático${r.nuevos !== 1 ? 's' : ''} revisado${r.nuevos !== 1 ? 's' : ''}.` : 'No había nada que enviar.'); cargar(); }
             catch (e) { alert(e.message); }
-          }}>Revisar ahora</button>
+          }}>Comprobar ahora si toca enviar alguno</button>
         )}
       </div>
       {d.automatismos.map(a => <Tarjeta key={a.id} a={a} onCambio={cargar} onAbrirFicha={onAbrirFicha} showToast={showToast} />)}
