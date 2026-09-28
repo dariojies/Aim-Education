@@ -27,6 +27,7 @@ import AdminObjetosPerdidos from './AdminObjetosPerdidos.jsx';
 import AdminSpeaking from './AdminSpeaking.jsx';
 import AdminFaltas from './AdminFaltas.jsx';
 import AdminComunicaciones from './AdminComunicaciones.jsx';
+import AdminResumen from './AdminResumen.jsx';
 import AdminAlmacen from './AdminAlmacen.jsx';
 import AdminContactos from './AdminContactos.jsx';
 import { IconoActividad } from './IconoActividad.jsx';
@@ -95,244 +96,6 @@ function KPI({ label, value, trend, act, icon }) {
       <div className="v">{value}</div>
       <div className="trend" style={{ background: `color-mix(in oklab, ${a?.color || "var(--ink)"} 14%, var(--bg-2))`, color: a?.color || "var(--ink)" }}>{trend}</div>
     </div>
-  );
-}
-
-function QuickCard({ title, desc, act, icon, onClick }) {
-  const a = ACT_BY_ID[act];
-  return (
-    <button onClick={onClick} className={a?.className || ""} style={{
-      background: "var(--bg-2)",
-      border: "1px solid var(--line)",
-      borderRadius: 18,
-      padding: 20,
-      cursor: "pointer",
-      textAlign: "left",
-      fontFamily: "inherit",
-      display: "flex",
-      gap: 14,
-      alignItems: "flex-start",
-      transition: "transform var(--tx-base) ease, box-shadow var(--tx-base) ease, border-color var(--tx-base) ease",
-    }}
-      onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-3px)"; e.currentTarget.style.boxShadow = "var(--shadow)"; e.currentTarget.style.borderColor = "transparent"; }}
-      onMouseLeave={(e) => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.borderColor = "var(--line)"; }}>
-      <div style={{
-        width: 44, height: 44, borderRadius: 12,
-        background: `color-mix(in oklab, ${a?.color || "var(--ink)"} 16%, var(--bg-2))`,
-        color: a?.color || "var(--ink)",
-        display: "grid", placeItems: "center", flexShrink: 0,
-      }}>{icon}</div>
-      <div>
-        <div style={{ fontWeight: 800, fontSize: 15, color: "var(--ink)" }}>{title}</div>
-        <div style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 4, lineHeight: 1.45 }}>{desc}</div>
-      </div>
-      <I.Arrow style={{ marginLeft: "auto", color: "var(--ink-3)", flexShrink: 0, marginTop: 4 }} />
-    </button>
-  );
-}
-
-// El resumen de un instructor. El general habla de gastos, recibos y noticias,
-// que no son asunto suyo; aquí solo salen sus clases y sus alumnos.
-function ResumenInstructor({ setView, refreshTrigger }) {
-  const [grupos, setGrupos] = useState(null);
-  const [clasesHoy, setClasesHoy] = useState(null);
-  const hoy = new Date();
-  const hoyIso = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}-${String(hoy.getDate()).padStart(2, '0')}`;
-
-  useEffect(() => {
-    fetch('/api/admin/tul/groups', { credentials: 'include', cache: 'no-store' })
-      .then(r => r.ok ? r.json() : null).then(d => setGrupos(d?.groups || [])).catch(() => setGrupos([]));
-    fetch(`/api/admin/tul/attendance/dia/${hoyIso}`, { credentials: 'include', cache: 'no-store' })
-      .then(r => r.ok ? r.json() : null).then(d => setClasesHoy(d?.clases || [])).catch(() => setClasesHoy([]));
-  }, [refreshTrigger, hoyIso]);
-
-  const cargando = grupos === null || clasesHoy === null;
-  const alumnos = (grupos || []).reduce((n, g) => n + Number(g.studentCount || 0), 0);
-  const sinPasar = (clasesHoy || []).filter(c => !c.marcados).length;
-
-  return (
-    <>
-      <div className="kpis">
-        <KPI label="Tus clases" value={cargando ? '…' : String(grupos.length)} trend="grupos que llevas" act="taekwondo" icon={<I.Trophy />} />
-        <KPI label="Tus alumnos" value={cargando ? '…' : String(alumnos)} trend="matriculados en tus grupos" act="ballet" icon={<I.Users />} />
-        <KPI label="Clases hoy" value={cargando ? '…' : String(clasesHoy.length)} trend={fmtFecha(hoyIso)} act="funcional" icon={<I.Calendar />} />
-        <KPI label="Listas por pasar" value={cargando ? '…' : String(sinPasar)} trend={sinPasar ? 'te faltan hoy' : 'todo al día'} act="pintura" icon={<I.Check />} />
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: 18 }}>
-        <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 18, padding: 24 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 18 }}>
-            <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 800, letterSpacing: '-.015em', margin: 0 }}>
-              Tus clases de hoy
-            </h2>
-            <button className="btn btn-sm btn-outline" onClick={() => setView('classes')}>Pasar lista</button>
-          </div>
-          {cargando ? <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>
-            : clasesHoy.length === 0 ? (
-              <div style={{ padding: '32px 0', textAlign: 'center', color: 'var(--ink-3)', fontSize: 14 }}>
-                Hoy no te toca ninguna clase.
-              </div>
-            ) : clasesHoy.map(c => (
-              <div key={c.id} className="payment-row">
-                <div>
-                  <div className="name">{c.name}</div>
-                  <div className="date">{c.activityName}{c.horario ? ` · ${c.horario}` : ''}</div>
-                </div>
-                <span className="date">{c.studentCount} alumno{c.studentCount !== 1 ? 's' : ''}</span>
-                <span className={`status-pill ${c.marcados ? 'ok' : 'upcoming'}`}>
-                  {c.marcados ? 'Lista pasada' : 'Sin pasar'}
-                </span>
-              </div>
-            ))}
-        </div>
-
-        <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 18, padding: 24 }}>
-          <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 800, letterSpacing: '-.015em', margin: 0, marginBottom: 4 }}>
-            Tus grupos
-          </h2>
-          <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: '0 0 18px' }}>Los que tienes asignados en el horario</p>
-          {cargando ? <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>
-            : grupos.length === 0 ? (
-              <div style={{ padding: '24px 0', textAlign: 'center', color: 'var(--ink-3)', fontSize: 13 }}>
-                Todavía no tienes ningún grupo asignado. Los asigna la dirección desde el horario.
-              </div>
-            ) : (
-              <div style={{ display: 'grid', gap: 10 }}>
-                {grupos.map(g => (
-                  <div key={g.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
-                    <span style={{ fontWeight: 700 }}>{g.name}</span>
-                    <span style={{ color: 'var(--ink-3)' }}>{g.studentCount}{g.maxStudents ? ` / ${g.maxStudents}` : ''}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-        </div>
-      </div>
-
-      <div style={{ marginTop: 18, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
-        <QuickCard title="Pasar lista" desc="Marca la asistencia de tus clases de hoy."
-          act="taekwondo" icon={<I.Check />} onClick={() => setView('classes')} />
-        <QuickCard title="Tus estadísticas" desc="Asistencia y evolución de tus grupos."
-          act="robotica" icon={<I.Trophy />} onClick={() => setView('reportes')} />
-      </div>
-    </>
-  );
-}
-
-function AdminOverview({ setView, refreshTrigger, showToast }) {
-  const [stats, setStats] = useState(null);
-  const [userCount, setUserCount] = useState(null);
-  const [receipts, setReceipts] = useState([]);
-  const [classes, setClasses] = useState([]);
-
-  useEffect(() => {
-    fetch('/api/admin/posts/stats', { credentials: 'include' })
-      .then(r => r.ok ? r.json() : null)
-      .then(setStats)
-      .catch(() => { });
-    fetch('/api/users', { credentials: 'include' })
-      .then(r => r.ok ? r.json() : [])
-      .then(u => setUserCount(u.filter(x => !(x.esPersonal ?? x.esInstructor)).length))
-      .catch(() => { });
-    fetch('/api/admin/gastos', { credentials: 'include' })
-      .then(r => r.ok ? r.json() : [])
-      .then(data => setReceipts(Array.isArray(data) ? data : []))
-      .catch(() => { });
-    fetch('/api/classes', { credentials: 'include' })
-      .then(r => r.ok ? r.json() : [])
-      .then(data => setClasses(Array.isArray(data) ? data : []))
-      .catch(() => { });
-  }, [refreshTrigger]);
-
-  const receiptsTotal = receipts.reduce((sum, r) => sum + (r.importe || 0), 0);
-
-  const classCounts = {};
-  classes.forEach(c => { classCounts[c.act] = (classCounts[c.act] || 0) + 1; });
-  const actBars = Object.entries(classCounts)
-    .map(([act, count]) => ({ count, name: ACT_BY_ID[act]?.name || act, color: ACT_BY_ID[act]?.color || "var(--ink)" }))
-    .sort((a, b) => b.count - a.count);
-  const maxCount = Math.max(1, ...actBars.map(b => b.count));
-
-  return (
-    <>
-      <div className="kpis">
-        <KPI label="Alumnos registrados" value={userCount != null ? String(userCount) : "…"} trend="en la plataforma" act="taekwondo" icon={<I.Users />} />
-        <KPI label="Gastos registrados" value={receiptsTotal > 0 ? `${receiptsTotal.toLocaleString("es-ES")}€` : "0€"} trend={`${receipts.length} gasto${receipts.length !== 1 ? "s" : ""}`} act="funcional" icon={<I.Wallet />} />
-        <KPI label="Posts publicados" value={stats ? String(stats.publishedPosts) : "…"} trend={stats ? `${stats.totalViews.toLocaleString("es-ES")} visitas` : "cargando..."} act="pintura" icon={<I.Newspaper />} />
-        <KPI label="Borradores" value={stats ? String(stats.draftPosts) : "…"} trend="sin publicar" act="ballet" icon={<I.Edit />} />
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 18 }}>
-        <div style={{ background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 18, padding: 24 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 18 }}>
-            <h2 style={{ fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 800, letterSpacing: "-.015em", margin: 0 }}>
-              Últimos gastos
-            </h2>
-            <button className="btn btn-sm btn-outline" onClick={() => setView("payments")}>Ver todos</button>
-          </div>
-          {receipts.length === 0 ? (
-            <div style={{ padding: "32px 0", textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>No hay gastos registrados todavía.</div>
-          ) : receipts.slice(0, 5).map((r, i) => (
-            <div key={r.id || i} className="payment-row">
-              <div>
-                <div className="name">{r.proveedor || "Gasto"}</div>
-                <div className="date">{r.concepto || r.medioPago || "—"}</div>
-              </div>
-              <span className="date">{fmtFecha(r.fecha)}</span>
-              <span className="amount">{r.importe != null ? `${parseFloat(r.importe).toLocaleString("es-ES", { minimumFractionDigits: 2 })}€` : "—"}</span>
-            </div>
-          ))}
-        </div>
-
-        <div style={{ background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 18, padding: 24 }}>
-          <h2 style={{ fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 800, letterSpacing: "-.015em", margin: 0, marginBottom: 4 }}>
-            Clases por actividad
-          </h2>
-          <p style={{ fontSize: 13, color: "var(--ink-3)", margin: "0 0 18px" }}>Según el horario semanal</p>
-          {actBars.length === 0 ? (
-            <div style={{ padding: "32px 0", textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>No hay clases en el horario.</div>
-          ) : (
-            <div style={{ display: "grid", gap: 12 }}>
-              {actBars.map((a, i) => (
-                <div key={i}>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: 13, fontWeight: 600 }}>
-                    <span>{a.name}</span>
-                    <span style={{ color: "var(--ink-3)" }}>{a.count} clase{a.count !== 1 ? "s" : ""}</span>
-                  </div>
-                  <div style={{ height: 8, background: "var(--bg-3)", borderRadius: 99, overflow: "hidden" }}>
-                    <div style={{ height: "100%", width: `${(a.count / maxCount) * 100}%`, background: a.color, transition: "width var(--tx-slow) ease" }} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div style={{ marginTop: 18, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 18 }}>
-        <QuickCard
-          title="Pasar lista de hoy"
-          desc={`${classes.length} clase${classes.length !== 1 ? "s" : ""} en el horario.`}
-          act="taekwondo"
-          icon={<I.Check />}
-          onClick={() => setView("classes")}
-        />
-        <QuickCard
-          title="Publicar noticia"
-          desc="Llega a todas las familias."
-          act="pintura"
-          icon={<I.Newspaper />}
-          onClick={() => setView("news")}
-        />
-        <QuickCard
-          title="Recordatorios de pago"
-          desc="Enviar avisos de cobros."
-          act="funcional"
-          icon={<I.Wallet />}
-          onClick={() => setView("payments")}
-        />
-      </div>
-    </>
   );
 }
 
@@ -6958,8 +6721,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
   // Una sección solo se pinta si además de estar abierta se puede ver: escribir
   // la ruta a mano no debe colar.
   const ver = (id) => view === id && !!permisos.secciones[id];
-  // Un trabajador, por ejemplo, no tiene "Resumen": al entrar se le lleva a la
-  // primera sección que sí tiene, en vez de a una pantalla vacía.
+  // Si alguien entra a una sección que no tiene, se le lleva a la primera que
+  // sí tiene, en vez de a una pantalla vacía.
   useEffect(() => {
     if (permisos.secciones[view]) return;
     const orden = ['overview', 'agenda', 'fichaje', 'support'];
@@ -6994,6 +6757,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "comunicaciones", pestana: "segmentos", label: "Segmentos", icon: <I.Filter width={18} height={18} /> },
         { id: "comunicaciones", pestana: "campanas", label: "Campañas", icon: <I.Mail /> },
         { id: "comunicaciones", pestana: "automatismos", label: "Automatismos", icon: <I.Spark width={18} height={18} /> },
+        { id: "comunicaciones", pestana: "disenos", label: "Diseño de correos", icon: <I.Brush width={18} height={18} /> },
         { id: "contactos", label: "Consultas web", icon: <I.Globe width={18} height={18} /> },
       ]
     },
@@ -7157,9 +6921,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("fichaje") && <Fichaje showToast={showToast} permisos={permisos} />}
           {ver("equipo_it") && <EquipoIT showToast={showToast} />}
           {ver("contactos") && <AdminContactos showToast={showToast} />}
-          {ver("overview") && (permisos.resumenGeneral
-            ? <AdminOverview setView={setView} refreshTrigger={refreshTrigger} showToast={showToast} />
-            : <ResumenInstructor setView={setView} refreshTrigger={refreshTrigger} />)}
+          {ver("overview") && <AdminResumen permisos={permisos} refreshTrigger={refreshTrigger} ir={navTo} irRuta={(ruta) => go(ruta)} />}
           {ver("students") && <AdminStudents refreshTrigger={refreshTrigger} showToast={showToast} permisos={permisos}
             onNuevo={() => { setEditingItem({ firstName: '', lastName: '', email: '', isSuperAdmin: false }); setActiveModal('new-student'); }}
             onEditUser={abrirFicha} />}

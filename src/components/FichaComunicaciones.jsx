@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { I } from './Icons.jsx';
 import { fmtFechaHora } from '../fechas.js';
+import EditorDiseno, { ElegirPlantilla, Miniatura, VistaPrevia, useMarca } from './EditorDiseno.jsx';
+import { VARIABLES_CRM } from '../../correo-diseno.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CRM en la ficha (tickets #310 y #311): escribir un correo al alumno o a su
@@ -82,6 +84,11 @@ export default function FichaComunicaciones({ personaId, showToast }) {
   const [enviando, setEnviando] = useState(false);
   const [abiertoId, setAbiertoId] = useState(null);
   const [rebotes, setRebotes] = useState([]);
+  // Con diseño (#326): el correo lleva imágenes, botones y colores.
+  const [diseno, setDiseno] = useState(null);
+  const [eligiendo, setEligiendo] = useState(false);
+  const [disenando, setDisenando] = useState(false);
+  const marca = useMarca();
 
   const cargar = useCallback(async () => {
     try {
@@ -104,6 +111,8 @@ export default function FichaComunicaciones({ personaId, showToast }) {
   useEffect(() => { cargar(); }, [cargar]);
 
   if (!ctx) return null;
+  // En el diseñador, los datos de ejemplo son los de esta persona.
+  const varsDiseno = Object.fromEntries(Object.entries(VARIABLES_CRM).map(([k, v]) => [k, { ...v, ejemplo: ctx.variables[k] ?? v.ejemplo }]));
 
   const puede = (d) => !!d.email && !(tipo === 'comercial' && d.comerciales !== true);
   const elegidos = ctx.destinatarios.filter(d => para[d.email] && puede(d));
@@ -119,18 +128,18 @@ export default function FichaComunicaciones({ personaId, showToast }) {
 
   async function enviar() {
     if (!elegidos.length) return alert('Elige al menos un destinatario.');
-    if (!asunto.trim() || !cuerpo.trim()) return alert('Falta el asunto o el texto.');
+    if (!asunto.trim() || (!diseno && !cuerpo.trim())) return alert('Falta el asunto o el texto.');
     if (!window.confirm(`¿Enviar «${rellenar(asunto, ctx.variables)}» a ${elegidos.map(d => d.nombre).join(', ')}?`)) return;
     setEnviando(true);
     try {
       const r = await fetch(`/api/admin/comunicaciones/${personaId}/enviar`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-        body: JSON.stringify({ destinatarios: elegidos.map(d => d.email), asunto, cuerpo, plantilla: plantillas.find(p => p.id === plantilla)?.nombre || null, tipo }),
+        body: JSON.stringify({ destinatarios: elegidos.map(d => d.email), asunto, cuerpo, diseno, plantilla: plantillas.find(p => p.id === plantilla)?.nombre || null, tipo }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { alert(d.error || 'No se ha podido enviar.'); await cargar(); return; }
       showToast?.(`Correo enviado a ${d.enviadoA.join(', ')}${d.omitidos?.length ? ` (sin enviar a ${d.omitidos.join(', ')}: no acepta comerciales)` : ''}.`);
-      setAbierto(false); setAsunto(''); setCuerpo(''); setPlantilla(''); setVista(false);
+      setAbierto(false); setAsunto(''); setCuerpo(''); setPlantilla(''); setVista(false); setDiseno(null);
       await cargar();
     } catch { alert('No hay conexión con el servidor.'); }
     finally { setEnviando(false); }
@@ -224,13 +233,39 @@ export default function FichaComunicaciones({ personaId, showToast }) {
           {editando && <EditorPlantillas plantillas={plantillas} onGuardar={guardarPlantillas} onCerrar={() => setEditando(false)} />}
 
           <input style={campo} value={asunto} onChange={e => setAsunto(e.target.value)} placeholder="Asunto" aria-label="Asunto" />
-          <textarea style={{ ...campo, minHeight: 170, resize: 'vertical' }} value={cuerpo} onChange={e => setCuerpo(e.target.value)} placeholder="Escribe el correo…" aria-label="Texto del correo" />
-          <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
-            Se rellenan solas: {VARIABLES.map(v => <code key={v} style={{ marginRight: 6 }}>{v}</code>)}
-            (ahora: {ctx.variables.nombre} · {ctx.variables.clases} · pendiente {ctx.variables.pendiente})
-          </span>
+          {diseno ? (
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 180px) minmax(0, 1fr)', gap: 12, alignItems: 'center' }}>
+              <button type="button" onClick={() => setDisenando(true)} title="Abrir el diseñador" style={{ padding: 0, border: '1px solid var(--line)', borderRadius: 10, background: 'none', cursor: 'pointer', overflow: 'hidden' }}>
+                <Miniatura diseno={diseno} marca={marca} alto={200} vars={ctx.variables} />
+              </button>
+              <div style={{ display: 'grid', gap: 6, justifyItems: 'start' }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--purple)' }}>Correo con diseño</span>
+                <button type="button" className="btn btn-sm btn-primary" onClick={() => setDisenando(true)}>Abrir el diseñador</button>
+                <button type="button" className="btn btn-sm btn-outline" onClick={() => { if (window.confirm('¿Quitar el diseño y escribirlo solo con texto?')) setDiseno(null); }}>Quitar el diseño</button>
+              </div>
+            </div>
+          ) : (
+            <>
+            <textarea style={{ ...campo, minHeight: 170, resize: 'vertical' }} value={cuerpo} onChange={e => setCuerpo(e.target.value)} placeholder="Escribe el correo…" aria-label="Texto del correo" />
+            <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+              Se rellenan solas: {VARIABLES.map(v => <code key={v} style={{ marginRight: 6 }}>{v}</code>)}
+              (ahora: {ctx.variables.nombre} · {ctx.variables.clases} · pendiente {ctx.variables.pendiente})
+            </span>
+              <button type="button" className="btn btn-sm btn-outline" style={{ justifySelf: 'start' }} onClick={() => setEligiendo(true)}>Darle diseño (imágenes, botones, colores)</button>
+            </>
+          )}
+          {eligiendo && (
+            <ElegirPlantilla textoActual={cuerpo} onCerrar={() => setEligiendo(false)}
+              onElegir={({ diseno: d, asunto: as }) => { setEligiendo(false); setDiseno(d); if (!asunto && as) setAsunto(as); setDisenando(true); }} />
+          )}
+          {disenando && (
+            <EditorDiseno titulo={`Correo a ${ctx.alumno.completo}`} valor={{ asunto, diseno }} variables={varsDiseno} showToast={showToast}
+              textoGuardar="Usar este diseño" onCerrar={() => setDisenando(false)}
+              onGuardar={({ asunto: as, diseno: d }) => { setAsunto(as); setDiseno(d); setDisenando(false); }} />
+          )}
+          {vista && diseno && <VistaPrevia diseno={diseno} marca={marca} vars={ctx.variables} asunto={asunto} onCerrar={() => setVista(false)} />}
 
-          {vista && (
+          {vista && !diseno && (
             <div style={{ border: '1px dashed var(--line)', borderRadius: 10, padding: 12, background: 'var(--bg-3)', fontSize: 14, whiteSpace: 'pre-wrap' }}>
               <div style={{ fontWeight: 800, marginBottom: 8 }}>{rellenar(asunto, ctx.variables) || '(sin asunto)'}</div>
               {rellenar(cuerpo, ctx.variables)}

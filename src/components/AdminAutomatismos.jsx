@@ -2,6 +2,8 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { I } from './Icons.jsx';
 import { fmtFechaHora } from '../fechas.js';
 import { Variables, meterEnCursor } from './CrmPiezas.jsx';
+import EditorDiseno, { ElegirPlantilla } from './EditorDiseno.jsx';
+import { VARIABLES_CRM } from '../../correo-diseno.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Automatismos (CRM 7, ticket #316): correos que salen solos. Cada uno se
@@ -14,6 +16,12 @@ const VARS = {
   bienvenida: ['{nombre}', '{alumno}', '{clases}'],
   faltas: ['{nombre}', '{alumno}', '{clase}', '{faltas}'],
   cumple: ['{nombre}', '{alumno}', '{edad}'],
+};
+// Los mismos datos, con su ejemplo, para el diseñador.
+const VARS_DISENO = {
+  bienvenida: { nombre: VARIABLES_CRM.nombre, alumno: VARIABLES_CRM.alumno, clases: VARIABLES_CRM.clases },
+  faltas: { nombre: VARIABLES_CRM.nombre, alumno: VARIABLES_CRM.alumno, clase: { que: 'La clase', ejemplo: 'Ballet (L-X 17:00)' }, faltas: { que: 'Cuántas faltas lleva', ejemplo: '4' } },
+  cumple: { nombre: VARIABLES_CRM.nombre, alumno: VARIABLES_CRM.alumno, edad: { que: 'Los años que cumple', ejemplo: '9' } },
 };
 const campo = { fontFamily: 'inherit', fontSize: 14, padding: '9px 11px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', width: '100%' };
 const api = async (url, opts = {}) => {
@@ -31,6 +39,8 @@ function Tarjeta({ a, onCambio, onAbrirFicha, showToast }) {
   const [verEnviados, setVerEnviados] = useState(false);
   const asuntoRef = useRef(null), cuerpoRef = useRef(null);
   const [ultimo, setUltimo] = useState('cuerpo');
+  const [eligiendo, setEligiendo] = useState(false);
+  const [disenando, setDisenando] = useState(null);
   const meter = (v) => (ultimo === 'asunto' ? setAsunto(x => meterEnCursor(asuntoRef.current, x, v)) : setCuerpo(x => meterEnCursor(cuerpoRef.current, x, v)));
 
   async function guardar(cambios, aviso) {
@@ -64,14 +74,40 @@ function Tarjeta({ a, onCambio, onAbrirFicha, showToast }) {
       </div>
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <button type="button" className="btn btn-sm btn-outline" onClick={() => setEditar(e => !e)}><I.Edit /> {editar ? 'Cerrar el texto' : 'Editar el texto'}</button>
+        {a.diseno ? (
+          <>
+            <button type="button" className="btn btn-sm btn-primary" onClick={() => setDisenando({ asunto: a.asunto, diseno: a.diseno })}><I.Edit /> Abrir el diseño</button>
+            <button type="button" className="btn btn-sm btn-outline" onClick={() => {
+              if (window.confirm('¿Quitar el diseño? Volverá a salir el texto sencillo que tenía.')) guardar({ diseno: null }, 'Vuelve a salir solo con texto.');
+            }}>Quitar el diseño</button>
+          </>
+        ) : (
+          <>
+            <button type="button" className="btn btn-sm btn-outline" onClick={() => setEditar(e => !e)}><I.Edit /> {editar ? 'Cerrar el texto' : 'Editar el texto'}</button>
+            <button type="button" className="btn btn-sm btn-outline" onClick={() => setEligiendo(true)}>Darle diseño</button>
+          </>
+        )}
         <button type="button" className="btn btn-sm btn-outline" onClick={verQuien}>¿A quién le llegaría ahora?</button>
         <button type="button" className="btn btn-sm btn-outline" onClick={() => setVerEnviados(v => !v)} disabled={!a.recientes.length}>
           {verEnviados ? 'Ocultar los enviados' : `Ya enviados (${a.recientes.length})`}
         </button>
       </div>
 
-      {editar && (
+      {a.diseno && <span style={{ fontSize: 12, color: 'var(--purple)', fontWeight: 700 }}>Sale con diseño (imágenes, botones y colores). Asunto: «{a.asunto}»</span>}
+      {eligiendo && (
+        <ElegirPlantilla textoActual={a.cuerpo} onCerrar={() => setEligiendo(false)}
+          onElegir={({ diseno }) => { setEligiendo(false); setDisenando({ asunto: a.asunto, diseno }); }} />
+      )}
+      {disenando && (
+        <EditorDiseno titulo={a.nombre} valor={disenando} variables={VARS_DISENO[a.id]} showToast={showToast}
+          textoGuardar="Guardar el diseño" onCerrar={() => setDisenando(null)}
+          onGuardar={async ({ asunto: as, diseno }) => {
+            await api(`/api/admin/automatismos/${a.id}`, { method: 'PUT', body: { asunto: as, diseno } });
+            showToast?.('Diseño guardado: el automatismo sale ya con él.');
+            setDisenando(null); onCambio();
+          }} />
+      )}
+      {editar && !a.diseno && (
         <div style={{ display: 'grid', gap: 8 }}>
           <input ref={asuntoRef} style={campo} value={asunto} onFocus={() => setUltimo('asunto')} onChange={e => setAsunto(e.target.value)} aria-label={`Asunto de ${a.nombre}`} placeholder="Asunto" />
           <textarea ref={cuerpoRef} style={{ ...campo, minHeight: 150, resize: 'vertical' }} value={cuerpo} onFocus={() => setUltimo('cuerpo')} onChange={e => setCuerpo(e.target.value)} aria-label={`Texto de ${a.nombre}`} />

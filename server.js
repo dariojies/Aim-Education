@@ -25,6 +25,7 @@ import { filasLibroRegistro, generarLibroRegistro, prorrataDe, TIPOS_OPERACION_D
 import { PassThrough } from 'stream';
 import { escalaDe, escalasDelClub, resultadoDe, baremoDe, matriculaExamenDe } from './rangos.js';
 import { rolEfectivo, rolVisible, permisosDe, mandaAlMenos, ROLES_STAFF, NOMBRE_ROL, NOMBRE_RANGO, RANGOS_PROPIOS, RANGOS_ASIGNABLES } from './permisos.js';
+import { htmlCorreo, textoCorreo, disenoDesdeTexto, limpiarDiseno, limpiarMarca, faltanObligatorios, ejemplosDe, CORREOS_SISTEMA, MARCA_POR_DEFECTO } from './correo-diseno.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -95,6 +96,12 @@ const pool = process.env.DATABASE_URL
 
 pool.on('error', (err) => {
     console.error('Error inesperado en el pool de Postgres:', err);
+});
+// Si la base corta una conexión mientras alguien la tiene cogida (sin consulta
+// en marcha), el error sale en esa conexión y no en el pool; sin quien lo
+// escuche, tumbaba el servidor entero. La consulta siguiente ya falla sola.
+pool.on('connect', (client) => {
+    client.on('error', (err) => console.error('[postgres] conexión cortada:', err.message));
 });
 
 const dbLabel = process.env.DATABASE_URL ? 'DATABASE_URL (Heroku)' : `${process.env.DB_HOST}:${process.env.DB_PORT || 5432}`;
@@ -1481,6 +1488,38 @@ async function initDb() {
         // Consentimientos dados solo con un correo (formulario de contacto): se
         // buscan por él cuando esa persona tenga ficha.
         await client.query(`CREATE INDEX IF NOT EXISTS ix_consentimientos_email ON aim_consentimientos (LOWER(email)) WHERE user_id IS NULL`);
+        // Correos con diseño (ticket #326). Las imágenes que se suben al editor: en
+        // la base, porque Heroku no guarda archivos, y servidas en /ci/<id> para
+        // que Gmail pueda cargarlas.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_correo_imagenes (
+                id VARCHAR(40) PRIMARY KEY,
+                mime VARCHAR(50) NOT NULL,
+                datos BYTEA NOT NULL,
+                nombre VARCHAR(200),
+                ancho INTEGER,
+                alto INTEGER,
+                bytes INTEGER,
+                subido_por UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        // Las plantillas diseñadas del club, para empezar campañas y correos.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_plantillas_diseno (
+                id SERIAL PRIMARY KEY,
+                nombre VARCHAR(120) NOT NULL,
+                asunto VARCHAR(200),
+                diseno JSONB NOT NULL,
+                creado_por UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_by UUID REFERENCES users(user_id) ON DELETE SET NULL
+            )
+        `);
+        // Un correo de campaña puede ir con diseño; el texto (cuerpo) queda como
+        // versión sencilla.
+        await client.query(`ALTER TABLE aim_campana_correos ADD COLUMN IF NOT EXISTS diseno JSONB`);
         // Avisos de la campanita que cada persona ya ha visto. Un aviso visto no
         // cuenta en el número rojo hasta que haya algo nuevo: un mensaje más en
         // ese ticket (marca) o que su contador suba (n).
@@ -2411,13 +2450,7 @@ app.post('/api/password/olvido', async (req, res) => {
             if (mailTransporter) {
                 await mailTransporter.sendMail({
                     from: process.env.EMAIL_USER, to: persona.email,
-                    subject: 'Restablecer tu contraseña de AIM Education',
-                    html: `<div style="font-family:system-ui,sans-serif;color:#1a1a1a;max-width:520px">
-                      <p>Hola ${escHtml(persona.name || '')},</p>
-                      <p>Nos han pedido poner una contraseña nueva en tu cuenta de AIM Education. Si has sido tú, entra aquí:</p>
-                      <p style="margin:22px 0"><a href="${enlace}" style="background:#5233A8;color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:700;display:inline-block">Poner una contraseña nueva</a></p>
-                      <p style="font-size:13px;color:#555">El enlace sirve una sola vez y caduca en 1 hora. Si no lo has pedido tú, ignora este correo: tu contraseña sigue siendo la misma.</p>
-                      <p style="font-size:12px;color:#888">AIM Education · Algeciras</p></div>`,
+                    ...(await correoSistema('password_olvido', { nombre: persona.name || '', enlace })),
                 }).catch(e => console.error('[olvido] correo:', e.message));
             } else {
                 console.warn('[olvido] sin correo configurado: no se ha podido mandar el enlace a', persona.email);
@@ -2470,15 +2503,9 @@ app.post('/api/password/restablecer', async (req, res) => {
         // Quien tuviera abierta su cuenta con la contraseña vieja, fuera.
         cerrarSesionesDe(userId);
         if (mailTransporter) {
-            mailTransporter.sendMail({
-                from: process.env.EMAIL_USER, to: email,
-                subject: 'Tu contraseña de AIM Education ha cambiado',
-                html: `<div style="font-family:system-ui,sans-serif;color:#1a1a1a;max-width:520px">
-                  <p>Hola ${escHtml(name || '')},</p>
-                  <p>La contraseña de tu cuenta de AIM Education se acaba de cambiar. Es la misma cuenta de las apps de AIM, así que la nueva vale también en ellas.</p>
-                  <p>Si no has sido tú, escríbenos cuanto antes a info@aimeducation.es o llámanos al 956 742 216.</p>
-                  <p style="font-size:12px;color:#888">AIM Education · Algeciras</p></div>`,
-            }).catch(e => console.error('[restablecer] aviso:', e.message));
+            correoSistema('password_cambiada', { nombre: name || '' })
+                .then(c => mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: email, ...c }))
+                .catch(e => console.error('[restablecer] aviso:', e.message));
         }
         res.json({ success: true });
     } catch (err) {
@@ -2629,13 +2656,14 @@ app.post('/api/register', async (req, res) => {
                 [nombreTutor, emailLower, String(phone || '').trim().slice(0, 40) || null, mensaje,
                  String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim().slice(0, 60) || null]);
             if (mailTransporter) {
-                mailTransporter.sendMail({
-                    from: process.env.EMAIL_USER, to: CONTACTO_EMAIL, replyTo: emailLower,
-                    subject: `Alta en la web: ${nombreTutor} quiere apuntar a ${hijos.length === 1 ? 'un hijo/a' : `${hijos.length} hijos`}`,
-                    html: `<p><b>${escHtml(nombreTutor)}</b> (${escHtml(emailLower)}${phone ? ` · ${escHtml(phone)}` : ''}) se ha registrado en la web y quiere apuntar a:</p>
-                           <ul>${hijos.map(h => `<li>${escHtml(`${h.nombre} ${h.apellidos}`.trim())}${h.nacimiento ? ` · ${escHtml(h.nacimiento.split('-').reverse().join('/'))}` : ''}${h.actividad ? ` · ${escHtml(h.actividad)}` : ''}</li>`).join('')}</ul>
-                           <p>Está también en el panel, en «Consultas web».</p>`,
-                }).catch(e => console.error('[registro] aviso a secretaría:', e.message));
+                correoSistema('aviso_alta_web', {
+                    tutor: nombreTutor, email: emailLower, telefono: String(phone || '').trim() || 'sin teléfono',
+                    cuantos: hijos.length === 1 ? 'un hijo/a' : `${hijos.length} hijos`,
+                }, {
+                    automaticos: { lista_hijos: `<ul style="margin:0;padding-left:20px">${hijos.map(h => `<li>${escHtml(`${h.nombre} ${h.apellidos}`.trim())}${h.nacimiento ? ` · ${escHtml(h.nacimiento.split('-').reverse().join('/'))}` : ''}${h.actividad ? ` · ${escHtml(h.actividad)}` : ''}</li>`).join('')}</ul>` },
+                    automaticosTexto: { lista_hijos: lineas.join('\n') },
+                }).then(c => mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: CONTACTO_EMAIL, replyTo: emailLower, ...c }))
+                  .catch(e => console.error('[registro] aviso a secretaría:', e.message));
             }
         }
         const now = Date.now();
@@ -5054,11 +5082,14 @@ app.post('/api/admin/examenes/:id/comunicar', authenticateSession, requireAdmin,
         if (await sinComunicacionesActividades(e.alumno_id)) {
             return res.status(409).json({ error: 'Ha pedido no recibir comunicaciones de sus actividades (consta en su ficha): no se le envía el correo.' });
         }
-        const asunto = `Resultado de examen · ${e.actividad} · ${e.alumno_nombre}`;
         await mailTransporter.sendMail({
             from: process.env.EMAIL_USER, to: emails,
-            subject: `[AIM Education] ${asunto}`,
-            html: cuerpoComunicadoExamen(e, null),
+            ...(await correoSistema('examen_resultado', {
+                alumno: e.alumno_nombre, actividad: e.actividad, nivel: e.nivel || '',
+                resultado: e.resultado || (e.apto ? 'Apto' : 'No apto'),
+                enhorabuena: e.apto === true ? `¡Enhorabuena! Ha superado el examen${e.nivel ? ` y promociona a ${e.nivel}` : ''}.` : '',
+                observaciones: e.observaciones || '',
+            }, datosExamenCorreo(e))),
         });
         const upd = await pool.query(
             `UPDATE aim_examenes SET comunicado_enviado = true, comunicado_at = NOW() WHERE id = $1
@@ -5070,7 +5101,8 @@ app.post('/api/admin/examenes/:id/comunicar', authenticateSession, requireAdmin,
     }
 });
 
-function cuerpoComunicadoExamen(e, dest) {
+// La tabla con los datos del examen (pieza automática del correo del resultado).
+function datosExamenCorreo(e) {
     const fecha = new Date(e.fecha).toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' });
     const filas = [
         ['Alumno/a', e.alumno_nombre],
@@ -5080,23 +5112,13 @@ function cuerpoComunicadoExamen(e, dest) {
         e.puntos != null ? ['Puntuación', `${Number(e.puntos)}${e.puntos_max ? ` / ${Number(e.puntos_max)}` : ''}`] : null,
         ['Resultado', e.resultado || (e.apto ? 'Apto' : 'No apto')],
     ].filter(Boolean);
-    const saludo = dest?.name ? `Hola ${dest.name}` : 'Hola';
-    const promociona = e.apto === true
-        ? `<p style="margin:0 0 4px;font-size:15px"><b>¡Enhorabuena!</b> Ha superado el examen${e.nivel ? ` y promociona a <b>${e.nivel}</b>` : ''}.</p>`
-        : '';
-    return `
-        <div style="font-family:Arial,Helvetica,sans-serif;color:#222;max-width:520px">
-            <p>${saludo},</p>
-            ${promociona}
-            <p>Ya está disponible el resultado del examen de <b>${e.alumno_nombre}</b>. Estos son los datos:</p>
-            <table style="border-collapse:collapse;font-size:14px">
-                ${filas.map(([k, v]) => `<tr>
-                    <td style="padding:6px 14px 6px 0;color:#666">${k}</td>
-                    <td style="padding:6px 0;font-weight:600">${v}</td></tr>`).join('')}
-            </table>
-            ${e.observaciones ? `<p style="margin-top:14px"><b>Observaciones:</b><br>${String(e.observaciones).replace(/\n/g, '<br>')}</p>` : ''}
-            <p style="margin-top:18px">Un saludo,<br><b>AIM Education</b> · Algeciras</p>
-        </div>`;
+    return {
+        automaticos: {
+            datos_examen: `<table role="presentation" style="border-collapse:collapse;font-size:14px">${filas.map(([k, v]) => `<tr>`
+                + `<td style="padding:6px 14px 6px 0;color:#666">${escHtml(k)}</td><td style="padding:6px 0;font-weight:600">${escHtml(v)}</td></tr>`).join('')}</table>`,
+        },
+        automaticosTexto: { datos_examen: filas.map(([k, v]) => `${k}: ${v}`).join('\n') },
+    };
 }
 
 // 'conDinero' a false deja fuera el estado de pago y los datos de contacto de la
@@ -9957,23 +9979,248 @@ async function contextoCorreo(personaId) {
     };
 }
 const rellenarPlantilla = (texto, v) => String(texto || '').replace(/\{(\w+)\}/g, (m, k) => (v[k] !== undefined ? v[k] : m));
-function htmlCorreoClub(cuerpo, { comercial = false, rastrear = null, pie = '', apertura = null } = {}) {
-    // rastrear(url) → la dirección con seguimiento de clics (campañas, #314).
-    const enlace = (visible, destino) => {
-        const d = destino.replace(/&amp;/g, '&');
-        return `<a href="${escHtml(rastrear ? rastrear(d) : d)}">${visible}</a>`;
-    };
-    const texto = escHtml(cuerpo)
-        .replace(/(https?:\/\/[^\s<]+)/g, (m) => enlace(m, m))
-        .replace(/(^|[\s(])(www\.[^\s<]+)/g, (m, a, w) => a + enlace(w, `https://${w}`))
-        .replace(/\n/g, '<br>');
-    return `<div style="font-family:system-ui,-apple-system,sans-serif;color:#1a1a1a;max-width:600px">
-      <div style="font-size:15px;line-height:1.6">${texto}</div>
-      <p style="font-size:12px;color:#888;margin-top:28px;border-top:1px solid #eee;padding-top:10px">AIM Education · Algeciras · 956 742 216 · <a href="${URL_PUBLICA_WEB}" style="color:#888">www.aimeducation.es</a></p>
-      ${pie || (comercial ? `<p style="font-size:11px;color:#999">Recibes este correo porque aceptaste las comunicaciones comerciales del club. Puedes darte de baja cuando quieras desde tu perfil: <a href="${URL_PUBLICA_WEB}/dashboard" style="color:#999">${URL_PUBLICA_WEB.replace(/^https?:\/\//, '')}/dashboard</a>.</p>` : '')}
-      ${apertura ? `<img src="${escHtml(apertura)}" width="1" height="1" alt="" style="display:block;border:0;width:1px;height:1px">` : ''}
-    </div>`;
+// ── Correos con la marca del club (ticket #326) ──────────────────────────────
+// Todos los correos salen con la misma cabecera y el mismo pie (logo, colores,
+// redes), que se cambian en CRM → Diseño de correos → Marca. El pintado vive en
+// correo-diseno.js, compartido con el editor: lo que se ve al diseñar es lo que
+// llega.
+let marcaCache = null;
+async function marcaCorreo() {
+    if (marcaCache && marcaCache.t > Date.now() - 60_000) return marcaCache.v;
+    const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'marca_correo'`).catch(() => ({ rows: [] }));
+    const v = r.rows[0]?.valor ? limpiarMarca(r.rows[0].valor) : { ...MARCA_POR_DEFECTO };
+    marcaCache = { t: Date.now(), v };
+    return v;
 }
+
+// Un correo del CRM (ficha, automatismos, campañas): con diseño o, si es texto
+// de los de siempre, ese texto dentro del marco de la marca.
+//  cuerpo: el texto ya rellenado; diseno: si lo tiene (se rellena con vars).
+async function correoCrm({ cuerpo = '', diseno = null, vars = {}, asunto = '', comercial = false, rastrear = null, pie = '', pieTexto = '', apertura = null }) {
+    const marca = await marcaCorreo();
+    const d = (diseno && limpiarDiseno(diseno)) || disenoDesdeTexto(cuerpo);
+    const pieExtra = pie || (comercial ? `Recibes este correo porque aceptaste las comunicaciones comerciales del club. Puedes darte de baja cuando quieras desde tu perfil: <a href="${URL_PUBLICA_WEB}/dashboard" style="color:#9a958d">${URL_PUBLICA_WEB.replace(/^https?:\/\//, '')}/dashboard</a>.` : '');
+    return {
+        html: htmlCorreo(d, { marca, vars: diseno ? vars : {}, base: URL_PUBLICA_WEB, rastrear, apertura, pieExtra, titulo: asunto }),
+        text: textoCorreo(d, { marca, vars: diseno ? vars : {}, pieExtraTexto: pieTexto }),
+    };
+}
+
+// Los correos automáticos de la app, con el diseño del club si lo ha cambiado.
+// Si el guardado no tiene lo imprescindible (el enlace, la tabla…), sale el de
+// fábrica: un correo de contraseña sin enlace no puede llegar nunca.
+let sistemaCache = null;
+async function disenosSistema() {
+    if (sistemaCache && sistemaCache.t > Date.now() - 60_000) return sistemaCache.v;
+    const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'correos_sistema'`).catch(() => ({ rows: [] }));
+    const v = r.rows[0]?.valor && typeof r.rows[0].valor === 'object' ? r.rows[0].valor : {};
+    sistemaCache = { t: Date.now(), v };
+    return v;
+}
+function disenoVigente(clave, guardado) {
+    const def = CORREOS_SISTEMA[clave];
+    if (guardado?.diseno) {
+        const d = limpiarDiseno(guardado.diseno);
+        const asunto = String(guardado.asunto || def.asunto);
+        if (d && !faltanObligatorios(def, d, asunto).length) return { asunto, diseno: d, personalizado: true };
+    }
+    return { asunto: def.asunto, diseno: def.diseno(), personalizado: false };
+}
+// vars: los datos {así} (texto normal, se escapan solos).
+// automaticos: las piezas que monta la app, en HTML ya escapado.
+async function correoSistema(clave, vars = {}, { automaticos = {}, automaticosTexto = {} } = {}) {
+    const { asunto, diseno } = disenoVigente(clave, (await disenosSistema())[clave]);
+    const marca = await marcaCorreo();
+    const limpias = Object.fromEntries(Object.entries(vars).map(([k, v]) => [k, v == null ? '' : String(v)]));
+    const subject = rellenarPlantilla(asunto, limpias).replace(/\s+/g, ' ').trim().slice(0, 250);
+    return {
+        subject,
+        html: htmlCorreo(diseno, { marca, vars: limpias, automaticos, base: URL_PUBLICA_WEB, titulo: subject }),
+        text: textoCorreo(diseno, { marca, vars: limpias, automaticosTexto }),
+    };
+}
+
+// Imágenes de los correos: públicas (Gmail las pide sin sesión) y para siempre
+// (un correo ya enviado sigue apuntando a ellas).
+app.get('/ci/:id', async (req, res) => {
+    try {
+        const r = await pool.query(`SELECT mime, datos FROM aim_correo_imagenes WHERE id = $1`, [String(req.params.id).slice(0, 40)]);
+        if (!r.rowCount) return res.status(404).end();
+        res.set('Content-Type', r.rows[0].mime);
+        res.set('Cache-Control', 'public, max-age=31536000, immutable');
+        res.send(r.rows[0].datos);
+    } catch { res.status(500).end(); }
+});
+
+const mapImagen = (x) => ({ id: x.id, url: `/ci/${x.id}`, nombre: x.nombre, ancho: x.ancho, alto: x.alto, bytes: x.bytes, fecha: x.created_at });
+app.get('/api/admin/correo/imagenes', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try {
+        const r = await pool.query(`SELECT id, nombre, ancho, alto, bytes, created_at FROM aim_correo_imagenes ORDER BY created_at DESC LIMIT 300`);
+        res.set('Cache-Control', 'no-store');
+        res.json({ imagenes: r.rows.map(mapImagen) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.post('/api/admin/correo/imagenes', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    const m = String(req.body?.datos || '').match(/^data:(image\/(?:png|jpeg|gif));base64,([A-Za-z0-9+/=]+)$/);
+    if (!m) return res.status(400).json({ error: 'La imagen tiene que ser JPG, PNG o GIF.' });
+    const datos = Buffer.from(m[2], 'base64');
+    if (datos.length > 2.5 * 1024 * 1024) return res.status(413).json({ error: 'La imagen pesa demasiado (máximo 2,5 MB).' });
+    try {
+        const id = crypto.randomBytes(12).toString('hex');
+        const r = await pool.query(
+            `INSERT INTO aim_correo_imagenes (id, mime, datos, nombre, ancho, alto, bytes, subido_por)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, nombre, ancho, alto, bytes, created_at`,
+            [id, m[1], datos, String(req.body?.nombre || '').slice(0, 200) || null,
+             Number.isFinite(Number(req.body?.ancho)) ? Math.round(Number(req.body.ancho)) : null,
+             Number.isFinite(Number(req.body?.alto)) ? Math.round(Number(req.body.alto)) : null,
+             datos.length, req.userSession.userId]);
+        res.status(201).json(mapImagen(r.rows[0]));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.delete('/api/admin/correo/imagenes/:id', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try {
+        await pool.query(`DELETE FROM aim_correo_imagenes WHERE id = $1`, [req.params.id]);
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/admin/correo/marca', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try { res.set('Cache-Control', 'no-store'); res.json({ marca: await marcaCorreo(), porDefecto: MARCA_POR_DEFECTO }); }
+    catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.put('/api/admin/correo/marca', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try {
+        const marca = limpiarMarca(req.body?.marca || {});
+        await pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('marca_correo', $1::jsonb, NOW(), $2)
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+            [JSON.stringify(marca), req.userSession.userId]);
+        marcaCache = null;
+        res.json({ success: true, marca });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Plantillas diseñadas del club.
+const mapPlantillaDiseno = (x) => ({ id: x.id, nombre: x.nombre, asunto: x.asunto || '', diseno: x.diseno, actualizada: x.updated_at, autor: x.autor || null });
+app.get('/api/admin/correo/plantillas', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT p.*, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS autor FROM aim_plantillas_diseno p
+             LEFT JOIN users u ON u.user_id = COALESCE(p.updated_by, p.creado_por) ORDER BY p.updated_at DESC`);
+        res.set('Cache-Control', 'no-store');
+        res.json({ plantillas: r.rows.map(mapPlantillaDiseno) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.post('/api/admin/correo/plantillas', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    const nombre = String(req.body?.nombre || '').trim().slice(0, 120);
+    const diseno = limpiarDiseno(req.body?.diseno);
+    if (!nombre) return res.status(400).json({ error: 'Ponle un nombre a la plantilla.' });
+    if (!diseno) return res.status(400).json({ error: 'Falta el diseño.' });
+    try {
+        const r = await pool.query(
+            `INSERT INTO aim_plantillas_diseno (nombre, asunto, diseno, creado_por, updated_by) VALUES ($1,$2,$3::jsonb,$4,$4) RETURNING *`,
+            [nombre, String(req.body?.asunto || '').slice(0, 200), JSON.stringify(diseno), req.userSession.userId]);
+        res.status(201).json(mapPlantillaDiseno(r.rows[0]));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.put('/api/admin/correo/plantillas/:id(\\d+)', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    const nombre = String(req.body?.nombre || '').trim().slice(0, 120);
+    const diseno = limpiarDiseno(req.body?.diseno);
+    if (!nombre) return res.status(400).json({ error: 'Ponle un nombre a la plantilla.' });
+    if (!diseno) return res.status(400).json({ error: 'Falta el diseño.' });
+    try {
+        const r = await pool.query(
+            `UPDATE aim_plantillas_diseno SET nombre = $2, asunto = $3, diseno = $4::jsonb, updated_at = NOW(), updated_by = $5
+             WHERE id = $1 RETURNING *`,
+            [req.params.id, nombre, String(req.body?.asunto || '').slice(0, 200), JSON.stringify(diseno), req.userSession.userId]);
+        if (!r.rowCount) return res.status(404).json({ error: 'Esa plantilla no existe.' });
+        res.json(mapPlantillaDiseno(r.rows[0]));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.delete('/api/admin/correo/plantillas/:id(\\d+)', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try {
+        await pool.query(`DELETE FROM aim_plantillas_diseno WHERE id = $1`, [req.params.id]);
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Los correos automáticos: cuáles hay, cómo están y su diseño de fábrica.
+app.get('/api/admin/correo/sistema', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try {
+        const guardados = await disenosSistema();
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            correos: Object.entries(CORREOS_SISTEMA).map(([clave, def]) => {
+                const v = disenoVigente(clave, guardados[clave]);
+                return {
+                    clave, grupo: def.grupo, nombre: def.nombre, cuando: def.cuando,
+                    variables: def.variables || {}, automaticos: def.automaticos || {}, obligatorio: def.obligatorio || [],
+                    asunto: v.asunto, diseno: v.diseno, personalizado: v.personalizado,
+                    // Guardado pero sin lo imprescindible: sale el de fábrica.
+                    roto: !!guardados[clave]?.diseno && !v.personalizado,
+                    actualizado: guardados[clave]?.at || null,
+                    porDefecto: { asunto: def.asunto, diseno: def.diseno() },
+                };
+            }),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+async function guardarSistema(req, valor) {
+    await pool.query(
+        `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('correos_sistema', $1::jsonb, NOW(), $2)
+         ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+        [JSON.stringify(valor), req.userSession.userId]);
+    sistemaCache = null;
+}
+app.put('/api/admin/correo/sistema/:clave', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    const def = CORREOS_SISTEMA[req.params.clave];
+    if (!def) return res.status(404).json({ error: 'Ese correo no existe.' });
+    const diseno = limpiarDiseno(req.body?.diseno);
+    const asunto = String(req.body?.asunto || '').trim().slice(0, 200);
+    if (!diseno) return res.status(400).json({ error: 'Falta el diseño.' });
+    if (!asunto) return res.status(400).json({ error: 'Falta el asunto.' });
+    const faltan = faltanObligatorios(def, diseno, asunto);
+    if (faltan.length) return res.status(400).json({ error: `A este correo no le puede faltar: ${faltan.join(', ')}.` });
+    try {
+        const todos = { ...(await disenosSistema()) };
+        todos[req.params.clave] = { asunto, diseno, at: new Date().toISOString(), por: req.userSession.userId };
+        await guardarSistema(req, todos);
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.delete('/api/admin/correo/sistema/:clave', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    if (!CORREOS_SISTEMA[req.params.clave]) return res.status(404).json({ error: 'Ese correo no existe.' });
+    try {
+        const todos = { ...(await disenosSistema()) };
+        delete todos[req.params.clave];
+        await guardarSistema(req, todos);
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Una prueba del diseño que se está haciendo, a quien lo diseña, con datos de
+// ejemplo. Sale tal cual saldría (con la marca guardada).
+app.post('/api/admin/correo/prueba', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    if (!mailTransporter) return res.status(503).json({ error: 'El correo no está configurado en el servidor.' });
+    const diseno = limpiarDiseno(req.body?.diseno);
+    if (!diseno) return res.status(400).json({ error: 'Falta el diseño.' });
+    try {
+        const yo = (await pool.query(`SELECT email FROM users WHERE user_id = $1`, [req.userSession.userId])).rows[0]?.email;
+        if (!yo || esCorreoInterno(yo)) return res.status(400).json({ error: 'Tu cuenta no tiene correo al que mandarte la prueba.' });
+        const def = CORREOS_SISTEMA[req.body?.clave];
+        const ej = def ? ejemplosDe(def) : { vars: {}, automaticos: {} };
+        const vars = { nombre: 'Lucía', alumno: 'Lucía García', clases: 'Ballet (L-X 17:00)', pendiente: '35,00 €', mes: 'octubre de 2026', club: 'AIM Education', ...ej.vars };
+        const asunto = rellenarPlantilla(String(req.body?.asunto || 'Prueba de diseño'), vars).slice(0, 200);
+        const marca = await marcaCorreo();
+        await mailTransporter.sendMail({
+            from: `AIM Education <${process.env.EMAIL_USER}>`, replyTo: process.env.EMAIL_USER, to: yo,
+            subject: `[Prueba] ${asunto}`,
+            html: htmlCorreo(diseno, { marca, vars, automaticos: ej.automaticos, base: URL_PUBLICA_WEB, titulo: asunto }),
+            text: textoCorreo(diseno, { marca, vars }),
+        });
+        res.json({ success: true, enviadaA: yo });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 app.get('/api/admin/comunicaciones/plantillas', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
     try { res.set('Cache-Control', 'no-store'); res.json({ plantillas: await plantillasCorreo() }); }
@@ -10013,10 +10260,11 @@ app.get('/api/admin/comunicaciones/:personaId/contexto', authenticateSession, re
 
 app.post('/api/admin/comunicaciones/:personaId/enviar', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
     const { destinatarios, asunto, cuerpo, plantilla, tipo } = req.body || {};
+    const diseno = req.body?.diseno ? limpiarDiseno(req.body.diseno) : null;
     const t = TIPOS_CORREO.includes(tipo) ? tipo : 'servicio';
     if (!mailTransporter) return res.status(503).json({ error: 'El correo no está configurado en el servidor.' });
     if (!String(asunto || '').trim()) return res.status(400).json({ error: 'Falta el asunto.' });
-    if (!String(cuerpo || '').trim()) return res.status(400).json({ error: 'El correo está vacío.' });
+    if (!String(cuerpo || '').trim() && !diseno?.bloques.length) return res.status(400).json({ error: 'El correo está vacío.' });
     try {
         const ctx = await contextoCorreo(req.params.personaId);
         if (!ctx) return res.status(404).json({ error: 'Esa persona no es del club.' });
@@ -10035,7 +10283,7 @@ app.post('/api/admin/comunicaciones/:personaId/enviar', authenticateSession, req
         }
         const env = await enviarYApuntar({
             personaId: req.params.personaId, a, asunto, cuerpo, tipo: t, variables: ctx.variables,
-            plantilla, enviadoPor: req.userSession.userId,
+            plantilla, enviadoPor: req.userSession.userId, diseno,
         });
         if (env.estado === 'error') return res.status(502).json({ error: `No se ha podido enviar: ${env.error}`, id: env.id });
         res.json({ success: true, id: env.id, enviadoA: a, omitidos: quitados.map(d => d.nombre) });
@@ -10045,15 +10293,17 @@ app.post('/api/admin/comunicaciones/:personaId/enviar', authenticateSession, req
 // Envía un correo de la ficha y lo apunta en su historial (lo usan la ficha y
 // los automatismos). 'plantilla' guarda de dónde salió; en los automatismos es
 // su marca (auto:…), que sirve para no mandarlo dos veces.
-async function enviarYApuntar({ personaId, a, asunto, cuerpo, tipo, variables, plantilla = null, enviadoPor = null }) {
+async function enviarYApuntar({ personaId, a, asunto, cuerpo, tipo, variables, plantilla = null, enviadoPor = null, diseno = null }) {
     const asuntoFinal = rellenarPlantilla(String(asunto).trim(), variables).slice(0, 200);
-    const cuerpoFinal = rellenarPlantilla(String(cuerpo), variables).slice(0, 8000);
+    // Con diseño, en el historial queda su versión en texto.
+    const d = diseno ? limpiarDiseno(diseno) : null;
+    const cuerpoFinal = (d ? textoCorreo({ ...d, pie: false }, { vars: variables }) : rellenarPlantilla(String(cuerpo), variables)).slice(0, 8000);
     let estado = 'enviado', error = null;
     try {
+        const c = await correoCrm({ cuerpo: cuerpoFinal, diseno: d, vars: variables, asunto: asuntoFinal, comercial: tipo === 'comercial' });
         await mailTransporter.sendMail({
             from: `AIM Education <${process.env.EMAIL_USER}>`, replyTo: process.env.EMAIL_USER,
-            to: a.join(','), subject: asuntoFinal, text: cuerpoFinal,
-            html: htmlCorreoClub(cuerpoFinal, { comercial: tipo === 'comercial' }),
+            to: a.join(','), subject: asuntoFinal, text: c.text, html: c.html,
         });
     } catch (e) { estado = 'error'; error = String(e.message || e).slice(0, 500); }
     const ins = await pool.query(
@@ -10096,7 +10346,7 @@ async function configAutomatismos() {
     const g = r.rows[0]?.valor || {};
     return Object.fromEntries(Object.entries(AUTOMATISMOS).map(([id, def]) => [id, {
         activo: !!g[id]?.activo, activadoAt: g[id]?.activadoAt || null,
-        asunto: g[id]?.asunto ?? def.asunto, cuerpo: g[id]?.cuerpo ?? def.cuerpo,
+        asunto: g[id]?.asunto ?? def.asunto, cuerpo: g[id]?.cuerpo ?? def.cuerpo, diseno: g[id]?.diseno || null,
     }]));
 }
 
@@ -10183,7 +10433,7 @@ async function ejecutarAutomatismos() {
                     continue;
                 }
                 await enviarYApuntar({
-                    personaId: cand.personaId, a: d.para.map(x => x.email), asunto: c.asunto, cuerpo: c.cuerpo,
+                    personaId: cand.personaId, a: d.para.map(x => x.email), asunto: c.asunto, cuerpo: c.cuerpo, diseno: c.diseno,
                     tipo: 'actividades', variables: { ...d.ctx.variables, ...cand.extra }, plantilla: cand.marca,
                 });
             }
@@ -10229,6 +10479,8 @@ app.put('/api/admin/automatismos/:id', authenticateSession, requireSeccion('comu
             activadoAt: activo ? (antes.activo ? antes.activadoAt : new Date().toISOString()) : null,
             asunto: typeof req.body?.asunto === 'string' ? req.body.asunto.slice(0, 200) : antes.asunto,
             cuerpo: typeof req.body?.cuerpo === 'string' ? req.body.cuerpo.slice(0, 8000) : antes.cuerpo,
+            // null lo quita (vuelve a ser texto); sin mandarlo, se queda como estaba.
+            diseno: req.body?.diseno === null ? null : req.body?.diseno ? limpiarDiseno(req.body.diseno) : (antes.diseno || null),
         };
         await pool.query(
             `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('automatismos_crm', $1::jsonb, NOW(), $2)
@@ -10496,9 +10748,10 @@ const INTERVALO_CAMPANAS_MS = 4000;
 const urlClic = (token, destino) => `${URL_PUBLICA_WEB}/c/${token}?u=${encodeURIComponent(destino)}`;
 const urlBaja = (token) => `${URL_PUBLICA_WEB}/baja/${token}`;
 const urlApertura = (token) => `${URL_PUBLICA_WEB}/o/${token}.gif`;
-const pieBaja = (tipo, token) => tipo === 'servicio' ? '' : `<p style="font-size:11px;color:#999">${tipo === 'comercial'
+const pieBaja = (tipo, token) => tipo === 'servicio' ? '' : `${tipo === 'comercial'
     ? 'Recibes este correo porque aceptaste las comunicaciones comerciales del club.'
-    : 'Recibes este correo por las actividades en las que está apuntado tu familia.'} Si no quieres recibir más, <a href="${urlBaja(token)}" style="color:#999">date de baja aquí</a>.</p>`;
+    : 'Recibes este correo por las actividades en las que está apuntado tu familia.'} Si no quieres recibir más, <a href="${urlBaja(token)}" style="color:#9a958d">date de baja aquí</a>.`;
+const pieBajaTexto = (tipo, token) => tipo === 'servicio' ? '' : `Si no quieres recibir más correos como este: ${urlBaja(token)}`;
 
 // Estado de una campaña, sacado de sus correos.
 function estadoCampana(correos) {
@@ -10536,7 +10789,7 @@ async function correosDeCampanas(ids) {
     for (const k of r.rows) {
         if (!m.has(k.campana_id)) m.set(k.campana_id, []);
         m.get(k.campana_id).push({
-            id: k.id, orden: k.orden, titulo: k.titulo, asunto: k.asunto, cuerpo: k.cuerpo, tipo: k.tipo,
+            id: k.id, orden: k.orden, titulo: k.titulo, asunto: k.asunto, cuerpo: k.cuerpo, diseno: k.diseno || null, tipo: k.tipo,
             programadoAt: k.programado_at, estado: k.estado, lanzadoAt: k.lanzado_at, terminadoAt: k.terminado_at,
             cuentas: cuentasDe(k),
         });
@@ -10653,6 +10906,10 @@ app.delete('/api/admin/campanas/:id(\\d+)', authenticateSession, requireSeccion(
 app.post('/api/admin/campanas/:id(\\d+)/correos', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
     const b = req.body || {};
     const tipo = TIPOS_CORREO.includes(b.tipo) ? b.tipo : 'comercial';
+    // Con diseño, el texto sencillo sale de él (para la versión de texto plano y
+    // para que el resto de comprobaciones vean que tiene contenido).
+    const diseno = b.diseno ? limpiarDiseno(b.diseno) : null;
+    if (diseno) b.cuerpo = textoCorreo({ ...diseno, pie: false }, {});
     let programado = null;
     if (b.programadoAt) {
         programado = new Date(b.programadoAt);
@@ -10661,22 +10918,22 @@ app.post('/api/admin/campanas/:id(\\d+)/correos', authenticateSession, requireSe
         if (!String(b.asunto || '').trim() || !String(b.cuerpo || '').trim()) return res.status(400).json({ error: 'Para programarlo hace falta el asunto y el texto.' });
     }
     const vals = [String(b.titulo || '').trim().slice(0, 120), String(b.asunto || '').slice(0, 200), String(b.cuerpo || '').slice(0, 20000),
-        tipo, programado ? programado.toISOString() : null, programado ? 'programado' : 'borrador'];
+        tipo, programado ? programado.toISOString() : null, programado ? 'programado' : 'borrador', diseno ? JSON.stringify(diseno) : null];
     try {
         const c = (await pool.query(`SELECT id, segmentos FROM aim_campanas WHERE id = $1`, [Number(req.params.id)])).rows[0];
         if (!c) return res.status(404).json({ error: 'Esa campaña no existe.' });
         if (programado && !(c.segmentos || []).length) return res.status(400).json({ error: 'Elige primero a quién va la campaña.' });
         if (b.correoId) {
             const r = await pool.query(
-                `UPDATE aim_campana_correos SET titulo = $1, asunto = $2, cuerpo = $3, tipo = $4, programado_at = $5, estado = $6
-                 WHERE id = $7 AND campana_id = $8 AND estado IN ('borrador', 'programado') RETURNING id`,
+                `UPDATE aim_campana_correos SET titulo = $1, asunto = $2, cuerpo = $3, tipo = $4, programado_at = $5, estado = $6, diseno = $7::jsonb
+                 WHERE id = $8 AND campana_id = $9 AND estado IN ('borrador', 'programado') RETURNING id`,
                 [...vals, Number(b.correoId), c.id]);
             if (!r.rowCount) return res.status(409).json({ error: 'Ese correo ya ha salido: no se puede cambiar.' });
             return res.json({ success: true, id: r.rows[0].id });
         }
         const r = await pool.query(
-            `INSERT INTO aim_campana_correos (campana_id, orden, titulo, asunto, cuerpo, tipo, programado_at, estado)
-             VALUES ($1, (SELECT COALESCE(MAX(orden), -1) + 1 FROM aim_campana_correos WHERE campana_id = $1), $2, $3, $4, $5, $6, $7) RETURNING id`,
+            `INSERT INTO aim_campana_correos (campana_id, orden, titulo, asunto, cuerpo, tipo, programado_at, estado, diseno)
+             VALUES ($1, (SELECT COALESCE(MAX(orden), -1) + 1 FROM aim_campana_correos WHERE campana_id = $1), $2, $3, $4, $5, $6, $7, $8::jsonb) RETURNING id`,
             [c.id, ...vals]);
         res.status(201).json({ success: true, id: r.rows[0].id });
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -10719,11 +10976,14 @@ app.post('/api/admin/campanas/correos/:cid(\\d+)/prueba', authenticateSession, r
             const a = seg.alumnos.find(x => !x.fuera);
             if (a) { ejemplo = a.nombre; vars = await variablesDeEnvio(a.esContacto ? null : a.id, a.destinatarios[0]?.email); break; }
         }
-        const cuerpo = rellenarPlantilla(k.cuerpo, vars);
+        const asunto = rellenarPlantilla(k.asunto, vars);
+        const c = await correoCrm({
+            cuerpo: rellenarPlantilla(k.cuerpo, vars), diseno: k.diseno, vars, asunto,
+            pie: pieBaja(k.tipo, '0'.repeat(32)), pieTexto: pieBajaTexto(k.tipo, '0'.repeat(32)),
+        });
         await mailTransporter.sendMail({
             from: `AIM Education <${process.env.EMAIL_USER}>`, replyTo: process.env.EMAIL_USER, to: yo,
-            subject: `[Prueba] ${rellenarPlantilla(k.asunto, vars)}`, text: cuerpo,
-            html: htmlCorreoClub(cuerpo, { pie: pieBaja(k.tipo, '0'.repeat(32)) }),
+            subject: `[Prueba] ${asunto}`, text: c.text, html: c.html,
         });
         res.json({ success: true, enviadaA: yo, ejemplo });
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -10843,7 +11103,7 @@ async function enviarSiguienteDeCampana() {
         client = await pool.connect();
         await client.query('BEGIN');
         const r = await client.query(
-            `SELECT e.*, k.asunto, k.cuerpo, k.tipo FROM aim_campana_envios e JOIN aim_campana_correos k ON k.id = e.correo_id
+            `SELECT e.*, k.asunto, k.cuerpo, k.diseno, k.tipo FROM aim_campana_envios e JOIN aim_campana_correos k ON k.id = e.correo_id
              WHERE e.estado = 'pendiente' AND k.estado = 'enviando' ORDER BY e.id LIMIT 1 FOR UPDATE OF e SKIP LOCKED`);
         if (!r.rowCount) {
             await client.query(
@@ -10866,13 +11126,17 @@ async function enviarSiguienteDeCampana() {
             return;
         }
         const vars = await variablesDeEnvio(e.persona_id, e.email);
-        const cuerpo = rellenarPlantilla(e.cuerpo, vars);
+        const asunto = rellenarPlantilla(e.asunto, vars).slice(0, 200);
         let estado = 'enviado', error = null;
         try {
+            const c = await correoCrm({
+                cuerpo: rellenarPlantilla(e.cuerpo, vars), diseno: e.diseno, vars, asunto,
+                rastrear: (u) => urlClic(e.token, u), apertura: urlApertura(e.token),
+                pie: pieBaja(e.tipo, e.token), pieTexto: pieBajaTexto(e.tipo, e.token),
+            });
             await mailTransporter.sendMail({
                 from: `AIM Education <${process.env.EMAIL_USER}>`, replyTo: process.env.EMAIL_USER, to: e.email,
-                subject: rellenarPlantilla(e.asunto, vars).slice(0, 200), text: cuerpo,
-                html: htmlCorreoClub(cuerpo, { rastrear: (u) => urlClic(e.token, u), pie: pieBaja(e.tipo, e.token), apertura: urlApertura(e.token) }),
+                subject: asunto, text: c.text, html: c.html,
                 headers: {
                     ...(e.tipo === 'servicio' ? {} : { 'List-Unsubscribe': `<${urlBaja(e.token)}>` }),
                     // Para reconocer el envío si vuelve rebotado.
@@ -12927,12 +13191,13 @@ app.post('/api/support', authenticateSession, async (req, res) => {
         );
         const ticketId = result.rows[0].id;
         if (mailTransporter) {
-            mailTransporter.sendMail({
-                from: process.env.EMAIL_USER,
-                to: process.env.EMAIL_USER,
-                subject: `[Soporte Aim Education] Ticket #${ticketId}: ${subject}`,
-                text: `Nuevo ticket de ${req.userSession.firstName} ${req.userSession.lastName || ''} (${req.userSession.email})\n\nAsunto: ${subject}\n\nDescripción:\n${description}`
-            }).then(() => {
+            correoSistema('aviso_ticket', {
+                numero: ticketId, asunto: subject,
+                autor: `${req.userSession.firstName || ''} ${req.userSession.lastName || ''}`.trim(), email: req.userSession.email || '',
+            }, {
+                automaticos: { descripcion: `<div style="white-space:pre-wrap">${escHtml(description)}</div>` },
+                automaticosTexto: { descripcion: `Descripción:\n${description}` },
+            }).then(c => mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: process.env.EMAIL_USER, ...c })).then(() => {
                 pool.query('UPDATE tickets_registrosoporte SET email_sent = true WHERE id = $1', [ticketId]).catch(() => {});
             }).catch(err => console.error('[SMTP ERROR]', err.message));
         }
@@ -13247,6 +13512,292 @@ app.post('/api/avisos/vistos', authenticateSession, async (req, res) => {
 // ── Campanita de avisos ──────────────────────────────────────────────────────
 // Lo que hay pendiente de atender ahora mismo, agrupado por sitio. Cada aviso
 // lleva a dónde resolverlo. Nada de esto se guarda: se calcula al abrirla.
+// ═════════════════════════════════════════════════════════════════════════════
+// Resumen del panel por rango (ticket #327). Cada uno ve nada más entrar lo que
+// le toca: el instructor sus clases y sus alumnos; secretaría el día del club y
+// lo que hay que atender; la dirección cómo va el negocio; el Equipo IT los
+// tickets y la salud del sistema. Todos llevan arriba «Tu día» (fichaje,
+// tareas). Lo pendiente (la campanita) se pinta aparte con /notificaciones.
+// La dirección y el Equipo IT pueden asomarse a las otras vistas.
+// ═════════════════════════════════════════════════════════════════════════════
+const VISTAS_RESUMEN = { direccion: 'Dirección', secretaria: 'Secretaría', it: 'Equipo IT', instructor: 'Instructor', trabajador: 'Mi día' };
+function vistasResumenDe(ses) {
+    const rol = ses?.rol;
+    if (rol === 'trabajador' || rol === 'instructor' || rol === 'secretaria') return [rol];
+    const propia = rol === 'equipo_it' ? 'it' : rol === 'club_owner' ? 'direccion'
+        : ({ equipo_it: 'it', secretaria: 'secretaria', instructor: 'instructor', club_owner: 'direccion' }[ses?.rolVisible] || 'direccion');
+    return [propia, ...['direccion', 'secretaria', 'it'].filter(v => v !== propia)];
+}
+const HOY_SQL = `(now() AT TIME ZONE 'Europe/Madrid')::date`;
+const n2 = (v) => Math.round(Number(v || 0) * 100) / 100;
+
+// Tu día: fichaje, tareas, tus tickets y tus próximas ausencias.
+async function resumenMiDia(yo) {
+    const [fich, entrada, tareas, lista, tickets, ausencias] = await Promise.all([
+        estadoFichaje(yo),
+        pool.query(`SELECT MIN(f.ts) AS desde FROM aim_fichajes f WHERE f.user_id = $1 AND f.tipo = 'entrada' AND f.dia = ${HOY_SQL} AND ${FICHAJE_VIGENTE('f')}`, [yo]),
+        pool.query(`SELECT COUNT(*) FILTER (WHERE fecha = ${HOY_SQL} AND NOT hecha)::int AS pendientes,
+                           COUNT(*) FILTER (WHERE fecha = ${HOY_SQL} AND hecha)::int AS hechas,
+                           COUNT(*) FILTER (WHERE fecha < ${HOY_SQL} AND NOT hecha)::int AS vencidas
+                    FROM aim_tareas WHERE user_id = $1`, [yo]),
+        pool.query(`SELECT id, titulo, hora FROM aim_tareas WHERE user_id = $1 AND fecha = ${HOY_SQL} AND NOT hecha
+                    ORDER BY hora NULLS LAST, id LIMIT 5`, [yo]),
+        pool.query(`SELECT COUNT(*)::int n FROM tickets_registrosoporte WHERE status = 'open' AND (assigned_to = $1 OR $1 = ANY(asignados_extra))`, [yo]),
+        pool.query(`SELECT tipo, desde::text, hasta::text, estado FROM aim_ausencias
+                    WHERE user_id = $1 AND hasta >= ${HOY_SQL} AND estado IN ('pendiente', 'aprobada') ORDER BY desde LIMIT 3`, [yo]),
+    ]);
+    return {
+        fichaje: { estado: fich.estado, ultimo: fich.ultimo?.ts || null, desde: entrada.rows[0]?.desde || null },
+        tareas: { ...tareas.rows[0], proximas: lista.rows },
+        ticketsMios: tickets.rows[0].n,
+        ausencias: ausencias.rows.map(a => ({ ...a, nombre: TIPOS_AUSENCIA[a.tipo]?.nombre || a.tipo })),
+    };
+}
+
+// Cumpleaños de hoy y de los próximos días (de alumnos con clase).
+async function cumplesProximos(grupos = null, dias = 7) {
+    const r = await pool.query(
+        `SELECT DISTINCT u.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre, d.n AS en_dias,
+                EXTRACT(YEAR FROM age(${HOY_SQL} + d.n, u.birthday))::int AS edad
+         FROM users u
+         JOIN tul_group_students gs ON gs.student_id = u.user_id
+         JOIN tul_groups g ON g.group_id = gs.group_id
+         JOIN tul_activities a ON a.activity_id = g.activity_id
+         JOIN LATERAL (SELECT n FROM generate_series(0, $3::int - 1) n
+                       WHERE to_char(${HOY_SQL} + n, 'MM-DD') = to_char(u.birthday, 'MM-DD') LIMIT 1) d ON true
+         WHERE a.club_id = $1 AND u.birthday IS NOT NULL AND ($2::uuid[] IS NULL OR gs.group_id = ANY($2::uuid[]))
+         ORDER BY d.n, nombre LIMIT 30`, [AIM_CLUB_ID, grupos, dias]);
+    return r.rows.map(x => ({ id: x.user_id, nombre: x.nombre, enDias: x.en_dias, edad: x.edad }));
+}
+
+async function speakingHoy(grupos = null) {
+    const r = await pool.query(
+        `SELECT s.group_id, g.name, COUNT(*)::int total,
+                COUNT(*) FILTER (WHERE s.confirmado IS TRUE)::int si,
+                COUNT(*) FILTER (WHERE s.confirmado IS FALSE)::int no,
+                COUNT(*) FILTER (WHERE s.confirmado IS NULL)::int sin_respuesta
+         FROM aim_speaking s LEFT JOIN tul_groups g ON g.group_id = s.group_id
+         WHERE s.fecha = ${HOY_SQL} AND ($1::uuid[] IS NULL OR s.group_id = ANY($1::uuid[]))
+         GROUP BY s.group_id, g.name ORDER BY g.name`, [grupos]);
+    return r.rows.map(x => ({ grupo: x.name || 'Speaking', total: x.total, si: x.si, no: x.no, sinRespuesta: x.sin_respuesta }));
+}
+
+async function eventosProximos(docente = null, dias = 14) {
+    const r = await pool.query(
+        `SELECT id, title, event_date::text AS fecha, end_date::text AS fin, time, venue FROM aim_eventos
+         WHERE COALESCE(end_date, event_date) >= ${HOY_SQL} AND event_date <= ${HOY_SQL} + $2::int
+           AND ($1::uuid IS NULL OR docente_id = $1)
+         ORDER BY event_date, time NULLS LAST LIMIT 6`, [docente, dias]);
+    return r.rows.map(e => ({ id: e.id, titulo: e.title, fecha: e.fecha, fin: e.fin, hora: e.time, lugar: e.venue }));
+}
+
+// Quién está trabajando ahora mismo (según su último fichaje de hoy o ayer).
+async function personalAhora() {
+    const r = await pool.query(
+        `SELECT * FROM (
+           SELECT DISTINCT ON (f.user_id) f.user_id, f.tipo, f.ts,
+                  TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre,
+                  (SELECT MIN(e.ts) FROM aim_fichajes e WHERE e.user_id = f.user_id AND e.tipo = 'entrada' AND e.dia = f.dia AND ${FICHAJE_VIGENTE('e')}) AS desde
+           FROM aim_fichajes f JOIN users u ON u.user_id = f.user_id
+           WHERE f.dia >= ${HOY_SQL} - 1 AND ${FICHAJE_VIGENTE('f')}
+           ORDER BY f.user_id, f.ts DESC, f.id DESC) t
+         WHERE t.tipo IN ('entrada', 'pausa_fin', 'pausa_inicio') ORDER BY t.nombre`);
+    return r.rows.map(x => ({ id: x.user_id, nombre: x.nombre, estado: x.tipo === 'pausa_inicio' ? 'pausa' : 'dentro', desde: x.desde || x.ts }));
+}
+
+async function porCobrar() {
+    const r = await pool.query(
+        `SELECT COUNT(*)::int n, COUNT(DISTINCT cliente_id)::int familias, COALESCE(SUM(COALESCE(importe, precio)), 0)::numeric total
+         FROM aim_cargos WHERE estado = 'pendiente' AND recibo_id IS NULL`);
+    const x = r.rows[0];
+    return { cargos: x.n, familias: x.familias, total: n2(x.total) };
+}
+
+async function resumenInstructor(yo) {
+    const grupos = await gruposDe(yo);
+    const [alumnos, faltas, cumples, speaking, eventos, pedidos] = await Promise.all([
+        pool.query(`SELECT COUNT(DISTINCT student_id)::int n FROM tul_group_students WHERE group_id = ANY($1::uuid[])`, [grupos]),
+        rachasDeFaltas({ minimo: 3 }),
+        cumplesProximos(grupos, 7),
+        speakingHoy(grupos),
+        eventosProximos(yo, 30),
+        pool.query(`SELECT titulo, estado, fecha::text FROM aim_eventos_solicitudes WHERE solicitante_id = $1 AND estado = 'pendiente' ORDER BY created_at DESC LIMIT 5`, [yo]).catch(() => ({ rows: [] })),
+    ]);
+    const mios = new Set(grupos.map(String));
+    return {
+        grupos: grupos.length,
+        alumnos: alumnos.rows[0].n,
+        faltas: faltas.filter(f => mios.has(String(f.groupId))).slice(0, 10)
+            .map(f => ({ id: f.studentId, alumno: f.alumno, clase: f.clase, racha: f.racha })),
+        cumples, speaking, eventos,
+        eventosPedidos: pedidos.rows,
+    };
+}
+
+async function resumenSecretaria() {
+    const [cobrado, porMedio, caja, cobrar, personal, cumples, speaking, eventos, camp] = await Promise.all([
+        pool.query(`SELECT COALESCE(SUM(importe), 0)::numeric total, COUNT(*)::int n FROM aim_recibos WHERE fecha = ${HOY_SQL} AND estado <> 'anulado'`),
+        pool.query(`SELECT COALESCE(p.medio, r.medio_pago, 'Otro') AS medio, SUM(COALESCE(p.importe, r.importe))::numeric total
+                    FROM aim_recibos r LEFT JOIN aim_recibo_pagos p ON p.recibo_id = r.id
+                    WHERE r.fecha = ${HOY_SQL} AND r.estado <> 'anulado' GROUP BY 1 ORDER BY 2 DESC`),
+        pool.query(`SELECT cerrado_at FROM aim_arqueos WHERE fecha = ${HOY_SQL}`),
+        porCobrar(),
+        personalAhora(),
+        cumplesProximos(null, 1),
+        speakingHoy(null),
+        eventosProximos(null, 7),
+        pool.query(`SELECT COUNT(*)::int n FROM aim_camp_child_days WHERE day = ${HOY_SQL}`),
+    ]);
+    return {
+        cobradoHoy: { total: n2(cobrado.rows[0].total), recibos: cobrado.rows[0].n, porMedio: porMedio.rows.map(x => ({ medio: nombreMedioServer(x.medio), total: n2(x.total) })) },
+        cajaCerrada: caja.rows[0]?.cerrado_at || null,
+        porCobrar: cobrar, personal, cumples, speaking, eventos,
+        campamentoHoy: camp.rows[0].n,
+    };
+}
+const nombreMedioServer = (m) => ({ efectivo: 'Efectivo', tarjeta: 'Tarjeta', bizum: 'Bizum', transferencia: 'Transferencia', domiciliacion: 'Domiciliación', online: 'Pago online' }[String(m || '').toLowerCase()] || m);
+
+async function resumenDireccion() {
+    const [ing, serie, gastos, serieGastos, activos, altas, bajas, grupos, cobrar, personal] = await Promise.all([
+        // Este mes hasta hoy, y el mes pasado hasta el mismo día (para comparar
+        // lo mismo con lo mismo) y entero.
+        pool.query(`SELECT
+              COALESCE(SUM(importe) FILTER (WHERE fecha >= date_trunc('month', ${HOY_SQL})), 0)::numeric AS mes,
+              COALESCE(SUM(importe) FILTER (WHERE fecha >= date_trunc('month', ${HOY_SQL}) - INTERVAL '1 month'
+                  AND fecha <= (date_trunc('month', ${HOY_SQL}) - INTERVAL '1 month' + (${HOY_SQL} - date_trunc('month', ${HOY_SQL})::date) * INTERVAL '1 day')
+                  AND fecha < date_trunc('month', ${HOY_SQL})), 0)::numeric AS pasado_igual,
+              COALESCE(SUM(importe) FILTER (WHERE fecha >= date_trunc('month', ${HOY_SQL}) - INTERVAL '1 month' AND fecha < date_trunc('month', ${HOY_SQL})), 0)::numeric AS pasado
+            FROM aim_recibos WHERE estado <> 'anulado' AND fecha >= date_trunc('month', ${HOY_SQL}) - INTERVAL '1 month' AND fecha <= ${HOY_SQL}`),
+        pool.query(`SELECT to_char(date_trunc('month', fecha), 'YYYY-MM') AS mes, SUM(importe)::numeric total FROM aim_recibos
+                    WHERE estado <> 'anulado' AND fecha >= date_trunc('month', ${HOY_SQL}) - INTERVAL '5 months' AND fecha <= ${HOY_SQL} GROUP BY 1`),
+        pool.query(`SELECT COALESCE(SUM(amount), 0)::numeric total FROM aim_gastos WHERE date >= date_trunc('month', ${HOY_SQL}) AND date <= ${HOY_SQL}`),
+        pool.query(`SELECT to_char(date_trunc('month', date), 'YYYY-MM') AS mes, SUM(amount)::numeric total FROM aim_gastos
+                    WHERE date >= date_trunc('month', ${HOY_SQL}) - INTERVAL '5 months' AND date <= ${HOY_SQL} GROUP BY 1`),
+        pool.query(`SELECT COUNT(DISTINCT gs.student_id)::int n FROM tul_group_students gs
+                    JOIN tul_groups g ON g.group_id = gs.group_id JOIN tul_activities a ON a.activity_id = g.activity_id WHERE a.club_id = $1`, [AIM_CLUB_ID]),
+        // Alta del mes: su primera clase en el club es de este mes.
+        pool.query(`SELECT COUNT(*)::int n FROM (SELECT student_id, MIN(created_at) AS primera FROM tul_enrollment_history
+                    WHERE club_id = $1 AND action = 'enrolled' GROUP BY student_id) t WHERE t.primera >= date_trunc('month', now())`, [AIM_CLUB_ID]),
+        // Baja del mes: dejó una clase este mes y ya no está en ninguna.
+        pool.query(`SELECT COUNT(DISTINCT h.student_id)::int n FROM tul_enrollment_history h
+                    WHERE h.club_id = $1 AND h.action = 'unenrolled' AND h.created_at >= date_trunc('month', now())
+                      AND NOT EXISTS (SELECT 1 FROM tul_group_students gs JOIN tul_groups g ON g.group_id = gs.group_id
+                                      JOIN tul_activities a ON a.activity_id = g.activity_id WHERE gs.student_id = h.student_id AND a.club_id = $1)`, [AIM_CLUB_ID]),
+        pool.query(`SELECT g.group_id, g.name, a.name AS actividad, g.max_students AS max,
+                           (SELECT COUNT(*) FROM tul_group_students gs WHERE gs.group_id = g.group_id)::int AS n,
+                           (SELECT COUNT(*) FROM aim_lista_espera e WHERE e.group_id = g.group_id AND e.estado = 'esperando')::int AS espera
+                    FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+                    WHERE a.club_id = $1 AND COALESCE(g.max_students, 0) > 0 AND g.name NOT ILIKE '%speaking%'`, [AIM_CLUB_ID]),
+        porCobrar(),
+        personalAhora(),
+    ]);
+    // Los seis últimos meses, también los que no tuvieron movimientos.
+    const meses = [];
+    const hoy = new Date(hoyMadrid() + 'T12:00:00');
+    for (let i = 5; i >= 0; i--) {
+        const d = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
+        meses.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+    }
+    const mapa = (rows) => Object.fromEntries(rows.map(x => [x.mes, n2(x.total)]));
+    const mi = mapa(serie.rows), mg = mapa(serieGastos.rows);
+    const gs = grupos.rows;
+    const plazas = gs.reduce((t, g) => t + g.max, 0), ocupadas = gs.reduce((t, g) => t + Math.min(g.n, g.max), 0);
+    const x = ing.rows[0];
+    return {
+        ingresos: { mes: n2(x.mes), pasadoIgual: n2(x.pasado_igual), pasado: n2(x.pasado) },
+        gastosMes: n2(gastos.rows[0].total),
+        meses: meses.map(m => ({ mes: m, ingresos: mi[m] || 0, gastos: mg[m] || 0 })),
+        alumnos: { activos: activos.rows[0].n, altas: altas.rows[0].n, bajas: bajas.rows[0].n },
+        ocupacion: {
+            pct: plazas ? Math.round(ocupadas * 100 / plazas) : null, plazas, ocupadas,
+            espera: gs.reduce((t, g) => t + g.espera, 0),
+            llenas: gs.filter(g => g.n >= g.max).sort((a, b) => b.espera - a.espera || a.name.localeCompare(b.name)).slice(0, 8)
+                .map(g => ({ nombre: g.name, actividad: g.actividad, n: g.n, max: g.max, espera: g.espera })),
+            flojas: gs.filter(g => g.n / g.max <= 0.34).sort((a, b) => a.n / a.max - b.n / b.max).slice(0, 6)
+                .map(g => ({ nombre: g.name, actividad: g.actividad, n: g.n, max: g.max })),
+        },
+        porCobrar: cobrar, personal,
+    };
+}
+
+async function resumenIT(yo) {
+    const lunes = new Date(hoyMadrid() + 'T12:00:00');
+    lunes.setDate(lunes.getDate() - ((lunes.getDay() + 6) % 7));
+    const lunesIso = lunes.toLocaleDateString('en-CA');
+    const [cuentas, mios, sinAsignar, plan, imap, imapErr, vf, tpv, rebotes, cola] = await Promise.all([
+        pool.query(`SELECT COUNT(*)::int abiertos,
+                           COUNT(*) FILTER (WHERE assigned_to = $1 OR $1 = ANY(asignados_extra))::int mios,
+                           COUNT(*) FILTER (WHERE assigned_to IS NULL AND cardinality(asignados_extra) = 0)::int sin_asignar,
+                           COUNT(*) FILTER (WHERE due_date < now())::int vencidos,
+                           COUNT(*) FILTER (WHERE priority = 'high')::int urgentes,
+                           (SELECT COUNT(*) FROM tickets_registrosoporte WHERE resolved_at > now() - INTERVAL '7 days')::int resueltos_semana
+                    FROM tickets_registrosoporte WHERE status = 'open'`, [yo]),
+        pool.query(`SELECT id, subject, priority, due_date, created_at FROM tickets_registrosoporte
+                    WHERE status = 'open' AND (assigned_to = $1 OR $1 = ANY(asignados_extra))
+                    ORDER BY (priority = 'high') DESC, due_date NULLS LAST, created_at LIMIT 8`, [yo]),
+        pool.query(`SELECT id, subject, priority, created_at FROM tickets_registrosoporte
+                    WHERE status = 'open' AND assigned_to IS NULL AND cardinality(asignados_extra) = 0
+                    ORDER BY (priority = 'high') DESC, created_at LIMIT 5`),
+        pool.query(`SELECT p.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre, p.fecha::text, to_char(p.inicio, 'HH24:MI') inicio, to_char(p.fin, 'HH24:MI') fin, p.nota
+                    FROM aim_it_planificacion p JOIN users u ON u.user_id = p.user_id
+                    WHERE p.fecha BETWEEN $1::date AND $1::date + 6 ORDER BY p.fecha, p.inicio`, [lunesIso]),
+        pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'rebotes_imap'`),
+        pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'rebotes_imap_error'`),
+        pool.query(`SELECT COUNT(*) FILTER (WHERE estado_envio = 'pendiente')::int pendientes, COUNT(*) FILTER (WHERE estado_envio = 'error')::int errores
+                    FROM aim_factura_registro WHERE huella_aeat IS NOT NULL`),
+        pool.query(`SELECT COUNT(*)::int n FROM aim_tpv_pagos WHERE estado = 'revisar'`),
+        pool.query(`SELECT COUNT(*)::int n FROM aim_correos_rebotados WHERE resuelto_at IS NULL`),
+        pool.query(`SELECT COUNT(*)::int n FROM aim_campana_envios e JOIN aim_campana_correos k ON k.id = e.correo_id WHERE e.estado = 'pendiente' AND k.estado = 'enviando'`),
+    ]);
+    const im = imap.rows[0]?.valor || null, ie = imapErr.rows[0]?.valor || null;
+    const errorImap = ie?.error && (!im?.revisadoAt || new Date(ie.at) > new Date(im.revisadoAt)) ? ie : null;
+    const mapT = (t) => ({ id: t.id, asunto: t.subject, prioridad: t.priority, vence: t.due_date, fecha: t.created_at });
+    const mem = process.memoryUsage();
+    return {
+        tickets: { ...cuentas.rows[0], mios: mios.rows.map(mapT), sinAsignarLista: sinAsignar.rows.map(mapT) },
+        semana: { lunes: lunesIso, bloques: plan.rows.map(b => ({ id: b.user_id, nombre: b.nombre, fecha: b.fecha, inicio: b.inicio, fin: b.fin, nota: b.nota, mio: String(b.user_id) === String(yo) })) },
+        sistema: {
+            correo: !!mailTransporter,
+            imap: { revisado: im?.revisadoAt || null, error: errorImap?.error || null, errorAt: errorImap?.at || null },
+            verifactu: { modo: AJUSTES_VERIFACTU.modo, entorno: AJUSTES_VERIFACTU.entorno, certificado: hayCertificadoVerifactu(), ...vf.rows[0] },
+            pagosOnline: pagosOnlineAbiertos(),
+            tpvRevisar: tpv.rows[0].n,
+            rebotes: rebotes.rows[0].n,
+            colaCampanas: cola.rows[0].n,
+            baseDatos: { abiertas: pool.totalCount, libres: pool.idleCount, esperando: pool.waitingCount, max: LIMITES_POOL.max },
+            servidor: {
+                arrancado: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+                memoriaMb: Math.round(mem.rss / 1048576), node: process.version,
+                version: process.env.HEROKU_RELEASE_VERSION || null,
+                commit: (process.env.HEROKU_SLUG_COMMIT || process.env.SOURCE_VERSION || '').slice(0, 7) || null,
+                publicado: process.env.HEROKU_RELEASE_CREATED_AT || null,
+            },
+        },
+    };
+}
+
+app.get('/api/admin/resumen', authenticateSession, requireAdmin, async (req, res) => {
+    const ses = req.userSession;
+    const vistas = vistasResumenDe(ses);
+    const vista = vistas.includes(req.query.vista) ? req.query.vista : vistas[0];
+    try {
+        const mi = await resumenMiDia(ses.userId);
+        const datos = vista === 'instructor' ? await resumenInstructor(ses.userId)
+            : vista === 'secretaria' ? await resumenSecretaria()
+                : vista === 'direccion' ? await resumenDireccion()
+                    : vista === 'it' ? await resumenIT(ses.userId)
+                        : {};
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            vista, vistas: vistas.map(id => ({ id, nombre: VISTAS_RESUMEN[id] })),
+            nombre: ses.firstName || '', hoy: hoyMadrid(), mi, datos,
+        });
+    } catch (err) {
+        console.error('[resumen]', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (req, res) => {
     const yo = req.userSession.userId;
     const permisosYo = permisos(req);
@@ -13613,31 +14164,14 @@ async function enviarCorreosSpeaking(ids, { tipo = 'inicial' } = {}) {
             const franjasTxt = franjasTexto(row.hora_inicio, row.hora_fin, row.franjas || []);
             const si = `${base}/speaking/${row.token}/si`;
             const no = `${base}/speaking/${row.token}/no`;
-            const limiteTxt = row.limite_hoy ? 'hoy' : `el <b>${fechaLarga(row.limite)}</b>`;
-            // El plazo, bien visible: si no confirman a tiempo pierden la clase.
-            const plazo = `<p style="background:#fff4e5;border-left:4px solid #b45309;padding:10px 14px;border-radius:6px;margin:16px 0">
-                    <b>Importante:</b> tienes hasta ${limiteTxt} (incluido) para confirmar.
-                    Si para entonces no has confirmado, <b>se pierde la plaza</b> de ese día.</p>`;
-            const intro = tipo === 'manana'
-                ? `<p>Te recordamos que <b>mañana</b> es la clase de <b>Speaking</b> de <b>${row.alumno}</b> (<b>${fechaTxt}</b>${franjasTxt ? ` · ${franjasTxt}` : ''}). ¡Os esperamos!</p><p>Si al final no puede venir, avísanos:</p>`
-                : tipo === 'ultimoDia'
-                    ? `<p><b>${row.alumno}</b> está apuntado/a a la clase de <b>Speaking</b> del <b>${fechaTxt}</b>${franjasTxt ? ` (${franjasTxt})` : ''} y todavía no nos has confirmado si podrá asistir.</p>
-                       <p style="background:#fff4e5;border-left:4px solid #b45309;padding:10px 14px;border-radius:6px;margin:16px 0"><b>Hoy es el último día para confirmar.</b> Si no lo haces hoy, se pierde la plaza de ese día.</p>`
-                    : `<p><b>${row.alumno}</b> está apuntado/a a la clase de <b>Speaking</b> del <b>${fechaTxt}</b>${franjasTxt ? ` (${franjasTxt})` : ''}.</p><p>Por favor, confirma si podrá asistir:</p>${plazo}`;
-            const botonSi = `<a href="${si}" style="background:#0a7d3c;color:#fff;text-decoration:none;padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block;margin-right:8px">Sí, asistirá</a>`;
-            await mailTransporter.sendMail({
-                from: process.env.EMAIL_USER, to: correos.join(','),
-                subject: `${tipo === 'ultimoDia' ? 'Último día para confirmar · ' : recordatorio ? 'Recordatorio · ' : ''}Clase de Speaking de ${row.alumno} · ${fechaTxt}`,
-                html: `<div style="font-family:system-ui,sans-serif;color:#1a1a1a">
-                  <p>Hola,</p>
-                  ${intro}
-                  <p style="margin:20px 0">
-                    ${tipo === 'manana' ? '' : botonSi}
-                    <a href="${no}" style="background:#eee;color:#333;text-decoration:none;padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block">No podrá</a>
-                  </p>
-                  <p style="font-size:12px;color:#888">AIM Education · Algeciras</p>
-                </div>`,
+            const clave = tipo === 'manana' ? 'speaking_manana' : tipo === 'ultimoDia' ? 'speaking_ultimo_dia' : 'speaking_inicial';
+            const c = await correoSistema(clave, {
+                alumno: row.alumno, fecha: fechaTxt,
+                cuando: franjasTxt ? (tipo === 'manana' ? `${fechaTxt} · ${franjasTxt}` : `${fechaTxt} (${franjasTxt})`) : fechaTxt,
+                limite: row.limite_hoy ? 'hoy' : `el ${fechaLarga(row.limite)}`,
+                enlace_si: si, enlace_no: no,
             });
+            await mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: correos.join(','), ...c });
             await pool.query(
                 `UPDATE aim_speaking SET ${recordatorio ? 'recordatorio_enviado' : 'email_enviado'} = true WHERE id = $1`,
                 [row.id]);
@@ -14707,23 +15241,18 @@ async function correoSolicitudFichaje(solicitudId, momento) {
         const w = await pool.query(`SELECT email, name FROM users WHERE user_id = $1`, [s.user_id]);
         const email = w.rows[0]?.email;
         if (!email) return;
-        const base = URL_PUBLICA_WEB;
         const propuesta = momento === 'propuesta';
-        const asunto = propuesta ? 'Corrección de tu registro de jornada pendiente de aprobar'
-            : `Tu solicitud de corrección ha sido ${s.estado === 'aprobada' ? 'aprobada' : 'rechazada'}`;
-        const cuerpo = propuesta
-            ? `<p>${s.solicitado_por_nombre || 'Secretaría'} ha propuesto una corrección de tu registro de jornada:</p>
-               <p style="background:#f4f4f4;padding:10px 14px;border-radius:8px"><b>${describirSolicitud(s)}</b><br>Motivo: ${s.motivo}</p>
-               <p>No se aplicará hasta que la apruebes. Entra en <b>Fichaje</b> para aprobarla o rechazarla.</p>`
-            : `<p>Tu solicitud <b>«${describirSolicitud(s)}»</b> ha sido <b>${s.estado}</b>${s.resuelto_por_nombre ? ` por ${s.resuelto_por_nombre}` : ''}.</p>
-               ${s.respuesta ? `<p>Comentario: ${s.respuesta}</p>` : ''}`;
-        await mailTransporter.sendMail({
-            from: process.env.EMAIL_USER, to: email, subject: asunto,
-            html: `<div style="font-family:system-ui,sans-serif;color:#1a1a1a">
-              <p>Hola ${w.rows[0].name || ''},</p>${cuerpo}
-              <p style="margin:18px 0"><a href="${base}/admin" style="background:#0a7d3c;color:#fff;text-decoration:none;padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block">Ir a Fichaje</a></p>
-              <p style="font-size:12px;color:#888">AIM Education · Algeciras</p></div>`,
-        });
+        const c = propuesta
+            ? await correoSistema('fichaje_propuesta', {
+                nombre: w.rows[0].name || '', quien: s.solicitado_por_nombre || 'Secretaría',
+                correccion: describirSolicitud(s), motivo: s.motivo || '', enlace: `${URL_PUBLICA_WEB}/admin`,
+            })
+            : await correoSistema('fichaje_resuelta', {
+                nombre: w.rows[0].name || '', correccion: describirSolicitud(s),
+                estado: s.estado === 'aprobada' ? 'aprobada' : 'rechazada',
+                resuelto_por: s.resuelto_por_nombre || '', comentario: s.respuesta || '', enlace: `${URL_PUBLICA_WEB}/admin`,
+            });
+        await mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: email, ...c });
     } catch (e) { console.error('[fichaje solicitud mail]', e.message); }
 }
 
@@ -15367,22 +15896,22 @@ async function enviarResumenMensual(resumenId, { actorId = null, ip = null } = {
     if (!x?.email) return false;
     const mes = String(x.mes).slice(0, 7);
     const pdf = await pdfEnMemoria(salida => generarResumenMensualPdf(datosPdfResumen(x), salida));
-    const base = URL_PUBLICA_WEB;
     const h = (n) => `${Number(n).toFixed(2).replace('.', ',')} h`;
+    const filas = [
+        ['Horas ordinarias', h(x.horas_ordinarias)],
+        [`Horas ${x.jornada === 'parcial' ? 'complementarias' : 'por encima de la jornada'}`, h(x.horas_complementarias)],
+        ['Total trabajado', h(x.horas_trabajadas)],
+    ];
+    const c = await correoSistema('fichaje_resumen', {
+        nombre: x.nombre_pila || '', mes: nombreMesISO(mes),
+        version: x.version > 1 ? ` (versión ${x.version}, sustituye a la anterior)` : '',
+        enlace: `${URL_PUBLICA_WEB}/admin/fichaje`,
+    }, {
+        automaticos: { tabla_horas: `<table role="presentation" style="border-collapse:collapse;font-size:14px">${filas.map(([k, v]) => `<tr><td style="padding:4px 14px 4px 0">${escHtml(k)}</td><td style="font-weight:700">${escHtml(v)}</td></tr>`).join('')}</table>` },
+        automaticosTexto: { tabla_horas: filas.map(([k, v]) => `${k}: ${v}`).join('\n') },
+    });
     await mailTransporter.sendMail({
-        from: process.env.EMAIL_USER, to: x.email,
-        subject: `Tu resumen de horas de ${nombreMesISO(mes)}`,
-        html: `<div style="font-family:system-ui,sans-serif;color:#1a1a1a">
-          <p>Hola ${x.nombre_pila || ''},</p>
-          <p>Te enviamos el resumen de tus horas de <b>${nombreMesISO(mes)}</b>${x.version > 1 ? ` (versión ${x.version}, sustituye a la anterior)` : ''}:</p>
-          <table style="border-collapse:collapse;font-size:14px">
-            <tr><td style="padding:4px 14px 4px 0">Horas ordinarias</td><td style="font-weight:700">${h(x.horas_ordinarias)}</td></tr>
-            <tr><td style="padding:4px 14px 4px 0">Horas ${x.jornada === 'parcial' ? 'complementarias' : 'por encima de la jornada'}</td><td style="font-weight:700">${h(x.horas_complementarias)}</td></tr>
-            <tr><td style="padding:4px 14px 4px 0">Total trabajado</td><td style="font-weight:700">${h(x.horas_trabajadas)}</td></tr>
-          </table>
-          <p>Tienes el detalle en el PDF adjunto. Entra en <b>Fichaje</b> y pulsa <b>«Confirmar que lo he recibido»</b>.</p>
-          <p style="margin:18px 0"><a href="${base}/admin/fichaje" style="background:#0a7d3c;color:#fff;text-decoration:none;padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block">Ver y confirmar</a></p>
-          <p style="font-size:12px;color:#888">AIM Education · Algeciras</p></div>`,
+        from: process.env.EMAIL_USER, to: x.email, ...c,
         attachments: [{ filename: `resumen-horas-${mes}.pdf`, content: pdf, contentType: 'application/pdf' }],
     });
     const client = await pool.connect();
@@ -15543,13 +16072,14 @@ async function selloSemanalRegistro() {
     if (!destino) return;
     await mailTransporter.sendMail({
         from: process.env.EMAIL_USER, to: destino,
-        subject: `Sello semanal del registro de jornada · ${hoyMadrid()}`,
-        html: `<div style="font-family:system-ui,sans-serif;color:#1a1a1a">
-          <p>Huella del registro de jornada a ${fmtFechaHoraMadrid(new Date())}:</p>
-          <p style="font-family:monospace;background:#f4f4f4;padding:10px 14px;border-radius:8px;word-break:break-all">${huella}</p>
-          <p>Apuntes en la cadena: <b>${v.eventos + 1}</b> · Comprobación: <b style="color:${v.ok ? '#0a7d3c' : '#c62828'}">${v.ok ? 'íntegro' : 'con diferencias (revísalo en Fichaje)'}</b></p>
-          <p style="font-size:12px;color:#666">No hace falta hacer nada. Conserva este correo: sirve para demostrar que el registro no se ha reescrito después de esta fecha.</p>
-          <p style="font-size:12px;color:#888">AIM Education · Algeciras</p></div>`,
+        ...(await correoSistema('sello_semanal', { fecha: hoyMadrid() }, {
+            automaticos: {
+                sello: `<p style="margin:0 0 8px">Huella del registro de jornada a ${escHtml(fmtFechaHoraMadrid(new Date()))}:</p>`
+                    + `<p style="font-family:monospace;background:#f4f4f4;padding:10px 14px;border-radius:8px;word-break:break-all;margin:0 0 8px">${escHtml(huella)}</p>`
+                    + `<p style="margin:0">Apuntes en la cadena: <b>${v.eventos + 1}</b> · Comprobación: <b style="color:${v.ok ? '#0a7d3c' : '#c62828'}">${v.ok ? 'íntegro' : 'con diferencias (revísalo en Fichaje)'}</b></p>`,
+            },
+            automaticosTexto: { sello: `Huella del registro de jornada a ${fmtFechaHoraMadrid(new Date())}:\n${huella}\nApuntes en la cadena: ${v.eventos + 1} · Comprobación: ${v.ok ? 'íntegro' : 'con diferencias'}` },
+        })),
     });
 }
 
@@ -15968,14 +16498,11 @@ app.post('/api/contacto', async (req, res) => {
         // El aviso a secretaría. Si el correo falla, la consulta ya está guardada y
         // se ve en el panel: no se le da error a quien la ha enviado.
         if (mailTransporter) {
-            mailTransporter.sendMail({
-                from: process.env.EMAIL_USER, to: CONTACTO_EMAIL, replyTo: email,
-                subject: `Nueva consulta en la web: ${nombre}`,
-                html: `<p>Han escrito desde el formulario de contacto de la web:</p>
-                       <p><b>${escHtml(nombre)}</b> · <a href="mailto:${escHtml(email)}">${escHtml(email)}</a>${telefono ? ` · ${escHtml(telefono)}` : ''}</p>
-                       <blockquote style="border-left:3px solid #5233A8;margin:0;padding:6px 12px;white-space:pre-wrap">${escHtml(mensaje)}</blockquote>
-                       <p>Puedes contestar directamente a este correo. La consulta está también en el panel, en «Consultas web».</p>`,
-            }).catch(e => console.error('[contacto] aviso por correo:', e.message));
+            correoSistema('aviso_consulta_web', { nombre, email, telefono: telefono || 'sin teléfono' }, {
+                automaticos: { mensaje: `<blockquote style="border-left:3px solid #5233A8;margin:0;padding:6px 12px;white-space:pre-wrap">${escHtml(mensaje)}</blockquote>` },
+                automaticosTexto: { mensaje },
+            }).then(c => mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: CONTACTO_EMAIL, replyTo: email, ...c }))
+              .catch(e => console.error('[contacto] aviso por correo:', e.message));
         }
         res.status(201).json({ success: true, id: r.rows[0].id });
     } catch (err) { res.status(500).json({ error: 'No se ha podido enviar. Inténtalo de nuevo o llámanos al 956 742 216.' }); }
@@ -16282,16 +16809,13 @@ async function correoAusencia(id) {
         if (!w.rows[0]?.email) return;
         const fecha = (iso) => new Date(iso + 'T12:00:00').toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' });
         const que = `${(TIPOS_AUSENCIA[a.tipo]?.nombre || a.tipo).toLowerCase()} del ${fecha(a.desde_txt)}${a.hasta_txt !== a.desde_txt ? ` al ${fecha(a.hasta_txt)}` : ''}`;
-        const base = URL_PUBLICA_WEB;
         await mailTransporter.sendMail({
             from: process.env.EMAIL_USER, to: w.rows[0].email,
-            subject: `Tu petición de ${(TIPOS_AUSENCIA[a.tipo]?.nombre || 'ausencia').toLowerCase()} ha sido ${a.estado}`,
-            html: `<div style="font-family:system-ui,sans-serif;color:#1a1a1a">
-              <p>Hola ${w.rows[0].name || ''},</p>
-              <p>Tu petición de <b>${que}</b> ha sido <b>${a.estado}</b>${a.resuelto_por_nombre ? ` por ${a.resuelto_por_nombre}` : ''}.</p>
-              ${a.respuesta ? `<p>Comentario: ${a.respuesta}</p>` : ''}
-              <p style="margin:18px 0"><a href="${base}/admin/fichaje" style="background:#0a7d3c;color:#fff;text-decoration:none;padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block">Ver en Fichaje</a></p>
-              <p style="font-size:12px;color:#888">AIM Education · Algeciras</p></div>`,
+            ...(await correoSistema('ausencia_resuelta', {
+                nombre: w.rows[0].name || '', tipo: (TIPOS_AUSENCIA[a.tipo]?.nombre || 'ausencia').toLowerCase(),
+                peticion: que, estado: a.estado, resuelto_por: a.resuelto_por_nombre || '', comentario: a.respuesta || '',
+                enlace: `${URL_PUBLICA_WEB}/admin/fichaje`,
+            })),
         });
     } catch (e) { console.error('[ausencia mail]', e.message); }
 }
@@ -16541,15 +17065,7 @@ async function avisarFichaje(w, tipo, hoy, base, variosTramos = false) {
         const turno = variosTramos ? ` de ${Number(w.tramo) === 2 ? 'tarde' : 'mañana'}` : '';
         await mailTransporter.sendMail({
             from: process.env.EMAIL_USER, to: w.email,
-            subject: esEntrada ? 'Recuerda fichar tu entrada' : 'Recuerda fichar tu salida',
-            html: `<div style="font-family:system-ui,sans-serif;color:#1a1a1a">
-              <p>Hola ${w.nombre},</p>
-              <p>${esEntrada
-                    ? `Tu turno${turno} de hoy empieza a las <b>${hora}</b> y aún no has fichado la <b>entrada</b>.`
-                    : `Tu turno${turno} de hoy terminaba a las <b>${hora}</b> y sigues con la jornada <b>abierta</b>. No olvides fichar la <b>salida</b>.`}</p>
-              <p style="margin:18px 0"><a href="${base}" style="background:#0a7d3c;color:#fff;text-decoration:none;padding:11px 20px;border-radius:8px;font-weight:700;display:inline-block">Ir a fichar</a></p>
-              <p style="font-size:12px;color:#888">AIM Education · Algeciras</p>
-            </div>`,
+            ...(await correoSistema(esEntrada ? 'fichaje_entrada' : 'fichaje_salida', { nombre: w.nombre || '', hora, turno, enlace: base })),
         });
     } catch (e) { console.error('[fichaje mail]', e.message); }
 }

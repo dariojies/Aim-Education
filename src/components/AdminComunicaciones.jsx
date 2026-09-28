@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { I } from './Icons.jsx';
 import AdminCampanas from './AdminCampanas.jsx';
 import AdminAutomatismos from './AdminAutomatismos.jsx';
+import AdminDisenoCorreos from './AdminDisenoCorreos.jsx';
 import { TIPOS_CORREO, describirSegmento } from './crmTextos.js';
 import { Paso, Opcion } from './CrmPiezas.jsx';
 
@@ -23,7 +24,8 @@ const grupoPastillas = { display: 'inline-flex', flexWrap: 'wrap', border: '1px 
 const inp = { fontFamily: 'inherit', fontSize: 13, padding: '7px 10px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' };
 const mismo = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
-// Comunicaciones: pestañas de segmentos, campañas y automatismos. La pestaña la
+// Comunicaciones: pestañas de segmentos, campañas, automatismos y diseño de
+// correos. La pestaña la
 // lleva el panel (se elige también desde el menú del CRM); si no se la pasan,
 // la guarda ella misma.
 export default function AdminComunicaciones({ showToast, onAbrirFicha, pestana: pestanaFuera, onPestana }) {
@@ -38,12 +40,14 @@ export default function AdminComunicaciones({ showToast, onAbrirFicha, pestana: 
         <button type="button" style={{ ...pastilla(pestana === 'segmentos'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('segmentos')}>Segmentos</button>
         <button type="button" style={{ ...pastilla(pestana === 'campanas'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('campanas')}>Campañas</button>
         <button type="button" style={{ ...pastilla(pestana === 'automatismos'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('automatismos')}>Automatismos</button>
+        <button type="button" style={{ ...pastilla(pestana === 'disenos'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('disenos')}>Diseño de correos</button>
       </div>
       {pestana === 'segmentos' && <Segmentos showToast={showToast} onAbrirFicha={onAbrirFicha}
         onUsarEnCampana={(nombre) => { setCampanaCon(nombre); setPestana('campanas'); }} />}
       {pestana === 'campanas' && <AdminCampanas showToast={showToast} onAbrirFicha={onAbrirFicha}
         nuevaConSegmento={campanaCon} onEmpezada={() => setCampanaCon(null)} onIrASegmentos={() => setPestana('segmentos')} />}
       {pestana === 'automatismos' && <AdminAutomatismos showToast={showToast} onAbrirFicha={onAbrirFicha} />}
+      {pestana === 'disenos' && <AdminDisenoCorreos showToast={showToast} />}
     </div>
   );
 }

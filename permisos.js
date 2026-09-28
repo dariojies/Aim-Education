@@ -73,7 +73,9 @@ export function permisosDe(rol) {
         rol,
         // ── Secciones del menú ──
         secciones: {
-            overview: !trabajador,
+            // El resumen lo tiene todo el mundo, cada uno con lo suyo (#327): el
+            // trabajador ve su día (fichaje, tareas).
+            overview: true,
             // La agenda es de cada uno: la tiene todo el que entra al panel.
             agenda: true,
             students: !trabajador,
@@ -116,7 +118,8 @@ export function permisosDe(rol) {
         },
 
         // ── Qué se puede hacer dentro de cada una ──
-        // El resumen de un instructor solo habla de lo suyo.
+        // El resumen de un instructor solo habla de lo suyo (el servidor elige
+        // qué resumen toca según el rango: /api/admin/resumen).
         resumenGeneral: !instructor,
         // Las fichas de alumno se miran, no se tocan.
         editarAlumnos: !instructor,

@@ -4,6 +4,7 @@ import { fmtFechaHora } from '../fechas.js';
 import { useEnVivo } from '../envivo.js';
 import { TIPOS_CORREO, describirSegmento } from './crmTextos.js';
 import { Paso, Opcion, Variables, meterEnCursor } from './CrmPiezas.jsx';
+import EditorDiseno, { ElegirPlantilla, Miniatura, useMarca } from './EditorDiseno.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Campañas (CRM 5, ticket #314). Una campaña («Navidad 2026») va a uno o varios
@@ -255,7 +256,12 @@ function EditorCorreo({ campanaId, segmentos, correo, numero, plantillas, onVolv
   const [ocupado, setOcupado] = useState(false);
   const cuerpoRef = useRef(null), asuntoRef = useRef(null);
   const [ultimo, setUltimo] = useState('cuerpo');
+  // El diseño (#326): elegir por dónde empezar y el editor a pantalla completa.
+  const [eligiendo, setEligiendo] = useState(false);
+  const [disenando, setDisenando] = useState(false);
+  const marca = useMarca();
   const cambia = (c, v) => setK(x => ({ ...x, [c]: v }));
+  const conDiseno = !!k.diseno;
   useEffect(() => {
     if (!segmentos.length) return;
     api('/api/admin/campanas/alcance', { method: 'POST', body: { segmentos } }).then(setAlcance).catch(() => {});
@@ -266,7 +272,7 @@ function EditorCorreo({ campanaId, segmentos, correo, numero, plantillas, onVolv
     !segmentos.length && 'elegir a quién va la campaña',
     llega && !llega.correos && 'que llegue al menos a alguien',
     !k.asunto.trim() && 'escribir el asunto',
-    !k.cuerpo.trim() && 'escribir el texto',
+    !(conDiseno ? k.diseno.bloques?.length : k.cuerpo.trim()) && (conDiseno ? 'diseñar el correo' : 'escribir el texto'),
     cuando === 'programado' && !fecha && 'poner la fecha y hora',
   ].filter(Boolean);
 
@@ -274,11 +280,12 @@ function EditorCorreo({ campanaId, segmentos, correo, numero, plantillas, onVolv
     if (ultimo === 'asunto') cambia('asunto', meterEnCursor(asuntoRef.current, k.asunto, v));
     else cambia('cuerpo', meterEnCursor(cuerpoRef.current, k.cuerpo, v));
   }
-  async function guardar(aviso) {
+  async function guardar(aviso, extra = {}) {
     setOcupado(true);
+    const c = { ...k, ...extra };
     try {
       const d = await api(`/api/admin/campanas/${campanaId}/correos`, { method: 'POST', body: {
-        correoId: k.id, titulo: k.titulo, asunto: k.asunto, cuerpo: k.cuerpo, tipo: k.tipo,
+        correoId: c.id, titulo: c.titulo, asunto: c.asunto, cuerpo: c.cuerpo, tipo: c.tipo, diseno: c.diseno || null,
         programadoAt: cuando === 'programado' && fecha ? new Date(fecha).toISOString() : null,
       } });
       setK(x => ({ ...x, id: d.id }));
@@ -323,8 +330,14 @@ function EditorCorreo({ campanaId, segmentos, correo, numero, plantillas, onVolv
               })}
             </div>
           </Paso>
-          <Paso n={3} titulo="Escribe el correo">
-            {plantillas.length > 0 && (
+          <Paso n={3} titulo="Escribe el correo" ayuda="Solo texto, como un correo normal, o con diseño: imágenes, botones y colores, como en Canva.">
+            <div role="radiogroup" aria-label="Cómo es el correo" style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <Opcion activa={!conDiseno} titulo="Solo texto" texto="Rápido. Sale con el logo y el pie del club."
+                onClick={() => { if (conDiseno && !window.confirm('¿Quitar el diseño y dejarlo solo con texto? Se queda el texto que haya.')) return; cambia('diseno', null); }} />
+              <Opcion activa={conDiseno} titulo="Con diseño" texto="Imágenes, botones, columnas y colores."
+                onClick={() => { if (!conDiseno) setEligiendo(true); }} />
+            </div>
+            {!conDiseno && plantillas.length > 0 && (
               <select style={campo} value="" onChange={e => { const p = plantillas.find(x => x.id === e.target.value); if (p && (!(k.asunto || k.cuerpo) || window.confirm('¿Cambiar lo escrito por la plantilla?'))) setK(x => ({ ...x, asunto: p.asunto, cuerpo: p.cuerpo })); }} aria-label="Plantilla">
                 <option value="">— Empezar desde una plantilla (opcional) —</option>
                 {plantillas.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
@@ -332,9 +345,24 @@ function EditorCorreo({ campanaId, segmentos, correo, numero, plantillas, onVolv
             )}
             <input ref={asuntoRef} style={campo} placeholder="Asunto: lo primero que verán en su bandeja" value={k.asunto}
               onFocus={() => setUltimo('asunto')} onChange={e => cambia('asunto', e.target.value)} aria-label="Asunto" />
-            <textarea ref={cuerpoRef} style={{ ...campo, minHeight: 220, resize: 'vertical' }} placeholder={'Hola:\n\nEscribe aquí el mensaje…'} value={k.cuerpo}
-              onFocus={() => setUltimo('cuerpo')} onChange={e => cambia('cuerpo', e.target.value)} aria-label="Texto del correo" />
-            <Variables vars={VARIABLES} onMeter={meter} />
+            {conDiseno ? (
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 220px) minmax(0, 1fr)', gap: 14, alignItems: 'center' }}>
+                <button type="button" onClick={() => setDisenando(true)} style={{ padding: 0, border: '1px solid var(--line)', borderRadius: 12, background: 'none', cursor: 'pointer', overflow: 'hidden' }} title="Abrir el diseñador">
+                  <Miniatura diseno={k.diseno} marca={marca} alto={240} vars={{ nombre: 'Lucía', alumno: 'Lucía García' }} />
+                </button>
+                <div style={{ display: 'grid', gap: 8, justifyItems: 'start' }}>
+                  <button type="button" className="btn btn-primary" onClick={() => setDisenando(true)}>Abrir el diseñador</button>
+                  <button type="button" className="btn btn-sm btn-outline" onClick={() => setEligiendo(true)}>Empezar con otra plantilla</button>
+                  <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{k.diseno.bloques?.length || 0} pieza{k.diseno.bloques?.length === 1 ? '' : 's'}. Los datos como {'{nombre}'} se rellenan con los de cada alumno.</span>
+                </div>
+              </div>
+            ) : (
+              <>
+              <textarea ref={cuerpoRef} style={{ ...campo, minHeight: 220, resize: 'vertical' }} placeholder={'Hola:\n\nEscribe aquí el mensaje…'} value={k.cuerpo}
+                onFocus={() => setUltimo('cuerpo')} onChange={e => cambia('cuerpo', e.target.value)} aria-label="Texto del correo" />
+              <Variables vars={VARIABLES} onMeter={meter} />
+              </>
+            )}
             <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
               Se cuenta quién lo abre y quién pincha sus enlaces (https://… o www.…).
               {k.tipo !== 'servicio' && ' Al pie de cada correo va su enlace para darse de baja.'}
@@ -368,7 +396,7 @@ function EditorCorreo({ campanaId, segmentos, correo, numero, plantillas, onVolv
             </div>
           ) : <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>{segmentos.length ? 'Contando…' : 'La campaña aún no tiene a quién ir.'}</p>}
           <div style={{ display: 'grid', gap: 4 }}>
-            {[['Tipo', !!k.tipo], ['Asunto', !!k.asunto.trim()], ['Texto', !!k.cuerpo.trim()], ['Cuándo sale', cuando === 'mano' || !!fecha]].map(([t, hecho]) => (
+            {[['Tipo', !!k.tipo], ['Asunto', !!k.asunto.trim()], [conDiseno ? 'Diseño' : 'Texto', conDiseno ? !!k.diseno.bloques?.length : !!k.cuerpo.trim()], ['Cuándo sale', cuando === 'mano' || !!fecha]].map(([t, hecho]) => (
               <span key={t} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, color: hecho ? 'var(--ink)' : 'var(--ink-3)' }}>
                 <span aria-hidden="true" style={{ width: 18, height: 18, borderRadius: 999, display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 800,
                   background: hecho ? 'var(--teal)' : 'var(--bg-3)', color: hecho ? '#fff' : 'var(--ink-3)', border: hecho ? 0 : '1px solid var(--line)' }}>{hecho ? '✓' : ''}</span>
@@ -388,6 +416,23 @@ function EditorCorreo({ campanaId, segmentos, correo, numero, plantillas, onVolv
           </div>
         </aside>
       </div>
+      {eligiendo && (
+        <ElegirPlantilla textoActual={k.cuerpo} onCerrar={() => setEligiendo(false)}
+          onElegir={({ diseno, asunto }) => {
+            setEligiendo(false);
+            setK(x => ({ ...x, diseno, asunto: x.asunto || asunto || '' }));
+            setDisenando(true);
+          }} />
+      )}
+      {disenando && (
+        <EditorDiseno titulo={k.titulo?.trim() || `Correo ${numero + 1}`} valor={{ asunto: k.asunto, diseno: k.diseno }} showToast={showToast}
+          textoGuardar="Guardar el diseño" onCerrar={() => setDisenando(false)}
+          onGuardar={async ({ asunto, diseno }) => {
+            setK(x => ({ ...x, asunto, diseno }));
+            if (!(await guardar('Diseño guardado.', { asunto, diseno }))) throw new Error('No se ha podido guardar.');
+            setDisenando(false);
+          }} />
+      )}
     </div>
   );
 }
