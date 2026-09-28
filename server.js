@@ -1417,6 +1417,70 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_campana_envios_estado ON aim_campana_envios (campana_id, estado)`);
+        // Campañas con varios correos (antes de empezar, al empezar, al
+        // terminar…) y a varios segmentos: cada correo tiene su texto, su tipo y
+        // cuándo sale (a mano o programado).
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_campana_correos (
+                id SERIAL PRIMARY KEY,
+                campana_id INTEGER NOT NULL REFERENCES aim_campanas(id) ON DELETE CASCADE,
+                orden INTEGER NOT NULL DEFAULT 0,
+                titulo VARCHAR(120) NOT NULL DEFAULT '',
+                asunto TEXT NOT NULL DEFAULT '',
+                cuerpo TEXT NOT NULL DEFAULT '',
+                tipo VARCHAR(20) NOT NULL DEFAULT 'comercial',
+                programado_at TIMESTAMPTZ,
+                estado VARCHAR(20) NOT NULL DEFAULT 'borrador',
+                lanzado_at TIMESTAMPTZ,
+                terminado_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_campana_correos_campana ON aim_campana_correos (campana_id, orden)`);
+        await client.query(`ALTER TABLE aim_campanas ADD COLUMN IF NOT EXISTS segmentos JSONB NOT NULL DEFAULT '[]'::jsonb`);
+        await client.query(`ALTER TABLE aim_campana_envios ADD COLUMN IF NOT EXISTS correo_id INTEGER REFERENCES aim_campana_correos(id) ON DELETE CASCADE`);
+        // Aperturas: la imagen invisible del correo (primera vez y cuántas).
+        await client.query(`ALTER TABLE aim_campana_envios ADD COLUMN IF NOT EXISTS aperturas INTEGER NOT NULL DEFAULT 0`);
+        await client.query(`ALTER TABLE aim_campana_envios ADD COLUMN IF NOT EXISTS abierto_at TIMESTAMPTZ`);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_campana_envios_correo ON aim_campana_envios (correo_id, estado)`);
+        // Las campañas de antes (un solo correo en la propia campaña) pasan a
+        // tener su correo y su segmento en la forma nueva. Solo las que tienen
+        // texto o ya salieron: una campaña nueva empieza sin correos.
+        await client.query(`
+            INSERT INTO aim_campana_correos (campana_id, orden, titulo, asunto, cuerpo, tipo, estado, lanzado_at, terminado_at, created_at)
+            SELECT c.id, 0, '', c.asunto, c.cuerpo, c.tipo,
+                   CASE c.estado WHEN 'enviando' THEN 'enviando' WHEN 'pausada' THEN 'pausado' WHEN 'enviada' THEN 'enviado' ELSE 'borrador' END,
+                   c.lanzada_at, c.terminada_at, c.created_at
+            FROM aim_campanas c
+            WHERE (c.asunto <> '' OR c.cuerpo <> '' OR c.estado <> 'borrador')
+              AND NOT EXISTS (SELECT 1 FROM aim_campana_correos k WHERE k.campana_id = c.id)`);
+        await client.query(`
+            UPDATE aim_campana_envios e SET correo_id = k.id FROM aim_campana_correos k
+            WHERE e.correo_id IS NULL AND k.campana_id = e.campana_id AND k.orden = 0`);
+        await client.query(`
+            UPDATE aim_campanas SET segmentos = jsonb_build_array(jsonb_build_object('nombre', COALESCE(segmento_nombre, ''), 'filtros', filtros))
+            WHERE segmentos = '[]'::jsonb AND segmento_nombre IS NOT NULL`);
+        // Correos que rebotan: se apartan de los envíos hasta que se cambien en
+        // la ficha o se marquen a mano como arreglados.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_correos_rebotados (
+                id SERIAL PRIMARY KEY,
+                email TEXT NOT NULL,
+                tipo VARCHAR(10) NOT NULL,
+                codigo VARCHAR(20),
+                motivo TEXT,
+                detalle TEXT,
+                envio_id INTEGER REFERENCES aim_campana_envios(id) ON DELETE SET NULL,
+                detectado_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                resuelto_at TIMESTAMPTZ,
+                resuelto_por UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                resuelto_como VARCHAR(30)
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_rebotados_email ON aim_correos_rebotados (LOWER(email)) WHERE resuelto_at IS NULL`);
+        // Consentimientos dados solo con un correo (formulario de contacto): se
+        // buscan por él cuando esa persona tenga ficha.
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_consentimientos_email ON aim_consentimientos (LOWER(email)) WHERE user_id IS NULL`);
         // Avisos de la campanita que cada persona ya ha visto. Un aviso visto no
         // cuenta en el número rojo hasta que haya algo nuevo: un mensaje más en
         // ese ticket (marca) o que su contador suba (n).
@@ -9701,8 +9765,12 @@ const SQL_SOLICITUD_FOTOS = `
         WHERE c.tipo IN ('imagen_solicitud', 'imagen', 'imagen_descartada') AND c.user_id IS NOT NULL
         ORDER BY c.user_id, c.created_at DESC, c.id DESC
     ) sf WHERE sf.tipo = 'imagen_solicitud'`;
+// El último que dio: desde su ficha o, si lo dio antes de tenerla (una consulta
+// de la web), con su correo.
 const sqlUltimoConsentimiento = (col, tipo) => `(SELECT k.otorgado FROM aim_consentimientos k
-    WHERE k.user_id = ${col} AND k.tipo = '${tipo}' ORDER BY k.created_at DESC, k.id DESC LIMIT 1)`;
+    WHERE k.tipo = '${tipo}' AND (k.user_id = ${col}
+       OR (k.user_id IS NULL AND LOWER(k.email) = (SELECT LOWER(uu.email) FROM users uu WHERE uu.user_id = ${col})))
+    ORDER BY k.created_at DESC, k.id DESC LIMIT 1)`;
 
 // ¿Ha dicho que NO a las comunicaciones de sus actividades? (Speaking, exámenes…)
 async function sinComunicacionesActividades(userId) {
@@ -9889,7 +9957,7 @@ async function contextoCorreo(personaId) {
     };
 }
 const rellenarPlantilla = (texto, v) => String(texto || '').replace(/\{(\w+)\}/g, (m, k) => (v[k] !== undefined ? v[k] : m));
-function htmlCorreoClub(cuerpo, { comercial = false, rastrear = null, pie = '' } = {}) {
+function htmlCorreoClub(cuerpo, { comercial = false, rastrear = null, pie = '', apertura = null } = {}) {
     // rastrear(url) → la dirección con seguimiento de clics (campañas, #314).
     const enlace = (visible, destino) => {
         const d = destino.replace(/&amp;/g, '&');
@@ -9903,6 +9971,7 @@ function htmlCorreoClub(cuerpo, { comercial = false, rastrear = null, pie = '' }
       <div style="font-size:15px;line-height:1.6">${texto}</div>
       <p style="font-size:12px;color:#888;margin-top:28px;border-top:1px solid #eee;padding-top:10px">AIM Education · Algeciras · 956 742 216 · <a href="${URL_PUBLICA_WEB}" style="color:#888">www.aimeducation.es</a></p>
       ${pie || (comercial ? `<p style="font-size:11px;color:#999">Recibes este correo porque aceptaste las comunicaciones comerciales del club. Puedes darte de baja cuando quieras desde tu perfil: <a href="${URL_PUBLICA_WEB}/dashboard" style="color:#999">${URL_PUBLICA_WEB.replace(/^https?:\/\//, '')}/dashboard</a>.</p>` : '')}
+      ${apertura ? `<img src="${escHtml(apertura)}" width="1" height="1" alt="" style="display:block;border:0;width:1px;height:1px">` : ''}
     </div>`;
 }
 
@@ -10075,8 +10144,11 @@ async function destinoAutomatismo(personaId) {
     if (!ctx) return { fuera: 'ya no es del club' };
     if (ctx.actividadesRechazadas) return { ctx, fuera: 'no quiere comunicaciones de sus actividades' };
     const tutores = ctx.destinatarios.filter(d => d.relacion !== 'Alumno/a' && d.email);
-    const para = tutores.length ? tutores : ctx.destinatarios.filter(d => d.email);
-    if (!para.length) return { ctx, fuera: 'sin correo' };
+    const conCorreo = tutores.length ? tutores : ctx.destinatarios.filter(d => d.email);
+    if (!conCorreo.length) return { ctx, fuera: 'sin correo' };
+    const rebotan = await rebotesDe(conCorreo.map(d => d.email));
+    const para = conCorreo.filter(d => !rebotan.has(d.email.toLowerCase()));
+    if (!para.length) return { ctx, fuera: 'su correo rebota' };
     return { ctx, para };
 }
 
@@ -10253,6 +10325,7 @@ function sqlSegmento(f, vals) {
 
 // Las personas del segmento con sus destinatarios, ya filtrados por permisos.
 async function resolverSegmento(f) {
+    if (f?.estado === 'contactos') return resolverContactos(f);
     const vals = [AIM_CLUB_ID];
     const where = sqlSegmento(f || {}, vals);
     const r = await pool.query(
@@ -10274,10 +10347,12 @@ async function resolverSegmento(f) {
     const tipo = TIPOS_CORREO.includes(f?.tipo) ? f.tipo : 'servicio';
     const destino = f?.destino === 'alumno' ? 'alumno' : 'familia';
     const real = (e) => (e && !esCorreoInterno(e) ? e : null);
+    // Los correos que rebotan no cuentan hasta que se arreglen.
+    const rebotan = await rebotesDe([...r.rows.map(x => x.email), ...tut.map(x => x.email)]);
     // A quién se escribe con cada tipo de correo: el de servicio llega a todos
     // los que tienen correo; los otros dos respetan lo que ha dicho cada uno.
     const conTipo = (x, para, tp) => {
-        if (!para.length) return { para, fuera: 'sin correo' };
+        if (!para.length) return { para, fuera: x.rebota ? 'su correo rebota' : 'sin correo' };
         if (tp === 'actividades' && x.act === false) return { para: [], fuera: 'no quiere comunicaciones de sus actividades' };
         if (tp === 'comercial') {
             const si = para.filter(d => d.com === true);
@@ -10289,17 +10364,20 @@ async function resolverSegmento(f) {
     const alumnos = r.rows.map(x => {
         const propio = { id: x.user_id, nombre: `${x.name || ''} ${x.surname || ''}`.trim(), relacion: 'Alumno/a', email: real(x.email), com: x.com };
         const tutores = (tutoresDe.get(x.user_id) || []).map(t => ({ id: t.user_id, nombre: `${t.name || ''} ${t.surname || ''}`.trim(), relacion: t.tipo, email: real(t.email), com: t.com }));
-        const para = (destino === 'alumno' ? [propio] : (tutores.some(t => t.email) ? tutores : [propio])).filter(d => d.email);
+        const conCorreo = (destino === 'alumno' ? [propio] : (tutores.some(t => t.email) ? tutores : [propio])).filter(d => d.email);
+        const para = conCorreo.filter(d => !rebotan.has(d.email.toLowerCase()));
+        x.rebota = conCorreo.length > 0 && !para.length;
         // Qué recibiría con cada tipo, para enseñarlo sin tener que ir probando.
-        const recibe = {};
+        const recibe = {}, correos = {};
         for (const tp of TIPOS_CORREO) {
             const c = conTipo(x, para, tp);
             recibe[tp] = !c.fuera;
-            if (!c.fuera) { porTipo[tp].alumnos++; for (const d of c.para) porTipo[tp].correos.add(d.email.toLowerCase()); }
+            correos[tp] = c.fuera ? [] : c.para.map(d => d.email.toLowerCase());
+            if (!c.fuera) { porTipo[tp].alumnos++; for (const e of correos[tp]) porTipo[tp].correos.add(e); }
         }
         const { para: paraTipo, fuera } = conTipo(x, para, tipo);
         return {
-            id: x.user_id, nombre: propio.nombre, edad: edadDe(x.birthday), clases: x.clases || '', recibe,
+            id: x.user_id, nombre: propio.nombre, edad: edadDe(x.birthday), clases: x.clases || '', recibe, correos,
             destinatarios: fuera ? [] : paraTipo.map(d => ({ id: d.id, nombre: d.nombre, relacion: d.relacion, email: d.email })), fuera,
         };
     });
@@ -10310,9 +10388,52 @@ async function resolverSegmento(f) {
         resumen: {
             alumnos: alumnos.length, conDestinatario: dentro.length, direcciones: direcciones.length,
             sinCorreo: alumnos.filter(a => a.fuera === 'sin correo').length,
-            porPermisos: alumnos.filter(a => a.fuera && a.fuera !== 'sin correo').length,
+            rebotan: alumnos.filter(a => a.fuera === 'su correo rebota').length,
+            porPermisos: alumnos.filter(a => a.fuera && a.fuera !== 'sin correo' && a.fuera !== 'su correo rebota').length,
             limite: r.rows.length >= 2000,
             porTipo: Object.fromEntries(TIPOS_CORREO.map(tp => [tp, { alumnos: porTipo[tp].alumnos, correos: porTipo[tp].correos.size }])),
+        },
+    };
+}
+
+// «Personas que escribieron por la web»: quien ha enviado una consulta (una vez
+// por correo). No son clientes: solo pueden recibir publicidad, y solo si la
+// aceptaron (en la consulta o después).
+async function resolverContactos(f) {
+    const tipo = TIPOS_CORREO.includes(f?.tipo) ? f.tipo : 'servicio';
+    const r = await pool.query(
+        `SELECT DISTINCT ON (LOWER(c.email)) c.id, c.nombre, LOWER(c.email) AS email, c.created_at,
+                (SELECT k.otorgado FROM aim_consentimientos k
+                  WHERE k.tipo = 'comunicaciones'
+                    AND (LOWER(k.email) = LOWER(c.email) OR k.user_id = (SELECT uu.user_id FROM users uu WHERE LOWER(uu.email) = LOWER(c.email) LIMIT 1))
+                  ORDER BY k.created_at DESC, k.id DESC LIMIT 1) AS com
+         FROM aim_contactos c WHERE c.email IS NOT NULL
+         ORDER BY LOWER(c.email), c.created_at DESC LIMIT 2000`);
+    const rebotan = await rebotesDe(r.rows.map(x => x.email));
+    const porTipo = Object.fromEntries(TIPOS_CORREO.map(tp => [tp, { alumnos: 0, correos: 0 }]));
+    const alumnos = r.rows.map(x => {
+        const fueraDe = (tp) => rebotan.has(x.email) ? 'su correo rebota'
+            : tp !== 'comercial' ? 'no es cliente: solo recibe publicidad si la acepta'
+            : x.com !== true ? 'no acepta comerciales' : null;
+        const recibe = {}, correos = {};
+        for (const tp of TIPOS_CORREO) {
+            recibe[tp] = !fueraDe(tp); correos[tp] = recibe[tp] ? [x.email] : [];
+            if (recibe[tp]) { porTipo[tp].alumnos++; porTipo[tp].correos++; }
+        }
+        const fuera = fueraDe(tipo);
+        return {
+            id: `contacto-${x.id}`, esContacto: true, nombre: x.nombre || x.email, edad: null, clases: 'Consulta web', recibe, correos,
+            destinatarios: fuera ? [] : [{ id: null, nombre: x.nombre || x.email, relacion: 'Contacto web', email: x.email }], fuera,
+        };
+    });
+    const dentro = alumnos.filter(a => !a.fuera);
+    return {
+        tipo, destino: 'contacto', alumnos,
+        resumen: {
+            alumnos: alumnos.length, conDestinatario: dentro.length, direcciones: dentro.length,
+            sinCorreo: 0, rebotan: alumnos.filter(a => a.fuera === 'su correo rebota').length,
+            porPermisos: alumnos.filter(a => a.fuera && a.fuera !== 'su correo rebota').length,
+            limite: r.rows.length >= 2000, porTipo,
         },
     };
 }
@@ -10362,161 +10483,357 @@ app.put('/api/admin/segmentos', authenticateSession, requireSeccion('comunicacio
 });
 
 // ── CRM 5 · Campañas (#314) ───────────────────────────────────────────────────
-// Un correo a todo un segmento. Sale por el buzón del club (Gmail), uno por
-// destinatario y poco a poco (uno cada 4 s, ~900/h: Workspace admite unos 2.000
-// al día), personalizado con los datos de su alumno. Cada uno lleva su enlace de
-// baja y los enlaces del texto cuentan los clics. La cola vive en la base: si el
-// servidor se reinicia, sigue por donde iba. Cuando llegue un proveedor de envío
-// (#318) se cambia aquí, en enviarSiguienteDeCampana, sin tocar lo demás.
+// Una campaña («Navidad 2026») va a uno o varios segmentos y tiene uno o varios
+// correos (antes de empezar, al empezar, al terminar…), cada uno con su texto,
+// su tipo y cuándo sale: a mano o programado. Salen por el buzón del club
+// (Gmail), uno por destinatario y poco a poco (uno cada 4 s, ~900/h: Workspace
+// admite unos 2.000 al día), personalizados con los datos de su alumno. Cada uno
+// lleva su enlace de baja, los enlaces del texto cuentan los clics y una imagen
+// invisible cuenta las aperturas. La cola vive en la base: si el servidor se
+// reinicia, sigue por donde iba. Cuando llegue un proveedor de envío (#318) se
+// cambia aquí, en enviarSiguienteDeCampana, sin tocar lo demás.
 const INTERVALO_CAMPANAS_MS = 4000;
 const urlClic = (token, destino) => `${URL_PUBLICA_WEB}/c/${token}?u=${encodeURIComponent(destino)}`;
 const urlBaja = (token) => `${URL_PUBLICA_WEB}/baja/${token}`;
+const urlApertura = (token) => `${URL_PUBLICA_WEB}/o/${token}.gif`;
 const pieBaja = (tipo, token) => tipo === 'servicio' ? '' : `<p style="font-size:11px;color:#999">${tipo === 'comercial'
     ? 'Recibes este correo porque aceptaste las comunicaciones comerciales del club.'
     : 'Recibes este correo por las actividades en las que está apuntado tu familia.'} Si no quieres recibir más, <a href="${urlBaja(token)}" style="color:#999">date de baja aquí</a>.</p>`;
 
+// Estado de una campaña, sacado de sus correos.
+function estadoCampana(correos) {
+    const e = correos.map(k => k.estado);
+    if (e.includes('enviando')) return 'enviando';
+    if (e.includes('pausado')) return 'pausada';
+    if (e.includes('programado')) return e.includes('enviado') ? 'en_curso' : 'programada';
+    if (e.length && e.every(x => x === 'enviado')) return 'enviada';
+    if (e.includes('enviado')) return 'en_curso';
+    return 'borrador';
+}
+
+const SQL_CUENTAS_ENVIOS = `
+    COUNT(e.id)::int AS total,
+    COUNT(e.id) FILTER (WHERE e.estado = 'pendiente')::int AS pendientes,
+    COUNT(e.id) FILTER (WHERE e.estado = 'enviado')::int AS enviados,
+    COUNT(e.id) FILTER (WHERE e.estado = 'error')::int AS errores,
+    COUNT(e.id) FILTER (WHERE e.estado = 'omitido')::int AS omitidos,
+    COUNT(e.id) FILTER (WHERE e.estado = 'rebotado')::int AS rebotados,
+    COUNT(e.id) FILTER (WHERE e.aperturas > 0)::int AS abiertos,
+    COUNT(e.id) FILTER (WHERE e.clics > 0)::int AS con_clic,
+    COUNT(e.id) FILTER (WHERE e.baja_at IS NOT NULL)::int AS bajas`;
+const cuentasDe = (x) => ({
+    total: x.total, pendientes: x.pendientes, enviados: x.enviados, errores: x.errores, omitidos: x.omitidos,
+    rebotados: x.rebotados, abiertos: x.abiertos, conClic: x.con_clic, bajas: x.bajas,
+});
+
+async function correosDeCampanas(ids) {
+    if (!ids.length) return new Map();
+    const r = await pool.query(
+        `SELECT k.*, ${SQL_CUENTAS_ENVIOS}
+         FROM aim_campana_correos k LEFT JOIN aim_campana_envios e ON e.correo_id = k.id
+         WHERE k.campana_id = ANY($1::int[]) GROUP BY k.id ORDER BY k.campana_id, k.orden, k.id`, [ids]);
+    const m = new Map();
+    for (const k of r.rows) {
+        if (!m.has(k.campana_id)) m.set(k.campana_id, []);
+        m.get(k.campana_id).push({
+            id: k.id, orden: k.orden, titulo: k.titulo, asunto: k.asunto, cuerpo: k.cuerpo, tipo: k.tipo,
+            programadoAt: k.programado_at, estado: k.estado, lanzadoAt: k.lanzado_at, terminadoAt: k.terminado_at,
+            cuentas: cuentasDe(k),
+        });
+    }
+    return m;
+}
+
 async function resumenCampanas(where = 'TRUE', vals = []) {
     const r = await pool.query(
-        `SELECT c.*, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS quien,
-                COUNT(e.id)::int AS total,
-                COUNT(e.id) FILTER (WHERE e.estado = 'pendiente')::int AS pendientes,
-                COUNT(e.id) FILTER (WHERE e.estado = 'enviado')::int AS enviados,
-                COUNT(e.id) FILTER (WHERE e.estado = 'error')::int AS errores,
-                COUNT(e.id) FILTER (WHERE e.estado = 'omitido')::int AS omitidos,
-                COUNT(e.id) FILTER (WHERE e.clics > 0)::int AS con_clic,
-                COUNT(e.id) FILTER (WHERE e.baja_at IS NOT NULL)::int AS bajas
+        `SELECT c.*, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS quien
          FROM aim_campanas c LEFT JOIN users u ON u.user_id = c.creada_por
-         LEFT JOIN aim_campana_envios e ON e.campana_id = c.id
-         WHERE ${where} GROUP BY c.id, u.name, u.surname ORDER BY c.created_at DESC LIMIT 100`, vals);
-    return r.rows.map(c => ({
-        id: c.id, nombre: c.nombre, asunto: c.asunto, cuerpo: c.cuerpo, tipo: c.tipo, filtros: c.filtros,
-        segmentoNombre: c.segmento_nombre, estado: c.estado, quien: c.quien || null,
-        creadaAt: c.created_at, lanzadaAt: c.lanzada_at, terminadaAt: c.terminada_at,
-        cuentas: { total: c.total, pendientes: c.pendientes, enviados: c.enviados, errores: c.errores, omitidos: c.omitidos, conClic: c.con_clic, bajas: c.bajas },
-    }));
+         WHERE ${where} ORDER BY c.created_at DESC LIMIT 100`, vals);
+    const correos = await correosDeCampanas(r.rows.map(c => c.id));
+    return r.rows.map(c => {
+        const ks = correos.get(c.id) || [];
+        const suma = (k) => ks.reduce((t, x) => t + x.cuentas[k], 0);
+        return {
+            id: c.id, nombre: c.nombre, segmentos: Array.isArray(c.segmentos) ? c.segmentos : [],
+            estado: estadoCampana(ks), quien: c.quien || null, creadaAt: c.created_at,
+            correos: ks,
+            cuentas: { total: suma('total'), enviados: suma('enviados'), abiertos: suma('abiertos'), conClic: suma('conClic'), bajas: suma('bajas'), rebotados: suma('rebotados') },
+            proximo: ks.filter(k => k.estado === 'programado' && k.programadoAt).map(k => k.programadoAt).sort()[0] || null,
+        };
+    });
 }
+
+// Los segmentos de una campaña, sanos: [{ nombre, filtros }].
+function segmentosLimpios(lista) {
+    return (Array.isArray(lista) ? lista : []).slice(0, 10)
+        .filter(s => s && typeof s === 'object' && s.filtros && typeof s.filtros === 'object')
+        .map(s => ({ nombre: String(s.nombre || '').slice(0, 80), filtros: s.filtros }));
+}
+
+// Los segmentos de la campaña tal y como están guardados ahora: si alguien
+// cambia un segmento, vale para los correos que aún no han salido. Si se borró,
+// se usa como estaba cuando se eligió.
+async function segmentosVigentes(segs) {
+    const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'segmentos_crm'`);
+    const guardados = Array.isArray(r.rows[0]?.valor) ? r.rows[0].valor : [];
+    return segs.map(s => ({ ...s, filtros: guardados.find(g => g.nombre === s.nombre)?.filtros || s.filtros }));
+}
+
+// A quién llega la suma de varios segmentos, por tipo de correo (sin repetir
+// direcciones aunque alguien esté en dos segmentos).
+async function alcanceDeSegmentos(segmentos) {
+    const por = Object.fromEntries(TIPOS_CORREO.map(t => [t, { alumnos: new Set(), correos: new Set() }]));
+    const todos = new Set();
+    for (const s of segmentos) {
+        const r = await resolverSegmento({ ...s.filtros, tipo: 'servicio' });
+        for (const a of r.alumnos) {
+            todos.add(a.id);
+            for (const t of TIPOS_CORREO) {
+                const cs = a.correos?.[t] || [];
+                if (cs.length) { por[t].alumnos.add(a.id); for (const x of cs) por[t].correos.add(x); }
+            }
+        }
+    }
+    return {
+        alumnos: todos.size,
+        porTipo: Object.fromEntries(TIPOS_CORREO.map(t => [t, { alumnos: por[t].alumnos.size, correos: por[t].correos.size }])),
+    };
+}
+
+app.post('/api/admin/campanas/alcance', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try { res.json(await alcanceDeSegmentos(await segmentosVigentes(segmentosLimpios(req.body?.segmentos)))); }
+    catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 app.get('/api/admin/campanas', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
     try { res.set('Cache-Control', 'no-store'); res.json({ campanas: await resumenCampanas(), correoActivo: !!mailTransporter }); }
     catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/admin/campanas/:id', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+app.get('/api/admin/campanas/:id(\\d+)', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
     try {
         const [c] = await resumenCampanas('c.id = $1', [Number(req.params.id)]);
         if (!c) return res.status(404).json({ error: 'Esa campaña no existe.' });
-        const e = await pool.query(
-            `SELECT e.id, e.email, e.estado, e.error, e.enviado_at, e.clics, e.primer_clic_at, e.baja_at,
-                    TRIM(CONCAT(p.name, ' ', COALESCE(p.surname, ''))) AS alumno, p.user_id AS alumno_id,
-                    TRIM(CONCAT(d.name, ' ', COALESCE(d.surname, ''))) AS destinatario
-             FROM aim_campana_envios e LEFT JOIN users p ON p.user_id = e.persona_id LEFT JOIN users d ON d.user_id = e.destinatario_id
-             WHERE e.campana_id = $1 ORDER BY e.id`, [c.id]);
         res.set('Cache-Control', 'no-store');
-        res.json({ campana: c, envios: e.rows.map(x => ({
-            id: x.id, email: x.email, estado: x.estado, error: x.error, enviadoAt: x.enviado_at, clics: x.clics,
-            primerClicAt: x.primer_clic_at, bajaAt: x.baja_at, alumno: x.alumno, alumnoId: x.alumno_id, destinatario: x.destinatario,
-        })) });
+        res.json({ campana: c, correoActivo: !!mailTransporter });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Crear o guardar un borrador.
+// Crear o guardar la campaña (nombre y segmentos). Se puede tocar siempre: a
+// quién va se calcula cuando sale cada correo.
 app.post('/api/admin/campanas', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
-    const { id, nombre, asunto, cuerpo, tipo, filtros, segmentoNombre } = req.body || {};
+    const { id, nombre } = req.body || {};
     if (!String(nombre || '').trim()) return res.status(400).json({ error: 'Ponle un nombre a la campaña.' });
-    const t = TIPOS_CORREO.includes(tipo) ? tipo : 'comercial';
-    const vals = [String(nombre).trim().slice(0, 120), String(asunto || '').slice(0, 200), String(cuerpo || '').slice(0, 20000), t,
-        JSON.stringify(filtros && typeof filtros === 'object' ? filtros : {}), segmentoNombre ? String(segmentoNombre).slice(0, 80) : null];
+    const segs = segmentosLimpios(req.body?.segmentos);
     try {
         if (id) {
-            const r = await pool.query(
-                `UPDATE aim_campanas SET nombre = $1, asunto = $2, cuerpo = $3, tipo = $4, filtros = $5::jsonb, segmento_nombre = $6
-                 WHERE id = $7 AND estado = 'borrador' RETURNING id`, [...vals, Number(id)]);
-            if (!r.rowCount) return res.status(409).json({ error: 'Solo se puede cambiar una campaña que aún no se ha lanzado.' });
+            const r = await pool.query(`UPDATE aim_campanas SET nombre = $1, segmentos = $2::jsonb WHERE id = $3 RETURNING id`,
+                [String(nombre).trim().slice(0, 120), JSON.stringify(segs), Number(id)]);
+            if (!r.rowCount) return res.status(404).json({ error: 'Esa campaña no existe.' });
             return res.json({ success: true, id: r.rows[0].id });
         }
         const r = await pool.query(
-            `INSERT INTO aim_campanas (nombre, asunto, cuerpo, tipo, filtros, segmento_nombre, creada_por)
-             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7) RETURNING id`, [...vals, req.userSession.userId]);
+            `INSERT INTO aim_campanas (nombre, segmentos, creada_por) VALUES ($1, $2::jsonb, $3) RETURNING id`,
+            [String(nombre).trim().slice(0, 120), JSON.stringify(segs), req.userSession.userId]);
         res.status(201).json({ success: true, id: r.rows[0].id });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.delete('/api/admin/campanas/:id', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+app.delete('/api/admin/campanas/:id(\\d+)', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
     try {
-        const r = await pool.query(`DELETE FROM aim_campanas WHERE id = $1 AND estado = 'borrador'`, [Number(req.params.id)]);
-        if (!r.rowCount) return res.status(409).json({ error: 'Solo se puede borrar una campaña que aún no se ha lanzado.' });
+        const ya = await pool.query(`SELECT 1 FROM aim_campana_correos WHERE campana_id = $1 AND estado NOT IN ('borrador', 'programado')`, [Number(req.params.id)]);
+        if (ya.rowCount) return res.status(409).json({ error: 'Esta campaña ya ha enviado correos: no se puede borrar.' });
+        await pool.query(`DELETE FROM aim_campanas WHERE id = $1`, [Number(req.params.id)]);
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Una prueba a quien la está preparando, con los datos del primer alumno del segmento.
-app.post('/api/admin/campanas/:id/prueba', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
-    if (!mailTransporter) return res.status(503).json({ error: 'El correo no está configurado en el servidor.' });
+// Crear o guardar un correo de la campaña. Con fecha, queda programado; sin
+// ella, en borrador (se envía a mano). Solo mientras no haya salido.
+app.post('/api/admin/campanas/:id(\\d+)/correos', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    const b = req.body || {};
+    const tipo = TIPOS_CORREO.includes(b.tipo) ? b.tipo : 'comercial';
+    let programado = null;
+    if (b.programadoAt) {
+        programado = new Date(b.programadoAt);
+        if (Number.isNaN(programado.getTime())) return res.status(400).json({ error: 'Esa fecha no vale.' });
+        if (programado.getTime() < Date.now() - 60_000) return res.status(400).json({ error: 'La fecha de envío ya ha pasado: elige una futura o envíalo ahora.' });
+        if (!String(b.asunto || '').trim() || !String(b.cuerpo || '').trim()) return res.status(400).json({ error: 'Para programarlo hace falta el asunto y el texto.' });
+    }
+    const vals = [String(b.titulo || '').trim().slice(0, 120), String(b.asunto || '').slice(0, 200), String(b.cuerpo || '').slice(0, 20000),
+        tipo, programado ? programado.toISOString() : null, programado ? 'programado' : 'borrador'];
     try {
-        const c = (await pool.query(`SELECT * FROM aim_campanas WHERE id = $1`, [Number(req.params.id)])).rows[0];
+        const c = (await pool.query(`SELECT id, segmentos FROM aim_campanas WHERE id = $1`, [Number(req.params.id)])).rows[0];
         if (!c) return res.status(404).json({ error: 'Esa campaña no existe.' });
-        const yo = (await pool.query(`SELECT email FROM users WHERE user_id = $1`, [req.userSession.userId])).rows[0]?.email;
-        if (!yo || esCorreoInterno(yo)) return res.status(400).json({ error: 'Tu cuenta no tiene correo al que mandarte la prueba.' });
-        const seg = await resolverSegmento({ ...(c.filtros || {}), tipo: c.tipo });
-        const primero = seg.alumnos.find(a => !a.fuera);
-        const vars = primero ? (await contextoCorreo(primero.id))?.variables || {} : {};
-        const cuerpo = rellenarPlantilla(c.cuerpo, vars);
-        await mailTransporter.sendMail({
-            from: `AIM Education <${process.env.EMAIL_USER}>`, replyTo: process.env.EMAIL_USER, to: yo,
-            subject: `[Prueba] ${rellenarPlantilla(c.asunto, vars)}`, text: cuerpo,
-            html: htmlCorreoClub(cuerpo, { pie: pieBaja(c.tipo, '0'.repeat(32)) }),
-        });
-        res.json({ success: true, enviadaA: yo, ejemplo: primero?.nombre || null });
+        if (programado && !(c.segmentos || []).length) return res.status(400).json({ error: 'Elige primero a quién va la campaña.' });
+        if (b.correoId) {
+            const r = await pool.query(
+                `UPDATE aim_campana_correos SET titulo = $1, asunto = $2, cuerpo = $3, tipo = $4, programado_at = $5, estado = $6
+                 WHERE id = $7 AND campana_id = $8 AND estado IN ('borrador', 'programado') RETURNING id`,
+                [...vals, Number(b.correoId), c.id]);
+            if (!r.rowCount) return res.status(409).json({ error: 'Ese correo ya ha salido: no se puede cambiar.' });
+            return res.json({ success: true, id: r.rows[0].id });
+        }
+        const r = await pool.query(
+            `INSERT INTO aim_campana_correos (campana_id, orden, titulo, asunto, cuerpo, tipo, programado_at, estado)
+             VALUES ($1, (SELECT COALESCE(MAX(orden), -1) + 1 FROM aim_campana_correos WHERE campana_id = $1), $2, $3, $4, $5, $6, $7) RETURNING id`,
+            [c.id, ...vals]);
+        res.status(201).json({ success: true, id: r.rows[0].id });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Lanzar: se calcula el segmento en ese momento y se ponen en cola los envíos
-// (una dirección, un envío, aunque tenga varios hijos en el segmento).
-app.post('/api/admin/campanas/:id/lanzar', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+app.delete('/api/admin/campanas/correos/:cid(\\d+)', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try {
+        const r = await pool.query(`DELETE FROM aim_campana_correos WHERE id = $1 AND estado IN ('borrador', 'programado')`, [Number(req.params.cid)]);
+        if (!r.rowCount) return res.status(409).json({ error: 'Ese correo ya ha salido: no se puede borrar.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+async function correoConCampana(cid, cliente = pool, bloquear = false) {
+    return (await cliente.query(
+        `SELECT k.*, c.segmentos, c.nombre AS campana_nombre FROM aim_campana_correos k JOIN aim_campanas c ON c.id = k.campana_id
+         WHERE k.id = $1 ${bloquear ? 'FOR UPDATE OF k' : ''}`, [cid])).rows[0];
+}
+
+// Las variables de un envío: las de su alumno o, si es un contacto de la web,
+// su nombre.
+async function variablesDeEnvio(personaId, email) {
+    if (personaId) return (await contextoCorreo(personaId))?.variables || {};
+    const c = (await pool.query(`SELECT nombre FROM aim_contactos WHERE LOWER(email) = LOWER($1) ORDER BY created_at DESC LIMIT 1`, [email])).rows[0];
+    const n = String(c?.nombre || '').trim();
+    return { nombre: n.split(/\s+/)[0] || '', alumno: n, clases: '', pendiente: '0,00 €', mes: '', club: 'AIM Education' };
+}
+
+// Una prueba a quien la está preparando, con los datos del primer alumno.
+app.post('/api/admin/campanas/correos/:cid(\\d+)/prueba', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
     if (!mailTransporter) return res.status(503).json({ error: 'El correo no está configurado en el servidor.' });
+    try {
+        const k = await correoConCampana(Number(req.params.cid));
+        if (!k) return res.status(404).json({ error: 'Ese correo no existe.' });
+        const yo = (await pool.query(`SELECT email FROM users WHERE user_id = $1`, [req.userSession.userId])).rows[0]?.email;
+        if (!yo || esCorreoInterno(yo)) return res.status(400).json({ error: 'Tu cuenta no tiene correo al que mandarte la prueba.' });
+        let ejemplo = null, vars = {};
+        for (const s of await segmentosVigentes(k.segmentos || [])) {
+            const seg = await resolverSegmento({ ...s.filtros, tipo: k.tipo });
+            const a = seg.alumnos.find(x => !x.fuera);
+            if (a) { ejemplo = a.nombre; vars = await variablesDeEnvio(a.esContacto ? null : a.id, a.destinatarios[0]?.email); break; }
+        }
+        const cuerpo = rellenarPlantilla(k.cuerpo, vars);
+        await mailTransporter.sendMail({
+            from: `AIM Education <${process.env.EMAIL_USER}>`, replyTo: process.env.EMAIL_USER, to: yo,
+            subject: `[Prueba] ${rellenarPlantilla(k.asunto, vars)}`, text: cuerpo,
+            html: htmlCorreoClub(cuerpo, { pie: pieBaja(k.tipo, '0'.repeat(32)) }),
+        });
+        res.json({ success: true, enviadaA: yo, ejemplo });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Sacar un correo: se calculan sus segmentos en ese momento y se ponen en cola
+// los envíos (una dirección, un envío, aunque tenga varios hijos o esté en dos
+// segmentos). Lo usan «Enviar ahora» y los programados cuando les llega la hora.
+async function lanzarCorreo(cid) {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        const c = (await client.query(`SELECT * FROM aim_campanas WHERE id = $1 FOR UPDATE`, [Number(req.params.id)])).rows[0];
-        if (!c) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Esa campaña no existe.' }); }
-        if (c.estado !== 'borrador') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Esa campaña ya se lanzó.' }); }
-        if (!c.asunto.trim() || !c.cuerpo.trim()) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Falta el asunto o el texto.' }); }
-        const seg = await resolverSegmento({ ...(c.filtros || {}), tipo: c.tipo });
+        const k = await correoConCampana(cid, client, true);
+        if (!k) throw { httP: 404, msg: 'Ese correo no existe.' };
+        if (!['borrador', 'programado'].includes(k.estado)) throw { httP: 409, msg: 'Ese correo ya ha salido.' };
+        if (!k.asunto.trim() || !k.cuerpo.trim()) throw { httP: 400, msg: 'Falta el asunto o el texto.' };
         const vistos = new Set(); const filas = [];
-        for (const a of seg.alumnos) {
-            if (a.fuera) continue;
-            for (const d of a.destinatarios) {
-                const k = d.email.toLowerCase();
-                if (vistos.has(k)) continue;
-                vistos.add(k); filas.push([a.id, d.id || null, d.email, crypto.randomBytes(16).toString('hex')]);
+        for (const s of await segmentosVigentes(k.segmentos || [])) {
+            const seg = await resolverSegmento({ ...s.filtros, tipo: k.tipo });
+            for (const a of seg.alumnos) {
+                if (a.fuera) continue;
+                for (const d of a.destinatarios) {
+                    const e = d.email.toLowerCase();
+                    if (vistos.has(e)) continue;
+                    vistos.add(e); filas.push([a.esContacto ? null : a.id, d.id || null, d.email, crypto.randomBytes(16).toString('hex')]);
+                }
             }
         }
-        if (!filas.length) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'El segmento no tiene a nadie a quien escribir.' }); }
+        if (!filas.length) throw { httP: 400, msg: 'Con estos segmentos y este tipo de correo no le llega a nadie.' };
         await client.query(
-            `INSERT INTO aim_campana_envios (campana_id, persona_id, destinatario_id, email, token)
-             SELECT $1, t.p, t.d, t.e, t.k FROM unnest($2::uuid[], $3::uuid[], $4::text[], $5::text[]) AS t(p, d, e, k)`,
-            [c.id, filas.map(f => f[0]), filas.map(f => f[1]), filas.map(f => f[2]), filas.map(f => f[3])]);
-        await client.query(`UPDATE aim_campanas SET estado = 'enviando', lanzada_at = NOW() WHERE id = $1`, [c.id]);
+            `INSERT INTO aim_campana_envios (campana_id, correo_id, persona_id, destinatario_id, email, token)
+             SELECT $1, $2, t.p, t.d, t.e, t.k FROM unnest($3::uuid[], $4::uuid[], $5::text[], $6::text[]) AS t(p, d, e, k)`,
+            [k.campana_id, k.id, filas.map(f => f[0]), filas.map(f => f[1]), filas.map(f => f[2]), filas.map(f => f[3])]);
+        await client.query(`UPDATE aim_campana_correos SET estado = 'enviando', lanzado_at = NOW() WHERE id = $1`, [k.id]);
         await client.query('COMMIT');
-        res.json({ success: true, envios: filas.length, minutos: Math.ceil(filas.length * INTERVALO_CAMPANAS_MS / 60000) });
+        return { envios: filas.length, minutos: Math.ceil(filas.length * INTERVALO_CAMPANAS_MS / 60000) };
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
-        res.status(500).json({ error: err.message });
+        throw err;
     } finally { client.release(); }
+}
+
+app.post('/api/admin/campanas/correos/:cid(\\d+)/lanzar', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    if (!mailTransporter) return res.status(503).json({ error: 'El correo no está configurado en el servidor.' });
+    try { res.json({ success: true, ...(await lanzarCorreo(Number(req.params.cid))) }); }
+    catch (err) { res.status(err.httP || 500).json({ error: err.msg || err.message }); }
 });
 
-// Pausar o reanudar una campaña en marcha.
-app.post('/api/admin/campanas/:id/:accion(pausar|reanudar)', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
-    const [de, a] = req.params.accion === 'pausar' ? ['enviando', 'pausada'] : ['pausada', 'enviando'];
+// Los programados, cuando les llega la hora. Si falla (p. ej. ya no llega a
+// nadie), se deja en borrador con el motivo para que se vea en el panel.
+let programadosEnCurso = false;
+async function lanzarProgramados() {
+    if (programadosEnCurso || !mailTransporter) return;
+    programadosEnCurso = true;
     try {
-        const r = await pool.query(`UPDATE aim_campanas SET estado = $1 WHERE id = $2 AND estado = $3 RETURNING id`, [a, Number(req.params.id), de]);
-        if (!r.rowCount) return res.status(409).json({ error: req.params.accion === 'pausar' ? 'Esa campaña no se está enviando.' : 'Esa campaña no está en pausa.' });
+        const r = await pool.query(`SELECT id FROM aim_campana_correos WHERE estado = 'programado' AND programado_at <= NOW() ORDER BY programado_at LIMIT 5`);
+        for (const { id } of r.rows) {
+            try { await lanzarCorreo(id); }
+            catch (err) {
+                await pool.query(`UPDATE aim_campana_correos SET estado = 'borrador', titulo = LEFT(titulo || ' (no salió: ' || $2 || ')', 120) WHERE id = $1 AND estado = 'programado'`,
+                    [id, String(err.msg || err.message || 'error').slice(0, 60)]).catch(() => {});
+            }
+        }
+    } catch (err) {
+        if (!/aim_campana/.test(err.message || '')) console.error('[campañas programadas]', err.message);
+    } finally { programadosEnCurso = false; }
+}
+
+// Pausar o reanudar un correo que se está enviando.
+app.post('/api/admin/campanas/correos/:cid(\\d+)/:accion(pausar|reanudar)', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    const [de, a] = req.params.accion === 'pausar' ? ['enviando', 'pausado'] : ['pausado', 'enviando'];
+    try {
+        const r = await pool.query(`UPDATE aim_campana_correos SET estado = $1 WHERE id = $2 AND estado = $3 RETURNING id`, [a, Number(req.params.cid), de]);
+        if (!r.rowCount) return res.status(409).json({ error: req.params.accion === 'pausar' ? 'Ese correo no se está enviando.' : 'Ese correo no está en pausa.' });
         res.json({ success: true, estado: a });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// La cola: un envío cada vez. Comprueba el permiso otra vez (pudo darse de baja
-// mientras tanto) y rellena el texto con los datos de su alumno.
+// A quién le ha llegado un correo: estado, aperturas, clics, bajas y rebotes.
+app.get('/api/admin/campanas/correos/:cid(\\d+)/envios', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try {
+        const e = await pool.query(
+            `SELECT e.id, e.email, e.estado, e.error, e.enviado_at, e.clics, e.primer_clic_at, e.baja_at, e.aperturas, e.abierto_at,
+                    TRIM(CONCAT(p.name, ' ', COALESCE(p.surname, ''))) AS alumno, p.user_id AS alumno_id,
+                    COALESCE(NULLIF(TRIM(CONCAT(d.name, ' ', COALESCE(d.surname, ''))), ''),
+                             (SELECT ct.nombre FROM aim_contactos ct WHERE LOWER(ct.email) = LOWER(e.email) ORDER BY ct.created_at DESC LIMIT 1)) AS destinatario
+             FROM aim_campana_envios e LEFT JOIN users p ON p.user_id = e.persona_id LEFT JOIN users d ON d.user_id = e.destinatario_id
+             WHERE e.correo_id = $1 ORDER BY e.id`, [Number(req.params.cid)]);
+        res.set('Cache-Control', 'no-store');
+        res.json({ envios: e.rows.map(x => ({
+            id: x.id, email: x.email, estado: x.estado, error: x.error, enviadoAt: x.enviado_at, clics: x.clics,
+            primerClicAt: x.primer_clic_at, bajaAt: x.baja_at, aperturas: x.aperturas, abiertoAt: x.abierto_at,
+            alumno: x.alumno || null, alumnoId: x.alumno_id, destinatario: x.destinatario,
+        })) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ¿Sigue queriendo publicidad quien recibe este envío? Por su ficha o, si es un
+// contacto de la web, por su correo.
+async function aceptaComercial(cliente, destinatarioId, email) {
+    const r = destinatarioId
+        ? await cliente.query(`SELECT ${sqlUltimoConsentimiento('$1::uuid', 'comunicaciones')} AS v`, [destinatarioId])
+        : await cliente.query(
+            `SELECT k.otorgado AS v FROM aim_consentimientos k WHERE k.tipo = 'comunicaciones' AND LOWER(k.email) = LOWER($1)
+             ORDER BY k.created_at DESC, k.id DESC LIMIT 1`, [email]);
+    return r.rows[0]?.v === true;
+}
+
+// La cola: un envío cada vez. Comprueba otra vez el permiso (pudo darse de baja
+// mientras tanto) y que su correo no rebote, y rellena el texto con sus datos.
 let campanaEnCurso = false;
 async function enviarSiguienteDeCampana() {
     if (campanaEnCurso || !mailTransporter) return;
@@ -10526,41 +10843,53 @@ async function enviarSiguienteDeCampana() {
         client = await pool.connect();
         await client.query('BEGIN');
         const r = await client.query(
-            `SELECT e.*, c.asunto, c.cuerpo, c.tipo FROM aim_campana_envios e JOIN aim_campanas c ON c.id = e.campana_id
-             WHERE e.estado = 'pendiente' AND c.estado = 'enviando' ORDER BY e.id LIMIT 1 FOR UPDATE OF e SKIP LOCKED`);
+            `SELECT e.*, k.asunto, k.cuerpo, k.tipo FROM aim_campana_envios e JOIN aim_campana_correos k ON k.id = e.correo_id
+             WHERE e.estado = 'pendiente' AND k.estado = 'enviando' ORDER BY e.id LIMIT 1 FOR UPDATE OF e SKIP LOCKED`);
         if (!r.rowCount) {
             await client.query(
-                `UPDATE aim_campanas c SET estado = 'enviada', terminada_at = NOW()
-                 WHERE estado = 'enviando' AND NOT EXISTS (SELECT 1 FROM aim_campana_envios e WHERE e.campana_id = c.id AND e.estado = 'pendiente')`);
+                `UPDATE aim_campana_correos k SET estado = 'enviado', terminado_at = NOW()
+                 WHERE estado = 'enviando' AND NOT EXISTS (SELECT 1 FROM aim_campana_envios e WHERE e.correo_id = k.id AND e.estado = 'pendiente')`);
             await client.query('COMMIT');
             return;
         }
         const e = r.rows[0];
         let omitir = null;
-        if (e.tipo === 'comercial' && e.destinatario_id) {
-            const v = (await client.query(`SELECT ${sqlUltimoConsentimiento('$1::uuid', 'comunicaciones')} AS v`, [e.destinatario_id])).rows[0].v;
-            if (v !== true) omitir = 'ya no acepta comunicaciones comerciales';
-        }
+        if (e.tipo === 'comercial' && !(await aceptaComercial(client, e.destinatario_id, e.email))) omitir = 'ya no acepta comunicaciones comerciales';
         if (e.tipo === 'actividades' && e.persona_id) {
             const v = (await client.query(`SELECT ${sqlUltimoConsentimiento('$1::uuid', 'actividades')} AS v`, [e.persona_id])).rows[0].v;
             if (v === false) omitir = 'ya no quiere comunicaciones de sus actividades';
         }
+        if (!omitir && (await rebotesDe([e.email], client)).size) omitir = 'su correo rebota';
         if (omitir) {
             await client.query(`UPDATE aim_campana_envios SET estado = 'omitido', error = $1 WHERE id = $2`, [omitir, e.id]);
             await client.query('COMMIT');
             return;
         }
-        const vars = e.persona_id ? (await contextoCorreo(e.persona_id))?.variables || {} : {};
+        const vars = await variablesDeEnvio(e.persona_id, e.email);
         const cuerpo = rellenarPlantilla(e.cuerpo, vars);
         let estado = 'enviado', error = null;
         try {
             await mailTransporter.sendMail({
                 from: `AIM Education <${process.env.EMAIL_USER}>`, replyTo: process.env.EMAIL_USER, to: e.email,
                 subject: rellenarPlantilla(e.asunto, vars).slice(0, 200), text: cuerpo,
-                html: htmlCorreoClub(cuerpo, { rastrear: (u) => urlClic(e.token, u), pie: pieBaja(e.tipo, e.token) }),
-                headers: e.tipo === 'servicio' ? {} : { 'List-Unsubscribe': `<${urlBaja(e.token)}>` },
+                html: htmlCorreoClub(cuerpo, { rastrear: (u) => urlClic(e.token, u), pie: pieBaja(e.tipo, e.token), apertura: urlApertura(e.token) }),
+                headers: {
+                    ...(e.tipo === 'servicio' ? {} : { 'List-Unsubscribe': `<${urlBaja(e.token)}>` }),
+                    // Para reconocer el envío si vuelve rebotado.
+                    'X-AIM-Envio': e.token,
+                },
             });
-        } catch (err) { estado = 'error'; error = String(err.message || err).slice(0, 500); }
+        } catch (err) {
+            // Un rechazo en el momento por culpa de la dirección o del buzón
+            // (5.1.x, 5.2.x) es un rebote. Otros (cupo diario de Gmail, 5.4.5…)
+            // son problema nuestro: se quedan como error, sin apartar a nadie.
+            const m = String(err.response || err.message || err);
+            const codigo = (m.match(/\b([45]\.[12]\.\d{1,3})\b/) || [])[1];
+            if (codigo) {
+                estado = 'rebotado'; error = clasificarRebote(codigo).motivo;
+                await apuntarRebote(client, { email: e.email, status: codigo, diagnostico: m, envioId: e.id });
+            } else { estado = 'error'; error = m.slice(0, 500); }
+        }
         await client.query(`UPDATE aim_campana_envios SET estado = $1, error = $2, enviado_at = NOW() WHERE id = $3`, [estado, error, e.id]);
         await client.query('COMMIT');
     } catch (err) {
@@ -10585,30 +10914,45 @@ function paginaCorreo(titulo, texto, extra = '') {
       </body></html>`;
 }
 
+// Apertura: la imagen invisible del correo. Se cuenta y se devuelve un GIF de
+// 1×1 transparente. (Gmail la pide a través de su proxy al abrirlo; algunos
+// programas la descargan solos, así que es una aproximación.)
+const GIF_VACIO = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+app.get('/o/:token.gif', async (req, res) => {
+    res.set({ 'Content-Type': 'image/gif', 'Cache-Control': 'no-store, no-cache, must-revalidate, private' });
+    if (/^[0-9a-f]{32}$/.test(req.params.token)) {
+        pool.query(`UPDATE aim_campana_envios SET aperturas = aperturas + 1, abierto_at = COALESCE(abierto_at, NOW()) WHERE token = $1`, [req.params.token]).catch(() => {});
+    }
+    res.end(GIF_VACIO);
+});
+
 // Clic en un enlace de una campaña: se cuenta y se va a su destino. Solo a
-// enlaces que están en el texto de esa campaña (si no, cualquiera podría usar la
-// web para redirigir a donde quisiera).
+// enlaces que están en el texto de ese correo (si no, cualquiera podría usar la
+// web para redirigir a donde quisiera). Un clic también cuenta como apertura.
 app.get('/c/:token', async (req, res) => {
     const destino = String(req.query.u || '');
     try {
         const r = await pool.query(
-            `SELECT e.id, c.cuerpo FROM aim_campana_envios e JOIN aim_campanas c ON c.id = e.campana_id WHERE e.token = $1`, [req.params.token]);
+            `SELECT e.id, k.cuerpo FROM aim_campana_envios e JOIN aim_campana_correos k ON k.id = e.correo_id WHERE e.token = $1`, [req.params.token]);
         const e = r.rows[0];
         const valido = /^https?:\/\//i.test(destino) && e && (e.cuerpo.includes(destino) || e.cuerpo.includes(destino.replace(/^https:\/\//, '')));
         if (!valido) return res.redirect(302, URL_PUBLICA_WEB);
-        await pool.query(`UPDATE aim_campana_envios SET clics = clics + 1, primer_clic_at = COALESCE(primer_clic_at, NOW()) WHERE id = $1`, [e.id]);
+        await pool.query(
+            `UPDATE aim_campana_envios SET clics = clics + 1, primer_clic_at = COALESCE(primer_clic_at, NOW()),
+                    abierto_at = COALESCE(abierto_at, NOW()), aperturas = GREATEST(aperturas, 1) WHERE id = $1`, [e.id]);
         res.redirect(302, destino);
     } catch { res.redirect(302, URL_PUBLICA_WEB); }
 });
 
 // Baja desde el correo. Primero se pregunta (algunos programas de correo abren
 // los enlaces solos y darían de baja sin querer); al confirmar, cambia el permiso
-// en su ficha: comerciales de quien lo recibe, o las de actividades de su alumno.
+// en su ficha: comerciales de quien lo recibe (o de su correo, si es un contacto
+// de la web), o las de actividades de su alumno.
 app.get('/baja/:token', async (req, res) => {
     res.set('Content-Type', 'text/html; charset=utf-8');
     try {
         const r = await pool.query(
-            `SELECT e.email, e.baja_at, c.tipo FROM aim_campana_envios e JOIN aim_campanas c ON c.id = e.campana_id WHERE e.token = $1`, [req.params.token]);
+            `SELECT e.email, e.baja_at, k.tipo FROM aim_campana_envios e JOIN aim_campana_correos k ON k.id = e.correo_id WHERE e.token = $1`, [req.params.token]);
         const e = r.rows[0];
         if (!e || e.tipo === 'servicio') return res.status(404).send(paginaCorreo('Enlace no válido', 'Este enlace de baja no es correcto o ha caducado. Si quieres dejar de recibir correos, cámbialo en tu perfil de la web o escríbenos.'));
         if (e.baja_at) return res.send(paginaCorreo('Ya estás dado de baja', `No volverás a recibir estas comunicaciones en <b>${escHtml(e.email)}</b>. Puedes cambiarlo cuando quieras desde tu perfil en la web.`));
@@ -10621,16 +10965,181 @@ app.post('/baja/:token', async (req, res) => {
     res.set('Content-Type', 'text/html; charset=utf-8');
     try {
         const r = await pool.query(
-            `SELECT e.id, e.email, e.persona_id, e.destinatario_id, e.baja_at, c.tipo FROM aim_campana_envios e JOIN aim_campanas c ON c.id = e.campana_id WHERE e.token = $1`, [req.params.token]);
+            `SELECT e.id, e.email, e.persona_id, e.destinatario_id, e.baja_at, k.tipo FROM aim_campana_envios e JOIN aim_campana_correos k ON k.id = e.correo_id WHERE e.token = $1`, [req.params.token]);
         const e = r.rows[0];
         if (!e || e.tipo === 'servicio') return res.status(404).send(paginaCorreo('Enlace no válido', 'Este enlace de baja no es correcto.'));
         if (!e.baja_at) {
-            const quien = e.tipo === 'comercial' ? e.destinatario_id : e.persona_id;
-            if (quien) await anotarConsentimiento(pool, req, { userId: quien, email: e.email, tipo: e.tipo === 'comercial' ? 'comunicaciones' : 'actividades', otorgado: false, origen: 'baja desde correo' });
+            if (e.tipo === 'comercial') {
+                await anotarConsentimiento(pool, req, { userId: e.destinatario_id || null, email: e.email, tipo: 'comunicaciones', otorgado: false, origen: 'baja desde correo' });
+            } else if (e.persona_id) {
+                await anotarConsentimiento(pool, req, { userId: e.persona_id, email: e.email, tipo: 'actividades', otorgado: false, origen: 'baja desde correo' });
+            }
             await pool.query(`UPDATE aim_campana_envios SET baja_at = NOW() WHERE id = $1`, [e.id]);
         }
         res.send(paginaCorreo('Hecho: te has dado de baja', `No volverás a recibir estas comunicaciones en <b>${escHtml(e.email)}</b>. Si cambias de idea, puedes volver a activarlas desde tu perfil en la web.`));
     } catch { res.status(500).send(paginaCorreo('Algo ha fallado', 'Vuelve a intentarlo en un rato.')); }
+});
+
+// ── Rebotes ──────────────────────────────────────────────────────────────────
+// Un correo que no llega (dirección que no existe, buzón lleno…) se aparta de
+// los envíos hasta que se cambie en la ficha (entonces ya es otra dirección) o
+// se marque a mano como arreglado. Se detectan de dos formas: el rechazo en el
+// momento de enviar y los avisos de rebote que Gmail deja en el buzón del club,
+// que se leen por IMAP (solo esos avisos, sin tocar nada del buzón).
+const MOTIVO_REBOTE = [
+    [/^5\.1\.1/, 'La dirección no existe'],
+    [/^5\.1\.2/, 'El dominio del correo no existe'],
+    [/^5\.1\./, 'La dirección no es válida'],
+    [/^[45]\.2\.2/, 'Buzón lleno'],
+    [/^5\.2\.1/, 'Buzón desactivado'],
+    [/^5\.2\./, 'Problema con el buzón del destinatario'],
+    [/^5\.7\./, 'Rechazado por el servidor del destinatario (bloqueo o spam)'],
+    [/^4\./, 'No se pudo entregar por ahora (error temporal)'],
+    [/^5\./, 'El servidor del destinatario lo rechazó'],
+];
+function clasificarRebote(status) {
+    const s = String(status || '');
+    const motivo = (MOTIVO_REBOTE.find(([re]) => re.test(s)) || [null, 'No se pudo entregar'])[1];
+    // Duro: la dirección no sirve. Suave: el buzón existe pero ahora no admite.
+    const tipo = /^5\.(1|5)\./.test(s) || /^5\.0\.0/.test(s) ? 'duro' : 'suave';
+    return { tipo, motivo };
+}
+async function apuntarRebote(cliente, { email, status, diagnostico, envioId = null }) {
+    const e = String(email || '').trim().toLowerCase();
+    if (!EMAIL_RE.test(e)) return;
+    const { tipo, motivo } = clasificarRebote(status);
+    // Uno abierto por dirección: si ya lo había, se actualiza.
+    const ya = await cliente.query(`SELECT id FROM aim_correos_rebotados WHERE LOWER(email) = $1 AND resuelto_at IS NULL LIMIT 1`, [e]);
+    if (ya.rowCount) {
+        await cliente.query(`UPDATE aim_correos_rebotados SET tipo = $2, codigo = $3, motivo = $4, detalle = $5, detectado_at = NOW(), envio_id = COALESCE($6, envio_id) WHERE id = $1`,
+            [ya.rows[0].id, tipo, String(status || '').slice(0, 20), motivo, String(diagnostico || '').slice(0, 1000), envioId]);
+    } else {
+        await cliente.query(`INSERT INTO aim_correos_rebotados (email, tipo, codigo, motivo, detalle, envio_id) VALUES ($1, $2, $3, $4, $5, $6)`,
+            [e, tipo, String(status || '').slice(0, 20), motivo, String(diagnostico || '').slice(0, 1000), envioId]);
+    }
+}
+// De una lista de correos, los que rebotan ahora mismo.
+async function rebotesDe(emails, cliente = pool) {
+    const l = [...new Set((emails || []).filter(Boolean).map(x => String(x).toLowerCase()))];
+    if (!l.length) return new Set();
+    const r = await cliente.query(`SELECT DISTINCT LOWER(email) AS e FROM aim_correos_rebotados WHERE resuelto_at IS NULL AND LOWER(email) = ANY($1::text[])`, [l]);
+    return new Set(r.rows.map(x => x.e));
+}
+
+// Lee los avisos de rebote nuevos del buzón del club. Solo mira mensajes de
+// «mailer-daemon», sin marcarlos ni moverlos, y recuerda hasta dónde leyó.
+let rebotesEnCurso = false;
+async function revisarRebotes() {
+    if (rebotesEnCurso || !process.env.EMAIL_USER || !process.env.EMAIL_PASS) return;
+    rebotesEnCurso = true;
+    let imap = null;
+    try {
+        const { ImapFlow } = await import('imapflow');
+        imap = new ImapFlow({
+            host: process.env.IMAP_HOST || 'imap.gmail.com', port: 993, secure: true, logger: false,
+            auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+        });
+        await imap.connect();
+        const lock = await imap.getMailboxLock('INBOX', { readOnly: true });
+        try {
+            const marca = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'rebotes_imap'`)).rows[0]?.valor || {};
+            const validez = String(imap.mailbox.uidValidity);
+            const desde = marca.uidValidity === validez ? Number(marca.ultimoUid) || 0 : 0;
+            // La primera vez, solo lo de los últimos 30 días.
+            const criterio = desde ? { uid: `${desde + 1}:*`, from: 'mailer-daemon' } : { since: new Date(Date.now() - 30 * 86400_000), from: 'mailer-daemon' };
+            const uids = (await imap.search(criterio, { uid: true })) || [];
+            let ultimo = desde;
+            for (const uid of uids) {
+                if (uid <= desde) continue;
+                const m = await imap.fetchOne(String(uid), { source: true }, { uid: true });
+                ultimo = Math.max(ultimo, uid);
+                if (!m?.source) continue;
+                for (const reb of leerAvisoRebote(m.source.toString('utf8'))) {
+                    const env = reb.token
+                        ? (await pool.query(`SELECT id FROM aim_campana_envios WHERE token = $1`, [reb.token])).rows[0]
+                        : (await pool.query(`SELECT id FROM aim_campana_envios WHERE LOWER(email) = LOWER($1) AND enviado_at > NOW() - INTERVAL '30 days' ORDER BY enviado_at DESC LIMIT 1`, [reb.email])).rows[0];
+                    await apuntarRebote(pool, { ...reb, envioId: env?.id || null });
+                    if (env && reb.definitivo) await pool.query(`UPDATE aim_campana_envios SET estado = 'rebotado', error = $2 WHERE id = $1`, [env.id, clasificarRebote(reb.status).motivo]);
+                }
+            }
+            await pool.query(
+                `INSERT INTO aim_ajustes (clave, valor, actualizado_at) VALUES ('rebotes_imap', $1::jsonb, NOW())
+                 ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW()`,
+                [JSON.stringify({ uidValidity: validez, ultimoUid: ultimo, revisadoAt: new Date().toISOString() })]);
+        } finally { lock.release(); }
+    } catch (err) {
+        // Sin IMAP activado o con la contraseña cambiada: se apunta para verlo en el panel.
+        await pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at) VALUES ('rebotes_imap_error', $1::jsonb, NOW())
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW()`,
+            [JSON.stringify({ error: String(err.message || err).slice(0, 300), at: new Date().toISOString() })]).catch(() => {});
+    } finally {
+        if (imap) await imap.logout().catch(() => {});
+        rebotesEnCurso = false;
+    }
+}
+
+// Saca de un aviso de rebote (DSN, RFC 3464) a quién no llegó, el código y el
+// motivo. Un aviso puede traer varios destinatarios. 'definitivo' es falso en
+// los avisos de «todavía lo estamos intentando».
+function leerAvisoRebote(raw) {
+    const txt = String(raw || '').replace(/\r\n/g, '\n');
+    const token = (txt.match(/X-AIM-Envio:\s*([0-9a-f]{32})/i) || [])[1] || null;
+    const out = [];
+    const bloques = txt.split(/\n(?=Final-Recipient:)/i).slice(1);
+    for (const b of bloques) {
+        const email = (b.match(/^Final-Recipient:\s*rfc822;\s*<?([^\s>]+)>?/im) || [])[1];
+        const action = ((b.match(/^Action:\s*(\S+)/im) || [])[1] || '').toLowerCase();
+        const status = (b.match(/^Status:\s*([245]\.\d{1,3}\.\d{1,3})/im) || [])[1];
+        // El motivo puede seguir en las líneas siguientes (empiezan por espacio).
+        const diag = ((b.match(/^Diagnostic-Code:[ \t]*(?:smtp;[ \t]*)?(.*(?:\n[ \t]+.*)*)/im) || [])[1] || '').replace(/\s+/g, ' ').trim();
+        if (!email || !status || action === 'delivered' || action === 'relayed' || action === 'expanded') continue;
+        out.push({ email, status, diagnostico: diag, token, definitivo: action !== 'delayed' });
+    }
+    return out;
+}
+
+app.get('/api/admin/rebotes', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT b.*, (SELECT json_agg(json_build_object('id', u.user_id, 'nombre', TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, '')))))
+                          FROM users u WHERE LOWER(u.email) = LOWER(b.email)) AS personas
+             FROM aim_correos_rebotados b WHERE b.resuelto_at IS NULL ORDER BY b.detectado_at DESC LIMIT 300`);
+        const est = (await pool.query(`SELECT clave, valor FROM aim_ajustes WHERE clave IN ('rebotes_imap', 'rebotes_imap_error')`)).rows;
+        const imap = Object.fromEntries(est.map(x => [x.clave, x.valor]));
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            rebotes: r.rows.map(b => ({ id: b.id, email: b.email, tipo: b.tipo, codigo: b.codigo, motivo: b.motivo, detalle: b.detalle, detectadoAt: b.detectado_at, personas: b.personas || [] })),
+            revisadoAt: imap.rebotes_imap?.revisadoAt || null,
+            error: imap.rebotes_imap_error && (!imap.rebotes_imap?.revisadoAt || imap.rebotes_imap_error.at > imap.rebotes_imap.revisadoAt) ? imap.rebotes_imap_error.error : null,
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Los rebotes de una persona y de sus padres o tutores (su correo actual), para
+// avisar en su ficha.
+app.get('/api/admin/rebotes/persona/:id', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT DISTINCT ON (b.id) b.id, b.email, b.tipo, b.codigo, b.motivo, b.detectado_at,
+                    TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS de
+             FROM aim_correos_rebotados b JOIN users u ON LOWER(u.email) = LOWER(b.email)
+             WHERE b.resuelto_at IS NULL
+               AND (u.user_id = $1 OR u.user_id IN (SELECT f.familiar_id FROM aim_familias f WHERE f.persona_id = $1))`, [req.params.id]);
+        res.set('Cache-Control', 'no-store');
+        res.json({ rebotes: r.rows.map(b => ({ id: b.id, email: b.email, tipo: b.tipo, codigo: b.codigo, motivo: b.motivo, detectadoAt: b.detectado_at, de: b.de })) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Marcar a mano que el correo ya está bien (vuelve a recibir envíos).
+app.post('/api/admin/rebotes/:id(\\d+)/resolver', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
+    try {
+        const r = await pool.query(
+            `UPDATE aim_correos_rebotados SET resuelto_at = NOW(), resuelto_por = $2, resuelto_como = 'manual' WHERE id = $1 AND resuelto_at IS NULL RETURNING id`,
+            [Number(req.params.id), req.userSession.userId]);
+        if (!r.rowCount) return res.status(404).json({ error: 'Ese rebote ya estaba resuelto.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // Historial: lo enviado desde su ficha y lo que le llegó a su correo desde otras.
@@ -15449,6 +15958,13 @@ app.post('/api/contacto', async (req, res) => {
             `INSERT INTO aim_contactos (nombre, email, telefono, mensaje, ip) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
             [nombre, email, telefono, mensaje, ip || null]);
         await anotarConsentimiento(pool, req, { email, tipo: 'contacto', otorgado: true, origen: 'formulario de contacto' });
+        // La publicidad va en una casilla aparte y sin marcar: solo se apunta si
+        // la ha marcado. Si ya tiene ficha, va a ella; si no, a su correo (y se
+        // le aplicará cuando la tenga). No marcarla no es decir que no.
+        if (b.comunicaciones === true) {
+            const u = (await pool.query(`SELECT user_id FROM users WHERE LOWER(email) = $1 LIMIT 1`, [email])).rows[0];
+            await anotarConsentimiento(pool, req, { userId: u?.user_id || null, email, tipo: 'comunicaciones', otorgado: true, origen: 'consulta web' });
+        }
         // El aviso a secretaría. Si el correo falla, la consulta ya está guardada y
         // se ve en el panel: no se le da error a quien la ha enviado.
         if (mailTransporter) {
@@ -16345,6 +16861,11 @@ app.listen(port, () => {
     setInterval(recordatoriosSpeaking, 15 * 60 * 1000);
     // Campañas (CRM 5, #314): la cola saca un envío cada 4 s.
     setInterval(enviarSiguienteDeCampana, INTERVALO_CAMPANAS_MS);
+    // Los correos de campaña programados, cuando les llega la hora.
+    setInterval(lanzarProgramados, 60 * 1000);
+    // Los avisos de rebote del buzón del club (IMAP), cada 10 minutos.
+    setTimeout(revisarRebotes, 2 * 60 * 1000);
+    setInterval(revisarRebotes, 10 * 60 * 1000);
     // Automatismos (CRM 7, #316): bienvenida, faltas y cumpleaños, cada 15 min.
     setTimeout(ejecutarAutomatismos, 60 * 1000);
     setInterval(ejecutarAutomatismos, 15 * 60 * 1000);

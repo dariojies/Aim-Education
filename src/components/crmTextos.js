@@ -13,6 +13,7 @@ const lista = (xs) => (xs.length <= 1 ? xs.join('') : `${xs.slice(0, -1).join(',
 // Un segmento contado en una frase: «Alumnos actuales de Ballet, de 6 a 12
 // años, con recibos sin pagar. Se escribe a sus padres o tutores.»
 export function describirSegmento(f = {}, clases = []) {
+  if (f.estado === 'contactos') return 'Personas que nos han escrito por la web (no son alumnos). Solo reciben publicidad, y solo si la aceptaron.';
   const quien = { activos: 'Alumnos actuales', baja: 'Antiguos alumnos', todos: 'Alumnos actuales y antiguos' }[f.estado || 'activos'];
   const partes = [];
   if (f.clases?.length) {

@@ -81,6 +81,7 @@ export default function FichaComunicaciones({ personaId, showToast }) {
   const [vista, setVista] = useState(false);
   const [enviando, setEnviando] = useState(false);
   const [abiertoId, setAbiertoId] = useState(null);
+  const [rebotes, setRebotes] = useState([]);
 
   const cargar = useCallback(async () => {
     try {
@@ -90,6 +91,8 @@ export default function FichaComunicaciones({ personaId, showToast }) {
         fetch('/api/admin/comunicaciones/plantillas', { credentials: 'include', cache: 'no-store' }).then(r => (r.ok ? r.json() : { plantillas: [] })),
       ]);
       setCtx(c); setHistorial(h.comunicaciones || []); setPlantillas(p.plantillas || []);
+      fetch(`/api/admin/rebotes/persona/${personaId}`, { credentials: 'include', cache: 'no-store' })
+        .then(r => (r.ok ? r.json() : { rebotes: [] })).then(d => setRebotes(d.rebotes || [])).catch(() => {});
       // Por defecto, a los tutores con correo; si no tiene, al propio alumno.
       if (c) {
         const tutores = c.destinatarios.filter(d => d.email && d.relacion !== 'Alumno/a');
@@ -159,6 +162,21 @@ export default function FichaComunicaciones({ personaId, showToast }) {
         </button>
       )}>
       {sinCorreo && <p style={{ margin: '0 0 8px', fontSize: 12, color: 'var(--ink-3)' }}>Ni el alumno ni sus tutores tienen correo: habrá que llamar.</p>}
+      {/* Correos que rebotan: no reciben campañas ni automatismos hasta que se
+          cambie el correo en la ficha o se marque aquí como arreglado. */}
+      {rebotes.map(b => (
+        <div key={b.id} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '10px 12px', marginBottom: 8, borderRadius: 12,
+          background: 'color-mix(in oklab, var(--orange) 10%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--orange) 35%, transparent)', fontSize: 12 }}>
+          <span style={{ flex: '1 1 260px' }}>
+            <b>↩ El correo de {b.de} rebota</b> ({b.email}): {b.motivo}{b.tipo === 'duro' ? '' : ' (temporal)'}. No se le envían campañas ni automatismos hasta que se cambie el correo en la ficha o se marque como arreglado.
+          </span>
+          <button type="button" className="btn btn-sm btn-outline" onClick={async () => {
+            if (!window.confirm(`¿Marcar ${b.email} como arreglado? Volverá a recibir los correos.`)) return;
+            const r = await fetch(`/api/admin/rebotes/${b.id}/resolver`, { method: 'POST', credentials: 'include' });
+            if (r.ok) { setRebotes(x => x.filter(y => y.id !== b.id)); showToast?.('Marcado como arreglado.'); }
+          }}>Ya está arreglado</button>
+        </div>
+      ))}
 
       {abierto && (
         <div style={{ display: 'grid', gap: 12, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: 14, marginBottom: 12 }}>

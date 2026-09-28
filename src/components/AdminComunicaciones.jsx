@@ -190,6 +190,7 @@ function EditorSegmento({ inicial, opciones, guardados, guardarLista, onAbrirFic
   }
 
   const r = res?.resumen;
+  const esContactos = f.estado === 'contactos';
   // La edad cuenta como una sola condición aunque tenga «desde» y «hasta».
   const afinados = [f.edadMin || f.edadMax, Number(f.faltasMin) > 0, f.pendientes, f.campamento].filter(Boolean).length;
   return (
@@ -204,13 +205,14 @@ function EditorSegmento({ inicial, opciones, guardados, guardarLista, onAbrirFic
 
       <div className="seg-editor">
         <div className="panel" style={{ display: 'grid', gap: 26, margin: 0 }}>
-          <Paso n={1} titulo="¿Qué alumnos?">
-            <div role="radiogroup" aria-label="Qué alumnos" style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <Paso n={1} titulo="¿A quién?">
+            <div role="radiogroup" aria-label="A quién" style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               <Opcion activa={f.estado === 'activos'} onClick={() => cambia('estado', 'activos')} titulo="Alumnos actuales" texto="Apuntados ahora a alguna clase." />
               <Opcion activa={f.estado === 'baja'} onClick={() => cambia('estado', 'baja')} titulo="Antiguos alumnos" texto="Estuvieron apuntados y ya no vienen." />
               <Opcion activa={f.estado === 'todos'} onClick={() => cambia('estado', 'todos')} titulo="Actuales y antiguos" texto="Todos los que han pasado por el club." />
+              <Opcion activa={esContactos} onClick={() => cambia('estado', 'contactos')} titulo="Personas que escribieron por la web" texto="Nos enviaron una consulta. No son alumnos: solo reciben publicidad, si la aceptaron." />
             </div>
-            <div style={{ display: 'grid', gap: 6 }}>
+            {!esContactos && <div style={{ display: 'grid', gap: 6 }}>
               <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-2)' }}>De qué actividades</span>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 <button type="button" className={`filter-pill ${!f.actividades.length ? 'is-active' : ''}`} onClick={() => cambia('actividades', [])}>Todas</button>
@@ -218,8 +220,8 @@ function EditorSegmento({ inicial, opciones, guardados, guardarLista, onAbrirFic
                   <button key={a} type="button" aria-pressed={f.actividades.includes(a)} className={`filter-pill ${f.actividades.includes(a) ? 'is-active' : ''}`} onClick={() => alterna('actividades', a)}>{a}</button>
                 ))}
               </div>
-            </div>
-            <div style={{ display: 'grid', gap: 6 }}>
+            </div>}
+            {!esContactos && <div style={{ display: 'grid', gap: 6 }}>
               <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, cursor: 'pointer' }}>
                 <input type="checkbox" checked={verClases || f.clases.length > 0} onChange={e => { setVerClases(e.target.checked); if (!e.target.checked) cambia('clases', []); }} />
                 Solo algunas clases{f.clases.length ? ` (${f.clases.length} elegida${f.clases.length !== 1 ? 's' : ''})` : ''}
@@ -237,10 +239,10 @@ function EditorSegmento({ inicial, opciones, guardados, guardarLista, onAbrirFic
                   {!clasesVisibles.length && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Ninguna clase con esa búsqueda.</span>}
                 </div>
               )}
-            </div>
+            </div>}
           </Paso>
 
-          <Paso n={2} titulo="¿Quieres afinar más?" ayuda={`Opcional. Déjalo en blanco si no hace falta.${afinados ? ` Ahora mismo: ${afinados} ${afinados === 1 ? 'condición' : 'condiciones'}.` : ''}`}>
+          {!esContactos && <Paso n={2} titulo="¿Quieres afinar más?" ayuda={`Opcional. Déjalo en blanco si no hace falta.${afinados ? ` Ahora mismo: ${afinados} ${afinados === 1 ? 'condición' : 'condiciones'}.` : ''}`}>
             <div style={{ display: 'grid', gap: 10 }}>
               <span style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', fontSize: 14 }}>
                 Que tengan entre
@@ -257,16 +259,16 @@ function EditorSegmento({ inicial, opciones, guardados, guardarLista, onAbrirFic
               <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14, cursor: 'pointer' }}><input type="checkbox" checked={f.pendientes} onChange={e => cambia('pendientes', e.target.checked)} /> Que tengan recibos sin pagar</label>
               <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14, cursor: 'pointer' }}><input type="checkbox" checked={f.campamento} onChange={e => cambia('campamento', e.target.checked)} /> Que estén apuntados al campamento</label>
             </div>
-          </Paso>
+          </Paso>}
 
-          <Paso n={3} titulo="¿A quién le escribimos?">
+          {!esContactos && <Paso n={3} titulo="¿A quién le escribimos?">
             <div role="radiogroup" aria-label="A quién se escribe" style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               <Opcion activa={f.destino !== 'alumno'} onClick={() => cambia('destino', 'familia')} titulo="A sus padres o tutores"
                 texto="Lo habitual. Si un alumno no tiene padres o tutores con correo, se le escribe a él." />
               <Opcion activa={f.destino === 'alumno'} onClick={() => cambia('destino', 'alumno')} titulo="Al propio alumno"
                 texto="A su propio correo, también si es menor: sus padres lo autorizan al firmar la matrícula." />
             </div>
-          </Paso>
+          </Paso>}
         </div>
 
         <aside className="panel seg-resumen" style={{ margin: 0, display: 'grid', gap: 14 }} aria-live="polite">
@@ -276,7 +278,7 @@ function EditorSegmento({ inicial, opciones, guardados, guardarLista, onAbrirFic
           </div>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
             <span style={{ fontSize: 34, fontWeight: 800, lineHeight: 1 }}>{r ? r.alumnos : '…'}</span>
-            <span style={{ fontSize: 14, color: 'var(--ink-2)' }}>alumno{r?.alumnos === 1 ? '' : 's'} en el segmento{cargando ? ' · contando…' : ''}</span>
+            <span style={{ fontSize: 14, color: 'var(--ink-2)' }}>{esContactos ? 'persona' : 'alumno'}{r?.alumnos === 1 ? '' : 's'} en el segmento{cargando ? ' · contando…' : ''}</span>
           </div>
           {r && (
             <div style={{ display: 'grid', gap: 8 }}>
@@ -297,6 +299,7 @@ function EditorSegmento({ inicial, opciones, guardados, guardarLista, onAbrirFic
                 );
               })}
               {r.sinCorreo > 0 && <span style={{ fontSize: 12, color: 'var(--orange)' }}>{r.sinCorreo} alumno{r.sinCorreo !== 1 ? 's' : ''} no {r.sinCorreo !== 1 ? 'tienen' : 'tiene'} ningún correo al que escribir.</span>}
+              {r.rebotan > 0 && <span style={{ fontSize: 12, color: 'var(--orange)' }}>{r.rebotan} {r.rebotan !== 1 ? 'se quedan' : 'se queda'} fuera porque su correo rebota (se ve en Campañas → «Correos que rebotan»).</span>}
               {r.limite && <span style={{ fontSize: 12, color: 'var(--orange)' }}>Se cuentan los 2.000 primeros: afina un poco más.</span>}
             </div>
           )}
@@ -317,7 +320,7 @@ function EditorSegmento({ inicial, opciones, guardados, guardarLista, onAbrirFic
           </div>
           {res.alumnos.slice(0, 300).map(a => (
             <div key={a.id} className="data-table-row" style={{ gridTemplateColumns: '1.2fr 60px 1.3fr 1.8fr 1.3fr', alignItems: 'center' }}>
-              <button type="button" onClick={() => onAbrirFicha?.({ id: a.id })}
+              <button type="button" onClick={() => !a.esContacto && onAbrirFicha?.({ id: a.id })}
                 style={{ background: 'none', border: 0, padding: 0, fontFamily: 'inherit', fontWeight: 800, fontSize: 14, color: 'var(--ink)', cursor: 'pointer', textAlign: 'left' }}>{a.nombre}</button>
               <span style={{ fontSize: 13 }}>{a.edad ?? '—'}</span>
               <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{a.clases || '—'}</span>

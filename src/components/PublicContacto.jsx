@@ -18,6 +18,8 @@ export default function PublicContacto() {
     mensaje: sobre ? `Hola, quería información sobre ${sobre.slice(0, 120)}.` : '',
   });
   const [acepta, setAcepta] = useState(false);
+  // La publicidad va aparte y sin marcar: si no, el consentimiento no vale.
+  const [comunicaciones, setComunicaciones] = useState(false);
   const [enviando, setEnviando] = useState(false);
   const [hecho, setHecho] = useState(false);
   const [error, setError] = useState('');
@@ -30,7 +32,7 @@ export default function PublicContacto() {
     try {
       const r = await fetch('/api/contacto', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...f, aceptaPrivacidad: acepta }),
+        body: JSON.stringify({ ...f, aceptaPrivacidad: acepta, comunicaciones }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.error || 'No se ha podido enviar.');
@@ -98,9 +100,13 @@ export default function PublicContacto() {
                     <input type="checkbox" required checked={acepta} onChange={e => setAcepta(e.target.checked)} style={{ marginTop: 3, accentColor: 'var(--purple)' }} />
                     <span>He leído y acepto la <a href="/legal/privacidad" target="_blank" rel="noopener">política de privacidad</a>.</span>
                   </label>
+                  <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.5 }}>
+                    <input type="checkbox" checked={comunicaciones} onChange={e => setComunicaciones(e.target.checked)} style={{ marginTop: 3, accentColor: 'var(--purple)' }} />
+                    <span>Quiero recibir por correo información de las actividades, campamentos y ofertas del club. Es opcional y puedo darme de baja cuando quiera.</span>
+                  </label>
                   <div style={{ padding: '10px 12px', borderRadius: 10, background: 'var(--bg-3)', fontSize: 11.5, color: 'var(--ink-3)', lineHeight: 1.55 }}>
-                    <b>Protección de datos.</b> Responsable: AIM Deporte y Educación S.L. Finalidad: atender tu consulta.
-                    Legitimación: tu consentimiento. No se ceden datos salvo obligación legal. Puedes ejercer tus derechos en
+                    <b>Protección de datos.</b> Responsable: AIM Deporte y Educación S.L. Finalidad: atender tu consulta y, si lo
+                    marcas, enviarte información del club. Legitimación: tu consentimiento. No se ceden datos salvo obligación legal. Puedes ejercer tus derechos en
                     info@aimeducation.es. Más información en la <a href="/legal/privacidad" target="_blank" rel="noopener">política de privacidad</a>.
                   </div>
                   {error && <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: 'var(--orange)' }}>{error}</p>}
