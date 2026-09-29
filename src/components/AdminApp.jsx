@@ -29,6 +29,7 @@ import AdminFaltas from './AdminFaltas.jsx';
 import AdminComunicaciones from './AdminComunicaciones.jsx';
 import AdminResumen from './AdminResumen.jsx';
 import AdminRangosPermisos from './AdminRangosPermisos.jsx';
+import AdminBandeja from './AdminBandeja.jsx';
 import AdminAlmacen from './AdminAlmacen.jsx';
 import AdminContactos from './AdminContactos.jsx';
 import { IconoActividad } from './IconoActividad.jsx';
@@ -86,6 +87,7 @@ function sectionLabel(id) {
     almacen: "Almacén",
     equipo_it: "Equipo IT",
     rangos: "Rangos y permisos",
+    bandeja: "Correo",
   })[id] || "Panel";
 }
 
@@ -6759,6 +6761,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
       // El CRM tiene su propio apartado: cada pestaña de Comunicaciones es una
       // entrada, y las consultas que llegan por la web son contactos nuevos.
       heading: "CRM", items: [
+        { id: "bandeja", label: "Correo", icon: <I.Mail /> },
         { id: "comunicaciones", pestana: "segmentos", label: "Segmentos", icon: <I.Filter width={18} height={18} /> },
         { id: "comunicaciones", pestana: "campanas", label: "Campañas", icon: <I.Mail /> },
         { id: "comunicaciones", pestana: "automatismos", label: "Automatismos", icon: <I.Spark width={18} height={18} /> },
@@ -6928,6 +6931,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("fichaje") && <Fichaje showToast={showToast} permisos={permisos} />}
           {ver("equipo_it") && <EquipoIT showToast={showToast} />}
           {ver("contactos") && <AdminContactos showToast={showToast} />}
+          {ver("bandeja") && <AdminBandeja showToast={showToast} onAbrirFicha={abrirFicha} />}
           {ver("rangos") && <AdminRangosPermisos grupos={gruposMenu} showToast={showToast} />}
           {ver("overview") && <AdminResumen permisos={permisos} refreshTrigger={refreshTrigger} ir={navTo} irRuta={(ruta) => go(ruta)} />}
           {ver("students") && <AdminStudents refreshTrigger={refreshTrigger} showToast={showToast} permisos={permisos}

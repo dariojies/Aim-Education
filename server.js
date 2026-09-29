@@ -10,6 +10,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 import nodemailer from 'nodemailer';
 import { calcularRecibo, calcularCobro, serieDeLinea, mesAGenerar, mesDeAlta, tieneMilesimas, brutoMilesimas } from './billing.js';
 import { crearRouterTulClases } from './tul-clases.js';
+import { crearRouterBandeja } from './bandeja.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
 import { generarGastosPdf, gastosCsv, nombrePeriodo } from './gastos-pdf.js';
@@ -4537,6 +4538,31 @@ function requireRol(minimo) {
 // portados a nuestro panel. Ver tul-clases.js.
 app.use('/api/admin/tul', authenticateSession, requireAdmin,
     crearRouterTulClases({ pool, clubId: AIM_CLUB_ID, permisos, gruposDe, grupoSuyo, generarCargosDeMatricula, generarCargoInscripcion, debeInscripcion }));
+
+// Bandeja de correo del CRM (ticket #317): el buzón general (info@) y el de cada
+// uno. Ver bandeja.js.
+// A quién se le puede asignar o pasar un correo: el personal que tiene el
+// apartado «Correo» (con los permisos que haya puesto la dirección).
+async function companerosCorreo() {
+    const r = await pool.query(
+        `SELECT u.user_id, u.name, u.surname, u.email, u.role, u.dev_role, ar.rango
+         FROM users u LEFT JOIN aim_rangos ar ON ar.user_id = u.user_id
+         WHERE u.club_id = $1 OR ar.rango IS NOT NULL OR u.dev_role = 'superadmin'`, [AIM_CLUB_ID]);
+    return r.rows
+        .map(u => ({ u, rol: rolEfectivo(u.role, u.dev_role, u.rango) }))
+        .filter(({ u, rol }) => rol && permisosEfectivos(rol).secciones.bandeja && u.email && !esCorreoInterno(u.email))
+        .map(({ u }) => ({ id: u.user_id, nombre: `${u.name || ''} ${u.surname || ''}`.trim(), email: String(u.email).toLowerCase() }))
+        .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+}
+// Si quien escribe es de una ficha del club, para abrirla desde el correo.
+async function fichaDeCorreo(email) {
+    const r = await pool.query(
+        `SELECT u.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre FROM users u
+         WHERE LOWER(u.email) = LOWER($1) LIMIT 1`, [email]);
+    return r.rows[0] ? { id: r.rows[0].user_id, nombre: r.rows[0].nombre } : null;
+}
+const bandeja = crearRouterBandeja({ pool, permisos, companeros: companerosCorreo, fichaDe: fichaDeCorreo });
+app.use('/api/admin/bandeja', authenticateSession, requireAdmin, requireSeccion('bandeja'), bandeja.router);
 
 // =============================================================================
 // OBJETOS PERDIDOS (ticket #208)
@@ -14145,6 +14171,12 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                 });
             }
             if (faltas.length > 10) avisos.push({ tipo: 'faltas', destino: '/admin/faltas', n: faltas.length, clave: 'faltas:resto', texto: `Y ${faltas.length - 10} alumno${faltas.length - 10 !== 1 ? 's' : ''} más con 4 o más faltas seguidas` });
+        }
+        // Correos de info@ asignados a esta persona y sin hacer (#317). Si Gmail
+        // no responde, no se enseña y ya está.
+        if (recibe('correos_asignados')) {
+            const n = await bandeja.asignadosSinHacer().then(m => m?.[yo] || 0).catch(() => 0);
+            if (n) avisos.push({ tipo: 'correo', destino: '/admin/correo', n, texto: `${n} correo${n !== 1 ? 's' : ''} de info@ asignado${n !== 1 ? 's' : ''} a ti`, detalle: 'sin marcar como hecho' });
         }
         // Consultas del formulario de contacto (y altas web) sin atender (#329).
         // La clave lleva la última: si entra otra, vuelve a encenderse.

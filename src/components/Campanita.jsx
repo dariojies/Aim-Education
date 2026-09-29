@@ -34,6 +34,7 @@ const COLOR = {
   faltas: 'var(--danger, #dc2626)',
   almacen: 'var(--orange)',
   contactos: '#21B668',
+  correo: 'var(--purple)',
   // Los de la zona de familias.
   pagos: 'var(--orange)',
   soporte: 'var(--purple)',
@@ -51,6 +52,7 @@ const TITULO = {
   faltas: 'Faltas',
   almacen: 'Almacén',
   contactos: 'Consultas web',
+  correo: 'Correo',
   pagos: 'Pagos',
   soporte: 'Soporte',
   avisos: 'Del club',
