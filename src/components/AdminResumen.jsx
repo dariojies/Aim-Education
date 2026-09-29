@@ -19,20 +19,21 @@ const fechaCorta = (iso) => new Date(String(iso).slice(0, 10) + 'T12:00:00').toL
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 const plural = (n, uno, varios) => `${n} ${n === 1 ? uno : varios}`;
 
-const tarjeta = { background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 18, padding: 20, minWidth: 0 };
-const tituloTarjeta = { fontFamily: 'var(--font-display)', fontSize: 17, fontWeight: 800, letterSpacing: '-.01em', margin: 0 };
+const tarjeta = { background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: '16px 18px', minWidth: 0 };
+const tituloTarjeta = { fontSize: 15, fontWeight: 800, letterSpacing: '-.005em', margin: 0, color: 'var(--ink)' };
 const suave = { fontSize: 12, color: 'var(--ink-3)' };
-const fila = { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderTop: '1px solid var(--line)', fontSize: 13, minWidth: 0 };
+const fila = { display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderTop: '1px solid var(--line)', fontSize: 13, minWidth: 0 };
+const enlaceAccion = { background: 'none', border: 0, padding: '2px 0', color: 'var(--purple)', fontWeight: 700, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap', flexShrink: 0 };
 
 function Tarjeta({ titulo, sub, accion, onAccion, children, style }) {
   return (
     <section style={{ ...tarjeta, ...style }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10, marginBottom: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, marginBottom: sub ? 8 : 6 }}>
         <div style={{ minWidth: 0 }}>
           <h2 style={tituloTarjeta}>{titulo}</h2>
-          {sub && <div style={{ ...suave, marginTop: 2 }}>{sub}</div>}
+          {sub && <div style={{ ...suave, marginTop: 1 }}>{sub}</div>}
         </div>
-        {accion && <button type="button" className="btn btn-sm btn-outline" onClick={onAccion} style={{ flexShrink: 0 }}>{accion}</button>}
+        {accion && <button type="button" onClick={onAccion} style={enlaceAccion}>{accion} →</button>}
       </div>
       {children}
     </section>
@@ -44,12 +45,13 @@ function Cifra({ etiqueta, valor, detalle, tono, onClick }) {
   const color = { bien: 'var(--teal)', aviso: 'var(--orange)' }[tono];
   const Tag = onClick ? 'button' : 'div';
   return (
-    <Tag type={onClick ? 'button' : undefined} onClick={onClick} style={{
-      ...tarjeta, padding: '16px 18px', textAlign: 'left', fontFamily: 'inherit', cursor: onClick ? 'pointer' : 'default', display: 'grid', gap: 4,
+    <Tag type={onClick ? 'button' : undefined} onClick={onClick} className="resumen-cifra" style={{
+      ...tarjeta, padding: '14px 16px', textAlign: 'left', fontFamily: 'inherit', cursor: onClick ? 'pointer' : 'default',
+      display: 'grid', gridTemplateRows: 'auto auto 1fr', gap: 2, alignContent: 'start',
     }}>
       <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-3)' }}>{etiqueta}</span>
-      <span style={{ fontFamily: 'var(--font-display)', fontSize: 28, fontWeight: 800, lineHeight: 1.1, color: 'var(--ink)', letterSpacing: '-.02em' }}>{valor}</span>
-      {detalle && <span style={{ fontSize: 12, fontWeight: 600, color: color || 'var(--ink-3)' }}>{detalle}</span>}
+      <span style={{ fontFamily: 'var(--font-display)', fontSize: 26, fontWeight: 800, lineHeight: 1.15, color: 'var(--ink)', letterSpacing: '-.02em' }}>{valor}</span>
+      <span style={{ fontSize: 12, fontWeight: 600, color: color || 'var(--ink-3)', minHeight: 16 }}>{detalle || '\u00a0'}</span>
     </Tag>
   );
 }
@@ -69,74 +71,82 @@ function Estado({ tipo, children }) {
 }
 
 // ── Tu día ──────────────────────────────────────────────────────────────────
-function TuDia({ mi, ir, permisos }) {
+// Una sola tarjeta: fichaje, tareas y (si no se ven ya abajo) tus tickets.
+function TuDia({ mi, ir, permisos, conTickets }) {
   const f = mi.fichaje;
   const fich = f.estado === 'dentro' ? ['ok', `Trabajando${f.desde ? ` desde las ${hora(f.desde)}` : ''}`]
     : f.estado === 'pausa' ? ['aviso', `En pausa desde las ${hora(f.ultimo)}`]
       : ['info', f.desde ? 'Jornada de hoy cerrada' : 'Sin fichar hoy'];
   const t = mi.tareas;
+  const Apartado = ({ titulo, accion, onAccion, children, primero }) => (
+    <div style={{ padding: '10px 0', borderTop: primero ? 0 : '1px solid var(--line)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, marginBottom: 4 }}>
+        <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--ink-2)' }}>{titulo}</span>
+        {accion && <button type="button" onClick={onAccion} style={enlaceAccion}>{accion} →</button>}
+      </div>
+      {children}
+    </div>
+  );
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 14 }}>
+    <section style={tarjeta}>
+      <h2 style={{ ...tituloTarjeta, marginBottom: 2 }}>Tu día</h2>
       {permisos.secciones.fichaje && (
-        <Tarjeta titulo="Tu fichaje" accion={f.estado === 'fuera' ? 'Fichar' : 'Ver'} onAccion={() => ir('fichaje')}>
+        <Apartado titulo="Fichaje" accion={f.estado === 'fuera' ? 'Fichar' : 'Ver'} onAccion={() => ir('fichaje')} primero>
           <Estado tipo={fich[0]}>{fich[1]}</Estado>
-        </Tarjeta>
+        </Apartado>
       )}
-      <Tarjeta titulo="Tus tareas de hoy" sub={t.hechas ? `${plural(t.hechas, 'hecha', 'hechas')} ya` : null} accion="Agenda" onAccion={() => ir('agenda')}>
-        {t.proximas.length ? (
-          <div>
-            {t.proximas.slice(0, 3).map(x => (
-              <div key={x.id} style={{ ...fila, borderTop: 0, padding: '3px 0' }}>
-                <span style={{ ...suave, minWidth: 38 }}>{x.hora || '—'}</span>
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{x.titulo}</span>
-              </div>
-            ))}
-            {t.pendientes > 3 && <div style={suave}>y {t.pendientes - 3} más</div>}
+      <Apartado titulo={t.pendientes ? `Tareas de hoy (${t.pendientes})` : 'Tareas de hoy'} accion="Agenda" onAccion={() => ir('agenda')} primero={!permisos.secciones.fichaje}>
+        {t.proximas.length ? t.proximas.slice(0, 3).map(x => (
+          <div key={x.id} style={{ display: 'flex', gap: 8, fontSize: 13, padding: '2px 0', minWidth: 0 }}>
+            <span style={{ ...suave, minWidth: 36 }}>{x.hora || '—'}</span>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{x.titulo}</span>
           </div>
-        ) : <Vacio>{t.hechas ? 'Todo hecho por hoy.' : 'Nada apuntado para hoy.'}</Vacio>}
-        {t.vencidas > 0 && <div style={{ marginTop: 6 }}><Estado tipo="aviso">{plural(t.vencidas, 'tarea atrasada', 'tareas atrasadas')}</Estado></div>}
-      </Tarjeta>
-      {permisos.secciones.support && (
-        <Tarjeta titulo="Tus tickets" accion="Soporte" onAccion={() => ir('support')}>
-          {mi.ticketsMios ? <Estado tipo="aviso">{plural(mi.ticketsMios, 'ticket abierto asignado a ti', 'tickets abiertos asignados a ti')}</Estado>
+        )) : <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>{t.hechas ? 'Todo hecho por hoy.' : 'Nada apuntado para hoy.'}</span>}
+        {t.pendientes > 3 && <div style={suave}>y {t.pendientes - 3} más</div>}
+        {t.vencidas > 0 && <div style={{ marginTop: 4 }}><Estado tipo="aviso">{plural(t.vencidas, 'tarea atrasada', 'tareas atrasadas')}</Estado></div>}
+      </Apartado>
+      {conTickets && permisos.secciones.support && (
+        <Apartado titulo="Tus tickets" accion="Soporte" onAccion={() => ir('support')}>
+          {mi.ticketsMios ? <Estado tipo="aviso">{plural(mi.ticketsMios, 'abierto asignado a ti', 'abiertos asignados a ti')}</Estado>
             : <Estado tipo="ok">Ninguno pendiente</Estado>}
-        </Tarjeta>
+        </Apartado>
       )}
       {mi.ausencias.length > 0 && (
-        <Tarjeta titulo="Tus próximas ausencias" accion="Ver" onAccion={() => ir('fichaje')}>
+        <Apartado titulo="Tus próximas ausencias" accion="Ver" onAccion={() => ir('fichaje')}>
           {mi.ausencias.map((a, i) => (
-            <div key={i} style={{ fontSize: 13, padding: '2px 0' }}>
+            <div key={i} style={{ fontSize: 13, padding: '1px 0' }}>
               {a.nombre}: {fechaCorta(a.desde)}{a.hasta !== a.desde ? ` – ${fechaCorta(a.hasta)}` : ''}
               {a.estado === 'pendiente' && <span style={{ ...suave, marginLeft: 6 }}>(por aprobar)</span>}
             </div>
           ))}
-        </Tarjeta>
+        </Apartado>
       )}
-    </div>
+    </section>
   );
 }
 
-// Lo pendiente: lo mismo que la campanita, en grande.
+// Lo pendiente: lo mismo que la campanita, en una lista. Con muchas cosas se
+// enseñan las primeras y el resto con un clic.
 function ParaAtender({ avisos, irRuta }) {
+  const [todos, setTodos] = useState(false);
   if (avisos === null) return null;
+  const lista = todos ? avisos : avisos.slice(0, 6);
   return (
-    <Tarjeta titulo="Para atender" sub={avisos.length ? 'Pulsa para ir a cada cosa' : null}>
-      {avisos.length === 0 ? <Estado tipo="ok">Todo al día: no hay nada pendiente.</Estado> : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', columnGap: 18 }}>
-          {avisos.map((a, i) => (
-            <button key={a.clave || i} type="button" onClick={() => irRuta(a.destino)} style={{
-              ...fila, width: '100%', background: 'none', border: 0, borderTop: '1px solid var(--line)', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', color: 'var(--ink)',
-            }}>
-              <span style={{ minWidth: 30, height: 24, padding: '0 7px', borderRadius: 999, display: 'grid', placeItems: 'center', fontSize: 12, fontWeight: 800,
-                background: 'color-mix(in oklab, var(--purple) 12%, var(--bg-2))', color: 'var(--purple)' }}>{a.n || '•'}</span>
-              <span style={{ minWidth: 0, flex: 1 }}>
-                <span style={{ display: 'block', fontWeight: 700 }}>{a.texto}</span>
-                {a.detalle && <span style={{ ...suave, display: 'block' }}>{a.detalle}</span>}
-              </span>
-              <I.Arrow style={{ color: 'var(--ink-3)', flexShrink: 0 }} />
-            </button>
-          ))}
-        </div>
+    <Tarjeta titulo="Para atender" sub={avisos.length ? plural(avisos.length, 'cosa pendiente', 'cosas pendientes') : null}>
+      {avisos.length === 0 ? <Estado tipo="ok">Todo al día.</Estado> : lista.map((a, i) => (
+        <button key={a.clave || i} type="button" onClick={() => irRuta(a.destino)} className="resumen-aviso" style={{
+          ...fila, width: '100%', background: 'none', border: 0, borderTop: '1px solid var(--line)', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', color: 'var(--ink)', alignItems: 'flex-start',
+        }}>
+          <span style={{ minWidth: 26, height: 22, padding: '0 6px', borderRadius: 999, display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 800, flexShrink: 0,
+            background: 'color-mix(in oklab, var(--purple) 12%, var(--bg-2))', color: 'var(--purple)' }}>{a.n || '•'}</span>
+          <span style={{ minWidth: 0, flex: 1, lineHeight: 1.35 }}>
+            <span style={{ display: 'block', fontWeight: 700 }}>{a.texto}</span>
+            {a.detalle && <span style={{ ...suave, display: 'block' }}>{a.detalle}</span>}
+          </span>
+        </button>
+      ))}
+      {avisos.length > 6 && (
+        <button type="button" onClick={() => setTodos(x => !x)} style={{ ...enlaceAccion, marginTop: 6 }}>{todos ? 'Ver menos' : `Ver ${avisos.length - 6} más`}</button>
       )}
     </Tarjeta>
   );
@@ -293,18 +303,19 @@ function GraficoMeses({ meses }) {
 
 // ── Cada vista ──────────────────────────────────────────────────────────────
 const rejilla = (min = 300) => ({ display: 'grid', gridTemplateColumns: `repeat(auto-fit, minmax(min(${min}px, 100%), 1fr))`, gap: 14, alignItems: 'start' });
-const cifras = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(150px, 100%), 1fr))', gap: 14 };
+const cifras = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(140px, 100%), 1fr))', gap: 12 };
 
-function VistaInstructor({ d, clases, ir }) {
+function VistaInstructor({ parte, d, clases, ir }) {
   const sin = clases ? clases.filter(c => !c.marcados).length : null;
-  return (
-    <>
+  const k = (
       <div style={cifras}>
         <Cifra etiqueta="Clases hoy" valor={clases ? clases.length : '…'} detalle={clases && clases.length ? (sin ? `${plural(sin, 'lista', 'listas')} por pasar` : 'listas al día') : null} tono={sin ? 'aviso' : 'bien'} onClick={() => ir('classes')} />
         <Cifra etiqueta="Tus alumnos" valor={d.alumnos} detalle={plural(d.grupos, 'grupo', 'grupos')} onClick={() => ir('groups')} />
         <Cifra etiqueta="Faltas seguidas" valor={d.faltas.length} detalle={d.faltas.length ? '3 o más clases sin venir' : 'nadie falta seguido'} tono={d.faltas.length ? 'aviso' : 'bien'} />
         <Cifra etiqueta="Cumpleaños" valor={d.cumples.filter(c => c.enDias === 0).length} detalle={`hoy · ${d.cumples.length} esta semana`} />
       </div>
+  );
+  const c = (
       <div style={rejilla()}>
         <ClasesHoy clases={clases} ir={ir} titulo="Tus clases de hoy" />
         <Tarjeta titulo="Alumnos que faltan seguido" sub="En tus grupos, 3 o más clases seguidas sin venir">
@@ -324,14 +335,13 @@ function VistaInstructor({ d, clases, ir }) {
           </Tarjeta>
         )}
       </div>
-    </>
   );
+  return parte === 'cifras' ? k : c;
 }
 
-function VistaSecretaria({ d, clases, ir }) {
+function VistaSecretaria({ parte, d, clases, ir }) {
   const sin = clases ? clases.filter(c => !c.marcados).length : null;
-  return (
-    <>
+  const k = (
       <div style={cifras}>
         <Cifra etiqueta="Cobrado hoy" valor={eur(d.cobradoHoy.total)} detalle={plural(d.cobradoHoy.recibos, 'recibo', 'recibos')} onClick={() => ir('billing')} />
         <Cifra etiqueta="Por cobrar" valor={eur(d.porCobrar.total)} detalle={plural(d.porCobrar.familias, 'familia', 'familias')} tono={d.porCobrar.total > 0 ? 'aviso' : 'bien'} onClick={() => ir('billing')} />
@@ -340,6 +350,8 @@ function VistaSecretaria({ d, clases, ir }) {
           ? <Cifra etiqueta="Campamento hoy" valor={d.campamentoHoy} detalle="niños apuntados" onClick={() => ir('camp')} />
           : <Cifra etiqueta="Trabajando ahora" valor={d.personal.length} detalle="del equipo" onClick={() => ir('fichaje')} />}
       </div>
+  );
+  const c = (
       <div style={rejilla()}>
         <ClasesHoy clases={clases} ir={ir} />
         <Tarjeta titulo="La caja de hoy" accion={d.cajaCerrada ? 'Ver' : 'Cerrar la caja'} onAccion={() => ir('billing')}>
@@ -353,16 +365,15 @@ function VistaSecretaria({ d, clases, ir }) {
         <SpeakingHoy lista={d.speaking} ir={ir} />
         <Eventos lista={d.eventos} ir={ir} titulo="Esta semana" vacio="No hay eventos en los próximos 7 días." />
       </div>
-    </>
   );
+  return parte === 'cifras' ? k : c;
 }
 
-function VistaDireccion({ d, ir }) {
+function VistaDireccion({ parte, d, ir }) {
   const ing = d.ingresos;
   const cambio = ing.pasadoIgual > 0 ? Math.round(((ing.mes - ing.pasadoIgual) / ing.pasadoIgual) * 100) : null;
   const resultado = ing.mes - d.gastosMes;
-  return (
-    <>
+  const k = (
       <div style={cifras}>
         <Cifra etiqueta="Ingresos del mes" valor={eur(ing.mes)} onClick={() => ir('billing')}
           detalle={cambio === null ? `el mes pasado: ${eur(ing.pasado)}` : `${cambio >= 0 ? '▲' : '▼'} ${Math.abs(cambio)} % que el mes pasado a estas alturas`} tono={cambio === null ? null : cambio >= 0 ? 'bien' : 'aviso'} />
@@ -370,6 +381,8 @@ function VistaDireccion({ d, ir }) {
         <Cifra etiqueta="Diferencia" valor={eur(resultado)} detalle={resultado >= 0 ? 'ingresos menos gastos' : 'se ha gastado más de lo ingresado'} tono={resultado >= 0 ? 'bien' : 'aviso'} />
         <Cifra etiqueta="Alumnos activos" valor={d.alumnos.activos} detalle={`${plural(d.alumnos.altas, 'alta', 'altas')} y ${plural(d.alumnos.bajas, 'baja', 'bajas')} este mes`} onClick={() => ir('students')} />
       </div>
+  );
+  const c = (
       <div style={rejilla(340)}>
         <Tarjeta titulo="Ingresos y gastos" sub="Los últimos seis meses (el actual, hasta hoy)">
           <GraficoMeses meses={d.meses} />
@@ -397,11 +410,11 @@ function VistaDireccion({ d, ir }) {
         </Tarjeta>
         <Personal lista={d.personal} ir={ir} />
       </div>
-    </>
   );
+  return parte === 'cifras' ? k : c;
 }
 
-function VistaIT({ d, irRuta, ir }) {
+function VistaIT({ parte, d, irRuta, ir }) {
   const t = d.tickets, s = d.sistema;
   const dias = useMemo(() => {
     const m = new Map();
@@ -432,23 +445,25 @@ function VistaIT({ d, irRuta, ir }) {
     ['Servidor', ['info', `En marcha desde el ${fechaCorta(s.servidor.arrancado)} a las ${hora(s.servidor.arrancado)} · ${s.servidor.memoriaMb} MB · Node ${s.servidor.node}`]],
     ...(s.servidor.version || s.servidor.commit ? [['Versión publicada', ['info', [s.servidor.version, s.servidor.commit].filter(Boolean).join(' · ')]]] : []),
   ];
-  return (
-    <>
+  const k = (
       <div style={cifras}>
         <Cifra etiqueta="Tickets abiertos" valor={t.abiertos} detalle={`${t.resueltos_semana} resueltos esta semana`} onClick={() => ir('support')} />
-        <Cifra etiqueta="Asignados a ti" valor={t.mios.length} onClick={() => ir('support')} />
+        <Cifra etiqueta="Asignados a ti" valor={t.mios} detalle={t.mios ? 'abiertos' : 'ninguno'} onClick={() => ir('support')} />
         <Cifra etiqueta="Sin asignar" valor={t.sin_asignar} tono={t.sin_asignar ? 'aviso' : 'bien'} detalle={t.sin_asignar ? 'hay que repartirlos' : 'todos tienen dueño'} onClick={() => ir('support')} />
         <Cifra etiqueta="Vencidos" valor={t.vencidos} tono={t.vencidos ? 'aviso' : null} detalle={t.vencidos ? 'se ha pasado su fecha' : `ninguno · ${t.urgentes} de prioridad alta`} onClick={() => ir('support')} />
       </div>
+  );
+  const c = (
       <div style={rejilla(340)}>
-        <Tarjeta titulo="Tus tickets" sub="Primero los urgentes y los que vencen antes" accion="Soporte" onAccion={() => ir('support')}>
-          {t.mios.length === 0 ? <Vacio>No tienes tickets abiertos.</Vacio> : t.mios.map(x => <Ticket key={x.id} x={x} />)}
+        <Tarjeta titulo="Tus tickets" sub="Los urgentes y los que vencen antes, primero" accion="Todos" onAccion={() => ir('support')}>
+          {t.miosLista.length === 0 ? <Vacio>No tienes tickets abiertos.</Vacio> : t.miosLista.map(x => <Ticket key={x.id} x={x} />)}
+          {t.mios > t.miosLista.length && <div style={{ ...suave, marginTop: 6 }}>y {t.mios - t.miosLista.length} más en Soporte</div>}
         </Tarjeta>
         <Tarjeta titulo="Estado del sistema">
           {sistema.map(([k, [tipo, txt]]) => (
-            <div key={k} style={{ ...fila, alignItems: 'flex-start' }}>
-              <span style={{ flex: '0 0 42%', fontWeight: 600 }}>{k}</span>
-              <span style={{ flex: 1, minWidth: 0 }}><Estado tipo={tipo}>{txt}</Estado></span>
+            <div key={k} style={{ ...fila, justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <span style={{ fontWeight: 600, flexShrink: 0 }}>{k}</span>
+              <span style={{ minWidth: 0, textAlign: 'right' }}><Estado tipo={tipo}>{txt}</Estado></span>
             </div>
           ))}
         </Tarjeta>
@@ -468,8 +483,8 @@ function VistaIT({ d, irRuta, ir }) {
           ))}
         </Tarjeta>
       </div>
-    </>
   );
+  return parte === 'cifras' ? k : c;
 }
 
 // ── La página ───────────────────────────────────────────────────────────────
@@ -509,33 +524,57 @@ export default function AdminResumen({ permisos, ir, irRuta, refreshTrigger }) {
   const saludo = h < 14 ? 'Buenos días' : h < 21 ? 'Buenas tardes' : 'Buenas noches';
   const f = new Date(d.hoy + 'T12:00:00').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
   const fecha = f.charAt(0).toUpperCase() + f.slice(1);
+  // En la vista de IT los tickets ya están abajo: no se repiten en «Tu día» ni
+  // en «Para atender» (sí los mensajes nuevos de cada ticket).
+  const esIT = d.vista === 'it';
+  const pendientes = avisos && (esIT ? avisos.filter(a => !(a.tipo === 'tickets' && a.destino === '/admin/soporte' && !a.clave)) : avisos);
+  const Vista = { instructor: VistaInstructor, secretaria: VistaSecretaria, direccion: VistaDireccion, it: VistaIT }[d.vista] || null;
+  const props = { d: d.datos, clases, ir, irRuta };
 
   return (
-    <div style={{ display: 'grid', gap: 18 }}>
-      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-        <div>
-          <div style={{ fontFamily: 'var(--font-display)', fontSize: 24, fontWeight: 800, letterSpacing: '-.02em' }}>{saludo}{d.nombre ? `, ${d.nombre}` : ''}</div>
-          <div style={{ ...suave, fontSize: 13 }}>{fecha}</div>
+    <div style={{ display: 'grid', gap: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 15, color: 'var(--ink-2)' }}>
+          <b style={{ color: 'var(--ink)' }}>{saludo}{d.nombre ? `, ${d.nombre}` : ''}.</b> <span style={{ color: 'var(--ink-3)' }}>{fecha}</span>
         </div>
         {d.vistas.length > 1 && (
-          <div role="tablist" aria-label="Qué resumen ver" style={{ display: 'inline-flex', border: '1px solid var(--line)', borderRadius: 999, overflow: 'hidden', background: 'var(--bg-3)' }}>
+          <div role="tablist" aria-label="Qué resumen ver" style={{ display: 'inline-flex', border: '1px solid var(--line)', borderRadius: 999, overflow: 'hidden', background: 'var(--bg-2)', padding: 3, gap: 2 }}>
             {d.vistas.map(v => (
               <button key={v.id} type="button" role="tab" aria-selected={d.vista === v.id} onClick={() => elegirVista(v.id)} style={{
-                padding: '8px 14px', fontSize: 13, fontWeight: 800, fontFamily: 'inherit', cursor: 'pointer', border: 0,
-                background: d.vista === v.id ? 'var(--purple)' : 'transparent', color: d.vista === v.id ? '#fff' : 'var(--ink-2)',
+                padding: '6px 14px', fontSize: 12, fontWeight: 800, fontFamily: 'inherit', cursor: 'pointer', border: 0, borderRadius: 999,
+                background: d.vista === v.id ? 'var(--ink)' : 'transparent', color: d.vista === v.id ? 'var(--bg-2)' : 'var(--ink-2)',
               }}>{v.nombre}</button>
             ))}
           </div>
         )}
       </div>
 
-      <TuDia mi={d.mi} ir={ir} permisos={permisos} />
-      <ParaAtender avisos={avisos} irRuta={irRuta} />
+      {Vista && <Vista parte="cifras" {...props} />}
 
-      {d.vista === 'instructor' && <VistaInstructor d={d.datos} clases={clases} ir={ir} />}
-      {d.vista === 'secretaria' && <VistaSecretaria d={d.datos} clases={clases} ir={ir} />}
-      {d.vista === 'direccion' && <VistaDireccion d={d.datos} ir={ir} />}
-      {d.vista === 'it' && <VistaIT d={d.datos} ir={ir} irRuta={irRuta} />}
+      <div className={`resumen-cuerpo${Vista ? '' : ' solo-lado'}`}>
+        <aside className="resumen-lado">
+          <TuDia mi={d.mi} ir={ir} permisos={permisos} conTickets={!esIT} />
+          <ParaAtender avisos={pendientes} irRuta={irRuta} />
+        </aside>
+        {Vista && <div className="resumen-principal"><Vista parte="cuerpo" {...props} /></div>}
+      </div>
+      <style>{`
+        .resumen-cuerpo{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start}
+        .resumen-cuerpo .resumen-lado{grid-column:2;grid-row:1;display:grid;gap:16px;position:sticky;top:16px}
+        .resumen-cuerpo .resumen-principal{grid-column:1;grid-row:1;min-width:0}
+        .resumen-principal > div{display:block!important;columns:2 300px;column-gap:14px}
+        .resumen-principal > div > *{break-inside:avoid;margin:0 0 14px;width:100%;box-sizing:border-box}
+        .resumen-cuerpo.solo-lado{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+        .resumen-cuerpo.solo-lado .resumen-lado{grid-column:1 / -1;grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));position:static}
+        .resumen-cifra{transition:border-color var(--tx-fast) ease, transform var(--tx-fast) ease}
+        button.resumen-cifra:hover{border-color:color-mix(in oklab, var(--purple) 45%, var(--line));transform:translateY(-1px)}
+        .resumen-aviso:hover{background:color-mix(in oklab, var(--purple) 5%, transparent)!important}
+        @media (max-width: 1100px){
+          .resumen-cuerpo{grid-template-columns:minmax(0,1fr)}
+          .resumen-cuerpo .resumen-lado{grid-column:1;grid-row:1;position:static;grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr))}
+          .resumen-cuerpo .resumen-principal{grid-column:1;grid-row:2}
+        }
+      `}</style>
     </div>
   );
 }

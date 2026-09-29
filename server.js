@@ -13754,7 +13754,7 @@ async function resumenIT(yo) {
     const mapT = (t) => ({ id: t.id, asunto: t.subject, prioridad: t.priority, vence: t.due_date, fecha: t.created_at });
     const mem = process.memoryUsage();
     return {
-        tickets: { ...cuentas.rows[0], mios: mios.rows.map(mapT), sinAsignarLista: sinAsignar.rows.map(mapT) },
+        tickets: { ...cuentas.rows[0], miosLista: mios.rows.map(mapT), sinAsignarLista: sinAsignar.rows.map(mapT) },
         semana: { lunes: lunesIso, bloques: plan.rows.map(b => ({ id: b.user_id, nombre: b.nombre, fecha: b.fecha, inicio: b.inicio, fin: b.fin, nota: b.nota, mio: String(b.user_id) === String(yo) })) },
         sistema: {
             correo: !!mailTransporter,
