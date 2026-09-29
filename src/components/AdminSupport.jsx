@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { marcarAvisosVistos } from './Campanita.jsx';
+import { useRouter } from '../App.jsx';
 import { I } from './Icons.jsx';
 import { fmtFecha, fmtFechaHora, fmtHora as fmtHoraCorta } from '../fechas.js';
 
@@ -421,11 +422,17 @@ export function AdminSupport({ user, ticketId = null }) {
   }, [fetchTickets]);
 
   // Si se ha entrado por /admin/soporte/180, abrir ese ticket en cuanto cargue.
-  const abiertoPorEnlace = useRef(false);
+  // Luego la dirección vuelve a /admin/soporte: si no, al volver a Soporte más
+  // tarde se abría otra vez ese ticket en vez del listado (ticket #335).
+  const { go } = useRouter() || {};
+  const abiertoPorEnlace = useRef(null);
   useEffect(() => {
-    if (!ticketId || abiertoPorEnlace.current || !tickets.length) return;
+    if (!ticketId) { abiertoPorEnlace.current = null; return; }
+    if (abiertoPorEnlace.current === ticketId || !tickets.length) return;
+    abiertoPorEnlace.current = ticketId;
     const t = tickets.find(x => x.id === ticketId);
-    if (t) { abiertoPorEnlace.current = true; openTicket(t); }
+    if (t) openTicket(t);
+    go?.('/admin/soporte', { replace: true });
   }, [ticketId, tickets]);
 
   // Vincular tickets que son el mismo asunto: al abrir cualquiera se ven todos.

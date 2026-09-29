@@ -24,7 +24,7 @@ import compression from 'compression';
 import { filasLibroRegistro, generarLibroRegistro, prorrataDe, TIPOS_OPERACION_DEFECTO } from './libro-registro.js';
 import { PassThrough } from 'stream';
 import { escalaDe, escalasDelClub, resultadoDe, baremoDe, matriculaExamenDe } from './rangos.js';
-import { rolEfectivo, rolVisible, permisosDe, mandaAlMenos, ROLES_STAFF, NOMBRE_ROL, NOMBRE_RANGO, RANGOS_PROPIOS, RANGOS_ASIGNABLES, recibeAviso } from './permisos.js';
+import { rolEfectivo, rolVisible, permisosDe, mandaAlMenos, ROLES_STAFF, NOMBRE_ROL, NOMBRE_RANGO, RANGOS_PROPIOS, RANGOS_ASIGNABLES, recibeAviso, aplicarAjustesPermisos, limpiarAjustesPermisos, RANGOS_EDITABLES } from './permisos.js';
 import { htmlCorreo, textoCorreo, disenoDesdeTexto, limpiarDiseno, limpiarMarca, faltanObligatorios, ejemplosDe, CORREOS_SISTEMA, MARCA_POR_DEFECTO } from './correo-diseno.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -2049,7 +2049,7 @@ async function abrirSesion(res, user, { recordar = true } = {}) {
         rol,
         rolVisible: visible,
         nombreRol: NOMBRE_ROL[visible] || null,
-        permisos: permisosDe(rol),
+        permisos: permisosEfectivos(rol),
         expiresAt: Date.now() + duracion,
     });
     res.cookie('aim_session', token, {
@@ -2070,7 +2070,7 @@ async function abrirSesion(res, user, { recordar = true } = {}) {
         canAccessAdmin,
         rol,
         nombreRol: NOMBRE_ROL[visible] || null,
-        permisos: permisosDe(rol),
+        permisos: permisosEfectivos(rol),
     };
 }
 
@@ -2710,7 +2710,7 @@ app.get('/api/me', authenticateSession, (req, res) => {
         canAccessAdmin: s.canAccessAdmin,
         rol: s.rol || null,
         nombreRol: s.nombreRol || null,
-        permisos: s.permisos || null,
+        permisos: s.rol ? permisosEfectivos(s.rol) : (s.permisos || null),
     });
 });
 
@@ -4497,8 +4497,18 @@ async function grupoSuyo(req, groupId) {
 // Los permisos de quien hace la petición. Si la sesión es vieja (se guardó antes
 // de que existieran los roles) se recalculan, para no dejar a nadie fuera ni
 // darle de más mientras no vuelva a entrar.
+// Los permisos de un rango con lo que haya cambiado la dirección en «Rangos y
+// permisos» (#333). Se calculan en cada petición: un cambio vale al momento,
+// sin tener que volver a entrar.
+let AJUSTES_PERMISOS = {};
+async function cargarAjustesPermisos() {
+    const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'permisos_rangos'`).catch(() => ({ rows: [] }));
+    AJUSTES_PERMISOS = limpiarAjustesPermisos(r.rows[0]?.valor || {});
+}
+const permisosEfectivos = (rol) => aplicarAjustesPermisos(permisosDe(rol), rol, AJUSTES_PERMISOS);
+
 function permisos(req) {
-    return req.userSession?.permisos || permisosDe(req.userSession?.rol || null);
+    return permisosEfectivos(req.userSession?.rol || null);
 }
 
 // Exige un permiso concreto de los de permisos.js. Esconder el botón en la
@@ -13577,13 +13587,15 @@ app.post('/api/avisos/vistos', authenticateSession, async (req, res) => {
 // tareas). Lo pendiente (la campanita) se pinta aparte con /notificaciones.
 // La dirección y el Equipo IT pueden asomarse a las otras vistas.
 // ═════════════════════════════════════════════════════════════════════════════
-const VISTAS_RESUMEN = { direccion: 'Dirección', secretaria: 'Secretaría', it: 'Equipo IT', instructor: 'Instructor', trabajador: 'Mi día' };
+const VISTAS_RESUMEN = { direccion: 'Dirección', secretaria: 'Secretaría', it: 'Equipo IT', instructor: 'Instructor', trabajador: 'Trabajador' };
 function vistasResumenDe(ses) {
     const rol = ses?.rol;
     if (rol === 'trabajador' || rol === 'instructor' || rol === 'secretaria') return [rol];
     const propia = rol === 'equipo_it' ? 'it' : rol === 'club_owner' ? 'direccion'
         : ({ equipo_it: 'it', secretaria: 'secretaria', instructor: 'instructor', club_owner: 'direccion' }[ses?.rolVisible] || 'direccion');
-    return [propia, ...['direccion', 'secretaria', 'it'].filter(v => v !== propia)];
+    // La dirección y el Equipo IT pueden ver todas, también la de un instructor o
+    // un trabajador concreto (tal cual la ve esa persona).
+    return [propia, ...['direccion', 'secretaria', 'it', 'instructor', 'trabajador'].filter(v => v !== propia)];
 }
 const HOY_SQL = `(now() AT TIME ZONE 'Europe/Madrid')::date`;
 const n2 = (v) => Math.round(Number(v || 0) * 100) / 100;
@@ -13833,13 +13845,46 @@ async function resumenIT(yo) {
     };
 }
 
+// «Rangos y permisos» (#333): leer y guardar lo que se ha cambiado. Solo la
+// dirección (dueño del club y Equipo IT).
+app.get('/api/admin/permisos-rangos', authenticateSession, requireSeccion('rangos'), async (req, res) => {
+    try {
+        await cargarAjustesPermisos();
+        res.set('Cache-Control', 'no-store');
+        res.json({ ajustes: AJUSTES_PERMISOS, puedeEditar: mandaAlMenos(req.userSession?.rol, 'club_owner') });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.put('/api/admin/permisos-rangos', authenticateSession, requireSeccion('rangos'), async (req, res) => {
+    if (!mandaAlMenos(req.userSession?.rol, 'club_owner')) return res.status(403).json({ error: 'Solo la dirección puede cambiar los permisos.' });
+    try {
+        const ajustes = limpiarAjustesPermisos(req.body?.ajustes || {});
+        await pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('permisos_rangos', $1::jsonb, NOW(), $2)
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+            [JSON.stringify(ajustes), req.userSession.userId]);
+        AJUSTES_PERMISOS = ajustes;
+        res.json({ success: true, ajustes });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/admin/resumen', authenticateSession, requireAdmin, async (req, res) => {
     const ses = req.userSession;
     const vistas = vistasResumenDe(ses);
     const vista = vistas.includes(req.query.vista) ? req.query.vista : vistas[0];
     try {
-        const mi = await resumenMiDia(ses.userId);
-        const datos = vista === 'instructor' ? await resumenInstructor(ses.userId)
+        // Ver el de un instructor o un trabajador concreto (solo quien puede ver
+        // otras vistas): se elige de la lista; si no, el primero.
+        let quien = ses.userId, personas = null, como = null;
+        if (vistas.length > 1 && (vista === 'instructor' || vista === 'trabajador')) {
+            personas = (await pool.query(
+                `SELECT u.user_id AS id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre FROM users u
+                 WHERE u.club_id = $1 AND ${sqlRango('u')} = $2 ORDER BY 2`, [AIM_CLUB_ID, vista])).rows;
+            const elegido = personas.find(p => String(p.id) === String(req.query.como))
+                || (vistas[0] === vista ? null : personas[0]);
+            if (elegido) { quien = elegido.id; como = elegido; }
+        }
+        const mi = await resumenMiDia(quien);
+        const datos = vista === 'instructor' ? await resumenInstructor(quien)
             : vista === 'secretaria' ? await resumenSecretaria()
                 : vista === 'direccion' ? await resumenDireccion()
                     : vista === 'it' ? await resumenIT(ses.userId)
@@ -13847,7 +13892,7 @@ app.get('/api/admin/resumen', authenticateSession, requireAdmin, async (req, res
         res.set('Cache-Control', 'no-store');
         res.json({
             vista, vistas: vistas.map(id => ({ id, nombre: VISTAS_RESUMEN[id] })),
-            nombre: ses.firstName || '', hoy: hoyMadrid(), mi, datos,
+            nombre: ses.firstName || '', hoy: hoyMadrid(), mi, datos, personas, como,
         });
     } catch (err) {
         console.error('[resumen]', err);
@@ -17430,6 +17475,8 @@ app.get('*', (req, res) => {
 });
 
 app.listen(port, () => {
+    // Los permisos cambiados en «Rangos y permisos» (#333).
+    cargarAjustesPermisos().catch(e => console.error('[permisos]', e.message));
     // El formato de numeración vive en la base: se carga al arrancar.
     cargarFormatoNumeracion();
     // Y el día de corte del alta (ticket #289).

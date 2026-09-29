@@ -180,7 +180,7 @@ function CampoEnlace({ etiqueta: txt, valor, onCambio, variables, placeholder = 
 }
 
 // Elegir o subir una imagen.
-function CampoImagen({ valor, onCambio, onGaleria, showToast }) {
+function CampoImagen({ valor, onCambio, onGaleria, showToast, etiqueta: txt = 'Imagen', ayuda }) {
   const [subiendo, setSubiendo] = useState(false);
   const input = useRef(null);
   const subir = async (f) => {
@@ -192,7 +192,8 @@ function CampoImagen({ valor, onCambio, onGaleria, showToast }) {
   };
   return (
     <div style={etiqueta}>
-      <span>Imagen</span>
+      <span>{txt}</span>
+      {ayuda && <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}>{ayuda}</span>}
       {valor && <img src={valor} alt="" style={{ width: '100%', maxHeight: 140, objectFit: 'contain', borderRadius: 8, background: 'var(--bg-3)' }} />}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         <button type="button" className="btn btn-sm btn-primary" disabled={subiendo} onClick={() => input.current?.click()}>{subiendo ? 'Subiendo…' : valor ? 'Cambiar' : 'Subir imagen'}</button>
@@ -320,6 +321,12 @@ function Propiedades({ b, cambiar, variables, automaticos, marca, onGaleria, sho
       <Segmentado valor={b.alinear || 'left'} onCambio={v => set('alinear', v)} opciones={[['left', 'Izquierda'], ['center', 'Centro'], ['right', 'Derecha']]} />
     </label>
   );
+  // El texto puede ir también justificado (#336).
+  const alinearTexto = (
+    <label style={etiqueta}><span>Alineación</span>
+      <Segmentado valor={b.alinear || 'left'} onCambio={v => set('alinear', v)} opciones={[['left', 'Izquierda'], ['center', 'Centro'], ['right', 'Derecha'], ['justify', 'Justificado']]} />
+    </label>
+  );
   const partes = [];
   if (b.tipo === 'titulo') {
     partes.push(
@@ -335,12 +342,13 @@ function Propiedades({ b, cambiar, variables, automaticos, marca, onGaleria, sho
       <CampoTexto key="t" etiqueta="Texto" valor={b.texto || ''} onCambio={v => set('texto', v)} variables={variables} filas={8}
         ayuda="Deja una línea en blanco entre párrafos." />,
       <Deslizador key="s" etiqueta="Tamaño de letra" valor={b.tamano || 15} min={12} max={22} unidad=" px" onCambio={v => set('tamano', v)} />,
-      alinear,
+      React.cloneElement(alinearTexto, { key: 'al' }),
       <Color key="c" etiqueta="Color del texto" valor={b.color} onCambio={v => set('color', v)} marca={marca} />,
     );
   } else if (b.tipo === 'caja') {
     partes.push(
       <CampoTexto key="t" etiqueta="Texto del aviso" valor={b.texto || ''} onCambio={v => set('texto', v)} variables={variables} />,
+      React.cloneElement(alinearTexto, { key: 'al' }),
       <Color key="f" etiqueta="Color de la caja" valor={b.fondo} onCambio={v => set('fondo', v)} marca={marca} vacio={null} />,
       <Color key="b" etiqueta="Color de la raya" valor={b.borde} onCambio={v => set('borde', v)} marca={marca} />,
       <Color key="c" etiqueta="Color del texto" valor={b.color} onCambio={v => set('color', v)} marca={marca} />,
@@ -714,7 +722,15 @@ export default function EditorDiseno({
             {panel === 'estilo' && (
               <div style={{ display: 'grid', gap: 14 }}>
                 <Color etiqueta="Fondo de fuera" valor={diseno.fondo} onCambio={v => cambiar(d => ({ ...d, fondo: v }))} marca={marca} vacio="De la marca" />
+                <CampoImagen etiqueta="Imagen de fondo de fuera" valor={diseno.fondoImagen === '-' ? '' : (diseno.fondoImagen || '')}
+                  ayuda={marca.fondoImagen && !diseno.fondoImagen ? 'Ahora sale la de la marca.' : 'Ocupa todo el fondo, detrás del correo. Debajo queda el color, por si el programa de correo no la muestra.'}
+                  onCambio={v => cambiar(d => ({ ...d, fondoImagen: v || (marca.fondoImagen ? '-' : '') }))} onGaleria={() => setPanel('imagenes')} showToast={showToast} />
+                {marca.fondoImagen && diseno.fondoImagen === '-' && (
+                  <button type="button" style={{ ...botonIcono(), justifySelf: 'start' }} onClick={() => cambiar(d => ({ ...d, fondoImagen: '' }))}>Volver a poner la de la marca</button>
+                )}
                 <Color etiqueta="Fondo del correo" valor={diseno.lienzo} onCambio={v => cambiar(d => ({ ...d, lienzo: v }))} marca={marca} vacio="De la marca" />
+                <CampoImagen etiqueta="Imagen de fondo del correo" valor={diseno.lienzoImagen || ''} ayuda="Detrás del texto: mejor una imagen suave para que se lea bien."
+                  onCambio={v => cambiar(d => ({ ...d, lienzoImagen: v }))} showToast={showToast} />
                 <label style={etiqueta}><span>Tipo de letra</span>
                   <select value={diseno.fuente || ''} onChange={e => cambiar(d => ({ ...d, fuente: e.target.value }))} style={campo}>
                     <option value="">La de la marca</option>
@@ -734,7 +750,8 @@ export default function EditorDiseno({
         </aside>
 
         {/* Centro: el correo */}
-        <section style={{ overflow: 'auto', background: piezas.fondo, padding: '26px 14px 60px' }}
+        <section style={{ overflow: 'auto', background: piezas.fondo, padding: '26px 14px 60px',
+          ...(piezas.fondoImagen ? { backgroundImage: `url('${piezas.fondoImagen}')`, backgroundSize: 'cover', backgroundPosition: 'center top' } : {}) }}
           onClick={e => { if (e.target === e.currentTarget) { setSel(null); setPanel('anadir'); } }}
           onDragOver={e => { e.preventDefault(); if (e.target === e.currentTarget) setIndicador(bloques.length); }}
           onDrop={soltar}>
@@ -743,7 +760,8 @@ export default function EditorDiseno({
               <b>A este correo le falta:</b> {faltan.join(', ')}. Sin eso no funciona: vuelve a ponerlo antes de guardar.
             </div>
           )}
-          <div style={{ width: ancho, maxWidth: '100%', margin: '0 auto', background: piezas.lienzo, borderRadius: movil ? 0 : piezas.radio, boxShadow: '0 10px 40px rgba(0,0,0,.12)', overflow: 'hidden', transition: 'width .2s' }}
+          <div style={{ width: ancho, maxWidth: '100%', margin: '0 auto', background: piezas.lienzo,
+            ...(piezas.lienzoImagen ? { backgroundImage: `url('${piezas.lienzoImagen}')`, backgroundSize: 'cover', backgroundPosition: 'center top' } : {}), borderRadius: movil ? 0 : piezas.radio, boxShadow: '0 10px 40px rgba(0,0,0,.12)', overflow: 'hidden', transition: 'width .2s' }}
             onClickCapture={e => { if (e.target.closest?.('a')) e.preventDefault(); }}>
             {piezas.cabecera
               ? <div title="La cabecera se cambia en Marca" dangerouslySetInnerHTML={{ __html: piezas.cabecera + '<div style="height:10px"></div>' }} />

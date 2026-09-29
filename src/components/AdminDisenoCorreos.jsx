@@ -269,6 +269,22 @@ function Marca({ showToast }) {
             {color('fondo', 'Fondo de fuera')}
             {color('lienzo', 'Fondo del correo')}
           </div>
+          <div style={etq}>
+            <span>Imagen de fondo (opcional)</span>
+            <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}>Ocupa todo el fondo, detrás del correo. Debajo queda el color de fuera, que es lo que se ve en los programas que no muestran imágenes de fondo (Outlook de escritorio). Cada diseño puede cambiarla o quitarla.</span>
+            <span style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              {m.fondoImagen && <img src={m.fondoImagen} alt="" style={{ width: 90, height: 56, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--line)' }} />}
+              <label className="btn btn-sm btn-outline" style={{ cursor: 'pointer' }}>
+                {m.fondoImagen ? 'Cambiar la imagen' : 'Subir una imagen'}
+                <input type="file" accept="image/png,image/jpeg,image/gif" hidden onChange={async e => {
+                  const f = e.target.files?.[0]; e.target.value = '';
+                  if (!f) return;
+                  try { const d = await subirImagen(f); set('fondoImagen', d.url); } catch (err) { showToast?.(err.message, 'error'); }
+                }} />
+              </label>
+              {m.fondoImagen && <button type="button" className="btn btn-sm btn-outline" onClick={() => set('fondoImagen', '')}>Quitar</button>}
+            </span>
+          </div>
           <label style={etq}><span>Tipo de letra</span>
             <select value={m.fuente} onChange={e => set('fuente', e.target.value)} style={campo}>
               {Object.entries(FUENTES).map(([k, f]) => <option key={k} value={k}>{f.nombre}</option>)}

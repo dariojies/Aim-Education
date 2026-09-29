@@ -917,7 +917,10 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                  WHERE a.club_id = $1
                    AND ($2::uuid[] IS NULL OR g.group_id = ANY($2::uuid[]))
                  ORDER BY a.name, g.name`,
-                [clubId, soloSuyos(req) ? await gruposDe(req.userSession.userId) : null]
+                // ?instructor=<id>: las de ese instructor (el Resumen «ver como», #327).
+                // Quien solo ve lo suyo no puede pedir las de otro.
+                [clubId, soloSuyos(req) ? await gruposDe(req.userSession.userId)
+                    : /^[0-9a-f-]{36}$/i.test(String(req.query.instructor || '')) ? await gruposDe(req.query.instructor) : null]
             );
             const marcados = await pool.query(
                 `SELECT at.group_id, COUNT(*)::int n FROM tul_attendance at

@@ -17,6 +17,7 @@
 export const MARCA_POR_DEFECTO = {
     nombre: 'AIM Education',
     logo: '',              // /ci/<id> o una dirección https
+    fondoImagen: '',       // imagen que ocupa todo el fondo de fuera (#334)
     logoAncho: 160,
     cabecera: 'logo',      // 'logo' (sobre el lienzo) | 'banda' (franja de color)
     colorPrincipal: '#5233A8',
@@ -55,6 +56,8 @@ const num = (v, min, max, def) => {
     return Number.isFinite(n) ? Math.min(Math.max(n, min), max) : def;
 };
 const alinear = (a) => (['left', 'center', 'right'].includes(a) ? a : 'left');
+// El texto admite además «justificado» (#336); imágenes y botones no.
+const alinearTexto = (a) => (a === 'justify' ? 'justify' : alinear(a));
 
 let _n = 0;
 export const idBloque = () => `b${Date.now().toString(36)}${(_n++).toString(36)}${Math.random().toString(36).slice(2, 5)}`;
@@ -144,6 +147,9 @@ function contexto(diseno = {}, opts = {}) {
         colorEnlace: principal,
         fondo: color(diseno.fondo, color(marca.fondo, MARCA_POR_DEFECTO.fondo)),
         lienzo: color(diseno.lienzo, color(marca.lienzo, MARCA_POR_DEFECTO.lienzo)),
+        // Imágenes de fondo (#334). «-» en el diseño quita la de la marca.
+        fondoImagen: diseno.fondoImagen === '-' ? '' : (diseno.fondoImagen || marca.fondoImagen || ''),
+        lienzoImagen: diseno.lienzoImagen || '',
         fuente: (FUENTES[diseno.fuente] || FUENTES[marca.fuente] || FUENTES.system).css,
         radio: num(marca.radio, 0, 30, 14),
         vars: opts.vars || {},
@@ -194,13 +200,13 @@ export function pintarBloque(b, ctx) {
         }
         case 'texto':
             return fila(b, ctx, `<div style="font-family:${ctx.fuente};font-size:${num(b.tamano, 11, 24, 15)}px;line-height:1.6;`
-                + `color:${color(b.color, ctx.texto)};text-align:${al}">${formato(b.texto, ctx)}</div>`);
+                + `color:${color(b.color, ctx.texto)};text-align:${alinearTexto(b.alinear)}">${formato(b.texto, ctx)}</div>`);
         case 'caja': {
             const borde = color(b.borde, ctx.principal);
             return fila({ ...b, fondo: '' }, ctx,
                 `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:separate"><tr>`
                 + `<td style="background:${color(b.fondo, '#f4f4f4')};border-left:4px solid ${borde};border-radius:8px;padding:12px 16px;`
-                + `font-family:${ctx.fuente};font-size:15px;line-height:1.55;color:${color(b.color, ctx.texto)}">${formato(b.texto, ctx)}</td></tr></table>`);
+                + `font-family:${ctx.fuente};font-size:15px;line-height:1.55;color:${color(b.color, ctx.texto)};text-align:${alinearTexto(b.alinear)}">${formato(b.texto, ctx)}</td></tr></table>`);
         }
         case 'imagen': {
             if (!b.src) {
@@ -287,6 +293,20 @@ function pintarPie(ctx, extra = '') {
         + `${lineas.join('<br>')}${extra ? `<div style="margin-top:10px;font-size:11px;color:#9a958d">${extra}</div>` : ''}</td></tr></table>`;
 }
 
+// Una imagen de fondo, con la dirección entera y sin nada que rompa el CSS.
+function urlFondo(ctx, v) {
+    const u = src(ctx, v || '');
+    return u && /^(https?:\/\/|\/)[^\s"'()<>\\]+$/.test(u) ? u : '';
+}
+// Los estilos de un fondo: el color siempre (es lo que se ve si el programa de
+// correo no carga imágenes de fondo, como Outlook de escritorio) y la imagen
+// cubriéndolo todo.
+export function estiloFondo(color, imagen) {
+    return imagen
+        ? `background-color:${color};background-image:url('${imagen}');background-size:cover;background-position:center top;background-repeat:no-repeat`
+        : `background:${color}`;
+}
+
 // Las piezas por separado: el editor las pinta una a una para poder
 // seleccionarlas; el correo las junta.
 export function piezasCorreo(diseno, opts = {}) {
@@ -295,6 +315,7 @@ export function piezasCorreo(diseno, opts = {}) {
     return {
         ctx,
         fondo: ctx.fondo, lienzo: ctx.lienzo, fuente: ctx.fuente, radio: ctx.radio, ancho: ANCHO,
+        fondoImagen: urlFondo(ctx, ctx.fondoImagen), lienzoImagen: urlFondo(ctx, ctx.lienzoImagen),
         cabecera: d.cabecera === false ? '' : pintarCabecera(ctx),
         bloques: (Array.isArray(d.bloques) ? d.bloques : []).map(b => ({ id: b.id, tipo: b.tipo, html: pintarBloque(b, ctx) })),
         pie: d.pie === false ? (opts.pieExtra ? pintarPie({ ...ctx, marca: { ...ctx.marca, pieTexto: '', web: '', redes: {} } }, opts.pieExtra) : '') : pintarPie(ctx, opts.pieExtra || ''),
@@ -314,10 +335,10 @@ export function htmlCorreo(diseno, opts = {}) {
         + `<meta name="color-scheme" content="light only"><meta name="supported-color-schemes" content="light"><title>${esc(opts.titulo || '')}</title>`
         + `<style>body{margin:0;padding:0}img{-ms-interpolation-mode:bicubic}`
         + `@media (max-width:620px){.aim-col{max-width:100%!important;display:block!important;margin:0 0 14px!important}.aim-lienzo{border-radius:0!important}}</style></head>`
-        + `<body style="margin:0;padding:0;background:${p.fondo}">${resumen}`
-        + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${p.fondo}" style="background:${p.fondo}"><tr><td align="center" style="padding:24px 10px">`
-        + `<table role="presentation" class="aim-lienzo" width="${p.ancho}" cellpadding="0" cellspacing="0" border="0" bgcolor="${p.lienzo}" `
-        + `style="width:100%;max-width:${p.ancho}px;background:${p.lienzo};border-radius:${p.radio}px;border-collapse:separate;overflow:hidden">`
+        + `<body style="margin:0;padding:0;${estiloFondo(p.fondo, p.fondoImagen)}">${resumen}`
+        + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${p.fondo}"${p.fondoImagen ? ` background="${esc(p.fondoImagen)}"` : ''} style="${estiloFondo(p.fondo, p.fondoImagen)}"><tr><td align="center" style="padding:${p.fondoImagen ? '40px 10px' : '24px 10px'}">`
+        + `<table role="presentation" class="aim-lienzo" width="${p.ancho}" cellpadding="0" cellspacing="0" border="0" bgcolor="${p.lienzo}"${p.lienzoImagen ? ` background="${esc(p.lienzoImagen)}"` : ''} `
+        + `style="width:100%;max-width:${p.ancho}px;${estiloFondo(p.lienzo, p.lienzoImagen)};border-radius:${p.radio}px;border-collapse:separate;overflow:hidden">`
         + `<tr><td style="padding:0">${p.cabecera}${p.cabecera ? '<div style="height:10px;line-height:10px;font-size:0">&nbsp;</div>' : '<div style="height:18px;line-height:18px;font-size:0">&nbsp;</div>'}${cuerpo}`
         + `<div style="height:18px;line-height:18px;font-size:0">&nbsp;</div>${p.pie}${pixel}</td></tr></table>`
         + `</td></tr></table></body></html>`;
@@ -382,6 +403,12 @@ export function faltanObligatorios(def, diseno, asunto = '') {
     return faltan;
 }
 
+// Una imagen de fondo aceptable: subida (/ci/…) o https, sin comillas ni paréntesis.
+const imagenSegura = (v) => {
+    const u = String(v ?? '').trim().slice(0, 500);
+    return /^(https:\/\/|\/ci\/)[^\s"'()<>\\]+$/.test(u) ? u : '';
+};
+
 // Deja un diseño recibido de fuera en algo seguro y con forma conocida.
 export function limpiarDiseno(d) {
     if (!d || typeof d !== 'object') return null;
@@ -391,7 +418,7 @@ export function limpiarDiseno(d) {
         if (!b || !TIPOS_BLOQUE[b.tipo]) return null;
         const base = { id: txt(b.id, 40) || idBloque(), tipo: b.tipo, fondo: col(b.fondo), pad: num(b.pad, 0, 60, 10) };
         if (b.siHay) base.siHay = txt(b.siHay, 40).replace(/\W/g, '');
-        if (b.alinear) base.alinear = alinear(b.alinear);
+        if (b.alinear) base.alinear = ['texto', 'caja'].includes(b.tipo) ? alinearTexto(b.alinear) : alinear(b.alinear);
         switch (b.tipo) {
             case 'titulo': return { ...base, texto: txt(b.texto, 300), nivel: Number(b.nivel) === 2 ? 2 : 1, color: col(b.color), ...(b.tamano ? { tamano: num(b.tamano, 14, 48, 26) } : {}) };
             case 'texto': return { ...base, texto: txt(b.texto, 8000), tamano: num(b.tamano, 11, 24, 15), color: col(b.color) };
@@ -411,6 +438,7 @@ export function limpiarDiseno(d) {
     }).filter(Boolean);
     return {
         v: 1, fondo: col(d.fondo), lienzo: col(d.lienzo), fuente: FUENTES[d.fuente] ? d.fuente : '',
+        fondoImagen: d.fondoImagen === '-' ? '-' : imagenSegura(d.fondoImagen), lienzoImagen: imagenSegura(d.lienzoImagen),
         cabecera: d.cabecera !== false, pie: d.pie !== false, bloques,
     };
 }
@@ -423,6 +451,7 @@ export function limpiarMarca(m = {}) {
     return {
         nombre: txt(m.nombre, 80) || d.nombre,
         logo: txt(m.logo, 500),
+        fondoImagen: imagenSegura(m.fondoImagen),
         logoAncho: num(m.logoAncho, 40, 400, d.logoAncho),
         cabecera: m.cabecera === 'banda' ? 'banda' : 'logo',
         colorPrincipal: col(m.colorPrincipal, d.colorPrincipal),

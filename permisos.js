@@ -185,8 +185,56 @@ const AVISO_POR_ID = Object.fromEntries(AVISOS.map(a => [a.id, a]));
 export function recibeAviso(id, permisos, rol) {
     const a = AVISO_POR_ID[id];
     if (!a) return false;
+    // Lo que haya cambiado la dirección en «Rangos y permisos» manda.
+    if (typeof permisos?.avisos?.[id] === 'boolean') return permisos.avisos[id];
     // Un superadmin recibe lo mismo que la dirección.
     return !!a.quien(permisos, rol === 'superadmin' ? 'club_owner' : rol);
+}
+
+// ── Permisos cambiados por la dirección (ticket #333) ──
+// Desde «Rangos y permisos» el dueño del club puede cambiar qué apartados ve
+// cada rango y qué avisos le llegan. Se guardan solo los cambios respecto a lo
+// de fábrica: { rol: { secciones: { id: bool }, avisos: { id: bool } } }.
+export const RANGOS_EDITABLES = ['trabajador', 'instructor', 'secretaria', 'club_owner'];
+// Lo que no se puede cambiar: el fichaje es obligatorio por ley para todo el
+// personal, y el dueño no puede quedarse sin «Rangos y permisos» ni «Ajustes»
+// (nadie podría deshacerlo). «Rangos y permisos» es solo de la dirección.
+export function seccionFija(id, rol) {
+    if (id === 'fichaje') return true;
+    if (id === 'rangos') return true;
+    if (rol === 'club_owner' && id === 'settings') return true;
+    return false;
+}
+export function aplicarAjustesPermisos(p, rol, ajustes) {
+    const a = ajustes?.[rol];
+    if (!a || !RANGOS_EDITABLES.includes(rol)) return p;
+    const secciones = { ...p.secciones };
+    for (const [id, v] of Object.entries(a.secciones || {})) {
+        if (id in secciones && !seccionFija(id, rol)) secciones[id] = !!v;
+    }
+    const avisos = {};
+    for (const [id, v] of Object.entries(a.avisos || {})) if (AVISO_POR_ID[id]) avisos[id] = !!v;
+    return { ...p, secciones, avisos };
+}
+// Deja unos ajustes recibidos solo con lo que se puede cambiar y solo con lo
+// que difiere de lo de fábrica.
+export function limpiarAjustesPermisos(entrada) {
+    const out = {};
+    for (const rol of RANGOS_EDITABLES) {
+        const e = entrada?.[rol];
+        if (!e) continue;
+        const base = permisosDe(rol);
+        const secciones = {}, avisos = {};
+        for (const [id, v] of Object.entries(e.secciones || {})) {
+            if (id in base.secciones && !seccionFija(id, rol) && !!v !== !!base.secciones[id]) secciones[id] = !!v;
+        }
+        const conSecciones = { ...base, secciones: { ...base.secciones, ...secciones } };
+        for (const [id, v] of Object.entries(e.avisos || {})) {
+            if (AVISO_POR_ID[id] && !!v !== recibeAviso(id, conSecciones, rol)) avisos[id] = !!v;
+        }
+        if (Object.keys(secciones).length || Object.keys(avisos).length) out[rol] = { secciones, avisos };
+    }
+    return out;
 }
 
 // Lo que se manda a la pantalla al entrar. El nombre es el del rango VISIBLE,

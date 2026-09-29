@@ -39,10 +39,13 @@ export default function App() {
       .catch(() => setUserChecked(true));
   }, []);
 
-  const go = useCallback((to) => {
-    window.history.pushState(null, '', to);
+  // { replace: true } cambia la dirección sin dejar un paso más en el historial
+  // (p. ej. quitar el número del ticket de /admin/soporte/180 una vez abierto).
+  const go = useCallback((to, { replace = false } = {}) => {
+    if (replace) window.history.replaceState(null, '', to);
+    else window.history.pushState(null, '', to);
     setPath(to);
-    window.scrollTo({ top: 0, behavior: 'instant' });
+    if (!replace) window.scrollTo({ top: 0, behavior: 'instant' });
   }, []);
 
   const handleLoginSuccess = (u) => {

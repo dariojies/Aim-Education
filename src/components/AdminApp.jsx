@@ -6928,7 +6928,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("fichaje") && <Fichaje showToast={showToast} permisos={permisos} />}
           {ver("equipo_it") && <EquipoIT showToast={showToast} />}
           {ver("contactos") && <AdminContactos showToast={showToast} />}
-          {ver("rangos") && <AdminRangosPermisos grupos={gruposMenu} />}
+          {ver("rangos") && <AdminRangosPermisos grupos={gruposMenu} showToast={showToast} />}
           {ver("overview") && <AdminResumen permisos={permisos} refreshTrigger={refreshTrigger} ir={navTo} irRuta={(ruta) => go(ruta)} />}
           {ver("students") && <AdminStudents refreshTrigger={refreshTrigger} showToast={showToast} permisos={permisos}
             onNuevo={() => { setEditingItem({ firstName: '', lastName: '', email: '', isSuperAdmin: false }); setActiveModal('new-student'); }}
