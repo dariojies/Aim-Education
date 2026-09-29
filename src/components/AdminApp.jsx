@@ -28,6 +28,7 @@ import AdminSpeaking from './AdminSpeaking.jsx';
 import AdminFaltas from './AdminFaltas.jsx';
 import AdminComunicaciones from './AdminComunicaciones.jsx';
 import AdminResumen from './AdminResumen.jsx';
+import AdminRangosPermisos from './AdminRangosPermisos.jsx';
 import AdminAlmacen from './AdminAlmacen.jsx';
 import AdminContactos from './AdminContactos.jsx';
 import { IconoActividad } from './IconoActividad.jsx';
@@ -84,6 +85,7 @@ function sectionLabel(id) {
     fichaje: "Fichaje",
     almacen: "Almacén",
     equipo_it: "Equipo IT",
+    rangos: "Rangos y permisos",
   })[id] || "Panel";
 }
 
@@ -4077,13 +4079,16 @@ function BillingTPV({ showToast }) {
                     // de darle a «dejar pendiente». Si sobra, se quita con la papelera.
                     const r = await fetch('/api/admin/billing/cargos/extra', {
                       method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-                      body: JSON.stringify({ clienteId: persona.id, concepto: p.concepto, mes: p.tipo === 'Mensualidad' ? addExtra.mes + '-01' : null, descuentoPct: 0 }),
+                      // Sin descuento: lo pone el servidor desde su matrícula (#330).
+                      body: JSON.stringify({ clienteId: persona.id, concepto: p.concepto, mes: p.tipo === 'Mensualidad' ? addExtra.mes + '-01' : null }),
                     });
                     const d = await r.json().catch(() => ({}));
                     if (!r.ok) { alert(d.error || 'No se pudo añadir.'); return; }
                     setAddExtra(null);
                     await traerCesta(pagador.id, false);
-                    showToast?.(`«${p.descripcion}» añadido. Queda pendiente hasta que se cobre.`);
+                    showToast?.(d.deMatricula
+                      ? `«${p.descripcion}» añadido con su descuento de matrícula (${String(d.descuentoPct).replace('.', ',')} %). Queda pendiente hasta que se cobre.`
+                      : `«${p.descripcion}» añadido. Queda pendiente hasta que se cobre.`);
                   }}>
                   <select value={addExtra.clienteId} onChange={e => setAddExtra(a => ({ ...a, clienteId: e.target.value }))} required style={{ fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
                     <option value="">¿Para quién?...</option>
@@ -6730,7 +6735,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
     if (primera) setView(primera);
   }, [view, permisos]);
 
-  const sections = [
+  const gruposMenu = [
     {
       // Agrupado por aquello de lo que trata cada sitio, no por quién lo usa:
       // once entradas seguidas bajo un solo título no se leen, hay que ir
@@ -6788,10 +6793,12 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "almacen", label: "Almacén", icon: <I.Package /> },
         { id: "equipo_it", label: "Equipo IT", icon: <I.Monitor /> },
         { id: "objetos", label: "Objetos perdidos", icon: <I.Search /> },
+        { id: "rangos", label: "Rangos y permisos", icon: <I.Shield /> },
         { id: "settings", label: "Ajustes", icon: <I.Settings /> },
       ]
     },
-  ]
+  ];
+  const sections = gruposMenu
     // Cada rol ve solo sus secciones. Un grupo que se queda sin ninguna no
     // pinta su título suelto en el menú.
     .map(g => ({ ...g, items: g.items.filter(i => permisos.secciones[i.id]) }))
@@ -6921,6 +6928,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("fichaje") && <Fichaje showToast={showToast} permisos={permisos} />}
           {ver("equipo_it") && <EquipoIT showToast={showToast} />}
           {ver("contactos") && <AdminContactos showToast={showToast} />}
+          {ver("rangos") && <AdminRangosPermisos grupos={gruposMenu} />}
           {ver("overview") && <AdminResumen permisos={permisos} refreshTrigger={refreshTrigger} ir={navTo} irRuta={(ruta) => go(ruta)} />}
           {ver("students") && <AdminStudents refreshTrigger={refreshTrigger} showToast={showToast} permisos={permisos}
             onNuevo={() => { setEditingItem({ firstName: '', lastName: '', email: '', isSuperAdmin: false }); setActiveModal('new-student'); }}

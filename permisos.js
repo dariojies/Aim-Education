@@ -114,6 +114,8 @@ export function permisosDe(rol) {
             // la tocan el propio equipo y los superadmin (editarEquipoIT).
             equipo_it: mandaAlMenos(rol, 'secretaria'),
             settings: jefe,            // los ajustes del club son cosa del club
+            // Qué ve y qué avisos recibe cada rango (ticket #333).
+            rangos: jefe,
             support: true,
         },
 
@@ -144,6 +146,47 @@ export function permisosDe(rol) {
         // Dar o quitar rangos del club (dueño del club y por encima).
         cambiarRangos: jefe,
     };
+}
+
+// ── Avisos de la campanita (ticket #333) ──
+// Quién recibe cada aviso. El servidor pregunta aquí antes de mandar cada uno
+// (/api/admin/notificaciones) y la página «Rangos y permisos» lo enseña: así lo
+// que se ve en esa página es siempre lo que pasa de verdad.
+//   quien(permisos, rol) → ¿lo recibe? · nota(rol) → matiz para ese rango.
+const todos = () => true;
+const secretariaOMas = (p, rol) => mandaAlMenos(rol, 'secretaria');
+export const AVISOS = [
+    { id: 'tickets_sin_asignar', grupo: 'Soporte', texto: 'Tickets sin asignar', quien: (p) => p.soporteCompleto },
+    { id: 'tickets_mios', grupo: 'Soporte', texto: 'Tickets asignados a ti', quien: todos },
+    { id: 'tickets_mensajes', grupo: 'Soporte', texto: 'Mensajes nuevos en un ticket', quien: todos,
+      nota: (p) => (p.soporteCompleto ? 'de todos los tickets' : 'solo de los suyos') },
+    { id: 'cobros_pendientes', grupo: 'Dinero', texto: 'Cargos pendientes de cobrar', quien: (p) => p.secciones.billing },
+    { id: 'caja_sin_cerrar', grupo: 'Dinero', texto: 'Días con cobros y sin arqueo de caja', quien: (p) => p.secciones.billing },
+    { id: 'datos_fiscales', grupo: 'Dinero', texto: 'Cambios de datos fiscales por autorizar', quien: (p) => p.secciones.billing },
+    { id: 'campamento_sin_ficha', grupo: 'Clases', texto: 'Niños del campamento sin ficha', quien: (p) => p.campCompleto },
+    { id: 'eventos_propuestos', grupo: 'Clases', texto: 'Eventos propuestos sin decidir', quien: (p) => p.editarEventos },
+    { id: 'eventos_respondidos', grupo: 'Clases', texto: 'Respuesta a un evento que ha propuesto', quien: (p) => !p.editarEventos },
+    { id: 'lista_espera', grupo: 'Clases', texto: 'Clases con plaza libre y gente esperando', quien: (p, rol) => rol !== 'trabajador',
+      nota: (p) => (p.soloSusGrupos ? 'solo de sus clases' : null) },
+    { id: 'faltas', grupo: 'Clases', texto: 'Alumnos con 4 o más faltas seguidas', quien: (p) => p.secciones.faltas },
+    { id: 'speaking_por_llamar', grupo: 'Speaking', texto: 'Alumnos de Speaking por avisar a los padres', quien: todos },
+    { id: 'speaking_rechazados', grupo: 'Speaking', texto: 'Familias que han dicho que no al Speaking', quien: todos },
+    { id: 'fotos', grupo: 'Familias', texto: 'Solicitudes del permiso de fotos', quien: (p) => p.editarAlumnos },
+    { id: 'contactos', grupo: 'Familias', texto: 'Consultas de la web sin atender', quien: (p) => p.secciones.contactos },
+    { id: 'almacen', grupo: 'Club', texto: 'Artículos del almacén por debajo del mínimo', quien: (p) => p.secciones.almacen },
+    { id: 'resumen_horas', grupo: 'Fichaje', texto: 'Su resumen de horas del mes, por confirmar', quien: todos },
+    { id: 'correcciones_por_aprobar', grupo: 'Fichaje', texto: 'Correcciones de su fichaje que le proponen', quien: todos },
+    { id: 'correcciones_por_validar', grupo: 'Fichaje', texto: 'Correcciones de fichaje que piden los trabajadores', quien: secretariaOMas },
+    { id: 'correcciones_respondidas', grupo: 'Fichaje', texto: 'Respuesta a una corrección que ha pedido', quien: todos },
+    { id: 'ausencias_por_aprobar', grupo: 'Fichaje', texto: 'Vacaciones y ausencias por aprobar', quien: secretariaOMas },
+    { id: 'ausencias_respondidas', grupo: 'Fichaje', texto: 'Respuesta a sus vacaciones o ausencias', quien: todos },
+];
+const AVISO_POR_ID = Object.fromEntries(AVISOS.map(a => [a.id, a]));
+export function recibeAviso(id, permisos, rol) {
+    const a = AVISO_POR_ID[id];
+    if (!a) return false;
+    // Un superadmin recibe lo mismo que la dirección.
+    return !!a.quien(permisos, rol === 'superadmin' ? 'club_owner' : rol);
 }
 
 // Lo que se manda a la pantalla al entrar. El nombre es el del rango VISIBLE,

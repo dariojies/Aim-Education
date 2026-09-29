@@ -24,7 +24,7 @@ import compression from 'compression';
 import { filasLibroRegistro, generarLibroRegistro, prorrataDe, TIPOS_OPERACION_DEFECTO } from './libro-registro.js';
 import { PassThrough } from 'stream';
 import { escalaDe, escalasDelClub, resultadoDe, baremoDe, matriculaExamenDe } from './rangos.js';
-import { rolEfectivo, rolVisible, permisosDe, mandaAlMenos, ROLES_STAFF, NOMBRE_ROL, NOMBRE_RANGO, RANGOS_PROPIOS, RANGOS_ASIGNABLES } from './permisos.js';
+import { rolEfectivo, rolVisible, permisosDe, mandaAlMenos, ROLES_STAFF, NOMBRE_ROL, NOMBRE_RANGO, RANGOS_PROPIOS, RANGOS_ASIGNABLES, recibeAviso } from './permisos.js';
 import { htmlCorreo, textoCorreo, disenoDesdeTexto, limpiarDiseno, limpiarMarca, faltanObligatorios, ejemplosDe, CORREOS_SISTEMA, MARCA_POR_DEFECTO } from './correo-diseno.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -7353,17 +7353,28 @@ app.post('/api/admin/billing/cargos/extra', authenticateSession, requireAdmin, a
         const pr = await pool.query(`SELECT descripcion, tipo, precio, iva_pct FROM aim_precios WHERE concepto = $1 AND activo = true`, [concepto]);
         if (!pr.rowCount) return res.status(400).json({ error: 'Concepto no válido.' });
         const p = pr.rows[0];
-        const d = Math.min(100, Math.max(0, Number(descuentoPct) || 0));
         const periodico = p.tipo === 'Mensualidad';
         const mesPedido = /^\d{4}-\d{2}(-01)?$/.test(String(mes || '')) ? String(mes).slice(0, 7) + '-01' : null;
         if (periodico && !mesPedido) return res.status(400).json({ error: `Indica a qué mes corresponde "${p.descripcion}".` });
         const mesCargo = mesPedido || (hoyMadrid().slice(0, 7) + '-01');
+        // Sin descuento indicado, el de su matrícula para ese concepto y ese mes
+        // (ticket #330): cobrar a mano el mes siguiente no puede saltárselo.
+        let d = Math.min(100, Math.max(0, Number(descuentoPct) || 0));
+        let deMatricula = false;
+        if (descuentoPct === undefined || descuentoPct === null || descuentoPct === '') {
+            const dm = await pool.query(
+                `SELECT MAX(m.descuento_pct)::numeric AS d FROM aim_conceptos_temporada ct
+                 ${SQL_JOIN_FICHA}
+                 WHERE ct.concepto = $1 AND m.user_id = $3 AND ${SQL_FILTRO_VIGENTE}`, [concepto, mesCargo, clienteId]);
+            const v = Number(dm.rows[0]?.d || 0);
+            if (v > 0) { d = Math.min(100, v); deMatricula = true; }
+        }
         const act = await actividadDeConcepto(concepto);
         const ins = await pool.query(
             `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado, origen, actividad)
              VALUES ($1,$2,$3::date,$4,$5,$6,$7,$8,'pendiente','manual',$9) RETURNING id`,
             [clienteId, concepto, mesCargo, p.descripcion, p.tipo, p.precio, p.iva_pct, d, act]);
-        res.status(201).json({ success: true, id: ins.rows[0].id });
+        res.status(201).json({ success: true, id: ins.rows[0].id, descuentoPct: d, deMatricula });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -9215,10 +9226,44 @@ async function movimientosDelDia(fecha) {
     return porMedio;
 }
 
+// Caja de efectivo (ticket #332): la caja abre siempre con un fondo fijo (200 €,
+// se cambia en el arqueo). Al cerrar, lo que pasa del fondo se lleva al banco en
+// billetes y los picos (monedas y lo que no llega a un billete) van a una caja de
+// cambio aparte, que va acumulando; de ella se saca de vez en cuando para el
+// banco. Todo se guarda dentro del cierre de cada día (aim_arqueos.contado.caja).
+const FONDO_CAJA_DEFECTO = 200;
+async function fondoFijoCaja() {
+    const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'caja_fondo'`);
+    const v = Number(r.rows[0]?.valor?.fondo);
+    return Number.isFinite(v) && v >= 0 ? v : FONDO_CAJA_DEFECTO;
+}
+// Lo que dejó el último cierre anterior a `fecha`: con cuánto abre la caja y cuánto
+// había en la caja de cambio. Los cierres de antes de #332 no tienen caja de cambio.
+async function cajaAnterior(fecha) {
+    const r = await pool.query(
+        `SELECT fecha, contado->'caja' AS caja FROM aim_arqueos
+         WHERE fecha < $1::date AND contado ? 'caja' ORDER BY fecha DESC LIMIT 1`, [fecha]);
+    const a = r.rows[0];
+    if (!a) return null;
+    return { fecha: a.fecha, queda: Number(a.caja?.queda || 0), cambio: Number(a.caja?.cambioQueda || 0) };
+}
+
+app.put('/api/admin/billing/caja-fondo', authenticateSession, requireAdmin, async (req, res) => {
+    const fondo = r2Server(Number(req.body?.fondo));
+    if (!Number.isFinite(fondo) || fondo < 0 || fondo > 5000) return res.status(400).json({ error: 'Ese fondo no vale.' });
+    try {
+        await pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('caja_fondo', $1::jsonb, NOW(), $2)
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+            [JSON.stringify({ fondo }), req.userSession.userId]);
+        res.json({ success: true, fondo });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/admin/billing/arqueo', authenticateSession, requireAdmin, async (req, res) => {
     const fecha = /^\d{4}-\d{2}-\d{2}$/.test(req.query.fecha || '') ? req.query.fecha : hoyMadrid();
     try {
-        const [esperado, guardado, detalle, anterior] = await Promise.all([
+        const [esperado, guardado, detalle, ant, fondoFijo] = await Promise.all([
             movimientosDelDia(fecha),
             pool.query('SELECT * FROM aim_arqueos WHERE fecha = $1::date', [fecha]),
             pool.query(
@@ -9227,14 +9272,12 @@ app.get('/api/admin/billing/arqueo', authenticateSession, requireAdmin, async (r
                  FROM aim_recibos r LEFT JOIN users u ON u.user_id = r.pagador_id
                  WHERE r.fecha = $1::date AND r.estado <> 'anulado'
                  ORDER BY r.cobrado_at NULLS LAST, r.id`, [fecha]),
-            // Caja de efectivo (#323): con lo que quedó al cerrar el último día
-            // anterior se abre este.
-            pool.query(
-                `SELECT fecha, contado->'caja' AS caja FROM aim_arqueos
-                 WHERE fecha < $1::date AND contado ? 'caja' ORDER BY fecha DESC LIMIT 1`, [fecha]),
+            // Caja de efectivo (#323/#332): con lo que quedó al cerrar el último día
+            // anterior se abre este, y de ahí sale lo que hay en la caja de cambio.
+            cajaAnterior(fecha),
+            fondoFijoCaja(),
         ]);
         const arq = guardado.rows[0] || null;
-        const ant = anterior.rows[0] || null;
         res.set('Cache-Control', 'no-store');
         res.json({
             fecha, medios: MEDIOS_PAGO, esperado,
@@ -9244,8 +9287,10 @@ app.get('/api/admin/billing/arqueo', authenticateSession, requireAdmin, async (r
             } : null,
             caja: {
                 guardada: arq?.contado?.caja || null,
-                fondoAnterior: ant ? Number(ant.caja?.queda || 0) : null,
+                fondoFijo,
+                fondoAnterior: ant ? ant.queda : null,
                 fondoAnteriorFecha: ant ? ant.fecha : null,
+                cambioAntes: ant ? ant.cambio : 0,
             },
             detalle: detalle.rows.map(d => ({
                 numero: numeroVisible(d), serie: d.serie, tipo: d.tipo, importe: Number(d.importe),
@@ -9277,13 +9322,25 @@ app.post('/api/admin/billing/arqueo', authenticateSession, requireAdmin, async (
         // Caja de efectivo (#323): con qué se abrió, lo que entró en efectivo, lo
         // que se lleva al banco y lo que se queda para cambio (con eso se abre el
         // día siguiente). Va dentro del recuento, junto a los medios de pago.
+        // #332: la caja se queda con su fondo, al banco van billetes y los picos
+        // pasan a la caja de cambio; de ella se puede sacar para el banco.
         if (caja) {
             const fondo = r2Server(Number(caja.fondo) || 0);
             const banco = r2Server(Number(caja.banco) || 0);
             const total = r2Server(fondo + cont.efectivo);
-            if (fondo < 0 || banco < 0) return res.status(400).json({ error: 'Los importes de la caja no pueden ser negativos.' });
-            if (banco > total + 0.005) return res.status(400).json({ error: `No se puede llevar al banco más de lo que hay en caja (${total.toFixed(2)} €).` });
-            cont.caja = { fondo, efectivoDia: cont.efectivo, total, banco, queda: r2Server(total - banco) };
+            const queda = caja.queda === undefined || caja.queda === null ? r2Server(total - banco) : r2Server(Number(caja.queda) || 0);
+            const sacaCambio = r2Server(Number(caja.sacaCambio) || 0);
+            if (fondo < 0 || banco < 0 || queda < 0 || sacaCambio < 0) return res.status(400).json({ error: 'Los importes de la caja no pueden ser negativos.' });
+            if (banco + queda > total + 0.005) return res.status(400).json({ error: `Entre lo que se queda en caja y lo que va al banco hay más de lo que hay (${total.toFixed(2)} €).` });
+            const ant = await cajaAnterior(fecha);
+            const cambioAntes = ant ? ant.cambio : 0;
+            const aCambio = r2Server(total - queda - banco);
+            if (sacaCambio > cambioAntes + aCambio + 0.005) return res.status(400).json({ error: `En la caja de cambio solo hay ${(cambioAntes + aCambio).toFixed(2)} €.` });
+            cont.caja = {
+                fondo, efectivoDia: cont.efectivo, total, queda, banco, aCambio,
+                cambioAntes, sacaCambio, cambioQueda: r2Server(cambioAntes + aCambio - sacaCambio),
+                bancoTotal: r2Server(banco + sacaCambio),
+            };
         }
         await pool.query(
             `INSERT INTO aim_arqueos (fecha, esperado, contado, comentario, cerrado_por)
@@ -13801,6 +13858,9 @@ app.get('/api/admin/resumen', authenticateSession, requireAdmin, async (req, res
 app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (req, res) => {
     const yo = req.userSession.userId;
     const permisosYo = permisos(req);
+    // Quién recibe cada aviso está en permisos.js (AVISOS): lo mismo que enseña
+    // la página «Rangos y permisos» (#333).
+    const recibe = (id) => recibeAviso(id, permisosYo, req.userSession?.rol);
     try {
         const avisos = [];
         // Que haya cobros pendientes o cajas sin cuadrar no es trabajo de un
@@ -13863,13 +13923,14 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
 
         const t = tickets.rows[0];
         // Los tickets sin asignar y los del club son cosa de quien los lleva.
-        if (!permisosYo.soporteCompleto) { t.sin_asignar = 0; }
+        if (!recibe('tickets_sin_asignar')) { t.sin_asignar = 0; }
         if (t.sin_asignar) avisos.push({ tipo: 'tickets', texto: `${t.sin_asignar} ticket${t.sin_asignar !== 1 ? 's' : ''} sin asignar`, detalle: t.urgentes ? `${t.urgentes} de prioridad alta` : null, destino: '/admin/soporte', n: t.sin_asignar });
-        if (t.mios) avisos.push({ tipo: 'tickets', texto: `${t.mios} ticket${t.mios !== 1 ? 's' : ''} asignado${t.mios !== 1 ? 's' : ''} a ti`, destino: '/admin/soporte', n: t.mios });
+        if (t.mios && recibe('tickets_mios')) avisos.push({ tipo: 'tickets', texto: `${t.mios} ticket${t.mios !== 1 ? 's' : ''} asignado${t.mios !== 1 ? 's' : ''} a ti`, destino: '/admin/soporte', n: t.mios });
         // Un aviso por ticket, y cada uno lleva directo a ese ticket. Si hay
         // muchos se enseñan los cinco últimos y el resto se resume, para que la
         // campanita no se convierta en una lista interminable.
         const TOPE_TICKETS = 5;
+        if (!recibe('tickets_mensajes')) mensajes.rows = [];
         for (const t of mensajes.rows.slice(0, TOPE_TICKETS)) {
             avisos.push({
                 tipo: 'tickets',
@@ -13893,18 +13954,18 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         }
 
         const c = cobros.rows[0];
-        if (c.n && permisosYo.secciones.billing) avisos.push({ tipo: 'cobros', texto: `${c.n} cargo${c.n !== 1 ? 's' : ''} pendiente${c.n !== 1 ? 's' : ''} de cobrar`, detalle: `${r2Server(Number(c.total))} € de ${c.clientes} cliente${c.clientes !== 1 ? 's' : ''}`, destino: '/admin/facturacion', n: c.n });
+        if (c.n && recibe('cobros_pendientes')) avisos.push({ tipo: 'cobros', texto: `${c.n} cargo${c.n !== 1 ? 's' : ''} pendiente${c.n !== 1 ? 's' : ''} de cobrar`, detalle: `${r2Server(Number(c.total))} € de ${c.clientes} cliente${c.clientes !== 1 ? 's' : ''}`, destino: '/admin/facturacion', n: c.n });
 
         const cj = cajas.rows[0];
-        if (cj.n && permisosYo.secciones.billing) avisos.push({ tipo: 'caja', texto: `${cj.n} día${cj.n !== 1 ? 's' : ''} con cobros y sin arqueo`, detalle: cj.desde ? `el más antiguo, del ${cj.desde}` : null, destino: '/admin/facturacion', n: cj.n });
+        if (cj.n && recibe('caja_sin_cerrar')) avisos.push({ tipo: 'caja', texto: `${cj.n} día${cj.n !== 1 ? 's' : ''} con cobros y sin arqueo`, detalle: cj.desde ? `el más antiguo, del ${cj.desde}` : null, destino: '/admin/facturacion', n: cj.n });
 
         const cp = camp.rows[0];
         // Sin ficha no se les puede cobrar: es un aviso de facturación.
-        if (cp.sin_ficha && permisosYo.campCompleto) avisos.push({ tipo: 'campamento', texto: `${cp.sin_ficha} niño${cp.sin_ficha !== 1 ? 's' : ''} del campamento sin ficha`, detalle: 'sin ficha no se les puede cobrar', destino: '/admin/campamento', n: cp.sin_ficha });
+        if (cp.sin_ficha && recibe('campamento_sin_ficha')) avisos.push({ tipo: 'campamento', texto: `${cp.sin_ficha} niño${cp.sin_ficha !== 1 ? 's' : ''} del campamento sin ficha`, detalle: 'sin ficha no se les puede cobrar', destino: '/admin/campamento', n: cp.sin_ficha });
 
         // Eventos que ha propuesto alguien y están esperando respuesta. A quien
         // los pidió también se le avisa cuando ya se los han contestado.
-        if (permisosYo.editarEventos) {
+        if (recibe('eventos_propuestos')) {
             const sol = await pool.query(
                 `SELECT COUNT(*)::int n FROM aim_eventos_solicitudes WHERE estado = 'pendiente'`);
             if (sol.rows[0].n) avisos.push({
@@ -13912,7 +13973,7 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                 texto: `${sol.rows[0].n} evento${sol.rows[0].n !== 1 ? 's' : ''} propuesto${sol.rows[0].n !== 1 ? 's' : ''} sin decidir`,
                 detalle: 'los ha pedido un instructor', n: sol.rows[0].n,
             });
-        } else {
+        } else if (recibe('eventos_respondidos')) {
             const mias = await pool.query(
                 `SELECT titulo, estado FROM aim_eventos_solicitudes
                  WHERE solicitante_id = $1 AND estado <> 'pendiente' AND resuelto_at > NOW() - INTERVAL '7 days'
@@ -13942,10 +14003,10 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                 `SELECT COUNT(*)::int n FROM aim_fichaje_resumenes r
                  WHERE r.user_id = $1 AND r.confirmado_at IS NULL
                    AND r.version = (SELECT MAX(v.version) FROM aim_fichaje_resumenes v WHERE v.user_id = r.user_id AND v.mes = r.mes)`, [yo]);
-            if (rs.rows[0].n) avisos.push({ tipo: 'fichaje', texto: `${rs.rows[0].n === 1 ? 'Un resumen' : `${rs.rows[0].n} resúmenes`} de horas por confirmar`, detalle: 'confirma que lo has recibido', destino: '/admin/fichaje', n: rs.rows[0].n });
-            if (x.por_aprobar) avisos.push({ tipo: 'fichaje', texto: `${x.por_aprobar} corrección${x.por_aprobar !== 1 ? 'es' : ''} de tu fichaje por aprobar`, detalle: 'no se aplican hasta que las apruebes', destino: '/admin/fichaje', n: x.por_aprobar });
-            if (x.por_validar && mandaAlMenos(req.userSession?.rol, 'secretaria')) avisos.push({ tipo: 'fichaje', texto: `${x.por_validar} solicitud${x.por_validar !== 1 ? 'es' : ''} de corrección de fichaje por validar`, detalle: 'las han pedido los trabajadores', destino: '/admin/fichaje', n: x.por_validar });
-            if (x.resueltas) avisos.push({ tipo: 'fichaje', texto: `${x.resueltas} solicitud${x.resueltas !== 1 ? 'es' : ''} de corrección de fichaje respondida${x.resueltas !== 1 ? 's' : ''}`, detalle: 'mira el resultado en Fichaje', destino: '/admin/fichaje', n: x.resueltas });
+            if (rs.rows[0].n && recibe('resumen_horas')) avisos.push({ tipo: 'fichaje', texto: `${rs.rows[0].n === 1 ? 'Un resumen' : `${rs.rows[0].n} resúmenes`} de horas por confirmar`, detalle: 'confirma que lo has recibido', destino: '/admin/fichaje', n: rs.rows[0].n });
+            if (x.por_aprobar && recibe('correcciones_por_aprobar')) avisos.push({ tipo: 'fichaje', texto: `${x.por_aprobar} corrección${x.por_aprobar !== 1 ? 'es' : ''} de tu fichaje por aprobar`, detalle: 'no se aplican hasta que las apruebes', destino: '/admin/fichaje', n: x.por_aprobar });
+            if (x.por_validar && recibe('correcciones_por_validar')) avisos.push({ tipo: 'fichaje', texto: `${x.por_validar} solicitud${x.por_validar !== 1 ? 'es' : ''} de corrección de fichaje por validar`, detalle: 'las han pedido los trabajadores', destino: '/admin/fichaje', n: x.por_validar });
+            if (x.resueltas && recibe('correcciones_respondidas')) avisos.push({ tipo: 'fichaje', texto: `${x.resueltas} solicitud${x.resueltas !== 1 ? 'es' : ''} de corrección de fichaje respondida${x.resueltas !== 1 ? 's' : ''}`, detalle: 'mira el resultado en Fichaje', destino: '/admin/fichaje', n: x.resueltas });
             // Vacaciones y ausencias (ticket #233): por aprobar (secretaría/dirección,
             // nunca las propias) y las respondidas al que las pidió.
             const au = await pool.query(
@@ -13954,19 +14015,19 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                                          AND user_id = $1 AND resuelto_at > NOW() - INTERVAL '3 days')::int AS resueltas
                  FROM aim_ausencias`, [yo]);
             const y = au.rows[0];
-            if (y.por_aprobar && mandaAlMenos(req.userSession?.rol, 'secretaria')) avisos.push({ tipo: 'fichaje', texto: `${y.por_aprobar} petición${y.por_aprobar !== 1 ? 'es' : ''} de vacaciones o ausencia por aprobar`, detalle: 'las han pedido los trabajadores', destino: '/admin/fichaje', n: y.por_aprobar });
-            if (y.resueltas) avisos.push({ tipo: 'fichaje', texto: `${y.resueltas === 1 ? 'Tu petición' : `${y.resueltas} peticiones`} de vacaciones o ausencia ${y.resueltas === 1 ? 'tiene' : 'tienen'} respuesta`, detalle: 'mírala en Fichaje', destino: '/admin/fichaje', n: y.resueltas });
+            if (y.por_aprobar && recibe('ausencias_por_aprobar')) avisos.push({ tipo: 'fichaje', texto: `${y.por_aprobar} petición${y.por_aprobar !== 1 ? 'es' : ''} de vacaciones o ausencia por aprobar`, detalle: 'las han pedido los trabajadores', destino: '/admin/fichaje', n: y.por_aprobar });
+            if (y.resueltas && recibe('ausencias_respondidas')) avisos.push({ tipo: 'fichaje', texto: `${y.resueltas === 1 ? 'Tu petición' : `${y.resueltas} peticiones`} de vacaciones o ausencia ${y.resueltas === 1 ? 'tiene' : 'tienen'} respuesta`, detalle: 'mírala en Fichaje', destino: '/admin/fichaje', n: y.resueltas });
         }
 
         const esp = espera.rows[0];
-        if (esp.n) avisos.push({ tipo: 'clases', texto: `${esp.n} clase${esp.n !== 1 ? 's' : ''} con plaza libre y gente esperando`, detalle: 'se puede dar la plaza al primero de la lista', destino: '/admin/clases', n: esp.n });
+        if (esp.n && recibe('lista_espera')) avisos.push({ tipo: 'clases', texto: `${esp.n} clase${esp.n !== 1 ? 's' : ''} con plaza libre y gente esperando`, detalle: 'se puede dar la plaza al primero de la lista', destino: '/admin/clases', n: esp.n });
 
         // Aviso privado: lo que se asigna a la cuenta de soporte lo acaba
         // atendiendo el desarrollo, así que solo a esa persona se le avisa. Se
         // decide aquí, en el servidor, y a nadie más se le devuelve.
         // Cambios de datos fiscales esperando autorización: si no se ven, la
         // familia se queda esperando sin saberlo.
-        const fis = permisosYo.secciones.billing
+        const fis = recibe('datos_fiscales')
             ? await pool.query(`SELECT COUNT(*)::int n FROM aim_datos_fiscales_cambios WHERE estado = 'pendiente'`)
             : { rows: [{ n: 0 }] };
         if (fis.rows[0].n > 0) {
@@ -14009,10 +14070,10 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                     COUNT(*) FILTER (WHERE confirmado = true)::int AS confirmados
              FROM aim_speaking WHERE fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date`);
         const sp = spk.rows[0];
-        if (sp.por_llamar) avisos.push({ tipo: 'speaking', texto: `${sp.por_llamar} alumno${sp.por_llamar !== 1 ? 's' : ''} de Speaking por avisar a los padres`, detalle: 'llamar y confirmar asistencia', destino: '/admin/speaking', n: sp.por_llamar });
+        if (sp.por_llamar && recibe('speaking_por_llamar')) avisos.push({ tipo: 'speaking', texto: `${sp.por_llamar} alumno${sp.por_llamar !== 1 ? 's' : ''} de Speaking por avisar a los padres`, detalle: 'llamar y confirmar asistencia', destino: '/admin/speaking', n: sp.por_llamar });
         // Almacén (#322): artículos en o por debajo de su mínimo de aviso. La clave
         // lleva cuáles son, así que si baja otro distinto vuelve a encenderse.
-        if (permisosYo.secciones.almacen) {
+        if (recibe('almacen')) {
             const bajos = (await pool.query(
                 `SELECT id, nombre, stock, stock_minimo FROM aim_almacen
                  WHERE stock_minimo > 0 AND stock <= stock_minimo ORDER BY stock - stock_minimo, nombre`)).rows;
@@ -14028,7 +14089,7 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         // Faltas seguidas: a partir de 4, hay que llamar a la familia. Un aviso por
         // alumno y clase; vuelve a encenderse si sigue faltando (sube el número) o
         // si empieza otra racha (la clave lleva el día en que empezó).
-        if (permisosYo.secciones.faltas) {
+        if (recibe('faltas')) {
             const faltas = await rachasDeFaltas({ minimo: FALTAS_PARA_LLAMAR });
             for (const f of faltas.slice(0, 10)) {
                 avisos.push({
@@ -14040,13 +14101,26 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
             }
             if (faltas.length > 10) avisos.push({ tipo: 'faltas', destino: '/admin/faltas', n: faltas.length, clave: 'faltas:resto', texto: `Y ${faltas.length - 10} alumno${faltas.length - 10 !== 1 ? 's' : ''} más con 4 o más faltas seguidas` });
         }
+        // Consultas del formulario de contacto (y altas web) sin atender (#329).
+        // La clave lleva la última: si entra otra, vuelve a encenderse.
+        if (recibe('contactos')) {
+            const ct = (await pool.query(
+                `SELECT COUNT(*)::int n, MAX(id) AS ultima,
+                        (SELECT nombre FROM aim_contactos WHERE estado = 'nuevo' ORDER BY id DESC LIMIT 1) AS quien
+                 FROM aim_contactos WHERE estado = 'nuevo'`)).rows[0];
+            if (ct.n) avisos.push({
+                tipo: 'contactos', destino: '/admin/consultas', n: ct.n, clave: `contactos:${ct.ultima}`,
+                texto: `${ct.n} consulta${ct.n !== 1 ? 's' : ''} de la web sin atender`,
+                detalle: ct.quien ? `la última, de ${ct.quien}` : null,
+            });
+        }
         // Solicitudes de las familias para dar o quitar el permiso de fotos (#170).
-        if (permisosYo.editarAlumnos) {
+        if (recibe('fotos')) {
             const sf = (await pool.query(
                 `SELECT COUNT(*)::int n FROM (${SQL_SOLICITUD_FOTOS}) s JOIN users u ON u.user_id = s.user_id WHERE u.club_id = $1`, [AIM_CLUB_ID])).rows[0].n;
             if (sf) avisos.push({ tipo: 'permisos', texto: `${sf} solicitud${sf !== 1 ? 'es' : ''} de permiso de fotos`, detalle: 'confirmar o descartar en Gestión de alumnos', destino: '/admin/alumnos', n: sf });
         }
-        if (sp.rechazados) avisos.push({ tipo: 'speaking', texto: `${sp.rechazados} familia${sp.rechazados !== 1 ? 's' : ''} han dicho que NO al Speaking`, detalle: 'revisar la asistencia', destino: '/admin/speaking', n: sp.rechazados });
+        if (sp.rechazados && recibe('speaking_rechazados')) avisos.push({ tipo: 'speaking', texto: `${sp.rechazados} familia${sp.rechazados !== 1 ? 's' : ''} han dicho que NO al Speaking`, detalle: 'revisar la asistencia', destino: '/admin/speaking', n: sp.rechazados });
 
         res.set('Cache-Control', 'no-store');
         await conVistos(yo, avisos);

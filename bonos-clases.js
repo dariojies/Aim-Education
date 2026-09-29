@@ -37,7 +37,16 @@ export const sqlMatriculadoEnFecha = ({ g = '$1', f = '$2', sid }) => `
       ORDER BY h.created_at ASC, h.id ASC LIMIT 1),
     CASE WHEN EXISTS (SELECT 1 FROM tul_group_students gs WHERE gs.group_id = ${g} AND gs.student_id = ${sid})
          THEN 'enrolled' ELSE 'unenrolled' END
-  ) = 'enrolled'`;
+  ) = 'enrolled'
+  -- Quitado de la plantilla sin que se apuntara la baja (ticket #331: desde
+  -- otra app, o una cuenta repetida): el histórico dice «apuntado» pero ya no
+  -- está. No se sabe desde cuándo, así que deja de contar como de la clase (si
+  -- tiene marca ese día, sigue saliendo por ella).
+  AND NOT (
+    NOT EXISTS (SELECT 1 FROM tul_group_students gs2_ WHERE gs2_.group_id = ${g} AND gs2_.student_id = ${sid})
+    AND (SELECT h2_.action FROM tul_enrollment_history h2_ WHERE h2_.group_id = ${g} AND h2_.student_id = ${sid}
+         ORDER BY h2_.created_at DESC, h2_.id DESC LIMIT 1) = 'enrolled'
+  )`;
 
 // De baja ese mes, pero con la mensualidad de ese mes de esa clase cobrada: tiene
 // la clase hasta fin de mes.
