@@ -9,8 +9,8 @@ import { I } from './Icons.jsx';
 // ─────────────────────────────────────────────────────────────────────────────
 
 const VISTAS = {
-  general: [['entrada', 'Entrada'], ['sin_asignar', 'Sin asignar'], ['mios', 'Asignados a mí'], ['hechos', 'Hechos'], ['enviados', 'Enviados']],
-  mio: [['entrada', 'Entrada'], ['enviados', 'Enviados']],
+  general: [['entrada', 'Entrada'], ['sin_asignar', 'Sin asignar'], ['mios', 'Asignados a mí'], ['hechos', 'Hechos'], ['enviados', 'Enviados'], ['programados', 'Programados']],
+  mio: [['entrada', 'Entrada'], ['enviados', 'Enviados'], ['programados', 'Programados']],
 };
 const api = async (url, opts = {}) => {
   const r = await fetch(url, { credentials: 'include', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, ...opts, body: opts.body ? JSON.stringify(opts.body) : undefined });
@@ -47,14 +47,17 @@ function Cuerpo({ html, texto, imagenes }) {
 function Redactar({ inicial, buzon, onCerrar, onEnviado, showToast }) {
   const [c, setC] = useState(inicial);
   const [enviando, setEnviando] = useState(false);
+  // Programar (#338): sale solo a la hora elegida.
+  const [programar, setProgramar] = useState(false);
+  const [cuando, setCuando] = useState(() => { const d = new Date(Date.now() + 3600e3); d.setMinutes(0, 0, 0); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); });
   const input = useRef(null);
   const set = (k, v) => setC(x => ({ ...x, [k]: v }));
   const leer = (f) => new Promise((ok, mal) => { const r = new FileReader(); r.onload = () => ok({ nombre: f.name, datos: r.result, bytes: f.size }); r.onerror = mal; r.readAsDataURL(f); });
   async function enviar() {
     setEnviando(true);
     try {
-      await api(`/api/admin/bandeja/${buzon}/enviar`, { method: 'POST', body: { para: c.para, cc: c.cc, asunto: c.asunto, texto: c.texto, modo: c.modo, origen: c.origen, adjuntos: c.adjuntos || [] } });
-      showToast?.('Correo enviado.');
+      const d = await api(`/api/admin/bandeja/${buzon}/enviar`, { method: 'POST', body: { para: c.para, cc: c.cc, asunto: c.asunto, texto: c.texto, modo: c.modo, origen: c.origen, adjuntos: c.adjuntos || [], programadoAt: programar ? new Date(cuando).toISOString() : null } });
+      showToast?.(d.programado ? `Programado: saldrá el ${new Date(d.programado.enviar_at).toLocaleString('es-ES', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}.` : 'Correo enviado.');
       onEnviado?.();
     } catch (e) { alert(e.message); }
     finally { setEnviando(false); }
@@ -82,11 +85,91 @@ function Redactar({ inicial, buzon, onCerrar, onEnviado, showToast }) {
           <button type="button" className="btn btn-sm btn-outline" onClick={() => input.current?.click()}>📎 Adjuntar</button>
           <input ref={input} type="file" multiple hidden onChange={async e => { const fs = [...(e.target.files || [])]; e.target.value = ''; const nuevos = await Promise.all(fs.map(leer)); set('adjuntos', [...(c.adjuntos || []), ...nuevos]); }} />
         </div>
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap' }}>
+          <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 13, fontWeight: 700, marginRight: 'auto' }}>
+            <input type="checkbox" checked={programar} onChange={e => setProgramar(e.target.checked)} /> Programar el envío
+            {programar && <input type="datetime-local" value={cuando} min={new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)} onChange={e => setCuando(e.target.value)} style={{ ...campo, width: 'auto', padding: '5px 8px' }} />}
+          </label>
           <button type="button" className="btn btn-sm btn-outline" onClick={onCerrar}>Cancelar</button>
-          <button type="button" className="btn btn-sm btn-primary" disabled={enviando || !c.para.trim() || !c.asunto.trim()} onClick={enviar}>{enviando ? 'Enviando…' : 'Enviar'}</button>
+          <button type="button" className="btn btn-sm btn-primary" disabled={enviando || !c.para.trim() || !c.asunto.trim() || (programar && !cuando)} onClick={enviar}>{enviando ? 'Enviando…' : programar ? 'Programar' : 'Enviar'}</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Las reglas del buzón general (#339): los correos de un remitente (o de todo un
+// dominio) van siempre a la misma persona.
+function Reglas({ companeros, onCerrar, showToast }) {
+  const [lista, setLista] = useState(null);
+  const [remitente, setRemitente] = useState('');
+  const [a, setA] = useState('');
+  const cargar = useCallback(() => api('/api/admin/bandeja/general/reglas').then(d => setLista(d.reglas)).catch(e => alert(e.message)), []);
+  useEffect(() => { cargar(); }, [cargar]);
+  async function crear() {
+    try { await api('/api/admin/bandeja/general/reglas', { method: 'POST', body: { remitente, a } }); setRemitente(''); setA(''); showToast?.('Regla creada.'); cargar(); }
+    catch (e) { alert(e.message); }
+  }
+  async function quitar(r) {
+    if (!window.confirm(`¿Quitar la regla de ${r.remitente}? Los correos ya asignados se quedan como están.`)) return;
+    try { await api(`/api/admin/bandeja/general/reglas/${r.i}`, { method: 'DELETE' }); cargar(); } catch (e) { alert(e.message); }
+  }
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', zIndex: 2000, display: 'grid', placeItems: 'center', padding: 16 }} onClick={e => e.target === e.currentTarget && onCerrar()}>
+      <div style={{ background: 'var(--bg-2)', borderRadius: 16, width: 'min(620px, 100%)', maxHeight: '90vh', overflow: 'auto', padding: 18, display: 'grid', gap: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h2 style={{ margin: 0, fontSize: 17 }}>Reglas de asignación</h2>
+          <button type="button" className="btn btn-sm btn-outline" onClick={onCerrar}>Cerrar</button>
+        </div>
+        <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Los correos de info@ de ese remitente se asignan solos a esa persona en cuanto llegan. Vale un correo (ana@colegio.es) o un dominio entero (@colegio.es).</p>
+        {lista === null ? <p style={{ fontSize: 13, color: 'var(--ink-3)' }}>Cargando…</p> : lista.length === 0 ? <p style={{ fontSize: 13, color: 'var(--ink-3)' }}>Todavía no hay reglas.</p> : (
+          <div style={{ display: 'grid', gap: 6 }}>
+            {lista.map(r => (
+              <div key={r.i} className="payment-row" style={{ gridTemplateColumns: 'minmax(0,1fr) auto auto', padding: '9px 12px' }}>
+                <span className="name" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.remitente}</span>
+                <span className="date">→ {r.nombre}</span>
+                <button type="button" className="icon-btn danger" aria-label="Quitar regla" onClick={() => quitar(r)}><I.Trash width={14} height={14} /></button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <input style={{ ...campo, flex: '1 1 200px', width: 'auto' }} value={remitente} onChange={e => setRemitente(e.target.value)} placeholder="ana@colegio.es o @colegio.es" />
+          <select style={{ ...campo, width: 'auto' }} value={a} onChange={e => setA(e.target.value)}>
+            <option value="">A quién…</option>
+            {companeros.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+          </select>
+          <button type="button" className="btn btn-sm btn-primary" disabled={!remitente.trim() || !a} onClick={crear}>Añadir</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Los correos programados de un buzón (#338): cuándo salen y cancelarlos.
+function Programados({ buzon, showToast }) {
+  const [lista, setLista] = useState(null);
+  const cargar = useCallback(() => api(`/api/admin/bandeja/${buzon}/programados`).then(d => setLista(d.programados)).catch(e => { alert(e.message); setLista([]); }), [buzon]);
+  useEffect(() => { cargar(); }, [cargar]);
+  async function cancelar(x) {
+    if (!window.confirm(`¿Cancelar «${x.asunto}»? No saldrá.`)) return;
+    try { await api(`/api/admin/bandeja/${buzon}/programados/${x.id}`, { method: 'DELETE' }); showToast?.('Cancelado.'); cargar(); } catch (e) { alert(e.message); }
+  }
+  if (lista === null) return <p style={{ color: 'var(--ink-3)', fontSize: 13 }}>Cargando…</p>;
+  if (!lista.length) return <div className="panel" style={{ textAlign: 'center', color: 'var(--ink-3)' }}>No hay correos programados. Al escribir uno, marca «Programar el envío».</div>;
+  const estado = { pendiente: ['upcoming', 'Saldrá'], enviando: ['upcoming', 'Saliendo'], enviado: ['ok', 'Enviado'], error: ['pending', 'Error'], cancelado: ['upcoming', 'Cancelado'] };
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      {lista.map(x => (
+        <div key={x.id} className="payment-row" style={{ gridTemplateColumns: 'minmax(0,1fr) auto auto' }}>
+          <div style={{ minWidth: 0 }}>
+            <div className="name" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{x.asunto}</div>
+            <div className="date" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Para: {x.para}{x.adjuntos ? ` · 📎 ${x.adjuntos}` : ''}{!x.mio && x.autor ? ` · lo programó ${x.autor}` : ''}{x.error ? ` · ${x.error}` : ''}</div>
+          </div>
+          <span className={`status-pill ${(estado[x.estado] || estado.pendiente)[0]}`}>{(estado[x.estado] || estado.pendiente)[1]} {x.estado === 'enviado' ? fechaLarga(x.enviado) : x.estado === 'pendiente' ? fechaLarga(x.cuando) : ''}</span>
+          {x.estado === 'pendiente' ? <button type="button" className="btn btn-sm btn-outline" onClick={() => cancelar(x)}>Cancelar</button> : <span />}
+        </div>
+      ))}
     </div>
   );
 }
@@ -105,6 +188,9 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
   const [detalle, setDetalle] = useState(null);
   const [imagenes, setImagenes] = useState(false);
   const [redactar, setRedactar] = useState(null);
+  const [verReglas, setVerReglas] = useState(false);
+  // Al asignar: «y todos los de este remitente» (#339).
+  const [siempre, setSiempre] = useState(false);
 
   useEffect(() => {
     api('/api/admin/bandeja/buzones').then(d => { setInfo(d); if (d.buzones[0]) setBuzon(d.buzones[0].id); }).catch(e => setInfo({ buzones: [], error: e.message }));
@@ -113,7 +199,7 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
   const yo = info?.companeros.find(c => c.yo);
 
   const cargar = useCallback(async () => {
-    if (!actual) return;
+    if (!actual || vista === 'programados') return;
     setError(null);
     try {
       const d = await api(`/api/admin/bandeja/${buzon}/mensajes?vista=${vista}&pagina=${pagina}&q=${encodeURIComponent(buscar)}`);
@@ -139,11 +225,21 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
       const d = await api(`/api/admin/bandeja/${buzon}/mensajes/${detalle.uid}/accion`, { method: 'POST', body: { accion: nombre, vista, ...extra } });
       if (aviso) showToast?.(aviso);
       if (['archivar', 'papelera'].includes(nombre) || (nombre === 'hecho' && vista === 'mios') || (nombre === 'asignar' && vista === 'sin_asignar')) {
-        setLista(l => l?.filter(x => x.uid !== detalle.uid)); setDetalle(null); setSel(null);
+        // Sale de la lista: se abre el siguiente (o el anterior si era el último),
+        // para no tener que ir pinchando uno a uno (#337).
+        const i = (lista || []).findIndex(x => x.uid === detalle.uid);
+        const siguiente = lista?.[i + 1] || lista?.[i - 1] || null;
+        setLista(l => l?.filter(x => x.uid !== detalle.uid));
+        if (siguiente) abrir(siguiente); else { setDetalle(null); setSel(null); }
       } else {
         const cambio = nombre === 'asignar' ? { asignado: d.asignado, hecho: false } : nombre === 'hecho' ? { hecho: true } : nombre === 'reabrir' ? { hecho: false } : nombre === 'no_leido' ? { leido: false } : {};
         setDetalle(x => ({ ...x, ...cambio }));
         setLista(l => l?.map(x => (x.uid === detalle.uid ? { ...x, ...cambio } : x)));
+        // Marcado como hecho: ya está atendido, se pasa al siguiente (#337).
+        if (nombre === 'hecho') {
+          const i = (lista || []).findIndex(x => x.uid === detalle.uid);
+          if (lista?.[i + 1]) abrir(lista[i + 1]);
+        }
       }
     } catch (e) { alert(e.message); }
   }
@@ -185,12 +281,14 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
           <input style={{ ...campo, borderRadius: 999 }} value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar (como en Gmail: de:, asunto:…)" />
         </form>
         <button type="button" className="btn btn-sm btn-outline" onClick={cargar} title="Actualizar">↻</button>
+        {buzon === 'general' && <button type="button" className="btn btn-sm btn-outline" onClick={() => setVerReglas(true)} title="Correos de un remitente que van siempre a la misma persona">Reglas</button>}
         <button type="button" className="btn btn-sm btn-primary" onClick={() => escribir('nuevo')}><I.Plus width={14} height={14} /> Escribir</button>
       </div>
       {!info.tengoBuzon && buzon === 'general' && (
         <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Tu buzón ({info.miCorreo}) no está conectado: cuando IT lo conecte (ticket #317), saldrá aquí al lado del general.</p>
       )}
 
+      {vista === 'programados' ? <Programados buzon={buzon} showToast={showToast} /> : (
       <div className={`bandeja${detalle || sel ? ' con-detalle' : ''}`}>
         <section className="bandeja-lista">
           {error && <p style={{ color: '#c62828', fontSize: 13, padding: 12, margin: 0 }}>{error}</p>}
@@ -208,7 +306,7 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
                   <span style={{ fontSize: 13, fontWeight: m.leido ? 400 : 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--ink-2)' }}>{m.asunto}</span>
                   {(m.asignado || m.hecho) && (
                     <span style={{ fontSize: 11, fontWeight: 700, color: m.hecho ? 'var(--teal)' : 'var(--purple)' }}>
-                      {m.hecho ? '✓ Hecho' : ''}{m.hecho && m.asignado ? ' · ' : ''}{m.asignado ? `→ ${m.asignado.nombre.split(' ')[0]}` : ''}
+                      {m.hecho ? '✓ Hecho' : ''}{m.hecho && m.asignado ? ' · ' : ''}{m.asignado ? `→ ${m.asignado.nombre.split(' ')[0]}${m.asignado.porRegla ? ' (regla)' : ''}` : ''}
                     </span>
                   )}
                 </button>
@@ -239,11 +337,23 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
                     <button type="button" className="btn btn-sm btn-outline" onClick={() => escribir('reenviar')}>Reenviar</button>
                     {buzon === 'general' ? (
                       <>
-                        <select value={detalle.asignado?.id || ''} onChange={e => accion('asignar', { a: e.target.value || null }, e.target.value ? `Asignado a ${companeros.find(c => String(c.id) === e.target.value)?.nombre}.` : 'Ya no está asignado.')}
+                        <select value={detalle.asignado?.id || ''} onChange={async e => {
+                          const a = e.target.value || null;
+                          const nombre = companeros.find(c => String(c.id) === e.target.value)?.nombre;
+                          if (a && siempre && detalle.de?.email) {
+                            try { await api('/api/admin/bandeja/general/reglas', { method: 'POST', body: { remitente: detalle.de.email, a } }); }
+                            catch (err) { alert(err.message); }
+                          }
+                          accion('asignar', { a }, a ? `Asignado a ${nombre}${siempre ? `, y a partir de ahora todos los de ${detalle.de?.email}` : ''}.` : 'Ya no está asignado.');
+                          setSiempre(false);
+                        }}
                           style={{ ...campo, width: 'auto', padding: '6px 8px', fontWeight: 700 }} aria-label="Asignar a">
                           <option value="">Asignar a…</option>
                           {companeros.map(c => <option key={c.id} value={c.id}>{c.yo ? `Mí (${c.nombre.split(' ')[0]})` : c.nombre}</option>)}
                         </select>
+                        <label title="Los próximos correos de este remitente se le asignarán solos" style={{ display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12, fontWeight: 700, color: 'var(--ink-2)', cursor: 'pointer' }}>
+                          <input type="checkbox" checked={siempre} onChange={e => setSiempre(e.target.checked)} /> y todos los de este remitente
+                        </label>
                         {detalle.hecho
                           ? <button type="button" className="btn btn-sm btn-outline" onClick={() => accion('reabrir', {}, 'Vuelve a estar pendiente.')}>Reabrir</button>
                           : <button type="button" className="btn btn-sm btn-outline" onClick={() => accion('hecho', {}, 'Marcado como hecho.')}>✓ Hecho</button>}
@@ -285,6 +395,8 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
         </section>
       </div>
 
+      )}
+      {verReglas && <Reglas companeros={companeros} showToast={showToast} onCerrar={() => { setVerReglas(false); cargar(); }} />}
       {redactar && <Redactar inicial={redactar} buzon={buzon} showToast={showToast} onCerrar={() => setRedactar(null)} onEnviado={() => { setRedactar(null); if (vista === 'enviados') cargar(); }} />}
       <style>{`
         .bandeja{display:grid;grid-template-columns:minmax(280px,380px) minmax(0,1fr);gap:12px;height:calc(100vh - 250px);min-height:460px}

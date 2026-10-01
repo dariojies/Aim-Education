@@ -19,13 +19,103 @@ async function guardar(id, body) {
   if (!r.ok) throw new Error(d.error || 'No se pudo guardar.');
 }
 
-export default function AdminContactos({ showToast }) {
+// Contactos sin ficha (#340): cuentas que no son del club (las creaba la
+// sincronización de HubSpot de Aim-Tul, ya apagada). Se pasan a ficha o se
+// descartan; solo se borra la que no tiene nada asociado.
+function SinFicha({ aviso, onAbrirFicha }) {
+  const [datos, setDatos] = useState(null);
+  const [q, setQ] = useState('');
+  const [buscar, setBuscar] = useState('');
+  const [pagina, setPagina] = useState(0);
+  const [marcados, setMarcados] = useState({});
+  const [ocupado, setOcupado] = useState(false);
+  const cargar = useCallback(async () => {
+    const r = await fetch(`/api/admin/contactos/sin-ficha?q=${encodeURIComponent(buscar)}&pagina=${pagina}`, { credentials: 'include', cache: 'no-store' });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) { setDatos(d); setMarcados({}); } else aviso(d.error || 'No se han podido cargar.');
+  }, [buscar, pagina]);
+  useEffect(() => { cargar(); }, [cargar]);
+  const ids = Object.keys(marcados).filter(k => marcados[k]);
+  async function alta(c) {
+    if (!window.confirm(`¿Pasar a ${c.nombre} a ficha del club? Saldrá en Alumnos (sin clases, como inactivo) para darle de alta.`)) return;
+    const r = await fetch(`/api/admin/contactos/sin-ficha/${c.id}/alta`, { method: 'POST', credentials: 'include' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) return alert(d.error || 'No se ha podido.');
+    aviso(`${c.nombre} ya es ficha del club.`); cargar();
+  }
+  async function descartar(lista) {
+    if (!lista.length) return;
+    if (!window.confirm(lista.length === 1 ? '¿Descartar (borrar) esta cuenta? Solo se borra si no tiene nada asociado.' : `¿Descartar (borrar) estas ${lista.length} cuentas? Las que tengan algo asociado no se tocan.`)) return;
+    setOcupado(true);
+    try {
+      const r = await fetch('/api/admin/contactos/sin-ficha/descartar', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: lista }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || 'No se ha podido.');
+      const noSe = d.noSe || [];
+      aviso(`${d.borrados} descartada${d.borrados !== 1 ? 's' : ''}.${noSe.length ? ` ${noSe.length} no se han borrado porque tienen datos (${noSe.slice(0, 3).map(x => x.nombre).join(', ')}${noSe.length > 3 ? '…' : ''}).` : ''}`);
+      cargar();
+    } catch (e) { alert(e.message); }
+    finally { setOcupado(false); }
+  }
+  if (!datos) return <div className="card" style={{ padding: 24, color: 'var(--ink-3)' }}>Cargando…</div>;
+  return (
+    <div style={{ display: 'grid', gap: 12 }}>
+      <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)', maxWidth: 820 }}>
+        Cuentas que existen en la web pero <b>no son fichas del club</b>, así que no salen en Alumnos. Casi todas las creó la sincronización con HubSpot de Aim-Tul (ya apagada): hay familias de verdad, duplicados de alumnos que ya tienen ficha y publicidad.
+        Si es alguien del club, <b>Pasar a ficha</b>; si es un duplicado o publicidad, <b>Descartar</b> (solo se borra si no tiene nada asociado).
+      </p>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <form onSubmit={e => { e.preventDefault(); setPagina(0); setBuscar(q.trim()); }} style={{ flex: '1 1 240px', display: 'flex', gap: 6 }}>
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar por nombre o correo" style={{ flex: 1, fontFamily: 'inherit', fontSize: 13, padding: '8px 12px', borderRadius: 999, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)' }} />
+        </form>
+        <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{datos.total} cuenta{datos.total !== 1 ? 's' : ''}</span>
+        <button className="btn btn-sm btn-outline" onClick={() => setMarcados(Object.fromEntries(datos.contactos.map(c => [c.id, true])))}>Marcar las de la página</button>
+        <button className="btn btn-sm btn-outline" onClick={() => setMarcados(Object.fromEntries(datos.contactos.filter(c => c.parecido).map(c => [c.id, true])))}>Marcar los duplicados</button>
+        <button className="btn btn-sm btn-primary" disabled={!ids.length || ocupado} onClick={() => descartar(ids)}>{ocupado ? 'Descartando…' : `Descartar marcadas${ids.length ? ` (${ids.length})` : ''}`}</button>
+      </div>
+      {datos.contactos.length === 0 ? <div className="card" style={{ padding: 30, textAlign: 'center', color: 'var(--ink-3)' }}>No hay cuentas sin ficha{buscar ? ' con esa búsqueda' : ''}.</div> : (
+        <div style={{ display: 'grid', gap: 6 }}>
+          {datos.contactos.map(c => (
+            <div key={c.id} className="payment-row" style={{ gridTemplateColumns: 'auto minmax(0,1.4fr) minmax(0,1fr) auto', padding: '10px 14px' }}>
+              <input type="checkbox" checked={!!marcados[c.id]} onChange={e => setMarcados(m => ({ ...m, [c.id]: e.target.checked }))} aria-label={`Marcar ${c.nombre}`} />
+              <div style={{ minWidth: 0 }}>
+                <div className="name" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.nombre || '(sin nombre)'}</div>
+                <div className="date" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.email || 'sin correo'}{c.telefono ? ` · ${c.telefono}` : ''}</div>
+              </div>
+              <div style={{ minWidth: 0, fontSize: 12 }}>
+                <span className="date">{c.origen}{c.fecha ? ` · ${fmtFecha(c.fecha).split(',')[0]}` : ''}{c.consultas ? ` · ${c.consultas} consulta${c.consultas !== 1 ? 's' : ''} web` : ''}</span>
+                {c.parecido && (
+                  <div>
+                    <button type="button" onClick={() => onAbrirFicha?.({ id: c.parecido.id })} className="status-pill pending" style={{ border: 0, cursor: 'pointer', fontFamily: 'inherit', marginTop: 3 }}>
+                      Parece duplicado de la ficha de {c.parecido.nombre}
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className="btn btn-sm btn-outline" onClick={() => alta(c)}>Pasar a ficha</button>
+                <button className="btn btn-sm btn-outline" onClick={() => descartar([c.id])}>Descartar</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 8 }}>
+        {pagina > 0 && <button className="btn btn-sm btn-outline" onClick={() => setPagina(p => p - 1)}>← Anteriores</button>}
+        {(pagina + 1) * datos.porPagina < datos.total && <button className="btn btn-sm btn-outline" onClick={() => setPagina(p => p + 1)}>Siguientes →</button>}
+      </div>
+    </div>
+  );
+}
+
+export default function AdminContactos({ showToast, onAbrirFicha }) {
   const [filtro, setFiltro] = useState('nuevo');
   const [datos, setDatos] = useState(null);
   const [error, setError] = useState('');
 
   const cargar = useCallback(async () => {
     setError('');
+    if (filtro === 'sin_ficha') return;
     try {
       const r = await fetch(`/api/admin/contactos${filtro ? `?estado=${filtro}` : ''}`, { credentials: 'include' });
       const d = await r.json().catch(() => ({}));
@@ -40,7 +130,7 @@ export default function AdminContactos({ showToast }) {
   return (
     <div style={{ display: 'grid', gap: 16 }}>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-        {[['nuevo', 'Pendientes'], ['atendido', 'Atendidas'], ['', 'Todas']].map(([id, txt]) => (
+        {[['nuevo', 'Pendientes'], ['atendido', 'Atendidas'], ['', 'Todas'], ['sin_ficha', 'Contactos sin ficha']].map(([id, txt]) => (
           <button key={id || 'todas'} className={`btn btn-sm ${filtro === id ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setFiltro(id)}>
             {txt}{id === 'nuevo' && datos?.nuevos ? ` (${datos.nuevos})` : ''}
           </button>
@@ -50,6 +140,8 @@ export default function AdminContactos({ showToast }) {
         </span>
       </div>
 
+      {filtro === 'sin_ficha' && <SinFicha aviso={aviso} onAbrirFicha={onAbrirFicha} />}
+      {filtro !== 'sin_ficha' && <>
       {error && <div className="card" style={{ padding: 16, color: 'var(--orange)', fontWeight: 700 }}>{error}</div>}
       {!datos && !error && <div className="card" style={{ padding: 24, color: 'var(--ink-3)' }}>Cargando…</div>}
       {datos && datos.contactos.length === 0 && (
@@ -58,6 +150,7 @@ export default function AdminContactos({ showToast }) {
         </div>
       )}
       {datos?.contactos.map(c => <Consulta key={c.id} c={c} onCambio={cargar} aviso={aviso} />)}
+      </>}
     </div>
   );
 }

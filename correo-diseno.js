@@ -549,6 +549,20 @@ export const CORREOS_SISTEMA = {
             PEQ('El enlace sirve una sola vez y caduca en 1 hora. Si no lo has pedido tú, ignora este correo: tu contraseña sigue siendo la misma.'),
         ]),
     },
+    acceso_invitacion: {
+        grupo: 'personal', nombre: 'Tu acceso a la web', cuando: 'Al pulsar «Enviar acceso» en la lista del personal: para que pongan su contraseña y puedan fichar y pasar lista.',
+        asunto: 'Tu acceso a la web de AIM Education',
+        variables: { nombre: { que: 'Su nombre', ejemplo: 'Marta' }, correo: { que: 'El correo con el que entra', ejemplo: 'marta@ejemplo.com' }, enlace: { que: 'Enlace para poner su contraseña', ejemplo: 'https://www.aimeducation.es/auth' }, dias: { que: 'Días que vale el enlace', ejemplo: '7' } },
+        obligatorio: ['enlace'],
+        diseno: () => d([
+            T('Hola {nombre},'),
+            T('Ya tienes tu cuenta en la web de AIM Education. Con ella puedes **fichar tu jornada**, ver tu día y, si das clase, **pasar lista**.'),
+            T('Para entrar, pon tu contraseña aquí:'),
+            BTN([{ texto: 'Poner mi contraseña', url: '{enlace}', fondo: '', color: '#ffffff' }]),
+            T('Después entra siempre en **www.aimeducation.es** con tu correo (**{correo}**) y esa contraseña. Desde el móvil también se puede: guárdala en la pantalla de inicio y tendrás la web como una app.'),
+            PEQ('El enlace vale {dias} días y sirve una sola vez. Si caduca, pide otro en el club o usa «¿Olvidaste tu contraseña?».'),
+        ]),
+    },
     password_cambiada: {
         grupo: 'familias', nombre: 'Contraseña cambiada', cuando: 'Justo después de cambiar la contraseña, como aviso de seguridad.',
         asunto: 'Tu contraseña de AIM Education ha cambiado',

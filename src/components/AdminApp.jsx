@@ -59,6 +59,14 @@ function ElegirSiNo({ valor, onCambio, disabled }) {
   );
 }
 
+// Una fecha ISO para un <input type="datetime-local"> (en la hora del navegador).
+function aLocalInput(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().slice(0, 16);
+}
+
 function sectionLabel(id) {
   return ({
     overview: "Resumen",
@@ -1691,7 +1699,8 @@ function AdminNews({ refreshTrigger, onEditPost, onNuevo }) {
         {!loading && visible.length === 0 && <div style={{ padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>No hay entradas.</div>}
         {visible.map((p) => {
           const a = ACT_BY_ID[p.category];
-          const statusLabel = p.status === "published" ? "Publicado" : p.status === "draft" ? "Borrador" : p.status;
+          const statusLabel = p.status === "published" ? "Publicado" : p.status === "draft" ? "Borrador"
+            : p.status === "scheduled" ? `Programada · ${new Date(p.published_at).toLocaleString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}` : p.status;
           const statusClass = p.status === "published" ? "ok" : p.status === "draft" ? "pending" : "upcoming";
           const dateStr = fmtFecha(p.published_at || p.created_at);
           return (
@@ -2602,6 +2611,20 @@ function AdminInstructores({ refreshTrigger, showToast, onEditUser, onNuevoInstr
     return () => { vivo = false; };
   }, [gente]);
 
+  // Ticket #343: le llega un correo para poner su contraseña y entrar a la web.
+  async function enviarAcceso(u) {
+    const quien = `${u.firstName || ''} ${u.lastName || ''}`.trim();
+    if (!window.confirm(`¿Enviar a ${quien} su acceso a la web?
+
+Le llegará un correo a ${u.email} con un enlace para poner su contraseña (vale 7 días). Con ella podrá entrar a fichar${u.rango === 'trabajador' ? '' : ' y pasar lista'}.`)) return;
+    try {
+      const r = await fetch(`/api/admin/usuarios/${u.id}/enviar-acceso`, { method: 'POST', credentials: 'include' });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) return alert(d.error || 'No se ha podido enviar.');
+      showToast?.(`Acceso enviado a ${d.enviadoA}. El enlace vale ${d.dias} días.`);
+    } catch { alert('No hay conexión con el servidor.'); }
+  }
+
   async function cambiarRol(u, rol) {
     const texto = rol === 'student'
       ? `¿${u.firstName} deja de ser ${etiquetaRol(u).toLowerCase()} del club?\nSeguirá como alumno, con sus clases y sus rangos intactos.`
@@ -2683,6 +2706,8 @@ function AdminInstructores({ refreshTrigger, showToast, onEditUser, onNuevoInstr
                 : <span style={{ color: "var(--ink-3)" }}>—</span>}
             </div>
             <div className="row-actions">
+              <button className="btn btn-sm btn-outline" title="Le llega un correo para poner su contraseña y entrar a la web (fichar, pasar lista)"
+                onClick={() => enviarAcceso(u)}><I.Mail width={14} height={14} /> Enviar acceso</button>
               <button className="icon-btn" aria-label="Abrir ficha" title="Abrir su ficha" onClick={() => onEditUser(u)}><I.Edit /></button>
               <button className="icon-btn" aria-label="Perfil en la web" title="Su perfil en «Conócenos» de la web" onClick={() => setPerfilDe(u)}><I.Globe /></button>
               <button className="icon-btn danger" aria-label="Sacar del personal"
@@ -2825,6 +2850,9 @@ function TarjetaEvento({ ev, conDinero = true, pie }) {
         : <div style={{ height: 120, background: `color-mix(in oklab, ${color} 20%, var(--bg-3))`, display: 'grid', placeItems: 'center', color }}><I.Star /></div>}
       <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
         <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color }}>{a?.name || 'General'}</span>
+        {ev.publicarAt && new Date(ev.publicarAt) > new Date() && (
+          <span className="status-pill upcoming" style={{ justifySelf: 'start', alignSelf: 'flex-start' }}>Se publica el {new Date(ev.publicarAt).toLocaleString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+        )}
         <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: 'var(--ink)' }}>{ev.title}</h3>
         <div style={{ fontSize: 12, color: 'var(--ink-3)', display: 'grid', gap: 3 }}>
           <span>{fmtFechaCorta(ev.date)}{ev.endDate ? ` – ${fmtFechaCorta(ev.endDate)}` : ''}{ev.time ? ` · ${ev.time}${ev.endTime ? `–${ev.endTime}` : ''}` : ''}</span>
@@ -3132,6 +3160,9 @@ function AdminEvents({ showToast, permisos = {} }) {
       endDate: ev.endDate ? String(ev.endDate).slice(0, 10) : '',
       time: ev.time || '', endTime: ev.endTime || '', venue: ev.venue || '', price: ev.price || '', activity: ev.activity || 'general', posterUrl: ev.posterUrl || '',
       precio: ev.precio ?? '', precioSocio: ev.precioSocio ?? '', docenteId: ev.docenteId || null,
+      // Programado (#338): solo si aún no ha llegado su hora.
+      programar: !!(ev.publicarAt && new Date(ev.publicarAt) > new Date()),
+      publicarAt: ev.publicarAt && new Date(ev.publicarAt) > new Date() ? aLocalInput(ev.publicarAt) : '',
     });
   }
 
@@ -3149,7 +3180,9 @@ function AdminEvents({ showToast, permisos = {} }) {
   async function save(e) {
     e.preventDefault();
     setSaving(true);
-    const { _solicitud, _solicitudId, ...datos } = editing;
+    const { _solicitud, _solicitudId, programar, ...resto } = editing;
+    // Sin programar se publica ya (vacío); programado, a su hora (#338).
+    const datos = { ...resto, publicarAt: programar && resto.publicarAt ? new Date(resto.publicarAt).toISOString() : '' };
     const isEdit = !!datos.id && !_solicitud && !_solicitudId;
     const url = _solicitudId ? `/api/admin/events/solicitudes/${_solicitudId}/aprobar`
       : _solicitud ? '/api/admin/events/solicitudes'
@@ -3516,6 +3549,18 @@ function AdminEvents({ showToast, permisos = {} }) {
               <div className="field-row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
                 <div className="field"><label>Hora inicio</label><input value={editing.time} onChange={e => setEditing({ ...editing, time: e.target.value })} placeholder="Ej. 19:00" /></div>
                 <div className="field"><label>Hora fin</label><input value={editing.endTime} onChange={e => setEditing({ ...editing, endTime: e.target.value })} placeholder="Ej. 21:00" /></div>
+                {!editing._solicitud && !editing._solicitudId && (
+                  <div className="field" style={{ gridColumn: '1 / -1' }}>
+                    <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer' }}>
+                      <input type="checkbox" checked={!!editing.programar} onChange={e => setEditing({ ...editing, programar: e.target.checked })} style={{ width: 'auto' }} />
+                      Programar la publicación (hasta entonces no sale en la web)
+                    </label>
+                    {editing.programar && (
+                      <input type="datetime-local" required value={editing.publicarAt || ''} min={aLocalInput(new Date().toISOString())}
+                        onChange={e => setEditing({ ...editing, publicarAt: e.target.value })} style={{ marginTop: 6 }} />
+                    )}
+                  </div>
+                )}
                 <div className="field"><label>Precio (texto del cartel)</label><input value={editing.price} onChange={e => setEditing({ ...editing, price: e.target.value })} placeholder="Ej. 15€ (10€ Socios C.D. AIM)" /></div>
                 {/* El texto de arriba es para el cartel; para cobrar hace falta un
                     número. Vacío o 0 = el taller es gratis y no genera cargos. */}
@@ -6655,14 +6700,19 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
     const method = isEdit ? 'PUT' : 'POST';
 
     try {
+      // Programada (#338): la hora elegida, en la del navegador.
+      const local = editingItem.publishAt ?? (editingItem.published_at ? aLocalInput(editingItem.published_at) : '');
+      const publishAt = editingItem.status === 'scheduled' && local ? new Date(local).toISOString() : null;
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editingItem),
+        body: JSON.stringify({ ...editingItem, publishAt }),
         credentials: 'include'
       });
       if (res.ok) {
-        showToast(isEdit ? "Noticia modificada." : "Noticia publicada con éxito.");
+        showToast(editingItem.status === 'scheduled'
+          ? `Noticia programada: se publicará el ${new Date(publishAt).toLocaleString('es-ES', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}.`
+          : isEdit ? "Noticia modificada." : "Noticia publicada con éxito.");
         setRefreshTrigger(p => p + 1);
         setActiveModal(null);
       } else {
@@ -6930,7 +6980,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("agenda") && <AdminAgenda showToast={showToast} user={user} />}
           {ver("fichaje") && <Fichaje showToast={showToast} permisos={permisos} />}
           {ver("equipo_it") && <EquipoIT showToast={showToast} />}
-          {ver("contactos") && <AdminContactos showToast={showToast} />}
+          {ver("contactos") && <AdminContactos showToast={showToast} onAbrirFicha={abrirFicha} />}
           {ver("bandeja") && <AdminBandeja showToast={showToast} onAbrirFicha={abrirFicha} />}
           {ver("rangos") && <AdminRangosPermisos grupos={gruposMenu} showToast={showToast} />}
           {ver("overview") && <AdminResumen permisos={permisos} refreshTrigger={refreshTrigger} ir={navTo} irRuta={(ruta) => go(ruta)} />}
@@ -7340,7 +7390,15 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                 <select value={editingItem.status} onChange={e => setEditingItem({ ...editingItem, status: e.target.value })} style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }}>
                   <option value="draft">Borrador (Oculto)</option>
                   <option value="published">Publicado (Visible en la web)</option>
+                  <option value="scheduled">Programada (se publica sola)</option>
                 </select>
+                {editingItem.status === 'scheduled' && (
+                  <input type="datetime-local" aria-label="Fecha y hora de publicación" required
+                    value={editingItem.publishAt ?? (editingItem.published_at ? aLocalInput(editingItem.published_at) : '')}
+                    min={aLocalInput(new Date().toISOString())}
+                    onChange={e => setEditingItem({ ...editingItem, publishAt: e.target.value })}
+                    style={{ width: '100%', marginTop: 8, padding: '10px 14px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }} />
+                )}
               </div>
             </div>
 

@@ -47,23 +47,57 @@ export function etiquetaDe(nombre) {
     return `AIM-${slug || 'sin-nombre'}`;
 }
 
-// Abre el buzón, hace lo que haga falta y lo cierra. Una conexión por petición:
-// es poco uso y así nunca se queda una colgada.
-async function conImap(buzon, fn) {
+// Las conexiones con Gmail se reutilizan mientras se usan (#337): abrir una
+// nueva en cada clic tardaba un segundo largo. Se cierran solas a los 2 minutos
+// sin uso, y si una falla se tira y se abre otra.
+const conexiones = new Map(); // email → { client, pass, cierre, abriendo }
+const INACTIVA_MS = 120_000;
+async function conexion(buzon) {
+    const k = buzon.email;
+    const c = conexiones.get(k);
+    if (c && c.pass === buzon.pass) {
+        if (c.abriendo) await c.abriendo.catch(() => {});
+        if (c.client?.usable) { clearTimeout(c.cierre); return c.client; }
+        conexiones.delete(k);
+    }
     const client = new ImapFlow({
         host: IMAP_HOST(), port: 993, secure: true, logger: false,
         auth: { user: buzon.email, pass: buzon.pass },
     });
-    client.on('error', () => {}); // un corte de red no tumba el servidor
-    await client.connect();
-    try { return await fn(client); }
-    finally { await client.logout().catch(() => {}); }
+    client.on('error', () => conexiones.delete(k)); // un corte de red no tumba el servidor
+    client.on('close', () => { if (conexiones.get(k)?.client === client) conexiones.delete(k); });
+    const entrada = { client, pass: buzon.pass, cierre: null, abriendo: client.connect() };
+    conexiones.set(k, entrada);
+    try { await entrada.abriendo; } catch (e) { conexiones.delete(k); throw e; }
+    entrada.abriendo = null;
+    return client;
 }
+async function conImap(buzon, fn) {
+    const client = await conexion(buzon);
+    try { return await fn(client); }
+    catch (e) {
+        // Si la conexión se ha estropeado, fuera: la siguiente abre otra.
+        if (!client.usable) conexiones.delete(buzon.email);
+        throw e;
+    } finally {
+        const c = conexiones.get(buzon.email);
+        if (c?.client === client) {
+            clearTimeout(c.cierre);
+            c.cierre = setTimeout(() => { conexiones.delete(buzon.email); client.logout().catch(() => {}); }, INACTIVA_MS);
+            c.cierre.unref?.();
+        }
+    }
+}
+// Las carpetas de cada buzón no cambian: se miran una vez por conexión.
+const carpetasCache = new WeakMap();
 // Las carpetas especiales de Gmail (sus nombres cambian con el idioma).
 async function carpetas(client) {
+    if (carpetasCache.has(client)) return carpetasCache.get(client);
     const lista = await client.list();
     const por = (uso) => lista.find(m => m.specialUse === uso)?.path || null;
-    return { entrada: 'INBOX', enviados: por('\\Sent'), todos: por('\\All'), papelera: por('\\Trash') };
+    const r = { entrada: 'INBOX', enviados: por('\\Sent'), todos: por('\\All'), papelera: por('\\Trash') };
+    carpetasCache.set(client, r);
+    return r;
 }
 
 const direccion = (a) => (a ? { nombre: a.name || '', email: String(a.address || '').toLowerCase() } : null);
@@ -80,6 +114,25 @@ const conAdjuntos = (bs) => {
 
 export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
     const router = express.Router();
+
+    // ── Reglas de asignación (#339): «todos los de este remitente, a X» ──
+    // remitente: un correo («ana@x.es») o un dominio entero («@colegio.es»).
+    async function reglas() {
+        const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'bandeja_reglas'`);
+        return Array.isArray(r.rows[0]?.valor) ? r.rows[0].valor : [];
+    }
+    async function guardarReglas(lista, userId) {
+        await pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('bandeja_reglas', $1::jsonb, NOW(), $2)
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+            [JSON.stringify(lista), userId || null]);
+    }
+    const casa = (regla, email) => {
+        const e = String(email || '').toLowerCase();
+        return regla.remitente.startsWith('@') ? e.endsWith(regla.remitente) : e === regla.remitente;
+    };
+    // La regla que le toca a un remitente (la de su correo manda sobre la del dominio).
+    const reglaDe = (lista, email) => lista.find(r => !r.remitente.startsWith('@') && casa(r, email)) || lista.find(r => casa(r, email)) || null;
 
     // Qué buzón es: 'general' o 'mio'. Nunca el de otra persona.
     function resolver(req, res) {
@@ -168,6 +221,17 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
                         }
                     }
                     mensajes.sort((a, b) => b.uid - a.uid);
+                    if (buzon.general && vista !== 'enviados') {
+                        const rs = await reglas().catch(() => []);
+                        for (const m of mensajes) {
+                            if (m.asignado || m.hecho || !m.de) continue;
+                            const regla = reglaDe(rs, m.de.email);
+                            const destino = regla && lista.find(x => String(x.id) === String(regla.a));
+                            if (!destino) continue;
+                            await client.messageFlagsAdd(String(m.uid), [etiquetaDe(destino.nombre)], { uid: true, useLabels: true }).catch(() => {});
+                            m.asignado = { id: destino.id, nombre: destino.nombre, porRegla: true };
+                        }
+                    }
                     return { mensajes, total: uids.length, carpeta };
                 } finally { lock.release(); }
             });
@@ -242,6 +306,36 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
         } catch (e) { error(res, e); }
     });
 
+    router.get('/general/reglas', async (req, res) => {
+        try {
+            const lista = await companeros();
+            res.set('Cache-Control', 'no-store');
+            res.json({ reglas: (await reglas()).map((r, i) => ({ i, remitente: r.remitente, a: r.a, nombre: lista.find(x => String(x.id) === String(r.a))?.nombre || '(ya no puede tener correos)' })) });
+        } catch (e) { res.status(500).json({ error: e.message }); }
+    });
+    router.post('/general/reglas', async (req, res) => {
+        let remitente = String(req.body?.remitente || '').trim().toLowerCase();
+        if (/^[^\s@]+\.[^\s@]+$/.test(remitente)) remitente = `@${remitente}`; // «colegio.es» → «@colegio.es»
+        if (!/^([^\s@]+)?@[^\s@]+\.[^\s@]+$/.test(remitente)) return res.status(400).json({ error: 'Pon un correo (ana@colegio.es) o un dominio (@colegio.es).' });
+        try {
+            const lista = await companeros();
+            const destino = lista.find(x => String(x.id) === String(req.body?.a));
+            if (!destino) return res.status(400).json({ error: 'Esa persona no puede tener correos asignados.' });
+            const rs = (await reglas()).filter(r => r.remitente !== remitente);
+            rs.push({ remitente, a: destino.id, por: req.userSession.userId, at: new Date().toISOString() });
+            await guardarReglas(rs, req.userSession.userId);
+            res.json({ success: true });
+        } catch (e) { res.status(500).json({ error: e.message }); }
+    });
+    router.delete('/general/reglas/:i(\\d+)', async (req, res) => {
+        try {
+            const rs = await reglas();
+            rs.splice(Number(req.params.i), 1);
+            await guardarReglas(rs, req.userSession.userId);
+            res.json({ success: true });
+        } catch (e) { res.status(500).json({ error: e.message }); }
+    });
+
     // Leído / no leído, archivar, papelera, asignar, hecho.
     router.post('/:buzon/mensajes/:uid(\\d+)/accion', async (req, res) => {
         const buzon = resolver(req, res); if (!buzon) return;
@@ -282,67 +376,160 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
         } catch (e) { if (e.http) return res.status(e.http).json({ error: e.message }); error(res, e); }
     });
 
-    // Escribir, responder o reenviar. Sale por el Gmail de ese buzón: queda en
-    // sus «Enviados» y las respuestas vuelven a él.
-    router.post('/:buzon/enviar', async (req, res) => {
-        const buzon = resolver(req, res); if (!buzon) return;
-        const b = req.body || {};
+    // Comprueba lo que se va a enviar. Devuelve el error o los datos limpios.
+    function revisarEnvio(b) {
         const lista = (v) => String(v || '').split(/[,;]/).map(x => x.trim()).filter(Boolean);
         const para = lista(b.para), cc = lista(b.cc);
         const valido = (e) => /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(e.replace(/^.*<(.+)>$/, '$1'));
-        if (!para.length) return res.status(400).json({ error: 'Falta a quién va.' });
-        if ([...para, ...cc].some(e => !valido(e))) return res.status(400).json({ error: 'Hay alguna dirección que no parece un correo.' });
-        if (para.length + cc.length > 20) return res.status(400).json({ error: 'Como mucho 20 destinatarios.' });
+        if (!para.length) return { error: 'Falta a quién va.' };
+        if ([...para, ...cc].some(e => !valido(e))) return { error: 'Hay alguna dirección que no parece un correo.' };
+        if (para.length + cc.length > 20) return { error: 'Como mucho 20 destinatarios.' };
         const asunto = String(b.asunto || '').trim().slice(0, 250);
-        const texto = String(b.texto || '').slice(0, 50000);
-        if (!asunto) return res.status(400).json({ error: 'Falta el asunto.' });
-        try {
-            let original = null;
-            if (b.origen?.uid) original = await leerUno(buzon, carpetaDeVista(b.origen.vista), b.origen.uid);
-            const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            let html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5">${esc(texto).replace(/\n/g, '<br>')}</div>`;
-            let text = texto;
-            const correo = { attachments: [] };
-            if (original) {
-                const p = original.p;
-                const cuando = p.date ? new Date(p.date).toLocaleString('es-ES', { timeZone: 'Europe/Madrid' }) : '';
-                const quien = p.from?.text || '';
-                const cita = p.html || `<div style="white-space:pre-wrap">${esc(p.text || '')}</div>`;
-                if (b.modo === 'reenviar') {
-                    html += `<br><div style="color:#555">---------- Mensaje reenviado ----------<br>De: ${esc(quien)}<br>Fecha: ${esc(cuando)}<br>Asunto: ${esc(p.subject || '')}<br>Para: ${esc(p.to?.text || '')}</div><br>${cita}`;
-                    text += `\n\n---------- Mensaje reenviado ----------\nDe: ${quien}\nFecha: ${cuando}\nAsunto: ${p.subject || ''}\n\n${p.text || ''}`;
-                    correo.attachments = (p.attachments || []).map(a => ({ filename: a.filename, content: a.content, contentType: a.contentType, cid: a.cid || undefined }));
-                } else {
-                    html += `<br><div style="color:#555">El ${esc(cuando)}, ${esc(quien)} escribió:</div><blockquote style="margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-left:1ex">${cita}</blockquote>`;
-                    text += `\n\nEl ${cuando}, ${quien} escribió:\n${String(p.text || '').split('\n').map(l => `> ${l}`).join('\n')}`;
-                    if (p.messageId) {
-                        correo.inReplyTo = p.messageId;
-                        correo.references = [...[].concat(p.references || []), p.messageId].slice(-20);
-                    }
-                    // Las imágenes pegadas del original, para que la cita se vea igual.
-                    correo.attachments = (p.attachments || []).filter(a => a.cid).map(a => ({ filename: a.filename, content: a.content, contentType: a.contentType, cid: a.cid }));
+        if (!asunto) return { error: 'Falta el asunto.' };
+        const adjuntos = (Array.isArray(b.adjuntos) ? b.adjuntos : []).slice(0, 10)
+            .filter(x => /^data:[^;,]+;base64,/.test(String(x?.datos || '')))
+            .map(x => ({ nombre: String(x.nombre || 'adjunto').slice(0, 150), datos: String(x.datos) }));
+        const pesan = adjuntos.reduce((t, x) => t + x.datos.length * 0.75, 0);
+        if (pesan > 20 * 1024 * 1024) return { error: 'Los adjuntos pesan demasiado (Gmail admite 25 MB en total).' };
+        return { para, cc, asunto, texto: String(b.texto || '').slice(0, 50000), modo: b.modo || null, origen: b.origen?.uid ? { uid: b.origen.uid, vista: b.origen.vista } : null, adjuntos };
+    }
+
+    // Envía de verdad. Sale por el Gmail de ese buzón: queda en sus «Enviados» y
+    // las respuestas vuelven a él. Lo usan «Enviar» y los programados.
+    async function enviarDesde(buzon, e, autor) {
+        let original = null;
+        if (e.origen?.uid) original = await leerUno(buzon, carpetaDeVista(e.origen.vista), e.origen.uid).catch(() => null);
+        const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        let html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5">${esc(e.texto).replace(/\n/g, '<br>')}</div>`;
+        let text = e.texto;
+        const correo = { attachments: [] };
+        if (original) {
+            const p = original.p;
+            const cuando = p.date ? new Date(p.date).toLocaleString('es-ES', { timeZone: 'Europe/Madrid' }) : '';
+            const quien = p.from?.text || '';
+            const cita = p.html || `<div style="white-space:pre-wrap">${esc(p.text || '')}</div>`;
+            if (e.modo === 'reenviar') {
+                html += `<br><div style="color:#555">---------- Mensaje reenviado ----------<br>De: ${esc(quien)}<br>Fecha: ${esc(cuando)}<br>Asunto: ${esc(p.subject || '')}<br>Para: ${esc(p.to?.text || '')}</div><br>${cita}`;
+                text += `\n\n---------- Mensaje reenviado ----------\nDe: ${quien}\nFecha: ${cuando}\nAsunto: ${p.subject || ''}\n\n${p.text || ''}`;
+                correo.attachments = (p.attachments || []).map(a => ({ filename: a.filename, content: a.content, contentType: a.contentType, cid: a.cid || undefined }));
+            } else {
+                html += `<br><div style="color:#555">El ${esc(cuando)}, ${esc(quien)} escribió:</div><blockquote style="margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-left:1ex">${cita}</blockquote>`;
+                text += `\n\nEl ${cuando}, ${quien} escribió:\n${String(p.text || '').split('\n').map(l => `> ${l}`).join('\n')}`;
+                if (p.messageId) {
+                    correo.inReplyTo = p.messageId;
+                    correo.references = [...[].concat(p.references || []), p.messageId].slice(-20);
                 }
+                // Las imágenes pegadas del original, para que la cita se vea igual.
+                correo.attachments = (p.attachments || []).filter(a => a.cid).map(a => ({ filename: a.filename, content: a.content, contentType: a.contentType, cid: a.cid }));
             }
-            for (const a of (Array.isArray(b.adjuntos) ? b.adjuntos : []).slice(0, 10)) {
-                const m = String(a?.datos || '').match(/^data:([^;,]+);base64,(.+)$/);
-                if (m) correo.attachments.push({ filename: String(a.nombre || 'adjunto').slice(0, 150), content: Buffer.from(m[2], 'base64'), contentType: m[1] });
-            }
-            const tam = correo.attachments.reduce((t, a) => t + (a.content?.length || 0), 0);
-            if (tam > 20 * 1024 * 1024) return res.status(413).json({ error: 'Los adjuntos pesan demasiado (Gmail admite 25 MB en total).' });
-            const nombre = buzon.general ? 'AIM Education' : `${req.userSession.firstName || ''} ${req.userSession.lastName || ''}`.trim();
-            const envio = nodemailer.createTransport({ host: 'smtp.gmail.com', port: 465, secure: true, auth: { user: buzon.email, pass: buzon.pass } });
-            await envio.sendMail({
-                from: nombre ? `${nombre} <${buzon.email}>` : buzon.email,
-                to: para.join(', '), cc: cc.length ? cc.join(', ') : undefined,
-                subject: asunto, text, html, ...correo,
-            });
-            // Contestar un correo del general lo da por atendido si estaba asignado a quien contesta.
+        }
+        for (const a of e.adjuntos || []) {
+            const m = String(a.datos).match(/^data:([^;,]+);base64,(.+)$/);
+            if (m) correo.attachments.push({ filename: a.nombre, content: Buffer.from(m[2], 'base64'), contentType: m[1] });
+        }
+        const nombre = buzon.general ? 'AIM Education' : String(autor || '').trim();
+        const envio = nodemailer.createTransport({ host: 'smtp.gmail.com', port: 465, secure: true, auth: { user: buzon.email, pass: buzon.pass } });
+        await envio.sendMail({
+            from: nombre ? `${nombre} <${buzon.email}>` : buzon.email,
+            to: e.para.join(', '), cc: e.cc.length ? e.cc.join(', ') : undefined,
+            subject: e.asunto, text, html, ...correo,
+        });
+    }
+    const errorEnvio = (e) => {
+        const m = String(e?.response || e?.message || e);
+        return /535|Username and Password|auth/i.test(m) ? 'Gmail no acepta la contraseña de este buzón (ticket #317).' : `No se ha podido enviar: ${m}`;
+    };
+
+    // Escribir, responder o reenviar. Con «programadoAt» se guarda y sale sola a
+    // esa hora (#338).
+    router.post('/:buzon/enviar', async (req, res) => {
+        const buzon = resolver(req, res); if (!buzon) return;
+        const e = revisarEnvio(req.body || {});
+        if (e.error) return res.status(400).json({ error: e.error });
+        const autor = `${req.userSession.firstName || ''} ${req.userSession.lastName || ''}`.trim();
+        if (req.body?.programadoAt) {
+            const cuando = new Date(req.body.programadoAt);
+            if (Number.isNaN(cuando.getTime()) || cuando.getTime() < Date.now() + 30_000) return res.status(400).json({ error: 'Pon una fecha y hora que no haya pasado.' });
+            try {
+                const r = await pool.query(
+                    `INSERT INTO aim_correos_programados (buzon_email, general, user_id, autor, para, cc, asunto, texto, modo, origen, adjuntos, enviar_at)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12) RETURNING id, enviar_at`,
+                    [buzon.email, !!buzon.general, req.userSession.userId, autor, e.para.join(', '), e.cc.join(', '), e.asunto, e.texto, e.modo,
+                     e.origen ? JSON.stringify(e.origen) : null, JSON.stringify(e.adjuntos), cuando.toISOString()]);
+                return res.json({ success: true, programado: r.rows[0] });
+            } catch (err) { return res.status(500).json({ error: err.message }); }
+        }
+        try {
+            await enviarDesde(buzon, e, autor);
             res.json({ success: true });
-        } catch (e) {
-            const m = String(e?.response || e?.message || e);
-            res.status(/535|Username and Password|auth/i.test(m) ? 502 : 500).json({ error: /535|Username and Password|auth/i.test(m) ? 'Gmail no acepta la contraseña de este buzón (ticket #317).' : `No se ha podido enviar: ${m}` });
+        } catch (err) {
+            const m = errorEnvio(err);
+            res.status(/contraseña/.test(m) ? 502 : 500).json({ error: m });
         }
     });
+
+    // Los programados de este buzón que ha dejado esta persona.
+    router.get('/:buzon/programados', async (req, res) => {
+        const buzon = resolver(req, res); if (!buzon) return;
+        try {
+            const r = await pool.query(
+                `SELECT id, para, cc, asunto, texto, enviar_at, estado, error, enviado_at, autor, user_id,
+                        jsonb_array_length(COALESCE(adjuntos, '[]'::jsonb))::int AS adjuntos
+                 FROM aim_correos_programados
+                 WHERE buzon_email = $1 AND (general OR user_id = $2) AND (estado = 'pendiente' OR enviado_at > NOW() - INTERVAL '7 days' OR estado = 'error')
+                 ORDER BY (estado = 'pendiente') DESC, enviar_at`, [buzon.email, req.userSession.userId]);
+            res.set('Cache-Control', 'no-store');
+            res.json({ programados: r.rows.map(x => ({ id: x.id, para: x.para, cc: x.cc, asunto: x.asunto, texto: x.texto, cuando: x.enviar_at, estado: x.estado, error: x.error, enviado: x.enviado_at, autor: x.autor, mio: String(x.user_id) === String(req.userSession.userId), adjuntos: x.adjuntos })) });
+        } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+    router.delete('/:buzon/programados/:id(\\d+)', async (req, res) => {
+        const buzon = resolver(req, res); if (!buzon) return;
+        try {
+            const r = await pool.query(
+                `UPDATE aim_correos_programados SET estado = 'cancelado' WHERE id = $1 AND buzon_email = $2 AND (general OR user_id = $3) AND estado = 'pendiente' RETURNING id`,
+                [req.params.id, buzon.email, req.userSession.userId]);
+            if (!r.rowCount) return res.status(409).json({ error: 'Ese correo ya ha salido o no está.' });
+            res.json({ success: true });
+        } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // La pasada que envía los programados cuya hora ha llegado (cada minuto).
+    let enviandoProgramados = false;
+    async function enviarProgramados() {
+        if (enviandoProgramados) return;
+        enviandoProgramados = true;
+        try {
+            // Uno que se quedó a medias (el servidor se reinició al enviarlo): no se
+            // reintenta solo, por si llegó a salir; se marca para revisarlo.
+            await pool.query(
+                `UPDATE aim_correos_programados SET estado = 'error', error = 'Se cortó al enviarlo: mira en «Enviados» de Gmail si salió.'
+                 WHERE estado = 'enviando' AND enviar_at < NOW() - INTERVAL '10 minutes'`);
+            const r = await pool.query(
+                `UPDATE aim_correos_programados SET estado = 'enviando' WHERE id IN (
+                   SELECT id FROM aim_correos_programados WHERE estado = 'pendiente' AND enviar_at <= NOW() ORDER BY enviar_at LIMIT 10 FOR UPDATE SKIP LOCKED)
+                 RETURNING *`);
+            for (const x of r.rows) {
+                const g = buzonGeneral();
+                const buzon = x.general ? (g && g.email === x.buzon_email ? g : null) : buzonDe(x.buzon_email);
+                let estado = 'enviado', error = null;
+                if (!buzon) { estado = 'error'; error = 'Ese buzón ya no está conectado.'; }
+                else {
+                    try {
+                        await enviarDesde(buzon, {
+                            para: String(x.para).split(/,\s*/).filter(Boolean), cc: String(x.cc || '').split(/,\s*/).filter(Boolean),
+                            asunto: x.asunto, texto: x.texto || '', modo: x.modo, origen: x.origen, adjuntos: x.adjuntos || [],
+                        }, x.autor);
+                    } catch (e) { estado = 'error'; error = errorEnvio(e); }
+                }
+                await pool.query(
+                    `UPDATE aim_correos_programados SET estado = $2::varchar, error = $3,
+                            enviado_at = CASE WHEN $2::varchar = 'enviado' THEN NOW() END,
+                            adjuntos = CASE WHEN $2::varchar = 'enviado' THEN NULL ELSE adjuntos END
+                     WHERE id = $1`, [x.id, estado, error]);
+            }
+        } catch (e) { console.error('[correos programados]', e.message); }
+        finally { enviandoProgramados = false; }
+    }
 
     // ── Para la campanita: correos de info@ asignados a alguien y sin hacer ──
     // Mirar Gmail en cada aviso sería lento: se guarda 3 minutos.
@@ -371,5 +558,32 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
         return v;
     }
 
-    return { router, asignadosSinHacer };
+    async function aplicarReglasBandeja() {
+        const g = buzonGeneral();
+        if (!g) return 0;
+        const rs = await reglas().catch(() => []);
+        if (!rs.length) return 0;
+        const lista = await companeros();
+        return conImap(g, async (client) => {
+            if (!client.capabilities?.has?.('X-GM-EXT-1')) return 0;
+            const lock = await client.getMailboxLock('INBOX');
+            try {
+                const uids = (await client.search({ gmraw: `newer_than:30d ${lista.map(x => `-label:${etiquetaDe(x.nombre)}`).join(' ')} -label:${ETIQUETA_HECHO}` }, { uid: true })) || [];
+                let n = 0;
+                if (!uids.length) return 0;
+                for await (const m of client.fetch(uids.slice(-200), { uid: true, envelope: true }, { uid: true })) {
+                    const de = String(m.envelope?.from?.[0]?.address || '').toLowerCase();
+                    const regla = reglaDe(rs, de);
+                    const destino = regla && lista.find(x => String(x.id) === String(regla.a));
+                    if (!destino) continue;
+                    await client.messageFlagsAdd(String(m.uid), [etiquetaDe(destino.nombre)], { uid: true, useLabels: true }).catch(() => {});
+                    n++;
+                }
+                if (n) olvidarAsignados();
+                return n;
+            } finally { lock.release(); }
+        }).catch(() => 0);
+    }
+
+    return { router, asignadosSinHacer, aplicarReglasBandeja, enviarProgramados };
 }

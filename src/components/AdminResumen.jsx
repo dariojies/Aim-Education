@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { I } from './Icons.jsx';
+import { ACT_BY_ID } from './Shared.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // El Resumen del panel (ticket #327): lo primero que se ve al entrar, distinto
@@ -21,62 +23,64 @@ const suave = { fontSize: 12, color: 'var(--ink-3)' };
 const enlace = { background: 'none', border: 0, padding: 0, color: 'var(--purple)', fontWeight: 700, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' };
 const recorte = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 };
 
-// Estado con icono y palabra (nunca solo el color).
+// Estado: la pastilla de siempre del panel (palabra y color, nunca solo color).
 function Estado({ tipo, children }) {
-  const e = { ok: ['✓', 'var(--teal)'], aviso: ['!', '#b45309'], mal: ['✕', '#c62828'], info: ['·', 'var(--ink-3)'] }[tipo] || ['·', 'var(--ink-3)'];
-  return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700, color: e[1], minWidth: 0, maxWidth: '100%' }}>
-      <span aria-hidden="true" style={{ width: 16, height: 16, flexShrink: 0, borderRadius: 999, display: 'grid', placeItems: 'center', fontSize: 10, fontWeight: 900,
-        background: `color-mix(in oklab, ${e[1]} 14%, transparent)` }}>{e[0]}</span>
-      <span style={recorte}>{children}</span>
-    </span>
-  );
+  const clase = { ok: 'ok', aviso: 'pending', mal: 'pending', info: 'upcoming' }[tipo] || 'upcoming';
+  return <span className={`status-pill ${clase}`} style={{ maxWidth: '100%', ...recorte }}>{tipo === 'mal' ? '✕ ' : tipo === 'ok' ? '✓ ' : ''}{children}</span>;
 }
 
-// Una tarjeta con su título y el enlace a su sitio.
+// Una tarjeta con su título y el botón a su sitio (el estilo de siempre del panel).
 function Bloque({ titulo, sub, accion, onAccion, children }) {
   return (
     <section className="res-bloque">
-      <header style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10, marginBottom: 6 }}>
+      <header style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 14 }}>
         <div style={{ minWidth: 0 }}>
-          <h2 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: 'var(--ink)' }}>{titulo}</h2>
-          {sub && <div style={{ ...suave, ...recorte }}>{sub}</div>}
+          <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 19, fontWeight: 800, letterSpacing: '-.015em', margin: 0 }}>{titulo}</h2>
+          {sub && <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: '3px 0 0' }}>{sub}</p>}
         </div>
-        {accion && <button type="button" onClick={onAccion} style={enlace}>{accion} →</button>}
+        {accion && <button type="button" className="btn btn-sm btn-outline" onClick={onAccion} style={{ flexShrink: 0 }}>{accion}</button>}
       </header>
       {children}
     </section>
   );
 }
+// Una fila como las de «Últimos gastos»: fondo suave, nombre y detalle.
 function Fila({ izq, centro, der, onClick }) {
   const Tag = onClick ? 'button' : 'div';
   return (
-    <Tag type={onClick ? 'button' : undefined} onClick={onClick} className="res-fila" style={onClick ? { cursor: 'pointer' } : undefined}>
-      {izq !== undefined && <span style={{ ...suave, flexShrink: 0, minWidth: 40 }}>{izq}</span>}
-      <span style={{ flex: 1, ...recorte }}>{centro}</span>
-      {der !== undefined && <span style={{ flexShrink: 0 }}>{der}</span>}
+    <Tag type={onClick ? 'button' : undefined} onClick={onClick} className="payment-row res-fila"
+      style={{ gridTemplateColumns: izq !== undefined ? 'auto minmax(0,1fr) auto' : 'minmax(0,1fr) auto', ...(onClick ? { cursor: 'pointer' } : {}) }}>
+      {izq !== undefined && <span className="date" style={{ minWidth: 38 }}>{izq}</span>}
+      <span className="name" style={recorte}>{centro}</span>
+      {der !== undefined ? <span style={{ flexShrink: 0 }}>{der}</span> : <span />}
     </Tag>
   );
 }
 // Como mucho `max` filas; el resto, con un enlace a su sitio.
-function Lista({ items, max = 6, vacio, render, onMas }) {
-  if (!items.length) return <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--ink-3)' }}>{vacio}</p>;
+function Lista({ items, max = 5, vacio, render, onMas }) {
+  if (!items.length) return <div style={{ padding: '22px 0', textAlign: 'center', color: 'var(--ink-3)', fontSize: 14 }}>{vacio}</div>;
   return (
     <div>
       {items.slice(0, max).map(render)}
-      {items.length > max && <button type="button" onClick={onMas} style={{ ...enlace, marginTop: 6 }}>y {items.length - max} más →</button>}
+      {items.length > max && <button type="button" onClick={onMas} style={{ ...enlace, marginTop: 10 }}>y {items.length - max} más →</button>}
     </div>
   );
 }
 
-function Cifra({ etiqueta, valor, detalle, tono, onClick }) {
-  const color = { bien: 'var(--teal)', aviso: 'var(--orange)' }[tono];
+// Una cifra como las de siempre: tarjeta con su icono y su color en la esquina
+// y el detalle en una pastilla.
+const COLORES_CIFRA = ['taekwondo', 'ballet', 'funcional', 'pintura'];
+function Cifra({ etiqueta, valor, detalle, tono, onClick, act = 'taekwondo', icono }) {
+  const a = ACT_BY_ID[act];
+  const color = tono === 'aviso' ? 'var(--orange)' : (a?.color || 'var(--ink)');
   const Tag = onClick ? 'button' : 'div';
   return (
-    <Tag type={onClick ? 'button' : undefined} onClick={onClick} className="res-cifra" style={{ cursor: onClick ? 'pointer' : 'default' }}>
-      <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-3)' }}>{etiqueta}</span>
-      <span style={{ fontFamily: 'var(--font-display)', fontSize: 24, fontWeight: 800, lineHeight: 1.1, color: 'var(--ink)', letterSpacing: '-.02em' }}>{valor}</span>
-      <span style={{ fontSize: 12, fontWeight: 600, color: color || 'var(--ink-3)', ...recorte }}>{detalle || ' '}</span>
+    <Tag type={onClick ? 'button' : undefined} onClick={onClick} className={`stat-card ${a?.className || ''}`}
+      style={{ textAlign: 'left', fontFamily: 'inherit', cursor: onClick ? 'pointer' : 'default', width: '100%' }}>
+      <div className="corner" style={{ color: a?.color }}>{icono}</div>
+      <div className="l">{etiqueta}</div>
+      <div className="v">{valor}</div>
+      <div className="trend" style={{ background: `color-mix(in oklab, ${color} 14%, var(--bg-2))`, color }}>{detalle || '\u00a0'}</div>
     </Tag>
   );
 }
@@ -85,52 +89,58 @@ function Cifra({ etiqueta, valor, detalle, tono, onClick }) {
 function TuDia({ mi, ir, permisos, conTickets, como }) {
   const f = mi.fichaje, t = mi.tareas;
   const fich = f.estado === 'dentro' ? ['ok', `Trabajando${f.desde ? ` desde las ${hora(f.desde)}` : ''}`]
-    : f.estado === 'pausa' ? ['aviso', `En pausa desde las ${hora(f.ultimo)}`]
-      : ['info', f.desde ? 'Jornada de hoy cerrada' : 'Sin fichar hoy'];
-  // Viendo el de otra persona no hay botones: no es su panel.
-  const Parte = ({ children, accion, onAccion }) => (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-      {children}{accion && !como && <button type="button" onClick={onAccion} style={enlace}>{accion} →</button>}
-    </span>
+    : f.estado === 'pausa' ? ['upcoming', `En pausa desde las ${hora(f.ultimo)}`]
+      : ['upcoming', f.desde ? 'Jornada de hoy cerrada' : 'Sin fichar hoy'];
+  const Pill = ({ tipo, children, onClick }) => (
+    <button type="button" onClick={como ? undefined : onClick} className={`status-pill ${tipo}`}
+      style={{ border: 0, cursor: como ? 'default' : 'pointer', fontFamily: 'inherit' }}>{children}</button>
   );
   const a = mi.ausencias[0];
   return (
-    <div className="res-dia">
-      <b style={{ fontSize: 13 }}>{como ? `El día de ${como.nombre.split(' ')[0]}` : 'Tu día'}</b>
-      {permisos.secciones.fichaje && <Parte accion={f.estado === 'fuera' ? 'Fichar' : 'Ver'} onAccion={() => ir('fichaje')}><Estado tipo={fich[0]}>{fich[1]}</Estado></Parte>}
-      <Parte accion="Agenda" onAccion={() => ir('agenda')}>
-        <Estado tipo={t.vencidas ? 'aviso' : t.pendientes ? 'info' : 'ok'}>
-          {t.pendientes ? plural(t.pendientes, 'tarea hoy', 'tareas hoy') : t.hechas ? 'Tareas de hoy hechas' : 'Sin tareas hoy'}
-          {t.vencidas ? ` · ${plural(t.vencidas, 'atrasada', 'atrasadas')}` : ''}
-        </Estado>
-      </Parte>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+      <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--ink-2)', marginRight: 2 }}>{como ? `El día de ${como.nombre.split(' ')[0]}:` : 'Tu día:'}</span>
+      {permisos.secciones.fichaje && <Pill tipo={fich[0]} onClick={() => ir('fichaje')}>{fich[1]}</Pill>}
+      <Pill tipo={t.vencidas ? 'pending' : t.pendientes ? 'upcoming' : 'ok'} onClick={() => ir('agenda')}>
+        {t.pendientes ? plural(t.pendientes, 'tarea hoy', 'tareas hoy') : t.hechas ? 'Tareas de hoy hechas' : 'Sin tareas hoy'}
+        {t.vencidas ? ` · ${plural(t.vencidas, 'atrasada', 'atrasadas')}` : ''}
+      </Pill>
       {conTickets && permisos.secciones.support && (
-        <Parte accion="Soporte" onAccion={() => ir('support')}>
-          <Estado tipo={mi.ticketsMios ? 'aviso' : 'ok'}>{mi.ticketsMios ? `${plural(mi.ticketsMios, 'ticket abierto', 'tickets abiertos')} ${como ? (mi.ticketsMios === 1 ? 'suyo' : 'suyos') : (mi.ticketsMios === 1 ? 'tuyo' : 'tuyos')}` : 'Ningún ticket pendiente'}</Estado>
-        </Parte>
+        <Pill tipo={mi.ticketsMios ? 'pending' : 'ok'} onClick={() => ir('support')}>
+          {mi.ticketsMios ? `${plural(mi.ticketsMios, 'ticket abierto', 'tickets abiertos')} ${como ? (mi.ticketsMios === 1 ? 'suyo' : 'suyos') : (mi.ticketsMios === 1 ? 'tuyo' : 'tuyos')}` : 'Ningún ticket pendiente'}
+        </Pill>
       )}
-      {a && (
-        <Parte accion="Ver" onAccion={() => ir('fichaje')}>
-          <Estado tipo="info">{a.nombre}: {fechaCorta(a.desde)}{a.hasta !== a.desde ? ` – ${fechaCorta(a.hasta)}` : ''}{a.estado === 'pendiente' ? ' (por aprobar)' : ''}</Estado>
-        </Parte>
-      )}
+      {a && <Pill tipo="upcoming" onClick={() => ir('fichaje')}>{a.nombre}: {fechaCorta(a.desde)}{a.hasta !== a.desde ? ` – ${fechaCorta(a.hasta)}` : ''}{a.estado === 'pendiente' ? ' (por aprobar)' : ''}</Pill>}
     </div>
   );
 }
 
+// Lo pendiente (lo de la campanita), como tarjeta con sus filas.
 function ParaAtender({ avisos, irRuta, como }) {
-  if (como) return <div style={{ ...suave, fontSize: 13 }}>Así ve su Resumen {como.nombre}. Qué avisos le llegan a la campanita según su rango está en Club → Rangos y permisos.</div>;
-  if (avisos === null) return null;
+  const [todos, setTodos] = useState(false);
+  if (como) {
+    return (
+      <Bloque titulo="Para atender" sub={`Los avisos de ${como.nombre.split(' ')[0]} dependen de su rango`}>
+        <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>Están en Club → Rangos y permisos.</p>
+      </Bloque>
+    );
+  }
+  if (avisos === null) return <Bloque titulo="Para atender"><p style={{ fontSize: 13, color: 'var(--ink-3)' }}>Cargando…</p></Bloque>;
+  const lista = todos ? avisos : avisos.slice(0, 5);
   return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-      <b style={{ fontSize: 13, marginRight: 2 }}>Para atender</b>
-      {avisos.length === 0 ? <Estado tipo="ok">Todo al día</Estado> : avisos.map((x, i) => (
-        <button key={x.clave || i} type="button" onClick={() => irRuta(x.destino)} title={x.detalle || ''} className="res-aviso">
+    <Bloque titulo="Para atender" sub={avisos.length ? plural(avisos.length, 'cosa pendiente', 'cosas pendientes') : null}>
+      {avisos.length === 0 ? <div style={{ padding: '22px 0', textAlign: 'center' }}><span className="status-pill ok">Todo al día</span></div> : lista.map((x, i) => (
+        <button key={x.clave || i} type="button" onClick={() => irRuta(x.destino)} className="payment-row res-fila"
+          style={{ gridTemplateColumns: 'auto minmax(0,1fr) auto', cursor: 'pointer' }} title={x.detalle || ''}>
           <span className="res-aviso-n">{x.n || '•'}</span>
-          <span style={{ ...recorte, maxWidth: 340 }}>{x.n ? x.texto.replace(/^\d+\s/, '') : x.texto}</span>
+          <span style={{ minWidth: 0 }}>
+            <span className="name" style={{ ...recorte, display: 'block' }}>{x.n ? x.texto.replace(/^\d+\s/, '') : x.texto}</span>
+            {x.detalle && <span className="date" style={{ ...recorte, display: 'block' }}>{x.detalle}</span>}
+          </span>
+          <I.Arrow style={{ color: 'var(--ink-3)' }} />
         </button>
       ))}
-    </div>
+      {avisos.length > 5 && <button type="button" onClick={() => setTodos(v => !v)} style={{ ...enlace, marginTop: 10 }}>{todos ? 'Ver menos' : `Ver ${avisos.length - 5} más`}</button>}
+    </Bloque>
   );
 }
 
@@ -409,7 +419,8 @@ function vistaTrabajador({ mi, ir }) {
 
 // ── La página ───────────────────────────────────────────────────────────────
 export default function AdminResumen({ permisos, ir, irRuta, refreshTrigger }) {
-  const [vista, setVista] = useState(() => { try { return localStorage.getItem('aim_resumen_vista') || ''; } catch { return ''; } });
+  // Siempre abre en el resumen de tu rango; cambiar de pestaña es solo para mirar.
+  const [vista, setVista] = useState('');
   const [como, setComo] = useState('');
   const [d, setD] = useState(null);
   const [error, setError] = useState(null);
@@ -442,7 +453,7 @@ export default function AdminResumen({ permisos, ir, irRuta, refreshTrigger }) {
       .then(r => (r.ok ? r.json() : { clases: [] })).then(x => setClases(x.clases || [])).catch(() => setClases([]));
   }, [conClases, d?.hoy, d?.vista, idComo, refreshTrigger]);
 
-  const elegirVista = (v) => { setVista(v); setComo(''); try { localStorage.setItem('aim_resumen_vista', v); } catch { /* sin almacenamiento */ } };
+  const elegirVista = (v) => { setVista(v); setComo(''); };
 
   if (error) return <div className="res-bloque"><p style={{ margin: 0 }}>{error}</p><button type="button" className="btn btn-sm btn-outline" style={{ marginTop: 10 }} onClick={cargar}>Reintentar</button></div>;
   if (!d) return <p style={{ color: 'var(--ink-3)' }}>Cargando el resumen…</p>;
@@ -457,17 +468,31 @@ export default function AdminResumen({ permisos, ir, irRuta, refreshTrigger }) {
   const hacer = { instructor: vistaInstructor, secretaria: vistaSecretaria, direccion: vistaDireccion, it: vistaIT, trabajador: vistaTrabajador }[d.vista];
   const v = hacer ? hacer({ d: d.datos, mi: d.mi, clases, ir, irRuta, como: d.como }) : null;
 
+  // Iconos de las cuatro cifras de cada vista (el color va por posición, como antes).
+  const ICONOS = {
+    it: [<I.Bell key="i" />, <I.User key="i" />, <I.Users key="i" />, <I.Clock key="i" />],
+    direccion: [<I.Wallet key="i" />, <I.CreditCard key="i" />, <I.Chart key="i" />, <I.Users key="i" />],
+    secretaria: [<I.Wallet key="i" />, <I.CreditCard key="i" />, <I.Calendar key="i" />, <I.Users key="i" />],
+    instructor: [<I.Calendar key="i" />, <I.Users key="i" />, <I.Phone key="i" />, <I.Star key="i" />],
+    trabajador: [<I.Check key="i" />, <I.Clock key="i" />, <I.Bell key="i" />, <I.Calendar key="i" />],
+  }[d.vista] || [];
+  const piezas = v ? v.columnas.flat().filter(Boolean) : [];
+  const [principal, ...resto] = piezas;
+
   return (
     <div className="res">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-        <div style={{ fontSize: 14, color: 'var(--ink-2)' }}>
-          <b style={{ color: 'var(--ink)' }}>{saludo}{d.nombre ? `, ${d.nombre}` : ''}.</b> <span style={{ color: 'var(--ink-3)' }}>{fecha}</span>
+        <div style={{ display: 'grid', gap: 8 }}>
+          <div style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 800, letterSpacing: '-.015em' }}>
+            {saludo}{d.nombre ? `, ${d.nombre}` : ''} <span style={{ fontFamily: 'inherit', fontSize: 14, fontWeight: 500, color: 'var(--ink-3)', letterSpacing: 0 }}>· {fecha}</span>
+          </div>
+          <TuDia mi={d.mi} ir={ir} permisos={permisos} conTickets={!esIT} como={d.como} />
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           {d.personas && (
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--ink-3)', fontWeight: 700 }}>
               Ver como
-              <select value={d.como?.id || ''} onChange={e => setComo(e.target.value)} style={{ fontFamily: 'inherit', fontSize: 13, padding: '5px 8px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)', maxWidth: 220 }}>
+              <select value={d.como?.id || ''} onChange={e => setComo(e.target.value)} style={{ fontFamily: 'inherit', fontSize: 13, padding: '6px 8px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)', maxWidth: 220 }}>
                 {!d.como && <option value="">Tú</option>}
                 {d.personas.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
               </select>
@@ -483,37 +508,32 @@ export default function AdminResumen({ permisos, ir, irRuta, refreshTrigger }) {
         </div>
       </div>
 
-      <TuDia mi={d.mi} ir={ir} permisos={permisos} conTickets={!esIT} como={d.como} />
-      <ParaAtender avisos={pendientes} irRuta={irRuta} como={d.como} />
-
-      {v && <div className="res-cifras">{v.cifras}</div>}
       {v && (
-        <div className="res-cols">
-          {v.columnas.map((col, i) => <div key={i} className="res-col">{col}</div>)}
+        <div className="kpis" style={{ marginBottom: 0 }}>
+          {v.cifras.map((c, i) => React.cloneElement(c, { act: COLORES_CIFRA[i % 4], icono: ICONOS[i] }))}
         </div>
       )}
 
+      <div className="res-fila-1">
+        {principal || null}
+        <ParaAtender avisos={pendientes} irRuta={irRuta} como={d.como} />
+      </div>
+      {resto.length > 0 && <div className="res-fila-2">{resto}</div>}
+
       <style>{`
-        .res{display:grid;gap:12px}
+        .res{display:grid;gap:18px}
         .res-tabs{display:inline-flex;border:1px solid var(--line);border-radius:999px;background:var(--bg-2);padding:3px;gap:2px;flex-wrap:wrap}
-        .res-tabs button{padding:5px 12px;font-size:12px;font-weight:800;font-family:inherit;cursor:pointer;border:0;border-radius:999px;background:transparent;color:var(--ink-2)}
-        .res-tabs button.on{background:var(--ink);color:var(--bg-2)}
-        .res-dia{display:flex;flex-wrap:wrap;align-items:center;gap:8px 22px;background:var(--bg-2);border:1px solid var(--line);border-radius:14px;padding:10px 16px}
-        .res-aviso{display:inline-flex;align-items:center;gap:7px;padding:4px 12px 4px 4px;border-radius:999px;border:1px solid var(--line);background:var(--bg-2);cursor:pointer;font-family:inherit;font-size:12px;font-weight:700;color:var(--ink);max-width:100%}
-        .res-aviso:hover{border-color:color-mix(in oklab,var(--purple) 45%,var(--line))}
-        .res-aviso-n{min-width:22px;height:22px;padding:0 6px;border-radius:999px;display:grid;place-items:center;font-size:11px;font-weight:800;background:color-mix(in oklab,var(--purple) 12%,var(--bg-2));color:var(--purple)}
-        .res-cifras{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
-        .res-cifra{display:grid;gap:1px;text-align:left;font-family:inherit;background:var(--bg-2);border:1px solid var(--line);border-radius:14px;padding:11px 14px;min-width:0}
-        button.res-cifra:hover{border-color:color-mix(in oklab,var(--purple) 45%,var(--line))}
-        .res-cols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;align-items:start}
-        .res-col{display:grid;gap:12px;min-width:0}
-        .res-bloque{background:var(--bg-2);border:1px solid var(--line);border-radius:14px;padding:12px 14px;min-width:0}
-        .res-fila{display:flex;align-items:center;gap:10px;padding:5px 0;border:0;border-top:1px solid var(--line);font-size:13px;min-width:0;width:100%;background:none;font-family:inherit;color:var(--ink);text-align:left}
-        button.res-fila:hover{background:color-mix(in oklab,var(--purple) 5%,transparent)}
+        .res-tabs button{padding:6px 13px;font-size:12px;font-weight:800;font-family:inherit;cursor:pointer;border:0;border-radius:999px;background:transparent;color:var(--ink-2)}
+        .res-tabs button.on{background:var(--purple);color:#fff}
+        .res-bloque{background:var(--bg-2);border:1px solid var(--line);border-radius:18px;padding:22px;min-width:0}
+        .res-fila-1{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:18px;align-items:start}
+        .res-fila-2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));gap:18px;align-items:start}
+        .res-fila{width:100%;font-family:inherit;color:var(--ink);text-align:left;padding:11px 14px!important}
+        button.res-fila:hover{border-color:color-mix(in oklab,var(--purple) 40%,var(--line))}
+        .res-aviso-n{min-width:26px;height:24px;padding:0 7px;border-radius:999px;display:grid;place-items:center;font-size:12px;font-weight:800;background:color-mix(in oklab,var(--purple) 12%,var(--bg-2));color:var(--purple)}
         .resumen-graf{--serie-ing:#5233A8;--serie-gas:#C2692A}
         html[data-theme="dark"] .resumen-graf{--serie-ing:#8F75E0;--serie-gas:#C97C3E}
-        @media (max-width:1100px){.res-cols{grid-template-columns:repeat(2,minmax(0,1fr))}}
-        @media (max-width:760px){.res-cifras{grid-template-columns:repeat(2,minmax(0,1fr))}.res-cols{grid-template-columns:minmax(0,1fr)}}
+        @media (max-width:1000px){.res-fila-1{grid-template-columns:minmax(0,1fr)}.kpis{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
       `}</style>
     </div>
   );

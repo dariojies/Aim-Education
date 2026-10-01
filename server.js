@@ -676,6 +676,31 @@ async function initDb() {
         }
         // Quién da el evento. Esto sí sale en los datos del evento.
         await client.query(`ALTER TABLE aim_eventos ADD COLUMN IF NOT EXISTS docente_id UUID REFERENCES users(user_id) ON DELETE SET NULL`);
+        // Programar un evento (#338): hasta esa fecha y hora no sale en la web.
+        await client.query(`ALTER TABLE aim_eventos ADD COLUMN IF NOT EXISTS publicar_at TIMESTAMPTZ`);
+        // Correos programados de la bandeja (#338): se guardan hasta que salen.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_correos_programados (
+                id SERIAL PRIMARY KEY,
+                buzon_email TEXT NOT NULL,
+                general BOOLEAN NOT NULL DEFAULT false,
+                user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+                autor TEXT,
+                para TEXT NOT NULL,
+                cc TEXT,
+                asunto TEXT NOT NULL,
+                texto TEXT,
+                modo VARCHAR(20),
+                origen JSONB,
+                adjuntos JSONB,
+                enviar_at TIMESTAMPTZ NOT NULL,
+                estado VARCHAR(12) NOT NULL DEFAULT 'pendiente',
+                error TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                enviado_at TIMESTAMPTZ
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_correos_programados_pendientes ON aim_correos_programados (enviar_at) WHERE estado = 'pendiente'`);
 
         // Las tareas de cada uno. Son privadas: solo las ve y las toca quien las
         // escribe, y por eso no hay ningún endpoint de administración sobre
@@ -2464,6 +2489,33 @@ app.post('/api/password/olvido', async (req, res) => {
     }
 });
 
+// Enviar a alguien su acceso (ticket #343): un enlace para que ponga su
+// contraseña, igual que el de «¿Olvidaste tu contraseña?» pero válido 7 días.
+// Para dar de alta en la web al personal (fichar, pasar lista) o a una familia.
+const DIAS_ENLACE_ACCESO = 7;
+app.post('/api/admin/usuarios/:id/enviar-acceso', authenticateSession, requireAdmin, async (req, res) => {
+    if (!mandaAlMenos(req.userSession?.rol, 'secretaria')) return res.status(403).json({ error: 'Solo secretaría y dirección pueden enviar accesos.' });
+    if (!mailTransporter) return res.status(503).json({ error: 'El correo no está configurado en el servidor.' });
+    try {
+        const u = (await pool.query(`SELECT user_id, name, email FROM users WHERE user_id = $1`, [req.params.id])).rows[0];
+        if (!u) return res.status(404).json({ error: 'Esa persona no existe.' });
+        if (!u.email || esCorreoInterno(u.email)) return res.status(400).json({ error: 'No tiene un correo de verdad en su ficha: ponle uno antes de enviarle el acceso.' });
+        const token = crypto.randomBytes(32).toString('base64url');
+        await pool.query(
+            `INSERT INTO aim_password_resets (user_id, token_hash, expires_at, ip) VALUES ($1, $2, NOW() + ($3 || ' days')::interval, $4)`,
+            [u.user_id, huellaEnlace(token), String(DIAS_ENLACE_ACCESO), ipDe(req) || null]);
+        const enlace = `${URL_PUBLICA_WEB}/auth?mode=restablecer&token=${encodeURIComponent(token)}`;
+        await mailTransporter.sendMail({
+            from: process.env.EMAIL_USER, to: u.email,
+            ...(await correoSistema('acceso_invitacion', { nombre: u.name || '', correo: u.email, enlace, dias: String(DIAS_ENLACE_ACCESO) })),
+        });
+        res.json({ success: true, enviadoA: u.email, dias: DIAS_ENLACE_ACCESO });
+    } catch (err) {
+        console.error('[enviar acceso]', err.message);
+        res.status(500).json({ error: 'No se ha podido enviar el acceso.' });
+    }
+});
+
 // ¿Sirve aún este enlace? Para avisar nada más abrirlo, y no después de escribir la contraseña.
 app.get('/api/password/restablecer/:token', async (req, res) => {
     try {
@@ -2637,10 +2689,11 @@ app.post('/api/register', async (req, res) => {
         const hash = await bcrypt.hash(password, 12);
         const result = await pool.query(
             // El teléfono se pedía y no se guardaba; ahora se guarda, con el DNI.
-            `INSERT INTO users (name, surname, email, password, role, phone, dni)
-             VALUES ($1, $2, $3, $4, 'student', $5, $6)
+            // Con el club puesto (#340): sin él la cuenta no salía en ningún sitio del panel.
+            `INSERT INTO users (name, surname, email, password, role, phone, dni, club_id)
+             VALUES ($1, $2, $3, $4, 'student', $5, $6, $7)
              RETURNING user_id, name, surname, email`,
-            [firstName.trim(), (lastName || '').trim(), emailLower, hash, String(phone || '').trim().slice(0, 40) || null, dni]
+            [firstName.trim(), (lastName || '').trim(), emailLower, hash, String(phone || '').trim().slice(0, 40) || null, dni, AIM_CLUB_ID]
         );
         const newUser = result.rows[0];
         // Lo que ha aceptado, para poder demostrarlo (ticket #255).
@@ -3558,6 +3611,8 @@ function mapEvent(r) {
         precioSocio: r.precio_socio == null ? null : Number(r.precio_socio),
         docenteId: r.docente_id || null,
         docente: r.docente || null,
+        // Programado (#338): hasta esta hora no sale en la web.
+        publicarAt: r.publicar_at || null,
         activity: r.activity || 'taekwondo',
         posterUrl: r.poster_url,
     };
@@ -3572,7 +3627,9 @@ app.get('/api/events', async (req, res) => {
         const result = await pool.query(
             `SELECT e.*, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS docente
              FROM aim_eventos e LEFT JOIN users u ON u.user_id = e.docente_id
-             ${all ? '' : "WHERE COALESCE(e.end_date, e.event_date) >= (now() AT TIME ZONE 'Europe/Madrid')::date"}
+             -- Los programados (#338) no salen hasta su hora de publicación.
+             WHERE (e.publicar_at IS NULL OR e.publicar_at <= NOW())
+             ${all ? '' : "AND COALESCE(e.end_date, e.event_date) >= (now() AT TIME ZONE 'Europe/Madrid')::date"}
              ORDER BY e.event_date ASC`
         );
         res.set('Cache-Control', 'public, max-age=120, stale-while-revalidate=30');
@@ -3584,6 +3641,17 @@ app.get('/api/events', async (req, res) => {
 });
 
 // Admin: lista completa de eventos sin caché (para el panel de gestión).
+// Una fecha y hora futura (lo que llega de un «datetime-local» o ISO), o null.
+function fechaFutura(v) {
+    const d = new Date(v);
+    return v && !Number.isNaN(d.getTime()) && d.getTime() > Date.now() - 60_000 ? d : null;
+}
+// Publicar lo programado (#338): las noticias cuya hora ha llegado.
+async function publicarProgramado() {
+    await pool.query(`UPDATE aim_education_posts SET status = 'published', updated_at = NOW() WHERE status = 'scheduled' AND published_at <= NOW()`).catch(() => {});
+}
+setInterval(() => { publicarProgramado().catch(() => {}); }, 60_000);
+
 // Quita del evento lo que es dinero, para quien no tiene por que verlo.
 const sinDinero = (e) => { const { price, precio, precioSocio, ...resto } = e; return resto; };
 
@@ -3604,14 +3672,16 @@ app.get('/api/admin/events', authenticateSession, async (req, res) => {
 app.post('/api/admin/events', authenticateSession, requirePermiso('editarEventos'), async (req, res) => {
     const { title, description, date, endDate, time, endTime, venue, price, activity, posterUrl, precio, precioSocio, docenteId } = req.body;
     if (!title || !date) return res.status(400).json({ error: 'Título y fecha son obligatorios.' });
+    const publicarAt = req.body.publicarAt ? fechaFutura(req.body.publicarAt) : null;
+    if (req.body.publicarAt && !publicarAt) return res.status(400).json({ error: 'La fecha de publicación ya ha pasado: pon una futura o déjala vacía para publicarlo ya.' });
     const id = crypto.randomUUID();
     try {
         await pool.query(
-            `INSERT INTO aim_eventos (id, title, description, event_date, end_date, time, end_time, venue, price, activity, poster_url, precio, precio_socio, docente_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+            `INSERT INTO aim_eventos (id, title, description, event_date, end_date, time, end_time, venue, price, activity, poster_url, precio, precio_socio, docente_id, publicar_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
             [id, title, description || null, date, endDate || null, time || null, endTime || null,
              venue?.trim() || LUGAR_POR_DEFECTO, price || null, activity || 'taekwondo', posterUrl || null,
-             numONull(precio), numONull(precioSocio), docenteId || null]
+             numONull(precio), numONull(precioSocio), docenteId || null, publicarAt]
         );
         const result = await pool.query('SELECT * FROM aim_eventos WHERE id = $1', [id]);
         res.status(201).json(mapEvent(result.rows[0]));
@@ -3624,15 +3694,20 @@ app.post('/api/admin/events', authenticateSession, requirePermiso('editarEventos
 app.put('/api/admin/events/:id', authenticateSession, requirePermiso('editarEventos'), async (req, res) => {
     const { title, description, date, endDate, time, endTime, venue, price, activity, posterUrl, precio, precioSocio, docenteId } = req.body;
     if (!title || !date) return res.status(400).json({ error: 'Título y fecha son obligatorios.' });
+    // Sin tocar (undefined) se queda la que tenía; vacía, se publica ya; con fecha, futura.
+    const tocaPublicar = req.body.publicarAt !== undefined;
+    const publicarAt = req.body.publicarAt ? fechaFutura(req.body.publicarAt) : null;
+    if (req.body.publicarAt && !publicarAt) return res.status(400).json({ error: 'La fecha de publicación ya ha pasado: pon una futura o déjala vacía para publicarlo ya.' });
     try {
         const result = await pool.query(
             `UPDATE aim_eventos
              SET title=$1, description=$2, event_date=$3, end_date=$4, time=$5, end_time=$6, venue=$7, price=$8, activity=$9, poster_url=$10,
-                 precio=$12, precio_socio=$13, docente_id=$14, updated_at=NOW()
+                 precio=$12, precio_socio=$13, docente_id=$14, updated_at=NOW(),
+                 publicar_at = CASE WHEN $15::boolean THEN $16::timestamptz ELSE publicar_at END
              WHERE id=$11 RETURNING *`,
             [title, description || null, date, endDate || null, time || null, endTime || null,
              venue?.trim() || LUGAR_POR_DEFECTO, price || null, activity || 'taekwondo', posterUrl || null, req.params.id,
-             numONull(precio), numONull(precioSocio), docenteId || null]
+             numONull(precio), numONull(precioSocio), docenteId || null, tocaPublicar, publicarAt]
         );
         if (result.rowCount === 0) return res.status(404).json({ error: 'Evento no encontrado.' });
         res.json(mapEvent(result.rows[0]));
@@ -4563,6 +4638,13 @@ async function fichaDeCorreo(email) {
 }
 const bandeja = crearRouterBandeja({ pool, permisos, companeros: companerosCorreo, fichaDe: fichaDeCorreo });
 app.use('/api/admin/bandeja', authenticateSession, requireAdmin, requireSeccion('bandeja'), bandeja.router);
+// Las reglas de asignación (#339) también se aplican a lo que llega aunque nadie
+// abra la bandeja: cada 5 minutos.
+async function reglasCorreoGeneral() { await bandeja.aplicarReglasBandeja(); }
+setInterval(() => { reglasCorreoGeneral().catch(() => {}); }, 5 * 60_000);
+// Correos programados de la bandeja (#338): cada minuto salen los que tocan.
+async function correosProgramadosBandeja() { await bandeja.enviarProgramados(); }
+setInterval(() => { correosProgramadosBandeja().catch(() => {}); }, 60_000);
 
 // =============================================================================
 // OBJETOS PERDIDOS (ticket #208)
@@ -12959,14 +13041,19 @@ app.get('/api/admin/posts', authenticateSession, async (req, res) => {
 });
 
 app.post('/api/admin/posts', authenticateSession, async (req, res) => {
-    const { title, excerpt, content, coverImageUrl, cover_image_url, category, status, slug } = req.body;
+    const { title, excerpt, content, coverImageUrl, cover_image_url, category, slug } = req.body;
+    let { status } = req.body;
     const imageUrl = coverImageUrl || cover_image_url;
     if (!title || !content) return res.status(400).json({ error: 'Título y contenido son obligatorios.' });
+    // Programada (#338): se publica sola el día y la hora que se diga.
+    const programada = status === 'scheduled' ? fechaFutura(req.body.publishAt) : null;
+    if (status === 'scheduled' && !programada) return res.status(400).json({ error: 'Pon una fecha y hora de publicación que no haya pasado.' });
+    if (!['draft', 'published', 'scheduled'].includes(status)) status = 'draft';
 
     const id = crypto.randomUUID();
     const finalSlug = slug ? slugify(slug) : slugify(title);
     const authorName = `${req.userSession.firstName || ''} ${req.userSession.lastName || ''}`.trim();
-    const publishedAt = status === 'published' ? new Date() : null;
+    const publishedAt = status === 'published' ? new Date() : programada;
 
     try {
         await pool.query(`
@@ -12983,15 +13070,20 @@ app.post('/api/admin/posts', authenticateSession, async (req, res) => {
 });
 
 app.put('/api/admin/posts/:id', authenticateSession, async (req, res) => {
-    const { title, excerpt, content, coverImageUrl, cover_image_url, category, status, slug } = req.body;
+    const { title, excerpt, content, coverImageUrl, cover_image_url, category, slug } = req.body;
+    let { status } = req.body;
     const imageUrl = coverImageUrl || cover_image_url;
+    const programada = status === 'scheduled' ? fechaFutura(req.body.publishAt) : null;
+    if (status === 'scheduled' && !programada) return res.status(400).json({ error: 'Pon una fecha y hora de publicación que no haya pasado.' });
+    if (!['draft', 'published', 'scheduled'].includes(status)) status = 'draft';
     try {
         const current = await pool.query('SELECT * FROM aim_education_posts WHERE id = $1', [req.params.id]);
         if (current.rowCount === 0) return res.status(404).json({ error: 'Entrada no encontrada.' });
 
         const wasPublished = current.rows[0].status === 'published';
         const willPublish = status === 'published';
-        const publishedAt = willPublish && !wasPublished ? new Date() : current.rows[0].published_at;
+        const publishedAt = status === 'scheduled' ? programada
+            : willPublish && !wasPublished ? new Date() : current.rows[0].published_at;
         const finalSlug = slug ? slugify(slug) : slugify(title);
 
         await pool.query(`
@@ -16657,6 +16749,80 @@ app.post('/api/contacto', async (req, res) => {
         }
         res.status(201).json({ success: true, id: r.rows[0].id });
     } catch (err) { res.status(500).json({ error: 'No se ha podido enviar. Inténtalo de nuevo o llámanos al 956 742 216.' }); }
+});
+
+// ── Contactos sin ficha (#340) ───────────────────────────────────────────────
+// Cuentas que existen pero no son del club: las creó la sincronización de
+// HubSpot de Aim-Tul (ya apagada) o se registraron sin club. Desde aquí se
+// pasan a ficha del club o se descartan. Solo se borra una cuenta que no tiene
+// nada asociado en ninguna tabla (clases, cobros, familia, Learning Dungeon…).
+const SQL_NOMBRE_PLANO = (a) => `lower(translate(TRIM(CONCAT(${a}.name, ' ', COALESCE(${a}.surname, ''))), 'áéíóúÁÉÍÓÚàèìòùÀÈÌÒÙñÑüÜ', 'aeiouaeiouaeiouaeiounnuu'))`;
+let columnasUsuario = null;
+async function referenciasDeUsuario(userId, cliente = pool) {
+    if (!columnasUsuario) {
+        columnasUsuario = (await cliente.query(
+            `SELECT table_name, column_name FROM information_schema.columns
+             WHERE table_schema = 'public' AND data_type = 'uuid' AND NOT (table_name = 'users' AND column_name = 'user_id')
+               -- Lo que no es «dato» de la persona y se borra con ella: enlaces de
+               -- contraseña, avisos vistos y preferencias de la agenda.
+               AND table_name NOT IN ('aim_password_resets', 'aim_avisos_vistos', 'aim_agenda_prefs')`)).rows;
+    }
+    const hay = [];
+    for (const c of columnasUsuario) {
+        const r = await cliente.query(`SELECT 1 FROM "${c.table_name}" WHERE "${c.column_name}" = $1 LIMIT 1`, [userId]).catch(() => ({ rowCount: 0 }));
+        if (r.rowCount) hay.push(c.table_name);
+    }
+    return [...new Set(hay)];
+}
+
+app.get('/api/admin/contactos/sin-ficha', authenticateSession, requireSeccion('contactos'), async (req, res) => {
+    const q = String(req.query.q || '').trim().slice(0, 80);
+    const pagina = Math.max(0, Number(req.query.pagina) || 0);
+    try {
+        const vals = [AIM_CLUB_ID];
+        let filtro = '';
+        if (q) { vals.push(`%${q.toLowerCase()}%`); filtro = `AND (${SQL_NOMBRE_PLANO('u')} LIKE lower(translate($2, 'áéíóúÁÉÍÓÚñÑ', 'aeiouaeiounn')) OR LOWER(u.email) LIKE $2)`; }
+        const r = await pool.query(
+            `SELECT u.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre, u.email, u.phone, u.created_at, u.username,
+                    (SELECT json_build_object('id', f.user_id, 'nombre', TRIM(CONCAT(f.name, ' ', COALESCE(f.surname, '')))) FROM users f
+                     WHERE f.club_id = $1 AND ${SQL_NOMBRE_PLANO('f')} = ${SQL_NOMBRE_PLANO('u')} LIMIT 1) AS parecido,
+                    (SELECT COUNT(*) FROM aim_contactos k WHERE LOWER(k.email) = LOWER(u.email))::int AS consultas
+             FROM users u WHERE u.club_id IS NULL ${filtro}
+             ORDER BY u.created_at DESC NULLS LAST, u.name LIMIT 50 OFFSET ${pagina * 50}`, vals);
+        const cuenta = await pool.query(`SELECT COUNT(*)::int n FROM users u WHERE u.club_id IS NULL ${filtro.replace(/\$2/g, '$1')}`, q ? [vals[1]] : []);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            total: cuenta.rows[0].n, pagina, porPagina: 50,
+            contactos: r.rows.map(x => ({
+                id: x.user_id, nombre: x.nombre, email: correoVisible(x.email), telefono: x.phone, fecha: x.created_at,
+                origen: /^[a-z( -]{2,4}0000/.test(x.username || '') ? 'HubSpot' : 'Otra app', parecido: x.parecido, consultas: x.consultas,
+            })),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.post('/api/admin/contactos/sin-ficha/:id/alta', authenticateSession, requireSeccion('contactos'), async (req, res) => {
+    try {
+        const r = await pool.query(`UPDATE users SET club_id = $1 WHERE user_id = $2 AND club_id IS NULL RETURNING user_id`, [AIM_CLUB_ID, req.params.id]);
+        if (!r.rowCount) return res.status(404).json({ error: 'Esa cuenta ya no está sin ficha.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+// Descartar (borrar) una o varias. La que tenga algo asociado no se toca.
+app.post('/api/admin/contactos/sin-ficha/descartar', authenticateSession, requireSeccion('contactos'), async (req, res) => {
+    const ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).map(String).filter(x => /^[0-9a-f-]{36}$/i.test(x)).slice(0, 200);
+    if (!ids.length) return res.status(400).json({ error: 'No has marcado ninguna.' });
+    const hechos = [], noSe = [];
+    try {
+        for (const id of ids) {
+            const u = (await pool.query(`SELECT user_id, name, surname FROM users WHERE user_id = $1 AND club_id IS NULL`, [id])).rows[0];
+            if (!u) continue;
+            const refs = await referenciasDeUsuario(id);
+            if (refs.length) { noSe.push({ id, nombre: `${u.name || ''} ${u.surname || ''}`.trim(), motivo: refs.join(', ') }); continue; }
+            await pool.query(`DELETE FROM users WHERE user_id = $1 AND club_id IS NULL`, [id]);
+            hechos.push(id);
+        }
+        res.json({ success: true, borrados: hechos.length, noSe });
+    } catch (err) { res.status(500).json({ error: err.message, borrados: hechos.length, noSe }); }
 });
 
 app.get('/api/admin/contactos', authenticateSession, requireSeccion('contactos'), async (req, res) => {
