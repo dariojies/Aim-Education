@@ -14,6 +14,7 @@ import PublicLegal from './components/PublicLegal';
 import PublicContacto from './components/PublicContacto';
 import PublicConocenos from './components/PublicConocenos';
 import { CookieBanner, registrarVisita } from './components/Cookies';
+import AvisosWeb from './components/AvisosWeb';
 
 export const RouterContext = createContext({ path: '/', go: () => {}, user: null });
 export const useRouter = () => useContext(RouterContext);
@@ -73,6 +74,7 @@ export default function App() {
     window.addEventListener('aim-cookies-cambio', f);
     return () => window.removeEventListener('aim-cookies-cambio', f);
   }, []);
+  const webPublica = !pathname.startsWith('/admin') && !pathname.startsWith('/dashboard');
   const search = path.includes('?') ? path.slice(path.indexOf('?')) : '';
   const params = new URLSearchParams(search);
   const seg = pathname.split('/').filter(Boolean);
@@ -112,7 +114,7 @@ export default function App() {
     if (!userChecked) return null;
     if (!user || !user.canAccessAdmin) { go('/auth'); return null; }
     // 'recibos' se mantiene como alias antiguo: esa sección ahora son los gastos del club.
-    const adminSub = { campamento: 'camp', alumnos: 'students', familias: 'familias', clases: 'classes', eventos: 'events', noticias: 'news', gastos: 'payments', recibos: 'payments', facturacion: 'billing', soporte: 'support', reportes: 'reportes', fichaje: 'fichaje', speaking: 'speaking', faltas: 'faltas', comunicaciones: 'comunicaciones', crm: 'comunicaciones', almacen: 'almacen', consultas: 'contactos', rangos: 'rangos', correo: 'bandeja' }[seg[1]] || 'overview';
+    const adminSub = { campamento: 'camp', alumnos: 'students', familias: 'familias', clases: 'classes', eventos: 'events', noticias: 'news', gastos: 'payments', recibos: 'payments', facturacion: 'billing', soporte: 'support', reportes: 'reportes', fichaje: 'fichaje', speaking: 'speaking', faltas: 'faltas', comunicaciones: 'comunicaciones', crm: 'comunicaciones', almacen: 'almacen', consultas: 'contactos', rangos: 'rangos', correo: 'bandeja', avisos: 'ctas' }[seg[1]] || 'overview';
     // /admin/soporte/180 abre ese ticket directamente, para poder pasar el enlace.
     const ticketId = seg[1] === 'soporte' && /^\d+$/.test(seg[2] || '') ? Number(seg[2]) : null;
     screen = <AdminApp user={user} onLogout={handleLogout} subroute={adminSub} ticketId={ticketId} />;
@@ -123,7 +125,10 @@ export default function App() {
   return (
     <RouterContext.Provider value={{ path, go, user }}>
       <Suspense fallback={<div style={{ padding: 40, textAlign: 'center', color: 'var(--ink-3)', fontSize: 14 }}>Cargando…</div>}>
+        {/* Los avisos de la web (#341): en las páginas públicas, no en el panel ni en el área de familias. */}
+        {webPublica && <AvisosWeb ruta={pathname} go={go} arriba />}
         {screen}
+        {webPublica && <AvisosWeb ruta={pathname} go={go} />}
       </Suspense>
       {/* El aviso de cookies, en toda la web salvo el panel de administración
           (allí solo está la cookie de la sesión, que no pide consentimiento). */}

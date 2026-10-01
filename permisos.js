@@ -102,6 +102,8 @@ export function permisosDe(rol) {
             groups: !trabajador,
             instructors: !instructor,
             portada: !instructor,
+            // Los avisos y llamadas a la acción de la web (#341), como la portada.
+            ctas: !instructor,
             // Las consultas del formulario de contacto de la web (ticket #295):
             // las atienden secretaría y dirección.
             contactos: mandaAlMenos(rol, 'secretaria'),

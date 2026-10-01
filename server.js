@@ -1633,6 +1633,32 @@ async function initDb() {
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_web_visitas_visitante ON aim_web_visitas (visitante, created_at DESC)`);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_web_visitas_fecha ON aim_web_visitas (created_at)`);
+        // Avisos y llamadas a la acción de la web (#341): una barra arriba, una
+        // ventana o un botón flotante, en las páginas y fechas que se elijan, con
+        // sus vistas y clics.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_ctas (
+                id SERIAL PRIMARY KEY,
+                nombre VARCHAR(120) NOT NULL,
+                formato VARCHAR(12) NOT NULL DEFAULT 'barra',
+                titulo VARCHAR(160),
+                texto VARCHAR(600),
+                boton_texto VARCHAR(60),
+                boton_url VARCHAR(500),
+                color VARCHAR(20) NOT NULL DEFAULT '#5233A8',
+                paginas TEXT[] NOT NULL DEFAULT '{}',
+                retraso_s INTEGER NOT NULL DEFAULT 5,
+                desde TIMESTAMPTZ,
+                hasta TIMESTAMPTZ,
+                activa BOOLEAN NOT NULL DEFAULT true,
+                vistas INTEGER NOT NULL DEFAULT 0,
+                clics INTEGER NOT NULL DEFAULT 0,
+                cierres INTEGER NOT NULL DEFAULT 0,
+                creada_por UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
         // Tamaño de cada segmento guardado, una foto al día (#341).
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_segmentos_historial (
@@ -4263,6 +4289,7 @@ for (const [ruta, seccion] of [
     ['/api/admin/posts', 'news'],
     ['/api/admin/instructores', 'instructors'],
     ['/api/admin/landing', 'portada'],
+    ['/api/admin/ctas', 'ctas'],
     ['/api/admin/examenes', 'titulos'],
     ['/api/admin/objetos', 'objetos'],
 ]) {
@@ -16941,6 +16968,97 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 // Freno contra el spam: como mucho 5 consultas por IP y hora.
 const contactosPorIp = new Map();
 const escHtml = (t) => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+// ── Avisos y llamadas a la acción de la web (#341) ───────────────────────────
+const FORMATOS_CTA = ['barra', 'ventana', 'boton'];
+const mapCta = (x, admin = false) => ({
+    id: x.id, formato: x.formato, titulo: x.titulo || '', texto: x.texto || '', botonTexto: x.boton_texto || '', botonUrl: x.boton_url || '',
+    color: x.color, paginas: x.paginas || [], retraso: x.retraso_s,
+    ...(admin ? { nombre: x.nombre, desde: x.desde, hasta: x.hasta, activa: x.activa, vistas: x.vistas, clics: x.clics, cierres: x.cierres, creadaAt: x.created_at, actualizadaAt: x.updated_at } : {}),
+});
+let ctasCache = null;
+app.get('/api/ctas', async (req, res) => {
+    try {
+        if (!ctasCache || Date.now() - ctasCache.at > 60_000) {
+            const r = await pool.query(
+                `SELECT * FROM aim_ctas WHERE activa AND (desde IS NULL OR desde <= NOW()) AND (hasta IS NULL OR hasta > NOW())
+                 ORDER BY updated_at DESC LIMIT 20`);
+            ctasCache = { at: Date.now(), lista: r.rows.map(x => mapCta(x)) };
+        }
+        res.set('Cache-Control', 'public, max-age=60');
+        res.json({ ctas: ctasCache.lista });
+    } catch (err) { res.json({ ctas: [] }); }
+});
+const ctasPorIp = new Map();
+app.post('/api/ctas/:id(\\d+)/:evento(vista|clic|cierre)', async (req, res) => {
+    const ip = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim();
+    const ahora = Date.now();
+    const recientes = (ctasPorIp.get(ip) || []).filter(t => ahora - t < 60_000);
+    if (recientes.length >= 30) return res.status(204).end();
+    ctasPorIp.set(ip, [...recientes, ahora]);
+    if (ctasPorIp.size > 5000) ctasPorIp.clear();
+    const col = { vista: 'vistas', clic: 'clics', cierre: 'cierres' }[req.params.evento];
+    try { await pool.query(`UPDATE aim_ctas SET ${col} = ${col} + 1 WHERE id = $1`, [Number(req.params.id)]); }
+    catch (e) { console.error('[ctas]', e.message); }
+    res.status(204).end();
+});
+function ctaDeCuerpo(b) {
+    const formato = FORMATOS_CTA.includes(b.formato) ? b.formato : 'barra';
+    const nombre = String(b.nombre || '').trim().slice(0, 120);
+    if (!nombre) return { error: 'Ponle un nombre (solo lo veis vosotros).' };
+    const titulo = String(b.titulo || '').trim().slice(0, 160), texto = String(b.texto || '').trim().slice(0, 600);
+    if (formato !== 'boton' && !titulo && !texto) return { error: 'Escribe al menos el título o el texto.' };
+    const botonTexto = String(b.botonTexto || '').trim().slice(0, 60);
+    const botonUrl = String(b.botonUrl || '').trim().slice(0, 500);
+    if (botonTexto && !/^(\/|https?:\/\/|mailto:|tel:)/i.test(botonUrl)) return { error: 'El botón necesita a dónde lleva: una página de la web (/actividades) o una dirección (https://…).' };
+    if (formato === 'boton' && !botonTexto) return { error: 'El botón flotante necesita su texto.' };
+    const color = /^#[0-9a-f]{6}$/i.test(b.color || '') ? b.color : '#5233A8';
+    const paginas = (Array.isArray(b.paginas) ? b.paginas : String(b.paginas || '').split(/[\n,]/))
+        .map(x => String(x).trim()).filter(x => x.startsWith('/')).slice(0, 30).map(x => x.slice(0, 200));
+    const fecha = (v) => { if (!v) return null; const d = new Date(v); return Number.isNaN(d.getTime()) ? undefined : d.toISOString(); };
+    const desde = fecha(b.desde), hasta = fecha(b.hasta);
+    if (desde === undefined || hasta === undefined) return { error: 'Alguna fecha no es válida.' };
+    if (desde && hasta && hasta <= desde) return { error: 'La fecha de fin tiene que ser después de la de inicio.' };
+    const retraso = Math.min(120, Math.max(0, Number.parseInt(b.retraso, 10) || 0));
+    return { v: [nombre, formato, titulo || null, texto || null, botonTexto || null, botonUrl || null, color, paginas, retraso, desde, hasta, b.activa !== false] };
+}
+app.get('/api/admin/ctas', async (req, res) => {
+    try {
+        const r = await pool.query(`SELECT * FROM aim_ctas ORDER BY activa DESC, updated_at DESC`);
+        res.set('Cache-Control', 'no-store');
+        res.json({ ctas: r.rows.map(x => mapCta(x, true)) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.post('/api/admin/ctas', async (req, res) => {
+    const c = ctaDeCuerpo(req.body || {});
+    if (c.error) return res.status(400).json({ error: c.error });
+    try {
+        const r = await pool.query(
+            `INSERT INTO aim_ctas (nombre, formato, titulo, texto, boton_texto, boton_url, color, paginas, retraso_s, desde, hasta, activa, creada_por)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`, [...c.v, req.userSession.userId]);
+        ctasCache = null;
+        res.status(201).json({ cta: mapCta(r.rows[0], true) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.put('/api/admin/ctas/:id(\\d+)', async (req, res) => {
+    const c = ctaDeCuerpo(req.body || {});
+    if (c.error) return res.status(400).json({ error: c.error });
+    try {
+        const r = await pool.query(
+            `UPDATE aim_ctas SET nombre=$1, formato=$2, titulo=$3, texto=$4, boton_texto=$5, boton_url=$6, color=$7, paginas=$8, retraso_s=$9,
+                    desde=$10, hasta=$11, activa=$12, updated_at=NOW() WHERE id = $13 RETURNING *`, [...c.v, Number(req.params.id)]);
+        if (!r.rowCount) return res.status(404).json({ error: 'Ese aviso ya no existe.' });
+        ctasCache = null;
+        res.json({ cta: mapCta(r.rows[0], true) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.delete('/api/admin/ctas/:id(\\d+)', async (req, res) => {
+    try {
+        await pool.query(`DELETE FROM aim_ctas WHERE id = $1`, [Number(req.params.id)]);
+        ctasCache = null;
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 // ── Visitas a la web (#341) ──────────────────────────────────────────────────
 // Solo llegan si la persona ha aceptado las cookies de análisis (lo comprueba

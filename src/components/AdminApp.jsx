@@ -29,6 +29,7 @@ import AdminFaltas from './AdminFaltas.jsx';
 import AdminComunicaciones from './AdminComunicaciones.jsx';
 import AdminResumen from './AdminResumen.jsx';
 import AdminRangosPermisos from './AdminRangosPermisos.jsx';
+import AdminCtas from './AdminCtas.jsx';
 import AdminBandeja from './AdminBandeja.jsx';
 import AdminAlmacen from './AdminAlmacen.jsx';
 import AdminContactos from './AdminContactos.jsx';
@@ -96,6 +97,7 @@ function sectionLabel(id) {
     equipo_it: "Equipo IT",
     rangos: "Rangos y permisos",
     bandeja: "Correo",
+    ctas: "Avisos y CTA",
   })[id] || "Panel";
 }
 
@@ -6838,6 +6840,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
     {
       heading: "Web pública", items: [
         { id: "portada", label: "Portada", icon: <I.Portada /> },
+        { id: "ctas", label: "Avisos y CTA", icon: <I.Bell /> },
         { id: "news", label: "Noticias / Foro", icon: <I.Newspaper /> },
       ]
     },
@@ -7042,6 +7045,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
             </div>
           )}
           {ver("portada") && <AjustesPortada showToast={showToast} />}
+          {ver("ctas") && <AdminCtas showToast={showToast} />}
           {ver("settings") && <AdminSettings />}
           {ver("reportes") && <AdminReportes user={user} permisos={permisos} />}
           {ver("titulos") && <AdminExamenes showToast={showToast} />}
