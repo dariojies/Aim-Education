@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { I } from './Icons.jsx';
 import { ACT_BY_ID } from './Shared.jsx';
 
@@ -30,6 +30,7 @@ function Estado({ tipo, children }) {
 }
 
 // Una tarjeta con su título y el botón a su sitio (el estilo de siempre del panel).
+// `vacia` solo la lee la página: una tarjeta sin nada no ocupa el sitio grande.
 function Bloque({ titulo, sub, accion, onAccion, children }) {
   return (
     <section className="res-bloque">
@@ -58,7 +59,7 @@ function Fila({ izq, centro, der, onClick }) {
 }
 // Como mucho `max` filas; el resto, con un enlace a su sitio.
 function Lista({ items, max = 5, vacio, render, onMas }) {
-  if (!items.length) return <div style={{ padding: '22px 0', textAlign: 'center', color: 'var(--ink-3)', fontSize: 14 }}>{vacio}</div>;
+  if (!items.length) return <div className="res-vacio">{vacio}</div>;
   return (
     <div>
       {items.slice(0, max).map(render)}
@@ -80,7 +81,7 @@ function Cifra({ etiqueta, valor, detalle, tono, onClick, act = 'taekwondo', ico
       <div className="corner" style={{ color: a?.color }}>{icono}</div>
       <div className="l">{etiqueta}</div>
       <div className="v">{valor}</div>
-      <div className="trend" style={{ background: `color-mix(in oklab, ${color} 14%, var(--bg-2))`, color }}>{detalle || '\u00a0'}</div>
+      <div className="trend" style={{ background: `color-mix(in oklab, ${color} 14%, var(--bg-2))`, color, visibility: detalle ? 'visible' : 'hidden' }}>{detalle || '\u00a0'}</div>
     </Tag>
   );
 }
@@ -125,10 +126,10 @@ function ParaAtender({ avisos, irRuta, como }) {
     );
   }
   if (avisos === null) return <Bloque titulo="Para atender"><p style={{ fontSize: 13, color: 'var(--ink-3)' }}>Cargando…</p></Bloque>;
-  const lista = todos ? avisos : avisos.slice(0, 5);
+  const lista = todos ? avisos : avisos.slice(0, 4);
   return (
     <Bloque titulo="Para atender" sub={avisos.length ? plural(avisos.length, 'cosa pendiente', 'cosas pendientes') : null}>
-      {avisos.length === 0 ? <div style={{ padding: '22px 0', textAlign: 'center' }}><span className="status-pill ok">Todo al día</span></div> : lista.map((x, i) => (
+      {avisos.length === 0 ? <div className="res-vacio"><span className="status-pill ok">Todo al día</span></div> : lista.map((x, i) => (
         <button key={x.clave || i} type="button" onClick={() => irRuta(x.destino)} className="payment-row res-fila"
           style={{ gridTemplateColumns: 'auto minmax(0,1fr) auto', cursor: 'pointer' }} title={x.detalle || ''}>
           <span className="res-aviso-n">{x.n || '•'}</span>
@@ -139,18 +140,18 @@ function ParaAtender({ avisos, irRuta, como }) {
           <I.Arrow style={{ color: 'var(--ink-3)' }} />
         </button>
       ))}
-      {avisos.length > 5 && <button type="button" onClick={() => setTodos(v => !v)} style={{ ...enlace, marginTop: 10 }}>{todos ? 'Ver menos' : `Ver ${avisos.length - 5} más`}</button>}
+      {avisos.length > 4 && <button type="button" onClick={() => setTodos(v => !v)} style={{ ...enlace, marginTop: 10 }}>{todos ? 'Ver menos' : `Ver ${avisos.length - 4} más`}</button>}
     </Bloque>
   );
 }
 
 // ── Piezas de las vistas ────────────────────────────────────────────────────
-function ClasesHoy({ clases, ir, titulo = 'Clases de hoy', max = 7 }) {
+function ClasesHoy({ clases, ir, titulo = 'Clases de hoy', max = 6 }) {
   if (clases === null) return <Bloque titulo={titulo}><p style={suave}>Cargando…</p></Bloque>;
   const orden = [...clases].sort((a, b) => String(a.hora || a.horario || '').localeCompare(String(b.hora || b.horario || '')));
   const sin = clases.filter(c => !c.marcados).length;
   return (
-    <Bloque titulo={titulo} sub={clases.length ? (sin ? `${plural(sin, 'lista', 'listas')} sin pasar de ${clases.length}` : 'Todas las listas pasadas') : null} accion="Pasar lista" onAccion={() => ir('classes')}>
+    <Bloque vacia={!clases.length} titulo={titulo} sub={clases.length ? (sin ? `${plural(sin, 'lista', 'listas')} sin pasar de ${clases.length}` : 'Todas las listas pasadas') : null} accion="Pasar lista" onAccion={() => ir('classes')}>
       <Lista items={orden} max={max} vacio="Hoy no hay clases." onMas={() => ir('classes')} render={c => (
         <Fila key={c.id} izq={c.hora || (c.horario || '').split(/[–-]/)[0] || '—'}
           centro={<><b>{c.name}</b><span style={suave}> · {c.studentCount} al.{c.instructor ? ` · ${c.instructor.split(' ')[0]}` : ''}</span></>}
@@ -193,7 +194,6 @@ function GraficoMeses({ meses }) {
   const [tabla, setTabla] = useState(false);
   const max = Math.max(1, ...meses.flatMap(m => [m.ingresos, m.gastos]));
   const nombreMes = (m) => MESES[Number(m.slice(5, 7)) - 1];
-  const ALTO = 120;
   return (
     <div className="resumen-graf">
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6, fontSize: 12, color: 'var(--ink-2)' }}>
@@ -211,15 +211,15 @@ function GraficoMeses({ meses }) {
           ))}</tbody>
         </table>
       ) : (
-        <div style={{ position: 'relative' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${meses.length}, 1fr)`, alignItems: 'end', height: ALTO, borderBottom: '1px solid var(--line)' }}>
+        <div style={{ position: 'relative', flex: 1, display: 'flex', flexDirection: 'column' }}>
+          <div style={{ flex: 1, minHeight: 120, display: 'grid', gridTemplateColumns: `repeat(${meses.length}, 1fr)`, borderBottom: '1px solid var(--line)' }}>
             {meses.map((m, i) => (
               <div key={m.mes} onMouseEnter={() => setSobre(i)} onMouseLeave={() => setSobre(null)} onFocus={() => setSobre(i)} onBlur={() => setSobre(null)} tabIndex={0}
                 aria-label={`${nombreMes(m.mes)}: ingresos ${eur(m.ingresos)}, gastos ${eur(m.gastos)}`}
-                style={{ height: '100%', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', gap: 2, outline: 'none', borderRadius: 6,
+                style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'center', gap: 2, outline: 'none', borderRadius: 6,
                   background: sobre === i ? 'color-mix(in oklab, var(--ink) 5%, transparent)' : 'transparent' }}>
                 {['ingresos', 'gastos'].map(k => (
-                  <span key={k} style={{ width: 'min(18px, 32%)', height: `${(m[k] / max) * (ALTO - 4)}px`, minHeight: m[k] > 0 ? 2 : 0,
+                  <span key={k} style={{ width: 'min(18px, 32%)', height: `${(m[k] / max) * 96}%`, minHeight: m[k] > 0 ? 2 : 0,
                     background: k === 'ingresos' ? 'var(--serie-ing)' : 'var(--serie-gas)', borderRadius: '4px 4px 0 0' }} />
                 ))}
               </div>
@@ -255,14 +255,14 @@ function vistaInstructor({ d, clases, ir, como }) {
     ],
     columnas: [
       [<ClasesHoy key="c" clases={clases} ir={ir} titulo={`${su} clases de hoy`} />],
-      [<Bloque key="f" titulo="Alumnos que faltan seguido" sub="3 o más clases seguidas sin venir">
-        <Lista items={d.faltas} max={7} vacio="Nadie. ¡Bien!" render={f => (
+      [<Bloque key="f" vacia={!d.faltas.length} titulo="Alumnos que faltan seguido" sub="3 o más clases seguidas sin venir">
+        <Lista items={d.faltas} max={6} vacio="Nadie. ¡Bien!" render={f => (
           <Fila key={`${f.id}-${f.clase}`} centro={<><b>{f.alumno}</b><span style={suave}> · {f.clase}</span></>} der={<Estado tipo="aviso">{f.racha} seguidas</Estado>} />
         )} />
       </Bloque>],
       [
         <Cumples key="cu" lista={d.cumples} titulo="Cumpleaños de sus alumnos" vacio="Nadie cumple años esta semana." />,
-        <SpeakingHoy key="s" lista={d.speaking} ir={ir} />,
+        d.speaking.length ? <SpeakingHoy key="s" lista={d.speaking} ir={ir} /> : null,
         <Eventos key="e" lista={d.eventos} ir={ir} titulo={`${su} próximos eventos`} vacio="Ninguno en el próximo mes." />,
       ],
     ],
@@ -292,7 +292,7 @@ function vistaSecretaria({ d, clases, ir }) {
       ],
       [
         <Cumples key="cu" lista={d.cumples} titulo="Cumpleaños de hoy" vacio="Hoy no cumple años nadie." />,
-        <SpeakingHoy key="s" lista={d.speaking} ir={ir} />,
+        d.speaking.length ? <SpeakingHoy key="s" lista={d.speaking} ir={ir} /> : null,
         <Eventos key="e" lista={d.eventos} ir={ir} titulo="Esta semana" vacio="Sin eventos en 7 días." />,
       ],
     ],
@@ -319,7 +319,7 @@ function vistaDireccion({ d, ir }) {
         {o.llenas.length > 0 && <div style={{ ...suave, fontWeight: 800 }}>Llenas</div>}
         {o.llenas.slice(0, 3).map(g => <Fila key={g.nombre} centro={<>{g.nombre}<span style={suave}> · {g.actividad}</span></>} der={<span style={suave}>{g.n}/{g.max}{g.espera ? ` · ${g.espera} esp.` : ''}</span>} />)}
         {o.flojas.length > 0 && <div style={{ ...suave, fontWeight: 800, marginTop: 6 }}>Con muchas plazas libres</div>}
-        {o.flojas.slice(0, 4).map(g => <Fila key={g.nombre} centro={<>{g.nombre}<span style={suave}> · {g.actividad}</span></>} der={<span style={suave}>{g.n}/{g.max}</span>} />)}
+        {o.flojas.slice(0, 3).map(g => <Fila key={g.nombre} centro={<>{g.nombre}<span style={suave}> · {g.actividad}</span></>} der={<span style={suave}>{g.n}/{g.max}</span>} />)}
       </Bloque>],
       [
         <Bloque key="c" titulo="Por cobrar" accion="Cobrar" onAccion={() => ir('billing')}>
@@ -365,12 +365,17 @@ function vistaIT({ d, ir, irRuta }) {
       <Cifra key="4" etiqueta="Vencidos" valor={t.vencidos} tono={t.vencidos ? 'aviso' : 'bien'} detalle={t.vencidos ? 'se pasó su fecha' : 'ninguno'} onClick={() => ir('support')} />,
     ],
     columnas: [
-      [<Bloque key="m" titulo="Tus tickets" sub="Urgentes y los que vencen antes, primero" accion="Todos" onAccion={() => ir('support')}>
-        <Lista items={t.miosLista} max={8} vacio="No tienes tickets abiertos." onMas={() => ir('support')} render={ticket} />
+      [<Bloque key="m" vacia={!t.miosLista.length} titulo="Tus tickets" sub="Urgentes y los que vencen antes, primero" accion="Todos" onAccion={() => ir('support')}>
+        <Lista items={t.miosLista} max={6} vacio="No tienes tickets abiertos." onMas={() => ir('support')} render={ticket} />
         {t.mios > t.miosLista.length && <button type="button" onClick={() => ir('support')} style={{ ...enlace, marginTop: 6 }}>y {t.mios - t.miosLista.length} más en Soporte →</button>}
       </Bloque>],
+      [
+        <Bloque key="n" vacia={!t.sinAsignarLista.length} titulo="Sin asignar" accion="Repartir" onAccion={() => ir('support')}>
+          <Lista items={t.sinAsignarLista} max={t.miosLista.length ? 4 : 6} vacio="Todos tienen dueño." onMas={() => ir('support')} render={ticket} />
+        </Bloque>,
+      ],
       [<Bloque key="s" titulo="Estado del sistema">
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', columnGap: 14 }}>
+        <div className="res-sistema">
           {sistema.map(([k, [tipo, txt]]) => (
             <div key={k} style={{ padding: '6px 0', borderTop: '1px solid var(--line)', minWidth: 0 }}>
               <div style={{ fontSize: 11, color: 'var(--ink-3)', fontWeight: 700 }}>{k}</div>
@@ -381,9 +386,6 @@ function vistaIT({ d, ir, irRuta }) {
         {s.imap.error && <p style={{ margin: '6px 0 0', fontSize: 11, color: '#c62828' }}>IMAP: {s.imap.error}</p>}
       </Bloque>],
       [
-        <Bloque key="n" titulo="Sin asignar" accion="Repartir" onAccion={() => ir('support')}>
-          <Lista items={t.sinAsignarLista} max={4} vacio="Todos tienen dueño." onMas={() => ir('support')} render={ticket} />
-        </Bloque>,
         <Bloque key="w" titulo="La semana del equipo" accion="Planificar" onAccion={() => ir('equipo_it')}>
           <Lista items={dias} max={4} vacio="Nada planificado esta semana." onMas={() => ir('equipo_it')} render={([dia, bs]) => (
             <Fila key={dia} izq={fechaCorta(dia)} centro={bs.map(b => `${b.inicio}–${b.fin} ${b.nombre.split(' ')[0]}`).join(' · ')} />
@@ -404,10 +406,10 @@ function vistaTrabajador({ mi, ir }) {
       <Cifra key="4" etiqueta="Ausencias" valor={mi.ausencias.length} detalle="próximas" onClick={() => ir('fichaje')} />,
     ],
     columnas: [
-      [<Bloque key="t" titulo="Tareas de hoy" accion="Agenda" onAccion={() => ir('agenda')}>
+      [<Bloque key="t" vacia={!t.proximas.length} titulo="Tareas de hoy" accion="Agenda" onAccion={() => ir('agenda')}>
         <Lista items={t.proximas} max={6} vacio="Nada apuntado para hoy." render={x => <Fila key={x.id} izq={x.hora || '—'} centro={x.titulo} />} />
       </Bloque>],
-      [<Bloque key="a" titulo="Próximas ausencias" accion="Fichaje" onAccion={() => ir('fichaje')}>
+      [<Bloque key="a" vacia={!mi.ausencias.length} titulo="Próximas ausencias" accion="Fichaje" onAccion={() => ir('fichaje')}>
         <Lista items={mi.ausencias} max={4} vacio="Ninguna pedida." render={(a, i) => (
           <Fila key={i} centro={a.nombre} der={<span style={suave}>{fechaCorta(a.desde)}{a.hasta !== a.desde ? ` – ${fechaCorta(a.hasta)}` : ''}{a.estado === 'pendiente' ? ' · por aprobar' : ''}</span>} />
         )} />
@@ -415,6 +417,28 @@ function vistaTrabajador({ mi, ir }) {
       [],
     ],
   };
+}
+
+// El resto de tarjetas, en tantas columnas como quepan (tres en un portátil),
+// repartidas por turnos para que ninguna columna se quede vacía y cada tarjeta
+// mida lo suyo, sin huecos entre filas.
+function Tablero({ piezas }) {
+  const ref = useRef(null);
+  const [n, setN] = useState(3);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(([e]) => setN(Math.max(1, Math.min(3, Math.floor((e.contentRect.width + 18) / 300)))));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const cols = Math.min(n, piezas.length);
+  const reparto = Array.from({ length: cols }, (_, c) => piezas.filter((_, i) => i % cols === c));
+  return (
+    <div ref={ref} className="res-fila-2" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0,1fr))` }}>
+      {reparto.map((col, c) => <div key={c} className="res-col">{col}</div>)}
+    </div>
+  );
 }
 
 // ── La página ───────────────────────────────────────────────────────────────
@@ -477,7 +501,13 @@ export default function AdminResumen({ permisos, ir, irRuta, refreshTrigger }) {
     trabajador: [<I.Check key="i" />, <I.Clock key="i" />, <I.Bell key="i" />, <I.Calendar key="i" />],
   }[d.vista] || [];
   const piezas = v ? v.columnas.flat().filter(Boolean) : [];
-  const [principal, ...resto] = piezas;
+  // Sin nada que enseñar: la marca `vacia` o una lista vacía.
+  const vacia = (x) => !!x.props?.vacia || ['lista', 'clases'].some(k => Array.isArray(x.props?.[k]) && !x.props[k].length);
+  const iPrin = Math.max(0, piezas.findIndex(x => !vacia(x)));
+  // Si todas están vacías, arriba van dos apiladas (no una grande sin nada).
+  const nArriba = piezas[iPrin] && vacia(piezas[iPrin]) && piezas.length > 1 && !d.como && (pendientes?.length || 0) > 1 ? 2 : 1;
+  const arriba = piezas.slice(iPrin, iPrin + nArriba);
+  const resto = piezas.filter((_, i) => i < iPrin || i >= iPrin + nArriba);
 
   return (
     <div className="res">
@@ -515,22 +545,34 @@ export default function AdminResumen({ permisos, ir, irRuta, refreshTrigger }) {
       )}
 
       <div className="res-fila-1">
-        {principal || null}
+        {arriba.length > 1 ? <div className="res-pila">{arriba}</div> : arriba[0] || null}
         <ParaAtender avisos={pendientes} irRuta={irRuta} como={d.como} />
       </div>
-      {resto.length > 0 && <div className="res-fila-2">{resto}</div>}
+      {resto.length > 0 && <Tablero piezas={resto} />}
 
       <style>{`
         .res{display:grid;gap:18px}
         .res-tabs{display:inline-flex;border:1px solid var(--line);border-radius:999px;background:var(--bg-2);padding:3px;gap:2px;flex-wrap:wrap}
         .res-tabs button{padding:6px 13px;font-size:12px;font-weight:800;font-family:inherit;cursor:pointer;border:0;border-radius:999px;background:transparent;color:var(--ink-2)}
         .res-tabs button.on{background:var(--purple);color:#fff}
-        .res-bloque{background:var(--bg-2);border:1px solid var(--line);border-radius:18px;padding:22px;min-width:0}
-        .res-fila-1{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:18px;align-items:start}
-        .res-fila-2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));gap:18px;align-items:start}
+        .res-bloque{background:var(--bg-2);border:1px solid var(--line);border-radius:18px;padding:20px 22px;min-width:0;display:flex;flex-direction:column;box-sizing:border-box}
+        .res-vacio{flex:1;display:grid;place-items:center;text-align:center;color:var(--ink-3);font-size:14px;padding:10px 0;min-height:44px}
+        .res-bloque > div:has(> .res-vacio){flex:1;display:flex;flex-direction:column}
+        /* Fila 1: la principal y «Para atender», de la misma altura (sin hueco
+           debajo de la más corta). */
+        .res-fila-1{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:18px;align-items:stretch}
+        /* El resto, en columnas (ver Tablero): cada tarjeta mide lo suyo. */
+        .res-fila-2{display:grid;gap:18px;align-items:start}
+        .res-col{display:grid;gap:18px;align-content:start;min-width:0}
+        .res-sistema{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))!important;column-gap:14px}
+        .res-pila{display:flex;flex-direction:column;gap:18px;min-width:0}
+        .res-pila > *{flex:1}
         .res-fila{width:100%;font-family:inherit;color:var(--ink);text-align:left;padding:11px 14px!important}
+        .res .payment-row.res-fila{display:grid;align-items:center;gap:6px 12px}
+        .res .payment-row.res-fila>*:first-child{flex:none}
         button.res-fila:hover{border-color:color-mix(in oklab,var(--purple) 40%,var(--line))}
         .res-aviso-n{min-width:26px;height:24px;padding:0 7px;border-radius:999px;display:grid;place-items:center;font-size:12px;font-weight:800;background:color-mix(in oklab,var(--purple) 12%,var(--bg-2));color:var(--purple)}
+        .resumen-graf{flex:1;display:flex;flex-direction:column;min-height:0}
         .resumen-graf{--serie-ing:#5233A8;--serie-gas:#C2692A}
         html[data-theme="dark"] .resumen-graf{--serie-ing:#8F75E0;--serie-gas:#C97C3E}
         @media (max-width:1000px){.res-fila-1{grid-template-columns:minmax(0,1fr)}.kpis{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
