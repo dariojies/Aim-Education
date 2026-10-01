@@ -108,18 +108,19 @@ export const DOCS_LEGALES = [
         'Cuidar de la seguridad de los alumnos: los datos de salud que la familia nos facilite (alergias, enfermedades, medicación, contacto de emergencia) se usan solo para ese fin.',
         'Enviarte noticias, eventos y ofertas del club, solo si nos lo has autorizado. Puedes retirarlo cuando quieras.',
         'Comercio electrónico: el pago por internet de mensualidades, inscripciones y material.',
+        'Conocer qué páginas de esta web visitas, solo si aceptas las cookies de análisis, para atenderte mejor. Si eres de una familia del club o nos escribes por el formulario, lo relacionamos con tu ficha.',
       ]],
-      ['p', 'Los datos no se utilizan para tomar decisiones automatizadas ni para elaborar perfiles.'],
+      ['p', 'Los datos no se utilizan para tomar decisiones automatizadas. Solo si aceptas las cookies de análisis relacionamos las páginas que visitas con tu ficha, para saber qué te interesa; puedes retirarlo cuando quieras desde «Configurar cookies» y lo guardado se borra.'],
 
       ['h', '3. Plazo de conservación'],
-      ['p', 'Conservamos los datos mientras se mantenga la relación con el club o sean necesarios para las finalidades indicadas y, después, durante los plazos que exige la ley: los documentos contables y las facturas, seis años (Código de Comercio) y los necesarios a efectos fiscales mientras la Administración pueda comprobarlos; el registro de jornada del personal, cuatro años. Las consultas del formulario de contacto se conservan el tiempo necesario para atenderlas.'],
+      ['p', 'Conservamos los datos mientras se mantenga la relación con el club o sean necesarios para las finalidades indicadas y, después, durante los plazos que exige la ley: los documentos contables y las facturas, seis años (Código de Comercio) y los necesarios a efectos fiscales mientras la Administración pueda comprobarlos; el registro de jornada del personal, cuatro años. Las consultas del formulario de contacto se conservan el tiempo necesario para atenderlas. Las visitas a la web (con las cookies de análisis aceptadas), 13 meses como mucho.'],
 
       ['h', '4. Legitimación'],
       ['p', 'La normativa aplicable es el Reglamento (UE) 2016/679, General de Protección de Datos (RGPD), y la Ley Orgánica 3/2018, de 5 de diciembre, de Protección de Datos Personales y garantía de los derechos digitales. Las bases que legitiman cada tratamiento son:'],
       ['ul', [
         'Art. 6.1.b RGPD, la ejecución de un contrato: la gestión de la cuenta, las inscripciones, los cobros y la organización de las clases.',
         'Art. 6.1.c RGPD, el cumplimiento de obligaciones legales: facturación, contabilidad y obligaciones fiscales.',
-        'Art. 6.1.a RGPD, tu consentimiento: el formulario de contacto y las comunicaciones comerciales.',
+        'Art. 6.1.a RGPD, tu consentimiento: el formulario de contacto, las comunicaciones comerciales y el análisis de las páginas que visitas.',
         'Art. 9.2.a RGPD, el consentimiento explícito de la familia para los datos de salud.',
       ]],
       ['p', 'No estás obligado a facilitarnos los datos, pero sin los necesarios no podremos gestionar la inscripción ni atender tu consulta.'],
@@ -160,11 +161,12 @@ export const DOCS_LEGALES = [
       ['p', 'Una cookie es un pequeño fichero que se descarga en tu dispositivo al acceder a determinadas páginas web. Las cookies permiten a una web, entre otras cosas, almacenar y recuperar información sobre la navegación o recordar tus preferencias.'],
 
       ['h', 'Qué cookies usa esta web'],
-      ['p', 'Esta web no usa cookies de análisis ni de publicidad. Solo usa las imprescindibles para funcionar y, si tú lo aceptas, las de los servicios externos que muestran algunos contenidos.'],
+      ['p', 'Esta web no usa cookies de publicidad. Usa las imprescindibles para funcionar y, solo si tú lo aceptas, una propia de análisis y las de los servicios externos que muestran algunos contenidos.'],
       ['tabla', [
         ['Nombre', 'Quién la pone', 'Para qué', 'Duración'],
         ['aim_session', 'Nosotros', 'Mantener tu sesión iniciada cuando entras con tu cuenta. Es técnica y necesaria: sin ella no se puede entrar.', '24 horas'],
         ['aim_cookies', 'Nosotros (almacenamiento local)', 'Recordar lo que has elegido en el aviso de cookies.', '12 meses'],
+        ['aim_visitante', 'Nosotros (almacenamiento local)', 'Análisis: un número al azar para saber qué páginas visitas. Si eres de una familia del club o nos escribes, lo relacionamos con tu ficha. Solo si aceptas el análisis; al retirarlo se borra lo guardado.', '13 meses'],
         ['Cookies de YouTube (Google)', 'YouTube', 'Mostrar el vídeo de presentación del club. Solo se cargan si aceptas los contenidos externos o si le das a ver el vídeo.', 'Según YouTube'],
         ['Cookies de HubSpot', 'HubSpot', 'El formulario de «Trabaja con nosotros», cuando está activo. Solo se cargan si aceptas los contenidos externos.', 'Según HubSpot'],
       ]],
@@ -172,6 +174,7 @@ export const DOCS_LEGALES = [
 
       ['h', 'Medición de visitas'],
       ['p', 'Para saber cuántas personas visitan la web y qué páginas leen usamos Metricool, que mide las visitas de forma anónima y agregada: no usa cookies, no guarda nada en tu dispositivo ni te asigna ningún identificador, y tu dirección IP solo se usa durante la conexión, sin guardarse. Por eso, según la guía de la Agencia Española de Protección de Datos, no necesita tu consentimiento. Más información en metricool.com/privacy-policy.'],
+      ['p', 'Aparte, si aceptas las cookies de análisis, guardamos en tu navegador un identificador al azar (aim_visitante) y apuntamos las páginas de esta web que visitas, sin tu dirección IP. Lo usamos solo nosotros, para conocer qué interesa a las familias y atenderte mejor. Se borra a los 13 meses, o en cuanto retiras el permiso.'],
 
       ['h', 'Cómo cambiar tu elección'],
       ['p', 'Puedes cambiar lo que elegiste en cualquier momento desde «Configurar cookies», en el pie de todas las páginas.'],

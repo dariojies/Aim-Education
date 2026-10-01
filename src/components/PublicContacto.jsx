@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { I } from './Icons.jsx';
 import { AimHeader, AimFooter, MagicText, MAPA_URL } from './Shared.jsx';
+import { visitanteId } from './Cookies.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Contacto (ticket #295): nombre, correo, teléfono y mensaje. La consulta queda
@@ -32,7 +33,7 @@ export default function PublicContacto() {
     try {
       const r = await fetch('/api/contacto', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...f, aceptaPrivacidad: acepta, comunicaciones }),
+        body: JSON.stringify({ ...f, aceptaPrivacidad: acepta, comunicaciones, visitante: visitanteId() }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.error || 'No se ha podido enviar.');

@@ -74,9 +74,9 @@ function EditorPlantillas({ plantillas, onGuardar, onCerrar }) {
 const FILTROS_HISTORIA = [['todo', 'Todo'], ['correo', 'Correos'], ['campana', 'Campañas'], ['web', 'Web'], ['permiso', 'Permisos']];
 const ETIQUETA = {
   correo: ['Correo', 'var(--purple)'], buzon: ['Correo', 'var(--purple)'], campana: ['Campaña', 'var(--blue, #1e6fd9)'],
-  web: ['Web', 'var(--teal)'], permiso: ['Permiso', 'var(--ink-2)'], rebote: ['Rebote', 'var(--orange)'],
+  web: ['Web', 'var(--teal)'], visita: ['Visita', 'var(--teal)'], permiso: ['Permiso', 'var(--ink-2)'], rebote: ['Rebote', 'var(--orange)'],
 };
-const enFiltro = (f, t) => f === 'todo' || f === t || (f === 'correo' && (t === 'buzon' || t === 'rebote'));
+const enFiltro = (f, t) => f === 'todo' || f === t || (f === 'correo' && (t === 'buzon' || t === 'rebote')) || (f === 'web' && t === 'visita');
 function estadoDe(x) {
   if (x.tipo === 'correo') return [{ enviado: '✓ enviado', omitido: 'no enviado', error: '✗ error' }[x.estado] || x.estado, x.estado === 'enviado' ? 'var(--teal)' : x.estado === 'omitido' ? 'var(--ink-3)' : 'var(--orange)'];
   if (x.tipo === 'campana') {
@@ -90,6 +90,7 @@ function estadoDe(x) {
   if (x.tipo === 'web') return [x.estado === 'atendido' ? '✓ atendida' : 'sin atender', x.estado === 'atendido' ? 'var(--teal)' : 'var(--orange)'];
   if (x.tipo === 'permiso') return [x.otorgado ? '✓ sí' : '✗ no', x.otorgado ? 'var(--teal)' : 'var(--orange)'];
   if (x.tipo === 'rebote') return [x.resuelto ? '✓ arreglado' : 'sin arreglar', x.resuelto ? 'var(--teal)' : 'var(--orange)'];
+  if (x.tipo === 'visita') return ['', 'var(--ink-3)'];
   if (x.tipo === 'buzon') return [x.entrante ? '↙ nos escribió' : '↗ le escribimos', x.entrante ? 'var(--teal)' : 'var(--ink-2)'];
   return ['', 'var(--ink-3)'];
 }

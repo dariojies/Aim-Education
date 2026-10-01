@@ -1606,6 +1606,42 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_contactos_estado ON aim_contactos (estado, created_at DESC)`);
+        // Visitas a la web (#341), solo de quien acepta las cookies de análisis:
+        // un identificador al azar por navegador y las páginas que ve. Si es de
+        // una ficha (ha entrado a su cuenta) o nos escribe, se relaciona con ella.
+        // Se borran a los 13 meses, o en cuanto retira el consentimiento.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_web_visitantes (
+                visitante CHAR(32) PRIMARY KEY,
+                user_id UUID,
+                email VARCHAR(255),
+                visitas INTEGER NOT NULL DEFAULT 0,
+                primera_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                ultima_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_web_visitantes_user ON aim_web_visitantes (user_id) WHERE user_id IS NOT NULL`);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_web_visitantes_email ON aim_web_visitantes (LOWER(email)) WHERE email IS NOT NULL`);
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_web_visitas (
+                id BIGSERIAL PRIMARY KEY,
+                visitante CHAR(32) NOT NULL,
+                ruta VARCHAR(300) NOT NULL,
+                origen VARCHAR(300),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_web_visitas_visitante ON aim_web_visitas (visitante, created_at DESC)`);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_web_visitas_fecha ON aim_web_visitas (created_at)`);
+        // Tamaño de cada segmento guardado, una foto al día (#341).
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_segmentos_historial (
+                segmento_id VARCHAR(60) NOT NULL,
+                fecha DATE NOT NULL,
+                total INTEGER NOT NULL,
+                PRIMARY KEY (segmento_id, fecha)
+            )
+        `);
         // Rango de cada persona DENTRO de Aim Education, para los que solo existen
         // aquí (trabajador, secretaría, equipo IT). La cuenta de users la comparten
         // otras apps (Aim-Tul solo conoce alumno, instructor y dueño), así que no se
@@ -4645,6 +4681,12 @@ setInterval(() => { reglasCorreoGeneral().catch(() => {}); }, 5 * 60_000);
 // Correos programados de la bandeja (#338): cada minuto salen los que tocan.
 async function correosProgramadosBandeja() { await bandeja.enviarProgramados(); }
 setInterval(() => { correosProgramadosBandeja().catch(() => {}); }, 60_000);
+// La foto de los segmentos y la limpieza de visitas (#341): al arrancar y cada
+// seis horas (la foto es una por día: repetirla solo la pone al día).
+setTimeout(fotoSegmentos, 3 * 60_000);
+setInterval(fotoSegmentos, 6 * 3600_000);
+setTimeout(caducarVisitas, 5 * 60_000);
+setInterval(caducarVisitas, 6 * 3600_000);
 
 // =============================================================================
 // OBJETOS PERDIDOS (ticket #208)
@@ -10909,6 +10951,94 @@ app.put('/api/admin/segmentos', authenticateSession, requireSeccion('comunicacio
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Análisis de segmentos (#341) ─────────────────────────────────────────────
+// Cuántos hay en cada segmento guardado: una foto al día. Y, de sus miembros (y
+// sus familias): cómo responden a las campañas, cuántos escriben por la web y
+// cuántos la visitan (los que aceptaron las cookies de análisis).
+async function segmentosGuardados() {
+    const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'segmentos_crm'`);
+    return Array.isArray(r.rows[0]?.valor) ? r.rows[0].valor : [];
+}
+// Los miembros de un segmento: ids de las fichas (con su familia) y correos.
+async function miembrosDeSegmento(f) {
+    if (f?.estado === 'contactos') {
+        const r = await pool.query(`SELECT DISTINCT LOWER(email) AS email FROM aim_contactos WHERE email IS NOT NULL`);
+        const emails = r.rows.map(x => x.email);
+        const u = emails.length ? await pool.query(`SELECT user_id FROM users WHERE LOWER(email) = ANY($1::text[])`, [emails]) : { rows: [] };
+        return { total: emails.length, alumnos: [], ids: u.rows.map(x => x.user_id), emails };
+    }
+    const vals = [AIM_CLUB_ID];
+    const where = sqlSegmento(f || {}, vals);
+    const r = await pool.query(`SELECT u.user_id, LOWER(u.email) AS email FROM users u WHERE ${where}`, vals);
+    const alumnos = r.rows.map(x => x.user_id);
+    const fam = alumnos.length ? (await pool.query(
+        `SELECT u.user_id, LOWER(u.email) AS email FROM aim_familias f JOIN users u ON u.user_id = f.familiar_id
+         WHERE f.persona_id = ANY($1::uuid[])`, [alumnos])).rows : [];
+    const ids = [...new Set([...alumnos, ...fam.map(x => x.user_id)])];
+    const emails = [...new Set([...r.rows, ...fam].map(x => x.email).filter(e => e && !esCorreoInterno(e)))];
+    return { total: alumnos.length, alumnos, ids, emails };
+}
+async function fotoSegmentos() {
+    try {
+        const hoy = hoyMadrid();
+        for (const sg of await segmentosGuardados()) {
+            const m = await miembrosDeSegmento(sg.filtros || {});
+            await pool.query(
+                `INSERT INTO aim_segmentos_historial (segmento_id, fecha, total) VALUES ($1, $2, $3)
+                 ON CONFLICT (segmento_id, fecha) DO UPDATE SET total = EXCLUDED.total`, [sg.id, hoy, m.total]);
+        }
+    } catch (e) { console.error('[segmentos] foto diaria:', e.message); }
+}
+
+app.get('/api/admin/segmentos/:id/analisis', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try {
+        const sg = (await segmentosGuardados()).find(x => x.id === req.params.id);
+        if (!sg) return res.status(404).json({ error: 'Ese segmento ya no existe.' });
+        const m = await miembrosDeSegmento(sg.filtros || {});
+        // La foto de hoy, al momento (por si el segmento es nuevo).
+        await pool.query(
+            `INSERT INTO aim_segmentos_historial (segmento_id, fecha, total) VALUES ($1, $2, $3)
+             ON CONFLICT (segmento_id, fecha) DO UPDATE SET total = EXCLUDED.total`, [sg.id, hoyMadrid(), m.total]);
+        const ids = m.ids, emails = m.emails;
+        const [hist, camp, web, vis, paginas, semanas] = await Promise.all([
+            pool.query(`SELECT to_char(fecha, 'YYYY-MM-DD') AS fecha, total FROM aim_segmentos_historial
+                        WHERE segmento_id = $1 AND fecha >= CURRENT_DATE - 365 ORDER BY fecha`, [sg.id]),
+            pool.query(
+                `SELECT ${SQL_CUENTAS_ENVIOS} FROM aim_campana_envios e
+                 WHERE e.enviado_at >= NOW() - interval '90 days'
+                   AND (e.persona_id = ANY($1::uuid[]) OR e.destinatario_id = ANY($1::uuid[]) OR LOWER(e.email) = ANY($2::text[]))`, [ids, emails]),
+            pool.query(
+                `SELECT COUNT(*)::int AS consultas, COUNT(DISTINCT LOWER(email))::int AS personas FROM aim_contactos
+                 WHERE created_at >= NOW() - interval '90 days' AND LOWER(email) = ANY($1::text[])`, [emails]),
+            pool.query(
+                `SELECT COUNT(DISTINCT v.visitante)::int AS navegadores, COUNT(*)::int AS paginas,
+                        COUNT(DISTINCT COALESCE(w.user_id::text, LOWER(w.email)))::int AS personas
+                 FROM aim_web_visitas v JOIN aim_web_visitantes w ON w.visitante = v.visitante
+                 WHERE v.created_at >= NOW() - interval '30 days' AND v.ruta LIKE '/%'
+                   AND (w.user_id = ANY($1::uuid[]) OR LOWER(w.email) = ANY($2::text[]))`, [ids, emails]),
+            pool.query(
+                `SELECT v.ruta, COUNT(*)::int AS n FROM aim_web_visitas v JOIN aim_web_visitantes w ON w.visitante = v.visitante
+                 WHERE v.created_at >= NOW() - interval '30 days' AND v.ruta LIKE '/%'
+                   AND (w.user_id = ANY($1::uuid[]) OR LOWER(w.email) = ANY($2::text[]))
+                 GROUP BY 1 ORDER BY 2 DESC LIMIT 8`, [ids, emails]),
+            pool.query(
+                `SELECT to_char(date_trunc('week', v.created_at AT TIME ZONE 'Europe/Madrid'), 'YYYY-MM-DD') AS semana, COUNT(*)::int AS n
+                 FROM aim_web_visitas v JOIN aim_web_visitantes w ON w.visitante = v.visitante
+                 WHERE v.created_at >= NOW() - interval '12 weeks' AND v.ruta LIKE '/%'
+                   AND (w.user_id = ANY($1::uuid[]) OR LOWER(w.email) = ANY($2::text[]))
+                 GROUP BY 1 ORDER BY 1`, [ids, emails]),
+        ]);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            segmento: { id: sg.id, nombre: sg.nombre },
+            total: m.total, historial: hist.rows,
+            campanas: cuentasDe(camp.rows[0]),
+            web: web.rows[0],
+            visitas: { ...vis.rows[0], paginasMas: paginas.rows, porSemana: semanas.rows },
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── CRM 5 · Campañas (#314) ───────────────────────────────────────────────────
 // Una campaña («Navidad 2026») va a uno o varios segmentos y tiene uno o varios
 // correos (antes de empezar, al empezar, al terminar…), cada uno con su texto,
@@ -11644,7 +11774,7 @@ app.get('/api/admin/comunicaciones/:personaId/historia', authenticateSession, re
         const ids = ctx.destinatarios.map(d => d.personaId);
         const emails = ctx.destinatarios.map(d => String(d.email || '').toLowerCase()).filter(Boolean);
         const nombreDe = (id) => ctx.destinatarios.find(d => d.personaId === id)?.nombre || null;
-        const [camp, web, perm, reb] = await Promise.all([
+        const [camp, web, perm, reb, vis] = await Promise.all([
             pool.query(
                 `SELECT e.id, e.estado, e.error, e.email, e.enviado_at, e.aperturas, e.abierto_at, e.clics, e.primer_clic_at, e.baja_at,
                         k.asunto, k.titulo, k.orden, c.nombre AS campana
@@ -11660,6 +11790,13 @@ app.get('/api/admin/comunicaciones/:personaId/historia', authenticateSession, re
             pool.query(
                 `SELECT id, email, motivo, detectado_at, resuelto_at, resuelto_como FROM aim_correos_rebotados
                  WHERE LOWER(email) = ANY($1::text[]) ORDER BY detectado_at DESC LIMIT 20`, [emails]),
+            // Las visitas a la web, por días (si aceptó las cookies de análisis).
+            pool.query(
+                `SELECT to_char(v.created_at AT TIME ZONE 'Europe/Madrid', 'YYYY-MM-DD') AS dia, MIN(v.created_at) AS desde,
+                        COUNT(*)::int AS n, array_agg(v.ruta ORDER BY v.created_at) AS rutas
+                 FROM aim_web_visitas v JOIN aim_web_visitantes w ON w.visitante = v.visitante
+                 WHERE w.user_id = ANY($1::uuid[]) OR LOWER(w.email) = ANY($2::text[])
+                 GROUP BY 1 ORDER BY 1 DESC LIMIT 30`, [ids, emails]),
         ]);
         const PERMISO = { comunicaciones: 'publicidad y novedades', actividades: 'avisos de sus actividades', imagen: 'uso de su imagen', imagen_solicitud: 'uso de su imagen (pedido)', contacto: 'que le contestemos', condiciones: 'las condiciones' };
         const eventos = [
@@ -11673,6 +11810,15 @@ app.get('/api/admin/comunicaciones/:personaId/historia', authenticateSession, re
                 titulo: `${x.otorgado ? 'Aceptó' : 'No acepta'} ${PERMISO[x.tipo] || x.tipo}`, de: [nombreDe(x.user_id) || x.email, x.origen].filter(Boolean).join(' · '), otorgado: x.otorgado,
             })),
             ...reb.rows.map(x => ({ id: `r${x.id}`, tipo: 'rebote', fecha: x.detectado_at, titulo: `Su correo rebota: ${x.motivo || 'no llega'}`, de: x.email, resuelto: x.resuelto_at })),
+            ...vis.rows.map(x => {
+                const paginas = x.rutas.filter(r => r.startsWith('/'));
+                const ctas = x.rutas.filter(r => r.startsWith('cta:')).length;
+                return {
+                    id: `v${x.dia}`, tipo: 'visita', fecha: x.desde,
+                    titulo: `Visitó la web: ${paginas.length} ${paginas.length === 1 ? 'página' : 'páginas'}${ctas ? ` y pinchó ${ctas === 1 ? 'un aviso' : `${ctas} avisos`}` : ''}`,
+                    de: [...new Set(paginas)].slice(0, 6).join(' · '), rutas: x.rutas,
+                };
+            }),
         ].filter(x => x.fecha);
         res.set('Cache-Control', 'no-store');
         res.json({ eventos });
@@ -16796,6 +16942,65 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const contactosPorIp = new Map();
 const escHtml = (t) => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
+// ── Visitas a la web (#341) ──────────────────────────────────────────────────
+// Solo llegan si la persona ha aceptado las cookies de análisis (lo comprueba
+// la web antes de mandar nada). Sin IP ni navegador: el identificador al azar,
+// la página y de dónde venía.
+const VISITANTE_RE = /^[0-9a-f]{32}$/;
+const visitasPorIp = new Map();
+const sesionOpcional = (req) => {
+    const s = sessions.get(parseCookies(req.headers.cookie).aim_session);
+    return s && Date.now() <= s.expiresAt ? s : null;
+};
+async function apuntarVisitante(visitante, { userId = null, email = null } = {}) {
+    await pool.query(
+        `INSERT INTO aim_web_visitantes (visitante, user_id, email) VALUES ($1, $2, $3)
+         ON CONFLICT (visitante) DO UPDATE SET user_id = COALESCE(EXCLUDED.user_id, aim_web_visitantes.user_id),
+                                               email = COALESCE(EXCLUDED.email, aim_web_visitantes.email)`,
+        [visitante, userId, email]);
+}
+app.post('/api/v', async (req, res) => {
+    const v = String(req.body?.v || '');
+    const ruta = String(req.body?.r || '').slice(0, 300);
+    if (!VISITANTE_RE.test(v) || !ruta.startsWith('/') && !ruta.startsWith('cta:')) return res.status(204).end();
+    if (ruta.startsWith('/admin')) return res.status(204).end();
+    const ip = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim();
+    const ahora = Date.now();
+    const recientes = (visitasPorIp.get(ip) || []).filter(t => ahora - t < 60_000);
+    if (recientes.length >= 60) return res.status(204).end();
+    visitasPorIp.set(ip, [...recientes, ahora]);
+    if (visitasPorIp.size > 5000) visitasPorIp.clear();
+    let origen = null;
+    try { const o = new URL(String(req.body?.o || '')); if (!/aimeducation\.es$/i.test(o.hostname)) origen = o.hostname.slice(0, 300); } catch { /* sin origen */ }
+    try {
+        const s = sesionOpcional(req);
+        await pool.query(
+            `INSERT INTO aim_web_visitantes (visitante, user_id, visitas) VALUES ($1, $2, 1)
+             ON CONFLICT (visitante) DO UPDATE SET visitas = aim_web_visitantes.visitas + 1, ultima_at = NOW(),
+                                                   user_id = COALESCE(EXCLUDED.user_id, aim_web_visitantes.user_id)`,
+            [v, s?.userId || null]);
+        await pool.query(`INSERT INTO aim_web_visitas (visitante, ruta, origen) VALUES ($1, $2, $3)`, [v, ruta, origen]);
+    } catch (e) { console.error('[visitas]', e.message); }
+    res.status(204).end();
+});
+// Retira el consentimiento: se borra todo lo de ese navegador.
+app.post('/api/v/olvidar', async (req, res) => {
+    const v = String(req.body?.v || '');
+    if (!VISITANTE_RE.test(v)) return res.status(204).end();
+    try {
+        await pool.query(`DELETE FROM aim_web_visitas WHERE visitante = $1`, [v]);
+        await pool.query(`DELETE FROM aim_web_visitantes WHERE visitante = $1`, [v]);
+    } catch (e) { console.error('[visitas] olvidar:', e.message); }
+    res.status(204).end();
+});
+// Más de 13 meses: fuera.
+async function caducarVisitas() {
+    try {
+        await pool.query(`DELETE FROM aim_web_visitas WHERE created_at < NOW() - interval '13 months'`);
+        await pool.query(`DELETE FROM aim_web_visitantes WHERE ultima_at < NOW() - interval '13 months'`);
+    } catch (e) { console.error('[visitas] caducar:', e.message); }
+}
+
 app.post('/api/contacto', async (req, res) => {
     const b = req.body || {};
     // Campo trampa: invisible para las personas; si viene relleno, es un robot. Se
@@ -16819,6 +17024,7 @@ app.post('/api/contacto', async (req, res) => {
             `INSERT INTO aim_contactos (nombre, email, telefono, mensaje, ip) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
             [nombre, email, telefono, mensaje, ip || null]);
         await anotarConsentimiento(pool, req, { email, tipo: 'contacto', otorgado: true, origen: 'formulario de contacto' });
+        if (VISITANTE_RE.test(String(b.visitante || ''))) await apuntarVisitante(b.visitante, { email }).catch(() => {});
         // La publicidad va en una casilla aparte y sin marcar: solo se apunta si
         // la ha marcado. Si ya tiene ficha, va a ella; si no, a su correo (y se
         // le aplicará cuando la tenga). No marcarla no es decir que no.
@@ -16853,7 +17059,7 @@ async function referenciasDeUsuario(userId, cliente = pool) {
              WHERE table_schema = 'public' AND data_type = 'uuid' AND NOT (table_name = 'users' AND column_name = 'user_id')
                -- Lo que no es «dato» de la persona y se borra con ella: enlaces de
                -- contraseña, avisos vistos y preferencias de la agenda.
-               AND table_name NOT IN ('aim_password_resets', 'aim_avisos_vistos', 'aim_agenda_prefs')`)).rows;
+               AND table_name NOT IN ('aim_password_resets', 'aim_avisos_vistos', 'aim_agenda_prefs', 'aim_web_visitantes')`)).rows;
     }
     const hay = [];
     for (const c of columnasUsuario) {

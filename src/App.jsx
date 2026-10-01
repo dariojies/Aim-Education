@@ -13,7 +13,7 @@ import PublicCalendar from './components/PublicCalendar';
 import PublicLegal from './components/PublicLegal';
 import PublicContacto from './components/PublicContacto';
 import PublicConocenos from './components/PublicConocenos';
-import { CookieBanner } from './components/Cookies';
+import { CookieBanner, registrarVisita } from './components/Cookies';
 
 export const RouterContext = createContext({ path: '/', go: () => {}, user: null });
 export const useRouter = () => useContext(RouterContext);
@@ -65,6 +65,14 @@ export default function App() {
   };
 
   const pathname = path.split('?')[0];
+  // Las páginas vistas, si se ha aceptado el análisis (#341). También la que
+  // se está viendo justo al aceptarlo.
+  useEffect(() => { registrarVisita(pathname); }, [pathname]);
+  useEffect(() => {
+    const f = (e) => { if (e.detail?.analitica) registrarVisita(window.location.pathname); };
+    window.addEventListener('aim-cookies-cambio', f);
+    return () => window.removeEventListener('aim-cookies-cambio', f);
+  }, []);
   const search = path.includes('?') ? path.slice(path.indexOf('?')) : '';
   const params = new URLSearchParams(search);
   const seg = pathname.split('/').filter(Boolean);

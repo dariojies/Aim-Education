@@ -57,6 +57,7 @@ function Segmentos({ showToast, onAbrirFicha, onUsarEnCampana }) {
   const [opciones, setOpciones] = useState({ actividades: [], clases: [] });
   const [guardados, setGuardados] = useState(null);
   const [editando, setEditando] = useState(null); // { id, nombre, filtros }
+  const [analizando, setAnalizando] = useState(null); // id del segmento
 
   const cargar = useCallback(() => fetch('/api/admin/segmentos', { credentials: 'include', cache: 'no-store' })
     .then(r => (r.ok ? r.json() : { segmentos: [] })).then(d => setGuardados(d.segmentos || [])).catch(() => setGuardados([])), []);
@@ -75,6 +76,7 @@ function Segmentos({ showToast, onAbrirFicha, onUsarEnCampana }) {
     return d.segmentos;
   }
 
+  if (analizando) return <AnalisisSegmento id={analizando} onVolver={() => setAnalizando(null)} />;
   if (editando) {
     return <EditorSegmento inicial={editando} opciones={opciones} guardados={guardados || []} guardarLista={guardarLista}
       onAbrirFicha={onAbrirFicha} onUsarEnCampana={onUsarEnCampana} onVolver={() => setEditando(null)} />;
@@ -103,15 +105,120 @@ function Segmentos({ showToast, onAbrirFicha, onUsarEnCampana }) {
       {guardados?.length > 0 && (
         <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))' }}>
           {guardados.map(s => (
-            <button key={s.id} type="button" onClick={() => setEditando({ id: s.id, nombre: s.nombre, filtros: { ...VACIO, ...s.filtros } })}
-              className="panel" style={{ margin: 0, textAlign: 'left', cursor: 'pointer', fontFamily: 'inherit', display: 'grid', gap: 6, alignContent: 'start' }}>
+            <div key={s.id} className="panel" style={{ margin: 0, display: 'grid', gap: 6, alignContent: 'start' }}>
               <span style={{ fontWeight: 800, fontSize: 16, color: 'var(--ink)' }}>{s.nombre}</span>
               <span style={{ fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.45 }}>{describirSegmento({ ...VACIO, ...s.filtros }, opciones.clases)}</span>
-              <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--purple)', marginTop: 4 }}>Abrir →</span>
-            </button>
+              <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+                <button type="button" className="btn btn-sm btn-outline" onClick={() => setEditando({ id: s.id, nombre: s.nombre, filtros: { ...VACIO, ...s.filtros } })}>Abrir</button>
+                <button type="button" className="btn btn-sm btn-outline" onClick={() => setAnalizando(s.id)}><I.Chart width={14} height={14} /> Análisis</button>
+              </div>
+            </div>
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Análisis de un segmento (#341) ──────────────────────────────────────────
+// Cómo cambia de tamaño (una foto al día) y cómo responden sus familias: a las
+// campañas, por la web (consultas) y visitándola (quien aceptó el análisis).
+const pct = (a, b) => (b ? `${Math.round((100 * a) / b)} %` : '—');
+const fechaCorta = (f) => new Date(`${f}T12:00:00`).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+function Dato({ v, t, d }) {
+  return (
+    <div style={{ background: 'var(--bg-3)', borderRadius: 12, padding: '10px 14px', minWidth: 120 }}>
+      <div style={{ fontSize: 22, fontWeight: 800 }}>{v}</div>
+      <div style={{ fontSize: 12, color: 'var(--ink-2)', fontWeight: 700 }}>{t}</div>
+      {d && <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>{d}</div>}
+    </div>
+  );
+}
+function LineaTamano({ puntos }) {
+  const W = 640, H = 150, P = 24;
+  const max = Math.max(...puntos.map(p => p.total), 1), min = Math.min(...puntos.map(p => p.total), 0);
+  const t0 = new Date(puntos[0].fecha).getTime(), t1 = new Date(puntos[puntos.length - 1].fecha).getTime() || t0 + 1;
+  const x = (f) => P + ((new Date(f).getTime() - t0) / Math.max(1, t1 - t0)) * (W - 2 * P);
+  const y = (v) => H - P - ((v - min) / Math.max(1, max - min)) * (H - 2 * P);
+  const d = puntos.map((p, i) => `${i ? 'L' : 'M'}${x(p.fecha).toFixed(1)},${y(p.total).toFixed(1)}`).join(' ');
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', display: 'block' }} role="img" aria-label="Tamaño del segmento a lo largo del tiempo">
+      <line x1={P} x2={W - P} y1={H - P} y2={H - P} stroke="var(--line)" />
+      <path d={d} fill="none" stroke="var(--purple)" strokeWidth="2.5" strokeLinejoin="round" />
+      {puntos.map((p, i) => <circle key={p.fecha} cx={x(p.fecha)} cy={y(p.total)} r={i === puntos.length - 1 ? 4 : 2.5} fill="var(--purple)"><title>{`${fechaCorta(p.fecha)}: ${p.total}`}</title></circle>)}
+      <text x={P} y={H - 6} fontSize="11" fill="var(--ink-3)">{fechaCorta(puntos[0].fecha)}</text>
+      <text x={W - P} y={H - 6} fontSize="11" fill="var(--ink-3)" textAnchor="end">{fechaCorta(puntos[puntos.length - 1].fecha)}</text>
+      <text x={P} y={14} fontSize="11" fill="var(--ink-3)">{max}</text>
+    </svg>
+  );
+}
+function AnalisisSegmento({ id, onVolver }) {
+  const [d, setD] = useState(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    fetch(`/api/admin/segmentos/${encodeURIComponent(id)}/analisis`, { credentials: 'include', cache: 'no-store' })
+      .then(async r => { const x = await r.json().catch(() => ({})); if (!r.ok) throw new Error(x.error || 'No se ha podido cargar.'); return x; })
+      .then(setD).catch(e => setError(e.message));
+  }, [id]);
+  if (error) return <div className="panel"><button type="button" className="btn btn-sm btn-outline" onClick={onVolver}>← Segmentos</button><p>{error}</p></div>;
+  if (!d) return <p style={{ color: 'var(--ink-3)' }}>Calculando el análisis…</p>;
+  const h = d.historial;
+  // Hace 30 días (o el primer día medido, si es más reciente).
+  const hace = h.find(p => new Date(p.fecha) >= new Date(Date.now() - 30 * 864e5)) || h[0];
+  const cambio = hace && h.length > 1 ? d.total - hace.total : null;
+  const k = d.campanas, v = d.visitas;
+  const maxSem = Math.max(1, ...v.porSemana.map(x => x.n));
+  return (
+    <div style={{ display: 'grid', gap: 14 }}>
+      <div className="panel" style={{ display: 'grid', gap: 12 }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button type="button" className="btn btn-sm btn-outline" onClick={onVolver}>← Segmentos</button>
+          <h2 style={{ margin: 0 }}>{d.segmento.nombre}</h2>
+        </div>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <Dato v={d.total} t="alumnos ahora" d={cambio === null ? 'se mide desde hoy' : `${cambio > 0 ? '+' : ''}${cambio} desde el ${fechaCorta(hace.fecha)}`} />
+        </div>
+        {h.length > 1
+          ? <LineaTamano puntos={h} />
+          : <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>El tamaño se apunta una vez al día: a partir de mañana se verá aquí cómo cambia.</p>}
+      </div>
+
+      <div style={{ display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', alignItems: 'start' }}>
+        <div className="panel" style={{ margin: 0, display: 'grid', gap: 10 }}>
+          <b>Campañas · últimos 90 días</b>
+          {k.enviados ? (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <Dato v={k.enviados} t="correos recibidos" />
+              <Dato v={pct(k.abiertos, k.enviados)} t="apertura" d={`${k.abiertos} los abrieron`} />
+              <Dato v={pct(k.conClic, k.enviados)} t="clics" d={`${k.conClic} pincharon`} />
+              <Dato v={pct(k.bajas, k.enviados)} t="bajas" d={`${k.bajas} se dieron de baja`} />
+            </div>
+          ) : <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>No les ha llegado ninguna campaña en estos 90 días.</p>}
+        </div>
+
+        <div className="panel" style={{ margin: 0, display: 'grid', gap: 10 }}>
+          <b>La web</b>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <Dato v={d.web.consultas} t="consultas · 90 días" d={`de ${d.web.personas} ${d.web.personas === 1 ? 'persona' : 'personas'}`} />
+            <Dato v={v.personas} t="la visitaron · 30 días" d={`${v.paginas} páginas vistas`} />
+          </div>
+          {v.porSemana.length > 0 && (
+            <div>
+              <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 4 }}>Páginas vistas por semana</div>
+              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 4, height: 70 }}>
+                {v.porSemana.map(x => <div key={x.semana} title={`Semana del ${fechaCorta(x.semana)}: ${x.n}`} style={{ flex: 1, height: `${Math.max(4, (x.n / maxSem) * 100)}%`, background: 'var(--purple)', borderRadius: '4px 4px 0 0' }} />)}
+              </div>
+            </div>
+          )}
+          {v.paginasMas.length > 0 && (
+            <div style={{ display: 'grid', gap: 2 }}>
+              <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>Lo que más miran</div>
+              {v.paginasMas.map(x => <div key={x.ruta} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}><span>{x.ruta}</span><b>{x.n}</b></div>)}
+            </div>
+          )}
+          <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Las visitas solo cuentan a quien aceptó las cookies de análisis y está relacionado con su ficha (entró a su cuenta o nos escribió).</span>
+        </div>
+      </div>
     </div>
   );
 }
