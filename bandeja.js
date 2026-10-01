@@ -95,9 +95,77 @@ async function carpetas(client) {
     if (carpetasCache.has(client)) return carpetasCache.get(client);
     const lista = await client.list();
     const por = (uso) => lista.find(m => m.specialUse === uso)?.path || null;
-    const r = { entrada: 'INBOX', enviados: por('\\Sent'), todos: por('\\All'), papelera: por('\\Trash') };
+    const r = { entrada: 'INBOX', enviados: por('\\Sent'), todos: por('\\All'), papelera: por('\\Trash'), spam: por('\\Junk') };
     carpetasCache.set(client, r);
     return r;
+}
+
+// La carpeta de verdad de cada vista (las de etiquetas viven en «Todos»).
+const carpetaDe = (c, v) => (v === 'enviados' ? c.enviados : v === 'todos' ? c.todos : v === 'spam' ? c.spam : c.entrada);
+
+// Respuestas a un correo de campaña (#341): las campañas salen con «responder a»
+// el buzón general, así que se buscan ahí, en «Todos» (también lo archivado),
+// por el asunto y desde el día del envío. Cuenta quién de `emails` escribió.
+// Devuelve null si no hay buzón general conectado.
+export async function buscarRespuestas({ asunto, desde, emails }) {
+    const buzon = buzonGeneral();
+    if (!buzon) return null;
+    const quienes = new Set([...emails].map(e => String(e || '').toLowerCase()));
+    // El trozo fijo más largo del asunto (los {nombre} cambian en cada correo).
+    const fijo = String(asunto || '').split(/\{\w+\}/).map(x => x.replace(/["\\]/g, ' ').trim()).sort((a, b) => b.length - a.length)[0] || '';
+    const dia = new Date(desde || Date.now());
+    return conImap(buzon, async (client) => {
+        const c = await carpetas(client);
+        const lock = await client.getMailboxLock(c.todos || c.entrada);
+        try {
+            const gmail = client.capabilities?.has?.('X-GM-EXT-1');
+            const criterio = gmail
+                ? { gmraw: `${fijo.length >= 4 ? `subject:"${fijo}" ` : ''}after:${Math.floor(dia.getTime() / 1000)} -from:me` }
+                : { since: dia, ...(fijo.length >= 4 ? { subject: fijo } : {}) };
+            const uids = ((await client.search(criterio, { uid: true })) || []).sort((a, b) => b - a).slice(0, 500);
+            const r = new Map();
+            if (uids.length) {
+                for await (const m of client.fetch(uids, { uid: true, envelope: true }, { uid: true })) {
+                    const de = String(m.envelope?.from?.[0]?.address || '').toLowerCase();
+                    const fecha = m.envelope?.date ? new Date(m.envelope.date) : null;
+                    if (!quienes.has(de) || (fecha && fecha < dia)) continue;
+                    if (!r.has(de) || (fecha && fecha < r.get(de))) r.set(de, fecha);
+                }
+            }
+            return r;
+        } finally { lock.release(); }
+    });
+}
+
+// Los correos del buzón general con unas direcciones (#341, historial de la
+// ficha): los que escribieron y los que se les mandaron, los más recientes.
+// null si no hay buzón general conectado.
+export async function correosCon(emails, max = 40) {
+    const buzon = buzonGeneral();
+    const lista = [...new Set(emails.map(e => String(e || '').toLowerCase().replace(/[^a-z0-9@._+-]/g, '')).filter(e => e.includes('@')))];
+    if (!buzon) return null;
+    if (!lista.length) return [];
+    return conImap(buzon, async (client) => {
+        const c = await carpetas(client);
+        const lock = await client.getMailboxLock(c.todos || c.entrada);
+        try {
+            const gmail = client.capabilities?.has?.('X-GM-EXT-1');
+            const criterio = gmail
+                ? { gmraw: `{${lista.map(e => `from:${e} to:${e} cc:${e}`).join(' ')}}` }
+                : { or: lista.flatMap(e => [{ from: e }, { to: e }]) };
+            const uids = ((await client.search(criterio, { uid: true })) || []).sort((a, b) => b - a).slice(0, max);
+            const r = [];
+            if (uids.length) {
+                for await (const m of client.fetch(uids, { uid: true, envelope: true }, { uid: true })) {
+                    const de = direccion(m.envelope?.from?.[0]);
+                    const para = [...(m.envelope?.to || []), ...(m.envelope?.cc || [])].map(direccion);
+                    if (!lista.includes(de?.email) && !para.some(x => lista.includes(x?.email))) continue;
+                    r.push({ uid: m.uid, fecha: m.envelope?.date || null, de, para, asunto: m.envelope?.subject || '(sin asunto)', entrante: lista.includes(de?.email) });
+                }
+            }
+            return r.sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+        } finally { lock.release(); }
+    });
 }
 
 const direccion = (a) => (a ? { nombre: a.name || '', email: String(a.address || '').toLowerCase() } : null);
@@ -176,7 +244,7 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
     });
 
     // La lista de una carpeta.
-    //  entrada · sin_asignar · mios (asignados a mí, sin hacer) · hechos · enviados
+    //  entrada · sin_asignar · mios (asignados a mí, sin hacer) · hechos · enviados · spam
     router.get('/:buzon/mensajes', async (req, res) => {
         const buzon = resolver(req, res); if (!buzon) return;
         const vista = String(req.query.vista || 'entrada');
@@ -191,6 +259,7 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
                 let carpeta = c.entrada, criterio = { all: true };
                 const texto = q ? ` ${q}` : '';
                 if (vista === 'enviados') { carpeta = c.enviados || c.entrada; criterio = q && gmail ? { gmraw: q } : { all: true }; }
+                else if (vista === 'spam') { carpeta = c.spam; criterio = q && gmail ? { gmraw: q } : { all: true }; }
                 else if (buzon.general && vista === 'sin_asignar' && gmail) {
                     criterio = { gmraw: `${lista.map(x => `-label:${etiquetaDe(x.nombre)}`).join(' ')} -label:${ETIQUETA_HECHO}${texto}`.trim() };
                 } else if (buzon.general && (vista === 'mios' || vista === 'hechos') && gmail) {
@@ -221,7 +290,7 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
                         }
                     }
                     mensajes.sort((a, b) => b.uid - a.uid);
-                    if (buzon.general && vista !== 'enviados') {
+                    if (buzon.general && vista !== 'enviados' && vista !== 'spam') {
                         const rs = await reglas().catch(() => []);
                         for (const m of mensajes) {
                             if (m.asignado || m.hecho || !m.de) continue;
@@ -244,8 +313,7 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
     async function leerUno(buzon, carpetaVista, uid) {
         return conImap(buzon, async (client) => {
             const c = await carpetas(client);
-            const carpeta = carpetaVista === 'enviados' ? c.enviados : carpetaVista === 'todos' ? c.todos : c.entrada;
-            const lock = await client.getMailboxLock(carpeta || c.entrada);
+            const lock = await client.getMailboxLock(carpetaDe(c, carpetaVista) || c.entrada);
             try {
                 const m = await client.fetchOne(String(uid), { uid: true, source: true, labels: true, flags: true }, { uid: true });
                 if (!m?.source) return null;
@@ -254,7 +322,7 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
             } finally { lock.release(); }
         });
     }
-    const carpetaDeVista = (v) => (v === 'enviados' ? 'enviados' : (v === 'mios' || v === 'hechos') ? 'todos' : 'entrada');
+    const carpetaDeVista = (v) => (v === 'enviados' || v === 'spam' ? v : (v === 'mios' || v === 'hechos') ? 'todos' : 'entrada');
 
     router.get('/:buzon/mensajes/:uid(\\d+)', async (req, res) => {
         const buzon = resolver(req, res); if (!buzon) return;
@@ -336,13 +404,16 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
         } catch (e) { res.status(500).json({ error: e.message }); }
     });
 
-    // Leído / no leído, archivar, papelera, asignar, hecho.
+    // Leído / no leído, archivar, papelera, asignar, hecho, no es spam.
     router.post('/:buzon/mensajes/:uid(\\d+)/accion', async (req, res) => {
         const buzon = resolver(req, res); if (!buzon) return;
         const { accion, a } = req.body || {};
         const uid = String(req.params.uid);
         try {
             const lista = await companeros();
+            if (['asignar', 'hecho', 'reabrir'].includes(accion) && req.body?.vista === 'spam') {
+                return res.status(400).json({ error: 'Primero sácalo del spam («No es spam»).' });
+            }
             if (['asignar', 'hecho', 'reabrir'].includes(accion) && !buzon.general) {
                 return res.status(400).json({ error: 'Solo se asignan los correos del buzón general. Los tuyos se reenvían.' });
             }
@@ -353,13 +424,14 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
             }
             await conImap(buzon, async (client) => {
                 const c = await carpetas(client);
-                const carpeta = carpetaDeVista(req.body?.vista) === 'enviados' ? c.enviados : carpetaDeVista(req.body?.vista) === 'todos' ? c.todos : c.entrada;
-                const lock = await client.getMailboxLock(carpeta || c.entrada);
+                const lock = await client.getMailboxLock(carpetaDe(c, carpetaDeVista(req.body?.vista)) || c.entrada);
                 try {
                     if (accion === 'leido') await client.messageFlagsAdd(uid, ['\\Seen'], { uid: true });
                     else if (accion === 'no_leido') await client.messageFlagsRemove(uid, ['\\Seen'], { uid: true });
                     else if (accion === 'archivar') await client.messageFlagsRemove(uid, ['\\Inbox'], { uid: true, useLabels: true });
                     else if (accion === 'papelera') { if (c.papelera) await client.messageMove(uid, c.papelera, { uid: true }); }
+                    // Gmail aprende: lo devuelve a la entrada y no lo vuelve a tomar por spam.
+                    else if (accion === 'no_spam') { if (req.body?.vista !== 'spam') throw Object.assign(new Error('Ese correo no está en el spam.'), { http: 400 }); await client.messageMove(uid, 'INBOX', { uid: true }); }
                     else if (accion === 'asignar') {
                         const quitar = lista.map(x => etiquetaDe(x.nombre)).filter(e => e !== (destino && etiquetaDe(destino.nombre)));
                         if (quitar.length) await client.messageFlagsRemove(uid, quitar, { uid: true, useLabels: true });

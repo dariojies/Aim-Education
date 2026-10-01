@@ -10,7 +10,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 import nodemailer from 'nodemailer';
 import { calcularRecibo, calcularCobro, serieDeLinea, mesAGenerar, mesDeAlta, tieneMilesimas, brutoMilesimas } from './billing.js';
 import { crearRouterTulClases } from './tul-clases.js';
-import { crearRouterBandeja } from './bandeja.js';
+import { crearRouterBandeja, buscarRespuestas, correosCon } from './bandeja.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
 import { generarGastosPdf, gastosCsv, nombrePeriodo } from './gastos-pdf.js';
@@ -11256,6 +11256,34 @@ app.get('/api/admin/campanas/correos/:cid(\\d+)/envios', authenticateSession, re
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Quién respondió a un correo de campaña (#341): se mira en el buzón general
+// (las respuestas van ahí). Cinco minutos de memoria por correo.
+const respuestasCache = new Map();
+app.get('/api/admin/campanas/correos/:cid(\\d+)/respuestas', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    const cid = Number(req.params.cid);
+    try {
+        const guardado = respuestasCache.get(cid);
+        if (guardado && Date.now() - guardado.at < 5 * 60_000) return res.json(guardado.datos);
+        const k = (await pool.query(`SELECT asunto, lanzado_at FROM aim_campana_correos WHERE id = $1`, [cid])).rows[0];
+        if (!k) return res.status(404).json({ error: 'Ese correo no existe.' });
+        const env = await pool.query(`SELECT LOWER(email) AS email, MIN(enviado_at) AS enviado FROM aim_campana_envios WHERE correo_id = $1 AND estado = 'enviado' GROUP BY 1`, [cid]);
+        let datos;
+        if (!env.rows.length) datos = { disponible: true, respondieron: [] };
+        else {
+            const desde = k.lanzado_at || env.rows.reduce((m, x) => (!m || x.enviado < m ? x.enviado : m), null);
+            const r = await buscarRespuestas({ asunto: k.asunto, desde, emails: env.rows.map(x => x.email) });
+            datos = r === null
+                ? { disponible: false, respondieron: [] }
+                : { disponible: true, respondieron: [...r].map(([email, fecha]) => ({ email, fecha })) };
+        }
+        respuestasCache.set(cid, { at: Date.now(), datos });
+        res.json(datos);
+    } catch (err) {
+        console.error('respuestas de campaña:', err.message);
+        res.json({ disponible: false, respondieron: [], error: 'No se ha podido mirar el buzón ahora mismo.' });
+    }
+});
+
 // ¿Sigue queriendo publicidad quien recibe este envío? Por su ficha o, si es un
 // contacto de la web, por su correo.
 async function aceptaComercial(cliente, destinatarioId, email) {
@@ -11603,6 +11631,66 @@ app.get('/api/admin/comunicaciones/:personaId', authenticateSession, requirePerm
             })),
         });
     } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// El historial de la ficha (#341): todo lo que ha pasado con esta persona y su
+// familia, junto: campañas (si lo abrió, pinchó o se dio de baja), consultas de
+// la web, permisos que dio o quitó y correos que rebotan. Lo enviado desde la
+// ficha sigue en /api/admin/comunicaciones/:id, y el buzón va aparte (tarda).
+app.get('/api/admin/comunicaciones/:personaId/historia', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
+    try {
+        const ctx = await contextoCorreo(req.params.personaId);
+        if (!ctx) return res.status(404).json({ error: 'Esa persona no es del club.' });
+        const ids = ctx.destinatarios.map(d => d.personaId);
+        const emails = ctx.destinatarios.map(d => String(d.email || '').toLowerCase()).filter(Boolean);
+        const nombreDe = (id) => ctx.destinatarios.find(d => d.personaId === id)?.nombre || null;
+        const [camp, web, perm, reb] = await Promise.all([
+            pool.query(
+                `SELECT e.id, e.estado, e.error, e.email, e.enviado_at, e.aperturas, e.abierto_at, e.clics, e.primer_clic_at, e.baja_at,
+                        k.asunto, k.titulo, k.orden, c.nombre AS campana
+                 FROM aim_campana_envios e JOIN aim_campana_correos k ON k.id = e.correo_id JOIN aim_campanas c ON c.id = e.campana_id
+                 WHERE e.estado <> 'pendiente' AND (e.persona_id = $1 OR e.destinatario_id = ANY($2::uuid[]) OR LOWER(e.email) = ANY($3::text[]))
+                 ORDER BY e.enviado_at DESC NULLS LAST LIMIT 100`, [req.params.personaId, ids, emails]),
+            pool.query(
+                `SELECT id, nombre, email, telefono, mensaje, estado, notas, created_at FROM aim_contactos
+                 WHERE LOWER(email) = ANY($1::text[]) ORDER BY created_at DESC LIMIT 50`, [emails]),
+            pool.query(
+                `SELECT id, user_id, email, tipo, otorgado, origen, created_at FROM aim_consentimientos
+                 WHERE user_id = ANY($1::uuid[]) OR LOWER(email) = ANY($2::text[]) ORDER BY created_at DESC LIMIT 60`, [ids, emails]),
+            pool.query(
+                `SELECT id, email, motivo, detectado_at, resuelto_at, resuelto_como FROM aim_correos_rebotados
+                 WHERE LOWER(email) = ANY($1::text[]) ORDER BY detectado_at DESC LIMIT 20`, [emails]),
+        ]);
+        const PERMISO = { comunicaciones: 'publicidad y novedades', actividades: 'avisos de sus actividades', imagen: 'uso de su imagen', imagen_solicitud: 'uso de su imagen (pedido)', contacto: 'que le contestemos', condiciones: 'las condiciones' };
+        const eventos = [
+            ...camp.rows.map(x => ({
+                id: `c${x.id}`, tipo: 'campana', fecha: x.enviado_at, titulo: x.asunto, de: `Campaña «${x.campana}»${x.titulo ? ` · ${x.titulo}` : ''}`,
+                email: x.email, estado: x.estado, error: x.error, abierto: x.abierto_at, aperturas: x.aperturas, clics: x.clics, clic: x.primer_clic_at, baja: x.baja_at,
+            })),
+            ...web.rows.map(x => ({ id: `w${x.id}`, tipo: 'web', fecha: x.created_at, titulo: 'Escribió desde la web', de: `${x.nombre || ''} · ${x.email}`, mensaje: x.mensaje, estado: x.estado, notas: x.notas })),
+            ...perm.rows.map(x => ({
+                id: `p${x.id}`, tipo: 'permiso', fecha: x.created_at,
+                titulo: `${x.otorgado ? 'Aceptó' : 'No acepta'} ${PERMISO[x.tipo] || x.tipo}`, de: [nombreDe(x.user_id) || x.email, x.origen].filter(Boolean).join(' · '), otorgado: x.otorgado,
+            })),
+            ...reb.rows.map(x => ({ id: `r${x.id}`, tipo: 'rebote', fecha: x.detectado_at, titulo: `Su correo rebota: ${x.motivo || 'no llega'}`, de: x.email, resuelto: x.resuelto_at })),
+        ].filter(x => x.fecha);
+        res.set('Cache-Control', 'no-store');
+        res.json({ eventos });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+// Los correos del buzón general con esta familia (lo que escribieron y lo que
+// se les contestó desde Correo). Aparte porque mira Gmail.
+app.get('/api/admin/comunicaciones/:personaId/buzon', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
+    try {
+        const ctx = await contextoCorreo(req.params.personaId);
+        if (!ctx) return res.status(404).json({ error: 'Esa persona no es del club.' });
+        const r = await correosCon(ctx.destinatarios.map(d => d.email).filter(Boolean));
+        res.set('Cache-Control', 'no-store');
+        res.json(r === null ? { disponible: false, correos: [] } : { disponible: true, correos: r });
+    } catch (err) {
+        console.error('buzón de la ficha:', err.message);
+        res.json({ disponible: false, correos: [], error: 'No se ha podido mirar el buzón ahora mismo.' });
+    }
 });
 
 app.get('/api/me/perfil', authenticateSession, async (req, res) => {

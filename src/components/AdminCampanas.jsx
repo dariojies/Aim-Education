@@ -47,6 +47,21 @@ function Cifra({ v, t }) {
     </div>
   );
 }
+// Las tasas de un correo (#341), sobre los que llegaron (enviados sin rebote).
+const pct = (a, b) => (b ? `${Math.round((100 * a) / b)} %` : '—');
+function tasas(k, respondieron = null) {
+  const llegaron = k.enviados || 0, intentos = llegaron + (k.rebotados || 0);
+  return [
+    ['Apertura', pct(k.abiertos, llegaron), `${k.abiertos} de ${llegaron} lo abrieron`],
+    ['Clics', pct(k.conClic, llegaron), `${k.conClic} de ${llegaron} pincharon un enlace`],
+    ['Clic de los que abrieron', pct(k.conClic, k.abiertos), `${k.conClic} de ${k.abiertos} que lo abrieron pincharon`],
+    ...(respondieron === null ? [] : [['Respuesta', pct(respondieron, llegaron), `${respondieron} de ${llegaron} contestaron`]]),
+    ['Bajas', pct(k.bajas, llegaron), `${k.bajas} de ${llegaron} se dieron de baja`],
+    ['Rebote', pct(k.rebotados, intentos), `${k.rebotados} de ${intentos} no llegaron (la dirección falla)`],
+  ];
+}
+const resumenTasas = (k) => `${k.enviados} enviados · ${pct(k.abiertos, k.enviados)} apertura · ${pct(k.conClic, k.enviados)} clics${k.bajas ? ` · ${pct(k.bajas, k.enviados)} bajas` : ''}${k.rebotados ? ` · ${pct(k.rebotados, k.enviados + k.rebotados)} rebote` : ''}`;
+
 function Barra({ hecho, total }) {
   if (!total) return null;
   return (
@@ -202,7 +217,7 @@ function Campana({ inicial, segmentosGuardados, onVolver, onIrASegmentos, onEdit
                   {['enviando', 'pausado'].includes(k.estado) && <Barra hecho={kc.total - kc.pendientes} total={kc.total} />}
                   {k.estado === 'enviado' && (
                     <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
-                      {kc.enviados} enviados · {kc.abiertos} lo abrieron · {kc.conClic} pincharon un enlace{kc.rebotados ? ` · ${kc.rebotados} rebotaron` : ''}{kc.bajas ? ` · ${kc.bajas} bajas` : ''}
+                      {resumenTasas(kc)}
                     </span>
                   )}
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -438,11 +453,18 @@ function EditorCorreo({ campanaId, segmentos, correo, numero, plantillas, onVolv
 }
 
 // ── Quién lo recibió, lo abrió y pinchó ──────────────────────────────────────
-const FILTROS = [['todos', 'Todos'], ['abrieron', 'Lo abrieron'], ['noAbrieron', 'No lo abrieron'], ['clic', 'Pincharon'], ['rebote', 'Rebotaron'], ['baja', 'Se dieron de baja']];
+const FILTROS = [['todos', 'Todos'], ['abrieron', 'Lo abrieron'], ['noAbrieron', 'No lo abrieron'], ['clic', 'Pincharon'], ['respondieron', 'Respondieron'], ['rebote', 'Rebotaron'], ['baja', 'Se dieron de baja']];
 function Resultados({ campana, correo, numero, onVolver, onAbrirFicha, showToast }) {
   const [k, setK] = useState(correo);
   const [envios, setEnvios] = useState(null);
   const [filtro, setFiltro] = useState('todos');
+  // Quién contestó: se mira en el buzón general (tarda un poco; va aparte).
+  const [resp, setResp] = useState(null);
+  useEffect(() => {
+    if (correo.estado === 'borrador' || correo.estado === 'programado') return;
+    api(`/api/admin/campanas/correos/${correo.id}/respuestas`).then(setResp).catch(() => setResp({ disponible: false, respondieron: [] }));
+  }, [correo.id, correo.estado]);
+  const respondio = useMemo(() => new Map((resp?.respondieron || []).map(x => [x.email, x.fecha])), [resp]);
   const cargar = useCallback(async () => {
     try {
       const [d, e] = await Promise.all([api(`/api/admin/campanas/${campana.id}`), api(`/api/admin/campanas/correos/${correo.id}/envios`)]);
@@ -455,8 +477,8 @@ function Resultados({ campana, correo, numero, onVolver, onAbrirFicha, showToast
   const kc = k.cuentas;
   const lista = useMemo(() => (envios || []).filter(e => ({
     todos: true, abrieron: e.aperturas > 0, noAbrieron: e.estado === 'enviado' && !e.aperturas, clic: e.clics > 0,
-    rebote: e.estado === 'rebotado', baja: !!e.bajaAt,
-  })[filtro]), [envios, filtro]);
+    respondieron: respondio.has(String(e.email).toLowerCase()), rebote: e.estado === 'rebotado', baja: !!e.bajaAt,
+  })[filtro]), [envios, filtro, respondio]);
   async function accion(a) {
     try { await api(`/api/admin/campanas/correos/${k.id}/${a}`, { method: 'POST' }); showToast?.(a === 'pausar' ? 'Correo en pausa.' : 'Correo reanudado.'); cargar(); }
     catch (e) { alert(e.message); }
@@ -476,18 +498,16 @@ function Resultados({ campana, correo, numero, onVolver, onAbrirFicha, showToast
         <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{NOMBRE_TIPO[k.tipo]} · «{k.asunto}»</span>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           <Cifra v={`${kc.enviados}/${kc.total}`} t="enviados" />
-          <Cifra v={kc.abiertos} t={`lo abrieron${kc.enviados ? ` (${Math.round(100 * kc.abiertos / kc.enviados)} %)` : ''}`} />
-          <Cifra v={kc.conClic} t="pincharon un enlace" />
-          <Cifra v={kc.rebotados} t="rebotaron" />
-          <Cifra v={kc.bajas} t="se dieron de baja" />
+          {tasas(kc, resp?.disponible ? respondio.size : null).map(([nombre, v, detalle]) => <Cifra key={nombre} v={v} t={<span title={detalle}>{nombre.toLowerCase()} · {detalle.split(' ')[0]}</span>} />)}
           {kc.errores + kc.omitidos > 0 && <Cifra v={kc.errores + kc.omitidos} t="no se enviaron" />}
         </div>
+        {resp && !resp.disponible && <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>{resp.error || 'Las respuestas se cuentan mirando el buzón general, y no está conectado.'}</span>}
         {kc.total > 0 && k.estado !== 'enviado' && <Barra hecho={kc.total - kc.pendientes} total={kc.total} />}
         <details>
           <summary style={{ cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>Ver el correo</summary>
           <div style={{ marginTop: 8, whiteSpace: 'pre-wrap', background: 'var(--bg-3)', borderRadius: 10, padding: 12, fontSize: 13 }}><b>{k.asunto}</b>{'\n\n'}{k.cuerpo}</div>
         </details>
-        <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Las aperturas son aproximadas: algunos programas de correo no cargan las imágenes y otros las cargan solos.</span>
+        <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Las tasas son sobre los que llegaron (el rebote, sobre todos los intentos). Las aperturas son aproximadas: algunos programas de correo no cargan las imágenes y otros las cargan solos. Las respuestas son los que escribieron al buzón general con este asunto después del envío.</span>
       </div>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {FILTROS.map(([id, t]) => <button key={id} type="button" className={`filter-pill ${filtro === id ? 'is-active' : ''}`} onClick={() => setFiltro(id)}>{t}</button>)}
@@ -501,7 +521,7 @@ function Resultados({ campana, correo, numero, onVolver, onAbrirFicha, showToast
             {e.alumnoId
               ? <button type="button" onClick={() => onAbrirFicha?.({ id: e.alumnoId })} style={{ background: 'none', border: 0, padding: 0, fontFamily: 'inherit', fontWeight: 700, fontSize: 13, color: 'var(--ink)', cursor: 'pointer', textAlign: 'left' }}>{e.alumno}</button>
               : <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>Contacto web</span>}
-            <span style={{ fontSize: 12 }}>{e.destinatario || '—'} <span style={{ color: 'var(--ink-3)' }}>· {e.email}</span></span>
+            <span style={{ fontSize: 12 }}>{e.destinatario || '—'} <span style={{ color: 'var(--ink-3)' }}>· {e.email}</span>{respondio.has(String(e.email).toLowerCase()) && <span style={{ color: 'var(--teal)', fontWeight: 800 }}> · ↩ respondió</span>}</span>
             <span style={{ fontSize: 12, fontWeight: 700, color: e.estado === 'enviado' ? 'var(--teal)' : e.estado === 'pendiente' ? 'var(--ink-3)' : 'var(--orange)' }}>
               {{ enviado: '✓ enviado', pendiente: 'esperando', error: '✗ no salió', omitido: 'no se envió', rebotado: '↩ rebotó' }[e.estado] || e.estado}
             </span>
@@ -641,7 +661,7 @@ export default function AdminCampanas({ showToast, onAbrirFicha, nuevaConSegment
               A {c.segmentos.length ? c.segmentos.map(s => `«${s.nombre}»`).join(', ') : '(sin elegir)'} · {c.correos.length} correo{c.correos.length !== 1 ? 's' : ''}
               {c.proximo ? ` · próximo envío: ${fmtFechaHora(c.proximo)}` : ''}
             </span>
-            {k.enviados > 0 && <span style={{ fontSize: 12, color: 'var(--ink-2)' }}>{k.enviados} enviados · {k.abiertos} abiertos · {k.conClic} con clic{k.rebotados ? ` · ${k.rebotados} rebotaron` : ''}{k.bajas ? ` · ${k.bajas} bajas` : ''}</span>}
+            {k.enviados > 0 && <span style={{ fontSize: 12, color: 'var(--ink-2)' }}>{resumenTasas(k)}</span>}
           </button>
         );
       })}

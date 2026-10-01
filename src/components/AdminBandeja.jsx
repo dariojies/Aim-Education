@@ -9,8 +9,8 @@ import { I } from './Icons.jsx';
 // ─────────────────────────────────────────────────────────────────────────────
 
 const VISTAS = {
-  general: [['entrada', 'Entrada'], ['sin_asignar', 'Sin asignar'], ['mios', 'Asignados a mí'], ['hechos', 'Hechos'], ['enviados', 'Enviados'], ['programados', 'Programados']],
-  mio: [['entrada', 'Entrada'], ['enviados', 'Enviados'], ['programados', 'Programados']],
+  general: [['entrada', 'Entrada'], ['sin_asignar', 'Sin asignar'], ['mios', 'Asignados a mí'], ['hechos', 'Hechos'], ['enviados', 'Enviados'], ['programados', 'Programados'], ['spam', 'Spam']],
+  mio: [['entrada', 'Entrada'], ['enviados', 'Enviados'], ['programados', 'Programados'], ['spam', 'Spam']],
 };
 const api = async (url, opts = {}) => {
   const r = await fetch(url, { credentials: 'include', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, ...opts, body: opts.body ? JSON.stringify(opts.body) : undefined });
@@ -224,7 +224,7 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
     try {
       const d = await api(`/api/admin/bandeja/${buzon}/mensajes/${detalle.uid}/accion`, { method: 'POST', body: { accion: nombre, vista, ...extra } });
       if (aviso) showToast?.(aviso);
-      if (['archivar', 'papelera'].includes(nombre) || (nombre === 'hecho' && vista === 'mios') || (nombre === 'asignar' && vista === 'sin_asignar')) {
+      if (['archivar', 'papelera', 'no_spam'].includes(nombre) || (nombre === 'hecho' && vista === 'mios') || (nombre === 'asignar' && vista === 'sin_asignar')) {
         // Sale de la lista: se abre el siguiente (o el anterior si era el último),
         // para no tener que ir pinchando uno a uno (#337).
         const i = (lista || []).findIndex(x => x.uid === detalle.uid);
@@ -293,7 +293,7 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
         <section className="bandeja-lista">
           {error && <p style={{ color: '#c62828', fontSize: 13, padding: 12, margin: 0 }}>{error}</p>}
           {lista === null ? <p style={{ color: 'var(--ink-3)', fontSize: 13, padding: 12 }}>Cargando…</p>
-            : lista.length === 0 && !error ? <p style={{ color: 'var(--ink-3)', fontSize: 13, padding: 12 }}>{vista === 'mios' ? 'No tienes correos asignados pendientes.' : 'No hay correos aquí.'}</p>
+            : lista.length === 0 && !error ? <p style={{ color: 'var(--ink-3)', fontSize: 13, padding: 12 }}>{vista === 'mios' ? 'No tienes correos asignados pendientes.' : vista === 'spam' ? 'No hay nada en el spam.' : 'No hay correos aquí.'}</p>
               : lista.map(m => (
                 <button key={m.uid} type="button" onClick={() => abrir(m)} className={`bandeja-fila${sel === m.uid ? ' on' : ''}`}>
                   <span style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
@@ -335,7 +335,9 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
                     <button type="button" className="btn btn-sm btn-primary" onClick={() => escribir('responder')}>Responder</button>
                     <button type="button" className="btn btn-sm btn-outline" onClick={() => escribir('responder_todos')}>A todos</button>
                     <button type="button" className="btn btn-sm btn-outline" onClick={() => escribir('reenviar')}>Reenviar</button>
-                    {buzon === 'general' ? (
+                    {vista === 'spam' ? (
+                      <button type="button" className="btn btn-sm btn-outline" title="Vuelve a la entrada y Gmail aprende que este remitente es de fiar" onClick={() => accion('no_spam', {}, 'Devuelto a la entrada.')}>No es spam</button>
+                    ) : buzon === 'general' ? (
                       <>
                         <select value={detalle.asignado?.id || ''} onChange={async e => {
                           const a = e.target.value || null;
@@ -365,7 +367,7 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
                         {companeros.filter(c => !c.yo).map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
                       </select>
                     )}
-                    {vista !== 'enviados' && <button type="button" className="btn btn-sm btn-outline" onClick={() => accion('archivar', {}, 'Archivado (sigue en Gmail, en «Todos»).')}>Archivar</button>}
+                    {vista !== 'enviados' && vista !== 'spam' && <button type="button" className="btn btn-sm btn-outline" onClick={() => accion('archivar', {}, 'Archivado (sigue en Gmail, en «Todos»).')}>Archivar</button>}
                     <button type="button" className="btn btn-sm btn-outline" title="Marcar como no leído" onClick={() => accion('no_leido', {}, 'Marcado como no leído.')}>No leído</button>
                     <button type="button" className="btn btn-sm btn-outline" title="A la papelera" onClick={() => { if (window.confirm('¿Mandar este correo a la papelera?')) accion('papelera', {}, 'En la papelera.'); }}><I.Trash width={14} height={14} /></button>
                   </div>

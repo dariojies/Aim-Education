@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { I } from './Icons.jsx';
 import { fmtFechaHora } from '../fechas.js';
 import EditorDiseno, { ElegirPlantilla, Miniatura, VistaPrevia, useMarca } from './EditorDiseno.jsx';
@@ -6,8 +6,9 @@ import { VARIABLES_CRM } from '../../correo-diseno.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CRM en la ficha (tickets #310 y #311): escribir un correo al alumno o a su
-// familia con plantillas que se rellenan solas, y el historial de todo lo que se
-// les ha enviado. Sale desde el buzón del club (queda en sus «Enviados» de Gmail
+// familia con plantillas que se rellenan solas, y el historial de todo lo que ha
+// pasado con ellos (#341): lo enviado desde aquí, las campañas (si las abrieron),
+// lo que escribieron en la web o al correo del club y los permisos que dieron. Sale desde el buzón del club (queda en sus «Enviados» de Gmail
 // y las respuestas llegan allí). Respeta los permisos de la ficha: «de servicio»
 // siempre; «de sus actividades» si no lo ha rechazado; «comercial» solo a quien
 // lo acepta.
@@ -69,6 +70,113 @@ function EditorPlantillas({ plantillas, onGuardar, onCerrar }) {
   );
 }
 
+// ── El historial, todo junto ─────────────────────────────────────────────────
+const FILTROS_HISTORIA = [['todo', 'Todo'], ['correo', 'Correos'], ['campana', 'Campañas'], ['web', 'Web'], ['permiso', 'Permisos']];
+const ETIQUETA = {
+  correo: ['Correo', 'var(--purple)'], buzon: ['Correo', 'var(--purple)'], campana: ['Campaña', 'var(--blue, #1e6fd9)'],
+  web: ['Web', 'var(--teal)'], permiso: ['Permiso', 'var(--ink-2)'], rebote: ['Rebote', 'var(--orange)'],
+};
+const enFiltro = (f, t) => f === 'todo' || f === t || (f === 'correo' && (t === 'buzon' || t === 'rebote'));
+function estadoDe(x) {
+  if (x.tipo === 'correo') return [{ enviado: '✓ enviado', omitido: 'no enviado', error: '✗ error' }[x.estado] || x.estado, x.estado === 'enviado' ? 'var(--teal)' : x.estado === 'omitido' ? 'var(--ink-3)' : 'var(--orange)'];
+  if (x.tipo === 'campana') {
+    if (x.estado === 'rebotado') return ['↩ rebotó', 'var(--orange)'];
+    if (x.estado !== 'enviado') return [x.estado === 'omitido' ? 'no enviado' : '✗ no salió', 'var(--ink-3)'];
+    if (x.baja) return ['se dio de baja', 'var(--orange)'];
+    if (x.clics) return ['✓ pinchó', 'var(--teal)'];
+    if (x.abierto) return ['✓ lo abrió', 'var(--teal)'];
+    return ['no lo abrió', 'var(--ink-3)'];
+  }
+  if (x.tipo === 'web') return [x.estado === 'atendido' ? '✓ atendida' : 'sin atender', x.estado === 'atendido' ? 'var(--teal)' : 'var(--orange)'];
+  if (x.tipo === 'permiso') return [x.otorgado ? '✓ sí' : '✗ no', x.otorgado ? 'var(--teal)' : 'var(--orange)'];
+  if (x.tipo === 'rebote') return [x.resuelto ? '✓ arreglado' : 'sin arreglar', x.resuelto ? 'var(--teal)' : 'var(--orange)'];
+  if (x.tipo === 'buzon') return [x.entrante ? '↙ nos escribió' : '↗ le escribimos', x.entrante ? 'var(--teal)' : 'var(--ink-2)'];
+  return ['', 'var(--ink-3)'];
+}
+
+function Historial({ comunicaciones, eventos, buzon }) {
+  const [filtro, setFiltro] = useState('todo');
+  const [abiertoId, setAbiertoId] = useState(null);
+  const [todos, setTodos] = useState(false);
+  const items = useMemo(() => {
+    const enviados = [
+      ...comunicaciones.map(c => ({ ...c, id: `m${c.id}`, tipo: 'correo', tipoCorreo: c.tipo, titulo: c.asunto, de: `Para ${c.destinatarios.join(', ')}` })),
+      ...eventos,
+    ];
+    // Lo que salió desde la ficha o en una campaña también está en «Enviados»
+    // de Gmail: ese no se repite.
+    const yaSalio = (f) => enviados.some(x => (x.tipo === 'correo' || x.tipo === 'campana') && Math.abs(new Date(x.fecha) - new Date(f)) < 5 * 60_000);
+    const correos = (buzon?.correos || []).filter(m => m.entrante || !yaSalio(m.fecha)).map(m => ({
+      id: `b${m.uid}`, tipo: 'buzon', fecha: m.fecha, titulo: m.asunto, entrante: m.entrante,
+      de: m.entrante ? `De ${m.de?.nombre || m.de?.email}` : `Para ${m.para.map(x => x.nombre || x.email).join(', ')}`,
+    }));
+    return [...enviados, ...correos].sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+  }, [comunicaciones, eventos, buzon]);
+  const lista = items.filter(x => enFiltro(filtro, x.tipo));
+  const vistos = todos ? lista : lista.slice(0, 12);
+  const pill = (activo) => ({ padding: '4px 11px', fontSize: 12, fontWeight: 700, border: 0, borderRadius: 999, cursor: 'pointer', fontFamily: 'inherit', background: activo ? 'var(--purple)' : 'transparent', color: activo ? '#fff' : 'var(--ink-2)' });
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ display: 'inline-flex', flexWrap: 'wrap', border: '1px solid var(--line)', borderRadius: 999, background: 'var(--bg-3)', padding: 2 }}>
+          {FILTROS_HISTORIA.map(([k, n]) => {
+            const cuantos = items.filter(x => enFiltro(k, x.tipo)).length;
+            return <button key={k} type="button" style={pill(filtro === k)} onClick={() => { setFiltro(k); setTodos(false); }}>{n}{k !== 'todo' && cuantos ? ` · ${cuantos}` : ''}</button>;
+          })}
+        </div>
+        {buzon === null && <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Mirando el correo del club…</span>}
+        {buzon && !buzon.disponible && <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>{buzon.error || 'El correo del club no está conectado: no salen los correos que nos escribieron.'}</span>}
+      </div>
+      {!lista.length && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>{filtro === 'todo' ? 'Todavía no hay nada con esta familia.' : 'Nada de este tipo.'}</p>}
+      {vistos.map(x => {
+        const [etq, colEtq] = ETIQUETA[x.tipo] || ['', 'var(--ink-3)'];
+        const [est, colEst] = estadoDe(x);
+        const abre = x.tipo === 'correo' || x.tipo === 'campana' || x.tipo === 'web';
+        return (
+          <div key={x.id} style={{ border: '1px solid var(--line)', borderRadius: 10, background: 'var(--bg-2)', overflow: 'hidden' }}>
+            <button type="button" disabled={!abre} onClick={() => setAbiertoId(a => (a === x.id ? null : x.id))}
+              style={{ display: 'flex', gap: 10, alignItems: 'center', width: '100%', textAlign: 'left', padding: '9px 12px', background: 'transparent', border: 'none', cursor: abre ? 'pointer' : 'default', fontFamily: 'inherit', color: 'var(--ink)', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 12, color: 'var(--ink-3)', minWidth: 110 }}>{fmtFechaHora(x.fecha)}</span>
+              <span style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: colEtq, minWidth: 62 }}>{etq}</span>
+              <span style={{ flex: '1 1 200px', minWidth: 0, display: 'grid' }}>
+                <span style={{ fontWeight: 700, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{x.titulo}</span>
+                {x.de && <span style={{ fontSize: 11, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{x.de}</span>}
+              </span>
+              {x.tipo === 'correo' && <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--purple)' }}>{NOMBRE_TIPO[x.tipoCorreo] || ''}</span>}
+              <span style={{ fontSize: 11, fontWeight: 800, color: colEst }}>{est}</span>
+            </button>
+            {abiertoId === x.id && x.tipo === 'correo' && (
+              <div style={{ padding: '0 12px 12px', display: 'grid', gap: 6, fontSize: 12, color: 'var(--ink-2)' }}>
+                <span>Para: {x.destinatarios.join(', ')}{x.quien ? ` · lo envió ${x.quien}` : ''}{x.plantilla && !x.plantilla.startsWith('auto:') ? ` · plantilla «${x.plantilla}»` : ''}</span>
+                {x.desdeOtraFicha && <span>Enviado desde la ficha de {x.desdeOtraFicha}.</span>}
+                {x.plantilla?.startsWith('auto:') && <span>Automático.</span>}
+                {x.error && <span style={{ color: 'var(--orange)' }}>{x.estado === 'omitido' ? 'No se envió: ' : 'Error: '}{x.error}</span>}
+                <div style={{ whiteSpace: 'pre-wrap', background: 'var(--bg-3)', borderRadius: 8, padding: 10, fontSize: 13, color: 'var(--ink)' }}>{x.cuerpo}</div>
+              </div>
+            )}
+            {abiertoId === x.id && x.tipo === 'campana' && (
+              <div style={{ padding: '0 12px 12px', display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-2)' }}>
+                <span>A {x.email}</span>
+                <span>{x.abierto ? `Lo abrió el ${fmtFechaHora(x.abierto)}${x.aperturas > 1 ? ` (${x.aperturas} veces)` : ''}.` : 'No consta que lo abriera (algunos programas no lo avisan).'}</span>
+                {x.clics > 0 && <span>Pinchó un enlace el {fmtFechaHora(x.clic)}{x.clics > 1 ? ` (${x.clics} clics)` : ''}.</span>}
+                {x.baja && <span style={{ color: 'var(--orange)' }}>Se dio de baja de la publicidad el {fmtFechaHora(x.baja)}.</span>}
+                {x.error && <span style={{ color: 'var(--orange)' }}>{x.error}</span>}
+              </div>
+            )}
+            {abiertoId === x.id && x.tipo === 'web' && (
+              <div style={{ padding: '0 12px 12px', display: 'grid', gap: 6, fontSize: 12, color: 'var(--ink-2)' }}>
+                <div style={{ whiteSpace: 'pre-wrap', background: 'var(--bg-3)', borderRadius: 8, padding: 10, fontSize: 13, color: 'var(--ink)' }}>{x.mensaje}</div>
+                {x.notas && <span>Notas: {x.notas}</span>}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {lista.length > 12 && <button type="button" className="btn btn-sm btn-outline" style={{ justifySelf: 'start' }} onClick={() => setTodos(t => !t)}>{todos ? 'Ver menos' : `Ver los ${lista.length - 12} anteriores`}</button>}
+    </div>
+  );
+}
+
 export default function FichaComunicaciones({ personaId, showToast }) {
   const [ctx, setCtx] = useState(null);
   const [historial, setHistorial] = useState([]);
@@ -82,8 +190,9 @@ export default function FichaComunicaciones({ personaId, showToast }) {
   const [cuerpo, setCuerpo] = useState('');
   const [vista, setVista] = useState(false);
   const [enviando, setEnviando] = useState(false);
-  const [abiertoId, setAbiertoId] = useState(null);
   const [rebotes, setRebotes] = useState([]);
+  const [eventos, setEventos] = useState([]);
+  const [buzon, setBuzon] = useState(null);
   // Con diseño (#326): el correo lleva imágenes, botones y colores.
   const [diseno, setDiseno] = useState(null);
   const [eligiendo, setEligiendo] = useState(false);
@@ -100,6 +209,10 @@ export default function FichaComunicaciones({ personaId, showToast }) {
       setCtx(c); setHistorial(h.comunicaciones || []); setPlantillas(p.plantillas || []);
       fetch(`/api/admin/rebotes/persona/${personaId}`, { credentials: 'include', cache: 'no-store' })
         .then(r => (r.ok ? r.json() : { rebotes: [] })).then(d => setRebotes(d.rebotes || [])).catch(() => {});
+      fetch(`/api/admin/comunicaciones/${personaId}/historia`, { credentials: 'include', cache: 'no-store' })
+        .then(r => (r.ok ? r.json() : { eventos: [] })).then(d => setEventos(d.eventos || [])).catch(() => {});
+      fetch(`/api/admin/comunicaciones/${personaId}/buzon`, { credentials: 'include', cache: 'no-store' })
+        .then(r => (r.ok ? r.json() : { disponible: false, correos: [] })).then(setBuzon).catch(() => setBuzon({ disponible: false, correos: [] }));
       // Por defecto, a los tutores con correo; si no tiene, al propio alumno.
       if (c) {
         const tutores = c.destinatarios.filter(d => d.email && d.relacion !== 'Alumno/a');
@@ -162,7 +275,7 @@ export default function FichaComunicaciones({ personaId, showToast }) {
   const permiso = (v) => (v === true ? ['acepta', 'var(--teal)'] : v === false ? ['no acepta', 'var(--orange)'] : ['no consta', 'var(--ink-3)']);
 
   return (
-    <Seccion titulo={`Comunicaciones${historial.length ? ` (${historial.length})` : ''}`}
+    <Seccion titulo="Comunicaciones e historial"
       extra={!abierto && (
         <button type="button" className="btn btn-sm btn-primary" disabled={sinCorreo || !ctx.correoActivo}
           title={sinCorreo ? 'Ni el alumno ni sus tutores tienen correo' : !ctx.correoActivo ? 'El correo no está configurado en el servidor' : ''}
@@ -283,31 +396,7 @@ export default function FichaComunicaciones({ personaId, showToast }) {
         </div>
       )}
 
-      {!historial.length && !abierto && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Todavía no se le ha escrito desde aquí.</p>}
-      <div style={{ display: 'grid', gap: 6 }}>
-        {historial.map(c => (
-          <div key={c.id} style={{ border: '1px solid var(--line)', borderRadius: 10, background: 'var(--bg-2)', overflow: 'hidden' }}>
-            <button type="button" onClick={() => setAbiertoId(a => (a === c.id ? null : c.id))}
-              style={{ display: 'flex', gap: 10, alignItems: 'center', width: '100%', textAlign: 'left', padding: '9px 12px', background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: 'inherit', color: 'var(--ink)', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 12, color: 'var(--ink-3)', minWidth: 110 }}>{fmtFechaHora(c.fecha)}</span>
-              <span style={{ fontWeight: 700, fontSize: 13, flex: '1 1 200px', minWidth: 0 }}>{c.asunto}</span>
-              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--purple)' }}>{NOMBRE_TIPO[c.tipo] || c.tipo}</span>
-              <span style={{ fontSize: 11, fontWeight: 800, color: c.estado === 'enviado' ? 'var(--teal)' : c.estado === 'omitido' ? 'var(--ink-3)' : 'var(--orange)' }}>
-                {{ enviado: '✓ enviado', omitido: 'no enviado', error: '✗ error' }[c.estado] || c.estado}
-              </span>
-            </button>
-            {abiertoId === c.id && (
-              <div style={{ padding: '0 12px 12px', display: 'grid', gap: 6, fontSize: 12, color: 'var(--ink-2)' }}>
-                <span>Para: {c.destinatarios.join(', ')}{c.quien ? ` · lo envió ${c.quien}` : ''}{c.plantilla && !c.plantilla.startsWith('auto:') ? ` · plantilla «${c.plantilla}»` : ''}</span>
-                {c.desdeOtraFicha && <span>Enviado desde la ficha de {c.desdeOtraFicha}.</span>}
-                {c.plantilla?.startsWith('auto:') && <span>Automático.</span>}
-                {c.error && <span style={{ color: 'var(--orange)' }}>{c.estado === 'omitido' ? 'No se envió: ' : 'Error: '}{c.error}</span>}
-                <div style={{ whiteSpace: 'pre-wrap', background: 'var(--bg-3)', borderRadius: 8, padding: 10, fontSize: 13, color: 'var(--ink)' }}>{c.cuerpo}</div>
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
+      <Historial comunicaciones={historial} eventos={eventos} buzon={buzon} />
     </Seccion>
   );
 }
