@@ -104,7 +104,7 @@ export const DOCS_LEGALES = [
         'Gestionar tu cuenta y la de tu familia, las inscripciones en actividades, el campamento y los eventos.',
         'Gestión de clientes, contable, fiscal y administrativa: cobros, facturación y los registros que exige la ley.',
         'Organizar las clases: listas, asistencia, horarios y comunicaciones sobre la actividad (cambios de horario, cierres, avisos).',
-        'Atender las consultas que nos hagas por el formulario de contacto, por correo o por teléfono.',
+        'Atender las consultas que nos hagas por el formulario de contacto, por correo, por teléfono o por mensaje privado en nuestras redes (Facebook Messenger, Instagram o WhatsApp). Esos mensajes nos llegan a través de Meta, que los trata según su propia política (facebook.com/privacy/policy).',
         'Cuidar de la seguridad de los alumnos: los datos de salud que la familia nos facilite (alergias, enfermedades, medicación, contacto de emergencia) se usan solo para ese fin.',
         'Enviarte noticias, eventos y ofertas del club, solo si nos lo has autorizado. Puedes retirarlo cuando quieras.',
         'Comercio electrónico: el pago por internet de mensualidades, inscripciones y material.',

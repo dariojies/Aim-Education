@@ -35,6 +35,7 @@ const COLOR = {
   almacen: 'var(--orange)',
   contactos: '#21B668',
   correo: 'var(--purple)',
+  redes: '#1FA855',
   // Los de la zona de familias.
   pagos: 'var(--orange)',
   soporte: 'var(--purple)',
@@ -53,6 +54,7 @@ const TITULO = {
   almacen: 'Almacén',
   contactos: 'Consultas web',
   correo: 'Correo',
+  redes: 'Redes sociales',
   pagos: 'Pagos',
   soporte: 'Soporte',
   avisos: 'Del club',

@@ -114,6 +114,8 @@ export function permisosDe(rol) {
             comunicaciones: mandaAlMenos(rol, 'secretaria'),
             // La bandeja de correo: el buzón general (info@) y el suyo (#317).
             bandeja: mandaAlMenos(rol, 'secretaria'),
+            // Los mensajes de Messenger, Instagram y WhatsApp (#341), como el correo.
+            redes: mandaAlMenos(rol, 'secretaria'),
             // La planificación del Equipo IT: la ven secretaría y dirección; solo
             // la tocan el propio equipo y los superadmin (editarEquipoIT).
             equipo_it: mandaAlMenos(rol, 'secretaria'),
@@ -178,6 +180,7 @@ export const AVISOS = [
     { id: 'fotos', grupo: 'Familias', texto: 'Solicitudes del permiso de fotos', quien: (p) => p.editarAlumnos },
     { id: 'contactos', grupo: 'Familias', texto: 'Consultas de la web sin atender', quien: (p) => p.secciones.contactos },
     { id: 'correos_asignados', grupo: 'Correo', texto: 'Correos de info@ asignados a él', quien: (p) => p.secciones.bandeja },
+    { id: 'redes_sin_leer', grupo: 'Correo', texto: 'Mensajes de redes sociales sin leer (suyos o sin asignar)', quien: (p) => p.secciones.redes },
     { id: 'almacen', grupo: 'Club', texto: 'Artículos del almacén por debajo del mínimo', quien: (p) => p.secciones.almacen },
     { id: 'resumen_horas', grupo: 'Fichaje', texto: 'Su resumen de horas del mes, por confirmar', quien: todos },
     { id: 'correcciones_por_aprobar', grupo: 'Fichaje', texto: 'Correcciones de su fichaje que le proponen', quien: todos },

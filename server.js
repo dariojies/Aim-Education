@@ -11,6 +11,7 @@ import nodemailer from 'nodemailer';
 import { calcularRecibo, calcularCobro, serieDeLinea, mesAGenerar, mesDeAlta, tieneMilesimas, brutoMilesimas } from './billing.js';
 import { crearRouterTulClases } from './tul-clases.js';
 import { crearRouterBandeja, buscarRespuestas, correosCon } from './bandeja.js';
+import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES } from './redes.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
 import { generarGastosPdf, gastosCsv, nombrePeriodo } from './gastos-pdf.js';
@@ -1659,6 +1660,8 @@ async function initDb() {
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         `);
+        // Mensajes de Messenger, Instagram y WhatsApp (#341).
+        await crearTablasRedes(client);
         // Tamaño de cada segmento guardado, una foto al día (#341).
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_segmentos_historial (
@@ -2373,7 +2376,9 @@ app.use(cors({
     origin: (origin, callback) => callback(null, origin || true),
     credentials: true
 }));
-app.use(express.json({ limit: '6mb' })); // 6mb para permitir subir el cartel de eventos (base64)
+// 6mb para permitir subir el cartel de eventos (base64). Los avisos de Meta
+// guardan además el cuerpo tal cual, para comprobar su firma (#341).
+app.use(express.json({ limit: '6mb', verify: (req, res, buf) => { if (req.originalUrl.startsWith('/webhooks/meta')) req.rawBody = buf; } }));
 
 // Respuestas comprimidas (ticket #298): el JavaScript de la web pesaba 908 KB en
 // cada carga; comprimido, unos 220 KB. Con la wifi del club o con datos se nota.
@@ -4700,6 +4705,31 @@ async function fichaDeCorreo(email) {
     return r.rows[0] ? { id: r.rows[0].user_id, nombre: r.rows[0].nombre } : null;
 }
 const bandeja = crearRouterBandeja({ pool, permisos, companeros: companerosCorreo, fichaDe: fichaDeCorreo });
+
+// ── Redes sociales (#341) ────────────────────────────────────────────────────
+// Quién puede llevarlas (y recibir conversaciones asignadas).
+async function companerosRedes() {
+    const r = await pool.query(
+        `SELECT u.user_id, u.name, u.surname, u.role, u.dev_role, ar.rango
+         FROM users u LEFT JOIN aim_rangos ar ON ar.user_id = u.user_id
+         WHERE u.club_id = $1 OR ar.rango IS NOT NULL OR u.dev_role = 'superadmin'`, [AIM_CLUB_ID]);
+    return r.rows
+        .map(u => ({ u, rol: rolEfectivo(u.role, u.dev_role, u.rango) }))
+        .filter(({ rol }) => rol && permisosEfectivos(rol).secciones.redes)
+        .map(({ u }) => ({ id: u.user_id, nombre: `${u.name || ''} ${u.surname || ''}`.trim() }))
+        .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+}
+// Por el teléfono de WhatsApp, su ficha (si solo hay una con ese número).
+async function fichaPorTelefono(telefono) {
+    const d = soloDigitos(telefono);
+    if (d.length < 9) return null;
+    const r = await pool.query(
+        `SELECT user_id FROM users WHERE club_id = $1 AND phone IS NOT NULL
+           AND RIGHT(regexp_replace(phone, '\\D', '', 'g'), 9) = $2 LIMIT 2`, [AIM_CLUB_ID, d.slice(-9)]);
+    return r.rows.length === 1 ? { id: r.rows[0].user_id } : null;
+}
+const redes = crearRedes({ pool, companeros: companerosRedes, fichaPorTelefono, clubId: AIM_CLUB_ID });
+app.use('/api/admin/redes', authenticateSession, requireAdmin, requireSeccion('redes'), redes.router);
 app.use('/api/admin/bandeja', authenticateSession, requireAdmin, requireSeccion('bandeja'), bandeja.router);
 // Las reglas de asignación (#339) también se aplican a lo que llega aunque nadie
 // abra la bandeja: cada 5 minutos.
@@ -11801,7 +11831,7 @@ app.get('/api/admin/comunicaciones/:personaId/historia', authenticateSession, re
         const ids = ctx.destinatarios.map(d => d.personaId);
         const emails = ctx.destinatarios.map(d => String(d.email || '').toLowerCase()).filter(Boolean);
         const nombreDe = (id) => ctx.destinatarios.find(d => d.personaId === id)?.nombre || null;
-        const [camp, web, perm, reb, vis] = await Promise.all([
+        const [camp, web, perm, reb, vis, red] = await Promise.all([
             pool.query(
                 `SELECT e.id, e.estado, e.error, e.email, e.enviado_at, e.aperturas, e.abierto_at, e.clics, e.primer_clic_at, e.baja_at,
                         k.asunto, k.titulo, k.orden, c.nombre AS campana
@@ -11824,6 +11854,13 @@ app.get('/api/admin/comunicaciones/:personaId/historia', authenticateSession, re
                  FROM aim_web_visitas v JOIN aim_web_visitantes w ON w.visitante = v.visitante
                  WHERE w.user_id = ANY($1::uuid[]) OR LOWER(w.email) = ANY($2::text[])
                  GROUP BY 1 ORDER BY 1 DESC LIMIT 30`, [ids, emails]),
+            // Lo que ha hablado por redes, por conversación y día.
+            pool.query(
+                `SELECT c.id, c.canal, c.nombre, to_char(m.created_at AT TIME ZONE 'Europe/Madrid', 'YYYY-MM-DD') AS dia, MIN(m.created_at) AS desde,
+                        COUNT(*)::int AS n, COUNT(*) FILTER (WHERE m.entrante)::int AS suyos,
+                        (array_agg(m.texto ORDER BY m.created_at) FILTER (WHERE m.entrante AND m.texto IS NOT NULL))[1] AS primero
+                 FROM aim_social_conversaciones c JOIN aim_social_mensajes m ON m.conversacion_id = c.id
+                 WHERE c.persona_id = ANY($1::uuid[]) GROUP BY 1, 2, 3, 4 ORDER BY 4 DESC LIMIT 40`, [ids]),
         ]);
         const PERMISO = { comunicaciones: 'publicidad y novedades', actividades: 'avisos de sus actividades', imagen: 'uso de su imagen', imagen_solicitud: 'uso de su imagen (pedido)', contacto: 'que le contestemos', condiciones: 'las condiciones' };
         const eventos = [
@@ -11837,6 +11874,11 @@ app.get('/api/admin/comunicaciones/:personaId/historia', authenticateSession, re
                 titulo: `${x.otorgado ? 'Aceptó' : 'No acepta'} ${PERMISO[x.tipo] || x.tipo}`, de: [nombreDe(x.user_id) || x.email, x.origen].filter(Boolean).join(' · '), otorgado: x.otorgado,
             })),
             ...reb.rows.map(x => ({ id: `r${x.id}`, tipo: 'rebote', fecha: x.detectado_at, titulo: `Su correo rebota: ${x.motivo || 'no llega'}`, de: x.email, resuelto: x.resuelto_at })),
+            ...red.rows.map(x => ({
+                id: `s${x.id}-${x.dia}`, tipo: 'red', fecha: x.desde, canal: x.canal,
+                titulo: `${CANALES_REDES[x.canal] || x.canal}: ${x.n} mensaje${x.n !== 1 ? 's' : ''}${x.suyos ? ` (${x.suyos} suyo${x.suyos !== 1 ? 's' : ''})` : ''}`,
+                de: x.primero ? `«${String(x.primero).slice(0, 120)}»` : x.nombre,
+            })),
             ...vis.rows.map(x => {
                 const paginas = x.rutas.filter(r => r.startsWith('/'));
                 const ctas = x.rutas.filter(r => r.startsWith('cta:')).length;
@@ -14531,6 +14573,15 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
             const n = await bandeja.asignadosSinHacer().then(m => m?.[yo] || 0).catch(() => 0);
             if (n) avisos.push({ tipo: 'correo', destino: '/admin/correo', n, texto: `${n} correo${n !== 1 ? 's' : ''} de info@ asignado${n !== 1 ? 's' : ''} a ti`, detalle: 'sin marcar como hecho' });
         }
+        // Mensajes de redes sin leer: los suyos y los que no son de nadie (#341).
+        if (recibe('redes_sin_leer')) {
+            const r = await redes.sinLeerDe(yo).catch(() => null);
+            if (r?.n) avisos.push({
+                tipo: 'redes', destino: '/admin/redes', n: r.n, clave: `redes:${new Date(r.ultimo).getTime()}`,
+                texto: `${r.n} mensaje${r.n !== 1 ? 's' : ''} de redes sin leer`,
+                detalle: `en ${r.conv} conversaci${r.conv !== 1 ? 'ones' : 'ón'}`,
+            });
+        }
         // Consultas del formulario de contacto (y altas web) sin atender (#329).
         // La clave lleva la última: si entra otra, vuelve a encenderse.
         if (recibe('contactos')) {
@@ -17058,6 +17109,21 @@ app.delete('/api/admin/ctas/:id(\\d+)', async (req, res) => {
         ctasCache = null;
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Avisos de Meta: Messenger, Instagram y WhatsApp (#341) ───────────────────
+// Al dar de alta el webhook, Meta comprueba que es nuestro con la palabra
+// secreta; después manda cada mensaje firmado con la clave de la app.
+app.get('/webhooks/meta', (req, res) => {
+    const ok = req.query['hub.mode'] === 'subscribe' && process.env.META_VERIFY_TOKEN && req.query['hub.verify_token'] === process.env.META_VERIFY_TOKEN;
+    if (!ok) return res.status(403).send('No');
+    res.type('text/plain').send(String(req.query['hub.challenge'] || ''));
+});
+app.post('/webhooks/meta', (req, res) => {
+    if (!firmaValida(req)) return res.status(403).json({ error: 'Firma no válida.' });
+    // Se contesta enseguida (Meta reintenta si tardamos) y se guarda después.
+    res.sendStatus(200);
+    redes.procesar(req.body).catch(e => console.error('[redes] aviso de Meta:', e.message));
 });
 
 // ── Visitas a la web (#341) ──────────────────────────────────────────────────

@@ -8,6 +8,24 @@ import { I } from './Icons.jsx';
 // momento, así que lo que se hace aquí se ve también en Gmail.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// La lista a la izquierda y el detalle a la derecha (también lo usan las redes).
+export const ESTILO_BANDEJA = `
+        .bandeja{display:grid;grid-template-columns:minmax(280px,380px) minmax(0,1fr);gap:12px;height:calc(100vh - 250px);min-height:460px}
+        .bandeja-lista{background:var(--bg-2);border:1px solid var(--line);border-radius:14px;overflow:auto}
+        .bandeja-detalle{background:var(--bg-2);border:1px solid var(--line);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:12px;overflow:auto;min-width:0}
+        .bandeja-fila{display:grid;gap:2px;width:100%;text-align:left;padding:10px 12px;border:0;border-bottom:1px solid var(--line);background:none;cursor:pointer;font-family:inherit;color:var(--ink);font-size:13px}
+        .bandeja-fila:hover{background:color-mix(in oklab,var(--purple) 5%,transparent)}
+        .bandeja-fila.on{background:color-mix(in oklab,var(--purple) 10%,transparent)}
+        .bandeja-volver{display:none;justify-self:start;border:0;background:none;color:var(--purple);font-weight:700;font-size:13px;cursor:pointer;padding:0;font-family:inherit}
+        @media (max-width:860px){
+          .bandeja{grid-template-columns:1fr;height:auto}
+          .bandeja.con-detalle .bandeja-lista{display:none}
+          .bandeja:not(.con-detalle) .bandeja-detalle{display:none}
+          .bandeja-detalle{min-height:70vh}
+          .bandeja-volver{display:inline}
+        }
+      `;
+
 const VISTAS = {
   general: [['entrada', 'Entrada'], ['sin_asignar', 'Sin asignar'], ['mios', 'Asignados a mí'], ['hechos', 'Hechos'], ['enviados', 'Enviados'], ['programados', 'Programados'], ['spam', 'Spam']],
   mio: [['entrada', 'Entrada'], ['enviados', 'Enviados'], ['programados', 'Programados'], ['spam', 'Spam']],
@@ -400,22 +418,7 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
       )}
       {verReglas && <Reglas companeros={companeros} showToast={showToast} onCerrar={() => { setVerReglas(false); cargar(); }} />}
       {redactar && <Redactar inicial={redactar} buzon={buzon} showToast={showToast} onCerrar={() => setRedactar(null)} onEnviado={() => { setRedactar(null); if (vista === 'enviados') cargar(); }} />}
-      <style>{`
-        .bandeja{display:grid;grid-template-columns:minmax(280px,380px) minmax(0,1fr);gap:12px;height:calc(100vh - 250px);min-height:460px}
-        .bandeja-lista{background:var(--bg-2);border:1px solid var(--line);border-radius:14px;overflow:auto}
-        .bandeja-detalle{background:var(--bg-2);border:1px solid var(--line);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:12px;overflow:auto;min-width:0}
-        .bandeja-fila{display:grid;gap:2px;width:100%;text-align:left;padding:10px 12px;border:0;border-bottom:1px solid var(--line);background:none;cursor:pointer;font-family:inherit;color:var(--ink);font-size:13px}
-        .bandeja-fila:hover{background:color-mix(in oklab,var(--purple) 5%,transparent)}
-        .bandeja-fila.on{background:color-mix(in oklab,var(--purple) 10%,transparent)}
-        .bandeja-volver{display:none;justify-self:start;border:0;background:none;color:var(--purple);font-weight:700;font-size:13px;cursor:pointer;padding:0;font-family:inherit}
-        @media (max-width:860px){
-          .bandeja{grid-template-columns:1fr;height:auto}
-          .bandeja.con-detalle .bandeja-lista{display:none}
-          .bandeja:not(.con-detalle) .bandeja-detalle{display:none}
-          .bandeja-detalle{min-height:70vh}
-          .bandeja-volver{display:inline}
-        }
-      `}</style>
+      <style>{ESTILO_BANDEJA}</style>
     </div>
   );
 }
