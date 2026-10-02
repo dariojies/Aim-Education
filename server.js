@@ -9990,16 +9990,24 @@ function configTpv() {
     };
 }
 
+// En real hacen falta el comercio y SU clave: con la de pruebas el banco
+// rechazaría todas las firmas. Sin ellas no se deja empezar ningún pago.
+const tpvRealIncompleto = () => process.env.REDSYS_ENTORNO === 'real' && !(process.env.REDSYS_COMERCIO && process.env.REDSYS_CLAVE);
+
 // El pago con tarjeta desde el área de familias está cerrado («Próximamente»)
 // hasta que el club lo abra poniendo PAGOS_ONLINE=si en el entorno. Mientras
 // tanto la familia ve lo que tiene pendiente, pero no se crea ningún pedido.
-const pagosOnlineAbiertos = () => process.env.PAGOS_ONLINE === 'si';
+const pagosOnlineAbiertos = () => process.env.PAGOS_ONLINE === 'si' && !tpvRealIncompleto();
 
-// La URL pública desde la que Redsys nos alcanza. En local no existe, así que
-// la notificación no llega y el pago se comprueba consultando su estado.
+// La URL pública desde la que Redsys nos alcanza (aviso del pago y vuelta de la
+// familia). En Heroku la petición llega por http al servidor aunque fuera
+// https: por eso manda la dirección de la web y, si no, la cabecera del proxy.
+// En local no existe, así que la notificación no llega y el pago se comprueba
+// consultando su estado.
 function urlPublica(req) {
-    const base = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
-    return base.replace(/\/$/, '');
+    const proto = String(req.headers['x-forwarded-proto'] || req.protocol).split(',')[0].trim();
+    const base = process.env.APP_URL || process.env.PUBLIC_BASE_URL || `${proto}://${req.get('host')}`;
+    return base.replace(/\/+$/, '');
 }
 
 // Cargos que la familia tiene pendientes y nadie está pagando ahora mismo. Un
@@ -10189,7 +10197,9 @@ async function asentarPago(client, pago, aviso) {
                 ds_response = $3, ds_autorizacion = $4, tarjeta = $5, notificacion = $6, importe = $7
           WHERE id = $1`,
         [pago.id, reciboId, aviso.Ds_Response, aviso.Ds_AuthorisationCode,
-         aviso.Ds_Card_Brand ? `**** ${aviso.Ds_Card_Number || ''}`.trim() : null, aviso, total]);
+         // Con Bizum no hay tarjeta: Redsys lo marca con el método 68.
+         String(aviso.Ds_ProcessedPayMethod || '') === '68' ? 'Bizum'
+             : aviso.Ds_Card_Brand ? `**** ${aviso.Ds_Card_Number || ''}`.trim() : null, aviso, total]);
 
     // Si la familia autorizó el cobro mensual, Redsys devuelve la referencia.
     if (aviso.Ds_Merchant_Identifier) {
@@ -14557,6 +14567,8 @@ async function resumenIT(yo) {
             imap: { revisado: im?.revisadoAt || null, error: errorImap?.error || null, errorAt: errorImap?.at || null },
             verifactu: { modo: AJUSTES_VERIFACTU.modo, entorno: AJUSTES_VERIFACTU.entorno, certificado: hayCertificadoVerifactu(), ...vf.rows[0] },
             pagosOnline: pagosOnlineAbiertos(),
+            tpvEntorno: configTpv().entorno,
+            tpvIncompleto: tpvRealIncompleto(),
             tpvRevisar: tpv.rows[0].n,
             rebotes: rebotes.rows[0].n,
             colaCampanas: cola.rows[0].n,

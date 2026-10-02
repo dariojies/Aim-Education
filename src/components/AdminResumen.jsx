@@ -349,7 +349,7 @@ function vistaIT({ d, ir, irRuta }) {
     ['Correos que rebotan', s.rebotes ? ['aviso', `${s.rebotes} apartados`] : ['ok', 'Ninguno']],
     ['Cola de campañas', s.colaCampanas ? ['info', `${s.colaCampanas} en cola`] : ['ok', 'Vacía']],
     ['Verifactu', vf],
-    ['Pagos online', s.pagosOnline ? ['ok', 'Abiertos'] : ['info', 'Próximamente']],
+    ['Pagos online', s.tpvIncompleto ? ['mal', 'Falta la clave real'] : s.pagosOnline ? ['ok', s.tpvEntorno === 'real' ? 'Abiertos (real)' : 'Abiertos (pruebas)'] : ['info', 'Próximamente']],
     ['Pagos por revisar', s.tpvRevisar ? ['aviso', String(s.tpvRevisar)] : ['ok', 'Ninguno']],
     ['Base de datos', bd.esperando ? ['aviso', `${bd.esperando} esperando`] : ['ok', `${bd.abiertas}/${bd.max} conexiones`]],
     ['Servidor', ['info', `${s.servidor.memoriaMb} MB · desde ${hora(s.servidor.arrancado)}`]],

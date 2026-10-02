@@ -838,8 +838,8 @@ function PagoPendiente({ onPagado, onPagoHecho }) {
       <h2><I.CreditCard /> Pendiente de pago</h2>
       <p className="sub">
         {datos.pagoOnline
-          ? 'Elige lo que quieres pagar. La tarjeta se introduce en la pasarela del banco: aquí no se guarda.'
-          : 'Esto es lo que tenéis pendiente. Muy pronto podréis pagarlo desde aquí con tarjeta; de momento, en secretaría.'}
+          ? 'Elige lo que quieres pagar. Se paga con tarjeta o Bizum en la pasarela segura del banco: aquí no se guarda nada.'
+          : 'Esto es lo que tenéis pendiente. Muy pronto podréis pagarlo desde aquí con tarjeta o Bizum; de momento, en secretaría.'}
       </p>
       {proximamente && (
         <div role="dialog" aria-modal="true" aria-labelledby="pago-proximamente"
@@ -852,7 +852,7 @@ function PagoPendiente({ onPagado, onPagoHecho }) {
             }}><I.CreditCard width={26} height={26} /></span>
             <h2 id="pago-proximamente" style={{ margin: '0 0 6px', justifyContent: 'center' }}>Próximamente</h2>
             <p className="sub" style={{ margin: '0 0 18px' }}>
-              Estamos terminando de preparar el pago con tarjeta por internet. Mientras tanto, podéis pagar
+              Estamos terminando de preparar el pago con tarjeta o Bizum por internet. Mientras tanto, podéis pagar
               lo pendiente en secretaría.
             </p>
             <button type="button" className="btn btn-primary" autoFocus onClick={() => setProximamente(false)}>Entendido</button>
@@ -885,7 +885,7 @@ function PagoPendiente({ onPagado, onPagoHecho }) {
           <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 26 }}>{eurRec(total)}</span>
         </span>
         <button className="btn btn-primary" disabled={!sel.size || yendo || total <= 0} onClick={pagar}>
-          {yendo ? 'Conectando con el banco...' : 'Pagar con tarjeta'}
+          {yendo ? 'Conectando con el banco...' : 'Pagar con tarjeta o Bizum'}
         </button>
       </div>
       {datos.ahorro > 0 && sel.size === lineas.length && (
