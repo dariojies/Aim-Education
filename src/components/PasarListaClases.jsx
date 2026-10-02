@@ -266,7 +266,7 @@ export default function PasarListaClases({ showToast }) {
                 Todos: {l}
               </button>
             ))}
-            {!meta.speaking && meta.bonoModo !== 'no' && (
+            {!meta.speaking && (
               <button className="btn btn-sm btn-outline" onClick={() => { setBuscaBono(v => !v); setQBono(''); }}
                 title={esFuturo ? 'Reservar plaza a alguien con bono ese día' : 'Añadir un alumno con bono válido para esta clase'}>
                 🎫 {esFuturo ? 'Reservar con bono' : 'Con bono'}
@@ -278,7 +278,21 @@ export default function PasarListaClases({ showToast }) {
           {/* Añadir alguien con bono de esta actividad (ticket #245): solo salen los
               que tienen bono de la actividad de esta clase, con las clases que les
               quedan. Al elegirlo se le marca "Vino" y se le gasta una clase. */}
-          {buscaBono && (
+          {/* La clase no admite bonos (#354): se dice, y quien puede lo activa aquí. */}
+          {buscaBono && meta.bonoModo === 'no' && (
+            <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: 12, display: 'grid', gap: 8, maxWidth: 460, fontSize: 13 }}>
+              <span>Esta clase no admite bonos, así que no se puede añadir a nadie con bono (Pase Explorador, Bono Flexi…).</span>
+              <button type="button" className="btn btn-sm btn-primary" style={{ justifySelf: 'start' }} onClick={async () => {
+                const r = await fetch(`/api/admin/tul/groups/${clase.id}/bonos-config`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ modo: 'si' }) });
+                const d = await r.json().catch(() => ({}));
+                if (!r.ok) { alert(d.error || 'No se ha podido.'); return; }
+                showToast?.('Esta clase ya admite bonos.');
+                await cargarAlumnos(clase.id, fecha);
+              }}>Permitir bonos en esta clase</button>
+              <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Todas a la vez: Clases → «Clases con bono».</span>
+            </div>
+          )}
+          {buscaBono && meta.bonoModo !== 'no' && (
             <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, padding: 12, display: 'grid', gap: 8, maxWidth: 460 }}>
               <input autoFocus placeholder="Buscar alumno con bono..." value={qBono} onChange={e => setQBono(e.target.value)}
                 style={{ fontFamily: 'inherit', fontSize: 14, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }} />

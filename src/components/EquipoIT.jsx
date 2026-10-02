@@ -201,6 +201,39 @@ export default function EquipoIT({ showToast }) {
   );
 }
 
+// Los servicios de fuera: si están conectados y en qué modo. Nunca una clave.
+function Servicios({ s }) {
+  const pill = (tipo, texto) => {
+    const c = { ok: 'var(--teal)', aviso: 'var(--orange)', info: 'var(--ink-3)' }[tipo];
+    return <span style={{ fontSize: 12, fontWeight: 800, color: c, background: `color-mix(in oklab, ${c} 12%, transparent)`, padding: '3px 9px', borderRadius: 999 }}>{texto}</span>;
+  };
+  const fila = (t, estado, detalle) => (
+    <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '7px 0', borderTop: '1px solid var(--line)' }}>
+      <b style={{ fontSize: 13, minWidth: 150 }}>{t}</b>{estado}
+      {detalle && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{detalle}</span>}
+    </div>
+  );
+  const t = s.tpv;
+  const pagos = t.pagos30d.filter(p => p.entorno === t.entorno);
+  const cuenta = (e) => pagos.filter(p => p.estado === e).reduce((n, p) => n + p.n, 0);
+  return (
+    <div>
+      <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>Servicios</div>
+      {fila('Pagos por internet (TPV)',
+        t.incompleto ? pill('aviso', 'Real, pero falta el comercio o la clave') : !t.abiertos ? pill('info', `Cerrados · ${t.entorno}`) : pill(t.entorno === 'real' ? 'ok' : 'aviso', t.entorno === 'real' ? 'Abiertos · REAL' : 'Abiertos · pruebas'),
+        `Comercio ${t.comercio || '—'} · terminal ${t.terminal || '—'} · clave ${t.clave ? 'puesta' : 'sin poner'} · últimos 30 días: ${cuenta('pagado')} pagados, ${cuenta('rechazado')} rechazados, ${cuenta('creado')} sin terminar${cuenta('revisar') ? `, ${cuenta('revisar')} a revisar` : ''}`)}
+      {fila('Dirección de la web', s.web ? pill('ok', s.web) : pill('aviso', 'PUBLIC_BASE_URL sin poner'))}
+      {fila('Correo', s.correo.listo ? pill('ok', s.correo.general) : pill('aviso', 'Sin configurar'),
+        s.correo.buzones.length ? `Buzones personales: ${s.correo.buzones.join(', ')}` : 'Ningún buzón personal conectado')}
+      {fila('Entrar con Google', s.google ? pill('ok', 'Activo') : pill('info', 'Sin configurar'))}
+      {fila('VERI*FACTU', s.verifactu.modo === 'verifactu' ? pill('ok', `Encendido · ${s.verifactu.entorno}`) : pill('info', 'Apagado'),
+        s.verifactu.certificado ? 'Certificado puesto' : 'Sin certificado')}
+      {fila('Redes sociales', ['messenger', 'whatsapp'].some(k => s.redes[k]) ? pill('ok', [s.redes.messenger && 'Messenger e Instagram', s.redes.whatsapp && 'WhatsApp'].filter(Boolean).join(' · ')) : pill('info', 'Sin conectar'),
+        s.redes.webhook ? 'Aviso de Meta configurado' : 'Aviso de Meta sin configurar')}
+    </div>
+  );
+}
+
 // Estado del servidor (ticket #298): cómo va ahora y qué peticiones han tardado
 // más de 2 s desde el último arranque. Para saber, si algo vuelve a ir lento,
 // qué fue y si estaba esperando conexión a la base.
@@ -238,6 +271,7 @@ function EstadoServidor() {
             {dato('Conexiones propias', `${d.pool.total} de ${d.pool.max} · ${d.pool.libres} libres`)}
             {dato('Esperando conexión', String(d.pool.esperando), d.pool.esperando > 0)}
           </div>
+          {d.servicios && <Servicios s={d.servicios} />}
           <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
             En la base (20 como máximo, compartidas con Aim-Tul):{' '}
             {d.conexionesBase.map(c => `${c.n} ${c.state || '?'} desde ${c.ip || 'local'}`).join(' · ') || '—'}

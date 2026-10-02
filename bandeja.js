@@ -604,11 +604,22 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
     }
 
     // ── Para la campanita: correos de info@ asignados a alguien y sin hacer ──
-    // Mirar Gmail en cada aviso sería lento: se guarda 3 minutos.
+    // Mirar Gmail en cada aviso sería lento: se guarda 3 minutos. Y la campanita
+    // nunca espera a Gmail: contesta con lo último que se sabe y, si está viejo,
+    // se pone al día por detrás, una sola vez aunque lleguen varias peticiones a
+    // la vez (antes cada una abría su consulta y esperaban en fila: 3-6 s).
     let cacheAsignados = { t: 0, v: null };
-    const olvidarAsignados = () => { cacheAsignados = { t: 0, v: null }; };
-    async function asignadosSinHacer() {
+    let refrescando = null;
+    // Tras asignar o marcar hecho: lo guardado sigue valiendo, pero se rehace ya.
+    const olvidarAsignados = () => { cacheAsignados = { ...cacheAsignados, t: 0 }; };
+    async function asignadosSinHacer({ espera = 800 } = {}) {
         if (cacheAsignados.v && Date.now() - cacheAsignados.t < 180_000) return cacheAsignados.v;
+        if (!refrescando) refrescando = contarAsignados().finally(() => { refrescando = null; });
+        if (cacheAsignados.v) return cacheAsignados.v;
+        // La primera vez se espera un poco; si Gmail tarda más, sale en el siguiente aviso.
+        return Promise.race([refrescando, new Promise(r => setTimeout(() => r({}), espera))]);
+    }
+    async function contarAsignados() {
         const g = buzonGeneral();
         if (!g) return {};
         const lista = await companeros();

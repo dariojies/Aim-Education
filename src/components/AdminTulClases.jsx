@@ -95,6 +95,68 @@ function Etiqueta({ color, children }) {
 // ═════════════════════════════════════════════════════════════════════════════
 // LISTA DE CLASES: actividades → grupos → alumnos
 // ═════════════════════════════════════════════════════════════════════════════
+// Qué clases admiten bonos (#354), todas a la vez. Con bono se puede ir a una
+// clase suelta (Pase Explorador, Bono Flexi…): el club lo añade al pasar lista y
+// las familias reservan las plazas libres que se abren cada domingo.
+function ClasesConBono({ showToast, onCerrar }) {
+  const [clases, setClases] = useState(null);
+  const [marcadas, setMarcadas] = useState(new Set());
+  const [guardando, setGuardando] = useState(false);
+  useEffect(() => {
+    api('/bonos-clases').then(d => { setClases(d.clases); setMarcadas(new Set(d.clases.filter(c => c.modo === 'si').map(c => c.id))); })
+      .catch(e => { alert(e.message); onCerrar(); });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!clases) return null;
+  const posibles = clases.filter(c => !c.ingles);
+  const porActividad = [...new Set(clases.map(c => c.actividad))];
+  const alternar = (id) => setMarcadas(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const cambios = clases.filter(c => (c.modo === 'si') !== marcadas.has(c.id));
+  async function guardar() {
+    setGuardando(true);
+    try {
+      const d = await api('/bonos-clases', { method: 'PUT', body: { si: cambios.filter(c => marcadas.has(c.id)).map(c => c.id), no: cambios.filter(c => !marcadas.has(c.id)).map(c => c.id) } });
+      showToast?.(`Guardado: ${d.si} clase${d.si === 1 ? '' : 's'} admiten bonos ahora${d.no ? ` y ${d.no} ya no` : ''}.`);
+      onCerrar();
+    } catch (e) { alert(e.message); } finally { setGuardando(false); }
+  }
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Clases con bono" onClick={onCerrar}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', display: 'grid', placeItems: 'center', zIndex: 1000, padding: 16 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-2)', borderRadius: 18, padding: 22, width: 'min(720px, 100%)', maxHeight: '88vh', overflowY: 'auto', display: 'grid', gap: 12 }}>
+        <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>Clases con bono</h3>
+        <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.5 }}>
+          En las clases marcadas se puede ir con un bono (Pase Explorador, Bono Flexi…): el club lo añade al pasar lista y se le gasta una clase,
+          y las familias con bono reservan desde su área las plazas libres, que se abren cada domingo para la semana siguiente.
+          Para eso la clase necesita un número de plazas. Inglés nunca admite bonos.
+        </p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-sm btn-outline" onClick={() => setMarcadas(new Set(posibles.filter(c => !c.speaking).map(c => c.id)))}>Marcar todas (menos Inglés y Speaking)</button>
+          <button className="btn btn-sm btn-outline" onClick={() => setMarcadas(new Set())}>Ninguna</button>
+          <span style={{ fontSize: 12, color: 'var(--ink-3)', alignSelf: 'center' }}>{marcadas.size} de {clases.length} admiten bonos</span>
+        </div>
+        {porActividad.map(act => (
+          <div key={act} style={{ display: 'grid', gap: 4 }}>
+            <b style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--ink-3)' }}>{act}</b>
+            {clases.filter(c => c.actividad === act).map(c => (
+              <label key={c.id} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '7px 10px', borderRadius: 10, background: 'var(--bg-3)', cursor: c.ingles ? 'not-allowed' : 'pointer', opacity: c.ingles ? 0.55 : 1, fontSize: 13 }}>
+                <input type="checkbox" disabled={c.ingles} checked={marcadas.has(c.id)} onChange={() => alternar(c.id)} />
+                <span style={{ flex: 1, minWidth: 0 }}><b>{c.nombre}</b> <span style={{ color: 'var(--ink-3)' }}>· {c.horario || 'sin horario'}</span></span>
+                <span style={{ fontSize: 12, color: c.plazas ? 'var(--ink-3)' : 'var(--orange)', fontWeight: c.plazas ? 400 : 700 }}>
+                  {c.ingles ? 'Inglés: nunca' : c.plazas ? `${c.alumnos}/${c.plazas} plazas` : 'sin nº de plazas: las familias no podrán reservar'}
+                </span>
+              </label>
+            ))}
+          </div>
+        ))}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', position: 'sticky', bottom: -22, background: 'var(--bg-2)', padding: '10px 0' }}>
+          <button className="btn btn-outline" onClick={onCerrar}>Cancelar</button>
+          <button className="btn btn-primary" disabled={guardando || !cambios.length} onClick={guardar}>{guardando ? 'Guardando…' : cambios.length ? `Guardar (${cambios.length} cambio${cambios.length === 1 ? '' : 's'})` : 'Sin cambios'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ListaClases({ showToast }) {
   const [actividades, setActividades] = useState([]);
   const [grupos, setGrupos] = useState([]);
@@ -105,6 +167,7 @@ export function ListaClases({ showToast }) {
   const [grupoAlumnos, setGrupoAlumnos] = useState(null); // grupo abierto (nivel 3)
   const [espera, setEspera] = useState([]);   // lista de espera de todo el club
 
+  const [verBonos, setVerBonos] = useState(false); // qué clases admiten bonos (#354)
   const [editAct, setEditAct] = useState(null);   // { id?, name, icon, activityType }
   const [editGrupo, setEditGrupo] = useState(null); // { id?, name, maxStudents, minAge, maxAge, sessions[] }
   const [guardando, setGuardando] = useState(false);
@@ -368,8 +431,10 @@ export function ListaClases({ showToast }) {
         <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>Actividades del club</h3>
         <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Lo que toques aquí cambia también en la app de Aim-Tul.</span>
         <div style={{ flex: 1 }} />
+        <button className="btn btn-sm btn-outline" onClick={() => setVerBonos(true)} title="Qué clases admiten bonos (Pase Explorador, Bono Flexi…)">🎫 Clases con bono</button>
         <button className="btn btn-sm btn-primary" onClick={() => setEditAct({ name: '', icon: 'run', activityType: 'general' })}><I.Plus /> Nueva actividad</button>
       </div>
+      {verBonos && <ClasesConBono showToast={showToast} onCerrar={() => { setVerBonos(false); cargar(); }} />}
       {cargando && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 10 }}>
         {actividades.map(a => {

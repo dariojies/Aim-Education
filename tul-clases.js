@@ -242,6 +242,55 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
+    // Todas las clases y si admiten bonos (#354), para activarlo de una vez: uno
+    // a uno, dentro de cada grupo, nadie lo había hecho y no se podía gastar
+    // ningún bono (ni el Pase Explorador).
+    router.get('/bonos-clases', async (req, res) => {
+        if (soloSuyos(req)) return res.status(403).json({ error: 'Esto lo decide secretaría o dirección.' });
+        try {
+            const r = await pool.query(
+                `SELECT g.group_id, g.name, g.time, g.max_students, a.name AS actividad, a.activity_type,
+                        ${sqlModoBono()} AS modo,
+                        (SELECT COUNT(*)::int FROM tul_group_students s WHERE s.group_id = g.group_id) AS alumnos
+                 FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+                 LEFT JOIN aim_clase_bonos cb ON cb.group_id = g.group_id
+                 WHERE a.club_id = $1 ORDER BY a.name, g.name`, [clubId]);
+            res.set('Cache-Control', 'no-store');
+            res.json({ clases: r.rows.map(x => ({
+                id: x.group_id, nombre: x.name, horario: x.time || '', plazas: x.max_students || null, actividad: x.actividad,
+                ingles: x.activity_type === 'ingles', speaking: esSpeaking(x.name, x.actividad), modo: x.modo, alumnos: x.alumnos,
+            })) });
+        } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+    router.put('/bonos-clases', async (req, res) => {
+        if (soloSuyos(req)) return res.status(403).json({ error: 'Esto lo decide secretaría o dirección.' });
+        const si = (Array.isArray(req.body?.si) ? req.body.si : []).map(String).filter(x => /^[0-9a-f-]{36}$/i.test(x));
+        const no = (Array.isArray(req.body?.no) ? req.body.no : []).map(String).filter(x => /^[0-9a-f-]{36}$/i.test(x));
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            // Inglés nunca admite bonos, aunque llegue marcado.
+            const validos = (await client.query(
+                `SELECT g.group_id FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+                 WHERE a.club_id = $1 AND g.group_id = ANY($2::uuid[]) AND a.activity_type <> 'ingles'`, [clubId, si])).rows.map(x => x.group_id);
+            for (const [ids, modo] of [[validos, 'si'], [no, 'no']]) {
+                for (const id of ids) {
+                    await client.query(
+                        `INSERT INTO aim_clase_bonos (group_id, modo, updated_at, updated_by)
+                         SELECT g.group_id, $2, NOW(), $3 FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+                         WHERE g.group_id = $1 AND a.club_id = $4
+                         ON CONFLICT (group_id) DO UPDATE SET modo = EXCLUDED.modo, updated_at = NOW(), updated_by = EXCLUDED.updated_by`,
+                        [id, modo, req.userSession.userId, clubId]);
+                }
+            }
+            await client.query('COMMIT');
+            res.json({ success: true, si: validos.length, no: no.length });
+        } catch (err) {
+            await client.query('ROLLBACK').catch(() => {});
+            res.status(500).json({ error: err.message });
+        } finally { client.release(); }
+    });
+
     router.delete('/groups/:groupId', async (req, res) => {
         if (await ajeno(req, res, req.params.groupId)) return;
         try {

@@ -10,8 +10,8 @@ import { GoogleGenAI, Type } from '@google/genai';
 import nodemailer from 'nodemailer';
 import { calcularRecibo, calcularCobro, serieDeLinea, mesAGenerar, mesDeAlta, tieneMilesimas, brutoMilesimas } from './billing.js';
 import { crearRouterTulClases } from './tul-clases.js';
-import { crearRouterBandeja, buscarRespuestas, correosCon } from './bandeja.js';
-import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES } from './redes.js';
+import { crearRouterBandeja, buscarRespuestas, correosCon, buzonesPersonales } from './bandeja.js';
+import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
 import { generarGastosPdf, gastosCsv, nombrePeriodo } from './gastos-pdf.js';
@@ -17219,6 +17219,25 @@ app.get('/api/admin/diagnostico', authenticateSession, requireSeccion('equipo_it
              GROUP BY 1, 2, 3 ORDER BY 2, 3`);
         const pingMs = Math.round(Number(process.hrtime.bigint() - a) / 1e6);
         const mem = process.memoryUsage();
+        // Cómo están conectados los servicios de fuera. Nunca se enseña una clave:
+        // solo si está puesta o no.
+        const tpv = configTpv();
+        const pagosTpv = (await pool.query(
+            `SELECT estado, entorno, COUNT(*)::int n, MAX(created_at) AS ultimo FROM aim_tpv_pagos
+             WHERE created_at > NOW() - interval '30 days' GROUP BY 1, 2 ORDER BY 2, 1`)).rows;
+        const redesOn = canalesActivosRedes();
+        const servicios = {
+            tpv: {
+                entorno: tpv.entorno, abiertos: pagosOnlineAbiertos(), incompleto: tpvRealIncompleto(),
+                comercio: process.env.REDSYS_COMERCIO || null, terminal: process.env.REDSYS_TERMINAL || null,
+                clave: !!process.env.REDSYS_CLAVE, pagos30d: pagosTpv,
+            },
+            web: process.env.PUBLIC_BASE_URL || null,
+            correo: { general: process.env.EMAIL_USER || null, listo: !!mailTransporter, buzones: buzonesPersonales().map(b => b.email) },
+            google: googleActivo(),
+            verifactu: { modo: AJUSTES_VERIFACTU.modo, entorno: AJUSTES_VERIFACTU.entorno, certificado: hayCertificadoVerifactu() },
+            redes: { ...redesOn, webhook: !!(process.env.META_VERIFY_TOKEN && process.env.META_APP_SECRET) },
+        };
         res.set('Cache-Control', 'no-store');
         res.json({
             arrancadoHaceMin: Math.round(process.uptime() / 60),
@@ -17227,6 +17246,7 @@ app.get('/api/admin/diagnostico', authenticateSession, requireSeccion('equipo_it
             baseMs: pingMs,
             conexionesBase: conexiones.rows,
             lentas: [...PETICIONES_LENTAS].reverse(),
+            servicios,
         });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });

@@ -2218,18 +2218,14 @@ html[data-actaccents="off"] .act-card.solid {
 
 .dash-nav a.is-active::before,
 .dash-nav button.is-active::before {
+  /* Del tamaño exacto del botón, como en el menú del panel (#353). */
   content: "";
   position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 260%;
-  aspect-ratio: 1;
-  transform: translate(-50%, -50%) rotate(45deg);
-  background: linear-gradient(to right,
-      #5233A8, #FF99D3, #FFD526, #21B668, #00BBF4, #5233A8);
-  background-size: 840px 100%;
-  background-repeat: repeat;
-  animation: btn-pan-diagonal 9s linear infinite;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(135deg, #5233A8, #FF99D3, #FFD526, #21B668, #00BBF4, #5233A8);
+  background-size: 300% 300%;
+  animation: menu-pan-diagonal 9s ease-in-out infinite alternate;
   z-index: -1;
   pointer-events: none;
 }
@@ -2795,18 +2791,16 @@ html[data-theme="dark"] .dash-nav button.is-active {
 }
 
 .admin-nav button.is-active::before {
+  /* Del tamaño exacto del botón (#353): antes era un cuadrado girado del doble,
+     recortado con máscara, y el Safari de Mac a veces no lo recortaba y salía un
+     rombo de colores enorme sobre el menú. Así no hay nada que pueda salirse. */
   content: "";
   position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 200%;
-  aspect-ratio: 1;
-  transform: translate(-50%, -50%) rotate(45deg);
-  background: linear-gradient(to right,
-      #5233A8, #FF99D3, #FFD526, #21B668, #00BBF4, #5233A8);
-  background-size: 840px 100%;
-  background-repeat: repeat;
-  animation: btn-pan-diagonal 12s linear infinite;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(135deg, #5233A8, #FF99D3, #FFD526, #21B668, #00BBF4, #5233A8);
+  background-size: 300% 300%;
+  animation: menu-pan-diagonal 12s ease-in-out infinite alternate;
   z-index: -1;
   pointer-events: none;
 }
@@ -3847,6 +3841,17 @@ html[data-theme="dark"] .dash-nav button.is-active {
 /* Capa ::before rotada 45°: el degradado se desplaza en HORIZONTAL un periodo
    exacto (840px = tamaño del azulejo) → bucle continuo sin costura. La rotación
    convierte ese movimiento horizontal en diagonal (sup-izq → inf-der). */
+/* Los menús: el degradado va y vuelve en diagonal dentro del propio botón. */
+@keyframes menu-pan-diagonal {
+  from {
+    background-position: 0% 0%;
+  }
+
+  to {
+    background-position: 100% 100%;
+  }
+}
+
 @keyframes btn-pan-diagonal {
   from {
     background-position: 0 0;
