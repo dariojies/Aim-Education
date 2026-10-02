@@ -780,7 +780,7 @@ export const CORREOS_SISTEMA = {
         ]),
     },
     aviso_ticket: {
-        grupo: 'club', nombre: 'Ticket de soporte nuevo', cuando: 'Cuando alguien abre un ticket de soporte.',
+        grupo: 'club', nombre: 'Ticket de soporte nuevo', cuando: 'Cuando alguien abre un ticket de soporte. Le llega a sus encargados o, si no tiene, al Equipo IT; nunca a quien lo abre ni a info@.',
         asunto: '[Soporte Aim Education] Ticket #{numero}: {asunto}',
         variables: { numero: { que: 'Número del ticket', ejemplo: '330' }, asunto: { que: 'Asunto del ticket', ejemplo: 'No me deja pasar lista' }, autor: { que: 'Quién lo abre', ejemplo: 'Marta López' }, email: { que: 'Su correo', ejemplo: 'marta@example.com' } },
         automaticos: { descripcion: { nombre: 'La descripción del ticket', ejemplo: 'Al pulsar «Pasar lista» se queda cargando.' } },

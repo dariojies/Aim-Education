@@ -13965,6 +13965,21 @@ function encargadosDe(b) {
     return { principal: ids[0] || null, extra: ids.slice(1) };
 }
 
+// A quién avisa por correo un ticket nuevo (#350): a sus encargados y, si no
+// tiene, al Equipo IT. Nunca a quien lo abre (ya sabe que lo ha abierto) ni al
+// correo de la empresa: con más de diez tickets al día saturaba info@.
+async function destinatariosTicket({ creador, encargados }) {
+    const ids = encargados.filter(Boolean);
+    const r = ids.length
+        ? await pool.query(`SELECT user_id, email FROM users WHERE user_id = ANY($1::uuid[])`, [ids])
+        : await pool.query(`SELECT u.user_id, u.email FROM aim_rangos ar JOIN users u ON u.user_id = ar.user_id WHERE ar.rango = 'equipo_it'`);
+    const general = String(process.env.EMAIL_USER || '').toLowerCase();
+    return [...new Set(r.rows
+        .filter(x => String(x.user_id) !== String(creador) && x.email && !esCorreoInterno(x.email))
+        .map(x => String(x.email).toLowerCase())
+        .filter(e => e !== general))];
+}
+
 app.post('/api/support', authenticateSession, async (req, res) => {
     const { subject, description, adjunto, adjuntoNombre, adjuntoMime } = req.body;
     const userId = req.userSession.userId;
@@ -13994,14 +14009,15 @@ app.post('/api/support', authenticateSession, async (req, res) => {
              priority, enc.principal, dueDate, recurrencia, enc.extra]
         );
         const ticketId = result.rows[0].id;
-        if (mailTransporter) {
+        const para = mailTransporter ? await destinatariosTicket({ creador: userId, encargados: [enc.principal, ...enc.extra] }).catch(() => []) : [];
+        if (para.length) {
             correoSistema('aviso_ticket', {
                 numero: ticketId, asunto: subject,
                 autor: `${req.userSession.firstName || ''} ${req.userSession.lastName || ''}`.trim(), email: req.userSession.email || '',
             }, {
                 automaticos: { descripcion: `<div style="white-space:pre-wrap">${escHtml(description)}</div>` },
                 automaticosTexto: { descripcion: `Descripción:\n${description}` },
-            }).then(c => mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: process.env.EMAIL_USER, ...c })).then(() => {
+            }).then(c => mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: para.join(', '), ...c })).then(() => {
                 pool.query('UPDATE tickets_registrosoporte SET email_sent = true WHERE id = $1', [ticketId]).catch(() => {});
             }).catch(err => console.error('[SMTP ERROR]', err.message));
         }
