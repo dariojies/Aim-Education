@@ -19,15 +19,16 @@ const PLANTILLA = path.join(path.dirname(fileURLToPath(import.meta.url)), 'plant
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
-// Qué se escribe en "TIPO OPERACIÓN" para cada serie. Se puede cambiar en
-// pantalla: si la gestoría usa códigos, se ponen sus códigos.
+// Qué se escribe en "TIPO OPERACIÓN" para cada serie. Para la gestoría es si la
+// operación es nacional o internacional, y todas las del club son nacionales
+// (#346). Se puede cambiar en pantalla si algún día usan códigos.
 export const TIPOS_OPERACION_DEFECTO = {
-    MAT: 'Entrega de bienes',
-    IVA: 'Prestación de servicios',
-    SIVA: 'Exenta art. 20.Uno.9º LIVA',
-    MATR: 'Rectificativa entrega de bienes',
-    IVAR: 'Rectificativa prestación de servicios',
-    SIVAR: 'Rectificativa exenta',
+    MAT: 'Nacional',
+    IVA: 'Nacional',
+    SIVA: 'Nacional',
+    MATR: 'Nacional',
+    IVAR: 'Nacional',
+    SIVAR: 'Nacional',
 };
 
 // Las líneas de IVA de un registro. Si por lo que sea no guardó el desglose (los
@@ -85,8 +86,9 @@ export function filasLibroRegistro(registros, tipos = TIPOS_OPERACION_DEFECTO) {
     return filas;
 }
 
-// Rellena la plantilla de la gestoría y la escribe en `salida` (un stream).
-export async function generarLibroRegistro(filas, salida) {
+// Rellena la plantilla de la gestoría y la escribe en `salida` (un stream). Sin
+// salida, devuelve el fichero en memoria (para mandarlo por correo).
+export async function generarLibroRegistro(filas, salida = null) {
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.readFile(PLANTILLA);
     const ws = wb.worksheets[0];
@@ -108,6 +110,7 @@ export async function generarLibroRegistro(filas, salida) {
         });
         row.commit();
     });
+    if (!salida) return wb.xlsx.writeBuffer();
     await wb.xlsx.write(salida);
 }
 

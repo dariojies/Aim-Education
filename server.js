@@ -2556,6 +2556,30 @@ app.post('/api/password/olvido', async (req, res) => {
     }
 });
 
+// Desde el registro (#344): quien ya tenía ficha pide el enlace sin saber con
+// qué correo está. Se manda al de su ficha (no se le dice cuál es entero).
+app.post('/api/register/recuperar', async (req, res) => {
+    const dni = String(req.body?.dni || '').toUpperCase().replace(/[\s.-]/g, '') || null;
+    if (frenar(OLVIDO_POR_IP, ipDe(req), 10, 3600_000)) return res.status(429).json({ error: 'Has pedido muchos enlaces seguidos. Espera un rato y vuelve a intentarlo.' });
+    try {
+        const ya = await fichaExistente({ dni, nombre: req.body?.firstName, apellidos: req.body?.lastName, telefono: req.body?.phone });
+        if (ya && correoUsable(ya.email) && !frenar(OLVIDO_POR_EMAIL, ya.email.toLowerCase(), 3, 3600_000)) {
+            const token = crypto.randomBytes(32).toString('base64url');
+            await pool.query(`INSERT INTO aim_password_resets (user_id, token_hash, expires_at, ip) VALUES ($1, $2, NOW() + INTERVAL '1 hour', $3)`,
+                [ya.user_id, huellaEnlace(token), ipDe(req) || null]);
+            const enlace = `${baseWeb(req)}/auth?mode=restablecer&token=${encodeURIComponent(token)}`;
+            if (mailTransporter) {
+                await mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: ya.email, ...(await correoSistema('password_olvido', { nombre: ya.name || '', enlace })) })
+                    .catch(e => console.error('[registro] enlace:', e.message));
+            }
+        }
+        res.json({ success: true, mensaje: 'Te hemos mandado el enlace al correo de tu ficha. Mira también en correo no deseado.' });
+    } catch (err) {
+        console.error('[registro] recuperar:', err.message);
+        res.status(500).json({ error: 'No se ha podido enviar. Inténtalo de nuevo en un momento.' });
+    }
+});
+
 // Enviar a alguien su acceso (ticket #343): un enlace para que ponga su
 // contraseña, igual que el de «¿Olvidaste tu contraseña?» pero válido 7 días.
 // Para dar de alta en la web al personal (fichar, pasar lista) o a una familia.
@@ -2564,9 +2588,17 @@ app.post('/api/admin/usuarios/:id/enviar-acceso', authenticateSession, requireAd
     if (!mandaAlMenos(req.userSession?.rol, 'secretaria')) return res.status(403).json({ error: 'Solo secretaría y dirección pueden enviar accesos.' });
     if (!mailTransporter) return res.status(503).json({ error: 'El correo no está configurado en el servidor.' });
     try {
-        const u = (await pool.query(`SELECT user_id, name, email FROM users WHERE user_id = $1`, [req.params.id])).rows[0];
+        const u = (await pool.query(
+            `SELECT u.user_id, u.name, u.email, u.role, u.dev_role, ar.rango FROM users u LEFT JOIN aim_rangos ar ON ar.user_id = u.user_id WHERE u.user_id = $1`,
+            [req.params.id])).rows[0];
         if (!u) return res.status(404).json({ error: 'Esa persona no existe.' });
         if (!u.email || esCorreoInterno(u.email)) return res.status(400).json({ error: 'No tiene un correo de verdad en su ficha: ponle uno antes de enviarle el acceso.' });
+        // El personal entra con su correo del club; una familia no (#348): el
+        // nombre.apellido@aimeducation.es de su ficha es inventado y no le llega.
+        const personal = !!u.rango || ['instructor', 'club_owner', 'superadmin'].includes(String(u.role || '').toLowerCase()) || u.dev_role === 'superadmin';
+        if (!personal && String(u.email).toLowerCase().endsWith('@aimeducation.es')) {
+            return res.status(400).json({ error: `Su ficha tiene un correo inventado del club (${u.email}), que no le llega. Pon su correo de verdad, guarda y vuelve a pulsar.` });
+        }
         const token = crypto.randomBytes(32).toString('base64url');
         await pool.query(
             `INSERT INTO aim_password_resets (user_id, token_hash, expires_at, ip) VALUES ($1, $2, NOW() + ($3 || ' days')::interval, $4)`,
@@ -2574,7 +2606,7 @@ app.post('/api/admin/usuarios/:id/enviar-acceso', authenticateSession, requireAd
         const enlace = `${URL_PUBLICA_WEB}/auth?mode=restablecer&token=${encodeURIComponent(token)}`;
         await mailTransporter.sendMail({
             from: process.env.EMAIL_USER, to: u.email,
-            ...(await correoSistema('acceso_invitacion', { nombre: u.name || '', correo: u.email, enlace, dias: String(DIAS_ENLACE_ACCESO) })),
+            ...(await correoSistema(personal ? 'acceso_invitacion' : 'acceso_familia', { nombre: u.name || '', correo: u.email, enlace, dias: String(DIAS_ENLACE_ACCESO) })),
         });
         res.json({ success: true, enviadoA: u.email, dias: DIAS_ENLACE_ACCESO });
     } catch (err) {
@@ -2721,6 +2753,43 @@ function dniValido(v) {
     return 'TRWAGMYFPDXBNJZSQVHLCKE'[num % 23] === m[2];
 }
 
+// ¿Ya tiene ficha quien se registra? (#344) Por el DNI, o por el mismo nombre y
+// teléfono. Las familias se dan de alta en secretaría y luego algunos se
+// registran en la web con otro correo: así salían cuentas repetidas.
+const SQL_PLANO = (x) => `lower(translate(${x}, 'áéíóúÁÉÍÓÚàèìòùÀÈÌÒÙñÑüÜ', 'aeiouaeiouaeiouaeiounnuu'))`;
+const plano = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+async function fichaExistente({ dni, nombre, apellidos, telefono }) {
+    if (dni) {
+        const r = await pool.query(
+            `SELECT user_id, name, surname, email FROM users WHERE UPPER(regexp_replace(COALESCE(dni, ''), '[\\s.-]', '', 'g')) = $1
+             ORDER BY (club_id = $2) DESC NULLS LAST, created_at LIMIT 1`, [dni, AIM_CLUB_ID]);
+        if (r.rowCount) return { ...r.rows[0], por: 'dni' };
+    }
+    const tel = soloDigitos(telefono);
+    if (tel.length >= 9 && plano(nombre)) {
+        const r = await pool.query(
+            `SELECT user_id, name, surname, email FROM users
+             WHERE club_id = $1 AND RIGHT(regexp_replace(COALESCE(phone, ''), '\\D', '', 'g'), 9) = $2
+               AND ${SQL_PLANO(`TRIM(CONCAT(name, ' ', COALESCE(surname, '')))`)} = $3 LIMIT 1`,
+            [AIM_CLUB_ID, tel.slice(-9), plano(`${nombre} ${apellidos || ''}`)]);
+        if (r.rowCount) return { ...r.rows[0], por: 'nombre y teléfono' };
+    }
+    return null;
+}
+// Un correo al que se le puede mandar el enlace: ni los «sin correo» ni los
+// que se inventa secretaría con el dominio del club.
+const correoUsable = (e) => !!e && !esCorreoInterno(e) && !String(e).toLowerCase().endsWith('@aimeducation.es');
+const ocultarCorreo = (e) => { const [u, d] = String(e).split('@'); return `${u.slice(0, 2)}${'•'.repeat(Math.max(3, u.length - 2))}@${d}`; };
+// Los hijos que ya tienen ficha (por nombre y apellidos), para no darlos de alta dos veces.
+async function hijosConFicha(hijos) {
+    if (!hijos.length) return new Map();
+    const r = await pool.query(
+        `SELECT user_id, TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS nombre, ${SQL_PLANO(`TRIM(CONCAT(name, ' ', COALESCE(surname, '')))`)} AS plano
+         FROM users WHERE club_id = $1 AND ${SQL_PLANO(`TRIM(CONCAT(name, ' ', COALESCE(surname, '')))`)} = ANY($2::text[])`,
+        [AIM_CLUB_ID, hijos.map(h => plano(`${h.nombre} ${h.apellidos}`))]);
+    return new Map(r.rows.map(x => [x.plano, x.nombre]));
+}
+
 app.post('/api/register', async (req, res) => {
     const { firstName, lastName, email, phone, password } = req.body;
     const dni = String(req.body.dni || '').toUpperCase().replace(/[\s.-]/g, '') || null;
@@ -2752,6 +2821,35 @@ app.post('/api/register', async (req, res) => {
         const exists = await pool.query('SELECT user_id FROM users WHERE LOWER(email) = $1', [emailLower]);
         if (exists.rowCount > 0) {
             return res.status(409).json({ error: 'Ya existe una cuenta con ese email.' });
+        }
+        // Ya tiene ficha (#344): no se crea otra. Se avisa a secretaría con lo que
+        // pide y, si su ficha tiene un correo de verdad, se le ofrece el enlace.
+        const ya = await fichaExistente({ dni, nombre: firstName, apellidos: lastName, telefono: phone });
+        if (ya) {
+            const conFicha = await hijosConFicha(hijos);
+            const nombreTutor = `${firstName.trim()} ${(lastName || '').trim()}`.trim();
+            const lineas = hijos.map(h => `- ${h.nombre} ${h.apellidos}`.trim()
+                + (h.nacimiento ? ` (nacido/a el ${h.nacimiento.split('-').reverse().join('/')})` : '')
+                + (h.actividad ? ` · quiere: ${h.actividad}` : '')
+                + (conFicha.has(plano(`${h.nombre} ${h.apellidos}`)) ? ' · YA TIENE FICHA' : ''));
+            const recuperable = correoUsable(ya.email);
+            const mensaje = `Ha intentado crear una cuenta en la web, pero ya tiene ficha en el club: ${`${ya.name || ''} ${ya.surname || ''}`.trim()} (coincide por ${ya.por}). No se ha creado otra.\n`
+                + (recuperable
+                    ? `Su ficha tiene el correo ${ya.email}; se le ha ofrecido el enlace para entrar con él. Si prefiere usar ${emailLower}, cámbialo en su ficha y pulsa «Enviar acceso».`
+                    : `Su ficha no tiene un correo de verdad: si es él/ella, pon ${emailLower} en su ficha y pulsa «Enviar acceso» para que ponga su contraseña.`)
+                + (hijos.length ? `\n\nQuiere apuntar a:\n${lineas.join('\n')}` : '');
+            const reciente = await pool.query(
+                `SELECT 1 FROM aim_contactos WHERE LOWER(email) = $1 AND created_at > NOW() - interval '1 hour' AND mensaje LIKE 'Ha intentado crear una cuenta%' LIMIT 1`, [emailLower]);
+            if (!reciente.rowCount) {
+                await pool.query(`INSERT INTO aim_contactos (nombre, email, telefono, mensaje, ip) VALUES ($1, $2, $3, $4, $5)`,
+                    [nombreTutor, emailLower, String(phone || '').trim().slice(0, 40) || null, mensaje, ipDe(req) || null]);
+            }
+            return res.status(409).json({
+                codigo: 'cuenta_existente', recuperable,
+                error: recuperable
+                    ? `Ya tienes una cuenta en el club, con el correo ${ocultarCorreo(ya.email)}. Entra con ese correo; si no recuerdas la contraseña, te mandamos un enlace para poner una nueva.`
+                    : 'Ya tienes ficha en el club. Hemos avisado a secretaría para que te activen el acceso con este correo: te llegará un correo para poner tu contraseña.',
+            });
         }
         const hash = await bcrypt.hash(password, 12);
         const result = await pool.query(
@@ -3923,7 +4021,7 @@ async function emitirReciboDe(client, { pagadorId, cargoIds, medioPago, userId }
         pagadorId, rows: cs.rows, pagos: [{ medio: medioPago, importe: total }],
         entregado: total, cambio: 0, userId, receptor,
     });
-    return { reciboId: tickets[0].reciboId, numero: tickets[0].recibo.numero, total, facturas: tickets.length };
+    return { reciboId: tickets[0]?.reciboId || null, numero: tickets[0]?.recibo.numero || null, total, facturas: tickets.length };
 }
 
 // Admin: listar inscritos de un evento.
@@ -7588,10 +7686,12 @@ app.post('/api/admin/billing/cargos/extra', authenticateSession, requireAdmin, a
         }
         const act = await actividadDeConcepto(concepto);
         const ins = await pool.query(
-            `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado, origen, actividad)
-             VALUES ($1,$2,$3::date,$4,$5,$6,$7,$8,'pendiente','manual',$9) RETURNING id`,
-            [clienteId, concepto, mesCargo, p.descripcion, p.tipo, p.precio, p.iva_pct, d, act]);
-        res.status(201).json({ success: true, id: ins.rows[0].id, descuentoPct: d, deMatricula });
+            // Con el 100% de descuento no se cobra ni se factura (#320): nace exento.
+            `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, estado, origen, actividad, anulado_motivo)
+             VALUES ($1,$2,$3::date,$4,$5,$6,$7,$8,$10,'manual',$9,$11) RETURNING id`,
+            [clienteId, concepto, mesCargo, p.descripcion, p.tipo, p.precio, p.iva_pct, d, act,
+             d >= 100 ? 'exento' : 'pendiente', d >= 100 ? 'Descuento del 100%' : null]);
+        res.status(201).json({ success: true, id: ins.rows[0].id, descuentoPct: d, deMatricula, exento: d >= 100 });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -7937,6 +8037,44 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
     const extrasArr = Array.isArray(extras) ? extras : [];
     const anticiposArr = Array.isArray(anticipos) ? anticipos.filter(a => a && a.id && Number(a.importe) > 0) : [];
     if (idsSel.length === 0 && extrasArr.length === 0) return res.status(400).json({ error: 'No hay nada que cobrar.' });
+
+    // Los datos de quien paga (#345): con lo que falte (nombre, apellidos, DNI,
+    // dirección) se pregunta antes de emitir, porque una factura emitida ya no se
+    // toca. Se pueden rellenar aquí mismo o facturar igualmente.
+    try {
+        const dp = req.body.datosPagador;
+        if (dp && typeof dp === 'object') {
+            const limpio = (v, n) => (v === undefined ? undefined : String(v || '').trim().slice(0, n) || null);
+            const dni = dp.dni === undefined ? undefined : (String(dp.dni || '').toUpperCase().replace(/[\s.-]/g, '') || null);
+            if (dni && !dniValido(dni)) return res.status(400).json({ error: 'Ese DNI/NIE no es válido: revisa los números y la letra.' });
+            const campos = { name: limpio(dp.nombre, 80), surname: limpio(dp.apellidos, 120), dni, domicilio: limpio(dp.domicilio, 200), cp: limpio(dp.cp, 10), poblacion: limpio(dp.poblacion, 100) };
+            const sets = [], vals = [pagadorId];
+            for (const [k, v] of Object.entries(campos)) if (v !== undefined && v !== null) { vals.push(v); sets.push(`${k} = $${vals.length}`); }
+            if (sets.length) await pool.query(`UPDATE users SET ${sets.join(', ')} WHERE user_id = $1`, vals);
+        }
+        if (req.body.facturarSinDatos !== true) {
+            const u = (await pool.query(`SELECT name, surname, dni, domicilio, cp, poblacion FROM users WHERE user_id = $1`, [pagadorId])).rows[0];
+            // Si todo lo que se cobra va al 100%, no hay factura: no hace falta nada.
+            const todoExento = !extrasArr.length && idsSel.length > 0 && (await pool.query(
+                `SELECT bool_and(descuento_pct >= 100) AS t FROM aim_cargos WHERE id = ANY($1::int[])`, [idsSel])).rows[0]?.t
+                && (Array.isArray(lineas) ? lineas : []).every(l => l.descuentoPct === undefined || Number(l.descuentoPct) >= 100);
+            const vacio = (v) => !String(v || '').trim();
+            const faltan = !u || todoExento ? [] : [
+                vacio(u.name) && 'nombre', vacio(u.surname) && 'apellidos', vacio(u.dni) && 'dni',
+                vacio(u.domicilio) && 'domicilio', vacio(u.cp) && 'cp', vacio(u.poblacion) && 'poblacion',
+            ].filter(Boolean);
+            if (faltan.length) {
+                return res.status(409).json({
+                    codigo: 'faltan_datos', faltan,
+                    error: 'A quien paga le faltan datos para la factura.',
+                    actuales: { nombre: u.name || '', apellidos: u.surname || '', dni: u.dni || '', domicilio: u.domicilio || '', cp: u.cp || '', poblacion: u.poblacion || '' },
+                    topeSinNif: Number(AJUSTES_FACT.limiteSimplificada),
+                });
+            }
+        }
+    } catch (err) {
+        return res.status(400).json({ error: `No se han podido comprobar los datos de quien paga: ${err.message}` });
+    }
 
     const client = await pool.connect();
     try {
@@ -8310,7 +8448,15 @@ async function receptorDeFactura(client, pagadorId) {
 // serie (ticket #291), todas vinculadas por el mismo grupo. Es el único camino
 // por el que se emiten facturas: mostrador, pago por internet y cobro de cargos
 // sueltos pasan todos por aquí, así que las tres siguen la misma regla.
-async function emitirFacturasDeCargos(client, { pagadorId, rows, pagos, entregado, cambio, userId, receptor }) {
+async function emitirFacturasDeCargos(client, { pagadorId, rows: todas, pagos, entregado, cambio, userId, receptor }) {
+    // Lo que tiene el 100% de descuento no va en ninguna factura (#320), venga
+    // del mostrador, del pago por internet o de un evento: queda exento.
+    const exentas = todas.filter(c => Number(c.descuento_pct) >= 100 && Number(c.precio) >= 0 && c.id);
+    if (exentas.length) {
+        await client.query(`UPDATE aim_cargos SET estado = 'exento', anulado_motivo = 'Descuento del 100%' WHERE id = ANY($1::int[])`, [exentas.map(c => c.id)]);
+    }
+    const rows = todas.filter(c => !exentas.includes(c));
+    if (!rows.length) return { tickets: [], reciboDeCargo: new Map(), total: 0 };
     // La misma cuenta que ha visto el TPV (#293): el tramo de descuento se cuenta
     // sobre TODO el cobro y cada factura lo lleva ya fijado, así que las facturas
     // suman exactamente lo que se ha cobrado.
@@ -9250,6 +9396,16 @@ app.get('/api/admin/billing/libro-registro', authenticateSession, requireAdmin, 
         // Una factura completa (F1/R1) sin NIF es una factura mal hecha: se avisa
         // para que la gestoría no se la encuentre al importar.
         const sinNif = regs.filter(x => ['F1', 'R1'].includes(x.tipo_factura) && !x.nif_receptor).map(x => x.num_serie);
+        // Todas las que no llevan el DNI del cliente, y si su ficha ya lo tiene (#345).
+        const sinDni = (await pool.query(
+            `SELECT fr.id, COALESCE(fr.num_serie, fr.serie || '-' || fr.numero) AS numero, fr.nombre_receptor, fr.estado_envio,
+                    rc.pagador_id, NULLIF(TRIM(u.dni), '') AS dni_ficha
+             FROM aim_factura_registro fr JOIN aim_recibos rc ON rc.id = fr.recibo_id LEFT JOIN users u ON u.user_id = rc.pagador_id
+             WHERE fr.fecha_expedicion BETWEEN $1::date AND $2::date AND COALESCE(fr.nif_receptor, '') = ''
+             ORDER BY fr.fecha_expedicion, fr.id`, [rango.desde, rango.hasta])).rows.map(x => ({
+                id: x.id, numero: x.numero, nombre: x.nombre_receptor, pagadorId: x.pagador_id, dniFicha: x.dni_ficha,
+                completable: !!x.dni_ficha && x.estado_envio === 'no_aplica' && AJUSTES_VERIFACTU.modo !== 'verifactu',
+            }));
         res.set('Cache-Control', 'no-store');
         res.json({
             ...rango,
@@ -9263,6 +9419,8 @@ app.get('/api/admin/billing/libro-registro', authenticateSession, requireAdmin, 
             })),
             simplificadas: regs.filter(x => ['F2', 'R5'].includes(x.tipo_factura)).length,
             completasSinNif: sinNif,
+            sinDni,
+            terminado: rango.hasta < hoyMadrid(),
         });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -9286,12 +9444,30 @@ app.get('/api/admin/billing/libro-registro.xlsx', authenticateSession, requireAd
     }
 });
 
+// La gestoría (#346): a quién se manda el libro y lo que ya se le ha mandado.
+const GESTORIA_DEFECTO = 'angelapino@ayudatpymes.pro';
+async function ajustesLibro() {
+    try { return (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'libro_registro'`)).rows[0]?.valor || {}; }
+    catch { return {}; }
+}
+async function guardarAjustesLibro(cambios, userId) {
+    const valor = { ...(await ajustesLibro()), ...cambios };
+    await pool.query(
+        `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('libro_registro', $1::jsonb, NOW(), $2)
+         ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+        [JSON.stringify(valor), userId || null]);
+    return valor;
+}
+
 app.get('/api/admin/billing/libro-registro/config', authenticateSession, requireAdmin, async (req, res) => {
+    const a = await ajustesLibro();
     res.set('Cache-Control', 'no-store');
     res.json({
         tipos: await tiposOperacionLibro(),
         defecto: TIPOS_OPERACION_DEFECTO,
         series: TODAS_LAS_SERIES.map(s => ({ codigo: s.codigo, nombre: s.nombre })),
+        gestoria: a.gestoria || GESTORIA_DEFECTO,
+        envios: Array.isArray(a.envios) ? a.envios.slice(-40) : [],
     });
 });
 
@@ -9302,13 +9478,91 @@ app.put('/api/admin/billing/libro-registro/config', authenticateSession, require
         const v = String(entrada[s.codigo] ?? '').trim().slice(0, 60);
         tipos[s.codigo] = v || TIPOS_OPERACION_DEFECTO[s.codigo];
     }
+    const cambios = { tipos };
+    if (req.body?.gestoria !== undefined) {
+        const g = String(req.body.gestoria || '').trim().toLowerCase();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(g)) return res.status(400).json({ error: 'El correo de la gestoría no parece válido.' });
+        cambios.gestoria = g;
+    }
     try {
-        await pool.query(
-            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('libro_registro', $1::jsonb, NOW(), $2)
-             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
-            [JSON.stringify({ tipos }), req.userSession.userId]);
-        res.json({ success: true, tipos });
+        const v = await guardarAjustesLibro(cambios, req.userSession.userId);
+        res.json({ success: true, tipos, gestoria: v.gestoria || GESTORIA_DEFECTO });
     } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Mandar el libro a la gestoría por correo (#346), con los datos de la empresa y
+// el Excel adjunto. Solo cuando el periodo ya ha terminado: si no, faltarían
+// facturas.
+app.post('/api/admin/billing/libro-registro/enviar', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const rango = rangoLibro(req.body);
+    if (!rango) return res.status(400).json({ error: 'Indica un periodo válido (desde y hasta).' });
+    if (rango.hasta >= hoyMadrid()) return res.status(400).json({ error: 'Ese periodo aún no ha terminado: se podrá mandar a partir del día siguiente a su último día.' });
+    if (!mailTransporter) return res.status(503).json({ error: 'El correo no está configurado en el servidor.' });
+    try {
+        const a = await ajustesLibro();
+        const para = a.gestoria || GESTORIA_DEFECTO;
+        const regs = await registrosEntre(rango.desde, rango.hasta);
+        if (!regs.length) return res.status(400).json({ error: 'No hay facturas en ese periodo.' });
+        const filas = filasLibroRegistro(regs, await tiposOperacionLibro());
+        const excel = await generarLibroRegistro(filas);
+        const suma = (k) => Math.round(filas.reduce((s, x) => s + Number(x[k] || 0), 0) * 100) / 100;
+        const eu = (n) => `${n.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
+        const fecha = (iso) => iso.split('-').reverse().map(Number).join('/');
+        const periodo = String(req.body.nombre || `del ${fecha(rango.desde)} al ${fecha(rango.hasta)}`).slice(0, 60);
+        const E = EMPRESA_TICKET;
+        const empresaTxt = `${E.nombre} · CIF ${E.nif} · ${E.direccion}, ${E.cp}${E.tel ? ` · Tel. ${E.tel}` : ''} · ${E.email}`;
+        const resumenTxt = `${regs.length} factura${regs.length !== 1 ? 's' : ''} del ${fecha(rango.desde)} al ${fecha(rango.hasta)} · base ${eu(suma('base'))} · IVA ${eu(suma('cuota'))} · total ${eu(suma('total'))}`;
+        const c = await correoSistema('gestoria_libro', { periodo, empresa: E.nombre }, {
+            automaticos: {
+                datos_empresa: `<table style="border-collapse:collapse;font-size:14px;margin:6px 0">${[
+                    ['Empresa', E.nombre], ['CIF', E.nif], ['Domicilio', `${E.direccion}, ${E.cp}`], ['Teléfono', E.tel], ['Correo', E.email],
+                ].filter(x => x[1]).map(([k, v]) => `<tr><td style="padding:3px 12px 3px 0;color:#666">${k}</td><td style="padding:3px 0;font-weight:700">${escHtml(String(v))}</td></tr>`).join('')}</table>`,
+                resumen: `<p style="margin:6px 0;font-size:14px">${escHtml(resumenTxt)}</p>`,
+            },
+            automaticosTexto: { datos_empresa: empresaTxt, resumen: resumenTxt },
+        });
+        await mailTransporter.sendMail({
+            from: process.env.EMAIL_USER, to: para, replyTo: process.env.EMAIL_USER, ...c,
+            attachments: [{ filename: `libro-registro-emitidas_${rango.desde}_${rango.hasta}.xlsx`, content: Buffer.from(excel),
+                contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }],
+        });
+        const envio = { desde: rango.desde, hasta: rango.hasta, para, at: new Date().toISOString(), por: `${req.userSession.firstName || ''} ${req.userSession.lastName || ''}`.trim(), facturas: regs.length };
+        await guardarAjustesLibro({ envios: [...(Array.isArray(a.envios) ? a.envios : []), envio].slice(-200) }, req.userSession.userId);
+        res.json({ success: true, envio });
+    } catch (err) {
+        console.error('[gestoría]', err.message);
+        res.status(500).json({ error: `No se ha podido mandar: ${err.message}` });
+    }
+});
+
+// Facturas ya emitidas sin el DNI del cliente (#345). Mientras VERI*FACTU esté
+// apagado y el registro no se haya mandado a Hacienda, se le puede poner el DNI
+// que ahora tiene su ficha (la huella encadenada no lleva los datos del cliente,
+// así que la cadena no se toca), y queda anotado. Con VERI*FACTU encendido, no:
+// por eso el cobro pregunta antes.
+app.post('/api/admin/billing/libro-registro/completar-nif', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).map(Number).filter(Number.isInteger).slice(0, 200);
+    if (!ids.length) return res.status(400).json({ error: 'No hay facturas que completar.' });
+    if (AJUSTES_VERIFACTU.modo === 'verifactu') return res.status(409).json({ error: 'Con VERI*FACTU encendido una factura emitida no se puede cambiar.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const r = await client.query(
+            `UPDATE aim_factura_registro fr SET nif_receptor = UPPER(TRIM(u.dni)), nombre_receptor = TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, '')))
+             FROM aim_recibos rc JOIN users u ON u.user_id = rc.pagador_id
+             WHERE fr.id = ANY($1::int[]) AND rc.id = fr.recibo_id AND COALESCE(fr.nif_receptor, '') = ''
+               AND fr.estado_envio = 'no_aplica' AND COALESCE(fr.modo, 'apagado') <> 'verifactu' AND COALESCE(TRIM(u.dni), '') <> ''
+             RETURNING fr.id, fr.recibo_id, fr.serie, fr.numero, fr.nif_receptor`, [ids]);
+        for (const x of r.rows) {
+            await client.query(`INSERT INTO aim_factura_eventos (tipo, registro_id, recibo_id, detalle, usuario_id) VALUES ('datos_receptor', $1, $2, $3, $4)`,
+                [x.id, x.recibo_id, `${x.serie}-${x.numero}: NIF del cliente añadido desde su ficha (${x.nif_receptor}), con VERI*FACTU apagado`, req.userSession.userId]);
+        }
+        await client.query('COMMIT');
+        res.json({ success: true, completadas: r.rowCount });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
 });
 
 // ── Prorrata ──
@@ -9928,7 +10182,7 @@ async function asentarPago(client, pago, aviso) {
         pagos: [{ medio: 'tpv_online', importe: total }],
         entregado: total, cambio: 0, userId: pago.pagador_id, receptor,
     });
-    const reciboId = tickets[0].reciboId;
+    const reciboId = tickets[0]?.reciboId || null;
 
     await client.query(
         `UPDATE aim_tpv_pagos SET estado = 'pagado', pagado_at = NOW(), recibo_id = $2,
@@ -12581,6 +12835,58 @@ app.post('/api/admin/billing/familias', authenticateSession, requireAdmin, async
         res.status(201).json({ success: true });
     } catch (err) {
         await client.query('ROLLBACK');
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+// ── Hermanos sin enlazar (#351) ──────────────────────────────────────────────
+// Dos hijos de la misma madre, padre o tutor que no están enlazados entre sí:
+// al cobrar desde uno de ellos, el otro no salía. Se proponen para enlazarlos
+// como hermanos (los dos sentidos).
+const SQL_PADRES = `
+    SELECT f.persona_id AS hijo, f.familiar_id AS padre FROM aim_familias f
+     WHERE f.tipo IN ('Madre', 'Padre', 'Tutor/a', 'Tutor', 'Tutora')
+    UNION
+    SELECT f.familiar_id AS hijo, f.persona_id AS padre FROM aim_familias f
+     WHERE lower(f.tipo) IN ('hijo/a', 'hijo', 'hija', 'tutelado/a')`;
+async function hermanosSinEnlazar(personaId = null) {
+    const r = await pool.query(
+        `WITH p AS (${SQL_PADRES})
+         SELECT a.hijo AS a, b.hijo AS b,
+                string_agg(DISTINCT TRIM(CONCAT(pu.name, ' ', COALESCE(pu.surname, ''))), ' y ') AS padres,
+                MIN(TRIM(CONCAT(ua.name, ' ', COALESCE(ua.surname, '')))) AS nombre_a,
+                MIN(TRIM(CONCAT(ub.name, ' ', COALESCE(ub.surname, '')))) AS nombre_b
+         FROM p a JOIN p b ON b.padre = a.padre AND b.hijo <> a.hijo
+         JOIN users pu ON pu.user_id = a.padre JOIN users ua ON ua.user_id = a.hijo JOIN users ub ON ub.user_id = b.hijo
+         WHERE ${personaId ? 'a.hijo = $1' : 'a.hijo < b.hijo'}
+           AND NOT EXISTS (SELECT 1 FROM aim_familias x WHERE (x.persona_id = a.hijo AND x.familiar_id = b.hijo) OR (x.persona_id = b.hijo AND x.familiar_id = a.hijo))
+         GROUP BY a.hijo, b.hijo ORDER BY nombre_a, nombre_b LIMIT 300`, personaId ? [personaId] : []);
+    return r.rows.map(x => ({ a: x.a, b: x.b, nombreA: x.nombre_a, nombreB: x.nombre_b, padres: x.padres }));
+}
+app.get('/api/admin/familias/hermanos-sin-enlazar', authenticateSession, requireAdmin, requireSeccion('familias'), async (req, res) => {
+    try { res.set('Cache-Control', 'no-store'); res.json({ pares: await hermanosSinEnlazar() }); }
+    catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.get('/api/admin/billing/familias/:personaId/hermanos-sugeridos', authenticateSession, requireAdmin, async (req, res) => {
+    try { res.set('Cache-Control', 'no-store'); res.json({ pares: await hermanosSinEnlazar(req.params.personaId) }); }
+    catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.post('/api/admin/billing/familias/hermanos', authenticateSession, requireAdmin, async (req, res) => {
+    const pares = (Array.isArray(req.body?.pares) ? req.body.pares : []).slice(0, 300)
+        .filter(p => Array.isArray(p) && p.length === 2 && /^[0-9a-f-]{36}$/i.test(p[0]) && /^[0-9a-f-]{36}$/i.test(p[1]) && p[0] !== p[1]);
+    if (!pares.length) return res.status(400).json({ error: 'No hay hermanos que enlazar.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        for (const [a, b] of pares) {
+            for (const [x, y] of [[a, b], [b, a]]) {
+                await client.query(`INSERT INTO aim_familias (persona_id, familiar_id, tipo) VALUES ($1, $2, 'Hermano/a') ON CONFLICT (persona_id, familiar_id) DO NOTHING`, [x, y]);
+            }
+        }
+        await client.query('COMMIT');
+        res.json({ success: true, enlazados: pares.length });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
         res.status(500).json({ error: err.message });
     } finally { client.release(); }
 });
@@ -15494,7 +15800,7 @@ async function listadoFichajes({ userId, desde, hasta }) {
     // quién los anuló, cuándo y por qué. Para las horas solo cuentan los vigentes.
     const ap = await pool.query(
         `SELECT f.id, f.tipo, f.ts, f.dia, f.origen, f.motivo, f.solicitud_id, f.corrige_id,
-                (f.creado_por IS NOT NULL) AS corregido,
+                (f.creado_por IS NOT NULL OR f.origen = 'automatico') AS corregido,
                 TRIM(CONCAT(cu.name, ' ', COALESCE(cu.surname, ''))) AS creado_por_nombre,
                 an.id AS anulacion_id, an.motivo AS anulado_motivo, an.created_at AS anulado_at,
                 TRIM(CONCAT(au.name, ' ', COALESCE(au.surname, ''))) AS anulado_por_nombre,
@@ -15566,7 +15872,7 @@ app.get('/api/fichaje/estado', authenticateSession, requireAdmin, async (req, re
         const hoy = hoyMadrid();
         const horarioHoy = await horarioDeFecha(uid, hoy);
         const ap = await pool.query(
-            `SELECT f.id, f.tipo, f.ts, f.dia, (f.creado_por IS NOT NULL) AS corregido
+            `SELECT f.id, f.tipo, f.ts, f.dia, (f.creado_por IS NOT NULL OR f.origen = 'automatico') AS corregido
              FROM aim_fichajes f WHERE f.user_id = $1 AND f.dia = $2::date AND ${FICHAJE_VIGENTE('f')}
              ORDER BY f.ts`, [uid, hoy]);
         const calc = calcularTrabajado(ap.rows);
@@ -17245,13 +17551,178 @@ async function referenciasDeUsuario(userId, cliente = pool) {
                -- contraseña, avisos vistos y preferencias de la agenda.
                AND table_name NOT IN ('aim_password_resets', 'aim_avisos_vistos', 'aim_agenda_prefs', 'aim_web_visitantes')`)).rows;
     }
-    const hay = [];
-    for (const c of columnasUsuario) {
-        const r = await cliente.query(`SELECT 1 FROM "${c.table_name}" WHERE "${c.column_name}" = $1 LIMIT 1`, [userId]).catch(() => ({ rowCount: 0 }));
-        if (r.rowCount) hay.push(c.table_name);
-    }
-    return [...new Set(hay)];
+    // En una sola consulta (una a una eran cientos de idas y vueltas).
+    const sql = columnasUsuario.map((c, i) => `(SELECT ${i} AS i FROM "${c.table_name}" WHERE "${c.column_name}" = $1 LIMIT 1)`).join(' UNION ALL ');
+    const r = await cliente.query(sql, [userId]);
+    return [...new Set(r.rows.map(x => columnasUsuario[x.i].table_name))];
 }
+
+// ── Fusionar dos fichas de la misma persona (#347) ───────────────────────────
+// Todo lo que apunta a la ficha que sobra (clases, cobros, facturas, familia,
+// asistencia, consentimientos, Aim-Tul, Learning Dungeon…) pasa a la que queda,
+// se completan sus datos con los que se elijan y la que sobra se borra. Va todo
+// en una transacción: o se hace entero o no se hace. Se mira tabla por tabla en
+// la base (cualquier columna con el id de la persona), así no se escapa ninguna
+// aunque mañana se añada otra. El registro de jornada no se puede cambiar (es
+// inalterable por ley): si la ficha que sobra tiene fichajes, se fusiona al revés.
+const CAMPOS_FUSION = ['name', 'surname', 'email', 'phone', 'dni', 'birthday', 'domicilio', 'cp', 'poblacion', 'belt', 'profile_picture'];
+const TABLAS_JORNADA = ['aim_fichajes', 'aim_fichaje_anulaciones', 'aim_fichaje_auditoria', 'aim_fichaje_solicitudes', 'aim_fichaje_resumenes'];
+let columnasPersona = null;
+async function columnasConPersona(cliente = pool) {
+    if (!columnasPersona) {
+        columnasPersona = (await cliente.query(
+            `SELECT table_name, column_name, data_type FROM information_schema.columns c
+             WHERE table_schema = 'public' AND NOT (table_name = 'users' AND column_name = 'user_id')
+               AND EXISTS (SELECT 1 FROM information_schema.tables t WHERE t.table_schema = 'public' AND t.table_name = c.table_name AND t.table_type = 'BASE TABLE')
+               AND (data_type = 'uuid'
+                    OR (data_type IN ('text', 'character varying')
+                        AND column_name ~* '(user|usuario|student|alumno|persona|cliente|autor|instructor|familiar|pagador|trabajador|actor)'
+                        AND column_name !~* '(nombre|name|email|rol|agent|tipo)'))
+             ORDER BY table_name, column_name`)).rows;
+    }
+    return columnasPersona;
+}
+const igualA = (c, n) => (c.data_type === 'uuid' ? `"${c.column_name}" = $${n}::uuid` : `"${c.column_name}" = $${n}::text`);
+// Dónde aparece una persona: { tabla: filas }.
+// Todo en una sola consulta: una a una eran ~300 idas y vueltas (40 s).
+async function huellaPersona(id, cliente = pool) {
+    const cols = await columnasConPersona(cliente);
+    // $1 para las columnas uuid y $2 para las de texto (un mismo parámetro no
+    // puede ser de dos tipos a la vez).
+    const sql = cols.map((c, i) => `SELECT ${i} AS i, COUNT(*)::int AS n FROM "${c.table_name}" WHERE ${igualA(c, c.data_type === 'uuid' ? 1 : 2)}`).join(' UNION ALL ');
+    const out = {};
+    for (const r of (await cliente.query(sql, [id, String(id)])).rows) {
+        if (r.n) out[cols[r.i].table_name] = (out[cols[r.i].table_name] || 0) + r.n;
+    }
+    return out;
+}
+const NOMBRES_TABLA = {
+    aim_cargos: 'cargos', aim_recibos: 'facturas', aim_matriculas: 'matrículas', aim_familias: 'familia', tul_group_students: 'clases',
+    tul_attendance: 'asistencia', aim_consentimientos: 'permisos', aim_comunicaciones: 'correos', aim_campana_envios: 'campañas',
+    aim_anticipos: 'anticipos', aim_event_registrations: 'eventos', aim_camp_children: 'campamento', tul_enrollment_history: 'historial de clases',
+    aim_password_resets: 'enlaces de contraseña', aim_web_visitantes: 'visitas a la web', aim_social_conversaciones: 'redes sociales',
+};
+async function fichaFusion(id, cliente = pool) {
+    const r = await cliente.query(
+        `SELECT user_id, ${CAMPOS_FUSION.join(', ')}, role, club_id, created_at FROM users WHERE user_id = $1`, [id]);
+    return r.rows[0] || null;
+}
+
+app.get('/api/admin/fusion/previa', authenticateSession, requireAdmin, requirePermiso('editarAlumnos'), requireRol('secretaria'), async (req, res) => {
+    const { queda, sobra } = req.query;
+    if (!queda || !sobra || queda === sobra) return res.status(400).json({ error: 'Elige dos fichas distintas.' });
+    try {
+        const [a, b] = await Promise.all([fichaFusion(queda), fichaFusion(sobra)]);
+        if (!a || !b) return res.status(404).json({ error: 'Alguna de las dos fichas ya no existe.' });
+        const [ha, hb] = await Promise.all([huellaPersona(queda), huellaPersona(sobra)]);
+        const resumen = (h) => Object.entries(h).map(([t, n]) => ({ tabla: t, nombre: NOMBRES_TABLA[t] || t.replace(/^(aim_|tul_)/, '').replace(/_/g, ' '), n }));
+        const jornadaB = TABLAS_JORNADA.some(t => hb[t]), jornadaA = TABLAS_JORNADA.some(t => ha[t]);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            queda: a, sobra: b, campos: CAMPOS_FUSION, mueve: resumen(hb), tieneQueda: resumen(ha),
+            bloqueo: jornadaB && jornadaA ? 'Las dos fichas tienen registro de jornada (fichajes), que no se puede cambiar: no se pueden fusionar.'
+                : jornadaB ? 'La ficha que sobra tiene registro de jornada (fichajes), que no se puede cambiar: dale la vuelta y quédate con esa.' : null,
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/fusion', authenticateSession, requireAdmin, requirePermiso('editarAlumnos'), requireRol('secretaria'), async (req, res) => {
+    const { queda, sobra } = req.body || {};
+    const elegir = req.body?.campos && typeof req.body.campos === 'object' ? req.body.campos : {};
+    if (!queda || !sobra || queda === sobra) return res.status(400).json({ error: 'Elige dos fichas distintas.' });
+    if (queda === req.userSession.userId || sobra === req.userSession.userId) return res.status(400).json({ error: 'No puedes fusionar tu propia cuenta desde aquí.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query(`SELECT 1 FROM users WHERE user_id IN ($1, $2) FOR UPDATE`, [queda, sobra]);
+        const [a, b] = await Promise.all([fichaFusion(queda, client), fichaFusion(sobra, client)]);
+        if (!a || !b) throw { httP: 404, msg: 'Alguna de las dos fichas ya no existe.' };
+        const hb = await huellaPersona(sobra, client);
+        const conJornada = TABLAS_JORNADA.find(t => hb[t]);
+        if (conJornada) throw { httP: 409, msg: 'La ficha que sobra tiene registro de jornada (fichajes), que no se puede cambiar: quédate con esa y fusiona al revés.' };
+        // 1) Todo lo que apunta a la que sobra, a la que queda. Si choca con algo
+        // que la que queda ya tiene (la misma clase, el mismo familiar…), se
+        // queda lo suyo y se quita el duplicado.
+        const movidas = {}, duplicadas = {};
+        for (const c of await columnasConPersona(client)) {
+            if (!hb[c.table_name]) continue;
+            await client.query('SAVEPOINT col');
+            try {
+                const r = await client.query(`UPDATE "${c.table_name}" SET "${c.column_name}" = $1 WHERE ${igualA(c, 2)}`, [c.data_type === 'uuid' ? queda : String(queda), sobra]);
+                await client.query('RELEASE SAVEPOINT col');
+                if (r.rowCount) movidas[c.table_name] = (movidas[c.table_name] || 0) + r.rowCount;
+            } catch (e) {
+                await client.query('ROLLBACK TO SAVEPOINT col');
+                if (e.code !== '23505') throw { httP: 409, msg: `No se ha podido pasar «${NOMBRES_TABLA[c.table_name] || c.table_name}»: ${e.message}. No se ha cambiado nada.` };
+                // Fila a fila: las que chocan son duplicados de lo que ya tiene.
+                const filas = await client.query(`SELECT ctid FROM "${c.table_name}" WHERE ${igualA(c, 1)}`, [sobra]);
+                for (const f of filas.rows) {
+                    await client.query('SAVEPOINT fila');
+                    try {
+                        await client.query(`UPDATE "${c.table_name}" SET "${c.column_name}" = $1 WHERE ctid = $2`, [c.data_type === 'uuid' ? queda : String(queda), f.ctid]);
+                        await client.query('RELEASE SAVEPOINT fila');
+                        movidas[c.table_name] = (movidas[c.table_name] || 0) + 1;
+                    } catch (e2) {
+                        await client.query('ROLLBACK TO SAVEPOINT fila');
+                        if (e2.code !== '23505') throw { httP: 409, msg: `No se ha podido pasar «${NOMBRES_TABLA[c.table_name] || c.table_name}»: ${e2.message}. No se ha cambiado nada.` };
+                        await client.query(`DELETE FROM "${c.table_name}" WHERE ctid = $1`, [f.ctid]);
+                        duplicadas[c.table_name] = (duplicadas[c.table_name] || 0) + 1;
+                    }
+                }
+            }
+        }
+        // Consigo misma no es familia (si se habían enlazado entre ellas).
+        await client.query(`DELETE FROM aim_familias WHERE persona_id = familiar_id`);
+        // 2) Los datos de la ficha: lo elegido de la que sobra y, lo que la que
+        // queda tenga vacío, también de la que sobra.
+        const sets = [], vals = [queda];
+        for (const k of CAMPOS_FUSION) {
+            const vacio = a[k] == null || String(a[k]).trim() === '';
+            const deB = elegir[k] === 'sobra' || (elegir[k] !== 'queda' && vacio);
+            if (deB && b[k] != null && String(b[k]).trim() !== '') { vals.push(b[k]); sets.push(`${k} = $${vals.length}`); }
+        }
+        if (!a.club_id && b.club_id) { vals.push(b.club_id); sets.push(`club_id = $${vals.length}`); }
+        // El correo es único: se libera el de la que sobra antes de dárselo a la que queda.
+        await client.query(`UPDATE users SET email = $2 WHERE user_id = $1`, [sobra, `fusionada-${sobra}@${DOMINIO_SIN_CORREO}`]);
+        if (sets.length) await client.query(`UPDATE users SET ${sets.join(', ')} WHERE user_id = $1`, vals);
+        // 3) Fuera la que sobra.
+        await client.query(`DELETE FROM users WHERE user_id = $1`, [sobra]);
+        // 4) Constancia: qué había en cada una y qué se ha hecho.
+        const reg = (await client.query(`SELECT valor FROM aim_ajustes WHERE clave = 'fusiones_fichas'`)).rows[0]?.valor;
+        const lista = Array.isArray(reg) ? reg : [];
+        lista.push({ at: new Date().toISOString(), por: req.userSession.userId, queda: a, sobra: b, movidas, duplicadas, campos: elegir });
+        await client.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('fusiones_fichas', $1::jsonb, NOW(), $2)
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+            [JSON.stringify(lista.slice(-300)), req.userSession.userId]);
+        await client.query('COMMIT');
+        cerrarSesionesDe?.(sobra);
+        res.json({ success: true, movidas, duplicadas });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        if (err?.httP) return res.status(err.httP).json({ error: err.msg });
+        console.error('[fusión]', err.message);
+        res.status(500).json({ error: `No se ha podido fusionar: ${err.message}. No se ha cambiado nada.` });
+    } finally { client.release(); }
+});
+
+// Fichas que parecen de la misma persona: el mismo DNI, o el mismo nombre
+// completo (y, si las dos lo tienen, la misma fecha de nacimiento).
+app.get('/api/admin/fusion/parecidas/:id', authenticateSession, requireAdmin, requirePermiso('editarAlumnos'), async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT o.user_id, TRIM(CONCAT(o.name, ' ', COALESCE(o.surname, ''))) AS nombre, o.email, o.dni, o.created_at,
+                    CASE WHEN NULLIF(UPPER(TRIM(o.dni)), '') = NULLIF(UPPER(TRIM(u.dni)), '') THEN 'el mismo DNI' ELSE 'el mismo nombre' END AS por
+             FROM users u JOIN users o ON o.user_id <> u.user_id AND (o.club_id = $2 OR o.club_id IS NULL)
+             WHERE u.user_id = $1 AND (
+                   (NULLIF(UPPER(TRIM(o.dni)), '') = NULLIF(UPPER(TRIM(u.dni)), ''))
+                OR (${SQL_PLANO(`TRIM(CONCAT(o.name, ' ', COALESCE(o.surname, '')))`)} = ${SQL_PLANO(`TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, '')))`)}
+                    AND COALESCE(u.surname, '') <> '' AND (o.birthday IS NULL OR u.birthday IS NULL OR o.birthday = u.birthday)))
+             ORDER BY o.created_at LIMIT 5`, [req.params.id, AIM_CLUB_ID]);
+        res.set('Cache-Control', 'no-store');
+        res.json({ parecidas: r.rows.map(x => ({ id: x.user_id, nombre: x.nombre, email: x.email, dni: x.dni, desde: x.created_at, por: x.por })) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 app.get('/api/admin/contactos/sin-ficha', authenticateSession, requireSeccion('contactos'), async (req, res) => {
     const q = String(req.query.q || '').trim().slice(0, 80);
@@ -17845,6 +18316,97 @@ async function recordatoriosFichaje() {
         recordatorioFichajeEnCurso = false;
     }
 }
+// ── Cierre automático del fichaje (#349) ─────────────────────────────────────
+// Quien se olvida de fichar la salida queda «dentro» hasta el día siguiente. Si
+// el club lo activa, a los `margen` minutos de acabar su tramo del horario (el de
+// sus clases, para los profes) se le ficha la salida a la hora en que acababa,
+// con su motivo y en la auditoría. Si salió más tarde, pide una corrección.
+// El registro es solo de añadir: es un apunte nuevo, no se toca ninguno.
+const CIERRE_DEFECTO = { modo: 'instructores', margen: 30 };
+async function ajustesCierreFichaje() {
+    try {
+        const v = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'fichaje_cierre'`)).rows[0]?.valor || {};
+        return { ...CIERRE_DEFECTO, ...v };
+    } catch { return { ...CIERRE_DEFECTO }; }
+}
+const hhmm = (min) => `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
+let cierreFichajeEnCurso = false;
+async function cerrarFichajesAbiertos() {
+    if (cierreFichajeEnCurso) return;
+    cierreFichajeEnCurso = true;
+    try {
+        const cfg = await ajustesCierreFichaje();
+        if (cfg.modo === 'nadie') return;
+        const margen = Math.min(240, Math.max(0, Number(cfg.margen) || 0));
+        // Quien tiene ahora mismo una jornada abierta: su último apunte vigente es
+        // entrada, fin de pausa o inicio de pausa.
+        const abiertos = await pool.query(
+            `SELECT DISTINCT ON (f.user_id) f.user_id, f.tipo, f.ts, u.role, u.dev_role, ar.rango
+             FROM aim_fichajes f JOIN users u ON u.user_id = f.user_id LEFT JOIN aim_rangos ar ON ar.user_id = f.user_id
+             WHERE ${FICHAJE_VIGENTE('f')} AND f.ts > NOW() - interval '7 days'
+             ORDER BY f.user_id, f.ts DESC, f.id DESC`);
+        const hoy = hoyMadrid();
+        const ahoraMin = (() => { const [h, m] = new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/Madrid', hour: '2-digit', minute: '2-digit' }).split(':').map(Number); return h * 60 + m; })();
+        for (const a of abiertos.rows) {
+            if (!['entrada', 'pausa_fin', 'pausa_inicio'].includes(a.tipo)) continue;
+            if (cfg.modo === 'instructores' && rolEfectivo(a.role, a.dev_role, a.rango) !== 'instructor') continue;
+            // La entrada de esta jornada: el día y la hora en que empezó.
+            const ent = (await pool.query(
+                `SELECT f.dia::text AS dia, to_char(f.ts AT TIME ZONE 'Europe/Madrid', 'HH24:MI') AS hora FROM aim_fichajes f
+                 WHERE f.user_id = $1 AND f.tipo = 'entrada' AND ${FICHAJE_VIGENTE('f')} ORDER BY f.ts DESC, f.id DESC LIMIT 1`, [a.user_id])).rows[0];
+            if (!ent) continue;
+            const { tramos } = await horarioDeFecha(a.user_id, ent.dia);
+            if (!tramos.length) continue;
+            const entMin = minutosHHMM(ent.hora);
+            // El tramo en el que entró (o el siguiente, si llegó antes de hora).
+            const t = tramos.find(x => minutosHHMM(x.salida) > entMin);
+            if (!t) continue; // entró después de su horario: horas extra, no se cierra
+            const finMin = minutosHHMM(t.salida);
+            if (ent.dia === hoy && ahoraMin < finMin + margen) continue;
+            const client = await pool.connect();
+            try {
+                await client.query('BEGIN');
+                await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, ['fichaje:' + a.user_id]);
+                const { estado, ultimo } = await estadoFichaje(a.user_id, client);
+                if (estado !== 'dentro' && estado !== 'pausa') { await client.query('ROLLBACK'); continue; }
+                const motivo = `Cierre automático: no fichó la salida y su horario acababa a las ${hhmm(finMin)}. Si salió más tarde, que pida una corrección.`;
+                const ins = await client.query(
+                    `INSERT INTO aim_fichajes (user_id, tipo, ts, dia, origen, motivo)
+                     VALUES ($1, 'salida', GREATEST(($2::date + $3::time) AT TIME ZONE 'Europe/Madrid', $4::timestamptz + interval '1 second'), $2::date, 'automatico', $5)
+                     RETURNING id, tipo, ts, dia, origen, motivo`,
+                    [a.user_id, ent.dia, hhmm(finMin), ultimo.ts, motivo]);
+                await auditarFichaje(client, { evento: 'fichaje', trabajadorId: a.user_id, actorId: null, datos: { ...datosFichajeAuditoria(ins.rows[0]), automatico: true } });
+                await client.query('COMMIT');
+                console.log(`[fichaje] salida automática de ${a.user_id} a las ${hhmm(finMin)} del ${ent.dia}`);
+            } catch (e) {
+                await client.query('ROLLBACK').catch(() => {});
+                console.error('[fichaje cierre]', e.message);
+            } finally { client.release(); }
+        }
+    } catch (e) {
+        console.error('[fichaje cierre]', e.message);
+    } finally { cierreFichajeEnCurso = false; }
+}
+setInterval(() => { cerrarFichajesAbiertos().catch(() => {}); }, 5 * 60_000);
+
+app.get('/api/admin/fichajes/cierre-automatico', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json(await ajustesCierreFichaje());
+});
+app.put('/api/admin/fichajes/cierre-automatico', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const modo = ['nadie', 'instructores', 'todos'].includes(req.body?.modo) ? req.body.modo : null;
+    if (!modo) return res.status(400).json({ error: 'Elige a quién se le cierra.' });
+    const margen = Math.min(240, Math.max(0, Number.parseInt(req.body?.margen, 10) || 0));
+    try {
+        await pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('fichaje_cierre', $1::jsonb, NOW(), $2)
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+            [JSON.stringify({ modo, margen }), req.userSession.userId]);
+        await auditarSuelto({ evento: 'ajuste', actorId: req.userSession.userId, ip: ipDe(req), datos: { cierreAutomatico: { modo, margen } } });
+        res.json({ success: true, modo, margen });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Manda un recordatorio, una sola vez por (trabajador, día, tipo). La marca se
 // pone ANTES de enviar (con ON CONFLICT): si ya estaba, no se manda de nuevo.
 async function avisarFichaje(w, tipo, hoy, base, variosTramos = false) {

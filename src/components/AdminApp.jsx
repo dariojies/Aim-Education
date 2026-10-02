@@ -31,6 +31,7 @@ import AdminResumen from './AdminResumen.jsx';
 import AdminRangosPermisos from './AdminRangosPermisos.jsx';
 import AdminCtas from './AdminCtas.jsx';
 import AdminRedes from './AdminRedes.jsx';
+import FusionarFichas, { AvisoRepetida } from './FusionarFichas.jsx';
 import AdminBandeja from './AdminBandeja.jsx';
 import AdminAlmacen from './AdminAlmacen.jsx';
 import AdminContactos from './AdminContactos.jsx';
@@ -3805,6 +3806,8 @@ function BillingTPV({ showToast }) {
   const [pagos, setPagos] = useState([{ medio: 'tarjeta', importe: '' }]);
   const [efectivoEntregado, setEfectivoEntregado] = useState(''); // cuánto dan en efectivo
   const [cobrando, setCobrando] = useState(false);
+  // Faltan datos de quien paga (#345): se rellenan aquí o se factura igualmente.
+  const [faltanDatos, setFaltanDatos] = useState(null);
   const [ticket, setTicket] = useState(null);
   const [addExtra, setAddExtra] = useState(null);      // { clienteId, concepto }
   const [addAnticipo, setAddAnticipo] = useState(null);// { clienteId, importe, motivo } (registrar anticipo)
@@ -3906,7 +3909,7 @@ function BillingTPV({ showToast }) {
   const todoExento = !total && !extras.length && lineasActivas.length > 0
     && lineasActivas.every(c => Number(c.descuentoPct) >= 100);
 
-  async function cobrar() {
+  async function cobrar(mas = {}) {
     if (!total && !todoExento) return;
     setCobrando(true);
     try {
@@ -3926,6 +3929,7 @@ function BillingTPV({ showToast }) {
           // Reparto del pago entre métodos (ticket #247). Importe vacío = "el resto".
           pagos: pagos.map(p => ({ medio: p.medio, importe: p.importe === '' ? null : Number(p.importe) })),
           efectivoEntregado: hayEfectivo ? Number(efectivoEntregado || efectivoPortion) : undefined,
+          ...mas,
         }),
       });
       // Se lee como texto y luego se interpreta: si el servidor no contesta con
@@ -3934,10 +3938,14 @@ function BillingTPV({ showToast }) {
       const texto = await r.text();
       let d = null;
       try { d = JSON.parse(texto); } catch { /* no es JSON */ }
-      if (r.ok && d?.sinFactura) {
+      if (d?.codigo === 'faltan_datos') {
+        setFaltanDatos({ ...d, form: d.actuales });
+      } else if (r.ok && d?.sinFactura) {
+        setFaltanDatos(null);
         showToast?.(`${d.exentos} cargo${d.exentos !== 1 ? 's' : ''} con 100% de descuento cerrado${d.exentos !== 1 ? 's' : ''} sin factura.`);
         setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null);
       } else if (r.ok && d?.recibo) {
+        setFaltanDatos(null);
         setTicket(d);
         showToast?.(d.facturas?.length > 1 ? `Cobrado: ${d.facturas.length} facturas emitidas.` : `Factura ${d.recibo.numeroVisible || d.recibo.numero} cobrada.`);
         setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null);
@@ -3989,8 +3997,40 @@ function BillingTPV({ showToast }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pagador?.id, cesta]);
 
+  const CAMPOS_FACTURA = [['nombre', 'Nombre'], ['apellidos', 'Apellidos'], ['dni', 'DNI / NIE'], ['domicilio', 'Dirección'], ['cp', 'Código postal'], ['poblacion', 'Población']];
   return (
     <div style={{ display: 'grid', gap: 16 }}>
+      {faltanDatos && (
+        <div role="dialog" aria-modal="true" aria-label="Faltan datos para la factura" onClick={() => setFaltanDatos(null)}
+          style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,.45)', display: 'grid', placeItems: 'center', padding: 16 }}>
+          <div onClick={e => e.stopPropagation()} style={{ width: 'min(520px, 100%)', background: 'var(--bg-2)', borderRadius: 18, padding: 22, display: 'grid', gap: 12, boxShadow: '0 20px 60px rgba(0,0,0,.3)' }}>
+            <h3 style={{ margin: 0, fontFamily: 'var(--font-display)' }}>Faltan datos para la factura</h3>
+            <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.5 }}>
+              A <b>{`${faltanDatos.actuales.nombre} ${faltanDatos.actuales.apellidos}`.trim() || 'quien paga'}</b> le falta: <b>{faltanDatos.faltan.map(k => CAMPOS_FACTURA.find(c => c[0] === k)?.[1].toLowerCase()).join(', ')}</b>.
+              Una factura emitida ya no se puede cambiar: si los tienes, rellénalos ahora y se guardan en su ficha.
+            </p>
+            <div style={{ display: 'grid', gap: 8, gridTemplateColumns: '1fr 1fr' }}>
+              {CAMPOS_FACTURA.map(([k, n]) => (
+                <label key={k} style={{ display: 'grid', gap: 3, fontSize: 12, fontWeight: 700, color: faltanDatos.faltan.includes(k) ? 'var(--orange)' : 'var(--ink-2)', gridColumn: k === 'domicilio' ? '1 / -1' : undefined }}>
+                  {n}{faltanDatos.faltan.includes(k) ? ' · falta' : ''}
+                  <input value={faltanDatos.form[k] || ''} onChange={e => setFaltanDatos(f => ({ ...f, form: { ...f.form, [k]: e.target.value } }))}
+                    style={{ fontFamily: 'inherit', fontSize: 14, padding: '8px 10px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }} />
+                </label>
+              ))}
+            </div>
+            {faltanDatos.faltan.includes('dni') && total > faltanDatos.topeSinNif && (
+              <p style={{ margin: 0, fontSize: 12, color: 'var(--orange)', fontWeight: 700 }}>Son más de {eur(faltanDatos.topeSinNif)}: sin DNI no se puede facturar.</p>
+            )}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+              <button type="button" className="btn btn-sm btn-outline" onClick={() => setFaltanDatos(null)}>Cancelar</button>
+              {!(faltanDatos.faltan.includes('dni') && total > faltanDatos.topeSinNif) && (
+                <button type="button" className="btn btn-sm btn-outline" disabled={cobrando} onClick={() => cobrar({ facturarSinDatos: true })}>Facturar sin esos datos</button>
+              )}
+              <button type="button" className="btn btn-sm btn-primary" disabled={cobrando} onClick={() => cobrar({ datosPagador: faltanDatos.form })}>{cobrando ? 'Cobrando…' : 'Guardar y cobrar'}</button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Ticket recién cobrado */}
       {ticket && (
         <div style={{ background: 'color-mix(in oklab, var(--teal) 10%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--teal) 35%, transparent)', borderRadius: 14, padding: '16px 18px', display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -4377,11 +4417,11 @@ function BillingTPV({ showToast }) {
                 <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--orange)' }}>Elige arriba quién paga para poder cobrar.</div>
               )}
               {todoExento ? (
-                <button className="btn btn-primary btn-block" disabled={cobrando} onClick={cobrar} style={{ fontSize: 15, padding: '13px 0' }}>
+                <button className="btn btn-primary btn-block" disabled={cobrando} onClick={() => cobrar()} style={{ fontSize: 15, padding: '13px 0' }}>
                   {cobrando ? 'Cerrando...' : 'Cerrar sin factura (100% de descuento)'}
                 </button>
               ) : (
-                <button className="btn btn-primary btn-block" disabled={cobrando || !pagoValido || (pagador.esMenor && !pagadorFactura)} onClick={cobrar} style={{ fontSize: 15, padding: '13px 0' }}>
+                <button className="btn btn-primary btn-block" disabled={cobrando || !pagoValido || (pagador.esMenor && !pagadorFactura)} onClick={() => cobrar()} style={{ fontSize: 15, padding: '13px 0' }}>
                   {cobrando ? 'Cobrando...' : `Cobrar ${eur(total)}`}
                 </button>
               )}
@@ -6593,6 +6633,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
 
   // La ficha completa se pide al abrirla. La lista solo trae lo que pinta, que
   // con cientos de personas es la diferencia entre esperar segundos o no.
+  // Fusionar fichas repetidas (#347): { otra } o {} para buscarla.
+  const [fusion, setFusion] = useState(null);
   const abrirFicha = async (u) => {
     setEditingItem(u);
     setActiveModal('edit-student');
@@ -7135,6 +7177,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                       Solo consulta: tu perfil no puede cambiar los datos de las fichas.
                     </p>
                   )}
+                  {esEdit && permisos.editarAlumnos && <AvisoRepetida key={`rep-${editingItem.id}`} personaId={editingItem.id} onFusionar={(x) => setFusion({ otra: x })} />}
 
                   {/* Al dar de alta se busca primero: casi siempre la persona ya
                       tiene cuenta de otra app y no hay nada que teclear. */}
@@ -7352,11 +7395,37 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                   Eliminar
                 </button>
               )}
+              {activeModal === 'edit-student' && permisos.editarAlumnos && (
+                <button type="button" className="btn btn-outline btn-sm" title="Si esta persona tiene otra ficha repetida, júntalas en una" onClick={() => setFusion({})}>Fusionar con otra ficha</button>
+              )}
+              {/* Que ponga o cambie su contraseña (#348): le llega un enlace por correo. */}
+              {activeModal === 'edit-student' && permisos.editarAlumnos && (
+                <button type="button" className="btn btn-outline btn-sm" title="Le llega un correo con un enlace para poner su contraseña (vale 7 días)"
+                  onClick={async () => {
+                    const correo = String(editingItem.email || '').trim();
+                    if (!correo) return alert('No tiene correo en su ficha: ponle uno y guarda antes.');
+                    if (!window.confirm(`¿Mandar a ${correo} un enlace para poner su contraseña?\n\nVale 7 días y sirve una sola vez. Si has cambiado el correo, guarda primero.`)) return;
+                    try {
+                      const r = await fetch(`/api/admin/usuarios/${editingItem.id}/enviar-acceso`, { method: 'POST', credentials: 'include' });
+                      const d = await r.json().catch(() => ({}));
+                      if (!r.ok) return alert(d.error || 'No se ha podido enviar.');
+                      showToast?.(`Enlace mandado a ${d.enviadoA}. Vale ${d.dias} días.`);
+                    } catch { alert('No hay conexión con el servidor.'); }
+                  }}>
+                  Enviar enlace de contraseña
+                </button>
+              )}
               <button type="button" className="btn btn-outline btn-sm" onClick={() => setActiveModal(null)}>Cancelar</button>
               {permisos.editarAlumnos && <button type="submit" className="btn btn-primary btn-sm">Guardar</button>}
             </div>
           </form>
         </div>
+      )}
+
+      {fusion && editingItem?.id && (
+        <FusionarFichas personaId={editingItem.id} otra={fusion.otra ? { id: fusion.otra.id, nombre: fusion.otra.nombre, email: fusion.otra.email } : null}
+          onCerrar={() => setFusion(null)}
+          onHecho={({ queda, mensaje }) => { setFusion(null); showToast?.(mensaje); abrirFicha({ id: queda }); setRefreshTrigger(p => p + 1); }} />
       )}
 
       {/* --- MODAL NUEVO / EDITAR POST (NEWS) --- */}

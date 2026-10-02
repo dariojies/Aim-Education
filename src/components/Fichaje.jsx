@@ -28,7 +28,7 @@ const BOTON = { entrada: 'Iniciar jornada', pausa_inicio: 'Iniciar pausa', pausa
 const COLOR_TIPO = { entrada: 'var(--teal)', salida: 'var(--orange)', pausa_inicio: '#b45309', pausa_fin: 'var(--teal)' };
 const DIAS_SEMANA = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']; // 0 = lunes
 const hm2min = (s) => { const [h, m] = String(s || '').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
-const ORIGEN = { correccion: 'Corrección', incidencia: 'Incidencia' };
+const ORIGEN = { correccion: 'Corrección', incidencia: 'Incidencia', automatico: 'Cierre automático' };
 const ESTADO_SOL = {
   pendiente: { t: 'Pendiente', c: '#b45309' },
   aprobada: { t: 'Aprobada', c: 'var(--teal)' },
@@ -922,6 +922,46 @@ function VacacionesYFestivos({ showToast, puedeGestionar }) {
   );
 }
 
+// Cierre automático (#349): a quién se le ficha la salida sola si se olvida.
+function CierreAutomatico({ showToast }) {
+  const [c, setC] = useState(null);
+  useEffect(() => {
+    fetch('/api/admin/fichajes/cierre-automatico', { credentials: 'include', cache: 'no-store' }).then(r => (r.ok ? r.json() : null)).then(setC).catch(() => {});
+  }, []);
+  if (!c) return null;
+  async function guardar(cambio) {
+    const nuevo = { ...c, ...cambio };
+    setC(nuevo);
+    try { await enviar('/api/admin/fichajes/cierre-automatico', nuevo, 'PUT'); showToast?.('Guardado.'); } catch (err) { alert(err.message); }
+  }
+  const sel = { padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontFamily: 'inherit', fontSize: 13, color: 'var(--ink)' };
+  return (
+    <div style={{ display: 'grid', gap: 6, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '12px 16px' }}>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        <b style={{ fontSize: 13 }}>Cerrar sola la jornada al acabar el horario</b>
+        <select value={c.modo} onChange={e => guardar({ modo: e.target.value })} style={sel} aria-label="A quién">
+          <option value="instructores">A los profes</option>
+          <option value="todos">A todo el personal</option>
+          <option value="nadie">A nadie</option>
+        </select>
+        {c.modo !== 'nadie' && (
+          <label style={{ fontSize: 13, color: 'var(--ink-2)', display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+            si a los
+            <select value={c.margen} onChange={e => guardar({ margen: Number(e.target.value) })} style={sel}>
+              {[15, 30, 60, 120].map(m => <option key={m} value={m}>{m} min</option>)}
+            </select>
+            de acabar sigue dentro
+          </label>
+        )}
+      </div>
+      <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+        Si alguien se olvida de fichar la salida, se le ficha a la hora en que acababa su horario (el de sus clases, en los profes), con el motivo y en la auditoría.
+        Si salió más tarde, que pida una corrección. Quien entra después de su horario (horas extra) no se le cierra.
+      </span>
+    </div>
+  );
+}
+
 // Importar los horarios de las clases: para cada profe, sus clases asignadas
 // se convierten en la plantilla de su horario laboral (se puede editar después).
 function ModalImportarHorarios({ onClose, onDone }) {
@@ -1193,6 +1233,8 @@ function GestionFichajes({ showToast }) {
         <button className="btn btn-sm btn-outline" onClick={() => setIntegridad(true)}>Comprobar integridad</button>
         <a className="btn btn-sm btn-outline" href={exportUrl()} target="_blank" rel="noopener noreferrer"><I.Download /> Exportar CSV (Excel)</a>
       </div>
+
+      <CierreAutomatico showToast={showToast} />
 
       <ResumenesGestion showToast={showToast} />
 

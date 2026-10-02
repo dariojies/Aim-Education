@@ -347,10 +347,21 @@ function Familia({ personaId, nombre, showToast, onAbrirFamiliar }) {
   const [tipo, setTipo] = useState('');
   const [tipoInverso, setTipoInverso] = useState('');
 
+  // Hermanos que comparten madre, padre o tutor y no están enlazados (#351).
+  const [hermanos, setHermanos] = useState([]);
   const cargar = useCallback(async () => {
     try { setLista(await api(`/api/admin/billing/familias/${personaId}`)); }
     catch { /* noop */ }
+    try { setHermanos((await api(`/api/admin/billing/familias/${personaId}/hermanos-sugeridos`)).pares || []); }
+    catch { setHermanos([]); }
   }, [personaId]);
+  async function enlazarHermanos(pares) {
+    try {
+      await api('/api/admin/billing/familias/hermanos', { method: 'POST', body: { pares: pares.map(p => [p.a, p.b]) } });
+      showToast?.(pares.length === 1 ? `${pares[0].nombreB} enlazado/a como hermano/a.` : `${pares.length} hermanos enlazados.`);
+      await cargar();
+    } catch (e) { alert(e.message); }
+  }
   useEffect(() => { cargar(); }, [cargar]);
 
   useEffect(() => {
@@ -415,6 +426,20 @@ function Familia({ personaId, nombre, showToast, onAbrirFamiliar }) {
           </div>
         ))}
       </div>
+
+      {hermanos.length > 0 && (
+        <div style={{ display: 'grid', gap: 6, marginTop: 8, padding: 12, borderRadius: 12, background: 'color-mix(in oklab, var(--purple) 7%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--purple) 25%, var(--line))' }}>
+          <b style={{ fontSize: 13 }}>¿Son hermanos?</b>
+          <span style={{ fontSize: 12, color: 'var(--ink-2)' }}>Tienen la misma madre, padre o tutor pero no están enlazados entre sí: al cobrar desde {nombre}, sus recibos no saldrían juntos.</span>
+          {hermanos.map(h => (
+            <div key={h.b} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 13 }}>
+              <span style={{ flex: 1, minWidth: 0 }}><b>{h.nombreB}</b> <span style={{ color: 'var(--ink-3)' }}>· hijo/a también de {h.padres}</span></span>
+              <button type="button" className="btn btn-sm btn-outline" onClick={() => enlazarHermanos([h])}>Enlazar como hermanos</button>
+            </div>
+          ))}
+          {hermanos.length > 1 && <button type="button" className="btn btn-sm btn-primary" style={{ justifySelf: 'start' }} onClick={() => enlazarHermanos(hermanos)}>Enlazarlos todos</button>}
+        </div>
+      )}
 
       {anadiendo && (
         <div style={{ display: 'grid', gap: 8, marginTop: 8, background: 'var(--bg-3)', borderRadius: 12, padding: 12 }}>

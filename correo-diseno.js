@@ -549,6 +549,19 @@ export const CORREOS_SISTEMA = {
             PEQ('El enlace sirve una sola vez y caduca en 1 hora. Si no lo has pedido tú, ignora este correo: tu contraseña sigue siendo la misma.'),
         ]),
     },
+    acceso_familia: {
+        grupo: 'familias', nombre: 'Enlace para la contraseña (desde el club)', cuando: 'Al pulsar «Enviar enlace de contraseña» en la ficha de una persona: para que ponga o cambie su contraseña.',
+        asunto: 'Tu contraseña de AIM Education',
+        variables: { nombre: { que: 'Su nombre', ejemplo: 'Lucía' }, correo: { que: 'El correo con el que entra', ejemplo: 'lucia@ejemplo.com' }, enlace: { que: 'Enlace para poner la contraseña', ejemplo: 'https://www.aimeducation.es/auth' }, dias: { que: 'Días que vale el enlace', ejemplo: '7' } },
+        obligatorio: ['enlace'],
+        diseno: () => d([
+            T('Hola {nombre},'),
+            T('Desde el club te mandamos un enlace para poner la contraseña de tu cuenta de AIM Education. Con ella ves las clases, los recibos y los avisos de tu familia.'),
+            BTN([{ texto: 'Poner mi contraseña', url: '{enlace}', fondo: '', color: '#ffffff' }]),
+            T('Después entra en **www.aimeducation.es** con tu correo (**{correo}**) y esa contraseña.'),
+            PEQ('El enlace vale {dias} días y sirve una sola vez. Si no lo has pedido tú, no pasa nada: ignóralo y tu contraseña sigue siendo la misma.'),
+        ]),
+    },
     acceso_invitacion: {
         grupo: 'personal', nombre: 'Tu acceso a la web', cuando: 'Al pulsar «Enviar acceso» en la lista del personal: para que pongan su contraseña y puedan fichar y pasar lista.',
         asunto: 'Tu acceso a la web de AIM Education',
@@ -747,6 +760,23 @@ export const CORREOS_SISTEMA = {
             T('**{nombre}** · {email} · {telefono}'),
             AUTO('mensaje'),
             PEQ('Puedes contestar directamente a este correo. La consulta está también en el panel, en «Consultas web».'),
+        ]),
+    },
+    gestoria_libro: {
+        grupo: 'club', nombre: 'Libro de facturas para la gestoría', cuando: 'Al pulsar «Enviar a la gestoría» en Facturación → Hacienda, cuando ha terminado el periodo. Lleva el Excel adjunto.',
+        asunto: 'Libro registro de facturas emitidas · {periodo} · {empresa}',
+        variables: { periodo: { que: 'El periodo', ejemplo: '3T de 2026' }, empresa: { que: 'La empresa', ejemplo: 'AIM Deporte y Educación S.L.' } },
+        automaticos: {
+            datos_empresa: { nombre: 'Los datos de la empresa', ejemplo: 'AIM Deporte y Educación S.L. · CIF B93870103 · Urb. Terrazas de Doña Lola, Local 1, 11203 Algeciras (Cádiz)' },
+            resumen: { nombre: 'Lo que lleva el libro', ejemplo: '74 facturas del 1/7/2026 al 30/9/2026 · base 7.000,00 € · IVA 300,00 € · total 7.300,00 €' },
+        },
+        obligatorio: ['datos_empresa', 'resumen'],
+        diseno: () => d([
+            T('Hola,'),
+            T('Os mandamos el libro registro de facturas emitidas de **{periodo}**, en vuestra plantilla (va adjunto).'),
+            AUTO('datos_empresa'),
+            AUTO('resumen'),
+            PEQ('Cualquier duda, contestad a este correo.'),
         ]),
     },
     aviso_ticket: {

@@ -228,6 +228,17 @@ function RegisterForm({ onLoginSuccess }) {
   const { actividades } = useClasesPublicas();
   const opcionesActividad = fichasWeb(actividades).filter(a => !a.enlace).map(a => a.name);
 
+  // Ya tenía ficha en el club (#344): no se crea otra cuenta.
+  const [existente, setExistente] = useState(null);
+  const [enlace, setEnlace] = useState('');
+  async function pedirEnlace() {
+    try {
+      const r = await fetch('/api/register/recuperar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dni: form.dni, firstName: form.firstName, lastName: form.lastName, phone: form.phone }) });
+      const d = await r.json().catch(() => ({}));
+      setEnlace(d.mensaje || d.error || 'No se ha podido enviar.');
+    } catch { setEnlace('Error de conexión. Inténtalo de nuevo.'); }
+  }
+
   const upd = (key) => (e) => setForm(f => ({ ...f, [key]: e.target.value }));
   const updHijo = (i, key) => (e) => setHijos(h => h.map((x, j) => (j === i ? { ...x, [key]: e.target.value } : x)));
 
@@ -246,6 +257,7 @@ function RegisterForm({ onLoginSuccess }) {
         }),
       });
       const data = await r.json().catch(() => ({}));
+      if (data.codigo === 'cuenta_existente') { setExistente(data); setLoading(false); return; }
       if (!r.ok) {
         setError(data.error || 'Error al crear la cuenta.');
         // Si el fallo es de los datos del paso 1 (correo repetido, DNI…), se vuelve allí.
@@ -258,6 +270,18 @@ function RegisterForm({ onLoginSuccess }) {
       setError('Error de conexión. Inténtalo de nuevo.');
       setLoading(false);
     }
+  }
+
+  if (existente) {
+    return (
+      <div>
+        <h1>Ya tienes ficha en el club</h1>
+        <p className="hint" style={{ lineHeight: 1.55 }}>{existente.error}</p>
+        {existente.recuperable && !enlace && <button type="button" className="btn btn-gradient" style={{ width: '100%', marginTop: 8 }} onClick={pedirEnlace}>Mandarme el enlace para entrar</button>}
+        {enlace && <Aviso>{enlace}</Aviso>}
+        <button type="button" className="btn btn-outline" style={{ width: '100%', marginTop: 10 }} onClick={() => { window.location.href = '/auth'; }}>Ir a entrar</button>
+      </div>
+    );
   }
 
   return (

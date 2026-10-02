@@ -179,10 +179,22 @@ export default function AdminFamilias({ showToast, onEditUser }) {
   const [creando, setCreando] = useState(false);
   const [anadiendoA, setAnadiendoA] = useState(null);
 
+  // Hermanos sin enlazar (#351): hijos de la misma madre, padre o tutor.
+  const [hermanos, setHermanos] = useState([]);
+  const [verHermanos, setVerHermanos] = useState(false);
   const cargar = useCallback(async () => {
     try { setDatos(await api('/api/admin/familias')); }
     catch { setDatos({ circulos: [], totalPersonas: 0, totalLazos: 0 }); }
+    try { setHermanos((await api('/api/admin/familias/hermanos-sin-enlazar')).pares || []); }
+    catch { setHermanos([]); }
   }, []);
+  async function enlazarHermanos(pares) {
+    try {
+      await api('/api/admin/billing/familias/hermanos', { method: 'POST', body: { pares: pares.map(p => [p.a, p.b]) } });
+      showToast?.(`${pares.length} pareja${pares.length !== 1 ? 's' : ''} de hermanos enlazada${pares.length !== 1 ? 's' : ''}.`);
+      await cargar();
+    } catch (e) { alert(e.message); }
+  }
   useEffect(() => { cargar(); }, [cargar]);
 
   const visibles = useMemo(() => {
@@ -214,6 +226,23 @@ export default function AdminFamilias({ showToast, onEditUser }) {
           </button>
         )}
       </div>
+
+      {hermanos.length > 0 && (
+        <div style={{ marginBottom: 14, padding: '12px 14px', borderRadius: 14, background: 'color-mix(in oklab, var(--purple) 7%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--purple) 25%, var(--line))', display: 'grid', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <b style={{ fontSize: 14 }}>{hermanos.length} pareja{hermanos.length !== 1 ? 's' : ''} de hermanos sin enlazar</b>
+            <span style={{ fontSize: 12, color: 'var(--ink-2)', flex: '1 1 260px' }}>Tienen la misma madre, padre o tutor. Sin enlazarlos, al cobrar desde uno no sale el otro.</span>
+            <button type="button" className="btn btn-sm btn-outline" onClick={() => setVerHermanos(v => !v)}>{verHermanos ? 'Ocultar' : 'Ver cuáles'}</button>
+            <button type="button" className="btn btn-sm btn-primary" onClick={() => { if (window.confirm(`¿Enlazar como hermanos las ${hermanos.length} parejas?`)) enlazarHermanos(hermanos); }}>Enlazarlos todos</button>
+          </div>
+          {verHermanos && hermanos.map(h => (
+            <div key={`${h.a}-${h.b}`} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 13 }}>
+              <span style={{ flex: 1, minWidth: 0 }}><b>{h.nombreA}</b> y <b>{h.nombreB}</b> <span style={{ color: 'var(--ink-3)' }}>· de {h.padres}</span></span>
+              <button type="button" className="btn btn-sm btn-outline" onClick={() => enlazarHermanos([h])}>Enlazar</button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {creando && (
         <div style={{ marginBottom: 18 }}>

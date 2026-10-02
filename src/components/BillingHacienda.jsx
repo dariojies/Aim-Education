@@ -52,6 +52,8 @@ function LibroRegistro({ showToast }) {
   const [cfg, setCfg] = useState(null);
   const [verTipos, setVerTipos] = useState(false);
   const [guardando, setGuardando] = useState(false);
+  const [enviando, setEnviando] = useState(false);
+  const [completando, setCompletando] = useState(false);
 
   const rango = rangoDe(anio, periodo);
 
@@ -76,12 +78,12 @@ function LibroRegistro({ showToast }) {
     try {
       const r = await fetch('/api/admin/billing/libro-registro/config', {
         method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tipos: cfg.tipos }),
+        body: JSON.stringify({ tipos: cfg.tipos, gestoria: cfg.gestoria }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || 'No se pudo guardar.');
-      setCfg(c => ({ ...c, tipos: d.tipos }));
-      showToast?.('Tipos de operación guardados.');
+      setCfg(c => ({ ...c, tipos: d.tipos, gestoria: d.gestoria }));
+      showToast?.('Guardado.');
       cargar();
     } catch (e) { alert(e.message); } finally { setGuardando(false); }
   }
@@ -89,6 +91,39 @@ function LibroRegistro({ showToast }) {
   const anios = [];
   for (let a = actual.getFullYear(); a >= 2025; a--) anios.push(a);
   const nombrePeriodo = periodo === 'anual' ? `todo ${anio}` : /T$/.test(periodo) ? `${periodo} de ${anio}` : `${MESES[Number(periodo) - 1].toLowerCase()} de ${anio}`;
+
+  // Mandarlo a la gestoría (#346): solo cuando el periodo ha terminado.
+  const terminado = rango.hasta < hoy();
+  const enviado = (cfg?.envios || []).filter(e => e.desde === rango.desde && e.hasta === rango.hasta).slice(-1)[0];
+  async function enviarGestoria() {
+    const sinDni = (datos?.sinDni || []).length;
+    if (!window.confirm(`¿Mandar el libro de ${nombrePeriodo} (${datos.facturas} facturas) a ${cfg?.gestoria}?`
+      + (sinDni ? `\n\nOjo: ${sinDni} factura${sinDni === 1 ? '' : 's'} no lleva${sinDni === 1 ? '' : 'n'} el DNI del cliente.` : '')
+      + (enviado ? `\n\nYa se mandó el ${new Date(enviado.at).toLocaleString('es-ES')}.` : ''))) return;
+    setEnviando(true);
+    try {
+      const r = await fetch('/api/admin/billing/libro-registro/enviar', {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...rango, nombre: nombrePeriodo }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || 'No se pudo mandar.');
+      setCfg(c => ({ ...c, envios: [...(c?.envios || []), d.envio] }));
+      showToast?.(`Libro mandado a ${d.envio.para}.`);
+    } catch (e) { alert(e.message); } finally { setEnviando(false); }
+  }
+  async function completarDni(ids) {
+    setCompletando(true);
+    try {
+      const r = await fetch('/api/admin/billing/libro-registro/completar-nif', {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || 'No se pudo.');
+      showToast?.(`DNI puesto en ${d.completadas} factura${d.completadas === 1 ? '' : 's'}.`);
+      cargar();
+    } catch (e) { alert(e.message); } finally { setCompletando(false); }
+  }
 
   return (
     <div style={tarjeta}>
@@ -118,6 +153,15 @@ function LibroRegistro({ showToast }) {
           download style={{ pointerEvents: datos?.facturas ? 'auto' : 'none', opacity: datos?.facturas ? 1 : .5 }}>
           Descargar Excel
         </a>
+        <button className="btn btn-sm btn-outline" disabled={!terminado || !datos?.facturas || enviando || !cfg} onClick={enviarGestoria}
+          title={terminado ? `Se manda a ${cfg?.gestoria || 'la gestoría'} con el Excel adjunto` : 'Se puede mandar cuando termine el periodo'}>
+          {enviando ? 'Mandando…' : 'Enviar a la gestoría'}
+        </button>
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: -4 }}>
+        {enviado
+          ? <>✓ Mandado a {enviado.para} el {new Date(enviado.at).toLocaleString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}{enviado.por ? ` por ${enviado.por}` : ''}.</>
+          : terminado ? <>Sin mandar todavía a la gestoría ({cfg?.gestoria}).</> : <>El botón de la gestoría se activa cuando termina {nombrePeriodo}.</>}
       </div>
 
       {error && <p style={{ margin: 0, fontSize: 13, color: 'var(--orange)' }}>{error}</p>}
@@ -132,6 +176,25 @@ function LibroRegistro({ showToast }) {
 
           {datos.facturas === 0 && (
             <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>No hay facturas emitidas en {nombrePeriodo}.</p>
+          )}
+
+          {datos.sinDni?.length > 0 && (
+            <div style={{ padding: 10, borderRadius: 10, fontSize: 12, background: 'color-mix(in oklab, var(--orange) 10%, var(--bg-3))', color: 'var(--ink-2)', display: 'grid', gap: 6 }}>
+              <b style={{ color: 'var(--orange)' }}>{datos.sinDni.length} factura{datos.sinDni.length === 1 ? '' : 's'} sin el DNI del cliente</b>
+              {datos.sinDni.map(f => (
+                <span key={f.id}>
+                  <b>{f.numero}</b> · {f.nombre || 'sin nombre'} · {f.dniFicha ? <>su ficha ya tiene el DNI {f.dniFicha}</> : <>su ficha tampoco lo tiene: rellénalo en su ficha y vuelve aquí</>}
+                </span>
+              ))}
+              {datos.sinDni.some(f => f.completable) && (
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <button className="btn btn-sm btn-primary" disabled={completando} onClick={() => completarDni(datos.sinDni.filter(f => f.completable).map(f => f.id))}>
+                    {completando ? 'Poniendo…' : `Poner el DNI de su ficha (${datos.sinDni.filter(f => f.completable).length})`}
+                  </button>
+                  <span style={{ color: 'var(--ink-3)' }}>Solo se puede mientras VERI*FACTU esté apagado; queda anotado. Después, el cobro ya pregunta antes de facturar sin DNI.</span>
+                </div>
+              )}
+            </div>
           )}
 
           {datos.completasSinNif?.length > 0 && (
@@ -184,10 +247,14 @@ function LibroRegistro({ showToast }) {
       {cfg && (
         <div style={{ borderTop: '1px solid var(--line-2)', paddingTop: 10 }}>
           <button className="btn btn-sm btn-outline" onClick={() => setVerTipos(v => !v)}>
-            {verTipos ? 'Ocultar' : 'Cambiar'} lo que sale en «Tipo operación»
+            {verTipos ? 'Ocultar' : 'Cambiar'} la gestoría o lo que sale en «Tipo operación»
           </button>
           {verTipos && (
             <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
+              <label style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) 2fr', gap: 10, alignItems: 'center', fontSize: 12 }}>
+                <span style={{ color: 'var(--ink-2)', fontWeight: 600 }}>Correo de la gestoría</span>
+                <input type="email" value={cfg.gestoria || ''} onChange={e => setCfg(c => ({ ...c, gestoria: e.target.value }))} style={inp} />
+              </label>
               <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
                 Lo que se escribe en la primera columna según la serie de la factura. Si la gestoría usa códigos para
                 importar, poned aquí sus códigos (un número entra en el Excel como número).

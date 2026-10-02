@@ -31,7 +31,7 @@ const hm = (seg) => {
     return `${h} h ${String(m).padStart(2, '0')} min`;
 };
 const ETQ = { entrada: 'Entrada', salida: 'Salida', pausa_inicio: 'Inicio pausa', pausa_fin: 'Fin pausa' };
-const ORIGEN = { web: 'fichaje', correccion: 'corrección', incidencia: 'incidencia' };
+const ORIGEN = { web: 'fichaje', correccion: 'corrección', incidencia: 'incidencia', automatico: 'cierre automático' };
 const ESTADO = { pendiente: 'Pendiente', aprobada: 'Aprobada', rechazada: 'Rechazada', cancelada: 'Retirada' };
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 const nombreMes = (mes) => { const [y, m] = String(mes).split('-').map(Number); return `${MESES[m - 1]} de ${y}`; };
