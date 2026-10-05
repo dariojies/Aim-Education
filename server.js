@@ -7808,10 +7808,9 @@ app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async
         // un viaje a la base en vez de en tres.
         const [cargos, familia, anticipos] = await Promise.all([
             pool.query(
-                `SELECT c.*, p.serie_fiscal, u.name, u.surname FROM aim_cargos c JOIN users u ON u.user_id = c.cliente_id
+                `SELECT c.*, p.serie_fiscal, u.name, u.surname, ${SQL_PAGANDO_DESDE} AS pagando_desde FROM aim_cargos c JOIN users u ON u.user_id = c.cliente_id
                  LEFT JOIN aim_precios p ON p.concepto = c.concepto
                  WHERE c.cliente_id = ANY($1::uuid[]) AND c.estado = 'pendiente' AND c.recibo_id IS NULL
-                   AND ${SQL_NO_RESERVADO}
                  ORDER BY u.surname, u.name, c.mes`,
                 [fam]
             ),
@@ -7856,6 +7855,8 @@ app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async
                 precio: Number(c.precio), ivaPct: Number(c.iva_pct), descuentoPct: Number(c.descuento_pct),
                 // 'manual': añadido en el TPV; se puede quitar con la papelera.
                 origen: c.origen || null,
+                // La familia lo está pagando por internet ahora mismo.
+                pagandoDesde: c.pagando_desde || null,
             })),
             preview,
         });
@@ -8222,9 +8223,9 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
             `SELECT c.id, c.descripcion FROM aim_cargos c
              WHERE c.id = ANY($1::int[]) AND NOT (${SQL_NO_RESERVADO})`, [allIds]
         );
-        if (enCurso.rowCount) {
+        if (enCurso.rowCount && req.body?.aunqueEnCurso !== true) {
             throw {
-                httP: 409,
+                httP: 409, codigo: 'pagando_online',
                 msg: `La familia está pagando por internet ahora mismo: ${enCurso.rows.map(x => x.descripcion).join(', ')}. `
                     + 'Espera unos segundos: la pantalla se actualiza sola en cuanto termine.',
             };
@@ -8350,7 +8351,7 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
         // Si la conexión se ha roto, el ROLLBACK también falla; aun así hay que
         // contestar, o el TPV se queda esperando y acaba en "error de conexión".
         await client.query('ROLLBACK').catch(() => {});
-        if (err && err.httP) return res.status(err.httP).json({ error: err.msg });
+        if (err && err.httP) return res.status(err.httP).json({ error: err.msg, codigo: err.codigo });
         if (err?.code === '55P03') {
             return res.status(409).json({ error: 'Ahora mismo se está emitiendo otra factura y no ha llegado su turno. No se ha cobrado nada: vuelve a pulsar «Cobrar» en unos segundos.' });
         }
@@ -10038,14 +10039,19 @@ const SQL_NO_RESERVADO = `NOT EXISTS (
      WHERE p.estado = 'creado' AND p.created_at > NOW() - INTERVAL '30 minutes'
        AND c.id = ANY(p.cargo_ids))`;
 
+// Desde cuándo la familia está pagando ese cargo por internet (null si no). Ya
+// no se esconden mientras tanto: se ven marcados hasta que el pago se hace.
+const SQL_PAGANDO_DESDE = `(SELECT MAX(p.created_at) FROM aim_tpv_pagos p
+     WHERE p.estado = 'creado' AND p.created_at > NOW() - INTERVAL '30 minutes'
+       AND c.id = ANY(p.cargo_ids))`;
+
 async function cargosPendientesDe(personaId) {
     const fam = await familiaIds(personaId);
     const r = await pool.query(
-        `SELECT c.*, p.serie_fiscal, u.name, u.surname FROM aim_cargos c
+        `SELECT c.*, p.serie_fiscal, u.name, u.surname, ${SQL_PAGANDO_DESDE} AS pagando_desde FROM aim_cargos c
          JOIN users u ON u.user_id = c.cliente_id
          LEFT JOIN aim_precios p ON p.concepto = c.concepto
          WHERE c.cliente_id = ANY($1::uuid[]) AND c.estado = 'pendiente' AND c.recibo_id IS NULL
-           AND ${SQL_NO_RESERVADO}
          ORDER BY u.surname, u.name, c.mes`, [fam]);
     return r.rows;
 }
@@ -10065,6 +10071,7 @@ app.get('/api/me/cargos', authenticateSession, async (req, res) => {
                 alumno: `${porId[d.id]?.name || ''} ${porId[d.id]?.surname || ''}`.trim(),
                 precio: d.precio, descuentoPct: d.descuentoPct,
                 descuentoMensPct: d.descuentoMensPct, ivaPct: d.ivaPct, total: d.total,
+                pagandoDesde: porId[d.id]?.pagando_desde || null,
             })),
             total: calc.total, ahorro: calc.ahorro,
         });
@@ -10092,8 +10099,11 @@ app.post('/api/me/pagos/iniciar', authenticateSession, async (req, res) => {
              LEFT JOIN aim_precios p ON p.concepto = c.concepto
              WHERE c.id = ANY($1::int[]) AND c.cliente_id = ANY($2::uuid[])
                AND c.estado = 'pendiente' AND c.recibo_id IS NULL
-               AND ${SQL_NO_RESERVADO}
              FOR UPDATE OF c`, [pedidos, fam]);
+        // Puede volver a intentarlo aunque tenga otro intento abierto (se le cortó,
+        // volvió atrás…). Si acabaran pagándose los dos, el segundo aviso del
+        // banco encuentra los recibos ya cobrados y queda «a revisar» para
+        // devolverlo: nunca se cobra dos veces en silencio.
         if (cs.rowCount !== pedidos.length) {
             await client.query('ROLLBACK');
             return res.status(409).json({ error: 'Alguno de esos recibos ya no está disponible. Vuelve a cargar la página.' });

@@ -3984,7 +3984,14 @@ function BillingTPV({ showToast }) {
       const texto = await r.text();
       let d = null;
       try { d = JSON.parse(texto); } catch { /* no es JSON */ }
-      if (d?.codigo === 'faltan_datos') {
+      if (d?.codigo === 'pagando_online') {
+        // La familia lo está pagando por internet (#tpv): se avisa, y se cobra
+        // aquí solo si se confirma.
+        if (window.confirm(`${d.error}\n\n¿Cobrarlo aquí igualmente? Si la familia también termina el pago por internet, ese pago quedará «a revisar» para devolvérselo.`)) {
+          setCobrando(false);
+          return await cobrar({ ...mas, aunqueEnCurso: true });
+        }
+      } else if (d?.codigo === 'faltan_datos') {
         setFaltanDatos({ ...d, form: d.actuales });
       } else if (r.ok && d?.sinFactura) {
         setFaltanDatos(null);
@@ -4170,6 +4177,11 @@ function BillingTPV({ showToast }) {
                       {c.descripcion} <span style={{ color: 'var(--ink-3)', fontWeight: 500, fontSize: 12 }}>· {c.nombre}</span>
                     </div>
                     <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{mesDeCargo(c)}{c.tipo === 'Material' ? ` · +${c.ivaPct}% IVA` : ''}</div>
+                    {c.pagandoDesde && (
+                      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--orange)' }}>
+                        La familia lo está pagando por internet desde las {new Date(c.pagandoDesde).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}
+                      </div>
+                    )}
                   </div>
                   <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 12, color: 'var(--ink-3)', marginLeft: 'auto' }}>
                     dto

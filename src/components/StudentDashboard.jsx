@@ -873,6 +873,7 @@ function PagoPendiente({ onPagado, onPagoHecho }) {
             <span style={{ display: 'block', fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>
               {l.alumno}{l.mes ? ` · ${mesRec(l.mes)}` : ''}
               {l.descuentoMensPct > 0 ? ` · ${l.descuentoMensPct}% por varias mensualidades` : ''}
+              {l.pagandoDesde && <span style={{ display: 'block', color: 'var(--orange)', fontWeight: 700 }}>Pago en curso desde las {new Date(l.pagandoDesde).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}. Si no lo terminaste, puedes volver a intentarlo.</span>}
             </span>
           </span>
           <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 17 }}>{eurRec(l.total)}</span>
