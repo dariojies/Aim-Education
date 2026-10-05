@@ -9771,13 +9771,15 @@ async function movimientosDelDia(fecha) {
     // aim_recibo_pagos: hay que repartir su importe por método, no contar todo el
     // recibo como uno solo (si no, un cobro 'mixto' caía entero en efectivo). Los
     // recibos sin desglose (rectificativas, online, etc.) van por su medio_pago.
+    // «n» son cobros, no facturas: un cobro con cosas con y sin IVA emite varias
+    // facturas vinculadas (factura_grupo), pero es un solo pago con tarjeta.
     const r = await pool.query(
-        `SELECT rp.medio, r.tipo, COALESCE(SUM(rp.importe), 0)::numeric AS total, COUNT(DISTINCT r.id)::int AS n
+        `SELECT rp.medio, r.tipo, COALESCE(SUM(rp.importe), 0)::numeric AS total, COUNT(DISTINCT COALESCE(r.factura_grupo::text, r.id::text))::int AS n
            FROM aim_recibos r JOIN aim_recibo_pagos rp ON rp.recibo_id = r.id
           WHERE r.fecha = $1::date AND r.estado <> 'anulado'
           GROUP BY rp.medio, r.tipo
          UNION ALL
-         SELECT r.medio_pago AS medio, r.tipo, COALESCE(SUM(r.importe), 0)::numeric AS total, COUNT(*)::int AS n
+         SELECT r.medio_pago AS medio, r.tipo, COALESCE(SUM(r.importe), 0)::numeric AS total, COUNT(DISTINCT COALESCE(r.factura_grupo::text, r.id::text))::int AS n
            FROM aim_recibos r
           WHERE r.fecha = $1::date AND r.estado <> 'anulado'
             AND NOT EXISTS (SELECT 1 FROM aim_recibo_pagos rp WHERE rp.recibo_id = r.id)
