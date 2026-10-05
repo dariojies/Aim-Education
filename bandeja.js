@@ -160,11 +160,22 @@ export async function buscarRespuestas({ asunto, desde, emails }) {
 // Los correos del buzón general con unas direcciones (#341, historial de la
 // ficha): los que escribieron y los que se les mandaron, los más recientes.
 // null si no hay buzón general conectado.
+// Buscar en todo Gmail tarda (8-9 s): se guarda 5 minutos por familia.
+const correosConCache = new Map();
 export async function correosCon(emails, max = 40) {
     const buzon = buzonGeneral();
     const lista = [...new Set(emails.map(e => String(e || '').toLowerCase().replace(/[^a-z0-9@._+-]/g, '')).filter(e => e.includes('@')))];
     if (!buzon) return null;
     if (!lista.length) return [];
+    const clave = [...lista].sort().join(',');
+    const guardado = correosConCache.get(clave);
+    if (guardado && Date.now() - guardado.t < 5 * 60_000) return guardado.v;
+    const v = await buscarCorreosCon(buzon, lista, max);
+    correosConCache.set(clave, { v, t: Date.now() });
+    while (correosConCache.size > 200) correosConCache.delete(correosConCache.keys().next().value);
+    return v;
+}
+async function buscarCorreosCon(buzon, lista, max) {
     return conImap(buzon, async (client) => {
         const c = await carpetas(client);
         const lock = await client.getMailboxLock(c.todos || c.entrada);
@@ -332,14 +343,31 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
     });
 
     // Un correo entero (sin marcarlo como leído: eso lo pide la pantalla).
+    // Los últimos correos abiertos, ya leídos: al abrir uno y luego bajar su
+    // adjunto no se vuelve a descargar y leer entero (eran 4-7 s). Solo el
+    // contenido, que no cambia; las etiquetas (asignado, hecho) se piden siempre.
+    const leidos = new Map(); // «correo|carpeta|uid» → { p, t }
+    const LEIDO_MS = 10 * 60_000;
     async function leerUno(buzon, carpetaVista, uid) {
         return conImap(buzon, async (client) => {
             const c = await carpetas(client);
-            const lock = await client.getMailboxLock(carpetaDe(c, carpetaVista) || c.entrada);
+            const carpeta = carpetaDe(c, carpetaVista) || c.entrada;
+            const lock = await client.getMailboxLock(carpeta);
             try {
+                const clave = `${buzon.email}|${carpeta}|${uid}`;
+                const guardado = leidos.get(clave);
+                if (guardado && Date.now() - guardado.t < LEIDO_MS) {
+                    const m = await client.fetchOne(String(uid), { uid: true, labels: true, flags: true }, { uid: true });
+                    if (m) return { m, p: guardado.p };
+                }
                 const m = await client.fetchOne(String(uid), { uid: true, source: true, labels: true, flags: true }, { uid: true });
                 if (!m?.source) return null;
                 const p = await simpleParser(m.source);
+                // Los muy grandes no se guardan (memoria).
+                if (m.source.length < 10 * 1024 * 1024) {
+                    leidos.set(clave, { p, t: Date.now() });
+                    while (leidos.size > 20) leidos.delete(leidos.keys().next().value);
+                }
                 return { m, p };
             } finally { lock.release(); }
         });

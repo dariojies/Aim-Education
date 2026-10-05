@@ -2541,10 +2541,12 @@ app.post('/api/password/olvido', async (req, res) => {
                 [persona.user_id, huellaEnlace(token), ipDe(req) || null]);
             const enlace = `${baseWeb(req)}/auth?mode=restablecer&token=${encodeURIComponent(token)}`;
             if (mailTransporter) {
-                await mailTransporter.sendMail({
-                    from: process.env.EMAIL_USER, to: persona.email,
-                    ...(await correoSistema('password_olvido', { nombre: persona.name || '', enlace })),
-                }).catch(e => console.error('[olvido] correo:', e.message));
+                // Por detrás: esperar al correo tardaba 4 s y, como solo pasa si
+                // la cuenta existe, el tiempo de respuesta delataba qué correos
+                // están dados de alta.
+                correoSistema('password_olvido', { nombre: persona.name || '', enlace })
+                    .then(c => mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: persona.email, ...c }))
+                    .catch(e => console.error('[olvido] correo:', e.message));
             } else {
                 console.warn('[olvido] sin correo configurado: no se ha podido mandar el enlace a', persona.email);
             }
@@ -10142,7 +10144,6 @@ app.post('/api/me/pagos/iniciar', authenticateSession, async (req, res) => {
         // pagos a la vez. Redsys lo exige único para siempre en el comercio.
         const pedido = redsys.numeroPedido(pagoId);
         await client.query(`UPDATE aim_tpv_pagos SET pedido = $1 WHERE id = $2`, [pedido, pagoId]);
-        await client.query('COMMIT');
 
         const base = urlPublica(req);
         const datos = {
@@ -10161,6 +10162,11 @@ app.post('/api/me/pagos/iniciar', authenticateSession, async (req, res) => {
             ...(guardarTarjeta && cfg.recurrente ? redsys.COF_INICIAL : {}),
         };
         const parametros = redsys.codificaParametros(datos);
+        // Se firma ANTES de guardar el intento: si la firma falla (una clave mal
+        // puesta daba «Invalid key length»), no queda un pago «sin terminar»
+        // reservando los recibos de la familia.
+        const firma = redsys.firmar(cfg.clave, pedido, parametros);
+        await client.query('COMMIT');
         res.json({
             pedido,
             total: calc.total,
@@ -10169,12 +10175,14 @@ app.post('/api/me/pagos/iniciar', authenticateSession, async (req, res) => {
             campos: {
                 Ds_SignatureVersion: 'HMAC_SHA256_V1',
                 Ds_MerchantParameters: parametros,
-                Ds_Signature: redsys.firmar(cfg.clave, pedido, parametros),
+                Ds_Signature: firma,
             },
         });
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
-        res.status(500).json({ error: err.message });
+        console.error('[TPV] No se ha podido empezar el pago:', err.message);
+        // A la familia, nada técnico: que pruebe luego o pague en secretaría.
+        res.status(500).json({ error: 'No se ha podido conectar con el banco ahora mismo. Prueba más tarde o paga en secretaría.' });
     } finally { client.release(); }
 });
 
