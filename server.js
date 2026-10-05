@@ -7799,6 +7799,38 @@ app.get('/api/admin/billing/tpv/buscar', authenticateSession, requireAdmin, asyn
 });
 
 // Cesta: cargos pendientes de toda la familia del pagador + totales en vivo.
+// ── Pase Explorador descontado de la mensualidad (#352) ──────────────────────
+// Quien compra el Pase Explorador (3 clases de prueba, 15 €) y se apunta a una
+// actividad en los 30 días siguientes, no paga dos veces: esos 15 € se le
+// descuentan de su primera mensualidad. Como el pase lleva IVA y muchas
+// mensualidades van exentas, no se resta en la misma factura: se hace una
+// rectificativa de la factura del pase (−15 €) y, en el mismo cobro, se factura
+// la mensualidad entera. La familia paga la diferencia; los 15 € van como
+// «compensación», que no es dinero y no cuenta en el arqueo de caja.
+const DIAS_PASE_EXPLORADOR = 30;
+const SQL_ES_PASE = `(c.descripcion ILIKE '%explorador%' OR c.concepto IN (SELECT concepto FROM aim_precios WHERE descripcion ILIKE '%explorador%'))`;
+async function pasesDescontables(cliente, fam, ids = null) {
+    const r = await cliente.query(
+        `SELECT c.id, c.cliente_id, c.descripcion, c.importe, c.importe_bruto, c.iva_pct, c.recibo_id,
+                c.precio, c.descuento_pct, c.descuento_mens_pct,
+                rc.numero, rc.serie, rc.ejercicio, rc.fecha, u.name, u.surname
+         FROM aim_cargos c JOIN aim_recibos rc ON rc.id = c.recibo_id JOIN users u ON u.user_id = c.cliente_id
+         WHERE c.cliente_id = ANY($1::uuid[]) AND c.estado = 'cobrado' AND ${SQL_ES_PASE}
+           AND rc.tipo <> 'rectificativo' AND rc.fecha >= (${SQL_HOY_MADRID})::date - ${DIAS_PASE_EXPLORADOR}
+           ${ids ? 'AND c.id = ANY($2::int[])' : ''}
+         ORDER BY rc.fecha`, ids ? [fam, ids] : [fam]);
+    return r.rows.map(x => ({
+        cargoId: x.id, reciboId: x.recibo_id, alumno: `${x.name || ''} ${x.surname || ''}`.trim(),
+        factura: numeroVisible({ serie: x.serie, numero: x.numero, ejercicio: x.ejercicio, fecha: x.fecha }),
+        fecha: x.fecha, hasta: new Date(new Date(x.fecha).getTime() + DIAS_PASE_EXPLORADOR * 864e5),
+        // Con IVA, con la misma cuenta que la rectificativa (el pase va a 12,397 + IVA = 15 €).
+        importe: x.importe_bruto != null ? r2Server(Number(x.importe_bruto))
+            : tieneMilesimas(x.precio)
+                ? brutoMilesimas({ precio: x.precio, descuentoPct: x.descuento_pct, descuentoMensPct: x.descuento_mens_pct, ivaPct: x.iva_pct })
+                : r2Server(Number(x.importe || 0) * (1 + Number(x.iva_pct || 0) / 100)),
+    }));
+}
+
 app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async (req, res) => {
     const { pagadorId } = req.query;
     if (!pagadorId) return res.status(400).json({ error: 'Falta el pagador.' });
@@ -7858,6 +7890,8 @@ app.get('/api/admin/billing/tpv/cesta', authenticateSession, requireAdmin, async
                 // La familia lo está pagando por internet ahora mismo.
                 pagandoDesde: c.pagando_desde || null,
             })),
+            // Pases Explorador de los últimos 30 días que se pueden descontar (#352).
+            pasesExplorador: await pasesDescontables(pool, fam).catch(() => []),
             preview,
         });
     } catch (err) {
@@ -8265,8 +8299,16 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
         // 4) Calcular importes (autoritativo). Las líneas de anticipo aplicado ya
         // van dentro (negativas), así que 'total' es lo que se cobra de verdad.
         const calc = calcularCobro(cs.rows.map(cargoParaMotor));
-        const total = calc.total;
+        let total = calc.total;
         if (total < 0) throw { httP: 400, msg: 'Los anticipos aplicados superan el importe a cobrar. Ajusta el importe a aplicar.' };
+        // Pases Explorador a descontar (#352): lo que se paga es el total menos ellos.
+        const idsPases = (Array.isArray(req.body?.pasesExplorador) ? req.body.pasesExplorador : []).map(Number).filter(Number.isInteger);
+        const pasesADescontar = idsPases.length ? await pasesDescontables(client, await familiaIds(pagadorId), idsPases) : [];
+        if (pasesADescontar.length !== idsPases.length) throw { httP: 409, msg: 'Ese Pase Explorador ya no se puede descontar (más de 30 días, ya devuelto o de otra familia).' };
+        const credito = r2Server(pasesADescontar.reduce((x, p) => x + p.importe, 0));
+        if (credito > total + 0.005) throw { httP: 400, msg: `El Pase Explorador (${credito.toFixed(2)} €) es más que lo que se cobra (${total.toFixed(2)} €): cobra antes la mensualidad.` };
+        total = r2Server(total - credito);
+        const pasesHechos = [];
 
         // 4b) Reparto del pago entre métodos (ticket #247). Cada 'pago' es la parte
         // pagada con ese método. Un método puede ir SIN importe: se le asigna lo que
@@ -8283,7 +8325,7 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
             if (sinImp.length === 1) pagos.push({ medio: sinImp[0].medio, importe: r2Server(total - suma) });
             else if (Math.abs(suma - total) > 0.005) throw { httP: 400, msg: `Los pagos suman ${suma} € y el total es ${total} €.` };
             pagos = pagos.filter(p => p.importe > 0);
-            if (!pagos.length) throw { httP: 400, msg: 'No hay ningún importe que cobrar.' };
+            if (!pagos.length && !(credito > 0)) throw { httP: 400, msg: 'No hay ningún importe que cobrar.' };
             const efec = pagos.find(p => p.medio === 'efectivo');
             if (efec) {
                 const dado = Number(efectivoEntregado);
@@ -8304,7 +8346,31 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
         const receptor = await receptorDeFactura(client, pagadorId);
         const receptorNombre = receptor.nombre;
         const userId = req.userSession.userId;
-        exigirNifSiHaceFalta(receptor, total);
+        exigirNifSiHaceFalta(receptor, total + credito);
+
+        // Pase Explorador descontado (#352): rectificativa de su factura y la
+        // compensación entra como un «pago» más de este cobro.
+        for (const p of pasesADescontar) {
+            const o = (await client.query(`SELECT * FROM aim_recibos WHERE id = $1 FOR UPDATE`, [p.reciboId])).rows[0];
+            const vivas = await lineasVivasDeRecibo(client, o.id);
+            const quitadas = vivas.filter(c => c.id === p.cargoId);
+            if (!quitadas.length) throw { httP: 409, msg: `El Pase Explorador de ${p.alumno} ya estaba devuelto.` };
+            const rect = await emitirRectificativa(client, {
+                orig: o, quitadas, quedan: vivas.filter(c => c.id !== p.cargoId), metodo: 'diferencias',
+                motivo: `Pase Explorador descontado de la mensualidad: ${p.alumno} se apunta a una actividad.`, userId,
+            });
+            await client.query(`UPDATE aim_recibos SET medio_pago = 'compensacion' WHERE id = $1`, [rect.id]);
+            await client.query(`UPDATE aim_cargos SET estado = 'rectificado' WHERE id = $1`, [p.cargoId]);
+            // Las clases que le quedaran del pase se cierran: ya va a la actividad.
+            await client.query(`UPDATE aim_bonos SET clases_total = clases_usadas WHERE recibo_id = $1 AND cliente_id = $2 AND clases_usadas < clases_total`,
+                [o.id, quitadas[0].cliente_id]);
+            const rr = (await client.query(`SELECT serie, numero, ejercicio, fecha FROM aim_recibos WHERE id = $1`, [rect.id])).rows[0];
+            pasesHechos.push({ ...p, rectificativa: numeroVisible(rr), rectId: rect.id });
+        }
+        if (credito > 0) {
+            pagos = [...pagos.filter(p => p.importe > 0), { medio: 'compensacion', importe: credito }];
+            total = r2Server(total + credito);
+        }
 
         // 5) Reparto en facturas por serie (ticket #291). Para la familia es UN solo
         // cobro —un ticket con todo junto—, pero como entidad emitimos una factura
@@ -8345,8 +8411,9 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
 
         // Para el cliente, todo junto: si son dos facturas, se combinan las líneas y
         // las bases en un único ticket (con los dos números vinculados anotados).
-        res.json(tickets.length === 1 ? tickets[0]
-            : combinarTickets(tickets, { pagos, entregado: entregadoNum, cambio, total, medioResumen, receptorNombre }));
+        const respuesta = tickets.length === 1 ? tickets[0]
+            : combinarTickets(tickets, { pagos, entregado: entregadoNum, cambio, total, medioResumen, receptorNombre });
+        res.json(pasesHechos.length ? { ...respuesta, pasesDescontados: pasesHechos } : respuesta);
     } catch (err) {
         // Si la conexión se ha roto, el ROLLBACK también falla; aun así hay que
         // contestar, o el TPV se queda esperando y acaba en "error de conexión".
@@ -9706,6 +9773,8 @@ async function movimientosDelDia(fecha) {
     );
     const porMedio = Object.fromEntries(MEDIOS_PAGO.map(m => [m, { cobrado: 0, devuelto: 0, neto: 0, n: 0 }]));
     for (const x of r.rows) {
+        // El Pase Explorador descontado (#352) no es dinero: ni entra ni sale de la caja.
+        if (x.medio === 'compensacion') continue;
         const medio = MEDIOS_PAGO.includes(x.medio) ? x.medio : 'efectivo';
         const importe = Number(x.total);
         if (importe < 0 || x.tipo === 'rectificativo') porMedio[medio].devuelto = r2Server(porMedio[medio].devuelto + Math.abs(importe));
@@ -14558,7 +14627,7 @@ async function resumenSecretaria() {
         campamentoHoy: camp.rows[0].n,
     };
 }
-const nombreMedioServer = (m) => ({ efectivo: 'Efectivo', tarjeta: 'Tarjeta', bizum: 'Bizum', transferencia: 'Transferencia', domiciliacion: 'Domiciliación', online: 'Pago online' }[String(m || '').toLowerCase()] || m);
+const nombreMedioServer = (m) => ({ efectivo: 'Efectivo', tarjeta: 'Tarjeta', bizum: 'Bizum', transferencia: 'Transferencia', domiciliacion: 'Domiciliación', online: 'Pago online', compensacion: 'Pase Explorador descontado' }[String(m || '').toLowerCase()] || m);
 
 async function resumenDireccion() {
     const [ing, serie, gastos, serieGastos, activos, altas, bajas, grupos, cobrar, personal] = await Promise.all([

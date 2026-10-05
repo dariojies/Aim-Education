@@ -3845,6 +3845,8 @@ function BillingTPV({ showToast }) {
   const [pagadorFactura, setPagadorFactura] = useState(''); // #219: a nombre de quién se factura (adulto)
   const [sel, setSel] = useState({});                  // cargoId -> { on, descuentoPct }
   const [extras, setExtras] = useState([]);            // { key, clienteId, nombre, concepto, descripcion, precio, ivaPct, tipo, descuentoPct }
+  // Pases Explorador que se descuentan de este cobro (#352): ids de su cargo.
+  const [descPases, setDescPases] = useState([]);
   const [totales, setTotales] = useState(null);
   const [precios, setPrecios] = useState([]);
   // Métodos de pago (ticket #247): se puede repartir el cobro entre varios
@@ -3930,7 +3932,11 @@ function BillingTPV({ showToast }) {
     return () => { cancel = true; };
   }, [JSON.stringify(lineasMotor)]);
 
-  const total = totales?.total || 0;
+  // Lo que se factura y, si se descuenta un Pase Explorador (#352), lo que se paga.
+  const totalFacturas = totales?.total || 0;
+  const descuentoPase = Math.round((cesta?.pasesExplorador || []).filter(p => descPases.includes(p.cargoId)).reduce((x, p) => x + p.importe, 0) * 100) / 100;
+  const paseMayor = descuentoPase > totalFacturas + 0.005;
+  const total = Math.max(0, Math.round((totalFacturas - descuentoPase) * 100) / 100);
 
   // Reparto del pago entre métodos (ticket #247). Un método sin importe recibe "el
   // resto" (total − lo asignado a los demás). Con efectivo se pide cuánto dan.
@@ -3947,16 +3953,16 @@ function BillingTPV({ showToast }) {
   const cambioEfectivo = hayEfectivo ? round2(efectivoDado - efectivoPortion) : 0;
   // ¿Es válido el reparto? Suma cuadra, como mucho un método sin importe, y si hay
   // efectivo, lo entregado cubre su parte.
-  const pagoValido = total > 0 && nBlancos <= 1 && sumaAsignada <= total + 0.005
+  const pagoValido = !paseMayor && ((total === 0 && descuentoPase > 0 && totalFacturas > 0) || (total > 0 && nBlancos <= 1 && sumaAsignada <= total + 0.005
     && (nBlancos === 1 || Math.abs(sumaAsignada - total) < 0.005)
-    && (!hayEfectivo || efectivoDado >= efectivoPortion - 0.005);
+    && (!hayEfectivo || efectivoDado >= efectivoPortion - 0.005)));
 
   // Todo lo marcado con 100% de descuento (#320): se cierra sin factura.
   const todoExento = !total && !extras.length && lineasActivas.length > 0
     && lineasActivas.every(c => Number(c.descuentoPct) >= 100);
 
   async function cobrar(mas = {}) {
-    if (!total && !todoExento) return;
+    if (!total && !todoExento && !(descuentoPase > 0)) return;
     setCobrando(true);
     try {
       const r = await fetch('/api/admin/billing/tpv/cobrar', {
@@ -3975,6 +3981,7 @@ function BillingTPV({ showToast }) {
           // Reparto del pago entre métodos (ticket #247). Importe vacío = "el resto".
           pagos: pagos.map(p => ({ medio: p.medio, importe: p.importe === '' ? null : Number(p.importe) })),
           efectivoEntregado: hayEfectivo ? Number(efectivoEntregado || efectivoPortion) : undefined,
+          pasesExplorador: descPases,
           ...mas,
         }),
       });
@@ -3996,12 +4003,13 @@ function BillingTPV({ showToast }) {
       } else if (r.ok && d?.sinFactura) {
         setFaltanDatos(null);
         showToast?.(`${d.exentos} cargo${d.exentos !== 1 ? 's' : ''} con 100% de descuento cerrado${d.exentos !== 1 ? 's' : ''} sin factura.`);
-        setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null);
+        setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null); setDescPases([]);
       } else if (r.ok && d?.recibo) {
         setFaltanDatos(null);
         setTicket(d);
+        if (d.pasesDescontados?.length) showToast?.(`Pase Explorador descontado: rectificativa ${d.pasesDescontados.map(p => p.rectificativa).join(', ')}.`);
         showToast?.(d.facturas?.length > 1 ? `Cobrado: ${d.facturas.length} facturas emitidas.` : `Factura ${d.recibo.numeroVisible || d.recibo.numero} cobrada.`);
-        setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null);
+        setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null); setDescPases([]);
       } else if (d?.error) {
         alert(d.error);
       } else {
@@ -4151,7 +4159,7 @@ function BillingTPV({ showToast }) {
                 {pagador.esMenor && <span style={{ color: 'var(--orange)', fontWeight: 700 }}> · ⚠ el pagador es menor</span>}
               </div>
             </div>
-            <button className="btn btn-sm btn-outline" style={{ marginLeft: 'auto' }} onClick={() => { setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null); }}>Cambiar</button>
+            <button className="btn btn-sm btn-outline" style={{ marginLeft: 'auto' }} onClick={() => { setPagador(null); setCesta(null); setExtras([]); setAplicarAnt({}); setAddAnticipo(null); setDescPases([]); }}>Cambiar</button>
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.7fr) minmax(240px, 1fr)', gap: 16, alignItems: 'start' }}>
@@ -4193,6 +4201,22 @@ function BillingTPV({ showToast }) {
                       aria-label="Quitar este concepto" title="Quitar este concepto (deja de estar pendiente)"><I.Trash /></button>
                   ) : <span style={{ width: 28 }} />}
                 </div>
+              ))}
+              {/* Pase Explorador de los últimos 30 días (#352): si se apunta a una
+                  actividad, se le descuenta de la mensualidad. */}
+              {(cesta.pasesExplorador || []).map(p => (
+                <label key={`pase-${p.cargoId}`} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '10px 14px', borderRadius: 12, cursor: 'pointer',
+                  background: descPases.includes(p.cargoId) ? 'color-mix(in oklab, var(--teal) 10%, var(--bg-2))' : 'var(--bg-2)', border: `1px dashed ${descPases.includes(p.cargoId) ? 'var(--teal)' : 'var(--line)'}` }}>
+                  <input type="checkbox" checked={descPases.includes(p.cargoId)} style={{ width: 18, height: 18, accentColor: 'var(--teal)' }}
+                    onChange={e => setDescPases(x => (e.target.checked ? [...x, p.cargoId] : x.filter(y => y !== p.cargoId)))} />
+                  <span style={{ flex: '1 1 220px', minWidth: 0 }}>
+                    <b style={{ fontSize: 14 }}>Descontar el Pase Explorador</b> <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>· {p.alumno}</span>
+                    <span style={{ display: 'block', fontSize: 12, color: 'var(--ink-3)' }}>
+                      Factura {p.factura} del {new Date(p.fecha).toLocaleDateString('es-ES')} · se puede hasta el {new Date(p.hasta).toLocaleDateString('es-ES')}. Se hace la rectificativa del pase y se paga la diferencia.
+                    </span>
+                  </span>
+                  <b style={{ fontFamily: 'var(--font-display)', color: 'var(--teal)' }}>−{eur(p.importe)}</b>
+                </label>
               ))}
               {extras.map(e => (
                 <div key={e.key} style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', background: 'color-mix(in oklab, var(--purple) 6%, var(--bg-2))', border: '1px solid var(--line)', borderRadius: 12, padding: '10px 14px' }}>
@@ -4395,8 +4419,15 @@ function BillingTPV({ showToast }) {
                   </div>
                 )}
               </div>
+              {descuentoPase > 0 && (
+                <div style={{ display: 'grid', gap: 2, fontSize: 13 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Se factura</span><span>{eur(totalFacturas)}</span></div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--teal)', fontWeight: 700 }}><span>Pase Explorador descontado</span><span>−{eur(descuentoPase)}</span></div>
+                  {paseMayor && <div style={{ color: 'var(--orange)', fontWeight: 700 }}>El pase es más que lo que se cobra: cobra antes la mensualidad.</div>}
+                </div>
+              )}
               <div style={{ borderTop: '1px solid var(--line)', paddingTop: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                <span style={{ fontWeight: 800, fontSize: 15 }}>TOTAL</span>
+                <span style={{ fontWeight: 800, fontSize: 15 }}>{descuentoPase > 0 ? 'A PAGAR' : 'TOTAL'}</span>
                 <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 28, letterSpacing: '-.02em' }}>{eur(total)}</span>
               </div>
               {/* Las facturas que se van a emitir (una por serie, #291). El cliente

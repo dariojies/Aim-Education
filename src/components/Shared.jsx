@@ -708,6 +708,8 @@ export { AimLogo, AimHeader, AimFooter, ACTIVITIES, ACT_BY_ID, ActIcono, ActIcon
 const MEDIOS = {
   tpv_online: 'Tarjeta (web)', tarjeta: 'Tarjeta', bizum: 'Bizum',
   efectivo: 'Efectivo', transferencia: 'Transferencia',
+  // El Pase Explorador descontado de la mensualidad (#352): no es dinero.
+  compensacion: 'Pase Explorador descontado',
 };
 export const nombreMedioPago = (m) => MEDIOS[m] || (m ? m.charAt(0).toUpperCase() + m.slice(1) : '');
 
