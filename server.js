@@ -11098,6 +11098,8 @@ async function enviarYApuntar({ personaId, a, asunto, cuerpo, tipo, variables, p
 // a todos los que ya estaban). Cada uno sale una vez por persona y ocasión (la
 // marca va en aim_comunicaciones.plantilla), a la familia (tutores; si no tiene,
 // al alumno) y respetando si rechazó las comunicaciones de sus actividades.
+// Con cuántos días de antelación se avisa de que el club cierra (#365).
+const AVISO_CIERRE_DIAS = 3;
 const AUTOMATISMOS = {
     bienvenida: {
         nombre: 'Bienvenida al darse de alta',
@@ -11116,6 +11118,23 @@ const AUTOMATISMOS = {
         descripcion: 'El día de su cumpleaños, a partir de las 9:00.',
         asunto: '¡Feliz cumpleaños, {nombre}!',
         cuerpo: 'Hola,\n\nDesde AIM Education queremos desearle a {nombre} un feliz cumpleaños. ¡Que cumpla muchos más con nosotros!\n\nUn abrazo,\nAIM Education',
+    },
+    // #365: los dos siguientes van a todas las familias con alumnos en clase, una
+    // sola vez por familia (porFamilia: a quien ya le llegó por un hermano no se
+    // le repite).
+    cerrado: {
+        nombre: 'Aviso de día cerrado',
+        descripcion: `${AVISO_CIERRE_DIAS} días antes de un festivo, unas vacaciones o un cierre del centro (los que se marcan en Fichaje → Vacaciones y festivos), a partir de las 9:00. A las familias de los alumnos que tienen clase, una vez por familia.`,
+        asunto: 'AIM Education estará cerrado {dias}',
+        cuerpo: 'Hola,\n\nOs recordamos que AIM Education estará cerrado {dias} ({motivo}), así que no habrá clases.\n\nVolvemos el {vuelta}.\n\nUn saludo,\nAIM Education',
+        porFamilia: true,
+    },
+    noticias: {
+        nombre: 'Resumen de noticias del mes',
+        descripcion: 'A primeros de cada mes (del 1 al 7, a partir de las 9:00), con las noticias publicadas en la web el mes anterior. Si no hubo ninguna, no sale. A las familias de los alumnos que tienen clase, una vez por familia.',
+        asunto: 'Las noticias de {mes} en AIM Education',
+        cuerpo: 'Hola,\n\nEstas son las noticias que publicamos en {mes}:\n\n{noticias}\n\nUn saludo,\nAIM Education',
+        porFamilia: true,
     },
 };
 async function configAutomatismos() {
@@ -11162,7 +11181,66 @@ async function candidatosAutomatismo(id, cfg) {
                AND EXISTS (SELECT 1 FROM tul_group_students s WHERE s.student_id = u.user_id)`, [AIM_CLUB_ID, hoy]);
         return r.rows.map(x => ({ personaId: x.user_id, marca: `auto:cumple:${hoy.slice(0, 4)}`, extra: { edad: String(x.edad) } }));
     }
+    if (id === 'cerrado' || id === 'noticias') {
+        const hoy = hoyAutomatismos();
+        if (horaAutomatismos() < 9) return [];
+        let marca, extra;
+        if (id === 'cerrado') {
+            // El próximo periodo de cierre que empiece dentro del plazo de aviso y
+            // después de encenderlo.
+            const r = await pool.query(
+                `SELECT fecha::text AS fecha, nombre, tipo, resta_vacaciones FROM aim_calendario_laboral
+                 WHERE fecha BETWEEN $1::date - INTERVAL '${MAX_DIAS_CIERRE} days' AND $1::date + ${AVISO_CIERRE_DIAS} + ${MAX_DIAS_CIERRE}
+                 ORDER BY fecha`, [hoy]);
+            const p = periodosDeCierre(r.rows).find(x => x.desde > hoy && x.desde <= sumarDiaISO(hoy, AVISO_CIERRE_DIAS)
+                && x.desde > String(desde).slice(0, 10));
+            if (!p) return [];
+            // El día que se vuelve: el siguiente que no esté cerrado ni sea domingo.
+            const cerrados = new Set(r.rows.map(x => x.fecha));
+            let vuelta = sumarDiaISO(p.hasta, 1);
+            while (cerrados.has(vuelta) || new Date(vuelta + 'T12:00:00Z').getUTCDay() === 0) vuelta = sumarDiaISO(vuelta, 1);
+            const largo = (iso) => new Date(iso + 'T12:00:00Z').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' });
+            marca = `auto:cerrado:${p.desde}`;
+            extra = { dias: p.desde === p.hasta ? `el ${largo(p.desde)}` : `del ${largo(p.desde)} al ${largo(p.hasta)}`, motivo: p.nombre || p.tipoNombre, vuelta: largo(vuelta) };
+        } else {
+            // Del 1 al 7 de cada mes, las noticias publicadas el mes anterior.
+            if (Number(hoy.slice(8, 10)) > 7) return [];
+            const mesAnt = sumarDiaISO(`${hoy.slice(0, 7)}-01`, -1).slice(0, 7);
+            const n = await pool.query(
+                `SELECT title, slug FROM aim_education_posts
+                 WHERE status = 'published' AND (published_at AT TIME ZONE 'Europe/Madrid')::date >= $1::date
+                   AND (published_at AT TIME ZONE 'Europe/Madrid')::date < $2::date
+                 ORDER BY published_at`, [`${mesAnt}-01`, `${hoy.slice(0, 7)}-01`]);
+            if (!n.rowCount) return [];
+            const nombreMes = new Date(`${mesAnt}-15T12:00:00Z`).toLocaleDateString('es-ES', { month: 'long', timeZone: 'UTC' });
+            marca = `auto:noticias:${mesAnt}`;
+            extra = { mes: nombreMes, noticias: n.rows.map(x => `• ${x.title}\n  ${URL_PUBLICA_WEB}/noticias/${x.slug}`).join('\n\n') };
+        }
+        // Los alumnos que tienen clase ahora (sin el personal del club).
+        const al = await pool.query(
+            `SELECT DISTINCT s.student_id FROM tul_group_students s
+             JOIN tul_groups g ON g.group_id = s.group_id JOIN tul_activities a ON a.activity_id = g.activity_id
+             JOIN users u ON u.user_id = s.student_id
+             WHERE a.club_id = $1 AND COALESCE(u.role, 'student') NOT IN ('instructor', 'club_owner', 'superadmin')
+               AND NOT EXISTS (SELECT 1 FROM aim_rangos rg WHERE rg.user_id = u.user_id AND rg.rango IN ('trabajador', 'secretaria', 'equipo_it'))`,
+            [AIM_CLUB_ID]);
+        return al.rows.map(x => ({ personaId: x.student_id, marca, extra }));
+    }
     return [];
+}
+// El día y la hora que miran los automatismos. PRUEBA_HOY_AUTOMATISMOS solo
+// existe para probarlos en local sin esperar al día (en Heroku no está).
+const hoyAutomatismos = () => (/^\d{4}-\d{2}-\d{2}$/.test(process.env.PRUEBA_HOY_AUTOMATISMOS || '') ? process.env.PRUEBA_HOY_AUTOMATISMOS : hoyMadrid());
+const horaAutomatismos = () => (process.env.PRUEBA_HOY_AUTOMATISMOS ? 12
+    : Number(new Date().toLocaleString('en-GB', { timeZone: 'Europe/Madrid', hour: '2-digit', hour12: false })));
+
+// En los que van «una vez por familia»: los correos a los que ya les llegó esta
+// ocasión (por otro de sus hijos).
+async function yaRecibieron(marca) {
+    const r = await pool.query(
+        `SELECT DISTINCT LOWER(e) AS e FROM aim_comunicaciones, unnest(destinatarios) AS e
+         WHERE plantilla = $1 AND estado = 'enviado'`, [marca]);
+    return new Set(r.rows.map(x => x.e));
 }
 
 // A quién se escribe (la familia; si no tiene correo, el alumno) y si queda fuera.
@@ -11198,8 +11276,15 @@ async function ejecutarAutomatismos() {
         for (const [id, c] of Object.entries(cfg)) {
             if (!c.activo) continue;
             const lista = (await pendientesAutomatismo(id, c)).slice(0, 25);
+            const porFamilia = AUTOMATISMOS[id].porFamilia;
+            const ya = porFamilia && lista.length ? await yaRecibieron(lista[0].marca) : null;
             for (const cand of lista) {
                 const d = await destinoAutomatismo(cand.personaId);
+                // Una vez por familia: a quien ya le llegó por un hermano, no.
+                if (ya && !d.fuera) {
+                    d.para = d.para.filter(x => !ya.has(x.email.toLowerCase()));
+                    if (!d.para.length) d.fuera = 'ya le llegó con otro de la familia';
+                }
                 // Si queda fuera (sin correo, lo rechazó) también se apunta, para
                 // no volver a mirarlo en cada pasada.
                 if (d.fuera) {
@@ -11209,10 +11294,11 @@ async function ejecutarAutomatismos() {
                         [cand.personaId, AUTOMATISMOS[id].nombre, cand.marca, d.fuera]);
                     continue;
                 }
-                await enviarYApuntar({
+                const env = await enviarYApuntar({
                     personaId: cand.personaId, a: d.para.map(x => x.email), asunto: c.asunto, cuerpo: c.cuerpo, diseno: c.diseno,
                     tipo: 'actividades', variables: { ...d.ctx.variables, ...cand.extra }, plantilla: cand.marca,
                 });
+                if (ya && env.estado === 'enviado') d.para.forEach(x => ya.add(x.email.toLowerCase()));
             }
             if (lista.length) console.log(`[automatismos] ${id}: ${lista.length} revisado(s)`);
         }
@@ -11232,7 +11318,7 @@ app.get('/api/admin/automatismos', authenticateSession, requireSeccion('comunica
         res.json({
             correoActivo: !!mailTransporter,
             automatismos: Object.entries(AUTOMATISMOS).map(([id, def]) => ({
-                id, nombre: def.nombre, descripcion: def.descripcion, ...cfg[id],
+                id, nombre: def.nombre, descripcion: def.descripcion, porFamilia: !!def.porFamilia, ...cfg[id],
                 recientes: recientes.rows.filter(x => x.plantilla.split(':')[1] === id).slice(0, 30).map(x => ({
                     id: x.id, personaId: x.persona_id, alumno: x.alumno, asunto: x.asunto, estado: x.estado,
                     error: x.error, destinatarios: x.destinatarios, fecha: x.created_at,
@@ -11289,8 +11375,27 @@ app.get('/api/admin/automatismos/:id/vista', authenticateSession, requireSeccion
         const c = cfg.activo ? cfg : { ...cfg, activadoAt: new Date().toISOString() };
         const lista = await pendientesAutomatismo(id, c);
         const filas = [];
-        for (const cand of lista.slice(0, 40)) {
-            const d = await destinoAutomatismo(cand.personaId);
+        // Una vez por familia (#365): se repasan todos para saber a cuántas familias
+        // llegaría, y se enseñan las primeras.
+        const porFamilia = AUTOMATISMOS[id].porFamilia;
+        const ya = porFamilia && lista.length ? await yaRecibieron(lista[0].marca) : null;
+        let familias = 0;
+        const revisar = porFamilia ? lista : lista.slice(0, 40);
+        // De 4 en 4 (no de uno en uno): con 200 alumnos tardaba demasiado. El
+        // reparto por familia se hace después, en orden.
+        const destinos = new Array(revisar.length);
+        let sig = 0;
+        await Promise.all(Array.from({ length: Math.min(4, revisar.length) }, async () => {
+            while (sig < revisar.length) { const i = sig++; destinos[i] = await destinoAutomatismo(revisar[i].personaId); }
+        }));
+        for (let i = 0; i < revisar.length; i++) {
+            const cand = revisar[i], d = destinos[i];
+            if (ya && !d.fuera) {
+                d.para = d.para.filter(x => !ya.has(x.email.toLowerCase()));
+                if (!d.para.length) d.fuera = 'ya le llega con otro de la familia';
+                else { d.para.forEach(x => ya.add(x.email.toLowerCase())); familias++; }
+            }
+            if (filas.length >= 40) continue;
             filas.push({
                 personaId: cand.personaId, alumno: d.ctx?.alumno?.completo || '—', fuera: d.fuera || null,
                 para: (d.para || []).map(x => `${x.nombre} (${x.relacion})`),
@@ -11298,7 +11403,8 @@ app.get('/api/admin/automatismos/:id/vista', authenticateSession, requireSeccion
             });
         }
         res.set('Cache-Control', 'no-store');
-        res.json({ total: lista.length, filas, comoSiEncendido: !cfg.activo });
+        res.json({ total: lista.length, familias: porFamilia ? familias : null, filas, comoSiEncendido: !cfg.activo,
+            ocasion: lista[0]?.extra && porFamilia ? lista[0].extra : null });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

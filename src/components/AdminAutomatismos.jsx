@@ -4,24 +4,39 @@ import { fmtFechaHora } from '../fechas.js';
 import { Variables, meterEnCursor } from './CrmPiezas.jsx';
 import EditorDiseno, { ElegirPlantilla } from './EditorDiseno.jsx';
 import { VARIABLES_CRM } from '../../correo-diseno.js';
+import { CorreosSistema } from './AdminDisenoCorreos.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Automatismos (CRM 7, ticket #316): correos que salen solos. Cada uno se
 // enciende y apaga aquí, con su plantilla, se puede ver a quién le saldría ahora
 // (sin enviar nada) y qué ha enviado ya. Al encender uno solo cuenta lo que pase
-// desde ese momento.
+// desde ese momento. Desde el #365 también están aquí, abajo, los correos que la
+// app manda siempre (Speaking, contraseñas, fichaje…), con su diseño.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const VARS = {
   bienvenida: ['{nombre}', '{alumno}', '{clases}'],
   faltas: ['{nombre}', '{alumno}', '{clase}', '{faltas}'],
   cumple: ['{nombre}', '{alumno}', '{edad}'],
+  cerrado: ['{nombre}', '{alumno}', '{dias}', '{motivo}', '{vuelta}'],
+  noticias: ['{nombre}', '{alumno}', '{mes}', '{noticias}'],
 };
 // Los mismos datos, con su ejemplo, para el diseñador.
 const VARS_DISENO = {
   bienvenida: { nombre: VARIABLES_CRM.nombre, alumno: VARIABLES_CRM.alumno, clases: VARIABLES_CRM.clases },
   faltas: { nombre: VARIABLES_CRM.nombre, alumno: VARIABLES_CRM.alumno, clase: { que: 'La clase', ejemplo: 'Ballet (L-X 17:00)' }, faltas: { que: 'Cuántas faltas lleva', ejemplo: '4' } },
   cumple: { nombre: VARIABLES_CRM.nombre, alumno: VARIABLES_CRM.alumno, edad: { que: 'Los años que cumple', ejemplo: '9' } },
+  cerrado: {
+    nombre: VARIABLES_CRM.nombre, alumno: VARIABLES_CRM.alumno,
+    dias: { que: 'Qué días cierra', ejemplo: 'el lunes, 12 de octubre' },
+    motivo: { que: 'Por qué (el nombre del festivo o cierre)', ejemplo: 'Día de la Hispanidad' },
+    vuelta: { que: 'El día que se vuelve', ejemplo: 'martes, 13 de octubre' },
+  },
+  noticias: {
+    nombre: VARIABLES_CRM.nombre, alumno: VARIABLES_CRM.alumno,
+    mes: { que: 'El mes del resumen', ejemplo: 'septiembre' },
+    noticias: { que: 'Las noticias del mes, con su enlace', ejemplo: '• ¡Subcampeones en la WRO 2026!\n  https://www.aimeducation.es/noticias/subcampeones-en-la-wro-2026' },
+  },
 };
 const campo = { fontFamily: 'inherit', fontSize: 14, padding: '9px 11px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', width: '100%' };
 const api = async (url, opts = {}) => {
@@ -122,9 +137,15 @@ function Tarjeta({ a, onCambio, onAbrirFicha, showToast }) {
       {vista && (
         <div style={{ display: 'grid', gap: 6, background: 'var(--bg-3)', borderRadius: 12, padding: 12 }}>
           <b style={{ fontSize: 13 }}>
-            {vista.total ? `Ahora mismo le saldría a ${vista.total} ${vista.total === 1 ? 'persona' : 'personas'}` : 'Ahora mismo no le saldría a nadie'}
+            {vista.familias != null
+              ? (vista.familias ? `Ahora mismo le saldría a ${vista.familias} ${vista.familias === 1 ? 'familia' : 'familias'} (${vista.total} alumnos)` : 'Ahora mismo no le saldría a nadie')
+              : vista.total ? `Ahora mismo le saldría a ${vista.total} ${vista.total === 1 ? 'persona' : 'personas'}` : 'Ahora mismo no le saldría a nadie'}
             {vista.comoSiEncendido ? ' (si se encendiera ahora)' : ''}.
           </b>
+          {vista.ocasion?.dias && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Cierre: {vista.ocasion.dias} · {vista.ocasion.motivo}. Se vuelve el {vista.ocasion.vuelta}.</span>}
+          {vista.ocasion?.mes && <span style={{ fontSize: 12, color: 'var(--ink-3)', whiteSpace: 'pre-line' }}>Noticias de {vista.ocasion.mes}:{'\n'}{vista.ocasion.noticias}</span>}
+          {a.id === 'cerrado' && !vista.total && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Sale 3 días antes de cada cierre; ahora no empieza ninguno en ese plazo.</span>}
+          {a.id === 'noticias' && !vista.total && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Sale del 1 al 7 de cada mes con las noticias del mes anterior; ahora no toca o no hubo noticias.</span>}
           {a.id === 'bienvenida' && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>La bienvenida es para quien se apunte a partir de que se encienda: no se escribe a los que ya estaban.</span>}
           {vista.filas.map(f => (
             <div key={f.personaId} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: 12 }}>
@@ -164,9 +185,10 @@ export default function AdminAutomatismos({ showToast, onAbrirFicha }) {
       <div className="panel">
         <h2><I.Settings /> Automatismos</h2>
         <p className="sub">
-          Correos que se envían solos cuando pasa algo: cuando alguien se apunta, cuando un alumno falta 4 veces seguidas o el día
-          de su cumpleaños. Enciende los que quieras. A cada familia le llega una sola vez por cada ocasión, no le llega a quien
-          no quiere novedades de sus clases, y queda apuntado en su ficha.
+          Todos los correos que salen solos. Arriba, los que se encienden y apagan: cuando alguien se apunta, cuando un alumno
+          falta 4 veces seguidas, su cumpleaños, cuando el club va a cerrar y el resumen de noticias del mes. A cada familia le
+          llega una sola vez por cada ocasión, no le llega a quien no quiere novedades de sus clases, y queda apuntado en su ficha.
+          Abajo, los que la app manda siempre porque hacen falta (contraseñas, Speaking, fichaje…): de esos se puede cambiar el diseño.
         </p>
         {!d.correoActivo && <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: 'var(--orange)' }}>El correo no está configurado en el servidor: aunque se enciendan, no saldrán.</p>}
         {d.correoActivo && d.automatismos.some(a => a.activo) && (
@@ -176,7 +198,19 @@ export default function AdminAutomatismos({ showToast, onAbrirFicha }) {
           }}>Comprobar ahora si toca enviar alguno</button>
         )}
       </div>
+      <h3 style={{ margin: '6px 0 0', fontSize: 18, fontFamily: 'var(--font-display)', fontWeight: 800 }}>Los que se encienden y apagan</h3>
       {d.automatismos.map(a => <Tarjeta key={a.id} a={a} onCambio={cargar} onAbrirFicha={onAbrirFicha} showToast={showToast} />)}
+      {/* Los que salen siempre (antes en Diseño de correos → Correos automáticos). */}
+      <div className="panel" style={{ display: 'grid', gap: 12 }}>
+        <div>
+          <h2 style={{ marginBottom: 4 }}><I.Mail /> Los que la app manda siempre</h2>
+          <p className="sub" style={{ margin: 0 }}>
+            No se apagan: hacen falta para que todo funcione. Puedes cambiarles el texto, los colores, añadir imágenes… Lo que no se
+            puede quitar es lo que los hace funcionar (el enlace de la contraseña, los botones de Speaking, la tabla de horas…): el editor te avisa.
+          </p>
+        </div>
+        <CorreosSistema showToast={showToast} />
+      </div>
     </div>
   );
 }

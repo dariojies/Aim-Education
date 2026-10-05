@@ -5,11 +5,12 @@ import { htmlCorreo, FUENTES, REDES, GRUPOS_SISTEMA, PLANTILLAS_BASE, MARCA_POR_
 import { fmtFechaHora } from '../fechas.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CRM → Diseño de correos (ticket #326). Tres cosas:
+// CRM → Diseño de correos (ticket #326). Dos cosas:
 //  · Plantillas: los diseños del club para campañas y correos sueltos.
-//  · Correos automáticos: los que manda la app sola (Speaking, contraseñas,
-//    fichaje…), cada uno con su diseño; si no se toca, sale el de fábrica.
 //  · Marca: logo, colores, letra y pie, que llevan TODOS los correos.
+// Los correos que manda la app sola (Speaking, contraseñas, fichaje…) se
+// diseñan desde Automatismos (#365), junto al resto de correos automáticos:
+// el componente CorreosSistema de aquí abajo se usa allí.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const pastilla = (activa) => ({
@@ -32,16 +33,14 @@ export default function AdminDisenoCorreos({ showToast }) {
       <div>
         <h2 style={{ margin: 0, fontSize: 22, fontFamily: 'var(--font-display)', fontWeight: 800 }}>Diseño de correos</h2>
         <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--ink-3)', maxWidth: 720 }}>
-          Aquí se diseñan todos los correos del club, como en Canva: plantillas para las campañas, los correos que la app manda sola y la imagen de marca que llevan todos.
+          Aquí se diseñan los correos del club, como en Canva: plantillas para las campañas y la imagen de marca que llevan todos. Los correos que salen solos se diseñan en <b>Automatismos</b>.
         </p>
       </div>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <button type="button" style={pastilla(pestana === 'plantillas')} onClick={() => setPestana('plantillas')}>Plantillas</button>
-        <button type="button" style={pastilla(pestana === 'sistema')} onClick={() => setPestana('sistema')}>Correos automáticos</button>
         <button type="button" style={pastilla(pestana === 'marca')} onClick={() => setPestana('marca')}>Marca</button>
       </div>
       {pestana === 'plantillas' && <Plantillas showToast={showToast} />}
-      {pestana === 'sistema' && <Sistema showToast={showToast} />}
       {pestana === 'marca' && <Marca showToast={showToast} />}
     </div>
   );
@@ -124,8 +123,8 @@ function Plantillas({ showToast }) {
   );
 }
 
-// ── Correos automáticos ─────────────────────────────────────────────────────
-function Sistema({ showToast }) {
+// ── Correos que la app manda sola (se ven en Automatismos, #365) ────────────
+export function CorreosSistema({ showToast }) {
   const marca = useMarca();
   const [correos, setCorreos] = useState(null);
   const [editando, setEditando] = useState(null);
@@ -149,9 +148,6 @@ function Sistema({ showToast }) {
   if (correos === null) return <p style={{ fontSize: 13, color: 'var(--ink-3)' }}>Cargando…</p>;
   return (
     <div style={{ display: 'grid', gap: 18 }}>
-      <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)', maxWidth: 720 }}>
-        Son los correos que la app envía sola. Puedes cambiarles el texto, los colores, añadir imágenes… Lo que no se puede quitar es lo que los hace funcionar (el enlace de la contraseña, los botones de Speaking, la tabla de horas…): el editor te avisa.
-      </p>
       {Object.entries(GRUPOS_SISTEMA).map(([g, titulo]) => (
         <section key={g} style={{ display: 'grid', gap: 10 }}>
           <h3 style={{ margin: 0, fontSize: 16 }}>{titulo}</h3>
