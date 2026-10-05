@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { I } from './Icons.jsx';
 import { fmtFecha, fmtFechaHora, fmtHora } from '../fechas.js';
+import { nombreMedioPago } from './Shared.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Arqueo de caja: cierre de cada día.
@@ -90,6 +91,11 @@ export default function BillingArqueo({ showToast }) {
   }, [datos, contado, medios]);
   const totalContado = medios.reduce((s, m) => s + Number(contado[m] || 0), 0);
   const descuadreTotal = Number((totalContado - (datos?.totalEsperado ?? 0)).toFixed(2));
+  // Lo pagado por la web (TPV virtual): entra en el total del día, pero no se
+  // cuenta ni descuadra, porque lo ingresa el banco directamente.
+  const web = datos?.web || { cobrado: 0, devuelto: 0, neto: 0, n: 0 };
+  const totalDia = Number(((datos?.totalEsperado ?? 0) + web.neto).toFixed(2));
+  const totalDiaContado = Number((totalContado + web.neto).toFixed(2));
 
   // Un día que aún no ha llegado no tiene caja que contar, así que no se puede
   // ni mirar ni cerrar: si se cerrara, taparía los cobros que se hagan ese día.
@@ -193,11 +199,19 @@ export default function BillingArqueo({ showToast }) {
       <p class="meta">Aim Education · ${datos.detalle.length} movimiento${datos.detalle.length !== 1 ? 's' : ''} · impreso el ${fmtFechaHora(new Date())}</p>
       <table>
         <thead><tr><th>Medio de pago</th><th class="n">Cobrado</th><th class="n">Devuelto</th><th class="n">Debe haber</th><th class="n">Hay</th><th class="n">Descuadre</th></tr></thead>
-        <tbody>${filas}</tbody>
+        <tbody>${filas}
+          <tr>
+            <td>Por la web <span style="color:#888">(lo ingresa el banco)</span></td>
+            <td class="n">${eur(web.cobrado)}</td>
+            <td class="n">${web.devuelto ? '−' + eur(web.devuelto) : '—'}</td>
+            <td class="n"><b>${eur(web.neto)}</b></td>
+            <td class="n">${eur(web.neto)}</td>
+            <td class="n">—</td>
+          </tr></tbody>
         <tfoot><tr>
           <td>TOTAL</td><td class="n"></td><td class="n"></td>
-          <td class="n">${eur(datos.totalEsperado)}</td>
-          <td class="n">${eur(totalContado)}</td>
+          <td class="n">${eur(totalDia)}</td>
+          <td class="n">${eur(totalDiaContado)}</td>
           <td class="n ${descuadreTotal ? (descuadreTotal < 0 ? 'mal' : 'sobra') : ''}">${descuadreTotal ? (descuadreTotal > 0 ? '+' : '') + eur(descuadreTotal) : '—'}</td>
         </tr></tfoot>
       </table>
@@ -296,10 +310,22 @@ export default function BillingArqueo({ showToast }) {
             </div>
           );
         })}
+        {/* Pagado por la web: no se cuenta, lo ingresa el banco. */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr repeat(5, minmax(0,1fr))', minWidth: 520, gap: 8, alignItems: 'center', fontSize: 13 }}>
+          <span style={{ fontWeight: 700 }}>
+            Por la web{web.n ? <span style={{ color: 'var(--ink-3)', fontWeight: 400 }}> · {web.n}</span> : ''}
+            <span style={{ display: 'block', fontSize: 11, color: 'var(--ink-3)', fontWeight: 400 }}>lo ingresa el banco, no se cuenta</span>
+          </span>
+          <span style={{ textAlign: 'right', color: 'var(--ink-3)' }}>{eur(web.cobrado)}</span>
+          <span style={{ textAlign: 'right', color: web.devuelto ? 'var(--orange)' : 'var(--ink-3)' }}>{web.devuelto ? `−${eur(web.devuelto)}` : '—'}</span>
+          <span style={{ textAlign: 'right', fontWeight: 700 }}>{eur(web.neto)}</span>
+          <span style={{ textAlign: 'right', color: 'var(--ink-3)', padding: '6px 8px' }}>{eur(web.neto)}</span>
+          <span style={{ textAlign: 'right', color: 'var(--ink-3)' }}>—</span>
+        </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1.2fr repeat(5, minmax(0,1fr))', minWidth: 520, gap: 8, alignItems: 'center', fontSize: 14, fontWeight: 800, borderTop: '2px solid var(--line)', paddingTop: 10 }}>
           <span>TOTAL</span><span /><span />
-          <span style={{ textAlign: 'right' }}>{eur(datos.totalEsperado)}</span>
-          <span style={{ textAlign: 'right' }}>{eur(totalContado)}</span>
+          <span style={{ textAlign: 'right' }}>{eur(totalDia)}</span>
+          <span style={{ textAlign: 'right' }}>{eur(totalDiaContado)}</span>
           <span style={{ textAlign: 'right', color: descuadreTotal === 0 ? 'var(--teal)' : descuadreTotal < 0 ? 'var(--orange)' : 'var(--purple)' }}>
             {descuadreTotal === 0 ? 'Cuadra' : `${descuadreTotal > 0 ? '+' : ''}${eur(descuadreTotal)}`}
           </span>
@@ -375,7 +401,7 @@ export default function BillingArqueo({ showToast }) {
             <div key={i} style={{ display: 'flex', gap: 10, justifyContent: 'space-between' }}>
               <span style={{ fontWeight: 700, minWidth: 70 }}>{d.numero}</span>
               <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.pagador || '—'}</span>
-              <span style={{ color: 'var(--ink-3)' }}>{d.medioPago}</span>
+              <span style={{ color: 'var(--ink-3)' }}>{nombreMedioPago(d.medioPago)}</span>
               <span style={{ color: 'var(--ink-3)' }}>{fmtHora(d.hora)}</span>
               <span style={{ fontWeight: 700, color: d.tipo === 'rectificativo' ? 'var(--orange)' : 'var(--ink)', minWidth: 70, textAlign: 'right' }}>{eur(d.importe)}</span>
             </div>

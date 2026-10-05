@@ -9783,17 +9783,20 @@ async function movimientosDelDia(fecha) {
             AND NOT EXISTS (SELECT 1 FROM aim_recibo_pagos rp WHERE rp.recibo_id = r.id)
           GROUP BY r.medio_pago, r.tipo`, [fecha]
     );
-    const porMedio = Object.fromEntries(MEDIOS_PAGO.map(m => [m, { cobrado: 0, devuelto: 0, neto: 0, n: 0 }]));
+    // Además de los medios del mostrador, lo pagado por la web (TPV virtual): sale
+    // en la caja del día, pero no se cuenta, porque lo ingresa el banco. Antes caía
+    // en «efectivo» como cualquier medio desconocido e inflaba lo que debía haber.
+    const porMedio = Object.fromEntries([...MEDIOS_PAGO, 'tpv_online'].map(m => [m, { cobrado: 0, devuelto: 0, neto: 0, n: 0 }]));
     for (const x of r.rows) {
         // El Pase Explorador descontado (#352) no es dinero: ni entra ni sale de la caja.
         if (x.medio === 'compensacion') continue;
-        const medio = MEDIOS_PAGO.includes(x.medio) ? x.medio : 'efectivo';
+        const medio = MEDIOS_PAGO.includes(x.medio) || x.medio === 'tpv_online' ? x.medio : 'efectivo';
         const importe = Number(x.total);
         if (importe < 0 || x.tipo === 'rectificativo') porMedio[medio].devuelto = r2Server(porMedio[medio].devuelto + Math.abs(importe));
         else porMedio[medio].cobrado = r2Server(porMedio[medio].cobrado + importe);
         porMedio[medio].n += x.n;
     }
-    for (const m of MEDIOS_PAGO) porMedio[m].neto = r2Server(porMedio[m].cobrado - porMedio[m].devuelto);
+    for (const m of Object.keys(porMedio)) porMedio[m].neto = r2Server(porMedio[m].cobrado - porMedio[m].devuelto);
     return porMedio;
 }
 
@@ -9853,6 +9856,8 @@ app.get('/api/admin/billing/arqueo', authenticateSession, requireAdmin, async (r
         res.json({
             fecha, medios: MEDIOS_PAGO, esperado,
             totalEsperado: r2Server(MEDIOS_PAGO.reduce((s, m) => s + esperado[m].neto, 0)),
+            // Pagado por la web: se ve en la caja, no se cuenta (lo ingresa el banco).
+            web: esperado.tpv_online,
             cerrado: arq ? {
                 esperado: arq.esperado, contado: arq.contado, comentario: arq.comentario, cerradoAt: arq.cerrado_at,
             } : null,
@@ -14691,7 +14696,7 @@ async function resumenSecretaria() {
         campamentoHoy: camp.rows[0].n,
     };
 }
-const nombreMedioServer = (m) => ({ efectivo: 'Efectivo', tarjeta: 'Tarjeta', bizum: 'Bizum', transferencia: 'Transferencia', domiciliacion: 'Domiciliación', online: 'Pago online', compensacion: 'Pase Explorador descontado' }[String(m || '').toLowerCase()] || m);
+const nombreMedioServer = (m) => ({ efectivo: 'Efectivo', tarjeta: 'Tarjeta', bizum: 'Bizum', transferencia: 'Transferencia', domiciliacion: 'Domiciliación', online: 'Pago online', tpv_online: 'Por la web', compensacion: 'Pase Explorador descontado' }[String(m || '').toLowerCase()] || m);
 
 async function resumenDireccion() {
     const [ing, serie, gastos, serieGastos, activos, altas, bajas, grupos, cobrar, personal] = await Promise.all([
