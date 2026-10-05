@@ -60,9 +60,12 @@ async function conexion(buzon) {
         if (c.client?.usable) { clearTimeout(c.cierre); return c.client; }
         conexiones.delete(k);
     }
+    // Con tiempos máximos (#362): sin ellos, si Gmail tardaba en contestar, la
+    // petición se quedaba colgada y Heroku la cortaba a los 30 s con un 503.
     const client = new ImapFlow({
         host: IMAP_HOST(), port: 993, secure: true, logger: false,
         auth: { user: buzon.email, pass: buzon.pass },
+        connectionTimeout: 12_000, greetingTimeout: 8_000, socketTimeout: 60_000,
     });
     client.on('error', () => conexiones.delete(k)); // un corte de red no tumba el servidor
     client.on('close', () => { if (conexiones.get(k)?.client === client) conexiones.delete(k); });
@@ -72,15 +75,32 @@ async function conexion(buzon) {
     entrada.abriendo = null;
     return client;
 }
-async function conImap(buzon, fn) {
-    const client = await conexion(buzon);
+// ¿El fallo es de la conexión (y no del correo)? Gmail cierra las conexiones que
+// llevan rato quietas sin avisar: la guardada parece viva y falla al usarla
+// («Connection not available»). Con esos, se abre otra y se repite (#362).
+const fallaConexion = (e) => /Connection not available|NoConnection|closed|ECONNRESET|EPIPE|ETIMEDOUT|socket|timed? ?out|Unexpected close/i
+    .test(`${e?.code || ''} ${e?.message || e}`);
+function tirar(buzon, client) {
+    if (conexiones.get(buzon.email)?.client === client) conexiones.delete(buzon.email);
+    try { client.close(); } catch { /* ya estaba cerrada */ }
+}
+async function conImap(buzon, fn, intento = 1) {
+    let client;
+    try { client = await conexion(buzon); }
+    catch (e) {
+        if (intento === 1 && fallaConexion(e)) return conImap(buzon, fn, 2);
+        throw e;
+    }
     try { return await fn(client); }
     catch (e) {
-        // Si la conexión se ha estropeado, fuera: la siguiente abre otra.
-        if (!client.usable) conexiones.delete(buzon.email);
+        // Si la conexión se ha estropeado, fuera: se abre otra y se prueba una vez más.
+        if (!client.usable || fallaConexion(e)) {
+            tirar(buzon, client);
+            if (intento === 1) return conImap(buzon, fn, 2);
+        }
         throw e;
     } finally {
-        const c = conexiones.get(buzon.email);
+        const c = client && conexiones.get(buzon.email);
         if (c?.client === client) {
             clearTimeout(c.cierre);
             c.cierre = setTimeout(() => { conexiones.delete(buzon.email); client.logout().catch(() => {}); }, INACTIVA_MS);
@@ -221,7 +241,9 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
     const error = (res, e) => {
         const m = String(e?.responseText || e?.message || e);
         const auth = /AUTHENTICATIONFAILED|Invalid credentials|authenticate|Application-specific/i.test(m);
-        res.status(auth ? 502 : 500).json({ error: auth ? 'Gmail no acepta la contraseña de este buzón: hay que crear otra (ticket #317).' : `No se ha podido leer el correo: ${m}` });
+        if (auth) return res.status(502).json({ error: 'Gmail no acepta la contraseña de este buzón: hay que crear otra (ticket #317).' });
+        if (fallaConexion(e)) return res.status(503).json({ error: 'Gmail no ha contestado a tiempo. Vuelve a intentarlo en un momento (botón ↻).' });
+        res.status(500).json({ error: `No se ha podido leer el correo: ${m}` });
     };
 
     // Los buzones que ve esta persona y a quién se le pueden pasar correos.

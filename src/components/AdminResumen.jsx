@@ -146,14 +146,14 @@ function ParaAtender({ avisos, irRuta, como }) {
 }
 
 // ── Piezas de las vistas ────────────────────────────────────────────────────
-function ClasesHoy({ clases, ir, titulo = 'Clases de hoy', max = 6 }) {
+function ClasesHoy({ clases, ir, irRuta, titulo = 'Clases de hoy', max = 6 }) {
   if (clases === null) return <Bloque titulo={titulo}><p style={suave}>Cargando…</p></Bloque>;
   const orden = [...clases].sort((a, b) => String(a.hora || a.horario || '').localeCompare(String(b.hora || b.horario || '')));
   const sin = clases.filter(c => !c.marcados).length;
   return (
-    <Bloque vacia={!clases.length} titulo={titulo} sub={clases.length ? (sin ? `${plural(sin, 'lista', 'listas')} sin pasar de ${clases.length}` : 'Todas las listas pasadas') : null} accion="Pasar lista" onAccion={() => ir('classes')}>
-      <Lista items={orden} max={max} vacio="Hoy no hay clases." onMas={() => ir('classes')} render={c => (
-        <Fila key={c.id} izq={c.hora || (c.horario || '').split(/[–-]/)[0] || '—'}
+    <Bloque vacia={!clases.length} titulo={titulo} sub={clases.length ? (sin ? `${plural(sin, 'lista', 'listas')} sin pasar de ${clases.length}` : 'Todas las listas pasadas') : null} accion="Pasar lista" onAccion={() => (irRuta ? irRuta('/admin/clases/lista') : ir('classes'))}>
+      <Lista items={orden} max={max} vacio="Hoy no hay clases." onMas={() => (irRuta ? irRuta('/admin/clases/lista') : ir('classes'))} render={c => (
+        <Fila key={c.id} onClick={irRuta ? () => irRuta(`/admin/clases/lista/${c.id}`) : undefined} izq={c.hora || (c.horario || '').split(/[–-]/)[0] || '—'}
           centro={<><b>{c.name}</b><span style={suave}> · {c.studentCount} al.{c.instructor ? ` · ${c.instructor.split(' ')[0]}` : ''}</span></>}
           der={c.marcados ? <Estado tipo="ok">Pasada</Estado> : <Estado tipo="info">Sin pasar</Estado>} />
       )} />
@@ -243,7 +243,7 @@ function GraficoMeses({ meses }) {
 }
 
 // ── Cada vista: sus cuatro cifras y sus tres columnas ───────────────────────
-function vistaInstructor({ d, clases, ir, como }) {
+function vistaInstructor({ d, clases, ir, irRuta, como }) {
   const sin = clases ? clases.filter(c => !c.marcados).length : null;
   const su = como ? 'Sus' : 'Tus';
   return {
@@ -254,7 +254,7 @@ function vistaInstructor({ d, clases, ir, como }) {
       <Cifra key="4" etiqueta="Cumpleaños" valor={d.cumples.filter(c => c.enDias === 0).length} detalle={`hoy · ${d.cumples.length} esta semana`} />,
     ],
     columnas: [
-      [<ClasesHoy key="c" clases={clases} ir={ir} titulo={`${su} clases de hoy`} />],
+      [<ClasesHoy key="c" clases={clases} ir={ir} irRuta={como ? null : irRuta} titulo={`${su} clases de hoy`} />],
       [<Bloque key="f" vacia={!d.faltas.length} titulo="Alumnos que faltan seguido" sub="3 o más clases seguidas sin venir">
         <Lista items={d.faltas} max={6} vacio="Nadie. ¡Bien!" render={f => (
           <Fila key={`${f.id}-${f.clase}`} centro={<><b>{f.alumno}</b><span style={suave}> · {f.clase}</span></>} der={<Estado tipo="aviso">{f.racha} seguidas</Estado>} />
@@ -269,7 +269,7 @@ function vistaInstructor({ d, clases, ir, como }) {
   };
 }
 
-function vistaSecretaria({ d, clases, ir }) {
+function vistaSecretaria({ d, clases, ir, irRuta }) {
   const sin = clases ? clases.filter(c => !c.marcados).length : null;
   return {
     cifras: [
@@ -281,7 +281,7 @@ function vistaSecretaria({ d, clases, ir }) {
         : <Cifra key="4" etiqueta="Trabajando ahora" valor={d.personal.length} detalle="del equipo" onClick={() => ir('fichaje')} />,
     ],
     columnas: [
-      [<ClasesHoy key="c" clases={clases} ir={ir} />],
+      [<ClasesHoy key="c" clases={clases} ir={ir} irRuta={irRuta} />],
       [
         <Bloque key="caja" titulo="La caja de hoy" accion={d.cajaCerrada ? 'Ver' : 'Cerrar la caja'} onAccion={() => ir('billing')}>
           {d.cobradoHoy.porMedio.length === 0 ? <p style={{ ...suave, margin: '4px 0' }}>Todavía no se ha cobrado nada hoy.</p>
@@ -349,7 +349,7 @@ function vistaIT({ d, ir, irRuta }) {
     ['Correos que rebotan', s.rebotes ? ['aviso', `${s.rebotes} apartados`] : ['ok', 'Ninguno']],
     ['Cola de campañas', s.colaCampanas ? ['info', `${s.colaCampanas} en cola`] : ['ok', 'Vacía']],
     ['Verifactu', vf],
-    ['Pagos online', s.tpvIncompleto ? ['mal', 'Falta la clave real'] : s.pagosOnline ? ['ok', s.tpvEntorno === 'real' ? 'Abiertos (real)' : 'Abiertos (pruebas)'] : ['info', 'Próximamente']],
+    ['Pagos online', s.tpvIncompleto ? ['mal', 'Falta la clave real o no vale'] : s.pagosOnline ? ['ok', s.tpvEntorno === 'real' ? 'Abiertos (real)' : 'Abiertos (pruebas)'] : ['info', 'Próximamente']],
     ['Pagos por revisar', s.tpvRevisar ? ['aviso', String(s.tpvRevisar)] : ['ok', 'Ninguno']],
     ['Base de datos', bd.esperando ? ['aviso', `${bd.esperando} esperando`] : ['ok', `${bd.abiertas}/${bd.max} conexiones`]],
     ['Servidor', ['info', `${s.servidor.memoriaMb} MB · desde ${hora(s.servidor.arrancado)}`]],

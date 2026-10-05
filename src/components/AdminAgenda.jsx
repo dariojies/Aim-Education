@@ -110,7 +110,7 @@ function ElegirTicket({ valor, onElegir, coger, onCoger, yo }) {
     );
 }
 
-export default function AdminAgenda({ showToast, user }) {
+export default function AdminAgenda({ showToast, user, puedePasarLista = false }) {
     const { go } = useRouter();
     const [dia, setDia] = useState(HOY());
     const [datos, setDatos] = useState(null);
@@ -268,6 +268,12 @@ export default function AdminAgenda({ showToast, user }) {
                         {Array.from({ length: 24 }, (_, i) => i + 1).map(h => <option key={h} value={h}>{h >= 24 ? '00:00' : `${String(h).padStart(2, '0')}:00`}</option>)}
                     </select>
                 </div>
+                {/* Pasar lista desde Mi día (#360), sin quitarlo de Clases. */}
+                {puedePasarLista && (
+                    <button className="btn btn-sm btn-outline" onClick={() => go(`/admin/clases/lista${dia !== HOY() ? `?fecha=${dia}` : ''}`)} title="Las listas de las clases de este día">
+                        <I.Check /> Pasar lista
+                    </button>
+                )}
                 <button className="btn btn-sm btn-primary" onClick={() => abrirEn('')}><I.Plus /> Nueva tarea</button>
             </div>
 
@@ -295,10 +301,17 @@ export default function AdminAgenda({ showToast, user }) {
                                 </div>
                                 <div style={{ padding: '6px 12px 6px 0', display: 'grid', gap: 6, alignContent: 'center' }}>
                                     {f.ocupado.map(o => (
-                                        <div key={o.id} style={{
+                                        <div key={o.id}
+                                            role={o.tipo === 'clase' && puedePasarLista && o.grupoId ? 'button' : undefined}
+                                            tabIndex={o.tipo === 'clase' && puedePasarLista && o.grupoId ? 0 : undefined}
+                                            title={o.tipo === 'clase' && puedePasarLista && o.grupoId ? 'Pasar lista de esta clase' : undefined}
+                                            onClick={o.tipo === 'clase' && puedePasarLista && o.grupoId ? () => go(`/admin/clases/lista/${o.grupoId}?fecha=${dia}`) : undefined}
+                                            onKeyDown={o.tipo === 'clase' && puedePasarLista && o.grupoId ? (e) => { if (e.key === 'Enter') go(`/admin/clases/lista/${o.grupoId}?fecha=${dia}`); } : undefined}
+                                            style={{
                                             background: `color-mix(in oklab, ${colorOcupado(o.tipo)} 12%, var(--bg-2))`,
                                             borderLeft: `3px solid ${colorOcupado(o.tipo)}`,
                                             borderRadius: 8, padding: '8px 10px',
+                                            cursor: o.tipo === 'clase' && puedePasarLista && o.grupoId ? 'pointer' : 'default',
                                         }}>
                                             <div style={{ fontWeight: 800, fontSize: 13 }}>{o.nombre}</div>
                                             <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>

@@ -2204,30 +2204,13 @@ html[data-actaccents="off"] .act-card.solid {
 
 .dash-nav a.is-active,
 .dash-nav button.is-active {
-  position: relative;
-  z-index: 0;
-  overflow: hidden;
+  /* Fondo animado del propio botón, sin capas (#353), como en el panel. */
   color: #fff;
   font-weight: 700;
   box-shadow: 0 8px 20px -10px rgba(110, 63, 217, .75);
-  background: linear-gradient(135deg, #5233A8, #FF99D3, #FFD526, #21B668);
-  isolation: isolate;
-  -webkit-mask-image: -webkit-radial-gradient(#fff, #000);
-  mask-image: radial-gradient(#fff, #000);
-}
-
-.dash-nav a.is-active::before,
-.dash-nav button.is-active::before {
-  /* Del tamaño exacto del botón, como en el menú del panel (#353). */
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: linear-gradient(135deg, #5233A8, #FF99D3, #FFD526, #21B668, #00BBF4, #5233A8);
+  background-image: linear-gradient(135deg, #5233A8, #FF99D3, #FFD526, #21B668, #00BBF4, #5233A8);
   background-size: 300% 300%;
   animation: menu-pan-diagonal 9s ease-in-out infinite alternate;
-  z-index: -1;
-  pointer-events: none;
 }
 
 .dash-nav a.is-active .ico,
@@ -2779,30 +2762,14 @@ html[data-theme="dark"] .dash-nav button.is-active {
 }
 
 .admin-nav button.is-active {
-  /* Mismo arcoíris animado en diagonal (capa rotada, sin costura) que los botones */
-  position: relative;
-  z-index: 0;
-  overflow: hidden;
+  /* El arcoíris va en el FONDO del propio botón y se mueve en diagonal (#353).
+     Nada de capas ::before: en el Safari de Mac la capa no se colocaba respecto
+     al botón sino respecto a todo el menú (salía un rombo y luego el menú
+     entero pintado). El fondo de un botón no puede salirse de él. */
   color: white;
-  background: linear-gradient(135deg, #5233A8, #FF99D3, #FFD526, #21B668);
-  isolation: isolate;
-  -webkit-mask-image: -webkit-radial-gradient(#fff, #000);
-  mask-image: radial-gradient(#fff, #000);
-}
-
-.admin-nav button.is-active::before {
-  /* Del tamaño exacto del botón (#353): antes era un cuadrado girado del doble,
-     recortado con máscara, y el Safari de Mac a veces no lo recortaba y salía un
-     rombo de colores enorme sobre el menú. Así no hay nada que pueda salirse. */
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: linear-gradient(135deg, #5233A8, #FF99D3, #FFD526, #21B668, #00BBF4, #5233A8);
+  background-image: linear-gradient(135deg, #5233A8, #FF99D3, #FFD526, #21B668, #00BBF4, #5233A8);
   background-size: 300% 300%;
   animation: menu-pan-diagonal 12s ease-in-out infinite alternate;
-  z-index: -1;
-  pointer-events: none;
 }
 
 .admin-nav button.is-active .count {

@@ -360,7 +360,7 @@ export default function PublicLanding() {
                   const d = new Date(p.published_at || p.created_at);
                   const color = catColor(p.category);
                   return (
-                    <div key={p.id} onClick={() => go("/noticias")} style={{cursor: "pointer"}}>
+                    <div key={p.id} onClick={() => go(`/noticias/${p.slug}`)} style={{cursor: "pointer"}}>
                       <NewsCard
                         cat={`${p.category || "Aim"} · ${d.getDate()} ${MONTH_ABBR[d.getMonth()]}`}
                         color={color}

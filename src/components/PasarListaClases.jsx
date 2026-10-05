@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { I } from './Icons.jsx';
 import { fmtFechaLarga, fmtFecha } from '../fechas.js';
 import { colorOcupacion } from './AdminTulClases.jsx';
@@ -37,8 +37,8 @@ const ESTADOS = [
   ['absent', 'Faltó', 'var(--orange)'],
 ];
 
-export default function PasarListaClases({ showToast }) {
-  const [fecha, setFecha] = useState(hoyISO());
+export default function PasarListaClases({ showToast, abrir = null }) {
+  const [fecha, setFecha] = useState(abrir?.fecha || hoyISO());
   const [clases, setClases] = useState([]);
   const [clase, setClase] = useState(null);
   const [alumnos, setAlumnos] = useState([]);
@@ -77,6 +77,17 @@ export default function PasarListaClases({ showToast }) {
   }, []);
 
   useEffect(() => { cargarClases(fecha); setClase(null); setAlumnos([]); setMeta({}); setErrorLista(null); }, [fecha, cargarClases]);
+
+  // Enlace directo a una clase (#360): desde el Resumen, Mi día, etc. se abre
+  // su lista sin tener que buscarla.
+  const abiertaPorEnlace = useRef(null);
+  useEffect(() => {
+    if (!abrir) return;
+    if (abrir.fecha && abrir.fecha !== fecha) { setFecha(abrir.fecha); return; }
+    if (!abrir.grupo || abiertaPorEnlace.current === abrir.ruta || cargando) return;
+    const c = clases.find(x => String(x.id) === String(abrir.grupo));
+    if (c) { abiertaPorEnlace.current = abrir.ruta; setClase(c); cargarAlumnos(c.id, fecha); }
+  }, [abrir?.ruta, clases, cargando, fecha]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function marcar(alumno, status) {
     // Se pinta al momento; si el guardado falla, se recarga y vuelve a lo real.

@@ -54,9 +54,14 @@ async function enviar(url, body, method = 'POST') {
   return d;
 }
 
-export default function Fichaje({ showToast, permisos }) {
+export default function Fichaje({ showToast, permisos, enlace }) {
   const puedeGestionar = !!permisos?.fichajesGestion;
   const [tab, setTab] = useState('mi');
+  // ?pestana=gestion desde un aviso (#360): lo que hay que aprobar está ahí.
+  useEffect(() => {
+    const p = enlace?.seg?.[1] === 'fichaje' ? enlace.params?.pestana : null;
+    if (p && (p !== 'gestion' || puedeGestionar)) setTab(p);
+  }, [enlace?.ruta]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const tabs = [['mi', 'Mi fichaje'], ['calendario', 'Vacaciones y festivos'], ...(puedeGestionar ? [['gestion', 'Registro del personal']] : [])];
   return (

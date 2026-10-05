@@ -27,10 +27,20 @@ export const PRUEBAS = {
     clave: 'sq7HjrUOBfKmC576ILgskD5srU870gJ7',
 };
 
+// La clave del comercio tal y como se pega en Heroku: sin espacios, saltos de
+// línea ni comillas alrededor, que se cuelan al copiarla del portal (#358).
+export const limpiaClave = (c) => String(c || '').trim().replace(/^["']+|["']+$/g, '').replace(/\s+/g, '');
+// Una clave de Redsys son 32 caracteres en base64 = 24 bytes (3DES). Con otra
+// longitud el cifrado falla con «Invalid key length».
+export function claveValida(c) {
+    const l = limpiaClave(c);
+    return /^[A-Za-z0-9+/_-]+=*$/.test(l) && Buffer.from(l, 'base64').length === 24;
+}
+
 // Clave de firma de este pago: 3DES-CBC (IV a cero) del número de pedido con la
 // clave del comercio. El pedido se rellena con ceros hasta múltiplo de 8.
 function claveDelPedido(claveComercio, pedido) {
-    const clave = Buffer.from(claveComercio, 'base64');
+    const clave = Buffer.from(limpiaClave(claveComercio), 'base64');
     const cifrador = crypto.createCipheriv('des-ede3-cbc', clave, Buffer.alloc(8, 0));
     cifrador.setAutoPadding(false);
     const bloque = Buffer.alloc(Math.ceil(pedido.length / 8) * 8, 0);

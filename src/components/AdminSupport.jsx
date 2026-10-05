@@ -353,7 +353,7 @@ function TicketChat({ ticketId, canal, alto = 260 }) {
   );
 }
 
-export function AdminSupport({ user, ticketId = null }) {
+export function AdminSupport({ user, ticketId = null, enlace = null }) {
   const [tickets, setTickets] = useState([]);
   const [superadmins, setSuperadmins] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -434,6 +434,17 @@ export function AdminSupport({ user, ticketId = null }) {
     if (t) openTicket(t);
     go?.('/admin/soporte', { replace: true });
   }, [ticketId, tickets]);
+
+  // Desde un aviso (#360): «asignados a ti» abre solo los tuyos; «sin
+  // asignar», los que no tienen encargado. Siempre en la lista, abiertos.
+  const [soloSinAsignar, setSoloSinAsignar] = useState(false);
+  useEffect(() => {
+    const f = enlace?.seg?.[1] === 'soporte' ? enlace.params?.filtro : null;
+    if (!f) return;
+    setSelected(null); setActiveTab('list'); setFilterStatus('open'); setBusqueda('');
+    setFilterOnlyMe(f === 'mios');
+    setSoloSinAsignar(f === 'sin_asignar');
+  }, [enlace?.ruta]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Vincular tickets que son el mismo asunto: al abrir cualquiera se ven todos.
   async function vincular(t) {
@@ -619,7 +630,8 @@ export function AdminSupport({ user, ticketId = null }) {
         (filterPriority === 'all' || t.priority === filterPriority) &&
         (filterApp === 'all' || (Array.isArray(t.app_label) ? t.app_label.includes(filterApp) : t.app_label === filterApp)) &&
         (filterStatus === 'all' || t.status === filterStatus) &&
-        (!filterOnlyMe || esEncargado(t, user?.id))
+        (!filterOnlyMe || esEncargado(t, user?.id)) &&
+        (!soloSinAsignar || (!t.assigned_to && !(t.asignados_extra || []).length))
       )
       .sort((a, b) => {
         const peso = { high: 3, medium: 2, low: 1 };
@@ -865,6 +877,7 @@ export function AdminSupport({ user, ticketId = null }) {
               <button key={v} className={`filter-pill ${filterPriority === v ? "is-active" : ""}`} onClick={() => setFilterPriority(v)}>{l}</button>
             ))}
             <div style={{flex: 1}} />
+            {soloSinAsignar && <button className="filter-pill is-active" onClick={() => setSoloSinAsignar(false)} title="Quitar el filtro">Sin asignar ✕</button>}
             <button className={`filter-pill ${filterOnlyMe ? "is-active" : ""}`} onClick={() => setFilterOnlyMe(x => !x)}>
               <I.User width={13} height={13} style={{verticalAlign: "middle"}} /> Solo las mías
             </button>

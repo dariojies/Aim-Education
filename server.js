@@ -3461,6 +3461,22 @@ function buildSlotsFromGroups(rows, deQuien) {
 }
 
 // Horario completo del club (todas las clases de la academia).
+// Los días que el club cierra (#361), para el calendario de la web: los que se
+// marcan en Fichaje → Vacaciones y festivos. Solo fecha y nombre.
+app.get('/api/festivos', async (req, res) => {
+    const iso = /^\d{4}-\d{2}-\d{2}$/;
+    const hoy = hoyMadrid();
+    const desde = iso.test(req.query.desde || '') ? req.query.desde : `${Number(hoy.slice(0, 4)) - 1}-01-01`;
+    const hasta = iso.test(req.query.hasta || '') ? req.query.hasta : `${Number(hoy.slice(0, 4)) + 1}-12-31`;
+    try {
+        const r = await pool.query(
+            `SELECT to_char(fecha, 'YYYY-MM-DD') AS fecha, nombre, tipo FROM aim_calendario_laboral
+             WHERE fecha BETWEEN $1::date AND $2::date AND fecha <= $1::date + 800 ORDER BY fecha`, [desde, hasta]);
+        res.set('Cache-Control', 'public, max-age=600');
+        res.json({ festivos: r.rows.map(x => ({ fecha: x.fecha, nombre: x.nombre || 'Cerrado', tipo: x.tipo })) });
+    } catch (err) { res.json({ festivos: [] }); }
+});
+
 app.get('/api/classes', async (req, res) => {
     try {
         const result = await pool.query(`
@@ -4443,7 +4459,7 @@ app.get('/api/me/agenda', authenticateSession, requireAdmin, async (req, res) =>
                 if (!esDocente(ses, yo)) continue;
                 if (!(ses?.days || []).map(Number).includes(diaSemana)) continue;
                 clases.push({
-                    id: `${g.group_id}-${ses.startTime}`,
+                    id: `${g.group_id}-${ses.startTime}`, grupoId: g.group_id,
                     grupo: g.name, actividad: g.actividad,
                     hora: ses.startTime || null, horaFin: ses.endTime || null,
                     aula: ses.aulaName || null,
@@ -9983,7 +9999,7 @@ function configTpv() {
         url: redsys.ENTORNOS[entorno],
         comercio: process.env.REDSYS_COMERCIO || redsys.PRUEBAS.comercio,
         terminal: process.env.REDSYS_TERMINAL || redsys.PRUEBAS.terminal,
-        clave: process.env.REDSYS_CLAVE || redsys.PRUEBAS.clave,
+        clave: redsys.limpiaClave(process.env.REDSYS_CLAVE) || redsys.PRUEBAS.clave,
         // Solo se guarda la referencia para cobros mensuales si está pedido a
         // BBVA: el pago por referencia no viene activado de serie.
         recurrente: process.env.REDSYS_RECURRENTE === 'si',
@@ -9992,7 +10008,9 @@ function configTpv() {
 
 // En real hacen falta el comercio y SU clave: con la de pruebas el banco
 // rechazaría todas las firmas. Sin ellas no se deja empezar ningún pago.
-const tpvRealIncompleto = () => process.env.REDSYS_ENTORNO === 'real' && !(process.env.REDSYS_COMERCIO && process.env.REDSYS_CLAVE);
+// Tampoco con una clave que no tiene el formato de Redsys (#358: «Invalid key length»).
+const tpvRealIncompleto = () => process.env.REDSYS_ENTORNO === 'real'
+    && !(process.env.REDSYS_COMERCIO && process.env.REDSYS_CLAVE && redsys.claveValida(process.env.REDSYS_CLAVE));
 
 // El pago con tarjeta desde el área de familias está cerrado («Próximamente»)
 // hasta que el club lo abra poniendo PAGOS_ONLINE=si en el entorno. Mientras
@@ -10619,6 +10637,49 @@ app.delete('/api/admin/correo/imagenes/:id', authenticateSession, requireSeccion
     try {
         await pool.query(`DELETE FROM aim_correo_imagenes WHERE id = $1`, [req.params.id]);
         res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Imágenes de las noticias (#359) ──────────────────────────────────────────
+// Se suben aquí (o se traen de donde estén) y se sirven desde la propia web
+// (/ci/…), para no depender de servidores de fuera que pueden borrarlas, como
+// los de HubSpot. Mismo almacén que las imágenes de los correos.
+async function guardarImagenWeb({ mime, datos, nombre, userId }) {
+    const id = crypto.randomBytes(12).toString('hex');
+    await pool.query(
+        `INSERT INTO aim_correo_imagenes (id, mime, datos, nombre, bytes, subido_por) VALUES ($1,$2,$3,$4,$5,$6)`,
+        [id, mime, datos, String(nombre || '').slice(0, 200) || null, datos.length, userId || null]);
+    return `/ci/${id}`;
+}
+app.post('/api/admin/posts/imagen', authenticateSession, requireSeccion('news'), async (req, res) => {
+    const m = String(req.body?.datos || '').match(/^data:(image\/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/=]+)$/);
+    if (!m) return res.status(400).json({ error: 'La imagen tiene que ser JPG, PNG, WEBP o GIF.' });
+    const datos = Buffer.from(m[2], 'base64');
+    if (datos.length > 4 * 1024 * 1024) return res.status(413).json({ error: 'La imagen pesa demasiado (máximo 4 MB).' });
+    try { res.status(201).json({ url: await guardarImagenWeb({ mime: m[1], datos, nombre: req.body?.nombre, userId: req.userSession.userId }) }); }
+    catch (err) { res.status(500).json({ error: err.message }); }
+});
+// Trae a la web las portadas que están en otros servidores.
+app.post('/api/admin/posts/importar-imagenes', authenticateSession, requireSeccion('news'), async (req, res) => {
+    try {
+        const r = await pool.query(`SELECT id, title, cover_image_url FROM aim_education_posts WHERE cover_image_url ~* '^https?://'`);
+        const hechas = [], fallos = [];
+        for (const p of r.rows) {
+            try {
+                const ctrl = new AbortController();
+                const t = setTimeout(() => ctrl.abort(), 15_000);
+                const resp = await fetch(p.cover_image_url, { signal: ctrl.signal, redirect: 'follow' }).finally(() => clearTimeout(t));
+                const mime = String(resp.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+                if (!resp.ok) throw new Error(`el servidor contesta ${resp.status}`);
+                if (!/^image\/(png|jpeg|gif|webp)$/.test(mime)) throw new Error(`no es una imagen (${mime || 'sin tipo'})`);
+                const datos = Buffer.from(await resp.arrayBuffer());
+                if (datos.length > 6 * 1024 * 1024) throw new Error('pesa más de 6 MB');
+                const url = await guardarImagenWeb({ mime, datos, nombre: `portada · ${p.title}`, userId: req.userSession.userId });
+                await pool.query(`UPDATE aim_education_posts SET cover_image_url = $1 WHERE id = $2 AND cover_image_url = $3`, [url, p.id, p.cover_image_url]);
+                hechas.push(p.title);
+            } catch (e) { fallos.push({ titulo: p.title, motivo: e.name === 'AbortError' ? 'el servidor no contesta' : e.message }); }
+        }
+        res.json({ success: true, hechas, fallos });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -13808,6 +13869,8 @@ async function generateRssFeed(siteUrl, { categories, feedPath, feedTitle, feedD
     `, params);
 
     const items = result.rows.map(post => {
+        // Las portadas subidas a la web van como /ci/…: el lector necesita la dirección entera.
+        if (post.cover_image_url && post.cover_image_url.startsWith('/')) post.cover_image_url = `${siteUrl}${post.cover_image_url}`;
         const pubDate = new Date(post.published_at || post.created_at).toUTCString();
         const canonicalLink = `${siteUrl}/noticias/${post.slug}`;
         const trackingLink = `${siteUrl}/noticias/${post.slug}?utm_source=rss&amp;utm_medium=feed&amp;utm_campaign=aim-education-noticias`;
@@ -14724,8 +14787,9 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         const t = tickets.rows[0];
         // Los tickets sin asignar y los del club son cosa de quien los lleva.
         if (!recibe('tickets_sin_asignar')) { t.sin_asignar = 0; }
-        if (t.sin_asignar) avisos.push({ tipo: 'tickets', texto: `${t.sin_asignar} ticket${t.sin_asignar !== 1 ? 's' : ''} sin asignar`, detalle: t.urgentes ? `${t.urgentes} de prioridad alta` : null, destino: '/admin/soporte', n: t.sin_asignar });
-        if (t.mios && recibe('tickets_mios')) avisos.push({ tipo: 'tickets', texto: `${t.mios} ticket${t.mios !== 1 ? 's' : ''} asignado${t.mios !== 1 ? 's' : ''} a ti`, destino: '/admin/soporte', n: t.mios });
+        // Cada aviso lleva a lo suyo (#360): la lista filtrada, no Soporte a secas.
+        if (t.sin_asignar) avisos.push({ tipo: 'tickets', texto: `${t.sin_asignar} ticket${t.sin_asignar !== 1 ? 's' : ''} sin asignar`, detalle: t.urgentes ? `${t.urgentes} de prioridad alta` : null, destino: '/admin/soporte?filtro=sin_asignar', n: t.sin_asignar });
+        if (t.mios && recibe('tickets_mios')) avisos.push({ tipo: 'tickets', texto: `${t.mios} ticket${t.mios !== 1 ? 's' : ''} asignado${t.mios !== 1 ? 's' : ''} a ti`, destino: '/admin/soporte?filtro=mios', n: t.mios });
         // Un aviso por ticket, y cada uno lleva directo a ese ticket. Si hay
         // muchos se enseñan los cinco últimos y el resto se resume, para que la
         // campanita no se convierta en una lista interminable.
@@ -14748,16 +14812,16 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                 tipo: 'tickets',
                 texto: `y ${sobran.length} ticket${sobran.length !== 1 ? 's' : ''} más con mensajes nuevos`,
                 detalle: 'en las últimas 48 h',
-                destino: '/admin/soporte',
+                destino: '/admin/soporte?filtro=mensajes',
                 n: sobran.reduce((x, t) => x + t.n, 0),
             });
         }
 
         const c = cobros.rows[0];
-        if (c.n && recibe('cobros_pendientes')) avisos.push({ tipo: 'cobros', texto: `${c.n} cargo${c.n !== 1 ? 's' : ''} pendiente${c.n !== 1 ? 's' : ''} de cobrar`, detalle: `${r2Server(Number(c.total))} € de ${c.clientes} cliente${c.clientes !== 1 ? 's' : ''}`, destino: '/admin/facturacion', n: c.n });
+        if (c.n && recibe('cobros_pendientes')) avisos.push({ tipo: 'cobros', texto: `${c.n} cargo${c.n !== 1 ? 's' : ''} pendiente${c.n !== 1 ? 's' : ''} de cobrar`, detalle: `${r2Server(Number(c.total))} € de ${c.clientes} cliente${c.clientes !== 1 ? 's' : ''}`, destino: '/admin/facturacion?pestana=pendientes', n: c.n });
 
         const cj = cajas.rows[0];
-        if (cj.n && recibe('caja_sin_cerrar')) avisos.push({ tipo: 'caja', texto: `${cj.n} día${cj.n !== 1 ? 's' : ''} con cobros y sin arqueo`, detalle: cj.desde ? `el más antiguo, del ${cj.desde}` : null, destino: '/admin/facturacion', n: cj.n });
+        if (cj.n && recibe('caja_sin_cerrar')) avisos.push({ tipo: 'caja', texto: `${cj.n} día${cj.n !== 1 ? 's' : ''} con cobros y sin arqueo`, detalle: cj.desde ? `el más antiguo, del ${cj.desde}` : null, destino: '/admin/facturacion?pestana=arqueo', n: cj.n });
 
         const cp = camp.rows[0];
         // Sin ficha no se les puede cobrar: es un aviso de facturación.
@@ -14805,7 +14869,7 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                    AND r.version = (SELECT MAX(v.version) FROM aim_fichaje_resumenes v WHERE v.user_id = r.user_id AND v.mes = r.mes)`, [yo]);
             if (rs.rows[0].n && recibe('resumen_horas')) avisos.push({ tipo: 'fichaje', texto: `${rs.rows[0].n === 1 ? 'Un resumen' : `${rs.rows[0].n} resúmenes`} de horas por confirmar`, detalle: 'confirma que lo has recibido', destino: '/admin/fichaje', n: rs.rows[0].n });
             if (x.por_aprobar && recibe('correcciones_por_aprobar')) avisos.push({ tipo: 'fichaje', texto: `${x.por_aprobar} corrección${x.por_aprobar !== 1 ? 'es' : ''} de tu fichaje por aprobar`, detalle: 'no se aplican hasta que las apruebes', destino: '/admin/fichaje', n: x.por_aprobar });
-            if (x.por_validar && recibe('correcciones_por_validar')) avisos.push({ tipo: 'fichaje', texto: `${x.por_validar} solicitud${x.por_validar !== 1 ? 'es' : ''} de corrección de fichaje por validar`, detalle: 'las han pedido los trabajadores', destino: '/admin/fichaje', n: x.por_validar });
+            if (x.por_validar && recibe('correcciones_por_validar')) avisos.push({ tipo: 'fichaje', texto: `${x.por_validar} solicitud${x.por_validar !== 1 ? 'es' : ''} de corrección de fichaje por validar`, detalle: 'las han pedido los trabajadores', destino: '/admin/fichaje?pestana=gestion', n: x.por_validar });
             if (x.resueltas && recibe('correcciones_respondidas')) avisos.push({ tipo: 'fichaje', texto: `${x.resueltas} solicitud${x.resueltas !== 1 ? 'es' : ''} de corrección de fichaje respondida${x.resueltas !== 1 ? 's' : ''}`, detalle: 'mira el resultado en Fichaje', destino: '/admin/fichaje', n: x.resueltas });
             // Vacaciones y ausencias (ticket #233): por aprobar (secretaría/dirección,
             // nunca las propias) y las respondidas al que las pidió.
@@ -14815,12 +14879,12 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                                          AND user_id = $1 AND resuelto_at > NOW() - INTERVAL '3 days')::int AS resueltas
                  FROM aim_ausencias`, [yo]);
             const y = au.rows[0];
-            if (y.por_aprobar && recibe('ausencias_por_aprobar')) avisos.push({ tipo: 'fichaje', texto: `${y.por_aprobar} petición${y.por_aprobar !== 1 ? 'es' : ''} de vacaciones o ausencia por aprobar`, detalle: 'las han pedido los trabajadores', destino: '/admin/fichaje', n: y.por_aprobar });
-            if (y.resueltas && recibe('ausencias_respondidas')) avisos.push({ tipo: 'fichaje', texto: `${y.resueltas === 1 ? 'Tu petición' : `${y.resueltas} peticiones`} de vacaciones o ausencia ${y.resueltas === 1 ? 'tiene' : 'tienen'} respuesta`, detalle: 'mírala en Fichaje', destino: '/admin/fichaje', n: y.resueltas });
+            if (y.por_aprobar && recibe('ausencias_por_aprobar')) avisos.push({ tipo: 'fichaje', texto: `${y.por_aprobar} petición${y.por_aprobar !== 1 ? 'es' : ''} de vacaciones o ausencia por aprobar`, detalle: 'las han pedido los trabajadores', destino: '/admin/fichaje?pestana=calendario', n: y.por_aprobar });
+            if (y.resueltas && recibe('ausencias_respondidas')) avisos.push({ tipo: 'fichaje', texto: `${y.resueltas === 1 ? 'Tu petición' : `${y.resueltas} peticiones`} de vacaciones o ausencia ${y.resueltas === 1 ? 'tiene' : 'tienen'} respuesta`, detalle: 'mírala en Fichaje', destino: '/admin/fichaje?pestana=calendario', n: y.resueltas });
         }
 
         const esp = espera.rows[0];
-        if (esp.n && recibe('lista_espera')) avisos.push({ tipo: 'clases', texto: `${esp.n} clase${esp.n !== 1 ? 's' : ''} con plaza libre y gente esperando`, detalle: 'se puede dar la plaza al primero de la lista', destino: '/admin/clases', n: esp.n });
+        if (esp.n && recibe('lista_espera')) avisos.push({ tipo: 'clases', texto: `${esp.n} clase${esp.n !== 1 ? 's' : ''} con plaza libre y gente esperando`, detalle: 'se puede dar la plaza al primero de la lista', destino: '/admin/clases?vista=lista', n: esp.n });
 
         // Aviso privado: lo que se asigna a la cuenta de soporte lo acaba
         // atendiendo el desarrollo, así que solo a esa persona se le avisa. Se
@@ -17230,7 +17294,9 @@ app.get('/api/admin/diagnostico', authenticateSession, requireSeccion('equipo_it
             tpv: {
                 entorno: tpv.entorno, abiertos: pagosOnlineAbiertos(), incompleto: tpvRealIncompleto(),
                 comercio: process.env.REDSYS_COMERCIO || null, terminal: process.env.REDSYS_TERMINAL || null,
-                clave: !!process.env.REDSYS_CLAVE, pagos30d: pagosTpv,
+                clave: !process.env.REDSYS_CLAVE ? 'sin poner' : redsys.claveValida(process.env.REDSYS_CLAVE) ? 'puesta'
+                    : `no válida: tiene ${redsys.limpiaClave(process.env.REDSYS_CLAVE).length} caracteres y deben ser 32`,
+                pagos30d: pagosTpv,
             },
             web: process.env.PUBLIC_BASE_URL || null,
             correo: { general: process.env.EMAIL_USER || null, listo: !!mailTransporter, buzones: buzonesPersonales().map(b => b.email) },

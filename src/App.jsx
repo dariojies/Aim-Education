@@ -117,7 +117,10 @@ export default function App() {
     const adminSub = { campamento: 'camp', alumnos: 'students', familias: 'familias', clases: 'classes', eventos: 'events', noticias: 'news', gastos: 'payments', recibos: 'payments', facturacion: 'billing', soporte: 'support', reportes: 'reportes', fichaje: 'fichaje', speaking: 'speaking', faltas: 'faltas', comunicaciones: 'comunicaciones', crm: 'comunicaciones', almacen: 'almacen', consultas: 'contactos', rangos: 'rangos', correo: 'bandeja', avisos: 'ctas', redes: 'redes' }[seg[1]] || 'overview';
     // /admin/soporte/180 abre ese ticket directamente, para poder pasar el enlace.
     const ticketId = seg[1] === 'soporte' && /^\d+$/.test(seg[2] || '') ? Number(seg[2]) : null;
-    screen = <AdminApp user={user} onLogout={handleLogout} subroute={adminSub} ticketId={ticketId} />;
+    // La ruta entera va al panel (#360) para abrir lo concreto: una clase en
+    // «Pasar lista» (/admin/clases/lista/<grupo>), un filtro de Soporte
+    // (?filtro=mios), una pestaña (?pestana=pendientes)…
+    screen = <AdminApp user={user} onLogout={handleLogout} subroute={adminSub} ticketId={ticketId} enlace={{ ruta: path, seg, params: Object.fromEntries(params) }} />;
   } else {
     screen = <PublicLanding />;
   }

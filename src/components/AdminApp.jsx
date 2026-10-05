@@ -462,7 +462,7 @@ function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos, onNuev
   );
 }
 
-function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms = [], actById = {}, showToast, onAddClassClick, onAddActivityOrAulaClick }) {
+function AdminClasses({ enlace, classSlots, setClassSlots, activities = [], classrooms = [], actById = {}, showToast, onAddClassClick, onAddActivityOrAulaClick }) {
   const days = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
   const HOURS = Array.from({ length: 14 }, (_, i) => 9 + i);
 
@@ -474,6 +474,15 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
   // 'horario' es el calendario de siempre; 'lista' es el menú de gestión de
   // Aim-Tul (actividades → grupos → alumnos) recreado aquí.
   const [vista, setVista] = useState('horario');
+  // Enlaces directos (#360): /admin/clases/lista[/<grupo>][?fecha=] abre Pasar
+  // lista (y esa clase); ?vista=lista, la lista de clases.
+  const abrirLista = enlace?.seg?.[1] === 'clases' && enlace.seg[2] === 'lista'
+    ? { grupo: enlace.seg[3] || null, fecha: enlace.params?.fecha || null, ruta: enlace.ruta } : null;
+  useEffect(() => {
+    if (enlace?.seg?.[1] !== 'clases') return;
+    if (abrirLista) setVista('asistencia');
+    else if (['lista', 'asistencia', 'horario'].includes(enlace.params?.vista)) setVista(enlace.params.vista);
+  }, [enlace?.ruta]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const roomsList = ["Todas", ...classrooms.map(r => r.name)];
 
@@ -683,7 +692,7 @@ function AdminClasses({ classSlots, setClassSlots, activities = [], classrooms =
   }
 
   if (vista === 'asistencia') {
-    return (<>{pestanas('asistencia')}<PasarListaClases showToast={showToast} /></>);
+    return (<>{pestanas('asistencia')}<PasarListaClases showToast={showToast} abrir={abrirLista} /></>);
   }
 
   return (
@@ -1646,8 +1655,29 @@ function InformeDesglosePersonas() {
   );
 }
 
+// Sube una imagen de noticia (#359), reducida a 1600 px de ancho como mucho.
+async function subirImagenNoticia(archivo) {
+  const leer = (f) => new Promise((ok, mal) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => mal(new Error('No se ha podido leer la imagen.')); r.readAsDataURL(f); });
+  let datos = await leer(archivo);
+  if (!/gif/.test(archivo.type)) {
+    const img = await new Promise((ok, mal) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => mal(new Error('Esa imagen no se puede abrir.')); i.src = datos; });
+    const escala = Math.min(1, 1600 / img.width);
+    if (escala < 1 || archivo.size > 1.5 * 1024 * 1024) {
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * escala); c.height = Math.round(img.height * escala);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      datos = c.toDataURL('image/jpeg', 0.85);
+    }
+  }
+  const r = await fetch('/api/admin/posts/imagen', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ datos, nombre: archivo.name }) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || 'No se ha podido subir la imagen.');
+  return d.url;
+}
+
 function AdminNews({ refreshTrigger, onEditPost, onNuevo }) {
   const [posts, setPosts] = useState([]);
+  const [trayendo, setTrayendo] = useState(false);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -1693,6 +1723,22 @@ function AdminNews({ refreshTrigger, onEditPost, onNuevo }) {
         <button className={`filter-pill ${statusFilter === "published" ? "is-active" : ""}`} onClick={() => setStatusFilter("published")}>Publicados · {published}</button>
         <button className={`filter-pill ${statusFilter === "draft" ? "is-active" : ""}`} onClick={() => setStatusFilter("draft")}>Borradores · {drafts}</button>
         <div style={{ flex: 1 }} />
+        {posts.some(p => /^https?:\/\//.test(p.cover_image_url || '')) && (
+          <button className="btn btn-outline btn-sm" disabled={trayendo} title="Copia en la web las portadas que están en otros servidores (HubSpot…), para no perderlas"
+            onClick={async () => {
+              const n = posts.filter(p => /^https?:\/\//.test(p.cover_image_url || '')).length;
+              if (!window.confirm(`¿Traer a la web las ${n} imágenes de portada que están en otros servidores?`)) return;
+              setTrayendo(true);
+              try {
+                const r = await fetch('/api/admin/posts/importar-imagenes', { method: 'POST', credentials: 'include' });
+                const d = await r.json().catch(() => ({}));
+                if (!r.ok) throw new Error(d.error || 'No se ha podido.');
+                alert(`Traídas: ${d.hechas.length}.${d.fallos.length ? `\n\nNo se han podido traer:\n${d.fallos.map(f => `· ${f.titulo}: ${f.motivo}`).join('\n')}\n\nEsas súbelas a mano desde la noticia.` : ''}`);
+                const p = await fetch('/api/admin/posts', { credentials: 'include' }).then(x => (x.ok ? x.json() : posts));
+                setPosts(p);
+              } catch (e) { alert(e.message); } finally { setTrayendo(false); }
+            }}>{trayendo ? 'Trayendo…' : 'Traer las imágenes a la web'}</button>
+        )}
         {onNuevo && <button className="btn btn-primary btn-sm" onClick={onNuevo}><I.Plus /> Nueva noticia</button>}
       </div>
 
@@ -4988,8 +5034,13 @@ function BillingPendientes({ activa, showToast }) {
   );
 }
 
-function AdminBilling({ showToast }) {
-  const [tab, setTab] = useState('cobrar'); // 'cobrar' | 'catalogo' | 'clases' | 'temporadas' | 'conceptos' | 'fichas' | 'generar'
+function AdminBilling({ showToast, enlace }) {
+  const [tab, setTab] = useState('cobrar');
+  // ?pestana=pendientes, arqueo… desde un aviso (#360).
+  useEffect(() => {
+    const p = enlace?.seg?.[1] === 'facturacion' ? enlace.params?.pestana : null;
+    if (p) setTab(p);
+  }, [enlace?.ruta]); // eslint-disable-line react-hooks/exhaustive-deps // 'cobrar' | 'catalogo' | 'clases' | 'temporadas' | 'conceptos' | 'fichas' | 'generar'
   const [buscaCat, setBuscaCat] = useState(''); // #220: buscador del catálogo
   const [temporadas, setTemporadas] = useState([]);
   const [precios, setPrecios] = useState([]);
@@ -6497,7 +6548,7 @@ function AdminCamp({ showToast, permisos }) {
   );
 }
 
-export default function AdminApp({ user, onLogout, subroute = "overview", ticketId = null }) {
+export default function AdminApp({ user, onLogout, subroute = "overview", ticketId = null, enlace = null }) {
   const { go } = useRouter();
   const [view, setView] = useState(subroute);
   useEffect(() => { setView(subroute); }, [subroute]);
@@ -6635,6 +6686,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
   // con cientos de personas es la diferencia entre esperar segundos o no.
   // Fusionar fichas repetidas (#347): { otra } o {} para buscarla.
   const [fusion, setFusion] = useState(null);
+  const [subiendoPortada, setSubiendoPortada] = useState(false); // #359
   const abrirFicha = async (u) => {
     setEditingItem(u);
     setActiveModal('edit-student');
@@ -7025,8 +7077,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
             </div>
           </div>
 
-          {ver("agenda") && <AdminAgenda showToast={showToast} user={user} />}
-          {ver("fichaje") && <Fichaje showToast={showToast} permisos={permisos} />}
+          {ver("agenda") && <AdminAgenda showToast={showToast} user={user} puedePasarLista={!!permisos.secciones?.classes} />}
+          {ver("fichaje") && <Fichaje showToast={showToast} permisos={permisos} enlace={enlace} />}
           {ver("equipo_it") && <EquipoIT showToast={showToast} />}
           {ver("contactos") && <AdminContactos showToast={showToast} onAbrirFicha={abrirFicha} />}
           {ver("bandeja") && <AdminBandeja showToast={showToast} onAbrirFicha={abrirFicha} />}
@@ -7046,6 +7098,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           )}
           {ver("classes") && (
             <AdminClasses
+              enlace={enlace}
               classSlots={classSlots}
               setClassSlots={setClassSlots}
               activities={activities}
@@ -7070,7 +7123,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
             onNuevo={() => { setEditingItem({ title: '', slug: '', excerpt: '', content: '', coverImageUrl: '', category: 'general', status: 'draft' }); setActiveModal('new-post'); }} />}
           {ver("events") && <AdminEvents showToast={showToast} permisos={permisos} />}
           {ver("camp") && <AdminCamp showToast={showToast} permisos={permisos} />}
-          {ver("billing") && <AdminBilling showToast={showToast} />}
+          {ver("billing") && <AdminBilling showToast={showToast} enlace={enlace} />}
           {ver("groups") && <AdminGroups refreshTrigger={refreshTrigger} onEditGroup={(g) => { setEditingItem(g); setActiveModal('edit-group'); }} />}
           {ver("instructors") && (
             <AdminInstructores
@@ -7100,7 +7153,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("speaking") && <AdminSpeaking showToast={showToast} />}
           {ver("faltas") && <AdminFaltas onAbrirFicha={abrirFicha} />}
           {ver("comunicaciones") && <AdminComunicaciones showToast={showToast} onAbrirFicha={abrirFicha} pestana={pestanaCrm} onPestana={setPestanaCrm} />}
-          {ver("support") && <AdminSupport user={user} ticketId={ticketId} />}
+          {ver("support") && <AdminSupport user={user} ticketId={ticketId} enlace={enlace} />}
         </div>
       </div>
 
@@ -7480,8 +7533,29 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
             </div>
 
             <div className="field">
-              <label>URL Imagen de Portada</label>
-              <input value={editingItem.coverImageUrl || ''} onChange={e => setEditingItem({ ...editingItem, coverImageUrl: e.target.value })} placeholder="Ej. https://miservidor.com/imagen.jpg" />
+              <label>Imagen de portada</label>
+              {/* Se sube a la propia web (#359): una imagen enlazada de otro sitio
+                  se pierde si allí la borran. */}
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                {editingItem.coverImageUrl && <img src={editingItem.coverImageUrl} alt="" style={{ width: 120, height: 72, objectFit: 'cover', borderRadius: 10, border: '1px solid var(--line)' }} />}
+                <label className="btn btn-sm btn-outline" style={{ cursor: 'pointer' }}>
+                  {subiendoPortada ? 'Subiendo…' : editingItem.coverImageUrl ? 'Cambiar imagen' : 'Subir imagen'}
+                  <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" style={{ display: 'none' }} disabled={subiendoPortada}
+                    onChange={async e => {
+                      const f = e.target.files?.[0]; e.target.value = '';
+                      if (!f) return;
+                      setSubiendoPortada(true);
+                      try {
+                        const url = await subirImagenNoticia(f);
+                        setEditingItem(x => ({ ...x, coverImageUrl: url }));
+                      } catch (err) { alert(err.message); } finally { setSubiendoPortada(false); }
+                    }} />
+                </label>
+                {editingItem.coverImageUrl && <button type="button" className="btn btn-sm btn-outline" onClick={() => setEditingItem(x => ({ ...x, coverImageUrl: '' }))}>Quitar</button>}
+              </div>
+              {editingItem.coverImageUrl && /^https?:\/\//.test(editingItem.coverImageUrl) && (
+                <span style={{ fontSize: 12, color: 'var(--orange)' }}>Esta imagen está en otro servidor: si allí la borran, desaparece. Súbela aquí, o usa «Traer las imágenes a la web» en la lista de noticias.</span>
+              )}
             </div>
 
             <div className="field">

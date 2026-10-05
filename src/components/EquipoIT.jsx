@@ -220,8 +220,8 @@ function Servicios({ s }) {
     <div>
       <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>Servicios</div>
       {fila('Pagos por internet (TPV)',
-        t.incompleto ? pill('aviso', 'Real, pero falta el comercio o la clave') : !t.abiertos ? pill('info', `Cerrados · ${t.entorno}`) : pill(t.entorno === 'real' ? 'ok' : 'aviso', t.entorno === 'real' ? 'Abiertos · REAL' : 'Abiertos · pruebas'),
-        `Comercio ${t.comercio || '—'} · terminal ${t.terminal || '—'} · clave ${t.clave ? 'puesta' : 'sin poner'} · últimos 30 días: ${cuenta('pagado')} pagados, ${cuenta('rechazado')} rechazados, ${cuenta('creado')} sin terminar${cuenta('revisar') ? `, ${cuenta('revisar')} a revisar` : ''}`)}
+        t.incompleto ? pill('aviso', 'Real, pero falta el comercio o la clave no vale') : !t.abiertos ? pill('info', `Cerrados · ${t.entorno}`) : pill(t.entorno === 'real' ? 'ok' : 'aviso', t.entorno === 'real' ? 'Abiertos · REAL' : 'Abiertos · pruebas'),
+        `Comercio ${t.comercio || '—'} · terminal ${t.terminal || '—'} · clave ${t.clave} · últimos 30 días: ${cuenta('pagado')} pagados, ${cuenta('rechazado')} rechazados, ${cuenta('creado')} sin terminar${cuenta('revisar') ? `, ${cuenta('revisar')} a revisar` : ''}`)}
       {fila('Dirección de la web', s.web ? pill('ok', s.web) : pill('aviso', 'PUBLIC_BASE_URL sin poner'))}
       {fila('Correo', s.correo.listo ? pill('ok', s.correo.general) : pill('aviso', 'Sin configurar'),
         s.correo.buzones.length ? `Buzones personales: ${s.correo.buzones.join(', ')}` : 'Ningún buzón personal conectado')}

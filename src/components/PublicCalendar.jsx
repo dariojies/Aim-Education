@@ -41,6 +41,36 @@ export default function PublicCalendar() {
     finally { setRegSubmitting(false); }
   }
 
+  // Los días que el club cierra (#361): festivos y vacaciones del centro.
+  const [festivos, setFestivos] = useState([]);
+  useEffect(() => {
+    fetch('/api/festivos').then(r => (r.ok ? r.json() : { festivos: [] })).then(d => setFestivos(d.festivos || [])).catch(() => {});
+  }, []);
+  const isoDe = (y, m, d) => `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  const festivoDe = (iso) => festivos.find(f => f.fecha === iso);
+  // Los cierres del mes que se ve, juntando los días seguidos con el mismo nombre
+  // (las vacaciones del centro son varios días).
+  const cierresMes = (() => {
+    const out = [];
+    for (const f of festivos.filter(x => x.fecha.startsWith(isoDe(year, month, 1).slice(0, 7)))) {
+      const ult = out[out.length - 1];
+      const ayer = ult && new Date(new Date(ult.hasta + 'T12:00:00').getTime() + 864e5).toISOString().slice(0, 10);
+      if (ult && ult.nombre === f.nombre && ayer === f.fecha) ult.hasta = f.fecha;
+      else out.push({ desde: f.fecha, hasta: f.fecha, nombre: f.nombre });
+    }
+    return out;
+  })();
+  const fechaCierre = (c) => {
+    const f = (iso) => new Date(iso + 'T12:00:00').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
+    return c.desde === c.hasta ? f(c.desde) : `del ${f(c.desde)} al ${f(c.hasta)}`;
+  };
+  // Cierres de los próximos 7 días, para avisar en el horario de clases.
+  const cierresSemana = (() => {
+    const hoyIso = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' });
+    const fin = new Date(Date.now() + 7 * 864e5).toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' });
+    return festivos.filter(f => f.fecha >= hoyIso && f.fecha <= fin);
+  })();
+
   useEffect(() => {
     fetch('/api/events?all=1')
       .then(r => r.ok ? r.json() : [])
@@ -129,6 +159,13 @@ export default function PublicCalendar() {
             </div>
 
             {/* Classroom filter tabs for schedule view */}
+            {/* Esta semana se cierra algún día (#361). */}
+            {viewType === "schedule" && cierresSemana.length > 0 && (
+              <div style={{marginBottom: 14, padding: "12px 16px", borderRadius: 12, background: "color-mix(in oklab, var(--orange) 9%, var(--bg-2))", border: "1px solid color-mix(in oklab, var(--orange) 30%, var(--line))", fontSize: 14}}>
+                <b style={{color: "var(--orange)"}}>Esta semana cerramos:</b>{' '}
+                {cierresSemana.map(f => `${new Date(f.fecha + 'T12:00:00').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' })} (${f.nombre})`).join(', ')}. Esos días no hay clases.
+              </div>
+            )}
             {viewType === "schedule" && !loadingSlots && (
               <>
                 <div style={{
@@ -206,12 +243,16 @@ export default function PublicCalendar() {
                           return d.getFullYear() === year && d.getMonth() === month && d.getDate() === day && (filter === "all" || e.act === filter);
                         }) : [];
                         const isToday = day === today.getDate() && month === today.getMonth() && year === today.getFullYear();
+                        const cierre = day ? festivoDe(isoDe(year, month, day)) : null;
                         return (
                           <div key={i}
                             onClick={() => dayEvents.length && openEvent(dayEvents[0])}
+                            title={cierre ? `Cerrado: ${cierre.nombre}` : undefined}
                             style={{
                             aspectRatio: "1/1",
-                            background: day ? (isToday ? "var(--bg-3)" : "transparent") : "transparent",
+                            background: cierre
+                              ? "repeating-linear-gradient(135deg, color-mix(in oklab, var(--orange) 14%, transparent) 0 6px, transparent 6px 12px)"
+                              : day ? (isToday ? "var(--bg-3)" : "transparent") : "transparent",
                             border: day ? `1px solid ${isToday ? "var(--ink)" : "var(--line-2)"}` : "none",
                             borderRadius: 10,
                             padding: 8,
@@ -223,7 +264,8 @@ export default function PublicCalendar() {
                           }}>
                             {day && (
                               <>
-                                <div style={{fontFamily: "var(--font-display)", fontSize: 13, fontWeight: 700, color: isToday ? "var(--ink)" : "var(--ink-2)"}}>{day}</div>
+                                <div style={{fontFamily: "var(--font-display)", fontSize: 13, fontWeight: 700, color: cierre ? "var(--orange)" : isToday ? "var(--ink)" : "var(--ink-2)"}}>{day}</div>
+                                {cierre && <div style={{fontSize: 9, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--orange)", lineHeight: 1.1}}>Cerrado</div>}
                                 <div style={{display: "flex", gap: 3, flexWrap: "wrap"}}>
                                   {dayEvents.slice(0, 4).map((e, idx) => (
                                     <div key={idx} style={{width: 6, height: 6, borderRadius: "50%", background: ACT_BY_ID[e.act]?.color || "var(--ink)"}} />
@@ -260,6 +302,17 @@ export default function PublicCalendar() {
                       </div>
                     </div>
                     <div style={{display: "grid", gap: 12}}>
+                      {/* Los días que cerramos ese mes (#361). */}
+                      {cierresMes.length > 0 && (
+                        <div style={{padding: "14px 16px", borderRadius: 14, background: "color-mix(in oklab, var(--orange) 9%, var(--bg-2))", border: "1px solid color-mix(in oklab, var(--orange) 30%, var(--line))", display: "grid", gap: 6}}>
+                          <div style={{fontSize: 10, fontWeight: 800, letterSpacing: ".12em", textTransform: "uppercase", color: "var(--orange)"}}>El club cierra</div>
+                          {cierresMes.map(c => (
+                            <div key={c.desde} style={{fontSize: 14, color: "var(--ink)"}}>
+                              <b style={{textTransform: "capitalize"}}>{fechaCierre(c)}</b> · {c.nombre}. No hay clases.
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       {visibleEvents.length === 0 && (
                         <div style={{padding: 24, textAlign: "center", background: "var(--bg-2)", border: "1px dashed var(--line)", borderRadius: 14, color: "var(--ink-3)"}}>
                           Sin eventos este mes con este filtro.
