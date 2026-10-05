@@ -741,13 +741,16 @@ function BotonesRecibo({ id }) {
 
 // ── Pagar por internet ───────────────────────────────────────────────────────
 // Los recibos pendientes de la familia y el botón que lleva al TPV del banco.
-// La tarjeta se teclea en la pasarela, aquí no se ve ni se guarda nunca.
+// La tarjeta se teclea en la pasarela, aquí no se ve nunca. Si la familia lo
+// pide, la guarda Redsys y aquí solo queda su referencia (pago en un clic).
 function PagoPendiente({ onPagado, onPagoHecho }) {
   const [datos, setDatos] = useState(null);
   const [sel, setSel] = useState(new Set());
   const [yendo, setYendo] = useState(false);
   const [error, setError] = useState('');
   const [proximamente, setProximamente] = useState(false);
+  const [guardar, setGuardar] = useState(false);
+  const [quitando, setQuitando] = useState(false);
 
   const cargar = useCallback(() => {
     fetch('/api/me/cargos', { credentials: 'include', cache: 'no-store' })
@@ -796,17 +799,19 @@ function PagoPendiente({ onPagado, onPagoHecho }) {
   }
 
   // Se va al banco con un formulario: es como exige el TPV virtual.
-  async function pagar() {
+  // usarTarjeta: con la tarjeta guardada (pago en un clic).
+  async function pagar(usarTarjeta = false) {
     // Mientras el club no abra el pago por internet, solo se avisa.
     if (!datos?.pagoOnline) { setProximamente(true); return; }
     setYendo(true); setError('');
     try {
       const r = await fetch('/api/me/pagos/iniciar', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-        body: JSON.stringify({ cargoIds: [...sel] }),
+        body: JSON.stringify({ cargoIds: [...sel], usarTarjeta, guardarTarjeta: !usarTarjeta && guardar }),
       });
       const d = await r.json();
       if (d.proximamente) { setProximamente(true); setYendo(false); return; }
+      if (d.sinTarjeta) cargar();
       if (!r.ok) { setError(d.error || 'No se ha podido iniciar el pago.'); setYendo(false); return; }
       const form = document.createElement('form');
       form.method = 'POST';
@@ -824,6 +829,16 @@ function PagoPendiente({ onPagado, onPagoHecho }) {
     }
   }
 
+  async function quitarTarjeta() {
+    if (!window.confirm('¿Quitar la tarjeta guardada? La próxima vez tendrás que escribirla otra vez.')) return;
+    setQuitando(true);
+    try {
+      const r = await fetch('/api/me/tarjeta', { method: 'DELETE', credentials: 'include' });
+      if (!r.ok) setError('No se ha podido quitar la tarjeta. Vuelve a intentarlo.');
+      cargar();
+    } finally { setQuitando(false); }
+  }
+
   if (!datos || !lineas.length) {
     return error ? (
       <div className="panel">
@@ -838,7 +853,7 @@ function PagoPendiente({ onPagado, onPagoHecho }) {
       <h2><I.CreditCard /> Pendiente de pago</h2>
       <p className="sub">
         {datos.pagoOnline
-          ? 'Elige lo que quieres pagar. Se paga con tarjeta o Bizum en la pasarela segura del banco: aquí no se guarda nada.'
+          ? 'Elige lo que quieres pagar. Se paga con tarjeta o Bizum en la pasarela segura del banco: los datos de la tarjeta nunca pasan por aquí.'
           : 'Esto es lo que tenéis pendiente. Muy pronto podréis pagarlo desde aquí con tarjeta o Bizum; de momento, en secretaría.'}
       </p>
       {proximamente && (
@@ -885,10 +900,41 @@ function PagoPendiente({ onPagado, onPagoHecho }) {
           <span style={{ display: 'block', fontSize: 12, color: 'var(--ink-3)' }}>Total a pagar</span>
           <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 26 }}>{eurRec(total)}</span>
         </span>
-        <button className="btn btn-primary" disabled={!sel.size || yendo || total <= 0} onClick={pagar}>
-          {yendo ? 'Conectando con el banco...' : 'Pagar con tarjeta o Bizum'}
-        </button>
+        {datos.pagoOnline && datos.tarjeta ? (
+          <span style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn btn-outline" disabled={!sel.size || yendo || total <= 0} onClick={() => pagar(false)}>
+              Otra tarjeta o Bizum
+            </button>
+            <button className="btn btn-primary" disabled={!sel.size || yendo || total <= 0} onClick={() => pagar(true)}>
+              {yendo ? 'Conectando con el banco...' : `Pagar con ${datos.tarjeta.nombre}`}
+            </button>
+          </span>
+        ) : (
+          <button className="btn btn-primary" disabled={!sel.size || yendo || total <= 0} onClick={() => pagar(false)}>
+            {yendo ? 'Conectando con el banco...' : 'Pagar con tarjeta o Bizum'}
+          </button>
+        )}
       </div>
+      {/* Pago en un clic: la tarjeta la guarda el banco (Redsys), no nosotros. */}
+      {datos.pagoOnline && datos.unClic && (datos.tarjeta ? (
+        <p style={{ fontSize: 12, color: 'var(--ink-3)', margin: '10px 0 0' }}>
+          Tarjeta guardada: <b style={{ color: 'var(--ink-2)' }}>{datos.tarjeta.nombre}</b>{datos.tarjeta.caduca ? ` (caduca ${datos.tarjeta.caduca})` : ''}.
+          {' '}No hace falta volver a escribirla: solo confirmar el pago con tu banco.{' '}
+          <button type="button" onClick={quitarTarjeta} disabled={quitando}
+            style={{ background: 'none', border: 0, padding: 0, color: 'var(--purple)', fontWeight: 700, fontSize: 12, cursor: 'pointer', textDecoration: 'underline', fontFamily: 'inherit' }}>
+            {quitando ? 'Quitando...' : 'Quitar tarjeta'}
+          </button>
+        </p>
+      ) : (
+        <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13, color: 'var(--ink-2)', marginTop: 12, cursor: 'pointer' }}>
+          <input type="checkbox" checked={guardar} onChange={e => setGuardar(e.target.checked)}
+            style={{ width: 16, height: 16, marginTop: 1, accentColor: 'var(--purple)' }} />
+          <span>
+            Guardar la tarjeta para pagar en un clic la próxima vez.
+            <span style={{ display: 'block', fontSize: 12, color: 'var(--ink-3)' }}>La guarda el banco, no nosotros. No se cobra nada sin que tú lo confirmes, y puedes quitarla cuando quieras.</span>
+          </span>
+        </label>
+      ))}
       {datos.ahorro > 0 && sel.size === lineas.length && (
         <p style={{ fontSize: 12, color: 'var(--teal)', fontWeight: 700, margin: '8px 0 0' }}>
           Pagándolo todo junto te ahorras {eurRec(datos.ahorro)}.

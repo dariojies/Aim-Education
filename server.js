@@ -10075,8 +10075,22 @@ function configTpv() {
         // Solo se guarda la referencia para cobros mensuales si está pedido a
         // BBVA: el pago por referencia no viene activado de serie.
         recurrente: process.env.REDSYS_RECURRENTE === 'si',
+        // Pago en un clic (tarjeta guardada en Redsys). Está activo en el
+        // comercio; REDSYS_UN_CLIC=no lo apaga.
+        unClic: process.env.REDSYS_UN_CLIC !== 'no',
     };
 }
+
+// La tarjeta que esta persona guardó para pagar en un clic, si sigue valiendo.
+// Es solo suya: el resto de la familia no la ve ni la puede usar.
+async function tarjetaGuardada(cliente, userId) {
+    const r = await cliente.query(
+        `SELECT id, identificador, tarjeta, caducidad, autorizado_at FROM aim_tpv_mandatos
+         WHERE pagador_id = $1 AND estado = 'activo' ORDER BY id DESC LIMIT 1`, [userId]);
+    const m = r.rows[0];
+    return m && !redsys.caducada(m.caducidad) ? m : null;
+}
+const caducidadVisible = (aamm) => (/^\d{4}$/.test(String(aamm || '')) ? `${aamm.slice(2)}/${aamm.slice(0, 2)}` : null);
 
 // En real hacen falta el comercio y SU clave: con la de pruebas el banco
 // rechazaría todas las firmas. Sin ellas no se deja empezar ningún pago.
@@ -10132,9 +10146,14 @@ app.get('/api/me/cargos', authenticateSession, async (req, res) => {
         const calc = calcularCobro(cargos.map(cargoParaMotor));
         const porId = Object.fromEntries(cargos.map(c => [c.id, c]));
         res.set('Cache-Control', 'no-store');
+        const cfg = configTpv();
+        const t = cfg.unClic ? await tarjetaGuardada(pool, req.userSession.userId) : null;
         res.json({
             activo: true,
             pagoOnline: pagosOnlineAbiertos(),
+            // Pago en un clic: si se puede guardar la tarjeta y la que tiene guardada.
+            unClic: cfg.unClic,
+            tarjeta: t ? { nombre: t.tarjeta || 'Tarjeta', caduca: caducidadVisible(t.caducidad) } : null,
             lineas: calc.detalle.map(d => ({
                 cargoId: d.id, descripcion: d.descripcion, mes: d.mes,
                 alumno: `${porId[d.id]?.name || ''} ${porId[d.id]?.surname || ''}`.trim(),
@@ -10154,6 +10173,7 @@ app.post('/api/me/pagos/iniciar', authenticateSession, async (req, res) => {
     const me = req.userSession.userId;
     const pedidos = Array.isArray(req.body.cargoIds) ? req.body.cargoIds.map(Number).filter(Boolean) : [];
     const guardarTarjeta = !!req.body.guardarTarjeta;
+    const usarTarjeta = !!req.body.usarTarjeta;
     if (!pedidos.length) return res.status(400).json({ error: 'No has elegido nada que pagar.' });
     if (!pagosOnlineAbiertos()) return res.status(503).json({ proximamente: true, error: 'El pago con tarjeta por internet estará disponible próximamente. Mientras tanto puedes pagar en secretaría.' });
 
@@ -10212,6 +10232,18 @@ app.post('/api/me/pagos/iniciar', authenticateSession, async (req, res) => {
             }
         }
 
+        // Pago en un clic: la tarjeta se guarda y se usa solo para quien la puso.
+        // Si paga un menor (la factura va a su adulto), no se guarda ni se usa.
+        let tarjeta = null;
+        if (usarTarjeta) {
+            tarjeta = cfg.unClic && pagadorFactura === me ? await tarjetaGuardada(client, me) : null;
+            if (!tarjeta) {
+                await client.query('ROLLBACK');
+                return res.status(409).json({ sinTarjeta: true, error: 'Ya no tienes una tarjeta guardada que se pueda usar. Paga con otra tarjeta.' });
+            }
+        }
+        const guardar = guardarTarjeta && !tarjeta && pagadorFactura === me && (cfg.unClic || cfg.recurrente);
+
         const concepto = calc.detalle.map(d => d.descripcion).join(', ').slice(0, 120) || 'AIM Education';
         const ins = await client.query(
             `INSERT INTO aim_tpv_pagos (pagador_id, importe, concepto, cargo_ids, entorno)
@@ -10238,7 +10270,9 @@ app.post('/api/me/pagos/iniciar', authenticateSession, async (req, res) => {
             DS_MERCHANT_PRODUCTDESCRIPTION: concepto,
             // Con esto Redsys nos devuelve la referencia para cobrar los meses
             // siguientes sin que el titular esté delante.
-            ...(guardarTarjeta && cfg.recurrente ? redsys.COF_INICIAL : {}),
+            // Con la tarjeta guardada, la pasarela ya la enseña y solo hay que confirmar.
+            ...(tarjeta ? redsys.unClic(tarjeta.identificador)
+                : guardar ? (cfg.recurrente ? redsys.COF_INICIAL : redsys.UN_CLIC_INICIAL) : {}),
         };
         const parametros = redsys.codificaParametros(datos);
         // Se firma ANTES de guardar el intento: si la firma falla (una clave mal
@@ -10306,18 +10340,36 @@ async function asentarPago(client, pago, aviso) {
          String(aviso.Ds_ProcessedPayMethod || '') === '68' ? 'Bizum'
              : aviso.Ds_Card_Brand ? `**** ${aviso.Ds_Card_Number || ''}`.trim() : null, aviso, total]);
 
-    // Si la familia autorizó el cobro mensual, Redsys devuelve la referencia.
-    if (aviso.Ds_Merchant_Identifier) {
-        await client.query(`UPDATE aim_tpv_mandatos SET estado = 'revocado', revocado_at = NOW()
-                             WHERE pagador_id = $1 AND estado = 'activo'`, [pago.pagador_id]);
-        await client.query(
-            `INSERT INTO aim_tpv_mandatos (pagador_id, identificador, cof_txnid, tarjeta, caducidad, pago_inicial_id)
-             VALUES ($1,$2,$3,$4,$5,$6)`,
-            [pago.pagador_id, aviso.Ds_Merchant_Identifier, aviso.Ds_Merchant_Cof_Txnid || null,
-             aviso.Ds_Card_Number ? `**** ${aviso.Ds_Card_Number}` : null, aviso.Ds_ExpiryDate || null, pago.id]);
+    // Si la familia pidió guardar la tarjeta (pago en un clic o cobro mensual),
+    // Redsys devuelve su referencia. Si ha pagado con la que ya tenía guardada,
+    // vuelve la misma y no se toca.
+    const ref = aviso.Ds_Merchant_Identifier;
+    if (ref && ref !== 'REQUIRED') {
+        const ya = await client.query(
+            `SELECT 1 FROM aim_tpv_mandatos WHERE pagador_id = $1 AND estado = 'activo' AND identificador = $2`, [pago.pagador_id, ref]);
+        if (!ya.rowCount) {
+            await client.query(`UPDATE aim_tpv_mandatos SET estado = 'revocado', revocado_at = NOW()
+                                 WHERE pagador_id = $1 AND estado = 'activo'`, [pago.pagador_id]);
+            await client.query(
+                `INSERT INTO aim_tpv_mandatos (pagador_id, identificador, cof_txnid, tarjeta, caducidad, pago_inicial_id)
+                 VALUES ($1,$2,$3,$4,$5,$6)`,
+                [pago.pagador_id, ref, aviso.Ds_Merchant_Cof_Txnid || null,
+                 redsys.nombreTarjeta(aviso), aviso.Ds_ExpiryDate || null, pago.id]);
+        }
     }
     return { reciboId, numero: tickets[0].recibo.numero, facturas: tickets.length };
 }
+
+// La familia quita su tarjeta guardada. La referencia se da de baja aquí y ya
+// no se vuelve a usar; en Redsys caduca sola con la tarjeta.
+app.delete('/api/me/tarjeta', authenticateSession, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `UPDATE aim_tpv_mandatos SET estado = 'revocado', revocado_at = NOW()
+             WHERE pagador_id = $1 AND estado = 'activo'`, [req.userSession.userId]);
+        res.json({ success: true, quitadas: r.rowCount });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 // La notificación de Redsys. No lleva sesión: viene de sus servidores. Lo único
 // que la hace de fiar es la firma, así que se comprueba antes de nada.

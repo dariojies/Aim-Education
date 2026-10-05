@@ -140,6 +140,35 @@ export const COF_INICIAL = {
     DS_MERCHANT_COF_TYPE: 'R',
 };
 
+// Pago en un clic: el primer pago pide a Redsys una referencia de la tarjeta
+// (la tarjeta la guarda Redsys, no nosotros) y la marca como credencial
+// guardada que usará el propio titular (COF tipo C).
+export const UN_CLIC_INICIAL = {
+    DS_MERCHANT_IDENTIFIER: 'REQUIRED',
+    DS_MERCHANT_COF_INI: 'S',
+    DS_MERCHANT_COF_TYPE: 'C',
+};
+
+// Los pagos siguientes en un clic: con la referencia, la pasarela enseña la
+// tarjeta guardada y el titular solo confirma (y el 3D Secure si su banco lo pide).
+export const unClic = (identificador) => ({ DS_MERCHANT_IDENTIFIER: identificador });
+
+// Cómo se llama la marca que devuelve Redsys en Ds_Card_Brand.
+const MARCAS = { 1: 'Visa', 2: 'Mastercard', 6: 'Diners', 8: 'Amex', 9: 'JCB', 22: 'UnionPay' };
+// «Visa ·· 0004», para que la familia reconozca su tarjeta. Nunca el número.
+export function nombreTarjeta(aviso) {
+    const marca = MARCAS[Number(aviso.Ds_Card_Brand)] || 'Tarjeta';
+    const ultimas = String(aviso.Ds_Card_Number || '').replace(/\D/g, '').slice(-4);
+    return ultimas ? `${marca} ·· ${ultimas}` : marca;
+}
+
+// Ds_ExpiryDate viene como AAMM. Caducada si ya ha pasado ese mes.
+export function caducada(aamm, hoy = new Date()) {
+    if (!/^\d{4}$/.test(String(aamm || ''))) return false;
+    const fin = Number(`20${aamm.slice(0, 2)}`) * 12 + Number(aamm.slice(2)) - 1;
+    return fin < hoy.getFullYear() * 12 + hoy.getMonth();
+}
+
 // Parámetros de los cobros siguientes, ya sin el titular delante.
 export function cofRecurrente(identificador, txnid) {
     return {
