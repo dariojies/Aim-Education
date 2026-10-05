@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { I } from './Icons.jsx';
+import { EditorNoPuede, textoNoPuede } from './NoPuedeSpeaking.jsx';
 import { useEnVivo } from '../envivo.js';
 import Campanita from './Campanita.jsx';
 import { AimLogo, ACT_BY_ID, CampDayPicker, campFmtLong, nombreMedioPago } from './Shared.jsx';
@@ -46,15 +47,33 @@ function AccesoRapido({ titulo, desc, color, icon, onClick }) {
 const DAY_NAMES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
 
 // Clase de Speaking (ticket #228): las sesiones próximas de los hijos, para que la
-// familia confirme la asistencia desde la web (además del correo). Solo se ve si
-// hay alguna sesión apuntada.
+// familia confirme la asistencia desde la web (además del correo). Y (#363) los
+// días y horas en que cada uno NO puede, para que el club solo le cite cuando
+// pueda. Se ve si hay alguna sesión o alguien que vaya a Inglés.
 function SpeakingFamilia() {
   const [sesiones, setSesiones] = useState(null);
+  const [alumnos, setAlumnos] = useState([]);
   const [guardando, setGuardando] = useState(null);
+  const [editando, setEditando] = useState(null);
 
   const cargar = () => fetch('/api/me/speaking', { credentials: 'include', cache: 'no-store' })
-    .then(r => r.ok ? r.json() : { sesiones: [] }).then(d => setSesiones(d.sesiones || [])).catch(() => setSesiones([]));
+    .then(r => r.ok ? r.json() : { sesiones: [] })
+    .then(d => { setSesiones(d.sesiones || []); setAlumnos(d.alumnos || []); })
+    .catch(() => setSesiones([]));
   useEffect(() => { cargar(); }, []);
+
+  async function guardarNoPuede(a, datos) {
+    setGuardando(`np-${a.studentId}`);
+    try {
+      const r = await fetch(`/api/me/speaking/disponibilidad/${a.studentId}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(datos),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) return alert(d.error || 'No se pudo guardar.');
+      setAlumnos(prev => prev.map(x => (x.studentId === a.studentId ? { ...x, noPuede: d.noPuede, nota: d.nota } : x)));
+      setEditando(null);
+    } catch { alert('Error de conexión.'); } finally { setGuardando(null); }
+  }
 
   async function responder(s, confirmado) {
     setGuardando(s.id);
@@ -69,7 +88,7 @@ function SpeakingFamilia() {
     finally { setGuardando(null); }
   }
 
-  if (!sesiones || sesiones.length === 0) return null;
+  if (!sesiones || (sesiones.length === 0 && alumnos.length === 0)) return null;
   const fmt = (f) => new Date(String(f).slice(0, 10) + 'T12:00:00').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
   // Franjas con las horas reales de la clase (si el servidor las manda); si no, el nº.
   const franjas = (s) => {
@@ -81,7 +100,7 @@ function SpeakingFamilia() {
   return (
     <div className="panel">
       <h2><I.Calendar /> Clase de Speaking</h2>
-      <p className="sub">Confirma si tu hijo/a podrá asistir a estas clases. Hay que confirmar como tarde 2 días antes de la clase; si no, se pierde la plaza de ese día.</p>
+      {sesiones.length > 0 && <p className="sub">Confirma si tu hijo/a podrá asistir a estas clases. Hay que confirmar como tarde 2 días antes de la clase; si no, se pierde la plaza de ese día.</p>}
       <div style={{ display: 'grid', gap: 10 }}>
         {sesiones.map(s => (
           <div key={s.id} style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', padding: '12px 14px', borderRadius: 12, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
@@ -108,6 +127,37 @@ function SpeakingFamilia() {
           </div>
         ))}
       </div>
+      {/* Cuándo no puede cada uno (#363). */}
+      {alumnos.length > 0 && (
+        <div style={{ marginTop: sesiones.length ? 18 : 0 }}>
+          <h3 style={{ margin: '0 0 4px', fontSize: 15, fontWeight: 800 }}>Días y horas en que no puede</h3>
+          <p className="sub" style={{ marginTop: 0 }}>Dinos qué días u horas no puede venir y solo le citaremos cuando pueda. Por ejemplo: «los martes no», o «los jueves a en punto no, pero a y cuarto sí».</p>
+          <div style={{ display: 'grid', gap: 10 }}>
+            {alumnos.map(a => (
+              <div key={a.studentId} style={{ padding: '12px 14px', borderRadius: 12, border: '1px solid var(--line)', background: 'var(--bg-2)', display: 'grid', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+                    <div style={{ fontWeight: 800, fontSize: 15 }}>{a.nombre}</div>
+                    <div style={{ fontSize: 13, color: 'var(--ink-3)' }}>
+                      {a.noPuede.length ? `No puede ${textoNoPuede(a.noPuede)}.` : 'Puede venir cualquier día.'}
+                      {a.nota ? ` ${a.nota}` : ''}
+                    </div>
+                  </div>
+                  {editando !== a.studentId && (
+                    <button className="btn btn-sm btn-outline" onClick={() => setEditando(a.studentId)}>
+                      {a.noPuede.length || a.nota ? 'Cambiar' : 'Indicar cuándo no puede'}
+                    </button>
+                  )}
+                </div>
+                {editando === a.studentId && (
+                  <EditorNoPuede inicial={a.noPuede} notaInicial={a.nota} quien={a.nombre.split(' ')[0]}
+                    guardando={guardando === `np-${a.studentId}`} onCancelar={() => setEditando(null)} onGuardar={(d) => guardarNoPuede(a, d)} />
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

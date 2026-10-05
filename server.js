@@ -1088,6 +1088,18 @@ async function initDb() {
         await client.query(`ALTER TABLE aim_speaking ADD COLUMN IF NOT EXISTS hora_fin VARCHAR(5)`);
         // Segundo correo de confirmación el día antes de la clase (ticket #241).
         await client.query(`ALTER TABLE aim_speaking ADD COLUMN IF NOT EXISTS recordatorio_enviado BOOLEAN NOT NULL DEFAULT false`);
+        // Cuándo NO puede venir cada alumno a Speaking (ticket #363), para citarle
+        // solo cuando pueda. no_puede = [{ dia: 0-6 (0 = lunes), desde, hasta }];
+        // sin horas es el día entero. Lo apunta secretaría o la propia familia.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_speaking_disponibilidad (
+                student_id UUID PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                no_puede JSONB NOT NULL DEFAULT '[]',
+                nota TEXT,
+                actualizado_at TIMESTAMPTZ DEFAULT NOW(),
+                actualizado_por UUID REFERENCES users(user_id) ON DELETE SET NULL
+            )
+        `);
 
         // Mascota de clase (ticket #244): un peluche por clase que los alumnos se
         // llevan a casa por turnos. Se guarda quién lo tiene ahora, cuándo debe
@@ -15302,6 +15314,69 @@ async function recordatoriosSpeaking() {
     }
 }
 
+// ── Cuándo no puede venir cada alumno (ticket #363) ─────────────────────────
+// Reglas { dia: 0-6 (0 = lunes), desde: 'HH:MM'|null, hasta: 'HH:MM'|null }; sin
+// horas, el día entero. Se limpian siempre al guardar: nada raro entra en la base.
+const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+function normalizaNoPuede(arr) {
+    const out = [];
+    for (const r of (Array.isArray(arr) ? arr : []).slice(0, 30)) {
+        const dia = Number(r?.dia);
+        if (!Number.isInteger(dia) || dia < 0 || dia > 6) continue;
+        const desde = HHMM_RE.test(r?.desde || '') ? r.desde : null;
+        const hasta = HHMM_RE.test(r?.hasta || '') ? r.hasta : null;
+        if (desde && hasta && minSpk(desde) >= minSpk(hasta)) continue;
+        if (!out.some(x => x.dia === dia && x.desde === desde && x.hasta === hasta)) out.push({ dia, desde, hasta });
+    }
+    return out.sort((a, b) => a.dia - b.dia || minSpk(a.desde || '00:00') - minSpk(b.desde || '00:00'));
+}
+// Qué franjas de un día chocan con lo que no puede: todas si es el día entero.
+function choqueSpeaking(reglas, fecha, inicio, fin, franjas) {
+    const f0 = fecha instanceof Date ? fecha.toLocaleDateString('sv-SE', { timeZone: 'Europe/Madrid' }) : String(fecha).slice(0, 10);
+    const dia = (new Date(f0 + 'T12:00:00').getDay() + 6) % 7;
+    const delDia = (reglas || []).filter(r => r.dia === dia);
+    if (!delDia.length) return null;
+    const todas = franjasDeHoras(inicio, fin).filter(f => (franjas || FRANJAS_SPEAKING).includes(f.n));
+    if (delDia.some(r => !r.desde && !r.hasta)) return { diaEntero: true, franjas: todas.map(f => f.n) };
+    const tocadas = todas.filter(f => f.desde && delDia.some(r =>
+        minSpk(f.desde) < (r.hasta ? minSpk(r.hasta) : 1440) && (r.desde ? minSpk(r.desde) : 0) < minSpk(f.hasta))).map(f => f.n);
+    return tocadas.length ? { diaEntero: false, franjas: tocadas } : null;
+}
+async function disponibilidadDe(ids) {
+    if (!ids.length) return new Map();
+    const r = await pool.query(
+        `SELECT d.student_id, d.no_puede, d.nota, d.actualizado_at, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS por
+         FROM aim_speaking_disponibilidad d LEFT JOIN users u ON u.user_id = d.actualizado_por
+         WHERE d.student_id = ANY($1::uuid[])`, [ids]);
+    return new Map(r.rows.map(x => [x.student_id, { noPuede: x.no_puede || [], nota: x.nota || '', actualizadoAt: x.actualizado_at, por: x.por || null }]));
+}
+async function guardarDisponibilidad(studentId, body, userId) {
+    const noPuede = normalizaNoPuede(body?.noPuede);
+    const nota = String(body?.nota || '').trim().slice(0, 500) || null;
+    await pool.query(
+        `INSERT INTO aim_speaking_disponibilidad (student_id, no_puede, nota, actualizado_at, actualizado_por)
+         VALUES ($1, $2::jsonb, $3, NOW(), $4)
+         ON CONFLICT (student_id) DO UPDATE SET no_puede = EXCLUDED.no_puede, nota = EXCLUDED.nota,
+            actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+        [studentId, JSON.stringify(noPuede), nota, userId]);
+    return { noPuede, nota: nota || '' };
+}
+
+app.get('/api/admin/speaking/disponibilidad/:studentId', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const d = (await disponibilidadDe([req.params.studentId])).get(req.params.studentId);
+        res.set('Cache-Control', 'no-store');
+        res.json(d || { noPuede: [], nota: '' });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.put('/api/admin/speaking/disponibilidad/:studentId', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const u = await pool.query(`SELECT 1 FROM users WHERE user_id = $1`, [req.params.studentId]);
+        if (!u.rowCount) return res.status(404).json({ error: 'Ese alumno no existe.' });
+        res.json({ success: true, ...(await guardarDisponibilidad(req.params.studentId, req.body, req.userSession.userId)) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Las clases "Speaking" reservadas del horario (grupos de Inglés llamados así),
 // con sus sesiones (días y horas), para vincular el apartado con ellas.
 app.get('/api/admin/speaking/clases', authenticateSession, requireAdmin, async (req, res) => {
@@ -15374,9 +15449,13 @@ app.get('/api/admin/speaking', authenticateSession, requireAdmin, async (req, re
              LEFT JOIN tul_groups g ON g.group_id = s.group_id
              WHERE s.fecha >= COALESCE($1::date, (now() AT TIME ZONE 'Europe/Madrid')::date)
              ORDER BY s.fecha, alumno`, [desde]);
+        const disp = await disponibilidadDe([...new Set(r.rows.map(x => x.student_id))]);
         res.set('Cache-Control', 'no-store');
         res.json({
             sesiones: r.rows.map(x => ({
+                // Lo que tiene anotado que no puede y si choca con esta cita (#363).
+                noPuede: disp.get(x.student_id)?.noPuede || [], notaNoPuede: disp.get(x.student_id)?.nota || '',
+                choque: choqueSpeaking(disp.get(x.student_id)?.noPuede, x.fecha, x.hora_inicio, x.hora_fin, x.franjas),
                 id: x.id, fecha: x.fecha, franjas: x.franjas || [], confirmado: x.confirmado,
                 respondidoAt: x.respondido_at, llamado: x.llamado, emailEnviado: x.email_enviado,
                 limite: x.limite, plazoAbierto: x.plazo_abierto, sinAvisos: x.sin_avisos,
@@ -15594,8 +15673,34 @@ app.get('/api/me/speaking', authenticateSession, async (req, res) => {
              LEFT JOIN tul_groups g ON g.group_id = s.group_id
              WHERE s.student_id = ANY($1::uuid[]) AND s.fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date
              ORDER BY s.fecha, alumno`, [fam]);
+        // De quién puede la familia anotar cuándo no puede venir (#363): quien va
+        // a Inglés o a Speaking, o ya ha tenido alguna cita o algo anotado.
+        const al = await pool.query(
+            `SELECT u.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre
+             FROM users u
+             WHERE u.user_id = ANY($1::uuid[]) AND (
+                 EXISTS (SELECT 1 FROM tul_group_students gs JOIN tul_groups g ON g.group_id = gs.group_id
+                         JOIN tul_activities a ON a.activity_id = g.activity_id
+                         WHERE gs.student_id = u.user_id AND a.club_id = $2
+                           AND (a.name ILIKE '%ingl%' OR a.name ILIKE '%english%' OR a.name ILIKE '%speaking%' OR g.name ILIKE '%speaking%'))
+                 OR EXISTS (SELECT 1 FROM aim_speaking s WHERE s.student_id = u.user_id)
+                 OR EXISTS (SELECT 1 FROM aim_speaking_disponibilidad d WHERE d.student_id = u.user_id))
+             ORDER BY nombre`, [fam, AIM_CLUB_ID]);
+        const disp = await disponibilidadDe(al.rows.map(x => x.user_id));
         res.set('Cache-Control', 'no-store');
-        res.json({ sesiones: r.rows.map(x => ({ id: x.id, fecha: x.fecha, franjas: x.franjas || [], confirmado: x.confirmado, alumno: x.alumno, clase: x.clase || null, franjasTexto: franjasDeHoras(x.hora_inicio, x.hora_fin), limite: x.limite, plazoAbierto: x.plazo_abierto, perdida: x.confirmado === null && !x.plazo_abierto })) });
+        res.json({
+            sesiones: r.rows.map(x => ({ id: x.id, fecha: x.fecha, franjas: x.franjas || [], confirmado: x.confirmado, alumno: x.alumno, clase: x.clase || null, franjasTexto: franjasDeHoras(x.hora_inicio, x.hora_fin), limite: x.limite, plazoAbierto: x.plazo_abierto, perdida: x.confirmado === null && !x.plazo_abierto })),
+            alumnos: al.rows.map(x => ({ studentId: x.user_id, nombre: x.nombre, noPuede: disp.get(x.user_id)?.noPuede || [], nota: disp.get(x.user_id)?.nota || '' })),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// La familia anota cuándo no puede venir uno de los suyos (#363).
+app.put('/api/me/speaking/disponibilidad/:studentId', authenticateSession, async (req, res) => {
+    try {
+        const fam = await familiaIds(req.userSession.userId);
+        if (!fam.includes(req.params.studentId)) return res.status(403).json({ error: 'Esa persona no es de tu familia.' });
+        res.json({ success: true, ...(await guardarDisponibilidad(req.params.studentId, req.body, req.userSession.userId)) });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { I } from './Icons.jsx';
+import { EditorNoPuede, choques, textoNoPuede } from './NoPuedeSpeaking.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Clase de Speaking / Inglés (ticket #228), vinculada a las clases "Speaking"
@@ -21,7 +22,10 @@ function franjasDe(inicio, fin) {
   const a = min(inicio), b = min(fin);
   if (!inicio || !fin || b <= a) return [1, 2, 3].map(n => ({ n, label: `${n}ª franja` }));
   const paso = (b - a) / 3;
-  return [1, 2, 3].map(n => ({ n, label: `${hhmm(Math.round(a + paso * (n - 1)))}–${hhmm(Math.round(a + paso * n))}` }));
+  return [1, 2, 3].map(n => {
+    const desde = hhmm(Math.round(a + paso * (n - 1))), hasta = hhmm(Math.round(a + paso * n));
+    return { n, desde, hasta, label: `${desde}–${hasta}` };
+  });
 }
 // Una franja como texto. El servidor las manda como { n, desde, hasta } (o con
 // label si la sesión no tiene horas); antes se pintaba el objeto tal cual y en la
@@ -45,8 +49,11 @@ export default function AdminSpeaking({ showToast }) {
   const [fecha, setFecha] = useState('');
   const [q, setQ] = useState('');
   const [sug, setSug] = useState([]);
-  const [nuevos, setNuevos] = useState([]); // { id, name, franjas: {1,2,3} }
+  const [nuevos, setNuevos] = useState([]); // { id, name, franjas: {1,2,3}, noPuede, nota }
   const [guardando, setGuardando] = useState(false);
+  // Editor de «cuándo no puede» (#363) abierto: id del alumno.
+  const [editNoPuede, setEditNoPuede] = useState(null);
+  const [guardandoNP, setGuardandoNP] = useState(false);
 
   const cargar = useCallback(async () => {
     setCargando(true);
@@ -96,10 +103,36 @@ export default function AdminSpeaking({ showToast }) {
     return () => clearTimeout(t);
   }, [q]);
 
-  const añadir = (s) => {
-    if (!nuevos.some(n => n.id === s.id)) setNuevos(x => [...x, { id: s.id, name: s.name, franjas: { 1: true, 2: true, 3: true } }]);
+  // Al añadirle se trae cuándo no puede (#363) y se le marcan solo las franjas
+  // en que sí puede ese día.
+  const añadir = async (s) => {
     setQ(''); setSug([]);
+    if (nuevos.some(n => n.id === s.id)) return;
+    setNuevos(x => [...x, { id: s.id, name: s.name, franjas: { 1: true, 2: true, 3: true }, noPuede: [], nota: '' }]);
+    const d = await fetch(`/api/admin/speaking/disponibilidad/${s.id}`, { credentials: 'include', cache: 'no-store' })
+      .then(r => (r.ok ? r.json() : null)).catch(() => null);
+    if (!d) return;
+    const ch = fecha ? choques(d.noPuede, fecha, franjas) : { franjas: [] };
+    const libres = [1, 2, 3].filter(f => !ch.franjas.includes(f));
+    setNuevos(x => x.map(n => (n.id === s.id ? {
+      ...n, noPuede: d.noPuede || [], nota: d.nota || '',
+      franjas: libres.length ? Object.fromEntries([1, 2, 3].map(f => [f, libres.includes(f)])) : n.franjas,
+    } : n)));
   };
+  async function guardarNoPuede(studentId, datos) {
+    setGuardandoNP(true);
+    try {
+      const r = await fetch(`/api/admin/speaking/disponibilidad/${studentId}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(datos),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) return alert(d.error || 'No se ha podido guardar.');
+      setNuevos(x => x.map(n => (n.id === studentId ? { ...n, noPuede: d.noPuede, nota: d.nota } : n)));
+      setEditNoPuede(null);
+      showToast?.('Anotado cuándo no puede.');
+      cargar();
+    } catch { alert('Error de conexión.'); } finally { setGuardandoNP(false); }
+  }
   const toggleFranja = (id, f) => setNuevos(x => x.map(n => n.id === id ? { ...n, franjas: { ...n.franjas, [f]: !n.franjas[f] } } : n));
   // Mejora de selección de franjas (ticket #241): fijar una franja concreta, la
   // hora entera o ninguna para un alumno o de golpe para todos los añadidos.
@@ -161,6 +194,7 @@ export default function AdminSpeaking({ showToast }) {
     <div style={{ display: 'grid', gap: 16 }}>
       <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>
         Apunta alumnos a una sesión de <b>Speaking</b> de un día concreto. Se vincula con las clases "Speaking" reservadas del horario: eliges la clase, un día de los suyos, y una o varias de las 3 franjas de 20 minutos en que se divide su hora. Secretaría recibe el aviso para llamar a los padres y a estos les llega un correo para confirmar. No cuenta en los reportes de alumnos.
+        {' '}Si un alumno tiene anotado cuándo no puede (lo anota secretaría o la familia desde su área), al añadirlo solo se marcan las franjas en que sí puede y se avisa si ese día no puede.
       </p>
 
       {clases.length === 0 && (
@@ -214,22 +248,52 @@ export default function AdminSpeaking({ showToast }) {
                   ))}
                 </div>
               )}
-              {nuevos.map(n => (
-                <div key={n.id} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 12, padding: '8px 12px' }}>
-                  <span style={{ fontWeight: 700, fontSize: 14, flex: '1 1 140px', minWidth: 0 }}>{n.name}</span>
+              {nuevos.map(n => {
+                const ch = fecha ? choques(n.noPuede, fecha, franjas) : { dia: false, franjas: [] };
+                const marcadasMal = ch.franjas.filter(f => n.franjas[f]);
+                return (
+                <div key={n.id} style={{ display: 'grid', gap: 8, background: 'var(--bg-3)', border: `1px solid ${marcadasMal.length ? 'var(--orange)' : 'var(--line)'}`, borderRadius: 12, padding: '8px 12px' }}>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span style={{ flex: '1 1 140px', minWidth: 0 }}>
+                    <span style={{ display: 'block', fontWeight: 700, fontSize: 14 }}>{n.name}</span>
+                    {/* Cuándo no puede (#363), y si choca con este día. */}
+                    {n.noPuede.length > 0 && (
+                      <span style={{ display: 'block', fontSize: 12, color: ch.dia || marcadasMal.length ? 'var(--orange)' : 'var(--ink-3)', fontWeight: ch.dia || marcadasMal.length ? 700 : 400 }}>
+                        {ch.dia ? `⚠ Este día no puede: ${textoNoPuede(ch.reglas)}` : marcadasMal.length ? `⚠ No puede a esa hora: ${textoNoPuede(ch.reglas)}` : `No puede ${textoNoPuede(n.noPuede)}`}
+                      </span>
+                    )}
+                    {n.nota && <span style={{ display: 'block', fontSize: 12, color: 'var(--ink-3)', fontStyle: 'italic' }}>{n.nota}</span>}
+                    <button type="button" onClick={() => setEditNoPuede(editNoPuede === n.id ? null : n.id)}
+                      style={{ background: 'none', border: 0, padding: 0, fontSize: 11, fontWeight: 700, color: 'var(--purple)', cursor: 'pointer', textDecoration: 'underline', fontFamily: 'inherit' }}>
+                      {n.noPuede.length || n.nota ? 'Cambiar cuándo no puede' : 'Anotar cuándo no puede'}
+                    </button>
+                  </span>
                   <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                     <button type="button" onClick={() => setFranjasDe(n.id, nFranjas(n.franjas) === 3 ? NINGUNA : TODAS)}
                       className={`filter-pill ${nFranjas(n.franjas) === 3 ? 'is-active' : ''}`} style={{ fontSize: 11 }}
                       title="La hora entera (las tres franjas)">Hora entera</button>
                     <span style={{ color: 'var(--line)' }}>|</span>
-                    {franjas.map(f => (
-                      <button key={f.n} type="button" onClick={() => toggleFranja(n.id, f.n)}
-                        className={`filter-pill ${n.franjas[f.n] ? 'is-active' : ''}`} style={{ fontSize: 11 }}>{f.label}</button>
-                    ))}
+                    {franjas.map(f => {
+                      const noPuede = ch.franjas.includes(f.n);
+                      return (
+                        <button key={f.n} type="button" onClick={() => toggleFranja(n.id, f.n)}
+                          title={noPuede ? 'A esta hora no puede' : undefined}
+                          className={`filter-pill ${n.franjas[f.n] ? 'is-active' : ''}`}
+                          style={{ fontSize: 11, ...(noPuede ? { textDecoration: 'line-through', borderColor: 'var(--orange)', color: n.franjas[f.n] ? undefined : 'var(--orange)' } : {}) }}>{f.label}</button>
+                      );
+                    })}
                   </div>
                   <button className="icon-btn danger" onClick={() => setNuevos(x => x.filter(y => y.id !== n.id))} aria-label="Quitar"><I.X /></button>
                 </div>
-              ))}
+                {editNoPuede === n.id && (
+                  <div style={{ borderTop: '1px solid var(--line)', paddingTop: 10 }}>
+                    <EditorNoPuede key={n.id} inicial={n.noPuede} notaInicial={n.nota} quien={n.name.split(' ')[0]} guardando={guardandoNP}
+                      onCancelar={() => setEditNoPuede(null)} onGuardar={(d) => guardarNoPuede(n.id, d)} />
+                  </div>
+                )}
+                </div>
+                );
+              })}
               <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                 <button className="btn btn-sm btn-primary" onClick={guardar} disabled={guardando || !fecha}>
                   {guardando ? 'Guardando...' : `Apuntar y avisar a los padres (${nuevos.length})`}
@@ -260,7 +324,23 @@ export default function AdminSpeaking({ showToast }) {
               const e = estado(s);
               return (
                 <div key={s.id} className="data-table-row" style={{ gridTemplateColumns: '1.3fr 140px 1.4fr 190px 120px 60px', alignItems: 'center' }}>
-                  <div className="pri">{s.alumno}</div>
+                  <div className="pri" style={{ minWidth: 0 }}>
+                    {s.alumno}
+                    {/* Citado cuando dijo que no podía (#363). */}
+                    {s.choque ? (
+                      <span title={s.notaNoPuede || undefined} style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--orange)' }}>
+                        ⚠ No puede {textoNoPuede(s.noPuede)}
+                      </span>
+                    ) : (s.noPuede || []).length > 0 && (
+                      <span title={s.notaNoPuede || undefined} style={{ display: 'block', fontSize: 11, color: 'var(--ink-3)', fontWeight: 400 }}>
+                        No puede {textoNoPuede(s.noPuede)}
+                      </span>
+                    )}
+                    <button type="button" onClick={() => setEditNoPuede(editNoPuede === `s${s.id}` ? null : `s${s.id}`)}
+                      style={{ display: 'block', background: 'none', border: 0, padding: 0, fontSize: 11, fontWeight: 600, color: 'var(--ink-3)', cursor: 'pointer', textDecoration: 'underline dotted', fontFamily: 'inherit' }}>
+                      {(s.noPuede || []).length || s.notaNoPuede ? 'cambiar cuándo no puede' : 'anotar cuándo no puede'}
+                    </button>
+                  </div>
                   <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--purple)' }}>{franjasFila(s)}</span>
                   <span style={{ fontSize: 12, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.contactos || 'sin contacto'}</span>
                   {/* Lo normal es que confirme la familia desde el correo. Si
@@ -302,6 +382,12 @@ export default function AdminSpeaking({ showToast }) {
                     </button>
                   )}
                   <div className="row-actions"><button className="icon-btn danger" onClick={() => borrar(s)} aria-label="Quitar"><I.Trash /></button></div>
+                  {editNoPuede === `s${s.id}` && (
+                    <div style={{ gridColumn: '1 / -1', borderTop: '1px solid var(--line)', paddingTop: 10, marginTop: 6 }}>
+                      <EditorNoPuede key={s.id} inicial={s.noPuede} notaInicial={s.notaNoPuede} quien={s.alumno.split(' ')[0]} guardando={guardandoNP}
+                        onCancelar={() => setEditNoPuede(null)} onGuardar={(d) => guardarNoPuede(s.studentId, d)} />
+                    </div>
+                  )}
                 </div>
               );
             })}
