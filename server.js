@@ -9766,6 +9766,16 @@ app.post('/api/admin/billing/vaciar-pruebas', authenticateSession, requireAdmin,
 // ── Arqueo de caja ───────────────────────────────────────────────────────────
 // Lo cobrado de un día por medio de pago. Un rectificativo del mismo día resta,
 // porque ese dinero ha salido de la caja.
+// El día de CAJA de un recibo (r): el de su factura, salvo que se cobrara después
+// de cerrar la caja de ese día; entonces cuenta en la del día siguiente. Así un
+// cobro a las 23:48 con la caja ya cerrada no descuadra un día cerrado. La
+// factura conserva su fecha. Se mira el PRIMER cierre (contado.primerCierre),
+// para que «Actualizar el cierre» no devuelva esos cobros al día anterior.
+const SQL_DIA_CAJA = `(CASE WHEN EXISTS (
+        SELECT 1 FROM aim_arqueos ac WHERE ac.fecha = r.fecha
+           AND r.cobrado_at > COALESCE((ac.contado->>'primerCierre')::timestamptz, ac.cerrado_at))
+     THEN r.fecha + 1 ELSE r.fecha END)`;
+
 async function movimientosDelDia(fecha) {
     // Los cobros con varios métodos (ticket #247) tienen el desglose por método en
     // aim_recibo_pagos: hay que repartir su importe por método, no contar todo el
@@ -9776,12 +9786,12 @@ async function movimientosDelDia(fecha) {
     const r = await pool.query(
         `SELECT rp.medio, r.tipo, COALESCE(SUM(rp.importe), 0)::numeric AS total, COUNT(DISTINCT COALESCE(r.factura_grupo::text, r.id::text))::int AS n
            FROM aim_recibos r JOIN aim_recibo_pagos rp ON rp.recibo_id = r.id
-          WHERE r.fecha = $1::date AND r.estado <> 'anulado'
+          WHERE r.fecha BETWEEN $1::date - 1 AND $1::date AND ${SQL_DIA_CAJA} = $1::date AND r.estado <> 'anulado'
           GROUP BY rp.medio, r.tipo
          UNION ALL
          SELECT r.medio_pago AS medio, r.tipo, COALESCE(SUM(r.importe), 0)::numeric AS total, COUNT(DISTINCT COALESCE(r.factura_grupo::text, r.id::text))::int AS n
            FROM aim_recibos r
-          WHERE r.fecha = $1::date AND r.estado <> 'anulado'
+          WHERE r.fecha BETWEEN $1::date - 1 AND $1::date AND ${SQL_DIA_CAJA} = $1::date AND r.estado <> 'anulado'
             AND NOT EXISTS (SELECT 1 FROM aim_recibo_pagos rp WHERE rp.recibo_id = r.id)
           GROUP BY r.medio_pago, r.tipo`, [fecha]
     );
@@ -9843,10 +9853,11 @@ app.get('/api/admin/billing/arqueo', authenticateSession, requireAdmin, async (r
             movimientosDelDia(fecha),
             pool.query('SELECT * FROM aim_arqueos WHERE fecha = $1::date', [fecha]),
             pool.query(
-                `SELECT r.id, r.serie, r.numero, r.tipo, r.importe, r.medio_pago, r.cobrado_at,
+                `SELECT r.id, r.serie, r.numero, r.tipo, r.importe, r.medio_pago, r.cobrado_at, r.fecha,
+                        ${SQL_DIA_CAJA}::text AS dia_caja,
                         u.name || ' ' || COALESCE(u.surname,'') AS pagador
                  FROM aim_recibos r LEFT JOIN users u ON u.user_id = r.pagador_id
-                 WHERE r.fecha = $1::date AND r.estado <> 'anulado'
+                 WHERE r.fecha BETWEEN $1::date - 1 AND $1::date + 1 AND r.estado <> 'anulado'
                  ORDER BY r.cobrado_at NULLS LAST, r.id`, [fecha]),
             // Caja de efectivo (#323/#332): con lo que quedó al cerrar el último día
             // anterior se abre este, y de ahí sale lo que hay en la caja de cambio.
@@ -9870,10 +9881,15 @@ app.get('/api/admin/billing/arqueo', authenticateSession, requireAdmin, async (r
                 fondoAnteriorFecha: ant ? ant.fecha : null,
                 cambioAntes: ant ? ant.cambio : 0,
             },
-            detalle: detalle.rows.map(d => ({
+            detalle: detalle.rows.filter(d => String(d.dia_caja).slice(0, 10) === fecha).map(d => ({
                 numero: numeroVisible(d), serie: d.serie, tipo: d.tipo, importe: Number(d.importe),
                 medioPago: d.medio_pago, pagador: (d.pagador || '').trim(), hora: d.cobrado_at,
+                // Factura de la víspera cobrada con su caja ya cerrada: cuenta aquí.
+                deLaVispera: String(d.fecha).slice(0, 10) !== fecha,
             })),
+            // Cobros de este día hechos después de cerrar: pasan a la caja del día siguiente.
+            trasCierre: detalle.rows.filter(d => String(d.fecha).slice(0, 10) === fecha && String(d.dia_caja).slice(0, 10) !== fecha)
+                .map(d => ({ numero: numeroVisible(d), importe: Number(d.importe), medioPago: d.medio_pago, hora: d.cobrado_at, pagador: (d.pagador || '').trim() })),
         });
     } catch (err) {
         console.error('Error en el arqueo de caja:', err);
@@ -9920,11 +9936,15 @@ app.post('/api/admin/billing/arqueo', authenticateSession, requireAdmin, async (
                 bancoTotal: r2Server(banco + sacaCambio),
             };
         }
+        // La hora del primer cierre se conserva: marca qué cobros son de este día.
+        cont.primerCierre = new Date().toISOString();
         await pool.query(
             `INSERT INTO aim_arqueos (fecha, esperado, contado, comentario, cerrado_por)
              VALUES ($1::date, $2::jsonb, $3::jsonb, $4, $5)
              ON CONFLICT (fecha) DO UPDATE
-               SET esperado = EXCLUDED.esperado, contado = EXCLUDED.contado,
+               SET esperado = EXCLUDED.esperado,
+                   contado = EXCLUDED.contado || jsonb_build_object('primerCierre',
+                       COALESCE(aim_arqueos.contado->>'primerCierre', to_char(aim_arqueos.cerrado_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))),
                    comentario = EXCLUDED.comentario, cerrado_por = EXCLUDED.cerrado_por, cerrado_at = NOW()`,
             [fecha, JSON.stringify(esperado), JSON.stringify(cont), comentario?.trim() || null, req.userSession.userId]
         );
@@ -14917,12 +14937,13 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
             // Días con cobros y sin arqueo, sin contar el de hoy (aún abierto).
             pool.query(
                 `SELECT COUNT(*)::int n, MIN(fecha)::text AS desde FROM (
-                   SELECT r.fecha FROM aim_recibos r
-                   WHERE r.estado <> 'anulado' AND r.fecha < (now() AT TIME ZONE 'Europe/Madrid')::date
-                     AND r.fecha > (now() AT TIME ZONE 'Europe/Madrid')::date - INTERVAL '60 days'
-                   GROUP BY r.fecha
-                   HAVING NOT EXISTS (SELECT 1 FROM aim_arqueos a WHERE a.fecha = r.fecha)
-                 ) t`),
+                   SELECT DISTINCT ${SQL_DIA_CAJA} AS fecha FROM aim_recibos r
+                   WHERE r.estado <> 'anulado' AND r.fecha > (now() AT TIME ZONE 'Europe/Madrid')::date - INTERVAL '60 days'
+                     -- Lo pagado por la web no se cuenta en caja: un día solo con eso no hay que cerrarlo.
+                     AND COALESCE(r.medio_pago, '') NOT IN ('tpv_online', 'compensacion')
+                 ) t
+                 WHERE t.fecha < (now() AT TIME ZONE 'Europe/Madrid')::date
+                   AND NOT EXISTS (SELECT 1 FROM aim_arqueos a WHERE a.fecha = t.fecha)`),
             pool.query(
                 `SELECT COUNT(*) FILTER (WHERE alumno_id IS NULL)::int sin_ficha,
                         COUNT(*)::int total FROM aim_camp_children`),

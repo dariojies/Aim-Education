@@ -332,6 +332,14 @@ export default function BillingArqueo({ showToast }) {
         </div>
       </div>
 
+      {/* Cobros hechos después de cerrar este día: cuentan en la caja del siguiente. */}
+      {(datos.trasCierre || []).length > 0 && (
+        <div style={{ fontSize: 13, color: 'var(--ink-2)', background: 'color-mix(in oklab, var(--orange) 8%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--orange) 30%, var(--line))', borderRadius: 12, padding: '10px 14px' }}>
+          <b>{datos.trasCierre.length === 1 ? '1 cobro hecho' : `${datos.trasCierre.length} cobros hechos`} después de cerrar la caja</b> cuenta{datos.trasCierre.length === 1 ? '' : 'n'} en la caja del día siguiente:{' '}
+          {datos.trasCierre.map(t => `${t.pagador || t.numero} (${fmtHora(t.hora)}, ${eur(t.importe)}, ${nombreMedioPago(t.medioPago)})`).join(' · ')}.
+        </div>
+      )}
+
       {/* Caja de efectivo (#323/#332): la caja se queda con su fondo fijo, al
           banco van billetes y los picos a la caja de cambio, que va acumulando. */}
       <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 16, display: 'grid', gap: 12 }}>
@@ -400,7 +408,11 @@ export default function BillingArqueo({ showToast }) {
           {datos.detalle.map((d, i) => (
             <div key={i} style={{ display: 'flex', gap: 10, justifyContent: 'space-between' }}>
               <span style={{ fontWeight: 700, minWidth: 70 }}>{d.numero}</span>
-              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.pagador || '—'}</span>
+              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {d.pagador || '—'}
+                {/* Cobrado la víspera con su caja ya cerrada: cuenta en esta. */}
+                {d.deLaVispera && <span style={{ color: 'var(--orange)', fontWeight: 700 }}> · del día anterior, tras su cierre</span>}
+              </span>
               <span style={{ color: 'var(--ink-3)' }}>{nombreMedioPago(d.medioPago)}</span>
               <span style={{ color: 'var(--ink-3)' }}>{fmtHora(d.hora)}</span>
               <span style={{ fontWeight: 700, color: d.tipo === 'rectificativo' ? 'var(--orange)' : 'var(--ink)', minWidth: 70, textAlign: 'right' }}>{eur(d.importe)}</span>
