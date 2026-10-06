@@ -560,8 +560,14 @@ function TarjetaTicket({ t, diasParado, compacta = false, marcado, onMarcar, onA
       role="button"
       aria-label={`Ticket ${t.id}: ${t.subject}`}
       style={{
-        background: "var(--bg-2)", border: `1px solid ${marcado ? 'var(--purple)' : 'var(--line)'}`, borderRadius: 14,
-        padding: compacta ? "10px 12px" : "14px 18px", cursor: "pointer", borderLeft: `5px solid ${prioColor}`,
+        // Cada lado por separado: con «border» y «borderLeft» juntos, al marcar la
+        // tarjeta el navegador rehacía el borde entero y se perdía el color de la prioridad.
+        background: marcado ? "color-mix(in oklab, var(--purple) 5%, var(--bg-2))" : "var(--bg-2)",
+        borderTop: `1px solid ${marcado ? 'var(--purple)' : 'var(--line)'}`,
+        borderRight: `1px solid ${marcado ? 'var(--purple)' : 'var(--line)'}`,
+        borderBottom: `1px solid ${marcado ? 'var(--purple)' : 'var(--line)'}`,
+        borderLeft: `5px solid ${prioColor}`, borderRadius: 14,
+        padding: compacta ? "10px 12px" : "14px 18px", cursor: "pointer",
         transition: "box-shadow var(--tx-base) ease", display: "grid", gap: 6, minWidth: 0,
         boxShadow: marcado ? '0 0 0 2px color-mix(in oklab, var(--purple) 30%, transparent)' : 'none',
       }}
@@ -569,9 +575,16 @@ function TarjetaTicket({ t, diasParado, compacta = false, marcado, onMarcar, onA
       onMouseLeave={e => { if (!marcado) e.currentTarget.style.boxShadow = "none"; }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
         {onMarcar && (
-          <input type="checkbox" checked={!!marcado} aria-label={`Seleccionar el ticket ${t.id}`}
-            onClick={e => e.stopPropagation()} onChange={() => onMarcar(t.id)}
-            style={{ width: 16, height: 16, accentColor: 'var(--purple)', margin: 0 }} />
+          // Selección para cambiar varios a la vez: un círculo discreto que se llena al marcarlo.
+          <button type="button" role="checkbox" aria-checked={!!marcado} aria-label={`Seleccionar el ticket ${t.id}`}
+            title={marcado ? 'Quitar de la selección' : 'Seleccionar para cambiar varios a la vez'}
+            onClick={e => { e.stopPropagation(); onMarcar(t.id); }}
+            onKeyDown={e => e.stopPropagation()}
+            style={{ width: 20, height: 20, borderRadius: 999, padding: 0, flexShrink: 0, cursor: 'pointer', display: 'grid', placeItems: 'center',
+              border: `1.5px solid ${marcado ? 'var(--purple)' : 'color-mix(in oklab, var(--ink-3) 45%, transparent)'}`,
+              background: marcado ? 'var(--purple)' : 'transparent', color: '#fff', transition: 'background .15s, border-color .15s' }}>
+            {marcado && <I.Check width={12} height={12} />}
+          </button>
         )}
         <span style={{ fontWeight: 800, color: "var(--purple)", fontSize: 13 }}>#{t.id}</span>
         {!compacta && <span style={chip(est.color, { textTransform: 'uppercase', letterSpacing: '.04em' })}>{est.label}</span>}
@@ -1201,7 +1214,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
                 <option value="sin">Nadie (sin asignar)</option>
                 {superadmins.map(sa => <option key={sa.id} value={sa.id}>{sa.name} {sa.surname || ''}</option>)}
               </select>
-              <button className="btn btn-sm btn-primary" onClick={aplicarLote}>Aplicar</button>
+              <button className="btn btn-sm" onClick={aplicarLote} style={{background: "var(--bg-2)", color: "var(--ink)", fontWeight: 800}}>Aplicar</button>
               <button className="btn btn-sm" style={{background: "transparent", color: "var(--bg-2)", border: "1px solid color-mix(in oklab, var(--bg-2) 40%, transparent)"}} onClick={() => setMarcados(new Set())}>Cancelar</button>
             </div>
           )}
