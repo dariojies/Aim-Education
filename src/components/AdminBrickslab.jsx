@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { I } from './Icons.jsx';
 import { fmtFecha, fmtFechaHora } from '../fechas.js';
-import { IconoCategoria, ICONOS_BRICKS, CatalogoBK } from './Brickslab.jsx';
+import { IconoCategoria, ICONOS_BRICKS, CatalogoBK, Estrellas } from './Brickslab.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Brickslab y Biblioteca en el panel (#291), para secretaría y dirección:
@@ -110,6 +110,9 @@ export default function AdminBrickslab({ showToast, enlace }) {
 // ── Reservas: por entregar, entregadas (fuera) y lo último devuelto ──
 function Reservas({ d, hacer }) {
   const [nueva, setNueva] = useState(null); // { persona, articuloId }
+  const [revisar, setRevisar] = useState(null);
+  const esLego = (r) => d.categorias.find(c => c.id === r.categoriaId)?.modo === 'brickslab';
+  const botonRevisar = (r) => (esLego(r) ? <button type="button" className="btn btn-sm btn-outline" onClick={() => setRevisar({ id: r.articuloId, titulo: r.titulo })}>Revisar piezas</button> : null);
   const [q, setQ] = useState('');
   const n = q.trim().toLowerCase();
   const filtra = (l) => l.filter(r => !n || `${r.nombre} ${r.titulo}`.toLowerCase().includes(n));
@@ -141,13 +144,16 @@ function Reservas({ d, hacer }) {
       </section>
       <section style={{ display: 'grid', gap: 8 }}>
         <h3 style={{ margin: 0, fontSize: 15 }}>Prestados ahora · {fuera.length}</h3>
-        {!fuera.length ? <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Nada fuera.</p> : fuera.map(r => fila(r,
-          <button type="button" className="btn btn-sm btn-primary" onClick={() => hacer(() => api(`/api/admin/brickslab/reservas/${r.id}/devolver`, { method: 'POST' }), `Devuelto: cuenta en el historial de ${r.nombre}.`)}>Devuelto</button>))}
+        {!fuera.length ? <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Nada fuera.</p> : fuera.map(r => fila(r, <>
+          {botonRevisar(r)}
+          <button type="button" className="btn btn-sm btn-primary" onClick={() => hacer(() => api(`/api/admin/brickslab/reservas/${r.id}/devolver`, { method: 'POST' }), `Devuelto: cuenta en el historial de ${r.nombre}.`)}>Devuelto</button>
+        </>))}
       </section>
       <section style={{ display: 'grid', gap: 8 }}>
         <h3 style={{ margin: 0, fontSize: 15 }}>Lo último devuelto</h3>
-        {!d.devueltas.length ? <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Nada todavía.</p> : filtra(d.devueltas).slice(0, 30).map(r => fila(r, null))}
+        {!d.devueltas.length ? <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Nada todavía.</p> : filtra(d.devueltas).slice(0, 30).map(r => fila(r, botonRevisar(r)))}
       </section>
+      {revisar && <RevisarSet articulo={revisar} hacer={hacer} onCerrar={() => setRevisar(null)} />}
       {nueva && (
         <Modal titulo="Reservar para un alumno" onCerrar={() => setNueva(null)}>
           {!nueva.persona ? <BuscarPersona onElegir={p => setNueva(x => ({ ...x, persona: p }))} /> : (
@@ -240,6 +246,7 @@ function Catalogo({ d, hacer }) {
           <label style={etiqueta}>Imagen (enlace https://)
             <input value={ed.imagen} onChange={e => setEd(x => ({ ...x, imagen: e.target.value }))} placeholder="https://…" style={campo} />
           </label>
+          {ed.id && ed.valoraciones > 0 && <OpinionesAdmin id={ed.id} />}
           {ed.imagen && /^https:\/\//.test(ed.imagen) && <img src={ed.imagen} alt="" referrerPolicy="no-referrer" style={{ maxHeight: 140, maxWidth: '100%', objectFit: 'contain', justifySelf: 'start', borderRadius: 8, background: '#fff' }} />}
           <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 13, fontWeight: 700 }}>
             <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}><input type="checkbox" checked={!!ed.soloPro} onChange={e => setEd(x => ({ ...x, soloPro: e.target.checked }))} /> Solo para Pro</label>
@@ -254,24 +261,77 @@ function Catalogo({ d, hacer }) {
         </Modal>
       )}
 
-      {revisar && (
-        <Modal titulo={`Revisar «${revisar.articulo.titulo}»`} onCerrar={() => setRevisar(null)} ancho={520}>
-          <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Queda la fecha de la revisión. Si falta algo, apunta el número de pieza de LEGO y cuántas: sale en «Piezas que faltan» y en la lista para pedirlas.</p>
-          {revisar.piezas.map((p, i) => (
-            <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 90px auto', gap: 8 }}>
-              <input value={p.pieza} onChange={e => setRevisar(r => ({ ...r, piezas: r.piezas.map((x, j) => (j === i ? { ...x, pieza: e.target.value } : x)) }))} placeholder="Nº de pieza (p. ej. 300121)" style={campo} />
-              <input type="number" min="1" value={p.cantidad} onChange={e => setRevisar(r => ({ ...r, piezas: r.piezas.map((x, j) => (j === i ? { ...x, cantidad: e.target.value } : x)) }))} style={campo} />
-              <button type="button" className="icon-btn" aria-label="Quitar" onClick={() => setRevisar(r => ({ ...r, piezas: r.piezas.filter((_, j) => j !== i) }))}><I.Trash width={14} height={14} /></button>
+      {revisar && <RevisarSet articulo={revisar.articulo} hacer={hacer} onCerrar={() => setRevisar(null)} />}
+    </div>
+  );
+}
+
+// Las valoraciones de un artículo, con nombre y apellidos (#87).
+function OpinionesAdmin({ id }) {
+  const [l, setL] = useState(null);
+  useEffect(() => { api(`/api/admin/brickslab/articulos/${id}/opiniones`).then(x => setL(x.opiniones)).catch(() => setL([])); }, [id]);
+  if (!l?.length) return null;
+  return (
+    <details style={{ fontSize: 13 }}>
+      <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Valoraciones ({l.length})</summary>
+      <div style={{ display: 'grid', gap: 6, marginTop: 6, maxHeight: 220, overflow: 'auto' }}>
+        {l.map((o, i) => <div key={i} style={{ padding: '6px 9px', borderRadius: 8, background: 'var(--bg-3)' }}><Estrellas valor={o.estrellas} size={12} /> <b>{o.nombre}</b>{o.comentario ? <div>{o.comentario}</div> : null}</div>)}
+      </div>
+    </details>
+  );
+}
+
+// Revisar un set (#160, #168): sale lo que ya le falta (sumado, sin repetir) para
+// corregir las cantidades, más lo nuevo; y los avisos escritos a mano por las
+// familias, para darlos por vistos. Desde el catálogo y desde las reservas.
+function RevisarSet({ articulo, hacer, onCerrar }) {
+  const [piezas, setPiezas] = useState(null);
+  const [notas, setNotas] = useState([]);
+  const [vistas, setVistas] = useState({});
+  useEffect(() => {
+    api(`/api/admin/brickslab/articulos/${articulo.id}/piezas`)
+      .then(x => { setPiezas([...(x.piezas || []), { pieza: '', cantidad: 1, nueva: true }]); setNotas(x.notas || []); })
+      .catch(() => setPiezas([{ pieza: '', cantidad: 1, nueva: true }]));
+  }, [articulo.id]);
+  const cambiar = (i, k, v) => setPiezas(l => l.map((x, j) => (j === i ? { ...x, [k]: v } : x)));
+  const repetida = (p, i) => p.pieza.trim() && piezas.some((x, j) => j !== i && x.pieza.trim().toLowerCase() === p.pieza.trim().toLowerCase());
+  async function guardar() {
+    const r = await hacer(() => api(`/api/admin/brickslab/articulos/${articulo.id}/revisar`, { method: 'POST', body: { piezas: piezas.filter(x => x.pieza.trim() && Number(x.cantidad) > 0), notasVistas: Object.keys(vistas).filter(k => vistas[k]) } }),
+      x => (x.piezas ? `Revisado: le faltan ${x.piezas} tipo${x.piezas !== 1 ? 's' : ''} de pieza.` : 'Revisado: está completo.'));
+    if (r) onCerrar();
+  }
+  return (
+    <Modal titulo={`Revisar «${articulo.titulo}»`} onCerrar={onCerrar} ancho={560}>
+      <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Lo que le falta <b>ahora</b> a este set: corrige las cantidades (0 o la papelera si ya está) y añade lo nuevo. Se guarda como un solo aviso, sin repetidos, y sale en la lista para pedir a LEGO.</p>
+      {piezas === null ? <p style={{ fontSize: 13, color: 'var(--ink-3)' }}>Cargando…</p> : (
+        <div style={{ display: 'grid', gap: 8 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 36px', gap: 8, fontSize: 11.5, fontWeight: 800, color: 'var(--ink-3)', textTransform: 'uppercase' }}><span>Nº de pieza</span><span>Faltan</span><span /></div>
+          {piezas.map((p, i) => (
+            <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 90px 36px', gap: 8 }}>
+              <input value={p.pieza} onChange={e => cambiar(i, 'pieza', e.target.value)} placeholder="p. ej. 300121" style={{ ...campo, borderColor: repetida(p, i) ? 'var(--orange)' : undefined }} title={repetida(p, i) ? 'Ya está en la lista: se sumarán' : undefined} />
+              <input type="number" min="0" value={p.cantidad} onChange={e => cambiar(i, 'cantidad', e.target.value)} style={campo} />
+              <button type="button" className="icon-btn" aria-label="Quitar" onClick={() => setPiezas(l => l.filter((_, j) => j !== i))}><I.Trash width={14} height={14} /></button>
             </div>
           ))}
-          <button type="button" className="btn btn-sm btn-outline" style={{ justifySelf: 'start' }} onClick={() => setRevisar(r => ({ ...r, piezas: [...r.piezas, { pieza: '', cantidad: 1 }] }))}><I.Plus width={13} height={13} /> Otra pieza</button>
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-            <button type="button" className="btn btn-outline" onClick={() => setRevisar(null)}>Cancelar</button>
-            <button type="button" className="btn btn-primary" onClick={async () => { if (await hacer(() => api(`/api/admin/brickslab/articulos/${revisar.articulo.id}/revisar`, { method: 'POST', body: { piezas: revisar.piezas } }), r => (r.piezas ? `Revisado: ${r.piezas} pieza${r.piezas !== 1 ? 's' : ''} por reponer.` : 'Revisado: está completo.'))) setRevisar(null); }}>Guardar revisión</button>
-          </div>
-        </Modal>
+          <button type="button" className="btn btn-sm btn-outline" style={{ justifySelf: 'start' }} onClick={() => setPiezas(l => [...l, { pieza: '', cantidad: 1, nueva: true }])}><I.Plus width={13} height={13} /> Otra pieza</button>
+        </div>
       )}
-    </div>
+      {notas.length > 0 && (
+        <div style={{ display: 'grid', gap: 6 }}>
+          <b style={{ fontSize: 13 }}>Avisos de las familias</b>
+          {notas.map(n => (
+            <label key={n.id} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13, padding: '8px 10px', borderRadius: 10, background: 'var(--bg-3)', cursor: 'pointer' }}>
+              <input type="checkbox" checked={!!vistas[n.id]} onChange={e => setVistas(v => ({ ...v, [n.id]: e.target.checked }))} style={{ marginTop: 3 }} />
+              <span><span style={{ whiteSpace: 'pre-wrap' }}>{n.texto}</span><br /><span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>{n.quien} · {fmtFecha(n.fecha)} · márcalo si ya lo has pasado a la lista</span></span>
+            </label>
+          ))}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <button type="button" className="btn btn-outline" onClick={onCerrar}>Cancelar</button>
+        <button type="button" className="btn btn-primary" disabled={piezas === null} onClick={guardar}>Guardar revisión</button>
+      </div>
+    </Modal>
   );
 }
 
@@ -359,11 +419,13 @@ function Piezas({ showToast }) {
     catch (e) { showToast?.(e.message); }
   }
   if (!lista) return <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando…</p>;
-  const vistos = vista === 'pendientes' ? pendientes : lista;
+  const repuestas = (lista || []).filter(p => !p.pendiente);
+  const vistos = vista === 'pendientes' ? pendientes : vista === 'repuestas' ? repuestas : lista;
   return (
     <div style={{ display: 'grid', gap: 12 }}>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
         <button type="button" className={`filter-pill ${vista === 'pendientes' ? 'is-active' : ''}`} onClick={() => setVista('pendientes')}>Por reponer · {pendientes.length}</button>
+        <button type="button" className={`filter-pill ${vista === 'repuestas' ? 'is-active' : ''}`} onClick={() => setVista('repuestas')}>Repuestas · {repuestas.length}</button>
         <button type="button" className={`filter-pill ${vista === 'todos' ? 'is-active' : ''}`} onClick={() => setVista('todos')}>Todos · {lista.length}</button>
         <div style={{ flex: 1 }} />
         {totales.length > 0 && <button type="button" className="btn btn-sm btn-outline" onClick={csv}><I.Download width={14} height={14} /> Lista para LEGO (CSV) · {totales.length} piezas</button>}
@@ -614,6 +676,15 @@ function Ajustes({ showToast, onGuardado }) {
         </div>
       </section>
       <div><button type="button" className="btn btn-primary" onClick={guardar}>Guardar ajustes</button></div>
+      <section className="card" style={{ padding: 16, display: 'grid', gap: 8 }}>
+        <h3 style={{ margin: 0, fontSize: 16 }}>Novedades en XML (RSS)</h3>
+        <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-2)' }}>Lo nuevo del catálogo, lo que se retira y las votaciones que se abren y se cierran (con sus resultados), con sus fotos. Pega esta dirección en la herramienta de correo por suscripción o en la de Instagram (las dos leen RSS).</p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <input readOnly value={`${window.location.origin}/brickslab/feed.xml`} style={{ ...campo, flex: '1 1 280px', width: 'auto' }} onFocus={e => e.target.select()} />
+          <button type="button" className="btn btn-sm btn-outline" onClick={() => { navigator.clipboard?.writeText(`${window.location.origin}/brickslab/feed.xml`); showToast?.('Dirección copiada.'); }}>Copiar</button>
+          <a className="btn btn-sm btn-outline" href="/brickslab/feed.xml" target="_blank" rel="noopener noreferrer">Ver</a>
+        </div>
+      </section>
     </div>
   );
 }

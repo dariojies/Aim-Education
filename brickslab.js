@@ -31,7 +31,12 @@ const r2 = (x) => Math.round(Number(x) * 100) / 100;
 // Una categoría de LEGO (las que dan el Normal automático y el Pro pagado).
 const esLego = (c) => (c?.config?.reservationMode || (/brick|lego/i.test(c?.name || '') ? 'brickslab' : 'library')) === 'brickslab';
 
-export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatricula, sqlPagandoDesde, onCambio = () => {} }) {
+// Una línea «pieza: cantidad» (las de las revisiones; así la app hace su lista).
+const LINEA_PIEZA = /^\s*([\w-]+)\s*:\s*(\d+)\s*$/;
+const esListaPiezas = (texto) => { const l = String(texto || '').split('\n').filter(x => x.trim()); return l.length > 0 && l.every(x => LINEA_PIEZA.test(x)); };
+const xml = (t) => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatricula, sqlPagandoDesde, urlPublica = '', onCambio = () => {} }) {
     const err = (res, e) => (e?.httP ? res.status(e.httP).json({ error: e.msg }) : (console.error('[BRICKSLAB]', e), res.status(500).json({ error: 'Algo ha fallado. Prueba otra vez.' })));
     const fallo = (httP, msg) => ({ httP, msg });
 
@@ -94,13 +99,23 @@ export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatric
             .map(c => ({ id: c.id, nombre: c.name, icono: c.icon, descripcion: c.description || '', enCasa: c.isHomeAllowed, ranking: c.rankingEnabled,
                 modo: esLego(c) ? 'brickslab' : 'library', campos: Array.isArray(c.config?.customFields) ? c.config.customFields : [], config: c.config || {} }));
     }
-    // El catálogo con lo que queda libre de cada artículo.
+    // ¿Están ya las tablas de valoraciones? (las crea el arranque, en segundo plano).
+    let conValoraciones = false;
+    async function hayValoraciones() {
+        if (conValoraciones) return true;
+        conValoraciones = !!(await pool.query(`SELECT to_regclass('bricks_valoraciones') AS t`)).rows[0].t;
+        return conValoraciones;
+    }
+    // El catálogo con lo que queda libre de cada artículo y su valoración media.
     async function articulos() {
+        const val = await hayValoraciones();
         const r = await pool.query(
             `SELECT i.id, i."categoryId", i.title, i.description, i."imageUrl", i.stock, i."isProOnly", i."isAvailable", i.metadata,
                     i."lastReviewedAt", i."createdAt",
                     (SELECT COUNT(*) FROM bricks_reservation r WHERE r."itemId" = i.id AND r.status IN ${VIVAS})::int AS ocupadas,
                     (SELECT COUNT(*) FROM bricks_userhistory h WHERE h."itemId" = i.id)::int AS veces
+                    ${val ? `, (SELECT ROUND(AVG(v.estrellas)::numeric, 1) FROM bricks_valoraciones v WHERE v."itemId" = i.id) AS media,
+                             (SELECT COUNT(*) FROM bricks_valoraciones v WHERE v."itemId" = i.id)::int AS valoraciones` : ''}
              FROM bricks_items i WHERE i."clubId" = $1
              ORDER BY i."createdAt" DESC`, [clubId]);
         return r.rows.map(i => {
@@ -109,6 +124,7 @@ export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatric
                 id: i.id, categoriaId: i.categoryId, titulo: i.title, descripcion: i.description || '', imagen: i.imageUrl || '',
                 stock, ocupadas: i.ocupadas, libres: Math.max(0, stock - i.ocupadas), soloPro: i.isProOnly, activo: i.isAvailable,
                 disponible: i.isAvailable && i.ocupadas < stock, datos: i.metadata || {}, revisado: i.lastReviewedAt, veces: i.veces,
+                media: i.media == null ? null : Number(i.media), valoraciones: i.valoraciones || 0,
             };
         });
     }
@@ -235,6 +251,52 @@ export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatric
         return con.map(cid => ({ categoriaId: cid, filas: r.rows.filter(x => x.categoryId === cid).map(x => ({ userId: x.userId, nombre: nombreCorto(x.name, x.surname), total: x.total, anio: x.anio, mes: x.mes })) }));
     }
 
+    // «Te puede gustar»: lo que puntuaron alto (4 o 5) quienes también puntuaron
+    // alto lo mismo que esta persona. Sin gustos todavía, lo mejor valorado. Nunca
+    // lo que ya ha tenido.
+    async function recomendaciones(userId, limite = 8) {
+        if (!(await hayValoraciones())) return [];
+        const r = await pool.query(
+            `WITH gustos AS (SELECT "itemId" FROM bricks_valoraciones WHERE "userId" = $1 AND estrellas >= 4),
+                  hechos AS (SELECT "itemId" FROM bricks_userhistory WHERE "userId" = $1 AND "itemId" IS NOT NULL
+                             UNION SELECT "itemId" FROM bricks_reservation WHERE "userId" = $1 AND "itemId" IS NOT NULL),
+                  afines AS (SELECT DISTINCT v."userId" FROM bricks_valoraciones v JOIN gustos g ON g."itemId" = v."itemId"
+                             WHERE v.estrellas >= 4 AND v."userId" <> $1)
+             SELECT v."itemId" AS id, COUNT(*)::int AS puntos, AVG(v.estrellas) AS media
+             FROM bricks_valoraciones v JOIN afines a ON a."userId" = v."userId"
+             JOIN bricks_items i ON i.id = v."itemId" AND i."clubId" = $2 AND i."isAvailable"
+             WHERE v.estrellas >= 4 AND v."itemId" NOT IN (SELECT "itemId" FROM hechos)
+             GROUP BY v."itemId" ORDER BY puntos DESC, media DESC LIMIT $3`, [userId, clubId, limite]);
+        if (r.rowCount) return r.rows.map(x => x.id);
+        const t = await pool.query(
+            `SELECT v."itemId" AS id FROM bricks_valoraciones v
+             JOIN bricks_items i ON i.id = v."itemId" AND i."clubId" = $2 AND i."isAvailable"
+             WHERE v."itemId" NOT IN (SELECT "itemId" FROM bricks_userhistory WHERE "userId" = $1 AND "itemId" IS NOT NULL
+                                      UNION SELECT "itemId" FROM bricks_reservation WHERE "userId" = $1 AND "itemId" IS NOT NULL)
+             GROUP BY v."itemId" HAVING AVG(v.estrellas) >= 4 ORDER BY AVG(v.estrellas) DESC, COUNT(*) DESC LIMIT $3`, [userId, clubId, limite]);
+        return t.rows.map(x => x.id);
+    }
+    // «A quien le gustó esto, también le gustó…».
+    async function parecidos(itemId, limite = 4) {
+        if (!UUID.test(String(itemId || '')) || !(await hayValoraciones())) return [];
+        const r = await pool.query(
+            `SELECT v."itemId" AS id, COUNT(*)::int AS puntos
+             FROM bricks_valoraciones v
+             JOIN bricks_items i ON i.id = v."itemId" AND i."clubId" = $2 AND i."isAvailable"
+             WHERE v.estrellas >= 4 AND v."itemId" <> $1
+               AND v."userId" IN (SELECT "userId" FROM bricks_valoraciones WHERE "itemId" = $1 AND estrellas >= 4)
+             GROUP BY v."itemId" ORDER BY puntos DESC, AVG(v.estrellas) DESC LIMIT $3`, [itemId, clubId, limite]);
+        return r.rows.map(x => x.id);
+    }
+    // Las opiniones de un artículo (para quien entra: nombre e inicial del apellido).
+    async function opiniones(itemId, { completos = false } = {}) {
+        if (!UUID.test(String(itemId || '')) || !(await hayValoraciones())) return [];
+        const r = await pool.query(
+            `SELECT v.estrellas, v.comentario, v."updatedAt", u.name, u.surname FROM bricks_valoraciones v JOIN users u ON u.user_id = v."userId"
+             WHERE v."itemId" = $1 ORDER BY (v.comentario IS NOT NULL AND v.comentario <> '') DESC, v."updatedAt" DESC LIMIT 30`, [itemId]);
+        return r.rows.map(x => ({ estrellas: x.estrellas, comentario: x.comentario || '', fecha: x.updatedAt, nombre: completos ? nombreLargo(x.name, x.surname) : nombreCorto(x.name, x.surname) }));
+    }
+
     async function precioPro() {
         const a = await ajustes();
         if (!a.conceptoPro) return null;
@@ -253,6 +315,72 @@ export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatric
                 articulos: items.filter(i => i.activo).map(({ ocupadas, revisado, ...i }) => i),
                 pro: await precioPro().then(p => (p ? { precio: p.precio, texto: p.texto } : null)),
             });
+        } catch (e) { err(res, e); }
+    });
+
+    publico.get('/articulos/:id/parecidos', async (req, res) => {
+        try { res.set('Cache-Control', 'public, max-age=300'); res.json({ ids: await parecidos(req.params.id) }); }
+        catch (e) { err(res, e); }
+    });
+    // El XML de novedades (#92, #234), en RSS: lo que entra al catálogo y lo que
+    // se retira, y las votaciones que se abren y se cierran (con sus resultados).
+    // Lo leen las herramientas de correo por suscripción y las de Instagram.
+    publico.get('/feed.xml', async (req, res) => {
+        try {
+            const web = `${urlPublica}/brickslab`;
+            const [items, polls] = await Promise.all([
+                pool.query(
+                    `SELECT i.id, i.title, i.description, i."imageUrl", i."createdAt", i.metadata->>'retiradoAt' AS retirado, c.name AS categoria
+                     FROM bricks_items i LEFT JOIN bricks_categories c ON c.id = i."categoryId"
+                     WHERE i."clubId" = $1 AND (i."createdAt" > NOW() - INTERVAL '120 days' OR (i.metadata->>'retiradoAt')::timestamptz > NOW() - INTERVAL '120 days')`, [clubId]),
+                pool.query(
+                    `SELECT p.id, p.title, p.description, p."createdAt", p."expiresAt", p."isActive",
+                            COALESCE((SELECT json_agg(json_build_object('titulo', o.title, 'imagen', o."imageUrl", 'votos', (SELECT COUNT(*) FROM bricks_poll_vote x WHERE x."optionId" = o.id)) ORDER BY o.title)
+                                      FROM bricks_poll_option o WHERE o."pollId" = p.id), '[]') AS opciones
+                     FROM bricks_poll p WHERE p."clubId" = $1 AND (p."createdAt" > NOW() - INTERVAL '120 days' OR p."expiresAt" > NOW() - INTERVAL '120 days')`, [clubId]),
+            ]);
+            const ev = [];
+            const img = (u) => (/^https?:\/\//i.test(u || '') ? u : null);
+            for (const i of items.rows) {
+                if (new Date(i.createdAt) > new Date(Date.now() - 120 * 864e5)) ev.push({ guid: `nuevo-${i.id}`, tipo: 'nuevo', fecha: i.createdAt, titulo: `Nuevo en ${i.categoria || 'el catálogo'}: ${i.title}`, texto: i.description || '', imagen: img(i.imageUrl) });
+                if (i.retirado) ev.push({ guid: `retirado-${i.id}-${i.retirado}`, tipo: 'retirado', fecha: i.retirado, titulo: `Se retira del catálogo: ${i.title}`, texto: 'Ya no se presta.', imagen: img(i.imageUrl) });
+            }
+            for (const p of polls.rows) {
+                const ops = [...(p.opciones || [])].sort((a, b) => b.votos - a.votos);
+                ev.push({ guid: `votacion-${p.id}`, tipo: 'votacion_abierta', fecha: p.createdAt, titulo: `Nueva votación: ${p.title}`,
+                    texto: `${p.description ? `${p.description}\n\n` : ''}Opciones: ${ops.map(o => o.titulo).join(', ')}.`, imagen: img(ops[0]?.imagen) });
+                const cerrada = p.expiresAt && new Date(p.expiresAt) <= new Date();
+                if (cerrada) {
+                    const total = ops.reduce((s, o) => s + Number(o.votos), 0);
+                    ev.push({ guid: `resultado-${p.id}`, tipo: 'votacion_cerrada', fecha: p.expiresAt,
+                        titulo: total ? `Resultado de la votación «${p.title}»: gana ${ops[0].titulo}` : `Se cierra la votación «${p.title}»`,
+                        texto: total ? ops.map(o => `${o.titulo}: ${o.votos} voto${Number(o.votos) !== 1 ? 's' : ''}`).join('\n') : 'Sin votos.', imagen: img(ops[0]?.imagen) });
+                }
+            }
+            ev.sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+            const tipoImg = (u) => (/\.png(\?|$)/i.test(u) ? 'image/png' : /\.webp(\?|$)/i.test(u) ? 'image/webp' : 'image/jpeg');
+            const cuerpo = ev.slice(0, 60).map(e => `    <item>
+      <title>${xml(e.titulo)}</title>
+      <link>${xml(web)}</link>
+      <guid isPermaLink="false">${xml(`aim-brickslab-${e.guid}`)}</guid>
+      <pubDate>${new Date(e.fecha).toUTCString()}</pubDate>
+      <category>${xml(e.tipo)}</category>
+      <description>${xml(`${e.imagen ? `<p><img src="${e.imagen}" alt="" style="max-width:100%"></p>` : ''}${String(e.texto).split('\n').map(l => `<p>${xml(l)}</p>`).join('')}`)}</description>${e.imagen ? `
+      <enclosure url="${xml(e.imagen)}" length="0" type="${tipoImg(e.imagen)}" />` : ''}
+    </item>`).join('\n');
+            res.set('Content-Type', 'application/rss+xml; charset=utf-8');
+            res.set('Cache-Control', 'public, max-age=600');
+            res.send(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Brickslab y Biblioteca · AIM Education</title>
+    <link>${xml(web)}</link>
+    <description>Novedades del catálogo de sets de LEGO y libros del club, y sus votaciones.</description>
+    <language>es-es</language>
+    <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
+${cuerpo}
+  </channel>
+</rss>`);
         } catch (e) { err(res, e); }
     });
 
@@ -282,6 +410,9 @@ export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatric
             }
             const rk = await ranking(cats);
             const mios = new Set(fam.map(String));
+            const val = await hayValoraciones();
+            const misVal = val ? (await pool.query(`SELECT "userId", "itemId", estrellas, comentario FROM bricks_valoraciones WHERE "userId" = ANY($1::uuid[])`, [fam])).rows : [];
+            const recs = Object.fromEntries(await Promise.all(miembros.rows.map(async m => [m.id, await recomendaciones(m.id).catch(() => [])])));
             res.set('Cache-Control', 'no-store');
             res.json({
                 categorias: cats.map(({ config, ...c }) => c),
@@ -290,6 +421,8 @@ export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatric
                     id: m.id, nombre: m.name, apellidos: m.surname || '',
                     permisos: perms.get(String(m.id)) || {},
                     voto: votos.find(v => String(v.userId) === String(m.id))?.optionId || null,
+                    recomendaciones: recs[m.id] || [],
+                    valoraciones: Object.fromEntries(misVal.filter(v => String(v.userId) === String(m.id)).map(v => [v.itemId, { estrellas: v.estrellas, comentario: v.comentario || '' }])),
                 })),
                 reservas, historial: hist.rows.map(h => ({ id: h.id, userId: h.userId, articuloId: h.itemId, categoriaId: h.categoryId, titulo: h.title, imagen: h.imageUrl || '', fecha: h.completedAt })),
                 votacion,
@@ -297,6 +430,29 @@ export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatric
                 pro,
             });
         } catch (e) { err(res, e); }
+    });
+    // Valorar lo que se ha montado o leído (#87): de 1 a 5 y, si quiere, un comentario.
+    familia.post('/valorar', async (req, res) => {
+        const { alumnoId, articuloId } = req.body || {};
+        const estrellas = Math.round(Number(req.body?.estrellas));
+        const comentario = String(req.body?.comentario || '').trim().slice(0, 600) || null;
+        try {
+            if (!(await deMiFamilia(req, alumnoId))) throw fallo(403, 'Esa persona no es de tu familia.');
+            if (!(estrellas >= 1 && estrellas <= 5)) throw fallo(400, 'Elige de 1 a 5 estrellas.');
+            if (!UUID.test(String(articuloId || ''))) throw fallo(400, 'Ese artículo no existe.');
+            if (!(await hayValoraciones())) throw fallo(503, 'Prueba en un momento.');
+            const lo = (await pool.query(`SELECT 1 FROM bricks_userhistory WHERE "userId" = $1 AND "itemId" = $2 LIMIT 1`, [alumnoId, articuloId])).rowCount;
+            if (!lo) throw fallo(403, 'Se valora lo que se ha montado o leído (cuando se ha devuelto).');
+            await pool.query(
+                `INSERT INTO bricks_valoraciones ("userId", "itemId", estrellas, comentario) VALUES ($1, $2, $3, $4)
+                 ON CONFLICT ("userId", "itemId") DO UPDATE SET estrellas = EXCLUDED.estrellas, comentario = EXCLUDED.comentario, "updatedAt" = NOW()`,
+                [alumnoId, articuloId, estrellas, comentario]);
+            res.json({ success: true });
+        } catch (e) { err(res, e); }
+    });
+    familia.get('/articulos/:id/opiniones', async (req, res) => {
+        try { res.set('Cache-Control', 'no-store'); res.json({ opiniones: await opiniones(req.params.id) }); }
+        catch (e) { err(res, e); }
     });
     familia.post('/reservas', async (req, res) => {
         const { alumnoId, articuloId } = req.body || {};
@@ -503,7 +659,10 @@ export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatric
             const d = datosArticulo(req.body || {}, await categorias());
             const r = await pool.query(
                 `UPDATE bricks_items SET "categoryId" = $3, title = $4, description = $5, "imageUrl" = $6, stock = $7, "isProOnly" = $8, "isAvailable" = $9,
-                        metadata = COALESCE(metadata, '{}'::jsonb) || $10::jsonb
+                        -- Cuándo se retira (para el XML de novedades); al volver, se quita.
+                        metadata = CASE WHEN $9 THEN (COALESCE(metadata, '{}'::jsonb) - 'retiradoAt') || $10::jsonb
+                                        WHEN "isAvailable" THEN COALESCE(metadata, '{}'::jsonb) || $10::jsonb || jsonb_build_object('retiradoAt', NOW())
+                                        ELSE COALESCE(metadata, '{}'::jsonb) || $10::jsonb END
                  WHERE id = $1 AND "clubId" = $2 RETURNING id`,
                 [String(req.params.id), clubId, d.categoriaId, d.titulo, d.descripcion, d.imagen, d.stock, d.soloPro, d.activo, JSON.stringify(d.datos)]);
             if (!r.rowCount) throw fallo(404, 'Ese artículo no existe.');
@@ -519,30 +678,67 @@ export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatric
                 `SELECT 1 FROM bricks_reservation WHERE "itemId" = $1 UNION SELECT 1 FROM bricks_userhistory WHERE "itemId" = $1
                  UNION SELECT 1 FROM bricks_missing_pieces WHERE "itemId" = $1`, [id])).rowCount;
             if (usado) {
-                await pool.query(`UPDATE bricks_items SET "isAvailable" = false WHERE id = $1 AND "clubId" = $2`, [id, clubId]);
+                await pool.query(`UPDATE bricks_items SET "isAvailable" = false, metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('retiradoAt', NOW())
+                                  WHERE id = $1 AND "clubId" = $2 AND "isAvailable"`, [id, clubId]);
                 return res.json({ success: true, retirado: true });
             }
             await pool.query(`DELETE FROM bricks_items WHERE id = $1 AND "clubId" = $2`, [id, clubId]);
             res.json({ success: true });
         } catch (e) { err(res, e); }
     });
-    // Revisar un set: queda la fecha y, si faltan piezas, el aviso (con el formato
-    // «pieza: cantidad» de la app, para su lista de pedido a LEGO).
-    admin.post('/articulos/:id/revisar', async (req, res) => {
+    // Lo que le falta ahora a un set: sus piezas (sumadas, sin repetir) y los avisos
+    // escritos a mano por las familias, para revisarlo con todo delante (#160).
+    admin.get('/articulos/:id/piezas', async (req, res) => {
         const id = String(req.params.id);
         try {
             if (!UUID.test(id)) throw fallo(404, 'Ese artículo no existe.');
-            const r = await pool.query(`UPDATE bricks_items SET "lastReviewedAt" = NOW() WHERE id = $1 AND "clubId" = $2 RETURNING id`, [id, clubId]);
-            if (!r.rowCount) throw fallo(404, 'Ese artículo no existe.');
-            const lineas = (Array.isArray(req.body?.piezas) ? req.body.piezas : [])
-                .map(p => ({ pieza: String(p?.pieza || '').trim().slice(0, 40), cantidad: Math.round(Number(p?.cantidad) || 0) }))
-                .filter(p => p.pieza && p.cantidad > 0).slice(0, 100);
-            if (lineas.length) {
-                await pool.query(`INSERT INTO bricks_missing_pieces (id, "userId", "itemId", description, status, "reportedAt") VALUES ($1, $2, $3, $4, 'Pending', NOW())`,
-                    [crypto.randomUUID(), req.userSession.userId, id, lineas.map(p => `${p.pieza}: ${p.cantidad}`).join('\n')]);
+            const r = await pool.query(
+                `SELECT p.id, p.description, p."reportedAt", u.name, u.surname FROM bricks_missing_pieces p
+                 JOIN bricks_items i ON i.id = p."itemId" AND i."clubId" = $2 JOIN users u ON u.user_id = p."userId"
+                 WHERE p."itemId" = $1 AND p.status = 'Pending' ORDER BY p."reportedAt"`, [id, clubId]);
+            const suma = new Map();
+            const notas = [];
+            for (const x of r.rows) {
+                if (esListaPiezas(x.description)) {
+                    for (const l of x.description.split('\n')) { const m = l.match(LINEA_PIEZA); if (m) suma.set(m[1], (suma.get(m[1]) || 0) + Number(m[2])); }
+                } else notas.push({ id: x.id, texto: x.description, fecha: x.reportedAt, quien: nombreLargo(x.name, x.surname) });
             }
-            res.json({ success: true, piezas: lineas.length });
+            res.set('Cache-Control', 'no-store');
+            res.json({ piezas: [...suma.entries()].map(([pieza, cantidad]) => ({ pieza, cantidad })), notas });
         } catch (e) { err(res, e); }
+    });
+    // Revisar un set: queda la fecha y lo que le falta AHORA, en un solo aviso
+    // (con el formato «pieza: cantidad» de la app, para su lista de pedido a LEGO).
+    // Los avisos de piezas anteriores se dan por sustituidos: así no se repiten.
+    admin.post('/articulos/:id/revisar', async (req, res) => {
+        const id = String(req.params.id);
+        const client = await pool.connect();
+        try {
+            if (!UUID.test(id)) throw fallo(404, 'Ese artículo no existe.');
+            const suma = new Map();
+            for (const p of (Array.isArray(req.body?.piezas) ? req.body.piezas : []).slice(0, 200)) {
+                const pieza = String(p?.pieza || '').trim().replace(/[^\w-]/g, '').slice(0, 40), cantidad = Math.round(Number(p?.cantidad) || 0);
+                if (pieza && cantidad > 0) suma.set(pieza, (suma.get(pieza) || 0) + cantidad);
+            }
+            await client.query('BEGIN');
+            const r = await client.query(`UPDATE bricks_items SET "lastReviewedAt" = NOW() WHERE id = $1 AND "clubId" = $2 RETURNING id`, [id, clubId]);
+            if (!r.rowCount) throw fallo(404, 'Ese artículo no existe.');
+            const antes = (await client.query(`SELECT id, description FROM bricks_missing_pieces WHERE "itemId" = $1 AND status = 'Pending'`, [id])).rows.filter(x => esListaPiezas(x.description));
+            if (antes.length) await client.query(`UPDATE bricks_missing_pieces SET status = 'Replaced' WHERE id = ANY($1::text[])`, [antes.map(x => x.id)]);
+            // Los avisos escritos a mano que se den por vistos, también.
+            const vistas = (Array.isArray(req.body?.notasVistas) ? req.body.notasVistas : []).map(String).slice(0, 50);
+            if (vistas.length) await client.query(`UPDATE bricks_missing_pieces SET status = 'Replaced' WHERE "itemId" = $1 AND id = ANY($2::text[]) AND status = 'Pending'`, [id, vistas]);
+            if (suma.size) {
+                await client.query(`INSERT INTO bricks_missing_pieces (id, "userId", "itemId", description, status, "reportedAt") VALUES ($1, $2, $3, $4, 'Pending', NOW())`,
+                    [crypto.randomUUID(), req.userSession.userId, id, [...suma.entries()].map(([k, v]) => `${k}: ${v}`).join('\n')]);
+            }
+            await client.query('COMMIT');
+            res.json({ success: true, piezas: suma.size });
+        } catch (e) { await client.query('ROLLBACK').catch(() => {}); err(res, e); } finally { client.release(); }
+    });
+    admin.get('/articulos/:id/opiniones', async (req, res) => {
+        try { res.set('Cache-Control', 'no-store'); res.json({ opiniones: await opiniones(req.params.id, { completos: true }) }); }
+        catch (e) { err(res, e); }
     });
 
     // ── Categorías ──
@@ -674,7 +870,7 @@ export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatric
             const d = datosVotacion(req.body || {});
             await client.query('BEGIN');
             // Una votación activa a la vez: la nueva cierra las anteriores.
-            await client.query(`UPDATE bricks_poll SET "isActive" = false WHERE "clubId" = $1 AND "isActive"`, [clubId]);
+            await client.query(`UPDATE bricks_poll SET "isActive" = false, "expiresAt" = LEAST(COALESCE("expiresAt", NOW()), NOW()) WHERE "clubId" = $1 AND "isActive"`, [clubId]);
             const id = crypto.randomUUID();
             await client.query(`INSERT INTO bricks_poll (id, "clubId", title, description, "isActive", "expiresAt", "createdAt") VALUES ($1, $2, $3, $4, true, $5, NOW())`,
                 [id, clubId, d.titulo, d.descripcion, d.hasta]);
@@ -706,8 +902,16 @@ export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatric
     admin.patch('/votaciones/:id', async (req, res) => {
         try {
             const activa = !!req.body?.activa;
-            if (activa) await pool.query(`UPDATE bricks_poll SET "isActive" = false WHERE "clubId" = $1 AND "isActive" AND id <> $2`, [clubId, String(req.params.id)]);
-            const r = await pool.query(`UPDATE bricks_poll SET "isActive" = $3 WHERE id = $1 AND "clubId" = $2 RETURNING id`, [String(req.params.id), clubId, activa]);
+            // Cerrar deja la fecha de cierre en ahora (la usa el XML para el
+            // resultado); reabrir una que ya había caducado le da hasta el día 1 del
+            // mes que viene a las 10:00, como al crearla.
+            if (activa) await pool.query(`UPDATE bricks_poll SET "isActive" = false, "expiresAt" = LEAST(COALESCE("expiresAt", NOW()), NOW()) WHERE "clubId" = $1 AND "isActive" AND id <> $2`, [clubId, String(req.params.id)]);
+            const n = new Date(), siguiente = new Date(n.getFullYear(), n.getMonth() + 1, 1, 10, 0, 0);
+            const r = await pool.query(
+                `UPDATE bricks_poll SET "isActive" = $3,
+                        "expiresAt" = CASE WHEN $3 AND ("expiresAt" IS NOT NULL AND "expiresAt" <= NOW()) THEN $4::timestamp
+                                           WHEN NOT $3 THEN LEAST(COALESCE("expiresAt", NOW()), NOW()) ELSE "expiresAt" END
+                 WHERE id = $1 AND "clubId" = $2 RETURNING id`, [String(req.params.id), clubId, activa, siguiente]);
             if (!r.rowCount) throw fallo(404, 'Esa votación no existe.');
             res.json({ success: true });
         } catch (e) { err(res, e); }
@@ -752,5 +956,32 @@ export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatric
         return { porEntregar: r.por_entregar, ultima: r.ultima };
     }
 
-    return { publico, familia, admin, asegurarEnlacePro, pendientes };
+    // «¿Qué te ha parecido?» (#87): lo devuelto hace más de 18 horas (y menos de
+    // 7 días), sin valorar y sin aviso. Solo desde que se activó (no se manda por
+    // lo devuelto antes). `enviar(x)` lo manda; se apunta antes para no repetirlo.
+    async function recordatoriosValoracion(enviar) {
+        if (!(await hayValoraciones()) || !(await pool.query(`SELECT to_regclass('aim_brickslab_recordatorios') AS t`)).rows[0].t) return;
+        const a = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'brickslab'`)).rows[0]?.valor || {};
+        if (!a.valorarDesde) { await guardarAjustes({ valorarDesde: new Date().toISOString() }); return; }
+        const r = await pool.query(
+            `SELECT h.id, h."userId", h."itemId", i.title, c.config, c.name AS categoria, u.name AS alumno
+             FROM bricks_userhistory h JOIN bricks_items i ON i.id = h."itemId" AND i."clubId" = $1
+             LEFT JOIN bricks_categories c ON c.id = h."categoryId" JOIN users u ON u.user_id = h."userId"
+             WHERE h."completedAt" < NOW() - INTERVAL '18 hours' AND h."completedAt" > NOW() - INTERVAL '7 days'
+               AND h."completedAt" >= $2::timestamptz
+               AND NOT EXISTS (SELECT 1 FROM aim_brickslab_recordatorios r WHERE r.historial_id = h.id)
+               AND NOT EXISTS (SELECT 1 FROM bricks_valoraciones v WHERE v."userId" = h."userId" AND v."itemId" = h."itemId")
+             ORDER BY h."completedAt" LIMIT 40`, [clubId, a.valorarDesde]);
+        let n = 0;
+        for (const x of r.rows) {
+            const apuntado = await pool.query(`INSERT INTO aim_brickslab_recordatorios (historial_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING historial_id`, [x.id, x.userId]);
+            if (!apuntado.rowCount) continue;
+            try {
+                if (await enviar({ userId: x.userId, itemId: x.itemId, titulo: x.title, alumno: x.alumno, libro: !esLego({ config: x.config, name: x.categoria }) })) n++;
+            } catch (e) { console.error('[brickslab valorar]', e.message); }
+        }
+        if (n) console.log(`[brickslab] ${n} correo(s) de «¿qué te ha parecido?»`);
+    }
+
+    return { publico, familia, admin, asegurarEnlacePro, pendientes, recordatoriosValoracion };
 }

@@ -846,6 +846,24 @@ export const CORREOS_SISTEMA = {
             PEQ('Puedes contestarnos desde tu área, en Soporte.'),
         ]),
     },
+    brickslab_valorar: {
+        grupo: 'familias', nombre: 'Brickslab: ¿qué te ha parecido?', cuando: 'Al día siguiente de devolver un set de LEGO o un libro, a la familia, para que lo valore (uno por artículo).',
+        asunto: '¿Qué le ha parecido {articulo} a {alumno}?',
+        variables: {
+            alumno: { que: 'Nombre del alumno', ejemplo: 'Lucía' },
+            articulo: { que: 'El set o el libro', ejemplo: 'LEGO Star Wars Caminante' },
+            que: { que: '«el set» o «el libro»', ejemplo: 'el set' },
+            verbo: { que: '«montar» o «leer»', ejemplo: 'montar' },
+            enlace: { que: 'Enlace para valorarlo', ejemplo: 'https://www.aimeducation.es/dashboard/brickslab' },
+        },
+        obligatorio: ['enlace'],
+        diseno: () => d([
+            T('Hola,'),
+            T('**{alumno}** acaba de devolver {que} **«{articulo}»**. ¿Qué le ha parecido? Con un par de estrellas nos ayuda a elegir lo próximo que compramos y a recomendar a cada uno lo que más le puede gustar.'),
+            BTN([{ texto: 'Valorarlo', url: '{enlace}', fondo: '', color: '#ffffff' }]),
+            PEQ('Solo es un momento. Si no os apetece, no pasa nada.'),
+        ]),
+    },
     ticket_resuelto: {
         grupo: 'familias', nombre: 'Soporte: tu consulta está resuelta', cuando: 'Cuando se resuelve o se cierra un ticket, a quien lo abrió (familia o personal), si no es quien lo cierra.',
         asunto: 'Resuelto: {asunto}',

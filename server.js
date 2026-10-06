@@ -1698,6 +1698,32 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_incidencias_estado ON aim_incidencias (estado, created_at DESC)`);
+        // Valoraciones de Brickslab (#87, autorizadas): de 1 a 5 estrellas y un
+        // comentario, una por persona y artículo. La comparten esta web y la app de
+        // Brickslab (por eso va con el estilo de sus tablas). Con ellas se ordena
+        // por lo mejor valorado y se recomienda lo que gustó a gente con gustos
+        // parecidos.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS bricks_valoraciones (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                "userId" UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                "itemId" UUID NOT NULL REFERENCES bricks_items(id) ON DELETE CASCADE,
+                estrellas SMALLINT NOT NULL CHECK (estrellas BETWEEN 1 AND 5),
+                comentario TEXT,
+                "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE ("userId", "itemId")
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_bricks_valoraciones_item ON bricks_valoraciones ("itemId")`);
+        // A qué devoluciones ya se les ha mandado el «¿qué te ha parecido?».
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_brickslab_recordatorios (
+                historial_id TEXT PRIMARY KEY,
+                user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+                enviado_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
         // Galería de fotos (#364): álbumes, sus fotos (reducidas al subirlas) y quién
         // sale en cada una. Cada familia ve solo lo que le toca: las fotos donde
         // sale alguien suyo y los álbumes de sus clases o actividades.
@@ -11003,6 +11029,7 @@ const AJUSTES_SISTEMA = {
         hora: { nombre: 'A partir de qué hora sale', unidad: 'h', min: 0, max: 22, def: 9 },
         dias: { nombre: 'Días sin moverse para avisar', unidad: 'días', min: 2, max: 60, def: 7 },
     },
+    brickslab_valorar: { hora: { nombre: 'A partir de qué hora sale (hasta las 21 h)', unidad: 'h', min: 8, max: 20, def: 17 } },
     tickets_resumen_semanal: {
         dia: { nombre: 'Qué día de la semana (1 = lunes)', unidad: 'día', min: 1, max: 7, def: 1 },
         hora: { nombre: 'A partir de qué hora sale', unidad: 'h', min: 0, max: 22, def: 9 },
@@ -19269,9 +19296,31 @@ app.delete('/api/admin/candidatos/:id', authenticateSession, requireSeccion('can
 // ── Brickslab y Biblioteca (#291) ────────────────────────────────────────────
 // El préstamo de sets de LEGO y libros del club, sobre las tablas de la app de
 // Brickslab (que sigue para otros clubes). Ver brickslab.js.
-const brickslab = crearBrickslab({ pool, clubId: AIM_CLUB_ID, familiaIds, generarCargosDeMatricula, sqlPagandoDesde: SQL_PAGANDO_DESDE });
+const brickslab = crearBrickslab({ pool, clubId: AIM_CLUB_ID, familiaIds, generarCargosDeMatricula, sqlPagandoDesde: SQL_PAGANDO_DESDE, urlPublica: URL_PUBLICA_WEB });
 async function asegurarProBrickslab() { return brickslab.asegurarEnlacePro(); }
 app.use('/api/brickslab', brickslab.publico);
+// El XML de novedades (#92, #234), también con una dirección fácil de recordar.
+app.get('/brickslab/feed.xml', (req, res, next) => { req.url = '/feed.xml'; brickslab.publico(req, res, next); });
+// «¿Qué te ha parecido?» (#87): al día siguiente de devolver un set o un libro,
+// a la familia, desde la hora que se ponga en Automatismos. Uno por artículo.
+async function recordatoriosValoracion() {
+    if (!mailTransporter) return;
+    const est = await estadoCorreosSistema();
+    if (est.brickslab_valorar?.apagado || horaMadridAhora() < await ajusteSistema('brickslab_valorar', 'hora') || horaMadridAhora() >= 21) return;
+    await brickslab.recordatoriosValoracion(async (x) => {
+        // Si no quiere avisos de sus actividades (#170), no.
+        const act = (await pool.query(`SELECT ${sqlUltimoConsentimiento('$1::uuid', 'actividades')} AS a`, [x.userId])).rows[0]?.a;
+        if (act === false) return false;
+        const correos = (await emailsFamilia(x.userId)).filter(e => !esCorreoInterno(e));
+        if (!correos.length) return false;
+        const c = await correoSistema('brickslab_valorar', {
+            alumno: x.alumno, articulo: x.titulo, que: x.libro ? 'el libro' : 'el set', verbo: x.libro ? 'leer' : 'montar',
+            enlace: `${URL_PUBLICA_WEB}/dashboard/brickslab?valorar=${x.itemId}&para=${x.userId}`,
+        });
+        await mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: correos.join(','), ...c });
+        return true;
+    });
+}
 app.use('/api/me/brickslab', authenticateSession, brickslab.familia);
 app.use('/api/admin/brickslab', authenticateSession, requireSeccion('brickslab'), brickslab.admin);
 
@@ -20670,4 +20719,7 @@ app.listen(port, () => {
     // sello semanal de la cadena de auditoría. Cada hora basta.
     setTimeout(tareasRegistroJornada, 60 * 1000);
     setInterval(tareasRegistroJornada, 60 * 60 * 1000);
+    // Brickslab (#87): el «¿qué te ha parecido?» tras devolver algo, cada 30 min.
+    setTimeout(() => recordatoriosValoracion().catch(e => console.error('[brickslab valorar]', e.message)), 3 * 60 * 1000);
+    setInterval(() => recordatoriosValoracion().catch(e => console.error('[brickslab valorar]', e.message)), 30 * 60 * 1000);
 });

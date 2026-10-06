@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Box, Book, Package, Puzzle, Gamepad2, Music, Palette, Rocket, Star, Trophy, Search, X, Home, Sparkles, CalendarCheck, Medal } from 'lucide-react';
 import { I } from './Icons.jsx';
 import { AimHeader, AimFooter } from './Shared.jsx';
@@ -22,6 +22,26 @@ const colorCat = (cat) => (cat?.modo === 'library' ? '#00BBF4' : '#FFD526');
 const iniciales = (n, a) => `${(n || '?')[0] || ''}${(a || '')[0] || ''}`.toUpperCase();
 const sinTildes = (t) => String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 const VENTAJAS_PRO = ['Llévate los sets a casa', 'Sets exclusivos Pro', 'Prioridad en las novedades'];
+const media = (n) => Number(n || 0).toFixed(1).replace('.', ',');
+
+// Estrellas: para enseñar una nota o, con onCambio, para elegirla.
+export function Estrellas({ valor = 0, onCambio = null, size = 16 }) {
+  const [sobre, setSobre] = useState(0);
+  const v = sobre || valor;
+  return (
+    <span style={{ display: 'inline-flex', gap: onCambio ? 4 : 1, color: '#F5B301', lineHeight: 1 }} onMouseLeave={() => setSobre(0)} role={onCambio ? 'radiogroup' : 'img'} aria-label={onCambio ? 'Puntuación' : `${valor} de 5 estrellas`}>
+      {[1, 2, 3, 4, 5].map(n => {
+        const lleno = v >= n - 0.25, medio = !lleno && v >= n - 0.75;
+        const ico = <Star size={size} strokeWidth={2} fill={lleno ? '#F5B301' : medio ? 'url(#bk-medio)' : 'none'} color={lleno || medio ? '#F5B301' : 'var(--line)'} />;
+        return onCambio ? (
+          <button key={n} type="button" role="radio" aria-checked={valor === n} aria-label={`${n} estrella${n > 1 ? 's' : ''}`} onMouseEnter={() => setSobre(n)} onClick={() => onCambio(n)}
+            style={{ border: 0, background: 'none', padding: 2, cursor: 'pointer', display: 'grid' }}>{ico}</button>
+        ) : <span key={n} style={{ display: 'grid' }}>{ico}</span>;
+      })}
+      <svg width="0" height="0" style={{ position: 'absolute' }} aria-hidden="true"><defs><linearGradient id="bk-medio"><stop offset="50%" stopColor="#F5B301" /><stop offset="50%" stopColor="transparent" /></linearGradient></defs></svg>
+    </span>
+  );
+}
 
 async function api(url, opts = {}) {
   const r = await fetch(url, { credentials: 'include', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, ...opts, body: opts.body ? JSON.stringify(opts.body) : undefined });
@@ -63,6 +83,7 @@ export function TarjetaArticulo({ a, cat, accion = null, onAbrir = null }) {
         <span className="bk-tipo"><IconoCategoria nombre={cat?.icono} size={12} /> {cat?.nombre}</span>
         <h3 className="bk-titulo">{a.titulo}</h3>
         {datos.length > 0 && <div className="bk-meta">{datos.map(d => d.valor).join(' · ')}</div>}
+        {a.valoraciones > 0 && <div className="bk-meta" style={{ display: 'flex', gap: 6, alignItems: 'center' }}><Estrellas valor={a.media} size={13} /> <b style={{ color: 'var(--ink-2)' }}>{media(a.media)}</b> ({a.valoraciones})</div>}
         {a.descripcion && <p className="bk-desc">{a.descripcion}</p>}
       </div>
       {accion && <div className="bk-pie">{accion}</div>}
@@ -71,7 +92,15 @@ export function TarjetaArticulo({ a, cat, accion = null, onAbrir = null }) {
 }
 
 // La ficha completa de un artículo.
-export function FichaArticulo({ a, cat, accion = null, onCerrar }) {
+export function FichaArticulo({ a, cat, accion = null, onCerrar, opinionesUrl = null, articulos = [], onAbrirOtro = null }) {
+  const [ops, setOps] = useState(null);
+  const [parecidos, setParecidos] = useState([]);
+  useEffect(() => {
+    setOps(null); setParecidos([]);
+    if (opinionesUrl && a.valoraciones) fetch(opinionesUrl(a.id), { credentials: 'include', cache: 'no-store' }).then(r => (r.ok ? r.json() : null)).then(x => setOps(x?.opiniones || [])).catch(() => {});
+    fetch(`/api/brickslab/articulos/${a.id}/parecidos`).then(r => (r.ok ? r.json() : null)).then(x => setParecidos(x?.ids || [])).catch(() => {});
+  }, [a.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const otros = parecidos.map(id => articulos.find(x => x.id === id)).filter(Boolean);
   useEffect(() => {
     const k = (e) => { if (e.key === 'Escape') onCerrar(); };
     window.addEventListener('keydown', k);
@@ -90,6 +119,7 @@ export function FichaArticulo({ a, cat, accion = null, onCerrar }) {
           <span className="bk-tipo"><IconoCategoria nombre={cat?.icono} size={13} /> {cat?.nombre}</span>
           <h2>{a.titulo}</h2>
           {datos.length > 0 && <dl>{datos.map(d => <React.Fragment key={d.label}><dt>{d.label}</dt><dd>{d.valor}</dd></React.Fragment>)}</dl>}
+          {a.valoraciones > 0 && <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13.5 }}><Estrellas valor={a.media} size={17} /><b>{media(a.media)}</b><span style={{ color: 'var(--ink-3)' }}>· {a.valoraciones} {a.valoraciones === 1 ? 'valoración' : 'valoraciones'}</span></div>}
           {a.descripcion && <p style={{ margin: 0, fontSize: 14.5, lineHeight: 1.6, color: 'var(--ink-2)', whiteSpace: 'pre-wrap' }}>{a.descripcion}</p>}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <span className={`bk-sello ${a.disponible ? 'libre' : 'fuera'}`} style={{ boxShadow: 'none', border: '1px solid var(--line)' }}><span className="punto" />{disponibilidad(a)}</span>
@@ -97,6 +127,30 @@ export function FichaArticulo({ a, cat, accion = null, onCerrar }) {
             {aCasa && <span className="bk-sello" style={{ boxShadow: 'none', border: '1px solid var(--line)' }}><Home size={12} /> Con Pro, a casa</span>}
           </div>
           {accion && <div style={{ marginTop: 6 }}>{accion}</div>}
+          {ops && ops.filter(o => o.comentario).length > 0 && (
+            <div style={{ display: 'grid', gap: 8, marginTop: 4 }}>
+              <b style={{ fontSize: 13 }}>Lo que dicen</b>
+              {ops.filter(o => o.comentario).slice(0, 5).map((o, i) => (
+                <div key={i} style={{ fontSize: 13, padding: '8px 10px', borderRadius: 10, background: 'var(--bg-3)' }}>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 2 }}><Estrellas valor={o.estrellas} size={12} /><b style={{ fontSize: 12 }}>{o.nombre}</b></div>
+                  {o.comentario}
+                </div>
+              ))}
+            </div>
+          )}
+          {otros.length > 0 && (
+            <div style={{ display: 'grid', gap: 8, marginTop: 4 }}>
+              <b style={{ fontSize: 13 }}>A quien le gustó esto, también le gustó</b>
+              <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
+                {otros.map(o => (
+                  <button key={o.id} type="button" onClick={() => onAbrirOtro?.(o)} style={{ flex: '0 0 110px', border: '1px solid var(--line)', borderRadius: 12, background: 'var(--bg-2)', padding: 6, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', color: 'var(--ink)' }}>
+                    {o.imagen ? <img src={o.imagen} alt="" referrerPolicy="no-referrer" style={{ width: '100%', aspectRatio: '4 / 3', objectFit: 'cover', borderRadius: 8, background: '#fff' }} /> : null}
+                    <span style={{ display: 'block', fontSize: 11.5, fontWeight: 700, marginTop: 4, lineHeight: 1.25 }}>{o.titulo}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -104,7 +158,7 @@ export function FichaArticulo({ a, cat, accion = null, onCerrar }) {
 }
 
 // El catálogo entero: buscador, categorías, solo lo disponible y el orden.
-export function CatalogoBK({ categorias, articulos, accionDe = null, onAbrir = null, extra = null, conTodo = true }) {
+export function CatalogoBK({ categorias, articulos, accionDe = null, onAbrir = null, extra = null, conTodo = true, opinionesUrl = null, arriba = null }) {
   const [cat, setCat] = useState(conTodo ? 'todo' : null);
   const [q, setQ] = useState('');
   const [libres, setLibres] = useState(false);
@@ -118,6 +172,7 @@ export function CatalogoBK({ categorias, articulos, accionDe = null, onAbrir = n
       && (!n || n.split(/\s+/).every(p => sinTildes([a.titulo, a.descripcion, ...Object.values(a.datos || {})].join(' ')).includes(p))));
     if (orden === 'az') return [...l].sort((x, y) => x.titulo.localeCompare(y.titulo, 'es'));
     if (orden === 'popular') return [...l].sort((x, y) => (y.veces || 0) - (x.veces || 0));
+    if (orden === 'valorados') return [...l].sort((x, y) => (y.media || 0) - (x.media || 0) || (y.valoraciones || 0) - (x.valoraciones || 0));
     return l;
   }, [articulos, actual, q, libres, orden]);
   const abiertoA = articulos.find(a => a.id === abierto);
@@ -133,6 +188,7 @@ export function CatalogoBK({ categorias, articulos, accionDe = null, onAbrir = n
           <select className="bk-orden" value={orden} onChange={e => setOrden(e.target.value)} aria-label="Ordenar">
             <option value="nuevo">Lo más nuevo</option>
             <option value="popular">Lo más prestado</option>
+            <option value="valorados">Lo mejor valorado</option>
             <option value="az">De la A a la Z</option>
           </select>
           {extra}
@@ -150,6 +206,7 @@ export function CatalogoBK({ categorias, articulos, accionDe = null, onAbrir = n
           <span className="bk-cuenta">{lista.length} {lista.length === 1 ? 'artículo' : 'artículos'}</span>
         </div>
       </div>
+      {arriba && !q.trim() && arriba(abrir)}
       {!lista.length ? (
         <div className="bk-vacio"><Search size={28} /><b>No hay nada con esa búsqueda.</b><span style={{ fontSize: 13 }}>Prueba con otra palabra o quita «Solo lo disponible».</span></div>
       ) : (
@@ -157,7 +214,8 @@ export function CatalogoBK({ categorias, articulos, accionDe = null, onAbrir = n
           {lista.map(a => <TarjetaArticulo key={a.id} a={a} cat={porId[a.categoriaId]} onAbrir={() => abrir(a)} accion={accionDe ? accionDe(a, false) : null} />)}
         </div>
       )}
-      {abiertoA && <FichaArticulo a={abiertoA} cat={porId[abiertoA.categoriaId]} accion={accionDe ? accionDe(abiertoA, true) : null} onCerrar={() => setAbierto(null)} />}
+      {abiertoA && <FichaArticulo a={abiertoA} cat={porId[abiertoA.categoriaId]} accion={accionDe ? accionDe(abiertoA, true) : null} onCerrar={() => setAbierto(null)}
+        opinionesUrl={opinionesUrl} articulos={articulos} onAbrirOtro={o => setAbierto(o.id)} />}
     </div>
   );
 }
@@ -193,9 +251,24 @@ export function BrickslabFamilia() {
   const [piezas, setPiezas] = useState(null); // { reserva, texto }
   const [rkCat, setRkCat] = useState(null);
   const [rkPeriodo, setRkPeriodo] = useState('mes');
+  const [valorando, setValorando] = useState(null); // { articuloId, titulo, imagen, estrellas, comentario }
 
   const cargar = useCallback(() => api('/api/me/brickslab').then(x => { setD(x); setError(null); }).catch(e => setError(e.message)), []);
   useEffect(() => { cargar(); }, [cargar]);
+  // Desde el correo «¿qué te ha parecido?»: ?valorar=<artículo>&para=<alumno>.
+  // Solo la primera vez: al recargar los datos (tras valorar) no se vuelve a abrir.
+  const enlace = useRef((() => { const p = new URLSearchParams(window.location.search); return p.get('valorar') ? { articulo: p.get('valorar'), para: p.get('para') } : null; })());
+  useEffect(() => {
+    const e = enlace.current;
+    if (!d || !e) return;
+    enlace.current = null;
+    const h = d.historial.find(x => x.articuloId === e.articulo && (!e.para || x.userId === e.para));
+    if (!h) return;
+    setQuien(h.userId); setTab('historial');
+    const v = d.miembros.find(m => m.id === h.userId)?.valoraciones?.[h.articuloId];
+    setValorando({ articuloId: h.articuloId, titulo: h.titulo, imagen: h.imagen, estrellas: v?.estrellas || 0, comentario: v?.comentario || '' });
+    window.history.replaceState({}, '', window.location.pathname);
+  }, [d]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const conPermiso = (m) => Object.entries(m.permisos || {}).some(([k, p]) => k !== '_pro' && p?.normal);
   // Si dos de la familia se llaman igual (un padre y su hijo), con sus apellidos.
@@ -340,7 +413,18 @@ export function BrickslabFamilia() {
         ))}
       </div>
 
-      {tab === 'catalogo' && <CatalogoBK categorias={d.categorias} articulos={d.articulos} accionDe={accionDe} />}
+      {tab === 'catalogo' && <CatalogoBK categorias={d.categorias} articulos={d.articulos} accionDe={accionDe} opinionesUrl={id => `/api/me/brickslab/articulos/${id}/opiniones`}
+        arriba={(abrir) => {
+          const recs = (yo.recomendaciones || []).map(id => d.articulos.find(a => a.id === id)).filter(Boolean).slice(0, 4);
+          if (!recs.length) return null;
+          return (
+            <section style={{ display: 'grid', gap: 10 }}>
+              <h3 style={{ margin: 0, fontSize: 16, display: 'flex', gap: 8, alignItems: 'center' }}><Sparkles size={17} color="#B45309" /> Te puede gustar, {nombre}</h3>
+              <div className="bk-grid">{recs.map(a => <TarjetaArticulo key={a.id} a={a} cat={d.categorias.find(c => c.id === a.categoriaId)} onAbrir={() => abrir(a)} accion={accionDe(a, false)} />)}</div>
+              <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Por lo que ha valorado {nombre} y lo que gustó a quien tiene gustos parecidos. Cuanto más valore, mejor acierta.</p>
+            </section>
+          );
+        }} />}
 
       {tab === 'tiene' && (
         <section style={{ display: 'grid', gap: 10 }}>
@@ -381,17 +465,45 @@ export function BrickslabFamilia() {
               return (
                 <div key={h.id} className="bk-card" style={{ boxShadow: 'none' }}>
                   <div className={`bk-portada${c?.modo === 'library' ? ' libro' : ''}`} style={{ '--bk-c': colorCat(c), cursor: 'default' }}>
-                    {h.imagen ? <img src={h.imagen} alt="" loading="lazy" referrerPolicy="no-referrer" /> : <IconoCategoria nombre={c?.icono} size={32} />}
+                    {h.imagen ? <img src={h.imagen} alt="" loading="lazy" referrerPolicy="no-referrer" onError={e => { e.currentTarget.style.display = 'none'; }} /> : <IconoCategoria nombre={c?.icono} size={32} />}
                   </div>
-                  <div style={{ padding: '10px 12px', display: 'grid', gap: 2 }}>
+                  <div style={{ padding: '10px 12px', display: 'grid', gap: 6 }}>
                     <b style={{ fontSize: 13, lineHeight: 1.25 }}>{h.titulo}</b>
                     <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>{c?.modo === 'library' ? 'Leído' : 'Montado'} el {fmtFecha(h.fecha)}</span>
+                    {(() => {
+                      const v = yo.valoraciones?.[h.articuloId];
+                      const abrirV = () => setValorando({ articuloId: h.articuloId, titulo: h.titulo, imagen: h.imagen, estrellas: v?.estrellas || 0, comentario: v?.comentario || '' });
+                      return v
+                        ? <button type="button" onClick={abrirV} style={{ border: 0, background: 'none', padding: 0, cursor: 'pointer', justifySelf: 'start' }} title="Cambiar la valoración"><Estrellas valor={v.estrellas} size={15} /></button>
+                        : <button type="button" className="btn btn-sm btn-outline" onClick={abrirV}><Star size={13} /> Valorar</button>;
+                    })()}
                   </div>
                 </div>
               );
             })}
           </div>
         )
+      )}
+
+      {valorando && (
+        <div className="bk-fondo" onClick={e => { if (e.target === e.currentTarget) setValorando(null); }}>
+          <div className="bk-ficha bk" role="dialog" aria-modal="true" aria-label="Valorar" style={{ width: 'min(440px, 100%)', gridTemplateColumns: '1fr' }}>
+            <button type="button" className="bk-cerrar" onClick={() => setValorando(null)} aria-label="Cerrar"><X size={18} /></button>
+            <div className="bk-ficha-datos" style={{ textAlign: 'center', justifyItems: 'center' }}>
+              {valorando.imagen && <img src={valorando.imagen} alt="" referrerPolicy="no-referrer" style={{ width: 120, height: 90, objectFit: 'cover', borderRadius: 12, background: '#fff' }} />}
+              <h2 style={{ fontSize: 20 }}>¿Qué le ha parecido a {nombre}?</h2>
+              <span style={{ fontSize: 14, color: 'var(--ink-2)' }}>{valorando.titulo}</span>
+              <Estrellas valor={valorando.estrellas} size={32} onCambio={n => setValorando(v => ({ ...v, estrellas: n }))} />
+              <textarea value={valorando.comentario} onChange={e => setValorando(v => ({ ...v, comentario: e.target.value }))} rows={3} maxLength={600}
+                placeholder="Si quiere, un comentario: qué le gustó, si es difícil… (lo leerán otras familias)"
+                style={{ width: '100%', boxSizing: 'border-box', fontFamily: 'inherit', fontSize: 14, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', resize: 'vertical' }} />
+              <button type="button" className="btn btn-primary btn-block" disabled={!valorando.estrellas || !!ocupado}
+                onClick={() => hacer('valorar', () => api('/api/me/brickslab/valorar', { method: 'POST', body: { alumnoId: yo.id, articuloId: valorando.articuloId, estrellas: valorando.estrellas, comentario: valorando.comentario } }).then(() => setValorando(null)), '¡Gracias! Valoración guardada.')}>
+                {ocupado === 'valorar' ? 'Guardando…' : 'Guardar'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {tab === 'ranking' && (
