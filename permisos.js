@@ -109,6 +109,8 @@ export function permisosDe(rol) {
             contactos: mandaAlMenos(rol, 'secretaria'),
             // Los currículums de «Trabaja con nosotros» (#368): secretaría y dirección.
             candidatos: mandaAlMenos(rol, 'secretaria'),
+            // La galería de fotos (#364): la llevan secretaría y dirección.
+            galeria: !instructor,
             // Faltas seguidas de los alumnos, para llamar a las familias: secretaría
             // y dirección.
             faltas: mandaAlMenos(rol, 'secretaria'),

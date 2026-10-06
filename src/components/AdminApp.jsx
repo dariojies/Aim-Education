@@ -36,6 +36,7 @@ import AdminBandeja from './AdminBandeja.jsx';
 import AdminAlmacen from './AdminAlmacen.jsx';
 import AdminContactos from './AdminContactos.jsx';
 import AdminCandidatos from './AdminCandidatos.jsx';
+import AdminGaleria from './Galeria.jsx';
 import { IconoActividad } from './IconoActividad.jsx';
 
 const fichaCardTitulo = { margin: '0 0 12px', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--ink-3)' };
@@ -90,6 +91,7 @@ function sectionLabel(id) {
     portada: "Portada de la web",
     contactos: "Consultas web",
     candidatos: "Candidatos",
+    galeria: "Galería de fotos",
     settings: "Ajustes del club",
     objetos: "Objetos perdidos",
     support: "Panel de soporte",
@@ -6960,6 +6962,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "speaking", label: "Speaking", icon: <I.Users /> },
         { id: "camp", label: "Campamento", icon: <I.Sun /> },
         { id: "events", label: "Eventos", icon: <I.Star /> },
+        // Las fotos de clases y eventos, con quién sale en cada una (#364).
+        { id: "galeria", label: "Galería de fotos", icon: <I.Sparkle /> },
         { id: "titulos", label: "Títulos", icon: <I.Shield /> },
         { id: "reportes", label: "Reportes", icon: <I.Chart /> },
       ]
@@ -7118,6 +7122,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("equipo_it") && <EquipoIT showToast={showToast} />}
           {ver("contactos") && <AdminContactos showToast={showToast} onAbrirFicha={abrirFicha} />}
           {ver("candidatos") && <AdminCandidatos showToast={showToast} />}
+          {ver("galeria") && <AdminGaleria showToast={showToast} />}
           {ver("bandeja") && <AdminBandeja showToast={showToast} onAbrirFicha={abrirFicha} />}
           {ver("redes") && <AdminRedes showToast={showToast} onAbrirFicha={abrirFicha} />}
           {ver("rangos") && <AdminRangosPermisos grupos={gruposMenu} showToast={showToast} />}

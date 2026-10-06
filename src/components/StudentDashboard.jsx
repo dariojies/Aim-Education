@@ -6,6 +6,7 @@ import Campanita from './Campanita.jsx';
 import { AimLogo, ACT_BY_ID, CampDayPicker, campFmtLong, nombreMedioPago } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 import { UserSupport } from './AdminSupport.jsx';
+import { FotosFamilia } from './Galeria.jsx';
 import { fmtFecha } from '../fechas.js';
 
 function EmptyState({ icon, text, accion, onAccion }) {
@@ -1600,6 +1601,8 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
     { id: "classes", label: "Mis clases", icon: <I.Calendar /> },
     { id: "camp", label: "Campamento", icon: <I.Sun /> },
     { id: "attendance", label: "Asistencia", icon: <I.Check /> },
+    // Las fotos del club donde sale alguien de la familia (#364).
+    { id: "fotos", label: "Fotos", icon: <I.Sparkle /> },
     { id: "payments", label: "Pagos y recibos", icon: <I.Wallet /> },
     { id: "wallet", label: "Mi cartera", icon: <I.CreditCard /> },
   ];
@@ -1693,6 +1696,7 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
           {view === "profile" && <DashProfile user={user} />}
           {view === "settings" && <DashSettings />}
           {view === "support" && <UserSupport user={user} />}
+          {view === "fotos" && <FotosFamilia />}
         </div>
       </div>
     </main>
