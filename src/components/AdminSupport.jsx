@@ -545,15 +545,15 @@ function ResumenSoporte({ onAbrir }) {
 }
 
 // ── Una tarjeta de ticket (lista y tablero) ─────────────────────────────────
-function TarjetaTicket({ t, diasParado, compacta = false, marcado, onMarcar, onAbrir, arrastrable = false }) {
+function TarjetaTicket({ t, diasParado, compacta = false, marcado, onMarcar, onAbrir, onPointerDown, fantasma = false, oculto = false }) {
   const est = ESTADOS[estadoDe(t)];
   const prioColor = PRIORITY_COLOR[t.priority] || PRIORITY_COLOR.low;
   const cat = CATEGORIAS[t.categoria];
   const vencido = esVencido(t), parado = esParado(t, diasParado);
   return (
     <div
-      draggable={arrastrable}
-      onDragStart={arrastrable ? (e => { e.dataTransfer.setData('text/plain', String(t.id)); e.dataTransfer.effectAllowed = 'move'; }) : undefined}
+      data-ticket={t.id}
+      onPointerDown={onPointerDown}
       onClick={() => onAbrir(t)}
       onKeyDown={e => { if (e.key === 'Enter') onAbrir(t); }}
       tabIndex={0}
@@ -567,7 +567,12 @@ function TarjetaTicket({ t, diasParado, compacta = false, marcado, onMarcar, onA
         borderRight: `1px solid ${marcado ? 'var(--purple)' : 'var(--line)'}`,
         borderBottom: `1px solid ${marcado ? 'var(--purple)' : 'var(--line)'}`,
         borderLeft: `5px solid ${prioColor}`, borderRadius: 14,
-        padding: compacta ? "10px 12px" : "14px 18px", cursor: "pointer",
+        padding: compacta ? "10px 12px" : "14px 18px", cursor: onPointerDown ? "grab" : "pointer",
+        // Mientras se arrastra, en su sitio queda el hueco; al aterrizar, la de verdad
+        // espera escondida a que llegue la que vuela.
+        ...(fantasma ? { opacity: 0.35, borderTopStyle: 'dashed', borderRightStyle: 'dashed', borderBottomStyle: 'dashed', filter: 'saturate(.6)' } : {}),
+        ...(oculto ? { visibility: 'hidden' } : {}),
+        userSelect: onPointerDown ? 'none' : undefined,
         transition: "box-shadow var(--tx-base) ease", display: "grid", gap: 6, minWidth: 0,
         boxShadow: marcado ? '0 0 0 2px color-mix(in oklab, var(--purple) 30%, transparent)' : 'none',
       }}
@@ -611,23 +616,32 @@ function TarjetaTicket({ t, diasParado, compacta = false, marcado, onMarcar, onA
   );
 }
 
+// Lo que cada uno tenía puesto en Soporte (filtros, orden, vista, pestaña), para
+// encontrarlo igual al volver. En este navegador y por persona; la búsqueda
+// escrita no se guarda, que escondería tickets sin darse cuenta.
+const clavePrefs = (user) => `soporte-prefs:${user?.id || 'yo'}`;
+function leerPrefs(user) {
+  try { return JSON.parse(localStorage.getItem(clavePrefs(user)) || '{}') || {}; } catch { return {}; }
+}
+
 export function AdminSupport({ user, ticketId = null, enlace = null }) {
+  const prefs = useMemo(() => leerPrefs(user), [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const [tickets, setTickets] = useState([]);
   const [superadmins, setSuperadmins] = useState([]);
   const [loading, setLoading] = useState(true);
   const [soloMios, setSoloMios] = useState(false);
   const [diasParado, setDiasParado] = useState(7);
 
-  const [activeTab, setActiveTab] = useState('list');      // list | resumen | recientes | create
-  const [vista, setVista] = useState(() => { try { return localStorage.getItem('soporte-vista') || 'lista'; } catch { return 'lista'; } });
-  // Filtros.
-  const [fEstado, setFEstado] = useState('activos');       // activos | abierto | en_curso | esperando | resolved | closed | todos
-  const [fCategoria, setFCategoria] = useState('todas');
-  const [fPrioridad, setFPrioridad] = useState('todas');
-  const [fApp, setFApp] = useState('todas');
-  const [fQuien, setFQuien] = useState('todos');           // todos | mios | sin | <id>
-  const [fRapido, setFRapido] = useState('');               // '' | sinLeer | vencidos | parados
-  const [orden, setOrden] = useState('entrega');            // entrega | prioridad | recientes | antiguos | movidos
+  const [activeTab, setActiveTab] = useState(['list', 'resumen', 'recientes'].includes(prefs.tab) ? prefs.tab : 'list');
+  const [vista, setVista] = useState(() => prefs.vista || (() => { try { return localStorage.getItem('soporte-vista') || 'lista'; } catch { return 'lista'; } })());
+  // Filtros (con lo que se tenía la última vez).
+  const [fEstado, setFEstado] = useState(prefs.fEstado || 'activos');       // activos | abierto | en_curso | esperando | resolved | closed | todos
+  const [fCategoria, setFCategoria] = useState(prefs.fCategoria || 'todas');
+  const [fPrioridad, setFPrioridad] = useState(prefs.fPrioridad || 'todas');
+  const [fApp, setFApp] = useState(prefs.fApp || 'todas');
+  const [fQuien, setFQuien] = useState(prefs.fQuien || 'todos');           // todos | mios | sin | <id>
+  const [fRapido, setFRapido] = useState(prefs.fRapido || '');              // '' | sinLeer | vencidos | parados
+  const [orden, setOrden] = useState(prefs.orden || 'entrega');             // entrega | prioridad | recientes | antiguos | movidos
   const [busqueda, setBusqueda] = useState('');
   const [idsEnMensajes, setIdsEnMensajes] = useState([]);   // tickets cuya conversación casa con la búsqueda
   const [marcados, setMarcados] = useState(new Set());
@@ -656,7 +670,21 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
   const [vinculando, setVinculando] = useState('');
   const [verHistorial, setVerHistorial] = useState(false);
   const [recargaHist, setRecargaHist] = useState(0);
-  const [arrastrandoSobre, setArrastrandoSobre] = useState(null);
+  // Arrastre del tablero, hecho a mano (no el nativo del navegador, que deja un
+  // «fantasma» transparente): la tarjeta se levanta y sigue al ratón, la columna
+  // de destino se abre y al soltar vuela a su sitio. Lo que cambia a cada
+  // movimiento va en refs y se pinta directamente, para no repintar la página.
+  const [arrastrando, setArrastrando] = useState(null);    // { id, t, w, h, col }
+  const [sobre, setSobre] = useState(null);                // columna bajo el ratón
+  const [aterrizando, setAterrizando] = useState(null);    // id que está llegando
+  const arrastre = useRef(null);
+  const sobreRef = useRef(null);
+  const flotanteRef = useRef(null);
+  const inclinacionRef = useRef(null);
+  const tableroRef = useRef(null);
+  const columnasRef = useRef({});
+  const recienArrastrado = useRef(false);
+  const soltarRef = useRef(null);
 
   const fetchTickets = useCallback((silencioso = false) => {
     if (!silencioso) setLoading(true);
@@ -683,7 +711,14 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
     document.addEventListener('visibilitychange', f);
     return () => document.removeEventListener('visibilitychange', f);
   }, [fetchTickets]);
-  useEffect(() => { try { localStorage.setItem('soporte-vista', vista); } catch { /* sin almacenamiento */ } }, [vista]);
+  // Guardar lo que se tiene puesto, para encontrarlo igual la próxima vez.
+  useEffect(() => {
+    try {
+      localStorage.setItem(clavePrefs(user), JSON.stringify({
+        tab: activeTab === 'create' ? 'list' : activeTab, vista, fEstado, fCategoria, fPrioridad, fApp, fQuien, fRapido, orden,
+      }));
+    } catch { /* sin almacenamiento: no pasa nada */ }
+  }, [activeTab, vista, fEstado, fCategoria, fPrioridad, fApp, fQuien, fRapido, orden, user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Buscar también dentro de las conversaciones (a partir de 3 letras).
   useEffect(() => {
@@ -971,13 +1006,144 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
     { id: 'resolved', titulo: 'Hecho (7 días)', de: t => ['resolved', 'closed'].includes(t.status) && t.resolved_at && Date.now() - new Date(t.resolved_at).getTime() <= 7 * 86400000 },
   ];
   const paraTablero = useMemo(() => filtrar(tickets, { conEstado: false }), [filtrar, tickets]);
-  async function soltarEn(columna, e) {
-    e.preventDefault(); setArrastrandoSobre(null);
-    const id = Number(e.dataTransfer.getData('text/plain'));
-    const t = tickets.find(x => x.id === id);
-    if (!t || estadoDe(t) === columna || (columna === 'resolved' && ['resolved', 'closed'].includes(t.status))) return;
-    await cambiarEstado(t, columna);
+  const columnaDe = (t) => (['resolved', 'closed'].includes(t.status) ? 'resolved' : estadoDe(t));
+
+  // Coloca la tarjeta que vuela donde está el ratón (sin pasar por React).
+  const pintarFlotante = () => {
+    const a = arrastre.current, el = flotanteRef.current;
+    if (a && el) el.style.transform = `translate3d(${a.x - a.offX}px, ${a.y - a.offY}px, 0)`;
+  };
+  // Qué columna hay bajo el ratón.
+  const columnaBajo = (x, y) => {
+    for (const [id, el] of Object.entries(columnasRef.current)) {
+      const r = el?.getBoundingClientRect();
+      if (r && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return id;
+    }
+    return null;
+  };
+  const ponerSobre = (c) => { if (sobreRef.current !== c) { sobreRef.current = c; setSobre(c); } };
+  // Cerca del borde, el tablero (y la página) se desplazan solos.
+  const autoDesplazar = () => {
+    const a = arrastre.current;
+    if (!a?.activo) return;
+    const b = tableroRef.current;
+    if (b) {
+      const r = b.getBoundingClientRect();
+      if (a.x < r.left + 70) b.scrollLeft -= 14;
+      else if (a.x > r.right - 70) b.scrollLeft += 14;
+    }
+    if (a.y < 70) window.scrollBy(0, -14);
+    else if (a.y > window.innerHeight - 70) window.scrollBy(0, 14);
+    ponerSobre(columnaBajo(a.x, a.y));
+    a.raf = requestAnimationFrame(autoDesplazar);
+  };
+  const mover = (e) => {
+    const a = arrastre.current;
+    if (!a) return;
+    a.x = e.clientX; a.y = e.clientY;
+    if (!a.activo) {
+      // Hasta que no se mueve un poco es un clic normal (abre el ticket).
+      if (Math.hypot(a.x - a.x0, a.y - a.y0) < 6) return;
+      a.activo = true;
+      document.body.style.userSelect = 'none';
+      document.body.style.cursor = 'grabbing';
+      setArrastrando({ id: a.t.id, t: a.t, w: a.w, h: a.h, col: a.col });
+      a.raf = requestAnimationFrame(autoDesplazar);
+    }
+    pintarFlotante();
+    ponerSobre(columnaBajo(a.x, a.y));
+  };
+  const terminar = () => {
+    window.removeEventListener('pointermove', mover);
+    window.removeEventListener('pointerup', soltar);
+    window.removeEventListener('keydown', teclaArrastre);
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+  };
+  // Lleva la tarjeta que vuela hasta un sitio, con un poco de rebote, y luego acaba.
+  const volarA = (r, alAcabar) => {
+    const el = flotanteRef.current, inc = inclinacionRef.current;
+    if (!el || !r) { alAcabar(); return; }
+    el.style.transition = 'transform .28s cubic-bezier(.2, .9, .3, 1.15)';
+    el.style.transform = `translate3d(${r.left}px, ${r.top}px, 0)`;
+    if (inc) {
+      inc.style.animation = 'none';
+      inc.style.transform = 'rotate(2.5deg) scale(1.04)';
+      void inc.offsetWidth; // que el navegador se quede con el punto de partida
+      inc.style.transition = 'transform .28s ease, box-shadow .28s ease';
+      inc.style.transform = 'none';
+      inc.style.boxShadow = 'var(--shadow)';
+    }
+    let hecho = false;
+    const fin = () => { if (!hecho) { hecho = true; alAcabar(); } };
+    el.addEventListener('transitionend', fin, { once: true });
+    setTimeout(fin, 380);
+  };
+  const soltar = () => {
+    const a = arrastre.current;
+    terminar();
+    if (!a) return;
+    cancelAnimationFrame(a.raf);
+    if (!a.activo) { arrastre.current = null; return; }
+    // Que el clic que llega al soltar no abra el ticket.
+    recienArrastrado.current = true;
+    setTimeout(() => { recienArrastrado.current = false; }, 60);
+    const destino = sobreRef.current;
+    ponerSobre(null);
+    soltarRef.current?.(a, destino);
+  };
+  const teclaArrastre = (e) => {
+    if (e.key !== 'Escape') return;
+    const a = arrastre.current;
+    terminar();
+    if (!a) return;
+    cancelAnimationFrame(a.raf);
+    ponerSobre(null);
+    if (a.activo) soltarRef.current?.(a, null);
+    else arrastre.current = null;
+  };
+  // Lo que pasa al soltar: si es otra columna, se mueve ya (y se guarda por
+  // detrás); si no, la tarjeta vuelve a su sitio.
+  soltarRef.current = (a, destino) => {
+    const t = tickets.find(x => x.id === a.t.id) || a.t;
+    const vale = destino && destino !== a.col && !(destino === 'resolved' && ['resolved', 'closed'].includes(t.status));
+    const acabar = () => { setArrastrando(null); setAterrizando(null); arrastre.current = null; };
+    if (!vale) {
+      const r = document.querySelector(`[data-tablero="${a.t.id}"]`)?.getBoundingClientRect() || a.rect;
+      volarA(r, acabar);
+      return;
+    }
+    const cambio = ESTADOS[destino].cambio;
+    setAterrizando(a.t.id);
+    setTickets(l => l.map(x => (x.id === a.t.id ? {
+      ...x, status: cambio.status, etapa: cambio.etapa ?? null, updated_at: new Date().toISOString(),
+      resolved_at: cambio.status === 'open' ? null : (x.resolved_at || new Date().toISOString()),
+    } : x)));
+    // Cuando la tarjeta ya está pintada en su nueva columna, la que vuela va hacia ella.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      volarA(document.querySelector(`[data-tablero="${a.t.id}"]`)?.getBoundingClientRect(), acabar);
+    }));
+    fetch(`/api/support/${t.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(cambio) })
+      .then(async r => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) { avisar(d.error || 'No se ha podido cambiar.'); fetchTickets(true); return; }
+        avisar(d.siguienteId ? `#${t.id}: ${ESTADOS[destino].label}. Se ha creado el siguiente: #${d.siguienteId}.` : `#${t.id}: ${ESTADOS[destino].label}.`);
+        fetchTickets(true);
+      })
+      .catch(() => { avisar('Error de conexión: no se ha guardado.'); fetchTickets(true); });
+  };
+  function empezarArrastre(e, t) {
+    // Solo con el ratón (o lápiz) y el botón principal; en el móvil se toca para abrir.
+    if (e.button !== 0 || e.pointerType === 'touch' || arrastre.current) return;
+    if (e.target.closest('button, a, input')) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    arrastre.current = { t, col: columnaDe(t), x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, offX: e.clientX - r.left, offY: e.clientY - r.top, w: r.width, h: r.height, rect: r, activo: false };
+    window.addEventListener('pointermove', mover);
+    window.addEventListener('pointerup', soltar);
+    window.addEventListener('keydown', teclaArrastre);
   }
+  useEffect(() => () => { terminar(); if (arrastre.current) cancelAnimationFrame(arrastre.current.raf); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const abrirDesdeTablero = (t) => { if (!recienArrastrado.current) openTicket(t); };
 
   const vinculoId = selected ? (tickets.find(t => t.id === selected.id)?.vinculo_id ?? selected.vinculo_id) : null;
   const hermanos = vinculoId ? tickets.filter(t => t.vinculo_id === vinculoId && t.id !== selected.id) : [];
@@ -1236,28 +1402,64 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
 
           {!loading && vista === 'tablero' && (
             <>
-              <p style={{margin: "0 0 10px", fontSize: 12, color: "var(--ink-3)"}}>Arrastra un ticket a otra columna para cambiar su estado (en el móvil, ábrelo y cámbialo arriba).</p>
-              <div style={{display: "grid", gridTemplateColumns: "repeat(4, minmax(215px, 1fr))", gap: 10, overflowX: "auto", paddingBottom: 8}}>
+              <p style={{margin: "0 0 10px", fontSize: 12, color: "var(--ink-3)"}}>Coge un ticket y llévalo a otra columna para cambiar su estado (Esc lo devuelve). En el móvil, ábrelo y cámbialo arriba.</p>
+              <div ref={tableroRef} style={{display: "grid", gridTemplateColumns: "repeat(4, minmax(215px, 1fr))", gap: 10, overflowX: "auto", paddingBottom: 8}}>
                 {COLUMNAS.map(col => {
                   const suyos = paraTablero.filter(col.de);
                   const color = ESTADOS[col.id].color;
+                  const destino = arrastrando && sobre === col.id && arrastrando.col !== col.id
+                    && !(col.id === 'resolved' && ['resolved', 'closed'].includes(arrastrando.t.status));
+                  const origen = arrastrando && arrastrando.col === col.id;
                   return (
-                    <div key={col.id}
-                      onDragOver={e => { e.preventDefault(); setArrastrandoSobre(col.id); }}
-                      onDragLeave={() => setArrastrandoSobre(c => (c === col.id ? null : c))}
-                      onDrop={e => soltarEn(col.id, e)}
-                      style={{background: arrastrandoSobre === col.id ? `color-mix(in oklab, ${color} 10%, var(--bg-3))` : "var(--bg-3)", border: `1px solid ${arrastrandoSobre === col.id ? color : 'var(--line)'}`, borderRadius: 16, padding: 10, minHeight: 200, display: "flex", flexDirection: "column", gap: 8}}>
+                    <div key={col.id} ref={el => { columnasRef.current[col.id] = el; }}
+                      style={{
+                        background: destino ? `color-mix(in oklab, ${color} 11%, var(--bg-3))` : "var(--bg-3)",
+                        border: `1.5px ${destino ? 'dashed' : 'solid'} ${destino ? color : 'var(--line)'}`,
+                        borderRadius: 16, padding: 10, minHeight: 220, display: "flex", flexDirection: "column", gap: 8,
+                        transition: "background .18s ease, border-color .18s ease, transform .18s ease",
+                        transform: destino ? 'translateY(-2px)' : 'none',
+                        opacity: arrastrando && !destino && !origen ? 0.85 : 1,
+                      }}>
                       <div style={{display: "flex", alignItems: "center", gap: 8, padding: "2px 4px"}}>
-                        <span style={{width: 10, height: 10, borderRadius: 99, background: color}} />
+                        <span style={{width: 10, height: 10, borderRadius: 99, background: color, boxShadow: destino ? `0 0 0 4px color-mix(in oklab, ${color} 25%, transparent)` : 'none', transition: 'box-shadow .18s ease'}} />
                         <b style={{fontSize: 13}}>{col.titulo}</b>
                         <span style={{fontSize: 12, color: "var(--ink-3)"}}>{suyos.length}</span>
                       </div>
-                      {suyos.map(t => <TarjetaTicket key={t.id} t={t} diasParado={diasParado} compacta arrastrable onAbrir={openTicket} />)}
-                      {!suyos.length && <span style={{fontSize: 12, color: "var(--ink-3)", padding: "8px 4px"}}>Nada aquí.</span>}
+                      {/* El hueco donde caerá, del tamaño de la tarjeta. */}
+                      <div aria-hidden="true" style={{
+                        height: destino ? arrastrando.h : 0, opacity: destino ? 1 : 0, marginBottom: destino ? 0 : -8,
+                        borderRadius: 14, border: destino ? `2px dashed ${color}` : '0 dashed transparent',
+                        background: `color-mix(in oklab, ${color} 8%, transparent)`, overflow: 'hidden',
+                        display: 'grid', placeItems: 'center', fontSize: 12, fontWeight: 800, color,
+                        transition: 'height .2s ease, opacity .2s ease, margin .2s ease',
+                      }}>{destino ? 'Suelta aquí' : ''}</div>
+                      {suyos.map(t => (
+                        <div key={t.id} data-tablero={t.id}>
+                          <TarjetaTicket t={t} diasParado={diasParado} compacta onAbrir={abrirDesdeTablero}
+                            onPointerDown={e => empezarArrastre(e, t)}
+                            fantasma={arrastrando?.id === t.id && aterrizando !== t.id} oculto={aterrizando === t.id} />
+                        </div>
+                      ))}
+                      {!suyos.length && !destino && <span style={{fontSize: 12, color: "var(--ink-3)", padding: "8px 4px"}}>Nada aquí.</span>}
                     </div>
                   );
                 })}
               </div>
+              {/* La tarjeta que se lleva en la mano. */}
+              {arrastrando && (
+                <div ref={flotanteRef} aria-hidden="true" style={{
+                  position: "fixed", left: 0, top: 0, width: arrastrando.w, zIndex: 2500, pointerEvents: "none", willChange: "transform",
+                  transform: `translate3d(${(arrastre.current?.x ?? 0) - (arrastre.current?.offX ?? 0)}px, ${(arrastre.current?.y ?? 0) - (arrastre.current?.offY ?? 0)}px, 0)`,
+                }}>
+                  <div ref={inclinacionRef} style={{
+                    borderRadius: 14, transformOrigin: "50% 40%", animation: "soporte-levantar .16s ease-out forwards",
+                    boxShadow: "0 22px 45px rgba(20, 10, 40, .28), 0 6px 14px rgba(20, 10, 40, .16)",
+                  }}>
+                    <TarjetaTicket t={arrastrando.t} diasParado={diasParado} compacta onAbrir={() => {}} />
+                  </div>
+                </div>
+              )}
+              <style>{`@keyframes soporte-levantar { from { transform: none; } to { transform: rotate(2.5deg) scale(1.04); } }`}</style>
             </>
           )}
         </>
