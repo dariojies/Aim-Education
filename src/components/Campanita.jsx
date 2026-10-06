@@ -53,6 +53,7 @@ const TITULO = {
   faltas: 'Faltas',
   almacen: 'Almacén',
   contactos: 'Consultas web',
+  candidatos: 'Candidatos',
   correo: 'Correo',
   redes: 'Redes sociales',
   pagos: 'Pagos',

@@ -5,8 +5,8 @@ import React, { useState, useEffect } from 'react';
 //
 // La web solo usa una cookie propia, la de la sesión, que es técnica y no pide
 // consentimiento. Lo que sí lo pide son los contenidos de otros servicios que
-// ponen sus propias cookies: el vídeo de YouTube de la portada y el formulario de
-// HubSpot de «Trabaja con nosotros». Esos no se cargan hasta que se aceptan.
+// ponen sus propias cookies: el vídeo de YouTube de la portada. No se carga
+// hasta que se acepta. («Trabaja con nosotros» ya es un formulario propio, #368.)
 //
 // Y el análisis propio (#341): con permiso, un identificador al azar en este
 // navegador para saber qué páginas ve; si es de una familia del club o nos
@@ -147,7 +147,7 @@ export function CookieBanner() {
           </label>
           <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', fontSize: 13, cursor: 'pointer' }}>
             <input type="checkbox" checked={externos} onChange={e => setExternos(e.target.checked)} style={{ marginTop: 3 }} />
-            <span><b>Contenidos externos</b> — el vídeo de YouTube y el formulario de «Trabaja con nosotros» (HubSpot).</span>
+            <span><b>Contenidos externos</b> — el vídeo de presentación de YouTube.</span>
           </label>
         </div>
       )}

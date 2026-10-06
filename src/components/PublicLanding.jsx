@@ -44,31 +44,63 @@ function Testimonios({ lista }) {
   );
 }
 
-// Trabaja con nosotros. El formulario es el de HubSpot, que es donde se recogen
-// los currículums; se carga solo si está configurado.
+// Trabaja con nosotros (#368): formulario propio. Nombre, correo, teléfono, qué
+// clases podría dar (las actividades del club, más «Otras»), un mensaje y el CV
+// en PDF. Llega al panel (Personas → Candidatos) y a info@, con el CV.
+const MAX_CV = 4 * 1024 * 1024;
 function TrabajaConNosotros({ empleo }) {
-  const montado = useRef(false);
-  const { activo, hubspotPortalId, hubspotFormId, hubspotRegion } = empleo || {};
-  // HubSpot pone sus propias cookies: su formulario no se carga hasta que se
-  // aceptan los contenidos externos (ticket #295).
-  const externosOk = useCookiesExternas();
+  const { activo } = empleo || {};
+  const [clases, setClases] = useState([]);
+  const [f, setF] = useState({ nombre: '', email: '', telefono: '', otros: '', mensaje: '', web: '' });
+  const [elegidas, setElegidas] = useState([]);
+  const [otras, setOtras] = useState(false);
+  const [cv, setCv] = useState(null);
+  const [acepta, setAcepta] = useState(false);
+  const [enviando, setEnviando] = useState(false);
+  const [error, setError] = useState('');
+  const [hecho, setHecho] = useState(false);
+  const [encima, setEncima] = useState(false);
+  const inputCv = useRef(null);
 
   useEffect(() => {
-    if (!externosOk || !activo || !hubspotPortalId || !hubspotFormId || montado.current) return;
-    montado.current = true;
-    const pintar = () => window.hbspt?.forms?.create({
-      portalId: hubspotPortalId, formId: hubspotFormId,
-      region: hubspotRegion || 'eu1', target: '#form-empleo',
-    });
-    if (window.hbspt) return pintar();
-    const sc = document.createElement('script');
-    sc.src = `https://js-${hubspotRegion || 'eu1'}.hsforms.net/forms/embed/v2.js`;
-    sc.async = true;
-    sc.onload = pintar;
-    document.body.appendChild(sc);
-  }, [externosOk, activo, hubspotPortalId, hubspotFormId, hubspotRegion]);
+    if (!activo) return;
+    fetch('/api/empleo').then(r => (r.ok ? r.json() : { clases: [] })).then(d => setClases(d.clases || [])).catch(() => {});
+  }, [activo]);
+
+  const upd = (k) => (e) => setF(x => ({ ...x, [k]: e.target.value }));
+  const alternar = (c) => setElegidas(l => (l.includes(c) ? l.filter(x => x !== c) : [...l, c]));
+  function tomarCv(file) {
+    if (!file) return;
+    if (file.type !== 'application/pdf' && !/\.pdf$/i.test(file.name)) { setError('El currículum tiene que ser un PDF.'); return; }
+    if (file.size > MAX_CV) { setError('El PDF no puede pasar de 4 MB.'); return; }
+    const fr = new FileReader();
+    fr.onload = () => { setError(''); setCv({ data: String(fr.result).replace(/^data:[^;]*;/, 'data:application/pdf;'), nombre: file.name, bytes: file.size }); };
+    fr.readAsDataURL(file);
+  }
+  async function enviar(e) {
+    e.preventDefault();
+    if (!elegidas.length && !(otras && f.otros.trim())) { setError('Marca qué clases podrías dar (o escribe cuáles en «Otras»).'); return; }
+    setEnviando(true); setError('');
+    try {
+      const r = await fetch('/api/empleo', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...f, otros: otras ? f.otros : '', clases: elegidas, cv: cv?.data || null, cvNombre: cv?.nombre || null, aceptaPrivacidad: acepta }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) setHecho(true);
+      else setError(d.error || 'No se ha podido enviar.');
+    } catch { setError('No hay conexión. Inténtalo de nuevo.'); }
+    finally { setEnviando(false); }
+  }
 
   if (!activo) return null;
+  const inp = { fontFamily: 'inherit', fontSize: 15, padding: '11px 13px', borderRadius: 12, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', width: '100%' };
+  const etiqueta = { display: 'grid', gap: 6, fontSize: 13, fontWeight: 700 };
+  const pastilla = (sel) => ({
+    padding: '8px 14px', borderRadius: 999, cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, fontWeight: 700,
+    border: `1.5px solid ${sel ? 'var(--purple)' : 'var(--line)'}`, background: sel ? 'var(--purple)' : 'var(--bg-3)', color: sel ? '#fff' : 'var(--ink-2)',
+    transition: 'background .15s, border-color .15s',
+  });
   return (
     <section className="block tight" id="empleo">
       <div className="container">
@@ -78,14 +110,68 @@ function TrabajaConNosotros({ empleo }) {
             <h2 className="section-title">{empleo.titulo}</h2>
             <p className="section-lede" style={{marginTop: 10}}>{empleo.texto}</p>
           </div>
-          <div id="form-empleo" className="empleo-form">
-            {hubspotPortalId && hubspotFormId && !externosOk && (
-              <ContenidoExterno servicio="HubSpot" que="el formulario" />
-            )}
-            {(!hubspotPortalId || !hubspotFormId) && (
-              <p style={{fontSize: 13, color: "var(--ink-3)", margin: 0}}>
-                El formulario todavía no está configurado.
-              </p>
+          <div className="empleo-form" style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 22, padding: 22, boxShadow: 'var(--shadow)' }}>
+            {hecho ? (
+              <div style={{ display: 'grid', gap: 10, textAlign: 'center', padding: '26px 8px' }}>
+                <div style={{ fontSize: 42 }}>🙌</div>
+                <h3 style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 800 }}>¡Gracias, {f.nombre.split(' ')[0]}!</h3>
+                <p style={{ margin: 0, color: 'var(--ink-2)' }}>Hemos recibido tu candidatura. Si encaja con lo que buscamos, te escribiremos a {f.email}.</p>
+              </div>
+            ) : (
+              <form onSubmit={enviar} style={{ display: 'grid', gap: 14 }}>
+                <label style={etiqueta}>Nombre y apellidos
+                  <input value={f.nombre} onChange={upd('nombre')} required maxLength={160} autoComplete="name" style={inp} /></label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 14 }}>
+                  <label style={etiqueta}>Correo electrónico
+                    <input type="email" value={f.email} onChange={upd('email')} required maxLength={255} autoComplete="email" style={inp} /></label>
+                  <label style={etiqueta}>Teléfono
+                    <input type="tel" value={f.telefono} onChange={upd('telefono')} maxLength={40} autoComplete="tel" style={inp} /></label>
+                </div>
+                <div style={{ display: 'grid', gap: 8 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700 }}>¿Qué clases podrías dar?</span>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }} role="group" aria-label="Clases que podrías dar">
+                    {clases.map(c => <button key={c} type="button" aria-pressed={elegidas.includes(c)} onClick={() => alternar(c)} style={pastilla(elegidas.includes(c))}>{c}</button>)}
+                    <button type="button" aria-pressed={otras} onClick={() => setOtras(o => !o)} style={pastilla(otras)}>Otras…</button>
+                  </div>
+                  {otras && <input value={f.otros} onChange={upd('otros')} maxLength={300} placeholder="¿Cuáles? (p. ej. ajedrez, guitarra, monitor de comedor…)" aria-label="Otras clases" style={inp} autoFocus />}
+                </div>
+                <label style={etiqueta}>Cuéntanos algo de ti <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}>(opcional)</span>
+                  <textarea value={f.mensaje} onChange={upd('mensaje')} maxLength={3000} rows={3} style={{ ...inp, resize: 'vertical' }} placeholder="Experiencia, titulación, disponibilidad…" /></label>
+                <div style={{ display: 'grid', gap: 6 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700 }}>Currículum en PDF <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}>(opcional, máx. 4 MB)</span></span>
+                  {cv ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 10, borderRadius: 12, border: '1px solid var(--line)', background: 'var(--bg-3)' }}>
+                      <span aria-hidden="true" style={{ fontSize: 22 }}>📄</span>
+                      <span style={{ flex: 1, minWidth: 0, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cv.nombre}</span>
+                      <button type="button" className="btn btn-sm btn-outline" onClick={() => setCv(null)}>Quitar</button>
+                    </div>
+                  ) : (
+                    <div onClick={() => inputCv.current?.click()} onDragOver={e => { e.preventDefault(); setEncima(true); }} onDragLeave={() => setEncima(false)}
+                      onDrop={e => { e.preventDefault(); setEncima(false); tomarCv(e.dataTransfer.files?.[0]); }}
+                      role="button" tabIndex={0} onKeyDown={e => { if (e.key === 'Enter') inputCv.current?.click(); }}
+                      style={{ border: `1.5px dashed ${encima ? 'var(--purple)' : 'var(--line)'}`, background: encima ? 'color-mix(in oklab, var(--purple) 8%, var(--bg-3))' : 'var(--bg-3)', borderRadius: 12, padding: '16px 14px', textAlign: 'center', cursor: 'pointer', fontSize: 13, color: 'var(--ink-3)' }}>
+                      <b style={{ color: 'var(--ink-2)' }}>Sube tu CV</b> o arrástralo aquí
+                    </div>
+                  )}
+                  <input ref={inputCv} type="file" accept="application/pdf,.pdf" style={{ display: 'none' }} onChange={e => { const fl = e.target.files?.[0]; e.target.value = ''; tomarCv(fl); }} />
+                </div>
+                {/* Campo trampa: las personas no lo ven; los robots lo rellenan. */}
+                <input value={f.web} onChange={upd('web')} tabIndex={-1} autoComplete="off" aria-hidden="true"
+                  style={{ position: 'absolute', left: '-9999px', width: 1, height: 1, opacity: 0 }} />
+                <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.5 }}>
+                  <input type="checkbox" required checked={acepta} onChange={e => setAcepta(e.target.checked)} style={{ marginTop: 3, accentColor: 'var(--purple)' }} />
+                  <span>He leído la <a href="/legal/privacidad" target="_blank" rel="noopener">política de privacidad</a> y acepto que guardéis mi candidatura para procesos de selección del club.</span>
+                </label>
+                <div style={{ padding: '10px 12px', borderRadius: 10, background: 'var(--bg-3)', fontSize: 11.5, color: 'var(--ink-3)', lineHeight: 1.55 }}>
+                  <b>Protección de datos.</b> Responsable: AIM Deporte y Educación S.L. Finalidad: valorar tu candidatura y contactarte para este u otros
+                  procesos de selección. Legitimación: tu consentimiento. No se ceden datos salvo obligación legal. Puedes pedir que la borremos o ejercer tus
+                  derechos en info@aimeducation.es.
+                </div>
+                {error && <p role="alert" style={{ margin: 0, fontSize: 13, fontWeight: 700, color: 'var(--orange)' }}>{error}</p>}
+                <button type="submit" className="btn btn-gradient btn-lg" disabled={enviando}>
+                  {enviando ? 'Enviando…' : <>Enviar candidatura <I.Arrow /></>}
+                </button>
+              </form>
             )}
           </div>
         </div>

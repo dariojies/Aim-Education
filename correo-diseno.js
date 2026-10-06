@@ -791,6 +791,20 @@ export const CORREOS_SISTEMA = {
             AUTO('descripcion'),
         ]),
     },
+    aviso_candidato: {
+        grupo: 'club', nombre: 'Candidatura nueva («Trabaja con nosotros»)', cuando: 'Cuando alguien manda su currículum desde la web. Llega a info@ con el PDF adjunto; se puede contestar directamente.',
+        asunto: 'Candidatura nueva: {nombre} ({clases})',
+        variables: { nombre: { que: 'Su nombre', ejemplo: 'Laura Gómez' }, email: { que: 'Su correo', ejemplo: 'laura@example.com' }, telefono: { que: 'Su teléfono', ejemplo: '600 000 000' }, clases: { que: 'Qué clases puede dar', ejemplo: 'Inglés, Ballet' }, enlace: { que: 'Enlace a Candidatos', ejemplo: 'https://www.aimeducation.es/admin/candidatos' } },
+        automaticos: { mensaje: { nombre: 'Lo que nos cuenta', ejemplo: 'Soy profesora de inglés con 5 años de experiencia.' } },
+        obligatorio: [],
+        diseno: () => d([
+            T('Nueva candidatura de **{nombre}** · {email} · {telefono}'),
+            T('**Puede dar:** {clases}'),
+            AUTO('mensaje'),
+            BTN([{ texto: 'Ver en Candidatos', url: '{enlace}', fondo: '', color: '#ffffff' }]),
+            PEQ('El currículum va adjunto. Puedes contestar directamente a este correo.'),
+        ]),
+    },
     // Soporte: avisos de los tickets (se apagan y se ajustan en Automatismos).
     ticket_asignado: {
         grupo: 'personal', nombre: 'Soporte: te han asignado un ticket', cuando: 'Cuando alguien te pone de encargado de un ticket.',

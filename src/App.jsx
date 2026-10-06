@@ -23,6 +23,8 @@ export default function App() {
   const [path, setPath] = useState(window.location.pathname + window.location.search);
   const [user, setUser] = useState(null);
   const [userChecked, setUserChecked] = useState(false);
+  // La sesión caducó estando dentro (#366): se avisa y se lleva a entrar.
+  const [caducada, setCaducada] = useState(false);
 
   useEffect(() => {
     const onPop = () => {
@@ -52,11 +54,26 @@ export default function App() {
   const handleLoginSuccess = (u) => {
     setUser(u);
     setUserChecked(true); // mark checked so dashboard/admin don't block on the /api/me race
-    if (u?.canAccessAdmin) {
-      go('/admin');
-    } else {
-      go('/dashboard');
-    }
+    setCaducada(false);
+    // Si venía de una sesión caducada, de vuelta a donde estaba.
+    const volver = new URLSearchParams(window.location.search).get('volver') || '';
+    const vale = volver.startsWith('/') && !volver.startsWith('//')
+      && (volver.startsWith('/dashboard') || (u?.canAccessAdmin && volver.startsWith('/admin')));
+    if (vale) go(volver);
+    else if (u?.canAccessAdmin) go('/admin');
+    else go('/dashboard');
+  };
+
+  useEffect(() => {
+    const f = () => { if (user) setCaducada(true); };
+    window.addEventListener('aim-sesion-caducada', f);
+    return () => window.removeEventListener('aim-sesion-caducada', f);
+  }, [user]);
+  const volverAEntrar = () => {
+    const aqui = window.location.pathname + window.location.search;
+    setCaducada(false);
+    setUser(null);
+    go(`/auth?volver=${encodeURIComponent(aqui)}`);
   };
 
   const handleLogout = async () => {
@@ -114,7 +131,7 @@ export default function App() {
     if (!userChecked) return null;
     if (!user || !user.canAccessAdmin) { go('/auth'); return null; }
     // 'recibos' se mantiene como alias antiguo: esa sección ahora son los gastos del club.
-    const adminSub = { campamento: 'camp', alumnos: 'students', familias: 'familias', clases: 'classes', eventos: 'events', noticias: 'news', gastos: 'payments', recibos: 'payments', facturacion: 'billing', soporte: 'support', reportes: 'reportes', fichaje: 'fichaje', speaking: 'speaking', faltas: 'faltas', comunicaciones: 'comunicaciones', crm: 'comunicaciones', almacen: 'almacen', consultas: 'contactos', rangos: 'rangos', correo: 'bandeja', avisos: 'ctas', redes: 'redes' }[seg[1]] || 'overview';
+    const adminSub = { campamento: 'camp', alumnos: 'students', familias: 'familias', clases: 'classes', eventos: 'events', noticias: 'news', gastos: 'payments', recibos: 'payments', facturacion: 'billing', soporte: 'support', reportes: 'reportes', fichaje: 'fichaje', speaking: 'speaking', faltas: 'faltas', comunicaciones: 'comunicaciones', crm: 'comunicaciones', almacen: 'almacen', consultas: 'contactos', candidatos: 'candidatos', rangos: 'rangos', correo: 'bandeja', avisos: 'ctas', redes: 'redes' }[seg[1]] || 'overview';
     // /admin/soporte/180 abre ese ticket directamente, para poder pasar el enlace.
     const ticketId = seg[1] === 'soporte' && /^\d+$/.test(seg[2] || '') ? Number(seg[2]) : null;
     // La ruta entera va al panel (#360) para abrir lo concreto: una clase en
@@ -136,6 +153,16 @@ export default function App() {
       {/* El aviso de cookies, en toda la web salvo el panel de administración
           (allí solo está la cookie de la sesión, que no pide consentimiento). */}
       {!pathname.startsWith('/admin') && <CookieBanner />}
+      {caducada && (
+        <div role="dialog" aria-modal="true" aria-labelledby="sesion-caducada"
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 5000, display: 'grid', placeItems: 'center', padding: 16 }}>
+          <div className="panel" style={{ maxWidth: 400, width: '100%', margin: 0, textAlign: 'center' }}>
+            <h2 id="sesion-caducada" style={{ margin: '0 0 6px', justifyContent: 'center' }}>Tu sesión ha caducado</h2>
+            <p className="sub" style={{ margin: '0 0 18px' }}>Por seguridad hay que volver a entrar. Te traeremos de vuelta a esta misma página.</p>
+            <button type="button" className="btn btn-primary" autoFocus onClick={volverAEntrar}>Volver a entrar</button>
+          </div>
+        </div>
+      )}
     </RouterContext.Provider>
   );
 }

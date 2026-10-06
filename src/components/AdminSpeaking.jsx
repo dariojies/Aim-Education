@@ -41,7 +41,92 @@ const franjasTxt = (arr) => {
   return arr.map(franjaTxt).join(', ');
 };
 
+// ── Historial (#367): cuántas veces ha ido cada alumno y qué días ───────────
+// Sale de las citas y de lo marcado al pasar lista en la clase de Speaking.
+const fmtCorta = (f) => (f ? new Date(String(f).slice(0, 10) + 'T12:00:00').toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }) : '—');
+const ESTADO_DIA = (d) => (d.asistencia === 'present' ? { t: '✓ Vino', c: 'var(--teal)' }
+  : d.asistencia === 'late' ? { t: '✓ Vino (tarde)', c: 'var(--teal)' }
+  : d.asistencia === 'absent' ? { t: '✗ No vino', c: '#E5484D' }
+  : d.asistencia === 'excused' ? { t: 'Justificada', c: 'var(--ink-3)' }
+  : d.confirmado === false ? { t: 'No podía', c: 'var(--orange)' }
+  : d.perdida ? { t: '⌛ Plaza perdida', c: 'var(--ink-3)' }
+  : String(d.fecha).slice(0, 10) >= new Date().toLocaleDateString('sv-SE') ? { t: d.confirmado ? 'Confirmado · próxima' : 'Próxima · sin confirmar', c: 'var(--purple)' }
+  : { t: 'Sin lista pasada', c: 'var(--ink-3)' });
+
+function HistorialSpeaking() {
+  const [lista, setLista] = useState(null);
+  const [q, setQ] = useState('');
+  const [abierto, setAbierto] = useState(null);
+  const [dias, setDias] = useState({});
+  useEffect(() => {
+    fetch('/api/admin/speaking/historial', { credentials: 'include', cache: 'no-store' })
+      .then(r => (r.ok ? r.json() : { alumnos: [] })).then(d => setLista(d.alumnos || [])).catch(() => setLista([]));
+  }, []);
+  async function abrir(id) {
+    if (abierto === id) { setAbierto(null); return; }
+    setAbierto(id);
+    if (dias[id]) return;
+    const d = await fetch(`/api/admin/speaking/historial?alumno=${id}`, { credentials: 'include', cache: 'no-store' }).then(r => (r.ok ? r.json() : null)).catch(() => null);
+    setDias(x => ({ ...x, [id]: d?.dias || [] }));
+  }
+  if (lista === null) return <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando…</p>;
+  const n = q.trim().toLowerCase();
+  const filas = lista.filter(a => !n || a.alumno.toLowerCase().includes(n));
+  const tot = lista.reduce((t, a) => ({ citas: t.citas + a.citas, vino: t.vino + a.vino, falto: t.falto + a.falto }), { citas: 0, vino: 0, falto: 0 });
+  return (
+    <div style={{ display: 'grid', gap: 12 }}>
+      <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>
+        Cuántas veces ha ido cada alumno a Speaking y qué días. «Vino» y «No vino» salen de lo que se marca al <b>pasar lista</b> en la clase de Speaking; mientras no se pase, el día sale como «Sin lista pasada».
+      </p>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div className="search-input" style={{ flex: '1 1 260px', maxWidth: 420 }}><I.Search /><input placeholder="Buscar alumno…" value={q} onChange={e => setQ(e.target.value)} aria-label="Buscar alumno" /></div>
+        <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>{lista.length} alumnos · {tot.citas} citas · <b style={{ color: 'var(--teal)' }}>{tot.vino} veces vinieron</b> · <b style={{ color: '#E5484D' }}>{tot.falto} faltas</b></span>
+      </div>
+      {!filas.length && <div style={{ padding: 24, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>{lista.length ? 'Nadie con ese nombre.' : 'Todavía no hay nadie que haya ido a Speaking.'}</div>}
+      {filas.length > 0 && (
+        <div className="data-table">
+          <div className="data-table-head" style={{ gridTemplateColumns: '1.5fr repeat(5, 84px) 1.1fr 1.1fr' }}>
+            <span>Alumno</span><span>Citas</span><span>Vino</span><span>Faltó</span><span>No podía</span><span>Perdidas</span><span>Última vez</span><span>Próxima</span>
+          </div>
+          {filas.map(a => (
+            <React.Fragment key={a.studentId}>
+              <div className="data-table-row" role="button" tabIndex={0} onClick={() => abrir(a.studentId)} onKeyDown={e => { if (e.key === 'Enter') abrir(a.studentId); }}
+                style={{ gridTemplateColumns: '1.5fr repeat(5, 84px) 1.1fr 1.1fr', alignItems: 'center', cursor: 'pointer' }}>
+                <div className="pri">{abierto === a.studentId ? '▾' : '▸'} {a.alumno}</div>
+                <span>{a.citas}</span>
+                <span style={{ fontWeight: 800, color: 'var(--teal)' }}>{a.vino}</span>
+                <span style={{ fontWeight: a.falto ? 800 : 400, color: a.falto ? '#E5484D' : 'var(--ink-3)' }}>{a.falto}</span>
+                <span style={{ color: a.noPodia ? 'var(--orange)' : 'var(--ink-3)' }}>{a.noPodia}</span>
+                <span style={{ color: 'var(--ink-3)' }}>{a.perdidas}</span>
+                <span style={{ fontSize: 12 }}>{a.ultima ? fmtCorta(a.ultima) : '—'}</span>
+                <span style={{ fontSize: 12, color: 'var(--purple)' }}>{a.proxima ? fmtCorta(a.proxima) : '—'}</span>
+              </div>
+              {abierto === a.studentId && (
+                <div style={{ padding: '8px 14px 14px', display: 'grid', gap: 4, background: 'var(--bg-3)' }}>
+                  {!dias[a.studentId] && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Cargando…</span>}
+                  {(dias[a.studentId] || []).map((d, i) => {
+                    const e = ESTADO_DIA(d);
+                    return (
+                      <div key={i} style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 13, padding: '6px 10px', borderRadius: 8, background: 'var(--bg-2)', border: '1px solid var(--line)' }}>
+                        <span style={{ minWidth: 150, textTransform: 'capitalize', fontWeight: 700 }}>{fmtCorta(d.fecha)}</span>
+                        <span style={{ color: 'var(--ink-3)', flex: 1, minWidth: 0 }}>{d.citado ? (d.franjas || 'citado') : 'vino sin estar citado'}{d.clase ? ` · ${d.clase}` : ''}</span>
+                        <span style={{ fontWeight: 800, color: e.c }}>{e.t}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </React.Fragment>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AdminSpeaking({ showToast }) {
+  // Citas (apuntar y confirmar) o el historial de cada alumno (#367).
+  const [vistaSpk, setVistaSpk] = useState('citas');
   const [clases, setClases] = useState([]);
   const [claseId, setClaseId] = useState('');
   const [sesiones, setSesiones] = useState([]);
@@ -190,8 +275,18 @@ export default function AdminSpeaking({ showToast }) {
       : { t: s.emailEnviado ? 'Esperando respuesta' : s.sinAvisos ? 'Sin correo · no quiere avisos' : 'Sin correo', c: 'var(--ink-3)' };
   const franjasFila = (s) => franjasTxt((s.franjasTexto || []).filter(f => (s.franjas || []).includes(f.n)));
 
+  const pestanas = (
+    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+      {[['citas', 'Citas'], ['historial', 'Historial por alumno']].map(([v, l]) => (
+        <button key={v} type="button" className={`filter-pill ${vistaSpk === v ? 'is-active' : ''}`} onClick={() => setVistaSpk(v)}>{l}</button>
+      ))}
+    </div>
+  );
+  if (vistaSpk === 'historial') return <div style={{ display: 'grid', gap: 16 }}>{pestanas}<HistorialSpeaking /></div>;
+
   return (
     <div style={{ display: 'grid', gap: 16 }}>
+      {pestanas}
       <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>
         Apunta alumnos a una sesión de <b>Speaking</b> de un día concreto. Se vincula con las clases "Speaking" reservadas del horario: eliges la clase, un día de los suyos, y una o varias de las 3 franjas de 20 minutos en que se divide su hora. Secretaría recibe el aviso para llamar a los padres y a estos les llega un correo para confirmar. No cuenta en los reportes de alumnos.
         {' '}Si un alumno tiene anotado cuándo no puede (lo anota secretaría o la familia desde su área), al añadirlo solo se marcan las franjas en que sí puede y se avisa si ese día no puede.

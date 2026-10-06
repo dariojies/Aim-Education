@@ -35,6 +35,7 @@ import FusionarFichas, { AvisoRepetida } from './FusionarFichas.jsx';
 import AdminBandeja from './AdminBandeja.jsx';
 import AdminAlmacen from './AdminAlmacen.jsx';
 import AdminContactos from './AdminContactos.jsx';
+import AdminCandidatos from './AdminCandidatos.jsx';
 import { IconoActividad } from './IconoActividad.jsx';
 
 const fichaCardTitulo = { margin: '0 0 12px', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--ink-3)' };
@@ -88,6 +89,7 @@ function sectionLabel(id) {
     agenda: "Mi día",
     portada: "Portada de la web",
     contactos: "Consultas web",
+    candidatos: "Candidatos",
     settings: "Ajustes del club",
     objetos: "Objetos perdidos",
     support: "Panel de soporte",
@@ -2520,8 +2522,8 @@ function AjustesPortada({ showToast }) {
           Trabaja con nosotros
         </h3>
         <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>
-          Sección para recoger currículums. El formulario es el de HubSpot: los datos y los
-          archivos se quedan allí, no en esta web.
+          Sección para recoger currículums con nuestro propio formulario (nombre, correo, teléfono, qué clases puede
+          dar y su CV en PDF). Llegan a Personas → Candidatos y a info@ un aviso con el CV.
         </p>
       </div>
 
@@ -2537,19 +2539,8 @@ function AjustesPortada({ showToast }) {
         <div className="field"><label>Texto</label>
           <textarea rows={2} value={cfg.empleo?.texto || ''} onChange={e => setCfg(c => ({ ...c, empleo: { ...c.empleo, texto: e.target.value } }))}
             style={{ width: '100%', fontFamily: 'inherit', fontSize: 13, padding: 10, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, color: 'var(--ink)', resize: 'vertical' }} /></div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr 110px', gap: 10 }}>
-          <div className="field"><label>Portal de HubSpot</label>
-            <input value={cfg.empleo?.hubspotPortalId || ''} onChange={e => setCfg(c => ({ ...c, empleo: { ...c.empleo, hubspotPortalId: e.target.value } }))} placeholder="Ej. 12345678" /></div>
-          <div className="field"><label>Formulario</label>
-            <input value={cfg.empleo?.hubspotFormId || ''} onChange={e => setCfg(c => ({ ...c, empleo: { ...c.empleo, hubspotFormId: e.target.value } }))} placeholder="Ej. 1a2b3c4d-..." /></div>
-          <div className="field"><label>Región</label>
-            <select value={cfg.empleo?.hubspotRegion || 'eu1'} onChange={e => setCfg(c => ({ ...c, empleo: { ...c.empleo, hubspotRegion: e.target.value } }))}>
-              <option value="eu1">eu1</option><option value="na1">na1</option>
-            </select></div>
-        </div>
         <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
-          Los dos códigos salen en HubSpot, en el propio formulario, al pulsar «Compartir» o «Insertar».
-          Sin ellos la sección no se pinta.
+          Las clases que se pueden marcar son las actividades del club (más «Campamento» y «Otras»).
         </span>
       </div>
 
@@ -6946,6 +6937,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "familias", label: "Familias", icon: <I.Heart /> },
         { id: "faltas", label: "Faltas", icon: <I.Phone /> },
         { id: "instructors", label: "Instructores", icon: <I.Whistle /> },
+        // Los currículums de «Trabaja con nosotros» (#368).
+        { id: "candidatos", label: "Candidatos", icon: <I.User /> },
       ]
     },
     {
@@ -7124,6 +7117,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("fichaje") && <Fichaje showToast={showToast} permisos={permisos} enlace={enlace} />}
           {ver("equipo_it") && <EquipoIT showToast={showToast} />}
           {ver("contactos") && <AdminContactos showToast={showToast} onAbrirFicha={abrirFicha} />}
+          {ver("candidatos") && <AdminCandidatos showToast={showToast} />}
           {ver("bandeja") && <AdminBandeja showToast={showToast} onAbrirFicha={abrirFicha} />}
           {ver("redes") && <AdminRedes showToast={showToast} onAbrirFicha={abrirFicha} />}
           {ver("rangos") && <AdminRangosPermisos grupos={gruposMenu} showToast={showToast} />}

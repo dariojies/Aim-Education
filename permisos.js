@@ -107,6 +107,8 @@ export function permisosDe(rol) {
             // Las consultas del formulario de contacto de la web (ticket #295):
             // las atienden secretaría y dirección.
             contactos: mandaAlMenos(rol, 'secretaria'),
+            // Los currículums de «Trabaja con nosotros» (#368): secretaría y dirección.
+            candidatos: mandaAlMenos(rol, 'secretaria'),
             // Faltas seguidas de los alumnos, para llamar a las familias: secretaría
             // y dirección.
             faltas: mandaAlMenos(rol, 'secretaria'),
@@ -179,6 +181,7 @@ export const AVISOS = [
     { id: 'speaking_rechazados', grupo: 'Speaking', texto: 'Familias que han dicho que no al Speaking', quien: todos },
     { id: 'fotos', grupo: 'Familias', texto: 'Solicitudes del permiso de fotos', quien: (p) => p.editarAlumnos },
     { id: 'contactos', grupo: 'Familias', texto: 'Consultas de la web sin atender', quien: (p) => p.secciones.contactos },
+    { id: 'candidatos', grupo: 'Club', texto: 'Candidaturas nuevas de «Trabaja con nosotros»', quien: (p) => p.secciones.candidatos },
     { id: 'correos_asignados', grupo: 'Correo', texto: 'Correos de info@ asignados a él', quien: (p) => p.secciones.bandeja },
     { id: 'redes_sin_leer', grupo: 'Correo', texto: 'Mensajes de redes sociales sin leer (suyos o sin asignar)', quien: (p) => p.secciones.redes },
     { id: 'almacen', grupo: 'Club', texto: 'Artículos del almacén por debajo del mínimo', quien: (p) => p.secciones.almacen },

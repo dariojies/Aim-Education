@@ -104,6 +104,7 @@ export const DOCS_LEGALES = [
         'Gestionar tu cuenta y la de tu familia, las inscripciones en actividades, el campamento y los eventos.',
         'Gestión de clientes, contable, fiscal y administrativa: cobros, facturación y los registros que exige la ley.',
         'Organizar las clases: listas, asistencia, horarios y comunicaciones sobre la actividad (cambios de horario, cierres, avisos).',
+        'Selección de personal: si nos mandas tu candidatura desde «Trabaja con nosotros» (tus datos de contacto, qué clases podrías dar y tu currículum), la usamos solo para valorarla y escribirte en este u otros procesos del club.',
         'Atender las consultas que nos hagas por el formulario de contacto, por correo, por teléfono o por mensaje privado en nuestras redes (Facebook Messenger, Instagram o WhatsApp). Esos mensajes nos llegan a través de Meta, que los trata según su propia política (facebook.com/privacy/policy).',
         'Cuidar de la seguridad de los alumnos: los datos de salud que la familia nos facilite (alergias, enfermedades, medicación, contacto de emergencia) se usan solo para ese fin.',
         'Enviarte noticias, eventos y ofertas del club, solo si nos lo has autorizado. Puedes retirarlo cuando quieras.',
@@ -113,14 +114,14 @@ export const DOCS_LEGALES = [
       ['p', 'Los datos no se utilizan para tomar decisiones automatizadas. Solo si aceptas las cookies de análisis relacionamos las páginas que visitas con tu ficha, para saber qué te interesa; puedes retirarlo cuando quieras desde «Configurar cookies» y lo guardado se borra.'],
 
       ['h', '3. Plazo de conservación'],
-      ['p', 'Conservamos los datos mientras se mantenga la relación con el club o sean necesarios para las finalidades indicadas y, después, durante los plazos que exige la ley: los documentos contables y las facturas, seis años (Código de Comercio) y los necesarios a efectos fiscales mientras la Administración pueda comprobarlos; el registro de jornada del personal, cuatro años. Las consultas del formulario de contacto se conservan el tiempo necesario para atenderlas. Las visitas a la web (con las cookies de análisis aceptadas), 13 meses como mucho.'],
+      ['p', 'Conservamos los datos mientras se mantenga la relación con el club o sean necesarios para las finalidades indicadas y, después, durante los plazos que exige la ley: los documentos contables y las facturas, seis años (Código de Comercio) y los necesarios a efectos fiscales mientras la Administración pueda comprobarlos; el registro de jornada del personal, cuatro años. Las consultas del formulario de contacto se conservan el tiempo necesario para atenderlas. Las candidaturas de «Trabaja con nosotros», mientras puedan servir para futuros procesos de selección del club, salvo que nos pidas antes que las borremos. Las visitas a la web (con las cookies de análisis aceptadas), 13 meses como mucho.'],
 
       ['h', '4. Legitimación'],
       ['p', 'La normativa aplicable es el Reglamento (UE) 2016/679, General de Protección de Datos (RGPD), y la Ley Orgánica 3/2018, de 5 de diciembre, de Protección de Datos Personales y garantía de los derechos digitales. Las bases que legitiman cada tratamiento son:'],
       ['ul', [
         'Art. 6.1.b RGPD, la ejecución de un contrato: la gestión de la cuenta, las inscripciones, los cobros y la organización de las clases.',
         'Art. 6.1.c RGPD, el cumplimiento de obligaciones legales: facturación, contabilidad y obligaciones fiscales.',
-        'Art. 6.1.a RGPD, tu consentimiento: el formulario de contacto, las comunicaciones comerciales y el análisis de las páginas que visitas.',
+        'Art. 6.1.a RGPD, tu consentimiento: el formulario de contacto, las candidaturas de «Trabaja con nosotros», las comunicaciones comerciales y el análisis de las páginas que visitas.',
         'Art. 9.2.a RGPD, el consentimiento explícito de la familia para los datos de salud.',
       ]],
       ['p', 'No estás obligado a facilitarnos los datos, pero sin los necesarios no podremos gestionar la inscripción ni atender tu consulta.'],
@@ -164,13 +165,12 @@ export const DOCS_LEGALES = [
       ['p', 'Esta web no usa cookies de publicidad. Usa las imprescindibles para funcionar y, solo si tú lo aceptas, una propia de análisis y las de los servicios externos que muestran algunos contenidos.'],
       ['tabla', [
         ['Nombre', 'Quién la pone', 'Para qué', 'Duración'],
-        ['aim_session', 'Nosotros', 'Mantener tu sesión iniciada cuando entras con tu cuenta. Es técnica y necesaria: sin ella no se puede entrar.', '24 horas'],
+        ['aim_session', 'Nosotros', 'Mantener tu sesión iniciada cuando entras con tu cuenta. Es técnica y necesaria: sin ella no se puede entrar.', 'Hasta cerrar el navegador (o 30 días desde el último uso si marcas «Mantenerme conectado»)'],
         ['aim_cookies', 'Nosotros (almacenamiento local)', 'Recordar lo que has elegido en el aviso de cookies.', '12 meses'],
         ['aim_visitante', 'Nosotros (almacenamiento local)', 'Análisis: un número al azar para saber qué páginas visitas. Si eres de una familia del club o nos escribes, lo relacionamos con tu ficha. Solo si aceptas el análisis; al retirarlo se borra lo guardado.', '13 meses'],
         ['Cookies de YouTube (Google)', 'YouTube', 'Mostrar el vídeo de presentación del club. Solo se cargan si aceptas los contenidos externos o si le das a ver el vídeo.', 'Según YouTube'],
-        ['Cookies de HubSpot', 'HubSpot', 'El formulario de «Trabaja con nosotros», cuando está activo. Solo se cargan si aceptas los contenidos externos.', 'Según HubSpot'],
       ]],
-      ['p', 'Las cookies de terceros las gestionan esos servicios. Puedes consultar cómo lo hacen en sus propias políticas: policies.google.com/privacy (YouTube) y legal.hubspot.com/privacy-policy (HubSpot).'],
+      ['p', 'Las cookies de terceros las gestionan esos servicios. Puedes consultar cómo lo hacen en sus propias políticas: policies.google.com/privacy (YouTube).'],
 
       ['h', 'Medición de visitas'],
       ['p', 'Para saber cuántas personas visitan la web y qué páginas leen usamos Metricool, que mide las visitas de forma anónima y agregada: no usa cookies, no guarda nada en tu dispositivo ni te asigna ningún identificador, y tu dirección IP solo se usa durante la conexión, sin guardarse. Por eso, según la guía de la Agencia Española de Protección de Datos, no necesita tu consentimiento. Más información en metricool.com/privacy-policy.'],

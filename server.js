@@ -1582,6 +1582,18 @@ async function initDb() {
         // cuenta en el número rojo hasta que haya algo nuevo: un mensaje más en
         // ese ticket (marca) o que su contador suba (n).
         await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_sesiones (
+                huella VARCHAR(64) PRIMARY KEY,
+                user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                datos JSONB NOT NULL,
+                recordar BOOLEAN NOT NULL DEFAULT false,
+                expira_at TIMESTAMPTZ NOT NULL,
+                usada_at TIMESTAMPTZ DEFAULT NOW(),
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_sesiones_user ON aim_sesiones (user_id)`);
+        await client.query(`
             CREATE TABLE IF NOT EXISTS aim_avisos_vistos (
                 user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
                 clave VARCHAR(200) NOT NULL,
@@ -1638,6 +1650,30 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_contactos_estado ON aim_contactos (estado, created_at DESC)`);
+        // «Trabaja con nosotros» (#368): los currículums que llegan por la web, con
+        // las clases que puede dar cada uno, para buscar a alguien de inglés, ballet…
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_candidatos (
+                id SERIAL PRIMARY KEY,
+                nombre VARCHAR(160) NOT NULL,
+                email VARCHAR(255) NOT NULL,
+                telefono VARCHAR(40),
+                clases TEXT[] NOT NULL DEFAULT '{}',
+                otros TEXT,
+                mensaje TEXT,
+                cv BYTEA,
+                cv_nombre VARCHAR(255),
+                cv_bytes INTEGER,
+                estado VARCHAR(12) NOT NULL DEFAULT 'nuevo',
+                notas TEXT,
+                privacidad_at TIMESTAMPTZ,
+                ip VARCHAR(60),
+                actualizado_por UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                actualizado_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_candidatos_estado ON aim_candidatos (estado, created_at DESC)`);
         // Visitas a la web (#341), solo de quien acepta las cookies de análisis:
         // un identificador al azar por navegador y las páginas que ve. Si es de
         // una ficha (ha entrado a su cuenta) o nos escribe, se relaciona con ella.
@@ -2093,18 +2129,69 @@ function initDbConReintentos(intento = 1) {
 initDbConReintentos();
 
 // --- Session store ---
-
+// Las sesiones se guardan en la base (aim_sesiones) además de en memoria (#366):
+// antes vivían solo en memoria y cada despliegue o reinicio de Heroku (al menos
+// uno al día) desconectaba a todo el mundo sin avisar. De la cookie solo se
+// guarda su huella (SHA-256), nunca el código. La memoria hace de caché.
 const sessions = new Map();
+// Sin «mantenerme conectado», la sesión dura mientras se use: caduca tras 24 h
+// sin actividad (y la cookie, al cerrar el navegador).
 const SESSION_DURATION_MS = 24 * 60 * 60 * 1000;
-// «Mantenerme conectado»: 30 días. Sin marcarlo, la sesión acaba al cerrar el
-// navegador (y, como mucho, a las 24 h).
+// «Mantenerme conectado»: 30 días desde el último uso.
 const SESSION_RECORDAR_MS = 30 * 24 * 60 * 60 * 1000;
+const huellaSesion = (t) => crypto.createHash('sha256').update(String(t)).digest('hex');
+
+async function guardarSesion(token, datos, { recordar = false } = {}) {
+    const ses = { ...datos, recordar };
+    sessions.set(token, ses);
+    const { permisos: _p, ...paraGuardar } = ses;
+    await pool.query(
+        `INSERT INTO aim_sesiones (huella, user_id, datos, recordar, expira_at) VALUES ($1, $2, $3::jsonb, $4, to_timestamp($5 / 1000.0))
+         ON CONFLICT (huella) DO UPDATE SET datos = EXCLUDED.datos, expira_at = EXCLUDED.expira_at`,
+        [huellaSesion(token), ses.userId, JSON.stringify(paraGuardar), recordar, ses.expiresAt]).catch(e => console.error('[sesiones] guardar:', e.message));
+}
+// La sesión de un código (o null): de la memoria o, tras un reinicio, de la base.
+// Mientras se usa se alarga sola (como mucho una escritura por hora).
+async function sesionDeToken(token, res = null) {
+    if (!token || !/^[0-9a-f]{64}$/.test(token)) return null;
+    let s = sessions.get(token);
+    if (!s) {
+        let r;
+        try { r = await pool.query(`SELECT datos, recordar, expira_at FROM aim_sesiones WHERE huella = $1`, [huellaSesion(token)]); }
+        catch (e) {
+            // Recién desplegado, la tabla aún puede no existir: como si no hubiera sesión.
+            if (e.code === '42P01') return null;
+            throw e;
+        }
+        if (!r.rowCount) return null;
+        s = { ...r.rows[0].datos, recordar: r.rows[0].recordar, expiresAt: new Date(r.rows[0].expira_at).getTime() };
+        if (s.rol) s.permisos = permisosEfectivos(s.rol);
+        sessions.set(token, s);
+    }
+    if (Date.now() > s.expiresAt) { borrarSesion(token); return null; }
+    const nueva = Date.now() + (s.recordar ? SESSION_RECORDAR_MS : SESSION_DURATION_MS);
+    if (nueva - s.expiresAt > 60 * 60 * 1000) {
+        s.expiresAt = nueva;
+        pool.query(`UPDATE aim_sesiones SET expira_at = to_timestamp($2 / 1000.0), usada_at = NOW() WHERE huella = $1`,
+            [huellaSesion(token), nueva]).catch(() => {});
+        // Con «mantenerme conectado», la cookie también se alarga.
+        if (res && s.recordar) {
+            res.cookie('aim_session', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'strict', path: '/', maxAge: SESSION_RECORDAR_MS });
+        }
+    }
+    return s;
+}
+function borrarSesion(token) {
+    sessions.delete(token);
+    return pool.query(`DELETE FROM aim_sesiones WHERE huella = $1`, [huellaSesion(token)]).catch(() => {});
+}
 
 setInterval(() => {
     const now = Date.now();
     for (const [token, session] of sessions.entries()) {
         if (now > session.expiresAt) sessions.delete(token);
     }
+    pool.query(`DELETE FROM aim_sesiones WHERE expira_at < NOW()`).catch(() => {});
 }, 3_600_000);
 
 // --- Rate limiting stores ---
@@ -2125,17 +2212,16 @@ function parseCookies(cookieHeader) {
     return cookies;
 }
 
-function authenticateSession(req, res, next) {
-    const cookies = parseCookies(req.headers.cookie);
-    const token = cookies['aim_session'];
-    if (!token) return res.status(401).json({ error: 'No autenticado.' });
-
-    const session = sessions.get(token);
-    if (!session || Date.now() > session.expiresAt) {
-        sessions.delete(token);
-        return res.status(401).json({ error: 'Sesión inválida o expirada.' });
+async function authenticateSession(req, res, next) {
+    const token = parseCookies(req.headers.cookie)['aim_session'];
+    if (!token) return res.status(401).json({ error: 'No autenticado.', sesion: 'sin' });
+    let session;
+    try { session = await sesionDeToken(token, res); }
+    catch (e) {
+        console.error('[sesiones] leer:', e.message);
+        return res.status(503).json({ error: 'No se ha podido comprobar la sesión. Vuelve a intentarlo.' });
     }
-
+    if (!session) return res.status(401).json({ error: 'Tu sesión ha caducado. Vuelve a entrar.', sesion: 'caducada' });
     req.userSession = session;
     req.sessionToken = token;
     next();
@@ -2160,7 +2246,7 @@ async function abrirSesion(res, user, { recordar = true } = {}) {
     const duracion = recordar ? SESSION_RECORDAR_MS : SESSION_DURATION_MS;
 
     const token = crypto.randomBytes(32).toString('hex');
-    sessions.set(token, {
+    await guardarSesion(token, {
         userId: user.user_id,
         email: user.email,
         firstName: user.name,
@@ -2173,7 +2259,7 @@ async function abrirSesion(res, user, { recordar = true } = {}) {
         nombreRol: NOMBRE_ROL[visible] || null,
         permisos: permisosEfectivos(rol),
         expiresAt: Date.now() + duracion,
-    });
+    }, { recordar });
     res.cookie('aim_session', token, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
@@ -2199,6 +2285,7 @@ async function abrirSesion(res, user, { recordar = true } = {}) {
 // Cierra todas las sesiones abiertas de una persona (al cambiar su contraseña).
 function cerrarSesionesDe(userId) {
     for (const [t, ses] of sessions) if (ses.userId === userId) sessions.delete(t);
+    return pool.query(`DELETE FROM aim_sesiones WHERE user_id = $1`, [userId]).catch(() => {});
 }
 
 function recordEmailFailure(emailLower, now) {
@@ -2936,7 +3023,7 @@ app.post('/api/register', async (req, res) => {
         }
         const now = Date.now();
         const token = crypto.randomBytes(32).toString('hex');
-        sessions.set(token, {
+        await guardarSesion(token, {
             userId: newUser.user_id,
             email: newUser.email,
             firstName: newUser.name,
@@ -2982,8 +3069,8 @@ app.get('/api/me', authenticateSession, (req, res) => {
     });
 });
 
-app.post('/api/logout', authenticateSession, (req, res) => {
-    sessions.delete(req.sessionToken);
+app.post('/api/logout', authenticateSession, async (req, res) => {
+    await borrarSesion(req.sessionToken);
     res.clearCookie('aim_session', { path: '/' });
     res.json({ success: true });
 });
@@ -3969,7 +4056,7 @@ app.post('/api/events/:id/register', async (req, res) => {
     // lee la cookie con parseCookies, y por usar la otra forma este endpoint nunca
     // veía la sesión (de ahí que ninguna inscripción tuviera usuario).
     const token = parseCookies(req.headers.cookie)['aim_session'];
-    const session = token ? sessions.get(token) : null;
+    const session = token ? await sesionDeToken(token).catch(() => null) : null;
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
@@ -5630,15 +5717,12 @@ const MOSAICO_POR_DEFECTO = [
 // así que si algún día se conectan, el formato ya vale.
 const TESTIMONIOS_POR_DEFECTO = [];
 
-// Formulario de empleo. Se incrusta el de HubSpot, que es con el que se trabaja;
-// hasta que estén el portal y el formulario, la sección no se pinta.
+// «Trabaja con nosotros»: el formulario es nuestro (#368; antes, el de HubSpot).
+// Aquí solo se elige si sale en la portada y con qué título y texto.
 const EMPLEO_POR_DEFECTO = {
     activo: false,
     titulo: 'Trabaja con nosotros',
     texto: 'Buscamos gente a la que le guste enseñar. Déjanos tu currículum y te escribimos.',
-    hubspotPortalId: '',
-    hubspotFormId: '',
-    hubspotRegion: 'eu1',
 };
 
 const PORTADA_POR_DEFECTO = {
@@ -5867,9 +5951,6 @@ app.put('/api/admin/landing', authenticateSession, requireAdmin, async (req, res
                     activo: !!empleo?.activo,
                     titulo: String(empleo?.titulo || '').trim().slice(0, 120) || EMPLEO_POR_DEFECTO.titulo,
                     texto: String(empleo?.texto || '').trim().slice(0, 400) || EMPLEO_POR_DEFECTO.texto,
-                    hubspotPortalId: String(empleo?.hubspotPortalId || '').trim().slice(0, 40),
-                    hubspotFormId: String(empleo?.hubspotFormId || '').trim().slice(0, 80),
-                    hubspotRegion: String(empleo?.hubspotRegion || 'eu1').trim().slice(0, 10),
                 },
             }), req.userSession.userId]
         );
@@ -15793,6 +15874,18 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                 detalle: ct.quien ? `la última, de ${ct.quien}` : null,
             });
         }
+        // Candidaturas nuevas de «Trabaja con nosotros» (#368).
+        if (recibe('candidatos')) {
+            const cn = (await pool.query(
+                `SELECT COUNT(*)::int n, MAX(id) AS ultima,
+                        (SELECT nombre FROM aim_candidatos WHERE estado = 'nuevo' ORDER BY id DESC LIMIT 1) AS quien
+                 FROM aim_candidatos WHERE estado = 'nuevo'`)).rows[0];
+            if (cn.n) avisos.push({
+                tipo: 'candidatos', destino: '/admin/candidatos', n: cn.n, clave: `candidatos:${cn.ultima}`,
+                texto: `${cn.n} candidatura${cn.n !== 1 ? 's' : ''} nueva${cn.n !== 1 ? 's' : ''} de «Trabaja con nosotros»`,
+                detalle: cn.quien ? `la última, de ${cn.quien}` : null,
+            });
+        }
         // Solicitudes de las familias para dar o quitar el permiso de fotos (#170).
         if (recibe('fotos')) {
             const sf = (await pool.query(
@@ -16117,6 +16210,53 @@ app.get('/api/admin/speaking', authenticateSession, requireAdmin, async (req, re
                 franjasTexto: franjasDeHoras(x.hora_inicio, x.hora_fin),
             })),
         });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Historial de Speaking (#367): cuántas veces ha ido cada alumno y qué días.
+// Junta las citas (aim_speaking) con lo marcado al pasar lista en la clase de
+// Speaking (tul_attendance), incluidos los que vinieron sin estar citados. Sin
+// alumno, un resumen de todos; con ?alumno=, sus días uno a uno.
+const SQL_GRUPOS_SPEAKING = `(SELECT g.group_id FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+    WHERE a.club_id = '${AIM_CLUB_ID}' AND (g.name ILIKE '%speaking%' OR a.name ILIKE '%speaking%'))`;
+const SQL_DIAS_SPEAKING = `
+    SELECT COALESCE(s.student_id, at.student_id) AS student_id, COALESCE(s.fecha, at.date) AS fecha,
+           s.id AS cita_id, s.confirmado, s.franjas, s.hora_inicio, s.hora_fin, s.llamado,
+           (s.id IS NOT NULL AND s.confirmado IS NULL AND ${sqlLimiteSpeaking('s.')} < ${SQL_HOY_MADRID}) AS perdida,
+           at.status AS asistencia, g.name AS clase
+    FROM (SELECT * FROM aim_speaking) s
+    FULL JOIN (SELECT * FROM tul_attendance WHERE group_id IN ${SQL_GRUPOS_SPEAKING}) at
+           ON at.student_id = s.student_id AND at.date = s.fecha AND at.group_id = s.group_id
+    LEFT JOIN tul_groups g ON g.group_id = COALESCE(s.group_id, at.group_id)`;
+app.get('/api/admin/speaking/historial', authenticateSession, requireAdmin, async (req, res) => {
+    const alumno = /^[0-9a-f-]{36}$/i.test(String(req.query.alumno || '')) ? req.query.alumno : null;
+    try {
+        res.set('Cache-Control', 'no-store');
+        if (alumno) {
+            const r = await pool.query(`SELECT * FROM (${SQL_DIAS_SPEAKING}) d WHERE d.student_id = $1 ORDER BY d.fecha DESC`, [alumno]);
+            const u = (await pool.query(`SELECT TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS n FROM users WHERE user_id = $1`, [alumno])).rows[0];
+            return res.json({
+                alumno: u?.n || '—',
+                dias: r.rows.map(x => ({
+                    fecha: x.fecha, clase: x.clase, citado: !!x.cita_id, confirmado: x.confirmado, perdida: x.perdida, llamado: x.llamado,
+                    asistencia: x.asistencia || null,
+                    franjas: x.cita_id ? franjasTexto(x.hora_inicio, x.hora_fin, x.franjas || []) : null,
+                })),
+            });
+        }
+        const r = await pool.query(
+            `SELECT d.student_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno,
+                    COUNT(*) FILTER (WHERE d.cita_id IS NOT NULL)::int AS citas,
+                    COUNT(*) FILTER (WHERE d.asistencia IN ('present', 'late'))::int AS vino,
+                    COUNT(*) FILTER (WHERE d.asistencia = 'absent')::int AS falto,
+                    COUNT(*) FILTER (WHERE d.confirmado IS FALSE AND d.asistencia IS NULL)::int AS no_podia,
+                    COUNT(*) FILTER (WHERE d.perdida AND d.asistencia IS NULL)::int AS perdidas,
+                    MAX(d.fecha) FILTER (WHERE d.asistencia IN ('present', 'late')) AS ultima,
+                    MIN(d.fecha) FILTER (WHERE d.fecha >= ${SQL_HOY_MADRID}) AS proxima
+             FROM (${SQL_DIAS_SPEAKING}) d JOIN users u ON u.user_id = d.student_id
+             GROUP BY d.student_id, u.name, u.surname
+             ORDER BY MAX(d.fecha) DESC, alumno`);
+        res.json({ alumnos: r.rows.map(x => ({ studentId: x.student_id, alumno: x.alumno, citas: x.citas, vino: x.vino, falto: x.falto, noPodia: x.no_podia, perdidas: x.perdidas, ultima: x.ultima, proxima: x.proxima })) });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -18447,10 +18587,7 @@ app.post('/webhooks/meta', (req, res) => {
 // la página y de dónde venía.
 const VISITANTE_RE = /^[0-9a-f]{32}$/;
 const visitasPorIp = new Map();
-const sesionOpcional = (req) => {
-    const s = sessions.get(parseCookies(req.headers.cookie).aim_session);
-    return s && Date.now() <= s.expiresAt ? s : null;
-};
+const sesionOpcional = (req) => sesionDeToken(parseCookies(req.headers.cookie).aim_session).catch(() => null);
 async function apuntarVisitante(visitante, { userId = null, email = null } = {}) {
     await pool.query(
         `INSERT INTO aim_web_visitantes (visitante, user_id, email) VALUES ($1, $2, $3)
@@ -18472,7 +18609,7 @@ app.post('/api/v', async (req, res) => {
     let origen = null;
     try { const o = new URL(String(req.body?.o || '')); if (!/aimeducation\.es$/i.test(o.hostname)) origen = o.hostname.slice(0, 300); } catch { /* sin origen */ }
     try {
-        const s = sesionOpcional(req);
+        const s = await sesionOpcional(req);
         await pool.query(
             `INSERT INTO aim_web_visitantes (visitante, user_id, visitas) VALUES ($1, $2, 1)
              ON CONFLICT (visitante) DO UPDATE SET visitas = aim_web_visitantes.visitas + 1, ultima_at = NOW(),
@@ -18499,6 +18636,137 @@ async function caducarVisitas() {
         await pool.query(`DELETE FROM aim_web_visitantes WHERE ultima_at < NOW() - interval '13 months'`);
     } catch (e) { console.error('[visitas] caducar:', e.message); }
 }
+
+// ── Trabaja con nosotros (#368) ──────────────────────────────────────────────
+// El formulario es nuestro (antes era el de HubSpot): nombre, correo, teléfono,
+// qué clases puede dar, su CV en PDF y la aceptación de la privacidad. Llega a
+// Personas → Candidatos, donde se filtra por clase, y a info@ un aviso con el CV.
+const ESTADOS_CANDIDATO = ['nuevo', 'visto', 'contactado', 'descartado'];
+const MAX_CV = 4 * 1024 * 1024;
+const candidatosPorIp = new Map();
+async function clasesEmpleo() {
+    const r = await pool.query(
+        `SELECT DISTINCT a.name FROM tul_activities a WHERE a.club_id = $1 AND a.name NOT ILIKE '%speaking%' ORDER BY a.name`, [AIM_CLUB_ID]);
+    return [...r.rows.map(x => x.name), 'Campamento de verano'];
+}
+app.get('/api/empleo', async (req, res) => {
+    try {
+        res.set('Cache-Control', 'public, max-age=600');
+        res.json({ clases: await clasesEmpleo() });
+    } catch (err) { res.json({ clases: [] }); }
+});
+app.post('/api/empleo', async (req, res) => {
+    const b = req.body || {};
+    if (String(b.web || '').trim()) return res.status(201).json({ success: true }); // campo trampa
+    const nombre = String(b.nombre || '').trim().slice(0, 160);
+    const email = String(b.email || '').trim().toLowerCase().slice(0, 255);
+    const telefono = String(b.telefono || '').trim().slice(0, 40) || null;
+    const otros = String(b.otros || '').trim().slice(0, 300) || null;
+    const mensaje = String(b.mensaje || '').trim().slice(0, 3000) || null;
+    if (!nombre) return res.status(400).json({ error: 'Dinos tu nombre.' });
+    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Ese correo no parece válido.' });
+    if (b.aceptaPrivacidad !== true) return res.status(400).json({ error: 'Para enviarnos tu candidatura tienes que aceptar la política de privacidad.' });
+    let validas;
+    try { validas = await clasesEmpleo(); } catch { validas = []; }
+    const clases = [...new Set((Array.isArray(b.clases) ? b.clases : []).map(String).filter(c => validas.includes(c)))];
+    if (!clases.length && !otros) return res.status(400).json({ error: 'Marca qué clases podrías dar (o escribe cuáles en «Otras»).' });
+    // El CV: un PDF de verdad (empieza por %PDF) y de 4 MB como mucho.
+    let cv = null;
+    if (b.cv) {
+        const m = /^data:application\/pdf;base64,(.+)$/.exec(String(b.cv));
+        if (!m) return res.status(400).json({ error: 'El currículum tiene que ser un PDF.' });
+        cv = Buffer.from(m[1], 'base64');
+        if (cv.length > MAX_CV) return res.status(400).json({ error: 'El PDF no puede pasar de 4 MB.' });
+        if (cv.subarray(0, 4).toString('latin1') !== '%PDF') return res.status(400).json({ error: 'Ese archivo no es un PDF válido.' });
+    }
+    const ip = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim().slice(0, 60);
+    const ahora = Date.now();
+    const recientes = (candidatosPorIp.get(ip) || []).filter(t => ahora - t < 3600_000);
+    if (recientes.length >= 4) return res.status(429).json({ error: 'Has enviado varias candidaturas seguidas. Espera un rato o escríbenos a info@aimeducation.es.' });
+    candidatosPorIp.set(ip, [...recientes, ahora]);
+    if (candidatosPorIp.size > 5000) candidatosPorIp.clear();
+    try {
+        const cvNombre = cv ? (String(b.cvNombre || 'curriculum.pdf').replace(/[\\/:*?"<>|\r\n]/g, '').slice(0, 200) || 'curriculum.pdf') : null;
+        const r = await pool.query(
+            `INSERT INTO aim_candidatos (nombre, email, telefono, clases, otros, mensaje, cv, cv_nombre, cv_bytes, privacidad_at, ip)
+             VALUES ($1, $2, $3, $4::text[], $5, $6, $7, $8, $9, NOW(), $10) RETURNING id`,
+            [nombre, email, telefono, clases, otros, mensaje, cv, cvNombre, cv ? cv.length : null, ip || null]);
+        await anotarConsentimiento(pool, req, { email, tipo: 'contacto', otorgado: true, origen: 'trabaja con nosotros' }).catch(() => {});
+        res.status(201).json({ success: true });
+        // Aviso a info@ con el CV adjunto (en segundo plano).
+        if (mailTransporter) {
+            const lista = [...clases, ...(otros ? [`Otras: ${otros}`] : [])].join(', ');
+            correoSistema('aviso_candidato', {
+                nombre, email, telefono: telefono || 'sin teléfono', clases: lista, enlace: `${URL_PUBLICA_WEB}/admin/candidatos`,
+            }, {
+                automaticos: { mensaje: mensaje ? `<div style="white-space:pre-wrap;border-left:3px solid #ddd;padding:4px 0 4px 12px">${escHtml(mensaje)}</div>` : '<p style="color:#888;margin:0">(sin mensaje)</p>' },
+                automaticosTexto: { mensaje: mensaje || '(sin mensaje)' },
+            }).then(c => mailTransporter.sendMail({
+                from: process.env.EMAIL_USER, to: CONTACTO_EMAIL, replyTo: email, ...c,
+                attachments: cv ? [{ filename: cvNombre, content: cv, contentType: 'application/pdf' }] : [],
+            })).catch(e => { if (!e.apagado) console.error('[empleo] aviso:', e.message); });
+        }
+        console.log(`[empleo] candidatura #${r.rows[0].id}`);
+    } catch (err) {
+        console.error('[empleo]', err.message);
+        if (!res.headersSent) res.status(500).json({ error: 'No se ha podido enviar. Inténtalo de nuevo o escríbenos a info@aimeducation.es.' });
+    }
+});
+
+// Panel: la lista (sin los PDF), filtrable por clase, estado o texto.
+app.get('/api/admin/candidatos', authenticateSession, requireSeccion('candidatos'), async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT c.id, c.nombre, c.email, c.telefono, c.clases, c.otros, c.mensaje, c.cv_nombre, c.cv_bytes,
+                    (c.cv IS NOT NULL) AS tiene_cv, c.estado, c.notas, c.created_at, c.actualizado_at,
+                    TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS actualizado_por
+             FROM aim_candidatos c LEFT JOIN users u ON u.user_id = c.actualizado_por
+             ORDER BY c.created_at DESC LIMIT 1000`);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            clases: await clasesEmpleo().catch(() => []),
+            candidatos: r.rows.map(x => ({
+                id: x.id, nombre: x.nombre, email: x.email, telefono: x.telefono, clases: x.clases || [], otros: x.otros, mensaje: x.mensaje,
+                tieneCv: x.tiene_cv, cvNombre: x.cv_nombre, cvBytes: x.cv_bytes, estado: x.estado, notas: x.notas || '',
+                fecha: x.created_at, actualizadoAt: x.actualizado_at, actualizadoPor: x.actualizado_por || null,
+            })),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.get('/api/admin/candidatos/:id/cv', authenticateSession, requireSeccion('candidatos'), async (req, res) => {
+    try {
+        const r = await pool.query(`SELECT cv, cv_nombre FROM aim_candidatos WHERE id = $1`, [Number(req.params.id) || 0]);
+        if (!r.rows[0]?.cv) return res.status(404).send('Sin currículum.');
+        res.set('Content-Type', 'application/pdf');
+        res.set('X-Content-Type-Options', 'nosniff');
+        res.set('Cache-Control', 'private, no-store');
+        res.set('Content-Disposition', `${req.query.descargar ? 'attachment' : 'inline'}; filename="${String(r.rows[0].cv_nombre || 'curriculum.pdf').replace(/["\r\n]/g, '')}"`);
+        res.send(r.rows[0].cv);
+    } catch (err) { res.status(500).send('No se ha podido abrir.'); }
+});
+app.put('/api/admin/candidatos/:id', authenticateSession, requireSeccion('candidatos'), async (req, res) => {
+    const sets = [], vals = [Number(req.params.id) || 0];
+    if (req.body?.estado !== undefined) {
+        if (!ESTADOS_CANDIDATO.includes(req.body.estado)) return res.status(400).json({ error: 'Estado no válido.' });
+        vals.push(req.body.estado); sets.push(`estado = $${vals.length}`);
+    }
+    if (req.body?.notas !== undefined) { vals.push(String(req.body.notas || '').slice(0, 3000) || null); sets.push(`notas = $${vals.length}`); }
+    if (!sets.length) return res.status(400).json({ error: 'Nada que cambiar.' });
+    vals.push(req.userSession.userId);
+    try {
+        const r = await pool.query(`UPDATE aim_candidatos SET ${sets.join(', ')}, actualizado_por = $${vals.length}, actualizado_at = NOW() WHERE id = $1 RETURNING id`, vals);
+        if (!r.rowCount) return res.status(404).json({ error: 'No existe.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+// Borrar una candidatura entera (con su CV): p. ej. si la persona lo pide.
+app.delete('/api/admin/candidatos/:id', authenticateSession, requireSeccion('candidatos'), async (req, res) => {
+    try {
+        const r = await pool.query(`DELETE FROM aim_candidatos WHERE id = $1 RETURNING id`, [Number(req.params.id) || 0]);
+        if (!r.rowCount) return res.status(404).json({ error: 'No existe.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 app.post('/api/contacto', async (req, res) => {
     const b = req.body || {};
