@@ -34,6 +34,8 @@ const ESTADOS = {
   abierto: { label: 'Abierto', color: '#ccac00', cambio: { status: 'open', etapa: null } },
   en_curso: { label: 'En curso', color: 'var(--purple)', cambio: { status: 'open', etapa: 'en_curso' } },
   esperando: { label: 'Esperando respuesta', color: 'var(--orange)', cambio: { status: 'open', etapa: 'esperando' } },
+  // Hecho pero sin publicar: con el siguiente deploy pasa solo a «Resuelto».
+  espera_deploy: { label: 'Espera de deploy', color: '#2563EB', cambio: { status: 'open', etapa: 'espera_deploy' } },
   resolved: { label: 'Resuelto', color: 'var(--teal)', cambio: { status: 'resolved' } },
   closed: { label: 'Cerrado', color: 'var(--ink-3)', cambio: { status: 'closed' } },
 };
@@ -82,7 +84,8 @@ const primeraRespuesta = (t) => (t?.created_at && t?.primera_respuesta_at ? dura
 const hoyISO = () => new Date().toLocaleDateString('sv-SE');
 const esVencido = (t) => t.status === 'open' && t.due_date && String(t.due_date).slice(0, 10) < hoyISO();
 const diasSinMoverse = (t) => Math.floor((Date.now() - new Date(t.updated_at || t.created_at).getTime()) / 86400000);
-const esParado = (t, dias) => t.status === 'open' && diasSinMoverse(t) >= dias;
+// Lo que espera al deploy no está parado: ya está hecho.
+const esParado = (t, dias) => t.status === 'open' && t.etapa !== 'espera_deploy' && diasSinMoverse(t) >= dias;
 
 // Encargados (pueden ser varios; el principal va primero).
 const encargadosDe = t => (t.asignados?.length ? t.asignados
@@ -1003,6 +1006,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
     { id: 'abierto', titulo: 'Por atender', de: t => estadoDe(t) === 'abierto' },
     { id: 'en_curso', titulo: 'En curso', de: t => estadoDe(t) === 'en_curso' },
     { id: 'esperando', titulo: 'Esperando respuesta', de: t => estadoDe(t) === 'esperando' },
+    { id: 'espera_deploy', titulo: 'Espera de deploy', de: t => estadoDe(t) === 'espera_deploy' },
     { id: 'resolved', titulo: 'Hecho (7 días)', de: t => ['resolved', 'closed'].includes(t.status) && t.resolved_at && Date.now() - new Date(t.resolved_at).getTime() <= 7 * 86400000 },
   ];
   const paraTablero = useMemo(() => filtrar(tickets, { conEstado: false }), [filtrar, tickets]);
@@ -1403,7 +1407,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
           {!loading && vista === 'tablero' && (
             <>
               <p style={{margin: "0 0 10px", fontSize: 12, color: "var(--ink-3)"}}>Coge un ticket y llévalo a otra columna para cambiar su estado (Esc lo devuelve). En el móvil, ábrelo y cámbialo arriba.</p>
-              <div ref={tableroRef} style={{display: "grid", gridTemplateColumns: "repeat(4, minmax(215px, 1fr))", gap: 10, overflowX: "auto", paddingBottom: 8}}>
+              <div ref={tableroRef} style={{display: "grid", gridTemplateColumns: `repeat(${COLUMNAS.length}, minmax(215px, 1fr))`, gap: 10, overflowX: "auto", paddingBottom: 8}}>
                 {COLUMNAS.map(col => {
                   const suyos = paraTablero.filter(col.de);
                   const color = ESTADOS[col.id].color;
@@ -1671,6 +1675,7 @@ const ESTADO_FAMILIA = {
   abierto: { label: 'Recibida', color: '#ccac00' },
   en_curso: { label: 'Lo estamos mirando', color: 'var(--purple)' },
   esperando: { label: 'Esperando tu respuesta', color: 'var(--orange)' },
+  espera_deploy: { label: 'Solucionada, se publica pronto', color: '#2563EB' },
   resolved: { label: 'Resuelta', color: 'var(--teal)' },
   closed: { label: 'Cerrada', color: 'var(--ink-3)' },
 };

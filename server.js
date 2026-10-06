@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { readFile } from 'fs/promises';
 import pg from 'pg';
 import dotenv from 'dotenv';
 import cors from 'cors';
@@ -481,8 +482,8 @@ async function initDb() {
         // Recurrencia del ticket (ticket #215): cuando uno recurrente se cierra,
         // se genera solo el siguiente con la fecha límite corrida.
         await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS recurrencia VARCHAR(20)`);
-        // Soporte mejorado: la etapa de un ticket abierto ('en_curso' o
-        // 'esperando'; sin etapa, está por atender). Va aparte del estado para que
+        // Soporte mejorado: la etapa de un ticket abierto ('en_curso',
+        // 'esperando' o 'espera_deploy'; sin etapa, está por atender). Va aparte del estado para que
         // Aim-Tul y Brickslab, que comparten la tabla, lo sigan viendo «abierto».
         await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS etapa VARCHAR(20)`);
         // Qué es: error, mejora, familia, interna o facturacion.
@@ -2163,7 +2164,7 @@ async function initDb() {
 // Aim-Tul), las migraciones fallaban y no se volvían a intentar: las tablas
 // nuevas no se creaban hasta el siguiente reinicio. Ahora se reintenta.
 function initDbConReintentos(intento = 1) {
-    initDb().catch(err => {
+    initDb().then(() => resolverEsperaDeploy().catch(e => console.error('[deploy] tickets en espera:', e.message))).catch(err => {
         if (err?.code === '53300' && intento < 30) {
             console.warn(`[initDb] la base no admite más conexiones; se reintenta en 10 s (intento ${intento})`);
             setTimeout(() => initDbConReintentos(intento + 1), 10_000);
@@ -14590,7 +14591,7 @@ async function destinatariosTicket({ creador, encargados }) {
 
 // ── Soporte mejorado ─────────────────────────────────────────────────────────
 // Etapas de un ticket abierto, categorías, adjuntos y quién es del personal.
-const ETAPAS_TICKET = { en_curso: 'En curso', esperando: 'Esperando respuesta' };
+const ETAPAS_TICKET = { en_curso: 'En curso', esperando: 'Esperando respuesta', espera_deploy: 'Espera de deploy' };
 const CATEGORIAS_TICKET = { error: 'Error', mejora: 'Mejora', familia: 'Petición de familia', interna: 'Tarea interna', facturacion: 'Facturación' };
 const ESTADOS_TICKET = { open: 'Abierto', resolved: 'Resuelto', closed: 'Cerrado' };
 const PRIORIDADES_TICKET = { low: 'Baja', medium: 'Media', high: 'Alta' };
@@ -14876,6 +14877,58 @@ async function avisosTrasCambio(req, id, r) {
     }
 }
 
+// «Espera de deploy»: un ticket hecho pero sin publicar. Al arrancar un deploy
+// nuevo pasa solo a «Resuelto» (con su historial y el aviso a quien lo abrió).
+// El deploy se reconoce por la marca que deja cada compilación (dist/deploy.json,
+// la escribe vite.config.ts): los reinicios diarios de Heroku no compilan, así
+// que no cuentan. Solo en Heroku (DYNO): un servidor de pruebas en local tiene
+// su propia compilación y no debe resolver nada. Solo los de Aim Education, y
+// solo los que ya esperaban cuando se compiló (lo que se marque mientras el
+// deploy está en marcha espera al siguiente).
+async function resolverEsperaDeploy() {
+    if (!/^web/.test(process.env.DYNO || '')) return;
+    let marca;
+    try { marca = JSON.parse(await readFile(path.join(__dirname, 'dist', 'deploy.json'), 'utf8')); } catch { return; }
+    if (!marca?.id || !marca?.fecha) return;
+    // La marca se apunta de una vez: si arrancan dos dynos, solo uno lo hace, y
+    // volver a una versión anterior (rollback) no lo repite.
+    const nuevo = await pool.query(
+        `INSERT INTO aim_ajustes (clave, valor, actualizado_at) VALUES ('deploys_vistos', jsonb_build_object('ids', jsonb_build_array($1::text)), NOW())
+         ON CONFLICT (clave) DO UPDATE
+           SET valor = jsonb_build_object('ids', jsonb_build_array($1::text) || COALESCE((
+                 SELECT jsonb_agg(x) FROM (SELECT x FROM jsonb_array_elements(aim_ajustes.valor->'ids') x LIMIT 49) v), '[]'::jsonb)),
+               actualizado_at = NOW()
+           WHERE NOT COALESCE(aim_ajustes.valor->'ids', '[]'::jsonb) ? $1::text
+         RETURNING clave`, [marca.id]);
+    if (!nuevo.rowCount) return;
+    const r = await pool.query(
+        `SELECT s.id, h.user_id AS quien
+         FROM tickets_registrosoporte s
+         LEFT JOIN LATERAL (SELECT h.user_id, h.created_at FROM aim_ticket_historial h
+                            WHERE h.ticket_id = s.id AND h.campo = 'estado' AND h.despues = $1
+                            ORDER BY h.created_at DESC, h.id DESC LIMIT 1) h ON TRUE
+         WHERE s.status = 'open' AND s.etapa = 'espera_deploy'
+           AND 'Aim Education' = ANY(COALESCE(s.app_label, ARRAY['Aim Education']))
+           AND COALESCE(h.created_at, '-infinity') < $2::timestamptz
+         ORDER BY s.id`, [ETAPAS_TICKET.espera_deploy, marca.fecha]);
+    for (const t of r.rows) {
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            const hecho = await aplicarCambiosTicket(client, t.id, { status: 'resolved' }, null);
+            await client.query('COMMIT');
+            // El aviso sale como de quien lo dejó esperando al deploy.
+            const u = t.quien ? (await pool.query(`SELECT name, surname FROM users WHERE user_id = $1`, [t.quien])).rows[0] : null;
+            const req = { userSession: { userId: t.quien, firstName: u?.name || 'Aim Education', lastName: u?.surname || '' } };
+            avisosTrasCambio(req, t.id, hecho).catch(() => {});
+        } catch (e) {
+            await client.query('ROLLBACK').catch(() => {});
+            console.error(`[deploy] no se pudo resolver el ticket #${t.id}:`, e.message || e);
+        } finally { client.release(); }
+    }
+    if (r.rowCount) console.log(`[deploy] ${r.rowCount} ticket(s) en espera de deploy pasan a resueltos: ${r.rows.map(t => '#' + t.id).join(', ')}`);
+}
+
 // Respuestas guardadas, para lo que se contesta a menudo.
 app.get('/api/support/respuestas', authenticateSession, async (req, res) => {
     if (!req.userSession.canAccessAdmin) return res.status(403).json({ error: 'Sin permisos.' });
@@ -14981,7 +15034,7 @@ async function resumenSoporte(dias = 7) {
                     COUNT(*) FILTER (WHERE status = 'open')::int AS abiertos,
                     COUNT(*) FILTER (WHERE status = 'open' AND assigned_to IS NULL AND cardinality(COALESCE(asignados_extra, '{}')) = 0)::int AS sin_asignar,
                     COUNT(*) FILTER (WHERE status = 'open' AND due_date IS NOT NULL AND due_date::date < (NOW() AT TIME ZONE 'Europe/Madrid')::date)::int AS vencidos,
-                    COUNT(*) FILTER (WHERE status = 'open' AND COALESCE(updated_at, created_at) < NOW() - $2 * INTERVAL '1 day')::int AS parados,
+                    COUNT(*) FILTER (WHERE status = 'open' AND etapa IS DISTINCT FROM 'espera_deploy' AND COALESCE(updated_at, created_at) < NOW() - $2 * INTERVAL '1 day')::int AS parados,
                     percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (resolved_at - created_at)) / 3600)
                         FILTER (WHERE resolved_at > NOW() - $1 * INTERVAL '1 day') AS horas_resolver,
                     (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (pr - t.created_at)) / 3600)
@@ -15211,7 +15264,8 @@ async function avisosSoportePeriodicos() {
                      FROM tickets_registrosoporte s
                      CROSS JOIN LATERAL unnest(array_prepend(s.assigned_to, COALESCE(s.asignados_extra, '{}'))) AS e(user_id)
                      WHERE s.status = 'open' AND e.user_id IS NOT NULL
-                       AND ((s.due_date IS NOT NULL AND s.due_date::date < $1::date) OR COALESCE(s.updated_at, s.created_at) < NOW() - $2 * INTERVAL '1 day')
+                       AND ((s.due_date IS NOT NULL AND s.due_date::date < $1::date)
+                            OR (s.etapa IS DISTINCT FROM 'espera_deploy' AND COALESCE(s.updated_at, s.created_at) < NOW() - $2 * INTERVAL '1 day'))
                      ORDER BY s.due_date NULLS LAST, s.id`, [hoy, dias]);
                 const porPersona = new Map();
                 for (const x of r.rows) { if (!porPersona.has(x.user_id)) porPersona.set(x.user_id, []); porPersona.get(x.user_id).push(x); }
@@ -15668,7 +15722,7 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                         -- De los suyos: los vencidos y los que llevan días sin moverse.
                         COUNT(*) FILTER (WHERE (assigned_to = $1 OR $1 = ANY(asignados_extra)) AND due_date IS NOT NULL
                                            AND due_date::date < (NOW() AT TIME ZONE 'Europe/Madrid')::date)::int AS vencidos,
-                        COUNT(*) FILTER (WHERE (assigned_to = $1 OR $1 = ANY(asignados_extra))
+                        COUNT(*) FILTER (WHERE (assigned_to = $1 OR $1 = ANY(asignados_extra)) AND etapa IS DISTINCT FROM 'espera_deploy'
                                            AND COALESCE(updated_at, created_at) < NOW() - $2 * INTERVAL '1 day')::int AS parados
                  FROM tickets_registrosoporte WHERE status = 'open'`, [yo, await diasParadoTicket()]),
             // Mensajes sin leer: los de otros desde la última vez que abrió esa
