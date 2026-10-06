@@ -294,6 +294,7 @@ function AimHeader({ route } = {}) {
     if (path === '/noticias') return 'news';
     if (path === '/contacto') return 'contact';
     if (path === '/conocenos') return 'about';
+    if (path === '/brickslab' || path === '/biblioteca') return 'brickslab';
     return '';
   })();
 
@@ -302,6 +303,8 @@ function AimHeader({ route } = {}) {
     { id: "activities", label: "Actividades", href: "/actividades" },
     { id: "camp", label: "Campamento", href: "/campamento" },
     { id: "calendar", label: "Calendario", href: "/calendario" },
+    // Los sets de LEGO y la biblioteca del club (#291).
+    { id: "brickslab", label: "Brickslab", href: "/brickslab" },
     { id: "news", label: "Noticias", href: "/noticias" },
     { id: "about", label: "Conócenos", href: "/conocenos" },
     { id: "contact", label: "Contacto", href: "/contacto" },

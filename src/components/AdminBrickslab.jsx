@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { I } from './Icons.jsx';
 import { fmtFecha, fmtFechaHora } from '../fechas.js';
-import { IconoCategoria, ICONOS_BRICKS, TarjetaArticulo } from './Brickslab.jsx';
+import { IconoCategoria, ICONOS_BRICKS, CatalogoBK } from './Brickslab.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Brickslab y Biblioteca en el panel (#291), para secretaría y dirección:
@@ -78,8 +78,17 @@ export default function AdminBrickslab({ showToast, enlace }) {
   }
   if (!d) return <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando…</p>;
   const porEntregar = d.reservas.filter(r => r.estado !== 'Delivered').length;
+  const mesActual = new Date().toISOString().slice(0, 7);
+  const devueltasMes = d.devueltas.filter(r => String(r.devuelta || '').slice(0, 7) === mesActual).length;
   return (
-    <div style={{ display: 'grid', gap: 14 }}>
+    <div className="bk" style={{ display: 'grid', gap: 14 }}>
+      <div className="bk-kpis">
+        <button type="button" className={`bk-kpi${porEntregar ? ' aviso' : ''}`} onClick={() => setTab('reservas')}><b>{porEntregar}</b><span>por entregar</span></button>
+        <button type="button" className="bk-kpi" onClick={() => setTab('reservas')}><b>{d.reservas.length - porEntregar}</b><span>prestados ahora</span></button>
+        <button type="button" className="bk-kpi" onClick={() => setTab('reservas')}><b>{devueltasMes}{devueltasMes >= 60 ? '+' : ''}</b><span>devueltos este mes</span></button>
+        <button type="button" className="bk-kpi" onClick={() => setTab('catalogo')}><b>{d.articulos.filter(a => a.activo).length}</b><span>en el catálogo · {d.articulos.filter(a => a.activo && a.disponible).length} libres</span></button>
+        <button type="button" className="bk-kpi" onClick={() => setTab('ajustes')}><b style={{ fontSize: 18, paddingTop: 6 }}>{d.pro ? `${eur(d.pro.precio)}/mes` : 'Sin precio'}</b><span>Brickslab Pro por la web</span></button>
+      </div>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {PESTANAS.map(([k, l]) => (
           <button key={k} className={`filter-pill ${tab === k ? 'is-active' : ''}`} onClick={() => setTab(k)}>
@@ -107,8 +116,8 @@ function Reservas({ d, hacer }) {
   const porEntregar = filtra(d.reservas.filter(r => r.estado !== 'Delivered'));
   const fuera = filtra(d.reservas.filter(r => r.estado === 'Delivered'));
   const fila = (r, botones) => (
-    <div key={r.id} className="card" style={{ padding: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-      {r.imagen ? <img src={r.imagen} alt="" referrerPolicy="no-referrer" style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 8, background: '#fff' }} /> : null}
+    <div key={r.id} className="bk-fila">
+      {r.imagen ? <img className="mini" src={r.imagen} alt="" referrerPolicy="no-referrer" /> : <span className="mini"><IconoCategoria nombre={r.categoria === 'Biblioteca' ? 'Book' : 'Box'} size={22} /></span>}
       <div style={{ flex: '1 1 220px', minWidth: 0 }}>
         <b style={{ fontSize: 14 }}>{r.titulo}</b>
         <div style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>{r.nombre} · {r.categoria} · {r.estado === 'Returned' ? `devuelto el ${fmtFecha(r.devuelta)}` : `reservado el ${fmtFecha(r.fecha)}`}</div>
@@ -178,51 +187,40 @@ function Reservas({ d, hacer }) {
 
 // ── Catálogo: alta, edición, retirar y revisar sets ──
 function Catalogo({ d, hacer }) {
-  const [cat, setCat] = useState(d.categorias[0]?.id || null);
-  const [q, setQ] = useState('');
   const [ed, setEd] = useState(null);
   const [revisar, setRevisar] = useState(null); // { articulo, piezas: [{pieza, cantidad}] }
   const [verRetirados, setVerRetirados] = useState(false);
-  const categoria = d.categorias.find(c => c.id === cat);
-  const n = q.trim().toLowerCase();
-  const lista = d.articulos.filter(a => a.categoriaId === cat && (verRetirados || a.activo)
-    && (!n || [a.titulo, a.descripcion, ...Object.values(a.datos || {})].some(v => String(v || '').toLowerCase().includes(n))));
+  const porId = Object.fromEntries(d.categorias.map(c => [c.id, c]));
   const guardar = async () => {
     const body = { ...ed, stock: Number(ed.stock) || 1 };
     const ok = await hacer(() => api(ed.id ? `/api/admin/brickslab/articulos/${ed.id}` : '/api/admin/brickslab/articulos', { method: ed.id ? 'PUT' : 'POST', body }), ed.id ? 'Guardado.' : 'Añadido al catálogo.');
     if (ok) setEd(null);
   };
   const catEd = d.categorias.find(c => c.id === ed?.categoriaId);
+  const nuevo = () => setEd({ categoriaId: d.categorias[0]?.id, titulo: '', descripcion: '', imagen: '', stock: 1, soloPro: false, activo: true, datos: { allowHomeBuild: true } });
+  // En el panel, cada tarjeta dice cuánto se ha prestado y cuándo se revisó; al
+  // pulsarla se edita.
+  const accionDe = (a) => {
+    const cat = porId[a.categoriaId];
+    return (
+      <div style={{ display: 'grid', gap: 8 }}>
+        <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+          {a.activo === false ? 'Retirado · ' : ''}Prestado {a.veces} {a.veces === 1 ? 'vez' : 'veces'}{cat?.modo === 'brickslab' ? ` · ${a.revisado ? `revisado el ${fmtFecha(a.revisado)}` : 'sin revisar'}` : ''}
+        </div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button type="button" className="btn btn-sm btn-outline" style={{ flex: 1 }} onClick={() => setEd({ ...a })}>Editar</button>
+          {cat?.modo === 'brickslab' && <button type="button" className="btn btn-sm btn-outline" style={{ flex: 1 }} onClick={() => setRevisar({ articulo: a, piezas: [{ pieza: '', cantidad: 1 }] })}>Revisar</button>}
+        </div>
+      </div>
+    );
+  };
   return (
     <div style={{ display: 'grid', gap: 12 }}>
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-        {d.categorias.map(c => <button key={c.id} type="button" className={`filter-pill ${cat === c.id ? 'is-active' : ''}`} onClick={() => setCat(c.id)} style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}><IconoCategoria nombre={c.icono} size={15} /> {c.nombre} · {d.articulos.filter(a => a.categoriaId === c.id && a.activo).length}</button>)}
-        <div style={{ flex: 1 }} />
-        <button type="button" className="btn btn-primary" disabled={!cat} onClick={() => setEd({ categoriaId: cat, titulo: '', descripcion: '', imagen: '', stock: 1, soloPro: false, activo: true, datos: { allowHomeBuild: true } })}><I.Plus width={15} height={15} /> Añadir</button>
-      </div>
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar…" style={{ ...campo, flex: '1 1 240px', width: 'auto', borderRadius: 999 }} />
-        <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 13, fontWeight: 700 }}><input type="checkbox" checked={verRetirados} onChange={e => setVerRetirados(e.target.checked)} /> Ver también los retirados</label>
-      </div>
-      {!lista.length ? <p style={{ fontSize: 13, color: 'var(--ink-3)' }}>No hay nada aquí todavía.</p> : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 14 }}>
-          {lista.map(a => (
-            <div key={a.id} style={{ opacity: a.activo ? 1 : .55 }}>
-              <TarjetaArticulo a={a} cat={categoria} accion={(
-                <div style={{ display: 'grid', gap: 6 }}>
-                  <div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>
-                    {!a.activo ? 'Retirado · ' : ''}Prestado {a.veces} {a.veces === 1 ? 'vez' : 'veces'}{categoria?.modo === 'brickslab' ? ` · ${a.revisado ? `revisado el ${fmtFecha(a.revisado)}` : 'sin revisar'}` : ''}
-                  </div>
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    <button type="button" className="btn btn-sm btn-outline" onClick={() => setEd({ ...a })}>Editar</button>
-                    {categoria?.modo === 'brickslab' && <button type="button" className="btn btn-sm btn-outline" onClick={() => setRevisar({ articulo: a, piezas: [{ pieza: '', cantidad: 1 }] })}>Revisar</button>}
-                  </div>
-                </div>
-              )} />
-            </div>
-          ))}
-        </div>
-      )}
+      <CatalogoBK categorias={d.categorias} articulos={d.articulos.filter(a => verRetirados || a.activo)} accionDe={accionDe} onAbrir={a => setEd({ ...a })}
+        extra={<>
+          <label className="bk-check"><input type="checkbox" checked={verRetirados} onChange={e => setVerRetirados(e.target.checked)} /> Retirados</label>
+          <button type="button" className="btn btn-primary" disabled={!d.categorias.length} onClick={nuevo}><I.Plus width={15} height={15} /> Añadir</button>
+        </>} />
 
       {ed && (
         <Modal titulo={ed.id ? 'Editar' : 'Añadir al catálogo'} onCerrar={() => setEd(null)}>
@@ -524,6 +522,57 @@ function Categorias({ d, hacer }) {
   );
 }
 
+// Buscar un concepto del catálogo (en vez de un desplegable con todos): se
+// escribe parte del nombre o del código y se elige; también con flechas y Enter.
+const plano = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+function BuscadorConcepto({ conceptos, value, onChange }) {
+  const [q, setQ] = useState('');
+  const [abierto, setAbierto] = useState(false);
+  const [activo, setActivo] = useState(0);
+  const sel = conceptos.find(c => c.concepto === value) || null;
+  const lista = useMemo(() => {
+    const n = plano(q.trim());
+    return (n ? conceptos.filter(c => n.split(/\s+/).every(p => plano(`${c.concepto} ${c.nombre}`).includes(p))) : conceptos).slice(0, 40);
+  }, [q, conceptos]);
+  const elegir = (c) => { onChange(c.concepto); setQ(''); setAbierto(false); };
+  if (sel && !abierto) {
+    return (
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '9px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', fontWeight: 600, fontSize: 14 }}>
+        <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--ink-3)' }}>{sel.concepto}</span>
+        <span style={{ flex: 1 }}>{sel.nombre}</span>
+        <b>{eur(sel.precio)}</b>
+        <button type="button" className="btn btn-sm btn-outline" onClick={() => { setAbierto(true); setActivo(0); }}>Cambiar</button>
+        <button type="button" className="btn btn-sm btn-outline" onClick={() => onChange('')} title="El Pro deja de venderse por la web">Quitar</button>
+      </div>
+    );
+  }
+  return (
+    <div className="bk-combo">
+      <input autoFocus={abierto} value={q} placeholder="Escribe el nombre o el código del concepto (p. ej. «Brickslab Pro»)…" style={campo} autoComplete="off"
+        role="combobox" aria-expanded={abierto} aria-controls="bk-conceptos"
+        onFocus={() => setAbierto(true)} onBlur={() => setTimeout(() => setAbierto(false), 150)}
+        onChange={e => { setQ(e.target.value); setAbierto(true); setActivo(0); }}
+        onKeyDown={e => {
+          if (e.key === 'ArrowDown') { e.preventDefault(); setActivo(i => Math.min(lista.length - 1, i + 1)); }
+          else if (e.key === 'ArrowUp') { e.preventDefault(); setActivo(i => Math.max(0, i - 1)); }
+          else if (e.key === 'Enter' && lista[activo]) { e.preventDefault(); elegir(lista[activo]); }
+          else if (e.key === 'Escape') setAbierto(false);
+        }} />
+      {abierto && (
+        <div className="bk-combo-lista" id="bk-conceptos" role="listbox">
+          {!lista.length ? <div style={{ padding: 10, fontSize: 13, color: 'var(--ink-3)' }}>No hay ningún concepto así. Créalo primero en Facturación → Catálogo.</div>
+            : lista.map((c, i) => (
+              <button key={c.concepto} type="button" role="option" aria-selected={i === activo} className={`bk-combo-op${i === activo ? ' activa' : ''}`}
+                onMouseDown={e => { e.preventDefault(); elegir(c); }} onMouseEnter={() => setActivo(i)}>
+                <span className="cod">{c.concepto}</span><span>{c.nombre}</span><span className="pr">{eur(c.precio)}</span>
+              </button>
+            ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Ajustes: el Pro de pago y qué clases dan el Normal ──
 function Ajustes({ showToast, onGuardado }) {
   const [d, setD] = useState(null);
@@ -544,12 +593,10 @@ function Ajustes({ showToast, onGuardado }) {
           Las familias lo activan desde su área y se cobra cada mes con las demás mensualidades. Tienen Pro mientras el mes esté pagado y se pueden dar de baja cuando quieran.
           Primero da de alta el concepto en <b>Facturación → Catálogo</b> (con su precio) y elígelo aquí. Hasta entonces, el botón de pagar no sale.
         </p>
-        <label style={etiqueta}>Concepto del Pro
-          <select value={f.conceptoPro} onChange={e => setF(x => ({ ...x, conceptoPro: e.target.value }))} style={campo}>
-            <option value="">Sin elegir (el Pro no se vende por la web)</option>
-            {d.conceptos.map(c => <option key={c.concepto} value={c.concepto}>{c.concepto} · {c.nombre} · {eur(c.precio)}</option>)}
-          </select>
-        </label>
+        <div style={etiqueta}>
+          <span>Concepto del Pro</span>
+          <BuscadorConcepto conceptos={d.conceptos} value={f.conceptoPro} onChange={v => setF(x => ({ ...x, conceptoPro: v }))} />
+        </div>
         {elegido && <p style={{ margin: 0, fontSize: 13 }}>Las familias verán: <b>Brickslab Pro · {eur(elegido.precio)} al mes</b>.</p>}
         {d.ajustes.claseProId && <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Quien lo activa queda en la clase «Brickslab Pro» de Facturación → Fichas (se da de baja igual que en cualquier clase).</p>}
         <label style={etiqueta}>Qué incluye (lo leen las familias)

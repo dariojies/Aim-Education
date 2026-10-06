@@ -250,7 +250,7 @@ export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatric
             res.set('Cache-Control', 'public, max-age=60');
             res.json({
                 categorias: cats.map(({ config, ...c }) => c),
-                articulos: items.filter(i => i.activo).map(({ ocupadas, veces, revisado, ...i }) => i),
+                articulos: items.filter(i => i.activo).map(({ ocupadas, revisado, ...i }) => i),
                 pro: await precioPro().then(p => (p ? { precio: p.precio, texto: p.texto } : null)),
             });
         } catch (e) { err(res, e); }
@@ -285,7 +285,7 @@ export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatric
             res.set('Cache-Control', 'no-store');
             res.json({
                 categorias: cats.map(({ config, ...c }) => c),
-                articulos: items.filter(i => i.activo).map(({ ocupadas, veces, revisado, ...i }) => i),
+                articulos: items.filter(i => i.activo).map(({ ocupadas, revisado, ...i }) => i),
                 miembros: miembros.rows.map(m => ({
                     id: m.id, nombre: m.name, apellidos: m.surname || '',
                     permisos: perms.get(String(m.id)) || {},
