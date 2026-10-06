@@ -17077,6 +17077,8 @@ async function auditarSuelto(apunte) {
         throw e;
     } finally { client.release(); }
 }
+// Días de vacaciones al año por defecto: 10 meses trabajados a 2,5 días por mes (#386).
+const VACACIONES_POR_DEFECTO = 25;
 // Jornada contratada de un trabajador (completa sin horas si no se ha indicado).
 async function contratoDe(userId, cliente = pool) {
     const r = await cliente.query(
@@ -17085,7 +17087,8 @@ async function contratoDe(userId, cliente = pool) {
     const c = r.rows[0];
     return {
         jornada: c?.jornada || 'completa', horasSemana: c?.horas_semana == null ? null : Number(c.horas_semana), indicado: !!c,
-        vacacionesDias: c?.vacaciones_dias == null ? 30 : Number(c.vacaciones_dias),
+        // Sin contrato puesto: 10 meses trabajados a 2,5 días por mes (#386).
+        vacacionesDias: c?.vacaciones_dias == null ? VACACIONES_POR_DEFECTO : Number(c.vacaciones_dias),
         fechaAlta: c?.fecha_alta || null, fechaBaja: c?.fecha_baja || null,
     };
 }
@@ -17758,9 +17761,9 @@ app.put('/api/admin/fichajes/horario/:userId', authenticateSession, requireAdmin
         if (jornada === 'parcial' && hs == null) return res.status(400).json({ error: 'Para una jornada a tiempo parcial indica las horas contratadas a la semana.' });
     }
     // Vacaciones del contrato: días naturales al año y fechas de alta y baja.
-    let vacDias = 30, fAlta = null, fBaja = null;
+    let vacDias = VACACIONES_POR_DEFECTO, fAlta = null, fBaja = null;
     if (contrato) {
-        vacDias = contrato.vacacionesDias === '' || contrato.vacacionesDias == null ? 30 : Number(contrato.vacacionesDias);
+        vacDias = contrato.vacacionesDias === '' || contrato.vacacionesDias == null ? VACACIONES_POR_DEFECTO : Number(contrato.vacacionesDias);
         if (!Number.isInteger(vacDias) || vacDias < 0 || vacDias > 60) return res.status(400).json({ error: 'Los días de vacaciones al año tienen que ser un número entero entre 0 y 60.' });
         fAlta = esFechaISO(contrato.fechaAlta) ? contrato.fechaAlta : null;
         fBaja = esFechaISO(contrato.fechaBaja) ? contrato.fechaBaja : null;
@@ -18338,6 +18341,16 @@ function periodosDeCierre(dias) {
     return periodos;
 }
 const sumarDiaISO = (iso, n) => { const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+// Las vacaciones y el calendario van por curso escolar (#386): del 1 de
+// septiembre al 31 de agosto. Así la Navidad, que cruza de año, cuenta entera en
+// el mismo saldo, y Semana Santa sale con el resto del curso. Un curso se nombra
+// por el año en que empieza (2026 = curso 2026-27).
+const cursoDeFecha = (iso) => { const [y, m] = iso.split('-').map(Number); return m >= 9 ? y : y - 1; };
+const limitesCurso = (c) => [`${c}-09-01`, `${c + 1}-08-31`];
+const etiquetaCurso = (c) => `${c}-${String((c + 1) % 100).padStart(2, '0')}`;
+// ?curso=2026 (o el de hoy). Se sigue aceptando ?anio de antes.
+const cursoPedido = (q) => { const v = q.curso || q.anio; return /^\d{4}$/.test(v || '') ? Number(v) : cursoDeFecha(hoyMadrid()); };
+
 const diasEntreISO = (a, b) => Math.round((new Date(b + 'T12:00:00Z') - new Date(a + 'T12:00:00Z')) / 86400000) + 1;
 
 // Festivos del centro y ausencias aprobadas de un trabajador, día a día, en un
@@ -18364,9 +18377,9 @@ async function diasNoLaborables(userId, desde, hasta, cliente = pool) {
 
 // ── Festivos (calendario laboral del centro) ──
 app.get('/api/fichaje/calendario', authenticateSession, requireAdmin, async (req, res) => {
-    const anio = /^\d{4}$/.test(req.query.anio || '') ? req.query.anio : hoyMadrid().slice(0, 4);
+    const curso = cursoPedido(req.query);
     try {
-        const ini = `${anio}-01-01`, fin = `${anio}-12-31`;
+        const [ini, fin] = limitesCurso(curso);
         // Con margen por los dos lados: la Navidad cruza de año, y tiene que verse
         // (y poder quitarse) entera tanto desde un año como desde el otro.
         const r = await pool.query(
@@ -18376,7 +18389,7 @@ app.get('/api/fichaje/calendario', authenticateSession, requireAdmin, async (req
         const delAnio = r.rows.filter(x => x.fecha >= ini && x.fecha <= fin);
         res.set('Cache-Control', 'no-store');
         res.json({
-            anio,
+            curso, etiqueta: etiquetaCurso(curso), desde: ini, hasta: fin,
             festivos: delAnio.map(x => ({ ...x, tipoNombre: TIPOS_FESTIVO[x.tipo] || x.tipo })),
             restanPorDefecto: [...TIPOS_SON_VACACIONES],
             periodos: periodosDeCierre(r.rows).filter(p => p.hasta >= ini && p.desde <= fin),
@@ -18457,18 +18470,18 @@ app.delete('/api/admin/fichajes/festivos', authenticateSession, requireAdmin, re
 });
 
 // ── Saldo de vacaciones ──
-// Días naturales. A cada trabajador le tocan los de su contrato (30 por defecto),
-// en proporción a los días del año que ha estado de alta, redondeando hacia
-// arriba (a su favor). Se le restan los días de cierre del centro marcados como
+// Días naturales, por curso escolar (#386). A cada trabajador le tocan los de su
+// contrato: 2,5 por mes trabajado (25 por defecto, 10 meses), en proporción a
+// los días del curso que ha estado de alta, redondeando hacia arriba (a su favor). Se le restan los días de cierre del centro marcados como
 // "resta de las vacaciones" que caigan mientras está de alta, y sus propias
 // vacaciones aprobadas; un día que es a la vez cierre del centro y vacación suya
 // cuenta una sola vez. Las que ha pedido y aún no están aprobadas se dan aparte.
-async function saldoVacaciones(userId, anio, cliente = pool) {
+async function saldoVacaciones(userId, curso, cliente = pool) {
     const c = await contratoDe(userId, cliente);
-    const ini = `${anio}-01-01`, fin = `${anio}-12-31`;
+    const [ini, fin] = limitesCurso(curso);
     const desde = c.fechaAlta && c.fechaAlta > ini ? c.fechaAlta : ini;
     const hasta = c.fechaBaja && c.fechaBaja < fin ? c.fechaBaja : fin;
-    const base = { anio: Number(anio), diasContrato: c.vacacionesDias, fechaAlta: c.fechaAlta, fechaBaja: c.fechaBaja };
+    const base = { curso, etiqueta: etiquetaCurso(curso), diasContrato: c.vacacionesDias, mesesContrato: c.vacacionesDias / 2.5, fechaAlta: c.fechaAlta, fechaBaja: c.fechaBaja };
     if (desde > hasta) {
         return { ...base, deAlta: false, derecho: 0, proporcional: false, centro: 0, propias: 0, pendientes: 0, quedan: 0 };
     }
@@ -18501,16 +18514,16 @@ async function saldoVacaciones(userId, anio, cliente = pool) {
 
 // Mi saldo de vacaciones.
 app.get('/api/fichaje/vacaciones', authenticateSession, requireAdmin, async (req, res) => {
-    const anio = /^\d{4}$/.test(req.query.anio || '') ? Number(req.query.anio) : Number(hoyMadrid().slice(0, 4));
+    const curso = cursoPedido(req.query);
     try {
         res.set('Cache-Control', 'no-store');
-        res.json(await saldoVacaciones(req.userSession.userId, anio));
+        res.json(await saldoVacaciones(req.userSession.userId, curso));
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // El saldo de toda la plantilla, para dirección y secretaría.
 app.get('/api/admin/fichajes/vacaciones', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
-    const anio = /^\d{4}$/.test(req.query.anio || '') ? Number(req.query.anio) : Number(hoyMadrid().slice(0, 4));
+    const curso = cursoPedido(req.query);
     try {
         const staff = await pool.query(
             `SELECT u.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre
@@ -18518,9 +18531,9 @@ app.get('/api/admin/fichajes/vacaciones', authenticateSession, requireAdmin, req
              WHERE u.club_id = $1 AND (LOWER(COALESCE(${sqlRango('u')},'')) = ANY($2) OR LOWER(COALESCE(u.dev_role,'')) = ANY($2))
              ORDER BY nombre`, [AIM_CLUB_ID, ROLES_STAFF]);
         const trabajadores = [];
-        for (const s of staff.rows) trabajadores.push({ userId: s.user_id, nombre: s.nombre, ...(await saldoVacaciones(s.user_id, anio)) });
+        for (const s of staff.rows) trabajadores.push({ userId: s.user_id, nombre: s.nombre, ...(await saldoVacaciones(s.user_id, curso)) });
         res.set('Cache-Control', 'no-store');
-        res.json({ anio, trabajadores });
+        res.json({ curso, etiqueta: etiquetaCurso(curso), trabajadores });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

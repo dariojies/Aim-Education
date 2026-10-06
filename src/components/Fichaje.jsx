@@ -700,7 +700,7 @@ function ModalAusencia({ tipos, trabajadores, onClose, onDone }) {
   );
 }
 
-// Saldo de vacaciones de un trabajador en un año (días naturales).
+// Saldo de vacaciones de un trabajador en un curso (días naturales, #386).
 const plural = (n, uno, varios) => `${n} ${n === 1 ? uno : varios}`;
 function SaldoVacaciones({ s }) {
   const caja = (t, v, color) => (
@@ -712,13 +712,13 @@ function SaldoVacaciones({ s }) {
   return (
     <div style={{ display: 'grid', gap: 6 }}>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        {caja(`Te tocan en ${s.anio}`, plural(s.derecho, 'día', 'días'))}
+        {caja(`Te tocan en el curso ${s.etiqueta}`, plural(s.derecho, 'día', 'días'))}
         {caja('Cierres del centro', plural(s.centro, 'día', 'días'))}
         {caja('Tus vacaciones', plural(s.propias, 'día', 'días'))}
         {caja('Te quedan', plural(s.quedan, 'día', 'días'), s.quedan < 0 ? 'var(--orange)' : 'var(--teal)')}
       </div>
       <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
-        Días naturales.{s.proporcional ? ` Proporcional a los días de alta este año (${s.diasContrato} al año completo).` : ''}
+        Días naturales: 2,5 por mes trabajado ({String(s.mesesContrato).replace('.', ',')} meses = {s.diasContrato} días en el curso completo).{s.proporcional ? ' Proporcional a los días de alta en el curso.' : ''}
         {s.pendientes > 0 ? ` Además tienes ${plural(s.pendientes, 'día pedido', 'días pedidos')} sin aprobar todavía.` : ''}
         {s.quedan < 0 ? ' Has pasado de los días que te tocan: habla con secretaría.' : ''}
       </span>
@@ -731,11 +731,11 @@ function TablaSaldos({ datos }) {
   const td = { textAlign: 'right', fontSize: 13, padding: '6px 8px', borderTop: '1px solid var(--line-2)' };
   return (
     <div style={{ display: 'grid', gap: 6, marginTop: 6 }}>
-      <b style={{ fontSize: 13 }}>Vacaciones de la plantilla en {datos.anio}</b>
+      <b style={{ fontSize: 13 }}>Vacaciones de la plantilla en el curso {datos.etiqueta}</b>
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead><tr>
-            <th style={{ ...th, textAlign: 'left' }}>Trabajador</th><th style={th}>Le tocan</th><th style={th}>Cierres</th>
+            <th style={{ ...th, textAlign: 'left' }}>Trabajador</th><th style={th}>Meses</th><th style={th}>Le tocan</th><th style={th}>Cierres</th>
             <th style={th}>Suyas</th><th style={th}>Pedidas</th><th style={th}>Quedan</th>
           </tr></thead>
           <tbody>
@@ -743,10 +743,10 @@ function TablaSaldos({ datos }) {
               <tr key={t.userId}>
                 <td style={{ ...td, textAlign: 'left' }}>
                   {t.nombre}
-                  {!t.deAlta && <span style={{ fontSize: 11, color: 'var(--ink-3)' }}> · no está de alta este año</span>}
+                  {!t.deAlta && <span style={{ fontSize: 11, color: 'var(--ink-3)' }}> · no está de alta este curso</span>}
                   {t.deAlta && t.proporcional && <span style={{ fontSize: 11, color: 'var(--ink-3)' }}> · proporcional</span>}
                 </td>
-                <td style={td}>{t.derecho}</td><td style={td}>{t.centro}</td><td style={td}>{t.propias}</td>
+                <td style={{ ...td, color: 'var(--ink-3)' }}>{String(t.mesesContrato).replace('.', ',')}</td><td style={td}>{t.derecho}</td><td style={td}>{t.centro}</td><td style={td}>{t.propias}</td>
                 <td style={{ ...td, color: t.pendientes ? '#b45309' : 'var(--ink-3)' }}>{t.pendientes}</td>
                 <td style={{ ...td, fontWeight: 800, color: t.quedan < 0 ? 'var(--orange)' : 'var(--teal)' }}>{t.quedan}</td>
               </tr>
@@ -755,15 +755,17 @@ function TablaSaldos({ datos }) {
         </table>
       </div>
       <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
-        Días naturales. Los días al año, y las fechas de alta y baja para la parte proporcional, se ponen en el
-        «Horario» de cada trabajador (Registro del personal).
+        Días naturales, del 1 de septiembre al 31 de agosto: 2,5 por mes trabajado. Los meses que trabaja cada uno, y las
+        fechas de alta y baja para la parte proporcional, se ponen en el «Horario» de cada trabajador (Registro del personal).
       </span>
     </div>
   );
 }
 
 function VacacionesYFestivos({ showToast, puedeGestionar }) {
-  const [anio, setAnio] = useState(Number(hoyISO().slice(0, 4)));
+  // Por curso escolar (#386): 2026 = curso 2026-27 (septiembre a agosto).
+  const [anio, setAnio] = useState(() => { const [y, m] = hoyISO().split('-').map(Number); return m >= 9 ? y : y - 1; });
+  const etiquetaCurso = `${anio}-${String((anio + 1) % 100).padStart(2, '0')}`;
   const [cal, setCal] = useState(null);
   const [mias, setMias] = useState(null);
   const [todas, setTodas] = useState([]);
@@ -779,12 +781,12 @@ function VacacionesYFestivos({ showToast, puedeGestionar }) {
   const cargar = useCallback(async () => {
     const get = (u) => fetch(u, { credentials: 'include', cache: 'no-store' }).then(r => r.ok ? r.json() : null).catch(() => null);
     const [c, m, t, w, ms, ss] = await Promise.all([
-      get(`/api/fichaje/calendario?anio=${anio}`),
+      get(`/api/fichaje/calendario?curso=${anio}`),
       get('/api/fichaje/ausencias'),
       puedeGestionar ? get(`/api/admin/fichajes/ausencias?estado=${verTodas ? 'todas' : 'pendientes'}`) : null,
       puedeGestionar ? get(`/api/admin/fichajes?desde=${hoyISO()}&hasta=${hoyISO()}`) : null,
-      get(`/api/fichaje/vacaciones?anio=${anio}`),
-      puedeGestionar ? get(`/api/admin/fichajes/vacaciones?anio=${anio}`) : null,
+      get(`/api/fichaje/vacaciones?curso=${anio}`),
+      puedeGestionar ? get(`/api/admin/fichajes/vacaciones?curso=${anio}`) : null,
     ]);
     setCal(c); setMias(m); setMiSaldo(ms); setSaldos(ss);
     if (t) setTodas(t.ausencias || []);
@@ -855,9 +857,10 @@ function VacacionesYFestivos({ showToast, puedeGestionar }) {
       <div style={{ display: 'grid', gap: 8 }}>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           {titulo('Calendario laboral')}
-          <button className="btn btn-sm btn-outline" onClick={() => setAnio(a => a - 1)} aria-label="Año anterior">‹</button>
-          <b style={{ fontSize: 14 }}>{anio}</b>
-          <button className="btn btn-sm btn-outline" onClick={() => setAnio(a => a + 1)} aria-label="Año siguiente">›</button>
+          <button className="btn btn-sm btn-outline" onClick={() => setAnio(a => a - 1)} aria-label="Curso anterior">‹</button>
+          <b style={{ fontSize: 14 }}>Curso {etiquetaCurso}</b>
+          <button className="btn btn-sm btn-outline" onClick={() => setAnio(a => a + 1)} aria-label="Curso siguiente">›</button>
+          <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>1 sep {anio} – 31 ago {anio + 1}</span>
         </div>
         <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.6 }}>
           Los días que cierra el centro. Esos días no se recuerda fichar a nadie, y <b>las familias los ven en su panel</b> como
@@ -898,7 +901,7 @@ function VacacionesYFestivos({ showToast, puedeGestionar }) {
           </form>
         )}
         {!(cal?.periodos || []).length
-          ? <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>No hay días de cierre marcados en {anio}.</p>
+          ? <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>No hay días de cierre marcados en el curso {etiquetaCurso}.</p>
           : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 8 }}>
               {cal.periodos.map(p => (
@@ -1188,7 +1191,8 @@ function GestionFichajes({ showToast }) {
       userId: t.userId, nombre: t.nombre, dias,
       contrato: {
         jornada: d.contrato?.jornada || 'completa', horasSemana: d.contrato?.horasSemana == null ? '' : String(d.contrato.horasSemana),
-        vacacionesDias: d.contrato?.vacacionesDias == null ? '30' : String(d.contrato.vacacionesDias),
+        // Se edita en meses trabajados (2,5 días por mes, #386); se guarda en días.
+        vacacionesMeses: d.contrato?.vacacionesDias == null ? '10' : String(Math.round(d.contrato.vacacionesDias / 2.5 * 10) / 10),
         fechaAlta: d.contrato?.fechaAlta || '', fechaBaja: d.contrato?.fechaBaja || '',
       },
     });
@@ -1203,7 +1207,10 @@ function GestionFichajes({ showToast }) {
       if (d.tarde && d.t.entrada && d.t.salida) dias.push({ dia: d.dia, tramo: 2, entrada: d.t.entrada, salida: d.t.salida });
     }
     try {
-      await enviar(`/api/admin/fichajes/horario/${horario.userId}`, { dias, contrato: horario.contrato }, 'PUT');
+      // Los meses trabajados se guardan como días: 2,5 por mes, redondeando a su favor (#386).
+      const meses = Number(String(horario.contrato.vacacionesMeses ?? '').replace(',', '.'));
+      const contrato = { ...horario.contrato, vacacionesDias: String(horario.contrato.vacacionesMeses ?? '').trim() === '' ? '' : Math.ceil(meses * 2.5 - 1e-9) };
+      await enviar(`/api/admin/fichajes/horario/${horario.userId}`, { dias, contrato }, 'PUT');
       showToast?.('Horario y jornada guardados.'); setHorario(null); cargar();
     } catch (err) { alert(err.message); }
   }
@@ -1316,10 +1323,12 @@ function GestionFichajes({ showToast }) {
               <b style={{ fontSize: 13 }}>Vacaciones</b>
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', fontSize: 12, color: 'var(--ink-2)' }}>
                 <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                  <input type="number" min="0" max="60" step="1" value={horario.contrato.vacacionesDias}
-                    onChange={e => { const v = e.target.value; setHorario(h => ({ ...h, contrato: { ...h.contrato, vacacionesDias: v } })); }}
+                  <input type="number" min="0" max="12" step="0.5" value={horario.contrato.vacacionesMeses}
+                    onChange={e => { const v = e.target.value; setHorario(h => ({ ...h, contrato: { ...h.contrato, vacacionesMeses: v } })); }}
                     style={{ ...inp, padding: '6px 8px', width: 70 }} />
-                  días naturales al año
+                  meses que trabaja al año
+                  <b style={{ color: 'var(--ink)' }}>= {Math.ceil((Number(String(horario.contrato.vacacionesMeses).replace(',', '.')) || 0) * 2.5 - 1e-9)} días de vacaciones</b>
+                  <span style={{ color: 'var(--ink-3)' }}>(2,5 por mes)</span>
                 </label>
                 <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                   Alta

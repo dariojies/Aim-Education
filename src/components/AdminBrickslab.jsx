@@ -107,6 +107,69 @@ export default function AdminBrickslab({ showToast, enlace }) {
   );
 }
 
+// Buscar el set o el libro que se lleva (#387): por título, autor o referencia,
+// en vez de un desplegable con todo el catálogo. Solo lo que está libre; lo que
+// no puede reservar esa persona sale apagado diciendo por qué.
+const plano387 = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+function BuscarArticulo({ d, persona, value, onChange }) {
+  const [q, setQ] = useState('');
+  const [activo, setActivo] = useState(0);
+  const porCat = Object.fromEntries(d.categorias.map(c => [c.id, c]));
+  const motivo = (a) => {
+    const p = persona?.permisos?.[a.categoriaId] || {};
+    if (!p.normal) return `sin permiso en ${porCat[a.categoriaId]?.nombre || 'esta categoría'}`;
+    if (a.soloPro && !p.pro) return 'solo Pro';
+    return null;
+  };
+  const libres = d.articulos.filter(a => a.activo && a.disponible);
+  const lista = useMemo(() => {
+    const n = plano387(q.trim());
+    if (!n) return [];
+    return libres.filter(a => n.split(/\s+/).every(w => plano387([a.titulo, ...Object.values(a.datos || {})].join(' ')).includes(w)))
+      .sort((x, y) => (motivo(x) ? 1 : 0) - (motivo(y) ? 1 : 0)).slice(0, 12);
+  }, [q, d.articulos, persona]); // eslint-disable-line react-hooks/exhaustive-deps
+  const sel = d.articulos.find(a => a.id === value);
+  if (sel) {
+    return (
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: 8, borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', fontWeight: 600, fontSize: 14 }}>
+        {sel.imagen ? <img src={sel.imagen} alt="" referrerPolicy="no-referrer" style={{ width: 40, height: 40, objectFit: 'cover', borderRadius: 8, background: '#fff' }} /> : <IconoCategoria nombre={porCat[sel.categoriaId]?.icono} size={20} />}
+        <span style={{ flex: 1 }}>{sel.titulo}<span style={{ display: 'block', fontSize: 12, fontWeight: 400, color: 'var(--ink-3)' }}>{porCat[sel.categoriaId]?.nombre}</span></span>
+        <button type="button" className="btn btn-sm btn-outline" onClick={() => { onChange(''); setQ(''); }}>Cambiar</button>
+      </div>
+    );
+  }
+  const elegir = (a) => { if (!motivo(a)) { onChange(a.id); setQ(''); } };
+  return (
+    <div style={{ display: 'grid', gap: 4 }}>
+      <input autoFocus value={q} onChange={e => { setQ(e.target.value); setActivo(0); }} placeholder={`Escribe el título, el autor o la referencia (${libres.length} libres)…`} style={campo} autoComplete="off"
+        onKeyDown={e => {
+          if (e.key === 'ArrowDown') { e.preventDefault(); setActivo(i => Math.min(lista.length - 1, i + 1)); }
+          else if (e.key === 'ArrowUp') { e.preventDefault(); setActivo(i => Math.max(0, i - 1)); }
+          else if (e.key === 'Enter' && lista[activo]) { e.preventDefault(); elegir(lista[activo]); }
+        }} />
+      {q.trim() && (
+        <div role="listbox" style={{ display: 'grid', gap: 2, border: '1px solid var(--line)', borderRadius: 10, padding: 4, maxHeight: 280, overflow: 'auto' }}>
+          {!lista.length ? <div style={{ padding: 10, fontSize: 13, color: 'var(--ink-3)' }}>No hay nada libre que se llame así.</div> : lista.map((a, i) => {
+            const no = motivo(a);
+            return (
+              <button key={a.id} type="button" role="option" aria-selected={i === activo} aria-disabled={!!no} onClick={() => elegir(a)} onMouseEnter={() => setActivo(i)}
+                style={{ display: 'flex', gap: 10, alignItems: 'center', textAlign: 'left', border: 0, borderRadius: 8, padding: '6px 8px', cursor: no ? 'not-allowed' : 'pointer', fontFamily: 'inherit', fontSize: 13.5, color: 'var(--ink)', opacity: no ? 0.5 : 1,
+                  background: i === activo && !no ? 'color-mix(in oklab, var(--purple) 10%, var(--bg-2))' : 'none' }}>
+                {a.imagen ? <img src={a.imagen} alt="" referrerPolicy="no-referrer" style={{ width: 34, height: 34, objectFit: 'cover', borderRadius: 6, background: '#fff', flexShrink: 0 }} /> : <span style={{ width: 34, display: 'grid', placeItems: 'center' }}><IconoCategoria nombre={porCat[a.categoriaId]?.icono} size={18} /></span>}
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <b style={{ fontWeight: 700 }}>{a.titulo}</b>{a.soloPro ? <span style={chip('#B45309', { marginLeft: 6 })}>Pro</span> : null}
+                  <span style={{ display: 'block', fontSize: 12, color: 'var(--ink-3)' }}>{porCat[a.categoriaId]?.nombre}{Object.entries(a.datos || {}).filter(([k, v]) => k !== 'allowHomeBuild' && v).slice(0, 2).map(([, v]) => ` · ${v}`).join('')}</span>
+                </span>
+                {no && <span style={{ fontSize: 11.5, color: 'var(--orange)', fontWeight: 700 }}>{no}</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Reservas: por entregar, entregadas (fuera) y lo último devuelto ──
 function Reservas({ d, hacer }) {
   const [nueva, setNueva] = useState(null); // { persona, articuloId }
@@ -167,16 +230,10 @@ function Reservas({ d, hacer }) {
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', fontSize: 12.5 }}>
                 {d.categorias.map(c => { const p = nueva.persona.permisos?.[c.id] || {}; return <span key={c.id} style={chip(p.pro ? '#B45309' : p.normal ? 'var(--teal)' : 'var(--ink-3)')}>{c.nombre}: {p.pro ? 'Pro' : p.normal ? 'Normal' : 'sin permiso'}</span>; })}
               </div>
-              <label style={etiqueta}>Qué se lleva
-                <select value={nueva.articuloId} onChange={e => setNueva(x => ({ ...x, articuloId: e.target.value }))} style={campo}>
-                  <option value="">Elige…</option>
-                  {d.categorias.map(c => (
-                    <optgroup key={c.id} label={c.nombre}>
-                      {d.articulos.filter(a => a.categoriaId === c.id && a.activo && a.disponible).map(a => <option key={a.id} value={a.id}>{a.titulo}{a.soloPro ? ' (Pro)' : ''}</option>)}
-                    </optgroup>
-                  ))}
-                </select>
-              </label>
+              <div style={etiqueta}>
+                <span>Qué se lleva</span>
+                <BuscarArticulo d={d} persona={nueva.persona} value={nueva.articuloId} onChange={id => setNueva(x => ({ ...x, articuloId: id }))} />
+              </div>
               <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Se aplican las mismas reglas que a las familias: una reserva por categoría, permiso y unidades libres.</p>
             </>
           )}
