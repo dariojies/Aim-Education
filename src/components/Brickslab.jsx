@@ -198,11 +198,11 @@ export function BrickslabFamilia() {
   useEffect(() => { cargar(); }, [cargar]);
 
   const conPermiso = (m) => Object.entries(m.permisos || {}).some(([k, p]) => k !== '_pro' && p?.normal);
-  // Si dos de la familia se llaman igual (un padre y su hijo), con el primer apellido.
+  // Si dos de la familia se llaman igual (un padre y su hijo), con sus apellidos.
   const miembros = useMemo(() => {
     const l = d?.miembros || [];
     const repetido = (n) => l.filter(x => x.nombre.trim().toLowerCase() === n.trim().toLowerCase()).length > 1;
-    return l.map(m => ({ ...m, nombre: repetido(m.nombre) && m.apellidos ? `${m.nombre} ${m.apellidos.split(/\s+/)[0]}` : m.nombre }))
+    return l.map(m => ({ ...m, nombre: repetido(m.nombre) && m.apellidos ? `${m.nombre} ${m.apellidos.trim()}` : m.nombre }))
       .sort((a, b) => conPermiso(b) - conPermiso(a));
   }, [d]);
   const yo = miembros.find(m => m.id === quien) || miembros[0] || null;
