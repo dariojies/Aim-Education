@@ -21,6 +21,9 @@ const AL_APAGAR = {
   aviso_alta_web: 'No llegará a info@ el aviso de las familias que se registran en la web (seguirán saliendo en el panel).',
   aviso_consulta_web: 'No llegará a info@ el aviso de las consultas de la web (seguirán saliendo en el panel).',
   aviso_ticket: 'Los encargados no recibirán el aviso de los tickets nuevos.',
+  ticket_respuesta: 'Las familias no se enterarán de que les habéis contestado hasta que entren en su área.',
+  ticket_asignado: 'Nadie recibirá aviso cuando le asignen un ticket (seguirá saliendo en su campanita).',
+  ticket_mensaje: 'No llegará aviso de los mensajes nuevos en los tickets (seguirán en la campanita).',
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

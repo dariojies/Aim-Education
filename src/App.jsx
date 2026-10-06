@@ -108,7 +108,7 @@ export default function App() {
   } else if (pathname.startsWith('/dashboard')) {
     if (!userChecked) return null;
     if (!user) { go('/auth'); return null; }
-    const dashSub = { campamento: 'camp', pagos: 'payments', clases: 'classes', asistencia: 'attendance' }[seg[1]] || 'overview';
+    const dashSub = { campamento: 'camp', pagos: 'payments', clases: 'classes', asistencia: 'attendance', soporte: 'support' }[seg[1]] || 'overview';
     screen = <StudentDashboard user={user} onLogout={handleLogout} subroute={dashSub} />;
   } else if (pathname.startsWith('/admin')) {
     if (!userChecked) return null;

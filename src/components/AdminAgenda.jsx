@@ -48,7 +48,7 @@ function ElegirTicket({ valor, onElegir, coger, onCoger, yo }) {
     const lista = useMemo(() => {
         const q = busca.trim().toLowerCase();
         return tickets
-            .filter(t => t.status !== 'done' && t.status !== 'resolved')
+            .filter(t => t.status === 'open')
             .filter(t => ambito === 'todos'
                 || (ambito === 'mios' && (t.assigned_to === yo || t.user_id === yo || t.asignados?.some(a => a.id === yo)))
                 || (ambito === 'sinDuenio' && !t.assigned_to && !t.asignados?.length))

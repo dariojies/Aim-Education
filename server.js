@@ -481,6 +481,25 @@ async function initDb() {
         // Recurrencia del ticket (ticket #215): cuando uno recurrente se cierra,
         // se genera solo el siguiente con la fecha límite corrida.
         await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS recurrencia VARCHAR(20)`);
+        // Soporte mejorado: la etapa de un ticket abierto ('en_curso' o
+        // 'esperando'; sin etapa, está por atender). Va aparte del estado para que
+        // Aim-Tul y Brickslab, que comparten la tabla, lo sigan viendo «abierto».
+        await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS etapa VARCHAR(20)`);
+        // Qué es: error, mejora, familia, interna o facturacion.
+        await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS categoria VARCHAR(20)`);
+        // Quién cambió qué en cada ticket, y cuándo.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_ticket_historial (
+                id SERIAL PRIMARY KEY,
+                ticket_id INTEGER NOT NULL REFERENCES tickets_registrosoporte(id) ON DELETE CASCADE,
+                user_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                campo VARCHAR(30) NOT NULL,
+                antes TEXT,
+                despues TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_ticket_historial ON aim_ticket_historial (ticket_id, created_at)`);
         await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS dev_role VARCHAR(50) DEFAULT 'student'`);
 
         // Eventos y talleres del club (propio de aim-education).
@@ -10802,6 +10821,14 @@ const AJUSTES_SISTEMA = {
     speaking_manana: { hora: { nombre: 'A partir de qué hora sale', unidad: 'h', min: 0, max: 22, def: 9 } },
     fichaje_entrada: { margen: { nombre: 'Minutos de cortesía tras su hora de entrada', unidad: 'min', min: 0, max: 120, def: 0 } },
     fichaje_salida: { margen: { nombre: 'Minutos de cortesía tras su hora de salida', unidad: 'min', min: 0, max: 180, def: 0 } },
+    tickets_vencidos: {
+        hora: { nombre: 'A partir de qué hora sale', unidad: 'h', min: 0, max: 22, def: 9 },
+        dias: { nombre: 'Días sin moverse para avisar', unidad: 'días', min: 2, max: 60, def: 7 },
+    },
+    tickets_resumen_semanal: {
+        dia: { nombre: 'Qué día de la semana (1 = lunes)', unidad: 'día', min: 1, max: 7, def: 1 },
+        hora: { nombre: 'A partir de qué hora sale', unidad: 'h', min: 0, max: 22, def: 9 },
+    },
 };
 // Los valores de unos ajustes, enteros y dentro de sus límites.
 function limpiarAjustes(defs, valores = {}, antes = {}) {
@@ -12784,7 +12811,7 @@ app.get('/api/me/notificaciones', authenticateSession, async (req, res) => {
                     (SELECT MAX(m.created_at) FROM tickets_mensajes m
                       WHERE m.ticket_id = t.id AND m.canal = 'creador' AND m.autor_id IS DISTINCT FROM $1) AS ultima
              FROM tickets_registrosoporte t
-             WHERE t.user_id = $1 AND t.status <> 'done'`, [me]);
+             WHERE t.user_id = $1 AND (t.status = 'open' OR COALESCE(t.updated_at, t.created_at) > NOW() - INTERVAL '14 days')`, [me]);
         for (const t of tk.rows) {
             if (!t.ultima) continue;
             avisos.push({
@@ -14421,35 +14448,194 @@ async function destinatariosTicket({ creador, encargados }) {
         .filter(e => e !== general))];
 }
 
+// ── Soporte mejorado ─────────────────────────────────────────────────────────
+// Etapas de un ticket abierto, categorías, adjuntos y quién es del personal.
+const ETAPAS_TICKET = { en_curso: 'En curso', esperando: 'Esperando respuesta' };
+const CATEGORIAS_TICKET = { error: 'Error', mejora: 'Mejora', familia: 'Petición de familia', interna: 'Tarea interna', facturacion: 'Facturación' };
+const ESTADOS_TICKET = { open: 'Abierto', resolved: 'Resuelto', closed: 'Cerrado' };
+const PRIORIDADES_TICKET = { low: 'Baja', medium: 'Media', high: 'Alta' };
+// Adjuntos: imágenes, PDF, Office, texto y zip; hasta 4 MB (en base64 ocupa más).
+const ADJUNTO_TICKET_RE = /^data:(image\/(png|jpe?g|gif|webp)|application\/pdf|application\/msword|application\/vnd\.ms-excel|application\/vnd\.openxmlformats-officedocument\.(wordprocessingml\.document|spreadsheetml\.sheet|presentationml\.presentation)|text\/plain|text\/csv|application\/zip|application\/x-zip-compressed);base64,/;
+const MAX_ADJUNTO_TICKET = 5_600_000;
+const adjuntoNoValido = (a) => (!a ? null
+    : !ADJUNTO_TICKET_RE.test(a) ? 'Ese tipo de archivo no se puede adjuntar: imágenes, PDF, Word, Excel, texto o zip.'
+        : a.length > MAX_ADJUNTO_TICKET ? 'El archivo no puede pasar de 4 MB.' : null);
+// Sirve un adjunto guardado en base64: imágenes y PDF se ven en el navegador; el
+// resto se descarga. nosniff para que nada se interprete como otra cosa.
+function servirAdjunto(res, datos, nombre, mime) {
+    const b64 = String(datos).includes(',') ? String(datos).split(',')[1] : datos;
+    const tipo = mime || 'application/octet-stream';
+    const verEnLinea = /^image\/|^application\/pdf$/.test(tipo);
+    res.set('Content-Type', tipo);
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.set('Content-Disposition', `${verEnLinea ? 'inline' : 'attachment'}; filename="${String(nombre || 'adjunto').replace(/["\r\n]/g, '')}"`);
+    res.send(Buffer.from(b64, 'base64'));
+}
+// Del personal del club (no una familia), con la misma regla que «Enviar acceso».
+const SQL_ES_PERSONAL = (u) => `(EXISTS (SELECT 1 FROM aim_rangos rg WHERE rg.user_id = ${u}.user_id)
+    OR LOWER(COALESCE(${u}.role, '')) IN ('instructor', 'club_owner', 'superadmin') OR ${u}.dev_role = 'superadmin')`;
+// Cuántos días sin moverse son «parado» (también lo usa el aviso diario).
+const diasParadoTicket = async () => (await ajusteSistema('tickets_vencidos', 'dias')) || 7;
+
+// Apunta en el historial lo que ha cambiado.
+async function anotarHistorial(cliente, ticketId, userId, cambios) {
+    for (const c of cambios) {
+        if (String(c.antes ?? '') === String(c.despues ?? '')) continue;
+        await cliente.query(
+            `INSERT INTO aim_ticket_historial (ticket_id, user_id, campo, antes, despues) VALUES ($1, $2, $3, $4, $5)`,
+            [ticketId, userId || null, c.campo, c.antes == null ? null : String(c.antes).slice(0, 500), c.despues == null ? null : String(c.despues).slice(0, 500)]);
+    }
+}
+const nombreEstadoTicket = (status, etapa) => (status === 'open' && ETAPAS_TICKET[etapa]) || ESTADOS_TICKET[status] || status;
+async function nombresDe(cliente, ids) {
+    const l = (ids || []).filter(Boolean);
+    if (!l.length) return '';
+    const r = await cliente.query(`SELECT user_id, TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS n FROM users WHERE user_id = ANY($1::uuid[])`, [l]);
+    const m = new Map(r.rows.map(x => [x.user_id, x.n]));
+    return l.map(id => m.get(id) || '?').join(', ');
+}
+const fechaTicket = (f) => (f ? new Date(f).toLocaleDateString('es-ES', { timeZone: 'Europe/Madrid' }) : null);
+
+// Aplica a un ticket SOLO los cambios que vienen (antes se reescribía todo y un
+// botón de estado guardaba también lo que se estuviera tocando a medias). Deja
+// constancia en el historial y, al resolver uno recurrente, genera el siguiente.
+async function aplicarCambiosTicket(cliente, id, c, userId) {
+    const r = await cliente.query(
+        `SELECT id, user_id, subject, description, status, etapa, priority, due_date, assigned_to, asignados_extra,
+                app_label, recurrencia, categoria
+         FROM tickets_registrosoporte WHERE id = $1 FOR UPDATE`, [id]);
+    if (!r.rowCount) throw { httP: 404, msg: 'Ese ticket no existe.' };
+    const p = r.rows[0];
+    const n = { ...p };
+    if (c.status !== undefined) {
+        if (!ESTADOS_TICKET[c.status]) throw { httP: 400, msg: 'Ese estado no existe.' };
+        n.status = c.status;
+        if (c.status !== 'open') n.etapa = null;
+    }
+    if (c.etapa !== undefined) {
+        n.etapa = ETAPAS_TICKET[c.etapa] ? c.etapa : null;
+        if (c.status === undefined) n.status = 'open';
+    }
+    if (n.status !== 'open') n.etapa = null;
+    if (c.priority !== undefined) n.priority = PRIORIDADES_TICKET[c.priority] ? c.priority : 'low';
+    if (c.categoria !== undefined) n.categoria = CATEGORIAS_TICKET[c.categoria] ? c.categoria : null;
+    if (c.dueDate !== undefined) {
+        if (c.dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(c.dueDate)) throw { httP: 400, msg: 'La fecha límite no es válida.' };
+        n.due_date = c.dueDate || null;
+    }
+    if (c.assignedIds !== undefined || c.assignedTo !== undefined) {
+        const e = encargadosDe(c);
+        n.assigned_to = e.principal; n.asignados_extra = e.extra;
+    }
+    if (c.appLabel !== undefined) {
+        const l = (Array.isArray(c.appLabel) ? c.appLabel : [c.appLabel]).map(String).filter(Boolean).slice(0, 10);
+        n.app_label = l.length ? l : ['Aim Education'];
+    }
+    if (c.recurrencia !== undefined) n.recurrencia = RECURRENCIAS.includes(c.recurrencia) ? c.recurrencia : null;
+    const esFinal = ['resolved', 'closed'].includes(n.status);
+    // Al resolver/cerrar uno recurrente se genera el siguiente y este deja de serlo.
+    const generar = esFinal && c.status !== undefined && p.status === 'open' && !!n.recurrencia;
+    const recGuardar = generar ? null : n.recurrencia;
+    await cliente.query(
+        `UPDATE tickets_registrosoporte
+         SET status = $1, etapa = $2, priority = $3, due_date = $4::date, assigned_to = $5, asignados_extra = $6::uuid[],
+             app_label = $7::TEXT[], recurrencia = $8, categoria = $9, updated_at = NOW(),
+             resolved_at = CASE WHEN $10 THEN COALESCE(resolved_at, NOW()) ELSE NULL END
+             ${c.devResponse !== undefined ? ', dev_response = $12' : ''}
+         WHERE id = $11`,
+        [n.status, n.etapa, n.priority, n.due_date ? String(n.due_date instanceof Date ? n.due_date.toISOString() : n.due_date).slice(0, 10) : null,
+         n.assigned_to, n.asignados_extra || [], n.app_label, recGuardar, n.categoria, esFinal, id,
+         ...(c.devResponse !== undefined ? [String(c.devResponse || '')] : [])]);
+    const encAntes = [p.assigned_to, ...(p.asignados_extra || [])].filter(Boolean);
+    const encDespues = [n.assigned_to, ...(n.asignados_extra || [])].filter(Boolean);
+    await anotarHistorial(cliente, id, userId, [
+        { campo: 'estado', antes: nombreEstadoTicket(p.status, p.etapa), despues: nombreEstadoTicket(n.status, n.etapa) },
+        { campo: 'prioridad', antes: PRIORIDADES_TICKET[p.priority] || p.priority, despues: PRIORIDADES_TICKET[n.priority] || n.priority },
+        { campo: 'categoría', antes: CATEGORIAS_TICKET[p.categoria] || null, despues: CATEGORIAS_TICKET[n.categoria] || null },
+        { campo: 'fecha límite', antes: fechaTicket(p.due_date), despues: fechaTicket(n.due_date) },
+        { campo: 'encargados', antes: encAntes.join(',') === encDespues.join(',') ? 'x' : await nombresDe(cliente, encAntes), despues: encAntes.join(',') === encDespues.join(',') ? 'x' : await nombresDe(cliente, encDespues) },
+        { campo: 'apps', antes: (p.app_label || []).join(', '), despues: (n.app_label || []).join(', ') },
+        { campo: 'se repite', antes: p.recurrencia, despues: recGuardar },
+    ]);
+    let siguienteId = null;
+    if (generar) {
+        const sig = siguienteFechaRecurrente(n.due_date, n.recurrencia);
+        const nuevo = await cliente.query(
+            `INSERT INTO tickets_registrosoporte
+               (user_id, subject, description, app_label, priority, assigned_to, due_date, recurrencia, asignados_extra, categoria)
+             VALUES ($1,$2,$3,$4::TEXT[],$5,$6,$7,$8,$9::uuid[],$10) RETURNING id`,
+            [p.user_id, p.subject, p.description, n.app_label, n.priority, n.assigned_to, sig ? sig.toISOString() : null,
+             n.recurrencia, n.asignados_extra || [], n.categoria]);
+        siguienteId = nuevo.rows[0].id;
+        await anotarHistorial(cliente, siguienteId, userId, [{ campo: 'creado', antes: null, despues: `Repetición del #${id}` }]);
+    }
+    return { prev: p, nuevo: n, siguienteId, nuevosEncargados: encDespues.filter(x => !encAntes.includes(x)) };
+}
+
+// ── Avisos por correo de los tickets ─────────────────────────────────────────
+// Se mandan como correos de la app (se apagan y se diseñan en Automatismos).
+// Para no saturar con una conversación viva, a la misma persona y del mismo
+// ticket sale como mucho uno cada 15 minutos.
+const ultimoAvisoTicket = new Map();
+async function correosDePersonas(ids, { excluir = null } = {}) {
+    const l = [...new Set((ids || []).filter(Boolean).map(String))].filter(x => x !== String(excluir || ''));
+    if (!l.length) return [];
+    const r = await pool.query(
+        `SELECT u.user_id, u.email, u.name, ${SQL_ES_PERSONAL('u')} AS personal FROM users u WHERE u.user_id = ANY($1::uuid[])`, [l]);
+    const general = String(process.env.EMAIL_USER || '').toLowerCase();
+    return r.rows.filter(x => x.email && !esCorreoInterno(x.email) && x.email.toLowerCase() !== general);
+}
+async function avisarTicket(clave, personas, vars, { automaticos = {}, automaticosTexto = {}, sinFreno = false } = {}) {
+    if (!mailTransporter) return;
+    for (const p of personas) {
+        // El freno es por tipo de aviso: que te asignen un ticket no puede tapar
+        // el aviso del primer mensaje que llegue después.
+        const k = `${clave}:${vars.numero}:${p.email.toLowerCase()}`;
+        if (!sinFreno && Date.now() - (ultimoAvisoTicket.get(k) || 0) < 15 * 60 * 1000) continue;
+        if (!sinFreno) ultimoAvisoTicket.set(k, Date.now());
+        try {
+            const c = await correoSistema(clave, {
+                ...vars, nombre: p.name || '',
+                enlace: p.personal ? `${URL_PUBLICA_WEB}/admin/soporte/${vars.numero}` : `${URL_PUBLICA_WEB}/dashboard/soporte`,
+            }, { automaticos, automaticosTexto });
+            await mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: p.email, ...c });
+        } catch (e) { if (!e.apagado) console.error(`[soporte] ${clave}:`, e.message); }
+    }
+}
+const textoMensaje = (cuerpo) => {
+    const t = String(cuerpo || '').trim() || '(adjunto)';
+    return { automaticos: { mensaje: `<div style="white-space:pre-wrap;border-left:3px solid #ddd;padding:4px 0 4px 12px;color:#333">${escHtml(t.slice(0, 2000))}</div>` }, automaticosTexto: { mensaje: t.slice(0, 2000) } };
+};
+
 app.post('/api/support', authenticateSession, async (req, res) => {
     const { subject, description, adjunto, adjuntoNombre, adjuntoMime } = req.body;
     const userId = req.userSession.userId;
-    if (!subject || !description)
+    if (!String(subject || '').trim() || !String(description || '').trim())
         return res.status(400).json({ error: 'Asunto y descripción son obligatorios.' });
-    if (adjunto && !/^data:image\/(png|jpe?g|gif|webp);base64,/.test(adjunto)) {
-        return res.status(400).json({ error: 'El adjunto debe ser una imagen.' });
-    }
-    if (adjunto && adjunto.length > 4_400_000) return res.status(400).json({ error: 'La imagen no puede pasar de 3 MB.' });
-    // La prioridad, el responsable, la fecha límite, las apps y la recurrencia
-    // son gestión interna (ticket #214): solo las pone el personal del club. A una
-    // familia se le ignoran y el ticket entra con los valores por defecto.
+    const malAdjunto = adjuntoNoValido(adjunto);
+    if (malAdjunto) return res.status(400).json({ error: malAdjunto });
+    // La prioridad, el responsable, la fecha límite, las apps, la categoría y la
+    // recurrencia son gestión interna (ticket #214): solo las pone el personal del
+    // club. A una familia se le ignoran y el ticket entra como «Petición de familia».
     const staff = !!req.userSession.canAccessAdmin;
     const b = req.body || {};
-    const priority = staff && ['low', 'medium', 'high'].includes(b.priority) ? b.priority : 'low';
+    const priority = staff && PRIORIDADES_TICKET[b.priority] ? b.priority : 'low';
     const enc = staff ? encargadosDe(b) : { principal: null, extra: [] };
-    const dueDate = staff && b.dueDate ? b.dueDate : null;
+    const dueDate = staff && /^\d{4}-\d{2}-\d{2}$/.test(b.dueDate || '') ? b.dueDate : null;
     const appLabel = staff && Array.isArray(b.appLabel) && b.appLabel.length ? b.appLabel : ['Aim Education'];
     const recurrencia = staff && RECURRENCIAS.includes(b.recurrencia) ? b.recurrencia : null;
+    const categoria = staff ? (CATEGORIAS_TICKET[b.categoria] ? b.categoria : null) : 'familia';
     try {
         const result = await pool.query(
             `INSERT INTO tickets_registrosoporte
                (user_id, subject, description, app_label, adjunto, adjunto_nombre, adjunto_mime,
-                priority, assigned_to, due_date, recurrencia, asignados_extra)
-             VALUES ($1,$2,$3,$4::TEXT[],$5,$6,$7,$8,$9,$10::date,$11,$12::uuid[]) RETURNING id`,
-            [userId, subject, description, appLabel, adjunto || null, adjuntoNombre || null, adjuntoMime || null,
-             priority, enc.principal, dueDate, recurrencia, enc.extra]
+                priority, assigned_to, due_date, recurrencia, asignados_extra, categoria)
+             VALUES ($1,$2,$3,$4::TEXT[],$5,$6,$7,$8,$9,$10::date,$11,$12::uuid[],$13) RETURNING id`,
+            [userId, String(subject).trim().slice(0, 255), description, appLabel, adjunto || null, adjuntoNombre || null, adjuntoMime || null,
+             priority, enc.principal, dueDate, recurrencia, enc.extra, categoria]
         );
         const ticketId = result.rows[0].id;
+        await anotarHistorial(pool, ticketId, userId, [{ campo: 'creado', antes: null, despues: 'Ticket abierto' }]);
         const para = mailTransporter ? await destinatariosTicket({ creador: userId, encargados: [enc.principal, ...enc.extra] }).catch(() => []) : [];
         if (para.length) {
             correoSistema('aviso_ticket', {
@@ -14460,7 +14646,7 @@ app.post('/api/support', authenticateSession, async (req, res) => {
                 automaticosTexto: { descripcion: `Descripción:\n${description}` },
             }).then(c => mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: para.join(', '), ...c })).then(() => {
                 pool.query('UPDATE tickets_registrosoporte SET email_sent = true WHERE id = $1', [ticketId]).catch(() => {});
-            }).catch(err => console.error('[SMTP ERROR]', err.message));
+            }).catch(err => { if (!err.apagado) console.error('[SMTP ERROR]', err.message); });
         }
         res.json({ success: true, ticketId });
     } catch (err) {
@@ -14479,17 +14665,26 @@ app.get('/api/support', authenticateSession, async (req, res) => {
         // Columnas explícitas a propósito: 'adjunto' guarda la imagen en base64 y con
         // s.* el listado entero se llevaría todas las capturas por delante.
         const result = await pool.query(`
-            SELECT s.id, s.user_id, s.subject, s.description, s.status, s.priority,
-                   s.due_date, s.assigned_to, s.app_label, s.dev_response, s.email_sent, s.recurrencia,
+            SELECT s.id, s.user_id, s.subject, s.description, s.status, s.etapa, s.categoria, s.priority,
+                   s.due_date, s.assigned_to, s.asignados_extra, s.app_label, s.dev_response, s.email_sent, s.recurrencia,
                    s.created_at, s.updated_at, s.resolved_at, s.vinculo_id,
-                   (s.adjunto IS NOT NULL) AS tiene_adjunto,
+                   (s.adjunto IS NOT NULL) AS tiene_adjunto, s.adjunto_nombre, s.adjunto_mime,
                    COALESCE(u.name, 'Admin') as name,
                    COALESCE(u.surname, '') as surname,
                    COALESCE(u.email, '') as email,
+                   ${SQL_ES_PERSONAL('u')} AS creador_personal,
                    assignee.name as assignee_name,
                    assignee.surname as assignee_surname,
                    (SELECT COUNT(*) FROM tickets_mensajes m WHERE m.ticket_id = s.id AND m.canal = 'equipo')::int AS msgs_equipo,
                    (SELECT COUNT(*) FROM tickets_mensajes m WHERE m.ticket_id = s.id AND m.canal = 'creador')::int AS msgs_creador,
+                   -- Sin leer por quien mira: lo que han escrito otros desde la última
+                   -- vez que abrió la conversación (lo de hace más de 7 días no cuenta).
+                   (SELECT COUNT(*) FROM tickets_mensajes m
+                     WHERE m.ticket_id = s.id AND m.autor_id IS DISTINCT FROM $1::uuid
+                       AND m.created_at > COALESCE((SELECT v.visto_at FROM aim_avisos_vistos v WHERE v.user_id = $1::uuid AND v.clave = 'ticket:' || s.id),
+                                                   NOW() - INTERVAL '7 days'))::int AS sin_leer,
+                   -- Primera respuesta: el primer mensaje de alguien que no es quien lo abrió.
+                   (SELECT MIN(m.created_at) FROM tickets_mensajes m WHERE m.ticket_id = s.id AND m.autor_id IS DISTINCT FROM s.user_id) AS primera_respuesta_at,
                    -- Todos los encargados, el principal primero.
                    COALESCE((SELECT json_agg(json_build_object('id', e.user_id, 'name', e.name, 'surname', e.surname) ORDER BY a.o)
                              FROM unnest(array_prepend(s.assigned_to, s.asignados_extra)) WITH ORDINALITY a(id, o)
@@ -14499,89 +14694,196 @@ app.get('/api/support', authenticateSession, async (req, res) => {
             LEFT JOIN users assignee ON s.assigned_to = assignee.user_id
             ${soloMios ? 'WHERE s.user_id = $1 OR s.assigned_to = $1 OR $1 = ANY(s.asignados_extra)' : ''}
             ORDER BY s.created_at DESC
-        `, soloMios ? [req.userSession.userId] : []);
+        `, [req.userSession.userId]);
         // Aim-Tul solo cambia assigned_to: si pone de principal a quien ya
         // estaba entre los demás, que no salga dos veces.
         for (const t of result.rows) {
             const vistos = new Set();
             t.asignados = t.asignados.filter(a => !vistos.has(a.id) && vistos.add(a.id));
         }
-        res.json({ success: true, tickets: result.rows, soloMios });
+        res.set('Cache-Control', 'no-store');
+        res.json({ success: true, tickets: result.rows, soloMios, diasParado: await diasParadoTicket() });
     } catch (err) {
         console.error('[SUPPORT] Fetch error:', err);
         res.status(500).json({ error: 'Error al obtener tickets.' });
     }
 });
 
-app.put('/api/support/:id', authenticateSession, async (req, res) => {
-    if (!req.userSession.isSuperAdmin && !req.userSession.canAccessAdmin)
-        return res.status(403).json({ error: 'Sin permisos.' });
-    if (!permisos(req).soporteCompleto) {
-        const mio = await pool.query(
-            `SELECT 1 FROM tickets_registrosoporte WHERE id = $1 AND (user_id = $2 OR assigned_to = $2 OR $2 = ANY(asignados_extra))`,
-            [req.params.id, req.userSession.userId]
-        );
-        if (!mio.rowCount) return res.status(403).json({ error: 'Ese ticket no es tuyo.' });
+// Si puede tocar ese ticket: con soporte completo, todos; si no, los suyos.
+async function puedeTocarTicket(req, id) {
+    if (!req.userSession.isSuperAdmin && !req.userSession.canAccessAdmin) return false;
+    if (permisos(req).soporteCompleto) return true;
+    const mio = await pool.query(
+        `SELECT 1 FROM tickets_registrosoporte WHERE id = $1 AND (user_id = $2 OR assigned_to = $2 OR $2 = ANY(asignados_extra))`,
+        [id, req.userSession.userId]);
+    return mio.rowCount > 0;
+}
+// Tras cambiar un ticket: avisar a quien acaban de asignar y, si se ha resuelto,
+// a quien lo abrió (si no es quien lo resuelve).
+async function avisosTrasCambio(req, id, r) {
+    const yo = req.userSession.userId;
+    const quien = `${req.userSession.firstName || ''} ${req.userSession.lastName || ''}`.trim() || 'Alguien';
+    const vars = { numero: id, asunto: r.prev.subject, quien };
+    if (r.nuevosEncargados.length) {
+        avisarTicket('ticket_asignado', await correosDePersonas(r.nuevosEncargados, { excluir: yo }), vars, {
+            sinFreno: true,
+            automaticos: { descripcion: `<div style="white-space:pre-wrap">${escHtml(String(r.prev.description || '').slice(0, 1500))}</div>` },
+            automaticosTexto: { descripcion: String(r.prev.description || '').slice(0, 1500) },
+        }).catch(() => {});
     }
-    const { status, devResponse, priority, dueDate, assignedTo, appLabel } = req.body;
-    const finalAppLabels = Array.isArray(appLabel) ? appLabel : (appLabel ? [appLabel] : ['Aim Education']);
+    if (r.prev.status === 'open' && ['resolved', 'closed'].includes(r.nuevo.status)) {
+        avisarTicket('ticket_resuelto', await correosDePersonas([r.prev.user_id], { excluir: yo }), { ...vars, estado: r.nuevo.status === 'closed' ? 'cerrado' : 'resuelto' }, { sinFreno: true }).catch(() => {});
+    }
+}
+
+// Respuestas guardadas, para lo que se contesta a menudo.
+app.get('/api/support/respuestas', authenticateSession, async (req, res) => {
+    if (!req.userSession.canAccessAdmin) return res.status(403).json({ error: 'Sin permisos.' });
+    try {
+        const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'soporte_respuestas'`);
+        res.set('Cache-Control', 'no-store');
+        res.json({ respuestas: Array.isArray(r.rows[0]?.valor) ? r.rows[0].valor : [] });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.put('/api/support/respuestas', authenticateSession, async (req, res) => {
+    if (!req.userSession.canAccessAdmin) return res.status(403).json({ error: 'Sin permisos.' });
+    const lista = (Array.isArray(req.body?.respuestas) ? req.body.respuestas : []).slice(0, 60)
+        .map(x => ({ id: String(x?.id || crypto.randomUUID()).slice(0, 40), titulo: String(x?.titulo || '').trim().slice(0, 80), texto: String(x?.texto || '').trim().slice(0, 3000) }))
+        .filter(x => x.titulo && x.texto);
+    try {
+        await pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('soporte_respuestas', $1::jsonb, NOW(), $2)
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+            [JSON.stringify(lista), req.userSession.userId]);
+        res.json({ success: true, respuestas: lista });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/support/:id', authenticateSession, async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Ticket no válido.' });
+    if (!(await puedeTocarTicket(req, id))) return res.status(403).json({ error: 'Ese ticket no es tuyo.' });
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        const prev = await client.query(
-            `SELECT user_id, subject, description, due_date, recurrencia, asignados_extra FROM tickets_registrosoporte WHERE id = $1 FOR UPDATE`,
-            [req.params.id]);
-        if (!prev.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Ese ticket no existe.' }); }
-        const p = prev.rows[0];
-        const nuevoEstado = status || 'open';
-        const esFinal = ['resolved', 'closed'].includes(nuevoEstado);
-        // Recurrencia efectiva: la que venga en la petición o la que ya tenía.
-        const recEfectiva = req.body.recurrencia !== undefined
-            ? (RECURRENCIAS.includes(req.body.recurrencia) ? req.body.recurrencia : null)
-            : (p.recurrencia || null);
-        // Al cerrar/resolver un ticket recurrente se genera el siguiente y este
-        // deja de ser recurrente, para no volver a generarlo si se reabre y cierra.
-        const generar = esFinal && !!recEfectiva;
-        const recGuardar = generar ? null : recEfectiva;
-        // Con 'assignedIds' se fijan todos los encargados; con el 'assignedTo'
-        // de antes solo cambia el principal y los demás se quedan.
-        const enc = req.body.assignedIds !== undefined
-            ? encargadosDe(req.body)
-            : { principal: assignedTo || null, extra: (p.asignados_extra || []).filter(x => x !== assignedTo) };
-
-        // resolved_at se sella la primera vez que pasa a resuelto/cerrado y se borra
-        // si vuelve a abrirse, para que "cuánto tardó" siga siendo cierto. El estado
-        // final va como booleano aparte: reusar $1 dentro del CASE deja a Postgres sin
-        // poder deducir su tipo.
-        await client.query(
-            `UPDATE tickets_registrosoporte
-             SET status = $1, dev_response = $2, priority = $3,
-                 due_date = $4, assigned_to = $5, app_label = $6::TEXT[],
-                 recurrencia = $9, asignados_extra = $10::uuid[], updated_at = NOW(),
-                 resolved_at = CASE WHEN $8 THEN COALESCE(resolved_at, NOW()) ELSE NULL END
-             WHERE id = $7`,
-            [nuevoEstado, devResponse || '', priority || 'low', dueDate || null, enc.principal,
-             finalAppLabels, req.params.id, esFinal, recGuardar, enc.extra]
-        );
-
-        let siguienteId = null;
-        if (generar) {
-            const sig = siguienteFechaRecurrente(dueDate || p.due_date, recEfectiva);
-            const nuevo = await client.query(
-                `INSERT INTO tickets_registrosoporte
-                   (user_id, subject, description, app_label, priority, assigned_to, due_date, recurrencia, asignados_extra)
-                 VALUES ($1,$2,$3,$4::TEXT[],$5,$6,$7,$8,$9::uuid[]) RETURNING id`,
-                [p.user_id, p.subject, p.description, finalAppLabels, priority || 'low',
-                 enc.principal, sig ? sig.toISOString() : null, recEfectiva, enc.extra]);
-            siguienteId = nuevo.rows[0].id;
-        }
+        const r = await aplicarCambiosTicket(client, id, req.body || {}, req.userSession.userId);
         await client.query('COMMIT');
-        res.json({ success: true, siguienteId });
+        avisosTrasCambio(req, id, r).catch(() => {});
+        res.json({ success: true, siguienteId: r.siguienteId, status: r.nuevo.status, etapa: r.nuevo.etapa });
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
+        if (err?.httP) return res.status(err.httP).json({ error: err.msg });
         console.error('[SUPPORT] Update error:', err);
         res.status(500).json({ error: 'Error al actualizar el ticket.' });
     } finally { client.release(); }
+});
+
+// Cambiar varios tickets a la vez (estado, prioridad, categoría, encargados).
+app.post('/api/support/lote', authenticateSession, async (req, res) => {
+    const ids = [...new Set((Array.isArray(req.body?.ids) ? req.body.ids : []).map(Number).filter(Number.isInteger))].slice(0, 200);
+    const cambios = req.body?.cambios || {};
+    const permitidos = ['status', 'etapa', 'priority', 'categoria', 'assignedIds'];
+    const c = Object.fromEntries(Object.entries(cambios).filter(([k]) => permitidos.includes(k)));
+    if (!ids.length || !Object.keys(c).length) return res.status(400).json({ error: 'Elige tickets y qué cambiar.' });
+    for (const id of ids) if (!(await puedeTocarTicket(req, id))) return res.status(403).json({ error: `El ticket #${id} no es tuyo.` });
+    const client = await pool.connect();
+    const hechos = [];
+    try {
+        await client.query('BEGIN');
+        for (const id of ids) hechos.push([id, await aplicarCambiosTicket(client, id, c, req.userSession.userId)]);
+        await client.query('COMMIT');
+        for (const [id, r] of hechos) avisosTrasCambio(req, id, r).catch(() => {});
+        res.json({ success: true, cambiados: hechos.length });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        if (err?.httP) return res.status(err.httP).json({ error: err.msg });
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+// Quién cambió qué y cuándo.
+app.get('/api/support/:id/historial', authenticateSession, async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || !(await puedeTocarTicket(req, id))) return res.status(403).json({ error: 'Sin permisos.' });
+    try {
+        const r = await pool.query(
+            `SELECT h.campo, h.antes, h.despues, h.created_at, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS quien
+             FROM aim_ticket_historial h LEFT JOIN users u ON u.user_id = h.user_id
+             WHERE h.ticket_id = $1 ORDER BY h.created_at DESC, h.id DESC LIMIT 200`, [id]);
+        res.set('Cache-Control', 'no-store');
+        res.json({ historial: r.rows.map(x => ({ campo: x.campo, antes: x.antes, despues: x.despues, fecha: x.created_at, quien: x.quien || null })) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Buscar también dentro de las conversaciones: devuelve los tickets que casan.
+app.get('/api/support/buscar', authenticateSession, async (req, res) => {
+    if (!req.userSession.isSuperAdmin && !req.userSession.canAccessAdmin) return res.status(403).json({ error: 'Sin permisos.' });
+    const q = String(req.query.q || '').trim().slice(0, 100);
+    if (q.length < 3) return res.json({ ids: [] });
+    const soloMios = !permisos(req).soporteCompleto;
+    try {
+        const r = await pool.query(
+            `SELECT DISTINCT m.ticket_id FROM tickets_mensajes m JOIN tickets_registrosoporte s ON s.id = m.ticket_id
+             WHERE m.cuerpo ILIKE '%' || $1 || '%'
+               ${soloMios ? 'AND (s.user_id = $2 OR s.assigned_to = $2 OR $2 = ANY(s.asignados_extra))' : ''}
+             LIMIT 300`, soloMios ? [q.replace(/[%_\\]/g, '\\$&'), req.userSession.userId] : [q.replace(/[%_\\]/g, '\\$&')]);
+        res.json({ ids: r.rows.map(x => x.ticket_id) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Resumen de cómo va el soporte en los últimos días (también va por correo cada semana).
+async function resumenSoporte(dias = 7) {
+    const parado = await diasParadoTicket();
+    const [n, porPersona, porCategoria, parados] = await Promise.all([
+        pool.query(
+            `SELECT COUNT(*) FILTER (WHERE created_at > NOW() - $1 * INTERVAL '1 day')::int AS entraron,
+                    COUNT(*) FILTER (WHERE resolved_at > NOW() - $1 * INTERVAL '1 day')::int AS resueltos,
+                    COUNT(*) FILTER (WHERE status = 'open')::int AS abiertos,
+                    COUNT(*) FILTER (WHERE status = 'open' AND assigned_to IS NULL AND cardinality(COALESCE(asignados_extra, '{}')) = 0)::int AS sin_asignar,
+                    COUNT(*) FILTER (WHERE status = 'open' AND due_date IS NOT NULL AND due_date::date < (NOW() AT TIME ZONE 'Europe/Madrid')::date)::int AS vencidos,
+                    COUNT(*) FILTER (WHERE status = 'open' AND COALESCE(updated_at, created_at) < NOW() - $2 * INTERVAL '1 day')::int AS parados,
+                    percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (resolved_at - created_at)) / 3600)
+                        FILTER (WHERE resolved_at > NOW() - $1 * INTERVAL '1 day') AS horas_resolver,
+                    (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (pr - t.created_at)) / 3600)
+                       FROM (SELECT t2.created_at, (SELECT MIN(m.created_at) FROM tickets_mensajes m WHERE m.ticket_id = t2.id AND m.autor_id IS DISTINCT FROM t2.user_id) AS pr
+                             FROM tickets_registrosoporte t2 WHERE t2.created_at > NOW() - $1 * INTERVAL '1 day') t WHERE pr IS NOT NULL) AS horas_responder
+             FROM tickets_registrosoporte`, [dias, parado]),
+        pool.query(
+            `SELECT e.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre,
+                    COUNT(*) FILTER (WHERE s.status = 'open')::int AS abiertos,
+                    COUNT(*) FILTER (WHERE s.status = 'open' AND s.due_date IS NOT NULL AND s.due_date::date < (NOW() AT TIME ZONE 'Europe/Madrid')::date)::int AS vencidos,
+                    COUNT(*) FILTER (WHERE s.resolved_at > NOW() - $1 * INTERVAL '1 day')::int AS resueltos
+             FROM tickets_registrosoporte s
+             CROSS JOIN LATERAL unnest(array_prepend(s.assigned_to, COALESCE(s.asignados_extra, '{}'))) AS e(user_id)
+             JOIN users u ON u.user_id = e.user_id
+             WHERE s.status = 'open' OR s.resolved_at > NOW() - $1 * INTERVAL '1 day'
+             GROUP BY 1, 2 ORDER BY abiertos DESC, resueltos DESC`, [dias]),
+        pool.query(
+            `SELECT COALESCE(categoria, 'sin') AS categoria, COUNT(*)::int AS n FROM tickets_registrosoporte
+             WHERE created_at > NOW() - $1 * INTERVAL '1 day' GROUP BY 1 ORDER BY 2 DESC`, [dias]),
+        pool.query(
+            `SELECT id, subject, COALESCE(updated_at, created_at) AS ultimo,
+                    EXTRACT(DAY FROM NOW() - COALESCE(updated_at, created_at))::int AS dias
+             FROM tickets_registrosoporte WHERE status = 'open' AND COALESCE(updated_at, created_at) < NOW() - $1 * INTERVAL '1 day'
+             ORDER BY COALESCE(updated_at, created_at) LIMIT 15`, [parado]),
+    ]);
+    const x = n.rows[0];
+    const h = (v) => (v == null ? null : Math.round(Number(v) * 10) / 10);
+    return {
+        dias, diasParado: parado,
+        entraron: x.entraron, resueltos: x.resueltos, abiertos: x.abiertos, sinAsignar: x.sin_asignar,
+        vencidos: x.vencidos, parados: x.parados, horasResolver: h(x.horas_resolver), horasResponder: h(x.horas_responder),
+        porPersona: porPersona.rows.map(p => ({ id: p.user_id, nombre: p.nombre, abiertos: p.abiertos, vencidos: p.vencidos, resueltos: p.resueltos })),
+        porCategoria: porCategoria.rows.map(c => ({ categoria: c.categoria, nombre: CATEGORIAS_TICKET[c.categoria] || 'Sin categoría', n: c.n })),
+        listaParados: parados.rows.map(p => ({ id: p.id, asunto: p.subject, dias: p.dias })),
+    };
+}
+app.get('/api/support/resumen', authenticateSession, async (req, res) => {
+    if (!req.userSession.canAccessAdmin || !permisos(req).soporteCompleto) return res.status(403).json({ error: 'Sin permisos.' });
+    try {
+        res.set('Cache-Control', 'no-store');
+        res.json(await resumenSoporte([7, 30, 90].includes(Number(req.query.dias)) ? Number(req.query.dias) : 7));
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ── Conversación de un ticket ──────────────────────────────────────────────
@@ -14622,7 +14924,10 @@ app.get('/api/support/:id/mensajes', authenticateSession, async (req, res) => {
             success: true,
             mensajes: r.rows.map(m => ({
                 id: m.id, canal: m.canal, cuerpo: m.cuerpo, createdAt: m.created_at,
-                autorId: m.autor_id, autor: [m.autor_nombre, m.autor_apellido].filter(Boolean).join(' ') || 'Soporte',
+                // A la familia no se le enseña quién del equipo contesta: «Soporte».
+                autorId: a.esStaff ? m.autor_id : null,
+                autor: (a.esStaff || String(m.autor_id) === String(req.userSession.userId))
+                    ? ([m.autor_nombre, m.autor_apellido].filter(Boolean).join(' ') || 'Soporte') : 'Soporte de AIM Education',
                 mio: String(m.autor_id) === String(req.userSession.userId),
                 tieneArchivo: m.tiene_archivo, archivoNombre: m.archivo_nombre, archivoMime: m.archivo_mime,
             })),
@@ -14636,29 +14941,60 @@ app.get('/api/support/:id/mensajes', authenticateSession, async (req, res) => {
 app.post('/api/support/:id/mensajes', authenticateSession, async (req, res) => {
     const { cuerpo, archivo, archivoNombre, archivoMime } = req.body;
     const canal = req.body.canal === 'equipo' ? 'equipo' : 'creador';
-    if (!cuerpo?.trim() && !archivo) return res.status(400).json({ error: 'Escribe un mensaje o adjunta una imagen.' });
-    if (archivo && !/^data:image\/(png|jpe?g|gif|webp);base64,/.test(archivo)) {
-        return res.status(400).json({ error: 'El adjunto debe ser una imagen.' });
-    }
-    if (archivo && archivo.length > 4_400_000) return res.status(400).json({ error: 'La imagen no puede pasar de 3 MB.' });
+    if (!cuerpo?.trim() && !archivo) return res.status(400).json({ error: 'Escribe un mensaje o adjunta un archivo.' });
+    const malAdjunto = adjuntoNoValido(archivo);
+    if (malAdjunto) return res.status(400).json({ error: malAdjunto });
     try {
         const a = await accesoTicket(req, req.params.id, canal);
         if (a.error) return res.status(a.code).json({ error: a.error });
+        const yo = req.userSession.userId;
         const r = await pool.query(
             `INSERT INTO tickets_mensajes (ticket_id, canal, autor_id, cuerpo, archivo, archivo_nombre, archivo_mime)
              VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-            [req.params.id, canal, req.userSession.userId, cuerpo?.trim() || null,
-             archivo || null, archivoNombre || null, archivoMime || null]
+            [req.params.id, canal, yo, cuerpo?.trim() || null,
+             archivo || null, archivoNombre ? String(archivoNombre).slice(0, 255) : null, archivoMime || null]
         );
-        await pool.query('UPDATE tickets_registrosoporte SET updated_at = NOW() WHERE id = $1', [req.params.id]);
+        // Si estaba «Esperando respuesta» y contesta quien lo abrió, vuelve a estar por atender.
+        const antes = (await pool.query(`SELECT etapa, user_id FROM tickets_registrosoporte WHERE id = $1`, [req.params.id])).rows[0];
+        if (antes?.etapa === 'esperando' && String(antes.user_id) === String(yo) && canal === 'creador') {
+            await anotarHistorial(pool, req.params.id, yo, [{ campo: 'estado', antes: 'Esperando respuesta', despues: 'Abierto (ha contestado)' }]);
+        }
+        const t = (await pool.query(
+            `UPDATE tickets_registrosoporte SET updated_at = NOW(),
+                    etapa = CASE WHEN etapa = 'esperando' AND user_id = $2 AND $3 = 'creador' THEN NULL ELSE etapa END
+             WHERE id = $1
+             RETURNING id, user_id, subject, status, assigned_to, asignados_extra,
+                       (SELECT ${SQL_ES_PERSONAL('u')} FROM users u WHERE u.user_id = tickets_registrosoporte.user_id) AS creador_personal`,
+            [req.params.id, yo, canal])).rows[0];
+        // Quien escribe ya lo ha visto todo hasta aquí.
+        await pool.query(
+            `INSERT INTO aim_avisos_vistos (user_id, clave, n, visto_at) VALUES ($1, $2, 1, NOW())
+             ON CONFLICT (user_id, clave) DO UPDATE SET visto_at = NOW()`, [yo, `ticket:${req.params.id}`]).catch(() => {});
         res.status(201).json({ success: true, id: r.rows[0].id });
+
+        // Avisos por correo (en segundo plano): a los encargados (o al Equipo IT si
+        // no tiene) y, si el club contesta en el canal del creador, a quien lo abrió.
+        (async () => {
+            const quien = `${req.userSession.firstName || ''} ${req.userSession.lastName || ''}`.trim() || 'Alguien';
+            const vars = { numero: t.id, asunto: t.subject, quien };
+            const txt = textoMensaje(cuerpo);
+            let encargados = [t.assigned_to, ...(t.asignados_extra || [])].filter(Boolean);
+            if (!encargados.length && String(t.user_id) === String(yo)) {
+                encargados = (await pool.query(`SELECT user_id FROM aim_rangos WHERE rango = 'equipo_it'`)).rows.map(x => x.user_id);
+            }
+            const aEquipo = await correosDePersonas([...encargados, ...(canal === 'equipo' && t.creador_personal ? [t.user_id] : [])], { excluir: yo });
+            const creador = canal === 'creador' && String(t.user_id) !== String(yo) ? await correosDePersonas([t.user_id]) : [];
+            const familia = creador.filter(p => !p.personal);
+            await avisarTicket('ticket_mensaje', [...aEquipo, ...creador.filter(p => p.personal)].filter((p, i, l) => l.findIndex(x => x.email === p.email) === i), vars, txt);
+            if (familia.length) await avisarTicket('ticket_respuesta', familia, vars, txt);
+        })().catch(e => console.error('[soporte] avisos:', e.message));
     } catch (err) {
         console.error('[SUPPORT] Enviar mensaje error:', err);
-        res.status(500).json({ error: err.message });
+        if (!res.headersSent) res.status(500).json({ error: err.message });
     }
 });
 
-// Imagen adjunta a un mensaje, servida como archivo real.
+// Adjunto de un mensaje, servido como archivo real.
 app.get('/api/support/mensajes/:id/archivo', authenticateSession, async (req, res) => {
     try {
         const r = await pool.query('SELECT ticket_id, canal, archivo, archivo_nombre, archivo_mime FROM tickets_mensajes WHERE id = $1', [req.params.id]);
@@ -14666,14 +15002,11 @@ app.get('/api/support/mensajes/:id/archivo', authenticateSession, async (req, re
         const m = r.rows[0];
         const a = await accesoTicket(req, m.ticket_id, m.canal);
         if (a.error) return res.status(a.code).json({ error: a.error });
-        const b64 = String(m.archivo).includes(',') ? String(m.archivo).split(',')[1] : m.archivo;
-        res.set('Content-Type', m.archivo_mime || 'image/png');
-        res.set('Content-Disposition', `inline; filename="${(m.archivo_nombre || 'captura').replace(/"/g, '')}"`);
-        res.send(Buffer.from(b64, 'base64'));
+        servirAdjunto(res, m.archivo, m.archivo_nombre || 'captura', m.archivo_mime || 'image/png');
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Imagen adjunta al propio ticket (la que se sube al crearlo).
+// Adjunto del propio ticket (el que se sube al crearlo).
 app.get('/api/support/:id/adjunto', authenticateSession, async (req, res) => {
     try {
         const a = await accesoTicket(req, req.params.id, 'creador');
@@ -14681,25 +15014,26 @@ app.get('/api/support/:id/adjunto', authenticateSession, async (req, res) => {
         const r = await pool.query('SELECT adjunto, adjunto_nombre, adjunto_mime FROM tickets_registrosoporte WHERE id = $1', [req.params.id]);
         if (!r.rowCount || !r.rows[0].adjunto) return res.status(404).json({ error: 'Sin adjunto.' });
         const t = r.rows[0];
-        const b64 = String(t.adjunto).includes(',') ? String(t.adjunto).split(',')[1] : t.adjunto;
-        res.set('Content-Type', t.adjunto_mime || 'image/png');
-        res.set('Content-Disposition', `inline; filename="${(t.adjunto_nombre || 'captura').replace(/"/g, '')}"`);
-        res.send(Buffer.from(b64, 'base64'));
+        servirAdjunto(res, t.adjunto, t.adjunto_nombre || 'captura', t.adjunto_mime || 'image/png');
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Tickets propios de quien consulta. Filtra en el servidor: antes el panel de
-// familias pedía la lista completa y la filtraba en el navegador.
+// Tickets propios de quien consulta. Sin nada interno: ni prioridad, ni
+// encargados, ni apps; solo su estado (y si esperamos su respuesta) y cuántos
+// mensajes del club no ha leído.
 app.get('/api/support/mios', authenticateSession, async (req, res) => {
     try {
         const r = await pool.query(
-            `SELECT s.id, s.subject, s.description, s.status, s.priority, s.created_at,
-                    s.updated_at, s.resolved_at, s.app_label,
-                    (s.adjunto IS NOT NULL) AS tiene_adjunto,
-                    (SELECT COUNT(*) FROM tickets_mensajes m WHERE m.ticket_id = s.id AND m.canal = 'creador')::int AS mensajes
+            `SELECT s.id, s.subject, s.description, s.status, s.etapa, s.created_at,
+                    s.updated_at, s.resolved_at,
+                    (s.adjunto IS NOT NULL) AS tiene_adjunto, s.adjunto_nombre, s.adjunto_mime,
+                    (SELECT COUNT(*) FROM tickets_mensajes m WHERE m.ticket_id = s.id AND m.canal = 'creador')::int AS mensajes,
+                    (SELECT COUNT(*) FROM tickets_mensajes m
+                      WHERE m.ticket_id = s.id AND m.canal = 'creador' AND m.autor_id IS DISTINCT FROM $1::uuid
+                        AND m.created_at > COALESCE((SELECT v.visto_at FROM aim_avisos_vistos v WHERE v.user_id = $1::uuid AND v.clave = 'ticket:' || s.id), '-infinity'::timestamptz))::int AS sin_leer
              FROM tickets_registrosoporte s
              WHERE s.user_id = $1
-             ORDER BY s.created_at DESC`,
+             ORDER BY (s.status = 'open') DESC, COALESCE(s.updated_at, s.created_at) DESC`,
             [req.userSession.userId]
         );
         res.set('Cache-Control', 'no-store');
@@ -14709,6 +15043,85 @@ app.get('/api/support/mios', authenticateSession, async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+
+// ── Avisos diarios y resumen semanal ────────────────────────────────────────
+// Cada mañana, a cada encargado, sus tickets vencidos y los que llevan días sin
+// moverse; y una vez por semana, al Equipo IT, el resumen. Son correos de la
+// app: se apagan y se ajustan (hora, días, día de la semana) en Automatismos.
+let avisosSoporteEnCurso = false;
+async function avisosSoportePeriodicos() {
+    if (avisosSoporteEnCurso || !mailTransporter) return;
+    avisosSoporteEnCurso = true;
+    try {
+        const est = await estadoCorreosSistema();
+        const hoy = hoyMadrid(), hora = horaMadridAhora();
+        const leer = async (clave) => (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = $1`, [clave])).rows[0]?.valor || {};
+        const guardar = (clave, v) => pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at) VALUES ($1, $2::jsonb, NOW())
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW()`, [clave, JSON.stringify(v)]);
+
+        if (!est.tickets_vencidos?.apagado && hora >= await ajusteSistema('tickets_vencidos', 'hora')) {
+            const hechos = await leer('soporte_avisos_diarios');
+            if (hechos.fecha !== hoy) {
+                const dias = await diasParadoTicket();
+                const r = await pool.query(
+                    `SELECT e.user_id, s.id, s.subject, s.due_date,
+                            (s.due_date IS NOT NULL AND s.due_date::date < $1::date) AS vencido,
+                            EXTRACT(DAY FROM NOW() - COALESCE(s.updated_at, s.created_at))::int AS dias
+                     FROM tickets_registrosoporte s
+                     CROSS JOIN LATERAL unnest(array_prepend(s.assigned_to, COALESCE(s.asignados_extra, '{}'))) AS e(user_id)
+                     WHERE s.status = 'open' AND e.user_id IS NOT NULL
+                       AND ((s.due_date IS NOT NULL AND s.due_date::date < $1::date) OR COALESCE(s.updated_at, s.created_at) < NOW() - $2 * INTERVAL '1 day')
+                     ORDER BY s.due_date NULLS LAST, s.id`, [hoy, dias]);
+                const porPersona = new Map();
+                for (const x of r.rows) { if (!porPersona.has(x.user_id)) porPersona.set(x.user_id, []); porPersona.get(x.user_id).push(x); }
+                for (const [uid, lista] of porPersona) {
+                    const [p] = await correosDePersonas([uid]);
+                    if (!p) continue;
+                    const fila = (t) => `#${t.id} ${t.subject}${t.vencido ? ` · venció el ${fechaTicket(t.due_date)}` : ''}${t.dias >= dias ? ` · ${t.dias} días sin moverse` : ''}`;
+                    try {
+                        const c = await correoSistema('tickets_vencidos', { nombre: p.name || '', cuantos: String(lista.length), enlace: `${URL_PUBLICA_WEB}/admin/soporte` }, {
+                            automaticos: { lista: `<ul style="margin:6px 0;padding-left:18px">${lista.map(t => `<li style="margin:4px 0"><a href="${URL_PUBLICA_WEB}/admin/soporte/${t.id}" style="color:#5233A8">${escHtml(fila(t))}</a></li>`).join('')}</ul>` },
+                            automaticosTexto: { lista: lista.map(t => `- ${fila(t)}`).join('\n') },
+                        });
+                        await mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: p.email, ...c });
+                    } catch (e) { if (!e.apagado) console.error('[soporte] aviso diario:', e.message); }
+                }
+                await guardar('soporte_avisos_diarios', { fecha: hoy, personas: porPersona.size });
+            }
+        }
+
+        const diaSemana = ((new Date(hoy + 'T12:00:00Z').getUTCDay() + 6) % 7) + 1; // 1 = lunes
+        if (!est.tickets_resumen_semanal?.apagado && diaSemana === await ajusteSistema('tickets_resumen_semanal', 'dia')
+            && hora >= await ajusteSistema('tickets_resumen_semanal', 'hora')) {
+            const hecho = await leer('soporte_resumen_semanal');
+            if (hecho.fecha !== hoy) {
+                const s = await resumenSoporte(7);
+                const ids = (await pool.query(`SELECT user_id FROM aim_rangos WHERE rango = 'equipo_it'`)).rows.map(x => x.user_id);
+                const para = await correosDePersonas(ids);
+                const horas = (v) => (v == null ? '—' : v < 48 ? `${v} h` : `${Math.round(v / 24)} días`);
+                const filas = [
+                    ['Entraron', s.entraron], ['Resueltos', s.resueltos], ['Abiertos ahora', s.abiertos], ['Sin asignar', s.sinAsignar],
+                    ['Vencidos', s.vencidos], [`Parados (más de ${s.diasParado} días)`, s.parados],
+                    ['Primera respuesta (mediana)', horas(s.horasResponder)], ['Resolver (mediana)', horas(s.horasResolver)],
+                ];
+                const personas = s.porPersona.map(p => `${p.nombre}: ${p.abiertos} abiertos${p.vencidos ? ` (${p.vencidos} vencidos)` : ''}, ${p.resueltos} resueltos`);
+                for (const p of para) {
+                    try {
+                        const c = await correoSistema('tickets_resumen_semanal', { nombre: p.name || '', enlace: `${URL_PUBLICA_WEB}/admin/soporte` }, {
+                            automaticos: { resumen: `<table role="presentation" style="border-collapse:collapse;font-size:14px;margin:6px 0">${filas.map(([k, v]) => `<tr><td style="padding:3px 14px 3px 0;color:#666">${escHtml(k)}</td><td style="font-weight:700">${escHtml(String(v))}</td></tr>`).join('')}</table>`
+                                + (personas.length ? `<p style="margin:10px 0 4px;font-weight:700">Por persona</p><ul style="margin:0;padding-left:18px">${personas.map(x => `<li>${escHtml(x)}</li>`).join('')}</ul>` : '') },
+                            automaticosTexto: { resumen: [...filas.map(([k, v]) => `${k}: ${v}`), '', ...personas].join('\n') },
+                        });
+                        await mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: p.email, ...c });
+                    } catch (e) { if (!e.apagado) console.error('[soporte] resumen semanal:', e.message); }
+                }
+                await guardar('soporte_resumen_semanal', { fecha: hoy });
+            }
+        }
+    } catch (e) { console.error('[soporte] avisos periódicos:', e.message); }
+    finally { avisosSoporteEnCurso = false; }
+}
 
 // Los tickets que se asignan a la cuenta de soporte los atiende desarrollo, así
 // que se avisa de ellos solo a esta persona: el aviso se calcula en el servidor
@@ -15111,12 +15524,17 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
             pool.query(
                 `SELECT COUNT(*) FILTER (WHERE assigned_to IS NULL AND cardinality(asignados_extra) = 0)::int AS sin_asignar,
                         COUNT(*) FILTER (WHERE assigned_to = $1 OR $1 = ANY(asignados_extra))::int AS mios,
-                        COUNT(*) FILTER (WHERE priority = 'high')::int AS urgentes
-                 FROM tickets_registrosoporte WHERE status = 'open'`, [yo]),
-            // Mensajes de otros en las últimas 48 h, que es lo que hay sin leer
-            // de facto mientras no exista una marca de lectura por usuario. Van
-            // uno por ticket, con su asunto y quién ha escrito: "3 mensajes en 2
-            // tickets" no dice a cuáles hay que entrar.
+                        COUNT(*) FILTER (WHERE priority = 'high')::int AS urgentes,
+                        -- De los suyos: los vencidos y los que llevan días sin moverse.
+                        COUNT(*) FILTER (WHERE (assigned_to = $1 OR $1 = ANY(asignados_extra)) AND due_date IS NOT NULL
+                                           AND due_date::date < (NOW() AT TIME ZONE 'Europe/Madrid')::date)::int AS vencidos,
+                        COUNT(*) FILTER (WHERE (assigned_to = $1 OR $1 = ANY(asignados_extra))
+                                           AND COALESCE(updated_at, created_at) < NOW() - $2 * INTERVAL '1 day')::int AS parados
+                 FROM tickets_registrosoporte WHERE status = 'open'`, [yo, await diasParadoTicket()]),
+            // Mensajes sin leer: los de otros desde la última vez que abrió esa
+            // conversación (lo de hace más de 7 días ya no cuenta). Solo de sus
+            // tickets (los abrió o los lleva) y, con soporte completo, también de
+            // los que no lleva nadie. Uno por ticket, con su asunto y quién escribe.
             pool.query(
                 `SELECT t.id, t.subject, COUNT(*)::int n, MAX(m.created_at) AS ultimo,
                         (SELECT COALESCE(NULLIF(TRIM(CONCAT(u.name, ' ', u.surname)), ''), u.email)
@@ -15124,10 +15542,11 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                          WHERE m2.ticket_id = t.id AND COALESCE(m2.autor_id::text,'') <> $1
                          ORDER BY m2.created_at DESC LIMIT 1) AS quien
                  FROM tickets_mensajes m JOIN tickets_registrosoporte t ON t.id = m.ticket_id
-                 WHERE m.created_at > NOW() - INTERVAL '48 hours'
+                 LEFT JOIN aim_avisos_vistos v ON v.user_id::text = $1 AND v.clave = 'ticket:' || t.id
+                 WHERE m.created_at > COALESCE(v.visto_at, NOW() - INTERVAL '7 days')
                    AND COALESCE(m.autor_id::text, '') <> $1 AND t.status = 'open'
-                   -- A un instructor solo se le avisa de sus propios tickets.
-                   AND ($2::boolean OR t.user_id::text = $1 OR t.assigned_to::text = $1 OR $1 = ANY(t.asignados_extra::text[]))
+                   AND (t.user_id::text = $1 OR t.assigned_to::text = $1 OR $1 = ANY(t.asignados_extra::text[])
+                        OR ($2::boolean AND t.assigned_to IS NULL AND cardinality(COALESCE(t.asignados_extra, '{}')) = 0))
                  GROUP BY t.id, t.subject
                  ORDER BY MAX(m.created_at) DESC`, [String(yo), !!permisosYo.soporteCompleto]),
             pool.query(
@@ -15169,6 +15588,8 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         // Cada aviso lleva a lo suyo (#360): la lista filtrada, no Soporte a secas.
         if (t.sin_asignar) avisos.push({ tipo: 'tickets', texto: `${t.sin_asignar} ticket${t.sin_asignar !== 1 ? 's' : ''} sin asignar`, detalle: t.urgentes ? `${t.urgentes} de prioridad alta` : null, destino: '/admin/soporte?filtro=sin_asignar', n: t.sin_asignar });
         if (t.mios && recibe('tickets_mios')) avisos.push({ tipo: 'tickets', texto: `${t.mios} ticket${t.mios !== 1 ? 's' : ''} asignado${t.mios !== 1 ? 's' : ''} a ti`, destino: '/admin/soporte?filtro=mios', n: t.mios });
+        if (t.vencidos && recibe('tickets_mios')) avisos.push({ tipo: 'tickets', texto: `${t.vencidos} ticket${t.vencidos !== 1 ? 's' : ''} tuyo${t.vencidos !== 1 ? 's' : ''} vencido${t.vencidos !== 1 ? 's' : ''}`, detalle: 'ya pasó su fecha límite', destino: '/admin/soporte?filtro=vencidos', n: t.vencidos });
+        if (t.parados && recibe('tickets_mios')) avisos.push({ tipo: 'tickets', texto: `${t.parados} ticket${t.parados !== 1 ? 's' : ''} tuyo${t.parados !== 1 ? 's' : ''} sin moverse`, detalle: `más de ${await diasParadoTicket()} días sin cambios ni mensajes`, destino: '/admin/soporte?filtro=parados', n: t.parados });
         // Un aviso por ticket, y cada uno lleva directo a ese ticket. Si hay
         // muchos se enseñan los cinco últimos y el resto se resume, para que la
         // campanita no se convierta en una lista interminable.
@@ -15190,7 +15611,7 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
             avisos.push({
                 tipo: 'tickets',
                 texto: `y ${sobran.length} ticket${sobran.length !== 1 ? 's' : ''} más con mensajes nuevos`,
-                detalle: 'en las últimas 48 h',
+                detalle: 'sin leer',
                 destino: '/admin/soporte?filtro=mensajes',
                 n: sobran.reduce((x, t) => x + t.n, 0),
             });
@@ -19336,6 +19757,9 @@ app.listen(port, () => {
     // Automatismos (CRM 7, #316): bienvenida, faltas y cumpleaños, cada 15 min.
     setTimeout(ejecutarAutomatismos, 60 * 1000);
     setInterval(ejecutarAutomatismos, 15 * 60 * 1000);
+    // Soporte: aviso diario de tickets vencidos o parados y resumen semanal.
+    setTimeout(avisosSoportePeriodicos, 90 * 1000);
+    setInterval(avisosSoportePeriodicos, 15 * 60 * 1000);
     // Recordatorios de fichaje (ticket #233): se revisa cada 5 min quién tiene que
     // fichar entrada/salida según su horario. Solo manda una vez por tipo y día.
     setTimeout(recordatoriosFichaje, 45 * 1000);
