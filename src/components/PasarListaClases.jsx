@@ -3,6 +3,7 @@ import { I } from './Icons.jsx';
 import { fmtFechaLarga, fmtFecha } from '../fechas.js';
 import { colorOcupacion } from './AdminTulClases.jsx';
 import { COLOR_CUMPLE } from './Shared.jsx';
+import { FormIncidencia } from './AdminIncidencias.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pasar lista de las clases del día.
@@ -51,6 +52,8 @@ export default function PasarListaClases({ showToast, abrir = null }) {
   const [buscaBono, setBuscaBono] = useState(false);
   const [qBono, setQBono] = useState('');
   const [bonosSug, setBonosSug] = useState([]);
+  // Registrar una incidencia de esta clase (#383), con sus alumnos a mano.
+  const [incidencia, setIncidencia] = useState(false);
 
   const cargarClases = useCallback(async (f) => {
     setCargando(true);
@@ -284,7 +287,13 @@ export default function PasarListaClases({ showToast, abrir = null }) {
               </button>
             )}
             <button className="btn btn-sm btn-outline" onClick={imprimir} disabled={!alumnos.length}><I.Print /> Imprimir</button>
+            <button className="btn btn-sm btn-outline" onClick={() => setIncidencia(true)} title="Dejar registrado algo que ha pasado en esta clase">⚠️ Incidencia</button>
           </div>
+          {incidencia && (
+            <FormIncidencia grupo={{ id: clase.id, nombre: `${clase.activityName ? `${clase.activityName} · ` : ''}${clase.name}` }}
+              sugeridos={alumnos.map(a => ({ id: a.id, nombre: a.nombre }))} showToast={showToast}
+              onCerrar={() => setIncidencia(false)} onGuardada={() => setIncidencia(false)} />
+          )}
 
           {/* Añadir alguien con bono de esta actividad (ticket #245): solo salen los
               que tienen bono de la actividad de esta clase, con las clases que les

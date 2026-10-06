@@ -112,6 +112,9 @@ export function permisosDe(rol) {
             // La galería de fotos (#364): el club entero; los profes, solo de sus
             // clases (soloSusGrupos).
             galeria: !trabajador,
+            // Incidencias (#383): las registra cualquiera del personal (en su
+            // apartado o desde la lista de clase); cada uno ve las suyas.
+            incidencias: true,
             // Faltas seguidas de los alumnos, para llamar a las familias: secretaría
             // y dirección.
             faltas: mandaAlMenos(rol, 'secretaria'),
@@ -156,6 +159,11 @@ export function permisosDe(rol) {
         editarEquipoIT: rol === 'equipo_it' || rol === 'superadmin',
         // Dar o quitar rangos del club (dueño del club y por encima).
         cambiarRangos: jefe,
+        // Incidencias (#383): secretaría y dirección las ven todas; solo la
+        // dirección las gestiona (responsable, fecha límite, resolverlas). El
+        // resto ve las que ha escrito y las que tiene que resolver.
+        verTodasIncidencias: mandaAlMenos(rol, 'secretaria'),
+        gestionarIncidencias: jefe,
     };
 }
 
@@ -188,6 +196,8 @@ export const AVISOS = [
     { id: 'correos_asignados', grupo: 'Correo', texto: 'Correos de info@ asignados a él', quien: (p) => p.secciones.bandeja },
     { id: 'redes_sin_leer', grupo: 'Correo', texto: 'Mensajes de redes sociales sin leer (suyos o sin asignar)', quien: (p) => p.secciones.redes },
     { id: 'almacen', grupo: 'Club', texto: 'Artículos del almacén por debajo del mínimo', quien: (p) => p.secciones.almacen },
+    { id: 'incidencias_nuevas', grupo: 'Club', texto: 'Incidencias abiertas sin responsable', quien: (p) => p.gestionarIncidencias },
+    { id: 'incidencias_mias', grupo: 'Club', texto: 'Incidencias que tiene que resolver', quien: todos },
     { id: 'resumen_horas', grupo: 'Fichaje', texto: 'Su resumen de horas del mes, por confirmar', quien: todos },
     { id: 'correcciones_por_aprobar', grupo: 'Fichaje', texto: 'Correcciones de su fichaje que le proponen', quien: todos },
     { id: 'correcciones_por_validar', grupo: 'Fichaje', texto: 'Correcciones de fichaje que piden los trabajadores', quien: secretariaOMas },

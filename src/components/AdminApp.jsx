@@ -36,6 +36,7 @@ import AdminBandeja from './AdminBandeja.jsx';
 import AdminAlmacen from './AdminAlmacen.jsx';
 import AdminContactos from './AdminContactos.jsx';
 import AdminCandidatos from './AdminCandidatos.jsx';
+import AdminIncidencias from './AdminIncidencias.jsx';
 import AdminGaleria from './Galeria.jsx';
 import { IconoActividad } from './IconoActividad.jsx';
 
@@ -91,6 +92,7 @@ function sectionLabel(id) {
     portada: "Portada de la web",
     contactos: "Consultas web",
     candidatos: "Candidatos",
+    incidencias: "Incidencias",
     galeria: "Galería de fotos",
     settings: "Ajustes del club",
     objetos: "Objetos perdidos",
@@ -6951,6 +6953,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "agenda", label: "Mi día", icon: <I.Check /> },
         { id: "fichaje", label: "Fichaje", icon: <I.Clock /> },
         { id: "support", label: "Soporte", icon: <I.Bell /> },
+        // Lo que pasa y hay que dejar registrado (#383).
+        { id: "incidencias", label: "Incidencias", icon: <I.Edit /> },
       ]
     },
     {
@@ -7142,6 +7146,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("equipo_it") && <EquipoIT showToast={showToast} />}
           {ver("contactos") && <AdminContactos showToast={showToast} onAbrirFicha={abrirFicha} />}
           {ver("candidatos") && <AdminCandidatos showToast={showToast} />}
+          {ver("incidencias") && <AdminIncidencias showToast={showToast} enlace={enlace} />}
           {ver("galeria") && <AdminGaleria showToast={showToast} />}
           {ver("bandeja") && <AdminBandeja showToast={showToast} onAbrirFicha={abrirFicha} />}
           {ver("redes") && <AdminRedes showToast={showToast} onAbrirFicha={abrirFicha} />}

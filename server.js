@@ -1675,6 +1675,28 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_candidatos_estado ON aim_candidatos (estado, created_at DESC)`);
+        // Incidencias (#383): lo que pasa en clase, en secretaría, con un pago…
+        // y hay que dejar apuntado. Quién la escribe, quién está implicado y, si
+        // se anota desde la lista, en qué clase (con su nombre de ese momento).
+        // La dirección le pone responsable y fecha límite y la da por resuelta.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_incidencias (
+                id SERIAL PRIMARY KEY,
+                texto TEXT NOT NULL,
+                autor_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                group_id UUID REFERENCES tul_groups(group_id) ON DELETE SET NULL,
+                clase_nombre VARCHAR(200),
+                implicados UUID[] NOT NULL DEFAULT '{}',
+                estado VARCHAR(12) NOT NULL DEFAULT 'abierta',
+                responsable_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                fecha_limite DATE,
+                resolucion TEXT,
+                resuelta_por UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                resuelta_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_incidencias_estado ON aim_incidencias (estado, created_at DESC)`);
         // Galería de fotos (#364): álbumes, sus fotos (reducidas al subirlas) y quién
         // sale en cada una. Cada familia ve solo lo que le toca: las fotos donde
         // sale alguien suyo y los álbumes de sus clases o actividades.
@@ -16023,6 +16045,26 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                 detalle: cn.quien ? `la última, de ${cn.quien}` : null,
             });
         }
+        // Incidencias (#383): a la dirección, las abiertas sin responsable; a
+        // cada uno, las que tiene que resolver.
+        if (recibe('incidencias_nuevas')) {
+            const ic = (await pool.query(
+                `SELECT COUNT(*)::int n, MAX(id) AS ultima FROM aim_incidencias WHERE estado = 'abierta' AND responsable_id IS NULL`)).rows[0];
+            if (ic.n) avisos.push({
+                tipo: 'incidencias', destino: '/admin/incidencias', n: ic.n, clave: `incidencias:${ic.ultima}`,
+                texto: `${ic.n} incidencia${ic.n !== 1 ? 's' : ''} sin responsable`, detalle: 'ponle a alguien que la resuelva o dala por resuelta',
+            });
+        }
+        if (recibe('incidencias_mias')) {
+            const im = (await pool.query(
+                `SELECT COUNT(*)::int n, MAX(id) AS ultima,
+                        COUNT(*) FILTER (WHERE fecha_limite < (NOW() AT TIME ZONE 'Europe/Madrid')::date)::int AS vencidas
+                 FROM aim_incidencias WHERE estado = 'abierta' AND responsable_id = $1`, [yo])).rows[0];
+            if (im.n) avisos.push({
+                tipo: 'incidencias', destino: '/admin/incidencias?filtro=mias', n: im.n, clave: `incidencias_mias:${im.ultima}`,
+                texto: `${im.n} incidencia${im.n !== 1 ? 's' : ''} por resolver`, detalle: im.vencidas ? `${im.vencidas} con la fecha límite pasada` : 'te las ha encargado la dirección',
+            });
+        }
         // Solicitudes de las familias para dar o quitar el permiso de fotos (#170).
         if (recibe('fotos')) {
             const sf = (await pool.query(
@@ -19209,6 +19251,133 @@ app.delete('/api/admin/candidatos/:id', authenticateSession, requireSeccion('can
         const r = await pool.query(`DELETE FROM aim_candidatos WHERE id = $1 RETURNING id`, [Number(req.params.id) || 0]);
         if (!r.rowCount) return res.status(404).json({ error: 'No existe.' });
         res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Incidencias (#383) ───────────────────────────────────────────────────────
+// Las registra cualquiera del personal. Secretaría y dirección las ven todas; el
+// resto, las que ha escrito y las que tiene que resolver. Solo la dirección pone
+// responsable y fecha límite; el responsable puede darla por resuelta.
+const SQL_INCIDENCIAS = `
+    SELECT i.id, i.texto, i.autor_id, i.group_id, i.clase_nombre, i.estado, i.responsable_id, i.resolucion,
+           i.resuelta_at, i.created_at, to_char(i.fecha_limite, 'YYYY-MM-DD') AS limite,
+           TRIM(CONCAT(a.name, ' ', COALESCE(a.surname, ''))) AS autor,
+           TRIM(CONCAT(r.name, ' ', COALESCE(r.surname, ''))) AS responsable,
+           TRIM(CONCAT(rp.name, ' ', COALESCE(rp.surname, ''))) AS resuelta_por,
+           COALESCE((SELECT json_agg(json_build_object('id', u.user_id, 'nombre', TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))), 'rango', ${sqlRango('u')}) ORDER BY u.name)
+                     FROM users u WHERE u.user_id = ANY(i.implicados)), '[]') AS implicados
+    FROM aim_incidencias i
+    LEFT JOIN users a ON a.user_id = i.autor_id
+    LEFT JOIN users r ON r.user_id = i.responsable_id
+    LEFT JOIN users rp ON rp.user_id = i.resuelta_por`;
+const mapIncidencia = (x) => ({
+    id: x.id, texto: x.texto, fecha: x.created_at, estado: x.estado,
+    autor: x.autor_id ? { id: x.autor_id, nombre: x.autor } : null,
+    clase: x.group_id || x.clase_nombre ? { id: x.group_id, nombre: x.clase_nombre } : null,
+    implicados: x.implicados || [],
+    responsable: x.responsable_id ? { id: x.responsable_id, nombre: x.responsable } : null,
+    fechaLimite: x.limite || null, resolucion: x.resolucion || '', resueltaPor: x.resuelta_por || null, resueltaAt: x.resuelta_at,
+});
+const ROLES_PERSONAL_SQL = `('trabajador', 'instructor', 'secretaria', 'club_owner', 'equipo_it')`;
+
+app.get('/api/admin/incidencias', authenticateSession, requireSeccion('incidencias'), async (req, res) => {
+    const p = permisos(req), yo = req.userSession.userId;
+    const estado = { abiertas: 'abierta', resueltas: 'resuelta' }[req.query.estado] || null;
+    try {
+        const vals = [estado, p.verTodasIncidencias, yo];
+        const r = await pool.query(
+            `${SQL_INCIDENCIAS}
+             WHERE ($1::text IS NULL OR i.estado = $1) AND ($2::boolean OR i.autor_id = $3 OR i.responsable_id = $3)
+             ORDER BY (i.estado = 'abierta') DESC, i.created_at DESC LIMIT 500`, vals);
+        res.set('Cache-Control', 'no-store');
+        res.json({ incidencias: r.rows.map(mapIncidencia), verTodas: !!p.verTodasIncidencias, gestionar: !!p.gestionarIncidencias, yo });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+// Para el formulario: las clases (para quien registra desde su apartado) y, a la
+// dirección, el personal al que encargarlas.
+app.get('/api/admin/incidencias/opciones', authenticateSession, requireSeccion('incidencias'), async (req, res) => {
+    try {
+        const g = await pool.query(
+            `SELECT g.group_id AS id, g.name, a.name AS actividad FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE a.club_id = $1 ORDER BY a.name, g.name`, [AIM_CLUB_ID]);
+        const personal = permisos(req).gestionarIncidencias ? (await pool.query(
+            `SELECT u.user_id AS id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre FROM users u
+             WHERE u.club_id = $1 AND ${sqlRango('u')} IN ${ROLES_PERSONAL_SQL} ORDER BY u.name, u.surname`, [AIM_CLUB_ID])).rows : [];
+        res.set('Cache-Control', 'no-store');
+        res.json({ grupos: g.rows.map(x => ({ id: x.id, nombre: `${x.actividad} · ${x.name}` })), personal });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+// Buscar a quién implicar: alumnos, familias o personal del club.
+app.get('/api/admin/incidencias/personas', authenticateSession, requireSeccion('incidencias'), async (req, res) => {
+    const vals = [AIM_CLUB_ID];
+    const filtro = filtroNombreSQL(String(req.query.q || '').slice(0, 80), `(u.name || ' ' || COALESCE(u.surname,''))`, vals);
+    if (!filtro) return res.json({ personas: [] });
+    try {
+        const r = await pool.query(
+            `SELECT u.user_id AS id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre, ${sqlRango('u')} AS rango
+             FROM users u WHERE u.club_id = $1 AND ${filtro} ORDER BY u.name, u.surname LIMIT 15`, vals);
+        res.json({ personas: r.rows });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.post('/api/admin/incidencias', authenticateSession, requireSeccion('incidencias'), async (req, res) => {
+    const b = req.body || {};
+    const texto = String(b.texto || '').trim().slice(0, 4000);
+    if (texto.length < 3) return res.status(400).json({ error: 'Escribe qué ha pasado.' });
+    const UUID = /^[0-9a-f-]{36}$/i;
+    const implicados = [...new Set((Array.isArray(b.implicados) ? b.implicados : []).map(String).filter(x => UUID.test(x)))].slice(0, 40);
+    try {
+        let clase = null;
+        if (b.groupId) {
+            if (!UUID.test(String(b.groupId))) return res.status(400).json({ error: 'Esa clase no existe.' });
+            clase = (await pool.query(
+                `SELECT g.group_id, a.name || ' · ' || g.name AS nombre FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+                 WHERE g.group_id = $1 AND a.club_id = $2`, [b.groupId, AIM_CLUB_ID])).rows[0];
+            if (!clase) return res.status(400).json({ error: 'Esa clase no existe.' });
+        }
+        const validos = implicados.length ? (await pool.query(`SELECT user_id FROM users WHERE user_id = ANY($1::uuid[]) AND club_id = $2`, [implicados, AIM_CLUB_ID])).rows.map(x => x.user_id) : [];
+        const r = await pool.query(
+            `INSERT INTO aim_incidencias (texto, autor_id, group_id, clase_nombre, implicados) VALUES ($1, $2, $3, $4, $5::uuid[]) RETURNING id`,
+            [texto, req.userSession.userId, clase?.group_id || null, clase?.nombre || null, validos]);
+        const fila = (await pool.query(`${SQL_INCIDENCIAS} WHERE i.id = $1`, [r.rows[0].id])).rows[0];
+        res.status(201).json({ success: true, incidencia: mapIncidencia(fila) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.put('/api/admin/incidencias/:id', authenticateSession, requireSeccion('incidencias'), async (req, res) => {
+    const id = Number(req.params.id);
+    const b = req.body || {}, p = permisos(req), yo = req.userSession.userId;
+    try {
+        const i = (await pool.query(`SELECT * FROM aim_incidencias WHERE id = $1`, [id])).rows[0];
+        if (!i) return res.status(404).json({ error: 'Esa incidencia no existe.' });
+        const gestiona = !!p.gestionarIncidencias, esResponsable = String(i.responsable_id) === String(yo);
+        const sets = [], vals = [id];
+        const poner = (sql, v) => { vals.push(v); sets.push(sql.replace('?', `$${vals.length}`)); };
+        if (b.responsableId !== undefined || b.fechaLimite !== undefined) {
+            if (!gestiona) return res.status(403).json({ error: 'El responsable y la fecha límite los pone la dirección.' });
+            if (b.responsableId !== undefined) {
+                const rid = b.responsableId || null;
+                if (rid && !(await pool.query(`SELECT 1 FROM users u WHERE u.user_id = $1 AND ${sqlRango('u')} IN ${ROLES_PERSONAL_SQL}`, [rid])).rowCount) {
+                    return res.status(400).json({ error: 'El responsable tiene que ser del personal del club.' });
+                }
+                poner('responsable_id = ?', rid);
+            }
+            if (b.fechaLimite !== undefined) {
+                if (b.fechaLimite && !/^\d{4}-\d{2}-\d{2}$/.test(b.fechaLimite)) return res.status(400).json({ error: 'La fecha límite no es válida.' });
+                poner('fecha_limite = ?::date', b.fechaLimite || null);
+            }
+        }
+        if (b.estado !== undefined) {
+            if (!['abierta', 'resuelta'].includes(b.estado)) return res.status(400).json({ error: 'Estado no válido.' });
+            if (!gestiona && !(esResponsable && b.estado === 'resuelta')) return res.status(403).json({ error: 'Solo la dirección o quien la tiene encargada puede resolverla.' });
+            poner('estado = ?', b.estado);
+            if (b.estado === 'resuelta') {
+                poner('resuelta_por = ?', yo); sets.push('resuelta_at = NOW()');
+                poner('resolucion = ?', String(b.resolucion || '').trim().slice(0, 3000) || null);
+            } else sets.push('resuelta_por = NULL', 'resuelta_at = NULL');
+        }
+        if (!sets.length) return res.status(400).json({ error: 'Nada que cambiar.' });
+        await pool.query(`UPDATE aim_incidencias SET ${sets.join(', ')} WHERE id = $1`, vals);
+        const fila = (await pool.query(`${SQL_INCIDENCIAS} WHERE i.id = $1`, [id])).rows[0];
+        res.json({ success: true, incidencia: mapIncidencia(fila) });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
