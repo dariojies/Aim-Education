@@ -112,6 +112,9 @@ export function permisosDe(rol) {
             // La galería de fotos (#364): el club entero; los profes, solo de sus
             // clases (soloSusGrupos).
             galeria: !trabajador,
+            // Brickslab y Biblioteca (#291): préstamos, catálogo, permisos y
+            // votaciones. Lo llevan secretaría y dirección.
+            brickslab: mandaAlMenos(rol, 'secretaria'),
             // Incidencias (#383): las registra cualquiera del personal (en su
             // apartado o desde la lista de clase); cada uno ve las suyas.
             incidencias: true,
@@ -196,6 +199,7 @@ export const AVISOS = [
     { id: 'correos_asignados', grupo: 'Correo', texto: 'Correos de info@ asignados a él', quien: (p) => p.secciones.bandeja },
     { id: 'redes_sin_leer', grupo: 'Correo', texto: 'Mensajes de redes sociales sin leer (suyos o sin asignar)', quien: (p) => p.secciones.redes },
     { id: 'almacen', grupo: 'Club', texto: 'Artículos del almacén por debajo del mínimo', quien: (p) => p.secciones.almacen },
+    { id: 'brickslab_reservas', grupo: 'Club', texto: 'Reservas de Brickslab y Biblioteca por entregar', quien: (p) => p.secciones.brickslab },
     { id: 'incidencias_nuevas', grupo: 'Club', texto: 'Incidencias abiertas sin responsable', quien: (p) => p.gestionarIncidencias },
     { id: 'incidencias_mias', grupo: 'Club', texto: 'Incidencias que tiene que resolver', quien: todos },
     { id: 'resumen_horas', grupo: 'Fichaje', texto: 'Su resumen de horas del mes, por confirmar', quien: todos },

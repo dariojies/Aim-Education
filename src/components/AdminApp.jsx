@@ -37,6 +37,7 @@ import AdminAlmacen from './AdminAlmacen.jsx';
 import AdminContactos from './AdminContactos.jsx';
 import AdminCandidatos from './AdminCandidatos.jsx';
 import AdminIncidencias from './AdminIncidencias.jsx';
+import AdminBrickslab from './AdminBrickslab.jsx';
 import AdminGaleria from './Galeria.jsx';
 import { IconoActividad } from './IconoActividad.jsx';
 
@@ -93,6 +94,7 @@ function sectionLabel(id) {
     contactos: "Consultas web",
     candidatos: "Candidatos",
     incidencias: "Incidencias",
+    brickslab: "Brickslab y Biblioteca",
     galeria: "Galería de fotos",
     settings: "Ajustes del club",
     objetos: "Objetos perdidos",
@@ -6988,6 +6990,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "events", label: "Eventos", icon: <I.Star /> },
         // Las fotos de clases y eventos, con quién sale en cada una (#364).
         { id: "galeria", label: "Galería de fotos", icon: <I.Sparkle /> },
+        // El préstamo de sets de LEGO y libros (#291).
+        { id: "brickslab", label: "Brickslab y Biblioteca", icon: <I.Package /> },
         { id: "titulos", label: "Títulos", icon: <I.Shield /> },
         { id: "reportes", label: "Reportes", icon: <I.Chart /> },
       ]
@@ -7147,6 +7151,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("contactos") && <AdminContactos showToast={showToast} onAbrirFicha={abrirFicha} />}
           {ver("candidatos") && <AdminCandidatos showToast={showToast} />}
           {ver("incidencias") && <AdminIncidencias showToast={showToast} enlace={enlace} />}
+          {ver("brickslab") && <AdminBrickslab showToast={showToast} enlace={enlace} />}
           {ver("galeria") && <AdminGaleria showToast={showToast} />}
           {ver("bandeja") && <AdminBandeja showToast={showToast} onAbrirFicha={abrirFicha} />}
           {ver("redes") && <AdminRedes showToast={showToast} onAbrirFicha={abrirFicha} />}

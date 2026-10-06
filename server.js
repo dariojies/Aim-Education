@@ -12,6 +12,7 @@ import nodemailer from 'nodemailer';
 import { calcularRecibo, calcularCobro, serieDeLinea, mesAGenerar, mesDeAlta, tieneMilesimas, brutoMilesimas } from './billing.js';
 import { crearRouterTulClases } from './tul-clases.js';
 import { crearRouterBandeja, buscarRespuestas, correosCon, buzonesPersonales } from './bandeja.js';
+import { crearBrickslab } from './brickslab.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
@@ -7631,6 +7632,9 @@ const nombreMesLargo = (iso) => {
 async function ejecutarGeneracionCargos(mesPedido) {
     if (cargosEnPausa()) return { creados: 0, mes: normalizaMes(mesPedido), pausa: true };
     await sincronizarFichasActivas().catch(e => console.error('[FICHAS sync]', e.message));
+    // El Brickslab Pro (#291) se cobra como una clase: su enlace con el concepto
+    // tiene que estar en la temporada activa (también si se acaba de abrir otra).
+    await asegurarProBrickslab().catch(e => console.error('[BRICKSLAB pro]', e.message));
     const temp = await pool.query('SELECT id, nombre FROM aim_temporadas WHERE activa = true');
     if (temp.rowCount === 0) return { creados: 0, mes: null, temporada: null, sinTemporada: true };
     const mes = normalizaMes(mesPedido);
@@ -16045,6 +16049,14 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                 detalle: cn.quien ? `la última, de ${cn.quien}` : null,
             });
         }
+        // Brickslab (#291): reservas que esperan a que se entreguen.
+        if (recibe('brickslab_reservas')) {
+            const bk = await brickslab.pendientes();
+            if (bk.porEntregar) avisos.push({
+                tipo: 'brickslab', destino: '/admin/brickslab', n: bk.porEntregar, clave: `brickslab:${new Date(bk.ultima || 0).getTime()}`,
+                texto: `${bk.porEntregar} reserva${bk.porEntregar !== 1 ? 's' : ''} de Brickslab o Biblioteca por entregar`, detalle: 'entrégalas o anúlalas',
+            });
+        }
         // Incidencias (#383): a la dirección, las abiertas sin responsable; a
         // cada uno, las que tiene que resolver.
         if (recibe('incidencias_nuevas')) {
@@ -19253,6 +19265,15 @@ app.delete('/api/admin/candidatos/:id', authenticateSession, requireSeccion('can
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
+
+// ── Brickslab y Biblioteca (#291) ────────────────────────────────────────────
+// El préstamo de sets de LEGO y libros del club, sobre las tablas de la app de
+// Brickslab (que sigue para otros clubes). Ver brickslab.js.
+const brickslab = crearBrickslab({ pool, clubId: AIM_CLUB_ID, familiaIds, generarCargosDeMatricula, sqlPagandoDesde: SQL_PAGANDO_DESDE });
+async function asegurarProBrickslab() { return brickslab.asegurarEnlacePro(); }
+app.use('/api/brickslab', brickslab.publico);
+app.use('/api/me/brickslab', authenticateSession, brickslab.familia);
+app.use('/api/admin/brickslab', authenticateSession, requireSeccion('brickslab'), brickslab.admin);
 
 // ── Incidencias (#383) ───────────────────────────────────────────────────────
 // Las registra cualquiera del personal. Secretaría y dirección las ven todas; el

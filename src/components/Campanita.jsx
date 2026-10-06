@@ -55,6 +55,7 @@ const TITULO = {
   contactos: 'Consultas web',
   candidatos: 'Candidatos',
   incidencias: 'Incidencias',
+  brickslab: 'Brickslab',
   galeria: 'Fotos',
   correo: 'Correo',
   redes: 'Redes sociales',

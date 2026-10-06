@@ -7,6 +7,7 @@ import { AimLogo, ACT_BY_ID, CampDayPicker, campFmtLong, nombreMedioPago } from 
 import { useRouter } from '../App.jsx';
 import { UserSupport } from './AdminSupport.jsx';
 import { FotosFamilia } from './Galeria.jsx';
+import { BrickslabFamilia } from './Brickslab.jsx';
 import { fmtFecha } from '../fechas.js';
 
 function EmptyState({ icon, text, accion, onAccion }) {
@@ -1603,6 +1604,8 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
     { id: "attendance", label: "Asistencia", icon: <I.Check /> },
     // Las fotos del club donde sale alguien de la familia (#364).
     { id: "fotos", label: "Fotos", icon: <I.Sparkle /> },
+    // Sets de LEGO y libros para reservar (#291).
+    { id: "brickslab", label: "Brickslab y Biblioteca", icon: <I.Package /> },
     { id: "payments", label: "Pagos y recibos", icon: <I.Wallet /> },
     { id: "wallet", label: "Mi cartera", icon: <I.CreditCard /> },
   ];
@@ -1697,6 +1700,7 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
           {view === "settings" && <DashSettings />}
           {view === "support" && <UserSupport user={user} />}
           {view === "fotos" && <FotosFamilia />}
+          {view === "brickslab" && <BrickslabFamilia />}
         </div>
       </div>
     </main>

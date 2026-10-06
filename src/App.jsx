@@ -12,6 +12,7 @@ const AdminApp = lazy(() => import('./components/AdminApp'));
 import PublicCalendar from './components/PublicCalendar';
 import PublicLegal from './components/PublicLegal';
 import PublicContacto from './components/PublicContacto';
+import BrickslabPublico from './components/Brickslab.jsx';
 import PublicConocenos from './components/PublicConocenos';
 import { CookieBanner, registrarVisita } from './components/Cookies';
 import AvisosWeb from './components/AvisosWeb';
@@ -113,6 +114,9 @@ export default function App() {
     screen = <PublicLegal id={seg[1] || 'aviso-legal'} />;
   } else if (pathname === '/contacto') {
     screen = <PublicContacto />;
+  } else if (pathname === '/brickslab' || pathname === '/biblioteca') {
+    // El catálogo de Brickslab y la Biblioteca (#291), sin entrar.
+    screen = <BrickslabPublico />;
   } else if (pathname === '/conocenos') {
     screen = <PublicConocenos />;
   } else if (pathname === '/noticias') {
@@ -125,13 +129,13 @@ export default function App() {
   } else if (pathname.startsWith('/dashboard')) {
     if (!userChecked) return null;
     if (!user) { go('/auth'); return null; }
-    const dashSub = { campamento: 'camp', pagos: 'payments', clases: 'classes', asistencia: 'attendance', soporte: 'support', fotos: 'fotos' }[seg[1]] || 'overview';
+    const dashSub = { campamento: 'camp', pagos: 'payments', clases: 'classes', asistencia: 'attendance', soporte: 'support', fotos: 'fotos', brickslab: 'brickslab', biblioteca: 'brickslab' }[seg[1]] || 'overview';
     screen = <StudentDashboard user={user} onLogout={handleLogout} subroute={dashSub} />;
   } else if (pathname.startsWith('/admin')) {
     if (!userChecked) return null;
     if (!user || !user.canAccessAdmin) { go('/auth'); return null; }
     // 'recibos' se mantiene como alias antiguo: esa sección ahora son los gastos del club.
-    const adminSub = { campamento: 'camp', alumnos: 'students', familias: 'familias', clases: 'classes', eventos: 'events', noticias: 'news', gastos: 'payments', recibos: 'payments', facturacion: 'billing', soporte: 'support', reportes: 'reportes', fichaje: 'fichaje', speaking: 'speaking', faltas: 'faltas', comunicaciones: 'comunicaciones', crm: 'comunicaciones', almacen: 'almacen', consultas: 'contactos', candidatos: 'candidatos', incidencias: 'incidencias', galeria: 'galeria', fotos: 'galeria', rangos: 'rangos', correo: 'bandeja', avisos: 'ctas', redes: 'redes' }[seg[1]] || 'overview';
+    const adminSub = { campamento: 'camp', alumnos: 'students', familias: 'familias', clases: 'classes', eventos: 'events', noticias: 'news', gastos: 'payments', recibos: 'payments', facturacion: 'billing', soporte: 'support', reportes: 'reportes', fichaje: 'fichaje', speaking: 'speaking', faltas: 'faltas', comunicaciones: 'comunicaciones', crm: 'comunicaciones', almacen: 'almacen', consultas: 'contactos', candidatos: 'candidatos', incidencias: 'incidencias', brickslab: 'brickslab', galeria: 'galeria', fotos: 'galeria', rangos: 'rangos', correo: 'bandeja', avisos: 'ctas', redes: 'redes' }[seg[1]] || 'overview';
     // /admin/soporte/180 abre ese ticket directamente, para poder pasar el enlace.
     const ticketId = seg[1] === 'soporte' && /^\d+$/.test(seg[2] || '') ? Number(seg[2]) : null;
     // La ruta entera va al panel (#360) para abrir lo concreto: una clase en
