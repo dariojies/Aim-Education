@@ -395,7 +395,11 @@ export default function AuthScreen({ mode = 'login', onLoginSuccess }) {
   const { go } = useRouter();
   const inicial = ['register', 'olvido', 'restablecer'].includes(mode) ? mode : 'login';
   const [vista, setVista] = useState(inicial);
-  const [emailOlvido, setEmailOlvido] = useState('');
+  // Desde Brickslab (misma cuenta) se llega con ?email= para no tener que escribirlo.
+  const [emailOlvido, setEmailOlvido] = useState(() => {
+    const e = new URLSearchParams(window.location.search).get('email') || '';
+    return /^[^\s@]+@[^\s@]+$/.test(e) ? e.slice(0, 200) : '';
+  });
   const [recordar, setRecordar] = useState(true);
   const [google, setGoogle] = useState(false);
   const [avisoOk, setAvisoOk] = useState('');
