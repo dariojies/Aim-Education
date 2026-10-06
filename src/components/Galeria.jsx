@@ -23,19 +23,46 @@ const mb = (b) => `${(b / 1024 / 1024).toFixed(b > 100 * 1024 * 1024 ? 0 : 1)} M
 const CUPO_GALERIA = 700 * 1024 * 1024;
 const paraQuien = (a) => (a.audiencia === 'grupo' ? `Clase ${a.grupo || ''}` : a.audiencia === 'actividad' ? a.actividad : AUDIENCIAS[a.audiencia]?.label);
 
-// Reduce una foto en el navegador: lado largo 'max' px, JPEG. Respeta la
-// orientación de la cámara (las fotos del móvil vienen giradas por dentro).
-async function reducir(file, max, calidad) {
-  let img = await createImageBitmap(file, { imageOrientation: 'from-image' }).catch(() => null);
-  if (!img) {
-    img = await new Promise((ok, ko) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => ko(new Error('No se puede leer')); i.src = URL.createObjectURL(file); });
+const esHeic = (f) => /^image\/hei[cf]/i.test(f.type || '') || /\.hei[cf]$/i.test(f.name || '');
+// Abre la imagen. Las fotos del iPhone (HEIC) solo las entiende Safari: en el
+// resto se pasan a JPG aquí mismo con heic2any, que se descarga solo cuando hace
+// falta (pesa bastante y la mayoría de fotos no lo necesitan).
+async function abrirImagen(file) {
+  const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }).catch(() => null);
+  if (bmp) return bmp;
+  if (esHeic(file)) {
+    const heic2any = (await import('heic2any')).default;
+    const jpg = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.92 });
+    const b = Array.isArray(jpg) ? jpg[0] : jpg;
+    return createImageBitmap(b, { imageOrientation: 'from-image' });
   }
+  return new Promise((ok, ko) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => ko(new Error('No se puede leer esta imagen')); i.src = URL.createObjectURL(file); });
+}
+// ¿Tiene partes transparentes? (se mira una muestra de puntos, que basta).
+function tieneTransparencia(ctx, w, h) {
+  const d = ctx.getImageData(0, 0, w, h).data;
+  const paso = Math.max(4, Math.floor(d.length / 4 / 40000)) * 4;
+  for (let i = 3; i < d.length; i += paso) if (d[i] < 250) return true;
+  return false;
+}
+// Reduce una foto en el navegador: lado largo 'max' px. Sale en JPEG, salvo un
+// PNG con transparencias (un logo, un diploma recortado), que se queda en PNG
+// para no ponerle un fondo blanco. Respeta la orientación de la cámara.
+async function reducir(img, max, calidad, { png = false } = {}) {
   const k = Math.min(1, max / Math.max(img.width, img.height));
   const c = document.createElement('canvas');
   c.width = Math.max(1, Math.round(img.width * k)); c.height = Math.max(1, Math.round(img.height * k));
   const ctx = c.getContext('2d');
+  if (png) {
+    ctx.drawImage(img, 0, 0, c.width, c.height);
+    if (tieneTransparencia(ctx, c.width, c.height)) {
+      const data = c.toDataURL('image/png');
+      if (data.length < max * 560) return { data, ancho: c.width, alto: c.height };
+    }
+    ctx.globalCompositeOperation = 'destination-over';
+  }
   ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
-  ctx.drawImage(img, 0, 0, c.width, c.height);
+  if (!png) ctx.drawImage(img, 0, 0, c.width, c.height);
   let q = calidad, data = c.toDataURL('image/jpeg', q);
   while (data.length > max * 700 && q > 0.5) { q -= 0.08; data = c.toDataURL('image/jpeg', q); }
   return { data, ancho: c.width, alto: c.height };
@@ -52,7 +79,9 @@ const chip = (color, extra = {}) => ({ fontSize: 11, fontWeight: 800, color, bac
 
 // ── El formulario de un álbum (nuevo o editar) ──
 function FormAlbum({ inicial, opciones, onGuardar, onCancelar, guardando }) {
-  const [f, setF] = useState(() => ({ titulo: '', descripcion: '', fecha: new Date().toLocaleDateString('sv-SE'), audiencia: 'etiquetados', groupId: '', actividad: '', ...inicial }));
+  // Un profe solo hace álbumes de sus clases: siempre «una clase».
+  const soloClase = !!opciones.soloSusClases;
+  const [f, setF] = useState(() => ({ titulo: '', descripcion: '', fecha: new Date().toLocaleDateString('sv-SE'), audiencia: soloClase ? 'grupo' : 'etiquetados', groupId: soloClase && opciones.grupos.length === 1 ? opciones.grupos[0].id : '', actividad: '', ...inicial }));
   const set = (k) => (e) => setF(x => ({ ...x, [k]: e.target.value }));
   return (
     <form onSubmit={e => { e.preventDefault(); onGuardar(f); }} style={{ display: 'grid', gap: 12 }}>
@@ -63,13 +92,14 @@ function FormAlbum({ inicial, opciones, onGuardar, onCancelar, guardando }) {
           <input style={campo} type="date" value={String(f.fecha || '').slice(0, 10)} onChange={set('fecha')} /></label>
       </div>
       <div style={{ display: 'grid', gap: 6 }}>
-        <span style={{ fontSize: 13, fontWeight: 700 }}>¿Quién lo ve?</span>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 13, fontWeight: 700 }}>{soloClase ? '¿De qué clase es?' : '¿Quién lo ve?'}</span>
+        <div style={{ display: soloClase ? 'none' : 'flex', gap: 6, flexWrap: 'wrap' }}>
           {Object.entries(AUDIENCIAS).map(([k, v]) => (
             <button key={k} type="button" className={`filter-pill ${f.audiencia === k ? 'is-active' : ''}`} onClick={() => setF(x => ({ ...x, audiencia: k }))}>{v.label}</button>
           ))}
         </div>
         <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{AUDIENCIAS[f.audiencia].ayuda} Además, siempre lo ve la familia de quien sale etiquetado.</span>
+        {soloClase && !opciones.grupos.length && <span style={{ fontSize: 12, color: 'var(--orange)', fontWeight: 700 }}>No tienes ninguna clase asignada en el horario.</span>}
         {f.audiencia === 'grupo' && (
           <select style={campo} value={f.groupId || ''} onChange={set('groupId')} required aria-label="Clase">
             <option value="">Elige la clase…</option>
@@ -178,17 +208,19 @@ function Album({ id, opciones, onVolver, showToast }) {
   useEffect(() => { cargar(); }, [cargar]);
 
   async function subir(files) {
-    const lista = [...(files || [])].filter(f => /^image\//.test(f.type) || /\.(jpe?g|png|webp|heic)$/i.test(f.name));
+    const lista = [...(files || [])].filter(f => /^image\//.test(f.type) || /\.(jpe?g|png|webp|gif|hei[cf])$/i.test(f.name));
     if (!lista.length) return;
-    setSubiendo({ hechas: 0, total: lista.length, fallos: [] });
+    setSubiendo({ hechas: 0, total: lista.length, fallos: [], convirtiendo: lista.some(esHeic) });
     for (const f of lista) {
       try {
-        const g = await reducir(f, 1600, 0.82);
-        const m = await reducir(f, 420, 0.72);
+        const img = await abrirImagen(f);
+        const png = /png/i.test(f.type) || /\.png$/i.test(f.name);
+        const g = await reducir(img, 1600, 0.82, { png });
+        const m = await reducir(img, 420, 0.72, { png });
         await api(`/api/admin/galeria/${id}/fotos`, { method: 'POST', body: { imagen: g.data, miniatura: m.data, ancho: g.ancho, alto: g.alto } });
         setSubiendo(s => ({ ...s, hechas: s.hechas + 1 }));
       } catch (e) {
-        setSubiendo(s => ({ ...s, hechas: s.hechas + 1, fallos: [...s.fallos, `${f.name}: ${/heic/i.test(f.name) ? 'las fotos HEIC del iPhone no se pueden leer aquí; pásalas a JPG' : e.message}`] }));
+        setSubiendo(s => ({ ...s, hechas: s.hechas + 1, fallos: [...s.fallos, `${f.name}: ${esHeic(f) ? 'no se ha podido pasar esta foto del iPhone a JPG' : e.message}`] }));
       }
     }
     await cargar();
@@ -278,6 +310,7 @@ function Album({ id, opciones, onVolver, showToast }) {
         {subiendo ? (
           <div style={{ display: 'grid', gap: 8, justifyItems: 'center' }}>
             <b>{subiendo.hechas < subiendo.total ? `Subiendo ${subiendo.hechas + 1} de ${subiendo.total}…` : `Subidas ${subiendo.total - subiendo.fallos.length} de ${subiendo.total}`}</b>
+            {subiendo.convirtiendo && subiendo.hechas < subiendo.total && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Las fotos del iPhone se pasan a JPG antes de subir: tardan un poco más.</span>}
             <div style={{ width: 'min(360px, 100%)', height: 8, borderRadius: 99, background: 'var(--bg-3)', overflow: 'hidden' }}>
               <div style={{ width: `${(subiendo.hechas / subiendo.total) * 100}%`, height: '100%', background: 'var(--purple)', transition: 'width .2s' }} />
             </div>
@@ -287,10 +320,10 @@ function Album({ id, opciones, onVolver, showToast }) {
         ) : (
           <>
             <b style={{ fontSize: 15 }}>Arrastra aquí las fotos o pulsa para elegirlas</b>
-            <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 4 }}>Varias a la vez. Se reducen solas antes de subir (no hace falta prepararlas).</div>
+            <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 4 }}>Varias a la vez: JPG, PNG o las del iPhone (HEIC), que se pasan solas a JPG. Se reducen antes de subir: no hace falta prepararlas.</div>
           </>
         )}
-        <input ref={inputRef} type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={e => { const fl = e.target.files; subir(fl); e.target.value = ''; }} />
+        <input ref={inputRef} type="file" accept="image/*,.heic,.heif" multiple style={{ display: 'none' }} onChange={e => { const fl = e.target.files; subir(fl); e.target.value = ''; }} />
       </div>
 
       {/* Las fotos */}
@@ -357,7 +390,7 @@ export default function AdminGaleria({ showToast }) {
   const [guardando, setGuardando] = useState(false);
   const [album, setAlbum] = useState(null);
   const cargar = useCallback(() => api('/api/admin/galeria').then(d => { setLista(d.albumes || []); setUso(d.uso); }).catch(e => { setLista([]); showToast?.(e.message); }), [showToast]);
-  useEffect(() => { cargar(); api('/api/admin/galeria/opciones').then(d => setOpciones({ grupos: d.grupos || [], actividades: d.actividades || [] })).catch(() => {}); }, [cargar]);
+  useEffect(() => { cargar(); api('/api/admin/galeria/opciones').then(d => setOpciones({ grupos: d.grupos || [], actividades: d.actividades || [], soloSusClases: !!d.soloSusClases })).catch(() => {}); }, [cargar]);
 
   async function crear(f) {
     setGuardando(true);
@@ -370,8 +403,9 @@ export default function AdminGaleria({ showToast }) {
     <div style={{ display: 'grid', gap: 14 }}>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)', flex: '1 1 320px', maxWidth: 720 }}>
-          Sube las fotos de las clases y eventos y etiqueta a quien sale. Cada familia las ve en su área («Fotos»): las fotos donde sale alguien suyo
-          y los álbumes de sus clases o actividades. Mientras un álbum es borrador, no lo ve nadie.
+          {opciones.soloSusClases
+            ? 'Sube las fotos de tus clases y etiqueta a quien sale. Las familias de la clase las ven en su área («Fotos»). Mientras un álbum es borrador, no lo ve nadie.'
+            : 'Sube las fotos de las clases y eventos y etiqueta a quien sale. Cada familia las ve en su área («Fotos»): las fotos donde sale alguien suyo y los álbumes de sus clases o actividades. Mientras un álbum es borrador, no lo ve nadie.'}
         </p>
         <button className="btn btn-gradient" onClick={() => setNuevo(true)}><I.Plus width={14} height={14} /> Nuevo álbum</button>
       </div>

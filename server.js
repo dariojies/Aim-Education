@@ -18805,6 +18805,25 @@ function imagenGaleria(dataUrl, max) {
     return ok ? { buf: b, mime: m[1] } : { error: 'Ese archivo no es una imagen válida.' };
 }
 const permisoGaleria = (req) => !!permisos(req).secciones?.galeria;
+// Los profes suben fotos de SUS clases: sus álbumes son siempre de una clase
+// suya, y solo etiquetan y buscan a alumnos de sus clases. null = sin límite.
+async function ambitoGaleria(req) {
+    return permisos(req).soloSusGrupos ? await gruposDe(req.userSession.userId) : null;
+}
+// El álbum, si quien pregunta puede tocarlo (si no, error 404/403).
+async function albumPermitido(req, albumId) {
+    const a = (await pool.query(`SELECT * FROM aim_galeria_albumes WHERE id = $1`, [Number(albumId) || 0])).rows[0];
+    if (!a) throw { httP: 404, msg: 'Ese álbum no existe.' };
+    const mis = await ambitoGaleria(req);
+    if (mis && !(a.audiencia === 'grupo' && mis.includes(a.group_id))) throw { httP: 403, msg: 'Ese álbum no es de una clase tuya.' };
+    return a;
+}
+async function albumDeFoto(req, fotoId) {
+    const f = (await pool.query(`SELECT album_id FROM aim_galeria_fotos WHERE id = $1`, [Number(fotoId) || 0])).rows[0];
+    if (!f) throw { httP: 404, msg: 'Esa foto no existe.' };
+    return albumPermitido(req, f.album_id);
+}
+const errGaleria = (res, err) => (err?.httP ? res.status(err.httP).json({ error: err.msg }) : res.status(500).json({ error: err.message }));
 async function usoGaleria() {
     const r = await pool.query(`SELECT COALESCE(SUM(COALESCE(bytes, 0) + length(miniatura)), 0)::bigint AS b, COUNT(*)::int AS n FROM aim_galeria_fotos`);
     return { bytes: Number(r.rows[0].b), fotos: r.rows[0].n };
@@ -18818,11 +18837,12 @@ const mapAlbum = (a) => ({
 // Lo que se puede elegir al crear un álbum: las clases y las actividades del club.
 app.get('/api/admin/galeria/opciones', authenticateSession, requireSeccion('galeria'), async (req, res) => {
     try {
+        const mis = await ambitoGaleria(req);
         const g = await pool.query(
             `SELECT g.group_id AS id, g.name, a.name AS actividad FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
-             WHERE a.club_id = $1 ORDER BY a.name, g.name`, [AIM_CLUB_ID]);
+             WHERE a.club_id = $1 AND ($2::uuid[] IS NULL OR g.group_id = ANY($2::uuid[])) ORDER BY a.name, g.name`, [AIM_CLUB_ID, mis]);
         res.set('Cache-Control', 'no-store');
-        res.json({ grupos: g.rows, actividades: [...new Set(g.rows.map(x => x.actividad))], uso: await usoGaleria() });
+        res.json({ grupos: g.rows, actividades: mis ? [] : [...new Set(g.rows.map(x => x.actividad))], uso: await usoGaleria(), soloSusClases: !!mis });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 app.get('/api/admin/galeria', authenticateSession, requireSeccion('galeria'), async (req, res) => {
@@ -18835,7 +18855,8 @@ app.get('/api/admin/galeria', authenticateSession, requireSeccion('galeria'), as
                     (SELECT COUNT(DISTINCT e.user_id) FROM aim_galeria_etiquetas e JOIN aim_galeria_fotos f ON f.id = e.foto_id JOIN users u ON u.user_id = e.user_id
                       WHERE f.album_id = al.id AND COALESCE(u.media_consent, false) = false)::int AS sin_permiso
              FROM aim_galeria_albumes al LEFT JOIN tul_groups g ON g.group_id = al.group_id
-             ORDER BY al.fecha DESC, al.id DESC`);
+             WHERE $1::uuid[] IS NULL OR (al.audiencia = 'grupo' AND al.group_id = ANY($1::uuid[]))
+             ORDER BY al.fecha DESC, al.id DESC`, [await ambitoGaleria(req)]);
         res.set('Cache-Control', 'no-store');
         res.json({ albumes: r.rows.map(mapAlbum), uso: await usoGaleria() });
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -18855,9 +18876,14 @@ function datosAlbum(b, antes = {}) {
     const descripcion = b.descripcion !== undefined ? String(b.descripcion || '').trim().slice(0, 1000) || null : antes.descripcion;
     return { titulo, audiencia, groupId, actividad, fecha, descripcion };
 }
+async function comprobarAmbitoAlbum(req, d) {
+    const mis = await ambitoGaleria(req);
+    if (mis && !(d.audiencia === 'grupo' && mis.includes(d.groupId))) throw { httP: 403, msg: 'Tus álbumes tienen que ser de una de tus clases.' };
+}
 app.post('/api/admin/galeria', authenticateSession, requireSeccion('galeria'), async (req, res) => {
     try {
         const d = datosAlbum(req.body || {});
+        await comprobarAmbitoAlbum(req, d);
         const r = await pool.query(
             `INSERT INTO aim_galeria_albumes (titulo, descripcion, fecha, audiencia, group_id, actividad, created_by)
              VALUES ($1, $2, COALESCE($3::date, CURRENT_DATE), $4, $5, $6, $7) RETURNING id`,
@@ -18870,9 +18896,9 @@ app.post('/api/admin/galeria', authenticateSession, requireSeccion('galeria'), a
 });
 app.put('/api/admin/galeria/:id', authenticateSession, requireSeccion('galeria'), async (req, res) => {
     try {
-        const antes = (await pool.query(`SELECT * FROM aim_galeria_albumes WHERE id = $1`, [Number(req.params.id) || 0])).rows[0];
-        if (!antes) return res.status(404).json({ error: 'Ese álbum no existe.' });
+        const antes = await albumPermitido(req, req.params.id);
         const d = datosAlbum(req.body || {}, antes);
+        await comprobarAmbitoAlbum(req, d);
         const publicado = typeof req.body?.publicado === 'boolean' ? req.body.publicado : antes.publicado;
         if (publicado && !antes.publicado) {
             const n = (await pool.query(`SELECT COUNT(*)::int n FROM aim_galeria_fotos WHERE album_id = $1`, [antes.id])).rows[0].n;
@@ -18891,18 +18917,17 @@ app.put('/api/admin/galeria/:id', authenticateSession, requireSeccion('galeria')
 });
 app.delete('/api/admin/galeria/:id', authenticateSession, requireSeccion('galeria'), async (req, res) => {
     try {
-        const r = await pool.query(`DELETE FROM aim_galeria_albumes WHERE id = $1 RETURNING id`, [Number(req.params.id) || 0]);
-        if (!r.rowCount) return res.status(404).json({ error: 'Ese álbum no existe.' });
+        const a = await albumPermitido(req, req.params.id);
+        await pool.query(`DELETE FROM aim_galeria_albumes WHERE id = $1`, [a.id]);
         res.json({ success: true });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { errGaleria(res, err); }
 });
 // Un álbum con sus fotos, quién sale en cada una y a quién se suele etiquetar
 // (los alumnos de su clase o actividad), con si tienen permiso de fotos.
 app.get('/api/admin/galeria/:id', authenticateSession, requireSeccion('galeria'), async (req, res) => {
     try {
-        const id = Number(req.params.id) || 0;
+        const id = (await albumPermitido(req, req.params.id)).id;
         const a = (await pool.query(`SELECT al.*, g.name AS grupo FROM aim_galeria_albumes al LEFT JOIN tul_groups g ON g.group_id = al.group_id WHERE al.id = $1`, [id])).rows[0];
-        if (!a) return res.status(404).json({ error: 'Ese álbum no existe.' });
         const [fotos, etiquetas, sugeridos] = await Promise.all([
             pool.query(`SELECT id, ancho, alto, bytes, pie FROM aim_galeria_fotos WHERE album_id = $1 ORDER BY orden, id`, [id]),
             pool.query(
@@ -18924,7 +18949,7 @@ app.get('/api/admin/galeria/:id', authenticateSession, requireSeccion('galeria')
             fotos: fotos.rows.map(f => ({ id: f.id, ancho: f.ancho, alto: f.alto, bytes: f.bytes, pie: f.pie || '', etiquetas: porFoto.get(f.id) || [] })),
             sugeridos: sugeridos.rows,
         });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { errGaleria(res, err); }
 });
 // Buscar a quién etiquetar (cualquier persona del club), con su permiso de fotos.
 app.get('/api/admin/galeria-personas', authenticateSession, requireSeccion('galeria'), async (req, res) => {
@@ -18937,7 +18962,8 @@ app.get('/api/admin/galeria-personas', authenticateSession, requireSeccion('gale
             `SELECT u.user_id AS id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre, COALESCE(u.media_consent, false) AS permiso,
                     (SELECT string_agg(DISTINCT g.name, ', ') FROM tul_group_students gs JOIN tul_groups g ON g.group_id = gs.group_id WHERE gs.student_id = u.user_id) AS clases
              FROM users u WHERE u.club_id = $1 AND ${sinTildes("CONCAT(u.name, ' ', COALESCE(u.surname, ''))")} LIKE '%' || ${sinTildes('$2')} || '%'
-             ORDER BY u.name LIMIT 15`, [AIM_CLUB_ID, q.replace(/[%_\\]/g, '')]);
+               AND ($3::uuid[] IS NULL OR EXISTS (SELECT 1 FROM tul_group_students gs WHERE gs.student_id = u.user_id AND gs.group_id = ANY($3::uuid[])))
+             ORDER BY u.name LIMIT 15`, [AIM_CLUB_ID, q.replace(/[%_\\]/g, ''), await ambitoGaleria(req)]);
         res.json({ personas: r.rows });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -18948,29 +18974,30 @@ app.post('/api/admin/galeria/:id/fotos', authenticateSession, requireSeccion('ga
     const mini = imagenGaleria(req.body?.miniatura, MAX_MINI);
     if (mini.error) return res.status(400).json({ error: `Miniatura: ${mini.error}` });
     try {
-        const a = await pool.query(`SELECT id FROM aim_galeria_albumes WHERE id = $1`, [Number(req.params.id) || 0]);
-        if (!a.rowCount) return res.status(404).json({ error: 'Ese álbum no existe.' });
+        const a = { rows: [await albumPermitido(req, req.params.id)] };
         const r = await pool.query(
             `INSERT INTO aim_galeria_fotos (album_id, datos, miniatura, mime, ancho, alto, bytes, orden, subida_por)
              VALUES ($1, $2, $3, $4, $5, $6, $7, (SELECT COALESCE(MAX(orden), 0) + 1 FROM aim_galeria_fotos WHERE album_id = $1), $8) RETURNING id`,
             [a.rows[0].id, foto.buf, mini.buf, foto.mime, Math.round(Number(req.body?.ancho)) || null, Math.round(Number(req.body?.alto)) || null, foto.buf.length, req.userSession.userId]);
         await pool.query(`UPDATE aim_galeria_albumes SET updated_at = NOW() WHERE id = $1`, [a.rows[0].id]);
         res.status(201).json({ success: true, id: r.rows[0].id });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { errGaleria(res, err); }
 });
 app.put('/api/admin/galeria/fotos/:fotoId', authenticateSession, requireSeccion('galeria'), async (req, res) => {
     try {
+        await albumDeFoto(req, req.params.fotoId);
         const r = await pool.query(`UPDATE aim_galeria_fotos SET pie = $2 WHERE id = $1 RETURNING id`, [Number(req.params.fotoId) || 0, String(req.body?.pie || '').trim().slice(0, 300) || null]);
         if (!r.rowCount) return res.status(404).json({ error: 'Esa foto no existe.' });
         res.json({ success: true });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { errGaleria(res, err); }
 });
 app.delete('/api/admin/galeria/fotos/:fotoId', authenticateSession, requireSeccion('galeria'), async (req, res) => {
     try {
+        await albumDeFoto(req, req.params.fotoId);
         const r = await pool.query(`DELETE FROM aim_galeria_fotos WHERE id = $1 RETURNING id`, [Number(req.params.fotoId) || 0]);
         if (!r.rowCount) return res.status(404).json({ error: 'Esa foto no existe.' });
         res.json({ success: true });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { errGaleria(res, err); }
 });
 // Etiquetar y quitar. Se avisa si no tiene permiso de fotos (no se impide: el
 // club decide), y se dice para quién quedará visible.
@@ -18978,32 +19005,42 @@ app.post('/api/admin/galeria/fotos/:fotoId/etiquetas', authenticateSession, requ
     const userId = String(req.body?.userId || '');
     if (!/^[0-9a-f-]{36}$/i.test(userId)) return res.status(400).json({ error: 'Elige a quién etiquetar.' });
     try {
+        const al = await albumDeFoto(req, req.params.fotoId);
         const u = (await pool.query(`SELECT TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS nombre, COALESCE(media_consent, false) AS permiso FROM users WHERE user_id = $1 AND club_id = $2`, [userId, AIM_CLUB_ID])).rows[0];
         if (!u) return res.status(404).json({ error: 'Esa persona no es del club.' });
+        if (await ambitoGaleria(req)) {
+            const esDeLaClase = await pool.query(`SELECT 1 FROM tul_group_students WHERE group_id = $1 AND student_id = $2`, [al.group_id, userId]);
+            if (!esDeLaClase.rowCount) return res.status(403).json({ error: 'Solo puedes etiquetar a alumnos de esta clase.' });
+        }
         await pool.query(
             `INSERT INTO aim_galeria_etiquetas (foto_id, user_id, etiquetado_por) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
             [Number(req.params.fotoId) || 0, userId, req.userSession.userId]);
         res.json({ success: true, nombre: u.nombre, permiso: u.permiso });
     } catch (err) {
         if (err.code === '23503') return res.status(404).json({ error: 'Esa foto no existe.' });
-        res.status(500).json({ error: err.message });
+        errGaleria(res, err);
     }
 });
 app.delete('/api/admin/galeria/fotos/:fotoId/etiquetas/:userId', authenticateSession, requireSeccion('galeria'), async (req, res) => {
     try {
+        await albumDeFoto(req, req.params.fotoId);
         await pool.query(`DELETE FROM aim_galeria_etiquetas WHERE foto_id = $1 AND user_id = $2`, [Number(req.params.fotoId) || 0, req.params.userId]);
         res.json({ success: true });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { errGaleria(res, err); }
 });
 // La imagen (o su miniatura): el club la ve siempre; una familia, solo si le toca.
 app.get('/api/galeria/fotos/:fotoId/:tamano(grande|mini)', authenticateSession, async (req, res) => {
     try {
         const id = Number(req.params.fotoId) || 0;
         const col = req.params.tamano === 'mini' ? 'miniatura' : 'datos';
-        let r;
+        let r = { rows: [] };
         if (req.userSession.canAccessAdmin && permisoGaleria(req)) {
-            r = await pool.query(`SELECT ${col} AS img, mime FROM aim_galeria_fotos WHERE id = $1`, [id]);
-        } else {
+            const mis = await ambitoGaleria(req);
+            r = await pool.query(
+                `SELECT f.${col} AS img, f.mime FROM aim_galeria_fotos f JOIN aim_galeria_albumes al ON al.id = f.album_id
+                 WHERE f.id = $1 AND ($2::uuid[] IS NULL OR (al.audiencia = 'grupo' AND al.group_id = ANY($2::uuid[])))`, [id, mis]);
+        }
+        if (!r.rows[0]) {
             const fam = await familiaIds(req.userSession.userId);
             r = await pool.query(
                 `SELECT f.${col} AS img, f.mime FROM aim_galeria_fotos f JOIN aim_galeria_albumes al ON al.id = f.album_id
@@ -19014,7 +19051,7 @@ app.get('/api/galeria/fotos/:fotoId/:tamano(grande|mini)', authenticateSession, 
         res.set('X-Content-Type-Options', 'nosniff');
         // Privada (lleva fotos de menores): solo en la caché de este navegador.
         res.set('Cache-Control', 'private, max-age=86400');
-        if (req.query.descargar) res.set('Content-Disposition', `attachment; filename="foto-${id}.jpg"`);
+        if (req.query.descargar) res.set('Content-Disposition', `attachment; filename="foto-${id}.${/png/.test(r.rows[0].mime) ? 'png' : /webp/.test(r.rows[0].mime) ? 'webp' : 'jpg'}"`);
         res.send(r.rows[0].img);
     } catch (err) { res.status(500).send('No se ha podido cargar.'); }
 });
