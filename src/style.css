@@ -1104,9 +1104,9 @@ html[data-actaccents="off"] [class*="act-"] {
 
 .empleo-caja {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1.3fr 1fr;
   gap: 32px;
-  align-items: start;
+  align-items: center;
   background: var(--bg-2);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
@@ -1115,6 +1115,32 @@ html[data-actaccents="off"] [class*="act-"] {
 
 .empleo-form {
   min-height: 60px;
+}
+
+/* La banda de «Trabaja con nosotros» (#377): las clases que se buscan y el botón. */
+.empleo-cta {
+  display: grid;
+  gap: 14px;
+  justify-items: start;
+}
+.empleo-chip {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+}
+
+/* Un día que el club cierra, en «Próximos eventos» de la portada (#377). */
+.cal-event.cal-cierre {
+  background: rgba(0, 0, 0, .14);
+  border-style: dashed;
+}
+.cal-event.cal-cierre .date {
+  background: rgba(255, 255, 255, .85);
+  color: #b45309;
 }
 
 @media (max-width: 860px) {

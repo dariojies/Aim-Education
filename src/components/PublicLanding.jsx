@@ -60,7 +60,17 @@ function TrabajaConNosotros({ empleo }) {
   const [error, setError] = useState('');
   const [hecho, setHecho] = useState(false);
   const [encima, setEncima] = useState(false);
+  // El formulario se abre en una ventana: en la portada queda solo una banda
+  // compacta (#377), sin el hueco en blanco que dejaba al lado.
+  const [abierto, setAbierto] = useState(false);
   const inputCv = useRef(null);
+  useEffect(() => {
+    if (!abierto) return;
+    const k = (e) => { if (e.key === 'Escape') setAbierto(false); };
+    window.addEventListener('keydown', k);
+    const antes = document.body.style.overflow; document.body.style.overflow = 'hidden';
+    return () => { window.removeEventListener('keydown', k); document.body.style.overflow = antes; };
+  }, [abierto]);
 
   useEffect(() => {
     if (!activo) return;
@@ -110,7 +120,28 @@ function TrabajaConNosotros({ empleo }) {
             <h2 className="section-title">{empleo.titulo}</h2>
             <p className="section-lede" style={{marginTop: 10}}>{empleo.texto}</p>
           </div>
-          <div className="empleo-form" style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 22, padding: 22, boxShadow: 'var(--shadow)' }}>
+          <div className="empleo-cta">
+            {clases.length > 0 && (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {clases.slice(0, 8).map(c => <span key={c} className="empleo-chip">{c}</span>)}
+                <span className="empleo-chip">y más…</span>
+              </div>
+            )}
+            <button type="button" className="btn btn-gradient btn-lg" onClick={() => setAbierto(true)}>
+              Enviar mi candidatura <I.Arrow />
+            </button>
+            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Solo un minuto: tus datos, qué clases podrías dar y tu CV en PDF.</span>
+          </div>
+        </div>
+      </div>
+      {abierto && (
+        <div role="dialog" aria-modal="true" aria-label={empleo.titulo} onClick={e => { if (e.target === e.currentTarget) setAbierto(false); }}
+          style={{ position: 'fixed', inset: 0, zIndex: 2000, background: 'rgba(10,8,20,.55)', display: 'grid', placeItems: 'center', padding: 16, overflowY: 'auto' }}>
+          <div className="empleo-form" style={{ position: 'relative', width: 'min(640px, 100%)', maxHeight: 'calc(100vh - 32px)', overflowY: 'auto', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 22, padding: 22, boxShadow: 'var(--shadow)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+              <h3 style={{ margin: 0, flex: 1, fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 800 }}>{empleo.titulo}</h3>
+              <button type="button" onClick={() => setAbierto(false)} aria-label="Cerrar" style={{ background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 10, padding: '6px 10px', cursor: 'pointer', color: 'var(--ink)' }}><I.X /></button>
+            </div>
             {hecho ? (
               <div style={{ display: 'grid', gap: 10, textAlign: 'center', padding: '26px 8px' }}>
                 <div style={{ fontSize: 42 }}>🙌</div>
@@ -175,7 +206,7 @@ function TrabajaConNosotros({ empleo }) {
             )}
           </div>
         </div>
-      </div>
+      )}
     </section>
   );
 }
@@ -261,6 +292,9 @@ export default function PublicLanding() {
   const destacadas = fichasWeb(actividades).slice(0, 6);
   const [posts, setPosts] = useState([]);
   const [events, setEvents] = useState([]);
+  // Los días que el club cierra (#377), como en el calendario: festivos,
+  // vacaciones y cierres, juntos por periodos.
+  const [cierres, setCierres] = useState([]);
   // Lo que el club puede cambiar de la portada, y los números del club. Se
   // arranca con algo razonable para que nunca se vea la portada a medio pintar.
   // El mismo mosaico que el servidor da por defecto, para que el primer pintado
@@ -285,6 +319,7 @@ export default function PublicLanding() {
   useEffect(() => {
     fetch('/api/posts?limit=3').then(r => r.ok ? r.json() : []).then(d => setPosts(Array.isArray(d) ? d : [])).catch(() => {});
     fetch('/api/events').then(r => r.ok ? r.json() : []).then(d => setEvents(Array.isArray(d) ? d : [])).catch(() => {});
+    fetch('/api/cierres').then(r => r.ok ? r.json() : null).then(d => setCierres(d?.periodos || [])).catch(() => {});
     fetch('/api/landing').then(r => r.ok ? r.json() : null).then(d => { if (d) setPortada(d); }).catch(() => {});
   }, []);
 
@@ -462,22 +497,42 @@ export default function PublicLanding() {
 
               <div className="calendar-card">
                 <h3>Próximos eventos</h3>
-                {events.length === 0 && (
-                  <p style={{fontSize: 13, opacity: .85, marginBottom: 12}}>No hay eventos próximos publicados.</p>
-                )}
-                {events.slice(0, 3).map(ev => {
-                  const d = new Date(ev.date);
-                  const sub = [ev.time, ev.venue].filter(Boolean).join(" · ");
-                  return (
-                    <div key={ev.id} className="cal-event" onClick={() => go("/calendario")}>
-                      <div className="date"><div className="d">{d.getDate()}</div><div className="m">{MONTH_ABBR[d.getMonth()]}</div></div>
-                      <div className="info">
-                        <h5>{ev.title}</h5>
-                        <p>{sub || "Evento del club"}</p>
+                {(() => {
+                  // Eventos y días cerrados, juntos y por fecha (los cerrados, marcados).
+                  const dia = (iso) => new Date(String(iso).slice(0, 10) + 'T12:00:00');
+                  const hoy = new Date().toLocaleDateString('sv-SE');
+                  const lista = [
+                    ...events.map(ev => ({ tipo: 'evento', fecha: String(ev.date).slice(0, 10), ev })),
+                    ...cierres.filter(c => c.hasta >= hoy).map(c => ({ tipo: 'cierre', fecha: c.desde < hoy ? hoy : c.desde, c })),
+                  ].sort((a, b) => a.fecha.localeCompare(b.fecha)).slice(0, 4);
+                  if (!lista.length) return <p style={{fontSize: 13, opacity: .85, marginBottom: 12}}>No hay eventos próximos publicados.</p>;
+                  return lista.map(x => {
+                    if (x.tipo === 'evento') {
+                      const ev = x.ev, d = dia(ev.date);
+                      const sub = [ev.time, ev.venue].filter(Boolean).join(" · ");
+                      return (
+                        <div key={`e${ev.id}`} className="cal-event" onClick={() => go("/calendario")}>
+                          <div className="date"><div className="d">{d.getDate()}</div><div className="m">{MONTH_ABBR[d.getMonth()]}</div></div>
+                          <div className="info">
+                            <h5>{ev.title}</h5>
+                            <p>{sub || "Evento del club"}</p>
+                          </div>
+                        </div>
+                      );
+                    }
+                    const c = x.c, d = dia(c.desde), h = dia(c.hasta);
+                    const varios = c.desde !== c.hasta;
+                    return (
+                      <div key={`c${c.desde}`} className="cal-event cal-cierre" onClick={() => go("/calendario")}>
+                        <div className="date"><div className="d">{d.getDate()}</div><div className="m">{MONTH_ABBR[d.getMonth()]}</div></div>
+                        <div className="info">
+                          <h5>Cerrado · {c.nombre || c.tipoNombre}</h5>
+                          <p>{varios ? `Del ${d.getDate()} ${MONTH_ABBR[d.getMonth()]} al ${h.getDate()} ${MONTH_ABBR[h.getMonth()]} · no hay clases` : 'No hay clases'}</p>
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  });
+                })()}
                 <button className="btn btn-primary btn-block" onClick={() => go("/calendario")} style={{background: "white", color: "var(--ink)"}}>
                   Ver calendario completo
                 </button>
