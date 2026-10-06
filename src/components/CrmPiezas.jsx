@@ -71,3 +71,51 @@ export function meterEnCursor(campo, valor, texto) {
   requestAnimationFrame(() => { campo.focus(); campo.setSelectionRange(a + texto.length, a + texto.length); });
   return nuevo;
 }
+
+// Interruptor de encendido/apagado de un correo automático (#365).
+export function Interruptor({ activo, onClick, nombre }) {
+  return (
+    <button type="button" onClick={onClick} role="switch" aria-checked={activo} aria-label={`${activo ? 'Apagar' : 'Encender'} ${nombre}`}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '6px 12px 6px 6px', borderRadius: 999, border: '1px solid var(--line)', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 800, fontSize: 12, flexShrink: 0,
+        background: activo ? 'color-mix(in oklab, var(--teal) 14%, var(--bg-2))' : 'var(--bg-3)', color: activo ? 'var(--teal)' : 'var(--ink-3)' }}>
+      <span style={{ width: 34, height: 20, borderRadius: 999, background: activo ? 'var(--teal)' : 'var(--line)', position: 'relative', transition: 'background .2s' }}>
+        <span style={{ position: 'absolute', top: 2, left: activo ? 16 : 2, width: 16, height: 16, borderRadius: '50%', background: '#fff', transition: 'left .2s' }} />
+      </span>
+      {activo ? 'Encendido' : 'Apagado'}
+    </button>
+  );
+}
+
+// Los ajustes de cuándo sale un correo automático (#365): cada uno es un número
+// con sus límites ({ nombre, unidad, min, max, def }). onGuardar(valores).
+export function AjustesCorreo({ def, valores, onGuardar }) {
+  const [v, setV] = React.useState(valores || {});
+  const [guardando, setGuardando] = React.useState(false);
+  React.useEffect(() => { setV(valores || {}); }, [JSON.stringify(valores)]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!def || !Object.keys(def).length) return null;
+  const cambiado = Object.keys(def).some(k => Number(v[k]) !== Number(valores?.[k]));
+  const fuera = Object.entries(def).some(([k, d]) => !(Number(v[k]) >= d.min && Number(v[k]) <= d.max));
+  return (
+    <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', background: 'var(--bg-3)', borderRadius: 12, padding: '10px 12px' }}>
+      {Object.entries(def).map(([k, d]) => (
+        <label key={k} style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-3)', fontWeight: 700 }}>
+          {d.nombre}
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <input type="number" min={d.min} max={d.max} step="1" value={v[k] ?? ''} aria-label={d.nombre}
+              onChange={e => setV(x => ({ ...x, [k]: e.target.value === '' ? '' : Number(e.target.value) }))}
+              style={{ width: 70, fontFamily: 'inherit', fontSize: 14, padding: '6px 8px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)' }} />
+            <span style={{ fontWeight: 400 }}>{d.unidad}</span>
+          </span>
+        </label>
+      ))}
+      {cambiado && (
+        <button type="button" className="btn btn-sm btn-primary" disabled={guardando || fuera}
+          title={fuera ? 'Algún valor está fuera de sus límites' : undefined}
+          onClick={async () => { setGuardando(true); try { await onGuardar(v); } finally { setGuardando(false); } }}>
+          {guardando ? 'Guardando…' : 'Guardar ajustes'}
+        </button>
+      )}
+      {fuera && <span style={{ fontSize: 12, color: 'var(--orange)', fontWeight: 700 }}>{Object.entries(def).filter(([k, d]) => !(Number(v[k]) >= d.min && Number(v[k]) <= d.max)).map(([, d]) => `${d.nombre}: de ${d.min} a ${d.max}`).join(' · ')}</span>}
+    </div>
+  );
+}

@@ -3,6 +3,25 @@ import { I } from './Icons.jsx';
 import EditorDiseno, { ElegirPlantilla, Miniatura, VistaPrevia, useMarca, olvidarMarca, subirImagen } from './EditorDiseno.jsx';
 import { htmlCorreo, FUENTES, REDES, GRUPOS_SISTEMA, PLANTILLAS_BASE, MARCA_POR_DEFECTO, ejemplosDe } from '../../correo-diseno.js';
 import { fmtFechaHora } from '../fechas.js';
+import { Interruptor, AjustesCorreo } from './CrmPiezas.jsx';
+
+// Lo que deja de funcionar si se apaga cada correo de la app (#365): se pregunta antes.
+const AL_APAGAR = {
+  password_olvido: 'Quien pulse «¿Olvidaste tu contraseña?» no recibirá el enlace y no podrá recuperar su cuenta por su cuenta.',
+  acceso_familia: 'El botón «Enviar enlace de contraseña» de la ficha dejará de funcionar.',
+  acceso_invitacion: 'El botón «Enviar acceso» del personal dejará de funcionar: no podrán poner su contraseña.',
+  password_cambiada: 'Nadie se enterará si alguien le cambia la contraseña (es un aviso de seguridad).',
+  examen_resultado: 'El botón «Enviar a la familia» de los exámenes dejará de funcionar.',
+  speaking_inicial: 'Las familias no recibirán el correo para confirmar el Speaking: solo podrán confirmarlo desde su área o por teléfono.',
+  speaking_ultimo_dia: 'No se recordará el último día de plazo a quien no ha confirmado el Speaking.',
+  speaking_manana: 'No se recordará la clase de Speaking el día antes.',
+  fichaje_resumen: 'El resumen mensual de horas es OBLIGATORIO por ley: si lo apagas, tendréis que entregarlo de otra forma.',
+  sello_semanal: 'El sello semanal sirve de prueba ante una inspección de que el registro de jornada no se ha tocado.',
+  gestoria_libro: 'El botón «Enviar a la gestoría» de Facturación dejará de funcionar.',
+  aviso_alta_web: 'No llegará a info@ el aviso de las familias que se registran en la web (seguirán saliendo en el panel).',
+  aviso_consulta_web: 'No llegará a info@ el aviso de las consultas de la web (seguirán saliendo en el panel).',
+  aviso_ticket: 'Los encargados no recibirán el aviso de los tickets nuevos.',
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CRM → Diseño de correos (ticket #326). Dos cosas:
@@ -139,6 +158,20 @@ export function CorreosSistema({ showToast }) {
     showToast?.('Guardado. A partir de ahora sale con este diseño.', 'success');
     cargar();
   };
+  // Encender o apagar, y sus ajustes (#365).
+  const cambiarEstado = async (c, cambios, aviso) => {
+    try {
+      await pedir(`/api/admin/correo/sistema/${c.clave}/estado`, { method: 'PUT', body: JSON.stringify(cambios) });
+      showToast?.(aviso, 'success'); cargar();
+    } catch (e) { showToast?.(e.message, 'error'); }
+  };
+  const alternar = (c) => {
+    if (!c.apagado) {
+      const extra = AL_APAGAR[c.clave] ? `\n\n${AL_APAGAR[c.clave]}` : '';
+      if (!window.confirm(`¿Apagar «${c.nombre}»? Dejará de enviarse.${extra}`)) return;
+    }
+    cambiarEstado(c, { apagado: !c.apagado }, c.apagado ? `«${c.nombre}» encendido.` : `«${c.nombre}» apagado: ya no sale.`);
+  };
   const restaurar = async (c) => {
     if (!window.confirm(`¿Volver al diseño de fábrica de «${c.nombre}»? Se pierde el que tiene ahora.`)) return;
     try { await pedir(`/api/admin/correo/sistema/${c.clave}`, { method: 'DELETE' }); showToast?.('Vuelve a salir el de fábrica.', 'success'); cargar(); }
@@ -153,7 +186,7 @@ export function CorreosSistema({ showToast }) {
           <h3 style={{ margin: 0, fontSize: 16 }}>{titulo}</h3>
           <div style={{ display: 'grid', gap: 8 }}>
             {correos.filter(c => c.grupo === g).map(c => (
-              <div key={c.clave} style={{ ...tarjeta, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', padding: '12px 16px' }}>
+              <div key={c.clave} style={{ ...tarjeta, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', padding: '12px 16px', opacity: c.apagado ? 0.75 : 1 }}>
                 <div style={{ flex: '1 1 280px', minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <strong style={{ fontSize: 14 }}>{c.nombre}</strong>
@@ -166,12 +199,19 @@ export function CorreosSistema({ showToast }) {
                   <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>{c.cuando}</div>
                   <div style={{ fontSize: 12, color: 'var(--ink-2)', marginTop: 2 }}>Asunto: {c.asunto}</div>
                   {c.personalizado && c.actualizado && <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>Cambiado {fmtFechaHora(c.actualizado)}</div>}
+                  {c.apagado && <div style={{ fontSize: 12, color: 'var(--orange)', fontWeight: 700, marginTop: 2 }}>Apagado{c.apagadoAt ? ` desde el ${fmtFechaHora(c.apagadoAt)}` : ''}: no se envía.</div>}
                 </div>
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <Interruptor activo={!c.apagado} onClick={() => alternar(c)} nombre={c.nombre} />
                   <button type="button" className="btn btn-sm btn-outline" onClick={() => setViendo(c)}><I.Eye width={14} height={14} /> Ver</button>
                   <button type="button" className="btn btn-sm btn-primary" onClick={() => setEditando(c)}><I.Edit width={14} height={14} /> Diseñar</button>
                   {(c.personalizado || c.roto) && <button type="button" className="btn btn-sm btn-outline" onClick={() => restaurar(c)}>Volver al de fábrica</button>}
                 </div>
+                {c.ajustesDef && (
+                  <div style={{ flex: '1 1 100%' }}>
+                    <AjustesCorreo def={c.ajustesDef} valores={c.ajustes} onGuardar={(ajustes) => cambiarEstado(c, { ajustes }, 'Ajustes guardados.')} />
+                  </div>
+                )}
               </div>
             ))}
           </div>

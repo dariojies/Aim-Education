@@ -2340,6 +2340,22 @@ const mailTransporter = (process.env.EMAIL_USER && process.env.EMAIL_PASS)
         auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
     })
     : null;
+// Los correos que manda la app (correoSistema) llevan su clave en una cabecera.
+// Si el club lo ha apagado en Comunicaciones → Automatismos (#365), aquí no sale
+// y quien lo pidió recibe el error (así no se apunta como enviado). La cabecera
+// no llega al destinatario.
+if (mailTransporter) {
+    const enviarDeVerdad = mailTransporter.sendMail.bind(mailTransporter);
+    mailTransporter.sendMail = async (m) => {
+        const clave = m?.headers?.['X-Aim-Correo'];
+        if (!clave) return enviarDeVerdad(m);
+        if ((await estadoCorreosSistema())[clave]?.apagado) {
+            throw Object.assign(new Error(`El correo «${CORREOS_SISTEMA[clave]?.nombre || clave}» está apagado en Comunicaciones → Automatismos.`), { apagado: true });
+        }
+        const { 'X-Aim-Correo': _clave, ...resto } = m.headers;
+        return enviarDeVerdad({ ...m, headers: resto });
+    };
+}
 
 // Personas sin correo (#321): la tabla de usuarios la comparten todas las apps y
 // exige un correo único, así que a quien solo tiene teléfono se le pone uno
@@ -2625,7 +2641,7 @@ app.post('/api/admin/usuarios/:id/enviar-acceso', authenticateSession, requireAd
         res.json({ success: true, enviadoA: u.email, dias: DIAS_ENLACE_ACCESO });
     } catch (err) {
         console.error('[enviar acceso]', err.message);
-        res.status(500).json({ error: 'No se ha podido enviar el acceso.' });
+        res.status(err.apagado ? 409 : 500).json({ error: err.apagado ? err.message : 'No se ha podido enviar el acceso.' });
     }
 });
 
@@ -5442,7 +5458,8 @@ app.post('/api/admin/examenes/:id/comunicar', authenticateSession, requireAdmin,
         res.json({ success: true, emails, comunicadoAt: upd.rows[0].comunicado_at });
     } catch (err) {
         console.error('[EXAMENES] comunicar:', err);
-        res.status(500).json({ error: 'No se pudo enviar el correo.' });
+        // Apagado en Automatismos (#365): se dice tal cual.
+        res.status(err.apagado ? 409 : 500).json({ error: err.apagado ? err.message : 'No se pudo enviar el correo.' });
     }
 });
 
@@ -10771,8 +10788,40 @@ async function correoSistema(clave, vars = {}, { automaticos = {}, automaticosTe
         subject,
         html: htmlCorreo(diseno, { marca, vars: limpias, automaticos, base: URL_PUBLICA_WEB, titulo: subject }),
         text: textoCorreo(diseno, { marca, vars: limpias, automaticosTexto }),
+        // Para poder apagarlo (#365): ver mailTransporter.sendMail.
+        headers: { 'X-Aim-Correo': clave },
     };
 }
+
+// ── Encender, apagar y ajustar los correos de la app (#365) ──────────────────
+// Vienen todos encendidos. Se guarda en aim_ajustes ('correos_sistema_estado'):
+// { clave: { apagado, ajustes: {...}, at, por } }. Algunos tienen ajustes de
+// cuándo salen (AJUSTES_SISTEMA); el resto salen cuando pasa lo suyo.
+const AJUSTES_SISTEMA = {
+    speaking_ultimo_dia: { hora: { nombre: 'A partir de qué hora sale', unidad: 'h', min: 0, max: 22, def: 9 } },
+    speaking_manana: { hora: { nombre: 'A partir de qué hora sale', unidad: 'h', min: 0, max: 22, def: 9 } },
+    fichaje_entrada: { margen: { nombre: 'Minutos de cortesía tras su hora de entrada', unidad: 'min', min: 0, max: 120, def: 0 } },
+    fichaje_salida: { margen: { nombre: 'Minutos de cortesía tras su hora de salida', unidad: 'min', min: 0, max: 180, def: 0 } },
+};
+// Los valores de unos ajustes, enteros y dentro de sus límites.
+function limpiarAjustes(defs, valores = {}, antes = {}) {
+    return Object.fromEntries(Object.entries(defs || {}).map(([k, d]) => {
+        const v = Number(valores?.[k] ?? antes?.[k] ?? d.def);
+        return [k, Number.isFinite(v) ? Math.min(d.max, Math.max(d.min, Math.round(v))) : d.def];
+    }));
+}
+let estadoSistemaCache = null;
+async function estadoCorreosSistema() {
+    if (estadoSistemaCache && estadoSistemaCache.t > Date.now() - 30_000) return estadoSistemaCache.v;
+    const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'correos_sistema_estado'`).catch(() => ({ rows: [] }));
+    const v = r.rows[0]?.valor || {};
+    estadoSistemaCache = { t: Date.now(), v };
+    return v;
+}
+async function ajusteSistema(clave, nombre) {
+    return limpiarAjustes(AJUSTES_SISTEMA[clave], (await estadoCorreosSistema())[clave]?.ajustes)[nombre];
+}
+const horaMadridAhora = () => Number(new Date().toLocaleString('en-GB', { timeZone: 'Europe/Madrid', hour: '2-digit', hour12: false }));
 
 // Imágenes de los correos: públicas (Gmail las pide sin sesión) y para siempre
 // (un correo ya enviado sigue apuntando a ellas).
@@ -10925,11 +10974,17 @@ app.delete('/api/admin/correo/plantillas/:id(\\d+)', authenticateSession, requir
 app.get('/api/admin/correo/sistema', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
     try {
         const guardados = await disenosSistema();
+        estadoSistemaCache = null;
+        const estado = await estadoCorreosSistema();
         res.set('Cache-Control', 'no-store');
         res.json({
             correos: Object.entries(CORREOS_SISTEMA).map(([clave, def]) => {
                 const v = disenoVigente(clave, guardados[clave]);
                 return {
+                    // Encendido/apagado y ajustes (#365).
+                    apagado: !!estado[clave]?.apagado, apagadoAt: estado[clave]?.apagado ? estado[clave]?.at || null : null,
+                    ajustesDef: AJUSTES_SISTEMA[clave] || null,
+                    ajustes: AJUSTES_SISTEMA[clave] ? limpiarAjustes(AJUSTES_SISTEMA[clave], estado[clave]?.ajustes) : null,
                     clave, grupo: def.grupo, nombre: def.nombre, cuando: def.cuando,
                     variables: def.variables || {}, automaticos: def.automaticos || {}, obligatorio: def.obligatorio || [],
                     asunto: v.asunto, diseno: v.diseno, personalizado: v.personalizado,
@@ -10965,6 +11020,28 @@ app.put('/api/admin/correo/sistema/:clave', authenticateSession, requireSeccion(
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
+// Encenderlo o apagarlo, y sus ajustes (#365).
+app.put('/api/admin/correo/sistema/:clave/estado', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    const clave = req.params.clave;
+    if (!CORREOS_SISTEMA[clave]) return res.status(404).json({ error: 'Ese correo no existe.' });
+    try {
+        const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'correos_sistema_estado'`);
+        const todos = r.rows[0]?.valor || {};
+        const antes = todos[clave] || {};
+        todos[clave] = {
+            apagado: typeof req.body?.apagado === 'boolean' ? req.body.apagado : !!antes.apagado,
+            ajustes: AJUSTES_SISTEMA[clave] ? limpiarAjustes(AJUSTES_SISTEMA[clave], req.body?.ajustes, antes.ajustes) : undefined,
+            at: new Date().toISOString(), por: req.userSession.userId,
+        };
+        await pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('correos_sistema_estado', $1::jsonb, NOW(), $2)
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+            [JSON.stringify(todos), req.userSession.userId]);
+        estadoSistemaCache = null;
+        res.json({ success: true, apagado: todos[clave].apagado, ajustes: todos[clave].ajustes || null });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.delete('/api/admin/correo/sistema/:clave', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
     if (!CORREOS_SISTEMA[req.params.clave]) return res.status(404).json({ error: 'Ese correo no existe.' });
     try {
@@ -11108,14 +11185,16 @@ const AUTOMATISMOS = {
         cuerpo: 'Hola,\n\n¡Qué alegría tener a {nombre} con nosotros! Está apuntado/a a: {clases}.\n\nEn vuestra área de familia (www.aimeducation.es) podéis ver el horario, la asistencia y los pagos.\n\nCualquier duda, aquí estamos.\n\nUn saludo,\nAIM Education',
     },
     faltas: {
-        nombre: '4 faltas seguidas',
-        descripcion: 'Cuando un alumno lleva 4 clases seguidas sin venir a una de sus clases (además del aviso a secretaría).',
+        nombre: 'Faltas seguidas',
+        descripcion: (a) => `Cuando un alumno lleva ${a.faltas} clases seguidas sin venir a una de sus clases (la lista de secretaría sigue avisando a partir de ${FALTAS_PARA_LLAMAR}).`,
+        ajustes: { faltas: { nombre: 'Cuántas faltas seguidas', unidad: 'faltas', min: 2, max: 15, def: 4 } },
         asunto: '{nombre} lleva unos días sin venir a {clase}',
         cuerpo: 'Hola,\n\nHemos notado que {nombre} lleva {faltas} clases seguidas sin venir a {clase}. ¿Va todo bien?\n\nSi necesitáis cambiar de horario o hay cualquier cosa en la que podamos ayudar, contadnos.\n\nUn saludo,\nAIM Education',
     },
     cumple: {
         nombre: 'Felicitación de cumpleaños',
-        descripcion: 'El día de su cumpleaños, a partir de las 9:00.',
+        descripcion: (a) => `El día de su cumpleaños, a partir de las ${a.hora}:00.`,
+        ajustes: { hora: { nombre: 'A partir de qué hora sale', unidad: 'h', min: 0, max: 22, def: 9 } },
         asunto: '¡Feliz cumpleaños, {nombre}!',
         cuerpo: 'Hola,\n\nDesde AIM Education queremos desearle a {nombre} un feliz cumpleaños. ¡Que cumpla muchos más con nosotros!\n\nUn abrazo,\nAIM Education',
     },
@@ -11124,14 +11203,22 @@ const AUTOMATISMOS = {
     // le repite).
     cerrado: {
         nombre: 'Aviso de día cerrado',
-        descripcion: `${AVISO_CIERRE_DIAS} días antes de un festivo, unas vacaciones o un cierre del centro (los que se marcan en Fichaje → Vacaciones y festivos), a partir de las 9:00. A las familias de los alumnos que tienen clase, una vez por familia.`,
+        descripcion: (a) => `${a.dias} ${a.dias === 1 ? 'día' : 'días'} antes de un festivo, unas vacaciones o un cierre del centro (los que se marcan en Fichaje → Vacaciones y festivos), a partir de las ${a.hora}:00. A las familias de los alumnos que tienen clase, una vez por familia.`,
+        ajustes: {
+            dias: { nombre: 'Cuántos días antes avisa', unidad: 'días', min: 1, max: 30, def: AVISO_CIERRE_DIAS },
+            hora: { nombre: 'A partir de qué hora sale', unidad: 'h', min: 0, max: 22, def: 9 },
+        },
         asunto: 'AIM Education estará cerrado {dias}',
         cuerpo: 'Hola,\n\nOs recordamos que AIM Education estará cerrado {dias} ({motivo}), así que no habrá clases.\n\nVolvemos el {vuelta}.\n\nUn saludo,\nAIM Education',
         porFamilia: true,
     },
     noticias: {
         nombre: 'Resumen de noticias del mes',
-        descripcion: 'A primeros de cada mes (del 1 al 7, a partir de las 9:00), con las noticias publicadas en la web el mes anterior. Si no hubo ninguna, no sale. A las familias de los alumnos que tienen clase, una vez por familia.',
+        descripcion: (a) => `El día ${a.dia} de cada mes (o en los 6 siguientes, si ese día no pudo), a partir de las ${a.hora}:00, con las noticias publicadas en la web el mes anterior. Si no hubo ninguna, no sale. A las familias de los alumnos que tienen clase, una vez por familia.`,
+        ajustes: {
+            dia: { nombre: 'Qué día del mes sale', unidad: 'del mes', min: 1, max: 22, def: 1 },
+            hora: { nombre: 'A partir de qué hora sale', unidad: 'h', min: 0, max: 22, def: 9 },
+        },
         asunto: 'Las noticias de {mes} en AIM Education',
         cuerpo: 'Hola,\n\nEstas son las noticias que publicamos en {mes}:\n\n{noticias}\n\nUn saludo,\nAIM Education',
         porFamilia: true,
@@ -11143,6 +11230,8 @@ async function configAutomatismos() {
     return Object.fromEntries(Object.entries(AUTOMATISMOS).map(([id, def]) => [id, {
         activo: !!g[id]?.activo, activadoAt: g[id]?.activadoAt || null,
         asunto: g[id]?.asunto ?? def.asunto, cuerpo: g[id]?.cuerpo ?? def.cuerpo, diseno: g[id]?.diseno || null,
+        // Cuándo y cómo sale (#365), con sus valores de fábrica si no se tocan.
+        ajustes: limpiarAjustes(def.ajustes, g[id]?.ajustes),
     }]));
 }
 
@@ -11160,7 +11249,7 @@ async function candidatosAutomatismo(id, cfg) {
         return r.rows.map(x => ({ personaId: x.persona_id, marca: 'auto:bienvenida', extra: {} }));
     }
     if (id === 'faltas') {
-        const rachas = await rachasDeFaltas({ minimo: FALTAS_PARA_LLAMAR });
+        const rachas = await rachasDeFaltas({ minimo: cfg.ajustes?.faltas || FALTAS_PARA_LLAMAR });
         const limite = String(desde).slice(0, 10);
         return rachas
             .filter(f => String(new Date(f.ultimaFalta).toISOString()).slice(0, 10) >= limite)
@@ -11173,7 +11262,7 @@ async function candidatosAutomatismo(id, cfg) {
     if (id === 'cumple') {
         const hoy = hoyMadrid();
         const hora = Number(new Date().toLocaleString('en-GB', { timeZone: 'Europe/Madrid', hour: '2-digit', hour12: false }));
-        if (hora < 9) return [];
+        if (hora < (cfg.ajustes?.hora ?? 9)) return [];
         const r = await pool.query(
             `SELECT u.user_id, EXTRACT(YEAR FROM age($2::date, u.birthday))::int AS edad FROM users u
              WHERE u.club_id = $1 AND u.birthday IS NOT NULL
@@ -11183,16 +11272,17 @@ async function candidatosAutomatismo(id, cfg) {
     }
     if (id === 'cerrado' || id === 'noticias') {
         const hoy = hoyAutomatismos();
-        if (horaAutomatismos() < 9) return [];
+        if (horaAutomatismos() < (cfg.ajustes?.hora ?? 9)) return [];
+        const diasAviso = cfg.ajustes?.dias ?? AVISO_CIERRE_DIAS;
         let marca, extra;
         if (id === 'cerrado') {
             // El próximo periodo de cierre que empiece dentro del plazo de aviso y
             // después de encenderlo.
             const r = await pool.query(
                 `SELECT fecha::text AS fecha, nombre, tipo, resta_vacaciones FROM aim_calendario_laboral
-                 WHERE fecha BETWEEN $1::date - INTERVAL '${MAX_DIAS_CIERRE} days' AND $1::date + ${AVISO_CIERRE_DIAS} + ${MAX_DIAS_CIERRE}
+                 WHERE fecha BETWEEN $1::date - INTERVAL '${MAX_DIAS_CIERRE} days' AND $1::date + ${Number(diasAviso)} + ${MAX_DIAS_CIERRE}
                  ORDER BY fecha`, [hoy]);
-            const p = periodosDeCierre(r.rows).find(x => x.desde > hoy && x.desde <= sumarDiaISO(hoy, AVISO_CIERRE_DIAS)
+            const p = periodosDeCierre(r.rows).find(x => x.desde > hoy && x.desde <= sumarDiaISO(hoy, diasAviso)
                 && x.desde > String(desde).slice(0, 10));
             if (!p) return [];
             // El día que se vuelve: el siguiente que no esté cerrado ni sea domingo.
@@ -11203,8 +11293,9 @@ async function candidatosAutomatismo(id, cfg) {
             marca = `auto:cerrado:${p.desde}`;
             extra = { dias: p.desde === p.hasta ? `el ${largo(p.desde)}` : `del ${largo(p.desde)} al ${largo(p.hasta)}`, motivo: p.nombre || p.tipoNombre, vuelta: largo(vuelta) };
         } else {
-            // Del 1 al 7 de cada mes, las noticias publicadas el mes anterior.
-            if (Number(hoy.slice(8, 10)) > 7) return [];
+            // Desde el día elegido y en los 6 siguientes, las noticias del mes anterior.
+            const diaMes = Number(hoy.slice(8, 10)), elegido = cfg.ajustes?.dia ?? 1;
+            if (diaMes < elegido || diaMes > elegido + 6) return [];
             const mesAnt = sumarDiaISO(`${hoy.slice(0, 7)}-01`, -1).slice(0, 7);
             const n = await pool.query(
                 `SELECT title, slug FROM aim_education_posts
@@ -11318,7 +11409,9 @@ app.get('/api/admin/automatismos', authenticateSession, requireSeccion('comunica
         res.json({
             correoActivo: !!mailTransporter,
             automatismos: Object.entries(AUTOMATISMOS).map(([id, def]) => ({
-                id, nombre: def.nombre, descripcion: def.descripcion, porFamilia: !!def.porFamilia, ...cfg[id],
+                id, nombre: def.nombre, porFamilia: !!def.porFamilia, ...cfg[id],
+                descripcion: typeof def.descripcion === 'function' ? def.descripcion(cfg[id].ajustes) : def.descripcion,
+                ajustesDef: def.ajustes || null,
                 recientes: recientes.rows.filter(x => x.plantilla.split(':')[1] === id).slice(0, 30).map(x => ({
                     id: x.id, personaId: x.persona_id, alumno: x.alumno, asunto: x.asunto, estado: x.estado,
                     error: x.error, destinatarios: x.destinatarios, fecha: x.created_at,
@@ -11341,6 +11434,7 @@ app.put('/api/admin/automatismos/:id', authenticateSession, requireSeccion('comu
             // Al encenderlo se apunta cuándo: solo cuenta lo que pase desde ahí.
             activadoAt: activo ? (antes.activo ? antes.activadoAt : new Date().toISOString()) : null,
             asunto: typeof req.body?.asunto === 'string' ? req.body.asunto.slice(0, 200) : antes.asunto,
+            ajustes: limpiarAjustes(AUTOMATISMOS[id].ajustes, req.body?.ajustes, antes.ajustes),
             cuerpo: typeof req.body?.cuerpo === 'string' ? req.body.cuerpo.slice(0, 8000) : antes.cuerpo,
             // null lo quita (vuelve a ser texto); sin mandarlo, se queda como estaba.
             diseno: req.body?.diseno === null ? null : req.body?.diseno ? limpiarDiseno(req.body.diseno) : (antes.diseno || null),
@@ -15430,14 +15524,16 @@ async function recordatoriosSpeaking() {
         const r = await pool.query(
             `SELECT id, (confirmado IS NULL) AS pendiente FROM aim_speaking
              WHERE recordatorio_enviado = false
-               AND EXTRACT(HOUR FROM now() AT TIME ZONE 'Europe/Madrid') >= 9
                AND (
                  (confirmado IS NULL AND ${sqlLimiteSpeaking()} = ${SQL_HOY_MADRID}
                     AND (created_at AT TIME ZONE 'Europe/Madrid')::date < ${SQL_HOY_MADRID})
                  OR (confirmado = true AND fecha = ${SQL_HOY_MADRID} + 1)
                )`);
-        const pendientes = r.rows.filter(x => x.pendiente).map(x => x.id);
-        const confirmados = r.rows.filter(x => !x.pendiente).map(x => x.id);
+        // Cada uno desde su hora y solo si está encendido (#365).
+        const est = await estadoCorreosSistema(), hora = horaMadridAhora();
+        const toca = async (clave) => !est[clave]?.apagado && hora >= await ajusteSistema(clave, 'hora');
+        const pendientes = (await toca('speaking_ultimo_dia')) ? r.rows.filter(x => x.pendiente).map(x => x.id) : [];
+        const confirmados = (await toca('speaking_manana')) ? r.rows.filter(x => !x.pendiente).map(x => x.id) : [];
         if (pendientes.length) await enviarCorreosSpeaking(pendientes, { tipo: 'ultimoDia' });
         if (confirmados.length) await enviarCorreosSpeaking(confirmados, { tipo: 'manana' });
         if (r.rows.length) console.log(`[speaking] ${pendientes.length} aviso(s) de último día y ${confirmados.length} recordatorio(s) de mañana`);
@@ -18784,6 +18880,10 @@ async function recordatoriosFichaje() {
             const suyos = porTrabajador.get(row.user_id);
             suyos.push({ ...row, tramo: suyos.length + 1 });
         }
+        // Minutos de cortesía antes de recordar (#365); apagados, ni se miran.
+        const estC = await estadoCorreosSistema();
+        const mE = await ajusteSistema('fichaje_entrada', 'margen'), mS = await ajusteSistema('fichaje_salida', 'margen');
+        const offE = !!estC.fichaje_entrada?.apagado, offS = !!estC.fichaje_salida?.apagado;
         for (const [uid, tramos] of porTrabajador) {
             const est = await estadoFichaje(uid);
             for (let i = 0; i < tramos.length; i++) {
@@ -18791,13 +18891,13 @@ async function recordatoriosFichaje() {
                 const entradaMin = minutosHHMM(w.entrada), salidaMin = minutosHHMM(w.salida);
                 // ENTRADA: ya es su hora (hasta 90 min después, sin pasar de su salida)
                 // y no está fichado dentro: se le recuerda una vez por tramo.
-                if (ahoraMin >= entradaMin && ahoraMin <= Math.min(entradaMin + 90, salidaMin) && est.estado === 'fuera') {
+                if (!offE && ahoraMin >= entradaMin + mE && ahoraMin <= Math.min(entradaMin + mE + 90, salidaMin) && est.estado === 'fuera') {
                     await avisarFichaje(w, 'entrada', hoy, base, tramos.length > 1);
                 }
                 // SALIDA: ya pasó su hora de salida (hasta 3 h después, o hasta que
                 // empiece su siguiente tramo) y sigue dentro o en pausa.
-                const limite = sig ? Math.min(salidaMin + 180, minutosHHMM(sig.entrada)) : salidaMin + 180;
-                if (ahoraMin >= salidaMin && ahoraMin < limite && (est.estado === 'dentro' || est.estado === 'pausa')) {
+                const limite = sig ? Math.min(salidaMin + mS + 180, minutosHHMM(sig.entrada)) : salidaMin + mS + 180;
+                if (!offS && ahoraMin >= salidaMin + mS && ahoraMin < limite && (est.estado === 'dentro' || est.estado === 'pausa')) {
                     await avisarFichaje(w, 'salida', hoy, base, tramos.length > 1);
                 }
             }

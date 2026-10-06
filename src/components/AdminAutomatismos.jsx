@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { I } from './Icons.jsx';
 import { fmtFechaHora } from '../fechas.js';
-import { Variables, meterEnCursor } from './CrmPiezas.jsx';
+import { Variables, meterEnCursor, Interruptor, AjustesCorreo } from './CrmPiezas.jsx';
 import EditorDiseno, { ElegirPlantilla } from './EditorDiseno.jsx';
 import { VARIABLES_CRM } from '../../correo-diseno.js';
 import { CorreosSistema } from './AdminDisenoCorreos.jsx';
@@ -78,15 +78,10 @@ function Tarjeta({ a, onCambio, onAbrirFicha, showToast }) {
           <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{a.descripcion}</div>
           {a.activo && a.activadoAt && <div style={{ fontSize: 12, color: 'var(--teal)', fontWeight: 700 }}>Encendido desde el {fmtFechaHora(a.activadoAt)}</div>}
         </div>
-        <button type="button" onClick={alternar} role="switch" aria-checked={a.activo} aria-label={`${a.activo ? 'Apagar' : 'Encender'} ${a.nombre}`}
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '6px 12px 6px 6px', borderRadius: 999, border: '1px solid var(--line)', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 800, fontSize: 12,
-            background: a.activo ? 'color-mix(in oklab, var(--teal) 14%, var(--bg-2))' : 'var(--bg-3)', color: a.activo ? 'var(--teal)' : 'var(--ink-3)' }}>
-          <span style={{ width: 34, height: 20, borderRadius: 999, background: a.activo ? 'var(--teal)' : 'var(--line)', position: 'relative', transition: 'background .2s' }}>
-            <span style={{ position: 'absolute', top: 2, left: a.activo ? 16 : 2, width: 16, height: 16, borderRadius: '50%', background: '#fff', transition: 'left .2s' }} />
-          </span>
-          {a.activo ? 'Encendido' : 'Apagado'}
-        </button>
+        <Interruptor activo={a.activo} onClick={alternar} nombre={a.nombre} />
       </div>
+      {/* Cuándo sale (#365): faltas, hora, días de antelación, día del mes… */}
+      <AjustesCorreo def={a.ajustesDef} valores={a.ajustes} onGuardar={(ajustes) => guardar({ ajustes }, 'Ajustes guardados.')} />
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         {a.diseno ? (
@@ -185,10 +180,11 @@ export default function AdminAutomatismos({ showToast, onAbrirFicha }) {
       <div className="panel">
         <h2><I.Settings /> Automatismos</h2>
         <p className="sub">
-          Todos los correos que salen solos. Arriba, los que se encienden y apagan: cuando alguien se apunta, cuando un alumno
-          falta 4 veces seguidas, su cumpleaños, cuando el club va a cerrar y el resumen de noticias del mes. A cada familia le
-          llega una sola vez por cada ocasión, no le llega a quien no quiere novedades de sus clases, y queda apuntado en su ficha.
-          Abajo, los que la app manda siempre porque hacen falta (contraseñas, Speaking, fichaje…): de esos se puede cambiar el diseño.
+          Todos los correos que salen solos, en un mismo sitio: cada uno se enciende y se apaga, se edita y se diseña, y los que
+          dependen de una hora o de un plazo tienen sus ajustes. Arriba, los avisos a las familias (bienvenida, faltas, cumpleaños,
+          días que cerramos, noticias del mes): a cada familia le llega una sola vez por cada ocasión, no le llega a quien no quiere
+          novedades de sus clases, y queda apuntado en su ficha. Abajo, los que la app manda cuando pasa algo (contraseñas,
+          Speaking, fichaje, avisos al club…).
         </p>
         {!d.correoActivo && <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: 'var(--orange)' }}>El correo no está configurado en el servidor: aunque se enciendan, no saldrán.</p>}
         {d.correoActivo && d.automatismos.some(a => a.activo) && (
@@ -198,15 +194,16 @@ export default function AdminAutomatismos({ showToast, onAbrirFicha }) {
           }}>Comprobar ahora si toca enviar alguno</button>
         )}
       </div>
-      <h3 style={{ margin: '6px 0 0', fontSize: 18, fontFamily: 'var(--font-display)', fontWeight: 800 }}>Los que se encienden y apagan</h3>
+      <h3 style={{ margin: '6px 0 0', fontSize: 18, fontFamily: 'var(--font-display)', fontWeight: 800 }}>Avisos y seguimiento de las familias</h3>
       {d.automatismos.map(a => <Tarjeta key={a.id} a={a} onCambio={cargar} onAbrirFicha={onAbrirFicha} showToast={showToast} />)}
       {/* Los que salen siempre (antes en Diseño de correos → Correos automáticos). */}
       <div className="panel" style={{ display: 'grid', gap: 12 }}>
         <div>
-          <h2 style={{ marginBottom: 4 }}><I.Mail /> Los que la app manda siempre</h2>
+          <h2 style={{ marginBottom: 4 }}><I.Mail /> Los que la app manda cuando pasa algo</h2>
           <p className="sub" style={{ margin: 0 }}>
-            No se apagan: hacen falta para que todo funcione. Puedes cambiarles el texto, los colores, añadir imágenes… Lo que no se
-            puede quitar es lo que los hace funcionar (el enlace de la contraseña, los botones de Speaking, la tabla de horas…): el editor te avisa.
+            Vienen encendidos. Si apagas uno, deja de salir (y te decimos antes qué deja de funcionar). Puedes cambiarles el texto,
+            los colores, añadir imágenes… Lo que no se puede quitar es lo que los hace funcionar (el enlace de la contraseña, los
+            botones de Speaking, la tabla de horas…): el editor te avisa.
           </p>
         </div>
         <CorreosSistema showToast={showToast} />
