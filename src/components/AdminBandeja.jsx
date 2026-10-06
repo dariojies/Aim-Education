@@ -26,6 +26,8 @@ export const ESTILO_BANDEJA = `
         }
       `;
 
+// Etiqueta de cada correo en la lista: de quién es, sin asignar, hecho.
+const chipFila = (color) => ({ fontSize: 10.5, fontWeight: 800, padding: '1px 7px', borderRadius: 999, color, background: `color-mix(in oklab, ${color} 13%, transparent)`, border: `1px solid color-mix(in oklab, ${color} 35%, transparent)` });
 const VISTAS = {
   general: [['entrada', 'Entrada'], ['sin_asignar', 'Sin asignar'], ['mios', 'Asignados a mí'], ['hechos', 'Hechos'], ['enviados', 'Enviados'], ['programados', 'Programados'], ['spam', 'Spam']],
   mio: [['entrada', 'Entrada'], ['enviados', 'Enviados'], ['programados', 'Programados'], ['spam', 'Spam']],
@@ -61,8 +63,9 @@ function Cuerpo({ html, texto, imagenes }) {
   return <iframe title="Contenido del correo" srcDoc={doc} sandbox="allow-popups allow-popups-to-escape-sandbox" style={{ border: 0, width: '100%', flex: 1, minHeight: 320, background: '#fff', borderRadius: 10 }} />;
 }
 
-// Escribir, responder o reenviar.
-function Redactar({ inicial, buzon, onCerrar, onEnviado, showToast }) {
+// Escribir, responder o reenviar. Con varios buzones (al escribir desde otra
+// pantalla) se elige desde cuál sale.
+function Redactar({ inicial, buzon, buzones, onBuzon, onCerrar, onEnviado, showToast }) {
   const [c, setC] = useState(inicial);
   const [enviando, setEnviando] = useState(false);
   // Programar (#338): sale solo a la hora elegida.
@@ -86,7 +89,14 @@ function Redactar({ inicial, buzon, onCerrar, onEnviado, showToast }) {
       <div style={{ background: 'var(--bg-2)', borderRadius: 16, width: 'min(720px, 100%)', maxHeight: '92vh', overflow: 'auto', padding: 18, display: 'grid', gap: 10 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h2 style={{ margin: 0, fontSize: 17 }}>{titulo}</h2>
-          <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Sale desde {c.desde}</span>
+          {buzones?.length > 1 ? (
+            <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 12, color: 'var(--ink-3)' }}>
+              Sale desde
+              <select value={buzon} onChange={e => onBuzon(e.target.value)} style={{ ...campo, width: 'auto', padding: '4px 8px', fontSize: 12, fontWeight: 700 }}>
+                {buzones.map(b => <option key={b.id} value={b.id}>{b.email}</option>)}
+              </select>
+            </label>
+          ) : <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Sale desde {buzones?.find(b => b.id === buzon)?.email || c.desde}</span>}
         </div>
         <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 700 }}>Para<input style={campo} value={c.para} onChange={e => set('para', e.target.value)} placeholder="correo@ejemplo.com, otro@ejemplo.com" autoFocus={!c.para} /></label>
         <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 700 }}>CC (opcional)<input style={campo} value={c.cc} onChange={e => set('cc', e.target.value)} /></label>
@@ -192,6 +202,26 @@ function Programados({ buzon, showToast }) {
   );
 }
 
+// Escribir un correo desde otra pantalla (#382: contestar una consulta web desde
+// el CRM). Sale por el correo de la web, como desde «Correo», con el general
+// primero. Si quien escribe no tiene ningún buzón, se abre su programa de correo.
+export function EscribirCorreo({ para, asunto, texto = '', onCerrar, onEnviado, showToast }) {
+  const [info, setInfo] = useState(null);
+  const [buzon, setBuzon] = useState(null);
+  useEffect(() => {
+    api('/api/admin/bandeja/buzones').then(d => { setInfo(d); setBuzon(d.buzones?.[0]?.id || null); }).catch(() => setInfo({ buzones: [] }));
+  }, []);
+  useEffect(() => {
+    if (info && !info.buzones?.length) {
+      window.location.href = `mailto:${para}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(texto)}`;
+      onCerrar();
+    }
+  }, [info]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!info || !buzon) return null;
+  const inicial = { modo: 'nuevo', para, cc: '', asunto, texto, desde: info.buzones.find(b => b.id === buzon)?.email, adjuntos: [] };
+  return <Redactar inicial={inicial} buzon={buzon} buzones={info.buzones} onBuzon={setBuzon} showToast={showToast} onCerrar={onCerrar} onEnviado={onEnviado} />;
+}
+
 export default function AdminBandeja({ showToast, onAbrirFicha }) {
   const [info, setInfo] = useState(null);
   const [buzon, setBuzon] = useState('general');
@@ -242,7 +272,9 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
     try {
       const d = await api(`/api/admin/bandeja/${buzon}/mensajes/${detalle.uid}/accion`, { method: 'POST', body: { accion: nombre, vista, ...extra } });
       if (aviso) showToast?.(aviso);
-      if (['archivar', 'papelera', 'no_spam'].includes(nombre) || (nombre === 'hecho' && vista === 'mios') || (nombre === 'asignar' && vista === 'sin_asignar')) {
+      // Lo hecho sale de la entrada (es archivarlo, #384) y lo reabierto, de «Hechos».
+      if (['archivar', 'papelera', 'no_spam'].includes(nombre) || (nombre === 'hecho' && vista !== 'hechos')
+        || (['reabrir', 'asignar'].includes(nombre) && vista === 'hechos') || (nombre === 'asignar' && vista === 'sin_asignar')) {
         // Sale de la lista: se abre el siguiente (o el anterior si era el último),
         // para no tener que ir pinchando uno a uno (#337).
         const i = (lista || []).findIndex(x => x.uid === detalle.uid);
@@ -311,7 +343,7 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
         <section className="bandeja-lista">
           {error && <p style={{ color: '#c62828', fontSize: 13, padding: 12, margin: 0 }}>{error}</p>}
           {lista === null ? <p style={{ color: 'var(--ink-3)', fontSize: 13, padding: 12 }}>Cargando…</p>
-            : lista.length === 0 && !error ? <p style={{ color: 'var(--ink-3)', fontSize: 13, padding: 12 }}>{vista === 'mios' ? 'No tienes correos asignados pendientes.' : vista === 'spam' ? 'No hay nada en el spam.' : 'No hay correos aquí.'}</p>
+            : lista.length === 0 && !error ? <p style={{ color: 'var(--ink-3)', fontSize: 13, padding: 12 }}>{vista === 'mios' ? 'No tienes correos asignados pendientes.' : vista === 'spam' ? 'No hay nada en el spam.' : vista === 'hechos' ? 'Todavía no hay correos hechos.' : 'No hay correos aquí.'}</p>
               : lista.map(m => (
                 <button key={m.uid} type="button" onClick={() => abrir(m)} className={`bandeja-fila${sel === m.uid ? ' on' : ''}`}>
                   <span style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
@@ -322,9 +354,17 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
                     <span style={{ fontSize: 11, color: 'var(--ink-3)', flexShrink: 0 }}>{m.adjuntos ? '📎 ' : ''}{fechaLista(m.fecha)}</span>
                   </span>
                   <span style={{ fontSize: 13, fontWeight: m.leido ? 400 : 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--ink-2)' }}>{m.asunto}</span>
-                  {(m.asignado || m.hecho) && (
+                  {/* En el general, cada correo dice de un vistazo si es de alguien o está por repartir (#384). */}
+                  {buzon === 'general' && !['enviados', 'spam'].includes(vista) ? (
+                    <span style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                      {m.asignado
+                        ? <span style={chipFila('var(--purple)')}>→ {m.asignado.nombre.split(' ')[0]}{m.asignado.porRegla ? ' (regla)' : ''}</span>
+                        : <span style={chipFila('var(--orange)')}>Sin asignar</span>}
+                      {m.hecho && <span style={chipFila('var(--teal)')}>✓ Hecho</span>}
+                    </span>
+                  ) : (m.asignado || m.hecho) && (
                     <span style={{ fontSize: 11, fontWeight: 700, color: m.hecho ? 'var(--teal)' : 'var(--purple)' }}>
-                      {m.hecho ? '✓ Hecho' : ''}{m.hecho && m.asignado ? ' · ' : ''}{m.asignado ? `→ ${m.asignado.nombre.split(' ')[0]}${m.asignado.porRegla ? ' (regla)' : ''}` : ''}
+                      {m.hecho ? '✓ Hecho' : ''}{m.hecho && m.asignado ? ' · ' : ''}{m.asignado ? `→ ${m.asignado.nombre.split(' ')[0]}` : ''}
                     </span>
                   )}
                 </button>
@@ -376,7 +416,7 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
                         </label>
                         {detalle.hecho
                           ? <button type="button" className="btn btn-sm btn-outline" onClick={() => accion('reabrir', {}, 'Vuelve a estar pendiente.')}>Reabrir</button>
-                          : <button type="button" className="btn btn-sm btn-outline" onClick={() => accion('hecho', {}, 'Marcado como hecho.')}>✓ Hecho</button>}
+                          : <button type="button" className="btn btn-sm btn-outline" title="Sale de la entrada y queda en «Hechos»" onClick={() => accion('hecho', {}, 'Hecho: está en «Hechos».')}>✓ Hecho</button>}
                       </>
                     ) : (
                       <select value="" onChange={e => { const c = companeros.find(x => String(x.id) === e.target.value); if (c) escribir('reenviar', { para: c.email, texto: `Hola ${c.nombre.split(' ')[0]}, te paso este correo.\n` }); }}

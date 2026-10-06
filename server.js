@@ -7851,6 +7851,30 @@ app.delete('/api/admin/billing/cargos/:id', authenticateSession, requireAdmin, a
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Descuento puntual en un cargo pendiente (#381): lo que se escribe en el TPV se
+// queda en ESE cargo (no en la matrícula), para cobrarlo otro día con él o que
+// la familia lo pague por internet ya descontado. Si la familia lo está pagando
+// en ese momento, no se toca (el importe ya ha salido hacia el banco).
+app.put('/api/admin/billing/cargos/:id/descuento', authenticateSession, requireAdmin, async (req, res) => {
+    const id = Number(req.params.id);
+    const d = Math.round(Number(req.body?.descuentoPct) * 100) / 100;
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Cargo no válido.' });
+    if (!Number.isFinite(d) || d < 0 || d > 100) return res.status(400).json({ error: 'El descuento va de 0 a 100.' });
+    try {
+        const r = await pool.query(
+            `UPDATE aim_cargos c SET descuento_pct = $1
+             WHERE c.id = $2 AND c.estado = 'pendiente' AND c.recibo_id IS NULL AND ${SQL_PAGANDO_DESDE} IS NULL
+             RETURNING descuento_pct`, [d, id]);
+        if (!r.rowCount) {
+            const c = (await pool.query(`SELECT c.estado, c.recibo_id, ${SQL_PAGANDO_DESDE} AS pagando FROM aim_cargos c WHERE c.id = $1`, [id])).rows[0];
+            if (!c) return res.status(404).json({ error: 'Ese cargo ya no existe.' });
+            if (c.pagando) return res.status(409).json({ error: 'La familia lo está pagando por internet ahora mismo: no se puede cambiar.' });
+            return res.status(409).json({ error: 'Ese cargo ya está cobrado.' });
+        }
+        res.json({ success: true, descuentoPct: Number(r.rows[0].descuento_pct) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Guardar un extra del TPV como cargo PENDIENTE en la persona (ticket #247): si
 // no se cobra ahora (lo paga otro día), no se pierde y aparece en sus cargos
 // pendientes para cobrarlo luego. Solo conceptos del catálogo (no anticipos/bonos).

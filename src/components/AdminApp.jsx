@@ -3854,6 +3854,24 @@ function BillingTPV({ showToast }) {
   const [addAnticipo, setAddAnticipo] = useState(null);// { clienteId, importe, motivo } (registrar anticipo)
   const [aplicarAnt, setAplicarAnt] = useState({});    // anticipoId -> { on, importe } (aplicar anticipos)
   const [actividades, setActividades] = useState([]);  // actividades para el bono
+  // El descuento escrito en un cargo pendiente se guarda en ese cargo (#381): si
+  // no se cobra ahora, sigue ahí la próxima vez (y si lo paga la familia por
+  // internet, lo paga ya descontado).
+  const timersDto = useRef({});
+  const [dtoGuardado, setDtoGuardado] = useState({}); // cargoId -> 'guardando' | 'ok' | error
+  function cambiarDto(c, valor) {
+    setSel(s => ({ ...s, [c.id]: { ...s[c.id], descuentoPct: valor } }));
+    clearTimeout(timersDto.current[c.id]);
+    const d = Number(String(valor).replace(',', '.'));
+    if (String(valor).trim() === '' || !Number.isFinite(d) || d < 0 || d > 100) { setDtoGuardado(x => ({ ...x, [c.id]: null })); return; }
+    timersDto.current[c.id] = setTimeout(async () => {
+      setDtoGuardado(x => ({ ...x, [c.id]: 'guardando' }));
+      const r = await fetch(`/api/admin/billing/cargos/${c.id}/descuento`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ descuentoPct: d }) }).catch(() => null);
+      const j = r ? await r.json().catch(() => ({})) : {};
+      setDtoGuardado(x => ({ ...x, [c.id]: r?.ok ? 'ok' : (j.error || 'No se ha podido guardar el descuento.') }));
+      if (!r?.ok) showToast?.(j.error || 'No se ha podido guardar el descuento.');
+    }, 700);
+  }
 
   useEffect(() => {
     fetch('/api/admin/billing/precios', { credentials: 'include' }).then(r => r.ok ? r.json() : []).then(setPrecios).catch(() => { });
@@ -4186,7 +4204,9 @@ function BillingTPV({ showToast }) {
                   </div>
                   <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 12, color: 'var(--ink-3)', marginLeft: 'auto' }}>
                     dto
-                    <input type="number" min="0" max="100" value={sel[c.id]?.descuentoPct ?? 0} onChange={e => setSel(s => ({ ...s, [c.id]: { ...s[c.id], descuentoPct: e.target.value } }))} style={{ width: 48, padding: '4px 6px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontSize: 13, textAlign: 'center' }} />%
+                    <input type="number" min="0" max="100" value={sel[c.id]?.descuentoPct ?? 0} onChange={e => cambiarDto(c, e.target.value)} style={{ width: 48, padding: '4px 6px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontSize: 13, textAlign: 'center' }} />%
+                    {dtoGuardado[c.id] === 'ok' && <span title="Guardado en este cargo: se mantiene aunque no se cobre ahora" style={{ color: 'var(--teal)', fontWeight: 800 }}>✓</span>}
+                    {dtoGuardado[c.id] && !['ok', 'guardando'].includes(dtoGuardado[c.id]) && <span title={dtoGuardado[c.id]} style={{ color: 'var(--orange)', fontWeight: 800, cursor: 'help' }}>!</span>}
                   </label>
                   <div style={{ fontWeight: 800, fontFamily: 'var(--font-display)', minWidth: 66, textAlign: 'right' }}>{eurPrecio(c.precio)}</div>
                   {c.origen === 'manual' ? (

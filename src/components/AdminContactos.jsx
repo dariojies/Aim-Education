@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { I } from './Icons.jsx';
+import { EscribirCorreo } from './AdminBandeja.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Consultas web (ticket #295): lo que llega por el formulario de contacto de la
@@ -158,6 +159,8 @@ export default function AdminContactos({ showToast, onAbrirFicha }) {
 function Consulta({ c, onCambio, aviso }) {
   const [notas, setNotas] = useState(c.notas);
   const [ocupado, setOcupado] = useState(false);
+  // Contestar por correo sin salir de la web (#382).
+  const [escribiendo, setEscribiendo] = useState(false);
   const atendida = c.estado === 'atendido';
 
   async function hacer(body, ok) {
@@ -167,12 +170,15 @@ function Consulta({ c, onCambio, aviso }) {
     finally { setOcupado(false); }
   }
 
-  const asunto = encodeURIComponent('Tu consulta a AIM Education');
+  const asunto = 'Tu consulta a AIM Education';
+  // Lo que escribió va citado debajo, para que sepa a qué se le contesta.
+  const textoRespuesta = `Hola, ${String(c.nombre || '').trim().split(/\s+/)[0]}:\n\n\n\nUn saludo.\n\n— El ${fmtFecha(c.fecha)} nos escribiste:\n${String(c.mensaje || '').split('\n').map(l => `> ${l}`).join('\n')}`;
+  const responder = (e) => { e?.preventDefault(); setEscribiendo(true); };
   return (
     <div className="card" style={{ padding: 18, display: 'grid', gap: 12, borderLeft: `4px solid ${atendida ? 'var(--line)' : 'var(--purple)'}` }}>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'baseline' }}>
         <b style={{ fontSize: 16 }}>{c.nombre}</b>
-        <a href={`mailto:${c.email}?subject=${asunto}`} style={{ fontSize: 13 }}>{c.email}</a>
+        <a href={`mailto:${c.email}`} onClick={responder} style={{ fontSize: 13 }}>{c.email}</a>
         {c.telefono && <a href={`tel:${c.telefono.replace(/\s/g, '')}`} style={{ fontSize: 13 }}>{c.telefono}</a>}
         <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink-3)' }}>{fmtFecha(c.fecha)}</span>
       </div>
@@ -181,7 +187,7 @@ function Consulta({ c, onCambio, aviso }) {
         placeholder="Notas internas (p. ej.: «Llamada el martes, viene a probar el jueves»)"
         style={{ fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', resize: 'vertical' }} />
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-        <a className="btn btn-sm btn-ghost" href={`mailto:${c.email}?subject=${asunto}`}><I.Mail width={14} height={14} /> Responder</a>
+        <button type="button" className="btn btn-sm btn-ghost" onClick={responder}><I.Mail width={14} height={14} /> Responder</button>
         {notas !== c.notas && (
           <button className="btn btn-sm btn-ghost" disabled={ocupado} onClick={() => hacer({ notas }, 'Notas guardadas.')}>Guardar notas</button>
         )}
@@ -198,6 +204,11 @@ function Consulta({ c, onCambio, aviso }) {
           </button>
         )}
       </div>
+      {escribiendo && (
+        <EscribirCorreo para={c.email} asunto={asunto} texto={textoRespuesta} showToast={aviso}
+          onCerrar={() => setEscribiendo(false)}
+          onEnviado={() => { setEscribiendo(false); if (!atendida) hacer({ estado: 'atendido', notas }, 'Correo enviado y consulta marcada como atendida.'); }} />
+      )}
     </div>
   );
 }

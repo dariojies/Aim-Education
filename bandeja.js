@@ -278,6 +278,8 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
 
     // La lista de una carpeta.
     //  entrada · sin_asignar · mios (asignados a mí, sin hacer) · hechos · enviados · spam
+    // En el general, «hecho» es archivar (#384): sale de la entrada y queda solo
+    // en «Hechos» (todos los hechos, de quien sea).
     router.get('/:buzon/mensajes', async (req, res) => {
         const buzon = resolver(req, res); if (!buzon) return;
         const vista = String(req.query.vista || 'entrada');
@@ -295,9 +297,15 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
                 else if (vista === 'spam') { carpeta = c.spam; criterio = q && gmail ? { gmraw: q } : { all: true }; }
                 else if (buzon.general && vista === 'sin_asignar' && gmail) {
                     criterio = { gmraw: `${lista.map(x => `-label:${etiquetaDe(x.nombre)}`).join(' ')} -label:${ETIQUETA_HECHO}${texto}`.trim() };
-                } else if (buzon.general && (vista === 'mios' || vista === 'hechos') && gmail) {
+                } else if (buzon.general && vista === 'mios' && gmail) {
                     carpeta = c.todos || c.entrada;
-                    criterio = { gmraw: `label:${miEtiqueta} ${vista === 'hechos' ? '' : '-'}label:${ETIQUETA_HECHO}${texto}` };
+                    criterio = { gmraw: `label:${miEtiqueta} -label:${ETIQUETA_HECHO}${texto}` };
+                } else if (buzon.general && vista === 'hechos' && gmail) {
+                    carpeta = c.todos || c.entrada;
+                    criterio = { gmraw: `label:${ETIQUETA_HECHO}${texto}` };
+                } else if (buzon.general && gmail) {
+                    // La entrada, sin lo hecho (lo que se marcó antes de que «hecho» archivara).
+                    criterio = { gmraw: `-label:${ETIQUETA_HECHO}${texto}` };
                 } else if (q && gmail) criterio = { gmraw: q };
                 if (!carpeta) return { mensajes: [], total: 0, carpeta: null };
                 const lock = await client.getMailboxLock(carpeta);
@@ -486,10 +494,20 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
                         const quitar = lista.map(x => etiquetaDe(x.nombre)).filter(e => e !== (destino && etiquetaDe(destino.nombre)));
                         if (quitar.length) await client.messageFlagsRemove(uid, quitar, { uid: true, useLabels: true });
                         if (destino) await client.messageFlagsAdd(uid, [etiquetaDe(destino.nombre)], { uid: true, useLabels: true });
+                        // Asignar uno hecho lo reabre: vuelve a la entrada.
                         await client.messageFlagsRemove(uid, [ETIQUETA_HECHO], { uid: true, useLabels: true });
+                        await client.messageFlagsAdd(uid, ['\\Inbox'], { uid: true, useLabels: true });
                     }
-                    else if (accion === 'hecho') await client.messageFlagsAdd(uid, [ETIQUETA_HECHO], { uid: true, useLabels: true });
-                    else if (accion === 'reabrir') await client.messageFlagsRemove(uid, [ETIQUETA_HECHO], { uid: true, useLabels: true });
+                    // Hecho = archivado (#384): sale de la entrada (también en Gmail) y
+                    // queda en «Hechos». Reabrir lo devuelve a la entrada.
+                    else if (accion === 'hecho') {
+                        await client.messageFlagsAdd(uid, [ETIQUETA_HECHO], { uid: true, useLabels: true });
+                        await client.messageFlagsRemove(uid, ['\\Inbox'], { uid: true, useLabels: true });
+                    }
+                    else if (accion === 'reabrir') {
+                        await client.messageFlagsRemove(uid, [ETIQUETA_HECHO], { uid: true, useLabels: true });
+                        await client.messageFlagsAdd(uid, ['\\Inbox'], { uid: true, useLabels: true });
+                    }
                     else throw Object.assign(new Error('Acción desconocida.'), { http: 400 });
                 } finally { lock.release(); }
             });
