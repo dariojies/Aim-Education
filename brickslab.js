@@ -8,8 +8,12 @@
 // para el club Aim Education: lo que se haga aquí se ve allí y al revés.
 //
 // Lo propio de la web:
-//  · El permiso «Normal» de LEGO sale solo a quien está matriculado en la clase
-//    de Brickslab (se puede dar también a mano, como siempre).
+//  · Los permisos salen solos (#385), además de los dados a mano:
+//      - Biblioteca: cualquiera con una actividad en su ficha (gratis), y quien
+//        paga el concepto de Biblioteca (para la gente de fuera del club).
+//      - LEGO: quien paga BricksLab (su concepto, cobrado este mes o el que
+//        viene) o está matriculado en una clase que lo lleva.
+//      - Pro: quien paga el concepto del Pro.
 //  · El «Pro» se paga por la web: es una cuota mensual. Al activarlo, el alumno
 //    queda matriculado en una clase propia «Brickslab Pro» enlazada con el
 //    concepto que se elija en los ajustes; se le genera el mes como cualquier
@@ -50,7 +54,17 @@ export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatric
                 `SELECT g.group_id FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
                  WHERE a.club_id = $1 AND g.name ILIKE '%brick%'`, [clubId])).rows.map(x => x.group_id);
         }
-        return { conceptoPro: v.conceptoPro || null, claseProId: UUID.test(v.claseProId || '') ? v.claseProId : null, clasesNormal, textoPro: v.textoPro || '' };
+        // El concepto de BricksLab: el elegido o, si no, el que va con esas clases.
+        let conceptoBrickslab = v.conceptoBrickslab;
+        if (conceptoBrickslab === undefined) {
+            conceptoBrickslab = clasesNormal.length ? (await pool.query(
+                `SELECT ct.concepto FROM aim_conceptos_temporada ct JOIN aim_temporadas t ON t.id = ct.temporada_id AND t.activa
+                 WHERE ct.target_tipo = 'clase' AND ct.target_ref = ANY($1::uuid[]) LIMIT 1`, [clasesNormal])).rows[0]?.concepto || null : null;
+        }
+        return {
+            conceptoPro: v.conceptoPro || null, claseProId: UUID.test(v.claseProId || '') ? v.claseProId : null, clasesNormal, textoPro: v.textoPro || '',
+            conceptoBrickslab: conceptoBrickslab || null, conceptoBiblioteca: v.conceptoBiblioteca || null,
+        };
     }
     async function guardarAjustes(cambios, userId) {
         const antes = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'brickslab'`)).rows[0]?.valor || {};
@@ -129,13 +143,43 @@ export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatric
         });
     }
 
-    // Qué puede hacer cada persona en cada categoría: lo dado a mano (Brickslab),
-    // el Normal automático por la matrícula y el Pro pagado por la web.
+    // Quiénes pagan un concepto (#385): lo tienen cobrado este mes o el que viene,
+    // o están matriculados (vigente) en una clase o actividad que lo lleva.
+    async function pagan(ids, concepto) {
+        if (!concepto || !ids.length) return new Set();
+        const r = await pool.query(
+            `SELECT cliente_id AS id FROM aim_cargos WHERE concepto = $2 AND cliente_id = ANY($1::uuid[]) AND estado = 'cobrado'
+               AND mes >= ${MES} AND mes <= (${MES} + INTERVAL '1 month')::date
+             UNION
+             SELECT m.user_id FROM aim_matriculas m JOIN aim_temporadas t ON t.id = m.temporada_id AND t.activa
+             JOIN aim_conceptos_temporada ct ON ct.temporada_id = m.temporada_id AND ct.concepto = $2
+               AND ((ct.target_tipo = 'clase' AND ct.target_ref = m.clase_ref) OR (ct.target_tipo = 'actividad' AND ct.target_actividad = m.actividad))
+             WHERE m.user_id = ANY($1::uuid[]) AND m.alta <= ${HOY} AND (m.baja IS NULL OR m.baja >= ${HOY})`, [ids, concepto]);
+        return new Set(r.rows.map(x => String(x.id)));
+    }
+    // Con alguna actividad en su ficha esta temporada (para la Biblioteca, #385).
+    async function conActividad(ids) {
+        if (!ids.length) return new Set();
+        const a = await ajustes();
+        const r = await pool.query(
+            `SELECT DISTINCT m.user_id AS id FROM aim_matriculas m JOIN aim_temporadas t ON t.id = m.temporada_id AND t.activa
+             WHERE m.user_id = ANY($1::uuid[]) AND m.alta <= ${HOY} AND (m.baja IS NULL OR m.baja >= ${HOY})
+               AND m.clase_ref IS DISTINCT FROM $2::uuid
+             UNION SELECT gs.student_id FROM tul_group_students gs
+             JOIN tul_groups g ON g.group_id = gs.group_id JOIN tul_activities ac ON ac.activity_id = g.activity_id AND ac.club_id = $3
+             WHERE gs.student_id = ANY($1::uuid[])`, [ids, a.claseProId, clubId]);
+        return new Set(r.rows.map(x => String(x.id)));
+    }
+
+    // Qué puede hacer cada persona en cada categoría: lo dado a mano (Brickslab)
+    // y lo automático (#385): la Biblioteca por tener actividad o pagarla, LEGO
+    // por pagar BricksLab (o estar en sus clases) y el Pro por pagarlo.
     async function permisosDe(ids) {
         const out = new Map(ids.map(id => [String(id), {}]));
         if (!ids.length) return out;
         const [cats, a] = await Promise.all([categorias(), ajustes()]);
         const lego = cats.filter(esLegoCat).map(c => c.id);
+        const [pagaBricks, pagaBiblio, actividad] = await Promise.all([pagan(ids, a.conceptoBrickslab), pagan(ids, a.conceptoBiblioteca), conActividad(ids)]);
         const [manual, matric, pagado, susc] = await Promise.all([
             pool.query(`SELECT p."userId", p."categoryId", p."isStandard", p."isPro" FROM bricks_user_permissions p
                         JOIN bricks_categories c ON c.id = p."categoryId" AND c."clubId" = $2 WHERE p."userId" = ANY($1::uuid[])`, [ids, clubId]),
@@ -163,7 +207,8 @@ export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatric
             for (const c of cats) {
                 const m = manual.rows.find(x => String(x.userId) === k && x.categoryId === c.id);
                 const lg = lego.includes(c.id);
-                const normalAuto = lg && auto.has(k), proPagado = lg && pagos.has(k);
+                const normalAuto = lg ? (auto.has(k) || pagaBricks.has(k)) : (actividad.has(k) || pagaBiblio.has(k));
+                const proPagado = lg && pagos.has(k);
                 const proManual = !!m?.isPro, normalManual = !!m?.isStandard;
                 const pro = proManual || proPagado;
                 p[c.id] = { normal: normalManual || normalAuto || pro, pro, normalManual, normalAuto, proManual, proPagado };
@@ -793,8 +838,10 @@ ${cuerpo}
                 `SELECT p."userId" AS id FROM bricks_user_permissions p JOIN bricks_categories c ON c.id = p."categoryId" AND c."clubId" = $1 WHERE p."isStandard" OR p."isPro"
                  UNION SELECT m.user_id FROM aim_matriculas m JOIN aim_temporadas t ON t.id = m.temporada_id AND t.activa
                    WHERE (m.clase_ref = ANY($2::uuid[]) OR m.clase_ref = $3) AND (m.baja IS NULL OR m.baja >= ${HOY})
-                 UNION SELECT gs.student_id FROM tul_group_students gs WHERE gs.group_id = ANY($2::uuid[])`,
-                [clubId, a.clasesNormal, a.claseProId || '00000000-0000-0000-0000-000000000000'])).rows.map(x => x.id);
+                 UNION SELECT gs.student_id FROM tul_group_students gs WHERE gs.group_id = ANY($2::uuid[])
+                 UNION SELECT c.cliente_id FROM aim_cargos c WHERE c.concepto IN ($4, $5) AND c.estado = 'cobrado'
+                   AND c.mes >= ${MES} AND c.mes <= (${MES} + INTERVAL '1 month')::date`,
+                [clubId, a.clasesNormal, a.claseProId || '00000000-0000-0000-0000-000000000000', a.conceptoBrickslab || '', a.conceptoBiblioteca || ''])).rows.map(x => x.id);
             const [u, perms] = await Promise.all([
                 pool.query(`SELECT user_id AS id, name, surname FROM users WHERE user_id = ANY($1::uuid[]) AND club_id = $2 ORDER BY name, surname`, [ids, clubId]),
                 permisosDe(ids),
@@ -938,6 +985,11 @@ ${cuerpo}
             if (b.conceptoPro !== undefined) {
                 if (b.conceptoPro && !(await pool.query(`SELECT 1 FROM aim_precios WHERE concepto = $1 AND activo = true`, [String(b.conceptoPro)])).rowCount) throw fallo(400, 'Ese concepto no existe en el catálogo.');
                 cambios.conceptoPro = b.conceptoPro ? String(b.conceptoPro) : null;
+            }
+            for (const k of ['conceptoBrickslab', 'conceptoBiblioteca']) {
+                if (b[k] === undefined) continue;
+                if (b[k] && !(await pool.query(`SELECT 1 FROM aim_precios WHERE concepto = $1 AND activo = true`, [String(b[k])])).rowCount) throw fallo(400, 'Ese concepto no existe en el catálogo.');
+                cambios[k] = b[k] ? String(b[k]) : null;
             }
             if (b.clasesNormal !== undefined) cambios.clasesNormal = (Array.isArray(b.clasesNormal) ? b.clasesNormal : []).filter(x => UUID.test(String(x))).slice(0, 20);
             if (b.textoPro !== undefined) cambios.textoPro = String(b.textoPro || '').trim().slice(0, 600);

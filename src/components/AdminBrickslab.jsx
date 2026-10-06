@@ -355,7 +355,7 @@ function Permisos({ d, showToast }) {
   return (
     <div style={{ display: 'grid', gap: 12 }}>
       <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)', maxWidth: 820 }}>
-        <b>Normal</b>: puede reservar en esa categoría. En LEGO lo tienen solos los matriculados en Brickslab (<i>por la clase</i>). <b>Pro</b>: además, los sets exclusivos y llevárselos a casa; sale solo al pagarlo por la web (<i>pagado</i>) o se da a mano.
+        <b>Normal</b>: puede reservar en esa categoría. Sale solo (<i>automático</i>): la Biblioteca, a quien tiene alguna actividad o paga su concepto; LEGO, a quien paga BricksLab. <b>Pro</b>: además, los sets exclusivos y llevárselos a casa; sale solo al pagar su concepto (<i>pagado</i>). Lo marcado a mano se suma a lo automático. Aquí salen los de LEGO y los que pagan; la Biblioteca la tienen además todos los alumnos con actividad.
       </p>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
         <input value={q} onChange={e => setQ(e.target.value)} placeholder="Filtrar la lista…" style={{ ...campo, flex: '1 1 200px', width: 'auto', borderRadius: 999 }} />
@@ -379,7 +379,7 @@ function Permisos({ d, showToast }) {
                     <td key={c.id} style={{ padding: '7px 8px', whiteSpace: 'nowrap' }}>
                       <label style={{ marginRight: 12, display: 'inline-flex', gap: 4, alignItems: 'center' }} title={x.normalAuto ? 'Lo tiene por estar matriculado' : ''}>
                         <input type="checkbox" checked={!!x.normalManual} onChange={e => cambiar(p, c, { normal: e.target.checked })} /> Normal
-                        {x.normalAuto && <span style={chip('var(--teal)')}>por la clase</span>}
+                        {x.normalAuto && <span style={chip('var(--teal)')} title={c.modo === 'brickslab' ? 'Paga BricksLab o está en su clase' : 'Tiene alguna actividad o paga la Biblioteca'}>automático</span>}
                       </label>
                       <label style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
                         <input type="checkbox" checked={!!x.proManual} onChange={e => cambiar(p, c, { pro: e.target.checked })} /> Pro
@@ -556,7 +556,7 @@ function Categorias({ d, hacer }) {
           </div>
           <label style={etiqueta}>Tipo
             <select value={ed.modo} onChange={e => setEd(x => ({ ...x, modo: e.target.value }))} style={campo}>
-              <option value="brickslab">Sets de LEGO (Normal automático por la clase, Pro de pago, revisión de piezas)</option>
+              <option value="brickslab">Sets de LEGO (Normal al pagar BricksLab, Pro de pago, revisión de piezas)</option>
               <option value="library">Préstamo (libros, juegos…)</option>
             </select>
           </label>
@@ -639,7 +639,7 @@ function BuscadorConcepto({ conceptos, value, onChange }) {
 function Ajustes({ showToast, onGuardado }) {
   const [d, setD] = useState(null);
   const [f, setF] = useState(null);
-  const cargar = useCallback(() => api('/api/admin/brickslab/ajustes').then(x => { setD(x); setF({ conceptoPro: x.ajustes.conceptoPro || '', clasesNormal: x.ajustes.clasesNormal || [], textoPro: x.ajustes.textoPro || '' }); }).catch(e => showToast?.(e.message)), [showToast]);
+  const cargar = useCallback(() => api('/api/admin/brickslab/ajustes').then(x => { setD(x); setF({ conceptoPro: x.ajustes.conceptoPro || '', clasesNormal: x.ajustes.clasesNormal || [], textoPro: x.ajustes.textoPro || '', conceptoBrickslab: x.ajustes.conceptoBrickslab || '', conceptoBiblioteca: x.ajustes.conceptoBiblioteca || '' }); }).catch(e => showToast?.(e.message)), [showToast]);
   useEffect(() => { cargar(); }, [cargar]);
   if (!d || !f) return <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando…</p>;
   async function guardar() {
@@ -666,8 +666,20 @@ function Ajustes({ showToast, onGuardado }) {
         </label>
       </section>
       <section className="card" style={{ padding: 16, display: 'grid', gap: 10 }}>
-        <h3 style={{ margin: 0, fontSize: 16 }}>Quién tiene el Normal de LEGO sin darlo a mano</h3>
-        <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-2)' }}>Los matriculados en estas clases pueden reservar sets de LEGO y votar. Si no eliges ninguna, valen las que se llaman «Brickslab».</p>
+        <h3 style={{ margin: 0, fontSize: 16 }}>Quién puede reservar sin darlo a mano</h3>
+        <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-2)' }}>
+          <b>Biblioteca:</b> todos los alumnos con alguna actividad en su ficha, gratis. Y quien no es del club, pagando el concepto de Biblioteca.<br />
+          <b>LEGO:</b> quien paga BricksLab (cobrado este mes o el que viene) o está matriculado en una clase que lo lleva. También pueden votar.<br />
+          <b>Pro:</b> quien paga el concepto del Pro (arriba), por la web o en el TPV.
+        </p>
+        <div style={etiqueta}><span>Concepto de BricksLab</span>
+          <BuscadorConcepto conceptos={d.conceptos} value={f.conceptoBrickslab} onChange={v => setF(x => ({ ...x, conceptoBrickslab: v }))} />
+        </div>
+        <div style={etiqueta}><span>Concepto de Biblioteca (para quien no es del club)</span>
+          <BuscadorConcepto conceptos={d.conceptos} value={f.conceptoBiblioteca} onChange={v => setF(x => ({ ...x, conceptoBiblioteca: v }))} />
+          <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--ink-3)' }}>Créalo en Facturación → Catálogo y elígelo aquí. Se cobra en el TPV (o con una clase que lo lleve) y da la Biblioteca mientras esté pagado.</span>
+        </div>
+        <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--ink-2)' }}>Y, si quieres, los matriculados en estas clases también tienen LEGO:</p>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {d.grupos.map(g => {
             const on = f.clasesNormal.includes(g.id);
