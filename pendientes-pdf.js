@@ -5,8 +5,8 @@ import PDFDocument from 'pdfkit';
 // pantalla —con el mes elegido y el buscador aplicado—, para imprimirlo o
 // mandarlo. Si el mes es futuro, además va la previsión: lo que se cobrará ese
 // mes y todavía no está generado (no es deuda).
-// Con t.titulo sirve también para las listas de impagados tras la baja y de
-// meses exentos (#393): cada fila lleva entonces su motivo debajo.
+// Con t.titulo sirve también para las listas de impagados tras la baja, de
+// exentos (#393) y de quitados (#389): cada fila lleva entonces su motivo debajo.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const TINTA = '#1A1A1A';
@@ -91,10 +91,15 @@ export function generarPendientesPdf(t, salida) {
         };
         cabecera();
         let total = 0;
+        const anchoMotivo = ancho - (cols[1].x - izq);
         for (const f of filas) {
-            if (y > doc.page.height - 80) { doc.addPage(); y = 50; cabecera(); }
+            // Se mide la fila entera, motivo incluido, antes de ver si cabe: un
+            // motivo largo cerca del final se saldría por abajo y pisaría el pie.
+            const altoMotivo = f.motivo ? doc.font('Helvetica-Oblique').fontSize(7.5)
+                .heightOfString(`Motivo: ${f.motivo}`, { width: anchoMotivo }) + 2 : 0;
             const alto = Math.max(11, ...cols.map((c, i) => doc.font('Helvetica').fontSize(8)
                 .heightOfString(String([f.alumno, f.descripcion, f.mes, '', '', ''][i] ?? ''), { width: c.w })));
+            if (y + alto + altoMotivo > doc.page.height - 70) { doc.addPage(); y = 50; cabecera(); }
             doc.font('Helvetica').fontSize(8).fillColor(TINTA);
             doc.text(f.alumno, cols[0].x, y, { width: cols[0].w });
             doc.text(f.descripcion, cols[1].x, y, { width: cols[1].w });
@@ -106,7 +111,7 @@ export function generarPendientesPdf(t, salida) {
             y += alto + 4;
             if (f.motivo) {
                 doc.font('Helvetica-Oblique').fontSize(7.5).fillColor(SUAVE)
-                    .text(`Motivo: ${f.motivo}`, cols[1].x, y - 2, { width: ancho - (cols[1].x - izq) });
+                    .text(`Motivo: ${f.motivo}`, cols[1].x, y - 2, { width: anchoMotivo });
                 y = doc.y + 4;
             }
             doc.moveTo(izq, y - 2).lineTo(izq + ancho, y - 2).strokeColor('#F3F3F3').stroke();
