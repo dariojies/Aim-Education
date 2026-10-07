@@ -31,7 +31,7 @@ import compression from 'compression';
 import { filasLibroRegistro, generarLibroRegistro, prorrataDe, TIPOS_OPERACION_DEFECTO } from './libro-registro.js';
 import { PassThrough } from 'stream';
 import { escalaDe, escalasDelClub, resultadoDe, baremoDe, matriculaExamenDe } from './rangos.js';
-import { rolEfectivo, rolVisible, permisosDe, mandaAlMenos, ROLES_STAFF, NOMBRE_ROL, NOMBRE_RANGO, RANGOS_PROPIOS, RANGOS_ASIGNABLES, recibeAviso, aplicarAjustesPermisos, limpiarAjustesPermisos, RANGOS_EDITABLES } from './permisos.js';
+import { rolEfectivo, rolVisible, permisosDe, mandaAlMenos, ROLES_STAFF, NOMBRE_ROL, NOMBRE_RANGO, RANGOS_PROPIOS, RANGOS_ASIGNABLES, recibeAviso, aplicarAjustesPermisos, limpiarAjustesPermisos, RANGOS_EDITABLES, FALTAS_PARA_LLAMAR } from './permisos.js';
 import { htmlCorreo, textoCorreo, disenoDesdeTexto, limpiarDiseno, limpiarMarca, faltanObligatorios, ejemplosDe, CORREOS_SISTEMA, MARCA_POR_DEFECTO } from './correo-diseno.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -16359,11 +16359,12 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                 });
             }
         }
-        // Faltas seguidas: a partir de 4, hay que llamar a la familia. Un aviso por
-        // alumno y clase; vuelve a encenderse si sigue faltando (sube el número) o
-        // si empieza otra racha (la clave lleva el día en que empezó).
+        // Faltas seguidas: a partir de FALTAS_PARA_LLAMAR, hay que llamar a la
+        // familia. Un aviso por alumno y clase; vuelve a encenderse si sigue
+        // faltando (sube el número) o si empieza otra racha (la clave lleva el día
+        // en que empezó). Las que secretaría ya ha llamado (#402) no salen.
         if (recibe('faltas')) {
-            const faltas = await rachasDeFaltas({ minimo: FALTAS_PARA_LLAMAR });
+            const faltas = (await rachasDeFaltas({ minimo: FALTAS_PARA_LLAMAR })).filter(f => !f.contactado);
             for (const f of faltas.slice(0, 10)) {
                 avisos.push({
                     tipo: 'faltas', destino: '/admin/faltas', n: f.racha,
@@ -16372,7 +16373,7 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                     detalle: `${f.clase} · llamar a la familia`,
                 });
             }
-            if (faltas.length > 10) avisos.push({ tipo: 'faltas', destino: '/admin/faltas', n: faltas.length, clave: 'faltas:resto', texto: `Y ${faltas.length - 10} alumno${faltas.length - 10 !== 1 ? 's' : ''} más con 4 o más faltas seguidas` });
+            if (faltas.length > 10) avisos.push({ tipo: 'faltas', destino: '/admin/faltas', n: faltas.length, clave: 'faltas:resto', texto: `Y ${faltas.length - 10} alumno${faltas.length - 10 !== 1 ? 's' : ''} más con ${FALTAS_PARA_LLAMAR} o más faltas seguidas` });
         }
         // Correos de info@ asignados a esta persona y sin hacer (#317). Si Gmail
         // no responde, no se enseña y ya está.
@@ -16978,8 +16979,18 @@ app.get('/api/admin/speaking/historial', authenticateSession, requireIndividuale
 // hacia atrás desde la última lista pasada hasta la última vez que vino (o llegó
 // tarde). Solo cuenta lo que el profe ha marcado: una clase sin lista no suma ni
 // corta. «rachaMes» es la misma cuenta pero solo con las faltas de este mes.
-const FALTAS_PARA_LLAMAR = 4;
-async function rachasDeFaltas({ minimo = 1 } = {}) {
+// El umbral para llamar (FALTAS_PARA_LLAMAR) está en permisos.js, que lo usa
+// también para el texto del aviso.
+//
+// Cuando secretaría llama a la familia lo apunta (#402): queda una fila en
+// aim_comunicaciones (tipo 'llamada', plantilla
+// 'llamada:faltas:{grupo}:{desde}:{racha}') que sale también en el historial de
+// la ficha. Esa racha cuenta como «contactada» mientras siga siendo la misma
+// (mismo alumno, clase y día en que empezó) y no haya faltado más desde la
+// llamada; si vuelve a faltar, el aviso vuelve, y una racha nueva (otro «desde»)
+// no se ve afectada por las llamadas de las anteriores.
+const llamadaDeFaltas = (groupId, desde, racha) => `llamada:faltas:${groupId}:${desde}:${racha}`;
+async function rachasDeFaltas({ minimo = 1, studentId = null } = {}) {
     const r = await pool.query(
         `WITH marcas AS (
              SELECT at.student_id, at.group_id, at.date, at.status,
@@ -16988,7 +16999,7 @@ async function rachasDeFaltas({ minimo = 1 } = {}) {
              JOIN tul_group_students gs ON gs.group_id = at.group_id AND gs.student_id = at.student_id
              JOIN tul_groups g ON g.group_id = at.group_id
              JOIN tul_activities ac ON ac.activity_id = g.activity_id AND ac.club_id = $1
-             WHERE at.date <= ${SQL_HOY_MADRID}
+             WHERE at.date <= ${SQL_HOY_MADRID} AND ($3::uuid IS NULL OR at.student_id = $3::uuid)
          ),
          corte AS (
              SELECT student_id, group_id,
@@ -17005,6 +17016,7 @@ async function rachasDeFaltas({ minimo = 1 } = {}) {
              GROUP BY 1, 2
          )
          SELECT r.*, c.ultima_vez, g.name AS clase, ac.name AS actividad,
+                ll.id AS llamada_id, ll.cuerpo AS llamada_nota, ll.created_at AS llamada_at, ll.quien AS llamada_quien, ll.racha AS llamada_racha,
                 TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno, u.phone, u.birthday,
                 (SELECT COUNT(*)::int FROM tul_attendance x WHERE x.student_id = r.student_id AND x.group_id = r.group_id
                    AND x.status = 'absent' AND x.date >= date_trunc('month', ${SQL_HOY_MADRID}) AND x.date <= ${SQL_HOY_MADRID}) AS faltas_mes,
@@ -17019,15 +17031,29 @@ async function rachasDeFaltas({ minimo = 1 } = {}) {
          JOIN users u ON u.user_id = r.student_id
          JOIN tul_groups g ON g.group_id = r.group_id
          JOIN tul_activities ac ON ac.activity_id = g.activity_id
+         -- La llamada apuntada para esta misma racha (la que cubra más faltas).
+         LEFT JOIN LATERAL (
+             SELECT lc.id, lc.cuerpo, lc.created_at, split_part(lc.plantilla, ':', 5)::int AS racha,
+                    NULLIF(TRIM(CONCAT(e.name, ' ', COALESCE(e.surname, ''))), '') AS quien
+             FROM aim_comunicaciones lc
+             LEFT JOIN users e ON e.user_id = lc.enviado_por
+             WHERE lc.persona_id = r.student_id AND lc.tipo = 'llamada'
+               AND lc.plantilla LIKE 'llamada:faltas:' || r.group_id::text || ':' || r.desde::text || ':%'
+               AND split_part(lc.plantilla, ':', 5) ~ '^[0-9]+$'
+             ORDER BY split_part(lc.plantilla, ':', 5)::int DESC, lc.created_at DESC
+             LIMIT 1
+         ) ll ON true
          WHERE r.racha >= $2
-         ORDER BY r.racha DESC, r.ultima_falta DESC, alumno`, [AIM_CLUB_ID, Math.max(1, minimo)]);
+         ORDER BY r.racha DESC, r.ultima_falta DESC, alumno`, [AIM_CLUB_ID, Math.max(1, minimo), studentId]);
     return r.rows.map(x => ({
         studentId: x.student_id, groupId: x.group_id, alumno: x.alumno, telefono: x.phone || null,
         edad: edadDe(x.birthday), clase: x.clase, actividad: x.actividad,
         racha: x.racha, rachaMes: x.racha_mes, desde: x.desde, ultimaFalta: x.ultima_falta,
         ultimaVez: x.ultima_vez, faltasMes: x.faltas_mes, clasesMes: x.clases_mes,
-        contactos: x.contactos || null, llamar: x.racha >= FALTAS_PARA_LLAMAR,
-    }));
+        contactos: x.contactos || null,
+        llamada: x.llamada_id ? { id: x.llamada_id, quien: x.llamada_quien || null, at: x.llamada_at, nota: x.llamada_nota || '', racha: x.llamada_racha } : null,
+        contactado: !!x.llamada_id && x.racha <= x.llamada_racha,
+    })).map(f => ({ ...f, llamar: f.racha >= FALTAS_PARA_LLAMAR && !f.contactado }));
 }
 
 app.get('/api/admin/faltas', authenticateSession, requireSeccion('faltas'), async (req, res) => {
@@ -17035,6 +17061,49 @@ app.get('/api/admin/faltas', authenticateSession, requireSeccion('faltas'), asyn
         const minimo = Number.parseInt(req.query.minimo, 10) || 1;
         res.set('Cache-Control', 'no-store');
         res.json({ paraLlamar: FALTAS_PARA_LLAMAR, filas: await rachasDeFaltas({ minimo }) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// «Ya he llamado» (#402): apunta la llamada a la familia. Un clic vale para todas
+// las clases en las que el alumno está ahora en FALTAS_PARA_LLAMAR o más (o solo
+// la que se diga). Las rachas las vuelve a calcular el servidor: no se fía de lo
+// que mande la pantalla, que puede estar desfasada.
+app.post('/api/admin/faltas/llamada', authenticateSession, requireSeccion('faltas'), async (req, res) => {
+    const studentId = String(req.body?.studentId || '');
+    const groupId = req.body?.groupId ? String(req.body.groupId) : null;
+    if (!UUID_RE.test(studentId)) return res.status(400).json({ error: 'Falta el alumno.' });
+    if (groupId && !UUID_RE.test(groupId)) return res.status(400).json({ error: 'Esa clase no existe.' });
+    const nota = String(req.body?.nota || '').trim().slice(0, 1000);
+    try {
+        const rachas = (await rachasDeFaltas({ minimo: FALTAS_PARA_LLAMAR, studentId }))
+            .filter(f => !groupId || String(f.groupId) === groupId.toLowerCase());
+        if (!rachas.length) {
+            return res.status(404).json({ error: `Ahora no tiene ninguna clase con ${FALTAS_PARA_LLAMAR} o más faltas seguidas.` });
+        }
+        const pendientes = rachas.filter(f => !f.contactado);
+        const ids = [];
+        for (const f of pendientes) {
+            const r = await pool.query(
+                `INSERT INTO aim_comunicaciones (persona_id, destinatarios, asunto, cuerpo, plantilla, tipo, estado, enviado_por)
+                 VALUES ($1, '{}', $2, $3, $4, 'llamada', 'hecha', $5) RETURNING id`,
+                [studentId, `Llamada a la familia: ${f.racha} faltas seguidas en ${f.clase}`, nota,
+                    llamadaDeFaltas(f.groupId, f.desde, f.racha), req.userSession.userId]);
+            ids.push(r.rows[0].id);
+        }
+        res.json({ success: true, apuntadas: ids.length, ids, yaEstaban: rachas.length - pendientes.length });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// «Deshacer»: borra la llamada apuntada. Solo puede borrar llamadas de faltas,
+// nunca un correo del historial.
+app.delete('/api/admin/faltas/llamada/:id', authenticateSession, requireSeccion('faltas'), async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Esa llamada no existe.' });
+    try {
+        const r = await pool.query(
+            `DELETE FROM aim_comunicaciones WHERE id = $1 AND tipo = 'llamada' AND plantilla LIKE 'llamada:faltas:%' RETURNING id`, [id]);
+        if (!r.rowCount) return res.status(404).json({ error: 'Esa llamada ya no está apuntada.' });
+        res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -20077,7 +20146,7 @@ async function huellaPersona(id, cliente = pool) {
 }
 const NOMBRES_TABLA = {
     aim_cargos: 'cargos', aim_recibos: 'facturas', aim_matriculas: 'matrículas', aim_familias: 'familia', tul_group_students: 'clases',
-    tul_attendance: 'asistencia', aim_consentimientos: 'permisos', aim_comunicaciones: 'correos', aim_campana_envios: 'campañas',
+    tul_attendance: 'asistencia', aim_consentimientos: 'permisos', aim_comunicaciones: 'correos y llamadas', aim_campana_envios: 'campañas',
     aim_anticipos: 'anticipos', aim_event_registrations: 'eventos', aim_camp_children: 'campamento', tul_enrollment_history: 'historial de clases',
     aim_password_resets: 'enlaces de contraseña', aim_web_visitantes: 'visitas a la web', aim_social_conversaciones: 'redes sociales',
 };

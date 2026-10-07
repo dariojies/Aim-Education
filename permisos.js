@@ -176,6 +176,9 @@ export function permisosDe(rol) {
 // (/api/admin/notificaciones) y la página «Rangos y permisos» lo enseña: así lo
 // que se ve en esa página es siempre lo que pasa de verdad.
 //   quien(permisos, rol) → ¿lo recibe? · nota(rol) → matiz para ese rango.
+// A partir de cuántas faltas seguidas hay que llamar a la familia: lo usan el
+// aviso, la lista de faltas del servidor y la pantalla.
+export const FALTAS_PARA_LLAMAR = 4;
 const todos = () => true;
 const secretariaOMas = (p, rol) => mandaAlMenos(rol, 'secretaria');
 export const AVISOS = [
@@ -191,7 +194,7 @@ export const AVISOS = [
     { id: 'eventos_respondidos', grupo: 'Clases', texto: 'Respuesta a un evento que ha propuesto', quien: (p) => !p.editarEventos },
     { id: 'lista_espera', grupo: 'Clases', texto: 'Clases con plaza libre y gente esperando', quien: (p, rol) => rol !== 'trabajador',
       nota: (p) => (p.soloSusGrupos ? 'solo de sus clases' : null) },
-    { id: 'faltas', grupo: 'Clases', texto: 'Alumnos con 4 o más faltas seguidas', quien: (p) => p.secciones.faltas },
+    { id: 'faltas', grupo: 'Clases', texto: `Alumnos con ${FALTAS_PARA_LLAMAR} o más faltas seguidas`, quien: (p) => p.secciones.faltas },
     // Clases individuales (#388, antes «Speaking»): los ids no cambian, para no
     // perder lo que la dirección haya ajustado. Solo a quien ve el apartado: sin
     // él, el aviso llevaría a una página que no le abre.

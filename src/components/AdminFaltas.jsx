@@ -2,13 +2,16 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { I } from './Icons.jsx';
 import { useEnVivo } from '../envivo.js';
 import { fmtFecha } from '../fechas.js';
+import { FALTAS_PARA_LLAMAR } from '../../permisos.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Faltas seguidas: para que secretaría vea qué alumnos llevan varias clases sin
 // venir y llame a la familia. Sale de la lista que pasan los profes: por cada
 // alumno y clase, las faltas seguidas hasta la última vez que vino. Se puede
-// contar entre meses (la racha entera) o solo las de este mes. A partir de 4
-// seguidas hay que llamar, y a secretaría le llega el aviso en la campanita.
+// contar entre meses (la racha entera) o solo las de este mes. A partir de
+// FALTAS_PARA_LLAMAR seguidas hay que llamar, y a secretaría le llega el aviso
+// en la campanita. Cuando llama, lo apunta con «Ya he llamado» (#402): el aviso
+// se apaga hasta que vuelva a faltar, y la llamada queda en su ficha.
 // Y el resumen de un mes: cuántas faltas tiene cada alumno (sumando sus clases)
 // y quién no ha venido ningún día.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -48,7 +51,7 @@ function FaltasSeguidas({ onAbrirFicha }) {
   useEffect(() => { cargar(); }, [cargar]);
   useEnVivo(cargar, { cada: 60000 });
 
-  const paraLlamar = datos?.paraLlamar || 4;
+  const paraLlamar = datos?.paraLlamar || FALTAS_PARA_LLAMAR;
   const cuenta = (f) => (modo === 'mes' ? f.rachaMes : f.racha);
   const filas = useMemo(() => {
     const t = sinTildes(q.trim());
@@ -57,7 +60,7 @@ function FaltasSeguidas({ onAbrirFicha }) {
       .filter(f => !t || sinTildes(`${f.alumno} ${f.clase}`).includes(t))
       .sort((a, b) => cuenta(b) - cuenta(a) || String(b.ultimaFalta).localeCompare(String(a.ultimaFalta)));
   }, [datos, modo, minimo, q]);
-  const nLlamar = (datos?.filas || []).filter(f => f.racha >= paraLlamar).length;
+  const nLlamar = (datos?.filas || []).filter(f => f.racha >= paraLlamar && !f.contactado).length;
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
@@ -66,7 +69,8 @@ function FaltasSeguidas({ onAbrirFicha }) {
         <p className="sub">
           Sale de la lista que pasan los profes: cuántas clases seguidas lleva cada alumno sin venir a su clase,
           hasta la última vez que vino. Una clase sin lista pasada no cuenta. A partir de {paraLlamar} faltas
-          seguidas hay que llamar a la familia (te llega el aviso a la campanita).
+          seguidas hay que llamar a la familia (te llega el aviso a la campanita). Cuando llames, pulsa
+          «Ya he llamado»: el aviso se quita hasta que vuelva a faltar y la llamada queda en su ficha.
         </p>
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginTop: 12 }}>
           <div style={{ display: 'inline-flex', border: '1px solid var(--line)', borderRadius: 999, overflow: 'hidden', background: 'var(--bg-2)' }}>
@@ -108,10 +112,11 @@ function FaltasSeguidas({ onAbrirFicha }) {
           </div>
           {filas.map(f => {
             const n = cuenta(f);
-            const llamar = f.racha >= paraLlamar;
+            const llamar = f.racha >= paraLlamar && !f.contactado;
+            const llamado = f.racha >= paraLlamar && f.contactado;
             return (
               <div key={`${f.studentId}:${f.groupId}`} className="data-table-row"
-                style={{ gridTemplateColumns: COLUMNAS, alignItems: 'center', background: llamar ? 'color-mix(in oklab, var(--danger, #dc2626) 6%, transparent)' : undefined }}>
+                style={{ gridTemplateColumns: COLUMNAS, alignItems: 'center', background: llamar ? 'color-mix(in oklab, var(--danger, #dc2626) 6%, transparent)' : undefined, opacity: llamado ? 0.7 : undefined }}>
                 <div className="pri" style={{ minWidth: 0 }}>
                   <button type="button" onClick={() => onAbrirFicha?.({ id: f.studentId })} title="Abrir su ficha"
                     style={{ background: 'none', border: 0, padding: 0, fontFamily: 'inherit', fontWeight: 800, fontSize: 14, color: 'var(--ink)', cursor: 'pointer', textAlign: 'left' }}>
@@ -124,8 +129,9 @@ function FaltasSeguidas({ onAbrirFicha }) {
                   <span style={{ display: 'block', fontSize: 11, color: 'var(--ink-3)' }}>{f.actividad}</span>
                 </span>
                 <span>
-                  <b style={{ fontSize: 20, color: llamar ? 'var(--danger, #dc2626)' : n >= 2 ? 'var(--orange)' : 'var(--ink)' }}>{n}</b>
+                  <b style={{ fontSize: 20, color: llamar ? 'var(--danger, #dc2626)' : llamado ? 'var(--ink-2)' : n >= 2 ? 'var(--orange)' : 'var(--ink)' }}>{n}</b>
                   {llamar && <span style={{ display: 'block', fontSize: 10, fontWeight: 800, color: 'var(--danger, #dc2626)', textTransform: 'uppercase' }}>Llamar</span>}
+                  {llamado && <span style={{ display: 'block', fontSize: 10, fontWeight: 800, color: 'var(--teal)', textTransform: 'uppercase' }}>Llamado</span>}
                   {modo === 'mes' && f.racha > f.rachaMes && <span style={{ display: 'block', fontSize: 10, color: 'var(--ink-3)' }}>{f.racha} entre meses</span>}
                 </span>
                 <span style={{ fontSize: 12.5 }}>
@@ -138,12 +144,86 @@ function FaltasSeguidas({ onAbrirFicha }) {
                     {f.ultimaVez ? `vino el ${fmtFecha(f.ultimaVez)}` : 'no consta que haya venido'}
                   </span>
                 </span>
-                <span style={{ fontSize: 12, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {f.contactos || (f.telefono ? `${f.alumno} · ${f.telefono}` : 'sin contacto')}
-                </span>
+                <div style={{ display: 'grid', gap: 6, minWidth: 0 }}>
+                  <span style={{ fontSize: 12, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {f.contactos || (f.telefono ? `${f.alumno} · ${f.telefono}` : 'sin contacto')}
+                  </span>
+                  {f.racha >= paraLlamar && <Llamada f={f} onCambio={cargar} />}
+                </div>
               </div>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// «Ya he llamado» / «Llamado · quién · fecha · nota» y «Deshacer» (#402). Un
+// clic apunta la llamada en todas las clases en las que ese alumno está para
+// llamar (es la misma familia); el servidor vuelve a mirar las rachas.
+function Llamada({ f, onCambio }) {
+  const [abierto, setAbierto] = useState(false);
+  const [nota, setNota] = useState('');
+  const [enviando, setEnviando] = useState(false);
+
+  async function apuntar() {
+    setEnviando(true);
+    try {
+      const r = await fetch('/api/admin/faltas/llamada', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ studentId: f.studentId, nota: nota.trim() }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) alert(d.error || 'No se ha podido apuntar la llamada.');
+      else { setAbierto(false); setNota(''); }
+      await onCambio();
+    } catch { alert('No hay conexión con el servidor.'); }
+    finally { setEnviando(false); }
+  }
+  async function deshacer() {
+    if (!window.confirm(`¿Quitar la llamada apuntada a la familia de ${f.alumno} en ${f.clase}? Volverá a salir para llamar.`)) return;
+    setEnviando(true);
+    try {
+      const r = await fetch(`/api/admin/faltas/llamada/${f.llamada.id}`, { method: 'DELETE', credentials: 'include' });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) alert(d.error || 'No se ha podido deshacer.');
+      await onCambio();
+    } catch { alert('No hay conexión con el servidor.'); }
+    finally { setEnviando(false); }
+  }
+
+  if (f.contactado && f.llamada) {
+    const l = f.llamada;
+    return (
+      <span style={{ fontSize: 12, color: 'var(--ink-2)', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        <span style={{ minWidth: 0 }}>
+          <b style={{ color: 'var(--teal)' }}>Llamado</b>
+          {l.quien ? ` · ${l.quien}` : ''} · {fmtFecha(l.at)}{l.nota ? ` · ${l.nota}` : ''}
+        </span>
+        <button type="button" className="btn btn-sm btn-ghost" style={{ padding: '2px 8px', fontSize: 11 }} disabled={enviando} onClick={deshacer}>Deshacer</button>
+      </span>
+    );
+  }
+  return (
+    <div style={{ display: 'grid', gap: 6 }}>
+      {f.llamada && (
+        <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+          Se llamó el {fmtFecha(f.llamada.at)} con {f.llamada.racha} faltas y ha vuelto a faltar.
+        </span>
+      )}
+      {!abierto ? (
+        <button type="button" className="btn btn-sm btn-outline" style={{ justifySelf: 'start' }} onClick={() => setAbierto(true)}>
+          <I.Phone width={14} height={14} /> Ya he llamado
+        </button>
+      ) : (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <input autoFocus value={nota} maxLength={1000} placeholder="Nota (opcional): qué te han dicho…"
+            onChange={e => setNota(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && !enviando) apuntar(); if (e.key === 'Escape') setAbierto(false); }}
+            style={{ flex: '1 1 160px', minWidth: 0, padding: '6px 10px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)', fontFamily: 'inherit', fontSize: 12 }} />
+          <button type="button" className="btn btn-sm btn-primary" disabled={enviando} onClick={apuntar}>{enviando ? 'Guardando…' : 'Guardar'}</button>
+          <button type="button" className="btn btn-sm btn-ghost" disabled={enviando} onClick={() => { setAbierto(false); setNota(''); }}>Cancelar</button>
         </div>
       )}
     </div>

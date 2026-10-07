@@ -8,7 +8,8 @@ import { VARIABLES_CRM } from '../../correo-diseno.js';
 // CRM en la ficha (tickets #310 y #311): escribir un correo al alumno o a su
 // familia con plantillas que se rellenan solas, y el historial de todo lo que ha
 // pasado con ellos (#341): lo enviado desde aquí, las campañas (si las abrieron),
-// lo que escribieron en la web o al correo del club y los permisos que dieron. Sale desde el buzón del club (queda en sus «Enviados» de Gmail
+// lo que escribieron en la web o al correo del club, los permisos que dieron y
+// las llamadas por faltas que apuntó secretaría (#402). Sale desde el buzón del club (queda en sus «Enviados» de Gmail
 // y las respuestas llegan allí). Respeta los permisos de la ficha: «de servicio»
 // siempre; «de sus actividades» si no lo ha rechazado; «comercial» solo a quien
 // lo acepta.
@@ -71,9 +72,9 @@ function EditorPlantillas({ plantillas, onGuardar, onCerrar }) {
 }
 
 // ── El historial, todo junto ─────────────────────────────────────────────────
-const FILTROS_HISTORIA = [['todo', 'Todo'], ['correo', 'Correos'], ['campana', 'Campañas'], ['web', 'Web'], ['permiso', 'Permisos']];
+const FILTROS_HISTORIA = [['todo', 'Todo'], ['correo', 'Correos'], ['llamada', 'Llamadas'], ['campana', 'Campañas'], ['web', 'Web'], ['permiso', 'Permisos']];
 const ETIQUETA = {
-  correo: ['Correo', 'var(--purple)'], buzon: ['Correo', 'var(--purple)'], campana: ['Campaña', 'var(--blue, #1e6fd9)'],
+  correo: ['Correo', 'var(--purple)'], buzon: ['Correo', 'var(--purple)'], llamada: ['Llamada', 'var(--teal)'], campana: ['Campaña', 'var(--blue, #1e6fd9)'],
   web: ['Web', 'var(--teal)'], visita: ['Visita', 'var(--teal)'], red: ['Redes', '#1FA855'], permiso: ['Permiso', 'var(--ink-2)'], rebote: ['Rebote', 'var(--orange)'],
 };
 const enFiltro = (f, t) => f === 'todo' || f === t || (f === 'correo' && (t === 'buzon' || t === 'rebote' || t === 'red')) || (f === 'web' && t === 'visita');
@@ -87,6 +88,7 @@ function estadoDe(x) {
     if (x.abierto) return ['✓ lo abrió', 'var(--teal)'];
     return ['no lo abrió', 'var(--ink-3)'];
   }
+  if (x.tipo === 'llamada') return ['✓ hecha', 'var(--teal)'];
   if (x.tipo === 'web') return [x.estado === 'atendido' ? '✓ atendida' : 'sin atender', x.estado === 'atendido' ? 'var(--teal)' : 'var(--orange)'];
   if (x.tipo === 'permiso') return [x.otorgado ? '✓ sí' : '✗ no', x.otorgado ? 'var(--teal)' : 'var(--orange)'];
   if (x.tipo === 'rebote') return [x.resuelto ? '✓ arreglado' : 'sin arreglar', x.resuelto ? 'var(--teal)' : 'var(--orange)'];
@@ -101,7 +103,11 @@ function Historial({ comunicaciones, eventos, buzon }) {
   const [todos, setTodos] = useState(false);
   const items = useMemo(() => {
     const enviados = [
-      ...comunicaciones.map(c => ({ ...c, id: `m${c.id}`, tipo: 'correo', tipoCorreo: c.tipo, titulo: c.asunto, de: `Para ${c.destinatarios.join(', ')}` })),
+      // Las llamadas a la familia por faltas (#402) van en la misma tabla que los
+      // correos, con tipo 'llamada' y sin destinatarios.
+      ...comunicaciones.map(c => (c.tipo === 'llamada'
+        ? { ...c, id: `m${c.id}`, tipo: 'llamada', titulo: c.asunto, de: c.quien ? `La apuntó ${c.quien}` : null }
+        : { ...c, id: `m${c.id}`, tipo: 'correo', tipoCorreo: c.tipo, titulo: c.asunto, de: `Para ${c.destinatarios.join(', ')}` })),
       ...eventos,
     ];
     // Lo que salió desde la ficha o en una campaña también está en «Enviados»
@@ -132,7 +138,7 @@ function Historial({ comunicaciones, eventos, buzon }) {
       {vistos.map(x => {
         const [etq, colEtq] = ETIQUETA[x.tipo] || ['', 'var(--ink-3)'];
         const [est, colEst] = estadoDe(x);
-        const abre = x.tipo === 'correo' || x.tipo === 'campana' || x.tipo === 'web';
+        const abre = x.tipo === 'correo' || x.tipo === 'campana' || x.tipo === 'web' || (x.tipo === 'llamada' && !!x.cuerpo);
         return (
           <div key={x.id} style={{ border: '1px solid var(--line)', borderRadius: 10, background: 'var(--bg-2)', overflow: 'hidden' }}>
             <button type="button" disabled={!abre} onClick={() => setAbiertoId(a => (a === x.id ? null : x.id))}
@@ -152,6 +158,11 @@ function Historial({ comunicaciones, eventos, buzon }) {
                 {x.desdeOtraFicha && <span>Enviado desde la ficha de {x.desdeOtraFicha}.</span>}
                 {x.plantilla?.startsWith('auto:') && <span>Automático.</span>}
                 {x.error && <span style={{ color: 'var(--orange)' }}>{x.estado === 'omitido' ? 'No se envió: ' : 'Error: '}{x.error}</span>}
+                <div style={{ whiteSpace: 'pre-wrap', background: 'var(--bg-3)', borderRadius: 8, padding: 10, fontSize: 13, color: 'var(--ink)' }}>{x.cuerpo}</div>
+              </div>
+            )}
+            {abiertoId === x.id && x.tipo === 'llamada' && (
+              <div style={{ padding: '0 12px 12px', display: 'grid', gap: 6, fontSize: 12, color: 'var(--ink-2)' }}>
                 <div style={{ whiteSpace: 'pre-wrap', background: 'var(--bg-3)', borderRadius: 8, padding: 10, fontSize: 13, color: 'var(--ink)' }}>{x.cuerpo}</div>
               </div>
             )}
