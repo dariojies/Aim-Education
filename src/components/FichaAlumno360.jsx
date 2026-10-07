@@ -168,9 +168,9 @@ export default function FichaAlumno360({ studentId }) {
           </div>
         )}
         {/* Lo que no se le va a cobrar (#393): impagados tras la baja (deuda
-            interna, la familia ya no los ve) y meses exentos, con su motivo. */}
+            interna, la familia ya no los ve) y exentos, con su motivo. */}
         <NoCobrados titulo="Impagados tras la baja" color="var(--orange)" lista={economico.impagados} total={economico.totalImpagado} />
-        <NoCobrados titulo="Meses exentos" color="var(--teal)" lista={economico.exentos} total={economico.totalExento} />
+        <NoCobrados titulo="Exentos" color="var(--teal)" lista={economico.exentos} total={economico.totalExento} />
         <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--ink-3)' }}>Facturas</span>
         <div style={{ display: 'grid', gap: 6, marginTop: 6 }}>
           {economico.facturas.length

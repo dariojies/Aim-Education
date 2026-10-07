@@ -4899,12 +4899,17 @@ function MesAnioInput({ value, onChange, desdeAnios = 5, hastaAnios = 10, style 
 // Apartado único de cargos pendientes (ticket #231): se ven y exportan los cargos
 // pendientes de un mes concreto o de todos, separado de la generación.
 // Ticket #393: además, las listas de lo que no se va a cobrar: los impagados tras
-// la baja (deuda interna, la familia ya no los ve) y los meses exentos.
+// la baja (deuda interna, la familia ya no los ve) y los exentos. Y la de los
+// quitados con la papelera (#389), para poder deshacer un clic por error.
 const VISTAS_CARGOS = {
   pendientes: { titulo: 'Pendientes' },
   impagado: { titulo: 'Impagados tras la baja', corto: 'impagados', vacio: 'No hay ningún impagado tras la baja.' },
-  exento: { titulo: 'Exentos', corto: 'exentos', vacio: 'No hay ningún mes exento.' },
+  exento: { titulo: 'Exentos', corto: 'exentos', vacio: 'No hay ningún cargo exento.' },
+  quitado: { titulo: 'Quitados', corto: 'quitados', vacio: 'No hay ningún cargo quitado.' },
 };
+// Solo estos se pueden marcar impagados o eximir (#393): los de eventos,
+// exámenes o campamento se llevan desde su propia sección.
+const ORIGENES_MARCABLES = ['generado', 'inscripcion', 'manual'];
 // Lo que se pregunta antes de marcar un cargo (#393): el motivo es obligatorio.
 const MARCAR_CARGO = {
   impagado: {
@@ -4930,8 +4935,8 @@ function BillingPendientes({ activa, showToast }) {
   const [cargando, setCargando] = useState(false);
   const [q, setQ] = useState('');                 // buscador de alumnos
   const [campCargos, setCampCargos] = useState([]); // pendientes de campamento (#248), aparte del mes
-  const [vista, setVista] = useState('pendientes'); // 'pendientes' | 'impagado' | 'exento' (#393)
-  const [cerrados, setCerrados] = useState({ impagado: [], exento: [] }); // de todos los meses
+  const [vista, setVista] = useState('pendientes'); // 'pendientes' | 'impagado' | 'exento' (#393) | 'quitado' (#389)
+  const [cerrados, setCerrados] = useState({ impagado: [], exento: [], quitado: [] }); // de todos los meses
   const [marcar, setMarcar] = useState(null);     // { cargo, accion: 'impagado' | 'eximir' }
   const [motivo, setMotivo] = useState('');
   const [guardando, setGuardando] = useState(false);
@@ -4969,13 +4974,16 @@ function BillingPendientes({ activa, showToast }) {
   }, [todos, mesIso]);
   useEffect(() => { cargar(); }, [cargar]);
 
-  // Impagados y exentos (#393): son listas internas y van siempre de todos los
-  // meses, que una deuda de hace tres meses no se pierda por el filtro de mes.
+  // Impagados, exentos (#393) y quitados (#389): son listas internas y van
+  // siempre de todos los meses, que una deuda de hace tres meses no se pierda
+  // por el filtro de mes.
   const cargarCerrados = useCallback(async () => {
     try {
-      const [ri, re] = await Promise.all(['impagado', 'exento'].map(e =>
+      const estados = ['impagado', 'exento', 'quitado'];
+      const rs = await Promise.all(estados.map(e =>
         fetch(`/api/admin/billing/cargos?estado=${e}`, { credentials: 'include', cache: 'no-store' })));
-      setCerrados({ impagado: ri.ok ? await ri.json() : [], exento: re.ok ? await re.json() : [] });
+      const listas = await Promise.all(rs.map(r => r.ok ? r.json() : []));
+      setCerrados(Object.fromEntries(estados.map((e, i) => [e, listas[i]])));
     } catch { /* noop */ }
   }, []);
   useEffect(() => { cargarCerrados(); }, [cargarCerrados]);
@@ -4994,7 +5002,7 @@ function BillingPendientes({ activa, showToast }) {
     if (!window.confirm('¿Quitar este cargo pendiente?\n\nSi es una mensualidad, ya no se vuelve a generar ese mes (salvo que se le apunte otra vez a esa clase este mismo mes).')) return;
     const r = await fetch(`/api/admin/billing/cargos/${id}`, { method: 'DELETE', credentials: 'include' });
     const d = await r.json().catch(() => ({}));
-    if (r.ok) { await cargar(); showToast?.(d.quitado ? 'Cargo quitado: no se vuelve a generar este mes.' : 'Cargo borrado.'); }
+    if (r.ok) { await Promise.all([cargar(), cargarCerrados()]); showToast?.(d.quitado ? 'Cargo quitado: no se vuelve a generar ese mes.' : 'Cargo borrado.'); }
     else alert(d.error || 'No se pudo quitar.');
   }
 
@@ -5062,13 +5070,18 @@ function BillingPendientes({ activa, showToast }) {
   const sumaDe = (l) => l.reduce((s, c) => s + baseCargo(c), 0);
 
   // Acciones de un cargo pendiente: impagado tras la baja, eximir el mes (#393)
-  // y la papelera de siempre (#389: quitar).
+  // y la papelera de siempre (#389: quitar). Lo de eventos, exámenes o
+  // campamento solo lleva la papelera.
   const acciones = (c) => (
     <div className="row-actions" style={{ justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-      <button className="btn btn-sm btn-outline" style={{ padding: '5px 10px' }} onClick={() => abrirMarcar(c, 'impagado')}
-        title="Se dio de baja y no paga este mes: sale de lo que ve la familia y queda como deuda interna">Impagado (baja)</button>
-      <button className="btn btn-sm btn-outline" style={{ padding: '5px 10px' }} onClick={() => abrirMarcar(c, 'eximir')}
-        title="No se cobra este mes por un motivo justificado">Eximir</button>
+      {ORIGENES_MARCABLES.includes(c.origen) && (
+        <>
+          <button className="btn btn-sm btn-outline" style={{ padding: '5px 10px' }} onClick={() => abrirMarcar(c, 'impagado')}
+            title="Se dio de baja y no paga este mes: sale de lo que ve la familia y queda como deuda interna">Impagado (baja)</button>
+          <button className="btn btn-sm btn-outline" style={{ padding: '5px 10px' }} onClick={() => abrirMarcar(c, 'eximir')}
+            title="No se cobra este mes por un motivo justificado">Eximir</button>
+        </>
+      )}
       <button className="icon-btn danger" onClick={() => borrarCargo(c.id)} aria-label="Quitar" title="Quitar el cargo"><I.Trash /></button>
     </div>
   );
@@ -5097,10 +5110,15 @@ function BillingPendientes({ activa, showToast }) {
           Mensualidades de alumnos que se dieron de baja y no las pagaron. Es deuda interna: la familia ya no las ve ni las puede pagar por internet.
           Si vienen a pagar, <b>vuelve a ponerla pendiente</b> y se cobra como siempre. Salen todas, de todos los meses.
         </p>
+      ) : vista === 'exento' ? (
+        <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>
+          Cargos que no se cobran, con su motivo (un mes con ausencia justificada, el 100% de descuento del TPV…). No llevan factura ni se vuelven a generar.
+          Salen todos, de todos los meses.
+        </p>
       ) : (
         <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>
-          Meses que no se cobran, con su motivo (una ausencia justificada, el 100% de descuento del TPV…). No llevan factura ni se vuelven a generar.
-          Salen todos, de todos los meses.
+          Mensualidades quitadas con la papelera: no se cobran y ya no se vuelven a generar ese mes.
+          Si se quitó por error, <b>vuelve a ponerla pendiente</b>. Salen todas, de todos los meses.
         </p>
       )}
 
@@ -5138,7 +5156,7 @@ function BillingPendientes({ activa, showToast }) {
         </div>
       </div>
 
-      {/* ── Impagados tras la baja y exentos (#393) ── */}
+      {/* ── Impagados tras la baja y exentos (#393), quitados (#389) ── */}
       {vista !== 'pendientes' && (
         cerradosF.length === 0 ? (
           <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>
@@ -5150,7 +5168,7 @@ function BillingPendientes({ activa, showToast }) {
               <span>Alumno</span><span>Concepto</span><span>Mes</span><span>Base</span><span>Motivo</span><span></span>
             </div>
             {cerradosF.map(c => (
-              <div key={c.id} className="data-table-row" style={{ gridTemplateColumns: colsCerr, borderLeft: `3px solid ${vista === 'impagado' ? 'var(--orange)' : 'var(--teal)'}` }}>
+              <div key={c.id} className="data-table-row" style={{ gridTemplateColumns: colsCerr, borderLeft: `3px solid ${vista === 'impagado' ? 'var(--orange)' : vista === 'quitado' ? 'var(--line)' : 'var(--teal)'}` }}>
                 <div className="pri">{c.nombre} {c.apellidos}</div>
                 <span style={{ fontSize: 13 }}>{c.descripcion}</span>
                 <span style={{ fontSize: 12, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{mesDeCargo(c)}</span>
