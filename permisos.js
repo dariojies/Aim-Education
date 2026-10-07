@@ -176,14 +176,15 @@ export function permisosDe(rol) {
     };
 }
 
+// A partir de cuántas faltas seguidas hay que llamar a la familia: lo usan el
+// aviso, la lista de faltas del servidor y la pantalla.
+export const FALTAS_PARA_LLAMAR = 4;
+
 // ── Avisos de la campanita (ticket #333) ──
 // Quién recibe cada aviso. El servidor pregunta aquí antes de mandar cada uno
 // (/api/admin/notificaciones) y la página «Rangos y permisos» lo enseña: así lo
 // que se ve en esa página es siempre lo que pasa de verdad.
 //   quien(permisos, rol) → ¿lo recibe? · nota(rol) → matiz para ese rango.
-// A partir de cuántas faltas seguidas hay que llamar a la familia: lo usan el
-// aviso, la lista de faltas del servidor y la pantalla.
-export const FALTAS_PARA_LLAMAR = 4;
 const todos = () => true;
 const secretariaOMas = (p, rol) => mandaAlMenos(rol, 'secretaria');
 export const AVISOS = [
@@ -242,6 +243,9 @@ export const RANGOS_EDITABLES = ['trabajador', 'instructor', 'secretaria', 'club
 export function seccionFija(id, rol) {
     if (id === 'fichaje') return true;
     if (id === 'rangos') return true;
+    // «Cambios» (#397) lista los asuntos de todos los tickets: queda como está
+    // (de secretaría para arriba), sin poder abrírselo a instructores ni trabajadores.
+    if (id === 'cambios') return true;
     if (rol === 'club_owner' && id === 'settings') return true;
     return false;
 }

@@ -11548,7 +11548,7 @@ const AUTOMATISMOS = {
     faltas: {
         nombre: 'Faltas seguidas',
         descripcion: (a) => `Cuando un alumno lleva ${a.faltas} clases seguidas sin venir a una de sus clases (la lista de secretaría sigue avisando a partir de ${FALTAS_PARA_LLAMAR}).`,
-        ajustes: { faltas: { nombre: 'Cuántas faltas seguidas', unidad: 'faltas', min: 2, max: 15, def: 4 } },
+        ajustes: { faltas: { nombre: 'Cuántas faltas seguidas', unidad: 'faltas', min: 2, max: 15, def: FALTAS_PARA_LLAMAR } },
         asunto: '{nombre} lleva unos días sin venir a {clase}',
         cuerpo: 'Hola,\n\nHemos notado que {nombre} lleva {faltas} clases seguidas sin venir a {clase}. ¿Va todo bien?\n\nSi necesitáis cambiar de horario o hay cualquier cosa en la que podamos ayudar, contadnos.\n\nUn saludo,\nAIM Education',
     },
@@ -17050,14 +17050,18 @@ async function rachasDeFaltas({ minimo = 1, studentId = null } = {}) {
          JOIN users u ON u.user_id = r.student_id
          JOIN tul_groups g ON g.group_id = r.group_id
          JOIN tul_activities ac ON ac.activity_id = g.activity_id
-         -- La llamada apuntada para esta misma racha (la que cubra más faltas).
+         -- La llamada apuntada durante esta racha (la que cubra más faltas). Vale
+         -- cualquiera de esa clase hecha desde que empezó la racha, aunque luego
+         -- se corrija la lista y cambie el día de inicio; una racha nueva empieza
+         -- después de volver a clase, así que una llamada vieja no la cubre.
          LEFT JOIN LATERAL (
              SELECT lc.id, lc.cuerpo, lc.created_at, split_part(lc.plantilla, ':', 5)::int AS racha,
                     NULLIF(TRIM(CONCAT(e.name, ' ', COALESCE(e.surname, ''))), '') AS quien
              FROM aim_comunicaciones lc
              LEFT JOIN users e ON e.user_id = lc.enviado_por
              WHERE lc.persona_id = r.student_id AND lc.tipo = 'llamada'
-               AND lc.plantilla LIKE 'llamada:faltas:' || r.group_id::text || ':' || r.desde::text || ':%'
+               AND lc.plantilla LIKE 'llamada:faltas:' || r.group_id::text || ':%'
+               AND (lc.created_at AT TIME ZONE 'Europe/Madrid')::date >= r.desde::date
                AND split_part(lc.plantilla, ':', 5) ~ '^[0-9]+$'
              ORDER BY split_part(lc.plantilla, ':', 5)::int DESC, lc.created_at DESC
              LIMIT 1
@@ -17102,12 +17106,15 @@ app.post('/api/admin/faltas/llamada', authenticateSession, requireSeccion('falta
         const pendientes = rachas.filter(f => !f.contactado);
         const ids = [];
         for (const f of pendientes) {
+            // Si dos personas lo apuntan a la vez (o se pulsa dos veces), solo una.
             const r = await pool.query(
                 `INSERT INTO aim_comunicaciones (persona_id, destinatarios, asunto, cuerpo, plantilla, tipo, estado, enviado_por)
-                 VALUES ($1, '{}', $2, $3, $4, 'llamada', 'hecha', $5) RETURNING id`,
+                 SELECT $1::uuid, '{}', $2::text, $3::text, $4::varchar, 'llamada', 'hecha', $5::uuid
+                 WHERE NOT EXISTS (SELECT 1 FROM aim_comunicaciones WHERE persona_id = $1::uuid AND tipo = 'llamada' AND plantilla = $4::varchar)
+                 RETURNING id`,
                 [studentId, `Llamada a la familia: ${f.racha} faltas seguidas en ${f.clase}`, nota,
                     llamadaDeFaltas(f.groupId, f.desde, f.racha), req.userSession.userId]);
-            ids.push(r.rows[0].id);
+            if (r.rowCount) ids.push(r.rows[0].id);
         }
         res.json({ success: true, apuntadas: ids.length, ids, yaEstaban: rachas.length - pendientes.length });
     } catch (err) { res.status(500).json({ error: err.message }); }

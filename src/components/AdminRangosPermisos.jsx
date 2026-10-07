@@ -111,7 +111,7 @@ export default function AdminRangosPermisos({ grupos, showToast }) {
 
   const menu = useMemo(() => {
     const vistos = new Set();
-    return grupos.map(g => ({ heading: g.heading, items: g.items.filter(it => { if (vistos.has(it.id) || it.id === 'equipo_it') return false; vistos.add(it.id); return true; }) }))
+    return grupos.map(g => ({ heading: g.heading, items: g.items.filter(it => { if (vistos.has(it.id) || it.id === 'equipo_it' || it.id === 'cambios') return false; vistos.add(it.id); return true; }) }))
       .filter(g => g.items.length);
   }, [grupos]);
 

@@ -52,7 +52,7 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
             publicado: new Date().toISOString(),
             commit,
             commitAnterior: shaValido(ant) && ant !== commit ? ant : null,
-            release: release ? String(release).slice(0, 20) : null,
+            release: release ? String(release).replace(/^v/i, '').slice(0, 20) : null,
             tickets: [],
             commits: [],
             titulo: '',
@@ -93,6 +93,7 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
             },
             signal: AbortSignal.timeout(10_000),
         });
+        if (r.status === 401 || r.status === 403) throw Object.assign(new Error(`GitHub respondió ${r.status}`), { token: true });
         if (!r.ok) throw new Error(`GitHub respondió ${r.status}`);
         const d = await r.json();
         const commits = (Array.isArray(d?.commits) ? d.commits : [])
@@ -199,7 +200,7 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
             res.json({ success: true, commits: r.commits });
         } catch (err) {
             console.warn('[cambios] recargar commits:', err?.message || err);
-            res.status(502).json({ error: 'GitHub no ha contestado bien. Prueba más tarde.' });
+            res.status(502).json({ error: err?.token ? 'El token de GitHub no vale o ha caducado: hay que renovarlo en Heroku (GITHUB_TOKEN).' : 'GitHub no ha contestado bien. Prueba más tarde.' });
         }
     });
 
