@@ -215,6 +215,9 @@ export const AVISOS = [
     { id: 'brickslab_reservas', grupo: 'Club', texto: 'Reservas de Brickslab y Biblioteca por entregar', quien: (p) => p.secciones.brickslab },
     { id: 'incidencias_nuevas', grupo: 'Club', texto: 'Incidencias abiertas sin responsable', quien: (p) => p.gestionarIncidencias },
     { id: 'incidencias_mias', grupo: 'Club', texto: 'Incidencias que tiene que resolver', quien: todos },
+    // #401: al personal implicado, al registrarla (o al añadirle después) y al
+    // resolverla (también a quien la registró). Sin el apartado no podría abrirla.
+    { id: 'incidencias_implicado', grupo: 'Club', texto: 'Incidencias en las que está implicado, y cuándo se resuelven', quien: (p) => p.secciones.incidencias },
     { id: 'resumen_horas', grupo: 'Fichaje', texto: 'Su resumen de horas del mes, por confirmar', quien: todos },
     { id: 'correcciones_por_aprobar', grupo: 'Fichaje', texto: 'Correcciones de su fichaje que le proponen', quien: todos },
     { id: 'correcciones_por_validar', grupo: 'Fichaje', texto: 'Correcciones de fichaje que piden los trabajadores', quien: secretariaOMas },

@@ -24,6 +24,8 @@ const AL_APAGAR = {
   ticket_respuesta: 'Las familias no se enterarán de que les habéis contestado hasta que entren en su área.',
   ticket_asignado: 'Nadie recibirá aviso cuando le asignen un ticket (seguirá saliendo en su campanita).',
   ticket_mensaje: 'No llegará aviso de los mensajes nuevos en los tickets (seguirán en la campanita).',
+  incidencia_implicado: 'El personal implicado en una incidencia no recibirá correo (seguirá saliendo en su campanita).',
+  incidencia_resuelta: 'Nadie recibirá correo cuando se resuelva una incidencia suya (seguirá saliendo en su campanita).',
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

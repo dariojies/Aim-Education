@@ -898,6 +898,34 @@ export const CORREOS_SISTEMA = {
             BTN([{ texto: 'Ir a Soporte', url: '{enlace}', fondo: '', color: '#ffffff' }]),
         ]),
     },
+    // Incidencias (#401): al personal implicado. Por privacidad no llevan lo que
+    // pasó (puede haber nombres de alumnos): solo el aviso y el enlace a la web.
+    incidencia_implicado: {
+        grupo: 'personal', nombre: 'Incidencias: te han implicado en una', cuando: 'Cuando alguien registra una incidencia y te pone entre los implicados (o la dirección te añade después). No lleva lo que pasó: eso se lee en la web.',
+        asunto: 'Te han implicado en una incidencia ({clase})',
+        variables: { nombre: { que: 'Su nombre', ejemplo: 'Juan Manuel' }, numero: { que: 'Número de la incidencia', ejemplo: '12' }, clase: { que: 'La clase', ejemplo: 'Inglés · B1 tardes' }, fecha: { que: 'Cuándo se registró', ejemplo: '08/10/2026, 18:30' }, quien: { que: 'Quién la registró', ejemplo: 'Patricia' }, enlace: { que: 'Enlace a la incidencia', ejemplo: 'https://www.aimeducation.es/admin/incidencias?filtro=implicado' } },
+        automaticos: {},
+        obligatorio: [],
+        diseno: () => d([
+            T('Hola {nombre},'),
+            T('Estás entre los implicados de la incidencia **#{numero}** que registró **{quien}** el {fecha} ({clase}).'),
+            BTN([{ texto: 'Ver la incidencia', url: '{enlace}', fondo: '', color: '#ffffff' }]),
+            PEQ('Por privacidad, lo que pasó no va en el correo: lo tienes en la web, en Incidencias.'),
+        ]),
+    },
+    incidencia_resuelta: {
+        grupo: 'personal', nombre: 'Incidencias: una tuya está resuelta', cuando: 'Cuando se da por resuelta una incidencia: al personal implicado, a quien la registró y a quien la tenía encargada (menos a quien la resuelve). No lleva la resolución: eso se lee en la web.',
+        asunto: 'Incidencia resuelta ({clase})',
+        variables: { nombre: { que: 'Su nombre', ejemplo: 'Juan Manuel' }, numero: { que: 'Número de la incidencia', ejemplo: '12' }, clase: { que: 'La clase', ejemplo: 'Inglés · B1 tardes' }, fecha: { que: 'Cuándo se registró', ejemplo: '08/10/2026, 18:30' }, quien: { que: 'Quién la ha resuelto', ejemplo: 'Darío' }, enlace: { que: 'Enlace a la incidencia', ejemplo: 'https://www.aimeducation.es/admin/incidencias?filtro=implicado' } },
+        automaticos: {},
+        obligatorio: [],
+        diseno: () => d([
+            T('Hola {nombre},'),
+            T('**{quien}** ha dado por resuelta la incidencia **#{numero}** ({clase}, registrada el {fecha}).'),
+            BTN([{ texto: 'Ver cómo se ha resuelto', url: '{enlace}', fondo: '', color: '#ffffff' }]),
+            PEQ('Por privacidad, la resolución no va en el correo: la tienes en la web, en Incidencias.'),
+        ]),
+    },
     tickets_resumen_semanal: {
         grupo: 'club', nombre: 'Soporte: resumen semanal', cuando: 'Una vez por semana, al Equipo IT: cuántos tickets han entrado y salido, cuánto se tarda y qué se ha quedado atascado.',
         asunto: 'Resumen semanal de soporte',
