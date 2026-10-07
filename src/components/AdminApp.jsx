@@ -102,7 +102,7 @@ function sectionLabel(id) {
     support: "Panel de soporte",
     faltas: "Faltas",
     comunicaciones: "Comunicaciones",
-    speaking: "Speaking",
+    speaking: "Clases individuales",
     fichaje: "Fichaje",
     almacen: "Almacén",
     equipo_it: "Equipo IT",
@@ -6991,7 +6991,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "classes", label: "Clases y horarios", icon: <I.Calendar /> },
         // Pasar lista de las clases del día, directamente (sin entrar en Clases).
         { id: "pasarlista", label: "Pasar lista", icon: <I.Check /> },
-        { id: "speaking", label: "Speaking", icon: <I.Users /> },
+        // Clases individuales de cualquier actividad (#388, antes «Speaking»).
+        { id: "speaking", label: "Clases individuales", icon: <I.Users /> },
         { id: "camp", label: "Campamento", icon: <I.Sun /> },
         { id: "events", label: "Eventos", icon: <I.Star /> },
         // Las fotos de clases y eventos, con quién sale en cada una (#364).

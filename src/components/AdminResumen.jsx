@@ -175,8 +175,8 @@ const Eventos = ({ lista, ir, titulo, vacio }) => (
   </Bloque>
 );
 const SpeakingHoy = ({ lista, ir }) => (lista.length ? (
-  <Bloque titulo="Speaking de hoy" accion="Abrir" onAccion={() => ir('speaking')}>
-    {lista.map((s, i) => <Fila key={i} centro={<b>{s.grupo}</b>} der={<span style={suave}>{s.si} sí · {s.no} no · {s.sinRespuesta} sin responder</span>} />)}
+  <Bloque titulo="Clases individuales de hoy" accion="Abrir" onAccion={() => ir('speaking')}>
+    {lista.map((s, i) => <Fila key={i} centro={<b>{s.actividad ? `${s.actividad} · ` : ''}{s.grupo}</b>} der={<span style={suave}>{s.si} sí · {s.no} no · {s.sinRespuesta} sin responder</span>} />)}
   </Bloque>
 ) : null);
 const Personal = ({ lista, ir }) => (

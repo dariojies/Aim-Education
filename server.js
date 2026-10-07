@@ -22,6 +22,7 @@ import { generarInformeJornadaPdf, generarResumenMensualPdf } from './fichaje-pd
 import { generarPendientesPdf } from './pendientes-pdf.js';
 import * as verifactu from './verifactu.js';
 import { plazasConBono, reservarPlazaBono, cancelarReservaBono, ventanaReservas, hoyMadridISO } from './bonos-clases.js';
+import { CLAVE_INDIVIDUALES, sqlEsIndividual, sqlGruposIndividuales, gruposIndividuales, olvidarGruposIndividuales } from './clases-individuales.js';
 import { filtroNombreSQL } from './buscar.js';
 import { VERSION_LEGAL } from './src/legal/textos.js';
 import compression from 'compression';
@@ -10768,7 +10769,7 @@ const sqlUltimoConsentimiento = (col, tipo) => `(SELECT k.otorgado FROM aim_cons
        OR (k.user_id IS NULL AND LOWER(k.email) = (SELECT LOWER(uu.email) FROM users uu WHERE uu.user_id = ${col})))
     ORDER BY k.created_at DESC, k.id DESC LIMIT 1)`;
 
-// ¿Ha dicho que NO a las comunicaciones de sus actividades? (Speaking, exámenes…)
+// ¿Ha dicho que NO a las comunicaciones de sus actividades? (clases individuales, exámenes…)
 async function sinComunicacionesActividades(userId) {
     const r = await pool.query(`SELECT ${sqlUltimoConsentimiento('$1::uuid', 'actividades')} AS v`, [userId]);
     return r.rows[0]?.v === false;
@@ -15517,16 +15518,18 @@ async function cumplesProximos(grupos = null, dias = 7) {
     return r.rows.map(x => ({ id: x.user_id, nombre: x.nombre, enDias: x.en_dias, edad: x.edad }));
 }
 
+// Las clases individuales de hoy (#388, antes Speaking), con su actividad.
 async function speakingHoy(grupos = null) {
     const r = await pool.query(
-        `SELECT s.group_id, g.name, COUNT(*)::int total,
+        `SELECT s.group_id, g.name, a.name AS actividad, COUNT(*)::int total,
                 COUNT(*) FILTER (WHERE s.confirmado IS TRUE)::int si,
                 COUNT(*) FILTER (WHERE s.confirmado IS FALSE)::int no,
                 COUNT(*) FILTER (WHERE s.confirmado IS NULL)::int sin_respuesta
          FROM aim_speaking s LEFT JOIN tul_groups g ON g.group_id = s.group_id
+         LEFT JOIN tul_activities a ON a.activity_id = g.activity_id
          WHERE s.fecha = ${HOY_SQL} AND ($1::uuid[] IS NULL OR s.group_id = ANY($1::uuid[]))
-         GROUP BY s.group_id, g.name ORDER BY g.name`, [grupos]);
-    return r.rows.map(x => ({ grupo: x.name || 'Speaking', total: x.total, si: x.si, no: x.no, sinRespuesta: x.sin_respuesta }));
+         GROUP BY s.group_id, g.name, a.name ORDER BY a.name, g.name`, [grupos]);
+    return r.rows.map(x => ({ grupo: x.name || 'Clase individual', actividad: x.actividad || null, total: x.total, si: x.si, no: x.no, sinRespuesta: x.sin_respuesta }));
 }
 
 async function eventosProximos(docente = null, dias = 14) {
@@ -15634,7 +15637,7 @@ async function resumenDireccion() {
                            (SELECT COUNT(*) FROM tul_group_students gs WHERE gs.group_id = g.group_id)::int AS n,
                            (SELECT COUNT(*) FROM aim_lista_espera e WHERE e.group_id = g.group_id AND e.estado = 'esperando')::int AS espera
                     FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
-                    WHERE a.club_id = $1 AND COALESCE(g.max_students, 0) > 0 AND g.name NOT ILIKE '%speaking%'`, [AIM_CLUB_ID]),
+                    WHERE a.club_id = $1 AND COALESCE(g.max_students, 0) > 0 AND NOT ${sqlEsIndividual()}`, [AIM_CLUB_ID]),
         porCobrar(),
         personalAhora(),
     ]);
@@ -15995,17 +15998,19 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
             }
         }
 
-        // Speaking (ticket #228): alumnos apuntados a una sesión futura sin llamar
+        // Clases individuales (#228, #388): alumnos apuntados a una sesión futura sin llamar
         // a los padres, y padres que han dicho que NO, para que secretaría lo vea.
         // Ya confirmados no cuentan como "por llamar" (ticket #241): si la familia
         // ya dijo que sí desde el correo/web, no hay que llamarles para confirmar.
+        // Llevan la clave de cuando se llamaban «Speaking» (#388): así no vuelven
+        // a salir como nuevos los que ya se habían visto.
         const spk = await pool.query(
             `SELECT COUNT(*) FILTER (WHERE llamado = false AND confirmado IS NULL AND ${sqlLimiteSpeaking()} >= ${SQL_HOY_MADRID})::int AS por_llamar,
                     COUNT(*) FILTER (WHERE confirmado = false)::int AS rechazados,
                     COUNT(*) FILTER (WHERE confirmado = true)::int AS confirmados
              FROM aim_speaking WHERE fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date`);
         const sp = spk.rows[0];
-        if (sp.por_llamar && recibe('speaking_por_llamar')) avisos.push({ tipo: 'speaking', texto: `${sp.por_llamar} alumno${sp.por_llamar !== 1 ? 's' : ''} de Speaking por avisar a los padres`, detalle: 'llamar y confirmar asistencia', destino: '/admin/speaking', n: sp.por_llamar });
+        if (sp.por_llamar && recibe('speaking_por_llamar')) avisos.push({ tipo: 'speaking', texto: `${sp.por_llamar} alumno${sp.por_llamar !== 1 ? 's' : ''} de clases individuales por avisar a los padres`, detalle: 'llamar y confirmar asistencia', destino: '/admin/clases-individuales', clave: 'speaking|/admin/speaking|alumn speak avisa padre', n: sp.por_llamar });
         // Almacén (#322): artículos en o por debajo de su mínimo de aviso. La clave
         // lleva cuáles son, así que si baja otro distinto vuelve a encenderse.
         if (recibe('almacen')) {
@@ -16110,7 +16115,7 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                 `SELECT COUNT(*)::int n FROM (${SQL_SOLICITUD_FOTOS}) s JOIN users u ON u.user_id = s.user_id WHERE u.club_id = $1`, [AIM_CLUB_ID])).rows[0].n;
             if (sf) avisos.push({ tipo: 'permisos', texto: `${sf} solicitud${sf !== 1 ? 'es' : ''} de permiso de fotos`, detalle: 'confirmar o descartar en Gestión de alumnos', destino: '/admin/alumnos', n: sf });
         }
-        if (sp.rechazados && recibe('speaking_rechazados')) avisos.push({ tipo: 'speaking', texto: `${sp.rechazados} familia${sp.rechazados !== 1 ? 's' : ''} han dicho que NO al Speaking`, detalle: 'revisar la asistencia', destino: '/admin/speaking', n: sp.rechazados });
+        if (sp.rechazados && recibe('speaking_rechazados')) avisos.push({ tipo: 'speaking', texto: `${sp.rechazados} familia${sp.rechazados !== 1 ? 's' : ''} han dicho que NO a una clase individual`, detalle: 'revisar la asistencia', destino: '/admin/clases-individuales', clave: 'speaking|/admin/speaking|famil dicho speak', n: sp.rechazados });
 
         res.set('Cache-Control', 'no-store');
         await conVistos(yo, avisos);
@@ -16122,11 +16127,16 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-// CLASE DE SPEAKING / INGLÉS (ticket #228)
+// CLASES INDIVIDUALES (ticket #388; antes «Speaking», ticket #228)
 // El profesor apunta alumnos a una sesión de un día concreto, a una o varias de
 // las 3 franjas de 20 min. Secretaría recibe aviso para llamar a los padres, y a
 // los padres les llega un correo para confirmar la asistencia. No usa las clases
 // normales (tul_group_students), así que no cuenta en los reportes de alumnos.
+// Vale para cualquier actividad: las clases del horario que son individuales se
+// marcan en el propio apartado (ver clases-individuales.js). Por dentro todo
+// sigue llamándose «speaking» (tablas, sección, avisos, correos y el enlace
+// público /speaking/…): cambiarlo borraría lo guardado y rompería los enlaces
+// de los correos ya enviados.
 // ═════════════════════════════════════════════════════════════════════════════
 const FRANJAS_SPEAKING = [1, 2, 3];
 const FRANJA_HORA = { 1: '1ª franja (0–20 min)', 2: '2ª franja (20–40 min)', 3: '3ª franja (40–60 min)' };
@@ -16146,7 +16156,7 @@ function franjasDeHoras(inicio, fin) {
 const franjasTexto = (inicio, fin, sub) => franjasDeHoras(inicio, fin)
     .filter(f => (sub || FRANJAS_SPEAKING).includes(f.n))
     .map(f => f.desde ? `${f.desde}–${f.hasta}` : f.label).join(', ');
-// La sesión del grupo Speaking que cae en el día de la semana de una fecha
+// La sesión de la clase individual que cae en el día de la semana de una fecha
 // (convención aim-tul: 0 = lunes). Devuelve {startTime, endTime} o null.
 async function sesionSpeakingDe(groupId, fecha) {
     const g = await pool.query(`SELECT sessions FROM tul_groups WHERE group_id = $1`, [groupId]);
@@ -16157,7 +16167,7 @@ async function sesionSpeakingDe(groupId, fecha) {
     }
     return null;
 }
-// Correos a los que avisar de la clase de Speaking de un alumno (ticket #241):
+// Correos a los que avisar de la clase individual de un alumno (ticket #241):
 // los adultos de la familia Y el propio alumno. Antes se excluía al alumno, así
 // que si el alumno es su propio contacto (adulto que se apunta a sí mismo) no le
 // llegaba nada. Ahora se incluye siempre su correo, además del de la familia.
@@ -16170,7 +16180,7 @@ async function emailsFamilia(studentId) {
         [ids]);
     return r.rows.map(x => x.email);
 }
-// Plazo para confirmar el Speaking: hasta 2 días antes de la clase, ese día
+// Plazo para confirmar la clase individual: hasta 2 días antes de la clase, ese día
 // incluido (clase el jueves → hasta el martes). Si para entonces la familia no ha
 // dicho que sí, pierde ese día. A quien se apunta ya dentro de esos 2 días se le
 // deja confirmar hasta el final del día en que se le apunta. Decir que NO se
@@ -16181,17 +16191,21 @@ const sqlLimiteSpeaking = (t = '') => `LEAST(${t}fecha, GREATEST(${t}fecha - ${S
     COALESCE((${t}created_at AT TIME ZONE 'Europe/Madrid')::date, ${t}fecha - ${SPEAKING_DIAS_PLAZO})))`;
 const fechaLarga = (d) => new Date(d).toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
 
-function paginaSpeaking(ok, si, limitePerdido = null) {
+// «clase individual de Taekwondo» (#388): con la actividad si se sabe.
+const nombreClaseIndividual = (actividad) => (actividad ? `clase individual de ${actividad}` : 'clase individual');
+
+function paginaSpeaking(ok, si, limitePerdido = null, actividad = null) {
+    const clase = escHtml(nombreClaseIndividual(actividad));
     const titulo = limitePerdido ? 'Plazo de confirmación cerrado'
         : !ok ? 'Enlace caducado o no válido'
             : si ? '¡Asistencia confirmada!' : 'Asistencia rechazada';
-    const texto = limitePerdido ? `La asistencia había que confirmarla como tarde el ${fechaLarga(limitePerdido)}. Como no nos llegó a tiempo, esta clase de Speaking se ha perdido. Si tienes cualquier duda, ponte en contacto con el club.`
+    const texto = limitePerdido ? `La asistencia había que confirmarla como tarde el ${fechaLarga(limitePerdido)}. Como no nos llegó a tiempo, esta ${clase} se ha perdido. Si tienes cualquier duda, ponte en contacto con el club.`
         : !ok ? 'Es posible que la clase ya haya pasado o que el enlace no sea correcto. Ponte en contacto con el club.'
-            : si ? 'Gracias, hemos anotado que tu hijo/a asistirá a la clase de Speaking.'
-                : 'Hemos anotado que tu hijo/a NO podrá asistir. Gracias por avisar.';
+            : si ? `Gracias, hemos anotado que tu hijo/a asistirá a la ${clase}.`
+                : `Hemos anotado que tu hijo/a NO podrá asistir a la ${clase}. Gracias por avisar.`;
     const color = limitePerdido || !ok ? '#dc2626' : si ? '#0a7d3c' : '#b45309';
     return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-      <title>Speaking · AIM Education</title></head>
+      <title>Clase individual · AIM Education</title></head>
       <body style="font-family:system-ui,sans-serif;background:#f6f5f2;margin:0;padding:40px 16px;color:#1a1a1a">
         <div style="max-width:460px;margin:0 auto;background:#fff;border-radius:16px;padding:28px;box-shadow:0 6px 24px rgba(0,0,0,.08);text-align:center">
           <h1 style="font-size:20px;margin:0 0 10px;color:${color}">${titulo}</h1>
@@ -16213,8 +16227,12 @@ async function enviarCorreosSpeaking(ids, { tipo = 'inicial' } = {}) {
         `SELECT s.id, s.fecha, s.franjas, s.token, s.student_id, s.hora_inicio, s.hora_fin,
                 ${sqlLimiteSpeaking('s.')} AS limite, ${sqlLimiteSpeaking('s.')} = ${SQL_HOY_MADRID} AS limite_hoy,
                 ${sqlUltimoConsentimiento('s.student_id', 'actividades')} IS FALSE AS sin_avisos,
-                TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno
-         FROM aim_speaking s JOIN users u ON u.user_id = s.student_id WHERE s.id = ANY($1::int[])`, [ids]);
+                TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno,
+                g.name AS clase, a.name AS actividad
+         FROM aim_speaking s JOIN users u ON u.user_id = s.student_id
+         LEFT JOIN tul_groups g ON g.group_id = s.group_id
+         LEFT JOIN tul_activities a ON a.activity_id = g.activity_id
+         WHERE s.id = ANY($1::int[])`, [ids]);
     // En paralelo: cada correo abría antes su conexión y se enviaban de uno en uno,
     // así que una tanda grande tardaba mucho. Con el pool del transporte y este
     // Promise.all salen a la vez.
@@ -16230,6 +16248,8 @@ async function enviarCorreosSpeaking(ids, { tipo = 'inicial' } = {}) {
             const no = `${base}/speaking/${row.token}/no`;
             const clave = tipo === 'manana' ? 'speaking_manana' : tipo === 'ultimoDia' ? 'speaking_ultimo_dia' : 'speaking_inicial';
             const c = await correoSistema(clave, {
+                // «Taekwondo», «Inglés»… (#388): «clase individual de {actividad}».
+                actividad: row.actividad || row.clase || 'su actividad', clase: row.clase || '',
                 alumno: row.alumno, fecha: fechaTxt,
                 cuando: franjasTxt ? (tipo === 'manana' ? `${fechaTxt} · ${franjasTxt}` : `${fechaTxt} (${franjasTxt})`) : fechaTxt,
                 limite: row.limite_hoy ? 'hoy' : `el ${fechaLarga(row.limite)}`,
@@ -16324,14 +16344,19 @@ async function guardarDisponibilidad(studentId, body, userId) {
     return { noPuede, nota: nota || '' };
 }
 
-app.get('/api/admin/speaking/disponibilidad/:studentId', authenticateSession, requireAdmin, async (req, res) => {
+// Todo el apartado va con el permiso de su sección (#388), como el resto del
+// panel: si en «Rangos y permisos» se le quita a un rango, tampoco le responde
+// el servidor. Por defecto lo tienen todos menos los trabajadores (permisos.js).
+const requireIndividuales = requireSeccion('speaking');
+
+app.get('/api/admin/speaking/disponibilidad/:studentId', authenticateSession, requireIndividuales, async (req, res) => {
     try {
         const d = (await disponibilidadDe([req.params.studentId])).get(req.params.studentId);
         res.set('Cache-Control', 'no-store');
         res.json(d || { noPuede: [], nota: '' });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
-app.put('/api/admin/speaking/disponibilidad/:studentId', authenticateSession, requireAdmin, async (req, res) => {
+app.put('/api/admin/speaking/disponibilidad/:studentId', authenticateSession, requireIndividuales, async (req, res) => {
     try {
         const u = await pool.query(`SELECT 1 FROM users WHERE user_id = $1`, [req.params.studentId]);
         if (!u.rowCount) return res.status(404).json({ error: 'Ese alumno no existe.' });
@@ -16339,42 +16364,131 @@ app.put('/api/admin/speaking/disponibilidad/:studentId', authenticateSession, re
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Las clases "Speaking" reservadas del horario (grupos de Inglés llamados así),
-// con sus sesiones (días y horas), para vincular el apartado con ellas.
-app.get('/api/admin/speaking/clases', authenticateSession, requireAdmin, async (req, res) => {
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const sesionesDeGrupo = (sessions) => (Array.isArray(sessions) ? sessions : []).map(s => ({
+    days: (s.days || []).map(Number), startTime: s.startTime || null, endTime: s.endTime || null, aula: s.aulaName || null,
+}));
+
+// Qué clases del horario son individuales (#388): todas las del club, por
+// actividad, con la marca. Lo decide secretaría o dirección; el resto lo ve.
+app.get('/api/admin/speaking/config', authenticateSession, requireIndividuales, async (req, res) => {
     try {
         const r = await pool.query(
-            `SELECT g.group_id, g.name, a.name AS actividad, g.sessions
+            `SELECT g.group_id, g.name, g.sessions, a.activity_id, a.name AS actividad, ${sqlEsIndividual()} AS individual,
+                    (SELECT COUNT(*)::int FROM tul_group_students gs WHERE gs.group_id = g.group_id) AS alumnos
              FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
-             WHERE a.club_id = $1 AND (g.name ILIKE '%speaking%' OR a.name ILIKE '%speaking%')
-             ORDER BY g.name`, [AIM_CLUB_ID]);
+             WHERE a.club_id = $1 ORDER BY a.name, g.name`, [AIM_CLUB_ID]);
+        const guardado = await pool.query(`SELECT actualizado_at FROM aim_ajustes WHERE clave = $1`, [CLAVE_INDIVIDUALES]);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            puedeCambiar: !permisos(req).soloSusGrupos,
+            // Aún sin guardar: valen las que se llaman «Speaking», como siempre.
+            porNombre: !guardado.rowCount,
+            clases: r.rows.map(g => ({
+                groupId: g.group_id, name: g.name, activityId: g.activity_id, actividad: g.actividad,
+                individual: g.individual, alumnos: g.alumnos, sesiones: sesionesDeGrupo(g.sessions),
+            })),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.put('/api/admin/speaking/config', authenticateSession, requireIndividuales, async (req, res) => {
+    if (permisos(req).soloSusGrupos) return res.status(403).json({ error: 'Esto lo decide secretaría o dirección.' });
+    const pedidos = [...new Set((Array.isArray(req.body?.groupIds) ? req.body.groupIds : []).map(String).filter(x => UUID_RE.test(x)))];
+    try {
+        // Solo clases que existen y son del club.
+        const ok = pedidos.length ? (await pool.query(
+            `SELECT g.group_id FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE a.club_id = $1 AND g.group_id = ANY($2::uuid[])`, [AIM_CLUB_ID, pedidos])).rows.map(x => x.group_id) : [];
+        await pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ($1, $2::jsonb, NOW(), $3)
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+            [CLAVE_INDIVIDUALES, JSON.stringify({ groupIds: ok }), req.userSession.userId]);
+        olvidarGruposIndividuales();
+        res.json({ success: true, groupIds: ok });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Las clases individuales del horario, con su actividad y sus sesiones (días y
+// horas), para elegir primero la actividad y luego la clase.
+app.get('/api/admin/speaking/clases', authenticateSession, requireIndividuales, async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT g.group_id, g.name, a.activity_id, a.name AS actividad, g.sessions
+             FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE a.club_id = $1 AND ${sqlEsIndividual()}
+             ORDER BY a.name, g.name`, [AIM_CLUB_ID]);
         res.set('Cache-Control', 'no-store');
         res.json({
             clases: r.rows.map(g => ({
-                groupId: g.group_id, name: g.name, actividad: g.actividad,
-                sesiones: (Array.isArray(g.sessions) ? g.sessions : []).map(s => ({
-                    days: (s.days || []).map(Number), startTime: s.startTime || null, endTime: s.endTime || null, aula: s.aulaName || null,
-                })),
+                groupId: g.group_id, name: g.name, activityId: g.activity_id, actividad: g.actividad,
+                sesiones: sesionesDeGrupo(g.sessions),
             })),
         });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// El profesor apunta a varios alumnos a una sesión de speaking de un día, dentro
-// de una clase "Speaking" reservada (el día tiene que ser una de sus sesiones).
-app.post('/api/admin/speaking', authenticateSession, requireAdmin, async (req, res) => {
+// Alumnos para apuntar (#388): por defecto, los que están en alguna clase de esa
+// actividad; con ?todos=1, cualquiera del club (como antes). Sin texto, los de
+// la actividad (los primeros); en todo el club hace falta buscar.
+app.get('/api/admin/speaking/alumnos', authenticateSession, requireIndividuales, async (req, res) => {
+    const act = UUID_RE.test(String(req.query.activityId || '')) ? req.query.activityId : null;
+    const todos = req.query.todos === '1' || !act;
+    const q = String(req.query.q || '').trim();
+    if (todos && q.length < 2) return res.json({ alumnos: [] });
+    try {
+        const vals = [AIM_CLUB_ID, act];
+        const filtro = q ? (filtroNombreSQL(q, `(u.name || ' ' || COALESCE(u.surname,''))`, vals, 'u.email') || 'true') : 'true';
+        const r = await pool.query(
+            `SELECT u.user_id AS id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS name, u.email,
+                    (SELECT string_agg(DISTINCT g.name, ', ') FROM tul_group_students gs JOIN tul_groups g ON g.group_id = gs.group_id
+                     WHERE gs.student_id = u.user_id AND g.activity_id = $2::uuid) AS grupos
+             FROM users u
+             WHERE u.club_id = $1 AND u.role IN ('student', 'instructor', 'club_owner') AND ${filtro}
+               AND (${todos ? 'true' : `EXISTS (SELECT 1 FROM tul_group_students gs JOIN tul_groups g ON g.group_id = gs.group_id
+                                                  WHERE gs.student_id = u.user_id AND g.activity_id = $2::uuid)`})
+             ORDER BY u.surname, u.name LIMIT ${q ? 25 : 60}`, vals);
+        res.set('Cache-Control', 'no-store');
+        res.json({ alumnos: r.rows.map(x => ({ id: x.id, name: x.name, email: x.email || null, grupos: x.grupos || null })) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// El profesor apunta a varios alumnos a una clase individual de un día, dentro
+// de una de las clases marcadas como individuales (el día tiene que ser una de
+// sus sesiones). Un alumno solo puede tener UNA clase individual al día (la
+// tabla lo exige: UNIQUE (fecha, student_id)): si ya tiene otra ese día en otra
+// clase, no se le cambia de clase sin avisar, se para y se dice (#388).
+app.post('/api/admin/speaking', authenticateSession, requireIndividuales, async (req, res) => {
     const { fecha, alumnos, groupId } = req.body;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha || ''))) return res.status(400).json({ error: 'Falta el día de la clase.' });
-    if (!groupId) return res.status(400).json({ error: 'Elige la clase de Speaking.' });
+    if (!groupId || !UUID_RE.test(String(groupId))) return res.status(400).json({ error: 'Elige la clase individual.' });
     if (await fechaEnPasado(fecha)) return res.status(400).json({ error: 'Ese día ya ha pasado.' });
+    if (!(await gruposIndividuales(pool, AIM_CLUB_ID)).has(groupId)) {
+        return res.status(400).json({ error: 'Esa clase no está marcada como individual.' });
+    }
     const ses = await sesionSpeakingDe(groupId, fecha);
-    if (!ses) return res.status(400).json({ error: 'Ese día no toca esa clase de Speaking (mira sus días en el horario).' });
-    const lista = (Array.isArray(alumnos) ? alumnos : []).filter(a => a && a.studentId && normalizaFranjas(a.franjas).length);
+    if (!ses) return res.status(400).json({ error: 'Ese día no toca esa clase (mira sus días en el horario).' });
+    const lista = (Array.isArray(alumnos) ? alumnos : []).filter(a => a && UUID_RE.test(String(a.studentId || '')) && normalizaFranjas(a.franjas).length);
     if (!lista.length) return res.status(400).json({ error: 'Añade al menos un alumno con alguna franja marcada.' });
     try {
+        // ¿Alguno tiene ya otra clase individual ese día?
+        const otras = await pool.query(
+            `SELECT TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno, g.name AS clase, a.name AS actividad
+             FROM aim_speaking s JOIN users u ON u.user_id = s.student_id
+             LEFT JOIN tul_groups g ON g.group_id = s.group_id
+             LEFT JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE s.fecha = $1::date AND s.student_id = ANY($2::uuid[]) AND s.group_id IS DISTINCT FROM $3::uuid
+             ORDER BY alumno`, [fecha, lista.map(a => a.studentId), groupId]);
+        if (otras.rowCount) {
+            const quien = otras.rows.map(x => `${x.alumno} (${nombreClaseIndividual(x.actividad)}${x.clase ? ` · ${x.clase}` : ''})`).join(', ');
+            return res.status(409).json({
+                error: `${otras.rowCount === 1 ? 'Este alumno ya tiene' : 'Estos alumnos ya tienen'} otra clase individual ese día: ${quien}. Solo se puede tener una al día: quítasela antes o elige otro día. No se ha apuntado a nadie.`,
+            });
+        }
         const ids = [];
         for (const a of lista) {
             const token = crypto.randomBytes(20).toString('hex');
+            // El WHERE del ON CONFLICT es la red por si otra persona le cita en
+            // otra clase a la vez: entonces no se toca y se avisa.
             const ins = await pool.query(
                 `INSERT INTO aim_speaking (fecha, student_id, franjas, token, created_by, group_id, hora_inicio, hora_fin)
                  VALUES ($1::date, $2, $3::smallint[], $4, $5, $6::uuid, $7, $8)
@@ -16382,24 +16496,31 @@ app.post('/api/admin/speaking', authenticateSession, requireAdmin, async (req, r
                     group_id = EXCLUDED.group_id, hora_inicio = EXCLUDED.hora_inicio, hora_fin = EXCLUDED.hora_fin,
                     confirmado = NULL, respondido_at = NULL, email_enviado = false,
                     recordatorio_enviado = false, created_at = NOW()
+                 WHERE aim_speaking.group_id IS NOT DISTINCT FROM EXCLUDED.group_id
                  RETURNING id`,
                 [fecha, a.studentId, normalizaFranjas(a.franjas), token, req.userSession.userId, groupId, ses.startTime, ses.endTime]);
-            ids.push(ins.rows[0].id);
+            if (ins.rowCount) ids.push(ins.rows[0].id);
         }
         // Los correos a los padres van en segundo plano (no bloquean la respuesta).
-        enviarCorreosSpeaking(ids).catch(e => console.error('[speaking mail]', e.message));
-        res.status(201).json({ success: true, creados: ids.length, correo: !!mailTransporter });
+        if (ids.length) enviarCorreosSpeaking(ids).catch(e => console.error('[speaking mail]', e.message));
+        const saltados = lista.length - ids.length;
+        res.status(201).json({
+            success: true, creados: ids.length, correo: !!mailTransporter,
+            ...(saltados ? { aviso: `${saltados} no se ${saltados === 1 ? 'ha' : 'han'} apuntado: ya ${saltados === 1 ? 'tenía' : 'tenían'} otra clase individual ese día.` } : {}),
+        });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Sesiones de speaking desde hoy (o desde una fecha), con el estado de cada alumno
-// y los contactos de la familia para que secretaría llame.
-app.get('/api/admin/speaking', authenticateSession, requireAdmin, async (req, res) => {
+// Clases individuales desde hoy (o desde una fecha), con el estado de cada alumno
+// y los contactos de la familia para que secretaría llame. ?activityId= filtra.
+app.get('/api/admin/speaking', authenticateSession, requireIndividuales, async (req, res) => {
     const desde = /^\d{4}-\d{2}-\d{2}$/.test(req.query.desde || '') ? req.query.desde : null;
+    const act = UUID_RE.test(String(req.query.activityId || '')) ? req.query.activityId : null;
     try {
         const r = await pool.query(
             `SELECT s.id, s.fecha, s.franjas, s.confirmado, s.respondido_at, s.llamado, s.email_enviado,
-                    s.student_id, s.hora_inicio, s.hora_fin, g.name AS clase,
+                    s.student_id, s.hora_inicio, s.hora_fin, s.group_id, g.name AS clase,
+                    a.activity_id, a.name AS actividad,
                     ${sqlLimiteSpeaking('s.')} AS limite, ${sqlLimiteSpeaking('s.')} >= ${SQL_HOY_MADRID} AS plazo_abierto,
                     ${sqlUltimoConsentimiento('s.student_id', 'actividades')} IS FALSE AS sin_avisos,
                     TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno,
@@ -16409,8 +16530,10 @@ app.get('/api/admin/speaking', authenticateSession, requireAdmin, async (req, re
                      WHERE f.persona_id = s.student_id) AS contactos
              FROM aim_speaking s JOIN users u ON u.user_id = s.student_id
              LEFT JOIN tul_groups g ON g.group_id = s.group_id
+             LEFT JOIN tul_activities a ON a.activity_id = g.activity_id
              WHERE s.fecha >= COALESCE($1::date, (now() AT TIME ZONE 'Europe/Madrid')::date)
-             ORDER BY s.fecha, alumno`, [desde]);
+               AND ($2::uuid IS NULL OR a.activity_id = $2::uuid)
+             ORDER BY s.fecha, a.name, g.name, alumno`, [desde, act]);
         const disp = await disponibilidadDe([...new Set(r.rows.map(x => x.student_id))]);
         res.set('Cache-Control', 'no-store');
         res.json({
@@ -16425,38 +16548,42 @@ app.get('/api/admin/speaking', authenticateSession, requireAdmin, async (req, re
                 perdida: x.confirmado === null && !x.plazo_abierto,
                 alumno: x.alumno, studentId: x.student_id, contactos: x.contactos || null,
                 clase: x.clase || null, horaInicio: x.hora_inicio || null, horaFin: x.hora_fin || null,
+                groupId: x.group_id || null, activityId: x.activity_id || null, actividad: x.actividad || null,
                 franjasTexto: franjasDeHoras(x.hora_inicio, x.hora_fin),
             })),
         });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Historial de Speaking (#367): cuántas veces ha ido cada alumno y qué días.
-// Junta las citas (aim_speaking) con lo marcado al pasar lista en la clase de
-// Speaking (tul_attendance), incluidos los que vinieron sin estar citados. Sin
-// alumno, un resumen de todos; con ?alumno=, sus días uno a uno.
-const SQL_GRUPOS_SPEAKING = `(SELECT g.group_id FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
-    WHERE a.club_id = '${AIM_CLUB_ID}' AND (g.name ILIKE '%speaking%' OR a.name ILIKE '%speaking%'))`;
+// Historial de las clases individuales (#367, #388): cuántas veces ha ido cada
+// alumno y qué días. Junta las citas (aim_speaking) con lo marcado al pasar
+// lista en las clases individuales (tul_attendance), incluidos los que vinieron
+// sin estar citados. Sin alumno, un resumen de todos; con ?alumno=, sus días uno
+// a uno. Con ?activityId=, solo los de esa actividad.
 const SQL_DIAS_SPEAKING = `
     SELECT COALESCE(s.student_id, at.student_id) AS student_id, COALESCE(s.fecha, at.date) AS fecha,
            s.id AS cita_id, s.confirmado, s.franjas, s.hora_inicio, s.hora_fin, s.llamado,
            (s.id IS NOT NULL AND s.confirmado IS NULL AND ${sqlLimiteSpeaking('s.')} < ${SQL_HOY_MADRID}) AS perdida,
-           at.status AS asistencia, g.name AS clase
+           at.status AS asistencia, g.name AS clase, g.activity_id, ac.name AS actividad
     FROM (SELECT * FROM aim_speaking) s
-    FULL JOIN (SELECT * FROM tul_attendance WHERE group_id IN ${SQL_GRUPOS_SPEAKING}) at
+    FULL JOIN (SELECT * FROM tul_attendance WHERE group_id IN ${sqlGruposIndividuales(AIM_CLUB_ID)}) at
            ON at.student_id = s.student_id AND at.date = s.fecha AND at.group_id = s.group_id
-    LEFT JOIN tul_groups g ON g.group_id = COALESCE(s.group_id, at.group_id)`;
-app.get('/api/admin/speaking/historial', authenticateSession, requireAdmin, async (req, res) => {
+    LEFT JOIN tul_groups g ON g.group_id = COALESCE(s.group_id, at.group_id)
+    LEFT JOIN tul_activities ac ON ac.activity_id = g.activity_id`;
+app.get('/api/admin/speaking/historial', authenticateSession, requireIndividuales, async (req, res) => {
     const alumno = /^[0-9a-f-]{36}$/i.test(String(req.query.alumno || '')) ? req.query.alumno : null;
+    const act = UUID_RE.test(String(req.query.activityId || '')) ? req.query.activityId : null;
     try {
         res.set('Cache-Control', 'no-store');
         if (alumno) {
-            const r = await pool.query(`SELECT * FROM (${SQL_DIAS_SPEAKING}) d WHERE d.student_id = $1 ORDER BY d.fecha DESC`, [alumno]);
+            const r = await pool.query(
+                `SELECT * FROM (${SQL_DIAS_SPEAKING}) d WHERE d.student_id = $1 AND ($2::uuid IS NULL OR d.activity_id = $2::uuid)
+                 ORDER BY d.fecha DESC`, [alumno, act]);
             const u = (await pool.query(`SELECT TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS n FROM users WHERE user_id = $1`, [alumno])).rows[0];
             return res.json({
                 alumno: u?.n || '—',
                 dias: r.rows.map(x => ({
-                    fecha: x.fecha, clase: x.clase, citado: !!x.cita_id, confirmado: x.confirmado, perdida: x.perdida, llamado: x.llamado,
+                    fecha: x.fecha, clase: x.clase, actividad: x.actividad || null, citado: !!x.cita_id, confirmado: x.confirmado, perdida: x.perdida, llamado: x.llamado,
                     asistencia: x.asistencia || null,
                     franjas: x.cita_id ? franjasTexto(x.hora_inicio, x.hora_fin, x.franjas || []) : null,
                 })),
@@ -16470,11 +16597,13 @@ app.get('/api/admin/speaking/historial', authenticateSession, requireAdmin, asyn
                     COUNT(*) FILTER (WHERE d.confirmado IS FALSE AND d.asistencia IS NULL)::int AS no_podia,
                     COUNT(*) FILTER (WHERE d.perdida AND d.asistencia IS NULL)::int AS perdidas,
                     MAX(d.fecha) FILTER (WHERE d.asistencia IN ('present', 'late')) AS ultima,
-                    MIN(d.fecha) FILTER (WHERE d.fecha >= ${SQL_HOY_MADRID}) AS proxima
+                    MIN(d.fecha) FILTER (WHERE d.fecha >= ${SQL_HOY_MADRID}) AS proxima,
+                    string_agg(DISTINCT d.actividad, ', ') AS actividades
              FROM (${SQL_DIAS_SPEAKING}) d JOIN users u ON u.user_id = d.student_id
+             WHERE ($1::uuid IS NULL OR d.activity_id = $1::uuid)
              GROUP BY d.student_id, u.name, u.surname
-             ORDER BY MAX(d.fecha) DESC, alumno`);
-        res.json({ alumnos: r.rows.map(x => ({ studentId: x.student_id, alumno: x.alumno, citas: x.citas, vino: x.vino, falto: x.falto, noPodia: x.no_podia, perdidas: x.perdidas, ultima: x.ultima, proxima: x.proxima })) });
+             ORDER BY MAX(d.fecha) DESC, alumno`, [act]);
+        res.json({ alumnos: r.rows.map(x => ({ studentId: x.student_id, alumno: x.alumno, actividades: x.actividades || null, citas: x.citas, vino: x.vino, falto: x.falto, noPodia: x.no_podia, perdidas: x.perdidas, ultima: x.ultima, proxima: x.proxima })) });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -16605,7 +16734,7 @@ app.get('/api/admin/faltas/mes', authenticateSession, requireSeccion('faltas'), 
 // Marcar que secretaría ya ha llamado, o cambiar las franjas. Y, si al llamar
 // la familia contesta, apuntar su respuesta (Confirmada / No puede) sin esperar
 // a que pulse el enlace del correo. null la deja otra vez pendiente.
-app.patch('/api/admin/speaking/:id', authenticateSession, requireAdmin, async (req, res) => {
+app.patch('/api/admin/speaking/:id', authenticateSession, requireIndividuales, async (req, res) => {
     const campos = [], vals = [];
     if (req.body.llamado !== undefined) { vals.push(!!req.body.llamado); campos.push(`llamado = $${vals.length}`); }
     if (req.body.confirmado !== undefined) {
@@ -16636,7 +16765,7 @@ app.patch('/api/admin/speaking/:id', authenticateSession, requireAdmin, async (r
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.delete('/api/admin/speaking/:id', authenticateSession, requireAdmin, async (req, res) => {
+app.delete('/api/admin/speaking/:id', authenticateSession, requireIndividuales, async (req, res) => {
     try {
         await pool.query('DELETE FROM aim_speaking WHERE id = $1', [req.params.id]);
         res.json({ success: true });
@@ -16663,42 +16792,47 @@ app.get('/speaking/:token/:r', async (req, res) => {
                 [req.params.token]);
             limitePerdido = p.rows[0]?.limite || null;
         }
-        res.set('Content-Type', 'text/html; charset=utf-8').send(paginaSpeaking(upd.rowCount > 0, si, limitePerdido));
+        // De qué actividad es, para decir «la clase individual de Taekwondo» (#388).
+        const act = await pool.query(
+            `SELECT a.name FROM aim_speaking s JOIN tul_groups g ON g.group_id = s.group_id
+             JOIN tul_activities a ON a.activity_id = g.activity_id WHERE s.token = $1`, [req.params.token]);
+        res.set('Content-Type', 'text/html; charset=utf-8').send(paginaSpeaking(upd.rowCount > 0, si, limitePerdido, act.rows[0]?.name || null));
     } catch (err) {
         res.status(500).set('Content-Type', 'text/html; charset=utf-8').send(paginaSpeaking(false, false));
     }
 });
 
-// La familia, desde su área en la web (ticket #228): las sesiones de Speaking
+// La familia, desde su área en la web (ticket #228): las clases individuales
 // próximas de sus hijos y confirmar/rechazar la asistencia sin salir de la web.
 app.get('/api/me/speaking', authenticateSession, async (req, res) => {
     try {
         const fam = await familiaIds(req.userSession.userId);
         const r = await pool.query(
-            `SELECT s.id, s.fecha, s.franjas, s.confirmado, s.hora_inicio, s.hora_fin, g.name AS clase,
+            `SELECT s.id, s.fecha, s.franjas, s.confirmado, s.hora_inicio, s.hora_fin, g.name AS clase, a.name AS actividad,
                     ${sqlLimiteSpeaking('s.')} AS limite, ${sqlLimiteSpeaking('s.')} >= ${SQL_HOY_MADRID} AS plazo_abierto,
                     TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno
              FROM aim_speaking s JOIN users u ON u.user_id = s.student_id
              LEFT JOIN tul_groups g ON g.group_id = s.group_id
+             LEFT JOIN tul_activities a ON a.activity_id = g.activity_id
              WHERE s.student_id = ANY($1::uuid[]) AND s.fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date
              ORDER BY s.fecha, alumno`, [fam]);
-        // De quién puede la familia anotar cuándo no puede venir (#363): quien va
-        // a Inglés o a Speaking, o ya ha tenido alguna cita o algo anotado.
+        // De quién puede la familia anotar cuándo no puede venir (#363, #388):
+        // quien va a una actividad que tiene clases individuales, o ya ha tenido
+        // alguna cita o algo anotado.
         const al = await pool.query(
             `SELECT u.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre
              FROM users u
              WHERE u.user_id = ANY($1::uuid[]) AND (
                  EXISTS (SELECT 1 FROM tul_group_students gs JOIN tul_groups g ON g.group_id = gs.group_id
-                         JOIN tul_activities a ON a.activity_id = g.activity_id
-                         WHERE gs.student_id = u.user_id AND a.club_id = $2
-                           AND (a.name ILIKE '%ingl%' OR a.name ILIKE '%english%' OR a.name ILIKE '%speaking%' OR g.name ILIKE '%speaking%'))
+                         WHERE gs.student_id = u.user_id
+                           AND g.activity_id IN (SELECT gi.activity_id FROM tul_groups gi WHERE gi.group_id IN ${sqlGruposIndividuales(AIM_CLUB_ID)}))
                  OR EXISTS (SELECT 1 FROM aim_speaking s WHERE s.student_id = u.user_id)
                  OR EXISTS (SELECT 1 FROM aim_speaking_disponibilidad d WHERE d.student_id = u.user_id))
-             ORDER BY nombre`, [fam, AIM_CLUB_ID]);
+             ORDER BY nombre`, [fam]);
         const disp = await disponibilidadDe(al.rows.map(x => x.user_id));
         res.set('Cache-Control', 'no-store');
         res.json({
-            sesiones: r.rows.map(x => ({ id: x.id, fecha: x.fecha, franjas: x.franjas || [], confirmado: x.confirmado, alumno: x.alumno, clase: x.clase || null, franjasTexto: franjasDeHoras(x.hora_inicio, x.hora_fin), limite: x.limite, plazoAbierto: x.plazo_abierto, perdida: x.confirmado === null && !x.plazo_abierto })),
+            sesiones: r.rows.map(x => ({ id: x.id, fecha: x.fecha, franjas: x.franjas || [], confirmado: x.confirmado, alumno: x.alumno, clase: x.clase || null, actividad: x.actividad || null, franjasTexto: franjasDeHoras(x.hora_inicio, x.hora_fin), limite: x.limite, plazoAbierto: x.plazo_abierto, perdida: x.confirmado === null && !x.plazo_abierto })),
             alumnos: al.rows.map(x => ({ studentId: x.user_id, nombre: x.nombre, noPuede: disp.get(x.user_id)?.noPuede || [], nota: disp.get(x.user_id)?.nota || '' })),
         });
     } catch (err) { res.status(500).json({ error: err.message }); }

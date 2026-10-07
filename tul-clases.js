@@ -1,9 +1,10 @@
 import express from 'express';
 import { escalaDe, escalasDelClub, TIPO_TAEKWONDO } from './rangos.js';
 import {
-    MODOS_BONO, esSpeaking, sqlMatriculadoEnFecha, sqlMiembroEnFecha, sqlModoBono, sqlBonoValeEn,
+    MODOS_BONO, sqlMatriculadoEnFecha, sqlMiembroEnFecha, sqlModoBono, sqlBonoValeEn,
     plazasConBono, reservarPlazaBono, cancelarReservaBono, hoyMadridISO,
 } from './bonos-clases.js';
+import { sqlEsIndividual } from './clases-individuales.js';
 import { filtroNombreSQL } from './buscar.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -157,7 +158,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                 SELECT g.group_id as id, g.activity_id as "activityId", g.name, g.time,
                        g.max_students as "maxStudents", g.min_age as "minAge", g.max_age as "maxAge", g.sessions,
                        (SELECT COUNT(*) FROM tul_group_students gs WHERE gs.group_id = g.group_id) as "studentCount",
-                       ${sqlModoBono()} AS "bonoModo"
+                       ${sqlModoBono()} AS "bonoModo", ${sqlEsIndividual()} AS individual
                 FROM tul_groups g
                 JOIN tul_activities a ON g.activity_id = a.activity_id
                 LEFT JOIN aim_clase_bonos cb ON cb.group_id = g.group_id
@@ -230,10 +231,11 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
         if (!MODOS_BONO.includes(modo)) return res.status(400).json({ error: 'Opción de bonos no válida.' });
         try {
             const g = await pool.query(
-                `SELECT a.activity_type FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+                `SELECT a.activity_type, ${sqlEsIndividual()} AS individual FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
                  WHERE g.group_id = $1 AND a.club_id = $2`, [req.params.groupId, clubId]);
             if (!g.rowCount) return res.status(404).json({ error: 'Grupo no encontrado.' });
             if (g.rows[0].activity_type === 'ingles' && modo !== 'no') return res.status(400).json({ error: 'Las clases de inglés no funcionan con bonos.' });
+            if (g.rows[0].individual && modo !== 'no') return res.status(400).json({ error: 'Las clases individuales no funcionan con bonos.' });
             await pool.query(
                 `INSERT INTO aim_clase_bonos (group_id, modo, updated_at, updated_by) VALUES ($1, $2, NOW(), $3)
                  ON CONFLICT (group_id) DO UPDATE SET modo = EXCLUDED.modo, updated_at = NOW(), updated_by = EXCLUDED.updated_by`,
@@ -250,7 +252,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
         try {
             const r = await pool.query(
                 `SELECT g.group_id, g.name, g.time, g.max_students, a.name AS actividad, a.activity_type,
-                        ${sqlModoBono()} AS modo,
+                        ${sqlModoBono()} AS modo, ${sqlEsIndividual()} AS individual,
                         (SELECT COUNT(*)::int FROM tul_group_students s WHERE s.group_id = g.group_id) AS alumnos
                  FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
                  LEFT JOIN aim_clase_bonos cb ON cb.group_id = g.group_id
@@ -258,7 +260,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
             res.set('Cache-Control', 'no-store');
             res.json({ clases: r.rows.map(x => ({
                 id: x.group_id, nombre: x.name, horario: x.time || '', plazas: x.max_students || null, actividad: x.actividad,
-                ingles: x.activity_type === 'ingles', speaking: esSpeaking(x.name, x.actividad), modo: x.modo, alumnos: x.alumnos,
+                ingles: x.activity_type === 'ingles', individual: x.individual, modo: x.modo, alumnos: x.alumnos,
             })) });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
@@ -269,10 +271,11 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
-            // Inglés nunca admite bonos, aunque llegue marcado.
+            // Inglés y las clases individuales nunca admiten bonos, aunque llegue marcado.
             const validos = (await client.query(
                 `SELECT g.group_id FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
-                 WHERE a.club_id = $1 AND g.group_id = ANY($2::uuid[]) AND a.activity_type <> 'ingles'`, [clubId, si])).rows.map(x => x.group_id);
+                 WHERE a.club_id = $1 AND g.group_id = ANY($2::uuid[]) AND a.activity_type <> 'ingles'
+                   AND NOT ${sqlEsIndividual()}`, [clubId, si])).rows.map(x => x.group_id);
             for (const [ids, modo] of [[validos, 'si'], [no, 'no']]) {
                 for (const id of ids) {
                     await client.query(
@@ -927,17 +930,18 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
     const miembroEnFecha = (sid) => sqlMiembroEnFecha({ g: '$1', f: '$2', sid });
     const matriculadoEnFecha = (sid) => sqlMatriculadoEnFecha({ g: '$1', f: '$2', sid });
 
-    // Lo básico de una clase del club: si es la de Speaking y su ajuste de bonos.
+    // Lo básico de una clase del club: si es una clase individual (#388, antes
+    // Speaking) y su ajuste de bonos.
     async function infoClase(groupId) {
         const r = await pool.query(
-            `SELECT g.name, g.max_students, a.name AS actividad, a.activity_type, ${sqlModoBono()} AS modo
+            `SELECT g.name, g.max_students, a.name AS actividad, a.activity_type, ${sqlModoBono()} AS modo,
+                    ${sqlEsIndividual()} AS speaking
              FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
              LEFT JOIN aim_clase_bonos cb ON cb.group_id = g.group_id
              WHERE g.group_id = $1 AND a.club_id = $2`, [groupId, clubId]);
-        const x = r.rows[0];
-        return x ? { ...x, speaking: esSpeaking(x.name, x.actividad) } : null;
+        return r.rows[0] || null;
     }
-    // Las franjas de Speaking con sus horas (la hora de clase partida en tres).
+    // Las franjas de la clase individual con sus horas (la hora partida en tres).
     const franjasSpeaking = (inicio, fin, franjas) => {
         const min = (t) => { const [h, m] = String(t || '').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
         const hhmm = (n) => `${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`;
@@ -959,7 +963,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
             const diaSemana = (js + 6) % 7;
             const r = await pool.query(
                 `SELECT g.group_id AS id, g.name, g.sessions, g.max_students AS "maxStudents", a.name AS "activityName",
-                        ${sqlModoBono()} AS "bonoModo",
+                        ${sqlModoBono()} AS "bonoModo", ${sqlEsIndividual()} AS individual,
                         (SELECT COUNT(*) FROM tul_group_students gs WHERE gs.group_id = g.group_id)::int AS "studentCount"
                  FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
                  LEFT JOIN aim_clase_bonos cb ON cb.group_id = g.group_id
@@ -978,8 +982,8 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                  WHERE a.club_id = $1 AND at.date = $2::date GROUP BY 1`, [clubId, fecha]
             );
             const yaMarcados = Object.fromEntries(marcados.rows.map(x => [x.group_id, x.n]));
-            // Speaking (#253): solo hay clase los días con alumnos apuntados, y cuentan
-            // los que han confirmado.
+            // Clases individuales (#253, #388): solo hay clase los días con alumnos
+            // apuntados, y cuentan los que han confirmado.
             const spk = await pool.query(
                 `SELECT group_id, COUNT(*) FILTER (WHERE confirmado IS TRUE)::int AS si,
                         COUNT(*) FILTER (WHERE confirmado IS NULL)::int AS pendientes,
@@ -998,9 +1002,9 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                 const ses = (Array.isArray(g.sessions) ? g.sessions : [])
                     .filter(s => (s?.days || []).map(Number).includes(diaSemana));
                 if (!ses.length) continue;
-                const speaking = esSpeaking(g.name, g.activityName);
+                const speaking = g.individual;
                 const sp = speakingDe.get(g.id);
-                if (speaking && !sp) continue; // ese día no hay Speaking
+                if (speaking && !sp) continue; // ese día no hay nadie citado
                 clases.push({
                     id: g.id, name: g.name, activityName: g.activityName,
                     studentCount: speaking ? sp.si : g.studentCount, maxStudents: g.maxStudents,
@@ -1039,7 +1043,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                         COALESCE(u.media_consent, false) AS fotos`;
             res.set('Cache-Control', 'no-store');
 
-            // Speaking (ticket #253): la lista del día es la de quienes han aceptado
+            // Clase individual (#253, #388): la lista del día es la de quienes han aceptado
             // la clase. Los que aún no han contestado salen aparte (por si vienen) y
             // los que han dicho que no, no salen (salvo que ya se les marcara).
             if (info.speaking) {
@@ -1151,7 +1155,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
         try {
             const info = await infoClase(req.params.groupId);
             if (!info) return res.status(404).json({ error: 'Esa clase no es de este club.' });
-            // Speaking (#253): "Todos" son los que han confirmado que vienen.
+            // Clase individual (#253, #388): "Todos" son los que han confirmado que vienen.
             if (info.speaking) {
                 const r = await pool.query(
                     `INSERT INTO tul_attendance (group_id, student_id, date, status, is_auto)

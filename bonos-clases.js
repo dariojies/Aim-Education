@@ -7,10 +7,13 @@
 //   sigue en la lista hasta el último día del mes.
 // · Bonos: cada clase tiene su ajuste (aim_clase_bonos): no admite bonos, admite
 //   el bono de su actividad, o además el bono de adultos (multiactividad). Inglés
-//   nunca admite bonos. Cada domingo se abren las plazas libres de la semana
-//   siguiente: quien tiene bono reserva un día y la clase del bono se gasta al
-//   reservar; si cancela antes del día de la clase, se le devuelve.
+//   y las clases individuales (#388) nunca admiten bonos. Cada domingo se abren
+//   las plazas libres de la semana siguiente: quien tiene bono reserva un día y la
+//   clase del bono se gasta al reservar; si cancela antes del día de la clase, se
+//   le devuelve.
 // ─────────────────────────────────────────────────────────────────────────────
+
+import { sqlEsIndividual } from './clases-individuales.js';
 
 export const MODOS_BONO = ['no', 'si'];
 
@@ -20,9 +23,6 @@ const ahoraHHMM = () => new Date().toLocaleTimeString('en-GB', { timeZone: TZ, h
 const sumarDias = (iso, n) => { const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 // Día de la semana con la convención de aim-tul (0 = lunes).
 export const diaSemanaISO = (iso) => (new Date(iso + 'T12:00:00Z').getUTCDay() + 6) % 7;
-
-// ¿Es la clase de Speaking? (grupos o actividad con ese nombre, como en #228).
-export const esSpeaking = (grupo, actividad) => /speaking/i.test(String(grupo || '')) || /speaking/i.test(String(actividad || ''));
 
 // Estado de matrícula por el histórico en la fecha `f` (lo de #246). `g`, `f` y
 // `sid` son expresiones SQL (placeholders o columnas).
@@ -66,10 +66,11 @@ export const sqlBajaPagadaEnFecha = ({ g = '$1', f = '$2', sid }) => `
 
 export const sqlMiembroEnFecha = (o) => `((${sqlMatriculadoEnFecha(o)}) OR (${sqlBajaPagadaEnFecha(o)}))`;
 
-// Ajuste de bonos efectivo de una clase: Inglés nunca admite bonos.
-// `cb` = alias de aim_clase_bonos (LEFT JOIN), `a` = alias de tul_activities.
-export const sqlModoBono = (cb = 'cb', a = 'a') =>
-    `(CASE WHEN ${a}.activity_type = 'ingles' THEN 'no' ELSE COALESCE(${cb}.modo, 'no') END)`;
+// Ajuste de bonos efectivo de una clase: Inglés y las clases individuales (#388)
+// nunca admiten bonos. `cb` = alias de aim_clase_bonos (LEFT JOIN), `a` = alias
+// de tul_activities, `g` = alias de tul_groups.
+export const sqlModoBono = (cb = 'cb', a = 'a', g = 'g') =>
+    `(CASE WHEN ${a}.activity_type = 'ingles' OR ${sqlEsIndividual(g, a)} THEN 'no' ELSE COALESCE(${cb}.modo, 'no') END)`;
 
 // ¿El bono `b` vale en una clase con ese modo? Desde el #231 (chat del equipo)
 // los bonos no van por actividad: valen en cualquier clase que admita bonos, así

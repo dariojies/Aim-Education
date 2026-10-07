@@ -12,9 +12,9 @@ const AL_APAGAR = {
   acceso_invitacion: 'El botón «Enviar acceso» del personal dejará de funcionar: no podrán poner su contraseña.',
   password_cambiada: 'Nadie se enterará si alguien le cambia la contraseña (es un aviso de seguridad).',
   examen_resultado: 'El botón «Enviar a la familia» de los exámenes dejará de funcionar.',
-  speaking_inicial: 'Las familias no recibirán el correo para confirmar el Speaking: solo podrán confirmarlo desde su área o por teléfono.',
-  speaking_ultimo_dia: 'No se recordará el último día de plazo a quien no ha confirmado el Speaking.',
-  speaking_manana: 'No se recordará la clase de Speaking el día antes.',
+  speaking_inicial: 'Las familias no recibirán el correo para confirmar la clase individual: solo podrán confirmarla desde su área o por teléfono.',
+  speaking_ultimo_dia: 'No se recordará el último día de plazo a quien no ha confirmado la clase individual.',
+  speaking_manana: 'No se recordará la clase individual el día antes.',
   fichaje_resumen: 'El resumen mensual de horas es OBLIGATORIO por ley: si lo apagas, tendréis que entregarlo de otra forma.',
   sello_semanal: 'El sello semanal sirve de prueba ante una inspección de que el registro de jornada no se ha tocado.',
   gestoria_libro: 'El botón «Enviar a la gestoría» de Facturación dejará de funcionar.',
@@ -30,7 +30,7 @@ const AL_APAGAR = {
 // CRM → Diseño de correos (ticket #326). Dos cosas:
 //  · Plantillas: los diseños del club para campañas y correos sueltos.
 //  · Marca: logo, colores, letra y pie, que llevan TODOS los correos.
-// Los correos que manda la app sola (Speaking, contraseñas, fichaje…) se
+// Los correos que manda la app sola (clases individuales, contraseñas, fichaje…) se
 // diseñan desde Automatismos (#365), junto al resto de correos automáticos:
 // el componente CorreosSistema de aquí abajo se usa allí.
 // ─────────────────────────────────────────────────────────────────────────────

@@ -253,7 +253,7 @@ export default function PasarListaClases({ showToast, abrir = null }) {
                 </div>
                 {c.speaking && (
                   <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>
-                    Speaking: {c.speaking.si} confirmado{c.speaking.si !== 1 ? 's' : ''}{c.speaking.pendientes ? ` · ${c.speaking.pendientes} sin contestar` : ''}{c.speaking.no ? ` · ${c.speaking.no} no vienen` : ''}
+                    Clase individual: {c.speaking.si} confirmado{c.speaking.si !== 1 ? 's' : ''}{c.speaking.pendientes ? ` · ${c.speaking.pendientes} sin contestar` : ''}{c.speaking.no ? ` · ${c.speaking.no} no vienen` : ''}
                   </div>
                 )}
                 {c.bonoModo && c.bonoModo !== 'no' && (c.bonoReservas > 0 || c.bonoLibres != null) && (
@@ -335,7 +335,7 @@ export default function PasarListaClases({ showToast, abrir = null }) {
 
           {meta.speaking && (
             <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
-              Clase de Speaking: la lista es la de quienes han aceptado la clase de este día.{meta.noVienen ? ` ${meta.noVienen} ${meta.noVienen === 1 ? 'ha dicho' : 'han dicho'} que no ${meta.noVienen === 1 ? 'viene' : 'vienen'}.` : ''}
+              Clase individual{clase.activityName ? ` de ${clase.activityName}` : ''}: la lista es la de quienes han aceptado la clase de este día.{meta.noVienen ? ` ${meta.noVienen} ${meta.noVienen === 1 ? 'ha dicho' : 'han dicho'} que no ${meta.noVienen === 1 ? 'viene' : 'vienen'}.` : ''}
             </p>
           )}
           {errorLista && (
@@ -344,7 +344,7 @@ export default function PasarListaClases({ showToast, abrir = null }) {
             </div>
           )}
           {!errorLista && !alumnos.length && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>{meta.speaking ? 'Nadie ha confirmado todavía para este día.' : 'Esta clase no tiene alumnos matriculados.'}</p>}
-          {/* En columnas para que quepan todos de un vistazo. En Speaking, primero los
+          {/* En columnas para que quepan todos de un vistazo. En una clase individual, primero los
               confirmados y aparte los que aún no han contestado (#253). */}
           {(meta.speaking
             ? [['Confirmados', alumnos.filter(a => a.speaking !== 'pendiente')], ['Sin contestar (por si vienen)', alumnos.filter(a => a.speaking === 'pendiente')]]
@@ -364,7 +364,7 @@ export default function PasarListaClases({ showToast, abrir = null }) {
 }
 
 // Un alumno en la lista del día, con sus marcas: cumpleaños, viene con bono (o
-// tiene la plaza reservada), de baja hasta fin de mes o Speaking confirmado.
+// tiene la plaza reservada), de baja hasta fin de mes o clase individual confirmada.
 function TarjetaAlumno({ a, onMarcar, onQuitarReserva }) {
   return (
     <div style={{ background: 'var(--bg-2)', border: `1px solid ${a.reservaId ? 'color-mix(in oklab, var(--purple) 35%, var(--line))' : 'var(--line)'}`, borderRadius: 12, padding: '10px 12px', display: 'grid', gap: 8 }}>
