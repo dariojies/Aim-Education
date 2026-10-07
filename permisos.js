@@ -83,8 +83,9 @@ export function permisosDe(rol) {
             billing: !instructor,
             payments: !instructor,     // gastos del club
             classes: !trabajador,
-            // La clase de Speaking la gestionan los profes (apuntar alumnos) y la
-            // ve secretaría (llamar a los padres). Ticket #228.
+            // Las clases individuales (antes Speaking; tickets #228 y #388) las
+            // gestionan los profes (apuntar alumnos) y las ve secretaría (llamar a
+            // los padres). El id sigue siendo 'speaking'.
             speaking: !trabajador,
             // El fichaje (registro de jornada) lo usa TODO el personal, también los
             // instructores y los trabajadores: cada uno ficha su jornada (#233).
@@ -191,8 +192,10 @@ export const AVISOS = [
     { id: 'lista_espera', grupo: 'Clases', texto: 'Clases con plaza libre y gente esperando', quien: (p, rol) => rol !== 'trabajador',
       nota: (p) => (p.soloSusGrupos ? 'solo de sus clases' : null) },
     { id: 'faltas', grupo: 'Clases', texto: 'Alumnos con 4 o más faltas seguidas', quien: (p) => p.secciones.faltas },
-    { id: 'speaking_por_llamar', grupo: 'Speaking', texto: 'Alumnos de Speaking por avisar a los padres', quien: todos },
-    { id: 'speaking_rechazados', grupo: 'Speaking', texto: 'Familias que han dicho que no al Speaking', quien: todos },
+    // Clases individuales (#388, antes «Speaking»): los ids no cambian, para no
+    // perder lo que la dirección haya ajustado.
+    { id: 'speaking_por_llamar', grupo: 'Clases individuales', texto: 'Alumnos de clases individuales por avisar a los padres', quien: todos },
+    { id: 'speaking_rechazados', grupo: 'Clases individuales', texto: 'Familias que han dicho que no a una clase individual', quien: todos },
     { id: 'fotos', grupo: 'Familias', texto: 'Solicitudes del permiso de fotos', quien: (p) => p.editarAlumnos },
     { id: 'contactos', grupo: 'Familias', texto: 'Consultas de la web sin atender', quien: (p) => p.secciones.contactos },
     { id: 'candidatos', grupo: 'Club', texto: 'Candidaturas nuevas de «Trabaja con nosotros»', quien: (p) => p.secciones.candidatos },

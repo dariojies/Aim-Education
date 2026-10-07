@@ -107,7 +107,8 @@ function ClasesConBono({ showToast, onCerrar }) {
       .catch(e => { alert(e.message); onCerrar(); });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   if (!clases) return null;
-  const posibles = clases.filter(c => !c.ingles);
+  // Inglés y las clases individuales (#388) nunca admiten bonos.
+  const posibles = clases.filter(c => !c.ingles && !c.individual);
   const porActividad = [...new Set(clases.map(c => c.actividad))];
   const alternar = (id) => setMarcadas(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const cambios = clases.filter(c => (c.modo === 'si') !== marcadas.has(c.id));
@@ -127,10 +128,10 @@ function ClasesConBono({ showToast, onCerrar }) {
         <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.5 }}>
           En las clases marcadas se puede ir con un bono (Pase Explorador, Bono Flexi…): el club lo añade al pasar lista y se le gasta una clase,
           y las familias con bono reservan desde su área las plazas libres, que se abren cada domingo para la semana siguiente.
-          Para eso la clase necesita un número de plazas. Inglés nunca admite bonos.
+          Para eso la clase necesita un número de plazas. Inglés y las clases individuales nunca admiten bonos.
         </p>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button className="btn btn-sm btn-outline" onClick={() => setMarcadas(new Set(posibles.filter(c => !c.speaking).map(c => c.id)))}>Marcar todas (menos Inglés y Speaking)</button>
+          <button className="btn btn-sm btn-outline" onClick={() => setMarcadas(new Set(posibles.map(c => c.id)))}>Marcar todas (menos Inglés y clases individuales)</button>
           <button className="btn btn-sm btn-outline" onClick={() => setMarcadas(new Set())}>Ninguna</button>
           <span style={{ fontSize: 12, color: 'var(--ink-3)', alignSelf: 'center' }}>{marcadas.size} de {clases.length} admiten bonos</span>
         </div>
@@ -138,11 +139,11 @@ function ClasesConBono({ showToast, onCerrar }) {
           <div key={act} style={{ display: 'grid', gap: 4 }}>
             <b style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--ink-3)' }}>{act}</b>
             {clases.filter(c => c.actividad === act).map(c => (
-              <label key={c.id} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '7px 10px', borderRadius: 10, background: 'var(--bg-3)', cursor: c.ingles ? 'not-allowed' : 'pointer', opacity: c.ingles ? 0.55 : 1, fontSize: 13 }}>
-                <input type="checkbox" disabled={c.ingles} checked={marcadas.has(c.id)} onChange={() => alternar(c.id)} />
+              <label key={c.id} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '7px 10px', borderRadius: 10, background: 'var(--bg-3)', cursor: c.ingles || c.individual ? 'not-allowed' : 'pointer', opacity: c.ingles || c.individual ? 0.55 : 1, fontSize: 13 }}>
+                <input type="checkbox" disabled={c.ingles || c.individual} checked={marcadas.has(c.id)} onChange={() => alternar(c.id)} />
                 <span style={{ flex: 1, minWidth: 0 }}><b>{c.nombre}</b> <span style={{ color: 'var(--ink-3)' }}>· {c.horario || 'sin horario'}</span></span>
                 <span style={{ fontSize: 12, color: c.plazas ? 'var(--ink-3)' : 'var(--orange)', fontWeight: c.plazas ? 400 : 700 }}>
-                  {c.ingles ? 'Inglés: nunca' : c.plazas ? `${c.alumnos}/${c.plazas} plazas` : 'sin nº de plazas: las familias no podrán reservar'}
+                  {c.ingles ? 'Inglés: nunca' : c.individual ? 'Clase individual: nunca' : c.plazas ? `${c.alumnos}/${c.plazas} plazas` : 'sin nº de plazas: las familias no podrán reservar'}
                 </span>
               </label>
             ))}
@@ -272,6 +273,7 @@ export function ListaClases({ showToast }) {
                   {lleno && <Etiqueta color="#E5484D">COMPLETA</Etiqueta>}
                   {enEspera > 0 && <Etiqueta color="var(--purple)">{enEspera} en espera</Etiqueta>}
                   {g.bonoModo && g.bonoModo !== 'no' && <Etiqueta color="var(--teal)">🎫 ADMITE BONOS</Etiqueta>}
+                  {g.individual && <Etiqueta color="#00BBF4">CLASE INDIVIDUAL</Etiqueta>}
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>{resumenSesiones(g)}</div>
                 <div style={{ fontSize: 12, color: 'var(--ink-2)', marginTop: 4, display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -289,7 +291,7 @@ export function ListaClases({ showToast }) {
                 </button>
               )}
               <button className="btn btn-sm btn-outline" onClick={() => setGrupoAlumnos({ ...g, actividadNombre: actividad.name })}><I.Users /> Alumnos</button>
-              <button className="icon-btn" title="Editar" onClick={() => setEditGrupo({ id: g.id, name: g.name, maxStudents: g.maxStudents ?? '', minAge: g.minAge ?? '', maxAge: g.maxAge ?? '', sessions: Array.isArray(g.sessions) ? g.sessions.map(s => ({ ...s })) : [], bonoModo: g.bonoModo || 'no', bonoModoInicial: g.bonoModo || 'no' })}><I.Edit /></button>
+              <button className="icon-btn" title="Editar" onClick={() => setEditGrupo({ id: g.id, name: g.name, maxStudents: g.maxStudents ?? '', minAge: g.minAge ?? '', maxAge: g.maxAge ?? '', sessions: Array.isArray(g.sessions) ? g.sessions.map(s => ({ ...s })) : [], bonoModo: g.bonoModo || 'no', bonoModoInicial: g.bonoModo || 'no', individual: !!g.individual })}><I.Edit /></button>
               <button className="icon-btn danger" title="Eliminar" onClick={() => borrarGrupo(g)}><I.Trash /></button>
             </div>
           );
@@ -318,6 +320,8 @@ export function ListaClases({ showToast }) {
                   <label>Bonos</label>
                   {actividad.activityType === 'ingles' ? (
                     <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Las clases de inglés no funcionan con bonos.</p>
+                  ) : editGrupo.individual ? (
+                    <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Es una clase individual: no funciona con bonos (se marca en «Clases individuales»).</p>
                   ) : (
                     <>
                       <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, cursor: 'pointer' }}>

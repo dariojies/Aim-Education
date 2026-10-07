@@ -9,7 +9,7 @@
 // El HTML es de correo, no de web: tablas, estilos en línea y nada de scripts,
 // para que se vea bien en Gmail, Outlook y el móvil.
 //
-// También está aquí el catálogo de los correos automáticos de la app (Speaking,
+// También está aquí el catálogo de los correos automáticos de la app (clases individuales,
 // contraseñas, fichaje…), cada uno con su diseño de fábrica y los datos que se
 // rellenan solos. Si el club personaliza uno, se guarda en aim_ajustes.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -609,10 +609,14 @@ export const CORREOS_SISTEMA = {
             T('Un saludo,\n**AIM Education** · Algeciras'),
         ]),
     },
+    // Clases individuales (#388, antes «Speaking»): las claves siguen siendo
+    // speaking_* para no perder los diseños ni los ajustes guardados.
     speaking_inicial: {
-        grupo: 'familias', nombre: 'Speaking: confirmar asistencia', cuando: 'Al apuntar a un alumno a una clase de Speaking.',
-        asunto: 'Clase de Speaking de {alumno} · {fecha}',
+        grupo: 'familias', nombre: 'Clases individuales: confirmar asistencia', cuando: 'Al apuntar a un alumno a una clase individual.',
+        asunto: 'Clase individual de {actividad} de {alumno} · {fecha}',
         variables: {
+            actividad: { que: 'La actividad de la clase', ejemplo: 'Taekwondo' },
+            clase: { que: 'La clase del horario', ejemplo: 'Individual tardes' },
             alumno: { que: 'Nombre y apellidos del alumno', ejemplo: 'Lucía García' },
             fecha: { que: 'El día de la clase', ejemplo: 'martes, 6 de octubre' },
             cuando: { que: 'El día y la hora', ejemplo: 'martes, 6 de octubre (17:00 a 17:30)' },
@@ -623,15 +627,17 @@ export const CORREOS_SISTEMA = {
         obligatorio: ['enlace_si', 'enlace_no'],
         diseno: () => d([
             T('Hola,'),
-            T('**{alumno}** está apuntado/a a la clase de **Speaking** del **{cuando}**.\n\nPor favor, confirma si podrá asistir:'),
+            T('**{alumno}** está apuntado/a a la **clase individual de {actividad}** del **{cuando}**.\n\nPor favor, confirma si podrá asistir:'),
             CAJA('**Importante:** tienes hasta {limite} (incluido) para confirmar. Si para entonces no has confirmado, **se pierde la plaza** de ese día.'),
             BTN([{ texto: 'Sí, asistirá', url: '{enlace_si}', fondo: VERDE, color: '#ffffff' }, { texto: 'No podrá', url: '{enlace_no}', fondo: '#eeeeee', color: '#333333' }]),
         ]),
     },
     speaking_ultimo_dia: {
-        grupo: 'familias', nombre: 'Speaking: último día para confirmar', cuando: 'El último día del plazo, a quien aún no ha contestado.',
-        asunto: 'Último día para confirmar · Clase de Speaking de {alumno} · {fecha}',
+        grupo: 'familias', nombre: 'Clases individuales: último día para confirmar', cuando: 'El último día del plazo, a quien aún no ha contestado.',
+        asunto: 'Último día para confirmar · Clase individual de {actividad} de {alumno} · {fecha}',
         variables: {
+            actividad: { que: 'La actividad de la clase', ejemplo: 'Taekwondo' },
+            clase: { que: 'La clase del horario', ejemplo: 'Individual tardes' },
             alumno: { que: 'Nombre y apellidos del alumno', ejemplo: 'Lucía García' },
             fecha: { que: 'El día de la clase', ejemplo: 'martes, 6 de octubre' },
             cuando: { que: 'El día y la hora', ejemplo: 'martes, 6 de octubre (17:00 a 17:30)' },
@@ -641,15 +647,17 @@ export const CORREOS_SISTEMA = {
         obligatorio: ['enlace_si', 'enlace_no'],
         diseno: () => d([
             T('Hola,'),
-            T('**{alumno}** está apuntado/a a la clase de **Speaking** del **{cuando}** y todavía no nos has confirmado si podrá asistir.'),
+            T('**{alumno}** está apuntado/a a la **clase individual de {actividad}** del **{cuando}** y todavía no nos has confirmado si podrá asistir.'),
             CAJA('**Hoy es el último día para confirmar.** Si no lo haces hoy, se pierde la plaza de ese día.'),
             BTN([{ texto: 'Sí, asistirá', url: '{enlace_si}', fondo: VERDE, color: '#ffffff' }, { texto: 'No podrá', url: '{enlace_no}', fondo: '#eeeeee', color: '#333333' }]),
         ]),
     },
     speaking_manana: {
-        grupo: 'familias', nombre: 'Speaking: la clase es mañana', cuando: 'El día antes de la clase, a quien ya ha confirmado.',
-        asunto: 'Recordatorio · Clase de Speaking de {alumno} · {fecha}',
+        grupo: 'familias', nombre: 'Clases individuales: la clase es mañana', cuando: 'El día antes de la clase, a quien ya ha confirmado.',
+        asunto: 'Recordatorio · Clase individual de {actividad} de {alumno} · {fecha}',
         variables: {
+            actividad: { que: 'La actividad de la clase', ejemplo: 'Taekwondo' },
+            clase: { que: 'La clase del horario', ejemplo: 'Individual tardes' },
             alumno: { que: 'Nombre y apellidos del alumno', ejemplo: 'Lucía García' },
             fecha: { que: 'El día de la clase', ejemplo: 'martes, 6 de octubre' },
             cuando: { que: 'El día y la hora', ejemplo: 'martes, 6 de octubre · 17:00 a 17:30' },
@@ -658,7 +666,7 @@ export const CORREOS_SISTEMA = {
         obligatorio: ['enlace_no'],
         diseno: () => d([
             T('Hola,'),
-            T('Te recordamos que **mañana** es la clase de **Speaking** de **{alumno}** (**{cuando}**). ¡Os esperamos!\n\nSi al final no puede venir, avísanos:'),
+            T('Te recordamos que **mañana** es la **clase individual de {actividad}** de **{alumno}** (**{cuando}**). ¡Os esperamos!\n\nSi al final no puede venir, avísanos:'),
             BTN([{ texto: 'No podrá', url: '{enlace_no}', fondo: '#eeeeee', color: '#333333' }]),
         ]),
     },

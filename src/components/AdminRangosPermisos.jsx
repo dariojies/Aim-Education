@@ -26,7 +26,7 @@ const MATIZ = {
 
 const RESUMEN = {
   trabajador: 'Su fichaje, sus tareas del día, sus tickets y sus avisos.',
-  instructor: 'Sus clases de hoy y si ha pasado lista, alumnos de sus grupos que faltan seguido, cumpleaños, Speaking y sus eventos.',
+  instructor: 'Sus clases de hoy y si ha pasado lista, alumnos de sus grupos que faltan seguido, cumpleaños, clases individuales y sus eventos.',
   secretaria: 'Lo cobrado hoy y la caja, lo que queda por cobrar, las clases de hoy, quién está trabajando, cumpleaños y eventos de la semana.',
   club_owner: 'Ingresos y gastos del mes y de los últimos seis meses, alumnos (altas y bajas), ocupación de las clases y lo pendiente de cobrar. Puede ver también el Resumen de los demás rangos.',
 };

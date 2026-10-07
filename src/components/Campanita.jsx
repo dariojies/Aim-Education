@@ -47,7 +47,7 @@ const TITULO = {
   caja: 'Caja',
   campamento: 'Campamento',
   clases: 'Clases',
-  speaking: 'Speaking',
+  speaking: 'Clases individuales',
   fichaje: 'Fichaje',
   permisos: 'Permisos',
   faltas: 'Faltas',

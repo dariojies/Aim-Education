@@ -49,7 +49,7 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Mantiene una conexión con el servidor propio del club (aimeducation.es) para recibir al instante, sin servicios de push de terceros, los avisos que la familia ha activado: cierres de clase, sesiones de Speaking, respuestas de soporte, pagos y Brickslab. Se apaga desde la notificación fija o desde la app. / Keeps one connection to the club's own server (aimeducation.es) to deliver within seconds, without third-party push services, the notices the family turned on: class closures, Speaking sessions, support replies, payments and Brickslab. The user can turn it off from the ongoing notification or from the app." />
+                android:value="Mantiene una conexión con el servidor propio del club (aimeducation.es) para recibir al instante, sin servicios de push de terceros, los avisos que la familia ha activado: cierres de clase, clases individuales, respuestas de soporte, pagos y Brickslab. Se apaga desde la notificación fija o desde la app. / Keeps one connection to the club's own server (aimeducation.es) to deliver within seconds, without third-party push services, the notices the family turned on: class closures, individual lessons, support replies, payments and Brickslab. The user can turn it off from the ongoing notification or from the app." />
         </service>
 
         <!-- Al encender el móvil y al actualizar la app -->

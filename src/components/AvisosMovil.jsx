@@ -10,7 +10,7 @@ import { plataformaApp, plugin, quitarOyente, activarAvisos, desactivarAvisos, e
 
 const GRUPOS = [
   ['pagos', 'Pagos', 'Recibos nuevos por pagar.'],
-  ['clases', 'Clases y cierres', 'Speaking por confirmar, días que cierra el centro, plazas libres.'],
+  ['clases', 'Clases y cierres', 'Clases individuales por confirmar, días que cierra el centro, plazas libres.'],
   ['soporte', 'Soporte', 'Cuando el club te contesta.'],
   ['brickslab', 'Brickslab', 'Sets entregados y votaciones.'],
   ['fotos', 'Fotos', 'Álbumes nuevos donde sale alguien de la familia.'],
@@ -56,7 +56,7 @@ export function TarjetaAvisos() {
       <span className="ico"><I.Bell /></span>
       <div style={{ flex: 1, minWidth: 0 }}>
         <b>Recibe los avisos al momento</b>
-        <p>Cierres del centro, Speaking por confirmar, respuestas de secretaría, recibos y fotos nuevas.</p>
+        <p>Cierres del centro, clases individuales por confirmar, respuestas de secretaría, recibos y fotos nuevas.</p>
         {estado === 'hecho'
           ? <p style={{ color: 'var(--teal)', fontWeight: 700 }}>Listo: ya te llegarán los avisos.</p>
           : estado && estado !== 'activando' ? <p style={{ color: 'var(--orange)' }}>{estado}</p> : null}

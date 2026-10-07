@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { I } from './Icons.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Cuándo NO puede venir un alumno a Speaking (ticket #363). Cada regla es un día
+// Cuándo NO puede venir un alumno a las clases individuales (ticket #363; antes
+// Speaking, #388). Vale para todas sus actividades. Cada regla es un día
 // de la semana (0 = lunes, como el horario) y, si no es el día entero, desde y/o
 // hasta qué hora. Así cabe «los martes no», y también «los jueves a en punto no,
 // pero a y cuarto sí» (jueves, hasta las 17:15). Lo usan secretaría (al citar) y

@@ -11,7 +11,7 @@ import { CorreosSistema } from './AdminDisenoCorreos.jsx';
 // enciende y apaga aquí, con su plantilla, se puede ver a quién le saldría ahora
 // (sin enviar nada) y qué ha enviado ya. Al encender uno solo cuenta lo que pase
 // desde ese momento. Desde el #365 también están aquí, abajo, los correos que la
-// app manda siempre (Speaking, contraseñas, fichaje…), con su diseño.
+// app manda siempre (clases individuales, contraseñas, fichaje…), con su diseño.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const VARS = {
@@ -184,7 +184,7 @@ export default function AdminAutomatismos({ showToast, onAbrirFicha }) {
           dependen de una hora o de un plazo tienen sus ajustes. Arriba, los avisos a las familias (bienvenida, faltas, cumpleaños,
           días que cerramos, noticias del mes): a cada familia le llega una sola vez por cada ocasión, no le llega a quien no quiere
           novedades de sus clases, y queda apuntado en su ficha. Abajo, los que la app manda cuando pasa algo (contraseñas,
-          Speaking, fichaje, avisos al club…).
+          clases individuales, fichaje, avisos al club…).
         </p>
         {!d.correoActivo && <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: 'var(--orange)' }}>El correo no está configurado en el servidor: aunque se enciendan, no saldrán.</p>}
         {d.correoActivo && d.automatismos.some(a => a.activo) && (
@@ -203,7 +203,7 @@ export default function AdminAutomatismos({ showToast, onAbrirFicha }) {
           <p className="sub" style={{ margin: 0 }}>
             Vienen encendidos. Si apagas uno, deja de salir (y te decimos antes qué deja de funcionar). Puedes cambiarles el texto,
             los colores, añadir imágenes… Lo que no se puede quitar es lo que los hace funcionar (el enlace de la contraseña, los
-            botones de Speaking, la tabla de horas…): el editor te avisa.
+            botones de las clases individuales, la tabla de horas…): el editor te avisa.
           </p>
         </div>
         <CorreosSistema showToast={showToast} />

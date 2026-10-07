@@ -50,10 +50,12 @@ function AccesoRapido({ titulo, desc, color, icon, onClick }) {
 
 const DAY_NAMES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
 
-// Clase de Speaking (ticket #228): las sesiones próximas de los hijos, para que la
-// familia confirme la asistencia desde la web (además del correo). Y (#363) los
-// días y horas en que cada uno NO puede, para que el club solo le cite cuando
-// pueda. Se ve si hay alguna sesión o alguien que vaya a Inglés.
+// Clases individuales (#228; antes «Speaking», #388): las próximas de los hijos,
+// de cualquier actividad («Clase individual de Taekwondo»), para que la familia
+// confirme la asistencia desde la web (además del correo). Y (#363) los días y
+// horas en que cada uno NO puede, para que el club solo le cite cuando pueda.
+// Se ve si hay alguna cita o alguien que vaya a una actividad con clases
+// individuales.
 function SpeakingFamilia() {
   const [sesiones, setSesiones] = useState(null);
   const [alumnos, setAlumnos] = useState([]);
@@ -95,21 +97,25 @@ function SpeakingFamilia() {
   if (!sesiones || (sesiones.length === 0 && alumnos.length === 0)) return null;
   const fmt = (f) => new Date(String(f).slice(0, 10) + 'T12:00:00').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
   // Franjas con las horas reales de la clase (si el servidor las manda); si no, el nº.
+  // El servidor manda { n, desde, hasta } cuando la clase tiene horas y { n, label }
+  // si no: antes solo se leía label y con horas salía vacío («martes · »).
   const franjas = (s) => {
     if ((s.franjas || []).length === 3) return 'la hora entera';
-    const tx = (s.franjasTexto || []).filter(f => (s.franjas || []).includes(f.n)).map(f => f.label);
+    const tx = (s.franjasTexto || []).filter(f => (s.franjas || []).includes(f.n))
+      .map(f => f.label || (f.desde ? `${f.desde}–${f.hasta}` : '')).filter(Boolean);
     return tx.length ? tx.join(', ') : `franja${(s.franjas || []).length !== 1 ? 's' : ''} ${(s.franjas || []).join(', ')}`;
   };
 
   return (
     <div className="panel">
-      <h2><I.Calendar /> Clase de Speaking</h2>
+      <h2><I.Calendar /> Clases individuales</h2>
       {sesiones.length > 0 && <p className="sub">Confirma si tu hijo/a podrá asistir a estas clases. Hay que confirmar como tarde 2 días antes de la clase; si no, se pierde la plaza de ese día.</p>}
       <div style={{ display: 'grid', gap: 10 }}>
         {sesiones.map(s => (
           <div key={s.id} style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', padding: '12px 14px', borderRadius: 12, border: '1px solid var(--line)', background: 'var(--bg-2)' }}>
             <div style={{ flex: '1 1 220px', minWidth: 0 }}>
-              <div style={{ fontWeight: 800, fontSize: 15 }}>{s.alumno}{s.clase ? ` · ${s.clase}` : ''}</div>
+              <div style={{ fontWeight: 800, fontSize: 15 }}>{s.alumno}</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--purple)' }}>Clase individual{s.actividad ? ` de ${s.actividad}` : ''}</div>
               <div style={{ fontSize: 13, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{fmt(s.fecha)} · {franjas(s)}</div>
               {s.confirmado == null && s.limite && !s.perdida && (
                 <div style={{ fontSize: 12, color: 'var(--orange)', fontWeight: 700, marginTop: 2 }}>Confirma como tarde el {fmt(s.limite)}</div>
@@ -135,7 +141,7 @@ function SpeakingFamilia() {
       {alumnos.length > 0 && (
         <div style={{ marginTop: sesiones.length ? 18 : 0 }}>
           <h3 style={{ margin: '0 0 4px', fontSize: 15, fontWeight: 800 }}>Días y horas en que no puede</h3>
-          <p className="sub" style={{ marginTop: 0 }}>Dinos qué días u horas no puede venir y solo le citaremos cuando pueda. Por ejemplo: «los martes no», o «los jueves a en punto no, pero a y cuarto sí».</p>
+          <p className="sub" style={{ marginTop: 0 }}>Dinos qué días u horas no puede venir y solo le citaremos a una clase individual cuando pueda (vale para todas sus actividades). Por ejemplo: «los martes no», o «los jueves a en punto no, pero a y cuarto sí».</p>
           <div style={{ display: 'grid', gap: 10 }}>
             {alumnos.map(a => (
               <div key={a.studentId} style={{ padding: '12px 14px', borderRadius: 12, border: '1px solid var(--line)', background: 'var(--bg-2)', display: 'grid', gap: 8 }}>
@@ -1435,7 +1441,7 @@ function PermisosFamilia() {
           <div key={p.id} style={{ border: '1px solid var(--line)', borderRadius: 14, padding: 14, display: 'grid', gap: 12, background: 'var(--bg-2)' }}>
             <div style={{ fontWeight: 800, fontSize: 15 }}>{p.nombre}{p.yo ? ' (tú)' : ''}</div>
             {[
-              ['comActividades', 'Comunicaciones de sus actividades', 'Avisos e información de las actividades en las que está apuntado/a (Speaking, exámenes…).'],
+              ['comActividades', 'Comunicaciones de sus actividades', 'Avisos e información de las actividades en las que está apuntado/a (clases individuales, exámenes…).'],
               ['comComerciales', 'Comunicaciones comerciales', 'Novedades, eventos y ofertas de otras actividades del club.'],
             ].map(([campo, titulo, ayuda]) => (
               <div key={campo} style={fila}>
