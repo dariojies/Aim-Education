@@ -16462,6 +16462,47 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                 texto: `${im.n} incidencia${im.n !== 1 ? 's' : ''} por resolver`, detalle: im.vencidas ? `${im.vencidas} con la fecha límite pasada` : 'te las ha encargado la dirección',
             });
         }
+        // Incidencias en las que me han implicado (#401): una por incidencia
+        // mientras esté abierta (si no la he registrado yo ni la tengo encargada:
+        // de esas ya avisa lo de arriba). Y, cuando se resuelve, a los implicados,
+        // a quien la registró y a quien la tenía encargada, salvo a quien la
+        // resuelve. La de «resuelta» lleva la hora como marca: si se reabre y se
+        // vuelve a resolver, se enciende otra vez.
+        if (recibe('incidencias_implicado')) {
+            const filas = (await pool.query(
+                `SELECT i.id, i.estado, i.clase_nombre, i.resuelta_at, i.autor_id, i.responsable_id, i.implicados,
+                        TRIM(CONCAT(a.name, ' ', COALESCE(a.surname, ''))) AS autor,
+                        TRIM(CONCAT(rp.name, ' ', COALESCE(rp.surname, ''))) AS resuelta_por
+                 FROM aim_incidencias i
+                 LEFT JOIN users a ON a.user_id = i.autor_id
+                 LEFT JOIN users rp ON rp.user_id = i.resuelta_por
+                 WHERE (i.estado = 'abierta' AND $1::uuid = ANY(i.implicados)
+                        AND i.autor_id IS DISTINCT FROM $1::uuid AND i.responsable_id IS DISTINCT FROM $1::uuid)
+                    OR (i.estado = 'resuelta' AND i.resuelta_at > NOW() - INTERVAL '7 days' AND i.resuelta_por IS DISTINCT FROM $1::uuid
+                        AND ($1::uuid = ANY(i.implicados) OR i.autor_id = $1::uuid OR i.responsable_id = $1::uuid))
+                 ORDER BY COALESCE(i.resuelta_at, i.created_at) DESC`, [yo])).rows;
+            const destino = (i, resuelta) => enlaceIncidencia(i, yo, resuelta).slice(URL_PUBLICA_WEB.length);
+            for (const estado of ['abierta', 'resuelta']) {
+                const l = filas.filter(i => i.estado === estado), max = 5;
+                for (const i of l.slice(0, max)) {
+                    avisos.push(estado === 'abierta' ? {
+                        tipo: 'incidencias', destino: destino(i, false), n: 1, clave: `incidencia_implicado:${i.id}`,
+                        texto: `Te han implicado en la incidencia #${i.id}`,
+                        detalle: `${i.clase_nombre || 'sin clase concreta'} · la registró ${i.autor || 'alguien'}`,
+                    } : {
+                        tipo: 'incidencias', destino: destino(i, true), n: 1, clave: `incidencia_resuelta:${i.id}`, marca: i.resuelta_at,
+                        texto: `Resuelta la incidencia #${i.id}`,
+                        detalle: `${i.clase_nombre || 'sin clase concreta'} · la resolvió ${i.resuelta_por || 'alguien'}`,
+                    });
+                }
+                if (l.length > max) avisos.push({
+                    tipo: 'incidencias', destino: `/admin/incidencias?filtro=implicado${estado === 'resuelta' ? '&estado=resueltas' : ''}`, n: l.length,
+                    clave: `incidencias_implicado:${estado}:resto`,
+                    texto: estado === 'abierta' ? `Y ${l.length - max} incidencia${l.length - max !== 1 ? 's' : ''} más en las que estás implicado`
+                        : `Y ${l.length - max} incidencia${l.length - max !== 1 ? 's' : ''} más resuelta${l.length - max !== 1 ? 's' : ''}`,
+                });
+            }
+        }
         // Solicitudes de las familias para dar o quitar el permiso de fotos (#170).
         if (recibe('fotos')) {
             const sf = (await pool.query(
@@ -19940,8 +19981,9 @@ app.use('/api/admin/brickslab', authenticateSession, requireSeccion('brickslab')
 
 // ── Incidencias (#383) ───────────────────────────────────────────────────────
 // Las registra cualquiera del personal. Secretaría y dirección las ven todas; el
-// resto, las que ha escrito y las que tiene que resolver. Solo la dirección pone
-// responsable y fecha límite; el responsable puede darla por resuelta.
+// resto, las que ha escrito, las que tiene que resolver y en las que le han
+// implicado (#401). Solo la dirección pone responsable y fecha límite (y cambia
+// los implicados); el responsable puede darla por resuelta.
 const SQL_INCIDENCIAS = `
     SELECT i.id, i.texto, i.autor_id, i.group_id, i.clase_nombre, i.estado, i.responsable_id, i.resolucion,
            i.resuelta_at, i.created_at, to_char(i.fecha_limite, 'YYYY-MM-DD') AS limite,
@@ -19963,6 +20005,57 @@ const mapIncidencia = (x) => ({
     fechaLimite: x.limite || null, resolucion: x.resolucion || '', resueltaPor: x.resuelta_por || null, resueltaAt: x.resuelta_at,
 });
 const ROLES_PERSONAL_SQL = `('trabajador', 'instructor', 'secretaria', 'club_owner', 'equipo_it')`;
+const UUID_INCIDENCIA = /^[0-9a-f-]{36}$/i;
+// Los implicados que llegan del formulario: ids válidos, sin repetir, como mucho
+// 40 y solo de gente del club.
+async function implicadosValidos(lista) {
+    const ids = [...new Set((Array.isArray(lista) ? lista : []).map(String).filter(x => UUID_INCIDENCIA.test(x)))].slice(0, 40);
+    if (!ids.length) return [];
+    return (await pool.query(`SELECT user_id FROM users WHERE user_id = ANY($1::uuid[]) AND club_id = $2`, [ids, AIM_CLUB_ID])).rows.map(x => x.user_id);
+}
+
+// Avisos al personal implicado (#401). Solo cuenta el personal (los alumnos y
+// las familias implicados no entran al panel) y solo quien tiene el apartado
+// «Incidencias»: sin él no podría abrirla. Nunca a quien ha hecho el cambio. El
+// correo no lleva lo que pasó (puede haber nombres de alumnos): solo la clase, el
+// día, quién y el enlace; el texto se lee en la web. En la campanita sale solo
+// (ver /api/admin/notificaciones).
+async function personalDeIncidencias(ids, excluir) {
+    const l = [...new Set((ids || []).filter(Boolean).map(String))].filter(x => x !== String(excluir || ''));
+    if (!l.length) return [];
+    const r = await pool.query(
+        `SELECT u.user_id, u.email, u.name, u.role, u.dev_role, ar.rango
+         FROM users u LEFT JOIN aim_rangos ar ON ar.user_id = u.user_id WHERE u.user_id = ANY($1::uuid[])`, [l]);
+    return r.rows.filter(u => {
+        const rol = rolEfectivo(u.role, u.dev_role, u.rango);
+        return rol && permisosEfectivos(rol).secciones.incidencias;
+    });
+}
+// Adónde lleva el enlace a cada uno: a «Me implican», a «Encargadas a mí» o a
+// «Escritas por mí», según lo que sea en esa incidencia.
+function enlaceIncidencia(i, userId, resuelta = false) {
+    const u = String(userId);
+    const filtro = (i.implicados || []).map(String).includes(u) ? 'implicado'
+        : String(i.responsable_id || '') === u ? 'mias' : String(i.autor_id || '') === u ? 'escritas' : 'implicado';
+    return `${URL_PUBLICA_WEB}/admin/incidencias?filtro=${filtro}${resuelta ? '&estado=resueltas' : ''}`;
+}
+async function avisarIncidencia(clave, i, ids, { excluir, quien }) {
+    if (!mailTransporter) return;
+    const general = String(process.env.EMAIL_USER || '').toLowerCase();
+    const personas = (await personalDeIncidencias(ids, excluir))
+        .filter(p => p.email && !esCorreoInterno(p.email) && p.email.toLowerCase() !== general);
+    for (const p of personas) {
+        try {
+            const c = await correoSistema(clave, {
+                nombre: p.name || '', numero: i.id, clase: i.clase_nombre || 'sin clase concreta',
+                fecha: fmtFechaHoraMadrid(i.created_at), quien: quien || 'Alguien',
+                enlace: enlaceIncidencia(i, p.user_id, clave === 'incidencia_resuelta'),
+            });
+            await mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: p.email, ...c });
+        } catch (e) { if (!e.apagado) console.error(`[incidencias] ${clave}:`, e.message); }
+    }
+}
+const nombreDe = (ses) => `${ses.firstName || ''} ${ses.lastName || ''}`.trim() || 'Alguien';
 
 app.get('/api/admin/incidencias', authenticateSession, requireSeccion('incidencias'), async (req, res) => {
     const p = permisos(req), yo = req.userSession.userId;
@@ -19971,16 +20064,31 @@ app.get('/api/admin/incidencias', authenticateSession, requireSeccion('incidenci
         const vals = [estado, p.verTodasIncidencias, yo];
         const r = await pool.query(
             `${SQL_INCIDENCIAS}
-             WHERE ($1::text IS NULL OR i.estado = $1) AND ($2::boolean OR i.autor_id = $3 OR i.responsable_id = $3)
+             WHERE ($1::text IS NULL OR i.estado = $1) AND ($2::boolean OR i.autor_id = $3 OR i.responsable_id = $3 OR $3 = ANY(i.implicados))
              ORDER BY (i.estado = 'abierta') DESC, i.created_at DESC LIMIT 500`, vals);
         res.set('Cache-Control', 'no-store');
         res.json({ incidencias: r.rows.map(mapIncidencia), verTodas: !!p.verTodasIncidencias, gestionar: !!p.gestionarIncidencias, yo });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 // Para el formulario: las clases (para quien registra desde su apartado) y, a la
-// dirección, el personal al que encargarlas.
+// dirección, el personal al que encargarlas. Con ?grupo=, los profes de esa clase
+// (salen del horario, como en gruposDe) para sugerirlos como implicados (#401);
+// quien la registra no hace falta: ya va como autor.
 app.get('/api/admin/incidencias/opciones', authenticateSession, requireSeccion('incidencias'), async (req, res) => {
     try {
+        const grupo = UUID_INCIDENCIA.test(String(req.query.grupo || '')) ? String(req.query.grupo) : null;
+        const docentes = grupo ? (await pool.query(
+            `SELECT u.user_id AS id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre, ${sqlRango('u')} AS rango
+             FROM users u
+             WHERE u.club_id = $2 AND u.user_id <> $3 AND u.user_id::text IN (
+                 SELECT COALESCE(sess->>'instructorId', '') FROM tul_groups g
+                   CROSS JOIN LATERAL jsonb_array_elements(COALESCE(g.sessions::jsonb, '[]'::jsonb)) sess WHERE g.group_id = $1
+                 UNION
+                 SELECT d->>'id' FROM tul_groups g
+                   CROSS JOIN LATERAL jsonb_array_elements(COALESCE(g.sessions::jsonb, '[]'::jsonb)) sess
+                   CROSS JOIN LATERAL jsonb_array_elements(COALESCE(sess->'instructors', '[]'::jsonb)) d WHERE g.group_id = $1)
+               AND ${sqlRango('u')} IN ${ROLES_PERSONAL_SQL}
+             ORDER BY u.name, u.surname`, [grupo, AIM_CLUB_ID, req.userSession.userId])).rows : [];
         const g = await pool.query(
             `SELECT g.group_id AS id, g.name, a.name AS actividad FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
              WHERE a.club_id = $1 ORDER BY a.name, g.name`, [AIM_CLUB_ID]);
@@ -19988,7 +20096,7 @@ app.get('/api/admin/incidencias/opciones', authenticateSession, requireSeccion('
             `SELECT u.user_id AS id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre FROM users u
              WHERE u.club_id = $1 AND ${sqlRango('u')} IN ${ROLES_PERSONAL_SQL} ORDER BY u.name, u.surname`, [AIM_CLUB_ID])).rows : [];
         res.set('Cache-Control', 'no-store');
-        res.json({ grupos: g.rows.map(x => ({ id: x.id, nombre: `${x.actividad} · ${x.name}` })), personal });
+        res.json({ grupos: g.rows.map(x => ({ id: x.id, nombre: `${x.actividad} · ${x.name}` })), personal, docentes });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 // Buscar a quién implicar: alumnos, familias o personal del club.
@@ -20007,23 +20115,23 @@ app.post('/api/admin/incidencias', authenticateSession, requireSeccion('incidenc
     const b = req.body || {};
     const texto = String(b.texto || '').trim().slice(0, 4000);
     if (texto.length < 3) return res.status(400).json({ error: 'Escribe qué ha pasado.' });
-    const UUID = /^[0-9a-f-]{36}$/i;
-    const implicados = [...new Set((Array.isArray(b.implicados) ? b.implicados : []).map(String).filter(x => UUID.test(x)))].slice(0, 40);
     try {
         let clase = null;
         if (b.groupId) {
-            if (!UUID.test(String(b.groupId))) return res.status(400).json({ error: 'Esa clase no existe.' });
+            if (!UUID_INCIDENCIA.test(String(b.groupId))) return res.status(400).json({ error: 'Esa clase no existe.' });
             clase = (await pool.query(
                 `SELECT g.group_id, a.name || ' · ' || g.name AS nombre FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
                  WHERE g.group_id = $1 AND a.club_id = $2`, [b.groupId, AIM_CLUB_ID])).rows[0];
             if (!clase) return res.status(400).json({ error: 'Esa clase no existe.' });
         }
-        const validos = implicados.length ? (await pool.query(`SELECT user_id FROM users WHERE user_id = ANY($1::uuid[]) AND club_id = $2`, [implicados, AIM_CLUB_ID])).rows.map(x => x.user_id) : [];
+        const validos = await implicadosValidos(b.implicados);
         const r = await pool.query(
-            `INSERT INTO aim_incidencias (texto, autor_id, group_id, clase_nombre, implicados) VALUES ($1, $2, $3, $4, $5::uuid[]) RETURNING id`,
+            `INSERT INTO aim_incidencias (texto, autor_id, group_id, clase_nombre, implicados) VALUES ($1, $2, $3, $4, $5::uuid[]) RETURNING *`,
             [texto, req.userSession.userId, clase?.group_id || null, clase?.nombre || null, validos]);
         const fila = (await pool.query(`${SQL_INCIDENCIAS} WHERE i.id = $1`, [r.rows[0].id])).rows[0];
         res.status(201).json({ success: true, incidencia: mapIncidencia(fila) });
+        // Al personal implicado le llega un correo (y la campanita).
+        avisarIncidencia('incidencia_implicado', r.rows[0], validos, { excluir: req.userSession.userId, quien: nombreDe(req.userSession) }).catch(() => {});
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 app.put('/api/admin/incidencias/:id', authenticateSession, requireSeccion('incidencias'), async (req, res) => {
@@ -20049,6 +20157,15 @@ app.put('/api/admin/incidencias/:id', authenticateSession, requireSeccion('incid
                 poner('fecha_limite = ?::date', b.fechaLimite || null);
             }
         }
+        // Los implicados, después de registrarla: solo la dirección (#401).
+        let nuevosImplicados = [];
+        if (b.implicados !== undefined) {
+            if (!gestiona) return res.status(403).json({ error: 'Los implicados los cambia la dirección.' });
+            const validos = await implicadosValidos(b.implicados);
+            const antes = (i.implicados || []).map(String);
+            nuevosImplicados = validos.filter(x => !antes.includes(String(x)));
+            poner('implicados = ?::uuid[]', validos);
+        }
         if (b.estado !== undefined) {
             if (!['abierta', 'resuelta'].includes(b.estado)) return res.status(400).json({ error: 'Estado no válido.' });
             if (!gestiona && !(esResponsable && b.estado === 'resuelta')) return res.status(403).json({ error: 'Solo la dirección o quien la tiene encargada puede resolverla.' });
@@ -20059,9 +20176,17 @@ app.put('/api/admin/incidencias/:id', authenticateSession, requireSeccion('incid
             } else sets.push('resuelta_por = NULL', 'resuelta_at = NULL');
         }
         if (!sets.length) return res.status(400).json({ error: 'Nada que cambiar.' });
-        await pool.query(`UPDATE aim_incidencias SET ${sets.join(', ')} WHERE id = $1`, vals);
+        const nueva = (await pool.query(`UPDATE aim_incidencias SET ${sets.join(', ')} WHERE id = $1 RETURNING *`, vals)).rows[0];
         const fila = (await pool.query(`${SQL_INCIDENCIAS} WHERE i.id = $1`, [id])).rows[0];
         res.json({ success: true, incidencia: mapIncidencia(fila) });
+        // Avisos (#401): a quien acaban de implicar y, si se acaba de resolver, a
+        // los implicados, a quien la registró y a quien la tenía encargada.
+        if (nuevosImplicados.length) {
+            avisarIncidencia('incidencia_implicado', nueva, nuevosImplicados, { excluir: yo, quien: fila.autor || 'Alguien' }).catch(() => {});
+        }
+        if (i.estado !== 'resuelta' && nueva.estado === 'resuelta') {
+            avisarIncidencia('incidencia_resuelta', nueva, [...(nueva.implicados || []), nueva.autor_id, nueva.responsable_id], { excluir: yo, quien: nombreDe(req.userSession) }).catch(() => {});
+        }
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
