@@ -122,7 +122,8 @@ function BuscarPersona({ excluir, onElegir, placeholder }) {
     return () => clearTimeout(t);
   }, [q]);
   const lista = res.filter(p => !excluir.has(p.id));
-  const elegir = (p) => { setQ(''); setRes([]); onElegir(p); };
+  // Se vacía al elegir, salvo si se echa atrás (p. ej. en el aviso de «sin permiso de fotos»).
+  const elegir = async (p) => { if ((await onElegir(p)) !== false) { setQ(''); setRes([]); } };
   return (
     <div style={{ position: 'relative' }}>
       {/* Intro no manda el formulario del álbum: elige, si solo sale una persona. */}
@@ -282,11 +283,11 @@ function Etiquetas({ foto, sugeridos, elegidos = [], grupos = [], onCambio, show
   const [poniendo, setPoniendo] = useState(false);
   const ya = new Set(foto.etiquetas.map(e => e.userId));
   async function poner(p) {
-    if (!p.permiso && !window.confirm(`${p.nombre} NO tiene permiso de fotos.\n\n¿Etiquetarle igualmente? Su familia y quien vea este álbum le verán en la foto.`)) return;
+    if (!p.permiso && !window.confirm(`${p.nombre} NO tiene permiso de fotos.\n\n¿Etiquetarle igualmente? Su familia y quien vea este álbum le verán en la foto.`)) return false;
     try {
       const d = await api(`/api/admin/galeria/fotos/${foto.id}/etiquetas`, { method: 'POST', body: { userId: p.id } });
       onCambio(x => ({ ...x, etiquetas: [...x.etiquetas.filter(e => e.userId !== p.id), { userId: p.id, nombre: d.nombre, permiso: d.permiso }] }));
-    } catch (e) { showToast?.(e.message); }
+    } catch (e) { showToast?.(e.message); return false; }
   }
   // «Etiquetar a todos»: de una vez, preguntando una sola vez si alguno no tiene permiso.
   async function ponerVarios(lista) {

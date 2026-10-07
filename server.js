@@ -19739,7 +19739,12 @@ app.post('/api/admin/galeria', authenticateSession, requireSeccion('galeria'), a
             `INSERT INTO aim_galeria_albumes (titulo, descripcion, fecha, audiencia, group_id, actividad, created_by)
              VALUES ($1, $2, COALESCE($3::date, CURRENT_DATE), $4, $5, $6, $7) RETURNING id`,
             [d.titulo, d.descripcion, d.fecha, d.audiencia, d.groupId, d.actividad, req.userSession.userId]);
-        if (elegidos.length) await guardarElegidos(req, r.rows[0].id, elegidos);
+        // Si no se puede guardar quién sale, el álbum tampoco se queda (así, al
+        // reintentar, no sale un borrador repetido).
+        if (elegidos.length) {
+            try { await guardarElegidos(req, r.rows[0].id, elegidos); }
+            catch (e) { await pool.query(`DELETE FROM aim_galeria_albumes WHERE id = $1`, [r.rows[0].id]).catch(() => {}); throw e; }
+        }
         res.status(201).json({ success: true, id: r.rows[0].id });
     } catch (err) {
         if (err?.httP) return res.status(err.httP).json({ error: err.msg });
