@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { I } from './Icons.jsx';
 import { permisosDe, NOMBRE_ROL, NOMBRE_RANGO } from '../../permisos.js';
 import EquipoIT from './EquipoIT.jsx';
+import AdminCambios from './AdminCambios.jsx';
 import { useEnVivo } from '../envivo.js';
 import { ListaClases, AdminReportes, colorOcupacion } from './AdminTulClases.jsx';
 import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong, campDayParts, nombreMedioPago, CoronaCumple, COLOR_CUMPLE, coincideBusqueda } from './Shared.jsx';
@@ -106,6 +107,7 @@ function sectionLabel(id) {
     fichaje: "Fichaje",
     almacen: "Almacén",
     equipo_it: "Equipo IT",
+    cambios: "Cambios",
     rangos: "Rangos y permisos",
     bandeja: "Correo",
     ctas: "Avisos y CTA",
@@ -7218,6 +7220,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
       heading: "Club", items: [
         { id: "almacen", label: "Almacén", icon: <I.Package /> },
         { id: "equipo_it", label: "Equipo IT", icon: <I.Monitor /> },
+        // Qué se ha publicado en cada deploy (#397).
+        { id: "cambios", label: "Cambios", icon: <I.Commit /> },
         { id: "objetos", label: "Objetos perdidos", icon: <I.Search /> },
         { id: "rangos", label: "Rangos y permisos", icon: <I.Shield /> },
         { id: "settings", label: "Ajustes", icon: <I.Settings /> },
@@ -7353,6 +7357,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("agenda") && <AdminAgenda showToast={showToast} user={user} puedePasarLista={!!permisos.secciones?.classes} />}
           {ver("fichaje") && <Fichaje showToast={showToast} permisos={permisos} enlace={enlace} />}
           {ver("equipo_it") && <EquipoIT showToast={showToast} />}
+          {ver("cambios") && <AdminCambios showToast={showToast} />}
           {ver("contactos") && <AdminContactos showToast={showToast} onAbrirFicha={abrirFicha} />}
           {ver("candidatos") && <AdminCandidatos showToast={showToast} />}
           {ver("incidencias") && <AdminIncidencias showToast={showToast} enlace={enlace} />}

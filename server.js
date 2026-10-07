@@ -15,6 +15,7 @@ import { crearRouterBandeja, buscarRespuestas, correosCon, buzonesPersonales } f
 import { crearBrickslab } from './brickslab.js';
 import { crearAvisosPush, GRUPOS_AVISO } from './avisos-push.js';
 import { crearRouterCalendarioMovil, agendaEnRango, leerHora } from './calendario-movil.js';
+import { crearCambios } from './cambios.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
@@ -5056,6 +5057,11 @@ app.use(crearRouterCalendarioMovil({
     pool, authenticateSession, requireAdmin, rolEfectivo, bajasDeCuenta,
     urlBase: URL_PUBLICA_WEB, clubId: AIM_CLUB_ID, hoy: hoyMadrid,
 }));
+
+// Registro de cambios (#397): una entrada por deploy (la crea
+// resolverEsperaDeploy al arrancar) y las que añada el Equipo IT. Ver cambios.js.
+const cambios = crearCambios({ pool, authenticateSession, requireSeccion, requirePermiso, permisos });
+app.use(cambios.router);
 
 // ── Redes sociales (#341) ────────────────────────────────────────────────────
 // Quién puede llevarlas (y recibir conversaciones asignadas).
@@ -15310,8 +15316,17 @@ async function resolverEsperaDeploy() {
            WHERE NOT COALESCE(aim_ajustes.valor->'ids', '[]'::jsonb) ? $1::text
          RETURNING clave`, [marca.id]);
     if (!nuevo.rowCount) return;
+    // Su entrada en «Cambios» (#397), nada más apuntar el deploy y aunque no
+    // resuelva ningún ticket: si el arranque se corta luego, ya está. El commit
+    // lo deja la compilación en la marca (o Heroku, con los metadatos del dyno).
+    await cambios.crearEntradaDeploy({
+        deployId: marca.id, compilado: marca.fecha,
+        commit: marca.commit || process.env.HEROKU_SLUG_COMMIT || null,
+        release: process.env.HEROKU_RELEASE_VERSION || null,
+    }).catch(e => console.error('[cambios] entrada del deploy:', e.message));
+    const resueltos = [];
     const r = await pool.query(
-        `SELECT s.id, h.user_id AS quien
+        `SELECT s.id, s.subject, s.categoria, h.user_id AS quien
          FROM tickets_registrosoporte s
          LEFT JOIN LATERAL (SELECT h.user_id, h.created_at FROM aim_ticket_historial h
                             WHERE h.ticket_id = s.id AND h.campo = 'estado' AND h.despues = $1
@@ -15326,6 +15341,7 @@ async function resolverEsperaDeploy() {
             await client.query('BEGIN');
             const hecho = await aplicarCambiosTicket(client, t.id, { status: 'resolved' }, null);
             await client.query('COMMIT');
+            resueltos.push({ id: t.id, asunto: t.subject, categoria: t.categoria });
             // El aviso sale como de quien lo dejó esperando al deploy.
             const u = t.quien ? (await pool.query(`SELECT name, surname FROM users WHERE user_id = $1`, [t.quien])).rows[0] : null;
             const req = { userSession: { userId: t.quien, firstName: u?.name || 'Aim Education', lastName: u?.surname || '' } };
@@ -15336,6 +15352,9 @@ async function resolverEsperaDeploy() {
         } finally { client.release(); }
     }
     if (r.rowCount) console.log(`[deploy] ${r.rowCount} ticket(s) en espera de deploy pasan a resueltos: ${r.rows.map(t => '#' + t.id).join(', ')}`);
+    if (resueltos.length) await cambios.anotarTickets(marca.id, resueltos).catch(e => console.error('[cambios] tickets del deploy:', e.message));
+    // Los commits de GitHub, de fondo (solo con GITHUB_TOKEN).
+    cambios.cargarCommitsEnSegundoPlano(marca.id);
 }
 
 // Respuestas guardadas, para lo que se contesta a menudo.

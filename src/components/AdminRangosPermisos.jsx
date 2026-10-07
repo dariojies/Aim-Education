@@ -21,6 +21,8 @@ const MATIZ = {
   support: (p) => (!p.soporteCompleto ? 'sus tickets' : null),
   fichaje: (p) => (!p.fichajesGestion ? 'solo el suyo' : 'el de todos'),
   equipo_it: (p) => (!p.editarEquipoIT ? 'solo ver' : null),
+  // Lo escriben el Equipo IT y los superadmin (#397).
+  cambios: (p) => (!p.editarCambios ? 'solo ver' : null),
   overview: (p, rol) => ({ trabajador: 'su día', instructor: 'sus clases', secretaria: 'el día del club', club_owner: 'negocio' }[rol]),
 };
 
