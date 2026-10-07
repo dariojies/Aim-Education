@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { I } from './Icons.jsx';
 import { fmtFecha } from '../fechas.js';
+import { alAtras } from '../app-movil.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Galería de fotos (#364). Dos pantallas:
@@ -464,6 +465,9 @@ export function FotosFamilia() {
   const album = albumes.find(a => a.id === albumAbierto) || null;
   const fotos = album?.fotos || [];
   const foto = abierta !== null ? fotos[abierta] : null;
+  // En la app, el botón atrás de Android cierra la foto y luego el álbum (#218).
+  useEffect(() => (albumAbierto !== null ? alAtras(() => setAlbumAbierto(null)) : undefined), [albumAbierto]);
+  useEffect(() => (abierta !== null ? alAtras(() => setAbierta(null)) : undefined), [abierta !== null]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (abierta === null) return;
     const k = (e) => {

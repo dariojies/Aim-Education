@@ -4463,3 +4463,14 @@ html.es-app [role="dialog"] { padding-top: calc(var(--app-arriba) + 12px) !impor
   font-weight: 600;
   box-shadow: 0 8px 24px rgba(0, 0, 0, .25);
 }
+
+/* Avisos en este móvil (#218). */
+.app-avisos-tarjeta { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 18px; border-color: color-mix(in oklab, var(--purple) 30%, var(--line)); }
+.app-avisos-tarjeta .ico { width: 40px; height: 40px; flex-shrink: 0; border-radius: 12px; display: grid; place-items: center; color: var(--purple); background: color-mix(in oklab, var(--purple) 12%, transparent); }
+.app-avisos-tarjeta b { font-size: 15.5px; }
+.app-avisos-tarjeta p { margin: 4px 0 0; font-size: 13.5px; color: var(--ink-2); line-height: 1.5; }
+.app-interruptor { position: relative; width: 50px; height: 30px; flex-shrink: 0; border: 0; border-radius: 999px; background: var(--line-2, #cfcfd8); cursor: pointer; transition: background .2s; padding: 0; }
+.app-interruptor span { position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .25); transition: transform .2s; }
+.app-interruptor.is-on { background: var(--teal); }
+.app-interruptor.is-on span { transform: translateX(20px); }
+.app-interruptor:disabled { opacity: .6; }

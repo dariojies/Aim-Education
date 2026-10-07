@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { marcarAvisosVistos } from './Campanita.jsx';
+import { alAtras } from '../app-movil.js';
 import { useRouter } from '../App.jsx';
 import { I } from './Icons.jsx';
 import { fmtFecha, fmtFechaHora, fmtHora as fmtHoraCorta } from '../fechas.js';
@@ -623,6 +624,36 @@ function TarjetaTicket({ t, diasParado, compacta = false, marcado, onMarcar, onA
 // encontrarlo igual al volver. En este navegador y por persona; la búsqueda
 // escrita no se guarda, que escondería tickets sin darse cuenta.
 const clavePrefs = (user) => `soporte-prefs:${user?.id || 'yo'}`;
+// Si el ticket es una solicitud de eliminación de cuenta (#218): está pedida y
+// la cuenta no puede entrar; secretaría la puede anular desde aquí.
+function BajaDeCuenta({ ticket }) {
+  const [baja, setBaja] = useState(null);
+  const [aviso, setAviso] = useState('');
+  useEffect(() => {
+    setBaja(null); setAviso('');
+    if (!/eliminación de cuenta/i.test(ticket?.subject || '')) return;
+    fetch('/api/admin/cuentas-baja', { credentials: 'include', cache: 'no-store' }).then(r => (r.ok ? r.json() : {}))
+      .then(m => { const b = m?.[ticket.user_id]; if (b && Number(b.ticket) === Number(ticket.id)) setBaja(b); }).catch(() => {});
+  }, [ticket?.id, ticket?.user_id, ticket?.subject]);
+  if (!baja && !aviso) return null;
+  async function anular() {
+    if (!window.confirm('¿Anular la solicitud? La cuenta podrá volver a entrar.')) return;
+    const r = await fetch(`/api/admin/cuentas-baja/${ticket.user_id}`, { method: 'DELETE', credentials: 'include' });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) { setBaja(null); setAviso('Solicitud anulada: ya puede volver a entrar.'); } else setAviso(d.error || 'No se ha podido anular.');
+  }
+  return (
+    <div style={{ border: '1px solid var(--orange)', background: 'color-mix(in oklab, var(--orange) 8%, transparent)', borderRadius: 12, padding: '10px 14px', marginBottom: 14, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', fontSize: 13.5 }}>
+      {baja ? (
+        <>
+          <span style={{ flex: 1, minWidth: 200 }}><b>Eliminación de cuenta pedida</b> el {new Date(baja.fecha).toLocaleDateString('es-ES')}. La cuenta ya no puede entrar.</span>
+          <button type="button" className="btn btn-sm btn-outline" onClick={anular}>Anular la solicitud</button>
+        </>
+      ) : <span>{aviso}</span>}
+    </div>
+  );
+}
+
 function leerPrefs(user) {
   try { return JSON.parse(localStorage.getItem(clavePrefs(user)) || '{}') || {}; } catch { return {}; }
 }
@@ -1498,6 +1529,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
             </div>
 
             <div style={{overflowY: "auto", padding: "16px 20px", flex: 1}}>
+            <BajaDeCuenta ticket={selected} />
             {chatCanal ? (
               <>
                 <button onClick={() => setChatCanal(null)} style={{background: "none", border: 0, padding: 0, cursor: "pointer", color: "var(--purple)", fontWeight: 700, fontSize: 13, fontFamily: "inherit", marginBottom: 12}}>← Volver al ticket</button>
@@ -1689,6 +1721,8 @@ export function UserSupport() {
   const [misTickets, setMisTickets] = useState([]);
   const [abierto, setAbierto] = useState(null);
   const [verForm, setVerForm] = useState(true);
+  // En la app, el botón atrás de Android cierra el ticket abierto (#218).
+  useEffect(() => (abierto ? alAtras(() => setAbierto(null)) : undefined), [abierto]);
 
   const cargar = useCallback(() => {
     fetch('/api/support/mios', { credentials: 'include', cache: 'no-store' })

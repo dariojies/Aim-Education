@@ -21,6 +21,7 @@ const ERRORES_GOOGLE = {
   'google-caducado': 'El inicio de sesión con Google ha caducado. Vuelve a intentarlo.',
   'google-fallo': 'No se ha podido entrar con Google. Vuelve a intentarlo o entra con tu correo y contraseña.',
   'google-apagado': 'El inicio de sesión con Google no está disponible ahora mismo.',
+  'google-baja': 'Tu cuenta tiene una solicitud de eliminación en curso. Si quieres anularla, escribe a secretaría.',
   'google-app': 'En la app se entra con el correo y la contraseña. Google solo deja entrar con su cuenta desde el navegador.',
 };
 

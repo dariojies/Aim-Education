@@ -4,4 +4,24 @@
     <string name="title_activity_main">AIM Education</string>
     <string name="package_name">es.aimeducation.app</string>
     <string name="custom_url_scheme">es.aimeducation.app</string>
+
+    <!-- Avisos (#218, movil/AVISOS.md §6) -->
+    <string name="canal_conexion">Conexión con AIM</string>
+    <string name="canal_conexion_desc">La notificación fija «Conectado». Puedes minimizarla.</string>
+    <string name="canal_pagos">Pagos</string>
+    <string name="canal_clases">Clases y cierres</string>
+    <string name="canal_soporte">Soporte</string>
+    <string name="canal_brickslab">Brickslab</string>
+    <string name="canal_fotos">Fotos</string>
+
+    <string name="conexion_conectado">Conectado</string>
+    <string name="conexion_conectado_texto">Los avisos del club te llegan al momento.</string>
+    <string name="conexion_reconectando">Reconectando…</string>
+    <string name="conexion_reconectando_texto">Sin conexión con el servidor. Se reintenta solo.</string>
+    <string name="conexion_desactivar">Desactivar</string>
+
+    <string name="pausa_titulo">Avisos en pausa</string>
+    <string name="pausa_texto">Toca para reactivar.</string>
+    <string name="fuera_titulo">Vuelve a entrar en la app</string>
+    <string name="fuera_texto">Tus avisos se han desactivado. Entra otra vez para recibirlos.</string>
 </resources>

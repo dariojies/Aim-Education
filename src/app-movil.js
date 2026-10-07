@@ -20,14 +20,15 @@ export const esApp = typeof navigator !== 'undefined'
 
 export const plataformaApp = () => (esApp ? (window.Capacitor?.getPlatform?.() || (/iPhone|iPad/.test(navigator.userAgent) ? 'ios' : 'android')) : null);
 
-const plugins = {};
 // Un plugin nativo de la app, o null fuera de ella (o si esa versión no lo tiene).
+// La web no lleva @capacitor/core: el puente nativo de la app ya pone cada plugin
+// en window.Capacitor.Plugins, con sus métodos (que devuelven promesas) y addListener.
 export function plugin(nombre) {
-  const cap = window.Capacitor;
-  if (!esApp || !cap?.registerPlugin) return null;
-  if (cap.isPluginAvailable && !cap.isPluginAvailable(nombre) && !cap.PluginHeaders?.some(h => h.name === nombre)) return null;
-  return (plugins[nombre] ||= cap.registerPlugin(nombre));
+  if (!esApp) return null;
+  return window.Capacitor?.Plugins?.[nombre] || null;
 }
+// addListener devuelve { remove } (o una promesa de él, según la versión).
+export const quitarOyente = (h) => Promise.resolve(h).then(x => x?.remove?.()).catch(() => {});
 
 // ── Atrás (Android) ──
 // Lo abierto encima (una ficha, una foto, un menú) se registra aquí mientras
@@ -48,7 +49,11 @@ const aBase64 = (blob) => new Promise((ok, ko) => {
 function nombreDe(res, url) {
   const cd = res.headers.get('Content-Disposition') || '';
   const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
-  if (m) return decodeURIComponent(m[1]).replace(/[\\/:*?"<>|]/g, '_');
+  if (m) {
+    let n = m[1];
+    try { n = decodeURIComponent(n); } catch { /* p. ej. «50%.pdf»: tal cual */ }
+    return n.replace(/[\\/:*?"<>|]/g, '_');
+  }
   const tipo = res.headers.get('Content-Type') || '';
   const ext = tipo.includes('pdf') ? 'pdf' : tipo.includes('png') ? 'png' : tipo.includes('jpeg') || tipo.includes('jpg') ? 'jpg' : 'bin';
   return `aim-${url.split('/').filter(Boolean).slice(-2).join('-').replace(/[^\w-]/g, '')}.${ext}`;
@@ -126,16 +131,24 @@ export function iniciarApp() {
 
   document.addEventListener('click', alTocar, true);
   marcaDeploy().then(id => { deployVisto = id; });
+  iniciarAvisosIphone();
+
+  // Cuántos pasos de historial hay en esta página: lo de antes (la pasarela del
+  // banco, otra carga) no es para volver con el botón atrás.
+  let pasos = 0;
+  const empujar = window.history.pushState.bind(window.history);
+  window.history.pushState = (...a) => { pasos += 1; return empujar(...a); };
+  window.addEventListener('popstate', () => { pasos = Math.max(0, pasos - 1); });
 
   const App = plugin('App');
   if (App) {
-    App.addListener('backButton', ({ canGoBack }) => {
+    App.addListener('backButton', () => {
       const cerrar = cerrables.pop();
       if (cerrar) { cerrar(); return; }
       const p = window.location.pathname;
       if (p === '/dashboard' || p === '/auth' || p === '/admin') App.minimizeApp();
-      else if (canGoBack) window.history.back();
-      else window.location.replace('/dashboard');
+      else if (pasos > 0) window.history.back();
+      else window.location.replace(p.startsWith('/admin') ? '/admin' : '/dashboard');
     });
     App.addListener('resume', async () => {
       window.dispatchEvent(new CustomEvent('aim-app-vuelve'));
@@ -144,4 +157,144 @@ export function iniciarApp() {
       else if (id) deployVisto = id;
     });
   }
+}
+
+// ── Avisos al móvil (#218, ver movil/AVISOS.md) ──
+// Android: el plugin propio AimAvisos mantiene la conexión con el servidor.
+// iPhone: el de Capacitor (PushNotifications) da el token de Apple.
+const CLAVE_DISPOSITIVO = 'aim_push_dispositivo';
+const VERSION_APP = (/AimEducationApp\/([\w.]+)/.exec(navigator.userAgent || '') || [])[1] || null;
+export const leerDispositivo = () => { try { return localStorage.getItem(CLAVE_DISPOSITIVO) || null; } catch { return null; } };
+const guardarDispositivo = (id) => { try { if (id) localStorage.setItem(CLAVE_DISPOSITIVO, id); else localStorage.removeItem(CLAVE_DISPOSITIVO); } catch { /* sin almacenamiento */ } };
+const json = async (r) => { const d = await r.json().catch(() => ({})); if (!r.ok) throw Object.assign(new Error(d.error || 'No se ha podido.'), { status: r.status }); return d; };
+const altaDispositivo = (cuerpo) => fetch('/api/me/push/dispositivo', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: VERSION_APP, ...cuerpo }) }).then(json);
+
+// El token del iPhone llega por un evento: se espera a él (o al error).
+function tokenIphone(Push) {
+  return new Promise((resolve, reject) => {
+    const hs = [];
+    const fin = (f) => (v) => { hs.forEach(quitarOyente); f(v); };
+    hs.push(Push.addListener('registration', fin(t => resolve(t.value))));
+    hs.push(Push.addListener('registrationError', fin(e => reject(new Error(e?.error || 'Apple no ha dado el permiso.')))));
+    Push.register().catch(fin(reject));
+    setTimeout(fin(() => reject(new Error('Apple no contesta. Prueba más tarde.'))), 20000);
+  });
+}
+
+// → { activo: true } o { activo: false, motivo: 'permiso' | 'arranque' | texto }
+export async function activarAvisos() {
+  const plat = plataformaApp();
+  // Si este móvil ya tenía un alta (apagada desde la notificación, por ejemplo),
+  // se quita antes, para no dejarla olvidada en el servidor.
+  const anterior = leerDispositivo();
+  if (anterior) {
+    await fetch(`/api/me/push/dispositivo/${anterior}`, { method: 'DELETE', credentials: 'include' }).catch(() => {});
+    guardarDispositivo(null);
+  }
+  if (plat === 'android') {
+    const A = plugin('AimAvisos');
+    if (!A) return { activo: false, motivo: 'Actualiza la app para recibir avisos.' };
+    const est = await A.estado().catch(() => ({}));
+    const d = await altaDispositivo({ plataforma: 'android', fabricante: est.fabricante || null });
+    const r = await A.activar({ token: d.token, id: d.id });
+    if (!r?.activo) {
+      // Sin permiso no sirve de nada: fuera del servidor.
+      await fetch(`/api/me/push/dispositivo/${d.id}`, { method: 'DELETE', credentials: 'include' }).catch(() => {});
+      return { activo: false, motivo: r?.motivo || 'arranque' };
+    }
+    guardarDispositivo(d.id);
+    return { activo: true };
+  }
+  if (plat === 'ios') {
+    const Push = plugin('PushNotifications');
+    if (!Push) return { activo: false, motivo: 'Actualiza la app para recibir avisos.' };
+    const p = await Push.requestPermissions();
+    if (p.receive !== 'granted') return { activo: false, motivo: 'permiso' };
+    const token = await tokenIphone(Push);
+    const d = await altaDispositivo({ plataforma: 'ios', apnsToken: token, fabricante: 'Apple' });
+    guardarDispositivo(d.id);
+    return { activo: true };
+  }
+  return { activo: false, motivo: 'Solo en la app del móvil.' };
+}
+
+// Al apagarlos o al cerrar sesión. Nunca hace esperar más de un par de segundos.
+export async function desactivarAvisos() {
+  const id = leerDispositivo();
+  guardarDispositivo(null);
+  const tareas = [];
+  if (plataformaApp() === 'android') tareas.push(plugin('AimAvisos')?.desactivar().catch(() => {}));
+  if (id) tareas.push(fetch(`/api/me/push/dispositivo/${id}`, { method: 'DELETE', credentials: 'include' }).catch(() => {}));
+  await Promise.race([Promise.all(tareas), new Promise(r => setTimeout(r, 2000))]);
+}
+
+// Cómo están los avisos en este móvil y para esta cuenta.
+export async function estadoAvisos() {
+  const plat = plataformaApp();
+  const id = leerDispositivo();
+  let servidor = null;
+  if (id) {
+    const r = await fetch(`/api/me/push/dispositivo/${id}`, { credentials: 'include', cache: 'no-store' }).catch(() => null);
+    if (r?.status === 404) guardarDispositivo(null);   // de otra cuenta o ya quitado
+    else if (r?.ok) servidor = await r.json();
+  }
+  const out = { plataforma: plat, activo: !!servidor, preferencias: servidor?.preferencias || {}, dispositivo: servidor?.id || null };
+  if (plat === 'android') {
+    const e = await plugin('AimAvisos')?.estado().catch(() => null);
+    if (e) Object.assign(out, { nativo: e, activo: !!servidor && !!e.activo && e.id === servidor.id });
+  } else if (plat === 'ios') {
+    const p = await plugin('PushNotifications')?.checkPermissions().catch(() => null);
+    out.permiso = p?.receive || null;
+    if (p && p.receive !== 'granted') out.activo = false;
+  }
+  return out;
+}
+
+// Al entrar en la app con una cuenta: si el móvil seguía recibiendo los avisos
+// de otra (sesión caducada y entra otra persona), se apagan.
+export async function revisarAvisosTrasEntrar() {
+  if (plataformaApp() === 'ios') {
+    const id = leerDispositivo();
+    if (!id) return;
+    const r = await fetch(`/api/me/push/dispositivo/${id}`, { credentials: 'include', cache: 'no-store' }).catch(() => null);
+    if (r?.status === 404) {
+      guardarDispositivo(null);
+      await plugin('PushNotifications')?.unregister().catch(() => {});
+    }
+    return;
+  }
+  const A = plugin('AimAvisos');
+  const e = await A?.estado().catch(() => null);
+  if (!e?.activo || !e.id) return;
+  const r = await fetch(`/api/me/push/dispositivo/${e.id}`, { credentials: 'include', cache: 'no-store' }).catch(() => null);
+  if (r?.status === 404) { await A.desactivar().catch(() => {}); guardarDispositivo(null); }
+  else if (r?.ok) guardarDispositivo(e.id);
+}
+
+export async function guardarPreferenciasAvisos(prefs) {
+  const id = leerDispositivo();
+  if (!id) throw new Error('Activa antes los avisos.');
+  return json(await fetch(`/api/me/push/dispositivo/${id}/preferencias`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(prefs) }));
+}
+
+// iPhone: al tocar un aviso, a su sitio; y el token de Apple puede cambiar, así
+// que al abrir la app se vuelve a dar si ya estaban activados.
+export function iniciarAvisosIphone() {
+  if (plataformaApp() !== 'ios') return;
+  const Push = plugin('PushNotifications');
+  if (!Push) return;
+  Push.addListener('pushNotificationActionPerformed', (a) => {
+    const url = a?.notification?.data?.url;
+    if (typeof url === 'string' && url.startsWith('/') && !url.startsWith('//')) {
+      window.history.pushState(null, '', url);
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    }
+  });
+  if (!leerDispositivo()) return;
+  Push.checkPermissions().then(async (p) => {
+    if (p.receive !== 'granted') return;
+    const token = await tokenIphone(Push);
+    const d = await altaDispositivo({ plataforma: 'ios', apnsToken: token, fabricante: 'Apple' });
+    guardarDispositivo(d.id);
+  }).catch(() => {});
 }

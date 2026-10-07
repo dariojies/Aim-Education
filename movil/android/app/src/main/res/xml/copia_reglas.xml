@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copia de seguridad y paso a otro móvil (Android 12+): el token de avisos es de este móvil, no se copia -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="aim_avisos.xml" />
+        <exclude domain="root" path="app_webview/" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="aim_avisos.xml" />
+        <exclude domain="root" path="app_webview/" />
+    </device-transfer>
+</data-extraction-rules>

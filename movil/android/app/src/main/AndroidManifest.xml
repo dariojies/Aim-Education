@@ -1,7 +1,21 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Permissions -->
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Avisos. Sin REQUEST_IGNORE_BATTERY_OPTIMIZATIONS ni alarmas exactas (AVISOS.md §6). -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
     <application
         android:allowBackup="true"
+        android:dataExtractionRules="@xml/copia_reglas"
+        android:fullBackupContent="@xml/copia_antigua"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -27,9 +41,30 @@
             android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- Avisos (#218, movil/AVISOS.md §6): conexión propia con el servidor, sin Firebase -->
+        <service
+            android:name=".AvisosService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Mantiene una conexión con el servidor propio del club (aimeducation.es) para recibir al instante, sin servicios de push de terceros, los avisos que la familia ha activado: cierres de clase, sesiones de Speaking, respuestas de soporte, pagos y Brickslab. Se apaga desde la notificación fija o desde la app. / Keeps one connection to the club's own server (aimeducation.es) to deliver within seconds, without third-party push services, the notices the family turned on: class closures, Speaking sessions, support replies, payments and Brickslab. The user can turn it off from the ongoing notification or from the app." />
+        </service>
+
+        <!-- Al encender el móvil y al actualizar la app -->
+        <receiver
+            android:name=".ArranqueReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Alarma inexacta del vigilante (~10 min) -->
+        <receiver
+            android:name=".VigilanteReceiver"
+            android:exported="false" />
     </application>
-
-    <!-- Permissions -->
-
-    <uses-permission android:name="android.permission.INTERNET" />
 </manifest>

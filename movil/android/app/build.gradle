@@ -1,5 +1,17 @@
 apply plugin: 'com.android.application'
 
+// La firma para Google Play (clave de subida): en un archivo fuera del repositorio,
+// ~/.aim-education/firma.properties (o la ruta en AIM_FIRMA), con storeFile,
+// storePassword, keyAlias y keyPassword. Ver movil/PUBLICAR.md.
+def firma = new Properties()
+def archivoFirma = file(System.getenv('AIM_FIRMA') ?: "${System.getProperty('user.home')}/.aim-education/firma.properties")
+if (archivoFirma.exists()) archivoFirma.withInputStream { firma.load(it) }
+
+// El servidor: el de siempre, salvo en una compilación de prueba
+// (./gradlew assembleDebug -PservidorWeb=http://10.0.2.2:3998).
+def servidorWeb = project.findProperty('servidorWeb') ?: 'https://www.aimeducation.es'
+def servidorWs = servidorWeb.replaceFirst('^http', 'ws') + '/ws/avisos'
+
 android {
     namespace = "es.aimeducation.app"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -8,7 +20,9 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
-        versionName "1.0"
+        versionName "1.0.0"
+        buildConfigField "String", "SERVIDOR_WEB", "\"${servidorWeb}\""
+        buildConfigField "String", "SERVIDOR_WS", "\"${servidorWs}\""
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,8 +30,23 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    buildFeatures {
+        // BuildConfig.VERSION_NAME va en el User-Agent de la conexión de avisos
+        buildConfig = true
+    }
+    signingConfigs {
+        if (firma.getProperty('storeFile')) {
+            subida {
+                storeFile file(firma.getProperty('storeFile'))
+                storePassword firma.getProperty('storePassword')
+                keyAlias firma.getProperty('keyAlias')
+                keyPassword firma.getProperty('keyPassword')
+            }
+        }
+    }
     buildTypes {
         release {
+            if (firma.getProperty('storeFile')) signingConfig signingConfigs.subida
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
@@ -36,6 +65,8 @@ dependencies {
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
+    // WebSocket de los avisos (AvisosService)
+    implementation "com.squareup.okhttp3:okhttp:4.12.0"
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"

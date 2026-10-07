@@ -40,7 +40,9 @@ const LINEA_PIEZA = /^\s*([\w-]+)\s*:\s*(\d+)\s*$/;
 const esListaPiezas = (texto) => { const l = String(texto || '').split('\n').filter(x => x.trim()); return l.length > 0 && l.every(x => LINEA_PIEZA.test(x)); };
 const xml = (t) => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatricula, sqlPagandoDesde, urlPublica = '', onCambio = () => {} }) {
+// onEvento (#218): avisa al móvil de las familias. Con personas, a sus familias;
+// sin ellas, a todas (una votación nueva).
+export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatricula, sqlPagandoDesde, urlPublica = '', onCambio = () => {}, onEvento = () => {} }) {
     const err = (res, e) => (e?.httP ? res.status(e.httP).json({ error: e.msg }) : (console.error('[BRICKSLAB]', e), res.status(500).json({ error: 'Algo ha fallado. Prueba otra vez.' })));
     const fallo = (httP, msg) => ({ httP, msg });
 
@@ -268,17 +270,45 @@ export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatric
         }));
     }
 
+    // Para la campanita y el móvil (#218): lo entregado hace poco a alguien de la
+    // familia y la votación en la que aún puede votar alguno.
+    async function avisosDe(fam) {
+        const out = [];
+        const ent = await pool.query(
+            `SELECT r.id, r."userId", r."reservationDate", i.title, u.name FROM bricks_reservation r
+             JOIN bricks_items i ON i.id = r."itemId" AND i."clubId" = $2 JOIN users u ON u.user_id = r."userId"
+             WHERE r."userId" = ANY($1::uuid[]) AND r.status = 'Delivered' AND r."reservationDate" > NOW() - INTERVAL '60 days'
+             ORDER BY r."reservationDate" DESC LIMIT 5`, [fam, clubId]);
+        for (const r of ent.rows) {
+            out.push({ tipo: 'brickslab', destino: 'brickslab', texto: `${r.name} ya tiene «${r.title}»`, detalle: 'Entregado en Brickslab', clave: `bk-entrega:${r.id}`, marca: r.reservationDate, alumnoId: r.userId });
+        }
+        const v = await votacionActiva();
+        if (v) {
+            const cats = (await categorias()).filter(esLegoCat);
+            const perms = await permisosDe(fam);
+            const pueden = fam.filter(id => cats.some(c => perms.get(String(id))?.[c.id]?.normal));
+            if (pueden.length) {
+                const ya = new Set((await pool.query(
+                    `SELECT x."userId" FROM bricks_poll_vote x JOIN bricks_poll_option o ON o.id = x."optionId" WHERE o."pollId" = $1 AND x."userId" = ANY($2::uuid[])`,
+                    [v.id, pueden])).rows.map(x => String(x.userId)));
+                const falta = pueden.find(id => !ya.has(String(id)));
+                if (falta) out.push({ tipo: 'brickslab', destino: 'brickslab', texto: `Nueva votación: ${v.titulo}`, detalle: 'Elegid el próximo set de Brickslab', clave: `bk-votacion:${v.id}`, marca: v.creada, alumnoId: falta });
+            }
+        }
+        return out;
+    }
+
     // La votación activa del club (la más reciente sin caducar).
     async function votacionActiva() {
         const v = (await pool.query(
-            `SELECT id, title, description, "expiresAt" FROM bricks_poll
+            `SELECT id, title, description, "expiresAt", "createdAt" FROM bricks_poll
              WHERE "clubId" = $1 AND "isActive" AND ("expiresAt" IS NULL OR "expiresAt" > NOW())
              ORDER BY "createdAt" DESC LIMIT 1`, [clubId])).rows[0];
         if (!v) return null;
         const ops = (await pool.query(
             `SELECT o.id, o.title, o."imageUrl", (SELECT COUNT(*) FROM bricks_poll_vote x WHERE x."optionId" = o.id)::int AS votos
              FROM bricks_poll_option o WHERE o."pollId" = $1 ORDER BY o.title`, [v.id])).rows;
-        return { id: v.id, titulo: v.title, descripcion: v.description || '', hasta: v.expiresAt, opciones: ops.map(o => ({ id: o.id, titulo: o.title, imagen: o.imageUrl || '', votos: o.votos })) };
+        return { id: v.id, titulo: v.title, descripcion: v.description || '', hasta: v.expiresAt, creada: v.createdAt, opciones: ops.map(o => ({ id: o.id, titulo: o.title, imagen: o.imageUrl || '', votos: o.votos })) };
     }
 
     // Ranking: devoluciones por persona en las categorías con ranking. A las
@@ -643,9 +673,10 @@ ${cuerpo}
     });
     admin.post('/reservas/:id/entregar', async (req, res) => {
         try {
-            const r = await pool.query(`UPDATE bricks_reservation SET status = 'Delivered' WHERE id = $1 AND status IN ('Reserved', 'Active') RETURNING id`, [String(req.params.id)]);
+            const r = await pool.query(`UPDATE bricks_reservation SET status = 'Delivered' WHERE id = $1 AND status IN ('Reserved', 'Active') RETURNING id, "userId"`, [String(req.params.id)]);
             if (!r.rowCount) throw fallo(409, 'Esa reserva ya no está pendiente de entregar.');
             onCambio();
+            onEvento({ tipo: 'entregado', personas: [r.rows[0].userId] });
             res.json({ success: true });
         } catch (e) { err(res, e); }
     });
@@ -923,6 +954,7 @@ ${cuerpo}
                 [id, clubId, d.titulo, d.descripcion, d.hasta]);
             for (const o of d.opciones) await client.query(`INSERT INTO bricks_poll_option (id, "pollId", title, "imageUrl") VALUES ($1, $2, $3, $4)`, [crypto.randomUUID(), id, o.titulo, o.imagen]);
             await client.query('COMMIT');
+            onEvento({ tipo: 'votacion' });
             res.status(201).json({ success: true, id });
         } catch (e) { await client.query('ROLLBACK').catch(() => {}); err(res, e); } finally { client.release(); }
     });
@@ -960,6 +992,7 @@ ${cuerpo}
                                            WHEN NOT $3 THEN LEAST(COALESCE("expiresAt", NOW()), NOW()) ELSE "expiresAt" END
                  WHERE id = $1 AND "clubId" = $2 RETURNING id`, [String(req.params.id), clubId, activa, siguiente]);
             if (!r.rowCount) throw fallo(404, 'Esa votación no existe.');
+            if (activa) onEvento({ tipo: 'votacion' });
             res.json({ success: true });
         } catch (e) { err(res, e); }
     });
@@ -1035,5 +1068,5 @@ ${cuerpo}
         if (n) console.log(`[brickslab] ${n} correo(s) de «¿qué te ha parecido?»`);
     }
 
-    return { publico, familia, admin, asegurarEnlacePro, pendientes, recordatoriosValoracion };
+    return { publico, familia, admin, asegurarEnlacePro, pendientes, recordatoriosValoracion, avisosDe };
 }

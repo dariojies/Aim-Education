@@ -5,7 +5,7 @@
   "appendUserAgent": "AimEducationApp/1.0",
   "backgroundColor": "#ffffff",
   "server": {
-    "url": "https://www.aimeducation.es/dashboard",
+    "url": "https://www.aimeducation.es",
     "errorPath": "error.html",
     "allowNavigation": ["*.redsys.es", "sis.redsys.es", "sis-t.redsys.es", "*"]
   },

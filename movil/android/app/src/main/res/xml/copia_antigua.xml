@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copia de seguridad (Android 11 y anteriores): el token de avisos es de este móvil, no se copia -->
+<full-backup-content>
+    <exclude domain="sharedpref" path="aim_avisos.xml" />
+    <exclude domain="root" path="app_webview/" />
+</full-backup-content>

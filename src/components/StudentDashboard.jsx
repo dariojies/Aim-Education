@@ -9,7 +9,8 @@ import { UserSupport } from './AdminSupport.jsx';
 import { FotosFamilia } from './Galeria.jsx';
 import { BrickslabFamilia } from './Brickslab.jsx';
 import { fmtFecha } from '../fechas.js';
-import { esApp, compartirArchivo, abrirFuera } from '../app-movil.js';
+import { esApp, compartirArchivo, abrirFuera, desactivarAvisos } from '../app-movil.js';
+import { TarjetaAvisos, AjustesAvisos } from './AvisosMovil.jsx';
 
 function EmptyState({ icon, text, accion, onAccion }) {
   return (
@@ -1588,6 +1589,76 @@ function DashProfile({ user }) {
       <p style={{ marginTop: 22, fontSize: 13, color: 'var(--ink-3)' }}>
         Para cambiar otros datos de tus hijos, habla con el club.
       </p>
+      {!user?.canAccessAdmin && <EliminarCuenta />}
+    </div>
+  );
+}
+
+// Pedir que se elimine la cuenta (#218; lo exigen Apple y Google). Secretaría lo
+// completa; desde que se pide, la cuenta ya no puede entrar.
+function EliminarCuenta() {
+  const [abierto, setAbierto] = useState(false);
+  const [pw, setPw] = useState('');
+  const [motivo, setMotivo] = useState('');
+  const [estado, setEstado] = useState('');
+  const [hecho, setHecho] = useState(false);
+  async function pedir() {
+    setEstado('enviando');
+    try {
+      // Antes que nada, este móvil deja de recibir avisos (si no, el servicio
+      // diría «vuelve a entrar en la app» al cerrarle la sesión).
+      if (esApp) await desactivarAvisos();
+      const r = await fetch('/api/me/cuenta/eliminar', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw, motivo }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setEstado(d.error || 'No se ha podido enviar.'); return; }
+      try { localStorage.removeItem('aim_push_dispositivo'); } catch { /* nada */ }
+      window.dispatchEvent(new CustomEvent('aim-cuenta-eliminada'));
+      setHecho(true);
+    } catch { setEstado('No hay conexión con el servidor.'); }
+  }
+  if (hecho) {
+    return (
+      <div className="panel" style={{ marginTop: 22, borderColor: 'var(--orange)' }}>
+        <h3 style={{ margin: '0 0 6px' }}>Solicitud enviada</h3>
+        <p className="sub" style={{ margin: '0 0 14px' }}>
+          Tu cuenta ya no puede entrar. Secretaría eliminará tus datos en un plazo de 30 días y conservará solo lo que exige la ley (las facturas).
+          Si cambias de opinión, escríbenos antes de que se complete.
+        </p>
+        <button type="button" className="btn btn-primary" onClick={() => { window.location.href = '/auth'; }}>Entendido</button>
+      </div>
+    );
+  }
+  return (
+    <div style={{ marginTop: 26, borderTop: '1px solid var(--line)', paddingTop: 16 }}>
+      {!abierto ? (
+        <button type="button" onClick={() => setAbierto(true)}
+          style={{ background: 'none', border: 0, padding: 0, color: 'var(--pink)', fontWeight: 700, fontSize: 13.5, cursor: 'pointer', fontFamily: 'inherit' }}>
+          Eliminar mi cuenta
+        </button>
+      ) : (
+        <div style={{ display: 'grid', gap: 10, maxWidth: 520 }}>
+          <b>Eliminar mi cuenta</b>
+          <p style={{ margin: 0, fontSize: 13.5, color: 'var(--ink-2)', lineHeight: 1.55 }}>
+            Se avisará a secretaría, que eliminará tu cuenta y tus datos personales en un plazo de 30 días. Las facturas se
+            conservan el tiempo que exige la ley. <b>Desde ahora mismo no podrás volver a entrar</b> (ni aquí, ni en la app).
+            Si en tu cuenta están tus hijos con clases o recibos pendientes, el club hablará contigo antes.
+          </p>
+          <label style={{ display: 'grid', gap: 4, fontSize: 13, fontWeight: 700 }}>Tu contraseña
+            <input type="password" value={pw} onChange={e => setPw(e.target.value)} autoComplete="current-password"
+              style={{ padding: '10px 12px', borderRadius: 10, border: '1px solid var(--line)', fontFamily: 'inherit', fontSize: 15 }} />
+          </label>
+          <label style={{ display: 'grid', gap: 4, fontSize: 13, fontWeight: 700 }}>Motivo (opcional)
+            <textarea value={motivo} onChange={e => setMotivo(e.target.value)} rows={2} maxLength={1000}
+              style={{ padding: '10px 12px', borderRadius: 10, border: '1px solid var(--line)', fontFamily: 'inherit', fontSize: 14 }} />
+          </label>
+          {estado && estado !== 'enviando' && <span style={{ fontSize: 13, color: 'var(--orange)', fontWeight: 700 }}>{estado}</span>}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button type="button" className="btn" disabled={!pw || estado === 'enviando'} onClick={pedir}
+              style={{ background: 'var(--pink)', color: '#fff' }}>{estado === 'enviando' ? 'Enviando…' : 'Pedir la eliminación'}</button>
+            <button type="button" className="btn btn-outline" onClick={() => { setAbierto(false); setPw(''); setEstado(''); }}>Cancelar</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1598,6 +1669,7 @@ function DashSettings() {
       <h2><I.Settings /> Ajustes</h2>
       <p className="sub">Qué comunicaciones quieres recibir y el permiso de fotos.</p>
       {/* Antes aquí había unos interruptores que no guardaban nada (#170). */}
+      {esApp && <AjustesAvisos />}
       <PermisosFamilia />
     </div>
   );
@@ -1756,6 +1828,7 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
             </div>
           </div>
 
+          {view === "overview" && esApp && <TarjetaAvisos />}
           {view === "overview" && <DashOverview go={go} setView={navTo} />}
           {view === "classes" && <DashClasses />}
           {view === "camp" && <DashCamp />}

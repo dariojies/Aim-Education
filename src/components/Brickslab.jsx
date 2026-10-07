@@ -4,6 +4,7 @@ import { I } from './Icons.jsx';
 import { AimHeader, AimFooter } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 import { fmtFecha } from '../fechas.js';
+import { alAtras } from '../app-movil.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Brickslab y Biblioteca (#291): el préstamo de sets de LEGO y de libros.
@@ -104,8 +105,10 @@ export function FichaArticulo({ a, cat, accion = null, onCerrar, opinionesUrl = 
   useEffect(() => {
     const k = (e) => { if (e.key === 'Escape') onCerrar(); };
     window.addEventListener('keydown', k);
+    // En la app, el botón atrás de Android la cierra (#218).
+    const quitarAtras = alAtras(onCerrar);
     const antes = document.body.style.overflow; document.body.style.overflow = 'hidden';
-    return () => { window.removeEventListener('keydown', k); document.body.style.overflow = antes; };
+    return () => { window.removeEventListener('keydown', k); quitarAtras(); document.body.style.overflow = antes; };
   }, [onCerrar]);
   const datos = datosDe(a, cat);
   // Llevárselo a casa es lo del Pro en LEGO (los libros se leen en casa igualmente).

@@ -27,7 +27,7 @@ export const EMPRESA_LEGAL = {
 
 // Versión de los textos: se guarda con cada consentimiento para poder demostrar
 // qué aceptó cada uno. Si se cambian los textos, se sube la versión.
-export const VERSION_LEGAL = '2026-09-22';
+export const VERSION_LEGAL = '2026-10-07';
 
 const E = EMPRESA_LEGAL;
 
@@ -151,6 +151,10 @@ export const DOCS_LEGALES = [
         'Nombre y apellidos.', 'NIF/DNI/NIE.', 'Dirección.', 'Teléfono.', 'Correo electrónico.', 'Firma.',
         'Datos de salud (alergias, enfermedades, medicación y contacto de emergencia).', 'Datos económicos y de facturación.',
       ]],
+
+      ['h', '10. La app del móvil'],
+      ['p', 'La app de AIM Education para Android e iPhone muestra tu área de familia de esta web, así que trata los mismos datos. Además, si activas los avisos, guardamos un identificador de ese móvil, su fabricante y modelo, la versión de la app, qué tipos de avisos quieres recibir y cuáles te hemos mandado ya, para enviártelos y no repetirlos. En iPhone los avisos se entregan a través del servicio de notificaciones de Apple; en Android, por una conexión directa con nuestro servidor, sin servicios de terceros. Al cerrar sesión, desactivar los avisos o cambiar la contraseña, ese identificador se borra.'],
+      ['p', 'Puedes pedir que eliminemos tu cuenta desde la propia app o la web (Perfil → Eliminar mi cuenta), o como se explica en «Eliminar tu cuenta». Borraremos tus datos personales en un plazo de 30 días, salvo los que la ley nos obliga a conservar (facturas y registros contables).'],
     ],
   },
 
@@ -257,6 +261,30 @@ export const DOCS_LEGALES = [
         'Las bajas deberán comunicarse en la recepción 10 días antes de finalizar el mes anterior a causar baja. En caso contrario, deberá abonar la cuota de la mensualidad en la que causa baja.',
         'Las bajas se realizarán por voluntad propia del interesado o incumplimiento por su parte de las reglas de este contrato.',
       ], 12],
+    ],
+  },
+
+  // Lo piden Google Play y la App Store para la app del móvil (#218): cómo pedir
+  // que se elimine la cuenta, también sin tener la app instalada.
+  {
+    id: 'eliminar-cuenta',
+    titulo: 'Eliminar tu cuenta',
+    bloques: [
+      ['p', `Puedes pedir que eliminemos tu cuenta de ${E.razonSocial} (la de la web www.aimeducation.es y la app AIM Education) y los datos personales asociados.`],
+      ['h', 'Cómo pedirlo'],
+      ['ol', [
+        'Entra en tu cuenta, en la app o en www.aimeducation.es.',
+        'Ve a Perfil y pulsa «Eliminar mi cuenta».',
+        'Confirma con tu contraseña. Desde ese momento la cuenta ya no puede entrar.',
+      ]],
+      ['p', `Si no puedes entrar, escríbenos a ${E.email} desde el correo de tu cuenta, indicando tu nombre y que quieres eliminarla.`],
+      ['h', 'Qué se borra y qué se conserva'],
+      ['ul', [
+        'Se borran en un plazo de 30 días tus datos personales, tu acceso y los avisos de tus móviles.',
+        'Se conservan solo los datos que la ley nos obliga a guardar, durante el plazo legal: las facturas y los registros contables y de cobro (seis años, Código de Comercio).',
+        'Si en la cuenta hay hijos con clases o recibos pendientes, el club se pondrá en contacto contigo antes de completar la eliminación.',
+      ]],
+      ['p', 'Mientras no se haya completado, puedes anular la solicitud escribiendo a secretaría.'],
     ],
   },
 ];

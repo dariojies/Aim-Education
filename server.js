@@ -13,6 +13,7 @@ import { calcularRecibo, calcularCobro, serieDeLinea, mesAGenerar, mesDeAlta, ti
 import { crearRouterTulClases } from './tul-clases.js';
 import { crearRouterBandeja, buscarRespuestas, correosCon, buzonesPersonales } from './bandeja.js';
 import { crearBrickslab } from './brickslab.js';
+import { crearAvisosPush, GRUPOS_AVISO } from './avisos-push.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
@@ -1604,6 +1605,26 @@ async function initDb() {
                 PRIMARY KEY (user_id, clave)
             )
         `);
+        // Los móviles con la app (#218), para mandarles los avisos: en Android, la
+        // huella del secreto con que se conecta; en iPhone, el token de Apple. Y lo
+        // que ya se le ha mandado a cada uno, para no repetir (movil/AVISOS.md).
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_push_dispositivos (
+                id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id      UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                plataforma   VARCHAR(10) NOT NULL CHECK (plataforma IN ('android','ios')),
+                token_hash   VARCHAR(64) UNIQUE,
+                apns_token   VARCHAR(200) UNIQUE,
+                fabricante   VARCHAR(60),
+                modelo       VARCHAR(80),
+                version_app  VARCHAR(20),
+                preferencias JSONB NOT NULL DEFAULT '{}'::jsonb,
+                avisados     JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                last_seen_at TIMESTAMPTZ
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_push_disp_user ON aim_push_dispositivos(user_id)`);
         // Enlaces para restablecer la contraseña. Solo se guarda la huella
         // (SHA-256) del enlace, no el enlace: quien leyera la base no podría
         // usarlos. Caducan en 1 hora y sirven una sola vez.
@@ -2213,7 +2234,11 @@ async function initDb() {
 // Aim-Tul), las migraciones fallaban y no se volvían a intentar: las tablas
 // nuevas no se creaban hasta el siguiente reinicio. Ahora se reintenta.
 function initDbConReintentos(intento = 1) {
-    initDb().then(() => resolverEsperaDeploy().catch(e => console.error('[deploy] tickets en espera:', e.message))).catch(err => {
+    initDb().then(() => {
+        // Los móviles con avisos (#218), ya con su tabla creada.
+        avisosPush.cargarTokens().catch(e => console.error('[avisos] tokens:', e.message));
+        return resolverEsperaDeploy().catch(e => console.error('[deploy] tickets en espera:', e.message));
+    }).catch(err => {
         if (err?.code === '53300' && intento < 30) {
             console.warn(`[initDb] la base no admite más conexiones; se reintenta en 10 s (intento ${intento})`);
             setTimeout(() => initDbConReintentos(intento + 1), 10_000);
@@ -2381,6 +2406,8 @@ async function abrirSesion(res, user, { recordar = true } = {}) {
 // Cierra todas las sesiones abiertas de una persona (al cambiar su contraseña).
 function cerrarSesionesDe(userId) {
     for (const [t, ses] of sessions) if (ses.userId === userId) sessions.delete(t);
+    // Y los avisos en sus móviles (#218): que vuelva a entrar en la app.
+    avisosPush.quitarDeUsuario(userId).catch(() => {});
     return pool.query(`DELETE FROM aim_sesiones WHERE user_id = $1`, [userId]).catch(() => {});
 }
 
@@ -2722,6 +2749,10 @@ app.post('/api/login', async (req, res) => {
         }
 
         const user = validos[0];
+        // Con la eliminación de la cuenta pedida, ya no se entra (#218).
+        if ((await bajasDeCuenta())[user.user_id]) {
+            return res.status(403).json({ error: 'Tu cuenta tiene una solicitud de eliminación en curso. Si quieres anularla, escribe a secretaría.' });
+        }
 
         emailLoginFailures.delete(emailLower);
         emailBlocks.delete(emailLower);
@@ -2969,6 +3000,8 @@ app.get('/api/auth/google/callback', async (req, res) => {
             || (c.hd && !GOOGLE_DOMINIOS.includes(String(c.hd).toLowerCase()))) return volver('google-dominio');
         const u = await pool.query('SELECT * FROM users WHERE LOWER(email) = $1', [email]);
         if (!u.rowCount) return volver('google-sin-cuenta');
+        // Con la eliminación de la cuenta pedida, tampoco con Google (#218).
+        if ((await bajasDeCuenta())[u.rows[0].user_id]) return volver('google-baja');
         const datos = await abrirSesion(res, u.rows[0], { recordar: guardado.recordar });
         res.redirect(datos.canAccessAdmin ? '/admin' : '/dashboard');
     } catch (e) {
@@ -7671,6 +7704,8 @@ async function ejecutarGeneracionCargos(mesPedido) {
          RETURNING id`,
         [temp.rows[0].id, mes]
     );
+    // Recibos nuevos por pagar: al móvil de las familias (#218).
+    if (r.rowCount) avisosPush.avisarTodos();
     return { creados: r.rowCount, mes, temporada: temp.rows[0].nombre };
 }
 
@@ -7944,6 +7979,7 @@ app.post('/api/admin/billing/cargos/extra', authenticateSession, requireAdmin, a
              VALUES ($1,$2,$3::date,$4,$5,$6,$7,$8,$10,'manual',$9,$11) RETURNING id`,
             [clienteId, concepto, mesCargo, p.descripcion, p.tipo, p.precio, p.iva_pct, d, act,
              d >= 100 ? 'exento' : 'pendiente', d >= 100 ? 'Descuento del 100%' : null]);
+        if (d < 100) avisosPush.avisarFamilias([clienteId]);
         res.status(201).json({ success: true, id: ins.rows[0].id, descuentoPct: d, deMatricula, exento: d >= 100 });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -12949,14 +12985,21 @@ app.post('/api/admin/fiscales/:id/:accion', authenticateSession, requireAdmin, a
 // Lo que una familia tiene pendiente de mirar: la campanita de su zona. Solo
 // entra lo que le pide algo (pagar, contestar, enterarse de una plaza), no un
 // resumen de todo, que para eso está el panel.
-app.get('/api/me/notificaciones', authenticateSession, async (req, res) => {
-    const me = req.userSession.userId;
-    try {
+// La campanita del área de familias, y lo mismo es lo que llega al móvil (#218):
+// cada aviso lleva además su grupo, título, texto y adónde lleva (url).
+const GRUPO_DE_TIPO = { pagos: 'pagos', clases: 'clases', soporte: 'soporte', galeria: 'fotos', brickslab: 'brickslab' };
+const URL_DE_DESTINO = { payments: '/dashboard/pagos', classes: '/dashboard/clases', support: '/dashboard/soporte', fotos: '/dashboard/fotos', brickslab: '/dashboard/brickslab', overview: '/dashboard' };
+const fechaAviso = (iso) => new Date(String(iso).slice(0, 10) + 'T12:00:00Z').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' });
+async function avisosFamilia(me) {
+    {
         const fam = await familiaIds(me);
         const avisos = [];
 
         // 1) Lo que hay por pagar, contando lo de toda la familia.
         const cargos = await cargosPendientesDe(me);
+        if (!cargos.length) {
+            await pool.query(`UPDATE aim_avisos_vistos SET n = 0 WHERE user_id = $1 AND clave = 'pagos' AND n > 0`, [me]).catch(() => {});
+        }
         if (cargos.length) {
             const calc = calcularCobro(cargos.map(cargoParaMotor));
             avisos.push({
@@ -13035,9 +13078,103 @@ app.get('/api/me/notificaciones', authenticateSession, async (req, res) => {
             avisos.push({ tipo: 'avisos', destino: 'overview', texto: n.title, detalle: 'Aviso del club', clave: `post:${n.title}`.slice(0, 200) });
         }
 
+        // 5) Speaking por confirmar, con el plazo aún abierto (#218).
+        const sp = await pool.query(
+            `SELECT s.id, s.fecha::text AS fecha, s.created_at, s.student_id, u.name AS alumno
+             FROM aim_speaking s JOIN users u ON u.user_id = s.student_id
+             WHERE s.student_id = ANY($1::uuid[]) AND s.confirmado IS NULL
+               AND s.fecha >= ${SQL_HOY_MADRID} AND ${sqlLimiteSpeaking('s.')} >= ${SQL_HOY_MADRID}
+             ORDER BY s.fecha LIMIT 5`, [fam]).catch(() => ({ rows: [] }));
+        for (const s of sp.rows) {
+            avisos.push({
+                tipo: 'clases', destino: 'overview', texto: `Confirma el Speaking de ${s.alumno}`,
+                detalle: `El ${fechaAviso(s.fecha)}`, clave: `speaking:${s.id}`, marca: s.created_at, alumnoId: s.student_id,
+            });
+        }
+
+        // 6) El centro cierra en los próximos días (#218), a quien tiene clase.
+        const conClase = (await pool.query(
+            `SELECT 1 FROM tul_group_students gs JOIN tul_groups g ON g.group_id = gs.group_id
+             JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE gs.student_id = ANY($1::uuid[]) AND a.club_id = $2 LIMIT 1`, [fam, AIM_CLUB_ID])).rowCount > 0;
+        if (conClase) {
+            // Desde antes de hoy, para que un cierre ya empezado conserve su
+            // inicio real (y su clave no cambie cada día).
+            const hoy = hoyMadrid(), hasta = sumarDiaISO(hoy, 10);
+            const dias = await pool.query(
+                `SELECT fecha::text AS fecha, nombre, tipo, resta_vacaciones FROM aim_calendario_laboral
+                 WHERE fecha BETWEEN $1::date AND $2::date ORDER BY fecha`, [sumarDiaISO(hoy, -MAX_DIAS_CIERRE), sumarDiaISO(hasta, MAX_DIAS_CIERRE)]);
+            for (const p of periodosDeCierre(dias.rows).filter(p => p.hasta >= hoy && p.desde <= hasta)) {
+                avisos.push({
+                    tipo: 'clases', destino: 'overview',
+                    texto: p.dias > 1 ? `El centro cierra del ${fechaAviso(p.desde)} al ${fechaAviso(p.hasta)}` : `El centro cierra el ${fechaAviso(p.desde)}`,
+                    detalle: [p.nombre, p.tipoNombre].filter(Boolean).join(' · '), clave: `cierre:${p.desde}`, n: 1,
+                });
+            }
+        }
+
+        // 7) Brickslab: lo entregado y la votación abierta (#218).
+        avisos.push(...await brickslab.avisosDe(fam).catch(() => []));
+
         await conVistos(me, avisos);
+        for (const a of avisos) {
+            a.grupo = GRUPO_DE_TIPO[a.tipo] || null;
+            a.titulo = a.texto;
+            a.cuerpo = a.detalle || '';
+            a.url = URL_DE_DESTINO[a.destino] || '/dashboard';
+        }
+        return avisos;
+    }
+}
+
+app.get('/api/me/notificaciones', authenticateSession, async (req, res) => {
+    try {
+        const avisos = await avisosFamilia(req.userSession.userId);
         res.set('Cache-Control', 'no-store');
         res.json({ avisos, sinLeer: avisos.filter(a => a.nuevo).length });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Avisos al móvil (#218) ───────────────────────────────────────────────────
+// La app se da de alta aquí (con la sesión de la web). En Android recibe un
+// secreto con el que abre su conexión; en iPhone se guarda el token de Apple.
+const avisosPush = crearAvisosPush({ pool, familiaIds, avisosFamilia, sinActividades: sinComunicacionesActividades });
+const dispositivoMio = async (req) => (await pool.query(
+    `SELECT id, plataforma, preferencias, last_seen_at FROM aim_push_dispositivos WHERE id::text = $1 AND user_id = $2`,
+    [String(req.params.id || ''), req.userSession.userId])).rows[0];
+app.post('/api/me/push/dispositivo', authenticateSession, async (req, res) => {
+    try {
+        const r = await avisosPush.registrar(req.userSession.userId, req.body || {});
+        res.status(201).json(r.token ? { id: r.id, token: r.token } : { id: r.id });
+    } catch (err) {
+        if (err.http) return res.status(err.http).json({ error: err.message });
+        console.error('[avisos] alta:', err.message);
+        res.status(500).json({ error: 'No se han podido activar los avisos.' });
+    }
+});
+app.get('/api/me/push/dispositivo/:id', authenticateSession, async (req, res) => {
+    try {
+        const d = await dispositivoMio(req);
+        if (!d) return res.status(404).json({ error: 'Este móvil no tiene los avisos activados.' });
+        res.set('Cache-Control', 'no-store');
+        res.json({ id: d.id, plataforma: d.plataforma, preferencias: d.preferencias || {}, conectado: avisosPush.conectado(d.id), lastSeenAt: d.last_seen_at });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.put('/api/me/push/dispositivo/:id/preferencias', authenticateSession, async (req, res) => {
+    try {
+        const d = await dispositivoMio(req);
+        if (!d) return res.status(404).json({ error: 'Este móvil no tiene los avisos activados.' });
+        const pref = { ...(d.preferencias || {}) };
+        for (const g of GRUPOS_AVISO) if (typeof req.body?.[g] === 'boolean') pref[g] = req.body[g];
+        await pool.query(`UPDATE aim_push_dispositivos SET preferencias = $2::jsonb WHERE id = $1`, [d.id, JSON.stringify(pref)]);
+        res.json({ success: true, preferencias: pref });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.delete('/api/me/push/dispositivo/:id', authenticateSession, async (req, res) => {
+    try {
+        const d = await dispositivoMio(req);
+        if (d) await avisosPush.quitar(d.id);
+        res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -14856,6 +14993,92 @@ app.post('/api/support', authenticateSession, async (req, res) => {
     }
 });
 
+// ── Eliminar la cuenta (#218) ────────────────────────────────────────────────
+// Apple y Google exigen poder pedirlo desde la app. Se pide aquí (con la
+// contraseña), la cuenta deja de poder entrar al momento y secretaría lo
+// completa en un ticket: borra los datos personales en un plazo de 30 días y
+// guarda solo lo que pide la ley (las facturas). Desde el ticket se puede anular.
+// Las solicitudes viven en aim_ajustes «cuentas_baja»: { userId: { fecha, ticket } }.
+async function bajasDeCuenta() {
+    return (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'cuentas_baja'`)).rows[0]?.valor || {};
+}
+// Añadir o quitar una, sin pisar las demás.
+async function anotarBajaDeCuenta(userId, datos) {
+    await pool.query(
+        `INSERT INTO aim_ajustes (clave, valor) VALUES ('cuentas_baja', jsonb_build_object($1::text, $2::jsonb))
+         ON CONFLICT (clave) DO UPDATE SET valor = aim_ajustes.valor || EXCLUDED.valor`, [userId, JSON.stringify(datos)]);
+}
+async function quitarBajaDeCuenta(userId) {
+    await pool.query(`UPDATE aim_ajustes SET valor = valor - $1::text WHERE clave = 'cuentas_baja'`, [userId]);
+}
+app.post('/api/me/cuenta/eliminar', authenticateSession, async (req, res) => {
+    const me = req.userSession.userId;
+    try {
+        if (req.userSession.canAccessAdmin) return res.status(400).json({ error: 'Las cuentas del personal del club se dan de baja en secretaría.' });
+        const u = (await pool.query(`SELECT name, surname, email, phone, password FROM users WHERE user_id = $1`, [me])).rows[0];
+        if (!u) return res.status(404).json({ error: 'No encontramos tu cuenta.' });
+        if (!u.password || !(await bcrypt.compare(String(req.body?.password || ''), u.password))) return res.status(403).json({ error: 'La contraseña no es correcta.' });
+        const bajas = await bajasDeCuenta();
+        if (bajas[me]) return res.json({ success: true, ticketId: bajas[me].ticket, ya: true });
+        const fam = (await pool.query(
+            `SELECT TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS nombre FROM users WHERE user_id = ANY($1::uuid[]) AND user_id <> $2 ORDER BY name`,
+            [await familiaIds(me), me])).rows.map(x => x.nombre);
+        const nombre = `${u.name || ''} ${u.surname || ''}`.trim();
+        const motivo = String(req.body?.motivo || '').trim().slice(0, 1000);
+        const descripcion = [
+            `${nombre} ha pedido eliminar su cuenta el ${new Date().toLocaleString('es-ES', { timeZone: 'Europe/Madrid' })}.`,
+            `Correo: ${correoVisible(u.email) || '—'} · Teléfono: ${u.phone || '—'}`,
+            fam.length ? `Familia vinculada: ${fam.join(', ')}.` : 'No tiene familia vinculada.',
+            ...(motivo ? [`Motivo: ${motivo}`] : []),
+            '',
+            'Ya no puede entrar. Qué hacer, en un plazo de 30 días:',
+            '· Borrar sus datos personales y su acceso (también en Brickslab y Learning Dungeon, que usan la misma cuenta).',
+            '· Conservar solo lo que exige la ley: facturas y registros de cobro.',
+            '· Si hay hijos con clases o recibos pendientes, hablarlo antes con la familia.',
+            'Si cambia de opinión, «Anular la solicitud» en este ticket le deja volver a entrar.',
+        ].join('\n');
+        const t = await pool.query(
+            `INSERT INTO tickets_registrosoporte (user_id, subject, description, app_label, priority, categoria)
+             VALUES ($1, $2, $3, ARRAY['Aim Education']::TEXT[], 'high', 'familia') RETURNING id`,
+            [me, 'Solicitud de eliminación de cuenta', descripcion]);
+        const ticketId = t.rows[0].id;
+        await anotarHistorial(pool, ticketId, me, [{ campo: 'creado', antes: null, despues: 'Solicitud de eliminación de cuenta' }]);
+        await anotarBajaDeCuenta(me, { fecha: new Date().toISOString(), ticket: ticketId });
+        // Fuera: sesiones y avisos del móvil.
+        await cerrarSesionesDe(me);
+        res.clearCookie('aim_session', { path: '/' });
+        res.json({ success: true, ticketId });
+        // Aviso a secretaría, como un ticket nuevo.
+        if (mailTransporter) {
+            const para = await destinatariosTicket({ creador: me, encargados: [] }).catch(() => []);
+            if (para.length) {
+                correoSistema('aviso_ticket', { numero: ticketId, asunto: 'Solicitud de eliminación de cuenta', autor: nombre, email: correoVisible(u.email) || '' }, {
+                    automaticos: { descripcion: `<div style="white-space:pre-wrap">${escHtml(descripcion)}</div>` },
+                    automaticosTexto: { descripcion: `Descripción:\n${descripcion}` },
+                }).then(c => mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: para.join(', '), ...c }))
+                  .catch(err => { if (!err.apagado) console.error('[baja cuenta] aviso:', err.message); });
+            }
+        }
+    } catch (err) {
+        console.error('[baja cuenta]', err.message);
+        if (!res.headersSent) res.status(500).json({ error: 'No se ha podido enviar la solicitud. Inténtalo de nuevo.' });
+    }
+});
+app.get('/api/admin/cuentas-baja', authenticateSession, requireAdmin, async (req, res) => {
+    try { res.set('Cache-Control', 'no-store'); res.json(await bajasDeCuenta()); }
+    catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.delete('/api/admin/cuentas-baja/:userId', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    try {
+        const bajas = await bajasDeCuenta();
+        const b = bajas[req.params.userId];
+        if (!b) return res.status(404).json({ error: 'Esa cuenta no tiene ninguna solicitud de eliminación.' });
+        await quitarBajaDeCuenta(req.params.userId);
+        if (b.ticket) await anotarHistorial(pool, b.ticket, req.userSession.userId, [{ campo: 'eliminación', antes: 'Pedida', despues: 'Anulada: puede volver a entrar' }]).catch(() => {});
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/support', authenticateSession, async (req, res) => {
     if (!req.userSession.isSuperAdmin && !req.userSession.canAccessAdmin)
         return res.status(403).json({ error: 'Sin permisos.' });
@@ -15238,6 +15461,8 @@ app.post('/api/support/:id/mensajes', authenticateSession, async (req, res) => {
             const aEquipo = await correosDePersonas([...encargados, ...(canal === 'equipo' && t.creador_personal ? [t.user_id] : [])], { excluir: yo });
             const creador = canal === 'creador' && String(t.user_id) !== String(yo) ? await correosDePersonas([t.user_id]) : [];
             const familia = creador.filter(p => !p.personal);
+            // Al móvil de la familia (#218), tenga o no correo.
+            if (canal === 'creador' && String(t.user_id) !== String(yo) && !t.creador_personal) avisosPush.avisarFamilias([t.user_id]);
             await avisarTicket('ticket_mensaje', [...aEquipo, ...creador.filter(p => p.personal)].filter((p, i, l) => l.findIndex(x => x.email === p.email) === i), vars, txt);
             if (familia.length) await avisarTicket('ticket_respuesta', familia, vars, txt);
         })().catch(e => console.error('[soporte] avisos:', e.message));
@@ -16371,6 +16596,7 @@ app.post('/api/admin/speaking', authenticateSession, requireAdmin, async (req, r
         }
         // Los correos a los padres van en segundo plano (no bloquean la respuesta).
         enviarCorreosSpeaking(ids).catch(e => console.error('[speaking mail]', e.message));
+        avisosPush.avisarFamilias(lista.map(a => a.studentId));
         res.status(201).json({ success: true, creados: ids.length, correo: !!mailTransporter });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -19064,6 +19290,8 @@ app.put('/api/admin/galeria/:id', authenticateSession, requireSeccion('galeria')
                     actividad = $7, publicado = $8, publicado_at = CASE WHEN $8 AND NOT publicado THEN NOW() ELSE publicado_at END, updated_at = NOW()
              WHERE id = $1`,
             [antes.id, d.titulo, d.descripcion, d.fecha, d.audiencia, d.groupId, d.actividad, publicado]);
+        // Fotos nuevas: al móvil de quien las puede ver (#218).
+        if (publicado && !antes.publicado) avisosPush.avisarTodos();
         res.json({ success: true });
     } catch (err) {
         if (err?.httP) return res.status(err.httP).json({ error: err.msg });
@@ -19170,6 +19398,7 @@ app.post('/api/admin/galeria/fotos/:fotoId/etiquetas', authenticateSession, requ
         await pool.query(
             `INSERT INTO aim_galeria_etiquetas (foto_id, user_id, etiquetado_por) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
             [Number(req.params.fotoId) || 0, userId, req.userSession.userId]);
+        if (al.publicado) avisosPush.avisarFamilias([userId]);
         res.json({ success: true, nombre: u.nombre, permiso: u.permiso });
     } catch (err) {
         if (err.code === '23503') return res.status(404).json({ error: 'Esa foto no existe.' });
@@ -19292,7 +19521,11 @@ app.delete('/api/admin/candidatos/:id', authenticateSession, requireSeccion('can
 // ── Brickslab y Biblioteca (#291) ────────────────────────────────────────────
 // El préstamo de sets de LEGO y libros del club, sobre las tablas de la app de
 // Brickslab (que sigue para otros clubes). Ver brickslab.js.
-const brickslab = crearBrickslab({ pool, clubId: AIM_CLUB_ID, familiaIds, generarCargosDeMatricula, sqlPagandoDesde: SQL_PAGANDO_DESDE, urlPublica: URL_PUBLICA_WEB });
+const brickslab = crearBrickslab({
+    pool, clubId: AIM_CLUB_ID, familiaIds, generarCargosDeMatricula, sqlPagandoDesde: SQL_PAGANDO_DESDE, urlPublica: URL_PUBLICA_WEB,
+    // Entregas y votaciones, al móvil (#218).
+    onEvento: (e) => (e?.personas?.length ? avisosPush.avisarFamilias(e.personas) : avisosPush.avisarTodos()),
+});
 async function asegurarProBrickslab() { return brickslab.asegurarEnlacePro(); }
 app.use('/api/brickslab', brickslab.publico);
 // El XML de novedades (#92, #234), también con una dirección fácil de recordar.
@@ -20672,7 +20905,7 @@ app.get('*', (req, res) => {
     }
 });
 
-app.listen(port, () => {
+const servidor = app.listen(port, () => {
     // Los permisos cambiados en «Rangos y permisos» (#333).
     cargarAjustesPermisos().catch(e => console.error('[permisos]', e.message));
     // El formato de numeración vive en la base: se carga al arrancar.
@@ -20718,4 +20951,23 @@ app.listen(port, () => {
     // Brickslab (#87): el «¿qué te ha parecido?» tras devolver algo, cada 30 min.
     setTimeout(() => recordatoriosValoracion().catch(e => console.error('[brickslab valorar]', e.message)), 3 * 60 * 1000);
     setInterval(() => recordatoriosValoracion().catch(e => console.error('[brickslab valorar]', e.message)), 30 * 60 * 1000);
+    // Avisos al móvil (#218): repaso cada 10 min por si algo cambió sin pasar por
+    // aquí (cierres que se acercan, cambios desde otras apps…).
+    setInterval(repasoAvisosMovil, 10 * 60 * 1000);
+});
+function repasoAvisosMovil() {
+    avisosPush.avisarTodos();
+    avisosPush.purgar().catch(e => console.error('[avisos] purga:', e.message));
+}
+// La conexión de los móviles Android (#218). Las conexiones largas necesitan que
+// el servidor no las corte antes que el router de Heroku.
+servidor.keepAliveTimeout = 95_000;
+servidor.headersTimeout = 96_000;
+avisosPush.enganchar(servidor);
+// Al apagar (cada deploy y el reinicio diario de Heroku): se avisa a los móviles
+// para que vuelvan a conectar enseguida, y se sale.
+process.on('SIGTERM', () => {
+    avisosPush.cerrarTodo();
+    servidor.close();
+    setTimeout(() => process.exit(0), 3000);
 });

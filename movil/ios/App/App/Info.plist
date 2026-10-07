@@ -8,6 +8,10 @@
 	<string>es</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSCameraUsageDescription</key>
+	<string>Para hacer una foto y adjuntarla a tu consulta a secretaría.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Para guardar en tu galería las fotos y archivos que descargas del club.</string>
 	<key>CFBundleDisplayName</key>
         <string>AIM Education</string>
 	<key>CFBundleExecutable</key>

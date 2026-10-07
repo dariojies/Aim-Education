@@ -16,7 +16,7 @@ import BrickslabPublico from './components/Brickslab.jsx';
 import PublicConocenos from './components/PublicConocenos';
 import { CookieBanner, registrarVisita } from './components/Cookies';
 import AvisosWeb from './components/AvisosWeb';
-import { esApp } from './app-movil';
+import { esApp, desactivarAvisos, revisarAvisosTrasEntrar } from './app-movil';
 
 export const RouterContext = createContext({ path: '/', go: () => {}, user: null });
 export const useRouter = () => useContext(RouterContext);
@@ -65,17 +65,31 @@ export default function App() {
     setUser(u);
     setUserChecked(true); // mark checked so dashboard/admin don't block on the /api/me race
     setCaducada(false);
+    setSinConexion(false);
+    // En la app: que el móvil no siga con los avisos de otra cuenta (#218).
+    if (esApp) revisarAvisosTrasEntrar().catch(() => {});
     // Si venía de una sesión caducada, de vuelta a donde estaba.
     const volver = new URLSearchParams(window.location.search).get('volver') || '';
     const vale = volver.startsWith('/') && !volver.startsWith('//')
       && (volver.startsWith('/dashboard') || (u?.canAccessAdmin && volver.startsWith('/admin')));
-    if (vale) go(volver);
-    else if (u?.canAccessAdmin) go('/admin');
-    else go('/dashboard');
+    // En la app, /auth no se queda en el historial (el atrás no vuelve a entrar).
+    const opc = esApp ? { replace: true } : undefined;
+    cuentaEliminada.current = false;
+    if (vale) go(volver, opc);
+    else if (u?.canAccessAdmin) go('/admin', opc);
+    else go('/dashboard', opc);
   };
 
+  // Tras pedir la eliminación de la cuenta (#218) la sesión se cierra a propósito:
+  // no se dice que ha caducado.
+  const cuentaEliminada = React.useRef(false);
   useEffect(() => {
-    const f = () => { if (user) setCaducada(true); };
+    const fuera = () => { cuentaEliminada.current = true; };
+    window.addEventListener('aim-cuenta-eliminada', fuera);
+    return () => window.removeEventListener('aim-cuenta-eliminada', fuera);
+  }, []);
+  useEffect(() => {
+    const f = () => { if (user && !cuentaEliminada.current) setCaducada(true); };
     window.addEventListener('aim-sesion-caducada', f);
     return () => window.removeEventListener('aim-sesion-caducada', f);
   }, [user]);
@@ -87,8 +101,13 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    // En la app, este móvil deja de recibir los avisos de esta cuenta (#218),
+    // se salga desde el área de familias o desde el panel.
+    if (esApp) await desactivarAvisos();
     await fetch('/api/logout', { method: 'POST' }).catch(() => {});
     setUser(null);
+    setSinConexion(false);
+    cuentaEliminada.current = false;
     // En la app no hay web pública: de vuelta a entrar.
     go(esApp ? '/auth' : '/');
   };
