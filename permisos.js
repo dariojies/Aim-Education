@@ -193,9 +193,10 @@ export const AVISOS = [
       nota: (p) => (p.soloSusGrupos ? 'solo de sus clases' : null) },
     { id: 'faltas', grupo: 'Clases', texto: 'Alumnos con 4 o más faltas seguidas', quien: (p) => p.secciones.faltas },
     // Clases individuales (#388, antes «Speaking»): los ids no cambian, para no
-    // perder lo que la dirección haya ajustado.
-    { id: 'speaking_por_llamar', grupo: 'Clases individuales', texto: 'Alumnos de clases individuales por avisar a los padres', quien: todos },
-    { id: 'speaking_rechazados', grupo: 'Clases individuales', texto: 'Familias que han dicho que no a una clase individual', quien: todos },
+    // perder lo que la dirección haya ajustado. Solo a quien ve el apartado: sin
+    // él, el aviso llevaría a una página que no le abre.
+    { id: 'speaking_por_llamar', grupo: 'Clases individuales', texto: 'Alumnos de clases individuales por avisar a los padres', quien: (p) => p.secciones.speaking },
+    { id: 'speaking_rechazados', grupo: 'Clases individuales', texto: 'Familias que han dicho que no a una clase individual', quien: (p) => p.secciones.speaking },
     { id: 'fotos', grupo: 'Familias', texto: 'Solicitudes del permiso de fotos', quien: (p) => p.editarAlumnos },
     { id: 'contactos', grupo: 'Familias', texto: 'Consultas de la web sin atender', quien: (p) => p.secciones.contactos },
     { id: 'candidatos', grupo: 'Club', texto: 'Candidaturas nuevas de «Trabaja con nosotros»', quien: (p) => p.secciones.candidatos },

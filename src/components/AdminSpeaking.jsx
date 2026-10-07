@@ -171,16 +171,33 @@ function ClasesIndividualesConfig({ showToast, onGuardado }) {
   const cambios = d.clases.filter(c => c.individual !== marcadas.has(c.groupId));
   const alternar = (id) => setMarcadas(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   async function guardar() {
-    const nuevas = cambios.filter(c => marcadas.has(c.groupId));
-    if (nuevas.some(c => c.alumnos > 0) && !window.confirm(
-      `Vas a marcar como individual ${nuevas.length === 1 ? 'una clase que tiene' : 'clases que tienen'} alumnos matriculados. En «Pasar lista» solo saldrá los días con alumnos citados y su lista será la de los citados. ¿Seguir?`)) return;
+    // Al marcar una clase que ya se usaba como normal, lo que conviene saber antes.
+    const usadas = cambios.filter(c => marcadas.has(c.groupId) && (c.alumnos > 0 || c.diasLista > 0 || c.reservasBono > 0));
+    const reservas = usadas.reduce((n, c) => n + (c.reservasBono || 0), 0);
+    const una = usadas.length === 1;
+    if (usadas.length && !window.confirm([
+      `Vas a marcar como individual ${una ? 'una clase que ya se usaba' : 'clases que ya se usaban'} como clase normal: ${usadas.map(c => `«${c.name}»`).join(', ')}.`,
+      `· En «Pasar lista» solo ${una ? 'saldrá' : 'saldrán'} los días con alumnos citados y su lista será la de los citados.`,
+      usadas.some(c => c.diasLista > 0) ? '· En el historial de clases individuales entrarán las listas que ya se pasaron: quienes vinieron saldrán como «vino sin estar citado».' : '',
+      reservas ? `· Hay ${reservas === 1 ? '1 reserva' : `${reservas} reservas`} con bono por delante: no se ${reservas === 1 ? 'devuelve' : 'devuelven'} y no ${reservas === 1 ? 'saldrá' : 'saldrán'} en «Pasar lista» salvo los días con citas. Conviene ${reservas === 1 ? 'anularla' : 'anularlas'} antes.` : '',
+      '¿Seguir?',
+    ].filter(Boolean).join('\n\n'))) return;
     setGuardando(true);
     try {
-      const r = await fetch('/api/admin/speaking/config', {
+      const enviar = (confirmar) => fetch('/api/admin/speaking/config', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-        body: JSON.stringify({ groupIds: [...marcadas] }),
+        body: JSON.stringify({ groupIds: [...marcadas], ...(confirmar ? { confirmar: true } : {}) }),
       });
-      const x = await r.json().catch(() => ({}));
+      let r = await enviar(false);
+      let x = await r.json().catch(() => ({}));
+      // Si alguna que se desmarca tiene citas por delante, el servidor no guarda
+      // y dice cuántas: se pregunta y, si sigue, se manda otra vez confirmándolo.
+      if (r.status === 409 && x.citasFuturas) {
+        const varias = (x.clases || []).length > 1;
+        if (!window.confirm(`${x.error}\n\nSi ${varias ? 'dejan de ser individuales' : 'deja de ser individual'}, ${x.citasFuturas === 1 ? 'esa cita sigue' : 'esas citas siguen'} en la lista y con sus correos, pero en «Pasar lista» ${varias ? 'saldrán como clases normales' : 'saldrá como una clase normal'} (sin los citados) y el historial perderá su asistencia. Mejor quitar antes ${x.citasFuturas === 1 ? 'la cita' : 'las citas'} desde «Citas».\n\n¿Desmarcar${varias ? 'las' : 'la'} igualmente?`)) return;
+        r = await enviar(true);
+        x = await r.json().catch(() => ({}));
+      }
       if (!r.ok) return alert(x.error || 'No se ha podido guardar.');
       showToast?.('Guardado: clases individuales actualizadas.');
       await cargar(); onGuardado?.();
@@ -241,6 +258,9 @@ export default function AdminSpeaking({ showToast }) {
   const [q, setQ] = useState('');
   const [sug, setSug] = useState([]);
   const [buscando, setBuscando] = useState(false);
+  // La búsqueda que ya ha contestado (actividad|texto|todo el club): hasta
+  // entonces no se dice «nadie», que aún no se sabe.
+  const [buscado, setBuscado] = useState('');
   // Por defecto se busca entre los alumnos de la actividad; con esto, en todo el club.
   const [todoClub, setTodoClub] = useState(false);
   const [nuevos, setNuevos] = useState([]); // { id, name, franjas: {1,2,3}, noPuede, nota }
@@ -305,12 +325,13 @@ export default function AdminSpeaking({ showToast }) {
   // «todo el club», cualquiera (escribiendo al menos 2 letras).
   const [foco, setFoco] = useState(false);
   useEffect(() => {
-    if (!foco || !actId || (todoClub && q.trim().length < 2)) { setSug([]); return; }
+    if (!foco || !actId || (todoClub && q.trim().length < 2)) { setSug([]); setBuscado(''); return; }
+    const clave = `${actId}|${q.trim()}|${todoClub}`;
     const t = setTimeout(() => {
       setBuscando(true);
       const p = new URLSearchParams({ activityId: actId, q: q.trim(), ...(todoClub ? { todos: '1' } : {}) });
       fetch(`/api/admin/speaking/alumnos?${p}`, { credentials: 'include', cache: 'no-store' })
-        .then(r => r.ok ? r.json() : { alumnos: [] }).then(d => setSug(d.alumnos || [])).catch(() => { })
+        .then(r => r.ok ? r.json() : { alumnos: [] }).then(d => { setSug(d.alumnos || []); setBuscado(clave); }).catch(() => { })
         .finally(() => setBuscando(false));
     }, 250);
     return () => clearTimeout(t);
@@ -396,11 +417,16 @@ export default function AdminSpeaking({ showToast }) {
     if (r.ok) { await cargar(); showToast?.('Quitado.'); }
   }
 
-  // Próximas, por día y clase (un mismo día puede haber varias actividades).
+  // Próximas, por día y clase (un mismo día puede haber varias actividades), en
+  // el orden en que llegan del servidor: día, actividad y clase.
   const visibles = sesiones.filter(s => !filtroAct || s.activityId === filtroAct);
   const porDia = {};
-  for (const s of visibles) (porDia[`${String(s.fecha).slice(0, 10)}|${s.groupId || ''}`] ||= []).push(s);
-  const dias = Object.keys(porDia).sort();
+  const dias = [];
+  for (const s of visibles) {
+    const clave = `${String(s.fecha).slice(0, 10)}|${s.groupId || ''}`;
+    if (!porDia[clave]) { porDia[clave] = []; dias.push(clave); }
+    porDia[clave].push(s);
+  }
   const estado = (s) => s.perdida ? { t: '⌛ Plaza perdida', c: 'var(--danger, #dc2626)' }
     : s.confirmado === true ? { t: '✓ Confirmado', c: 'var(--teal)' }
     : s.confirmado === false ? { t: '✗ No puede', c: 'var(--orange)' }
@@ -464,7 +490,7 @@ export default function AdminSpeaking({ showToast }) {
                   onChange={e => setQ(e.target.value)} onFocus={() => setFoco(true)} onBlur={() => setTimeout(() => setFoco(false), 150)}
                   aria-label="Buscar alumno para apuntar" />
               </div>
-              {foco && (sug.length > 0 || (!buscando && (q.trim().length >= 2 || !todoClub))) && (
+              {foco && (sug.length > 0 || (!buscando && buscado === `${actId}|${q.trim()}|${todoClub}` && (q.trim().length >= 2 || !todoClub))) && (
                 <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 6, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, marginTop: 2, overflow: 'hidden', maxHeight: 260, overflowY: 'auto', boxShadow: 'var(--shadow)' }}>
                   {sug.length === 0 && (
                     <div style={{ padding: '10px 12px', fontSize: 13, color: 'var(--ink-3)' }}>
