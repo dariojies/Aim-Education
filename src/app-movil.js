@@ -98,7 +98,8 @@ function alTocar(e) {
   if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
   let u;
   try { u = new URL(href, window.location.href); } catch { return; }
-  if (/^(tel|mailto|sms|whatsapp|intent):/.test(u.protocol)) {
+  // webcal: la suscripción al calendario de «Mi día» (#390), para el calendario del móvil.
+  if (/^(tel|mailto|sms|whatsapp|intent|webcal):/.test(u.protocol)) {
     e.preventDefault(); window.location.href = u.href; return;
   }
   const propia = u.origin === window.location.origin;

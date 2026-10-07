@@ -14,6 +14,7 @@ import { crearRouterTulClases } from './tul-clases.js';
 import { crearRouterBandeja, buscarRespuestas, correosCon, buzonesPersonales } from './bandeja.js';
 import { crearBrickslab } from './brickslab.js';
 import { crearAvisosPush, GRUPOS_AVISO } from './avisos-push.js';
+import { crearRouterCalendarioMovil, agendaEnRango } from './calendario-movil.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
@@ -4687,39 +4688,17 @@ app.use('/api/admin/camp', authenticateSession, (req, res, next) => {
 
 // El día de quien lo pide: lo que ya tiene ocupado (las clases que da y los
 // eventos donde figura como docente) y sus tareas. Todo suyo y solo suyo.
+// Las clases y los eventos salen de agendaEnRango, lo mismo que el enlace del
+// calendario del móvil (#390): los días de cierre no hay clases, y un evento de
+// varios días sale en todos.
 app.get('/api/me/agenda', authenticateSession, requireAdmin, async (req, res) => {
     const yo = req.userSession.userId;
     const fecha = String(req.query.fecha || '').slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) return res.status(400).json({ error: 'Falta el día.' });
     try {
-        // getDay() da 0=domingo; en las sesiones de aim-tul 0 es lunes.
-        const js = new Date(fecha + 'T12:00:00').getDay();
-        const diaSemana = (js + 6) % 7;
-
-        const grupos = await pool.query(
-            `SELECT g.group_id, g.name, a.name AS actividad, g.sessions
-             FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
-             WHERE a.club_id = $1`, [AIM_CLUB_ID]
-        );
-        const clases = [];
-        for (const g of grupos.rows) {
-            for (const ses of (Array.isArray(g.sessions) ? g.sessions : [])) {
-                if (!esDocente(ses, yo)) continue;
-                if (!(ses?.days || []).map(Number).includes(diaSemana)) continue;
-                clases.push({
-                    id: `${g.group_id}-${ses.startTime}`, grupoId: g.group_id,
-                    grupo: g.name, actividad: g.actividad,
-                    hora: ses.startTime || null, horaFin: ses.endTime || null,
-                    aula: ses.aulaName || null,
-                });
-            }
-        }
-        clases.sort((a, b) => String(a.hora).localeCompare(String(b.hora)));
-
-        const eventos = await pool.query(
-            `SELECT id, title, time, end_time, venue FROM aim_eventos
-             WHERE docente_id = $1 AND event_date = $2::date ORDER BY time`, [yo, fecha]
-        );
+        const agenda = await agendaEnRango(pool, { clubId: AIM_CLUB_ID, userId: yo, desde: fecha, hasta: fecha });
+        const clases = agenda.clases.map(({ fecha: _f, ...c }) => c);
+        const cierre = agenda.cierres[fecha] || null;
         // Las horas que tenga planificadas en «Equipo IT» ese día: ese rato está
         // ocupado, igual que una clase, y es lo que tiene que fichar.
         const it = await pool.query(
@@ -4756,8 +4735,12 @@ app.get('/api/me/agenda', authenticateSession, requireAdmin, async (req, res) =>
         res.json({
             fecha, clases,
             config: await jornadaDe(yo),
-            eventos: eventos.rows.map(e => ({
+            // Si el centro está cerrado ese día (por eso no hay clases).
+            cierre: cierre ? { nombre: cierre.nombre, tipo: cierre.tipo } : null,
+            eventos: agenda.eventos.map(e => ({
                 id: e.id, titulo: e.title, hora: e.time, horaFin: e.end_time, lugar: e.venue,
+                // De varios días: cuál es el primero y el último.
+                desde: e.fecha, hasta: e.fin && e.fin > e.fecha ? e.fin : null,
             })),
             it: it.rows.map(x => ({ id: `it-${x.id}`, hora: x.inicio, horaFin: x.fin, nota: x.nota || null })),
             tareas: tareas.rows.map(mapTarea),
@@ -4954,14 +4937,8 @@ async function ticketEnlazable(req, ticketId, coger) {
 // Los grupos que lleva un instructor. Sale del horario: cada sesión de un grupo
 // guarda a qué profesor se le ha asignado (tul_groups.sessions -> instructorId),
 // y eso es justo lo que hace suya una clase.
-// ¿La persona da esta sesión? Mira los dos monitores (ticket #224): el array
-// `instructors` si está, y siempre el instructorId de siempre por si la sesión
-// es antigua o la escribió aim-tul.
-function esDocente(ses, userId) {
-    const yo = String(userId);
-    if (String(ses?.instructorId || '') === yo) return true;
-    return (Array.isArray(ses?.instructors) ? ses.instructors : []).some(d => String(d?.id || '') === yo);
-}
+// (Si la persona da una sesión concreta lo dice esDocente, en calendario-movil.js:
+// la usan «Mi día» y el calendario del móvil.)
 
 // Los nombres de los monitores de una sesión, para pintarlos ("Darío y Dani").
 function nombresDocentes(ses) {
@@ -5067,6 +5044,13 @@ async function fichaDeCorreo(email) {
     return r.rows[0] ? { id: r.rows[0].user_id, nombre: r.rows[0].nombre } : null;
 }
 const bandeja = crearRouterBandeja({ pool, permisos, companeros: companerosCorreo, fichaDe: fichaDeCorreo });
+
+// «Mi día» en el calendario del móvil (#390): el enlace privado de cada uno y el
+// .ics que leen Google, Samsung o el iPhone. Ver calendario-movil.js.
+app.use(crearRouterCalendarioMovil({
+    pool, authenticateSession, requireAdmin, rolEfectivo, bajasDeCuenta,
+    urlBase: URL_PUBLICA_WEB, clubId: AIM_CLUB_ID, hoy: hoyMadrid,
+}));
 
 // ── Redes sociales (#341) ────────────────────────────────────────────────────
 // Quién puede llevarlas (y recibir conversaciones asignadas).

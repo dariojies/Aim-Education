@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { I } from './Icons.jsx';
 import { useRouter } from '../App.jsx';
+import CalendarioMovil from './CalendarioMovil.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // La agenda de cada uno: lo que ya tiene ocupado ese día (las clases que da y
-// los eventos donde figura como docente) y sus tareas.
+// los eventos donde figura como docente) y sus tareas. Las clases, los eventos
+// y sus turnos se pueden llevar al calendario del móvil (#390).
 //
 // Es privada. No hay forma de ver la de otro: el servidor solo devuelve las de
 // quien pregunta, y todas las consultas llevan su user_id.
@@ -117,6 +119,7 @@ export default function AdminAgenda({ showToast, user, puedePasarLista = false }
     const [cargando, setCargando] = useState(false);
     const [editando, setEditando] = useState(null); // tarea nueva o existente
     const [guardando, setGuardando] = useState(false);
+    const [movil, setMovil] = useState(false); // «Sincronizar con mi móvil» (#390)
 
     const cargar = useCallback(async () => {
         setCargando(true);
@@ -213,6 +216,9 @@ export default function AdminAgenda({ showToast, user, puedePasarLista = false }
         ...(datos?.it || []).map(x => ({ ...x, tipo: 'it', nombre: 'Equipo IT', detalle: x.nota || 'Horas planificadas' })),
     ].filter(x => x.hora);
 
+    // Lo que no tiene hora (o el día de cierre): va arriba, «todo el día».
+    const todoElDia = (datos?.eventos || []).filter(e => !e.hora);
+
     const conHora = (datos?.tareas || []).filter(t => t.hora);
     const sinHora = (datos?.tareas || []).filter(t => !t.hora);
     const vencidas = datos?.vencidas || [];
@@ -274,8 +280,32 @@ export default function AdminAgenda({ showToast, user, puedePasarLista = false }
                         <I.Check /> Pasar lista
                     </button>
                 )}
+                <button className="btn btn-sm btn-outline" onClick={() => setMovil(true)} title="Tus clases, eventos y turnos en el calendario del móvil">
+                    <I.Calendar width={14} height={14} /> Sincronizar con mi móvil
+                </button>
                 <button className="btn btn-sm btn-primary" onClick={() => abrirEn('')}><I.Plus /> Nueva tarea</button>
             </div>
+
+            {/* Día de cierre del centro y eventos sin hora (#390): no tienen hueco
+                en las horas, así que van aquí arriba. */}
+            {(datos?.cierre || todoElDia.length > 0) && (
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {datos?.cierre && (
+                        <div style={{ background: 'color-mix(in oklab, var(--orange) 12%, var(--bg-2))', borderLeft: '3px solid var(--orange)', borderRadius: 8, padding: '8px 12px', fontSize: 13 }}>
+                            <b>Centro cerrado: {datos.cierre.nombre}</b>
+                            <span style={{ color: 'var(--ink-3)' }}> · {dia === HOY() ? 'hoy' : 'ese día'} no hay clases</span>
+                        </div>
+                    )}
+                    {todoElDia.map(e => (
+                        <div key={e.id} style={{ background: `color-mix(in oklab, ${colorOcupado('evento')} 12%, var(--bg-2))`, borderLeft: `3px solid ${colorOcupado('evento')}`, borderRadius: 8, padding: '8px 12px', fontSize: 13 }}>
+                            <b>{e.titulo}</b>
+                            <span style={{ color: 'var(--ink-3)' }}>
+                                {' · evento'}{e.hasta ? ` · del ${vistaFecha(e.desde)} al ${vistaFecha(e.hasta)}` : ''}{e.lugar ? ` · ${e.lugar}` : ''}
+                            </span>
+                        </div>
+                    ))}
+                </div>
+            )}
 
             <div className="kpis">
                 <KPI label="Clases" valor={String((datos?.clases || []).length)} pie="que das hoy" />
@@ -317,6 +347,7 @@ export default function AdminAgenda({ showToast, user, puedePasarLista = false }
                                             <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>
                                                 {[o.hora && `${o.hora}${o.horaFin ? `–${o.horaFin}` : ''}`, o.detalle].filter(Boolean).join(' · ')}
                                                 {o.tipo === 'evento' ? ' · evento' : ''}
+                                                {o.tipo === 'evento' && o.hasta ? ` · del ${vistaFecha(o.desde)} al ${vistaFecha(o.hasta)}` : ''}
                                             </div>
                                         </div>
                                     ))}
@@ -400,6 +431,8 @@ export default function AdminAgenda({ showToast, user, puedePasarLista = false }
                 )}
                 </div>
             </div>
+
+            {movil && <CalendarioMovil onCerrar={() => setMovil(false)} showToast={showToast} />}
 
             {editando && (
                 <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 2000, display: 'grid', placeItems: 'center', padding: 20 }}
