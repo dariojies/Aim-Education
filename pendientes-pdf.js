@@ -5,6 +5,8 @@ import PDFDocument from 'pdfkit';
 // pantalla —con el mes elegido y el buscador aplicado—, para imprimirlo o
 // mandarlo. Si el mes es futuro, además va la previsión: lo que se cobrará ese
 // mes y todavía no está generado (no es deuda).
+// Con t.titulo sirve también para las listas de impagados tras la baja y de
+// meses exentos (#393): cada fila lleva entonces su motivo debajo.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const TINTA = '#1A1A1A';
@@ -20,8 +22,9 @@ const mesLargo = (iso) => {
 const cap = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 
 export function generarPendientesPdf(t, salida) {
+    const titulo = t.titulo || 'Cargos pendientes de cobro';
     const doc = new PDFDocument({ size: 'A4', margin: 50, bufferPages: true, info: {
-        Title: `Cargos pendientes · ${t.periodo}`, Author: 'AIM Education',
+        Title: `${t.titulo || 'Cargos pendientes'} · ${t.periodo}`, Author: 'AIM Education',
     } });
     doc.pipe(salida);
     const izq = 50, ancho = doc.page.width - 100;
@@ -38,7 +41,7 @@ export function generarPendientesPdf(t, salida) {
     doc.rect(izq, yFranja, ancho, 3).fill(grad);
 
     let y = yFranja + 18;
-    doc.fillColor(TINTA).font('Helvetica-Bold').fontSize(14).text('Cargos pendientes de cobro', izq, y);
+    doc.fillColor(TINTA).font('Helvetica-Bold').fontSize(14).text(titulo, izq, y);
     y = doc.y + 2;
     doc.font('Helvetica').fontSize(10.5).fillColor(SUAVE).text(t.periodo, izq, y, { width: ancho });
     if (t.filtros?.length) {
@@ -48,8 +51,8 @@ export function generarPendientesPdf(t, salida) {
 
     // Totales de un vistazo.
     const cajas = [
-        ['Cargos pendientes', String(t.cargos.length)],
-        ['Base pendiente', eur(t.totalPendiente)],
+        [t.titulo ? 'Cargos' : 'Cargos pendientes', String(t.cargos.length)],
+        [t.titulo ? 'Base' : 'Base pendiente', eur(t.totalPendiente)],
         ['Alumnos', String(new Set(t.cargos.map(c => c.alumno)).size)],
         ...(t.prevision.length ? [['En previsión', `${t.prevision.length} · ${eur(t.totalPrevision)}`]] : []),
     ];
@@ -101,6 +104,11 @@ export function generarPendientesPdf(t, salida) {
             doc.font('Helvetica-Bold').text(eur(f.base), cols[5].x, y, { width: cols[5].w, align: 'right', lineBreak: false });
             total += Number(f.base || 0);
             y += alto + 4;
+            if (f.motivo) {
+                doc.font('Helvetica-Oblique').fontSize(7.5).fillColor(SUAVE)
+                    .text(`Motivo: ${f.motivo}`, cols[1].x, y - 2, { width: ancho - (cols[1].x - izq) });
+                y = doc.y + 4;
+            }
             doc.moveTo(izq, y - 2).lineTo(izq + ancho, y - 2).strokeColor('#F3F3F3').stroke();
         }
         doc.font('Helvetica-Bold').fontSize(9.5).fillColor(TINTA)
@@ -108,12 +116,12 @@ export function generarPendientesPdf(t, salida) {
         y = doc.y + 14;
     };
 
-    tabla('Cargos pendientes', t.cargos);
+    tabla(t.titulo || 'Cargos pendientes', t.cargos);
     tabla('Campamento', t.campamento, 'Los del campamento de verano, que van por su cuenta y no dependen del mes elegido.');
     tabla('Previsión', t.prevision, 'Lo que se cobrará ese mes y aún no está generado: todavía no es deuda.');
 
     if (!t.cargos.length && !t.campamento.length && !t.prevision.length) {
-        doc.font('Helvetica').fontSize(10).fillColor(SUAVE).text('No hay ningún cargo pendiente con estos filtros.', izq, y);
+        doc.font('Helvetica').fontSize(10).fillColor(SUAVE).text(t.vacio || 'No hay ningún cargo pendiente con estos filtros.', izq, y);
     }
 
     // Pie con la fecha, en todas las páginas.
@@ -123,7 +131,7 @@ export function generarPendientesPdf(t, salida) {
         const margen = doc.page.margins.bottom;
         doc.page.margins.bottom = 0;
         doc.font('Helvetica').fontSize(7).fillColor(SUAVE)
-            .text(`Cargos pendientes de cobro · Generado el ${t.generadoEl}`, izq, doc.page.height - 48, { width: ancho - 60 })
+            .text(`${titulo} · Generado el ${t.generadoEl}`, izq, doc.page.height - 48, { width: ancho - 60 })
             .text(`Pág. ${i + 1} de ${rango.count}`, izq + ancho - 60, doc.page.height - 48, { width: 60, align: 'right' });
         doc.page.margins.bottom = margen;
     }

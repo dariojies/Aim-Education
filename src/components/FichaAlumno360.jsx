@@ -47,6 +47,32 @@ function Seccion({ titulo, extra, children }) {
   );
 }
 
+// Impagados tras la baja o meses exentos (#393): mes, concepto, importe y motivo.
+const MESES_FICHA = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+const mesFicha = (iso) => { if (!iso) return ''; const [y, m] = String(iso).slice(0, 7).split('-'); return `${MESES_FICHA[Number(m) - 1]} ${y}`; };
+function NoCobrados({ titulo, color, lista, total }) {
+  if (!lista?.length) return null;
+  return (
+    <div style={{ display: 'grid', gap: 4, marginBottom: 12 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
+        <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--ink-3)', flex: 1 }}>{titulo}</span>
+        <span style={{ fontSize: 12.5, fontWeight: 800, color }}>{eur(total)}</span>
+      </div>
+      {lista.map(p => (
+        <div key={p.id} style={{ display: 'grid', gap: 2, fontSize: 12.5, padding: '6px 10px', background: `color-mix(in oklab, ${color} 8%, var(--bg-2))`, borderRadius: 8 }}>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <span style={{ flex: 1 }}>
+              {p.descripcion}{p.mes ? <span style={{ color: 'var(--ink-3)' }}> · {mesFicha(p.mes)}</span> : ''}{p.actividad ? <span style={{ color: 'var(--ink-3)' }}> · {p.actividad}</span> : ''}
+            </span>
+            <span style={{ fontWeight: 700, color }}>{eur(p.total)}</span>
+          </div>
+          {p.motivo && <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Motivo: {p.motivo}</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function Factura({ f }) {
   const [abierta, setAbierta] = useState(false);
   const [est, col] = ESTADO_RECIBO[f.estado] || [f.estado, 'var(--ink-3)'];
@@ -141,6 +167,10 @@ export default function FichaAlumno360({ studentId }) {
             ))}
           </div>
         )}
+        {/* Lo que no se le va a cobrar (#393): impagados tras la baja (deuda
+            interna, la familia ya no los ve) y meses exentos, con su motivo. */}
+        <NoCobrados titulo="Impagados tras la baja" color="var(--orange)" lista={economico.impagados} total={economico.totalImpagado} />
+        <NoCobrados titulo="Meses exentos" color="var(--teal)" lista={economico.exentos} total={economico.totalExento} />
         <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--ink-3)' }}>Facturas</span>
         <div style={{ display: 'grid', gap: 6, marginTop: 6 }}>
           {economico.facturas.length
