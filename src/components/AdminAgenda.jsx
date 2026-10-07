@@ -300,7 +300,7 @@ export default function AdminAgenda({ showToast, user, puedePasarLista = false }
                         <div key={e.id} style={{ background: `color-mix(in oklab, ${colorOcupado('evento')} 12%, var(--bg-2))`, borderLeft: `3px solid ${colorOcupado('evento')}`, borderRadius: 8, padding: '8px 12px', fontSize: 13 }}>
                             <b>{e.titulo}</b>
                             <span style={{ color: 'var(--ink-3)' }}>
-                                {' · evento'}{e.hasta ? ` · del ${vistaFecha(e.desde)} al ${vistaFecha(e.hasta)}` : ''}{e.lugar ? ` · ${e.lugar}` : ''}
+                                {' · evento'}{e.hasta ? ` · del ${vistaFecha(e.desde)} al ${vistaFecha(e.hasta)}` : ''}{e.horaTexto ? ` · ${e.horaTexto}` : ''}{e.lugar ? ` · ${e.lugar}` : ''}
                             </span>
                         </div>
                     ))}

@@ -14,7 +14,7 @@ import { crearRouterTulClases } from './tul-clases.js';
 import { crearRouterBandeja, buscarRespuestas, correosCon, buzonesPersonales } from './bandeja.js';
 import { crearBrickslab } from './brickslab.js';
 import { crearAvisosPush, GRUPOS_AVISO } from './avisos-push.js';
-import { crearRouterCalendarioMovil, agendaEnRango } from './calendario-movil.js';
+import { crearRouterCalendarioMovil, agendaEnRango, leerHora } from './calendario-movil.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
@@ -4739,7 +4739,12 @@ app.get('/api/me/agenda', authenticateSession, requireAdmin, async (req, res) =>
             // Si el centro está cerrado ese día (por eso no hay clases).
             cierre: cierre ? { nombre: cierre.nombre, tipo: cierre.tipo } : null,
             eventos: agenda.eventos.map(e => ({
-                id: e.id, titulo: e.title, hora: e.time, horaFin: e.end_time, lugar: e.venue,
+                id: e.id, titulo: e.title, lugar: e.venue,
+                // La hora es texto libre: se lee igual que en el enlace del móvil
+                // ("19:00", "19.00", "19h"…). Si no se entiende va sin hora (arriba,
+                // «todo el día») y se enseña el texto tal cual (horaTexto).
+                hora: leerHora(e.time), horaFin: leerHora(e.end_time) || e.end_time || null,
+                horaTexto: e.time || null,
                 // De varios días: cuál es el primero y el último.
                 desde: e.fecha, hasta: e.fin && e.fin > e.fecha ? e.fin : null,
             })),
@@ -4935,12 +4940,6 @@ async function ticketEnlazable(req, ticketId, coger) {
     return id;
 }
 
-// Los grupos que lleva un instructor. Sale del horario: cada sesión de un grupo
-// guarda a qué profesor se le ha asignado (tul_groups.sessions -> instructorId),
-// y eso es justo lo que hace suya una clase.
-// (Si la persona da una sesión concreta lo dice esDocente, en calendario-movil.js:
-// la usan «Mi día» y el calendario del móvil.)
-
 // Los nombres de los monitores de una sesión, para pintarlos ("Darío y Dani").
 function nombresDocentes(ses) {
     const arr = (Array.isArray(ses?.instructors) ? ses.instructors : []).map(d => d?.name).filter(Boolean);
@@ -4948,6 +4947,11 @@ function nombresDocentes(ses) {
     return ses?.instructorName ? [ses.instructorName] : [];
 }
 
+// Los grupos que lleva un instructor. Sale del horario: cada sesión de un grupo
+// guarda a qué profesor se le ha asignado (tul_groups.sessions -> instructorId
+// o el array instructors, ticket #224), y eso es justo lo que hace suya una clase.
+// (Si la persona da una sesión concreta lo dice esDocente, en calendario-movil.js:
+// la usan «Mi día» y el calendario del móvil.)
 async function gruposDe(userId) {
     const r = await pool.query(
         `SELECT DISTINCT g.group_id

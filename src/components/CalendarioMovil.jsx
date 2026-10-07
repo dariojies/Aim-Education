@@ -70,16 +70,24 @@ function Pasos({ dispositivo }) {
 }
 
 export default function CalendarioMovil({ onCerrar, showToast }) {
-    const [estado, setEstado] = useState(null); // { activo, https, webcal, google }
+    const [estado, setEstado] = useState(null); // { activo, https, webcal, google } o { error }
     const [ocupado, setOcupado] = useState(false);
     const [dispositivo, setDispositivo] = useState(() => /iPhone|iPad/.test(navigator.userAgent) ? 'iphone' : /SM-|Samsung/i.test(navigator.userAgent) ? 'samsung' : 'android');
 
-    useEffect(() => {
+    // Si no se puede saber si ya tiene enlace, no se ofrece «Crear mi enlace»:
+    // crearlo cambiaría el que ya tuviera sin avisar y sus calendarios dejarían
+    // de recibir cambios. Se dice que ha fallado y se puede volver a probar.
+    function cargar() {
+        setEstado(null);
         fetch('/api/me/calendario-movil', { credentials: 'include', cache: 'no-store' })
-            .then(r => r.ok ? r.json() : { activo: false })
-            .then(setEstado)
-            .catch(() => setEstado({ activo: false }));
-    }, []);
+            .then(async r => {
+                const d = await r.json().catch(() => ({}));
+                if (r.ok && typeof d?.activo === 'boolean') return setEstado(d);
+                setEstado({ error: r.status === 401 ? 'Tu sesión ha caducado: vuelve a entrar.' : (d?.error || 'No se ha podido ver si ya tienes un enlace.') });
+            })
+            .catch(() => setEstado({ error: 'Error de conexión: no se ha podido ver si ya tienes un enlace.' }));
+    }
+    useEffect(cargar, []);
 
     async function pedir(metodo) {
         setOcupado(true);
@@ -129,7 +137,14 @@ export default function CalendarioMovil({ onCerrar, showToast }) {
 
                 {!estado && <p style={{ margin: 0, color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
 
-                {estado && !estado.activo && (
+                {estado?.error && (
+                    <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', background: 'color-mix(in oklab, var(--red, #dc2626) 8%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--red, #dc2626) 30%, var(--line))', borderRadius: 12, padding: '10px 12px', fontSize: 13, color: 'var(--ink-2)' }}>
+                        <span style={{ flex: 1, minWidth: 180 }}>{estado.error}</span>
+                        <button className="btn btn-sm btn-outline" onClick={cargar}>Reintentar</button>
+                    </div>
+                )}
+
+                {estado && !estado.error && !estado.activo && (
                     <button className="btn btn-primary" onClick={crear} disabled={ocupado} style={{ justifySelf: 'start' }}>
                         <I.Calendar width={16} height={16} /> {ocupado ? 'Creando...' : 'Crear mi enlace'}
                     </button>
