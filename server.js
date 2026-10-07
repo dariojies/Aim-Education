@@ -16444,7 +16444,7 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                 `SELECT COUNT(*)::int n FROM (${SQL_SOLICITUD_FOTOS}) s JOIN users u ON u.user_id = s.user_id WHERE u.club_id = $1`, [AIM_CLUB_ID])).rows[0].n;
             if (sf) avisos.push({ tipo: 'permisos', texto: `${sf} solicitud${sf !== 1 ? 'es' : ''} de permiso de fotos`, detalle: 'confirmar o descartar en Gestión de alumnos', destino: '/admin/alumnos', n: sf });
         }
-        if (sp.rechazados && recibe('speaking_rechazados')) avisos.push({ tipo: 'speaking', texto: `${sp.rechazados} familia${sp.rechazados !== 1 ? 's' : ''} han dicho que NO a una clase individual`, detalle: 'revisar la asistencia', destino: '/admin/clases-individuales', clave: 'speaking|/admin/speaking|famil dicho speak', n: sp.rechazados });
+        if (sp.rechazados && recibe('speaking_rechazados')) avisos.push({ tipo: 'speaking', texto: `${sp.rechazados} familia${sp.rechazados !== 1 ? 's han' : ' ha'} dicho que NO a una clase individual`, detalle: 'revisar la asistencia', destino: '/admin/clases-individuales', clave: 'speaking|/admin/speaking|famil dicho speak', n: sp.rechazados });
 
         res.set('Cache-Control', 'no-store');
         await conVistos(yo, avisos);
@@ -16547,6 +16547,9 @@ function paginaSpeaking(ok, si, limitePerdido = null, actividad = null) {
 //  · 'inicial'    al apuntarle, con el plazo para confirmar.
 //  · 'ultimoDia'  el último día del plazo, a quien aún no ha contestado.
 //  · 'manana'     el día antes de la clase, a quien ya ha confirmado (ticket #241).
+const MARCA_SIN_ACTIVIDAD = 'ZZSINACTIVIDADZZ';
+const sinMarcaActividad = (s) => String(s ?? '')
+    .replace(new RegExp(`\\s+de\\s+${MARCA_SIN_ACTIVIDAD}`, 'g'), '').replaceAll(MARCA_SIN_ACTIVIDAD, '');
 async function enviarCorreosSpeaking(ids, { tipo = 'inicial' } = {}) {
     const recordatorio = tipo !== 'inicial';
     if (!ids.length || !mailTransporter) return;
@@ -16576,14 +16579,18 @@ async function enviarCorreosSpeaking(ids, { tipo = 'inicial' } = {}) {
             const si = `${base}/speaking/${row.token}/si`;
             const no = `${base}/speaking/${row.token}/no`;
             const clave = tipo === 'manana' ? 'speaking_manana' : tipo === 'ultimoDia' ? 'speaking_ultimo_dia' : 'speaking_inicial';
-            const c = await correoSistema(clave, {
-                // «Taekwondo», «Inglés»… (#388): «clase individual de {actividad}».
-                actividad: row.actividad || row.clase || 'su actividad', clase: row.clase || '',
+            // «Taekwondo», «Inglés»… (#388): «clase individual de {actividad}». Si
+            // la cita ya no tiene clase (se borró del horario), «clase individual» a
+            // secas: se rellena con una marca y luego se quita con su «de».
+            const actividad = row.actividad || row.clase || null;
+            let c = await correoSistema(clave, {
+                actividad: actividad || MARCA_SIN_ACTIVIDAD, clase: row.clase || '',
                 alumno: row.alumno, fecha: fechaTxt,
                 cuando: franjasTxt ? (tipo === 'manana' ? `${fechaTxt} · ${franjasTxt}` : `${fechaTxt} (${franjasTxt})`) : fechaTxt,
                 limite: row.limite_hoy ? 'hoy' : `el ${fechaLarga(row.limite)}`,
                 enlace_si: si, enlace_no: no,
             });
+            if (!actividad) c = { ...c, subject: sinMarcaActividad(c.subject), html: sinMarcaActividad(c.html), text: sinMarcaActividad(c.text) };
             await mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: correos.join(','), ...c });
             await pool.query(
                 `UPDATE aim_speaking SET ${recordatorio ? 'recordatorio_enviado' : 'email_enviado'} = true WHERE id = $1`,
@@ -16704,7 +16711,12 @@ app.get('/api/admin/speaking/config', authenticateSession, requireIndividuales, 
     try {
         const r = await pool.query(
             `SELECT g.group_id, g.name, g.sessions, a.activity_id, a.name AS actividad, ${sqlEsIndividual()} AS individual,
-                    (SELECT COUNT(*)::int FROM tul_group_students gs WHERE gs.group_id = g.group_id) AS alumnos
+                    (SELECT COUNT(*)::int FROM tul_group_students gs WHERE gs.group_id = g.group_id) AS alumnos,
+                    -- Para avisar al marcarla: los días que ya se pasó lista (entran en
+                    -- el historial) y las reservas con bono que tiene por delante.
+                    (SELECT COUNT(DISTINCT t.date)::int FROM tul_attendance t WHERE t.group_id = g.group_id) AS dias_lista,
+                    (SELECT COUNT(*)::int FROM aim_bono_reservas br WHERE br.group_id = g.group_id
+                       AND br.estado = 'reservada' AND br.fecha >= ${SQL_HOY_MADRID}) AS reservas_bono
              FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
              WHERE a.club_id = $1 ORDER BY a.name, g.name`, [AIM_CLUB_ID]);
         const guardado = await pool.query(`SELECT actualizado_at FROM aim_ajustes WHERE clave = $1`, [CLAVE_INDIVIDUALES]);
@@ -16715,7 +16727,8 @@ app.get('/api/admin/speaking/config', authenticateSession, requireIndividuales, 
             porNombre: !guardado.rowCount,
             clases: r.rows.map(g => ({
                 groupId: g.group_id, name: g.name, activityId: g.activity_id, actividad: g.actividad,
-                individual: g.individual, alumnos: g.alumnos, sesiones: sesionesDeGrupo(g.sessions),
+                individual: g.individual, alumnos: g.alumnos, diasLista: g.dias_lista, reservasBono: g.reservas_bono,
+                sesiones: sesionesDeGrupo(g.sessions),
             })),
         });
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -16728,6 +16741,23 @@ app.put('/api/admin/speaking/config', authenticateSession, requireIndividuales, 
         const ok = pedidos.length ? (await pool.query(
             `SELECT g.group_id FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
              WHERE a.club_id = $1 AND g.group_id = ANY($2::uuid[])`, [AIM_CLUB_ID, pedidos])).rows.map(x => x.group_id) : [];
+        // Las que dejan de ser individuales con citas por delante: esas citas se
+        // quedarían a medias (siguen los correos, pero «Pasar lista» la trata como
+        // una clase normal y el historial pierde su asistencia). Se avisa con
+        // cuántas son y solo se guarda si lo confirma (confirmar: true).
+        const quitadas = (await pool.query(
+            `SELECT g.group_id, g.name, COUNT(s.id)::int AS citas
+             FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+             JOIN aim_speaking s ON s.group_id = g.group_id AND s.fecha >= ${SQL_HOY_MADRID}
+             WHERE a.club_id = $1 AND ${sqlEsIndividual()} AND NOT (g.group_id = ANY($2::uuid[]))
+             GROUP BY g.group_id, g.name ORDER BY g.name`, [AIM_CLUB_ID, ok])).rows;
+        const citasFuturas = quitadas.reduce((n, x) => n + x.citas, 0);
+        if (citasFuturas && req.body?.confirmar !== true) {
+            return res.status(409).json({
+                error: `${quitadas.map(x => `«${x.name}»`).join(', ')} ${citasFuturas === 1 ? 'tiene 1 cita' : `${quitadas.length === 1 ? 'tiene' : 'tienen'} ${citasFuturas} citas`} de clase individual por delante.`,
+                citasFuturas, clases: quitadas.map(x => ({ groupId: x.group_id, name: x.name, citas: x.citas })),
+            });
+        }
         await pool.query(
             `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ($1, $2::jsonb, NOW(), $3)
              ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
