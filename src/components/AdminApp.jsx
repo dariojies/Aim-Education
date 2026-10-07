@@ -80,6 +80,7 @@ function sectionLabel(id) {
     students: "Gestión de alumnos",
     familias: "Familias",
     classes: "Clases y horarios",
+    pasarlista: "Pasar lista",
     reportes: "Reportes",
     payments: "Gastos del club",
     news: "Noticias y foro",
@@ -6935,11 +6936,14 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
   const permisos = user?.permisos || permisosDe(user?.rol || null);
   // Una sección solo se pinta si además de estar abierta se puede ver: escribir
   // la ruta a mano no debe colar.
-  const ver = (id) => view === id && !!permisos.secciones[id];
+  // Apartados del menú que usan el permiso de otra sección: «Pasar lista» es de
+  // quien puede ver las clases.
+  const seccionDe = (id) => ({ pasarlista: 'classes' }[id] || id);
+  const ver = (id) => view === id && !!permisos.secciones[seccionDe(id)];
   // Si alguien entra a una sección que no tiene, se le lleva a la primera que
   // sí tiene, en vez de a una pantalla vacía.
   useEffect(() => {
-    if (permisos.secciones[view]) return;
+    if (permisos.secciones[seccionDe(view)]) return;
     const orden = ['overview', 'agenda', 'fichaje', 'support'];
     const primera = orden.find(id => permisos.secciones[id]) || Object.keys(permisos.secciones).find(id => permisos.secciones[id]);
     if (primera) setView(primera);
@@ -6985,6 +6989,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
     {
       heading: "Actividad", items: [
         { id: "classes", label: "Clases y horarios", icon: <I.Calendar /> },
+        // Pasar lista de las clases del día, directamente (sin entrar en Clases).
+        { id: "pasarlista", label: "Pasar lista", icon: <I.Check /> },
         { id: "speaking", label: "Speaking", icon: <I.Users /> },
         { id: "camp", label: "Campamento", icon: <I.Sun /> },
         { id: "events", label: "Eventos", icon: <I.Star /> },
@@ -7022,7 +7028,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
   const sections = gruposMenu
     // Cada rol ve solo sus secciones. Un grupo que se queda sin ninguna no
     // pinta su título suelto en el menú.
-    .map(g => ({ ...g, items: g.items.filter(i => permisos.secciones[i.id]) }))
+    .map(g => ({ ...g, items: g.items.filter(i => permisos.secciones[seccionDe(i.id)]) }))
     .filter(g => g.items.length > 0);
 
   // Menú en acordeón: solo se ve abierto un grupo, el de la sección en la que
@@ -7168,6 +7174,13 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
               if (u) abrirFicha(u);
             }} />
           )}
+          {/* Pasar lista directo desde el menú; /admin/pasar-lista/<grupo>?fecha= abre esa clase. */}
+          {ver("pasarlista") && (
+            <div className="panel" style={{ display: 'grid', gap: 12 }}>
+              <PasarListaClases showToast={showToast}
+                abrir={enlace?.seg?.[1] === 'pasar-lista' && enlace.seg[2] ? { grupo: enlace.seg[2], fecha: enlace.params?.fecha || null, ruta: enlace.ruta } : null} />
+            </div>
+          )}
           {ver("classes") && (
             <AdminClasses
               enlace={enlace}
@@ -7207,7 +7220,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                 setActiveModal('new-student');
               }} />
           )}
-          {!permisos.secciones[view] && (
+          {!permisos.secciones[seccionDe(view)] && (
             <div style={{ padding: 40, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 16 }}>
               <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 19, margin: '0 0 6px' }}>Esta sección no es para tu perfil</h2>
               <p style={{ margin: 0, fontSize: 14, color: 'var(--ink-3)' }}>
