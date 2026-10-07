@@ -23,6 +23,8 @@ const ES_SHA = /^[0-9a-f]{7,40}$/i;
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const ES_ID = new RegExp(`^(m-)?${UUID}$`, 'i');
 const MAX_COMMITS = 100;
+const MAX_NOVEDADES = 10;     // líneas «Novedad:» por commit
+const MAX_NOVEDAD = 300;
 const MAX_TITULO = 150;
 const MAX_TEXTO = 4000;
 
@@ -76,7 +78,9 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
     }
 
     // Los commits entre el deploy anterior y este, de la API de GitHub (comparar
-    // dos commits). Solo el primer renglón de cada mensaje y sin los de «merge».
+    // dos commits), sin los de «merge». De cada mensaje, el primer renglón y las
+    // líneas «Novedad: …» del cuerpo (lo que cambia contado para quien lo lee;
+    // el panel las usa para redactar las novedades del deploy).
     async function cargarCommits(id) {
         // El repositorio es público: sin token también contesta (con un límite de
         // consultas por hora); con GITHUB_TOKEN, sin ese límite.
@@ -99,7 +103,12 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
         const d = await r.json();
         const commits = (Array.isArray(d?.commits) ? d.commits : [])
             .filter(c => !(Array.isArray(c?.parents) && c.parents.length > 1))
-            .map(c => ({ sha: shaValido(c?.sha), mensaje: limpio(String(c?.commit?.message || '').split('\n')[0], 200) }))
+            .map(c => {
+                const lineas = String(c?.commit?.message || '').replace(/\r\n/g, '\n').split('\n');
+                const novedades = lineas.slice(1).map(l => /^\s*[-*·]?\s*novedad:\s*(.+)$/i.exec(l)?.[1]).filter(Boolean)
+                    .map(l => limpio(l, MAX_NOVEDAD)).filter(Boolean).slice(0, MAX_NOVEDADES);
+                return { sha: shaValido(c?.sha), mensaje: limpio(lineas[0], 200), ...(novedades.length ? { novedades } : {}) };
+            })
             .filter(c => c.sha && c.mensaje)
             .reverse()                       // el más reciente primero
             .slice(0, MAX_COMMITS);

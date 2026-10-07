@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { I } from './Icons.jsx';
 import { useRouter } from '../App.jsx';
 import { fmtFechaLarga, fmtHora, fmtFechaHora } from '../fechas.js';
+import { novedadesDe, tituloDe } from '../novedades.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Cambios (ticket #397): qué se ha publicado en cada deploy. Cada deploy deja su
@@ -9,6 +10,8 @@ import { fmtFechaLarga, fmtHora, fmtFechaHora } from '../fechas.js';
 // de «Espera de deploy» a «Resuelto» y, con el token de GitHub, sus commits). El
 // Equipo IT y los superadmin le ponen título y texto y pueden añadir entradas a
 // mano; secretaría y dirección lo leen (el servidor lo comprueba). Solo personal.
+// Arriba van las «Novedades», redactadas de los commits (src/novedades.js), y
+// los commits tal cual, plegados debajo.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Los tickets de cada deploy, agrupados por su categoría de Soporte.
@@ -65,7 +68,7 @@ export default function AdminCambios({ showToast }) {
     return datos.entradas.filter(e => [
       e.titulo, e.texto, e.commit, e.release ? `v${e.release}` : '',
       ...e.tickets.flatMap(t => [`#${t.id}`, t.asunto]),
-      ...e.commits.map(c => c.mensaje),
+      ...e.commits.flatMap(c => [c.mensaje, ...(c.novedades || [])]),
     ].some(v => String(v || '').toLowerCase().includes(n)));
   }, [datos, q]);
 
@@ -149,7 +152,8 @@ export default function AdminCambios({ showToast }) {
         const manual = e.origen === 'manual';
         const grupos = GRUPOS.map(([k, nombre, color]) => ({ nombre, color, tickets: e.tickets.filter(t => (t.categoria || '') === k || (!k && !GRUPOS.some(g => g[0] === t.categoria))) }))
           .filter(g => g.tickets.length);
-        const titulo = e.titulo || (manual ? 'Entrada a mano' : `Deploy de las ${fmtHora(e.publicado)}`);
+        const novedades = novedadesDe(e.commits);
+        const titulo = e.titulo || (manual ? 'Entrada a mano' : (tituloDe(novedades) || `Publicación de las ${fmtHora(e.publicado)}`));
         const enEdicion = editando && !editando.nueva && editando.id === e.id;
         return (
           <div key={e.id} className="card" style={{ padding: 16, display: 'grid', gap: 10, borderLeft: `4px solid ${manual ? 'var(--teal)' : 'var(--purple)'}` }}>
@@ -188,8 +192,32 @@ export default function AdminCambios({ showToast }) {
               </>
             )}
 
+            {novedades.length > 0 && (
+              <div style={{ display: 'grid', gap: 12, background: 'color-mix(in oklab, var(--purple) 6%, var(--bg-2))', borderRadius: 12, padding: '12px 14px' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--purple)' }}>
+                  <I.Sparkle width={12} height={12} /> Novedades
+                </span>
+                {novedades.map(g => (
+                  <div key={g.apartado || '—'} style={{ display: 'grid', gap: 4 }}>
+                    {(g.apartado || novedades.length > 1) && (
+                      <b style={{ fontSize: 14, color: 'var(--ink)' }}>{g.apartado || 'Además'}</b>
+                    )}
+                    <ul style={{ margin: 0, paddingLeft: 20, display: 'grid', gap: 3, fontSize: 14, lineHeight: 1.5, color: 'var(--ink-2)' }}>
+                      {g.puntos.map((p, j) => (
+                        <li key={j}>
+                          <ConTickets texto={p.texto} abrir={abrirTicket} />
+                          {p.tickets.length > 0 && <> {' '}<span style={{ fontSize: 12 }}>(<ConTickets texto={p.tickets.join(', ')} abrir={abrirTicket} />)</span></>}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {grupos.length > 0 && (
               <div style={{ display: 'grid', gap: 8 }}>
+                {novedades.length > 0 && <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-3)' }}>Tickets resueltos</span>}
                 {grupos.map(g => (
                   <div key={g.nombre} style={{ display: 'grid', gap: 4 }}>
                     <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em', color: g.color }}>{g.nombre}</span>
@@ -203,14 +231,14 @@ export default function AdminCambios({ showToast }) {
                 ))}
               </div>
             )}
-            {!manual && !e.tickets.length && !e.texto && (
+            {!manual && !e.tickets.length && !e.texto && !novedades.length && (
               <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Este deploy no resolvió ningún ticket en «Espera de deploy».</p>
             )}
 
             {e.commits.length > 0 && (
               <details>
                 <summary style={{ cursor: 'pointer', fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>
-                  {e.commits.length} commit{e.commits.length === 1 ? '' : 's'}{e.commits.length >= 100 ? ' (los 100 últimos)' : ''}
+                  {e.commits.length === 1 ? 'Ver el commit' : `Ver los ${e.commits.length} commits`}{e.commits.length >= 100 ? ' (los 100 últimos)' : ''}
                 </summary>
                 <ul style={{ margin: '8px 0 0', padding: 0, listStyle: 'none', display: 'grid', gap: 4 }}>
                   {e.commits.map(c => (
