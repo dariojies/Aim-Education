@@ -19594,6 +19594,45 @@ async function usoGaleria() {
     const r = await pool.query(`SELECT COALESCE(SUM(COALESCE(bytes, 0) + length(miniatura)), 0)::bigint AS b, COUNT(*)::int AS n FROM aim_galeria_fotos`);
     return { bytes: Number(r.rows[0].b), fotos: r.rows[0].n };
 }
+// «Quién sale en este álbum»: en los álbumes «solo quien sale», la gente que se
+// eligió al crearlo (de varias clases) para etiquetarla de un toque en cada
+// foto. Sin tabla nueva: va en aim_ajustes ('galeria-album:<id>' → {personas}).
+const CLAVE_ELEGIDOS = (albumId) => `galeria-album:${Number(albumId) || 0}`;
+const MAX_ELEGIDOS = 200;
+// Limpia la lista que llega: ids de gente del club (y, si es un profe, solo
+// alumnos de sus clases). Si alguien no vale, error: no se guarda a medias.
+async function limpiarElegidos(req, lista) {
+    if (!Array.isArray(lista)) throw { httP: 400, msg: 'La lista de quién sale no es válida.' };
+    const ids = [...new Set(lista.map(x => String(x || '')))];
+    if (ids.some(x => !/^[0-9a-f-]{36}$/i.test(x))) throw { httP: 400, msg: 'La lista de quién sale no es válida.' };
+    if (ids.length > MAX_ELEGIDOS) throw { httP: 400, msg: `Como mucho ${MAX_ELEGIDOS} personas por álbum.` };
+    if (!ids.length) return [];
+    const mis = await ambitoGaleria(req);
+    const r = await pool.query(
+        `SELECT u.user_id FROM users u WHERE u.user_id = ANY($1::uuid[]) AND u.club_id = $2
+           AND ($3::uuid[] IS NULL OR EXISTS (SELECT 1 FROM tul_group_students gs WHERE gs.student_id = u.user_id AND gs.group_id = ANY($3::uuid[])))`,
+        [ids, AIM_CLUB_ID, mis]);
+    if (r.rowCount !== ids.length) throw mis ? { httP: 403, msg: 'Solo puedes elegir a alumnos de tus clases.' } : { httP: 400, msg: 'Alguna de las personas elegidas no es del club.' };
+    return ids;
+}
+// Guarda la selección (o la borra si queda vacía o el álbum ya no es «solo quien sale»).
+async function guardarElegidos(req, albumId, ids) {
+    if (!ids.length) return pool.query(`DELETE FROM aim_ajustes WHERE clave = $1`, [CLAVE_ELEGIDOS(albumId)]);
+    return pool.query(
+        `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ($1, $2::jsonb, NOW(), $3)
+         ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+        [CLAVE_ELEGIDOS(albumId), JSON.stringify({ personas: ids }), req.userSession.userId]);
+}
+// La selección de un álbum con nombre y permiso de fotos (quien ya no está en el club, fuera).
+async function elegidosDe(albumId) {
+    const v = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = $1`, [CLAVE_ELEGIDOS(albumId)])).rows[0]?.valor;
+    const ids = Array.isArray(v?.personas) ? v.personas.filter(x => /^[0-9a-f-]{36}$/i.test(String(x))) : [];
+    if (!ids.length) return [];
+    const r = await pool.query(
+        `SELECT u.user_id AS id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre, COALESCE(u.media_consent, false) AS permiso
+         FROM users u WHERE u.user_id = ANY($1::uuid[]) AND u.club_id = $2 ORDER BY nombre`, [ids, AIM_CLUB_ID]);
+    return r.rows;
+}
 const mapAlbum = (a) => ({
     id: a.id, titulo: a.titulo, descripcion: a.descripcion || '', fecha: a.fecha, audiencia: a.audiencia,
     groupId: a.group_id, grupo: a.grupo || null, actividad: a.actividad || null, publicado: a.publicado, publicadoAt: a.publicado_at,
@@ -19605,7 +19644,9 @@ app.get('/api/admin/galeria/opciones', authenticateSession, requireSeccion('gale
     try {
         const mis = await ambitoGaleria(req);
         const g = await pool.query(
-            `SELECT g.group_id AS id, g.name, a.name AS actividad FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+            `SELECT g.group_id AS id, g.name, a.name AS actividad,
+                    (SELECT COUNT(*) FROM tul_group_students gs WHERE gs.group_id = g.group_id)::int AS alumnos
+             FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
              WHERE a.club_id = $1 AND ($2::uuid[] IS NULL OR g.group_id = ANY($2::uuid[])) ORDER BY a.name, g.name`, [AIM_CLUB_ID, mis]);
         res.set('Cache-Control', 'no-store');
         res.json({ grupos: g.rows, actividades: mis ? [] : [...new Set(g.rows.map(x => x.actividad))], uso: await usoGaleria(), soloSusClases: !!mis });
@@ -19650,10 +19691,13 @@ app.post('/api/admin/galeria', authenticateSession, requireSeccion('galeria'), a
     try {
         const d = datosAlbum(req.body || {});
         await comprobarAmbitoAlbum(req, d);
+        // Quién sale (solo en «solo quien sale»): se comprueba antes de crear nada.
+        const elegidos = d.audiencia === 'etiquetados' && req.body?.personas !== undefined ? await limpiarElegidos(req, req.body.personas) : [];
         const r = await pool.query(
             `INSERT INTO aim_galeria_albumes (titulo, descripcion, fecha, audiencia, group_id, actividad, created_by)
              VALUES ($1, $2, COALESCE($3::date, CURRENT_DATE), $4, $5, $6, $7) RETURNING id`,
             [d.titulo, d.descripcion, d.fecha, d.audiencia, d.groupId, d.actividad, req.userSession.userId]);
+        if (elegidos.length) await guardarElegidos(req, r.rows[0].id, elegidos);
         res.status(201).json({ success: true, id: r.rows[0].id });
     } catch (err) {
         if (err?.httP) return res.status(err.httP).json({ error: err.msg });
@@ -19670,11 +19714,14 @@ app.put('/api/admin/galeria/:id', authenticateSession, requireSeccion('galeria')
             const n = (await pool.query(`SELECT COUNT(*)::int n FROM aim_galeria_fotos WHERE album_id = $1`, [antes.id])).rows[0].n;
             if (!n) return res.status(400).json({ error: 'Sube alguna foto antes de publicarlo.' });
         }
+        // Quién sale: se cambia si llega la lista; si deja de ser «solo quien sale», se quita.
+        const elegidos = d.audiencia !== 'etiquetados' ? [] : req.body?.personas !== undefined ? await limpiarElegidos(req, req.body.personas) : null;
         await pool.query(
             `UPDATE aim_galeria_albumes SET titulo = $2, descripcion = $3, fecha = COALESCE($4::date, fecha), audiencia = $5, group_id = $6,
                     actividad = $7, publicado = $8, publicado_at = CASE WHEN $8 AND NOT publicado THEN NOW() ELSE publicado_at END, updated_at = NOW()
              WHERE id = $1`,
             [antes.id, d.titulo, d.descripcion, d.fecha, d.audiencia, d.groupId, d.actividad, publicado]);
+        if (elegidos) await guardarElegidos(req, antes.id, elegidos);
         // Fotos nuevas: al móvil de quien las puede ver (#218).
         if (publicado && !antes.publicado) avisosPush.avisarTodos();
         res.json({ success: true });
@@ -19687,16 +19734,18 @@ app.delete('/api/admin/galeria/:id', authenticateSession, requireSeccion('galeri
     try {
         const a = await albumPermitido(req, req.params.id);
         await pool.query(`DELETE FROM aim_galeria_albumes WHERE id = $1`, [a.id]);
+        await pool.query(`DELETE FROM aim_ajustes WHERE clave = $1`, [CLAVE_ELEGIDOS(a.id)]);
         res.json({ success: true });
     } catch (err) { errGaleria(res, err); }
 });
 // Un álbum con sus fotos, quién sale en cada una y a quién se suele etiquetar
-// (los alumnos de su clase o actividad), con si tienen permiso de fotos.
+// (los alumnos de su clase o actividad, o la gente elegida para un álbum «solo
+// quien sale»), con si tienen permiso de fotos.
 app.get('/api/admin/galeria/:id', authenticateSession, requireSeccion('galeria'), async (req, res) => {
     try {
         const id = (await albumPermitido(req, req.params.id)).id;
         const a = (await pool.query(`SELECT al.*, g.name AS grupo FROM aim_galeria_albumes al LEFT JOIN tul_groups g ON g.group_id = al.group_id WHERE al.id = $1`, [id])).rows[0];
-        const [fotos, etiquetas, sugeridos] = await Promise.all([
+        const [fotos, etiquetas, sugeridos, elegidos] = await Promise.all([
             pool.query(`SELECT id, ancho, alto, bytes, pie FROM aim_galeria_fotos WHERE album_id = $1 ORDER BY orden, id`, [id]),
             pool.query(
                 `SELECT e.foto_id, e.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre, COALESCE(u.media_consent, false) AS permiso
@@ -19708,6 +19757,7 @@ app.get('/api/admin/galeria/:id', authenticateSession, requireSeccion('galeria')
                  JOIN tul_groups g ON g.group_id = gs.group_id JOIN tul_activities ac ON ac.activity_id = g.activity_id
                  WHERE ac.club_id = $3 AND (($1::uuid IS NOT NULL AND gs.group_id = $1) OR ($2::text IS NOT NULL AND ac.name = $2))
                  ORDER BY nombre`, [a.audiencia === 'grupo' ? a.group_id : null, a.audiencia === 'actividad' ? a.actividad : null, AIM_CLUB_ID]),
+            a.audiencia === 'etiquetados' ? elegidosDe(id) : [],
         ]);
         const porFoto = new Map();
         for (const e of etiquetas.rows) { if (!porFoto.has(e.foto_id)) porFoto.set(e.foto_id, []); porFoto.get(e.foto_id).push({ userId: e.user_id, nombre: e.nombre, permiso: e.permiso }); }
@@ -19716,6 +19766,7 @@ app.get('/api/admin/galeria/:id', authenticateSession, requireSeccion('galeria')
             album: mapAlbum(a),
             fotos: fotos.rows.map(f => ({ id: f.id, ancho: f.ancho, alto: f.alto, bytes: f.bytes, pie: f.pie || '', etiquetas: porFoto.get(f.id) || [] })),
             sugeridos: sugeridos.rows,
+            elegidos,
         });
     } catch (err) { errGaleria(res, err); }
 });
@@ -19733,6 +19784,26 @@ app.get('/api/admin/galeria-personas', authenticateSession, requireSeccion('gale
                AND ($3::uuid[] IS NULL OR EXISTS (SELECT 1 FROM tul_group_students gs WHERE gs.student_id = u.user_id AND gs.group_id = ANY($3::uuid[])))
              ORDER BY u.name LIMIT 15`, [AIM_CLUB_ID, q.replace(/[%_\\]/g, ''), await ambitoGaleria(req)]);
         res.json({ personas: r.rows });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+// Los alumnos de una clase (para elegir o etiquetar «por clase»), con su permiso
+// de fotos. Un profe solo ve las suyas.
+app.get('/api/admin/galeria-clase/:groupId', authenticateSession, requireSeccion('galeria'), async (req, res) => {
+    const groupId = String(req.params.groupId || '');
+    if (!/^[0-9a-f-]{36}$/i.test(groupId)) return res.status(400).json({ error: 'Elige la clase.' });
+    try {
+        const mis = await ambitoGaleria(req);
+        if (mis && !mis.includes(groupId)) return res.status(403).json({ error: 'Esa clase no es tuya.' });
+        const g = await pool.query(
+            `SELECT g.name, a.name AS actividad FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id WHERE g.group_id = $1 AND a.club_id = $2`,
+            [groupId, AIM_CLUB_ID]);
+        if (!g.rowCount) return res.status(404).json({ error: 'Esa clase no existe.' });
+        const r = await pool.query(
+            `SELECT DISTINCT u.user_id AS id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre, COALESCE(u.media_consent, false) AS permiso
+             FROM tul_group_students gs JOIN users u ON u.user_id = gs.student_id
+             WHERE gs.group_id = $1 AND u.club_id = $2 ORDER BY nombre`, [groupId, AIM_CLUB_ID]);
+        res.set('Cache-Control', 'no-store');
+        res.json({ clase: { id: groupId, name: g.rows[0].name, actividad: g.rows[0].actividad }, alumnos: r.rows });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 // Subir una foto (ya reducida en el navegador) con su miniatura.
@@ -19769,22 +19840,29 @@ app.delete('/api/admin/galeria/fotos/:fotoId', authenticateSession, requireSecci
 });
 // Etiquetar y quitar. Se avisa si no tiene permiso de fotos (no se impide: el
 // club decide), y se dice para quién quedará visible.
+// Con «userIds» (una lista) etiqueta a varios de una vez («Etiquetar a todos»):
+// o todos o ninguno, con las mismas comprobaciones que de uno en uno.
 app.post('/api/admin/galeria/fotos/:fotoId/etiquetas', authenticateSession, requireSeccion('galeria'), async (req, res) => {
-    const userId = String(req.body?.userId || '');
-    if (!/^[0-9a-f-]{36}$/i.test(userId)) return res.status(400).json({ error: 'Elige a quién etiquetar.' });
+    const varios = Array.isArray(req.body?.userIds);
+    const ids = [...new Set((varios ? req.body.userIds : [req.body?.userId]).map(x => String(x || '')))];
+    if (!ids.length || ids.some(x => !/^[0-9a-f-]{36}$/i.test(x))) return res.status(400).json({ error: 'Elige a quién etiquetar.' });
+    if (ids.length > MAX_ELEGIDOS) return res.status(400).json({ error: `Como mucho ${MAX_ELEGIDOS} personas a la vez.` });
     try {
         const al = await albumDeFoto(req, req.params.fotoId);
-        const u = (await pool.query(`SELECT TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS nombre, COALESCE(media_consent, false) AS permiso FROM users WHERE user_id = $1 AND club_id = $2`, [userId, AIM_CLUB_ID])).rows[0];
-        if (!u) return res.status(404).json({ error: 'Esa persona no es del club.' });
+        const us = (await pool.query(
+            `SELECT user_id, TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS nombre, COALESCE(media_consent, false) AS permiso
+             FROM users WHERE user_id = ANY($1::uuid[]) AND club_id = $2 ORDER BY name`, [ids, AIM_CLUB_ID])).rows;
+        if (us.length !== ids.length) return res.status(404).json({ error: varios ? 'Alguna de esas personas no es del club.' : 'Esa persona no es del club.' });
         if (await ambitoGaleria(req)) {
-            const esDeLaClase = await pool.query(`SELECT 1 FROM tul_group_students WHERE group_id = $1 AND student_id = $2`, [al.group_id, userId]);
-            if (!esDeLaClase.rowCount) return res.status(403).json({ error: 'Solo puedes etiquetar a alumnos de esta clase.' });
+            const deLaClase = await pool.query(`SELECT COUNT(DISTINCT student_id)::int n FROM tul_group_students WHERE group_id = $1 AND student_id = ANY($2::uuid[])`, [al.group_id, ids]);
+            if (deLaClase.rows[0].n !== ids.length) return res.status(403).json({ error: 'Solo puedes etiquetar a alumnos de esta clase.' });
         }
         await pool.query(
-            `INSERT INTO aim_galeria_etiquetas (foto_id, user_id, etiquetado_por) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-            [Number(req.params.fotoId) || 0, userId, req.userSession.userId]);
-        if (al.publicado) avisosPush.avisarFamilias([userId]);
-        res.json({ success: true, nombre: u.nombre, permiso: u.permiso });
+            `INSERT INTO aim_galeria_etiquetas (foto_id, user_id, etiquetado_por) SELECT $1, x, $3 FROM unnest($2::uuid[]) x ON CONFLICT DO NOTHING`,
+            [Number(req.params.fotoId) || 0, ids, req.userSession.userId]);
+        if (al.publicado) avisosPush.avisarFamilias(ids);
+        if (varios) return res.json({ success: true, etiquetados: us.map(u => ({ userId: u.user_id, nombre: u.nombre, permiso: u.permiso })) });
+        res.json({ success: true, nombre: us[0].nombre, permiso: us[0].permiso });
     } catch (err) {
         if (err.code === '23503') return res.status(404).json({ error: 'Esa foto no existe.' });
         errGaleria(res, err);
