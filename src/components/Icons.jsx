@@ -60,6 +60,17 @@ const I = {
   Fire: (p) => <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M8.5 14.5A2.5 2.5 0 0 0 11 17c1.5 0 3-1.4 3-3.5 0-1.5-1-2.5-1.5-3.5-.5-1-1-1.5-1-2.5 0-1 .5-2 2-3-2 0-4 1-5 2-1 1-2 3-2 5 0 2 1 4 2 5z"/><path d="M16 12c0 4-2.5 5-4 5"/></svg>,
   Chess: (p) => <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M8 22h8l-1-5h-6zM10 17V11l-1-1 1-1V6l2-2 2 2v3l1 1-1 1v6"/></svg>,
   Karate: (p) => <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M2.5 9.5h6.5v5H2.5zM15 9.5h6.5v5H15z"/><rect x="9" y="8" width="6" height="8" rx="1.2"/><path d="M10.2 16l-1.2 5.2 3-2.1 3 2.1-1.2-5.2"/></svg>,
+  // Para el menú del panel: cada entrada con su dibujo, sin repetir.
+  // Portapapeles con una marca (Pasar lista).
+  Lista: (p) => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="5" y="4" width="14" height="18" rx="2"/><path d="M9 2h6v4H9z"/><path d="M9 14l2 2 4-4"/></svg>,
+  // Triángulo de aviso (Incidencias).
+  Alerta: (p) => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>,
+  // Cámara de fotos (Fotos).
+  Camara: (p) => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>,
+  // Maletín (Candidatos: quien busca trabajo).
+  Maletin: (p) => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2M2 13h20"/></svg>,
+  // Avión de papel (Campañas: lo que se envía).
+  Enviar: (p) => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>,
   Chevron: (p) => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M6 9l6 6 6-6"/></svg>,
   Run: (p) => <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="15" cy="4" r="2"/><path d="M13 21l1.5-6-3-2.5 1-5.5 3.5 2 3 1M11.5 12.5L8 15l-2 6M15 10l1 4"/></svg>,
   Ball: (p) => <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="12" cy="12" r="10"/><path d="M12 7l4 3-1.5 5h-5L8 10z"/><path d="M12 2v5M2.5 9L8 10M21.5 9L16 10M6 20l3.5-5M18 20l-3.5-5"/></svg>,

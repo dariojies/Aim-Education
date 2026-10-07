@@ -781,7 +781,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
 
   // Desde un aviso de la campanita: la lista ya filtrada.
   useEffect(() => {
-    const f = enlace?.seg?.[1] === 'soporte' ? enlace.params?.filtro : null;
+    const f = ['soporte', 'tickets'].includes(enlace?.seg?.[1]) ? enlace.params?.filtro : null;
     if (!f) return;
     setSelected(null); setActiveTab('list'); setFEstado('activos'); setBusqueda(''); setFRapido(''); setFQuien('todos');
     if (f === 'mios') setFQuien('mios');

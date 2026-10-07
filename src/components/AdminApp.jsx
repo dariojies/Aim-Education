@@ -7,6 +7,7 @@ import { useEnVivo } from '../envivo.js';
 import { ListaClases, AdminReportes, colorOcupacion } from './AdminTulClases.jsx';
 import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong, campDayParts, nombreMedioPago, CoronaCumple, COLOR_CUMPLE, coincideBusqueda } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
+import { seccionDeRuta, rutaDeSeccion } from '../rutasAdmin.js';
 import { AdminSupport } from './AdminSupport.jsx';
 import AdminAgenda from './AdminAgenda.jsx';
 import { fmtFecha, fmtFechaHora, fmtFechaLarga, fmtFechaCorta } from '../fechas.js';
@@ -75,34 +76,37 @@ function aLocalInput(iso) {
   return d.toISOString().slice(0, 16);
 }
 
-function sectionLabel(id) {
+// El título de cada sección es el mismo nombre corto que lleva en el menú: si
+// el menú dice «Alumnos» y la página «Gestión de alumnos», parece otro sitio.
+const NOMBRE_PESTANA_CRM = { campanas: "Campañas", segmentos: "Segmentos", automatismos: "Automatismos", disenos: "Diseños" };
+function sectionLabel(id, pestana) {
+  if (id === "comunicaciones" && NOMBRE_PESTANA_CRM[pestana]) return NOMBRE_PESTANA_CRM[pestana];
   return ({
     overview: "Resumen",
-    students: "Gestión de alumnos",
+    students: "Alumnos",
     familias: "Familias",
-    classes: "Clases y horarios",
+    classes: "Clases",
     pasarlista: "Pasar lista",
     reportes: "Reportes",
-    payments: "Gastos del club",
-    news: "Noticias y foro",
-    events: "Eventos y talleres",
-    camp: "Campamento de verano",
-    titulos: "Títulos y exámenes",
+    payments: "Gastos",
+    news: "Noticias",
+    events: "Eventos",
+    camp: "Campamento",
+    titulos: "Títulos",
     billing: "Ingresos",
-    groups: "Grupos",
-    instructors: "Instructores",
+    instructors: "Personal",
     agenda: "Mi día",
-    portada: "Portada de la web",
+    portada: "Portada",
     contactos: "Consultas web",
     candidatos: "Candidatos",
     incidencias: "Incidencias",
     brickslab: "Brickslab y Biblioteca",
-    galeria: "Galería de fotos",
-    settings: "Ajustes del club",
+    galeria: "Fotos",
+    settings: "Ajustes",
     objetos: "Objetos perdidos",
-    support: "Panel de soporte",
+    support: "Tickets",
     faltas: "Faltas",
-    comunicaciones: "Comunicaciones",
+    comunicaciones: "Comunicación",
     speaking: "Clases individuales",
     fichaje: "Fichaje",
     almacen: "Almacén",
@@ -485,14 +489,12 @@ function AdminClasses({ enlace, classSlots, setClassSlots, activities = [], clas
   // 'horario' es el calendario de siempre; 'lista' es el menú de gestión de
   // Aim-Tul (actividades → grupos → alumnos) recreado aquí.
   const [vista, setVista] = useState('horario');
-  // Enlaces directos (#360): /admin/clases/lista[/<grupo>][?fecha=] abre Pasar
-  // lista (y esa clase); ?vista=lista, la lista de clases.
-  const abrirLista = enlace?.seg?.[1] === 'clases' && enlace.seg[2] === 'lista'
-    ? { grupo: enlace.seg[3] || null, fecha: enlace.params?.fecha || null, ruta: enlace.ruta } : null;
+  // Enlaces directos (#360): ?vista=lista abre la lista de clases. Pasar lista
+  // ya no es una pestaña de aquí sino su propia entrada del menú, y
+  // /admin/clases/lista[/<grupo>] lleva allí (rutasAdmin.js).
   useEffect(() => {
     if (enlace?.seg?.[1] !== 'clases') return;
-    if (abrirLista) setVista('asistencia');
-    else if (['lista', 'asistencia', 'horario'].includes(enlace.params?.vista)) setVista(enlace.params.vista);
+    if (['lista', 'horario'].includes(enlace.params?.vista)) setVista(enlace.params.vista);
   }, [enlace?.ruta]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const roomsList = ["Todas", ...classrooms.map(r => r.name)];
@@ -686,24 +688,19 @@ function AdminClasses({ enlace, classSlots, setClassSlots, activities = [], clas
     }, 1000);
   }
 
-  // Pestañas de la sección: el horario semanal, la gestión de clases y el
-  // pasar lista del día.
+  // Pestañas de la sección: el horario semanal y la gestión de clases. Pasar
+  // lista tiene su propia entrada en el menú (una sola, se llegue como se llegue).
   const pestanas = (activa) => (
     <div className="toolbar">
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
         <button className={`filter-pill ${activa === 'horario' ? 'is-active' : ''}`} onClick={() => setVista('horario')}>Semana</button>
         <button className={`filter-pill ${activa === 'lista' ? 'is-active' : ''}`} onClick={() => setVista('lista')}>Lista de clases</button>
-        <button className={`filter-pill ${activa === 'asistencia' ? 'is-active' : ''}`} onClick={() => setVista('asistencia')}>Pasar lista</button>
       </div>
     </div>
   );
 
   if (vista === 'lista') {
     return (<>{pestanas('lista')}<ListaClases showToast={showToast} /></>);
-  }
-
-  if (vista === 'asistencia') {
-    return (<>{pestanas('asistencia')}<PasarListaClases showToast={showToast} abrir={abrirLista} /></>);
   }
 
   return (
@@ -713,7 +710,6 @@ function AdminClasses({ enlace, classSlots, setClassSlots, activities = [], clas
           <button className="filter-pill is-active">Semana</button>
           <button className="filter-pill" onClick={() => alert("Vista mensual disponible en el siguiente pase.")}>Mes</button>
           <button className="filter-pill" onClick={() => setVista('lista')}>Lista de clases</button>
-          <button className="filter-pill" onClick={() => setVista('asistencia')}>Pasar lista</button>
         </div>
         <div className="search-input" style={{ maxWidth: 280 }}>
           <I.Search />
@@ -1783,102 +1779,6 @@ function AdminNews({ refreshTrigger, onEditPost, onNuevo }) {
                 <button className="icon-btn" title="Ver en web pública" onClick={() => window.open(`/noticias/${p.slug}`, '_blank')}><I.Eye /></button>
                 <button className="icon-btn" title="Editar entrada" onClick={() => onEditPost(p)}><I.Edit /></button>
                 <button className="icon-btn danger" title="Eliminar entrada" onClick={() => deletePost(p.id)}><I.Trash /></button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </>
-  );
-}
-
-function AdminGroups({ refreshTrigger }) {
-  const [groups, setGroups] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState("all");
-
-  useEffect(() => {
-    fetch('/api/admin/groups', { credentials: 'include' })
-      .then(r => r.ok ? r.json() : [])
-      .then(g => { setGroups(Array.isArray(g) ? g : []); setLoading(false); })
-      .catch(() => setLoading(false));
-  }, [refreshTrigger]);
-
-  // Actividades reales presentes en los grupos (para el filtro), con su color.
-  // Se agrupan por la actividad real (activityId), no por el id de color, para que
-  // "Taekwon-Do ITF" y "Defensa Personal" sean filtros distintos aunque compartan color.
-  const activities = [];
-  const seen = new Set();
-  for (const g of groups) {
-    if (!seen.has(g.activityId)) {
-      seen.add(g.activityId);
-      activities.push({ id: g.activityId, name: g.activityName, color: ACT_BY_ID[g.activity]?.color || 'var(--ink)' });
-    }
-  }
-  activities.sort((a, b) => a.name.localeCompare(b.name));
-
-  const visible = filter === "all" ? groups : groups.filter(g => g.activityId === filter);
-
-  return (
-    <>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20 }}>
-        <button className={`filter-pill ${filter === "all" ? "is-active" : ""}`} onClick={() => setFilter("all")}>
-          Todas · {groups.length}
-        </button>
-        {activities.map(a => {
-          const count = groups.filter(g => g.activityId === a.id).length;
-          const active = filter === a.id;
-          return (
-            <button key={a.id} className={`filter-pill ${active ? "is-active" : ""}`} onClick={() => setFilter(a.id)}
-              style={active ? { background: a.color, borderColor: a.color, color: '#fff' } : {}}>
-              <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: active ? '#fff' : a.color, marginRight: 6, verticalAlign: 'middle' }} />
-              {a.name} · {count}
-            </button>
-          );
-        })}
-      </div>
-
-      {loading && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando grupos...</p>}
-      {!loading && visible.length === 0 && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>No hay grupos.</p>}
-
-      <div className="groups-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 20 }}>
-        {!loading && visible.map(g => {
-          const color = ACT_BY_ID[g.activity]?.color || 'var(--ink)';
-          const ageLabel = (g.minAge || g.maxAge)
-            ? `${g.minAge || ''}${g.maxAge ? `–${g.maxAge}` : '+'} años`
-            : null;
-          return (
-            <div key={g.id} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderLeft: `5px solid ${color}`, borderRadius: 18, padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <div>
-                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: 'var(--ink)' }}>{g.name}</h3>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', background: `color-mix(in oklab, ${color} 16%, var(--bg-2))`, color, padding: '3px 10px', borderRadius: 99 }}>{g.activityName}</span>
-                  {ageLabel && <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>{ageLabel}</span>}
-                </div>
-              </div>
-
-              <div style={{ display: 'grid', gap: 6 }}>
-                {g.schedule.length === 0 && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Sin horario asignado</span>}
-                {g.schedule.map((s, i) => (
-                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: 'var(--ink-2)', flexWrap: 'wrap' }}>
-                    <span style={{ fontWeight: 800, color: 'var(--ink)', minWidth: 32 }}>{s.day}</span>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><I.Clock width={13} height={13} /> {s.time}</span>
-                    {s.room && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><I.MapPin width={13} height={13} /> {s.room}</span>}
-                    {s.instructor && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><I.User width={13} height={13} /> {s.instructor}</span>}
-                  </div>
-                ))}
-              </div>
-
-              <div style={{ marginTop: 'auto', borderTop: '1px solid var(--line-2)', paddingTop: 12 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-3)', marginBottom: 8 }}>Alumnos ({g.studentCount})</div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                  {g.students.map(s => (
-                    <span key={s.id} style={{ fontSize: 11, background: 'var(--bg-3)', border: '1px solid var(--line)', padding: '2px 8px', borderRadius: 6, color: 'var(--ink-2)' }}>
-                      {s.name}
-                    </span>
-                  ))}
-                  {g.studentCount === 0 && <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Sin alumnos</span>}
-                </div>
               </div>
             </div>
           );
@@ -5299,7 +5199,7 @@ function AdminBilling({ showToast, enlace }) {
   const [tab, setTab] = useState('cobrar');
   // ?pestana=pendientes, arqueo… desde un aviso (#360).
   useEffect(() => {
-    const p = enlace?.seg?.[1] === 'facturacion' ? enlace.params?.pestana : null;
+    const p = ['facturacion', 'ingresos'].includes(enlace?.seg?.[1]) ? enlace.params?.pestana : null;
     if (p) setTab(p);
   }, [enlace?.ruta]); // eslint-disable-line react-hooks/exhaustive-deps // 'cobrar' | 'catalogo' | 'clases' | 'temporadas' | 'conceptos' | 'fichas' | 'generar'
   const [buscaCat, setBuscaCat] = useState(''); // #220: buscador del catálogo
@@ -6811,18 +6711,20 @@ function AdminCamp({ showToast, permisos }) {
 
 export default function AdminApp({ user, onLogout, subroute = "overview", ticketId = null, enlace = null }) {
   const { go } = useRouter();
-  const [view, setView] = useState(subroute);
-  useEffect(() => { setView(subroute); }, [subroute]);
-
+  // La sección que se ve sale siempre de la dirección: el menú cambia la URL
+  // (y así recargar deja donde se estaba, «Atrás» vuelve a la sección anterior
+  // y cualquier enlace del panel abre lo suyo aunque la ruta no cambie de
+  // sección). Antes era un estado aparte que solo se ponía al cambiar de ruta.
+  const view = subroute;
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  // La pestaña del CRM (segmentos, campañas, automatismos) se elige también
-  // desde el menú, así que vive aquí y no dentro de Comunicaciones.
-  const [pestanaCrm, setPestanaCrm] = useState('segmentos');
-  function navTo(id, pestana) { setView(id); if (pestana) setPestanaCrm(pestana); setSidebarOpen(false); }
+  // La pestaña de Comunicación (campañas, segmentos…) se elige también desde el
+  // menú: va en la dirección (/admin/campanas). Sin ella, la de siempre.
+  const pestanaCrm = seccionDeRuta(enlace?.seg || [], enlace?.params || {}).pestana || 'segmentos';
+  function navTo(id, pestana) { go(rutaDeSeccion(id, pestana)); setSidebarOpen(false); }
 
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [notification, setNotification] = useState(null);
-  const [activeModal, setActiveModal] = useState(null); // 'new-student' | 'edit-student' | 'new-post' | 'edit-post' | 'new-group' | 'edit-group' | 'new-class' | 'add-activity-or-aula' | 'new-aula' | 'new-activity'
+  const [activeModal, setActiveModal] = useState(null); // 'new-student' | 'edit-student' | 'new-post' | 'edit-post' | 'new-class' | 'add-activity-or-aula' | 'new-aula' | 'new-activity'
   const [editingItem, setEditingItem] = useState(null);
   // Moverse entre familiares desde la ficha: de dónde se viene, para volver.
   const [pilaFichas, setPilaFichas] = useState([]);
@@ -7083,29 +6985,6 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
     }
   };
 
-  const handleGroupSubmit = async (e) => {
-    e.preventDefault();
-    const isEdit = activeModal === 'edit-group';
-    const url = isEdit ? `/api/admin/groups/${editingItem.id}` : '/api/admin/groups';
-    const method = isEdit ? 'PUT' : 'POST';
-
-    try {
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editingItem),
-        credentials: 'include'
-      });
-      if (res.ok) {
-        showToast(isEdit ? "Grupo deportivo actualizado." : "Grupo deportivo creado con éxito.");
-        setRefreshTrigger(p => p + 1);
-        setActiveModal(null);
-      }
-    } catch (err) {
-      alert("Error al guardar grupo.");
-    }
-  };
-
   const handleClassSubmit = async (e) => {
     e.preventDefault();
     try {
@@ -7141,66 +7020,56 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
   const seccionDe = (id) => ({ pasarlista: 'classes' }[id] || id);
   const ver = (id) => view === id && !!permisos.secciones[seccionDe(id)];
   // Si alguien entra a una sección que no tiene, se le lleva a la primera que
-  // sí tiene, en vez de a una pantalla vacía.
+  // sí tiene, en vez de a una pantalla vacía (cambiando la dirección, sin dejar
+  // un paso más en el historial).
   useEffect(() => {
     if (permisos.secciones[seccionDe(view)]) return;
     const orden = ['overview', 'agenda', 'fichaje', 'support'];
     const primera = orden.find(id => permisos.secciones[id]) || Object.keys(permisos.secciones).find(id => permisos.secciones[id]);
-    if (primera) setView(primera);
-  }, [view, permisos]);
+    if (primera) go(rutaDeSeccion(primera), { replace: true });
+  }, [view, permisos]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const gruposMenu = [
     {
       // Agrupado por aquello de lo que trata cada sitio, no por quién lo usa:
       // once entradas seguidas bajo un solo título no se leen, hay que ir
-      // buscando. Cada grupo cabe de un vistazo.
-      heading: "Tu día", items: [
+      // buscando. Cada grupo cabe de un vistazo; lo de todos los días va
+      // arriba y las páginas del sistema, abajo del todo. Cada entrada lleva su
+      // propio dibujo: dos iguales en un menú se confunden a la primera ojeada.
+      heading: "Inicio", items: [
         { id: "overview", label: "Resumen", icon: <I.Dashboard /> },
-        { id: "agenda", label: "Mi día", icon: <I.Check /> },
+        { id: "agenda", label: "Mi día", icon: <I.Check width={18} height={18} /> },
+        // Pasar lista de las clases del día, directamente (sin entrar en Clases).
+        // Es la única: /admin/clases/lista también lleva aquí.
+        { id: "pasarlista", label: "Pasar lista", icon: <I.Lista /> },
         { id: "fichaje", label: "Fichaje", icon: <I.Clock /> },
-        { id: "support", label: "Soporte", icon: <I.Bell /> },
+        { id: "support", label: "Tickets", icon: <I.Bell /> },
         // Lo que pasa y hay que dejar registrado (#383).
-        { id: "incidencias", label: "Incidencias", icon: <I.Edit /> },
+        { id: "incidencias", label: "Incidencias", icon: <I.Alerta /> },
+      ]
+    },
+    {
+      heading: "Clases", items: [
+        { id: "classes", label: "Clases", icon: <I.Calendar /> },
+        // Clases individuales de cualquier actividad (#388, antes «Speaking»).
+        { id: "speaking", label: "Clases individuales", icon: <I.User /> },
+        { id: "faltas", label: "Faltas", icon: <I.EyeOff width={18} height={18} /> },
+        { id: "camp", label: "Campamento", icon: <I.Sun /> },
+        { id: "events", label: "Eventos", icon: <I.Star /> },
+        // Las fotos de clases y eventos, con quién sale en cada una (#364).
+        { id: "galeria", label: "Fotos", icon: <I.Camara /> },
+        { id: "titulos", label: "Títulos", icon: <I.Trophy /> },
+        { id: "reportes", label: "Reportes", icon: <I.Chart /> },
       ]
     },
     {
       heading: "Personas", items: [
         { id: "students", label: "Alumnos", icon: <I.Users /> },
         { id: "familias", label: "Familias", icon: <I.Heart /> },
-        { id: "faltas", label: "Faltas", icon: <I.Phone /> },
-        { id: "instructors", label: "Instructores", icon: <I.Whistle /> },
+        // Todo el personal del club, no solo los instructores.
+        { id: "instructors", label: "Personal", icon: <I.Whistle /> },
         // Los currículums de «Trabaja con nosotros» (#368).
-        { id: "candidatos", label: "Candidatos", icon: <I.User /> },
-      ]
-    },
-    {
-      // El CRM tiene su propio apartado: cada pestaña de Comunicaciones es una
-      // entrada, y las consultas que llegan por la web son contactos nuevos.
-      heading: "CRM", items: [
-        { id: "bandeja", label: "Correo", icon: <I.Mail /> },
-        { id: "redes", label: "Redes sociales", icon: <I.Phone /> },
-        { id: "comunicaciones", pestana: "segmentos", label: "Segmentos", icon: <I.Filter width={18} height={18} /> },
-        { id: "comunicaciones", pestana: "campanas", label: "Campañas", icon: <I.Mail /> },
-        { id: "comunicaciones", pestana: "automatismos", label: "Automatismos", icon: <I.Spark width={18} height={18} /> },
-        { id: "comunicaciones", pestana: "disenos", label: "Diseño de correos", icon: <I.Brush width={18} height={18} /> },
-        { id: "contactos", label: "Consultas web", icon: <I.Globe width={18} height={18} /> },
-      ]
-    },
-    {
-      heading: "Actividad", items: [
-        { id: "classes", label: "Clases y horarios", icon: <I.Calendar /> },
-        // Pasar lista de las clases del día, directamente (sin entrar en Clases).
-        { id: "pasarlista", label: "Pasar lista", icon: <I.Check /> },
-        // Clases individuales de cualquier actividad (#388, antes «Speaking»).
-        { id: "speaking", label: "Clases individuales", icon: <I.Users /> },
-        { id: "camp", label: "Campamento", icon: <I.Sun /> },
-        { id: "events", label: "Eventos", icon: <I.Star /> },
-        // Las fotos de clases y eventos, con quién sale en cada una (#364).
-        { id: "galeria", label: "Galería de fotos", icon: <I.Sparkle /> },
-        // El préstamo de sets de LEGO y libros (#291).
-        { id: "brickslab", label: "Brickslab y Biblioteca", icon: <I.Package /> },
-        { id: "titulos", label: "Títulos", icon: <I.Shield /> },
-        { id: "reportes", label: "Reportes", icon: <I.Chart /> },
+        { id: "candidatos", label: "Candidatos", icon: <I.Maletin /> },
       ]
     },
     {
@@ -7210,24 +7079,50 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
       ]
     },
     {
-      heading: "Web pública", items: [
-        { id: "portada", label: "Portada", icon: <I.Portada /> },
-        { id: "ctas", label: "Avisos y CTA", icon: <I.Bell /> },
-        { id: "news", label: "Noticias / Foro", icon: <I.Newspaper /> },
+      // Primero lo que entra (correo, redes, consultas de la web) y luego lo que
+      // sale: cada pestaña de Comunicaciones es una entrada.
+      heading: "Comunicación", items: [
+        { id: "bandeja", label: "Correo", icon: <I.Mail /> },
+        { id: "redes", label: "Redes sociales", icon: <I.Share /> },
+        { id: "contactos", label: "Consultas web", icon: <I.Globe width={18} height={18} /> },
+        { id: "comunicaciones", pestana: "campanas", label: "Campañas", icon: <I.Enviar /> },
+        { id: "comunicaciones", pestana: "segmentos", label: "Segmentos", icon: <I.Filter width={18} height={18} /> },
+        { id: "comunicaciones", pestana: "automatismos", label: "Automatismos", icon: <I.Spark width={18} height={18} /> },
+        { id: "comunicaciones", pestana: "disenos", label: "Diseños", icon: <I.Brush width={18} height={18} /> },
       ]
     },
     {
       heading: "Club", items: [
         { id: "almacen", label: "Almacén", icon: <I.Package /> },
+        { id: "objetos", label: "Objetos perdidos", icon: <I.Search /> },
+        // El préstamo de sets de LEGO y libros (#291).
+        { id: "brickslab", label: "Brickslab y Biblioteca", icon: <I.Robot width={18} height={18} /> },
+      ]
+    },
+    {
+      heading: "Web", items: [
+        { id: "portada", label: "Portada", icon: <I.Portada /> },
+        { id: "ctas", label: "Avisos y CTA", icon: <I.Bulb /> },
+        { id: "news", label: "Noticias", icon: <I.Newspaper /> },
+      ]
+    },
+    {
+      heading: "Administración", items: [
+        { id: "rangos", label: "Rangos y permisos", icon: <I.Shield /> },
+        { id: "settings", label: "Ajustes", icon: <I.Settings /> },
         { id: "equipo_it", label: "Equipo IT", icon: <I.Monitor /> },
         // Qué se ha publicado en cada deploy (#397).
         { id: "cambios", label: "Cambios", icon: <I.Commit /> },
-        { id: "objetos", label: "Objetos perdidos", icon: <I.Search /> },
-        { id: "rangos", label: "Rangos y permisos", icon: <I.Shield /> },
-        { id: "settings", label: "Ajustes", icon: <I.Settings /> },
       ]
     },
   ];
+  // El enlace a una clase concreta de Pasar lista (#360), por cualquiera de sus
+  // dos direcciones: /admin/pasar-lista/<grupo> y /admin/clases/lista/<grupo>.
+  const segs = enlace?.seg || [];
+  const grupoLista = segs[1] === 'pasar-lista' ? segs[2] : (segs[1] === 'clases' && segs[2] === 'lista' ? segs[3] : null);
+  const abrirLista = view === 'pasarlista' && (grupoLista || enlace?.params?.fecha)
+    ? { grupo: grupoLista || null, fecha: enlace.params?.fecha || null, ruta: enlace.ruta } : null;
+
   const sections = gruposMenu
     // Cada rol ve solo sus secciones. Un grupo que se queda sin ninguna no
     // pinta su título suelto en el menú.
@@ -7341,8 +7236,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                 <I.Menu />
               </button>
               <div>
-                <div className="crumb">Admin · <b>{sectionLabel(view)}</b></div>
-                <h1>{sectionLabel(view)}</h1>
+                <div className="crumb">Admin · <b>{sectionLabel(view, pestanaCrm)}</b></div>
+                <h1>{sectionLabel(view, pestanaCrm)}</h1>
               </div>
             </div>
             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -7378,11 +7273,11 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
               if (u) abrirFicha(u);
             }} />
           )}
-          {/* Pasar lista directo desde el menú; /admin/pasar-lista/<grupo>?fecha= abre esa clase. */}
+          {/* Pasar lista directo desde el menú; /admin/pasar-lista/<grupo>?fecha= y
+              /admin/clases/lista/<grupo>?fecha= (Mi día, Resumen) abren esa clase. */}
           {ver("pasarlista") && (
             <div className="panel" style={{ display: 'grid', gap: 12 }}>
-              <PasarListaClases showToast={showToast}
-                abrir={enlace?.seg?.[1] === 'pasar-lista' && enlace.seg[2] ? { grupo: enlace.seg[2], fecha: enlace.params?.fecha || null, ruta: enlace.ruta } : null} />
+              <PasarListaClases showToast={showToast} abrir={abrirLista} />
             </div>
           )}
           {ver("classes") && (
@@ -7413,7 +7308,6 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("events") && <AdminEvents showToast={showToast} permisos={permisos} />}
           {ver("camp") && <AdminCamp showToast={showToast} permisos={permisos} />}
           {ver("billing") && <AdminBilling showToast={showToast} enlace={enlace} />}
-          {ver("groups") && <AdminGroups refreshTrigger={refreshTrigger} onEditGroup={(g) => { setEditingItem(g); setActiveModal('edit-group'); }} />}
           {ver("instructors") && (
             <AdminInstructores
               refreshTrigger={refreshTrigger} showToast={showToast}
@@ -7441,7 +7335,9 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("objetos") && <AdminObjetosPerdidos showToast={showToast} />}
           {ver("speaking") && <AdminSpeaking showToast={showToast} />}
           {ver("faltas") && <AdminFaltas onAbrirFicha={abrirFicha} />}
-          {ver("comunicaciones") && <AdminComunicaciones showToast={showToast} onAbrirFicha={abrirFicha} pestana={pestanaCrm} onPestana={setPestanaCrm} />}
+          {/* Cambiar de pestaña cambia la dirección (sin dejar un paso más en el
+              historial), y con ella la entrada marcada en el menú. */}
+          {ver("comunicaciones") && <AdminComunicaciones showToast={showToast} onAbrirFicha={abrirFicha} pestana={pestanaCrm} onPestana={(p) => go(rutaDeSeccion('comunicaciones', p), { replace: true })} />}
           {ver("support") && <AdminSupport user={user} ticketId={ticketId} enlace={enlace} />}
         </div>
       </div>
@@ -7860,72 +7756,6 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10 }}>
               <button type="button" className="btn btn-outline btn-sm" onClick={() => setActiveModal(null)}>Cancelar</button>
               <button type="submit" className="btn btn-primary btn-sm">Publicar</button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* --- MODAL NUEVO / EDITAR GRUPO --- */}
-      {(activeModal === 'new-group' || activeModal === 'edit-group') && (
-        <div style={{
-          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-          backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(8px)',
-          display: 'grid', placeItems: 'center', zIndex: 1000, padding: 20
-        }}>
-          <form onSubmit={handleGroupSubmit} style={{
-            backgroundColor: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 24,
-            width: '100%', maxWidth: 500, padding: 32, display: 'grid', gap: 16,
-            maxHeight: '90vh', overflowY: 'auto'
-          }}>
-            <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: 'var(--ink)' }}>
-              {activeModal === 'edit-group' ? 'Editar Grupo' : 'Crear Nuevo Grupo'}
-            </h3>
-
-            <div className="field">
-              <label>Nombre del Grupo</label>
-              <input value={editingItem.name || ''} onChange={e => setEditingItem({ ...editingItem, name: e.target.value })} required placeholder="Ej. Taekwondo Juveniles Tatami" />
-            </div>
-
-            <div className="field">
-              <label>Actividad Deportiva</label>
-              <select value={editingItem.activity} onChange={e => setEditingItem({ ...editingItem, activity: e.target.value })} style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }}>
-                {ACTIVITIES.slice(0, 8).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-              </select>
-            </div>
-
-            <div className="field">
-              <label style={{ marginBottom: 8, display: 'block' }}>Asignar alumnos al grupo ({editingItem.studentIds?.length || 0} seleccionados)</label>
-              <div style={{
-                maxHeight: 180, overflowY: 'auto', border: '1px solid var(--line)',
-                borderRadius: 10, padding: 10, display: 'grid', gap: 8, background: 'var(--bg-3)'
-              }}>
-                {studentsList.map(st => {
-                  const isChecked = editingItem.studentIds?.includes(st.id);
-                  return (
-                    <label key={st.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, color: 'var(--ink)', cursor: 'pointer' }}>
-                      <input
-                        type="checkbox"
-                        checked={isChecked}
-                        style={{ width: 16, height: 16 }}
-                        onChange={e => {
-                          const checked = e.target.checked;
-                          const currentIds = editingItem.studentIds || [];
-                          const updated = checked
-                            ? [...currentIds, st.id]
-                            : currentIds.filter(id => id !== st.id);
-                          setEditingItem({ ...editingItem, studentIds: updated });
-                        }}
-                      />
-                      {st.firstName} {st.lastName} ({st.email})
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10 }}>
-              <button type="button" className="btn btn-outline btn-sm" onClick={() => setActiveModal(null)}>Cancelar</button>
-              <button type="submit" className="btn btn-primary btn-sm">Guardar Grupo</button>
             </div>
           </form>
         </div>

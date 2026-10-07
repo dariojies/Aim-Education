@@ -111,7 +111,10 @@ export default function AdminRangosPermisos({ grupos, showToast }) {
 
   const menu = useMemo(() => {
     const vistos = new Set();
-    return grupos.map(g => ({ heading: g.heading, items: g.items.filter(it => { if (vistos.has(it.id) || it.id === 'equipo_it' || it.id === 'cambios') return false; vistos.add(it.id); return true; }) }))
+    // Fuera las que no se reparten aquí: Equipo IT y Cambios, y «Pasar lista»,
+    // que no es un permiso propio (la ve quien ve Clases).
+    const fuera = ['equipo_it', 'cambios', 'pasarlista'];
+    return grupos.map(g => ({ heading: g.heading, items: g.items.filter(it => { if (vistos.has(it.id) || fuera.includes(it.id)) return false; vistos.add(it.id); return true; }) }))
       .filter(g => g.items.length);
   }, [grupos]);
 
@@ -206,5 +209,5 @@ export default function AdminRangosPermisos({ grupos, showToast }) {
   );
 }
 
-// Las entradas del CRM son pestañas de Comunicaciones: se ven o no todas juntas.
-function sectionLabelCrm(it) { return it.id === 'comunicaciones' ? 'CRM (segmentos, campañas, automatismos, diseño de correos)' : it.label; }
+// Las entradas de Comunicación son pestañas de una misma página: se ven o no todas juntas.
+function sectionLabelCrm(it) { return it.id === 'comunicaciones' ? 'Campañas, segmentos, automatismos y diseños' : it.label; }

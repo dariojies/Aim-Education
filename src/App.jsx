@@ -17,6 +17,7 @@ import PublicConocenos from './components/PublicConocenos';
 import { CookieBanner, registrarVisita } from './components/Cookies';
 import AvisosWeb from './components/AvisosWeb';
 import { esApp, desactivarAvisos, revisarAvisosTrasEntrar } from './app-movil';
+import { seccionDeRuta } from './rutasAdmin';
 
 export const RouterContext = createContext({ path: '/', go: () => {}, user: null });
 export const useRouter = () => useContext(RouterContext);
@@ -187,10 +188,11 @@ export default function App() {
   } else if (pathname.startsWith('/admin')) {
     if (!userChecked) return null;
     if (!user || !user.canAccessAdmin) { go('/auth'); return null; }
-    // 'recibos' se mantiene como alias antiguo: esa sección ahora son los gastos del club.
-    const adminSub = { campamento: 'camp', alumnos: 'students', familias: 'familias', clases: 'classes', 'pasar-lista': 'pasarlista', eventos: 'events', noticias: 'news', gastos: 'payments', recibos: 'payments', facturacion: 'billing', soporte: 'support', reportes: 'reportes', fichaje: 'fichaje', speaking: 'speaking', 'clases-individuales': 'speaking', faltas: 'faltas', comunicaciones: 'comunicaciones', crm: 'comunicaciones', almacen: 'almacen', consultas: 'contactos', candidatos: 'candidatos', incidencias: 'incidencias', brickslab: 'brickslab', galeria: 'galeria', fotos: 'galeria', rangos: 'rangos', correo: 'bandeja', avisos: 'ctas', redes: 'redes', cambios: 'cambios' }[seg[1]] || 'overview';
-    // /admin/soporte/180 abre ese ticket directamente, para poder pasar el enlace.
-    const ticketId = seg[1] === 'soporte' && /^\d+$/.test(seg[2] || '') ? Number(seg[2]) : null;
+    // Qué sección abre cada dirección (y los nombres antiguos que siguen
+    // valiendo) está en rutasAdmin.js, junto a la que pone el menú.
+    const { view: adminSub } = seccionDeRuta(seg, Object.fromEntries(params));
+    // /admin/soporte/180 (o /admin/tickets/180) abre ese ticket directamente, para poder pasar el enlace.
+    const ticketId = (seg[1] === 'soporte' || seg[1] === 'tickets') && /^\d+$/.test(seg[2] || '') ? Number(seg[2]) : null;
     // La ruta entera va al panel (#360) para abrir lo concreto: una clase en
     // «Pasar lista» (/admin/clases/lista/<grupo>), un filtro de Soporte
     // (?filtro=mios), una pestaña (?pestana=pendientes)…
