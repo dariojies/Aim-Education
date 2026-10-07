@@ -78,14 +78,160 @@ const api = async (url, opts = {}) => {
 const campo = { fontFamily: 'inherit', fontSize: 14, padding: '9px 11px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', width: '100%' };
 const chip = (color, extra = {}) => ({ fontSize: 11, fontWeight: 800, color, background: `color-mix(in oklab, ${color} 13%, var(--bg-2))`, padding: '2px 8px', borderRadius: 6, whiteSpace: 'nowrap', ...extra });
 
+// Sin tildes ni mayúsculas, para buscar: «danza» encuentra «Danza».
+const sinTildes = (x) => String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+const MAX_ELEGIDOS = 200;
+
+// ── Buscar una clase del club (para coger a su gente «por clase») ──
+function BuscarClase({ grupos, onElegir, placeholder }) {
+  const [q, setQ] = useState('');
+  const [abierto, setAbierto] = useState(false);
+  const t = sinTildes(q.trim());
+  const res = abierto ? grupos.filter(g => !t || sinTildes(`${g.name} ${g.actividad}`).includes(t)).slice(0, 40) : [];
+  const elegir = (g) => { setQ(''); setAbierto(false); onElegir(g); };
+  return (
+    <div style={{ position: 'relative' }}>
+      <input style={campo} value={q} placeholder={placeholder} aria-label="Buscar una clase"
+        onChange={e => { setQ(e.target.value); setAbierto(true); }} onFocus={() => setAbierto(true)} onBlur={() => setTimeout(() => setAbierto(false), 150)}
+        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); if (res[0]) elegir(res[0]); } if (e.key === 'Escape') setAbierto(false); }} />
+      {abierto && (res.length > 0 || t) && (
+        <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 6, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, marginTop: 2, maxHeight: 240, overflowY: 'auto', boxShadow: 'var(--shadow)' }}>
+          {!res.length && <div style={{ padding: '8px 12px', fontSize: 13, color: 'var(--ink-3)' }}>Ninguna clase con ese nombre.</div>}
+          {res.map(g => (
+            <button key={g.id} type="button" onMouseDown={e => e.preventDefault()} onClick={() => elegir(g)}
+              style={{ display: 'flex', width: '100%', gap: 8, alignItems: 'center', textAlign: 'left', padding: '8px 12px', background: 'none', border: 0, borderBottom: '1px solid var(--line-2)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, color: 'var(--ink)' }}>
+              <b style={{ flex: 1, minWidth: 0 }}>{g.name}<span style={{ fontWeight: 400, color: 'var(--ink-3)' }}> · {g.actividad}</span></b>
+              <span style={{ fontSize: 12, color: 'var(--ink-3)', whiteSpace: 'nowrap' }}>{g.alumnos ?? 0} alumno{g.alumnos !== 1 ? 's' : ''}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+// ── Buscar a alguien del club por su nombre (con sus clases y si tiene permiso
+// de fotos); «excluir»: quien ya está y no hace falta ofrecer. ──
+function BuscarPersona({ excluir, onElegir, placeholder }) {
+  const [q, setQ] = useState('');
+  const [res, setRes] = useState([]);
+  useEffect(() => {
+    if (q.trim().length < 2) { setRes([]); return; }
+    const t = setTimeout(() => {
+      api(`/api/admin/galeria-personas?q=${encodeURIComponent(q.trim())}`).then(d => setRes(d.personas || [])).catch(() => setRes([]));
+    }, 220);
+    return () => clearTimeout(t);
+  }, [q]);
+  const lista = res.filter(p => !excluir.has(p.id));
+  const elegir = (p) => { setQ(''); setRes([]); onElegir(p); };
+  return (
+    <div style={{ position: 'relative' }}>
+      {/* Intro no manda el formulario del álbum: elige, si solo sale una persona. */}
+      <input style={campo} value={q} onChange={e => setQ(e.target.value)} placeholder={placeholder} aria-label={placeholder}
+        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); if (lista.length === 1) elegir(lista[0]); } }} />
+      {lista.length > 0 && (
+        <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 5, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, marginTop: 2, maxHeight: 220, overflowY: 'auto', boxShadow: 'var(--shadow)' }}>
+          {lista.map(p => (
+            <button key={p.id} type="button" onClick={() => elegir(p)}
+              style={{ display: 'flex', width: '100%', gap: 8, alignItems: 'center', textAlign: 'left', padding: '8px 12px', background: 'none', border: 0, borderBottom: '1px solid var(--line-2)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, color: 'var(--ink)' }}>
+              <b style={{ flex: 1, minWidth: 0 }}>{p.nombre}{p.clases ? <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}> · {p.clases}</span> : ''}</b>
+              {!p.permiso && <span style={chip('#E5484D')}>Sin permiso de fotos</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+// La clase elegida en un BuscarClase, con sus alumnos (null mientras se cargan).
+function useClaseElegida() {
+  const [clase, setClase] = useState(null);
+  const elegir = useCallback((g) => {
+    setClase({ ...g, alumnos: null, error: '' });
+    api(`/api/admin/galeria-clase/${g.id}`)
+      .then(d => setClase(c => (c?.id === g.id ? { ...c, alumnos: d.alumnos || [] } : c)))
+      .catch(e => setClase(c => (c?.id === g.id ? { ...c, alumnos: [], error: e.message } : c)));
+  }, []);
+  return [clase, elegir, () => setClase(null)];
+}
+const chipPersona = (p, extra = {}) => ({ ...chip(p.permiso ? 'var(--purple)' : '#E5484D'), display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '4px 6px 4px 10px', ...extra });
+const cruz = { border: 0, background: 'none', cursor: 'pointer', color: 'inherit', padding: 0, lineHeight: 1, fontSize: 14, fontFamily: 'inherit' };
+
+// ── «Quién sale en este álbum» (álbumes «solo quien sale»): se busca una clase,
+// se marca a quién y se repite con otras clases. Luego, en cada foto, esa gente
+// sale para etiquetarla de un toque. ──
+function QuienSale({ grupos, personas, onCambio }) {
+  const [clase, elegirClase, cerrarClase] = useClaseElegida();
+  const ya = new Set(personas.map(p => p.id));
+  const alumnos = clase?.alumnos || [];
+  const todos = alumnos.length > 0 && alumnos.every(a => ya.has(a.id));
+  const marcar = (p, si) => onCambio(si ? (ya.has(p.id) ? personas : [...personas, p]) : personas.filter(x => x.id !== p.id));
+  const marcarTodos = () => {
+    const deLaClase = new Set(alumnos.map(a => a.id));
+    onCambio(todos ? personas.filter(p => !deLaClase.has(p.id)) : [...personas, ...alumnos.filter(a => !ya.has(a.id))]);
+  };
+  return (
+    <div style={{ display: 'grid', gap: 8, padding: 12, border: '1px solid var(--line)', borderRadius: 12, background: 'var(--bg-2)' }}>
+      <span style={{ fontSize: 13, fontWeight: 700 }}>Quién sale en este álbum <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}>(opcional)</span></span>
+      <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Busca una clase y marca a quién; puedes coger gente de varias clases (o a alguien suelto por su nombre). Luego, en cada foto, te saldrán para etiquetarlos de un toque (o a todos a la vez).</span>
+      <BuscarClase grupos={grupos} onElegir={elegirClase} placeholder="Buscar una clase: escribe su nombre o la actividad…" />
+      <BuscarPersona excluir={ya} onElegir={p => marcar({ id: p.id, nombre: p.nombre, permiso: p.permiso }, true)} placeholder="O añade a alguien suelto: escribe su nombre…" />
+      {clase && (
+        <div style={{ display: 'grid', gap: 6, padding: 10, borderRadius: 10, background: 'var(--bg-3)' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <b style={{ fontSize: 13, flex: 1, minWidth: 0 }}>{clase.name} <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}>· {clase.actividad}</span></b>
+            {alumnos.length > 0 && (
+              <label style={{ display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                <input type="checkbox" checked={todos} onChange={marcarTodos} /> Todos
+              </label>
+            )}
+            <button type="button" onClick={cerrarClase} aria-label="Cerrar la clase" style={{ ...cruz, fontSize: 16, color: 'var(--ink-3)' }}>×</button>
+          </div>
+          {clase.alumnos === null && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Cargando alumnos…</span>}
+          {clase.error && <span style={{ fontSize: 12, color: 'var(--orange)', fontWeight: 700 }}>{clase.error}</span>}
+          {clase.alumnos && !clase.error && !alumnos.length && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Esta clase no tiene alumnos.</span>}
+          {alumnos.length > 0 && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(200px, 100%), 1fr))', gap: '2px 10px', maxHeight: 220, overflowY: 'auto' }}>
+              {alumnos.map(a => (
+                <label key={a.id} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, padding: '3px 0', cursor: 'pointer', color: a.permiso ? 'var(--ink)' : '#E5484D' }}
+                  title={a.permiso ? undefined : 'No tiene permiso de fotos'}>
+                  <input type="checkbox" checked={ya.has(a.id)} onChange={e => marcar(a, e.target.checked)} />
+                  <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.permiso ? '' : '⚠ '}{a.nombre}</span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        {!personas.length
+          ? <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Todavía no has elegido a nadie.</span>
+          : <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-2)' }}>Elegidos · {personas.length}</span>}
+        {personas.map(p => (
+          <span key={p.id} style={chipPersona(p)} title={p.permiso ? undefined : 'No tiene permiso de fotos'}>
+            {p.permiso ? '' : '⚠ '}{p.nombre}
+            <button type="button" onClick={() => marcar(p, false)} aria-label={`Quitar a ${p.nombre}`} style={cruz}>×</button>
+          </span>
+        ))}
+        {personas.length > 1 && <button type="button" onClick={() => onCambio([])} style={{ ...cruz, fontSize: 12, fontWeight: 700, color: 'var(--ink-3)', textDecoration: 'underline' }}>Quitar a todos</button>}
+      </div>
+      {personas.length > MAX_ELEGIDOS && <span style={{ fontSize: 12, color: 'var(--orange)', fontWeight: 700 }}>Como mucho {MAX_ELEGIDOS} personas por álbum: quita a {personas.length - MAX_ELEGIDOS}.</span>}
+    </div>
+  );
+}
+
 // ── El formulario de un álbum (nuevo o editar) ──
 function FormAlbum({ inicial, opciones, onGuardar, onCancelar, guardando }) {
   // Un profe solo hace álbumes de sus clases: siempre «una clase».
   const soloClase = !!opciones.soloSusClases;
-  const [f, setF] = useState(() => ({ titulo: '', descripcion: '', fecha: new Date().toLocaleDateString('sv-SE'), audiencia: soloClase ? 'grupo' : 'etiquetados', groupId: soloClase && opciones.grupos.length === 1 ? opciones.grupos[0].id : '', actividad: '', ...inicial }));
+  const [f, setF] = useState(() => ({ titulo: '', descripcion: '', fecha: new Date().toLocaleDateString('sv-SE'), audiencia: soloClase ? 'grupo' : 'etiquetados', groupId: soloClase && opciones.grupos.length === 1 ? opciones.grupos[0].id : '', actividad: '', personas: [], ...inicial }));
   const set = (k) => (e) => setF(x => ({ ...x, [k]: e.target.value }));
+  // La gente elegida solo cuenta en «solo quien sale»: se mandan sus ids.
+  const guardar = () => {
+    const { personas, ...resto } = f;
+    onGuardar(f.audiencia === 'etiquetados' && !soloClase ? { ...resto, personas: personas.map(p => p.id) } : resto);
+  };
   return (
-    <form onSubmit={e => { e.preventDefault(); onGuardar(f); }} style={{ display: 'grid', gap: 12 }}>
+    <form onSubmit={e => { e.preventDefault(); guardar(); }} style={{ display: 'grid', gap: 12 }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(220px, 100%), 1fr))', gap: 12 }}>
         <label style={{ display: 'grid', gap: 4, fontSize: 13, fontWeight: 700 }}>Título
           <input style={campo} value={f.titulo} onChange={set('titulo')} required maxLength={160} placeholder="Ej. Exhibición de Ballet · Navidad" /></label>
@@ -113,6 +259,9 @@ function FormAlbum({ inicial, opciones, onGuardar, onCancelar, guardando }) {
             {opciones.actividades.map(a => <option key={a} value={a}>{a}</option>)}
           </select>
         )}
+        {f.audiencia === 'etiquetados' && !soloClase && (
+          <QuienSale grupos={opciones.grupos} personas={f.personas} onCambio={personas => setF(x => ({ ...x, personas }))} />
+        )}
       </div>
       <label style={{ display: 'grid', gap: 4, fontSize: 13, fontWeight: 700 }}>Descripción <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}>(opcional)</span>
         <textarea style={{ ...campo, resize: 'vertical' }} rows={2} value={f.descripcion || ''} onChange={set('descripcion')} maxLength={1000} /></label>
@@ -125,71 +274,101 @@ function FormAlbum({ inicial, opciones, onGuardar, onCancelar, guardando }) {
 }
 
 // ── Etiquetar a quien sale en una foto ──
-function Etiquetas({ foto, sugeridos, onCambio, showToast }) {
-  const [q, setQ] = useState('');
-  const [res, setRes] = useState([]);
-  useEffect(() => {
-    if (q.trim().length < 2) { setRes([]); return; }
-    const t = setTimeout(() => {
-      api(`/api/admin/galeria-personas?q=${encodeURIComponent(q.trim())}`).then(d => setRes(d.personas || [])).catch(() => setRes([]));
-    }, 220);
-    return () => clearTimeout(t);
-  }, [q]);
+// onCambio recibe una función (foto → foto nueva): así dos toques seguidos no se pisan.
+// «elegidos»: la gente elegida para el álbum («Quién sale en este álbum»).
+// «grupos»: las clases para «Buscar por clase» (vacío = no se muestra).
+function Etiquetas({ foto, sugeridos, elegidos = [], grupos = [], onCambio, showToast }) {
+  const [clase, elegirClase, cerrarClase] = useClaseElegida();
+  const [poniendo, setPoniendo] = useState(false);
   const ya = new Set(foto.etiquetas.map(e => e.userId));
   async function poner(p) {
     if (!p.permiso && !window.confirm(`${p.nombre} NO tiene permiso de fotos.\n\n¿Etiquetarle igualmente? Su familia y quien vea este álbum le verán en la foto.`)) return;
     try {
       const d = await api(`/api/admin/galeria/fotos/${foto.id}/etiquetas`, { method: 'POST', body: { userId: p.id } });
-      onCambio({ ...foto, etiquetas: [...foto.etiquetas, { userId: p.id, nombre: d.nombre, permiso: d.permiso }] });
-      setQ(''); setRes([]);
+      onCambio(x => ({ ...x, etiquetas: [...x.etiquetas.filter(e => e.userId !== p.id), { userId: p.id, nombre: d.nombre, permiso: d.permiso }] }));
     } catch (e) { showToast?.(e.message); }
+  }
+  // «Etiquetar a todos»: de una vez, preguntando una sola vez si alguno no tiene permiso.
+  async function ponerVarios(lista) {
+    const nuevos = lista.filter(p => !ya.has(p.id));
+    if (!nuevos.length || poniendo) return;
+    const sin = nuevos.filter(p => !p.permiso);
+    if (sin.length && !window.confirm(`${sin.length === 1 ? `${sin[0].nombre} NO tiene` : `${sin.length} personas NO tienen`} permiso de fotos${sin.length > 1 ? `: ${sin.map(p => p.nombre).join(', ')}` : ''}.\n\n¿Etiquetar a los ${nuevos.length} igualmente? Sus familias y quien vea este álbum les verán en la foto.`)) return;
+    setPoniendo(true);
+    try {
+      const d = await api(`/api/admin/galeria/fotos/${foto.id}/etiquetas`, { method: 'POST', body: { userIds: nuevos.map(p => p.id) } });
+      const otros = new Set((d.etiquetados || []).map(e => e.userId));
+      onCambio(x => ({ ...x, etiquetas: [...x.etiquetas.filter(e => !otros.has(e.userId)), ...(d.etiquetados || [])] }));
+    } catch (e) { showToast?.(e.message); } finally { setPoniendo(false); }
   }
   async function quitar(e) {
     try {
       await api(`/api/admin/galeria/fotos/${foto.id}/etiquetas/${e.userId}`, { method: 'DELETE' });
-      onCambio({ ...foto, etiquetas: foto.etiquetas.filter(x => x.userId !== e.userId) });
+      onCambio(x => ({ ...x, etiquetas: x.etiquetas.filter(y => y.userId !== e.userId) }));
     } catch (er) { showToast?.(er.message); }
   }
   const sinEtiquetar = sugeridos.filter(s => !ya.has(s.id));
+  const elegidosSin = elegidos.filter(s => !ya.has(s.id));
+  const deLaClaseSin = (clase?.alumnos || []).filter(s => !ya.has(s.id));
+  // Un botón «+ nombre» de un toque (con ⚠ si no tiene permiso de fotos).
+  const unToque = (s) => (
+    <button key={s.id} type="button" onClick={() => poner(s)} title={s.permiso ? undefined : 'Sin permiso de fotos'}
+      style={{ fontFamily: 'inherit', fontSize: 12, fontWeight: 700, padding: '4px 10px', borderRadius: 999, cursor: 'pointer', border: `1px solid ${s.permiso ? 'var(--line)' : 'color-mix(in oklab, #E5484D 45%, var(--line))'}`, background: 'var(--bg-3)', color: s.permiso ? 'var(--ink-2)' : '#E5484D' }}>
+      + {s.nombre}{s.permiso ? '' : ' ⚠'}
+    </button>
+  );
   return (
     <div style={{ display: 'grid', gap: 8 }}>
       <b style={{ fontSize: 13 }}>Quién sale {foto.etiquetas.length ? `· ${foto.etiquetas.length}` : ''}</b>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {!foto.etiquetas.length && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Nadie etiquetado todavía.</span>}
         {foto.etiquetas.map(e => (
-          <span key={e.userId} style={{ ...chip(e.permiso ? 'var(--purple)' : '#E5484D'), display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '4px 6px 4px 10px' }}
-            title={e.permiso ? undefined : 'No tiene permiso de fotos'}>
+          <span key={e.userId} style={chipPersona(e)} title={e.permiso ? undefined : 'No tiene permiso de fotos'}>
             {e.permiso ? '' : '⚠ '}{e.nombre}
-            <button type="button" onClick={() => quitar(e)} aria-label={`Quitar a ${e.nombre}`}
-              style={{ border: 0, background: 'none', cursor: 'pointer', color: 'inherit', padding: 0, lineHeight: 1, fontSize: 14 }}>×</button>
+            <button type="button" onClick={() => quitar(e)} aria-label={`Quitar a ${e.nombre}`} style={cruz}>×</button>
           </span>
         ))}
       </div>
-      <div style={{ position: 'relative' }}>
-        <input style={campo} value={q} onChange={e => setQ(e.target.value)} placeholder="Etiquetar a alguien: escribe su nombre…" aria-label="Buscar a quién etiquetar" />
-        {res.length > 0 && (
-          <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 5, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, marginTop: 2, maxHeight: 220, overflowY: 'auto', boxShadow: 'var(--shadow)' }}>
-            {res.filter(p => !ya.has(p.id)).map(p => (
-              <button key={p.id} type="button" onClick={() => poner(p)}
-                style={{ display: 'flex', width: '100%', gap: 8, alignItems: 'center', textAlign: 'left', padding: '8px 12px', background: 'none', border: 0, borderBottom: '1px solid var(--line-2)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, color: 'var(--ink)' }}>
-                <b style={{ flex: 1, minWidth: 0 }}>{p.nombre}{p.clases ? <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}> · {p.clases}</span> : ''}</b>
-                {!p.permiso && <span style={chip('#E5484D')}>Sin permiso de fotos</span>}
+      {elegidos.length > 0 && (
+        <div style={{ display: 'grid', gap: 4 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, color: 'var(--ink-3)', flex: 1, minWidth: 0 }}>
+              {elegidosSin.length ? 'Quién sale en este álbum (un toque para etiquetar):' : 'Ya están etiquetados todos los elegidos para este álbum.'}
+            </span>
+            {elegidosSin.length > 1 && (
+              <button type="button" className="btn btn-sm btn-outline" disabled={poniendo} onClick={() => ponerVarios(elegidosSin)}>
+                {poniendo ? 'Etiquetando…' : `Etiquetar a todos (${elegidosSin.length})`}
               </button>
-            ))}
+            )}
           </div>
-        )}
-      </div>
+          {elegidosSin.length > 0 && <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', maxHeight: 130, overflowY: 'auto' }}>{elegidosSin.map(unToque)}</div>}
+        </div>
+      )}
+      <BuscarPersona excluir={ya} onElegir={poner} placeholder="Etiquetar a alguien: escribe su nombre…" />
       {sinEtiquetar.length > 0 && (
         <div style={{ display: 'grid', gap: 4 }}>
           <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>De la clase (un toque para etiquetar):</span>
           <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', maxHeight: 130, overflowY: 'auto' }}>
-            {sinEtiquetar.map(s => (
-              <button key={s.id} type="button" onClick={() => poner(s)} title={s.permiso ? undefined : 'Sin permiso de fotos'}
-                style={{ fontFamily: 'inherit', fontSize: 12, fontWeight: 700, padding: '4px 10px', borderRadius: 999, cursor: 'pointer', border: `1px solid ${s.permiso ? 'var(--line)' : 'color-mix(in oklab, #E5484D 45%, var(--line))'}`, background: 'var(--bg-3)', color: s.permiso ? 'var(--ink-2)' : '#E5484D' }}>
-                + {s.nombre}{s.permiso ? '' : ' ⚠'}
-              </button>
-            ))}
+            {sinEtiquetar.map(unToque)}
           </div>
+        </div>
+      )}
+      {grupos.length > 0 && (
+        <div style={{ display: 'grid', gap: 6 }}>
+          <BuscarClase grupos={grupos} onElegir={elegirClase} placeholder="Buscar por clase: escribe su nombre o la actividad…" />
+          {clase && (
+            <div style={{ display: 'grid', gap: 4 }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <span style={{ fontSize: 12, color: 'var(--ink-3)', flex: 1, minWidth: 0 }}>
+                  <b style={{ color: 'var(--ink-2)' }}>{clase.name}</b> · {clase.actividad}
+                  {clase.alumnos === null ? ' · cargando…' : clase.error ? '' : deLaClaseSin.length ? ' (un toque para etiquetar):' : clase.alumnos.length ? ' · ya están todos etiquetados.' : ' · no tiene alumnos.'}
+                </span>
+                <button type="button" onClick={cerrarClase} aria-label="Cerrar la clase" style={{ ...cruz, fontSize: 16, color: 'var(--ink-3)' }}>×</button>
+              </div>
+              {clase.error && <span style={{ fontSize: 12, color: 'var(--orange)', fontWeight: 700 }}>{clase.error}</span>}
+              {deLaClaseSin.length > 0 && <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', maxHeight: 130, overflowY: 'auto' }}>{deLaClaseSin.map(unToque)}</div>}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -257,7 +436,8 @@ function Album({ id, opciones, onVolver, showToast }) {
       setAbierta(i => { const quedan = d.fotos.length - 1; return quedan <= 0 || i === null ? null : Math.min(i, quedan - 1); });
     } catch (e) { showToast?.(e.message); }
   }
-  const cambiarFoto = (f) => setD(x => ({ ...x, fotos: x.fotos.map(y => (y.id === f.id ? f : y)) }));
+  // cambio: foto → foto nueva (sobre la última versión, por si llegan dos seguidos).
+  const cambiarFoto = (id, cambio) => setD(x => ({ ...x, fotos: x.fotos.map(y => (y.id === id ? cambio(y) : y)) }));
   // Teclado en la foto abierta: flechas para pasar, Esc para cerrar.
   useEffect(() => {
     if (abierta === null) return;
@@ -280,7 +460,7 @@ function Album({ id, opciones, onVolver, showToast }) {
       <button type="button" onClick={() => onVolver(false)} style={{ justifySelf: 'start', background: 'none', border: 0, padding: 0, cursor: 'pointer', color: 'var(--purple)', fontWeight: 700, fontSize: 13, fontFamily: 'inherit' }}>← Todos los álbumes</button>
       <div className="panel" style={{ margin: 0, display: 'grid', gap: 10 }}>
         {editando ? (
-          <FormAlbum inicial={{ ...a, fecha: String(a.fecha).slice(0, 10), groupId: a.groupId || '', actividad: a.actividad || '' }} opciones={opciones} guardando={guardando} onGuardar={guardarAlbum} onCancelar={() => setEditando(false)} />
+          <FormAlbum inicial={{ ...a, fecha: String(a.fecha).slice(0, 10), groupId: a.groupId || '', actividad: a.actividad || '', personas: d.elegidos || [] }} opciones={opciones} guardando={guardando} onGuardar={guardarAlbum} onCancelar={() => setEditando(false)} />
         ) : (
           <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
             <div style={{ flex: '1 1 260px', minWidth: 0 }}>
@@ -288,7 +468,8 @@ function Album({ id, opciones, onVolver, showToast }) {
                 <h2 style={{ margin: 0 }}>{a.titulo}</h2>
                 <span style={chip(a.publicado ? 'var(--teal)' : 'var(--ink-3)', { textTransform: 'uppercase' })}>{a.publicado ? 'Publicado' : 'Borrador'}</span>
               </div>
-              <p className="sub" style={{ margin: '4px 0 0' }}>{fmtFecha(a.fecha)} · Lo ve: <b>{paraQuien(a)}</b>{a.audiencia !== 'etiquetados' ? ' (y la familia de quien sale)' : ''} · {d.fotos.length} foto{d.fotos.length !== 1 ? 's' : ''}</p>
+              <p className="sub" style={{ margin: '4px 0 0' }}>{fmtFecha(a.fecha)} · Lo ve: <b>{paraQuien(a)}</b>{a.audiencia !== 'etiquetados' ? ' (y la familia de quien sale)' : ''} · {d.fotos.length} foto{d.fotos.length !== 1 ? 's' : ''}
+                {a.audiencia === 'etiquetados' && d.elegidos?.length > 0 ? ` · ${d.elegidos.length} elegido${d.elegidos.length !== 1 ? 's' : ''} para etiquetar` : ''}</p>
               {a.descripcion && <p style={{ margin: '6px 0 0', fontSize: 14, color: 'var(--ink-2)' }}>{a.descripcion}</p>}
             </div>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -357,8 +538,9 @@ function Album({ id, opciones, onVolver, showToast }) {
                 <b style={{ flex: 1 }}>Foto {abierta + 1} de {d.fotos.length}</b>
                 <button type="button" className="btn btn-sm btn-outline" onClick={() => setAbierta(null)} aria-label="Cerrar"><I.X width={14} height={14} /></button>
               </div>
-              <Etiquetas key={foto.id} foto={foto} sugeridos={d.sugeridos} onCambio={cambiarFoto} showToast={showToast} />
-              <PieFoto key={`p${foto.id}`} foto={foto} onGuardado={pie => cambiarFoto({ ...foto, pie })} showToast={showToast} />
+              <Etiquetas key={foto.id} foto={foto} sugeridos={d.sugeridos} elegidos={d.elegidos || []} grupos={opciones.soloSusClases ? [] : opciones.grupos}
+                onCambio={c => cambiarFoto(foto.id, c)} showToast={showToast} />
+              <PieFoto key={`p${foto.id}`} foto={foto} onGuardado={pie => cambiarFoto(foto.id, y => ({ ...y, pie }))} showToast={showToast} />
               <button type="button" className="btn btn-sm btn-outline" style={{ justifySelf: 'start', color: 'var(--orange)' }} onClick={() => borrarFoto(foto)}><I.Trash width={14} height={14} /> Borrar esta foto</button>
             </div>
           </div>
