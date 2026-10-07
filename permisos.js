@@ -131,6 +131,9 @@ export function permisosDe(rol) {
             // La planificación del Equipo IT: la ven secretaría y dirección; solo
             // la tocan el propio equipo y los superadmin (editarEquipoIT).
             equipo_it: mandaAlMenos(rol, 'secretaria'),
+            // El registro de cambios de cada deploy (#397): lo leen secretaría y
+            // dirección; lo escriben el Equipo IT y los superadmin (editarCambios).
+            cambios: mandaAlMenos(rol, 'secretaria'),
             settings: jefe,            // los ajustes del club son cosa del club
             // Qué ve y qué avisos recibe cada rango (ticket #333).
             rangos: jefe,
@@ -161,6 +164,8 @@ export function permisosDe(rol) {
         fichajesGestion: mandaAlMenos(rol, 'secretaria'),
         // Planificar las semanas del Equipo IT: el equipo y los superadmin.
         editarEquipoIT: rol === 'equipo_it' || rol === 'superadmin',
+        // Escribir en «Cambios» (#397): título y texto de cada deploy y entradas a mano.
+        editarCambios: rol === 'equipo_it' || rol === 'superadmin',
         // Dar o quitar rangos del club (dueño del club y por encima).
         cambiarRangos: jefe,
         // Incidencias (#383): secretaría y dirección las ven todas; solo la

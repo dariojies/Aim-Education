@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
+import { execSync } from 'child_process';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
@@ -13,7 +14,14 @@ export default defineConfig(() => {
       name: 'marca-deploy',
       apply: 'build',
       closeBundle() {
-        fs.writeFileSync(path.resolve(__dirname, 'dist/deploy.json'), JSON.stringify({ id: crypto.randomUUID(), fecha: new Date().toISOString() }));
+        // El commit que se publica, para el registro de «Cambios» (#397). Heroku lo
+        // da al compilar (SOURCE_VERSION); en local, el de git. Este archivo es
+        // público: aquí solo va el hash, nunca mensajes ni notas.
+        let commit = process.env.SOURCE_VERSION || null;
+        if (!commit) {
+          try { commit = execSync('git rev-parse HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim() || null; } catch { commit = null; }
+        }
+        fs.writeFileSync(path.resolve(__dirname, 'dist/deploy.json'), JSON.stringify({ id: crypto.randomUUID(), fecha: new Date().toISOString(), commit }));
       },
     }],
     // La app del móvil (movil/, #218) tiene sus propios proyectos de Android e
