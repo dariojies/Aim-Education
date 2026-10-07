@@ -84,10 +84,13 @@ export function tramoPorMensualidades(n) {
 export function calcularRecibo(lineas) {
     const items = Array.isArray(lineas) ? lineas : [];
 
-    // 1) Cuántas mensualidades hay de cada mes en este recibo.
+    // 1) Cuántas mensualidades hay de cada mes en este recibo. Las que tienen el
+    //    100% de descuento no se pagan, así que no cuentan para el descuento por
+    //    varias (pagar 2 actividades con una al 100% es pagar solo una).
+    const sePaga = (l) => num(l.descuentoPct) < 100 && num(l.precio) > 0;
     const mensualidadesPorMes = {};
     for (const l of items) {
-        if (l.tipo === 'Mensualidad') {
+        if (l.tipo === 'Mensualidad' && sePaga(l)) {
             const k = mesKey(l.mes);
             mensualidadesPorMes[k] = (mensualidadesPorMes[k] || 0) + 1;
         }
@@ -104,7 +107,7 @@ export function calcularRecibo(lineas) {
         const fijado = l.descuentoMensPctFijo;
         const descuentoMensPct = (fijado != null && Number.isFinite(Number(fijado)))
             ? num(fijado)
-            : l.tipo === 'Mensualidad'
+            : l.tipo === 'Mensualidad' && sePaga(l)
                 ? tramoPorMensualidades(mensualidadesPorMes[mesKey(l.mes)] || 0)
                 : 0;
 
