@@ -78,8 +78,9 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
     // Los commits entre el deploy anterior y este, de la API de GitHub (comparar
     // dos commits). Solo el primer renglón de cada mensaje y sin los de «merge».
     async function cargarCommits(id) {
+        // El repositorio es público: sin token también contesta (con un límite de
+        // consultas por hora); con GITHUB_TOKEN, sin ese límite.
         const tk = token();
-        if (!tk) return { omitido: 'sin token' };
         const e = await leer(id);
         if (!e) return { omitido: 'no existe' };
         const base = shaValido(e.commitAnterior), cabeza = shaValido(e.commit);
@@ -87,7 +88,7 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
         const r = await fetchImpl(`https://api.github.com/repos/${REPO_GITHUB}/compare/${base}...${cabeza}`, {
             headers: {
                 Accept: 'application/vnd.github+json',
-                Authorization: `Bearer ${tk}`,
+                ...(tk ? { Authorization: `Bearer ${tk}` } : {}),
                 'X-GitHub-Api-Version': '2022-11-28',
                 'User-Agent': 'aim-education-cambios',
             },
@@ -111,7 +112,6 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
     // Al arrancar, sin esperar ni tumbar nada: si GitHub falla, la entrada se
     // queda con sus tickets y el enlace para comparar.
     function cargarCommitsEnSegundoPlano(id) {
-        if (!token()) return;
         cargarCommits(id).catch(err => console.warn('[cambios] no se pudieron leer los commits de GitHub:', err?.message || err));
     }
 
@@ -142,7 +142,8 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
                     actualizado: x.actualizado_at,
                 })),
                 puedeEditar: !!permisos(req).editarCambios,
-                conGithub: !!token(),
+                conGithub: true,
+                conToken: !!token(),
                 repo: REPO_GITHUB,
             });
         } catch (err) { res.status(500).json({ error: err.message }); }
@@ -192,7 +193,6 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
     // Volver a pedir los commits a GitHub (si al arrancar falló, o se ha puesto el token después).
     router.post('/api/admin/cambios/:id/commits', ...editar, async (req, res) => {
         const id = idDe(req, res); if (!id) return;
-        if (!token()) return res.status(400).json({ error: 'Falta poner el token de GitHub (GITHUB_TOKEN) en Heroku.' });
         try {
             const r = await cargarCommits(id);
             if (r.omitido === 'no existe') return res.status(404).json({ error: 'Esa entrada ya no existe.' });
@@ -200,7 +200,9 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
             res.json({ success: true, commits: r.commits });
         } catch (err) {
             console.warn('[cambios] recargar commits:', err?.message || err);
-            res.status(502).json({ error: err?.token ? 'El token de GitHub no vale o ha caducado: hay que renovarlo en Heroku (GITHUB_TOKEN).' : 'GitHub no ha contestado bien. Prueba más tarde.' });
+            res.status(502).json({ error: err?.token
+                ? (token() ? 'El token de GitHub no vale o ha caducado: hay que renovarlo en Heroku (GITHUB_TOKEN).' : 'GitHub ha limitado las consultas sin token: prueba dentro de un rato.')
+                : 'GitHub no ha contestado bien. Prueba más tarde.' });
         }
     });
 

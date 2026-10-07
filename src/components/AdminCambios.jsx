@@ -130,10 +130,10 @@ export default function AdminCambios({ showToast }) {
           </button>
         )}
       </div>
-      {puede && !datos.conGithub && (
+      {puede && !datos.conToken && (
         <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
-          Los commits no se cargan solos porque falta el token de GitHub (GITHUB_TOKEN en Heroku). Mientras tanto,
-          «Comparar en GitHub» enseña lo mismo a quien tenga acceso al repositorio.
+          Sin el token de GitHub (GITHUB_TOKEN en Heroku), los commits se piden igual, pero GitHub limita esas consultas:
+          si una entrada sale sin ellos, «Recargar commits» un rato después.
         </p>
       )}
       {editando?.nueva && formulario}

@@ -15353,7 +15353,7 @@ async function resolverEsperaDeploy() {
     }
     if (r.rowCount) console.log(`[deploy] ${r.rowCount} ticket(s) en espera de deploy pasan a resueltos: ${r.rows.map(t => '#' + t.id).join(', ')}`);
     if (resueltos.length) await cambios.anotarTickets(marca.id, resueltos).catch(e => console.error('[cambios] tickets del deploy:', e.message));
-    // Los commits de GitHub, de fondo (solo con GITHUB_TOKEN).
+    // Los commits de GitHub, de fondo (con GITHUB_TOKEN si lo hay; el repositorio es público).
     cambios.cargarCommitsEnSegundoPlano(marca.id);
 }
 
