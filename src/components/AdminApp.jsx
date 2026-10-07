@@ -7060,8 +7060,6 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "events", label: "Eventos", icon: <I.Star /> },
         // Las fotos de clases y eventos, con quién sale en cada una (#364).
         { id: "galeria", label: "Fotos", icon: <I.Camara /> },
-        { id: "titulos", label: "Títulos", icon: <I.Trophy /> },
-        { id: "reportes", label: "Reportes", icon: <I.Chart /> },
       ]
     },
     {
@@ -7097,6 +7095,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "objetos", label: "Objetos perdidos", icon: <I.Search /> },
         // El préstamo de sets de LEGO y libros (#291).
         { id: "brickslab", label: "Brickslab y Biblioteca", icon: <I.Robot width={18} height={18} /> },
+        { id: "titulos", label: "Títulos", icon: <I.Trophy /> },
       ]
     },
     {
@@ -7110,6 +7109,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
       heading: "Administración", items: [
         // Los currículums de «Trabaja con nosotros» (#368).
         { id: "candidatos", label: "Candidatos", icon: <I.Maletin /> },
+        { id: "reportes", label: "Reportes", icon: <I.Chart /> },
         { id: "rangos", label: "Rangos y permisos", icon: <I.Shield /> },
         { id: "settings", label: "Ajustes", icon: <I.Settings /> },
         { id: "equipo_it", label: "Equipo IT", icon: <I.Monitor /> },
