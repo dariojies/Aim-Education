@@ -324,7 +324,7 @@ export default function AdminIncidencias({ showToast, enlace }) {
               ) : (
                 <span style={{ color: 'var(--ink-2)' }}>
                   {i.responsable ? <>Responsable: <b>{i.responsable.nombre}</b></> : i.estado === 'abierta' ? 'Sin responsable todavía' : null}
-                  {i.fechaLimite ? <> · {i.estado === 'abierta' ? 'para el' : 'fecha límite:'} <b style={{ color: vencida ? '#E5484D' : undefined }}>{fmtDia(i.fechaLimite)}</b></> : null}
+                  {i.fechaLimite ? <>{i.responsable || i.estado === 'abierta' ? ' · ' : ''}{i.estado === 'abierta' ? 'para el' : 'Fecha límite:'} <b style={{ color: vencida ? '#E5484D' : undefined }}>{fmtDia(i.fechaLimite)}</b></> : null}
                 </span>
               )}
               <div style={{ flex: 1 }} />

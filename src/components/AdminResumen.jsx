@@ -367,7 +367,7 @@ function vistaIT({ d, ir, irRuta }) {
     columnas: [
       [<Bloque key="m" vacia={!t.miosLista.length} titulo="Tus tickets" sub="Urgentes y los que vencen antes, primero" accion="Todos" onAccion={() => ir('support')}>
         <Lista items={t.miosLista} max={6} vacio="No tienes tickets abiertos." onMas={() => ir('support')} render={ticket} />
-        {t.mios > t.miosLista.length && <button type="button" onClick={() => ir('support')} style={{ ...enlace, marginTop: 6 }}>y {t.mios - t.miosLista.length} más en Soporte →</button>}
+        {t.mios > t.miosLista.length && <button type="button" onClick={() => ir('support')} style={{ ...enlace, marginTop: 6 }}>y {t.mios - t.miosLista.length} más en Tickets →</button>}
       </Bloque>],
       [
         <Bloque key="n" vacia={!t.sinAsignarLista.length} titulo="Sin asignar" accion="Repartir" onAccion={() => ir('support')}>

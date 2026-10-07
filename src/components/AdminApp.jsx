@@ -6720,7 +6720,12 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
   // La pestaña de Comunicación (campañas, segmentos…) se elige también desde el
   // menú: va en la dirección (/admin/campanas). Sin ella, la de siempre.
   const pestanaCrm = seccionDeRuta(enlace?.seg || [], enlace?.params || {}).pestana || 'segmentos';
-  function navTo(id, pestana) { go(rutaDeSeccion(id, pestana)); setSidebarOpen(false); }
+  // Pulsar la sección en la que ya se está no deja un paso más en el historial.
+  function navTo(id, pestana) {
+    const ruta = rutaDeSeccion(id, pestana);
+    if (ruta !== window.location.pathname) go(ruta);
+    setSidebarOpen(false);
+  }
 
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [notification, setNotification] = useState(null);
@@ -6732,7 +6737,6 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
   const fichaOriginal = useRef(null);
   useEffect(() => { if (activeModal !== 'edit-student') setPilaFichas([]); }, [activeModal]);
 
-  const [studentsList, setStudentsList] = useState([]);
   const [classSlots, setClassSlots] = useState([]);
   const [activities, setActivities] = useState([]);
   const [aulas, setAulas] = useState([]);
@@ -6740,10 +6744,6 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
   const [actById, setActById] = useState({});
 
   useEffect(() => {
-    fetch('/api/users', { credentials: 'include' })
-      .then(r => r.ok ? r.json() : [])
-      .then(setStudentsList)
-      .catch(() => { });
     fetch('/api/classes', { credentials: 'include', cache: 'no-store' })
       .then(r => r.ok ? r.json() : [])
       .then(data => {
@@ -7025,7 +7025,9 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
   useEffect(() => {
     if (permisos.secciones[seccionDe(view)]) return;
     const orden = ['overview', 'agenda', 'fichaje', 'support'];
-    const primera = orden.find(id => permisos.secciones[id]) || Object.keys(permisos.secciones).find(id => permisos.secciones[id]);
+    // Solo secciones con dirección propia (si no, se quedaría en blanco).
+    const primera = orden.find(id => permisos.secciones[id])
+      || Object.keys(permisos.secciones).find(id => permisos.secciones[id] && rutaDeSeccion(id) !== '/admin');
     if (primera) go(rutaDeSeccion(primera), { replace: true });
   }, [view, permisos]); // eslint-disable-line react-hooks/exhaustive-deps
 

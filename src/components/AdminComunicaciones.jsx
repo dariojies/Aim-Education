@@ -40,7 +40,7 @@ export default function AdminComunicaciones({ showToast, onAbrirFicha, pestana: 
         <button type="button" style={{ ...pastilla(pestana === 'segmentos'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('segmentos')}>Segmentos</button>
         <button type="button" style={{ ...pastilla(pestana === 'campanas'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('campanas')}>Campañas</button>
         <button type="button" style={{ ...pastilla(pestana === 'automatismos'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('automatismos')}>Automatismos</button>
-        <button type="button" style={{ ...pastilla(pestana === 'disenos'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('disenos')}>Diseño de correos</button>
+        <button type="button" style={{ ...pastilla(pestana === 'disenos'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('disenos')}>Diseños</button>
       </div>
       {pestana === 'segmentos' && <Segmentos showToast={showToast} onAbrirFicha={onAbrirFicha}
         onUsarEnCampana={(nombre) => { setCampanaCon(nombre); setPestana('campanas'); }} />}

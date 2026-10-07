@@ -84,9 +84,14 @@ export default function PasarListaClases({ showToast, abrir = null }) {
   // Enlace directo a una clase (#360): desde el Resumen, Mi día, etc. se abre
   // su lista sin tener que buscarla.
   const abiertaPorEnlace = useRef(null);
+  const fechaDeEnlace = useRef(null);
   useEffect(() => {
     if (!abrir) return;
-    if (abrir.fecha && abrir.fecha !== fecha) { setFecha(abrir.fecha); return; }
+    // La fecha del enlace se pone una vez: después se puede cambiar a mano.
+    if (abrir.fecha && fechaDeEnlace.current !== abrir.ruta) {
+      fechaDeEnlace.current = abrir.ruta;
+      if (abrir.fecha !== fecha) { setFecha(abrir.fecha); return; }
+    }
     if (!abrir.grupo || abiertaPorEnlace.current === abrir.ruta || cargando) return;
     const c = clases.find(x => String(x.id) === String(abrir.grupo));
     if (c) { abiertaPorEnlace.current = abrir.ruta; setClase(c); cargarAlumnos(c.id, fecha); }

@@ -16496,7 +16496,8 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                     });
                 }
                 if (l.length > max) avisos.push({
-                    tipo: 'incidencias', destino: `/admin/incidencias?filtro=implicado${estado === 'resuelta' ? '&estado=resueltas' : ''}`, n: l.length,
+                    // Las resueltas también son de quien la registró o la llevaba: todas, no solo «Me implican».
+                    tipo: 'incidencias', destino: `/admin/incidencias?filtro=${estado === 'resuelta' ? 'todas&estado=resueltas' : 'implicado'}`, n: l.length,
                     clave: `incidencias_implicado:${estado}:resto`,
                     texto: estado === 'abierta' ? `Y ${l.length - max} incidencia${l.length - max !== 1 ? 's' : ''} más en las que estás implicado`
                         : `Y ${l.length - max} incidencia${l.length - max !== 1 ? 's' : ''} más resuelta${l.length - max !== 1 ? 's' : ''}`,
@@ -20076,7 +20077,12 @@ app.get('/api/admin/incidencias', authenticateSession, requireSeccion('incidenci
 // quien la registra no hace falta: ya va como autor.
 app.get('/api/admin/incidencias/opciones', authenticateSession, requireSeccion('incidencias'), async (req, res) => {
     try {
-        const grupo = UUID_INCIDENCIA.test(String(req.query.grupo || '')) ? String(req.query.grupo) : null;
+        let grupo = UUID_INCIDENCIA.test(String(req.query.grupo || '')) ? String(req.query.grupo) : null;
+        // Solo clases del club y, para quien solo ve sus clases, de las suyas.
+        if (grupo) {
+            const delClub = (await pool.query(`SELECT 1 FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id WHERE g.group_id = $1 AND a.club_id = $2`, [grupo, AIM_CLUB_ID])).rowCount;
+            if (!delClub || !(await grupoSuyo(req, grupo))) grupo = null;
+        }
         const docentes = grupo ? (await pool.query(
             `SELECT u.user_id AS id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre, ${sqlRango('u')} AS rango
              FROM users u
