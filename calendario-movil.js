@@ -33,13 +33,19 @@ const sumarMeses = (iso, n) => {
     return f.toISOString().slice(0, 10);
 };
 
+// El último día del curso en el que estamos: el 31 de agosto (el curso empieza
+// en septiembre).
+export function finCurso(hoy) {
+    const [y, m] = hoy.split('-').map(Number);
+    return `${m >= 9 ? y + 1 : y}-08-31`;
+}
+
 // Lo que abarca el enlace: desde hace 30 días hasta el final del curso (31 de
 // agosto) o hasta dentro de 6 meses, lo que llegue más lejos.
 export function ventanaCalendario(hoy) {
-    const [y, m] = hoy.split('-').map(Number);
-    const finCurso = `${m >= 9 ? y + 1 : y}-08-31`;
+    const fin = finCurso(hoy);
     const seisMeses = sumarMeses(hoy, 6);
-    return [sumarDia(hoy, -30), finCurso > seisMeses ? finCurso : seisMeses];
+    return [sumarDia(hoy, -30), fin > seisMeses ? fin : seisMeses];
 }
 
 // Las horas de los eventos son texto libre ("19:00", "19.00", "19h"…). Se entiende
@@ -104,7 +110,11 @@ export function eventosEnRango(eventos, desde, hasta) {
 
 // Lo de una persona entre dos fechas, tal cual lo usan «Mi día» y el enlace del
 // móvil. Con `turnos` también su horario de trabajo (lo que tiene que fichar).
-export async function agendaEnRango(pool, { clubId, userId, desde, hasta, turnos = false }) {
+// `finClases`: hasta qué día se proyectan las clases. Las sesiones de tul_groups
+// no tienen fecha de inicio ni de fin, así que el enlace del móvil las corta al
+// final del curso: si no, en verano repetiría el horario de este curso en el
+// siguiente. Los turnos y los cierres no se cortan.
+export async function agendaEnRango(pool, { clubId, userId, desde, hasta, turnos = false, finClases = null }) {
     // Consultas una detrás de otra: la base tiene pocas conexiones para todos.
     const grupos = (await pool.query(
         `SELECT g.group_id, g.name, a.name AS actividad, g.sessions
@@ -121,7 +131,8 @@ export async function agendaEnRango(pool, { clubId, userId, desde, hasta, turnos
          FROM aim_eventos
          WHERE docente_id = $1 AND event_date <= $3::date AND COALESCE(end_date, event_date) >= $2::date
          ORDER BY event_date, time`, [userId, desde, hasta])).rows;
-    const res = { cierres, clases: clasesEnRango(grupos, userId, desde, hasta, cierres), eventos };
+    const hastaClases = finClases && finClases < hasta ? finClases : hasta;
+    const res = { cierres, clases: clasesEnRango(grupos, userId, desde, hastaClases, cierres), eventos };
     if (!turnos) return res;
 
     res.horario = (await pool.query(
@@ -212,10 +223,17 @@ function periodosCierre(cierres) {
     return out;
 }
 
+// Un trocito fijo por persona para los UID: el estándar pide que cada UID sea
+// único en todo el mundo, y los de turnos, cierres y clases (cierre-20261012…)
+// serían iguales en los calendarios de dos compañeros.
+export const huellaUsuario = (userId) => crypto.createHash('sha256').update(`aim-ical:${userId}`).digest('hex').slice(0, 10);
+
 // El archivo .ics entero. `ahora` se pasa para que el DTSTAMP no cambie en cada
 // petición (se redondea a la hora): así una petición repetida da lo mismo.
-export function generarIcs({ nombreCalendario, clases = [], eventos = [], cierres = {}, turnos = [], desde, hasta, ahora = new Date() }) {
+export function generarIcs({ nombreCalendario, userId = null, clases = [], eventos = [], cierres = {}, turnos = [], desde, hasta, ahora = new Date() }) {
     const dtstamp = sello(new Date(Math.floor(ahora.getTime() / 3600_000) * 3600_000));
+    // Final de cada UID: '-<huella de la persona>@aimeducation.es'.
+    const arroba = `${userId != null ? `-${huellaUsuario(userId)}` : ''}@${DOMINIO_UID}`;
     const L = [
         'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//AIM Education//Mi dia//ES',
         'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
@@ -234,7 +252,7 @@ export function generarIcs({ nombreCalendario, clases = [], eventos = [], cierre
 
     for (const p of periodosCierre(cierres)) {
         evento([
-            `UID:cierre-${fechaIcs(p.desde)}@${DOMINIO_UID}`,
+            `UID:cierre-${fechaIcs(p.desde)}${arroba}`,
             ...diaEntero(p.desde, p.hasta),
             `SUMMARY:${escaparTexto(`Cerrado: ${p.nombre}`)}`,
             `DESCRIPTION:${escaparTexto('El centro está cerrado: no hay clases.')}`,
@@ -245,7 +263,7 @@ export function generarIcs({ nombreCalendario, clases = [], eventos = [], cierre
         const ini = leerHora(c.hora);
         if (!ini) continue;
         evento([
-            `UID:clase-${c.grupoId}-${fechaIcs(c.fecha)}T${ini.replace(':', '')}@${DOMINIO_UID}`,
+            `UID:clase-${c.grupoId}-${fechaIcs(c.fecha)}T${ini.replace(':', '')}${arroba}`,
             ...conHora(c.fecha, ini, leerHora(c.horaFin)),
             `SUMMARY:${escaparTexto(c.grupo || 'Clase')}`,
             c.actividad && `DESCRIPTION:${escaparTexto(`Clase de ${c.actividad}`)}`,
@@ -260,13 +278,13 @@ export function generarIcs({ nombreCalendario, clases = [], eventos = [], cierre
         if (!ini) {
             // Sin hora que se entienda: de día entero, todos los días que dura.
             const fin = e.fin && e.fin > e.fecha ? e.fin : e.fecha;
-            evento([`UID:evento-${e.id}@${DOMINIO_UID}`, ...diaEntero(e.fecha, fin),
+            evento([`UID:evento-${e.id}${arroba}`, ...diaEntero(e.fecha, fin),
                 `SUMMARY:${escaparTexto(e.title || 'Evento')}`, descripcion, lugar, 'CATEGORIES:Evento']);
             continue;
         }
         // Con hora: uno por cada día que dura, a la misma hora.
         for (const x of eventosEnRango([e], desde || e.fecha, hasta || '9999-12-31')) {
-            evento([`UID:evento-${e.id}-${fechaIcs(x.dia)}@${DOMINIO_UID}`, ...conHora(x.dia, ini, leerHora(e.end_time)),
+            evento([`UID:evento-${e.id}-${fechaIcs(x.dia)}${arroba}`, ...conHora(x.dia, ini, leerHora(e.end_time)),
                 `SUMMARY:${escaparTexto(e.title || 'Evento')}`, descripcion, lugar, 'CATEGORIES:Evento']);
         }
     }
@@ -274,7 +292,7 @@ export function generarIcs({ nombreCalendario, clases = [], eventos = [], cierre
         const ini = leerHora(t.entrada);
         if (!ini) continue;
         evento([
-            `UID:${t.uid}@${DOMINIO_UID}`,
+            `UID:${t.uid}${arroba}`,
             ...conHora(t.fecha, ini, leerHora(t.salida)),
             `SUMMARY:${escaparTexto(t.it ? 'Equipo IT (horas planificadas)' : t.tramo === 2 ? 'Turno de trabajo (tarde)' : 'Turno de trabajo')}`,
             `DESCRIPTION:${escaparTexto('Tu horario de trabajo: lo que tienes que fichar.')}`,
@@ -334,17 +352,47 @@ export function crearRouterCalendarioMovil({ pool, authenticateSession, requireA
     // El calendario en sí. Sin sesión: lo piden los servidores de Google, Apple…
     // Va bajo /api para que no le afecte la redirección al dominio principal;
     // /cal/… es por si alguien lo escribe a mano.
-    const fallos = new Map(); // ip → [marcas] de claves que no existen
+    //
+    // Freno para quien prueba claves al azar: como mucho 30 claves que no existen
+    // por IP y hora. Solo cuentan (y solo se frenan) las claves que no existen: un
+    // enlace bueno se sirve siempre. Si no, los 404 de un enlace ya cambiado, que
+    // Google sigue pidiendo, dejarían sin calendario a los compañeros que Google
+    // lee desde la misma IP.
+    const fallos = new Map(); // ip → [marcas] de claves que no existen (las de la última hora)
+    const HORA_MS = 3600_000, MAX_FALLOS = 30, MAX_IPS = 5000;
+    let ultimaLimpieza = Date.now();
+    const recientesDe = (ip, ahora) => (fallos.get(ip) || []).filter(t => ahora - t < HORA_MS);
+    // Se tiran las IP sin fallos en la última hora (cada 10 minutos, o antes si
+    // hay demasiadas) y, si aun así son muchas, las más antiguas: el mapa no crece
+    // sin fin aunque alguien vaya cambiando de IP.
+    const limpiar = (ahora) => {
+        if (fallos.size <= MAX_IPS && ahora - ultimaLimpieza < 600_000) return;
+        ultimaLimpieza = ahora;
+        for (const [ip, marcas] of fallos) if (ahora - marcas[marcas.length - 1] >= HORA_MS) fallos.delete(ip);
+        for (const ip of fallos.keys()) { if (fallos.size <= MAX_IPS) break; fallos.delete(ip); }
+    };
+    // La IP de quien pide: en Heroku, la última de X-Forwarded-For (la que pone el
+    // router de Heroku; las de antes las escribe el que pide y se pueden falsear).
+    const ipDe = (req) => {
+        const xff = String(req.headers['x-forwarded-for'] || '').split(',').map(s => s.trim()).filter(Boolean);
+        return xff.length ? xff[xff.length - 1] : String(req.socket?.remoteAddress || '');
+    };
     const NO_ENCONTRADO = 'No existe este calendario.';
     router.get(['/api/cal/:archivo', '/cal/:archivo'], async (req, res) => {
         res.set('X-Robots-Tag', 'noindex, nofollow');
         const m = String(req.params.archivo || '').match(/^([A-Za-z0-9_-]+)\.ics$/);
         const token = m && TOKEN_OK.test(m[1]) ? m[1] : null;
-        const ip = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim();
-        const ahora = Date.now();
-        const recientes = (fallos.get(ip) || []).filter(t => ahora - t < 3600_000);
-        if (recientes.length >= 30) return res.status(429).type('text/plain').send('Demasiadas peticiones.');
-        const fallo = () => { fallos.set(ip, [...recientes, ahora]); return res.status(404).type('text/plain').send(NO_ENCONTRADO); };
+        // Una clave que no existe: cuenta para el freno de esa IP.
+        const fallo = () => {
+            const ip = ipDe(req), ahora = Date.now();
+            const recientes = recientesDe(ip, ahora);
+            if (recientes.length >= MAX_FALLOS) return res.status(429).type('text/plain').send('Demasiadas peticiones.');
+            fallos.delete(ip); // al final del mapa: las primeras son las más antiguas
+            fallos.set(ip, [...recientes, ahora]);
+            limpiar(ahora);
+            return res.status(404).type('text/plain').send(NO_ENCONTRADO);
+        };
+        // Con el formato mal ni se busca en la base.
         if (!token) return fallo();
         try {
             const r = await pool.query(
@@ -359,10 +407,12 @@ export function crearRouterCalendarioMovil({ pool, authenticateSession, requireA
             if (!u || !rolEfectivo(u.role, u.dev_role, u.rango)) return res.status(404).type('text/plain').send(NO_ENCONTRADO);
             if (bajasDeCuenta && (await bajasDeCuenta())[userId]) return res.status(404).type('text/plain').send(NO_ENCONTRADO);
 
-            const [desde, hasta] = ventanaCalendario(hoy());
-            const a = await agendaEnRango(pool, { clubId, userId, desde, hasta, turnos: true });
+            const dia = hoy();
+            const [desde, hasta] = ventanaCalendario(dia);
+            // Las clases, solo hasta el final de este curso (ver agendaEnRango).
+            const a = await agendaEnRango(pool, { clubId, userId, desde, hasta, turnos: true, finClases: finCurso(dia) });
             const ics = generarIcs({
-                nombreCalendario: 'AIM · Mi agenda', desde, hasta,
+                nombreCalendario: 'AIM · Mi agenda', userId, desde, hasta,
                 clases: a.clases, eventos: a.eventos, cierres: a.cierres, turnos: turnosEnRango(a, desde, hasta),
             });
             res.set('Content-Type', 'text/calendar; charset=utf-8');
