@@ -7584,18 +7584,25 @@ app.get('/api/admin/billing/cargos/prevision', authenticateSession, requireAdmin
 
 // Los cargos pendientes en PDF (ticket #231), con el mismo mes y el mismo
 // buscador que se estén viendo en pantalla: lo que se ve es lo que se exporta.
+// Con ?estado=impagado o ?estado=exento sale la lista de impagados tras la baja
+// o la de meses exentos (#393), con su motivo y sin previsión ni campamento.
+const LISTAS_CARGOS_PDF = {
+    impagado: { titulo: 'Impagados tras la baja', vacio: 'No hay ningún impagado con estos filtros.' },
+    exento: { titulo: 'Meses exentos', vacio: 'No hay ningún mes exento con estos filtros.' },
+};
 app.get('/api/admin/billing/cargos/export.pdf', authenticateSession, requireAdmin, async (req, res) => {
     const todos = req.query.todos === 'true' || req.query.todos === '1';
     const q = String(req.query.q || '').trim();
+    const estadoLista = LISTAS_CARGOS_PDF[req.query.estado] ? String(req.query.estado) : null;
     try {
         const mes = todos ? null : normalizaMes(req.query.mes);
         const vals = [];
-        const where = [`c.estado = 'pendiente'`, 'c.recibo_id IS NULL'];
+        const where = [estadoLista ? `c.estado = '${estadoLista}'` : `c.estado = 'pendiente'`, 'c.recibo_id IS NULL'];
         if (!todos) { vals.push(mes); where.push(`c.mes = $${vals.length}::date`); }
         const filtro = filtroNombreSQL(q, `(u.name || ' ' || COALESCE(u.surname,''))`, vals);
         if (filtro) where.push(filtro);
         const lista = async (extra, valsExtra = []) => (await pool.query(
-            `SELECT c.concepto, c.descripcion, c.mes::text AS mes, c.precio, c.descuento_pct, c.origen,
+            `SELECT c.concepto, c.descripcion, c.mes::text AS mes, c.precio, c.descuento_pct, c.origen, c.anulado_motivo,
                     TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno
              FROM aim_cargos c JOIN users u ON u.user_id = c.cliente_id
              WHERE ${[...where, ...extra].join(' AND ')}
@@ -7605,13 +7612,14 @@ app.get('/api/admin/billing/cargos/export.pdf', authenticateSession, requireAdmi
             mes: c.concepto === CONCEPTO_INSCRIPCION || c.origen === 'inscripcion' ? null : c.mes,
             precio: Number(c.precio), descuentoPct: Number(c.descuento_pct),
             base: r2Server(Number(c.precio) * (1 - Number(c.descuento_pct) / 100)),
+            motivo: estadoLista ? c.anulado_motivo : null,
         }));
         const cargos = await lista([]);
         // Los del campamento van aparte y no dependen del mes elegido (#248).
-        const campamento = todos ? [] : await lista([`c.origen = 'campamento'`, `c.mes <> $${vals.length + 1}::date`], [mes]);
+        const campamento = todos || estadoLista ? [] : await lista([`c.origen = 'campamento'`, `c.mes <> $${vals.length + 1}::date`], [mes]);
         // Previsión del mes elegido: lo que se cobrará y aún no está generado.
         let prevision = [];
-        if (!todos) {
+        if (!todos && !estadoLista) {
             const temp = await pool.query('SELECT id, nombre FROM aim_temporadas WHERE activa = true');
             if (temp.rowCount) {
                 const rango = mesesDeTemporada(temp.rows[0].nombre);
@@ -7630,9 +7638,10 @@ app.get('/api/admin/billing/cargos/export.pdf', authenticateSession, requireAdmi
         }
         const suma = (l) => r2Server(l.reduce((s, x) => s + x.base, 0));
         res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `inline; filename="cargos-pendientes-${todos ? 'todos' : mes.slice(0, 7)}.pdf"`);
+        res.setHeader('Content-Disposition', `inline; filename="${estadoLista ? `cargos-${estadoLista}s` : 'cargos-pendientes'}-${todos ? 'todos' : mes.slice(0, 7)}.pdf"`);
         generarPendientesPdf({
             empresa: EMPRESA_TICKET,
+            ...(estadoLista ? LISTAS_CARGOS_PDF[estadoLista] : {}),
             periodo: todos ? 'Todos los meses' : nombreMesLargo(mes),
             filtros: q ? [`Buscando "${q}"`] : [],
             cargos, campamento, prevision,
@@ -7742,6 +7751,18 @@ async function generarCargosDeMatricula({ userId, claseRef, actividad, temporada
     // Ticket #289: al apuntarse, la mensualidad es la del mes en curso si aún no
     // se ha pasado el día de corte; a partir de ese día, la del mes siguiente.
     const m = normalizaMes(mes || mesParaAlta());
+    // Ticket #389: si ese mes se le quitó la mensualidad a mano (estado
+    // 'quitado') y ahora se le vuelve a apuntar, vuelve a estar pendiente tal
+    // como estaba. Lo de abajo ya no la duplica.
+    const vuelven = await cliente.query(
+        `UPDATE aim_cargos c SET estado = 'pendiente', anulado_motivo = NULL
+         FROM aim_conceptos_temporada ct
+         WHERE c.cliente_id = $1::uuid AND c.mes = $2::date AND c.estado = 'quitado' AND c.recibo_id IS NULL
+           AND c.concepto = ct.concepto AND ct.temporada_id = $4::int
+           AND ( (ct.target_tipo = 'clase' AND ct.target_ref = $5::uuid) OR (ct.target_tipo = 'actividad' AND ct.target_actividad = $3::text) )
+         RETURNING c.id`,
+        [userId, m, actividad || null, temporadaId, claseRef || null]
+    );
     const r = await cliente.query(
         `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, target_ref, target_nombre, actividad, estado)
          SELECT $1::uuid, ct.concepto, $2::date, p.descripcion, p.tipo, p.precio, p.iva_pct, $3::numeric,
@@ -7757,7 +7778,7 @@ async function generarCargosDeMatricula({ userId, claseRef, actividad, temporada
          RETURNING id`,
         [userId, m, descuentoPct, actividad || null, temporadaId, claseRef || null]
     );
-    return r.rowCount;
+    return r.rowCount + vuelven.rowCount;
 }
 
 // ── Ajustes de facturación (ticket #289) ──
@@ -7889,18 +7910,99 @@ app.get('/api/admin/billing/cargos', authenticateSession, requireAdmin, async (r
             precio: Number(c.precio), ivaPct: Number(c.iva_pct), descuentoPct: Number(c.descuento_pct),
             importe: c.importe == null ? null : Number(c.importe), reciboId: c.recibo_id, estado: c.estado,
             origen: c.origen,
+            // Por qué está impagado, exento o quitado (#393, #389).
+            motivo: c.anulado_motivo || null,
         })));
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Borrar un cargo pendiente (aún no cobrado / sin recibo).
+// Quién y cuándo, para dejarlo escrito en el motivo de un cargo (no hay columna
+// para ello): «Ana López, 07/10/2026».
+const firmaCargo = (req) => {
+    const quien = `${req.userSession?.firstName || ''} ${req.userSession?.lastName || ''}`.trim() || 'secretaría';
+    const [y, m, d] = hoyMadrid().split('-');
+    return `${quien}, ${d}/${m}/${y}`;
+};
+
+// Por qué no se ha podido tocar un cargo pendiente: ya no existe, ya está
+// cobrado (o cerrado) o la familia lo está pagando por internet ahora mismo.
+async function motivoCargoIntocable(id, res) {
+    const c = (await pool.query(`SELECT c.estado, c.recibo_id, ${SQL_PAGANDO_DESDE} AS pagando FROM aim_cargos c WHERE c.id = $1`, [id])).rows[0];
+    if (!c) return res.status(404).json({ error: 'Ese cargo ya no existe.' });
+    if (c.pagando) return res.status(409).json({ error: 'La familia lo está pagando por internet ahora mismo: no se puede cambiar.' });
+    return res.status(409).json({ error: 'Ese cargo ya no está pendiente (cobrado, exento o marcado antes).' });
+}
+
+// Quitar un cargo pendiente (aún no cobrado / sin recibo).
+// Ticket #389: una mensualidad generada no se borra, se marca 'quitado'. Si se
+// borrase, la generación automática (cada 45 s) la volvería a crear mientras la
+// ficha siga vigente ese mes; marcada, el NOT EXISTS y el índice único la frenan
+// y ya no vuelve ese mes. La inscripción no entra: debeInscripcion la contaría
+// como pagada. Los cargos a mano (y el resto) se siguen borrando como siempre.
 app.delete('/api/admin/billing/cargos/:id', authenticateSession, requireAdmin, async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Cargo no válido.' });
+    try {
+        const q = await pool.query(
+            `UPDATE aim_cargos c SET estado = 'quitado', anulado_motivo = $2
+             WHERE c.id = $1 AND c.estado = 'pendiente' AND c.recibo_id IS NULL
+               AND c.origen = 'generado' AND c.concepto <> $3 AND ${SQL_NO_RESERVADO}
+             RETURNING id`,
+            [id, `Quitado a mano (${firmaCargo(req)})`, CONCEPTO_INSCRIPCION]
+        );
+        if (q.rowCount) return res.json({ success: true, quitado: true });
+        const r = await pool.query(
+            `DELETE FROM aim_cargos c WHERE c.id = $1 AND c.estado = 'pendiente' AND c.recibo_id IS NULL
+               AND (c.origen <> 'generado' OR c.concepto = $2) AND ${SQL_NO_RESERVADO} RETURNING id`,
+            [id, CONCEPTO_INSCRIPCION]
+        );
+        if (r.rowCount === 0) return motivoCargoIntocable(id, res);
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Ticket #393: dos salidas para un cargo pendiente que no se va a cobrar.
+//  · «Impagado tras la baja»: el alumno se dio de baja y no paga ese mes. Sigue
+//    siendo deuda, pero solo interna: deja de salirle a la familia (panel,
+//    campanita, avisos, cesta del TPV) y pasa a la lista de Impagados. Si viene
+//    a pagar, se vuelve a poner pendiente.
+//  · «Eximir»: ese mes no se cobra por un motivo justificado (p. ej. una
+//    operación). Queda 'exento' con el motivo, sin factura, como el 100% de
+//    descuento del TPV, y no se vuelve a generar.
+// Solo cargos pendientes, sin recibo y que la familia no esté pagando en ese
+// momento: nada de esto toca facturas ni Verifactu.
+const MARCAS_CARGO = {
+    impagado: { estado: 'impagado', ok: 'Marcado como impagado tras la baja.' },
+    eximir: { estado: 'exento', ok: 'Mes eximido.' },
+};
+for (const [accion, marca] of Object.entries(MARCAS_CARGO)) app.post(`/api/admin/billing/cargos/:id/${accion}`, authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const id = Number(req.params.id);
+    const motivo = String(req.body?.motivo || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Cargo no válido.' });
+    if (motivo.length < 3) return res.status(400).json({ error: 'Escribe el motivo.' });
     try {
         const r = await pool.query(
-            `DELETE FROM aim_cargos WHERE id = $1 AND estado = 'pendiente' AND recibo_id IS NULL RETURNING id`,
-            [req.params.id]
-        );
-        if (r.rowCount === 0) return res.status(409).json({ error: 'Solo se pueden borrar cargos pendientes sin recibo.' });
+            `UPDATE aim_cargos c SET estado = $2, anulado_motivo = $3
+             WHERE c.id = $1 AND c.estado = 'pendiente' AND c.recibo_id IS NULL AND ${SQL_PAGANDO_DESDE} IS NULL
+             RETURNING id`, [id, marca.estado, `${motivo} (${firmaCargo(req)})`]);
+        if (!r.rowCount) return motivoCargoIntocable(id, res);
+        res.json({ success: true, estado: marca.estado, mensaje: marca.ok });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Deshacer lo anterior (#393): un impagado (o un mes eximido por error) vuelve a
+// estar pendiente y la familia lo vuelve a ver para pagarlo.
+app.post('/api/admin/billing/cargos/:id/pendiente', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Cargo no válido.' });
+    try {
+        const r = await pool.query(
+            `UPDATE aim_cargos SET estado = 'pendiente', anulado_motivo = NULL
+             WHERE id = $1 AND recibo_id IS NULL
+               -- El 100% de descuento cerrado en el TPV no se reabre: es un cobro de 0 €.
+               AND (estado = 'impagado' OR (estado = 'exento' AND anulado_motivo IS DISTINCT FROM 'Descuento del 100%'))
+             RETURNING id`, [id]);
+        if (!r.rowCount) return res.status(409).json({ error: 'Ese cargo no está impagado ni exento.' });
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -13501,6 +13603,25 @@ app.get('/api/admin/alumnos/:id/ficha360', authenticateSession, requirePermiso('
         const pendientes = calcP.detalle.map(d => ({
             descripcion: d.descripcion, mes: d.mes, actividad: pend.rows.find(c => c.id === d.id)?.actividad || null, total: d.total,
         }));
+        // Lo que no se le va a cobrar (#393): impagados tras la baja (deuda
+        // interna, la familia ya no los ve) y meses exentos, cada uno con su motivo.
+        const cerr = await pool.query(
+            `SELECT c.* FROM aim_cargos c
+             WHERE c.cliente_id = $1 AND c.estado IN ('impagado', 'exento') AND c.recibo_id IS NULL
+             ORDER BY c.mes DESC, c.id DESC LIMIT 100`, [id]);
+        const noCobrados = (estado) => {
+            const filas = cerr.rows.filter(c => c.estado === estado);
+            const calc = calcularRecibo(filas.map(cargoParaMotor));
+            return {
+                total: calc.total,
+                lista: calc.detalle.map(d => {
+                    const c = filas.find(x => x.id === d.id);
+                    return { id: d.id, descripcion: d.descripcion, mes: c?.concepto === CONCEPTO_INSCRIPCION || c?.origen === 'inscripcion' ? null : c?.mes, actividad: c?.actividad || null, total: d.total, motivo: c?.anulado_motivo || null };
+                }),
+            };
+        };
+        const impagados = noCobrados('impagado');
+        const exentos = noCobrados('exento');
 
         const rq = await pool.query(
             `SELECT rc.id, rc.numero, rc.serie, rc.tipo, rc.fecha, rc.importe, rc.estado, rc.medio_pago,
@@ -13531,6 +13652,8 @@ app.get('/api/admin/alumnos/:id/ficha360', authenticateSession, requirePermiso('
             asistencia: { resumen, historico: asisHist.rows },
             economico: {
                 pendientes, totalPendiente: calcP.total,
+                impagados: impagados.lista, totalImpagado: impagados.total,
+                exentos: exentos.lista, totalExento: exentos.total,
                 facturas,
             },
             pagadores: await pagadoresDe(id),

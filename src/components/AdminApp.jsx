@@ -4898,6 +4898,30 @@ function MesAnioInput({ value, onChange, desdeAnios = 5, hastaAnios = 10, style 
 
 // Apartado único de cargos pendientes (ticket #231): se ven y exportan los cargos
 // pendientes de un mes concreto o de todos, separado de la generación.
+// Ticket #393: además, las listas de lo que no se va a cobrar: los impagados tras
+// la baja (deuda interna, la familia ya no los ve) y los meses exentos.
+const VISTAS_CARGOS = {
+  pendientes: { titulo: 'Pendientes' },
+  impagado: { titulo: 'Impagados tras la baja', corto: 'impagados', vacio: 'No hay ningún impagado tras la baja.' },
+  exento: { titulo: 'Exentos', corto: 'exentos', vacio: 'No hay ningún mes exento.' },
+};
+// Lo que se pregunta antes de marcar un cargo (#393): el motivo es obligatorio.
+const MARCAR_CARGO = {
+  impagado: {
+    titulo: 'Impagado tras la baja',
+    texto: 'Deja de salirle a la familia para pagar (panel, avisos y TPV) y pasa a la lista de Impagados. Si viene a pagarlo, se vuelve a poner pendiente desde allí.',
+    ejemplo: 'Ej.: se dio de baja el día 12 y vino dos días; no paga el mes.',
+    boton: 'Marcar impagado',
+  },
+  eximir: {
+    titulo: 'Eximir el mes',
+    texto: 'Ese mes no se le cobra ni se factura, y no se vuelve a generar. Queda en la lista de Exentos con el motivo.',
+    ejemplo: 'Ej.: Ausencia justificada: operación.',
+    boton: 'Eximir',
+  },
+};
+const baseCargo = (c) => c.precio * (1 - (c.descuentoPct || 0) / 100);
+
 function BillingPendientes({ activa, showToast }) {
   const [mes, setMes] = useState('');
   const [todos, setTodos] = useState(false);   // ver los pendientes de todos los meses
@@ -4906,6 +4930,11 @@ function BillingPendientes({ activa, showToast }) {
   const [cargando, setCargando] = useState(false);
   const [q, setQ] = useState('');                 // buscador de alumnos
   const [campCargos, setCampCargos] = useState([]); // pendientes de campamento (#248), aparte del mes
+  const [vista, setVista] = useState('pendientes'); // 'pendientes' | 'impagado' | 'exento' (#393)
+  const [cerrados, setCerrados] = useState({ impagado: [], exento: [] }); // de todos los meses
+  const [marcar, setMarcar] = useState(null);     // { cargo, accion: 'impagado' | 'eximir' }
+  const [motivo, setMotivo] = useState('');
+  const [guardando, setGuardando] = useState(false);
 
   useEffect(() => {
     fetch('/api/admin/billing/mes-a-generar', { credentials: 'include' })
@@ -4940,18 +4969,61 @@ function BillingPendientes({ activa, showToast }) {
   }, [todos, mesIso]);
   useEffect(() => { cargar(); }, [cargar]);
 
+  // Impagados y exentos (#393): son listas internas y van siempre de todos los
+  // meses, que una deuda de hace tres meses no se pierda por el filtro de mes.
+  const cargarCerrados = useCallback(async () => {
+    try {
+      const [ri, re] = await Promise.all(['impagado', 'exento'].map(e =>
+        fetch(`/api/admin/billing/cargos?estado=${e}`, { credentials: 'include', cache: 'no-store' })));
+      setCerrados({ impagado: ri.ok ? await ri.json() : [], exento: re.ok ? await re.json() : [] });
+    } catch { /* noop */ }
+  }, []);
+  useEffect(() => { cargarCerrados(); }, [cargarCerrados]);
+
   const exportarPdfUrl = () => {
     const p = new URLSearchParams();
-    if (todos) p.set('todos', 'true'); else p.set('mes', mesIso);
+    if (vista !== 'pendientes') { p.set('estado', vista); p.set('todos', 'true'); }
+    else if (todos) p.set('todos', 'true'); else p.set('mes', mesIso);
     if (q.trim()) p.set('q', q.trim());
     return `/api/admin/billing/cargos/export.pdf?${p}`;
   };
 
+  // Ticket #389: una mensualidad generada no se borra, se queda quitada, para que
+  // la generación automática no la vuelva a poner ese mes.
   async function borrarCargo(id) {
-    if (!window.confirm('¿Borrar este cargo pendiente?')) return;
+    if (!window.confirm('¿Quitar este cargo pendiente?\n\nSi es una mensualidad, ya no se vuelve a generar ese mes (salvo que se le apunte otra vez a esa clase este mismo mes).')) return;
     const r = await fetch(`/api/admin/billing/cargos/${id}`, { method: 'DELETE', credentials: 'include' });
-    if (r.ok) { await cargar(); showToast?.('Cargo borrado.'); }
-    else { const d = await r.json(); alert(d.error || 'No se pudo borrar.'); }
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) { await cargar(); showToast?.(d.quitado ? 'Cargo quitado: no se vuelve a generar este mes.' : 'Cargo borrado.'); }
+    else alert(d.error || 'No se pudo quitar.');
+  }
+
+  function abrirMarcar(cargo, accion) { setMotivo(''); setMarcar({ cargo, accion }); }
+  async function confirmarMarcar(e) {
+    e.preventDefault();
+    if (!marcar || motivo.trim().length < 3) return;
+    setGuardando(true);
+    try {
+      const r = await fetch(`/api/admin/billing/cargos/${marcar.cargo.id}/${marcar.accion}`, {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ motivo: motivo.trim() }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(d.error || 'No se pudo guardar.'); return; }
+      setMarcar(null);
+      showToast?.(d.mensaje || 'Hecho.');
+      await Promise.all([cargar(), cargarCerrados()]);
+    } catch { alert('Error de conexión.'); }
+    finally { setGuardando(false); }
+  }
+
+  async function volverAPendiente(c) {
+    if (!window.confirm(`¿Volver a poner pendiente «${c.descripcion}» de ${c.nombre}? La familia lo volverá a ver para pagarlo.`)) return;
+    const r = await fetch(`/api/admin/billing/cargos/${c.id}/pendiente`, { method: 'POST', credentials: 'include' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { alert(d.error || 'No se pudo cambiar.'); return; }
+    showToast?.('Vuelve a estar pendiente.');
+    await Promise.all([cargar(), cargarCerrados()]);
   }
 
   // Buscador de alumnos: filtra en vivo por nombre y apellidos lo que ya se ha
@@ -4960,80 +5032,160 @@ function BillingPendientes({ activa, showToast }) {
   const cargosF = cargos.filter(coincide);
   const previsionF = prevision.filter(coincide);
   const campF = campCargos.filter(coincide);
+  const cerradosF = vista === 'pendientes' ? [] : (cerrados[vista] || []).filter(coincide);
 
   function exportarCargos() {
-    if (!cargosF.length && !previsionF.length && !campF.length) return;
     const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const fila = (c, tipo) => {
-      const base = c.precio * (1 - (c.descuentoPct || 0) / 100);
-      return [`${c.nombre} ${c.apellidos || ''}`.trim(), c.descripcion, sinMes(c) ? '' : mesLargo(c.mes || mesIso), tipo, c.precio, `${c.descuentoPct || 0}%`, base.toFixed(2)].map(esc).join(';');
+    const descargar = (lineas, nombre) => {
+      const csv = '﻿' + lineas.join('\r\n');
+      const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = `${nombre}${q.trim() ? '-' + q.trim() : ''}.csv`; a.click();
+      URL.revokeObjectURL(url);
     };
+    if (vista !== 'pendientes') {
+      if (!cerradosF.length) return;
+      const filas = cerradosF.map(c => [`${c.nombre} ${c.apellidos || ''}`.trim(), c.descripcion, sinMes(c) ? '' : mesLargo(c.mes), c.precio, `${c.descuentoPct || 0}%`, baseCargo(c).toFixed(2), c.motivo || ''].map(esc).join(';'));
+      descargar(['Alumno;Concepto;Mes;Precio;Dto.;Base;Motivo'].concat(filas), `cargos-${VISTAS_CARGOS[vista].corto}`);
+      return;
+    }
+    if (!cargosF.length && !previsionF.length && !campF.length) return;
+    const fila = (c, tipo) => [`${c.nombre} ${c.apellidos || ''}`.trim(), c.descripcion, sinMes(c) ? '' : mesLargo(c.mes || mesIso), tipo, c.precio, `${c.descuentoPct || 0}%`, baseCargo(c).toFixed(2)].map(esc).join(';');
     const filas = [...cargosF.map(c => fila(c, 'Pendiente')), ...campF.map(c => fila(c, 'Campamento')), ...previsionF.map(c => fila(c, 'Previsión'))];
-    const csv = '﻿' + ['Alumno;Concepto;Mes;Tipo;Precio;Dto.;Base'].concat(filas).join('\r\n');
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
-    const a = document.createElement('a');
-    a.href = url; a.download = `cargos-pendientes-${todos ? 'todos' : mes}${q.trim() ? '-' + q.trim() : ''}.csv`; a.click();
-    URL.revokeObjectURL(url);
+    descargar(['Alumno;Concepto;Mes;Tipo;Precio;Dto.;Base'].concat(filas), `cargos-pendientes-${todos ? 'todos' : mes}`);
   }
 
   if (!activa) return null;
-  const totalPendiente = cargosF.reduce((s, c) => s + c.precio * (1 - (c.descuentoPct || 0) / 100), 0);
-  const totalPrevision = previsionF.reduce((s, c) => s + c.precio * (1 - (c.descuentoPct || 0) / 100), 0);
+  const totalPendiente = cargosF.reduce((s, c) => s + baseCargo(c), 0);
+  const totalPrevision = previsionF.reduce((s, c) => s + baseCargo(c), 0);
+  const totalCerrados = cerradosF.reduce((s, c) => s + baseCargo(c), 0);
+  const sumaDe = (l) => l.reduce((s, c) => s + baseCargo(c), 0);
+
+  // Acciones de un cargo pendiente: impagado tras la baja, eximir el mes (#393)
+  // y la papelera de siempre (#389: quitar).
+  const acciones = (c) => (
+    <div className="row-actions" style={{ justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+      <button className="btn btn-sm btn-outline" style={{ padding: '5px 10px' }} onClick={() => abrirMarcar(c, 'impagado')}
+        title="Se dio de baja y no paga este mes: sale de lo que ve la familia y queda como deuda interna">Impagado (baja)</button>
+      <button className="btn btn-sm btn-outline" style={{ padding: '5px 10px' }} onClick={() => abrirMarcar(c, 'eximir')}
+        title="No se cobra este mes por un motivo justificado">Eximir</button>
+      <button className="icon-btn danger" onClick={() => borrarCargo(c.id)} aria-label="Quitar" title="Quitar el cargo"><I.Trash /></button>
+    </div>
+  );
+  const colsPend = todos ? '1.5fr 1.5fr 110px 80px 60px 230px' : '1.5fr 1.5fr 80px 60px 230px';
+  const colsCerr = '1.3fr 1.3fr 120px 80px 1.6fr 150px';
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
-      <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>
-        Todos los cargos pendientes de cobro. Los cargos del mes se generan solos, sin darle a ningún botón.
-        Elige un mes o mira los de todos los meses, y expórtalos a CSV o PDF.
-        En un mes futuro de la temporada verás además la <b>previsión</b>: lo que se cobrará ese mes, todavía sin generar (no es deuda).
-      </p>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {Object.entries(VISTAS_CARGOS).map(([id, v]) => (
+          <button key={id} className={`filter-pill ${vista === id ? 'is-active' : ''}`} onClick={() => setVista(id)}>
+            {v.titulo}{id !== 'pendientes' ? ` · ${cerrados[id].length}` : ''}
+          </button>
+        ))}
+      </div>
+
+      {vista === 'pendientes' ? (
+        <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>
+          Todos los cargos pendientes de cobro. Los cargos del mes se generan solos, sin darle a ningún botón.
+          Elige un mes o mira los de todos los meses, y expórtalos a CSV o PDF.
+          En un mes futuro de la temporada verás además la <b>previsión</b>: lo que se cobrará ese mes, todavía sin generar (no es deuda).
+          Si alguien se da de baja y no paga el mes, márcalo como <b>impagado</b>; si un mes no se le cobra por un motivo justificado, <b>exímelo</b>.
+        </p>
+      ) : vista === 'impagado' ? (
+        <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>
+          Mensualidades de alumnos que se dieron de baja y no las pagaron. Es deuda interna: la familia ya no las ve ni las puede pagar por internet.
+          Si vienen a pagar, <b>vuelve a ponerla pendiente</b> y se cobra como siempre. Salen todas, de todos los meses.
+        </p>
+      ) : (
+        <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>
+          Meses que no se cobran, con su motivo (una ausencia justificada, el 100% de descuento del TPV…). No llevan factura ni se vuelven a generar.
+          Salen todos, de todos los meses.
+        </p>
+      )}
 
       <div style={{ maxWidth: 420 }}>
         <div className="search-input"><I.Search /><input placeholder="Buscar alumno..." value={q} onChange={e => setQ(e.target.value)} />{q && <button type="button" className="icon-btn" onClick={() => setQ('')} aria-label="Limpiar"><I.X /></button>}</div>
       </div>
 
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '14px 16px' }}>
-        <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, fontWeight: 700, color: 'var(--ink-2)', cursor: 'pointer' }}>
-          <input type="checkbox" checked={todos} onChange={e => setTodos(e.target.checked)} style={{ accentColor: 'var(--purple)' }} />
-          Todos los meses
-        </label>
-        {!todos && (
+        {vista === 'pendientes' ? (
           <>
-            <label style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>Mes</label>
-            <MesAnioInput value={mes} onChange={setMes} />
-            <span style={{ fontSize: 13, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{mesLargo(mesIso)}</span>
+            <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, fontWeight: 700, color: 'var(--ink-2)', cursor: 'pointer' }}>
+              <input type="checkbox" checked={todos} onChange={e => setTodos(e.target.checked)} style={{ accentColor: 'var(--purple)' }} />
+              Todos los meses
+            </label>
+            {!todos && (
+              <>
+                <label style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>Mes</label>
+                <MesAnioInput value={mes} onChange={setMes} />
+                <span style={{ fontSize: 13, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{mesLargo(mesIso)}</span>
+              </>
+            )}
           </>
+        ) : (
+          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>{VISTAS_CARGOS[vista].titulo} · todos los meses</span>
         )}
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, alignItems: 'center' }}>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--ink-2)' }}>
-            {cargosF.length} cargos · base {eur(totalPendiente)}{previsionF.length > 0 ? ` · +${previsionF.length} en previsión` : ''}
+            {vista === 'pendientes'
+              ? <>{cargosF.length} cargos · base {eur(totalPendiente)}{previsionF.length > 0 ? ` · +${previsionF.length} en previsión` : ''}</>
+              : <>{cerradosF.length} cargo{cerradosF.length !== 1 ? 's' : ''} · {vista === 'impagado' ? 'deuda' : 'sin cobrar'} {eur(totalCerrados)}</>}
           </span>
-          <button className="btn btn-sm btn-outline" onClick={exportarCargos} disabled={!cargosF.length && !previsionF.length && !campF.length}><I.Download /> CSV</button>
+          <button className="btn btn-sm btn-outline" onClick={exportarCargos}
+            disabled={vista === 'pendientes' ? (!cargosF.length && !previsionF.length && !campF.length) : !cerradosF.length}><I.Download /> CSV</button>
           <a className="btn btn-sm btn-outline" href={exportarPdfUrl()} target="_blank" rel="noopener noreferrer"><I.Download /> PDF</a>
         </div>
       </div>
 
-      {cargando && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
-      {!cargando && cargosF.length === 0 && previsionF.length === 0 && campF.length === 0 && (
+      {/* ── Impagados tras la baja y exentos (#393) ── */}
+      {vista !== 'pendientes' && (
+        cerradosF.length === 0 ? (
+          <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>
+            {q.trim() ? `Ningún alumno "${q.trim()}" en ${VISTAS_CARGOS[vista].corto}.` : VISTAS_CARGOS[vista].vacio}
+          </p>
+        ) : (
+          <div className="data-table">
+            <div className="data-table-head" style={{ gridTemplateColumns: colsCerr }}>
+              <span>Alumno</span><span>Concepto</span><span>Mes</span><span>Base</span><span>Motivo</span><span></span>
+            </div>
+            {cerradosF.map(c => (
+              <div key={c.id} className="data-table-row" style={{ gridTemplateColumns: colsCerr, borderLeft: `3px solid ${vista === 'impagado' ? 'var(--orange)' : 'var(--teal)'}` }}>
+                <div className="pri">{c.nombre} {c.apellidos}</div>
+                <span style={{ fontSize: 13 }}>{c.descripcion}</span>
+                <span style={{ fontSize: 12, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{mesDeCargo(c)}</span>
+                <span style={{ fontWeight: 700, color: vista === 'impagado' ? 'var(--orange)' : 'var(--ink-2)' }}>{eur(baseCargo(c))}</span>
+                <span style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>{c.motivo || '—'}</span>
+                <div className="row-actions" style={{ justifyContent: 'flex-end' }}>
+                  {(vista === 'impagado' || c.motivo !== 'Descuento del 100%') && (
+                    <button className="btn btn-sm btn-outline" style={{ padding: '5px 10px' }} onClick={() => volverAPendiente(c)}>Volver a pendiente</button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )
+      )}
+
+      {vista === 'pendientes' && cargando && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
+      {vista === 'pendientes' && !cargando && cargosF.length === 0 && previsionF.length === 0 && campF.length === 0 && (
         <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>
           {q.trim() ? `Ningún alumno "${q.trim()}" con cargos pendientes ${todos ? '' : `de ${mesLargo(mesIso)}`}.` : `No hay cargos pendientes ${todos ? 'en ningún mes' : `de ${mesLargo(mesIso)}`}.`}
         </p>
       )}
-      {cargosF.length > 0 && (
+      {vista === 'pendientes' && cargosF.length > 0 && (
         <div className="data-table">
-          <div className="data-table-head" style={{ gridTemplateColumns: todos ? '1.6fr 1.6fr 110px 90px 80px 60px' : '1.6fr 1.6fr 90px 80px 60px' }}>
+          <div className="data-table-head" style={{ gridTemplateColumns: colsPend }}>
             <span>Alumno</span><span>Concepto</span>{todos && <span>Mes</span>}<span>Precio</span><span>Dto.</span><span></span>
           </div>
           {cargosF.map(c => (
-            <div key={c.id} className="data-table-row" style={{ gridTemplateColumns: todos ? '1.6fr 1.6fr 110px 90px 80px 60px' : '1.6fr 1.6fr 90px 80px 60px' }}>
+            <div key={c.id} className="data-table-row" style={{ gridTemplateColumns: colsPend }}>
               <div className="pri">{c.nombre} {c.apellidos}</div>
               <span style={{ fontSize: 13 }}>{c.descripcion}</span>
               {todos && <span style={{ fontSize: 12, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{mesDeCargo(c)}</span>}
               <span style={{ fontWeight: 700 }}>{eur(c.precio)}</span>
               <span style={{ color: c.descuentoPct > 0 ? 'var(--teal)' : 'var(--ink-3)', fontWeight: 700 }}>{c.descuentoPct}%</span>
-              <div className="row-actions">
-                <button className="icon-btn danger" onClick={() => borrarCargo(c.id)} aria-label="Borrar"><I.Trash /></button>
-              </div>
+              {acciones(c)}
             </div>
           ))}
         </div>
@@ -5042,23 +5194,23 @@ function BillingPendientes({ activa, showToast }) {
       {/* Campamento (ticket #248): sus cargos son de verano, así que se muestran
           aparte para que el filtro de mes no los tape. En "todos los meses" ya
           salen arriba. */}
-      {!todos && campF.length > 0 && (
+      {vista === 'pendientes' && !todos && campF.length > 0 && (
         <div style={{ display: 'grid', gap: 8 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
             <h3 style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 800, margin: 0, color: 'var(--orange)' }}>Campamento</h3>
-            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{campF.length} cargos · base {eur(campF.reduce((s, c) => s + c.precio * (1 - (c.descuentoPct || 0) / 100), 0))}</span>
+            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{campF.length} cargos · base {eur(sumaDe(campF))}</span>
           </div>
           <div className="data-table">
-            <div className="data-table-head" style={{ gridTemplateColumns: '1.6fr 1.6fr 110px 90px 60px' }}>
+            <div className="data-table-head" style={{ gridTemplateColumns: '1.5fr 1.5fr 110px 80px 230px' }}>
               <span>Alumno</span><span>Concepto</span><span>Mes</span><span>Precio</span><span></span>
             </div>
             {campF.map(c => (
-              <div key={c.id} className="data-table-row" style={{ gridTemplateColumns: '1.6fr 1.6fr 110px 90px 60px' }}>
+              <div key={c.id} className="data-table-row" style={{ gridTemplateColumns: '1.5fr 1.5fr 110px 80px 230px' }}>
                 <div className="pri">{c.nombre} {c.apellidos}</div>
                 <span style={{ fontSize: 13 }}>{c.descripcion}</span>
                 <span style={{ fontSize: 12, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{mesDeCargo(c)}</span>
                 <span style={{ fontWeight: 700 }}>{eur(c.precio)}</span>
-                <div className="row-actions"><button className="icon-btn danger" onClick={() => borrarCargo(c.id)} aria-label="Borrar"><I.Trash /></button></div>
+                {acciones(c)}
               </div>
             ))}
           </div>
@@ -5068,7 +5220,7 @@ function BillingPendientes({ activa, showToast }) {
       {/* Previsión: pagos pendientes futuros de la temporada (sept→ago). Es lo que
           se cobrará ese mes, todavía sin generar: no es deuda ni se le ha apuntado
           a nadie. Solo para un mes concreto (no en "todos los meses"). */}
-      {!todos && previsionF.length > 0 && (
+      {vista === 'pendientes' && !todos && previsionF.length > 0 && (
         <div style={{ display: 'grid', gap: 8 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
             <h3 style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 800, margin: 0, color: 'var(--purple)' }}>
@@ -5089,6 +5241,34 @@ function BillingPendientes({ activa, showToast }) {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* ── Motivo para marcar un cargo impagado o eximirlo (#393) ── */}
+      {marcar && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+          onClick={e => { if (e.target === e.currentTarget && !guardando) setMarcar(null); }}>
+          <form onSubmit={confirmarMarcar} style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 480, padding: 24, display: 'grid', gap: 12 }}>
+            <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>{MARCAR_CARGO[marcar.accion].titulo}</h3>
+            <div style={{ fontSize: 14 }}>
+              <b>{marcar.cargo.descripcion}</b> de {marcar.cargo.nombre} {marcar.cargo.apellidos}
+              {!sinMes(marcar.cargo) && <span style={{ color: 'var(--ink-3)' }}> · {mesLargo(marcar.cargo.mes)}</span>}
+              <span style={{ color: 'var(--ink-3)' }}> · {eur(baseCargo(marcar.cargo))}</span>
+            </div>
+            <p style={{ fontSize: 13, color: 'var(--ink-3)', margin: 0 }}>{MARCAR_CARGO[marcar.accion].texto}</p>
+            <label style={{ display: 'grid', gap: 6, fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>
+              Motivo (obligatorio)
+              <textarea autoFocus rows={3} value={motivo} onChange={e => setMotivo(e.target.value)} maxLength={300}
+                placeholder={MARCAR_CARGO[marcar.accion].ejemplo}
+                style={{ fontFamily: 'inherit', fontSize: 14, padding: '10px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', resize: 'vertical' }} />
+            </label>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button type="button" className="btn btn-outline" onClick={() => setMarcar(null)} disabled={guardando}>Cancelar</button>
+              <button type="submit" className="btn btn-primary" disabled={guardando || motivo.trim().length < 3}>
+                {guardando ? 'Guardando...' : MARCAR_CARGO[marcar.accion].boton}
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>
