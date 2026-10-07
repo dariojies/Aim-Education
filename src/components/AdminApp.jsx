@@ -7070,8 +7070,6 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "familias", label: "Familias", icon: <I.Heart /> },
         // Todo el personal del club, no solo los instructores.
         { id: "instructors", label: "Personal", icon: <I.Whistle /> },
-        // Los currículums de «Trabaja con nosotros» (#368).
-        { id: "candidatos", label: "Candidatos", icon: <I.Maletin /> },
       ]
     },
     {
@@ -7110,6 +7108,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
     },
     {
       heading: "Administración", items: [
+        // Los currículums de «Trabaja con nosotros» (#368).
+        { id: "candidatos", label: "Candidatos", icon: <I.Maletin /> },
         { id: "rangos", label: "Rangos y permisos", icon: <I.Shield /> },
         { id: "settings", label: "Ajustes", icon: <I.Settings /> },
         { id: "equipo_it", label: "Equipo IT", icon: <I.Monitor /> },
