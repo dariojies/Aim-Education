@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sin conexión</title>
+<style>
+  html, body { margin: 0; height: 100%; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: #fff; color: #1f1f2e; }
+  main { min-height: 100%; display: grid; place-items: center; padding: 24px; box-sizing: border-box; text-align: center; }
+  .marca { width: 72px; height: 72px; border-radius: 20px; margin: 0 auto 20px; background: linear-gradient(135deg, #7b3fe4, #22b07d 55%, #f5c518); }
+  h1 { font-size: 20px; margin: 0 0 8px; }
+  p { margin: 0 0 24px; color: #5b5b6e; line-height: 1.5; }
+  button { font: inherit; font-weight: 700; border: 0; border-radius: 12px; padding: 14px 28px; background: #7b3fe4; color: #fff; }
+</style>
+</head>
+<body>
+<main>
+  <div>
+    <div class="marca"></div>
+    <h1>No hay conexión</h1>
+    <p>Para usar la app de AIM Education necesitas internet.<br>Comprueba el wifi o los datos y vuelve a intentarlo.</p>
+    <button onclick="location.href='https://www.aimeducation.es/dashboard'">Reintentar</button>
+  </div>
+</main>
+</body>
+</html>

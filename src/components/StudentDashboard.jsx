@@ -9,6 +9,7 @@ import { UserSupport } from './AdminSupport.jsx';
 import { FotosFamilia } from './Galeria.jsx';
 import { BrickslabFamilia } from './Brickslab.jsx';
 import { fmtFecha } from '../fechas.js';
+import { esApp, compartirArchivo, abrirFuera } from '../app-movil.js';
 
 function EmptyState({ icon, text, accion, onAccion }) {
   return (
@@ -397,7 +398,7 @@ function DashOverview({ go, setView }) {
         ) : weekClasses.length === 0 ? (
           <EmptyState icon={<I.Calendar />}
             text="Todavía no hay ninguna clase apuntada en la familia. Mira lo que hacemos y habla con el club para apuntaros."
-            accion="Ver actividades" onAccion={() => go("/actividades")} />
+            accion="Ver actividades" onAccion={() => esApp ? abrirFuera(`${window.location.origin}/actividades`) : go("/actividades")} />
         ) : (
           <div className="classes-grid">
             {weekClasses.map((c) => {
@@ -736,14 +737,19 @@ function GraciasPorPagar({ pago, onCerrar }) {
         </div>
       </div>
 
-      {pdf && (
+      {pdf && !esApp && (
         <div style={{ border: '1px solid var(--line)', borderRadius: 14, overflow: 'hidden', background: 'var(--bg-3)', marginTop: 12 }}>
           <iframe src={pdf} title="Factura" style={{ width: '100%', height: 460, border: 0, display: 'block' }} />
         </div>
       )}
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 14 }}>
-        {pdf && (
+        {pdf && esApp && (
+          <button className="btn btn-outline btn-sm" onClick={() => compartirArchivo(pdf, `Factura ${pago.recibo}`).catch(e => alert(e.message))}>
+            <I.Download /> Ver o guardar la factura
+          </button>
+        )}
+        {pdf && !esApp && (
           <>
             <a className="btn btn-outline btn-sm" href={`${pdf}?descargar=1`}>
               <I.Print /> Descargar la factura
@@ -763,6 +769,15 @@ function GraciasPorPagar({ pago, onCerrar }) {
 // Los dos botoncitos de cada recibo: verlo y guardarlo.
 function BotonesRecibo({ id }) {
   const [viendo, setViendo] = useState(false);
+  // En la app, el PDF se abre con el móvil (verlo, guardarlo, mandarlo).
+  if (esApp) {
+    return (
+      <button className="btn btn-sm btn-outline" title="Ver o guardar la factura"
+        onClick={(e) => { e.stopPropagation(); compartirArchivo(`/api/me/recibos/${id}/pdf`, 'Factura').catch(err => alert(err.message)); }}>
+        <I.Download /> Factura
+      </button>
+    );
+  }
   return (
     <>
       <div style={{ display: 'flex', gap: 6 }}>
@@ -1588,6 +1603,38 @@ function DashSettings() {
   );
 }
 
+// Cada sección del área con su dirección (/dashboard/pagos…): así el botón
+// atrás del navegador y del móvil vuelve a la anterior.
+const RUTA_SECCION = { overview: '', classes: 'clases', camp: 'campamento', attendance: 'asistencia', fotos: 'fotos', brickslab: 'brickslab', payments: 'pagos', wallet: 'cartera', profile: 'perfil', settings: 'ajustes', support: 'soporte', mas: 'mas' };
+// Abajo, en la app: lo de cada día. El resto, en «Más».
+const PESTANAS_APP = [
+  { id: 'overview', label: 'Inicio', icon: <I.Dashboard /> },
+  { id: 'classes', label: 'Clases', icon: <I.Calendar /> },
+  { id: 'payments', label: 'Pagos', icon: <I.Wallet /> },
+  { id: 'fotos', label: 'Fotos', icon: <I.Sparkle width={20} height={20} /> },
+  { id: 'mas', label: 'Más', icon: <I.Menu /> },
+];
+
+function MasApp({ items, onIr, onSalir, user, go }) {
+  return (
+    <div className="panel app-mas">
+      {items.map(it => (
+        <button key={it.id} type="button" className="app-mas-fila" onClick={() => onIr(it.id)}>
+          <span className="ico">{it.icon}</span><span>{it.label}</span><I.Chevron style={{ transform: 'rotate(-90deg)', marginLeft: 'auto', opacity: .5 }} />
+        </button>
+      ))}
+      {user?.canAccessAdmin && (
+        <button type="button" className="app-mas-fila" onClick={() => go('/admin')}>
+          <span className="ico"><I.Dashboard /></span><span>Panel de admin</span>
+        </button>
+      )}
+      <button type="button" className="app-mas-fila" onClick={onSalir} style={{ color: 'var(--pink)' }}>
+        <span className="ico"><I.LogOut /></span><span>Cerrar sesión</span>
+      </button>
+    </div>
+  );
+}
+
 export default function StudentDashboard({ user, onLogout, subroute = "overview" }) {
   const { go } = useRouter();
   const [view, setView] = useState(subroute);
@@ -1607,7 +1654,8 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
     // Sets de LEGO y libros para reservar (#291).
     { id: "brickslab", label: "Brickslab y Biblioteca", icon: <I.Package /> },
     { id: "payments", label: "Pagos y recibos", icon: <I.Wallet /> },
-    { id: "wallet", label: "Mi cartera", icon: <I.CreditCard /> },
+    // Aún vacía: en la app no se enseña.
+    ...(esApp ? [] : [{ id: "wallet", label: "Mi cartera", icon: <I.CreditCard /> }]),
   ];
   const settingsItems = [
     { id: "profile", label: "Perfil", icon: <I.User /> },
@@ -1620,13 +1668,21 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
     else go("/");
   }
 
-  function navTo(id) { setView(id); setSidebarOpen(false); }
+  function navTo(id) {
+    setSidebarOpen(false);
+    if (id === view) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
+    const r = RUTA_SECCION[id];
+    if (r === undefined) { setView(id); return; }
+    go(r ? `/dashboard/${r}` : '/dashboard');
+  }
+  const todas = navItems.concat(settingsItems, [{ id: 'mas', label: 'Más' }]);
+  const enPestana = PESTANAS_APP.some(p => p.id === view);
 
   return (
-    <main style={{paddingTop: 0}}>
+    <main style={{paddingTop: 0}} className={esApp ? 'dash-app' : undefined}>
       {sidebarOpen && <div className="dash-overlay" onClick={() => setSidebarOpen(false)} />}
       <div className="dash-layout">
-        <aside className={`dash-side${sidebarOpen ? ' is-open' : ''}`}>
+        {!esApp && <aside className={`dash-side${sidebarOpen ? ' is-open' : ''}`}>
           <div className="brand">
             <AimLogo size="sm" auto onClick={() => go("/")} />
             <div className="role">Zona de familias</div>
@@ -1663,22 +1719,32 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
               <span>Cerrar sesión</span>
             </button>
           </nav>
-        </aside>
+        </aside>}
 
         <div className="dash-main">
           <div className="dash-topbar">
             <div style={{display: "flex", gap: 12, alignItems: "center"}}>
-              <button className="btn btn-icon dash-hamburger" aria-label="Menú" onClick={() => setSidebarOpen(o => !o)}>
-                <I.Menu />
-              </button>
+              {!esApp && (
+                <button className="btn btn-icon dash-hamburger" aria-label="Menú" onClick={() => setSidebarOpen(o => !o)}>
+                  <I.Menu />
+                </button>
+              )}
+              {/* En la app, desde una sección de «Más», la flecha para volver. */}
+              {esApp && !enPestana && (
+                <button className="btn btn-icon" aria-label="Volver" onClick={() => window.history.back()}>
+                  <I.Arrow style={{ transform: 'rotate(180deg)' }} />
+                </button>
+              )}
               <div>
-                <p style={{margin: 0, fontSize: 13, color: "var(--ink-3)", fontWeight: 600, letterSpacing: ".06em", textTransform: "uppercase"}}>
-                  {navItems.concat(settingsItems).find(i => i.id === view)?.label || "Resumen"}
-                </p>
+                {!esApp && (
+                  <p style={{margin: 0, fontSize: 13, color: "var(--ink-3)", fontWeight: 600, letterSpacing: ".06em", textTransform: "uppercase"}}>
+                    {todas.find(i => i.id === view)?.label || "Resumen"}
+                  </p>
+                )}
                 <h1>
                   {view === "overview"
                     ? <>{"¡Hola "}<span className="grad">{user?.firstName || ""}</span>!</>
-                    : navItems.concat(settingsItems).find(i => i.id === view)?.label}
+                    : todas.find(i => i.id === view)?.label}
                 </h1>
                 {view === "overview" && <p style={{margin: "6px 0 0", color: "var(--ink-3)"}}>Este es el resumen de tu familia esta semana.</p>}
               </div>
@@ -1690,7 +1756,7 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
             </div>
           </div>
 
-          {view === "overview" && <DashOverview go={go} setView={setView} />}
+          {view === "overview" && <DashOverview go={go} setView={navTo} />}
           {view === "classes" && <DashClasses />}
           {view === "camp" && <DashCamp />}
           {view === "attendance" && <DashAttendance />}
@@ -1701,8 +1767,24 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
           {view === "support" && <UserSupport user={user} />}
           {view === "fotos" && <FotosFamilia />}
           {view === "brickslab" && <BrickslabFamilia />}
+          {view === "mas" && (
+            <MasApp user={user} go={go} onIr={navTo} onSalir={handleLogout}
+              items={navItems.concat(settingsItems).filter(it => !PESTANAS_APP.some(p => p.id === it.id))} />
+          )}
         </div>
       </div>
+      {esApp && (
+        <nav className="app-pestanas" aria-label="Secciones">
+          {PESTANAS_APP.map(p => {
+            const activa = p.id === view || (p.id === 'mas' && !enPestana);
+            return (
+              <button key={p.id} type="button" className={activa ? 'is-active' : ''} aria-current={activa ? 'page' : undefined} onClick={() => navTo(p.id)}>
+                {p.icon}<span>{p.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      )}
     </main>
   );
 }

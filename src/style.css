@@ -4351,3 +4351,115 @@ body { overflow-wrap: break-word; }
   .bk-hero h1 { font-size: 34px; }
   .bk-cifra b { font-size: 24px; }
 }
+
+/* =============================================================
+   APP DEL MÓVIL (#218): la web dentro de la app de Android e iOS.
+   html.es-app la pone src/app-movil.js. Los huecos de la cámara y
+   de la barra de gestos llegan como --safe-area-inset-* (Android,
+   Capacitor) o env(safe-area-inset-*) (iOS).
+   ============================================================= */
+html.es-app {
+  --app-arriba: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --app-abajo: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+  --app-pestanas: 64px;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+}
+html.es-app body { overscroll-behavior-y: none; }
+html.es-app .dash-layout { grid-template-columns: 1fr; min-height: 100dvh; }
+html.es-app .dash-main {
+  padding: calc(var(--app-arriba) + 14px) 16px calc(var(--app-pestanas) + var(--app-abajo) + 24px);
+  max-width: none;
+  min-width: 0;
+}
+html.es-app .dash-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  margin: calc(-14px - var(--app-arriba)) -16px 18px;
+  padding: calc(var(--app-arriba) + 10px) 16px 10px;
+  background: color-mix(in oklab, var(--bg) 92%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+  gap: 10px;
+}
+html.es-app .dash-topbar h1 { font-size: 22px; }
+html.es-app .dash-topbar p { display: none; }
+
+.app-pestanas {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 900;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  height: calc(var(--app-pestanas) + var(--app-abajo));
+  padding-bottom: var(--app-abajo);
+  background: color-mix(in oklab, var(--bg-2) 94%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-top: 1px solid var(--line);
+}
+.app-pestanas button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border: 0;
+  background: none;
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 6px 0 0;
+  cursor: pointer;
+}
+.app-pestanas button svg { width: 22px; height: 22px; }
+.app-pestanas button.is-active { color: var(--purple); }
+.app-pestanas button.is-active svg { transform: translateY(-1px); }
+
+.app-mas { padding: 6px; display: grid; }
+.app-mas-fila {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: none;
+  font: inherit;
+  font-size: 15.5px;
+  font-weight: 600;
+  color: var(--ink);
+  padding: 15px 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.app-mas-fila:last-child { border-bottom: 0; }
+.app-mas-fila .ico { display: grid; place-items: center; width: 24px; color: var(--purple); }
+
+/* Entrar, en la app: sin el panel de la izquierda; el logo arriba. */
+html.es-app .auth-side { display: none; }
+html.es-app .auth-shell { grid-template-columns: 1fr; min-height: 100dvh; }
+html.es-app .auth-form { padding: calc(var(--app-arriba) + 24px) 20px calc(var(--app-abajo) + 24px); }
+.app-auth-logo { display: flex; justify-content: center; margin-bottom: 22px; }
+
+/* Lo que se abre encima no puede quedar bajo la cámara ni bajo las pestañas. */
+html.es-app .bk-fondo,
+html.es-app [role="dialog"] { padding-top: calc(var(--app-arriba) + 12px) !important; padding-bottom: calc(var(--app-abajo) + 12px) !important; }
+
+/* Avisos cortos de la app (p. ej. «no se ha podido descargar»). */
+.app-aviso {
+  position: fixed;
+  left: 16px; right: 16px;
+  bottom: calc(var(--app-pestanas, 0px) + var(--app-abajo, 0px) + 16px);
+  z-index: 6000;
+  background: var(--ink);
+  color: var(--bg);
+  border-radius: 12px;
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .25);
+}

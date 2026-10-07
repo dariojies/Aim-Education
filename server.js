@@ -2918,6 +2918,8 @@ app.get('/api/auth/config', (req, res) => {
 
 app.get('/api/auth/google', (req, res) => {
     if (!googleActivo()) return res.redirect('/auth?error=google-apagado');
+    // Google no deja entrar desde dentro de una app que muestra una web (#218).
+    if (/AimEducationApp\//.test(req.headers['user-agent'] || '')) return res.redirect('/auth?error=google-app');
     const ahora = Date.now();
     for (const [k, v] of ESTADOS_GOOGLE) if (ahora - v.creado > MINUTOS_ESTADO_GOOGLE * 60_000) ESTADOS_GOOGLE.delete(k);
     const state = crypto.randomBytes(24).toString('base64url');
@@ -3117,29 +3119,10 @@ app.post('/api/register', async (req, res) => {
                   .catch(e => console.error('[registro] aviso a secretaría:', e.message));
             }
         }
-        const now = Date.now();
-        const token = crypto.randomBytes(32).toString('hex');
-        await guardarSesion(token, {
-            userId: newUser.user_id,
-            email: newUser.email,
-            firstName: newUser.name,
-            lastName: newUser.surname,
-            avatar: null,
-            isSuperAdmin: false,
-            canAccessAdmin: false,
-            expiresAt: now + SESSION_DURATION_MS
-        });
-        res.cookie('aim_session', token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'strict',
-            maxAge: SESSION_DURATION_MS,
-            path: '/'
-        });
-        res.status(201).json({
-            success: true,
-            user: { id: newUser.user_id, firstName: newUser.name, lastName: newUser.surname, email: newUser.email, canAccessAdmin: false, isSuperAdmin: false }
-        });
+        // La sesión, como al entrar y que se mantenga (#218): antes caducaba a
+        // las 24 h aunque se usara, y en la app del móvil echaba a la familia.
+        const user = await abrirSesion(res, { ...newUser, role: 'student', profile_picture: null }, { recordar: true });
+        res.status(201).json({ success: true, user });
     } catch (err) {
         console.error('Register error:', err);
         if (err.code === '42703') {

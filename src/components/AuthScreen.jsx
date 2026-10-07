@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { I } from './Icons.jsx';
 import { AimLogo } from './Shared.jsx';
+import { esApp } from '../app-movil';
 import { useRouter } from '../App.jsx';
 import { useClasesPublicas, fichasWeb } from './clasesPublicas.js';
 
@@ -20,6 +21,7 @@ const ERRORES_GOOGLE = {
   'google-caducado': 'El inicio de sesión con Google ha caducado. Vuelve a intentarlo.',
   'google-fallo': 'No se ha podido entrar con Google. Vuelve a intentarlo o entra con tu correo y contraseña.',
   'google-apagado': 'El inicio de sesión con Google no está disponible ahora mismo.',
+  'google-app': 'En la app se entra con el correo y la contraseña. Google solo deja entrar con su cuenta desde el navegador.',
 };
 
 function Aviso({ tipo = 'error', children }) {
@@ -87,10 +89,10 @@ function LoginForm({ onLoginSuccess, onOlvido, onRegistro, recordar, setRecordar
         <CampoPassword id="pw" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="••••••••" autoComplete="current-password" />
       </div>
       <div className="field-meta">
-        <label style={{ display: 'inline-flex', gap: 8, alignItems: 'center', color: 'var(--ink-2)' }}
+        {esApp ? <span /> : <label style={{ display: 'inline-flex', gap: 8, alignItems: 'center', color: 'var(--ink-2)' }}
           title="Si lo marcas, la sesión dura 30 días en este dispositivo. Si no, se cierra al cerrar el navegador.">
           <input type="checkbox" checked={recordar} onChange={e => setRecordar(e.target.checked)} style={{ accentColor: 'var(--purple)' }} /> Mantenerme conectado
-        </label>
+        </label>}
         <a href="/auth?mode=olvido" onClick={(e) => { e.preventDefault(); onOlvido(email); }}>¿Olvidaste tu contraseña?</a>
       </div>
       <button type="submit" className="btn btn-gradient btn-block btn-lg" disabled={loading}>
@@ -438,6 +440,7 @@ export default function AuthScreen({ mode = 'login', onLoginSuccess }) {
         </aside>
 
         <section className="auth-form">
+          {esApp && <div className="app-auth-logo"><AimLogo size="lg" auto /></div>}
           {(vista === 'login' || vista === 'register') && (
             <div className="auth-tabs">
               <button className={vista === 'login' ? 'is-active' : ''} onClick={() => irA('login', '/auth')}>Iniciar sesión</button>
@@ -462,7 +465,7 @@ export default function AuthScreen({ mode = 'login', onLoginSuccess }) {
 
           {/* Google, solo para el personal (cuentas @aimeducation.es y
               @allegro.in-mae.es). Facebook no: no se usa. */}
-          {vista === 'login' && google && (
+          {vista === 'login' && google && !esApp && (
             <>
               <div className="divider">personal del club</div>
               <a className="btn btn-outline" style={{ width: '100%', justifyContent: 'center', display: 'flex', gap: 8 }}
@@ -480,9 +483,11 @@ export default function AuthScreen({ mode = 'login', onLoginSuccess }) {
             Al continuar aceptas nuestros <a href="/legal/terminos" target="_blank" rel="noopener" style={{ color: 'var(--purple)', fontWeight: 600 }}>Términos</a> y la{' '}
             <a href="/legal/privacidad" target="_blank" rel="noopener" style={{ color: 'var(--purple)', fontWeight: 600 }}>Política de privacidad</a>.
           </p>
-          <p style={{ textAlign: 'center', margin: '4px 0 0', fontSize: 12 }}>
-            <a href="/" onClick={(e) => { e.preventDefault(); go('/'); }} style={{ color: 'var(--ink-3)' }}>← Volver a la web</a>
-          </p>
+          {!esApp && (
+            <p style={{ textAlign: 'center', margin: '4px 0 0', fontSize: 12 }}>
+              <a href="/" onClick={(e) => { e.preventDefault(); go('/'); }} style={{ color: 'var(--ink-3)' }}>← Volver a la web</a>
+            </p>
+          )}
         </section>
       </div>
     </main>

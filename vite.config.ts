@@ -16,7 +16,11 @@ export default defineConfig(() => {
         fs.writeFileSync(path.resolve(__dirname, 'dist/deploy.json'), JSON.stringify({ id: crypto.randomUUID(), fecha: new Date().toISOString() }));
       },
     }],
+    // La app del móvil (movil/, #218) tiene sus propios proyectos de Android e
+    // iOS: que el servidor de desarrollo no los mire.
+    optimizeDeps: { entries: ['index.html'] },
     server: {
+      watch: { ignored: ['**/movil/**'] },
       proxy: {
         '/api': 'http://localhost:3000',
       }

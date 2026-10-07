@@ -1,0 +1,38 @@
+{
+  "appId": "es.aimeducation.app",
+  "appName": "AIM Education",
+  "webDir": "www",
+  "appendUserAgent": "AimEducationApp/1.0",
+  "backgroundColor": "#ffffff",
+  "server": {
+    "url": "https://www.aimeducation.es/dashboard",
+    "errorPath": "error.html",
+    "allowNavigation": ["*.redsys.es", "sis.redsys.es", "sis-t.redsys.es", "*"]
+  },
+  "android": {
+    "includePlugins": [
+      "@capacitor/app",
+      "@capacitor/browser",
+      "@capacitor/filesystem",
+      "@capacitor/preferences",
+      "@capacitor/share",
+      "@capacitor/splash-screen",
+      "@capacitor/status-bar"
+    ]
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1500,
+      "launchAutoHide": true,
+      "backgroundColor": "#ffffff",
+      "showSpinner": false
+    },
+    "SystemBars": {
+      "insetsHandling": "css",
+      "initialViewportFitValueHint": "cover"
+    },
+    "PushNotifications": {
+      "presentationOptions": ["badge", "sound", "alert"]
+    }
+  }
+}

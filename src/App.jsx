@@ -16,6 +16,7 @@ import BrickslabPublico from './components/Brickslab.jsx';
 import PublicConocenos from './components/PublicConocenos';
 import { CookieBanner, registrarVisita } from './components/Cookies';
 import AvisosWeb from './components/AvisosWeb';
+import { esApp } from './app-movil';
 
 export const RouterContext = createContext({ path: '/', go: () => {}, user: null });
 export const useRouter = () => useContext(RouterContext);
@@ -26,6 +27,10 @@ export default function App() {
   const [userChecked, setUserChecked] = useState(false);
   // La sesión caducó estando dentro (#366): se avisa y se lleva a entrar.
   const [caducada, setCaducada] = useState(false);
+  // No se pudo saber si hay sesión (sin conexión o el servidor no responde):
+  // no es lo mismo que no haber entrado, así que no se manda a entrar (#218).
+  const [sinConexion, setSinConexion] = useState(false);
+  const [intento, setIntento] = useState(0);
 
   useEffect(() => {
     const onPop = () => {
@@ -38,10 +43,14 @@ export default function App() {
 
   useEffect(() => {
     fetch('/api/me')
-      .then(r => r.ok ? r.json() : null)
-      .then(u => { setUser(u); setUserChecked(true); })
-      .catch(() => setUserChecked(true));
-  }, []);
+      .then(async r => {
+        if (r.ok) return r.json();
+        if (r.status === 401) return null;
+        throw new Error(String(r.status));
+      })
+      .then(u => { setUser(u); setSinConexion(false); setUserChecked(true); })
+      .catch(() => { setSinConexion(true); setUserChecked(true); });
+  }, [intento]);
 
   // { replace: true } cambia la dirección sin dejar un paso más en el historial
   // (p. ej. quitar el número del ticket de /admin/soporte/180 una vez abierto).
@@ -80,7 +89,8 @@ export default function App() {
   const handleLogout = async () => {
     await fetch('/api/logout', { method: 'POST' }).catch(() => {});
     setUser(null);
-    go('/');
+    // En la app no hay web pública: de vuelta a entrar.
+    go(esApp ? '/auth' : '/');
   };
 
   const pathname = path.split('?')[0];
@@ -92,12 +102,35 @@ export default function App() {
     window.addEventListener('aim-cookies-cambio', f);
     return () => window.removeEventListener('aim-cookies-cambio', f);
   }, []);
-  const webPublica = !pathname.startsWith('/admin') && !pathname.startsWith('/dashboard');
+  const webPublica = !esApp && !pathname.startsWith('/admin') && !pathname.startsWith('/dashboard');
   const search = path.includes('?') ? path.slice(path.indexOf('?')) : '';
   const params = new URLSearchParams(search);
   const seg = pathname.split('/').filter(Boolean);
 
   let screen;
+
+  // Sin poder comprobar la sesión, se dice y se deja reintentar (en vez de
+  // mandar a entrar a quien ya había entrado).
+  const privada = pathname.startsWith('/dashboard') || pathname.startsWith('/admin') || esApp;
+  if (sinConexion && privada && !user) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24, textAlign: 'center' }}>
+        <div>
+          <h2 style={{ margin: '0 0 8px' }}>No hemos podido conectar</h2>
+          <p className="sub" style={{ margin: '0 0 18px' }}>Comprueba tu conexión y vuelve a intentarlo.</p>
+          <button type="button" className="btn btn-primary" onClick={() => { setUserChecked(false); setIntento(i => i + 1); }}>Reintentar</button>
+        </div>
+      </div>
+    );
+  }
+
+  // La app del móvil es solo el área de familias (y el panel para el personal):
+  // la web pública se queda en el navegador.
+  if (esApp && !pathname.startsWith('/dashboard') && !pathname.startsWith('/admin') && pathname !== '/auth') {
+    if (!userChecked) return null;
+    go(user ? (user.canAccessAdmin ? '/admin' : '/dashboard') : '/auth', { replace: true });
+    return null;
+  }
 
   if (pathname === '/' || pathname === '') {
     screen = <PublicLanding />;
@@ -128,8 +161,9 @@ export default function App() {
     screen = <AuthScreen key={mode} mode={mode} onLoginSuccess={handleLoginSuccess} />;
   } else if (pathname.startsWith('/dashboard')) {
     if (!userChecked) return null;
-    if (!user) { go('/auth'); return null; }
-    const dashSub = { campamento: 'camp', pagos: 'payments', clases: 'classes', asistencia: 'attendance', soporte: 'support', fotos: 'fotos', brickslab: 'brickslab', biblioteca: 'brickslab' }[seg[1]] || 'overview';
+    // A entrar, y luego de vuelta aquí (un aviso del móvil, la vuelta del banco…).
+    if (!user) { go(`/auth?volver=${encodeURIComponent(path)}`, { replace: true }); return null; }
+    const dashSub = { campamento: 'camp', pagos: 'payments', clases: 'classes', asistencia: 'attendance', soporte: 'support', fotos: 'fotos', brickslab: 'brickslab', biblioteca: 'brickslab', perfil: 'profile', ajustes: 'settings', cartera: 'wallet', mas: 'mas' }[seg[1]] || 'overview';
     screen = <StudentDashboard user={user} onLogout={handleLogout} subroute={dashSub} />;
   } else if (pathname.startsWith('/admin')) {
     if (!userChecked) return null;
@@ -156,7 +190,8 @@ export default function App() {
       </Suspense>
       {/* El aviso de cookies, en toda la web salvo el panel de administración
           (allí solo está la cookie de la sesión, que no pide consentimiento). */}
-      {!pathname.startsWith('/admin') && <CookieBanner />}
+      {/* En la app tampoco: no hay vídeos de otros ni análisis. */}
+      {!pathname.startsWith('/admin') && !esApp && <CookieBanner />}
       {caducada && (
         <div role="dialog" aria-modal="true" aria-labelledby="sesion-caducada"
           style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 5000, display: 'grid', placeItems: 'center', padding: 16 }}>

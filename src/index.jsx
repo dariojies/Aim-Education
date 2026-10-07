@@ -2,6 +2,10 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import './style.css';
+import { iniciarApp } from './app-movil';
+
+// Dentro de la app del móvil (#218): atrás, enlaces, descargas…
+iniciarApp();
 
 // Si estando dentro una petición dice «no autenticado», la sesión ha caducado
 // (#366): se avisa a la App para que lo diga y lleve a entrar, en vez de que cada
