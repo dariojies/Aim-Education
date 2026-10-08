@@ -149,13 +149,13 @@ function ParaAtender({ avisos, irRuta, como }) {
 function ClasesHoy({ clases, ir, irRuta, titulo = 'Clases de hoy', max = 6 }) {
   if (clases === null) return <Bloque titulo={titulo}><p style={suave}>Cargando…</p></Bloque>;
   const orden = [...clases].sort((a, b) => String(a.hora || a.horario || '').localeCompare(String(b.hora || b.horario || '')));
-  const sin = clases.filter(c => !c.marcados).length;
+  const sin = clases.filter(c => !c.marcados && !c.pasada).length;
   return (
     <Bloque vacia={!clases.length} titulo={titulo} sub={clases.length ? (sin ? `${plural(sin, 'lista', 'listas')} sin pasar de ${clases.length}` : 'Todas las listas pasadas') : null} accion="Pasar lista" onAccion={() => (irRuta ? irRuta('/admin/clases/lista') : ir('classes'))}>
       <Lista items={orden} max={max} vacio="Hoy no hay clases." onMas={() => (irRuta ? irRuta('/admin/clases/lista') : ir('classes'))} render={c => (
         <Fila key={c.id} onClick={irRuta ? () => irRuta(`/admin/clases/lista/${c.id}`) : undefined} izq={c.hora || (c.horario || '').split(/[–-]/)[0] || '—'}
           centro={<><b>{c.name}</b><span style={suave}> · {c.studentCount} al.{c.instructor ? ` · ${c.instructor.split(' ')[0]}` : ''}</span></>}
-          der={c.marcados ? <Estado tipo="ok">Pasada</Estado> : <Estado tipo="info">Sin pasar</Estado>} />
+          der={c.marcados || c.pasada ? <Estado tipo="ok">Pasada</Estado> : <Estado tipo="info">Sin pasar</Estado>} />
       )} />
     </Bloque>
   );
@@ -244,7 +244,7 @@ function GraficoMeses({ meses }) {
 
 // ── Cada vista: sus cuatro cifras y sus tres columnas ───────────────────────
 function vistaInstructor({ d, clases, ir, irRuta, como }) {
-  const sin = clases ? clases.filter(c => !c.marcados).length : null;
+  const sin = clases ? clases.filter(c => !c.marcados && !c.pasada).length : null;
   const su = como ? 'Sus' : 'Tus';
   return {
     cifras: [
@@ -270,7 +270,7 @@ function vistaInstructor({ d, clases, ir, irRuta, como }) {
 }
 
 function vistaSecretaria({ d, clases, ir, irRuta }) {
-  const sin = clases ? clases.filter(c => !c.marcados).length : null;
+  const sin = clases ? clases.filter(c => !c.marcados && !c.pasada).length : null;
   return {
     cifras: [
       <Cifra key="1" etiqueta="Cobrado hoy" valor={eur(d.cobradoHoy.total)} detalle={plural(d.cobradoHoy.recibos, 'recibo', 'recibos')} onClick={() => ir('billing')} />,

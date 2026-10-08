@@ -56,6 +56,25 @@ function nombresDocentesSes(s) {
     return s?.instructorName ? [s.instructorName] : [];
 }
 
+// La hora de las clases (#407). Las sesiones usan 0 = lunes y horas 'HH:MM';
+// lo de «ahora» va en hora de Madrid.
+const minutosDe = (t) => { const [h, m] = String(t || '').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
+const ahoraMinMadrid = () => minutosDe(new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/Madrid', hour: '2-digit', minute: '2-digit' }));
+const sesionesDelDia = (sessions, fecha) => {
+    const dia = (new Date(fecha + 'T12:00:00').getDay() + 6) % 7;
+    return (Array.isArray(sessions) ? sessions : []).filter(s => (s?.days || []).map(Number).includes(dia));
+};
+// ¿Ha empezado o acabado ya la clase ese día? Una sesión sin hora de fin dura
+// una hora; sin ninguna hora, cuenta el día entero.
+function momentoClase(ses, fecha, hoy) {
+    if (!ses.length || fecha > hoy) return { empezada: false, acabada: false };
+    if (fecha < hoy) return { empezada: true, acabada: true };
+    const ahora = ahoraMinMadrid();
+    const ini = Math.min(...ses.map(s => (s?.startTime ? minutosDe(s.startTime) : 0)));
+    const fin = Math.max(...ses.map(s => (s?.endTime ? minutosDe(s.endTime) : s?.startTime ? minutosDe(s.startTime) + 60 : 24 * 60)));
+    return { empezada: ahora >= ini, acabada: ahora >= fin };
+}
+
 // Cambia el cinturón de Taekwon-Do de un alumno de forma que valga para las dos
 // apps. Learning Dungeon (aim-tul) lee el cinturón vigente de tul_user_belts —la
 // última fila por fecha— y lo usa en el multiplicador de combate, el acceso a
@@ -998,6 +1017,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
             const libresDe = new Map((await plazasConBono(pool, { clubId, desde: fecha, hasta: fecha }).catch(() => []))
                 .map(p => [p.groupId, p.libres]));
             const clases = [];
+            const hoy = hoyMadridISO();
             for (const g of r.rows) {
                 const ses = (Array.isArray(g.sessions) ? g.sessions : [])
                     .filter(s => (s?.days || []).map(Number).includes(diaSemana));
@@ -1005,7 +1025,16 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                 const speaking = g.individual;
                 const sp = speakingDe.get(g.id);
                 if (speaking && !sp) continue; // ese día no hay nadie citado
+                const alumnosDia = speaking ? sp.si : g.studentCount;
+                const marcadosDia = yaMarcados[g.id] || 0;
+                const { acabada } = momentoClase(ses, fecha, hoy);
                 clases.push({
+                    // Las que da quien mira (#407): para ver solo las suyas.
+                    mia: ses.some(s => esDocenteSes(s, req.userSession?.userId)),
+                    // Lista pasada: todos marcados o, sin nadie apuntado ni con
+                    // plaza de bono, en cuanto acaba su hora (#407).
+                    pasada: (marcadosDia > 0 && marcadosDia >= alumnosDia)
+                        || (alumnosDia === 0 && marcadosDia === 0 && !reservasDe.get(g.id) && acabada),
                     id: g.id, name: g.name, activityName: g.activityName,
                     studentCount: speaking ? sp.si : g.studentCount, maxStudents: g.maxStudents,
                     horario: ses.map(s => `${s.startTime || ''}${s.endTime ? `–${s.endTime}` : ''}${s.aulaName ? ` · ${s.aulaName}` : ''}`).join(' | '),
@@ -1019,7 +1048,8 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
             }
             clases.sort((a, b) => String(a.hora).localeCompare(String(b.hora)) || a.name.localeCompare(b.name));
             res.set('Cache-Control', 'no-store');
-            res.json({ fecha, clases });
+            // todas: la lista trae las de todo el club (no solo las suyas).
+            res.json({ fecha, clases, todas: !soloSuyos(req) && !req.query.instructor });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
@@ -1142,7 +1172,90 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                     'INSERT INTO tul_attendance (group_id, student_id, date, status, is_auto) VALUES ($1, $2, $3::date, $4, FALSE)',
                     [req.params.groupId, studentId, fecha, status]);
             }
-            res.json({ success: true });
+            // Si la lista se abrió antes de empezar la clase, al marcar ya dentro
+            // de su hora se apuntan las faltas de los demás (#407).
+            const faltas = await rellenarFaltas(req.params.groupId, fecha).catch(() => 0);
+            res.json({ success: true, faltas });
+        } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // Marca a todos los que aún no tienen nada ese día con `status`; `auto` dice
+    // si lo ha hecho una persona (FALSE) o el sistema (TRUE, como en Learning
+    // Dungeon: «marcado automáticamente», hasta que alguien lo cambie).
+    async function marcarSinMarcar(groupId, fecha, status, auto, info) {
+        // Una persona («Todos: …») cambia también lo marcado automáticamente (#407).
+        const cambiadas = auto ? 0 : (await pool.query(
+            `UPDATE tul_attendance SET status = $3, is_auto = FALSE
+             WHERE group_id = $1 AND date = $2::date AND is_auto IS TRUE`, [groupId, fecha, status])).rowCount;
+        // Clase individual (#253, #388): "Todos" son los que han confirmado que vienen.
+        if (info.speaking) {
+            const r = await pool.query(
+                `INSERT INTO tul_attendance (group_id, student_id, date, status, is_auto)
+                 SELECT $1, s.student_id, $2::date, $3, $4
+                 FROM aim_speaking s
+                 WHERE s.group_id = $1 AND s.fecha = $2::date AND s.confirmado IS TRUE
+                   AND NOT EXISTS (SELECT 1 FROM tul_attendance at
+                                   WHERE at.group_id = $1 AND at.student_id = s.student_id AND at.date = $2::date)
+                 RETURNING attendance_id`, [groupId, fecha, status, auto]);
+            return cambiadas + r.rowCount;
+        }
+        // Se marca a la plantilla que había EN esa fecha, no a la de hoy
+        // (ticket #246): así "Todos" en un día pasado no arrastra a los que se
+        // apuntaron después ni deja fuera a los que ya se dieron de baja. Entran
+        // también quienes tienen la plaza reservada con bono ese día (#253).
+        const r = await pool.query(
+            `INSERT INTO tul_attendance (group_id, student_id, date, status, is_auto)
+             SELECT $1, c.student_id, $2::date, $3, $5
+             FROM (
+                 SELECT student_id FROM tul_group_students WHERE group_id = $1
+                 UNION SELECT student_id FROM tul_enrollment_history WHERE group_id = $1
+                 UNION SELECT student_id FROM aim_bono_reservas WHERE group_id = $1 AND fecha = $2::date AND estado = 'reservada'
+             ) c
+             JOIN tul_groups g ON g.group_id = $1
+             JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE a.club_id = $4
+               AND (${miembroEnFecha('c.student_id')}
+                    OR EXISTS (SELECT 1 FROM aim_bono_reservas rv WHERE rv.group_id = $1 AND rv.fecha = $2::date
+                               AND rv.student_id = c.student_id AND rv.estado = 'reservada'))
+               AND NOT EXISTS (
+                 SELECT 1 FROM tul_attendance at
+                 WHERE at.group_id = $1 AND at.student_id = c.student_id AND at.date = $2::date)
+             RETURNING attendance_id`, [groupId, fecha, status, clubId, auto]);
+        return cambiadas + r.rowCount;
+    }
+
+    // Quien se queda sin marcar cuenta como falta (#407): al abrir la lista con
+    // la clase ya empezada, y cada vez que se marca a alguien, los que no tienen
+    // nada quedan «Faltó» (automático) hasta que el profe lo cambie. Así una
+    // lista en la que solo se apuntan los que vienen queda pasada del todo.
+    // Un día pasado solo se rellena si alguien ya empezó a pasar esa lista: sin
+    // nada marcado puede ser una clase que no se dio. Un día de cierre, nunca.
+    async function rellenarFaltas(groupId, fecha) {
+        const g = (await pool.query(
+            `SELECT g.sessions FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE g.group_id = $1 AND a.club_id = $2`, [groupId, clubId])).rows[0];
+        if (!g) return 0;
+        const hoy = hoyMadridISO();
+        if (!momentoClase(sesionesDelDia(g.sessions, fecha), fecha, hoy).empezada) return 0;
+        if (fecha < hoy) {
+            const empezada = await pool.query(
+                `SELECT 1 FROM tul_attendance WHERE group_id = $1 AND date = $2::date AND is_auto IS NOT TRUE LIMIT 1`, [groupId, fecha]);
+            if (!empezada.rowCount) return 0;
+        }
+        const cierre = await pool.query(`SELECT 1 FROM aim_calendario_laboral WHERE fecha = $1::date`, [fecha]).catch(() => ({ rowCount: 0 }));
+        if (cierre.rowCount) return 0;
+        const info = await infoClase(groupId);
+        if (!info) return 0;
+        return marcarSinMarcar(groupId, fecha, 'absent', true, info);
+    }
+
+    // Al abrir la lista de una clase (#407).
+    router.post('/groups/:groupId/attendance/abrir', async (req, res) => {
+        if (await ajeno(req, res, req.params.groupId)) return;
+        const { fecha } = req.body || {};
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha || '')) return res.status(400).json({ error: 'Fecha no válida.' });
+        try {
+            res.json({ success: true, faltas: await rellenarFaltas(req.params.groupId, fecha) });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
 
@@ -1155,42 +1268,7 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
         try {
             const info = await infoClase(req.params.groupId);
             if (!info) return res.status(404).json({ error: 'Esa clase no es de este club.' });
-            // Clase individual (#253, #388): "Todos" son los que han confirmado que vienen.
-            if (info.speaking) {
-                const r = await pool.query(
-                    `INSERT INTO tul_attendance (group_id, student_id, date, status, is_auto)
-                     SELECT $1, s.student_id, $2::date, $3, FALSE
-                     FROM aim_speaking s
-                     WHERE s.group_id = $1 AND s.fecha = $2::date AND s.confirmado IS TRUE
-                       AND NOT EXISTS (SELECT 1 FROM tul_attendance at
-                                       WHERE at.group_id = $1 AND at.student_id = s.student_id AND at.date = $2::date)
-                     RETURNING attendance_id`, [req.params.groupId, fecha, status]);
-                return res.json({ success: true, marcados: r.rowCount });
-            }
-            // Se marca a la plantilla que había EN esa fecha, no a la de hoy
-            // (ticket #246): así "Todos" en un día pasado no arrastra a los que se
-            // apuntaron después ni deja fuera a los que ya se dieron de baja. Entran
-            // también quienes tienen la plaza reservada con bono ese día (#253).
-            const r = await pool.query(
-                `INSERT INTO tul_attendance (group_id, student_id, date, status, is_auto)
-                 SELECT $1, c.student_id, $2::date, $3, FALSE
-                 FROM (
-                     SELECT student_id FROM tul_group_students WHERE group_id = $1
-                     UNION SELECT student_id FROM tul_enrollment_history WHERE group_id = $1
-                     UNION SELECT student_id FROM aim_bono_reservas WHERE group_id = $1 AND fecha = $2::date AND estado = 'reservada'
-                 ) c
-                 JOIN tul_groups g ON g.group_id = $1
-                 JOIN tul_activities a ON a.activity_id = g.activity_id
-                 WHERE a.club_id = $4
-                   AND (${miembroEnFecha('c.student_id')}
-                        OR EXISTS (SELECT 1 FROM aim_bono_reservas rv WHERE rv.group_id = $1 AND rv.fecha = $2::date
-                                   AND rv.student_id = c.student_id AND rv.estado = 'reservada'))
-                   AND NOT EXISTS (
-                     SELECT 1 FROM tul_attendance at
-                     WHERE at.group_id = $1 AND at.student_id = c.student_id AND at.date = $2::date)
-                 RETURNING attendance_id`, [req.params.groupId, fecha, status, clubId]
-            );
-            res.json({ success: true, marcados: r.rowCount });
+            res.json({ success: true, marcados: await marcarSinMarcar(req.params.groupId, fecha, status, false, info) });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
 

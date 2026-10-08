@@ -41,6 +41,10 @@ const ESTADOS = [
 export default function PasarListaClases({ showToast, abrir = null }) {
   const [fecha, setFecha] = useState(abrir?.fecha || hoyISO());
   const [clases, setClases] = useState([]);
+  // Quien ve las clases de todo el club puede quedarse con las suyas (#407).
+  const [todas, setTodas] = useState(false);
+  const [vista, setVista] = useState(() => { try { return localStorage.getItem('pasarLista.vista') || 'mias'; } catch { return 'mias'; } });
+  const elegirVista = (v) => { setVista(v); try { localStorage.setItem('pasarLista.vista', v); } catch { /* sin almacenamiento */ } };
   const [clase, setClase] = useState(null);
   const [alumnos, setAlumnos] = useState([]);
   const [meta, setMeta] = useState({}); // { speaking, noVienen, bonoModo } de la lista abierta
@@ -59,7 +63,7 @@ export default function PasarListaClases({ showToast, abrir = null }) {
     setCargando(true);
     try {
       const r = await fetch(`/api/admin/tul/attendance/dia/${f}`, { credentials: 'include' });
-      if (r.ok) setClases((await r.json()).clases || []);
+      if (r.ok) { const d = await r.json(); setClases(d.clases || []); setTodas(!!d.todas); }
     } catch { /* noop */ }
     finally { setCargando(false); }
   }, []);
@@ -81,6 +85,18 @@ export default function PasarListaClases({ showToast, abrir = null }) {
 
   useEffect(() => { cargarClases(fecha); setClase(null); setAlumnos([]); setMeta({}); setErrorLista(null); }, [fecha, cargarClases]);
 
+  // Abrir la lista de una clase. Si ya ha empezado, quien no tiene nada marcado
+  // queda como «Faltó» (automático) hasta que se cambie (#407).
+  async function abrirClase(c) {
+    setClase(c);
+    try {
+      await fetch(`/api/admin/tul/groups/${c.id}/attendance/abrir`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ fecha }),
+      });
+    } catch { /* la lista se carga igual */ }
+    cargarAlumnos(c.id, fecha);
+  }
+
   // Enlace directo a una clase (#360): desde el Resumen, Mi día, etc. se abre
   // su lista sin tener que buscarla.
   const abiertaPorEnlace = useRef(null);
@@ -94,7 +110,7 @@ export default function PasarListaClases({ showToast, abrir = null }) {
     }
     if (!abrir.grupo || abiertaPorEnlace.current === abrir.ruta || cargando) return;
     const c = clases.find(x => String(x.id) === String(abrir.grupo));
-    if (c) { abiertaPorEnlace.current = abrir.ruta; setClase(c); cargarAlumnos(c.id, fecha); }
+    if (c) { abiertaPorEnlace.current = abrir.ruta; abrirClase(c); }
   }, [abrir?.ruta, clases, cargando, fecha]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function marcar(alumno, status) {
@@ -112,13 +128,17 @@ export default function PasarListaClases({ showToast, abrir = null }) {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
         body: JSON.stringify({ studentId: alumno.id, fecha, status }),
       });
-      if (!r.ok) { const d = await r.json().catch(() => ({})); alert(d.error || 'No se pudo guardar.'); await cargarAlumnos(clase.id, fecha); }
-      else if (porBono) { await cargarAlumnos(clase.id, fecha); } // refresca las clases que le quedan
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(d.error || 'No se pudo guardar.'); await cargarAlumnos(clase.id, fecha); }
+      // Con bono, refresca las clases que le quedan; si se han apuntado faltas
+      // de los demás (la clase ya ha empezado, #407), para verlas.
+      else if (porBono || d.faltas > 0) { await cargarAlumnos(clase.id, fecha); }
     } catch { alert('Error de conexión.'); await cargarAlumnos(clase.id, fecha); }
   }
 
   async function marcarTodos(status) {
-    const sinMarcar = alumnos.filter(a => !a.status).length;
+    // Lo marcado automáticamente también cuenta como «por marcar» (#407).
+    const sinMarcar = alumnos.filter(a => !a.status || a.isAuto).length;
     if (!sinMarcar) { alert('Ya están todos marcados.'); return; }
     try {
       const r = await fetch(`/api/admin/tul/groups/${clase.id}/attendance/todos`, {
@@ -216,6 +236,9 @@ export default function PasarListaClases({ showToast, abrir = null }) {
   }
 
   const presentes = alumnos.filter(a => a.status === 'present' || a.status === 'late').length;
+  // Mis clases o todas (#407): «mías» solo si ese día da alguna.
+  const verClases = todas && clases.some(c => c.mia) && vista !== 'todas' ? 'mias' : 'todas';
+  const visibles = verClases === 'mias' ? clases.filter(c => c.mia) : clases;
 
   return (
     <div style={{ display: 'grid', gap: 14 }}>
@@ -236,9 +259,16 @@ export default function PasarListaClases({ showToast, abrir = null }) {
               Ese día no hay clases en el horario.
             </div>
           )}
+          {todas && clases.some(c => c.mia) && (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {[['mias', 'Mis clases', clases.filter(c => c.mia).length], ['todas', 'Todas', clases.length]].map(([v, l, n]) => (
+                <button key={v} type="button" className={`filter-pill ${verClases === v ? 'is-active' : ''}`} onClick={() => elegirVista(v)}>{l} ({n})</button>
+              ))}
+            </div>
+          )}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 10 }}>
-            {clases.map(c => (
-              <div key={c.id} onClick={() => { setClase(c); cargarAlumnos(c.id, fecha); }}
+            {visibles.map(c => (
+              <div key={c.id} onClick={() => abrirClase(c)}
                 style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '12px 14px', cursor: 'pointer' }}
                 onMouseEnter={e => e.currentTarget.style.boxShadow = 'var(--shadow-sm)'}
                 onMouseLeave={e => e.currentTarget.style.boxShadow = 'none'}>
@@ -249,9 +279,10 @@ export default function PasarListaClases({ showToast, abrir = null }) {
                     {c.studentCount}{c.maxStudents ? `/${c.maxStudents}` : ''}
                   </span>
                   <span style={{ fontSize: 12, color: 'var(--ink-2)' }}>alumno{c.studentCount !== 1 ? 's' : ''}</span>
-                  {c.marcados > 0 && (
-                    <span style={{ fontSize: 11, fontWeight: 800, color: c.marcados >= c.studentCount ? 'var(--teal)' : 'var(--ink-3)' }}>
-                      {c.marcados >= c.studentCount ? '✓ lista pasada' : `${c.marcados}/${c.studentCount} marcados`}
+                  {/* Sin nadie apuntado, la lista se da por pasada al acabar su hora (#407). */}
+                  {(c.pasada || c.marcados > 0) && (
+                    <span style={{ fontSize: 11, fontWeight: 800, color: c.pasada ? 'var(--teal)' : 'var(--ink-3)' }}>
+                      {c.pasada ? `✓ lista pasada${c.studentCount === 0 && !c.marcados ? ' · sin alumnos' : ''}` : `${c.marcados}/${c.studentCount} marcados`}
                     </span>
                   )}
                   {c.instructor && <span style={{ fontSize: 11, color: 'var(--ink-3)', marginLeft: 'auto' }}>{c.instructor}</span>}
@@ -341,6 +372,11 @@ export default function PasarListaClases({ showToast, abrir = null }) {
           {meta.speaking && (
             <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
               Clase individual{clase.activityName ? ` de ${clase.activityName}` : ''}: la lista es la de quienes han aceptado la clase de este día.{meta.noVienen ? ` ${meta.noVienen} ${meta.noVienen === 1 ? 'ha dicho' : 'han dicho'} que no ${meta.noVienen === 1 ? 'viene' : 'vienen'}.` : ''}
+            </p>
+          )}
+          {!errorLista && alumnos.length > 0 && (
+            <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
+              Quien quede sin marcar cuenta como «Faltó» en cuanto empieza la clase (sale como «marcado automáticamente»): marca solo a los que vienen.
             </p>
           )}
           {errorLista && (
