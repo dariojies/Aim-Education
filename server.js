@@ -17830,6 +17830,21 @@ async function horarioDiaDe(userId, dia = diaSemanaHoy(), cliente = pool) {
     return r.rows.map(x => ({ tramo: x.tramo, entrada: x.entrada, salida: x.salida }));
 }
 
+// Personal que no ficha (#403): quien sale en la plantilla pero no trabaja con
+// horario (la dirección, el Equipo IT, alguien que ya no viene…). Secretaría lo
+// marca como inactivo en Fichajes: no sale en la lista ni en las vacaciones, no
+// se le pone horario al importar el de las clases y no se le recuerda fichar.
+// Su registro no se toca: si ha fichado, sigue en el CSV y en sus informes.
+// Sin tabla nueva: una fila de aim_ajustes con la lista de ids.
+const CLAVE_FICHAJE_INACTIVOS = 'fichaje_inactivos';
+const SQL_FICHA = (col) => `${col}::text NOT IN (SELECT jsonb_array_elements_text(COALESCE(valor->'ids', '[]'::jsonb))
+                                              FROM aim_ajustes WHERE clave = '${CLAVE_FICHAJE_INACTIVOS}')`;
+async function fichajeInactivos(cliente = pool) {
+    const r = await cliente.query(`SELECT valor FROM aim_ajustes WHERE clave = $1`, [CLAVE_FICHAJE_INACTIVOS]);
+    const ids = r.rows[0]?.valor?.ids;
+    return new Set(Array.isArray(ids) ? ids.map(String) : []);
+}
+
 // Lo que hay que fichar un DÍA concreto. El Equipo IT se planifica la semana en
 // su apartado, y esas horas son las suyas: mandan sobre el horario semanal. Los
 // días que no tenga nada planificado, y el resto del personal, siguen con su
@@ -17854,7 +17869,7 @@ app.get('/api/fichaje/estado', authenticateSession, requireAdmin, async (req, re
         const uid = req.userSession.userId;
         const { estado, ultimo } = await estadoFichaje(uid);
         const hoy = hoyMadrid();
-        const horarioHoy = await horarioDeFecha(uid, hoy);
+        const horarioHoy = (await fichajeInactivos()).has(String(uid)) ? { origen: 'contrato', tramos: [] } : await horarioDeFecha(uid, hoy);
         const ap = await pool.query(
             `SELECT f.id, f.tipo, f.ts, f.dia, (f.creado_por IS NOT NULL OR f.origen = 'automatico') AS corregido
              FROM aim_fichajes f WHERE f.user_id = $1 AND f.dia = $2::date AND ${FICHAJE_VIGENTE('f')}
@@ -17977,6 +17992,7 @@ app.get('/api/admin/fichajes', authenticateSession, requireAdmin, requireRol('se
                                AND ($4::date IS NULL OR f.dia >= $4::date) AND f.dia <= $5::date))
                AND ($3::uuid IS NULL OR u.user_id = $3)
              ORDER BY nombre`, [AIM_CLUB_ID, ROLES_STAFF, persona, desde, hasta]);
+        const inactivos = await fichajeInactivos();
         const trabajadores = [];
         for (const s of staff.rows) {
             const l = await listadoFichajes({ userId: s.user_id, desde, hasta });
@@ -17988,10 +18004,35 @@ app.get('/api/admin/fichajes', authenticateSession, requireAdmin, requireRol('se
                 enPlantilla: !!s.en_plantilla,
                 jornada: s.jornada || null, horasSemana: s.horas_semana == null ? null : Number(s.horas_semana),
                 estado: estado.estado, totalSeg: l.totalSeg, dias: l.dias,
+                inactivo: inactivos.has(String(s.user_id)),
             });
         }
         res.set('Cache-Control', 'no-store');
         res.json({ desde, hasta, trabajadores });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Marcar o desmarcar a alguien como inactivo en Fichajes (#403).
+app.put('/api/admin/fichajes/inactivo/:userId', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
+    const uid = String(req.params.userId || '');
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uid)) return res.status(400).json({ error: 'Persona no válida.' });
+    if (typeof req.body?.inactivo !== 'boolean') return res.status(400).json({ error: 'Falta si está inactivo o no.' });
+    try {
+        const u = await pool.query(`SELECT 1 FROM users WHERE user_id = $1`, [uid]);
+        if (!u.rowCount) return res.status(404).json({ error: 'Esa persona no existe.' });
+        // De una vez en la base de datos: dos personas a la vez no se pisan.
+        await pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por)
+             VALUES ($1, jsonb_build_object('ids', CASE WHEN $3 THEN jsonb_build_array($2::text) ELSE '[]'::jsonb END), NOW(), $4)
+             ON CONFLICT (clave) DO UPDATE SET
+                valor = jsonb_build_object('ids', COALESCE((
+                    SELECT jsonb_agg(DISTINCT x) FROM (
+                        SELECT jsonb_array_elements_text(COALESCE(aim_ajustes.valor->'ids', '[]'::jsonb)) AS x
+                        UNION SELECT $2::text WHERE $3
+                    ) t WHERE x <> $2::text OR $3), '[]'::jsonb)),
+                actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+            [CLAVE_FICHAJE_INACTIVOS, uid, req.body.inactivo, req.userSession.userId]);
+        res.json({ success: true, inactivo: req.body.inactivo });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -18377,13 +18418,14 @@ app.put('/api/admin/fichajes/horario/:userId', authenticateSession, requireAdmin
         if (!Number.isInteger(dia) || dia < 0 || dia > 6) continue;
         const entrada = String(d?.entrada || ''), salida = String(d?.salida || '');
         if (!HHMM.test(entrada) || !HHMM.test(salida)) continue;
-        if (entrada >= salida) return res.status(400).json({ error: `El ${NOMBRE_DIA[dia]} (${tramo === 1 ? 'mañana' : 'tarde'}): la salida debe ser posterior a la entrada.` });
+        if (entrada >= salida) return res.status(400).json({ error: `El ${NOMBRE_DIA[dia]} (${tramo === 2 || entrada >= '14:00' ? 'tarde' : 'mañana'}): la salida debe ser posterior a la entrada.` });
         if (limpios.some(x => x.dia === dia && x.tramo === tramo)) continue;
         limpios.push({ dia, tramo, entrada, salida });
     }
     for (let dia = 0; dia < 7; dia++) {
         const m = limpios.find(x => x.dia === dia && x.tramo === 1), t = limpios.find(x => x.dia === dia && x.tramo === 2);
-        if (t && !m) return res.status(400).json({ error: `El ${NOMBRE_DIA[dia]} tiene turno de tarde sin turno de mañana: pon el turno en "mañana".` });
+        // El tramo 1 es el primer turno del día (de mañana o de tarde); el 2, el segundo.
+        if (t && !m) return res.status(400).json({ error: `El ${NOMBRE_DIA[dia]} tiene un segundo turno sin el primero.` });
         if (m && t && t.entrada < m.salida) return res.status(400).json({ error: `El ${NOMBRE_DIA[dia]}: el turno de tarde empieza antes de que acabe el de mañana.` });
     }
     // Jornada contratada (ticket #252), si viene con el horario.
@@ -19165,6 +19207,7 @@ app.get('/api/admin/fichajes/vacaciones', authenticateSession, requireAdmin, req
             `SELECT u.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre
              FROM users u
              WHERE u.club_id = $1 AND (LOWER(COALESCE(${sqlRango('u')},'')) = ANY($2) OR LOWER(COALESCE(u.dev_role,'')) = ANY($2))
+               AND ${SQL_FICHA('u.user_id')}
              ORDER BY nombre`, [AIM_CLUB_ID, ROLES_STAFF]);
         const trabajadores = [];
         for (const s of staff.rows) trabajadores.push({ userId: s.user_id, nombre: s.nombre, ...(await saldoVacaciones(s.user_id, curso)) });
@@ -20946,6 +20989,7 @@ async function horariosDesdeClases() {
     const staff = await pool.query(
         `SELECT user_id, TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS nombre FROM users
          WHERE club_id = $1 AND (LOWER(COALESCE(${sqlRango('users')},'')) = ANY($2) OR LOWER(COALESCE(dev_role,'')) = ANY($2))
+           AND ${SQL_FICHA('users.user_id')}
          ORDER BY nombre`, [AIM_CLUB_ID, ROLES_STAFF]);
     const grupos = await pool.query(
         `SELECT g.name, a.name AS actividad, g.sessions FROM tul_groups g
@@ -21084,7 +21128,9 @@ async function recordatoriosFichaje() {
         const estC = await estadoCorreosSistema();
         const mE = await ajusteSistema('fichaje_entrada', 'margen'), mS = await ajusteSistema('fichaje_salida', 'margen');
         const offE = !!estC.fichaje_entrada?.apagado, offS = !!estC.fichaje_salida?.apagado;
+        const inactivos = await fichajeInactivos();
         for (const [uid, tramos] of porTrabajador) {
+            if (inactivos.has(String(uid))) continue;
             const est = await estadoFichaje(uid);
             for (let i = 0; i < tramos.length; i++) {
                 const w = tramos[i], sig = tramos[i + 1];

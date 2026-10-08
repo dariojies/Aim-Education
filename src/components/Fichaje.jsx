@@ -1153,7 +1153,8 @@ function GestionFichajes({ showToast }) {
   const [cargando, setCargando] = useState(true);
   const [abierto, setAbierto] = useState(null);
   const [modal, setModal] = useState(null);     // { destino, apunte? }
-  const [horario, setHorario] = useState(null); // { userId, nombre, contrato:{jornada,horasSemana}, dias:[{dia,trabaja,m:{},tarde,t:{}}] }
+  const [horario, setHorario] = useState(null); // { userId, nombre, contrato:{jornada,horasSemana}, dias:[{dia,trabaja,manana,m:{},tarde,t:{}}] }
+  const [verInactivos, setVerInactivos] = useState(false);
   const [integridad, setIntegridad] = useState(false);
   const [importar, setImportar] = useState(false);
 
@@ -1182,10 +1183,14 @@ function GestionFichajes({ showToast }) {
   async function abrirHorario(t) {
     const r = await fetch(`/api/admin/fichajes/horario/${t.userId}`, { credentials: 'include', cache: 'no-store' });
     const d = await r.json().catch(() => ({ dias: [] }));
+    // El servidor guarda el primer y el segundo turno del día (#404). Con dos,
+    // son mañana y tarde; con uno solo, es de tarde si empieza a las 14:00 o más.
+    const vacio = { entrada: '', salida: '' };
     const dias = [0, 1, 2, 3, 4, 5, 6].map(dia => {
-      const m = (d.dias || []).find(x => x.dia === dia && Number(x.tramo || 1) === 1);
-      const t2 = (d.dias || []).find(x => x.dia === dia && Number(x.tramo) === 2);
-      return { dia, trabaja: !!m, m: { entrada: m?.entrada || '', salida: m?.salida || '' }, tarde: !!t2, t: { entrada: t2?.entrada || '', salida: t2?.salida || '' } };
+      const suyos = (d.dias || []).filter(x => x.dia === dia).sort((a, b) => Number(a.tramo || 1) - Number(b.tramo || 1))
+        .map(x => ({ entrada: x.entrada || '', salida: x.salida || '' }));
+      const [m, t] = suyos.length >= 2 ? suyos : suyos.length === 1 ? (suyos[0].entrada >= '14:00' ? [null, suyos[0]] : [suyos[0], null]) : [null, null];
+      return { dia, trabaja: !!(m || t), manana: !!m, m: m || vacio, tarde: !!t, t: t || vacio };
     });
     setHorario({
       userId: t.userId, nombre: t.nombre, dias,
@@ -1197,14 +1202,22 @@ function GestionFichajes({ showToast }) {
       },
     });
   }
-  const setDia = (i, cambio) => setHorario(h => ({ ...h, dias: h.dias.map((x, j) => j === i ? { ...x, ...cambio } : x) }));
+  const setDia = (i, cambio) => setHorario(h => ({ ...h, dias: h.dias.map((x, j) => {
+    if (j !== i) return x;
+    const n = { ...x, ...cambio };
+    // Al marcar un día sin turnos, empieza con el de tarde.
+    if (n.trabaja && !n.manana && !n.tarde) n.tarde = true;
+    return n;
+  }) }));
   async function guardarHorario(e) {
     e.preventDefault();
     const dias = [];
     for (const d of horario.dias) {
-      if (!d.trabaja || !d.m.entrada || !d.m.salida) continue;
-      dias.push({ dia: d.dia, tramo: 1, entrada: d.m.entrada, salida: d.m.salida });
-      if (d.tarde && d.t.entrada && d.t.salida) dias.push({ dia: d.dia, tramo: 2, entrada: d.t.entrada, salida: d.t.salida });
+      if (!d.trabaja) continue;
+      // Primer turno el que empieza antes (tramo 1) y, si hay otro, el segundo.
+      [d.manana && d.m, d.tarde && d.t].filter(x => x && x.entrada && x.salida)
+        .sort((a, b) => a.entrada.localeCompare(b.entrada))
+        .forEach((x, k) => dias.push({ dia: d.dia, tramo: k + 1, entrada: x.entrada, salida: x.salida }));
     }
     try {
       // Los meses trabajados se guardan como días: 2,5 por mes, redondeando a su favor (#386).
@@ -1216,6 +1229,54 @@ function GestionFichajes({ showToast }) {
   }
 
   const pendientes = sols.filter(s => s.estado === 'pendiente');
+
+  // Personal que no ficha (#403): fuera de la lista, con su registro intacto.
+  async function marcarInactivo(t, inactivo) {
+    if (inactivo && !window.confirm(`¿Marcar a ${t.nombre} como inactivo en Fichajes?\n\nDejará de salir en esta lista y en las vacaciones, y no se le recordará fichar. Lo que haya fichado se conserva, y se puede volver a activar cuando quieras.`)) return;
+    try {
+      await enviar(`/api/admin/fichajes/inactivo/${t.userId}`, { inactivo }, 'PUT');
+      showToast?.(inactivo ? `${t.nombre} ya no sale en Fichajes.` : `${t.nombre} vuelve a salir en Fichajes.`);
+      cargar();
+    } catch (err) { alert(err.message); }
+  }
+  const todos = data?.trabajadores || [];
+  const activos = todos.filter(t => !t.inactivo), inactivos = todos.filter(t => t.inactivo);
+
+  const fila = (t) => (
+    <div key={t.userId} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '12px 16px', cursor: 'pointer', flexWrap: 'wrap' }}
+        onClick={() => setAbierto(abierto === t.userId ? null : t.userId)}>
+        <div style={{ flex: '1 1 200px', minWidth: 0, opacity: t.inactivo ? .65 : 1 }}>
+          <div style={{ fontWeight: 800, fontSize: 14 }}>{t.nombre}
+            {t.estado === 'dentro' && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 800, color: 'var(--teal)' }}>● trabajando</span>}
+            {t.estado === 'pausa' && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 800, color: '#b45309' }}>● en pausa</span>}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+            {t.enPlantilla ? (t.rol || 'Personal') : <span style={{ color: 'var(--orange)', fontWeight: 700 }}>Ya no está en el club (se conserva su registro)</span>}
+            {t.jornada && ` · ${textoJornada(t.jornada, t.horasSemana)}`}
+          </div>
+        </div>
+        <span style={{ fontSize: 14, fontWeight: 800, color: 'var(--teal)' }}>{hms(t.totalSeg)}</span>
+        <a className="btn btn-sm btn-outline" onClick={e => e.stopPropagation()} target="_blank" rel="noopener noreferrer"
+          href={`/api/admin/fichajes/informe.pdf?persona=${t.userId}&desde=${desde || ''}&hasta=${hasta || ''}`}><I.Download /> PDF</a>
+        {t.enPlantilla && <button className="btn btn-sm btn-outline" onClick={e => { e.stopPropagation(); abrirHorario(t); }}>Horario</button>}
+        <button className="btn btn-sm btn-outline" onClick={e => { e.stopPropagation(); setModal({ destino: t }); }}>Añadir fichaje</button>
+        {t.inactivo
+          ? <button className="btn btn-sm btn-outline" onClick={e => { e.stopPropagation(); marcarInactivo(t, false); }}>Volver a activar</button>
+          : <button className="btn btn-sm btn-ghost" style={{ padding: '7px 9px', color: 'var(--ink-3)', lineHeight: 0 }} onClick={e => { e.stopPropagation(); marcarInactivo(t, true); }}
+              title="Marcar como inactivo: no ficha, deja de salir aquí y no se le recuerda fichar" aria-label={`Marcar a ${t.nombre} como inactivo`}><I.EyeOff /></button>}
+        <I.Chevron style={{ transform: abierto === t.userId ? 'rotate(180deg)' : 'none', transition: 'transform .15s', color: 'var(--ink-3)' }} />
+      </div>
+      {abierto === t.userId && (
+        <div style={{ borderTop: '1px solid var(--line)', padding: 14, display: 'grid', gap: 8 }}>
+          <ComputoMes persona={t.userId} fondo="var(--bg-3)" />
+          <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Pulsa un fichaje para proponer que se cambie o se anule. El trabajador tendrá que aprobarlo.</p>
+          {t.dias.length === 0 && <p style={{ margin: 0, color: 'var(--ink-3)', fontSize: 13 }}>Sin fichajes en este periodo.</p>}
+          {t.dias.map(d => <DiaRegistro key={d.dia} d={d} fondo="var(--bg-3)" onCorregir={a => setModal({ destino: t, apunte: a })} />)}
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div style={{ display: 'grid', gap: 14 }}>
@@ -1251,41 +1312,22 @@ function GestionFichajes({ showToast }) {
       <ResumenesGestion showToast={showToast} />
 
       {cargando && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
-      {!cargando && (data?.trabajadores || []).length === 0 && (
+      {!cargando && activos.length === 0 && (
         <div style={{ padding: 24, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>No hay personal para mostrar.</div>
       )}
 
-      {(data?.trabajadores || []).map(t => (
-        <div key={t.userId} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, overflow: 'hidden' }}>
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '12px 16px', cursor: 'pointer', flexWrap: 'wrap' }}
-            onClick={() => setAbierto(abierto === t.userId ? null : t.userId)}>
-            <div style={{ flex: '1 1 200px', minWidth: 0 }}>
-              <div style={{ fontWeight: 800, fontSize: 14 }}>{t.nombre}
-                {t.estado === 'dentro' && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 800, color: 'var(--teal)' }}>● trabajando</span>}
-                {t.estado === 'pausa' && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 800, color: '#b45309' }}>● en pausa</span>}
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
-                {t.enPlantilla ? (t.rol || 'Personal') : <span style={{ color: 'var(--orange)', fontWeight: 700 }}>Ya no está en el club (se conserva su registro)</span>}
-                {t.jornada && ` · ${textoJornada(t.jornada, t.horasSemana)}`}
-              </div>
-            </div>
-            <span style={{ fontSize: 14, fontWeight: 800, color: 'var(--teal)' }}>{hms(t.totalSeg)}</span>
-            <a className="btn btn-sm btn-outline" onClick={e => e.stopPropagation()} target="_blank" rel="noopener noreferrer"
-              href={`/api/admin/fichajes/informe.pdf?persona=${t.userId}&desde=${desde || ''}&hasta=${hasta || ''}`}><I.Download /> PDF</a>
-            {t.enPlantilla && <button className="btn btn-sm btn-outline" onClick={e => { e.stopPropagation(); abrirHorario(t); }}>Horario</button>}
-            <button className="btn btn-sm btn-outline" onClick={e => { e.stopPropagation(); setModal({ destino: t }); }}>Añadir fichaje</button>
-            <I.Chevron style={{ transform: abierto === t.userId ? 'rotate(180deg)' : 'none', transition: 'transform .15s', color: 'var(--ink-3)' }} />
-          </div>
-          {abierto === t.userId && (
-            <div style={{ borderTop: '1px solid var(--line)', padding: 14, display: 'grid', gap: 8 }}>
-              <ComputoMes persona={t.userId} fondo="var(--bg-3)" />
-              <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Pulsa un fichaje para proponer que se cambie o se anule. El trabajador tendrá que aprobarlo.</p>
-              {t.dias.length === 0 && <p style={{ margin: 0, color: 'var(--ink-3)', fontSize: 13 }}>Sin fichajes en este periodo.</p>}
-              {t.dias.map(d => <DiaRegistro key={d.dia} d={d} fondo="var(--bg-3)" onCorregir={a => setModal({ destino: t, apunte: a })} />)}
-            </div>
-          )}
+      {activos.map(t => fila(t))}
+
+      {inactivos.length > 0 && (
+        <div style={{ display: 'grid', gap: 8 }}>
+          <button type="button" onClick={() => setVerInactivos(v => !v)} aria-expanded={verInactivos}
+            style={{ justifySelf: 'start', background: 'none', border: 0, padding: 0, font: 'inherit', fontSize: 13, fontWeight: 700, color: 'var(--ink-3)', cursor: 'pointer', display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+            <I.Chevron width={14} height={14} style={{ transform: verInactivos ? 'none' : 'rotate(-90deg)', transition: 'transform .15s' }} />
+            Inactivos en Fichajes ({inactivos.length})
+          </button>
+          {verInactivos && inactivos.map(t => fila(t))}
         </div>
-      ))}
+      )}
 
       {modal && (
         <ModalSolicitud destino={modal.destino} apunte={modal.apunte} esEmpresa onClose={() => setModal(null)}
@@ -1348,35 +1390,40 @@ function GestionFichajes({ showToast }) {
                 (redondeando a su favor). Sin fecha de alta se entiende que está todo el año.
               </span>
             </div>
-            <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Marca los días que trabaja con su turno de mañana y, si también trabaja por la tarde, añade el turno de tarde. Con esto se le recuerda por correo y en la app que fiche.</p>
-            {horario.dias.map((d, i) => (
-              <div key={d.dia} style={{ display: 'grid', gap: 6, paddingBottom: 8, borderBottom: '1px solid var(--line-2)' }}>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <label style={{ display: 'flex', gap: 6, alignItems: 'center', width: 110, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-                    <input type="checkbox" checked={d.trabaja} onChange={e => setDia(i, { trabaja: e.target.checked })} />
-                    {DIAS_SEMANA[d.dia]}
-                  </label>
-                  {d.trabaja && (
-                    <>
-                      <span style={{ fontSize: 12, color: 'var(--ink-3)', width: 52 }}>Mañana</span>
-                      <input type="time" value={d.m.entrada} required onChange={e => setDia(i, { m: { ...d.m, entrada: e.target.value } })} style={{ ...inp, padding: '6px 8px' }} />
-                      <span style={{ color: 'var(--ink-3)' }}>–</span>
-                      <input type="time" value={d.m.salida} required onChange={e => setDia(i, { m: { ...d.m, salida: e.target.value } })} style={{ ...inp, padding: '6px 8px' }} />
-                      {!d.tarde && <button type="button" className="btn btn-sm btn-outline" style={{ fontSize: 11 }} onClick={() => setDia(i, { tarde: true })}>+ Tarde</button>}
-                    </>
+            <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Marca los días que trabaja: cada día empieza con el turno de tarde. Si también trabaja por la mañana, o solo por la mañana, añade el turno de mañana (y quita el de tarde si no lo tiene). Con esto se le recuerda por correo y en la app que fiche.</p>
+            {horario.dias.map((d, i) => {
+              const turnos = [
+                d.manana && { k: 'm', nombre: 'Mañana', v: d.m, quitar: { manana: false, m: { entrada: '', salida: '' } } },
+                d.tarde && { k: 't', nombre: 'Tarde', v: d.t, quitar: { tarde: false, t: { entrada: '', salida: '' } } },
+              ].filter(Boolean);
+              const turno = (x, primero) => (
+                <div key={x.k} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', paddingLeft: primero ? 0 : 118 }}>
+                  <span style={{ fontSize: 12, color: 'var(--ink-3)', width: 52 }}>{x.nombre}</span>
+                  <input type="time" value={x.v.entrada} required aria-label={`${DIAS_SEMANA[d.dia]}, ${x.nombre.toLowerCase()}: entrada`}
+                    onChange={e => setDia(i, { [x.k]: { ...x.v, entrada: e.target.value } })} style={{ ...inp, padding: '6px 8px' }} />
+                  <span style={{ color: 'var(--ink-3)' }}>–</span>
+                  <input type="time" value={x.v.salida} required aria-label={`${DIAS_SEMANA[d.dia]}, ${x.nombre.toLowerCase()}: salida`}
+                    onChange={e => setDia(i, { [x.k]: { ...x.v, salida: e.target.value } })} style={{ ...inp, padding: '6px 8px' }} />
+                  {turnos.length > 1 && (
+                    <button type="button" className="icon-btn danger" onClick={() => setDia(i, x.quitar)} aria-label={`Quitar el turno de ${x.nombre.toLowerCase()}`}><I.X /></button>
                   )}
+                  {primero && !d.manana && <button type="button" className="btn btn-sm btn-outline" style={{ fontSize: 11 }} onClick={() => setDia(i, { manana: true })}>+ Mañana</button>}
+                  {primero && !d.tarde && <button type="button" className="btn btn-sm btn-outline" style={{ fontSize: 11 }} onClick={() => setDia(i, { tarde: true })}>+ Tarde</button>}
                 </div>
-                {d.trabaja && d.tarde && (
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', paddingLeft: 118 }}>
-                    <span style={{ fontSize: 12, color: 'var(--ink-3)', width: 52 }}>Tarde</span>
-                    <input type="time" value={d.t.entrada} required onChange={e => setDia(i, { t: { ...d.t, entrada: e.target.value } })} style={{ ...inp, padding: '6px 8px' }} />
-                    <span style={{ color: 'var(--ink-3)' }}>–</span>
-                    <input type="time" value={d.t.salida} required onChange={e => setDia(i, { t: { ...d.t, salida: e.target.value } })} style={{ ...inp, padding: '6px 8px' }} />
-                    <button type="button" className="icon-btn danger" onClick={() => setDia(i, { tarde: false, t: { entrada: '', salida: '' } })} aria-label="Quitar tarde"><I.X /></button>
+              );
+              return (
+                <div key={d.dia} style={{ display: 'grid', gap: 6, paddingBottom: 8, borderBottom: '1px solid var(--line-2)' }}>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <label style={{ display: 'flex', gap: 6, alignItems: 'center', width: 110, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                      <input type="checkbox" checked={d.trabaja} onChange={e => setDia(i, { trabaja: e.target.checked })} />
+                      {DIAS_SEMANA[d.dia]}
+                    </label>
+                    {d.trabaja && turnos[0] && turno(turnos[0], true)}
                   </div>
-                )}
-              </div>
-            ))}
+                  {d.trabaja && turnos.slice(1).map(x => turno(x, false))}
+                </div>
+              );
+            })}
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
               <button type="button" className="btn btn-outline" onClick={() => setHorario(null)}>Cancelar</button>
               <button type="submit" className="btn btn-primary">Guardar</button>
