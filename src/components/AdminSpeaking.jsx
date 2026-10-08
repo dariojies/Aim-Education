@@ -657,9 +657,10 @@ export default function AdminSpeaking({ showToast }) {
                       )}
                     </span>
                   )}
-                  {/* Si la familia ya confirmó (sí), no hay que llamar (ticket #241).
-                      Y si se acabó el plazo sin confirmar, ya no hay nada que hacer. */}
-                  {(s.confirmado === true && !s.llamado) || s.perdida ? (
+                  {/* Si la familia ya ha contestado, que sí (ticket #241) o que no
+                      (#406), no hay que llamar. Y si se acabó el plazo sin
+                      confirmar, ya no hay nada que hacer. */}
+                  {(s.confirmado != null && !s.llamado) || s.perdida ? (
                     <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink-3)' }}>{s.perdida ? 'Fuera de plazo' : 'No hace falta llamar'}</span>
                   ) : (
                     <button onClick={() => marcarLlamado(s)} title="Marcar que ya has llamado a los padres"

@@ -16358,7 +16358,6 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         // a salir como nuevos los que ya se habían visto.
         const spk = await pool.query(
             `SELECT COUNT(*) FILTER (WHERE llamado = false AND confirmado IS NULL AND ${sqlLimiteSpeaking()} >= ${SQL_HOY_MADRID})::int AS por_llamar,
-                    COUNT(*) FILTER (WHERE confirmado = false)::int AS rechazados,
                     COUNT(*) FILTER (WHERE confirmado = true)::int AS confirmados
              FROM aim_speaking WHERE fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date`);
         const sp = spk.rows[0];
@@ -16510,7 +16509,19 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                 `SELECT COUNT(*)::int n FROM (${SQL_SOLICITUD_FOTOS}) s JOIN users u ON u.user_id = s.user_id WHERE u.club_id = $1`, [AIM_CLUB_ID])).rows[0].n;
             if (sf) avisos.push({ tipo: 'permisos', texto: `${sf} solicitud${sf !== 1 ? 'es' : ''} de permiso de fotos`, detalle: 'confirmar o descartar en Gestión de alumnos', destino: '/admin/alumnos', n: sf });
         }
-        if (sp.rechazados && recibe('speaking_rechazados')) avisos.push({ tipo: 'speaking', texto: `${sp.rechazados} familia${sp.rechazados !== 1 ? 's han' : ' ha'} dicho que NO a una clase individual`, detalle: 'revisar la asistencia', destino: '/admin/clases-individuales', clave: 'speaking|/admin/speaking|famil dicho speak', n: sp.rechazados });
+        // Alumnos que no vendrán a una clase individual (#406): a los profes de esa
+        // clase, para que citen a otra persona en el hueco. Solo cuenta lo que han
+        // dicho desde la última vez que lo vio: una vez abierto, el aviso se va.
+        if (recibe('speaking_rechazados')) {
+            const CLAVE_NO_VIENEN = 'speaking|/admin/speaking|famil dicho speak';
+            const visto = (await pool.query(`SELECT visto_at FROM aim_avisos_vistos WHERE user_id = $1 AND clave = $2`, [yo, CLAVE_NO_VIENEN])).rows[0]?.visto_at || null;
+            const nv = (await pool.query(
+                `SELECT COUNT(*)::int AS n, MAX(respondido_at) AS ultimo FROM aim_speaking
+                 WHERE confirmado = false AND fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date
+                   AND ($1::timestamptz IS NULL OR respondido_at > $1)
+                   AND ($2::uuid[] IS NULL OR group_id = ANY($2::uuid[]))`, [visto, misGrupos])).rows[0];
+            if (nv.n) avisos.push({ tipo: 'speaking', texto: `${nv.n} alumno${nv.n !== 1 ? 's no vendrán' : ' no vendrá'} a una clase individual`, detalle: 'puedes citar a otra persona en su hueco', destino: '/admin/clases-individuales', clave: CLAVE_NO_VIENEN, marca: nv.ultimo, n: nv.n });
+        }
 
         res.set('Cache-Control', 'no-store');
         await conVistos(yo, avisos);
@@ -21159,6 +21170,10 @@ async function recordatoriosFichaje() {
 // el club lo activa, a los `margen` minutos de acabar su tramo del horario (el de
 // sus clases, para los profes) se le ficha la salida a la hora en que acababa,
 // con su motivo y en la auditoría. Si salió más tarde, pide una corrección.
+// Siempre se cierra (#405): si entró cuando ya había acabado su horario, o ese
+// día no tenía, no hay hora de salida con la que cerrar; se espera a que acabe
+// el día (por si ficha él la salida) y se cierra sin sumar horas, para que pida
+// una corrección con la hora real. Mejor eso que contarle horas que no se saben.
 // El registro es solo de añadir: es un apunte nuevo, no se toca ninguno.
 const CIERRE_DEFECTO = { modo: 'instructores', margen: 30 };
 async function ajustesCierreFichaje() {
@@ -21194,28 +21209,35 @@ async function cerrarFichajesAbiertos() {
                  WHERE f.user_id = $1 AND f.tipo = 'entrada' AND ${FICHAJE_VIGENTE('f')} ORDER BY f.ts DESC, f.id DESC LIMIT 1`, [a.user_id])).rows[0];
             if (!ent) continue;
             const { tramos } = await horarioDeFecha(a.user_id, ent.dia);
-            if (!tramos.length) continue;
             const entMin = minutosHHMM(ent.hora);
             // El tramo en el que entró (o el siguiente, si llegó antes de hora).
             const t = tramos.find(x => minutosHHMM(x.salida) > entMin);
-            if (!t) continue; // entró después de su horario: horas extra, no se cierra
-            const finMin = minutosHHMM(t.salida);
-            if (ent.dia === hoy && ahoraMin < finMin + margen) continue;
+            let horaSalida, motivo;
+            if (t) {
+                const finMin = minutosHHMM(t.salida);
+                if (ent.dia === hoy && ahoraMin < finMin + margen) continue;
+                horaSalida = hhmm(finMin);
+                motivo = `Cierre automático: no fichó la salida y su horario acababa a las ${horaSalida}. Si salió más tarde, que pida una corrección.`;
+            } else {
+                // Entró con su horario ya acabado (horas extra) o un día sin horario.
+                if (ent.dia >= hoy) continue;
+                horaSalida = ent.hora;
+                motivo = `Cierre automático: no fichó la salida y entró a las ${ent.hora}, ${tramos.length ? 'con su horario ya acabado' : 'un día sin horario'}. Se cierra sin horas: que pida una corrección con la hora a la que salió.`;
+            }
             const client = await pool.connect();
             try {
                 await client.query('BEGIN');
                 await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, ['fichaje:' + a.user_id]);
                 const { estado, ultimo } = await estadoFichaje(a.user_id, client);
                 if (estado !== 'dentro' && estado !== 'pausa') { await client.query('ROLLBACK'); continue; }
-                const motivo = `Cierre automático: no fichó la salida y su horario acababa a las ${hhmm(finMin)}. Si salió más tarde, que pida una corrección.`;
                 const ins = await client.query(
                     `INSERT INTO aim_fichajes (user_id, tipo, ts, dia, origen, motivo)
                      VALUES ($1, 'salida', GREATEST(($2::date + $3::time) AT TIME ZONE 'Europe/Madrid', $4::timestamptz + interval '1 second'), $2::date, 'automatico', $5)
                      RETURNING id, tipo, ts, dia, origen, motivo`,
-                    [a.user_id, ent.dia, hhmm(finMin), ultimo.ts, motivo]);
+                    [a.user_id, ent.dia, horaSalida, ultimo.ts, motivo]);
                 await auditarFichaje(client, { evento: 'fichaje', trabajadorId: a.user_id, actorId: null, datos: { ...datosFichajeAuditoria(ins.rows[0]), automatico: true } });
                 await client.query('COMMIT');
-                console.log(`[fichaje] salida automática de ${a.user_id} a las ${hhmm(finMin)} del ${ent.dia}`);
+                console.log(`[fichaje] salida automática de ${a.user_id} a las ${horaSalida} del ${ent.dia}`);
             } catch (e) {
                 await client.query('ROLLBACK').catch(() => {});
                 console.error('[fichaje cierre]', e.message);

@@ -204,8 +204,11 @@ export const AVISOS = [
     // Clases individuales (#388, antes «Speaking»): los ids no cambian, para no
     // perder lo que la dirección haya ajustado. Solo a quien ve el apartado: sin
     // él, el aviso llevaría a una página que no le abre.
-    { id: 'speaking_por_llamar', grupo: 'Clases individuales', texto: 'Alumnos de clases individuales por avisar a los padres', quien: (p) => p.secciones.speaking },
-    { id: 'speaking_rechazados', grupo: 'Clases individuales', texto: 'Familias que han dicho que no a una clase individual', quien: (p) => p.secciones.speaking },
+    // Llamar es cosa de secretaría; quien no viene, de los profes de esa clase,
+    // que citan a otra persona en el hueco (#406).
+    { id: 'speaking_por_llamar', grupo: 'Clases individuales', texto: 'Alumnos de clases individuales sin contestar, por llamar a los padres', quien: (p, rol) => p.secciones.speaking && rol !== 'instructor' },
+    { id: 'speaking_rechazados', grupo: 'Clases individuales', texto: 'Alumnos que no vendrán a una clase individual (se va al verlo)', quien: (p, rol) => p.secciones.speaking && rol === 'instructor',
+      nota: () => 'solo de sus clases' },
     { id: 'fotos', grupo: 'Familias', texto: 'Solicitudes del permiso de fotos', quien: (p) => p.editarAlumnos },
     { id: 'contactos', grupo: 'Familias', texto: 'Consultas de la web sin atender', quien: (p) => p.secciones.contactos },
     { id: 'candidatos', grupo: 'Club', texto: 'Candidaturas nuevas de «Trabaja con nosotros»', quien: (p) => p.secciones.candidatos },

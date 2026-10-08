@@ -964,7 +964,7 @@ function CierreAutomatico({ showToast }) {
       </div>
       <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
         Si alguien se olvida de fichar la salida, se le ficha a la hora en que acababa su horario (el de sus clases, en los profes), con el motivo y en la auditoría.
-        Si salió más tarde, que pida una corrección. Quien entra después de su horario (horas extra) no se le cierra.
+        Si salió más tarde, que pida una corrección. Si entró con su horario ya acabado (horas extra) o un día sin horario, se le cierra al acabar el día sin sumarle horas, y que pida una corrección con la hora a la que salió.
       </span>
     </div>
   );
