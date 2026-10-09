@@ -19,8 +19,21 @@
     <div class="marca"></div>
     <h1>No hay conexión</h1>
     <p>Para usar la app de AIM Education necesitas internet.<br>Comprueba el wifi o los datos y vuelve a intentarlo.</p>
-    <button onclick="location.href='https://www.aimeducation.es/dashboard'">Reintentar</button>
+    <button onclick="reintentar()">Reintentar</button>
   </div>
 </main>
+<script>
+  // Se vuelve a intentar sola: en cuanto el móvil recupera la conexión y, una
+  // vez, a los pocos segundos (al abrir la app la red a veces tarda un momento).
+  var URL_APP = 'https://www.aimeducation.es/dashboard';
+  function reintentar() { location.replace(URL_APP); }
+  window.addEventListener('online', function () { setTimeout(reintentar, 800); });
+  try {
+    if (!sessionStorage.getItem('aim-reintento')) {
+      sessionStorage.setItem('aim-reintento', '1');
+      setTimeout(function () { if (navigator.onLine) reintentar(); }, 3000);
+    }
+  } catch (e) { /* sin sessionStorage: solo el botón */ }
+</script>
 </body>
 </html>
