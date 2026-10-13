@@ -105,14 +105,20 @@ function Apunte({ a, onCorregir }) {
 
 // Un día del registro, con sus apuntes y, debajo y a la vista, el detalle de lo
 // anulado y lo corregido (quién, cuándo y por qué): no se esconde nada.
-function DiaRegistro({ d, onCorregir, fondo = 'var(--bg-2)' }) {
+function DiaRegistro({ d, onCorregir, onCorregirJornada, fondo = 'var(--bg-2)' }) {
   const anulados = d.apuntes.filter(a => a.anulado);
   const corregidos = d.apuntes.filter(a => a.corregido && !a.anulado);
   return (
     <div style={{ background: fondo, border: '1px solid var(--line)', borderRadius: 12, padding: '10px 14px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <b style={{ fontSize: 13, textTransform: 'capitalize' }}>{fmtDia(d.dia)}</b>
-        <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--teal)' }}>{hms(d.segundos)}</span>
+        <span style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          {onCorregirJornada && (
+            <button type="button" className="btn btn-sm btn-outline" style={{ fontSize: 11, padding: '4px 10px' }} onClick={() => onCorregirJornada(d)}
+              title="Cambiar, anular o añadir los fichajes de este día de una vez">Corregir jornada</button>
+          )}
+          <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--teal)' }}>{hms(d.segundos)}</span>
+        </span>
       </div>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
         {d.apuntes.map(a => <Apunte key={a.id} a={a} onCorregir={onCorregir} />)}
@@ -127,6 +133,100 @@ function DiaRegistro({ d, onCorregir, fondo = 'var(--bg-2)' }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// Corregir una jornada entera de una vez (#409): los fichajes vigentes del día,
+// cada uno con su hora (o para anularlo), y los que falten, con un solo motivo.
+// Se manda todo junto; el trabajador lo aprueba (puede aprobarlo todo de golpe).
+// Sin `d`, es una jornada que no se fichó: se elige el día y se ponen sus horas.
+function ModalJornada({ destino, d, onClose, onDone }) {
+  const [fecha, setFecha] = useState(() => (d ? String(d.dia).slice(0, 10) : hoyISO()));
+  const [filas, setFilas] = useState(() => (d
+    ? d.apuntes.filter(a => !a.anulado)
+      .map(a => ({ id: a.id, tipo: a.tipo, hora: fmtHora(a.ts), orig: { tipo: a.tipo, hora: fmtHora(a.ts) }, anular: false, bloqueado: !!a.solicitudPendiente }))
+    : [{ tipo: 'entrada', hora: '' }, { tipo: 'salida', hora: '' }]));
+  const [motivo, setMotivo] = useState('');
+  const [incidencia, setIncidencia] = useState(false);
+  const [guardando, setGuardando] = useState(false);
+  const cambiar = (i, c) => setFilas(fs => fs.map((f, j) => (j === i ? { ...f, ...c } : f)));
+  const cambios = filas.flatMap(f => {
+    if (f.bloqueado) return [];
+    if (!f.id) return f.hora ? [{ accion: 'alta', tipo: f.tipo, hora: f.hora }] : [];
+    if (f.anular) return [{ accion: 'anular', fichajeId: f.id }];
+    if (f.tipo !== f.orig.tipo || f.hora !== f.orig.hora) return [{ accion: 'modificar', fichajeId: f.id, tipo: f.tipo, hora: f.hora }];
+    return [];
+  });
+
+  async function guardar(e) {
+    e.preventDefault();
+    if (!cambios.length) { alert('No has cambiado nada.'); return; }
+    setGuardando(true);
+    try {
+      await enviar('/api/fichaje/solicitudes/jornada', {
+        userId: destino.userId, fecha, motivo, cambios,
+        origen: incidencia ? 'incidencia' : 'correccion',
+      });
+      onDone?.(`${d ? 'Corrección de la jornada' : 'Jornada'} propuesta (${cambios.length} fichaje${cambios.length !== 1 ? 's' : ''}). ${destino.nombre} tiene que aprobarla.`);
+    } catch (err) { alert(err.message); } finally { setGuardando(false); }
+  }
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.4)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }} onClick={onClose}>
+      <form onClick={e => e.stopPropagation()} onSubmit={guardar}
+        style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 20, display: 'grid', gap: 12, width: 'min(520px, 100%)', maxHeight: '90vh', overflowY: 'auto' }}>
+        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>{d ? 'Corregir jornada' : 'Añadir una jornada'} · {destino.nombre}</h3>
+        {d ? <span style={{ fontSize: 13, color: 'var(--ink-2)', textTransform: 'capitalize', marginTop: -6 }}>{fmtDia(d.dia)}</span> : (
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, color: 'var(--ink-2)' }}>
+            Día <input type="date" value={fecha} max={hoyISO()} required onChange={e => setFecha(e.target.value)} style={{ ...inp, padding: '7px 9px' }} />
+            <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>(un día que no fichó)</span>
+          </label>
+        )}
+        <div style={{ display: 'grid', gap: 6 }}>
+          {filas.map((f, i) => (
+            <div key={f.id || `n${i}`} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', opacity: f.anular || f.bloqueado ? 0.55 : 1 }}>
+              <select value={f.tipo} disabled={f.anular || f.bloqueado} onChange={e => cambiar(i, { tipo: e.target.value })} style={{ ...inp, padding: '7px 9px', flex: '1 1 150px' }} aria-label="Tipo">
+                {Object.entries(ETQ).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
+              <input type="time" value={f.hora} required={!f.anular && !f.bloqueado} disabled={f.anular || f.bloqueado}
+                onChange={e => cambiar(i, { hora: e.target.value })} style={{ ...inp, padding: '7px 9px', textDecoration: f.anular ? 'line-through' : 'none' }} aria-label="Hora" />
+              {f.bloqueado ? <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>ya tiene una corrección pendiente</span>
+                : f.id ? (
+                  <button type="button" className="btn btn-sm btn-outline" style={{ fontSize: 11, color: f.anular ? 'var(--ink-2)' : 'var(--orange)' }}
+                    onClick={() => cambiar(i, { anular: !f.anular })}>{f.anular ? 'No anular' : 'Anular'}</button>
+                ) : (
+                  <button type="button" className="icon-btn danger" onClick={() => setFilas(fs => fs.filter((_, j) => j !== i))} aria-label="Quitar"><I.X /></button>
+                )}
+              {f.id && !f.anular && !f.bloqueado && (f.tipo !== f.orig.tipo || f.hora !== f.orig.hora) && (
+                <span style={{ fontSize: 11, color: 'var(--purple)' }}>antes {ETQ[f.orig.tipo].toLowerCase()} {f.orig.hora}</span>
+              )}
+              {!f.id && <span style={{ fontSize: 11, color: 'var(--teal)', fontWeight: 700 }}>nuevo</span>}
+            </div>
+          ))}
+          {!filas.length && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Ese día no tiene fichajes.</p>}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {[['entrada', '+ Entrada'], ['salida', '+ Salida'], ['pausa_inicio', '+ Pausa']].map(([t, l]) => (
+              <button key={t} type="button" className="btn btn-sm btn-outline" style={{ fontSize: 11 }}
+                onClick={() => setFilas(fs => (t === 'pausa_inicio'
+                  ? [...fs, { tipo: 'pausa_inicio', hora: '' }, { tipo: 'pausa_fin', hora: '' }]
+                  : [...fs, { tipo: t, hora: '' }]))}>{l}</button>
+            ))}
+          </div>
+        </div>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13, cursor: 'pointer' }}>
+          <input type="checkbox" checked={incidencia} onChange={e => setIncidencia(e.target.checked)} style={{ marginTop: 2 }} />
+          <span>No se pudo fichar a su hora por un fallo técnico (sin conexión, la web no cargaba...)</span>
+        </label>
+        <textarea placeholder="Motivo (obligatorio, vale para todos los cambios)" value={motivo} onChange={e => setMotivo(e.target.value)} required rows={2} style={{ ...inp, resize: 'vertical' }} />
+        <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
+          {cambios.length ? `${cambios.length} cambio${cambios.length !== 1 ? 's' : ''}. ` : ''}No se aplica nada hasta que {destino.nombre} lo apruebe; le llega todo junto y puede aprobarlo de una vez.
+        </p>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button type="button" className="btn btn-outline" onClick={onClose}>Cancelar</button>
+          <button type="submit" className="btn btn-primary" disabled={guardando || !cambios.length}>{guardando ? 'Enviando…' : 'Proponer corrección'}</button>
+        </div>
+      </form>
     </div>
   );
 }
@@ -223,6 +323,19 @@ function ListaSolicitudes({ solicitudes, mostrarTrabajador, onCambio, showToast 
       onCambio?.();
     } catch (err) { alert(err.message); }
   }
+  const resolubles = solicitudes.filter(s => s.puedoResolver);
+  async function resolverTodas(aprobar) {
+    let respuesta = null;
+    if (!aprobar) {
+      respuesta = window.prompt(`¿Por qué rechazas las ${resolubles.length}? (queda registrado)`);
+      if (!respuesta || !respuesta.trim()) return;
+    } else if (!window.confirm(`¿Aprobar las ${resolubles.length} correcciones? Se aplicarán al registro.`)) return;
+    try {
+      const d = await enviar('/api/fichaje/solicitudes/resolver-varias', { ids: resolubles.map(s => s.id), aprobar, respuesta });
+      showToast?.(aprobar ? `${d.resueltas} correcciones aprobadas y aplicadas.` : `${d.resueltas} correcciones rechazadas.`);
+      onCambio?.();
+    } catch (err) { alert(err.message); }
+  }
   async function cancelar(s) {
     if (!window.confirm('¿Retirar esta solicitud?')) return;
     try { await enviar(`/api/fichaje/solicitudes/${s.id}/cancelar`); showToast?.('Solicitud retirada.'); onCambio?.(); }
@@ -230,6 +343,12 @@ function ListaSolicitudes({ solicitudes, mostrarTrabajador, onCambio, showToast 
   }
   return (
     <div style={{ display: 'grid', gap: 8 }}>
+      {resolubles.length > 1 && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <button className="btn btn-sm btn-primary" onClick={() => resolverTodas(true)}>Aprobar todas ({resolubles.length})</button>
+          <button className="btn btn-sm btn-outline" onClick={() => resolverTodas(false)}>Rechazar todas</button>
+        </div>
+      )}
       {solicitudes.map(s => {
         const e = ESTADO_SOL[s.estado] || ESTADO_SOL.pendiente;
         return (
@@ -533,7 +652,12 @@ function MiFichaje({ showToast }) {
           trabajado hoy{tramos.length ? ` · ${horarioEsIT ? 'hoy, según el Equipo IT' : 'horario'} ${textoTramos(tramos)}` : ''}
         </div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
-          {estado === 'fuera' && (
+          {estado === 'fuera' && est?.inactivo && (
+            <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)', maxWidth: 380 }}>
+              Estás marcado como <b>inactivo en Fichajes</b>, así que no tienes que fichar. Si es un error, avisa a secretaría.
+            </p>
+          )}
+          {estado === 'fuera' && !est?.inactivo && (
             <button className="btn btn-primary" onClick={() => fichar('entrada')} disabled={fichando} style={{ fontSize: 15, padding: '12px 24px' }}>{BOTON.entrada}</button>
           )}
           {estado === 'dentro' && (
@@ -1155,6 +1279,7 @@ function GestionFichajes({ showToast }) {
   const [modal, setModal] = useState(null);     // { destino, apunte? }
   const [horario, setHorario] = useState(null); // { userId, nombre, contrato:{jornada,horasSemana}, dias:[{dia,trabaja,manana,m:{},tarde,t:{}}] }
   const [verInactivos, setVerInactivos] = useState(false);
+  const [jornada, setJornada] = useState(null); // { destino, d } (#409)
   const [integridad, setIntegridad] = useState(false);
   const [importar, setImportar] = useState(false);
 
@@ -1270,9 +1395,13 @@ function GestionFichajes({ showToast }) {
       {abierto === t.userId && (
         <div style={{ borderTop: '1px solid var(--line)', padding: 14, display: 'grid', gap: 8 }}>
           <ComputoMes persona={t.userId} fondo="var(--bg-3)" />
-          <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Pulsa un fichaje para proponer que se cambie o se anule. El trabajador tendrá que aprobarlo.</p>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)', flex: '1 1 260px' }}>Pulsa un fichaje para proponer que se cambie o se anule, o «Corregir jornada» para todo el día de una vez. El trabajador tendrá que aprobarlo.</p>
+            <button type="button" className="btn btn-sm btn-outline" onClick={() => setJornada({ destino: t, d: null })}
+              title="Entrada, pausas y salida de un día que no fichó, de una vez">+ Añadir jornada</button>
+          </div>
           {t.dias.length === 0 && <p style={{ margin: 0, color: 'var(--ink-3)', fontSize: 13 }}>Sin fichajes en este periodo.</p>}
-          {t.dias.map(d => <DiaRegistro key={d.dia} d={d} fondo="var(--bg-3)" onCorregir={a => setModal({ destino: t, apunte: a })} />)}
+          {t.dias.map(d => <DiaRegistro key={d.dia} d={d} fondo="var(--bg-3)" onCorregir={a => setModal({ destino: t, apunte: a })} onCorregirJornada={dd => setJornada({ destino: t, d: dd })} />)}
         </div>
       )}
     </div>
@@ -1334,6 +1463,10 @@ function GestionFichajes({ showToast }) {
           onDone={msg => { setModal(null); showToast?.(msg); cargar(); }} />
       )}
 
+      {jornada && (
+        <ModalJornada destino={jornada.destino} d={jornada.d} onClose={() => setJornada(null)}
+          onDone={msg => { setJornada(null); showToast?.(msg); cargar(); }} />
+      )}
       {integridad && <ModalIntegridad onClose={() => setIntegridad(false)} />}
       {importar && <ModalImportarHorarios onClose={() => setImportar(false)} onDone={msg => { setImportar(false); showToast?.(msg); cargar(); }} />}
 

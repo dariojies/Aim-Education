@@ -17893,6 +17893,8 @@ app.get('/api/fichaje/estado', authenticateSession, requireAdmin, async (req, re
         res.set('Cache-Control', 'no-store');
         res.json({
             estado, hoy,
+            // Inactivo en Fichajes (#408): no se le enseña el botón de fichar.
+            inactivo: (await fichajeInactivos()).has(String(uid)),
             // Si está trabajando ahora, desde cuándo (para el cronómetro en vivo).
             trabajandoDesde: estado === 'dentro' && ultimo ? ultimo.ts : null,
             enPausaDesde: estado === 'pausa' && ultimo ? ultimo.ts : null,
@@ -17941,6 +17943,12 @@ app.post('/api/fichaje', authenticateSession, requireAdmin, async (req, res) => 
         // Dos pestañas no pueden fichar a la vez y dejar el estado incoherente.
         await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, ['fichaje:' + uid]);
         const { estado } = await estadoFichaje(uid, client);
+        // Inactivo en Fichajes (#403, #408): no ficha. Si tenía una jornada abierta,
+        // puede cerrarla; empezar una nueva, no.
+        if (tipo === 'entrada' && (await fichajeInactivos(client)).has(String(uid))) {
+            await client.query('ROLLBACK');
+            return res.status(403).json({ error: 'Estás marcado como inactivo en Fichajes, así que no tienes que fichar. Si es un error, avisa a secretaría.' });
+        }
         if (!transicionFichaje(estado, tipo)) {
             await client.query('ROLLBACK');
             const msg = {
@@ -18132,9 +18140,12 @@ async function aplicarSolicitudFichaje(client, s, { actorId = null, ip = null } 
 async function correoSolicitudFichaje(solicitudId, momento) {
     if (!mailTransporter) return;
     try {
-        const r = await pool.query(`${SQL_SOLICITUDES_FICHAJE} WHERE s.id = $1`, [solicitudId]);
+        // Varias a la vez (una jornada corregida entera, #409): un solo correo.
+        const lista = (Array.isArray(solicitudId) ? solicitudId : [solicitudId]).map(Number).filter(Number.isInteger);
+        const r = await pool.query(`${SQL_SOLICITUDES_FICHAJE} WHERE s.id = ANY($1::int[]) ORDER BY s.ts NULLS FIRST, s.id`, [lista]);
         const s = r.rows[0];
         if (!s) return;
+        const textoCorreccion = r.rows.map(describirSolicitud).join('; ');
         const w = await pool.query(`SELECT email, name FROM users WHERE user_id = $1`, [s.user_id]);
         const email = w.rows[0]?.email;
         if (!email) return;
@@ -18142,7 +18153,7 @@ async function correoSolicitudFichaje(solicitudId, momento) {
         const c = propuesta
             ? await correoSistema('fichaje_propuesta', {
                 nombre: w.rows[0].name || '', quien: s.solicitado_por_nombre || 'Secretaría',
-                correccion: describirSolicitud(s), motivo: s.motivo || '', enlace: `${URL_PUBLICA_WEB}/admin`,
+                correccion: textoCorreccion, motivo: s.motivo || '', enlace: `${URL_PUBLICA_WEB}/admin`,
             })
             : await correoSistema('fichaje_resuelta', {
                 nombre: w.rows[0].name || '', correccion: describirSolicitud(s),
@@ -18152,6 +18163,121 @@ async function correoSolicitudFichaje(solicitudId, momento) {
         await mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: email, ...c });
     } catch (e) { console.error('[fichaje solicitud mail]', e.message); }
 }
+
+// Comprueba un cambio del registro antes de pedirlo: la hora (que no sea futura),
+// el fichaje que corrige (vigente y sin otra corrección pendiente) y el tipo.
+// Devuelve { ts, tipo, fichajeId } o lanza { httP, msg }.
+async function prepararSolicitudFichaje(userId, { accion, fichajeId, tipo, fecha, hora }) {
+    if (!['alta', 'anular', 'modificar'].includes(accion)) throw { httP: 400, msg: 'Acción no válida.' };
+    let ts = null, tipoN = null, fid = null;
+    if (accion === 'alta' || accion === 'modificar') {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha || ''))) throw { httP: 400, msg: 'Fecha no válida.' };
+        if (!/^\d{2}:\d{2}$/.test(String(hora || ''))) throw { httP: 400, msg: 'Hora no válida (HH:MM).' };
+        const t = await pool.query(
+            `SELECT (($1 || ' ' || $2)::timestamp AT TIME ZONE 'Europe/Madrid') AS ts,
+                    (($1 || ' ' || $2)::timestamp AT TIME ZONE 'Europe/Madrid') > NOW() AS futuro`, [fecha, hora]);
+        if (t.rows[0].futuro) throw { httP: 400, msg: 'No se puede registrar un fichaje en una hora que aún no ha llegado.' };
+        ts = t.rows[0].ts;
+    }
+    if (accion === 'anular' || accion === 'modificar') {
+        const f = await pool.query(
+            `SELECT f.id, f.tipo FROM aim_fichajes f WHERE f.id = $1 AND f.user_id = $2 AND ${FICHAJE_VIGENTE('f')}`,
+            [fichajeId, userId]);
+        if (!f.rowCount) throw { httP: 404, msg: 'Ese fichaje no existe o ya está anulado.' };
+        const dup = await pool.query(
+            `SELECT 1 FROM aim_fichaje_solicitudes WHERE fichaje_id = $1 AND estado = 'pendiente'`, [fichajeId]);
+        if (dup.rowCount) throw { httP: 409, msg: 'Ese fichaje ya tiene una corrección pendiente de aprobar.' };
+        fid = f.rows[0].id;
+        if (accion === 'modificar') tipoN = TIPOS_FICHAJE.includes(tipo) ? tipo : f.rows[0].tipo;
+    } else {
+        if (!TIPOS_FICHAJE.includes(tipo)) throw { httP: 400, msg: 'Tipo de fichaje no válido.' };
+        tipoN = tipo;
+    }
+    return { ts, tipo: tipoN, fichajeId: fid };
+}
+// La guarda dentro de la transacción de `client`, con su apunte en la auditoría.
+async function guardarSolicitudFichaje(client, { userId, accion, sol, motivo, origen, yo, esEmpresa, ip }) {
+    const ins = await client.query(
+        `INSERT INTO aim_fichaje_solicitudes (user_id, accion, fichaje_id, tipo, ts, motivo, origen, solicitado_por, iniciado_por)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+        [userId, accion, sol.fichajeId, sol.tipo, sol.ts, motivo, origen, yo, esEmpresa ? 'empresa' : 'trabajador']);
+    const id = ins.rows[0].id;
+    await auditarFichaje(client, {
+        evento: 'solicitud_creada', trabajadorId: userId, actorId: yo, ip,
+        datos: { solicitudId: id, accion, fichajeId: sol.fichajeId, tipo: sol.tipo, ts: sol.ts ? new Date(sol.ts).toISOString() : null, motivo, origen, iniciadoPor: esEmpresa ? 'empresa' : 'trabajador' },
+    });
+    return id;
+}
+const ESTADO_TRAS_FICHAJE = { entrada: 'dentro', pausa_inicio: 'pausa', pausa_fin: 'dentro', salida: 'fuera' };
+
+// Corregir una jornada entera de una vez (#409): cambiar horas, anular y añadir
+// fichajes de un mismo día en un solo paso y con un solo motivo. Se guardan todas
+// las solicitudes juntas (o ninguna) y la jornada que resulta tiene que cuadrar
+// (entrada, pausas y salida en orden). Siguen necesitando la aprobación de la
+// otra parte, como cualquier corrección (#251), que puede aprobarlas todas juntas.
+app.post('/api/fichaje/solicitudes/jornada', authenticateSession, requireAdmin, async (req, res) => {
+    const yo = req.userSession.userId;
+    const userId = req.body?.userId || yo;
+    const esEmpresa = String(userId) !== String(yo);
+    if (esEmpresa && !mandaAlMenos(req.userSession?.rol, 'secretaria')) {
+        return res.status(403).json({ error: 'Solo secretaría o dirección pueden proponer correcciones del registro de otra persona.' });
+    }
+    const fecha = String(req.body?.fecha || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) return res.status(400).json({ error: 'Fecha no válida.' });
+    const cambios = Array.isArray(req.body?.cambios) ? req.body.cambios.slice(0, 20) : [];
+    if (!cambios.length) return res.status(400).json({ error: 'No hay nada que corregir.' });
+    const mot = String(req.body?.motivo || '').trim().slice(0, 500);
+    if (!mot) return res.status(400).json({ error: 'Indica el motivo de la corrección.' });
+    const origen = req.body?.origen === 'incidencia' ? 'incidencia' : 'correccion';
+    try {
+        const u = await pool.query(
+            `SELECT 1 FROM users u WHERE u.user_id = $1
+               AND (u.club_id = $2 OR EXISTS (SELECT 1 FROM aim_fichajes f WHERE f.user_id = u.user_id))`, [userId, AIM_CLUB_ID]);
+        if (!u.rowCount) return res.status(404).json({ error: 'Esa persona no es del club.' });
+        const tocados = cambios.filter(c => c?.fichajeId).map(c => String(c.fichajeId));
+        if (new Set(tocados).size !== tocados.length) return res.status(400).json({ error: 'Un mismo fichaje no se puede corregir dos veces a la vez.' });
+        const preparadas = [];
+        for (const c of cambios) {
+            const accion = String(c?.accion || '');
+            preparadas.push({ accion, sol: await prepararSolicitudFichaje(userId, { accion, fichajeId: c?.fichajeId, tipo: c?.tipo, fecha, hora: c?.hora }) });
+        }
+        // Cómo quedaría el día: lo vigente, sin lo anulado o cambiado, más lo nuevo.
+        const vig = await pool.query(
+            `SELECT f.id, f.tipo, f.ts FROM aim_fichajes f
+             WHERE f.user_id = $1 AND f.dia = $2::date AND ${FICHAJE_VIGENTE('f')}`, [userId, fecha]);
+        const quitados = new Set(preparadas.filter(p => p.sol.fichajeId).map(p => String(p.sol.fichajeId)));
+        const dia = [
+            ...vig.rows.filter(f => !quitados.has(String(f.id))).map(f => ({ tipo: f.tipo, ts: new Date(f.ts) })),
+            ...preparadas.filter(p => p.sol.ts).map(p => ({ tipo: p.sol.tipo, ts: new Date(p.sol.ts) })),
+        ].sort((a, b) => a.ts - b.ts);
+        let estado = 'fuera';
+        for (const f of dia) {
+            if (!transicionFichaje(estado, f.tipo)) {
+                const hora = f.ts.toLocaleTimeString('es-ES', { timeZone: 'Europe/Madrid', hour: '2-digit', minute: '2-digit' });
+                return res.status(400).json({ error: `Así la jornada no cuadra: a las ${hora} va «${ETIQUETA_FICHAJE[f.tipo]}» y no toca. Tiene que ir entrada, las pausas (inicio y fin) y la salida, en ese orden.` });
+            }
+            estado = ESTADO_TRAS_FICHAJE[f.tipo];
+        }
+        const client = await pool.connect();
+        const ids = [];
+        try {
+            await client.query('BEGIN');
+            for (const p of preparadas) {
+                ids.push(await guardarSolicitudFichaje(client, { userId, accion: p.accion, sol: p.sol, motivo: mot, origen, yo, esEmpresa, ip: ipDe(req) }));
+            }
+            await client.query('COMMIT');
+        } catch (e) {
+            await client.query('ROLLBACK').catch(() => {});
+            throw e;
+        } finally { client.release(); }
+        // Un solo correo al trabajador con todo lo que se le propone.
+        if (esEmpresa) correoSolicitudFichaje(ids, 'propuesta').catch(() => {});
+        res.status(201).json({ success: true, ids, pendienteDe: esEmpresa ? 'trabajador' : 'empresa' });
+    } catch (err) {
+        if (err && err.httP) return res.status(err.httP).json({ error: err.msg });
+        res.status(500).json({ error: err.message });
+    }
+});
 
 // Pedir o proponer una corrección. Sin userId (o el propio): la pide el trabajador
 // y la valida la empresa. Con el de otra persona: la propone secretaría/dirección
@@ -18175,43 +18301,12 @@ app.post('/api/fichaje/solicitudes', authenticateSession, requireAdmin, async (r
             `SELECT 1 FROM users u WHERE u.user_id = $1
                AND (u.club_id = $2 OR EXISTS (SELECT 1 FROM aim_fichajes f WHERE f.user_id = u.user_id))`, [userId, AIM_CLUB_ID]);
         if (!u.rowCount) return res.status(404).json({ error: 'Esa persona no es del club.' });
-        let ts = null, tipoN = null, fid = null;
-        if (accion === 'alta' || accion === 'modificar') {
-            if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha || ''))) return res.status(400).json({ error: 'Fecha no válida.' });
-            if (!/^\d{2}:\d{2}$/.test(String(hora || ''))) return res.status(400).json({ error: 'Hora no válida (HH:MM).' });
-            const t = await pool.query(
-                `SELECT (($1 || ' ' || $2)::timestamp AT TIME ZONE 'Europe/Madrid') AS ts,
-                        (($1 || ' ' || $2)::timestamp AT TIME ZONE 'Europe/Madrid') > NOW() AS futuro`, [fecha, hora]);
-            if (t.rows[0].futuro) return res.status(400).json({ error: 'No se puede registrar un fichaje en una hora que aún no ha llegado.' });
-            ts = t.rows[0].ts;
-        }
-        if (accion === 'anular' || accion === 'modificar') {
-            const f = await pool.query(
-                `SELECT f.id, f.tipo FROM aim_fichajes f WHERE f.id = $1 AND f.user_id = $2 AND ${FICHAJE_VIGENTE('f')}`,
-                [fichajeId, userId]);
-            if (!f.rowCount) return res.status(404).json({ error: 'Ese fichaje no existe o ya está anulado.' });
-            const dup = await pool.query(
-                `SELECT 1 FROM aim_fichaje_solicitudes WHERE fichaje_id = $1 AND estado = 'pendiente'`, [fichajeId]);
-            if (dup.rowCount) return res.status(409).json({ error: 'Ese fichaje ya tiene una corrección pendiente de aprobar.' });
-            fid = f.rows[0].id;
-            if (accion === 'modificar') tipoN = TIPOS_FICHAJE.includes(tipo) ? tipo : f.rows[0].tipo;
-        } else {
-            if (!TIPOS_FICHAJE.includes(tipo)) return res.status(400).json({ error: 'Tipo de fichaje no válido.' });
-            tipoN = tipo;
-        }
+        const sol = await prepararSolicitudFichaje(userId, { accion, fichajeId, tipo, fecha, hora });
         const client = await pool.connect();
         let nuevaId;
         try {
             await client.query('BEGIN');
-            const ins = await client.query(
-                `INSERT INTO aim_fichaje_solicitudes (user_id, accion, fichaje_id, tipo, ts, motivo, origen, solicitado_por, iniciado_por)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-                [userId, accion, fid, tipoN, ts, mot, origen, yo, esEmpresa ? 'empresa' : 'trabajador']);
-            nuevaId = ins.rows[0].id;
-            await auditarFichaje(client, {
-                evento: 'solicitud_creada', trabajadorId: userId, actorId: yo, ip: ipDe(req),
-                datos: { solicitudId: nuevaId, accion, fichajeId: fid, tipo: tipoN, ts: ts ? new Date(ts).toISOString() : null, motivo: mot, origen, iniciadoPor: esEmpresa ? 'empresa' : 'trabajador' },
-            });
+            nuevaId = await guardarSolicitudFichaje(client, { userId, accion, sol, motivo: mot, origen, yo, esEmpresa, ip: ipDe(req) });
             await client.query('COMMIT');
         } catch (e) {
             await client.query('ROLLBACK').catch(() => {});
@@ -18219,7 +18314,10 @@ app.post('/api/fichaje/solicitudes', authenticateSession, requireAdmin, async (r
         } finally { client.release(); }
         if (esEmpresa) correoSolicitudFichaje(nuevaId, 'propuesta').catch(() => {});
         res.status(201).json({ success: true, id: nuevaId, pendienteDe: esEmpresa ? 'trabajador' : 'empresa' });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) {
+        if (err && err.httP) return res.status(err.httP).json({ error: err.msg });
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Las solicitudes del propio trabajador: las que pidió y las que le han propuesto.
@@ -18278,6 +18376,44 @@ app.post('/api/fichaje/solicitudes/:id/resolver', authenticateSession, requireAd
         await client.query('COMMIT');
         if (s.iniciado_por === 'trabajador') correoSolicitudFichaje(s.id, 'resuelta').catch(() => {});
         res.json({ success: true, estado: aprobar ? 'aprobada' : 'rechazada' });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        if (err && err.httP) return res.status(err.httP).json({ error: err.msg });
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+// Aprobar o rechazar varias de una vez (#409): todas o ninguna, en el orden de
+// sus horas. Las mismas reglas que una a una.
+app.post('/api/fichaje/solicitudes/resolver-varias', authenticateSession, requireAdmin, async (req, res) => {
+    const aprobar = req.body?.aprobar === true;
+    const respuesta = String(req.body?.respuesta || '').trim().slice(0, 500) || null;
+    if (!aprobar && !respuesta) return res.status(400).json({ error: 'Indica por qué las rechazas.' });
+    const ids = [...new Set((Array.isArray(req.body?.ids) ? req.body.ids : []).map(Number).filter(Number.isInteger))].slice(0, 50);
+    if (!ids.length) return res.status(400).json({ error: 'No hay nada que resolver.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const r = await client.query(
+            `SELECT * FROM aim_fichaje_solicitudes WHERE id = ANY($1::int[]) ORDER BY ts NULLS FIRST, id FOR UPDATE`, [ids]);
+        if (r.rowCount !== ids.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Alguna de esas solicitudes ya no existe.' }); }
+        for (const s of r.rows) {
+            if (s.estado !== 'pendiente') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Alguna ya estaba resuelta: recarga la página.' }); }
+            if (!puedeResolverSolicitud(req, s)) { await client.query('ROLLBACK'); return res.status(403).json({ error: 'Hay alguna que no te toca resolver a ti.' }); }
+        }
+        for (const s of r.rows) {
+            if (aprobar) await aplicarSolicitudFichaje(client, s, { actorId: req.userSession.userId, ip: ipDe(req) });
+            await client.query(
+                `UPDATE aim_fichaje_solicitudes SET estado = $2, resuelto_por = $3, resuelto_at = NOW(), respuesta = $4 WHERE id = $1`,
+                [s.id, aprobar ? 'aprobada' : 'rechazada', req.userSession.userId, respuesta]);
+            await auditarFichaje(client, {
+                evento: aprobar ? 'solicitud_aprobada' : 'solicitud_rechazada', trabajadorId: s.user_id,
+                actorId: req.userSession.userId, ip: ipDe(req), datos: { solicitudId: s.id, respuesta },
+            });
+        }
+        await client.query('COMMIT');
+        for (const s of r.rows) if (s.iniciado_por === 'trabajador') correoSolicitudFichaje(s.id, 'resuelta').catch(() => {});
+        res.json({ success: true, resueltas: r.rowCount, estado: aprobar ? 'aprobada' : 'rechazada' });
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
         if (err && err.httP) return res.status(err.httP).json({ error: err.msg });
