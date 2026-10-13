@@ -995,12 +995,16 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                     : /^[0-9a-f-]{36}$/i.test(String(req.query.instructor || '')) ? await gruposDe(req.query.instructor) : null]
             );
             const marcados = await pool.query(
-                `SELECT at.group_id, COUNT(*)::int n FROM tul_attendance at
+                `SELECT at.group_id, COUNT(*)::int n, COUNT(*) FILTER (WHERE at.is_auto IS NOT TRUE)::int a_mano
+                 FROM tul_attendance at
                  JOIN tul_groups g ON g.group_id = at.group_id
                  JOIN tul_activities a ON a.activity_id = g.activity_id
                  WHERE a.club_id = $1 AND at.date = $2::date GROUP BY 1`, [clubId, fecha]
             );
+            // Las faltas que se apuntan solas al abrir la lista (#407) no cuentan
+            // como lista pasada (#412): hace falta que alguien marque algo a mano.
             const yaMarcados = Object.fromEntries(marcados.rows.map(x => [x.group_id, x.n]));
+            const aMano = Object.fromEntries(marcados.rows.map(x => [x.group_id, x.a_mano]));
             // Clases individuales (#253, #388): solo hay clase los días con alumnos
             // apuntados, y cuentan los que han confirmado.
             const spk = await pool.query(
@@ -1026,21 +1030,22 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                 const sp = speakingDe.get(g.id);
                 if (speaking && !sp) continue; // ese día no hay nadie citado
                 const alumnosDia = speaking ? sp.si : g.studentCount;
-                const marcadosDia = yaMarcados[g.id] || 0;
+                const marcadosDia = yaMarcados[g.id] || 0, aManoDia = aMano[g.id] || 0;
                 const { acabada } = momentoClase(ses, fecha, hoy);
                 clases.push({
                     // Las que da quien mira (#407): para ver solo las suyas.
                     mia: ses.some(s => esDocenteSes(s, req.userSession?.userId)),
                     // Lista pasada: todos marcados o, sin nadie apuntado ni con
                     // plaza de bono, en cuanto acaba su hora (#407).
-                    pasada: (marcadosDia > 0 && marcadosDia >= alumnosDia)
+                    pasada: (aManoDia > 0 && marcadosDia >= alumnosDia)
                         || (alumnosDia === 0 && marcadosDia === 0 && !reservasDe.get(g.id) && acabada),
                     id: g.id, name: g.name, activityName: g.activityName,
                     studentCount: speaking ? sp.si : g.studentCount, maxStudents: g.maxStudents,
                     horario: ses.map(s => `${s.startTime || ''}${s.endTime ? `–${s.endTime}` : ''}${s.aulaName ? ` · ${s.aulaName}` : ''}`).join(' | '),
                     instructor: [...new Set(ses.flatMap(nombresDocentesSes))].join(' y ') || null,
                     hora: ses[0]?.startTime || '',
-                    marcados: yaMarcados[g.id] || 0,
+                    // Los marcados a mano (lo automático no es «pasar lista»).
+                    marcados: aManoDia,
                     speaking: speaking ? { si: sp.si, pendientes: sp.pendientes, no: sp.no } : null,
                     bonoModo: g.bonoModo, bonoReservas: reservasDe.get(g.id) || 0,
                     bonoLibres: libresDe.has(g.id) ? libresDe.get(g.id) : null,

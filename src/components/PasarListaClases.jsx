@@ -376,7 +376,7 @@ export default function PasarListaClases({ showToast, abrir = null }) {
           )}
           {!errorLista && alumnos.length > 0 && (
             <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
-              Quien quede sin marcar cuenta como «Faltó» en cuanto empieza la clase (sale como «marcado automáticamente»): marca solo a los que vienen.
+              Quien quede sin marcar cuenta como «Faltó» en cuanto empieza la clase (sale como «marcado automáticamente»): marca solo a los que vienen. La lista cuenta como pasada cuando marcas a alguien.
             </p>
           )}
           {errorLista && (
