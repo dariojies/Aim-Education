@@ -3,6 +3,7 @@ import { I } from './Icons.jsx';
 import { permisosDe, NOMBRE_ROL, NOMBRE_RANGO } from '../../permisos.js';
 import EquipoIT from './EquipoIT.jsx';
 import AdminCambios from './AdminCambios.jsx';
+import AdminEvaluacion from './AdminEvaluacion.jsx';
 import { useEnVivo } from '../envivo.js';
 import { ListaClases, AdminReportes, colorOcupacion } from './AdminTulClases.jsx';
 import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong, campDayParts, nombreMedioPago, CoronaCumple, COLOR_CUMPLE, coincideBusqueda } from './Shared.jsx';
@@ -102,6 +103,7 @@ function sectionLabel(id, pestana) {
     incidencias: "Incidencias",
     brickslab: "Brickslab y Biblioteca",
     galeria: "Fotos",
+    evaluacion: "Evaluación",
     settings: "Ajustes",
     objetos: "Objetos perdidos",
     support: "Tickets",
@@ -7060,6 +7062,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "events", label: "Eventos", icon: <I.Star /> },
         // Las fotos de clases y eventos, con quién sale en cada una (#364).
         { id: "galeria", label: "Fotos", icon: <I.Camara /> },
+        // Evaluación de los alumnos (#411): sesiones, notas y currículo.
+        { id: "evaluacion", label: "Evaluación", icon: <I.Birrete /> },
       ]
     },
     {
@@ -7255,6 +7259,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("fichaje") && <Fichaje showToast={showToast} permisos={permisos} enlace={enlace} />}
           {ver("equipo_it") && <EquipoIT showToast={showToast} />}
           {ver("cambios") && <AdminCambios showToast={showToast} />}
+          {ver("evaluacion") && <AdminEvaluacion showToast={showToast} />}
           {ver("contactos") && <AdminContactos showToast={showToast} onAbrirFicha={abrirFicha} />}
           {ver("candidatos") && <AdminCandidatos showToast={showToast} />}
           {ver("incidencias") && <AdminIncidencias showToast={showToast} enlace={enlace} />}

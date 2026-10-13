@@ -113,6 +113,8 @@ export function permisosDe(rol) {
             // La galería de fotos (#364): el club entero; los profes, solo de sus
             // clases (soloSusGrupos).
             galeria: !trabajador,
+            // Evaluación (#411): los profes, de sus clases; la dirección, de todas.
+            evaluacion: !trabajador,
             // Brickslab y Biblioteca (#291): préstamos, catálogo, permisos y
             // votaciones. Lo llevan secretaría y dirección.
             brickslab: mandaAlMenos(rol, 'secretaria'),
@@ -173,6 +175,9 @@ export function permisosDe(rol) {
         // resto ve las que ha escrito y las que tiene que resolver.
         verTodasIncidencias: mandaAlMenos(rol, 'secretaria'),
         gestionarIncidencias: jefe,
+        // El currículo de la evaluación (categorías, contenidos y objetivos, #411):
+        // la dirección y el Equipo IT. Los profes lo usan, no lo cambian.
+        editarCurriculo: jefe || rol === 'equipo_it',
     };
 }
 

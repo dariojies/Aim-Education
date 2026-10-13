@@ -16,6 +16,7 @@ import { crearBrickslab } from './brickslab.js';
 import { crearAvisosPush, GRUPOS_AVISO } from './avisos-push.js';
 import { crearRouterCalendarioMovil, agendaEnRango, leerHora } from './calendario-movil.js';
 import { crearCambios } from './cambios.js';
+import { crearEvaluacion, crearTablasEvaluacion, sembrarCategoriasIngles } from './evaluacion.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
@@ -1722,6 +1723,10 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_incidencias_estado ON aim_incidencias (estado, created_at DESC)`);
+        // Evaluación (#411): currículo, fichero de actividades, sesiones y notas.
+        // Tablas solo de esta web (las de Learning Dungeon no se tocan).
+        await crearTablasEvaluacion(client);
+        await sembrarCategoriasIngles(client, AIM_CLUB_ID).catch(e => console.warn('[evaluación] categorías de inglés:', e.message));
         // Valoraciones de Brickslab (#87, autorizadas): de 1 a 5 estrellas y un
         // comentario, una por persona y artículo. La comparten esta web y la app de
         // Brickslab (por eso va con el estilo de sus tablas). Con ellas se ordena
@@ -5062,6 +5067,8 @@ app.use(crearRouterCalendarioMovil({
 // resolverEsperaDeploy al arrancar) y las que añada el Equipo IT. Ver cambios.js.
 const cambios = crearCambios({ pool, authenticateSession, requireSeccion, requirePermiso, permisos });
 app.use(cambios.router);
+// Evaluación (#411): de los profes y la dirección; las familias no ven nada.
+app.use(crearEvaluacion({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireSeccion, permisos, grupoSuyo }).router);
 
 // ── Redes sociales (#341) ────────────────────────────────────────────────────
 // Quién puede llevarlas (y recibir conversaciones asignadas).

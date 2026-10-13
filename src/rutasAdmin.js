@@ -16,6 +16,7 @@ export const RUTAS_ADMIN = {
   camp: ['campamento'],
   events: ['eventos'],
   galeria: ['fotos', 'galeria'],
+  evaluacion: ['evaluacion'],
   titulos: ['titulos'],
   reportes: ['reportes'],
   students: ['alumnos'],
