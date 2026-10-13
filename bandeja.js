@@ -482,18 +482,29 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
             }
             await conImap(buzon, async (client) => {
                 const c = await carpetas(client);
-                const lock = await client.getMailboxLock(carpetaDe(c, carpetaDeVista(req.body?.vista)) || c.entrada);
+                const carpeta = carpetaDe(c, carpetaDeVista(req.body?.vista)) || c.entrada;
+                const lock = await client.getMailboxLock(carpeta);
+                // La librería no avisa si Gmail rechaza un cambio (devuelve false): se
+                // comprueba, para no decir «archivado» y que luego vuelva a salir (#413).
+                const exigir = (hecho) => { if (!hecho) throw Object.assign(new Error('Gmail no ha aceptado el cambio. Vuelve a intentarlo en un momento.'), { http: 502 }); };
+                // Archivar en Gmail es quitar la etiqueta «Recibidos». Desde la entrada,
+                // lo seguro es moverlo a «Todos» (Gmail lo entiende como archivar); desde
+                // otra carpeta, se le quita la etiqueta.
+                const archivar = async () => {
+                    if (carpeta === c.entrada && c.todos) exigir(await client.messageMove(uid, c.todos, { uid: true }));
+                    else exigir(await client.messageFlagsRemove(uid, ['\\Inbox'], { uid: true, useLabels: true }));
+                };
                 try {
                     if (accion === 'leido') await client.messageFlagsAdd(uid, ['\\Seen'], { uid: true });
                     else if (accion === 'no_leido') await client.messageFlagsRemove(uid, ['\\Seen'], { uid: true });
-                    else if (accion === 'archivar') await client.messageFlagsRemove(uid, ['\\Inbox'], { uid: true, useLabels: true });
+                    else if (accion === 'archivar') await archivar();
                     else if (accion === 'papelera') { if (c.papelera) await client.messageMove(uid, c.papelera, { uid: true }); }
                     // Gmail aprende: lo devuelve a la entrada y no lo vuelve a tomar por spam.
                     else if (accion === 'no_spam') { if (req.body?.vista !== 'spam') throw Object.assign(new Error('Ese correo no está en el spam.'), { http: 400 }); await client.messageMove(uid, 'INBOX', { uid: true }); }
                     else if (accion === 'asignar') {
                         const quitar = lista.map(x => etiquetaDe(x.nombre)).filter(e => e !== (destino && etiquetaDe(destino.nombre)));
                         if (quitar.length) await client.messageFlagsRemove(uid, quitar, { uid: true, useLabels: true });
-                        if (destino) await client.messageFlagsAdd(uid, [etiquetaDe(destino.nombre)], { uid: true, useLabels: true });
+                        if (destino) exigir(await client.messageFlagsAdd(uid, [etiquetaDe(destino.nombre)], { uid: true, useLabels: true }));
                         // Asignar uno hecho lo reabre: vuelve a la entrada.
                         await client.messageFlagsRemove(uid, [ETIQUETA_HECHO], { uid: true, useLabels: true });
                         await client.messageFlagsAdd(uid, ['\\Inbox'], { uid: true, useLabels: true });
@@ -501,12 +512,12 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
                     // Hecho = archivado (#384): sale de la entrada (también en Gmail) y
                     // queda en «Hechos». Reabrir lo devuelve a la entrada.
                     else if (accion === 'hecho') {
-                        await client.messageFlagsAdd(uid, [ETIQUETA_HECHO], { uid: true, useLabels: true });
-                        await client.messageFlagsRemove(uid, ['\\Inbox'], { uid: true, useLabels: true });
+                        exigir(await client.messageFlagsAdd(uid, [ETIQUETA_HECHO], { uid: true, useLabels: true }));
+                        await archivar();
                     }
                     else if (accion === 'reabrir') {
                         await client.messageFlagsRemove(uid, [ETIQUETA_HECHO], { uid: true, useLabels: true });
-                        await client.messageFlagsAdd(uid, ['\\Inbox'], { uid: true, useLabels: true });
+                        exigir(await client.messageFlagsAdd(uid, ['\\Inbox'], { uid: true, useLabels: true }));
                     }
                     else throw Object.assign(new Error('Acción desconocida.'), { http: 400 });
                 } finally { lock.release(); }
