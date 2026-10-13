@@ -17,6 +17,7 @@ import { crearAvisosPush, GRUPOS_AVISO } from './avisos-push.js';
 import { crearRouterCalendarioMovil, agendaEnRango, leerHora } from './calendario-movil.js';
 import { crearCambios } from './cambios.js';
 import { crearEvaluacion, crearTablasEvaluacion, sembrarCategoriasIngles } from './evaluacion.js';
+import { crearPublicaciones, crearTablasPublicaciones } from './publicaciones.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
@@ -1854,6 +1855,8 @@ async function initDb() {
         `);
         // Mensajes de Messenger, Instagram y WhatsApp (#341).
         await crearTablasRedes(client);
+        // Publicaciones en redes (#410): lo programado y sus fotos o vídeos.
+        await crearTablasPublicaciones(client);
         // Tamaño de cada segmento guardado, una foto al día (#341).
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_segmentos_historial (
@@ -5067,6 +5070,12 @@ app.use(crearRouterCalendarioMovil({
 // resolverEsperaDeploy al arrancar) y las que añada el Equipo IT. Ver cambios.js.
 const cambios = crearCambios({ pool, authenticateSession, requireSeccion, requirePermiso, permisos });
 app.use(cambios.router);
+// Publicaciones en Facebook e Instagram (#410), dentro de Comunicación. Cada
+// minuto sale lo programado; cada 6 horas se apuntan los seguidores.
+const publicacionesRedes = crearPublicaciones({ pool, authenticateSession, requireSeccion, urlPublica: URL_PUBLICA_WEB });
+app.use(publicacionesRedes.router);
+setInterval(function publicarRedesProgramadas() { publicacionesRedes.publicarPendientes(); }, 60_000);
+setInterval(function seguidoresRedes() { publicacionesRedes.fotoSeguidores(); }, 6 * 3600_000);
 // Evaluación (#411): de los profes y la dirección; las familias no ven nada.
 app.use(crearEvaluacion({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireSeccion, permisos, grupoSuyo }).router);
 

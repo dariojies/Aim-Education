@@ -79,7 +79,7 @@ function aLocalInput(iso) {
 
 // El título de cada sección es el mismo nombre corto que lleva en el menú: si
 // el menú dice «Alumnos» y la página «Gestión de alumnos», parece otro sitio.
-const NOMBRE_PESTANA_CRM = { campanas: "Campañas", segmentos: "Segmentos", automatismos: "Automatismos", disenos: "Diseños" };
+const NOMBRE_PESTANA_CRM = { campanas: "Campañas", segmentos: "Segmentos", automatismos: "Automatismos", disenos: "Diseños", publicaciones: "Publicaciones" };
 function sectionLabel(id, pestana) {
   if (id === "comunicaciones" && NOMBRE_PESTANA_CRM[pestana]) return NOMBRE_PESTANA_CRM[pestana];
   return ({
@@ -7087,6 +7087,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "bandeja", label: "Correo", icon: <I.Mail /> },
         { id: "redes", label: "Redes sociales", icon: <I.Share /> },
         { id: "contactos", label: "Consultas web", icon: <I.Globe width={18} height={18} /> },
+        // Publicar y programar en Facebook e Instagram, con sus estadísticas (#410).
+        { id: "comunicaciones", pestana: "publicaciones", label: "Publicaciones", icon: <I.Calendar width={18} height={18} /> },
         { id: "comunicaciones", pestana: "campanas", label: "Campañas", icon: <I.Enviar /> },
         { id: "comunicaciones", pestana: "segmentos", label: "Segmentos", icon: <I.Filter width={18} height={18} /> },
         { id: "comunicaciones", pestana: "automatismos", label: "Automatismos", icon: <I.Spark width={18} height={18} /> },

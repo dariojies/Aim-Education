@@ -3,6 +3,7 @@ import { I } from './Icons.jsx';
 import AdminCampanas from './AdminCampanas.jsx';
 import AdminAutomatismos from './AdminAutomatismos.jsx';
 import AdminDisenoCorreos from './AdminDisenoCorreos.jsx';
+import AdminPublicaciones from './AdminPublicaciones.jsx';
 import { TIPOS_CORREO, describirSegmento } from './crmTextos.js';
 import { Paso, Opcion } from './CrmPiezas.jsx';
 
@@ -37,6 +38,7 @@ export default function AdminComunicaciones({ showToast, onAbrirFicha, pestana: 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
       <div style={{ ...grupoPastillas, justifySelf: 'start' }}>
+        <button type="button" style={{ ...pastilla(pestana === 'publicaciones'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('publicaciones')}>Publicaciones</button>
         <button type="button" style={{ ...pastilla(pestana === 'segmentos'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('segmentos')}>Segmentos</button>
         <button type="button" style={{ ...pastilla(pestana === 'campanas'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('campanas')}>Campañas</button>
         <button type="button" style={{ ...pastilla(pestana === 'automatismos'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('automatismos')}>Automatismos</button>
@@ -48,6 +50,7 @@ export default function AdminComunicaciones({ showToast, onAbrirFicha, pestana: 
         nuevaConSegmento={campanaCon} onEmpezada={() => setCampanaCon(null)} onIrASegmentos={() => setPestana('segmentos')} />}
       {pestana === 'automatismos' && <AdminAutomatismos showToast={showToast} onAbrirFicha={onAbrirFicha} />}
       {pestana === 'disenos' && <AdminDisenoCorreos showToast={showToast} />}
+      {pestana === 'publicaciones' && <AdminPublicaciones showToast={showToast} />}
     </div>
   );
 }
