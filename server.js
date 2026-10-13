@@ -1,5 +1,8 @@
+// La vigilancia del Equipo IT va la primera: así ve todas las tareas automáticas.
+import { medirPeticiones, crearVigilancia, retardoBucle } from './vigilancia.js';
 import express from 'express';
 import path from 'path';
+import tls from 'tls';
 import { fileURLToPath } from 'url';
 import { readFile } from 'fs/promises';
 import pg from 'pg';
@@ -11,7 +14,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 import nodemailer from 'nodemailer';
 import { calcularRecibo, calcularCobro, serieDeLinea, mesAGenerar, mesDeAlta, tieneMilesimas, brutoMilesimas } from './billing.js';
 import { crearRouterTulClases } from './tul-clases.js';
-import { crearRouterBandeja, buscarRespuestas, correosCon, buzonesPersonales } from './bandeja.js';
+import { crearRouterBandeja, buscarRespuestas, correosCon, buzonesPersonales, probarBuzones } from './bandeja.js';
 import { crearBrickslab } from './brickslab.js';
 import { crearAvisosPush, GRUPOS_AVISO } from './avisos-push.js';
 import { crearRouterCalendarioMovil, agendaEnRango, leerHora } from './calendario-movil.js';
@@ -2696,6 +2699,8 @@ app.use((req, res, next) => {
     });
     next();
 });
+// Las peticiones, minuto a minuto, para la vigilancia del Equipo IT.
+app.use(medirPeticiones);
 // Redsys manda su notificación como formulario, no como JSON.
 app.use(express.urlencoded({ extended: false, limit: '256kb' }));
 
@@ -16377,6 +16382,11 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                     COUNT(*) FILTER (WHERE confirmado = true)::int AS confirmados
              FROM aim_speaking WHERE fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date`);
         const sp = spk.rows[0];
+        // Servicios caídos según la vigilancia (al Equipo IT y los superadmin).
+        if (recibe('servicios_caidos')) {
+            const caidos = vigilancia.caidos();
+            if (caidos.length) avisos.push({ tipo: 'sistema', texto: `${caidos.length} servicio${caidos.length !== 1 ? 's' : ''} de la web con problemas`, detalle: caidos.map(c => c.nombre).join(', '), destino: '/admin/equipo-it', clave: `servicios_caidos:${caidos.map(c => `${c.id}@${c.desde}`).sort().join(',')}`, n: caidos.length });
+        }
         if (sp.por_llamar && recibe('speaking_por_llamar')) avisos.push({ tipo: 'speaking', texto: `${sp.por_llamar} alumno${sp.por_llamar !== 1 ? 's' : ''} de clases individuales por avisar a los padres`, detalle: 'llamar y confirmar asistencia', destino: '/admin/clases-individuales', clave: 'speaking|/admin/speaking|alumn speak avisa padre', n: sp.por_llamar });
         // Almacén (#322): artículos en o por debajo de su mínimo de aviso. La clave
         // lleva cuáles son, así que si baja otro distinto vuelve a encenderse.
@@ -19424,6 +19434,211 @@ app.get('/api/admin/diagnostico', authenticateSession, requireSeccion('equipo_it
         });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
+
+// ── Vigilancia de los servicios (Equipo IT) ─────────────────────────────────
+// Qué se comprueba de cada servicio, cada cuánto y qué es «bien», «aviso» o
+// «error». vigilancia.js las lanza, las cronometra y guarda su historial; si una
+// pasa a error, sale en la campanita del Equipo IT.
+const LIMITE_CONEXIONES_BASE = 20;     // Heroku Postgres Essential-0
+const LIMITE_BASE_MB = 1024;
+const LIMITE_MEMORIA_MB = 512;         // un dyno básico de Heroku
+const conPlazo = (url, opts = {}) => fetch(url, { ...opts, signal: AbortSignal.timeout(10_000) });
+const haceCuanto = (t) => {
+    if (!t) return 'nunca';
+    const m = Math.round((Date.now() - new Date(t).getTime()) / 60_000);
+    return m < 60 ? `hace ${m} min` : m < 2880 ? `hace ${Math.round(m / 60)} h` : `hace ${Math.round(m / 1440)} días`;
+};
+const hostWeb = () => HOST_PRINCIPAL || new URL(URL_PUBLICA_WEB).host;
+const dominioRaiz = () => hostWeb().split('.').slice(-2).join('.');
+function certificadoDe(host) {
+    return new Promise((ok, ko) => {
+        const s = tls.connect({ host, port: 443, servername: host, timeout: 8000 }, () => {
+            const c = s.getPeerCertificate();
+            s.end();
+            if (!c?.valid_to) return ko(new Error('No tiene certificado'));
+            ok({ dias: Math.floor((new Date(c.valid_to).getTime() - Date.now()) / 864e5), hasta: c.valid_to, emisor: c.issuer?.O || c.issuer?.CN || '' });
+        });
+        s.on('error', ko);
+        s.on('timeout', () => { s.destroy(); ko(new Error('No contesta')); });
+    });
+}
+// Las apps de fuera que se quieran vigilar: VIGILAR_URLS en Heroku,
+// «Learning Dungeon=https://…;Brickslab=https://…».
+const urlsVigiladas = () => String(process.env.VIGILAR_URLS || '').split(/[;\n]/).map(x => x.trim()).filter(Boolean)
+    .map(x => { const i = x.indexOf('='); return i > 0 ? { nombre: x.slice(0, i).trim(), url: x.slice(i + 1).trim() } : null; })
+    .filter(x => x && /^https?:\/\//.test(x.url)).slice(0, 10);
+const config = (nombre, grupo, activo, detalleSi, detalleNo) => ({ estado: activo ? 'ok' : 'apagado', detalle: activo ? detalleSi : detalleNo });
+
+const COMPROBACIONES = [
+    { id: 'base', grupo: 'Infraestructura', nombre: 'Base de datos', cadaMin: 5, fn: async () => {
+        const a = Date.now();
+        await pool.query('SELECT 1');
+        const ms = Date.now() - a;
+        const r = (await pool.query(
+            `SELECT pg_database_size(current_database())::bigint AS bytes,
+                    (SELECT COUNT(*) FROM pg_stat_activity WHERE datname = current_database())::int AS conexiones`)).rows[0];
+        const porApp = (await pool.query(
+            `SELECT COALESCE(NULLIF(application_name, ''), '(sin nombre)') AS app, COALESCE(client_addr::text, 'local') AS ip, COUNT(*)::int AS n
+             FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() GROUP BY 1, 2 ORDER BY 3 DESC`)).rows;
+        const mb = Math.round(Number(r.bytes) / 1048576);
+        const uso = mb / LIMITE_BASE_MB, con = r.conexiones / LIMITE_CONEXIONES_BASE;
+        return {
+            estado: uso > 0.95 || con >= 1 ? 'error' : uso > 0.8 || con >= 0.8 || ms > 1000 || pool.waitingCount > 0 ? 'aviso' : 'ok',
+            detalle: `Responde en ${ms} ms · ${mb} MB de ${LIMITE_BASE_MB} MB · ${r.conexiones} de ${LIMITE_CONEXIONES_BASE} conexiones (esta web: ${pool.totalCount} de ${LIMITES_POOL.max}${pool.waitingCount ? `, ${pool.waitingCount} esperando` : ''})`,
+            datos: { mb, conexiones: r.conexiones, porApp },
+        };
+    } },
+    { id: 'servidor', grupo: 'Infraestructura', nombre: 'Servidor de la web', cadaMin: 1, fn: async () => {
+        const mb = Math.round(process.memoryUsage().rss / 1048576), atasco = retardoBucle();
+        return {
+            estado: mb > LIMITE_MEMORIA_MB * 0.95 ? 'error' : mb > LIMITE_MEMORIA_MB * 0.8 || atasco > 500 ? 'aviso' : 'ok',
+            detalle: `${mb} MB de memoria de ${LIMITE_MEMORIA_MB} · se atasca como mucho ${atasco} ms · arrancado ${haceCuanto(Date.now() - process.uptime() * 1000)}`,
+        };
+    } },
+    { id: 'web', grupo: 'Web', nombre: 'La web', cadaMin: 5, fn: async () => {
+        const a = Date.now();
+        const r = await conPlazo(`https://${hostWeb()}/`, { redirect: 'follow' });
+        const ms = Date.now() - a;
+        return {
+            estado: !r.ok ? 'error' : ms > 3000 ? 'aviso' : 'ok',
+            detalle: `https://${hostWeb()} → ${r.status}${r.redirected ? ` (en ${new URL(r.url).host})` : ''} en ${ms} ms`,
+        };
+    } },
+    { id: 'dominio', grupo: 'Web', nombre: `${dominioRaiz()} lleva a la web`, cadaMin: 30, fn: async () => {
+        const r = await conPlazo(`https://${dominioRaiz()}/`, { redirect: 'follow' });
+        const final = new URL(r.url).host;
+        return {
+            estado: r.ok && (final === hostWeb() || final.endsWith(`.${dominioRaiz()}`) || final === dominioRaiz()) ? 'ok' : 'aviso',
+            detalle: `https://${dominioRaiz()} → ${r.status} en ${final}`,
+        };
+    } },
+    { id: 'certificado', grupo: 'Web', nombre: 'Certificado HTTPS', cadaMin: 360, fn: async () => {
+        const c = await certificadoDe(hostWeb());
+        return { estado: c.dias < 7 ? 'error' : c.dias < 21 ? 'aviso' : 'ok', detalle: `Caduca en ${c.dias} días (${new Date(c.hasta).toLocaleDateString('es-ES')})${c.emisor ? ` · ${c.emisor}` : ''}` };
+    } },
+    ...urlsVigiladas().map((u, i) => ({ id: `app${i}`, grupo: 'Otras apps', nombre: u.nombre, cadaMin: 5, fn: async () => {
+        const a = Date.now();
+        const r = await conPlazo(u.url, { redirect: 'follow' });
+        const ms = Date.now() - a;
+        return { estado: r.status >= 500 ? 'error' : r.status >= 400 ? 'aviso' : ms > 5000 ? 'aviso' : 'ok', detalle: `${u.url} → ${r.status} en ${ms} ms` };
+    } })),
+    { id: 'correo', grupo: 'Comunicación', nombre: 'Correo saliente (SMTP)', cadaMin: 30, fn: async () => {
+        if (!mailTransporter) return { estado: 'apagado', detalle: 'Sin configurar (EMAIL_USER / EMAIL_PASS)' };
+        await mailTransporter.verify();
+        return { estado: 'ok', detalle: `${process.env.EMAIL_USER} puede enviar` };
+    } },
+    { id: 'buzones', grupo: 'Comunicación', nombre: 'Buzones de Gmail', cadaMin: 15, fn: async () => {
+        const r = await probarBuzones();
+        if (!r.length) return { estado: 'apagado', detalle: 'Ningún buzón conectado' };
+        const mal = r.filter(b => !b.ok);
+        return {
+            estado: mal.some(b => b.general) ? 'error' : mal.length ? 'aviso' : 'ok',
+            detalle: mal.length ? mal.map(b => `${b.email}: ${b.error}`).join(' · ') : `${r.length} buzón${r.length !== 1 ? 'es' : ''} bien (${r.map(b => b.email).join(', ')})`,
+            datos: { buzones: r },
+        };
+    } },
+    { id: 'meta', grupo: 'Comunicación', nombre: 'Facebook e Instagram', cadaMin: 30, fn: async () => {
+        const c = await publicacionesRedes.cuentaMeta(true);
+        const ultimo = (await pool.query(`SELECT MAX(created_at) AS t FROM aim_social_mensajes WHERE entrante`).catch(() => ({ rows: [{}] }))).rows[0]?.t;
+        if (!process.env.META_PAGE_TOKEN) return { estado: 'apagado', detalle: 'Sin token de la página (META_PAGE_TOKEN)' };
+        if (!c.conectado) return { estado: 'error', detalle: c.motivo };
+        const faltan = [...(c.faltan || []), ...(c.faltanEstadisticas || [])];
+        return {
+            estado: c.faltan?.length ? 'aviso' : 'ok',
+            detalle: `${c.facebook.nombre}${c.instagram ? ` · @${c.instagram.usuario}` : ' · sin Instagram vinculado'}${faltan.length ? ` · faltan permisos: ${faltan.join(', ')}` : ''} · último mensaje recibido: ${haceCuanto(ultimo)}`,
+        };
+    } },
+    { id: 'whatsapp', grupo: 'Comunicación', nombre: 'WhatsApp', cadaMin: 360, fn: async () =>
+        config('', '', !!(process.env.WHATSAPP_TOKEN && process.env.WHATSAPP_PHONE_ID), 'Configurado', 'Sin configurar') },
+    { id: 'push', grupo: 'Comunicación', nombre: 'Avisos al móvil', cadaMin: 15, fn: async () => {
+        const r = (await pool.query(
+            `SELECT COUNT(*) FILTER (WHERE plataforma = 'android')::int AS android, COUNT(*) FILTER (WHERE plataforma = 'ios')::int AS ios
+             FROM aim_push_dispositivos`).catch(() => ({ rows: [{}] }))).rows[0];
+        const ahora = avisosPush.conectados?.() ?? 0;
+        return {
+            estado: (r.ios || 0) > 0 && !avisosPush.apnsActivo() ? 'aviso' : 'ok',
+            detalle: `${r.android || 0} Android (${ahora} conectados ahora) · ${r.ios || 0} iPhone · avisos del iPhone (APNs) ${avisosPush.apnsActivo() ? 'configurados' : 'sin configurar'}`,
+        };
+    } },
+    { id: 'tpv', grupo: 'Dinero', nombre: 'Pagos por internet (Redsys)', cadaMin: 15, fn: async () => {
+        const t = configTpv();
+        const u = (await pool.query(
+            `SELECT MAX(created_at) FILTER (WHERE estado = 'pagado') AS ultimo, COUNT(*) FILTER (WHERE estado = 'revisar')::int AS revisar
+             FROM aim_tpv_pagos WHERE entorno = $1`, [t.entorno])).rows[0];
+        if (tpvRealIncompleto()) return { estado: 'error', detalle: 'En real, pero falta el comercio o la clave no vale' };
+        if (!pagosOnlineAbiertos()) return { estado: 'apagado', detalle: `Cerrados (${t.entorno})` };
+        return {
+            estado: u.revisar ? 'aviso' : t.entorno === 'real' ? 'ok' : 'aviso',
+            detalle: `Abiertos · ${t.entorno === 'real' ? 'REAL' : 'pruebas'} · último pago ${haceCuanto(u.ultimo)}${u.revisar ? ` · ${u.revisar} por revisar` : ''}`,
+        };
+    } },
+    { id: 'verifactu', grupo: 'Dinero', nombre: 'VERI*FACTU', cadaMin: 15, fn: async () => {
+        if (AJUSTES_VERIFACTU.modo !== 'verifactu') return { estado: 'apagado', detalle: 'Apagado: las facturas no se mandan a Hacienda' };
+        if (!hayCertificadoVerifactu()) return { estado: 'error', detalle: 'Encendido, pero sin certificado' };
+        const r = (await pool.query(
+            `SELECT COUNT(*) FILTER (WHERE estado_envio = 'pendiente' AND created_at < NOW() - INTERVAL '1 hour')::int AS atascadas,
+                    COUNT(*) FILTER (WHERE estado_envio NOT IN ('pendiente', 'enviado', 'no_aplica'))::int AS mal
+             FROM aim_factura_registro`)).rows[0];
+        return {
+            estado: r.mal ? 'error' : r.atascadas ? 'aviso' : 'ok',
+            detalle: `Encendido · ${AJUSTES_VERIFACTU.entorno}${r.atascadas ? ` · ${r.atascadas} sin mandar hace más de una hora` : ''}${r.mal ? ` · ${r.mal} con error` : ''}`,
+        };
+    } },
+    { id: 'google', grupo: 'Integraciones', nombre: 'Entrar con Google', cadaMin: 360, fn: async () =>
+        config('', '', googleActivo(), 'Configurado', 'Sin configurar') },
+    { id: 'github', grupo: 'Integraciones', nombre: 'GitHub (registro de cambios)', cadaMin: 360, fn: async () => {
+        const r = await conPlazo('https://api.github.com/rate_limit', {
+            headers: { 'User-Agent': 'aim-education-vigilancia', ...(process.env.GITHUB_TOKEN ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}) } });
+        const d = await r.json().catch(() => ({}));
+        const quedan = d?.resources?.core?.remaining, total = d?.resources?.core?.limit;
+        return {
+            estado: !r.ok ? 'aviso' : quedan === 0 ? 'aviso' : 'ok',
+            detalle: `${process.env.GITHUB_TOKEN ? 'Con token' : 'Sin token'} · quedan ${quedan ?? '?'} de ${total ?? '?'} consultas esta hora`,
+        };
+    } },
+    { id: 'ia', grupo: 'Integraciones', nombre: 'IA (Gemini)', cadaMin: 360, fn: async () =>
+        config('', '', !!process.env.GEMINI_API_KEY, 'Clave puesta', 'Sin clave') },
+];
+
+// Lo que está encendido y apagado en la web (solo para mirar; se cambia en su sitio).
+async function interruptoresWeb() {
+    const est = await estadoCorreosSistema();
+    const cierre = await ajustesCierreFichaje();
+    const [inactivos, programadas, cola] = await Promise.all([
+        fichajeInactivos().then(s => s.size).catch(() => null),
+        pool.query(`SELECT COUNT(*)::int n FROM aim_social_publicaciones WHERE estado = 'programada'`).then(r => r.rows[0].n).catch(() => null),
+        pool.query(`SELECT COUNT(*)::int n FROM aim_campana_envios e JOIN aim_campana_correos k ON k.id = e.correo_id WHERE e.estado = 'pendiente' AND k.estado = 'enviando'`).then(r => r.rows[0].n).catch(() => null),
+    ]);
+    const redes = canalesActivosRedes();
+    return [
+        { grupo: 'Dinero', nombre: 'Pagos por internet', activo: pagosOnlineAbiertos(), detalle: configTpv().entorno === 'real' ? 'Redsys real' : 'Redsys en pruebas', donde: 'billing' },
+        { grupo: 'Dinero', nombre: 'VERI*FACTU', activo: AJUSTES_VERIFACTU.modo === 'verifactu', detalle: AJUSTES_VERIFACTU.modo === 'verifactu' ? AJUSTES_VERIFACTU.entorno : 'apagado', donde: 'billing' },
+        { grupo: 'Fichajes', nombre: 'Cierre automático de la jornada', activo: cierre.modo !== 'nadie', detalle: cierre.modo === 'nadie' ? 'a nadie' : `${cierre.modo === 'todos' ? 'a todo el personal' : 'a los profes'}, a los ${cierre.margen} min`, donde: 'fichaje' },
+        { grupo: 'Fichajes', nombre: 'Personas inactivas en Fichajes', activo: null, detalle: inactivos == null ? '—' : `${inactivos}`, donde: 'fichaje' },
+        { grupo: 'Redes', nombre: 'Messenger e Instagram', activo: !!redes.messenger, detalle: redes.messenger ? 'con token' : 'sin token', donde: 'redes' },
+        { grupo: 'Redes', nombre: 'WhatsApp', activo: !!redes.whatsapp, detalle: redes.whatsapp ? 'configurado' : 'sin configurar', donde: 'redes' },
+        { grupo: 'Redes', nombre: 'Publicaciones programadas', activo: null, detalle: programadas == null ? '—' : `${programadas} esperando su hora`, donde: 'comunicaciones' },
+        { grupo: 'Correo', nombre: 'Envíos de campañas en cola', activo: null, detalle: cola == null ? '—' : `${cola} correos`, donde: 'comunicaciones' },
+        { grupo: 'App del móvil', nombre: 'Avisos del iPhone (APNs)', activo: avisosPush.apnsActivo(), detalle: avisosPush.apnsActivo() ? 'configurados' : 'sin configurar', donde: null },
+        { grupo: 'Acceso', nombre: 'Entrar con Google', activo: googleActivo(), detalle: googleActivo() ? 'configurado' : 'sin configurar', donde: null },
+        ...Object.entries(CORREOS_SISTEMA).map(([k, c]) => ({
+            grupo: 'Correos automáticos', nombre: c.nombre || k, activo: !est?.[k]?.apagado, detalle: est?.[k]?.apagado ? 'apagado' : 'encendido', donde: 'comunicaciones',
+        })),
+    ];
+}
+async function servidorWeb() {
+    let deploy = null;
+    try { deploy = JSON.parse(await readFile(path.join(__dirname, 'dist', 'deploy.json'), 'utf8')); } catch { /* en local no hay */ }
+    return {
+        version: process.env.HEROKU_RELEASE_VERSION || null, publicado: process.env.HEROKU_RELEASE_CREATED_AT || null,
+        commit: deploy?.commit || process.env.SOURCE_VERSION || null, compilado: deploy?.fecha || null,
+    };
+}
+const vigilancia = crearVigilancia({
+    authenticateSession, requireSeccion, requirePermiso,
+    comprobaciones: COMPROBACIONES, interruptores: interruptoresWeb, servidor: servidorWeb,
+});
+app.use(vigilancia.router);
 
 // ── Equipo IT: planificación semanal ────────────────────────────────────────
 // Cada semana el Equipo IT se planifica qué días y a qué horas trabaja. Lo editan

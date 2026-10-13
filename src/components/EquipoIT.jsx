@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { I } from './Icons.jsx';
+import VigilanciaIT from './VigilanciaIT.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Equipo IT: planificación semanal. Cada semana el equipo se organiza qué días y
-// a qué horas trabaja cada uno. Lo editan el propio Equipo IT y los superadmin;
+// Equipo IT: la vigilancia de los servicios (solo el Equipo IT y los superadmin)
+// y la planificación semanal. Cada semana el equipo se organiza qué días y a qué
+// horas trabaja cada uno. Lo editan el propio Equipo IT y los superadmin;
 // secretaría y dirección lo ven, pero no lo tocan (el servidor lo comprueba).
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -30,6 +32,27 @@ async function enviar(url, body, method = 'POST') {
 const inp = { fontFamily: 'inherit', fontSize: 13, padding: '7px 9px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', minWidth: 0 };
 
 export default function EquipoIT({ showToast }) {
+  // La vigilancia solo la abre quien puede (el servidor contesta 403 al resto).
+  const [puedeVigilar, setPuedeVigilar] = useState(null);
+  const [pestana, setPestana] = useState('vigilancia');
+  useEffect(() => {
+    fetch('/api/admin/vigilancia', { credentials: 'include', cache: 'no-store' }).then(r => setPuedeVigilar(r.ok)).catch(() => setPuedeVigilar(false));
+  }, []);
+  if (puedeVigilar === null) return <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>;
+  if (!puedeVigilar) return <Planificacion showToast={showToast} />;
+  return (
+    <div style={{ display: 'grid', gap: 14 }}>
+      <div style={{ display: 'flex', gap: 6 }}>
+        {[['vigilancia', 'Vigilancia'], ['planificacion', 'Planificación']].map(([v, l]) => (
+          <button key={v} className={`filter-pill ${pestana === v ? 'is-active' : ''}`} onClick={() => setPestana(v)} style={{ borderRadius: 8, padding: '8px 16px' }}>{l}</button>
+        ))}
+      </div>
+      {pestana === 'vigilancia' ? <VigilanciaIT><EstadoServidor /></VigilanciaIT> : <Planificacion showToast={showToast} />}
+    </div>
+  );
+}
+
+function Planificacion({ showToast }) {
   const [semana, setSemana] = useState(hoyISO());
   const [datos, setDatos] = useState(null);
   const [error, setError] = useState(null);
@@ -195,8 +218,6 @@ export default function EquipoIT({ showToast }) {
           </form>
         </div>
       )}
-
-      {puede && <EstadoServidor />}
     </div>
   );
 }
@@ -258,7 +279,7 @@ function EstadoServidor() {
   return (
     <div style={{ borderTop: '1px solid var(--line)', paddingTop: 14, display: 'grid', gap: 10 }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-        <b style={{ fontSize: 15 }}>Estado del servidor</b>
+        <b style={{ fontSize: 15 }}>Detalles del servidor</b>
         <button className="btn btn-sm btn-outline" onClick={cargar}>Actualizar</button>
       </div>
       {error && <p style={{ margin: 0, fontSize: 13, color: 'var(--orange)' }}>{error}</p>}

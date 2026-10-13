@@ -215,6 +215,8 @@ export const AVISOS = [
     { id: 'speaking_rechazados', grupo: 'Clases individuales', texto: 'Alumnos que no vendrán a una clase individual (se va al verlo)', quien: (p, rol) => p.secciones.speaking && rol === 'instructor',
       nota: () => 'solo de sus clases' },
     { id: 'fotos', grupo: 'Familias', texto: 'Solicitudes del permiso de fotos', quien: (p) => p.editarAlumnos },
+    // La vigilancia de los servicios: si algo se cae, al Equipo IT y los superadmin.
+    { id: 'servicios_caidos', grupo: 'Sistema', texto: 'Servicios de la web con problemas', quien: (p) => p.editarEquipoIT },
     { id: 'contactos', grupo: 'Familias', texto: 'Consultas de la web sin atender', quien: (p) => p.secciones.contactos },
     { id: 'candidatos', grupo: 'Club', texto: 'Candidaturas nuevas de «Trabaja con nosotros»', quien: (p) => p.secciones.candidatos },
     { id: 'correos_asignados', grupo: 'Correo', texto: 'Correos de info@ asignados a él', quien: (p) => p.secciones.bandeja },

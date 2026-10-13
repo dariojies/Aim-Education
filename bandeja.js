@@ -123,6 +123,21 @@ async function carpetas(client) {
 // La carpeta de verdad de cada vista (las de etiquetas viven en «Todos»).
 const carpetaDe = (c, v) => (v === 'enviados' ? c.enviados : v === 'todos' ? c.todos : v === 'spam' ? c.spam : c.entrada);
 
+// Para la vigilancia del Equipo IT: ¿se puede entrar en cada buzón de Gmail?
+// Usa la misma conexión que el correo (si ya está abierta, solo un NOOP).
+export async function probarBuzones() {
+    const lista = [buzonGeneral(), ...buzonesPersonales()].filter(Boolean);
+    return Promise.all(lista.map(async (b) => {
+        const ini = Date.now();
+        try {
+            await conImap(b, async (client) => { await client.noop(); });
+            return { email: b.email, general: !!b.general, ok: true, ms: Date.now() - ini };
+        } catch (e) {
+            return { email: b.email, general: !!b.general, ok: false, error: String(e?.message || e).slice(0, 200) };
+        }
+    }));
+}
+
 // Respuestas a un correo de campaña (#341): las campañas salen con «responder a»
 // el buzón general, así que se buscan ahí, en «Todos» (también lo archivado),
 // por el asunto y desde el día del envío. Cuenta quién de `emails` escribió.

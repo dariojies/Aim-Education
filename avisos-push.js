@@ -362,5 +362,7 @@ export function crearAvisosPush({ pool, familiaIds, avisosFamilia, sinActividade
   return {
     cargarTokens, enganchar, cerrarTodo, avisarFamilias, avisarTodos, purgar, registrar, quitar, quitarDeUsuario, conectado,
     apnsActivo: () => !!apns,
+    // Para la vigilancia: cuántos móviles Android están conectados ahora mismo.
+    conectados: () => [...sockets.values()].filter(s => s?.readyState === 1).length,
   };
 }
