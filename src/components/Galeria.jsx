@@ -476,6 +476,7 @@ function Album({ id, opciones, onVolver, showToast }) {
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               <button className={`btn btn-sm ${a.publicado ? 'btn-outline' : 'btn-gradient'}`} onClick={() => publicar(!a.publicado)}>{a.publicado ? 'Volver a borrador' : 'Publicar'}</button>
               <button className="btn btn-sm btn-outline" onClick={() => setEditando(true)}><I.Edit width={14} height={14} /> Editar</button>
+              {d.fotos.length > 0 && <a className="btn btn-sm btn-outline" href={`/api/admin/galeria/${a.id}/descargar`} title="Todas las fotos del álbum, en un ZIP"><I.Download width={14} height={14} /> Descargar todo</a>}
               <button className="btn btn-sm btn-outline" style={{ color: 'var(--orange)' }} onClick={borrarAlbum}><I.Trash width={14} height={14} /></button>
             </div>
           </div>
@@ -647,6 +648,10 @@ export function FotosFamilia() {
   const salenAlguna = new Set((d?.albumes || []).flatMap(a => a.fotos.flatMap(f => f.salen.map(s => s.id))));
   const album = albumes.find(a => a.id === albumAbierto) || null;
   const fotos = album?.fotos || [];
+  // Descargar de una vez (#420): un ZIP con las que se están viendo.
+  const nombreDe = (id) => (d?.familia || []).find(p => p.id === id)?.nombre || '';
+  const totalFotos = albumes.reduce((s, a) => s + a.fotos.length, 0);
+  const urlZip = (albumId) => `/api/me/galeria/descargar?${new URLSearchParams({ ...(albumId ? { album: albumId } : {}), ...(quien !== 'todas' ? { persona: quien } : {}) })}`;
   const foto = abierta !== null ? fotos[abierta] : null;
   // En la app, el botón atrás de Android cierra la foto y luego el álbum (#218).
   useEffect(() => (albumAbierto !== null ? alAtras(() => setAlbumAbierto(null)) : undefined), [albumAbierto]);
@@ -675,6 +680,12 @@ export function FotosFamilia() {
           ))}
         </div>
       )}
+      {!album && totalFotos > 0 && (
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', margin: '0 0 12px' }}>
+          <a className="btn btn-sm btn-outline" href={urlZip(null)}><I.Download width={14} height={14} /> {quien === 'todas' ? `Descargar todas (${totalFotos})` : `Descargar todas donde sale ${nombreDe(quien)} (${totalFotos})`}</a>
+          <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>En un ZIP, cada álbum en su carpeta.</span>
+        </div>
+      )}
       {!albumes.length && <p style={{ fontSize: 14, color: 'var(--ink-3)' }}>{d.albumes.length ? 'No hay fotos con este filtro.' : 'Todavía no hay fotos. Cuando el club suba las de vuestras clases, saldrán aquí y os avisaremos.'}</p>}
       {!album ? (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(200px, 100%), 1fr))', gap: 12 }}>
@@ -692,9 +703,12 @@ export function FotosFamilia() {
       ) : (
         <div style={{ display: 'grid', gap: 12 }}>
           <button type="button" onClick={() => { setAlbumAbierto(null); setAbierta(null); }} style={{ justifySelf: 'start', background: 'none', border: 0, padding: 0, cursor: 'pointer', color: 'var(--purple)', fontWeight: 700, fontSize: 13, fontFamily: 'inherit' }}>← Todos los álbumes</button>
-          <div>
-            <b style={{ fontSize: 17 }}>{album.titulo}</b>
-            <div style={{ fontSize: 13, color: 'var(--ink-3)' }}>{fmtFecha(album.fecha)}{album.descripcion ? ` · ${album.descripcion}` : ''}</div>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+              <b style={{ fontSize: 17 }}>{album.titulo}</b>
+              <div style={{ fontSize: 13, color: 'var(--ink-3)' }}>{fmtFecha(album.fecha)}{album.descripcion ? ` · ${album.descripcion}` : ''}</div>
+            </div>
+            <a className="btn btn-sm btn-outline" href={urlZip(album.id)}><I.Download width={14} height={14} /> {quien === 'todas' ? `Descargar el álbum (${fotos.length})` : `Descargar las ${fotos.length} donde sale ${nombreDe(quien)}`}</a>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(130px, 45%), 1fr))', gap: 6 }}>
             {fotos.map((f, i) => (

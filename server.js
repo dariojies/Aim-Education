@@ -21,6 +21,7 @@ import { crearRouterCalendarioMovil, agendaEnRango, leerHora } from './calendari
 import { crearCambios } from './cambios.js';
 import { crearEvaluacion, crearTablasEvaluacion, sembrarCategoriasIngles } from './evaluacion.js';
 import { crearReportes, pendienteAhora, SQL_MOVIMIENTOS } from './reportes.js';
+import { enviarZipFotos, nombreArchivo as nombreEnZip } from './zip.js';
 import { crearPublicaciones, crearTablasPublicaciones } from './publicaciones.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
@@ -20430,6 +20431,58 @@ app.get('/api/me/galeria', authenticateSession, async (req, res) => {
         res.set('Cache-Control', 'no-store');
         res.json({ albumes: [...albumes.values()], familia: nombres.rows });
     } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Descargar las fotos de una vez (#420) ──
+// Un ZIP con las fotos (en grande) de un álbum, o todas en las que sale alguien.
+// Si son de varios álbumes, cada uno en su carpeta («2026-10-12 Exhibición»).
+const MAX_FOTOS_ZIP = 2000;
+const extFoto = (mime) => (/png/.test(mime) ? 'png' : /webp/.test(mime) ? 'webp' : 'jpg');
+const leerFotosGaleria = async (ids) => (await pool.query(`SELECT id, datos FROM aim_galeria_fotos WHERE id = ANY($1::int[])`, [ids])).rows;
+function nombresZipGaleria(filas) {
+    const variosAlbumes = new Set(filas.map(f => f.album_id)).size > 1;
+    const porAlbum = new Map();
+    return filas.map(f => {
+        const n = (porAlbum.get(f.album_id) || 0) + 1;
+        porAlbum.set(f.album_id, n);
+        const carpeta = variosAlbumes ? `${String(f.fecha_txt || '').slice(0, 10)} ${nombreEnZip(f.titulo, 60)}/` : '';
+        const pie = f.pie ? ` - ${nombreEnZip(f.pie, 50)}` : '';
+        return { id: f.id, nombre: `${carpeta}${String(n).padStart(3, '0')}${pie}.${extFoto(f.mime)}`, fecha: f.created_at };
+    });
+}
+// La familia: un álbum suyo (?album=), las de uno de los suyos (?persona=) o las
+// dos cosas. Solo lo que ya puede ver; sin nada, todas las que puede ver.
+app.get('/api/me/galeria/descargar', authenticateSession, async (req, res) => {
+    try {
+        const fam = await familiaIds(req.userSession.userId);
+        const album = req.query.album ? Number(req.query.album) || 0 : null;
+        const persona = req.query.persona ? String(req.query.persona) : null;
+        if (persona && !fam.map(String).includes(persona)) return res.status(404).json({ error: 'Esa persona no es de tu familia.' });
+        const filas = (await pool.query(
+            `SELECT f.id, f.mime, f.pie, f.created_at, al.id AS album_id, al.titulo, al.fecha::text AS fecha_txt
+             FROM aim_galeria_fotos f JOIN aim_galeria_albumes al ON al.id = f.album_id
+             WHERE ${SQL_FOTO_VISIBLE('$1::uuid[]')}
+               AND ($2::int IS NULL OR al.id = $2::int)
+               AND ($3::uuid IS NULL OR EXISTS (SELECT 1 FROM aim_galeria_etiquetas e WHERE e.foto_id = f.id AND e.user_id = $3::uuid))
+             ORDER BY al.fecha, al.id, f.orden, f.id LIMIT ${MAX_FOTOS_ZIP}`, [fam, album, persona])).rows;
+        if (!filas.length) return res.status(404).json({ error: 'No hay fotos que descargar.' });
+        const quien = persona ? (await pool.query(`SELECT name FROM users WHERE user_id = $1`, [persona])).rows[0]?.name : null;
+        const nombre = album && filas[0] ? `${nombreEnZip(filas[0].titulo, 60)}${quien ? ` - ${nombreEnZip(quien, 40)}` : ''}.zip`
+            : `Fotos${quien ? ` de ${nombreEnZip(quien, 40)}` : ''} - AIM Education.zip`;
+        await enviarZipFotos(res, nombre, nombresZipGaleria(filas), leerFotosGaleria);
+    } catch (err) {
+        if (!res.headersSent) res.status(500).json({ error: err.message });
+    }
+});
+// El club: el álbum entero (también si aún es borrador).
+app.get('/api/admin/galeria/:id/descargar', authenticateSession, requireSeccion('galeria'), async (req, res) => {
+    try {
+        const a = await albumPermitido(req, req.params.id);
+        const filas = (await pool.query(
+            `SELECT f.id, f.mime, f.pie, f.created_at, f.album_id FROM aim_galeria_fotos f WHERE f.album_id = $1 ORDER BY f.orden, f.id LIMIT ${MAX_FOTOS_ZIP}`, [a.id])).rows;
+        if (!filas.length) return res.status(404).json({ error: 'Este álbum no tiene fotos.' });
+        await enviarZipFotos(res, `${nombreEnZip(a.titulo, 60)}.zip`, nombresZipGaleria(filas), leerFotosGaleria);
+    } catch (err) { if (!res.headersSent) errGaleria(res, err); }
 });
 
 // Panel: la lista (sin los PDF), filtrable por clase, estado o texto.
