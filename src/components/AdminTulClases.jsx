@@ -986,7 +986,9 @@ function Seccion({ titulo, children, extra }) {
   );
 }
 
-export function AdminReportes({ user, permisos = {} }) {
+// Desde Reportes (#416) es la pestaña «Alumnos y clases»: con «mes» manda el
+// mes elegido arriba y no se enseña el selector propio.
+export function AdminReportes({ user, permisos = {}, mes = null }) {
   // Un instructor no ve la visión general ni la de una actividad entera: solo
   // la suya de monitor. Arranca ya en esa vista y con su propio id puesto, y no
   // se le ofrece cambiar de una ni de otro.
@@ -995,6 +997,11 @@ export function AdminReportes({ user, permisos = {} }) {
   // Periodo: mensual o quincenal, navegable, igual que aim-tul.
   const [modo, setModo] = useState('monthly'); // 'monthly' | 'biweekly'
   const [inicio, setInicio] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
+  useEffect(() => {
+    if (!mes) return;
+    setModo('monthly');
+    setInicio(new Date(Number(mes.slice(0, 4)), Number(mes.slice(5, 7)) - 1, 1));
+  }, [mes]);
   const [segmento, setSegmento] = useState(soloYo ? 'instructor' : 'general'); // 'general' | 'activity' | 'instructor'
   const [segmentoId, setSegmentoId] = useState(soloYo ? (user?.id || null) : null);
 
@@ -1087,7 +1094,7 @@ export function AdminReportes({ user, permisos = {} }) {
   return (
     <div style={{ display: 'grid', gap: 14 }}>
       {/* Periodo */}
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      {mes ? (cargando && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Cargando...</span>) : <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         {[['monthly', 'Mensual'], ['biweekly', 'Quincenal']].map(([v, l]) => (
           <button key={v} className={`filter-pill ${modo === v ? 'is-active' : ''}`} onClick={() => setModo(v)}>{l}</button>
         ))}
@@ -1097,7 +1104,7 @@ export function AdminReportes({ user, permisos = {} }) {
           <button className="btn btn-icon" onClick={() => mover(1)} aria-label="Siguiente">›</button>
         </div>
         {cargando && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Cargando...</span>}
-      </div>
+      </div>}
 
       {/* Segmento */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -1331,11 +1338,9 @@ export function AdminReportes({ user, permisos = {} }) {
         )}
       </Seccion>
 
-      {/* Evolución de ingresos y alumnos, mes a mes */}
-      <EvolucionIngresos />
-
-      {/* Estimación de ganancia de la temporada (ticket #239) */}
-      {!soloYo && <EstimacionTemporada />}
+      {/* Los ingresos y la estimación de la temporada están en Reportes →
+          Ingresos y Previsión (#416), con las cuentas corregidas; aquí no hay
+          dinero, que esta pestaña la ven también los instructores. */}
 
       {/* Gamificación */}
       {gami && (
@@ -1376,128 +1381,3 @@ export function AdminReportes({ user, permisos = {} }) {
   );
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// Estimación de ganancia de la temporada (ticket #239): media de lo cobrado al
-// mes en los últimos 12 meses (mensualidades y material por separado), proyectada
-// a los 12 meses de temporada. Es el equivalente económico del informe de alumnos.
-// ═════════════════════════════════════════════════════════════════════════════
-function EstimacionTemporada() {
-  const [d, setD] = useState(null);
-  useEffect(() => {
-    let vivo = true;
-    fetch('/api/admin/informes/estimacion-temporada', { credentials: 'include' })
-      .then(r => r.ok ? r.json() : null).then(x => { if (vivo) setD(x); }).catch(() => { });
-    return () => { vivo = false; };
-  }, []);
-  if (!d) return null;
-  const e = d.estimacionTemporada, m = d.medias;
-  const eu = (n) => `${eurFmtNum(Number(n || 0).toFixed(2))} €`;
-  return (
-    <Seccion titulo="Estimación de ganancia de la temporada"
-      extra={<span style={{ fontSize: 11, color: 'var(--ink-3)' }}>según los últimos 12 meses · {d.mesesConDatos} con datos</span>}>
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-        <Kpi titulo="Estimación temporada" valor={eu(e.total)} sub="media mensual × 12 meses" />
-        <Kpi titulo="En mensualidades" valor={eu(e.mensualidad)} sub={`media ${eu(m.mensualidad)}/mes`} />
-        <Kpi titulo="En material" valor={eu(e.material)} sub={`media ${eu(m.material)}/mes`} />
-        {e.otros > 0 && <Kpi titulo="Otros" valor={eu(e.otros)} sub={`media ${eu(m.otros)}/mes`} />}
-      </div>
-      <p style={{ fontSize: 12, color: 'var(--ink-3)', margin: '4px 0 0' }}>
-        Media de lo cobrado al mes (los meses sin datos cuentan como 0 €), proyectada a los 12 meses de temporada.
-      </p>
-      {d.porActividad?.length > 0 && (
-        <div style={{ display: 'grid', gap: 4, fontSize: 12, marginTop: 6 }}>
-          <div style={{ fontWeight: 800, color: 'var(--ink-2)' }}>Media mensual por actividad</div>
-          {d.porActividad.map(a => (
-            <div key={a.actividad} style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
-              <span style={{ fontWeight: 700 }}>{a.actividad}</span>
-              <span style={{ color: 'var(--ink-3)' }}>{eu(a.mediaMes)}/mes · {eu(a.total12m)} en 12 meses</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </Seccion>
-  );
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// Evolución de ingresos y alumnos mes a mes, en total o de una actividad.
-// Enfrentar las dos cifras deja ver, por ejemplo, que los ingresos suben
-// aunque bajen los alumnos porque se ha subido el precio.
-// ═════════════════════════════════════════════════════════════════════════════
-function EvolucionIngresos() {
-  const [datos, setDatos] = useState(null);
-  const [actividad, setActividad] = useState('');
-  const [meses, setMeses] = useState(12);
-
-  useEffect(() => {
-    let vivo = true;
-    (async () => {
-      try {
-        const q = `meses=${meses}${actividad ? `&actividad=${encodeURIComponent(actividad)}` : ''}`;
-        // Este informe cuelga de facturación, no de /tul, así que va aparte.
-        const r = await fetch(`/api/admin/informes/evolucion?${q}`, { credentials: 'include' });
-        if (vivo && r.ok) setDatos(await r.json());
-      } catch { /* noop */ }
-    })();
-    return () => { vivo = false; };
-  }, [actividad, meses]);
-
-  if (!datos) return null;
-  const maxIngresos = Math.max(1, ...datos.meses.map(m => m.ingresos));
-  const maxAlumnos = Math.max(1, ...datos.meses.map(m => m.alumnos));
-  const totalIngresos = datos.meses.reduce((s, m) => s + m.ingresos, 0);
-  const conDatos = datos.meses.filter(m => m.ingresos > 0);
-  const media = conDatos.length ? totalIngresos / conDatos.length : 0;
-
-  return (
-    <Seccion titulo="Evolución de ingresos"
-      extra={
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <select value={actividad} onChange={e => setActividad(e.target.value)} style={{ ...inputCss, fontSize: 12, padding: '6px 10px' }}>
-            <option value="">Todas las actividades</option>
-            {datos.actividades.map(a => <option key={a} value={a}>{a}</option>)}
-          </select>
-          <select value={meses} onChange={e => setMeses(Number(e.target.value))} style={{ ...inputCss, fontSize: 12, padding: '6px 10px' }}>
-            {[6, 12, 24].map(n => <option key={n} value={n}>{n} meses</option>)}
-          </select>
-        </div>
-      }>
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-        <Kpi titulo="Total del periodo" valor={`${eurFmtNum(totalIngresos.toFixed(2))} €`} sub={actividad || 'todas las actividades'} />
-        <Kpi titulo="Media por mes" valor={`${eurFmtNum(media.toFixed(2))} €`} sub={`${conDatos.length} mes(es) con cobros`} />
-      </div>
-
-      <div style={{ overflowX: 'auto' }}>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end', minWidth: Math.max(420, datos.meses.length * 58) }}>
-          {datos.meses.map(m => (
-            <div key={m.mes} style={{ flex: 1, textAlign: 'center', display: 'grid', gap: 3 }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: m.ingresos ? 'var(--teal)' : 'var(--ink-3)' }}>
-                {m.ingresos ? eurFmtNum(Math.round(m.ingresos)) : '—'}
-              </div>
-              <div style={{ height: 90, display: 'flex', alignItems: 'flex-end', justifyContent: 'center', gap: 3 }}>
-                <div title={`Ingresos ${m.ingresos} €`} style={{ width: 16, borderRadius: '4px 4px 0 0', background: 'var(--teal)', height: `${Math.max((m.ingresos / maxIngresos) * 100, m.ingresos ? 3 : 1)}%` }} />
-                <div title={`${m.alumnos} alumno(s) pagaron`} style={{ width: 10, borderRadius: '4px 4px 0 0', background: 'var(--purple)', height: `${Math.max((m.alumnos / maxAlumnos) * 100, m.alumnos ? 3 : 1)}%`, opacity: .75 }} />
-              </div>
-              <div style={{ fontSize: 10, color: 'var(--ink-3)' }}>{m.mes.slice(2)}</div>
-              <div style={{ fontSize: 10, color: 'var(--purple)', fontWeight: 700 }}>{m.alumnos || '—'}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-      <div style={{ display: 'flex', gap: 12, fontSize: 11, fontWeight: 700, color: 'var(--ink-2)' }}>
-        <span><span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 3, background: 'var(--teal)', marginRight: 4 }} />Ingresos cobrados</span>
-        <span><span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 3, background: 'var(--purple)', marginRight: 4 }} />Alumnos que pagaron</span>
-      </div>
-      {!actividad && conDatos.length > 0 && (
-        <div style={{ display: 'grid', gap: 4, fontSize: 12 }}>
-          {conDatos.slice(-1)[0].actividades.sort((a, b) => b.ingresos - a.ingresos).map(a => (
-            <div key={a.actividad} style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
-              <span style={{ fontWeight: 700 }}>{a.actividad}</span>
-              <span style={{ color: 'var(--ink-3)' }}>{eurFmtNum(a.ingresos)} € · {a.alumnos} alumno(s) · último mes con cobros</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </Seccion>
-  );
-}

@@ -275,8 +275,8 @@ function vistaSecretaria({ d, clases, ir, irRuta }) {
   const sin = clases ? clases.filter(c => !c.marcados && !c.pasada).length : null;
   return {
     cifras: [
-      <Cifra key="1" etiqueta="Cobrado hoy" valor={eur(d.cobradoHoy.total)} detalle={plural(d.cobradoHoy.recibos, 'recibo', 'recibos')} onClick={() => ir('billing')} />,
-      <Cifra key="2" etiqueta="Por cobrar" valor={eur(d.porCobrar.total)} detalle={plural(d.porCobrar.familias, 'familia', 'familias')} tono={d.porCobrar.total > 0 ? 'aviso' : 'bien'} onClick={() => ir('billing')} />,
+      <Cifra key="1" etiqueta="Cobrado hoy" valor={eur(d.cobradoHoy.total)} detalle={plural(d.cobradoHoy.pagos ?? d.cobradoHoy.recibos, 'cobro', 'cobros')} onClick={() => ir('billing')} />,
+      <Cifra key="2" etiqueta="Por cobrar" valor={eur(d.porCobrar.total)} detalle={plural(d.porCobrar.alumnos ?? d.porCobrar.familias, 'alumno', 'alumnos')} tono={d.porCobrar.total > 0 ? 'aviso' : 'bien'} onClick={() => ir('billing')} />,
       <Cifra key="3" etiqueta="Clases hoy" valor={clases ? clases.length : '…'} detalle={clases && clases.length ? (sin ? `${plural(sin, 'lista', 'listas')} sin pasar` : 'listas al día') : null} tono={sin ? 'aviso' : 'bien'} onClick={() => ir('classes')} />,
       d.campamentoHoy > 0
         ? <Cifra key="4" etiqueta="Campamento hoy" valor={d.campamentoHoy} detalle="niños" onClick={() => ir('camp')} />
@@ -308,14 +308,14 @@ function vistaDireccion({ d, ir }) {
   const o = d.ocupacion;
   return {
     cifras: [
-      <Cifra key="1" etiqueta="Ingresos del mes" valor={eur(ing.mes)} onClick={() => ir('billing')}
-        detalle={cambio === null ? `mes pasado: ${eur(ing.pasado)}` : `${cambio >= 0 ? '▲' : '▼'} ${Math.abs(cambio)} % vs. el mes pasado`} tono={cambio === null ? null : cambio >= 0 ? 'bien' : 'aviso'} />,
+      <Cifra key="1" etiqueta="Ingresos del mes (sin IVA)" valor={eur(ing.mes)} onClick={() => ir('reportes')}
+        detalle={`${cambio === null ? `mes pasado: ${eur(ing.pasado)}` : `${cambio >= 0 ? '▲' : '▼'} ${Math.abs(cambio)} % vs. el mes pasado`}${ing.conIva != null ? ` · cobrado con IVA ${eur(ing.conIva)}` : ''}`} tono={cambio === null ? null : cambio >= 0 ? 'bien' : 'aviso'} />,
       <Cifra key="2" etiqueta="Gastos del mes" valor={eur(d.gastosMes)} detalle="apuntados hasta hoy" onClick={() => ir('payments')} />,
       <Cifra key="3" etiqueta="Diferencia" valor={eur(resultado)} detalle="ingresos menos gastos" tono={resultado >= 0 ? 'bien' : 'aviso'} />,
       <Cifra key="4" etiqueta="Alumnos activos" valor={d.alumnos.activos} detalle={`+${d.alumnos.altas} altas · −${d.alumnos.bajas} bajas este mes`} onClick={() => ir('students')} />,
     ],
     columnas: [
-      [<Bloque key="g" titulo="Ingresos y gastos" sub="Últimos seis meses (el actual, hasta hoy)"><GraficoMeses meses={d.meses} /></Bloque>],
+      [<Bloque key="g" titulo="Ingresos y gastos" sub="Últimos seis meses (el actual, hasta hoy) · ingresos sin IVA" accion="Reportes" onAccion={() => ir('reportes')}><GraficoMeses meses={d.meses} /></Bloque>],
       [<Bloque key="o" titulo="Ocupación de las clases" sub={o.pct !== null ? `${o.ocupadas} de ${o.plazas} plazas (${o.pct} %) · ${o.espera} en espera` : 'Las clases no tienen plazas máximas'} accion="Clases" onAccion={() => ir('classes')}>
         {o.pct !== null && <div aria-hidden="true" style={{ height: 6, borderRadius: 99, background: 'var(--bg-3)', overflow: 'hidden', margin: '2px 0 8px' }}><div style={{ height: '100%', width: `${o.pct}%`, background: 'var(--purple)' }} /></div>}
         {o.llenas.length > 0 && <div style={{ ...suave, fontWeight: 800 }}>Llenas</div>}
@@ -326,7 +326,7 @@ function vistaDireccion({ d, ir }) {
       [
         <Bloque key="c" titulo="Por cobrar" accion="Cobrar" onAccion={() => ir('billing')}>
           {d.porCobrar.total > 0
-            ? <div><b style={{ fontSize: 20, fontFamily: 'var(--font-display)' }}>{eur(d.porCobrar.total)}</b><div style={suave}>{plural(d.porCobrar.cargos, 'cargo', 'cargos')} de {plural(d.porCobrar.familias, 'familia', 'familias')}</div></div>
+            ? <div><b style={{ fontSize: 20, fontFamily: 'var(--font-display)' }}>{eur(d.porCobrar.total)}</b><div style={suave}>{plural(d.porCobrar.cargos, 'cargo', 'cargos')} de {plural(d.porCobrar.alumnos ?? d.porCobrar.familias, 'alumno', 'alumnos')}{d.porCobrar.atrasado > 0 ? ` · ${eur(d.porCobrar.atrasado)} de meses anteriores` : ''} · con IVA</div></div>
             : <Estado tipo="ok">Nada pendiente de cobrar.</Estado>}
         </Bloque>,
         <Personal key="p" lista={d.personal} ir={ir} />,

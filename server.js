@@ -20,6 +20,7 @@ import { crearAvisosPush, GRUPOS_AVISO } from './avisos-push.js';
 import { crearRouterCalendarioMovil, agendaEnRango, leerHora } from './calendario-movil.js';
 import { crearCambios } from './cambios.js';
 import { crearEvaluacion, crearTablasEvaluacion, sembrarCategoriasIngles } from './evaluacion.js';
+import { crearReportes, pendienteAhora, SQL_MOVIMIENTOS } from './reportes.js';
 import { crearPublicaciones, crearTablasPublicaciones } from './publicaciones.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
@@ -5089,6 +5090,8 @@ setInterval(function publicarRedesProgramadas() { publicacionesRedes.publicarPen
 setInterval(function seguidoresRedes() { publicacionesRedes.fotoSeguidores(); }, 6 * 3600_000);
 // Evaluación (#411): de los profes y la dirección; las familias no ven nada.
 app.use(crearEvaluacion({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireSeccion, permisos, grupoSuyo }).router);
+// Reportes (#416): cómo va el negocio, con las mismas cuentas en todas partes.
+app.use(crearReportes({ pool, clubId: AIM_CLUB_ID, authenticateSession, requirePermiso, candidatosGeneracion, mesesDeTemporada, sqlEsIndividual }).router);
 
 // ── Redes sociales (#341) ────────────────────────────────────────────────────
 // Quién puede llevarlas (y recibir conversaciones asignadas).
@@ -9619,121 +9622,9 @@ app.post('/api/admin/billing/cargos-sin-actividad/rellenar', authenticateSession
     } finally { client.release(); }
 });
 
-// Evolución mes a mes: ingresos cobrados y alumnos distintos que pagaron, en
-// total o de una actividad. Sirve para ver si la tendencia de ingresos se
-// mantiene aunque bajen los alumnos (por ejemplo tras subir precios).
-app.get('/api/admin/informes/evolucion', authenticateSession, requireAdmin, async (req, res) => {
-    const meses = Math.min(36, Math.max(1, Number(req.query.meses) || 12));
-    const actividad = req.query.actividad || null;
-    try {
-        const r = await pool.query(
-            `SELECT TO_CHAR(DATE_TRUNC('month', rc.fecha), 'YYYY-MM') AS mes,
-                    COALESCE(c.actividad, 'Sin actividad') AS actividad,
-                    SUM(c.importe)::numeric AS ingresos,
-                    COUNT(DISTINCT c.cliente_id)::int AS alumnos
-             FROM aim_cargos c
-             JOIN aim_recibos rc ON rc.id = c.recibo_id
-             WHERE c.estado = 'cobrado' AND rc.estado <> 'anulado'
-               AND rc.fecha >= (DATE_TRUNC('month', (now() AT TIME ZONE 'Europe/Madrid')::date) - ($1 || ' months')::interval)
-               AND ($2::text IS NULL OR c.actividad = $2)
-             GROUP BY 1, 2 ORDER BY 1`, [meses - 1, actividad]
-        );
-        // Un mes por fila, con el desglose por actividad dentro.
-        const porMes = new Map();
-        for (const x of r.rows) {
-            const e = porMes.get(x.mes) || { mes: x.mes, ingresos: 0, alumnos: 0, actividades: [] };
-            e.ingresos = r2Server(e.ingresos + Number(x.ingresos));
-            e.alumnos += x.alumnos;
-            e.actividades.push({ actividad: x.actividad, ingresos: r2Server(Number(x.ingresos)), alumnos: x.alumnos });
-            porMes.set(x.mes, e);
-        }
-        // Los meses sin cobros también salen, para que la línea no engañe.
-        const filas = [];
-        const hoy = new Date();
-        for (let i = meses - 1; i >= 0; i--) {
-            const d = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
-            const clave = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-            filas.push(porMes.get(clave) || { mes: clave, ingresos: 0, alumnos: 0, actividades: [] });
-        }
-        const acts = await pool.query(
-            `SELECT DISTINCT actividad FROM aim_cargos WHERE actividad IS NOT NULL ORDER BY 1`
-        );
-        res.set('Cache-Control', 'no-store');
-        res.json({ meses: filas, actividades: acts.rows.map(a => a.actividad), actividad });
-    } catch (err) {
-        console.error('Error en la evolución de ingresos:', err);
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// Estimación de ganancia de la temporada (ticket #239): a partir del mes actual y
-// los 11 anteriores (los meses sin datos cuentan como 0 €), la media de lo cobrado
-// al mes —desglosado en mensualidades y material— y la proyección a los 12 meses
-// de temporada. Es el equivalente económico del informe de alumnos.
-app.get('/api/admin/informes/estimacion-temporada', authenticateSession, requireAdmin, async (req, res) => {
-    const MESES = 12; // mes actual + 11 anteriores
-    try {
-        const r = await pool.query(
-            `SELECT TO_CHAR(DATE_TRUNC('month', rc.fecha), 'YYYY-MM') AS mes,
-                    CASE WHEN c.tipo = 'Mensualidad' THEN 'mensualidad'
-                         WHEN c.tipo = 'Material' THEN 'material'
-                         ELSE 'otros' END AS categoria,
-                    SUM(c.importe)::numeric AS ingresos
-             FROM aim_cargos c
-             JOIN aim_recibos rc ON rc.id = c.recibo_id
-             WHERE c.estado = 'cobrado' AND rc.estado <> 'anulado'
-               AND rc.fecha >= (DATE_TRUNC('month', (now() AT TIME ZONE 'Europe/Madrid')::date) - INTERVAL '11 months')
-             GROUP BY 1, 2`);
-        const porMes = new Map();
-        for (const x of r.rows) {
-            const e = porMes.get(x.mes) || { mes: x.mes, mensualidad: 0, material: 0, otros: 0, total: 0 };
-            e[x.categoria] = r2Server(e[x.categoria] + Number(x.ingresos));
-            e.total = r2Server(e.total + Number(x.ingresos));
-            porMes.set(x.mes, e);
-        }
-        // Los 12 meses (actual + 11 anteriores); los que no tienen datos van a 0 €.
-        const filas = [];
-        const hoy = new Date();
-        for (let i = MESES - 1; i >= 0; i--) {
-            const d = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
-            const clave = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-            filas.push(porMes.get(clave) || { mes: clave, mensualidad: 0, material: 0, otros: 0, total: 0 });
-        }
-        const suma = (k) => filas.reduce((s, f) => s + f[k], 0);
-        const medias = {
-            mensualidad: r2Server(suma('mensualidad') / MESES),
-            material: r2Server(suma('material') / MESES),
-            otros: r2Server(suma('otros') / MESES),
-            total: r2Server(suma('total') / MESES),
-        };
-        // Proyección a la temporada completa (12 meses).
-        const estimacionTemporada = {
-            mensualidad: r2Server(medias.mensualidad * 12),
-            material: r2Server(medias.material * 12),
-            otros: r2Server(medias.otros * 12),
-            total: r2Server(medias.total * 12),
-        };
-        // Media mensual por actividad ("cuánto genera cada clase").
-        const ra = await pool.query(
-            `SELECT COALESCE(c.actividad, 'Sin actividad') AS actividad, SUM(c.importe)::numeric AS ingresos
-             FROM aim_cargos c JOIN aim_recibos rc ON rc.id = c.recibo_id
-             WHERE c.estado = 'cobrado' AND rc.estado <> 'anulado'
-               AND rc.fecha >= (DATE_TRUNC('month', (now() AT TIME ZONE 'Europe/Madrid')::date) - INTERVAL '11 months')
-             GROUP BY 1 ORDER BY ingresos DESC`);
-        const porActividad = ra.rows.map(a => ({
-            actividad: a.actividad, total12m: r2Server(Number(a.ingresos)),
-            mediaMes: r2Server(Number(a.ingresos) / MESES),
-        }));
-        res.set('Cache-Control', 'no-store');
-        res.json({
-            meses: filas, medias, estimacionTemporada, porActividad,
-            mesesConDatos: filas.filter(f => f.total > 0).length,
-        });
-    } catch (err) {
-        console.error('Error en la estimación de temporada:', err);
-        res.status(500).json({ error: err.message });
-    }
-});
+// La evolución de ingresos y la estimación de la temporada están ahora en
+// Reportes (reportes.js, #416), con las cuentas corregidas: alumnos distintos
+// (no sumados por actividad) y la previsión con los meses que quedan de verdad.
 
 // ── Numeración de facturas ───────────────────────────────────────────────────
 // Cada serie se numera por su cuenta y de forma correlativa (artículo 6.1.a del
@@ -14212,8 +14103,8 @@ async function repartoPorActividad(d, h, { soloSinPersona = false } = {}) {
                 COALESCE(reparto,'iguales') AS reparto,
                 COALESCE(SUM(amount),0)::numeric AS total
          FROM aim_gastos
-         WHERE ($1::date IS NULL OR date >= $1::date)
-           AND ($2::date IS NULL OR date <= $2::date)
+         WHERE ($1::date IS NULL OR (date AT TIME ZONE 'Europe/Madrid')::date >= $1::date)
+           AND ($2::date IS NULL OR (date AT TIME ZONE 'Europe/Madrid')::date <= $2::date)
            ${soloSinPersona ? 'AND persona_id IS NULL' : ''}
          GROUP BY 1,2,3`, [d, h]
     );
@@ -14341,7 +14232,7 @@ async function repartoPorActividad(d, h, { soloSinPersona = false } = {}) {
     };
 }
 
-app.get('/api/admin/informes/beneficios', authenticateSession, requireAdmin, async (req, res) => {
+app.get('/api/admin/informes/beneficios', authenticateSession, requirePermiso('reportesGenerales'), async (req, res) => {
     const { desde, hasta } = req.query;
     try {
         const esFecha = v => /^\d{4}-\d{2}-\d{2}$/.test(v);
@@ -14358,6 +14249,9 @@ app.get('/api/admin/informes/beneficios', authenticateSession, requireAdmin, asy
                 gastosComunes: R.cuotaDe[n], beneficio: r2Server(ingr - dir - R.cuotaDe[n]),
             };
         }).sort((a, b) => b.beneficio - a.beneficio);
+        // Lo cobrado que no es de ninguna actividad (material suelto, matrícula,
+        // Pase Explorador…) va en su fila: antes se quedaba fuera del TOTAL (#416).
+        if (R.sinActividad) filas.push({ actividad: 'General (sin actividad)', ingresos: R.sinActividad, gastosDirectos: 0, gastosComunes: 0, beneficio: R.sinActividad, general: true });
 
         res.set('Cache-Control', 'no-store');
         res.json({
@@ -14424,7 +14318,7 @@ async function horasInstructorPorActividad() {
 // instructores según las horas que trabaja cada uno; y los gastos asignados a
 // una persona van enteros a esa persona. Así, quien más horas echa en una clase,
 // más parte de su beneficio (y de su coste común) asume.
-app.get('/api/admin/informes/desglose-personas', authenticateSession, requireAdmin, async (req, res) => {
+app.get('/api/admin/informes/desglose-personas', authenticateSession, requirePermiso('reportesGenerales'), async (req, res) => {
     const { desde, hasta } = req.query;
     try {
         const esFecha = v => /^\d{4}-\d{2}-\d{2}$/.test(v);
@@ -14442,8 +14336,8 @@ app.get('/api/admin/informes/desglose-personas', authenticateSession, requireAdm
                     COALESCE(SUM(g.amount),0)::numeric AS total
              FROM aim_gastos g JOIN users u ON u.user_id = g.persona_id
              WHERE g.persona_id IS NOT NULL
-               AND ($1::date IS NULL OR g.date >= $1::date)
-               AND ($2::date IS NULL OR g.date <= $2::date)
+               AND ($1::date IS NULL OR (g.date AT TIME ZONE 'Europe/Madrid')::date >= $1::date)
+               AND ($2::date IS NULL OR (g.date AT TIME ZONE 'Europe/Madrid')::date <= $2::date)
              GROUP BY g.persona_id, nombre`, [d, h]
         );
 
@@ -14503,6 +14397,7 @@ app.get('/api/admin/informes/desglose-personas', authenticateSession, requireAdm
         res.json({
             desde: desde || null, hasta: hasta || null,
             filas,
+            sinActividad: R.sinActividad,
             sinInstructor: { ingresos: r2Server(sinInstructor.ingresos), gastos: r2Server(sinInstructor.gastos) },
             totales: {
                 ingresos: r2Server(filas.reduce((s, f) => s + f.ingresos, 0) + sinInstructor.ingresos),
@@ -15959,12 +15854,11 @@ async function personalAhora() {
     return r.rows.map(x => ({ id: x.user_id, nombre: x.nombre, estado: x.tipo === 'pausa_inicio' ? 'pausa' : 'dentro', desde: x.desde || x.ts }));
 }
 
+// Lo que hay por cobrar, con la misma cuenta que Reportes (#416): con su
+// descuento y su IVA, y sin los cargos ya preparados de meses que no han llegado.
 async function porCobrar() {
-    const r = await pool.query(
-        `SELECT COUNT(*)::int n, COUNT(DISTINCT cliente_id)::int familias, COALESCE(SUM(COALESCE(importe, precio)), 0)::numeric total
-         FROM aim_cargos WHERE estado = 'pendiente' AND recibo_id IS NULL`);
-    const x = r.rows[0];
-    return { cargos: x.n, familias: x.familias, total: n2(x.total) };
+    const x = await pendienteAhora(pool);
+    return { cargos: x.cargos, alumnos: x.alumnos, total: x.total, atrasado: x.atrasado };
 }
 
 async function resumenInstructor(yo) {
@@ -15990,7 +15884,7 @@ async function resumenInstructor(yo) {
 
 async function resumenSecretaria() {
     const [cobrado, porMedio, caja, cobrar, personal, cumples, speaking, eventos, camp] = await Promise.all([
-        pool.query(`SELECT COALESCE(SUM(importe), 0)::numeric total, COUNT(*)::int n FROM aim_recibos WHERE fecha = ${HOY_SQL} AND estado <> 'anulado'`),
+        pool.query(`SELECT COALESCE(SUM(total), 0)::numeric total, COUNT(DISTINCT pago) FILTER (WHERE tipo <> 'rectificativo')::int n FROM (${SQL_MOVIMIENTOS}) m WHERE m.fecha = ${HOY_SQL}`),
         pool.query(`SELECT COALESCE(p.medio, r.medio_pago, 'Otro') AS medio, SUM(COALESCE(p.importe, r.importe))::numeric total
                     FROM aim_recibos r LEFT JOIN aim_recibo_pagos p ON p.recibo_id = r.id
                     WHERE r.fecha = ${HOY_SQL} AND r.estado <> 'anulado' GROUP BY 1 ORDER BY 2 DESC`),
@@ -16003,7 +15897,7 @@ async function resumenSecretaria() {
         pool.query(`SELECT COUNT(*)::int n FROM aim_camp_child_days WHERE day = ${HOY_SQL}`),
     ]);
     return {
-        cobradoHoy: { total: n2(cobrado.rows[0].total), recibos: cobrado.rows[0].n, porMedio: porMedio.rows.map(x => ({ medio: nombreMedioServer(x.medio), total: n2(x.total) })) },
+        cobradoHoy: { total: n2(cobrado.rows[0].total), pagos: cobrado.rows[0].n, porMedio: porMedio.rows.map(x => ({ medio: nombreMedioServer(x.medio), total: n2(x.total) })) },
         cajaCerrada: caja.rows[0]?.cerrado_at || null,
         porCobrar: cobrar, personal, cumples, speaking, eventos,
         campamentoHoy: camp.rows[0].n,
@@ -16015,26 +15909,29 @@ async function resumenDireccion() {
     const [ing, serie, gastos, serieGastos, activos, altas, bajas, grupos, cobrar, personal] = await Promise.all([
         // Este mes hasta hoy, y el mes pasado hasta el mismo día (para comparar
         // lo mismo con lo mismo) y entero.
+        // Sin IVA (la base de las facturas, #416): lo que es del club. El cobrado
+        // con IVA va al lado.
         pool.query(`SELECT
-              COALESCE(SUM(importe) FILTER (WHERE fecha >= date_trunc('month', ${HOY_SQL})), 0)::numeric AS mes,
-              COALESCE(SUM(importe) FILTER (WHERE fecha >= date_trunc('month', ${HOY_SQL}) - INTERVAL '1 month'
+              COALESCE(SUM(base) FILTER (WHERE fecha >= date_trunc('month', ${HOY_SQL})), 0)::numeric AS mes,
+              COALESCE(SUM(total) FILTER (WHERE fecha >= date_trunc('month', ${HOY_SQL})), 0)::numeric AS mes_con_iva,
+              COALESCE(SUM(base) FILTER (WHERE fecha >= date_trunc('month', ${HOY_SQL}) - INTERVAL '1 month'
                   AND fecha <= (date_trunc('month', ${HOY_SQL}) - INTERVAL '1 month' + (${HOY_SQL} - date_trunc('month', ${HOY_SQL})::date) * INTERVAL '1 day')
                   AND fecha < date_trunc('month', ${HOY_SQL})), 0)::numeric AS pasado_igual,
-              COALESCE(SUM(importe) FILTER (WHERE fecha >= date_trunc('month', ${HOY_SQL}) - INTERVAL '1 month' AND fecha < date_trunc('month', ${HOY_SQL})), 0)::numeric AS pasado
-            FROM aim_recibos WHERE estado <> 'anulado' AND fecha >= date_trunc('month', ${HOY_SQL}) - INTERVAL '1 month' AND fecha <= ${HOY_SQL}`),
-        pool.query(`SELECT to_char(date_trunc('month', fecha), 'YYYY-MM') AS mes, SUM(importe)::numeric total FROM aim_recibos
-                    WHERE estado <> 'anulado' AND fecha >= date_trunc('month', ${HOY_SQL}) - INTERVAL '5 months' AND fecha <= ${HOY_SQL} GROUP BY 1`),
-        pool.query(`SELECT COALESCE(SUM(amount), 0)::numeric total FROM aim_gastos WHERE date >= date_trunc('month', ${HOY_SQL}) AND date <= ${HOY_SQL}`),
-        pool.query(`SELECT to_char(date_trunc('month', date), 'YYYY-MM') AS mes, SUM(amount)::numeric total FROM aim_gastos
-                    WHERE date >= date_trunc('month', ${HOY_SQL}) - INTERVAL '5 months' AND date <= ${HOY_SQL} GROUP BY 1`),
+              COALESCE(SUM(base) FILTER (WHERE fecha >= date_trunc('month', ${HOY_SQL}) - INTERVAL '1 month' AND fecha < date_trunc('month', ${HOY_SQL})), 0)::numeric AS pasado
+            FROM (${SQL_MOVIMIENTOS}) m WHERE fecha >= date_trunc('month', ${HOY_SQL}) - INTERVAL '1 month' AND fecha <= ${HOY_SQL}`),
+        pool.query(`SELECT to_char(date_trunc('month', fecha), 'YYYY-MM') AS mes, SUM(base)::numeric total FROM (${SQL_MOVIMIENTOS}) m
+                    WHERE fecha >= date_trunc('month', ${HOY_SQL}) - INTERVAL '5 months' AND fecha <= ${HOY_SQL} GROUP BY 1`),
+        pool.query(`SELECT COALESCE(SUM(amount), 0)::numeric total FROM aim_gastos WHERE (date AT TIME ZONE 'Europe/Madrid')::date BETWEEN date_trunc('month', ${HOY_SQL}) AND ${HOY_SQL}`),
+        pool.query(`SELECT to_char((date AT TIME ZONE 'Europe/Madrid')::date, 'YYYY-MM') AS mes, SUM(amount)::numeric total FROM aim_gastos
+                    WHERE (date AT TIME ZONE 'Europe/Madrid')::date BETWEEN date_trunc('month', ${HOY_SQL}) - INTERVAL '5 months' AND ${HOY_SQL} GROUP BY 1`),
         pool.query(`SELECT COUNT(DISTINCT gs.student_id)::int n FROM tul_group_students gs
                     JOIN tul_groups g ON g.group_id = gs.group_id JOIN tul_activities a ON a.activity_id = g.activity_id WHERE a.club_id = $1`, [AIM_CLUB_ID]),
         // Alta del mes: su primera clase en el club es de este mes.
         pool.query(`SELECT COUNT(*)::int n FROM (SELECT student_id, MIN(created_at) AS primera FROM tul_enrollment_history
-                    WHERE club_id = $1 AND action = 'enrolled' GROUP BY student_id) t WHERE t.primera >= date_trunc('month', now())`, [AIM_CLUB_ID]),
+                    WHERE club_id = $1 AND action = 'enrolled' GROUP BY student_id) t WHERE (t.primera AT TIME ZONE 'Europe/Madrid')::date >= date_trunc('month', ${HOY_SQL})`, [AIM_CLUB_ID]),
         // Baja del mes: dejó una clase este mes y ya no está en ninguna.
         pool.query(`SELECT COUNT(DISTINCT h.student_id)::int n FROM tul_enrollment_history h
-                    WHERE h.club_id = $1 AND h.action = 'unenrolled' AND h.created_at >= date_trunc('month', now())
+                    WHERE h.club_id = $1 AND h.action = 'unenrolled' AND (h.created_at AT TIME ZONE 'Europe/Madrid')::date >= date_trunc('month', ${HOY_SQL})
                       AND NOT EXISTS (SELECT 1 FROM tul_group_students gs JOIN tul_groups g ON g.group_id = gs.group_id
                                       JOIN tul_activities a ON a.activity_id = g.activity_id WHERE gs.student_id = h.student_id AND a.club_id = $1)`, [AIM_CLUB_ID]),
         pool.query(`SELECT g.group_id, g.name, a.name AS actividad, g.max_students AS max,
@@ -16058,7 +15955,7 @@ async function resumenDireccion() {
     const plazas = gs.reduce((t, g) => t + g.max, 0), ocupadas = gs.reduce((t, g) => t + Math.min(g.n, g.max), 0);
     const x = ing.rows[0];
     return {
-        ingresos: { mes: n2(x.mes), pasadoIgual: n2(x.pasado_igual), pasado: n2(x.pasado) },
+        ingresos: { mes: n2(x.mes), conIva: n2(x.mes_con_iva), pasadoIgual: n2(x.pasado_igual), pasado: n2(x.pasado) },
         gastosMes: n2(gastos.rows[0].total),
         meses: meses.map(m => ({ mes: m, ingresos: mi[m] || 0, gastos: mg[m] || 0 })),
         alumnos: { activos: activos.rows[0].n, altas: altas.rows[0].n, bajas: bajas.rows[0].n },
