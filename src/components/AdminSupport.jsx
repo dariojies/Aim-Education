@@ -1736,6 +1736,15 @@ export function UserSupport() {
       .catch(() => {});
   }, []);
   useEffect(() => { cargar(); }, [cargar]);
+  // Desde el aviso «Te han contestado» (#415): /dashboard/soporte?ticket=12
+  // abre esa consulta y se quita de la dirección.
+  const { path, go } = useRouter() || {};
+  useEffect(() => {
+    const id = Number(new URLSearchParams(String(path || '').split('?')[1] || '').get('ticket'));
+    if (!id || !misTickets.length) return;
+    if (misTickets.some(t => t.id === id)) { setAbierto(id); setVerForm(false); }
+    go?.('/dashboard/soporte', { replace: true });
+  }, [path, misTickets]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function pegarEnAlta(e) {
     const f = archivoDelPortapapeles(e);

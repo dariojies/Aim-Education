@@ -96,6 +96,7 @@ export function crearAvisosPush({ pool, familiaIds, avisosFamilia, sinActividade
   const vistoEn = new Map();      // id → fecha del último contacto (se guarda en lote)
   const enCurso = new Map();      // id → { clave: valor } mandado y aún sin confirmar
   const noValen = new Set();      // huellas que no son de nadie (se vacía al dar de alta)
+  const fallosApns = new Map();   // «dispositivo|clave» → veces que Apple no lo ha aceptado
   let buscando = 0;               // consultas de tokens en marcha
   let wss = null;
 
@@ -164,7 +165,14 @@ export function crearAvisosPush({ pool, familiaIds, avisosFamilia, sinActividade
           const r = await apns.enviar(d.apns_token, a);
           if (r.ok) hechos[a.clave] = valorAviso(a);
           else if (r.borrar) { await pool.query(`DELETE FROM aim_push_dispositivos WHERE id = $1`, [d.id]); break; }
-          else console.error('[avisos] APNs no lo ha aceptado:', r.error);
+          else {
+            // Se reintenta en la siguiente vuelta, pero no para siempre (#415):
+            // a la tercera se da por mandado y deja de llenar el registro.
+            const k = `${d.id}|${a.clave}`, veces = (fallosApns.get(k) || 0) + 1;
+            fallosApns.set(k, veces);
+            if (veces >= 3) { hechos[a.clave] = valorAviso(a); fallosApns.delete(k); }
+            console.error(`[avisos] APNs no lo ha aceptado (${veces}/3):`, r.error);
+          }
         }
         await marcarAvisados(d.id, hechos);
       }

@@ -2701,6 +2701,12 @@ app.use((req, res, next) => {
 });
 // Las peticiones, minuto a minuto, para la vigilancia del Equipo IT.
 app.use(medirPeticiones);
+// Lo compartido de la campanita (#415) se tira con cualquier cambio en el panel:
+// al acabar, para que la siguiente campanita ya lo vea resuelto.
+app.use('/api', (req, res, next) => {
+    if (req.method !== 'GET') res.on('finish', () => avisosCompartidos.clear());
+    next();
+});
 // Redsys manda su notificación como formulario, no como JSON.
 app.use(express.urlencoded({ extended: false, limit: '256kb' }));
 
@@ -13143,7 +13149,7 @@ async function avisosFamilia(me) {
 
         // 2) Plazas de la lista de espera: si ya le toca, es lo más urgente.
         const esp = await pool.query(
-            `SELECT g.name AS grupo, a.name AS actividad, g.max_students,
+            `SELECT e.id, g.name AS grupo, a.name AS actividad, g.max_students,
                     TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno,
                     (SELECT COUNT(*)::int FROM aim_lista_espera e2
                       WHERE e2.group_id = e.group_id AND e2.estado = 'esperando'
@@ -13158,16 +13164,19 @@ async function avisosFamilia(me) {
         for (const e of esp.rows) {
             const libres = e.max_students ? e.max_students - e.ocupadas : null;
             const leToca = libres != null && libres >= e.puesto;
+            // El puesto en la lista sale en la campanita, pero al móvil solo
+            // llega cuando hay plaza (#415): «sigues 3º» no pide hacer nada.
             avisos.push({
-                tipo: 'clases', destino: 'classes',
+                tipo: 'clases', destino: 'classes', clave: `espera:${e.id}:${leToca ? 'plaza' : 'puesto'}`, n: leToca ? 1 : e.puesto,
                 texto: leToca
                     ? `Hay plaza en ${e.grupo} para ${e.alumno}`
                     : `${e.alumno} está ${e.puesto}º en la lista de ${e.grupo}`,
-                detalle: e.actividad,
+                detalle: e.actividad, sinPush: !leToca,
             });
         }
 
-        // 3) Tickets de soporte con respuesta del club sin leer por su parte.
+        // 3) Tickets de soporte con respuesta del club sin leer por su parte. Lo
+        // ya leído se quita (#415): antes seguía ahí catorce días.
         const tk = await pool.query(
             `SELECT t.id, t.subject,
                     (SELECT MAX(m.created_at) FROM tickets_mensajes m
@@ -13177,10 +13186,10 @@ async function avisosFamilia(me) {
         for (const t of tk.rows) {
             if (!t.ultima) continue;
             avisos.push({
-                tipo: 'soporte', destino: 'support',
+                tipo: 'soporte', destino: `/dashboard/soporte?ticket=${t.id}`,
                 texto: `Te han contestado en soporte`,
                 detalle: t.subject,
-                clave: `ticket:${t.id}`, marca: t.ultima,
+                clave: `ticket:${t.id}`, marca: t.ultima, fecha: t.ultima, soloSinLeer: true,
             });
         }
 
@@ -13189,24 +13198,24 @@ async function avisosFamilia(me) {
             `SELECT al.id, al.titulo, al.publicado_at, COUNT(*)::int AS n
              FROM aim_galeria_fotos f JOIN aim_galeria_albumes al ON al.id = f.album_id
              WHERE al.publicado_at > NOW() - INTERVAL '14 days' AND ${SQL_FOTO_VISIBLE('$1::uuid[]')}
-             GROUP BY al.id, al.titulo, al.publicado_at ORDER BY al.publicado_at DESC LIMIT 5`, [await familiaIds(me)]).catch(() => ({ rows: [] }));
+             GROUP BY al.id, al.titulo, al.publicado_at ORDER BY al.publicado_at DESC LIMIT 5`, [fam]).catch(() => ({ rows: [] }));
         for (const a of gal.rows) {
             avisos.push({
                 tipo: 'galeria', destino: 'fotos', texto: `Fotos nuevas: ${a.titulo}`,
-                detalle: `${a.n} foto${a.n !== 1 ? 's' : ''}`, clave: `galeria:${a.id}`, marca: a.publicado_at,
+                detalle: `${a.n} foto${a.n !== 1 ? 's' : ''}`, clave: `galeria:${a.id}`, marca: a.publicado_at, fecha: a.publicado_at,
             });
         }
 
         // 4) Novedades del club de los últimos quince días.
         const posts = await pool.query(
-            `SELECT title, published_at FROM aim_education_posts
+            `SELECT id, title, published_at FROM aim_education_posts
              WHERE status = 'published' AND published_at > NOW() - INTERVAL '15 days'
              ORDER BY published_at DESC LIMIT 3`);
         // Si ha dicho que no a las comunicaciones comerciales (#170), no se le enseñan.
         const sinComerciales = (await pool.query(`SELECT ${sqlUltimoConsentimiento('$1::uuid', 'comunicaciones')} IS FALSE AS no`, [me])).rows[0].no;
         if (sinComerciales) posts.rows = [];
         for (const n of posts.rows) {
-            avisos.push({ tipo: 'avisos', destino: 'overview', texto: n.title, detalle: 'Aviso del club', clave: `post:${n.title}`.slice(0, 200) });
+            avisos.push({ tipo: 'avisos', destino: 'overview', texto: n.title, detalle: 'Aviso del club', clave: `post:${n.id}`, legado: `post:${n.title}`, fecha: n.published_at, prioridad: 3 });
         }
 
         // 5) Clases individuales por confirmar (#388), con el plazo aún abierto (#218).
@@ -13249,13 +13258,17 @@ async function avisosFamilia(me) {
         avisos.push(...await brickslab.avisosDe(fam).catch(() => []));
 
         await conVistos(me, avisos);
-        for (const a of avisos) {
-            a.grupo = GRUPO_DE_TIPO[a.tipo] || null;
+        const lista = avisos.filter(a => !(a.soloSinLeer && !a.nuevo));
+        for (const a of lista) {
+            a.grupo = a.sinPush ? null : (GRUPO_DE_TIPO[a.tipo] || null);
             a.titulo = a.texto;
             a.cuerpo = a.detalle || '';
-            a.url = URL_DE_DESTINO[a.destino] || '/dashboard';
+            a.url = URL_DE_DESTINO[a.destino] || (String(a.destino || '').startsWith('/dashboard') ? a.destino : '/dashboard');
+            // Al tocar el aviso en el móvil, la web lo da por visto (#415).
+            a.url += `${a.url.includes('?') ? '&' : '?'}aviso=${encodeURIComponent(a.clave)}&n=${a.n}`;
+            delete a.soloSinLeer; delete a.sinPush;
         }
-        return avisos;
+        return lista;
     }
 }
 
@@ -15781,26 +15794,44 @@ const AVISO_SOPORTE_PARA = 'cm8175@gmail.com';
 //  - con «marca» (la fecha de lo último, p. ej. el último mensaje de un
 //    ticket), vuelve a ser nuevo si hay algo posterior;
 //  - sin ella, es un contador (cargos por cobrar…): vuelve a ser nuevo solo si
-//    sube. Si baja, lo visto baja con él, para notar la próxima subida.
-// La clave, si el aviso no la trae, sale de su texto sin los números y con cada
-// palabra recortada, para que «1 cargo pendiente» y «3 cargos pendientes» sean
-// el mismo aviso.
-const sinTildes = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-function claveAviso(a) {
-    if (a.clave) return String(a.clave).slice(0, 200);
+//    sube. Si baja, lo visto baja con él, para notar la próxima subida; y si
+//    desaparece («olvidar»), vuelve a cero (#415).
+// Los avisos llevan su clave fija (#415). Antes, si no la traían, salía de su
+// texto sin los números y con cada palabra recortada; esa clave de antes
+// («legado», y la sacada del texto) se sigue mirando si la nueva aún no tiene
+// nada apuntado, para que lo ya visto no vuelva a salir como nuevo.
+const sinTildes = (t) => String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '');
+function claveDerivada(a) {
     const palabras = sinTildes(a.texto).toLowerCase().replace(/[0-9.,€º%]+/g, ' ').split(/[^a-z«»]+/)
         .filter(w => w.length > 3).map(w => w.slice(0, 5));
     return `${a.tipo}|${a.destino}|${palabras.join(' ')}`.slice(0, 200);
 }
-async function conVistos(userId, avisos) {
-    for (const a of avisos) { a.clave = claveAviso(a); a.n = Number(a.n) || 1; }
+const claveAviso = (a) => (a.clave ? String(a.clave).slice(0, 200) : claveDerivada(a));
+async function conVistos(userId, avisos, { olvidar = [] } = {}) {
+    const legados = new Map();
+    for (const a of avisos) {
+        const antes = [a.legado, a.clave ? claveDerivada(a) : null].flat().filter(Boolean).map(k => String(k).slice(0, 200));
+        a.clave = claveAviso(a); a.n = Number(a.n) || 1;
+        legados.set(a, antes.filter(k => k !== a.clave));
+        delete a.legado;
+    }
+    if (olvidar.length) {
+        await pool.query(`UPDATE aim_avisos_vistos SET n = 0 WHERE user_id = $1 AND clave = ANY($2::text[]) AND n > 0`, [userId, olvidar]);
+    }
     if (!avisos.length) return avisos;
+    const todas = [...new Set(avisos.flatMap(a => [a.clave, ...legados.get(a)]))];
     const r = await pool.query(
-        `SELECT clave, n, visto_at FROM aim_avisos_vistos WHERE user_id = $1 AND clave = ANY($2::text[])`,
-        [userId, avisos.map(a => a.clave)]);
+        `SELECT clave, n, visto_at FROM aim_avisos_vistos WHERE user_id = $1 AND clave = ANY($2::text[])`, [userId, todas]);
     const vistos = new Map(r.rows.map(x => [x.clave, x]));
     for (const a of avisos) {
-        const v = vistos.get(a.clave);
+        let v = vistos.get(a.clave);
+        if (!v) {
+            v = legados.get(a).map(k => vistos.get(k)).find(Boolean);
+            // Lo visto con la clave de antes pasa a la nueva.
+            if (v) await pool.query(
+                `INSERT INTO aim_avisos_vistos (user_id, clave, n, visto_at) VALUES ($1, $2, $3, $4) ON CONFLICT (user_id, clave) DO NOTHING`,
+                [userId, a.clave, v.n, v.visto_at]);
+        }
         if (!v) { a.nuevo = true; continue; }
         if (a.marca) { a.nuevo = new Date(a.marca) > new Date(v.visto_at); continue; }
         a.nuevo = a.n > v.n;
@@ -16156,335 +16187,402 @@ app.get('/api/admin/resumen', authenticateSession, requireAdmin, async (req, res
     }
 });
 
+// Lo que es igual para todos (cobros, consultas de la web, faltas…) se calcula
+// una vez y lo comparten durante unos segundos todos los que tienen la
+// campanita abierta (#415): antes cada campanita, cada 30 s, lo hacía todo otra
+// vez. Cualquier cambio en el panel (un POST, PUT…) lo tira, para que lo que se
+// acaba de resolver no siga saliendo.
+const avisosCompartidos = new Map();
+function avisoCompartido(clave, fn, ms = 20_000) {
+    const c = avisosCompartidos.get(clave);
+    if (c && Date.now() - c.t < ms) return c.p;
+    const p = fn();
+    avisosCompartidos.set(clave, { t: Date.now(), p });
+    p.catch(() => { if (avisosCompartidos.get(clave)?.p === p) avisosCompartidos.delete(clave); });
+    return p;
+}
+// Unas pocas a la vez: la base tiene 8 conexiones para toda la web.
+async function enTandas(tareas, max = 3) {
+    const out = new Array(tareas.length);
+    let i = 0;
+    await Promise.all(Array.from({ length: Math.min(max, tareas.length) }, async () => {
+        while (i < tareas.length) { const k = i++; out[k] = await tareas[k](); }
+    }));
+    return out;
+}
+
+// Cada fuente de avisos va por su cuenta (#415): si una falla (Gmail, las tablas
+// de Brickslab…), las demás salen igual y la campanita dice cuál no se ha
+// podido mirar, en vez de quedarse congelada sin decir nada. Cada aviso lleva
+// una clave fija (no sacada de su texto, que cambiaba con el número o el
+// plural y lo volvía a encender), y los que son una lista de cosas por atender
+// llevan «marca» (la fecha de la última): se encienden si entra algo nuevo, no
+// cuando se resuelve la más reciente. «prioridad»: 1 urgente, 2 normal, 3 para
+// enterarse.
 app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (req, res) => {
     const yo = req.userSession.userId;
     const permisosYo = permisos(req);
     // Quién recibe cada aviso está en permisos.js (AVISOS): lo mismo que enseña
     // la página «Rangos y permisos» (#333).
     const recibe = (id) => recibeAviso(id, permisosYo, req.userSession?.rol);
+    const plural = (n, uno, varios) => (n === 1 ? uno : varios);
     try {
-        const avisos = [];
+        const misGrupos = permisosYo.soloSusGrupos ? await gruposDe(yo) : null;
+        // { nombre, claves (las fijas que puede dar), fn → lista de avisos }
+        const fuentes = [];
+        const fuente = (nombre, claves, fn) => fuentes.push({ nombre, claves, fn });
+
+        // Soporte: los contadores de tickets.
+        if (recibe('tickets_sin_asignar') || recibe('tickets_mios')) {
+            fuente('Soporte', ['tickets_sin_asignar', 'tickets_mios', 'tickets_vencidos', 'tickets_parados'], async () => {
+                const dias = await diasParadoTicket();
+                const t = (await pool.query(
+                    `SELECT COUNT(*) FILTER (WHERE assigned_to IS NULL AND cardinality(asignados_extra) = 0)::int AS sin_asignar,
+                            COUNT(*) FILTER (WHERE assigned_to IS NULL AND cardinality(asignados_extra) = 0 AND priority = 'high')::int AS urgentes,
+                            COUNT(*) FILTER (WHERE assigned_to = $1 OR $1 = ANY(asignados_extra))::int AS mios,
+                            -- De los suyos: los vencidos y los que llevan días sin moverse.
+                            COUNT(*) FILTER (WHERE (assigned_to = $1 OR $1 = ANY(asignados_extra)) AND due_date IS NOT NULL
+                                               AND due_date::date < (NOW() AT TIME ZONE 'Europe/Madrid')::date)::int AS vencidos,
+                            COUNT(*) FILTER (WHERE (assigned_to = $1 OR $1 = ANY(asignados_extra)) AND etapa IS DISTINCT FROM 'espera_deploy'
+                                               AND COALESCE(updated_at, created_at) < NOW() - $2 * INTERVAL '1 day')::int AS parados
+                     FROM tickets_registrosoporte WHERE status = 'open'`, [yo, dias])).rows[0];
+                const l = [];
+                // Cada aviso lleva a lo suyo (#360): la lista filtrada, no Soporte a secas.
+                if (t.sin_asignar && recibe('tickets_sin_asignar')) l.push({ tipo: 'tickets', clave: 'tickets_sin_asignar', n: t.sin_asignar, prioridad: t.urgentes ? 1 : 2, texto: `${t.sin_asignar} ${plural(t.sin_asignar, 'ticket', 'tickets')} sin asignar`, detalle: t.urgentes ? `${t.urgentes} de prioridad alta` : null, destino: '/admin/soporte?filtro=sin_asignar' });
+                if (recibe('tickets_mios')) {
+                    if (t.vencidos) l.push({ tipo: 'tickets', clave: 'tickets_vencidos', n: t.vencidos, prioridad: 1, texto: `${t.vencidos} ${plural(t.vencidos, 'ticket tuyo vencido', 'tickets tuyos vencidos')}`, detalle: 'ya pasó su fecha límite', destino: '/admin/soporte?filtro=vencidos' });
+                    if (t.mios) l.push({ tipo: 'tickets', clave: 'tickets_mios', n: t.mios, texto: `${t.mios} ${plural(t.mios, 'ticket asignado', 'tickets asignados')} a ti`, destino: '/admin/soporte?filtro=mios' });
+                    if (t.parados) l.push({ tipo: 'tickets', clave: 'tickets_parados', n: t.parados, texto: `${t.parados} ${plural(t.parados, 'ticket tuyo', 'tickets tuyos')} sin moverse`, detalle: `más de ${dias} días sin cambios ni mensajes`, destino: '/admin/soporte?filtro=parados' });
+                }
+                return l;
+            });
+        }
+        // Mensajes sin leer: los de otros desde la última vez que abrió esa
+        // conversación (lo de hace más de 7 días ya no cuenta). Solo de sus
+        // tickets (los abrió o los lleva) y, con soporte completo, también de
+        // los que no lleva nadie. Uno por ticket, directo a ese ticket; si hay
+        // muchos, los cinco últimos y el resto resumido.
+        if (recibe('tickets_mensajes')) {
+            fuente('Mensajes de soporte', ['tickets_mensajes_resto'], async () => {
+                const filas = (await pool.query(
+                    `SELECT t.id, t.subject, COUNT(*)::int n, MAX(m.created_at) AS ultimo,
+                            (SELECT COALESCE(NULLIF(TRIM(CONCAT(u.name, ' ', u.surname)), ''), u.email)
+                             FROM tickets_mensajes m2 LEFT JOIN users u ON u.user_id = m2.autor_id
+                             WHERE m2.ticket_id = t.id AND COALESCE(m2.autor_id::text,'') <> $1
+                             ORDER BY m2.created_at DESC LIMIT 1) AS quien
+                     FROM tickets_mensajes m JOIN tickets_registrosoporte t ON t.id = m.ticket_id
+                     LEFT JOIN aim_avisos_vistos v ON v.user_id::text = $1 AND v.clave = 'ticket:' || t.id
+                     WHERE m.created_at > COALESCE(v.visto_at, NOW() - INTERVAL '7 days')
+                       AND COALESCE(m.autor_id::text, '') <> $1 AND t.status = 'open'
+                       AND (t.user_id::text = $1 OR t.assigned_to::text = $1 OR $1 = ANY(t.asignados_extra::text[])
+                            OR ($2::boolean AND t.assigned_to IS NULL AND cardinality(COALESCE(t.asignados_extra, '{}')) = 0))
+                     GROUP BY t.id, t.subject
+                     ORDER BY MAX(m.created_at) DESC`, [String(yo), !!permisosYo.soporteCompleto])).rows;
+                const TOPE = 5;
+                const l = filas.slice(0, TOPE).map(t => ({
+                    tipo: 'tickets', destino: `/admin/soporte/${t.id}`, n: t.n,
+                    texto: `${t.n} ${plural(t.n, 'mensaje', 'mensajes')} en «${t.subject || `Ticket #${t.id}`}»`,
+                    detalle: [t.quien ? `de ${t.quien}` : null, `ticket #${t.id}`].filter(Boolean).join(' · '),
+                    // Visto al entrar en el ticket; vuelve a ser nuevo con otro mensaje.
+                    clave: `ticket:${t.id}`, marca: t.ultimo, fecha: t.ultimo,
+                }));
+                const sobran = filas.slice(TOPE);
+                if (sobran.length) l.push({
+                    tipo: 'tickets', clave: 'tickets_mensajes_resto', marca: sobran[0].ultimo, fecha: sobran[0].ultimo,
+                    n: sobran.reduce((x, t) => x + t.n, 0), destino: '/admin/soporte?filtro=mensajes',
+                    texto: `y ${sobran.length} ${plural(sobran.length, 'ticket', 'tickets')} más con mensajes nuevos`, detalle: 'sin leer',
+                });
+                return l;
+            });
+        }
+        // Aviso privado: lo que se asigna a la cuenta de soporte lo acaba
+        // atendiendo el desarrollo, así que solo a esa persona se le avisa. Se
+        // decide aquí, en el servidor, y a nadie más se le devuelve.
+        if (String(req.userSession.email || '').toLowerCase() === AVISO_SOPORTE_PARA) {
+            fuente('Cuenta de soporte', ['tickets_cuenta_soporte'], async () => {
+                const s = (await pool.query(
+                    `SELECT COUNT(*)::int n, COUNT(*) FILTER (WHERE t.priority = 'high')::int urgentes
+                     FROM tickets_registrosoporte t
+                     WHERE t.status = 'open' AND EXISTS (
+                         SELECT 1 FROM users u WHERE LOWER(u.email) = $1
+                            AND (u.user_id = t.assigned_to OR u.user_id = ANY(t.asignados_extra)))`, [CUENTA_SOPORTE])).rows[0];
+                return s.n ? [{
+                    tipo: 'tickets', clave: 'tickets_cuenta_soporte', n: s.n, destino: '/admin/soporte',
+                    texto: `${s.n} ${plural(s.n, 'ticket asignado', 'tickets asignados')} a Soporte Aim Education`,
+                    detalle: s.urgentes ? `${s.urgentes} de prioridad alta` : null,
+                }] : [];
+            });
+        }
+
         // Que haya cobros pendientes o cajas sin cuadrar no es trabajo de un
         // instructor: esos avisos ni se calculan ni se le mandan.
-        const misGrupos = permisosYo.soloSusGrupos ? await gruposDe(req.userSession.userId) : null;
-        const [tickets, mensajes, cobros, cajas, camp, espera] = await Promise.all([
-            pool.query(
-                `SELECT COUNT(*) FILTER (WHERE assigned_to IS NULL AND cardinality(asignados_extra) = 0)::int AS sin_asignar,
-                        COUNT(*) FILTER (WHERE assigned_to = $1 OR $1 = ANY(asignados_extra))::int AS mios,
-                        COUNT(*) FILTER (WHERE priority = 'high')::int AS urgentes,
-                        -- De los suyos: los vencidos y los que llevan días sin moverse.
-                        COUNT(*) FILTER (WHERE (assigned_to = $1 OR $1 = ANY(asignados_extra)) AND due_date IS NOT NULL
-                                           AND due_date::date < (NOW() AT TIME ZONE 'Europe/Madrid')::date)::int AS vencidos,
-                        COUNT(*) FILTER (WHERE (assigned_to = $1 OR $1 = ANY(asignados_extra)) AND etapa IS DISTINCT FROM 'espera_deploy'
-                                           AND COALESCE(updated_at, created_at) < NOW() - $2 * INTERVAL '1 day')::int AS parados
-                 FROM tickets_registrosoporte WHERE status = 'open'`, [yo, await diasParadoTicket()]),
-            // Mensajes sin leer: los de otros desde la última vez que abrió esa
-            // conversación (lo de hace más de 7 días ya no cuenta). Solo de sus
-            // tickets (los abrió o los lleva) y, con soporte completo, también de
-            // los que no lleva nadie. Uno por ticket, con su asunto y quién escribe.
-            pool.query(
-                `SELECT t.id, t.subject, COUNT(*)::int n, MAX(m.created_at) AS ultimo,
-                        (SELECT COALESCE(NULLIF(TRIM(CONCAT(u.name, ' ', u.surname)), ''), u.email)
-                         FROM tickets_mensajes m2 LEFT JOIN users u ON u.user_id = m2.autor_id
-                         WHERE m2.ticket_id = t.id AND COALESCE(m2.autor_id::text,'') <> $1
-                         ORDER BY m2.created_at DESC LIMIT 1) AS quien
-                 FROM tickets_mensajes m JOIN tickets_registrosoporte t ON t.id = m.ticket_id
-                 LEFT JOIN aim_avisos_vistos v ON v.user_id::text = $1 AND v.clave = 'ticket:' || t.id
-                 WHERE m.created_at > COALESCE(v.visto_at, NOW() - INTERVAL '7 days')
-                   AND COALESCE(m.autor_id::text, '') <> $1 AND t.status = 'open'
-                   AND (t.user_id::text = $1 OR t.assigned_to::text = $1 OR $1 = ANY(t.asignados_extra::text[])
-                        OR ($2::boolean AND t.assigned_to IS NULL AND cardinality(COALESCE(t.asignados_extra, '{}')) = 0))
-                 GROUP BY t.id, t.subject
-                 ORDER BY MAX(m.created_at) DESC`, [String(yo), !!permisosYo.soporteCompleto]),
-            pool.query(
-                `SELECT COUNT(*)::int n, COUNT(DISTINCT cliente_id)::int clientes,
-                        COALESCE(SUM(COALESCE(importe, precio)), 0)::numeric total
-                 FROM aim_cargos WHERE estado = 'pendiente' AND recibo_id IS NULL`),
-            // Días con cobros y sin arqueo, sin contar el de hoy (aún abierto).
-            pool.query(
-                `SELECT COUNT(*)::int n, MIN(fecha)::text AS desde FROM (
-                   SELECT DISTINCT ${SQL_DIA_CAJA} AS fecha FROM aim_recibos r
-                   WHERE r.estado <> 'anulado' AND r.fecha > (now() AT TIME ZONE 'Europe/Madrid')::date - INTERVAL '60 days'
-                     -- Lo pagado por la web no se cuenta en caja: un día solo con eso no hay que cerrarlo.
-                     AND COALESCE(r.medio_pago, '') NOT IN ('tpv_online', 'compensacion')
-                 ) t
-                 WHERE t.fecha < (now() AT TIME ZONE 'Europe/Madrid')::date
-                   AND NOT EXISTS (SELECT 1 FROM aim_arqueos a WHERE a.fecha = t.fecha)`),
-            pool.query(
-                `SELECT COUNT(*) FILTER (WHERE alumno_id IS NULL)::int sin_ficha,
-                        COUNT(*)::int total FROM aim_camp_children`),
-            // Clases con gente esperando en las que ya hay hueco.
-            pool.query(
-                `SELECT COUNT(*)::int n FROM (
-                   SELECT e.group_id
-                   FROM aim_lista_espera e
-                   JOIN tul_groups g ON g.group_id = e.group_id
-                   JOIN tul_activities a ON a.activity_id = g.activity_id
-                   WHERE e.estado = 'esperando' AND a.club_id = $1 AND g.max_students IS NOT NULL
-                     -- A un instructor solo le importan las suyas.
-                     AND ($2::uuid[] IS NULL OR e.group_id = ANY($2::uuid[]))
-                   GROUP BY e.group_id, g.max_students
-                   HAVING g.max_students - (
-                     SELECT COUNT(*) FROM tul_group_students gs WHERE gs.group_id = e.group_id) > 0
-                 ) t`, [AIM_CLUB_ID, misGrupos]),
-        ]);
-
-        const t = tickets.rows[0];
-        // Los tickets sin asignar y los del club son cosa de quien los lleva.
-        if (!recibe('tickets_sin_asignar')) { t.sin_asignar = 0; }
-        // Cada aviso lleva a lo suyo (#360): la lista filtrada, no Soporte a secas.
-        if (t.sin_asignar) avisos.push({ tipo: 'tickets', texto: `${t.sin_asignar} ticket${t.sin_asignar !== 1 ? 's' : ''} sin asignar`, detalle: t.urgentes ? `${t.urgentes} de prioridad alta` : null, destino: '/admin/soporte?filtro=sin_asignar', n: t.sin_asignar });
-        if (t.mios && recibe('tickets_mios')) avisos.push({ tipo: 'tickets', texto: `${t.mios} ticket${t.mios !== 1 ? 's' : ''} asignado${t.mios !== 1 ? 's' : ''} a ti`, destino: '/admin/soporte?filtro=mios', n: t.mios });
-        if (t.vencidos && recibe('tickets_mios')) avisos.push({ tipo: 'tickets', texto: `${t.vencidos} ticket${t.vencidos !== 1 ? 's' : ''} tuyo${t.vencidos !== 1 ? 's' : ''} vencido${t.vencidos !== 1 ? 's' : ''}`, detalle: 'ya pasó su fecha límite', destino: '/admin/soporte?filtro=vencidos', n: t.vencidos });
-        if (t.parados && recibe('tickets_mios')) avisos.push({ tipo: 'tickets', texto: `${t.parados} ticket${t.parados !== 1 ? 's' : ''} tuyo${t.parados !== 1 ? 's' : ''} sin moverse`, detalle: `más de ${await diasParadoTicket()} días sin cambios ni mensajes`, destino: '/admin/soporte?filtro=parados', n: t.parados });
-        // Un aviso por ticket, y cada uno lleva directo a ese ticket. Si hay
-        // muchos se enseñan los cinco últimos y el resto se resume, para que la
-        // campanita no se convierta en una lista interminable.
-        const TOPE_TICKETS = 5;
-        if (!recibe('tickets_mensajes')) mensajes.rows = [];
-        for (const t of mensajes.rows.slice(0, TOPE_TICKETS)) {
-            avisos.push({
-                tipo: 'tickets',
-                texto: `${t.n} mensaje${t.n !== 1 ? 's' : ''} en «${t.subject || `Ticket #${t.id}`}»`,
-                detalle: [t.quien ? `de ${t.quien}` : null, `ticket #${t.id}`].filter(Boolean).join(' · '),
-                destino: `/admin/soporte/${t.id}`,
-                n: t.n,
-                // Visto al entrar en el ticket; vuelve a ser nuevo con otro mensaje.
-                clave: `ticket:${t.id}`, marca: t.ultimo,
+        if (recibe('cobros_pendientes')) {
+            fuente('Cobros', ['cobros_pendientes'], async () => {
+                const c = (await avisoCompartido('cobros', () => pool.query(
+                    `SELECT COUNT(*)::int n, COUNT(DISTINCT cliente_id)::int clientes,
+                            COALESCE(SUM(COALESCE(importe, precio)), 0)::numeric total
+                     FROM aim_cargos WHERE estado = 'pendiente' AND recibo_id IS NULL`))).rows[0];
+                return c.n ? [{ tipo: 'cobros', clave: 'cobros_pendientes', n: c.n, texto: `${c.n} ${plural(c.n, 'cargo pendiente', 'cargos pendientes')} de cobrar`, detalle: `${r2Server(Number(c.total))} € de ${c.clientes} ${plural(c.clientes, 'cliente', 'clientes')}`, destino: '/admin/facturacion?pestana=pendientes' }] : [];
             });
         }
-        if (mensajes.rows.length > TOPE_TICKETS) {
-            const sobran = mensajes.rows.slice(TOPE_TICKETS);
-            avisos.push({
-                tipo: 'tickets',
-                texto: `y ${sobran.length} ticket${sobran.length !== 1 ? 's' : ''} más con mensajes nuevos`,
-                detalle: 'sin leer',
-                destino: '/admin/soporte?filtro=mensajes',
-                n: sobran.reduce((x, t) => x + t.n, 0),
+        // Días con cobros y sin arqueo, sin contar el de hoy (aún abierto).
+        if (recibe('caja_sin_cerrar')) {
+            fuente('Caja', ['caja_sin_cerrar'], async () => {
+                const cj = (await avisoCompartido('cajas', () => pool.query(
+                    `SELECT COUNT(*)::int n, MIN(fecha)::text AS desde FROM (
+                       SELECT DISTINCT ${SQL_DIA_CAJA} AS fecha FROM aim_recibos r
+                       WHERE r.estado <> 'anulado' AND r.fecha > (now() AT TIME ZONE 'Europe/Madrid')::date - INTERVAL '60 days'
+                         -- Lo pagado por la web no se cuenta en caja: un día solo con eso no hay que cerrarlo.
+                         AND COALESCE(r.medio_pago, '') NOT IN ('tpv_online', 'compensacion')
+                     ) t
+                     WHERE t.fecha < (now() AT TIME ZONE 'Europe/Madrid')::date
+                       AND NOT EXISTS (SELECT 1 FROM aim_arqueos a WHERE a.fecha = t.fecha)`))).rows[0];
+                return cj.n ? [{ tipo: 'caja', clave: 'caja_sin_cerrar', n: cj.n, texto: `${cj.n} ${plural(cj.n, 'día', 'días')} con cobros y sin arqueo`, detalle: cj.desde ? `el más antiguo, del ${cj.desde}` : null, destino: '/admin/facturacion?pestana=arqueo' }] : [];
             });
         }
-
-        const c = cobros.rows[0];
-        if (c.n && recibe('cobros_pendientes')) avisos.push({ tipo: 'cobros', texto: `${c.n} cargo${c.n !== 1 ? 's' : ''} pendiente${c.n !== 1 ? 's' : ''} de cobrar`, detalle: `${r2Server(Number(c.total))} € de ${c.clientes} cliente${c.clientes !== 1 ? 's' : ''}`, destino: '/admin/facturacion?pestana=pendientes', n: c.n });
-
-        const cj = cajas.rows[0];
-        if (cj.n && recibe('caja_sin_cerrar')) avisos.push({ tipo: 'caja', texto: `${cj.n} día${cj.n !== 1 ? 's' : ''} con cobros y sin arqueo`, detalle: cj.desde ? `el más antiguo, del ${cj.desde}` : null, destino: '/admin/facturacion?pestana=arqueo', n: cj.n });
-
-        const cp = camp.rows[0];
         // Sin ficha no se les puede cobrar: es un aviso de facturación.
-        if (cp.sin_ficha && recibe('campamento_sin_ficha')) avisos.push({ tipo: 'campamento', texto: `${cp.sin_ficha} niño${cp.sin_ficha !== 1 ? 's' : ''} del campamento sin ficha`, detalle: 'sin ficha no se les puede cobrar', destino: '/admin/campamento', n: cp.sin_ficha });
+        if (recibe('campamento_sin_ficha')) {
+            fuente('Campamento', ['campamento_sin_ficha'], async () => {
+                const n = (await avisoCompartido('camp', () => pool.query(
+                    `SELECT COUNT(*) FILTER (WHERE alumno_id IS NULL)::int sin_ficha FROM aim_camp_children`))).rows[0].sin_ficha;
+                return n ? [{ tipo: 'campamento', clave: 'campamento_sin_ficha', n, texto: `${n} ${plural(n, 'niño', 'niños')} del campamento sin ficha`, detalle: 'sin ficha no se les puede cobrar', destino: '/admin/campamento' }] : [];
+            });
+        }
+        // Clases con gente esperando en las que ya hay hueco (a un instructor,
+        // solo las suyas).
+        if (recibe('lista_espera')) {
+            fuente('Lista de espera', ['lista_espera'], async () => {
+                const n = (await pool.query(
+                    `SELECT COUNT(*)::int n FROM (
+                       SELECT e.group_id
+                       FROM aim_lista_espera e
+                       JOIN tul_groups g ON g.group_id = e.group_id
+                       JOIN tul_activities a ON a.activity_id = g.activity_id
+                       WHERE e.estado = 'esperando' AND a.club_id = $1 AND g.max_students IS NOT NULL
+                         AND ($2::uuid[] IS NULL OR e.group_id = ANY($2::uuid[]))
+                       GROUP BY e.group_id, g.max_students
+                       HAVING g.max_students - (
+                         SELECT COUNT(*) FROM tul_group_students gs WHERE gs.group_id = e.group_id) > 0
+                     ) t`, [AIM_CLUB_ID, misGrupos])).rows[0].n;
+                return n ? [{ tipo: 'clases', clave: 'lista_espera', n, texto: `${n} ${plural(n, 'clase', 'clases')} con plaza libre y gente esperando`, detalle: 'se puede dar la plaza al primero de la lista', destino: '/admin/clases?vista=lista' }] : [];
+            });
+        }
 
         // Eventos que ha propuesto alguien y están esperando respuesta. A quien
         // los pidió también se le avisa cuando ya se los han contestado.
         if (recibe('eventos_propuestos')) {
-            const sol = await pool.query(
-                `SELECT COUNT(*)::int n FROM aim_eventos_solicitudes WHERE estado = 'pendiente'`);
-            if (sol.rows[0].n) avisos.push({
-                tipo: 'clases', destino: '/admin/eventos',
-                texto: `${sol.rows[0].n} evento${sol.rows[0].n !== 1 ? 's' : ''} propuesto${sol.rows[0].n !== 1 ? 's' : ''} sin decidir`,
-                detalle: 'los ha pedido un instructor', n: sol.rows[0].n,
+            fuente('Eventos', ['eventos_propuestos'], async () => {
+                const e = (await avisoCompartido('eventos', () => pool.query(
+                    `SELECT COUNT(*)::int n, MAX(created_at) AS ultima FROM aim_eventos_solicitudes WHERE estado = 'pendiente'`))).rows[0];
+                return e.n ? [{ tipo: 'clases', clave: 'eventos_propuestos', n: e.n, marca: e.ultima, fecha: e.ultima, destino: '/admin/eventos', texto: `${e.n} ${plural(e.n, 'evento propuesto', 'eventos propuestos')} sin decidir`, detalle: 'los ha pedido un instructor' }] : [];
             });
         } else if (recibe('eventos_respondidos')) {
-            const mias = await pool.query(
-                `SELECT titulo, estado FROM aim_eventos_solicitudes
+            fuente('Eventos', [], async () => (await pool.query(
+                `SELECT id, titulo, estado, resuelto_at FROM aim_eventos_solicitudes
                  WHERE solicitante_id = $1 AND estado <> 'pendiente' AND resuelto_at > NOW() - INTERVAL '7 days'
-                 ORDER BY resuelto_at DESC LIMIT 3`, [yo]);
-            for (const m of mias.rows) {
-                avisos.push({
-                    tipo: 'clases', destino: '/admin/eventos',
-                    texto: `Tu evento «${m.titulo}» está ${m.estado === 'aprobada' ? 'aprobado' : 'rechazado'}`,
-                    detalle: 'lo has propuesto tú', n: 1,
-                });
-            }
+                 ORDER BY resuelto_at DESC LIMIT 3`, [yo])).rows.map(m => ({
+                tipo: 'clases', clave: `evento_respondido:${m.id}`, marca: m.resuelto_at, fecha: m.resuelto_at, prioridad: 3, destino: '/admin/eventos',
+                texto: `Tu evento «${m.titulo}» está ${m.estado === 'aprobada' ? 'aprobado' : 'rechazado'}`, detalle: 'lo has propuesto tú',
+            })));
         }
 
         // Fichaje (ticket #251): correcciones que esperan que las apruebe el propio
         // trabajador, y solicitudes de los trabajadores que tiene que validar
-        // secretaría/dirección. Al que pidió una, se le avisa también de la respuesta.
-        {
-            const fj = await pool.query(
-                `SELECT COUNT(*) FILTER (WHERE s.estado = 'pendiente' AND s.iniciado_por = 'empresa' AND s.user_id = $1)::int AS por_aprobar,
-                        COUNT(*) FILTER (WHERE s.estado = 'pendiente' AND s.iniciado_por = 'trabajador' AND s.user_id <> $1)::int AS por_validar,
-                        COUNT(*) FILTER (WHERE s.estado IN ('aprobada','rechazada') AND s.iniciado_por = 'trabajador'
-                                         AND s.solicitado_por = $1 AND s.resuelto_at > NOW() - INTERVAL '3 days')::int AS resueltas
-                 FROM aim_fichaje_solicitudes s`, [yo]);
-            const x = fj.rows[0];
-            // Resumen mensual de horas pendiente de que lo confirme (ticket #252).
-            const rs = await pool.query(
-                `SELECT COUNT(*)::int n FROM aim_fichaje_resumenes r
-                 WHERE r.user_id = $1 AND r.confirmado_at IS NULL
-                   AND r.version = (SELECT MAX(v.version) FROM aim_fichaje_resumenes v WHERE v.user_id = r.user_id AND v.mes = r.mes)`, [yo]);
-            if (rs.rows[0].n && recibe('resumen_horas')) avisos.push({ tipo: 'fichaje', texto: `${rs.rows[0].n === 1 ? 'Un resumen' : `${rs.rows[0].n} resúmenes`} de horas por confirmar`, detalle: 'confirma que lo has recibido', destino: '/admin/fichaje', n: rs.rows[0].n });
-            if (x.por_aprobar && recibe('correcciones_por_aprobar')) avisos.push({ tipo: 'fichaje', texto: `${x.por_aprobar} corrección${x.por_aprobar !== 1 ? 'es' : ''} de tu fichaje por aprobar`, detalle: 'no se aplican hasta que las apruebes', destino: '/admin/fichaje', n: x.por_aprobar });
-            if (x.por_validar && recibe('correcciones_por_validar')) avisos.push({ tipo: 'fichaje', texto: `${x.por_validar} solicitud${x.por_validar !== 1 ? 'es' : ''} de corrección de fichaje por validar`, detalle: 'las han pedido los trabajadores', destino: '/admin/fichaje?pestana=gestion', n: x.por_validar });
-            if (x.resueltas && recibe('correcciones_respondidas')) avisos.push({ tipo: 'fichaje', texto: `${x.resueltas} solicitud${x.resueltas !== 1 ? 'es' : ''} de corrección de fichaje respondida${x.resueltas !== 1 ? 's' : ''}`, detalle: 'mira el resultado en Fichaje', destino: '/admin/fichaje', n: x.resueltas });
-            // Vacaciones y ausencias (ticket #233): por aprobar (secretaría/dirección,
-            // nunca las propias) y las respondidas al que las pidió.
-            const au = await pool.query(
-                `SELECT COUNT(*) FILTER (WHERE estado = 'pendiente' AND user_id <> $1)::int AS por_aprobar,
-                        COUNT(*) FILTER (WHERE estado IN ('aprobada','rechazada') AND iniciado_por = 'trabajador'
-                                         AND user_id = $1 AND resuelto_at > NOW() - INTERVAL '3 days')::int AS resueltas
-                 FROM aim_ausencias`, [yo]);
-            const y = au.rows[0];
-            if (y.por_aprobar && recibe('ausencias_por_aprobar')) avisos.push({ tipo: 'fichaje', texto: `${y.por_aprobar} petición${y.por_aprobar !== 1 ? 'es' : ''} de vacaciones o ausencia por aprobar`, detalle: 'las han pedido los trabajadores', destino: '/admin/fichaje?pestana=calendario', n: y.por_aprobar });
-            if (y.resueltas && recibe('ausencias_respondidas')) avisos.push({ tipo: 'fichaje', texto: `${y.resueltas === 1 ? 'Tu petición' : `${y.resueltas} peticiones`} de vacaciones o ausencia ${y.resueltas === 1 ? 'tiene' : 'tienen'} respuesta`, detalle: 'mírala en Fichaje', destino: '/admin/fichaje?pestana=calendario', n: y.resueltas });
-        }
-
-        const esp = espera.rows[0];
-        if (esp.n && recibe('lista_espera')) avisos.push({ tipo: 'clases', texto: `${esp.n} clase${esp.n !== 1 ? 's' : ''} con plaza libre y gente esperando`, detalle: 'se puede dar la plaza al primero de la lista', destino: '/admin/clases?vista=lista', n: esp.n });
-
-        // Aviso privado: lo que se asigna a la cuenta de soporte lo acaba
-        // atendiendo el desarrollo, así que solo a esa persona se le avisa. Se
-        // decide aquí, en el servidor, y a nadie más se le devuelve.
-        // Cambios de datos fiscales esperando autorización: si no se ven, la
-        // familia se queda esperando sin saberlo.
-        const fis = recibe('datos_fiscales')
-            ? await pool.query(`SELECT COUNT(*)::int n FROM aim_datos_fiscales_cambios WHERE estado = 'pendiente'`)
-            : { rows: [{ n: 0 }] };
-        if (fis.rows[0].n > 0) {
-            avisos.push({
-                // El bloque para autorizarlos se pinta arriba del apartado
-                // Alumnos; el destino tiene que ser la ruta, no el id suelto, que
-                // si no la campanita se va a la portada pública.
-                tipo: 'cobros', destino: '/admin/alumnos',
-                texto: `${fis.rows[0].n} cambio${fis.rows[0].n !== 1 ? 's' : ''} de datos por autorizar`,
-                detalle: 'DNI o domicilio que ha pedido cambiar una familia',
+        // secretaría/dirección. Al que pidió una, se le avisa también de la
+        // respuesta. Y el resumen mensual de horas por confirmar (#252) y las
+        // vacaciones y ausencias (#233).
+        if (['resumen_horas', 'correcciones_por_aprobar', 'correcciones_por_validar', 'correcciones_respondidas', 'ausencias_por_aprobar', 'ausencias_respondidas'].some(recibe)) {
+            fuente('Fichaje', ['resumen_horas', 'fichaje_por_aprobar', 'fichaje_por_validar', 'ausencias_por_aprobar'], async () => {
+                const [fj, rs, au] = await Promise.all([
+                    pool.query(
+                        `SELECT COUNT(*) FILTER (WHERE s.estado = 'pendiente' AND s.iniciado_por = 'empresa' AND s.user_id = $1)::int AS por_aprobar,
+                                COUNT(*) FILTER (WHERE s.estado = 'pendiente' AND s.iniciado_por = 'trabajador' AND s.user_id <> $1)::int AS por_validar,
+                                MAX(s.created_at) FILTER (WHERE s.estado = 'pendiente' AND s.iniciado_por = 'trabajador' AND s.user_id <> $1) AS ultima_por_validar,
+                                COUNT(*) FILTER (WHERE s.estado IN ('aprobada','rechazada') AND s.iniciado_por = 'trabajador'
+                                                 AND s.solicitado_por = $1 AND s.resuelto_at > NOW() - INTERVAL '3 days')::int AS resueltas,
+                                MAX(s.resuelto_at) FILTER (WHERE s.estado IN ('aprobada','rechazada') AND s.iniciado_por = 'trabajador' AND s.solicitado_por = $1) AS ultima_resuelta
+                         FROM aim_fichaje_solicitudes s`, [yo]),
+                    pool.query(
+                        `SELECT COUNT(*)::int n FROM aim_fichaje_resumenes r
+                         WHERE r.user_id = $1 AND r.confirmado_at IS NULL
+                           AND r.version = (SELECT MAX(v.version) FROM aim_fichaje_resumenes v WHERE v.user_id = r.user_id AND v.mes = r.mes)`, [yo]),
+                    pool.query(
+                        `SELECT COUNT(*) FILTER (WHERE estado = 'pendiente' AND user_id <> $1)::int AS por_aprobar,
+                                MAX(created_at) FILTER (WHERE estado = 'pendiente' AND user_id <> $1) AS ultima_por_aprobar,
+                                COUNT(*) FILTER (WHERE estado IN ('aprobada','rechazada') AND iniciado_por = 'trabajador'
+                                                 AND user_id = $1 AND resuelto_at > NOW() - INTERVAL '3 days')::int AS resueltas,
+                                MAX(resuelto_at) FILTER (WHERE estado IN ('aprobada','rechazada') AND iniciado_por = 'trabajador' AND user_id = $1) AS ultima_resuelta
+                         FROM aim_ausencias`, [yo]),
+                ]);
+                const x = fj.rows[0], y = au.rows[0], r = rs.rows[0].n, l = [];
+                if (r && recibe('resumen_horas')) l.push({ tipo: 'fichaje', clave: 'resumen_horas', n: r, texto: `${r === 1 ? 'Un resumen' : `${r} resúmenes`} de horas por confirmar`, detalle: 'confirma que lo has recibido', destino: '/admin/fichaje' });
+                if (x.por_aprobar && recibe('correcciones_por_aprobar')) l.push({ tipo: 'fichaje', clave: 'fichaje_por_aprobar', n: x.por_aprobar, prioridad: 1, texto: `${x.por_aprobar} ${plural(x.por_aprobar, 'corrección', 'correcciones')} de tu fichaje por aprobar`, detalle: 'no se aplican hasta que las apruebes', destino: '/admin/fichaje' });
+                if (x.por_validar && recibe('correcciones_por_validar')) l.push({ tipo: 'fichaje', clave: 'fichaje_por_validar', n: x.por_validar, marca: x.ultima_por_validar, fecha: x.ultima_por_validar, texto: `${x.por_validar} ${plural(x.por_validar, 'solicitud', 'solicitudes')} de corrección de fichaje por validar`, detalle: 'las han pedido los trabajadores', destino: '/admin/fichaje?pestana=gestion' });
+                if (x.resueltas && recibe('correcciones_respondidas')) l.push({ tipo: 'fichaje', clave: 'fichaje_respondidas', n: x.resueltas, marca: x.ultima_resuelta, fecha: x.ultima_resuelta, prioridad: 3, texto: `${x.resueltas} ${plural(x.resueltas, 'solicitud', 'solicitudes')} de corrección de fichaje ${plural(x.resueltas, 'respondida', 'respondidas')}`, detalle: 'mira el resultado en Fichaje', destino: '/admin/fichaje' });
+                if (y.por_aprobar && recibe('ausencias_por_aprobar')) l.push({ tipo: 'fichaje', clave: 'ausencias_por_aprobar', n: y.por_aprobar, marca: y.ultima_por_aprobar, fecha: y.ultima_por_aprobar, texto: `${y.por_aprobar} ${plural(y.por_aprobar, 'petición', 'peticiones')} de vacaciones o ausencia por aprobar`, detalle: 'las han pedido los trabajadores', destino: '/admin/fichaje?pestana=calendario' });
+                if (y.resueltas && recibe('ausencias_respondidas')) l.push({ tipo: 'fichaje', clave: 'ausencias_respondidas', n: y.resueltas, marca: y.ultima_resuelta, fecha: y.ultima_resuelta, prioridad: 3, texto: `${y.resueltas === 1 ? 'Tu petición' : `${y.resueltas} peticiones`} de vacaciones o ausencia ${y.resueltas === 1 ? 'tiene' : 'tienen'} respuesta`, detalle: 'mírala en Fichaje', destino: '/admin/fichaje?pestana=calendario' });
+                return l;
             });
         }
 
-        if (String(req.userSession.email || '').toLowerCase() === AVISO_SOPORTE_PARA) {
-            const s = await pool.query(
-                `SELECT COUNT(*)::int n, COUNT(*) FILTER (WHERE t.priority = 'high')::int urgentes
-                 FROM tickets_registrosoporte t
-                 WHERE t.status = 'open' AND EXISTS (
-                     SELECT 1 FROM users u WHERE LOWER(u.email) = $1
-                        AND (u.user_id = t.assigned_to OR u.user_id = ANY(t.asignados_extra)))`, [CUENTA_SOPORTE]
-            );
-            const n = s.rows[0]?.n || 0;
-            if (n) {
-                avisos.push({
-                    tipo: 'tickets',
-                    texto: `${n} ticket${n !== 1 ? 's' : ''} asignado${n !== 1 ? 's' : ''} a Soporte Aim Education`,
-                    detalle: s.rows[0].urgentes ? `${s.rows[0].urgentes} de prioridad alta` : null,
-                    destino: '/admin/soporte', n,
-                });
-            }
+        // Cambios de datos fiscales esperando autorización: si no se ven, la
+        // familia se queda esperando sin saberlo. El bloque para autorizarlos se
+        // pinta arriba del apartado Alumnos.
+        if (recibe('datos_fiscales')) {
+            fuente('Datos fiscales', ['datos_fiscales'], async () => {
+                const f = (await avisoCompartido('fiscales', () => pool.query(
+                    `SELECT COUNT(*)::int n, MAX(created_at) AS ultima FROM aim_datos_fiscales_cambios WHERE estado = 'pendiente'`))).rows[0];
+                return f.n ? [{ tipo: 'cobros', clave: 'datos_fiscales', n: f.n, marca: f.ultima, fecha: f.ultima, destino: '/admin/alumnos', texto: `${f.n} ${plural(f.n, 'cambio', 'cambios')} de datos por autorizar`, detalle: 'DNI o domicilio que ha pedido cambiar una familia' }] : [];
+            });
+        }
+
+        // Servicios caídos según la vigilancia (al Equipo IT y los superadmin):
+        // se enciende con cada caída nueva, no cuando se arregla la última.
+        if (recibe('servicios_caidos')) {
+            fuente('Vigilancia', ['servicios_caidos'], async () => {
+                const caidos = vigilancia.caidos();
+                if (!caidos.length) return [];
+                const desde = caidos.map(c => new Date(c.desde || 0)).filter(d => !Number.isNaN(d.getTime())).sort((a, b) => b - a)[0] || null;
+                return [{ tipo: 'sistema', clave: 'servicios_caidos', n: caidos.length, marca: desde, fecha: desde, prioridad: 1, texto: `${caidos.length} ${plural(caidos.length, 'servicio', 'servicios')} de la web con problemas`, detalle: caidos.map(c => c.nombre).join(', '), destino: '/admin/equipo-it' }];
+            });
         }
 
         // Clases individuales (#228, #388): alumnos apuntados a una sesión futura sin llamar
-        // a los padres, y padres que han dicho que NO, para que secretaría lo vea.
-        // Ya confirmados no cuentan como "por llamar" (ticket #241): si la familia
-        // ya dijo que sí desde el correo/web, no hay que llamarles para confirmar.
-        // Llevan la clave de cuando se llamaban «Speaking» (#388): así no vuelven
-        // a salir como nuevos los que ya se habían visto.
-        const spk = await pool.query(
-            `SELECT COUNT(*) FILTER (WHERE llamado = false AND confirmado IS NULL AND ${sqlLimiteSpeaking()} >= ${SQL_HOY_MADRID})::int AS por_llamar,
-                    COUNT(*) FILTER (WHERE confirmado = true)::int AS confirmados
-             FROM aim_speaking WHERE fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date`);
-        const sp = spk.rows[0];
-        // Servicios caídos según la vigilancia (al Equipo IT y los superadmin).
-        if (recibe('servicios_caidos')) {
-            const caidos = vigilancia.caidos();
-            if (caidos.length) avisos.push({ tipo: 'sistema', texto: `${caidos.length} servicio${caidos.length !== 1 ? 's' : ''} de la web con problemas`, detalle: caidos.map(c => c.nombre).join(', '), destino: '/admin/equipo-it', clave: `servicios_caidos:${caidos.map(c => `${c.id}@${c.desde}`).sort().join(',')}`, n: caidos.length });
+        // a los padres. Ya confirmados no cuentan (ticket #241). Llevan la clave de
+        // cuando se llamaban «Speaking» (#388), para no volver a salir como nuevos.
+        if (recibe('speaking_por_llamar')) {
+            fuente('Clases individuales', ['speaking|/admin/speaking|alumn speak avisa padre'], async () => {
+                const n = (await avisoCompartido('speaking', () => pool.query(
+                    `SELECT COUNT(*) FILTER (WHERE llamado = false AND confirmado IS NULL AND ${sqlLimiteSpeaking()} >= ${SQL_HOY_MADRID})::int AS por_llamar
+                     FROM aim_speaking WHERE fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date`))).rows[0].por_llamar;
+                return n ? [{ tipo: 'speaking', clave: 'speaking|/admin/speaking|alumn speak avisa padre', n, texto: `${n} ${plural(n, 'alumno', 'alumnos')} de clases individuales por avisar a los padres`, detalle: 'llamar y confirmar asistencia', destino: '/admin/clases-individuales' }] : [];
+            });
         }
-        if (sp.por_llamar && recibe('speaking_por_llamar')) avisos.push({ tipo: 'speaking', texto: `${sp.por_llamar} alumno${sp.por_llamar !== 1 ? 's' : ''} de clases individuales por avisar a los padres`, detalle: 'llamar y confirmar asistencia', destino: '/admin/clases-individuales', clave: 'speaking|/admin/speaking|alumn speak avisa padre', n: sp.por_llamar });
-        // Almacén (#322): artículos en o por debajo de su mínimo de aviso. La clave
-        // lleva cuáles son, así que si baja otro distinto vuelve a encenderse.
+        // Alumnos que no vendrán a una clase individual (#406): a los profes de esa
+        // clase, para que citen a otra persona en el hueco. Solo cuenta lo que han
+        // dicho desde la última vez que lo vio: una vez abierto, el aviso se va.
+        if (recibe('speaking_rechazados')) {
+            fuente('Clases individuales', [], async () => {
+                const CLAVE_NO_VIENEN = 'speaking|/admin/speaking|famil dicho speak';
+                const visto = (await pool.query(`SELECT visto_at FROM aim_avisos_vistos WHERE user_id = $1 AND clave = $2`, [yo, CLAVE_NO_VIENEN])).rows[0]?.visto_at || null;
+                const nv = (await pool.query(
+                    `SELECT COUNT(*)::int AS n, MAX(respondido_at) AS ultimo FROM aim_speaking
+                     WHERE confirmado = false AND fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date
+                       AND ($1::timestamptz IS NULL OR respondido_at > $1)
+                       AND ($2::uuid[] IS NULL OR group_id = ANY($2::uuid[]))`, [visto, misGrupos])).rows[0];
+                return nv.n ? [{ tipo: 'speaking', clave: CLAVE_NO_VIENEN, marca: nv.ultimo, fecha: nv.ultimo, n: nv.n, texto: `${nv.n} ${plural(nv.n, 'alumno no vendrá', 'alumnos no vendrán')} a una clase individual`, detalle: 'puedes citar a otra persona en su hueco', destino: '/admin/clases-individuales' }] : [];
+            });
+        }
+
+        // Almacén (#322): artículos en o por debajo de su mínimo de aviso.
         if (recibe('almacen')) {
-            const bajos = (await pool.query(
-                `SELECT id, nombre, stock, stock_minimo FROM aim_almacen
-                 WHERE stock_minimo > 0 AND stock <= stock_minimo ORDER BY stock - stock_minimo, nombre`)).rows;
-            if (bajos.length) {
-                avisos.push({
-                    tipo: 'almacen', destino: '/admin/almacen', n: bajos.length,
-                    clave: `almacen:bajo:${bajos.map(b => b.id).sort((a, b) => a - b).join(',')}`.slice(0, 200),
-                    texto: `${bajos.length} artículo${bajos.length !== 1 ? 's' : ''} del almacén por debajo del mínimo`,
+            fuente('Almacén', ['almacen_bajo'], async () => {
+                const bajos = (await avisoCompartido('almacen', () => pool.query(
+                    `SELECT id, nombre, stock FROM aim_almacen
+                     WHERE stock_minimo > 0 AND stock <= stock_minimo ORDER BY stock - stock_minimo, nombre`))).rows;
+                return bajos.length ? [{
+                    tipo: 'almacen', clave: 'almacen_bajo', n: bajos.length, destino: '/admin/almacen',
+                    legado: `almacen:bajo:${bajos.map(b => b.id).sort((a, b) => a - b).join(',')}`.slice(0, 200),
+                    texto: `${bajos.length} ${plural(bajos.length, 'artículo', 'artículos')} del almacén por debajo del mínimo`,
                     detalle: bajos.slice(0, 3).map(b => `${b.nombre}: ${b.stock}`).join(' · ') + (bajos.length > 3 ? ' · …' : ''),
-                });
-            }
+                }] : [];
+            });
         }
         // Faltas seguidas: a partir de FALTAS_PARA_LLAMAR, hay que llamar a la
         // familia. Un aviso por alumno y clase; vuelve a encenderse si sigue
         // faltando (sube el número) o si empieza otra racha (la clave lleva el día
-        // en que empezó). Las que secretaría ya ha llamado (#402) no salen.
+        // en que empezó). Las que secretaría ya ha llamado (#402, #414) no salen.
         if (recibe('faltas')) {
-            const faltas = (await rachasDeFaltas({ minimo: FALTAS_PARA_LLAMAR })).filter(f => !f.contactado);
-            for (const f of faltas.slice(0, 10)) {
-                avisos.push({
-                    tipo: 'faltas', destino: '/admin/faltas', n: f.racha,
+            fuente('Faltas', ['faltas:resto'], async () => {
+                const faltas = (await avisoCompartido('faltas', () => rachasDeFaltas({ minimo: FALTAS_PARA_LLAMAR }))).filter(f => !f.contactado);
+                const l = faltas.slice(0, 10).map(f => ({
+                    tipo: 'faltas', destino: '/admin/faltas', n: f.racha, fecha: f.ultimaFalta,
                     clave: `faltas:${f.studentId}:${f.groupId}:${new Date(f.desde).toISOString().slice(0, 10)}`,
-                    texto: `${f.alumno} lleva ${f.racha} faltas seguidas`,
-                    detalle: `${f.clase} · llamar a la familia`,
-                });
-            }
-            if (faltas.length > 10) avisos.push({ tipo: 'faltas', destino: '/admin/faltas', n: faltas.length, clave: 'faltas:resto', texto: `Y ${faltas.length - 10} alumno${faltas.length - 10 !== 1 ? 's' : ''} más con ${FALTAS_PARA_LLAMAR} o más faltas seguidas` });
+                    texto: `${f.alumno} lleva ${f.racha} faltas seguidas`, detalle: `${f.clase} · llamar a la familia`,
+                }));
+                if (faltas.length > 10) l.push({ tipo: 'faltas', destino: '/admin/faltas', n: faltas.length, clave: 'faltas:resto', texto: `Y ${faltas.length - 10} ${plural(faltas.length - 10, 'alumno', 'alumnos')} más con ${FALTAS_PARA_LLAMAR} o más faltas seguidas` });
+                return l;
+            });
         }
-        // Correos de info@ asignados a esta persona y sin hacer (#317). Si Gmail
-        // no responde, no se enseña y ya está.
+        // Correos de info@ asignados a esta persona y sin hacer (#317).
         if (recibe('correos_asignados')) {
-            const n = await bandeja.asignadosSinHacer().then(m => m?.[yo] || 0).catch(() => 0);
-            if (n) avisos.push({ tipo: 'correo', destino: '/admin/correo', n, texto: `${n} correo${n !== 1 ? 's' : ''} de info@ asignado${n !== 1 ? 's' : ''} a ti`, detalle: 'sin marcar como hecho' });
+            fuente('Correo', ['correos_asignados'], async () => {
+                const m = await bandeja.asignadosSinHacer();
+                const n = m?.[yo] || 0;
+                return n ? [{ tipo: 'correo', clave: 'correos_asignados', destino: '/admin/correo', n, texto: `${n} ${plural(n, 'correo de info@ asignado', 'correos de info@ asignados')} a ti`, detalle: 'sin marcar como hecho' }] : [];
+            });
         }
         // Mensajes de redes sin leer: los suyos y los que no son de nadie (#341).
         if (recibe('redes_sin_leer')) {
-            const r = await redes.sinLeerDe(yo).catch(() => null);
-            if (r?.n) avisos.push({
-                tipo: 'redes', destino: '/admin/redes', n: r.n, clave: `redes:${new Date(r.ultimo).getTime()}`,
-                texto: `${r.n} mensaje${r.n !== 1 ? 's' : ''} de redes sin leer`,
-                detalle: `en ${r.conv} conversaci${r.conv !== 1 ? 'ones' : 'ón'}`,
+            fuente('Redes sociales', ['redes_sin_leer'], async () => {
+                const r = await redes.sinLeerDe(yo);
+                return r?.n ? [{
+                    tipo: 'redes', clave: 'redes_sin_leer', destino: '/admin/redes', n: r.n, marca: r.ultimo || null, fecha: r.ultimo || null,
+                    texto: `${r.n} ${plural(r.n, 'mensaje', 'mensajes')} de redes sin leer`, detalle: `en ${r.conv} ${plural(r.conv, 'conversación', 'conversaciones')}`,
+                    legado: r.ultimo ? `redes:${new Date(r.ultimo).getTime()}` : null,
+                }] : [];
             });
         }
-        // Consultas del formulario de contacto (y altas web) sin atender (#329).
-        // La clave lleva la última: si entra otra, vuelve a encenderse.
+        // Consultas del formulario de contacto (y altas web) sin atender (#329) y
+        // candidaturas de «Trabaja con nosotros» (#368): se encienden si entra otra.
         if (recibe('contactos')) {
-            const ct = (await pool.query(
-                `SELECT COUNT(*)::int n, MAX(id) AS ultima,
-                        (SELECT nombre FROM aim_contactos WHERE estado = 'nuevo' ORDER BY id DESC LIMIT 1) AS quien
-                 FROM aim_contactos WHERE estado = 'nuevo'`)).rows[0];
-            if (ct.n) avisos.push({
-                tipo: 'contactos', destino: '/admin/consultas', n: ct.n, clave: `contactos:${ct.ultima}`,
-                texto: `${ct.n} consulta${ct.n !== 1 ? 's' : ''} de la web sin atender`,
-                detalle: ct.quien ? `la última, de ${ct.quien}` : null,
+            fuente('Consultas web', ['contactos'], async () => {
+                const ct = (await avisoCompartido('contactos', () => pool.query(
+                    `SELECT COUNT(*)::int n, MAX(id) AS ultima, MAX(created_at) AS fecha,
+                            (SELECT nombre FROM aim_contactos WHERE estado = 'nuevo' ORDER BY id DESC LIMIT 1) AS quien
+                     FROM aim_contactos WHERE estado = 'nuevo'`))).rows[0];
+                return ct.n ? [{
+                    tipo: 'contactos', clave: 'contactos', legado: `contactos:${ct.ultima}`, destino: '/admin/consultas', n: ct.n, marca: ct.fecha, fecha: ct.fecha,
+                    texto: `${ct.n} ${plural(ct.n, 'consulta', 'consultas')} de la web sin atender`, detalle: ct.quien ? `la última, de ${ct.quien}` : null,
+                }] : [];
             });
         }
-        // Candidaturas nuevas de «Trabaja con nosotros» (#368).
         if (recibe('candidatos')) {
-            const cn = (await pool.query(
-                `SELECT COUNT(*)::int n, MAX(id) AS ultima,
-                        (SELECT nombre FROM aim_candidatos WHERE estado = 'nuevo' ORDER BY id DESC LIMIT 1) AS quien
-                 FROM aim_candidatos WHERE estado = 'nuevo'`)).rows[0];
-            if (cn.n) avisos.push({
-                tipo: 'candidatos', destino: '/admin/candidatos', n: cn.n, clave: `candidatos:${cn.ultima}`,
-                texto: `${cn.n} candidatura${cn.n !== 1 ? 's' : ''} nueva${cn.n !== 1 ? 's' : ''} de «Trabaja con nosotros»`,
-                detalle: cn.quien ? `la última, de ${cn.quien}` : null,
+            fuente('Candidatos', ['candidatos'], async () => {
+                const cn = (await avisoCompartido('candidatos', () => pool.query(
+                    `SELECT COUNT(*)::int n, MAX(id) AS ultima, MAX(created_at) AS fecha,
+                            (SELECT nombre FROM aim_candidatos WHERE estado = 'nuevo' ORDER BY id DESC LIMIT 1) AS quien
+                     FROM aim_candidatos WHERE estado = 'nuevo'`))).rows[0];
+                return cn.n ? [{
+                    tipo: 'candidatos', clave: 'candidatos', legado: `candidatos:${cn.ultima}`, destino: '/admin/candidatos', n: cn.n, marca: cn.fecha, fecha: cn.fecha,
+                    texto: `${cn.n} ${plural(cn.n, 'candidatura nueva', 'candidaturas nuevas')} de «Trabaja con nosotros»`, detalle: cn.quien ? `la última, de ${cn.quien}` : null,
+                }] : [];
             });
         }
         // Brickslab (#291): reservas que esperan a que se entreguen.
         if (recibe('brickslab_reservas')) {
-            const bk = await brickslab.pendientes();
-            if (bk.porEntregar) avisos.push({
-                tipo: 'brickslab', destino: '/admin/brickslab', n: bk.porEntregar, clave: `brickslab:${new Date(bk.ultima || 0).getTime()}`,
-                texto: `${bk.porEntregar} reserva${bk.porEntregar !== 1 ? 's' : ''} de Brickslab o Biblioteca por entregar`, detalle: 'entrégalas o anúlalas',
+            fuente('Brickslab', ['brickslab_por_entregar'], async () => {
+                const bk = await avisoCompartido('brickslab', () => brickslab.pendientes());
+                return bk.porEntregar ? [{
+                    tipo: 'brickslab', clave: 'brickslab_por_entregar', legado: `brickslab:${new Date(bk.ultima || 0).getTime()}`, destino: '/admin/brickslab',
+                    n: bk.porEntregar, marca: bk.ultima || null, fecha: bk.ultima || null,
+                    texto: `${bk.porEntregar} ${plural(bk.porEntregar, 'reserva', 'reservas')} de Brickslab o Biblioteca por entregar`, detalle: 'entrégalas o anúlalas',
+                }] : [];
             });
         }
         // Incidencias (#383): a la dirección, las abiertas sin responsable; a
         // cada uno, las que tiene que resolver.
         if (recibe('incidencias_nuevas')) {
-            const ic = (await pool.query(
-                `SELECT COUNT(*)::int n, MAX(id) AS ultima FROM aim_incidencias WHERE estado = 'abierta' AND responsable_id IS NULL`)).rows[0];
-            if (ic.n) avisos.push({
-                tipo: 'incidencias', destino: '/admin/incidencias', n: ic.n, clave: `incidencias:${ic.ultima}`,
-                texto: `${ic.n} incidencia${ic.n !== 1 ? 's' : ''} sin responsable`, detalle: 'ponle a alguien que la resuelva o dala por resuelta',
+            fuente('Incidencias', ['incidencias_sin_responsable'], async () => {
+                const ic = (await avisoCompartido('incidencias', () => pool.query(
+                    `SELECT COUNT(*)::int n, MAX(id) AS ultima, MAX(created_at) AS fecha FROM aim_incidencias WHERE estado = 'abierta' AND responsable_id IS NULL`))).rows[0];
+                return ic.n ? [{
+                    tipo: 'incidencias', clave: 'incidencias_sin_responsable', legado: `incidencias:${ic.ultima}`, destino: '/admin/incidencias', n: ic.n, marca: ic.fecha, fecha: ic.fecha,
+                    texto: `${ic.n} ${plural(ic.n, 'incidencia', 'incidencias')} sin responsable`, detalle: 'ponle a alguien que la resuelva o dala por resuelta',
+                }] : [];
             });
         }
         if (recibe('incidencias_mias')) {
-            const im = (await pool.query(
-                `SELECT COUNT(*)::int n, MAX(id) AS ultima,
-                        COUNT(*) FILTER (WHERE fecha_limite < (NOW() AT TIME ZONE 'Europe/Madrid')::date)::int AS vencidas
-                 FROM aim_incidencias WHERE estado = 'abierta' AND responsable_id = $1`, [yo])).rows[0];
-            if (im.n) avisos.push({
-                tipo: 'incidencias', destino: '/admin/incidencias?filtro=mias', n: im.n, clave: `incidencias_mias:${im.ultima}`,
-                texto: `${im.n} incidencia${im.n !== 1 ? 's' : ''} por resolver`, detalle: im.vencidas ? `${im.vencidas} con la fecha límite pasada` : 'te las ha encargado la dirección',
+            fuente('Incidencias', ['incidencias_mias'], async () => {
+                const im = (await pool.query(
+                    `SELECT COUNT(*)::int n, MAX(id) AS ultima,
+                            COUNT(*) FILTER (WHERE fecha_limite < (NOW() AT TIME ZONE 'Europe/Madrid')::date)::int AS vencidas
+                     FROM aim_incidencias WHERE estado = 'abierta' AND responsable_id = $1`, [yo])).rows[0];
+                // Un contador: el día en que se la encargaron no se guarda.
+                return im.n ? [{
+                    tipo: 'incidencias', clave: 'incidencias_mias', legado: `incidencias_mias:${im.ultima}`, destino: '/admin/incidencias?filtro=mias', n: im.n, prioridad: im.vencidas ? 1 : 2,
+                    texto: `${im.n} ${plural(im.n, 'incidencia', 'incidencias')} por resolver`, detalle: im.vencidas ? `${im.vencidas} con la fecha límite pasada` : 'te las ha encargado la dirección',
+                }] : [];
             });
         }
         // Incidencias en las que me han implicado (#401): una por incidencia
@@ -16494,64 +16592,73 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         // resuelve. La de «resuelta» lleva la hora como marca: si se reabre y se
         // vuelve a resolver, se enciende otra vez.
         if (recibe('incidencias_implicado')) {
-            const filas = (await pool.query(
-                `SELECT i.id, i.estado, i.clase_nombre, i.resuelta_at, i.autor_id, i.responsable_id, i.implicados,
-                        TRIM(CONCAT(a.name, ' ', COALESCE(a.surname, ''))) AS autor,
-                        TRIM(CONCAT(rp.name, ' ', COALESCE(rp.surname, ''))) AS resuelta_por
-                 FROM aim_incidencias i
-                 LEFT JOIN users a ON a.user_id = i.autor_id
-                 LEFT JOIN users rp ON rp.user_id = i.resuelta_por
-                 WHERE (i.estado = 'abierta' AND $1::uuid = ANY(i.implicados)
-                        AND i.autor_id IS DISTINCT FROM $1::uuid AND i.responsable_id IS DISTINCT FROM $1::uuid)
-                    OR (i.estado = 'resuelta' AND i.resuelta_at > NOW() - INTERVAL '7 days' AND i.resuelta_por IS DISTINCT FROM $1::uuid
-                        AND ($1::uuid = ANY(i.implicados) OR i.autor_id = $1::uuid OR i.responsable_id = $1::uuid))
-                 ORDER BY COALESCE(i.resuelta_at, i.created_at) DESC`, [yo])).rows;
-            const destino = (i, resuelta) => enlaceIncidencia(i, yo, resuelta).slice(URL_PUBLICA_WEB.length);
-            for (const estado of ['abierta', 'resuelta']) {
-                const l = filas.filter(i => i.estado === estado), max = 5;
-                for (const i of l.slice(0, max)) {
-                    avisos.push(estado === 'abierta' ? {
-                        tipo: 'incidencias', destino: destino(i, false), n: 1, clave: `incidencia_implicado:${i.id}`,
-                        texto: `Te han implicado en la incidencia #${i.id}`,
-                        detalle: `${i.clase_nombre || 'sin clase concreta'} · la registró ${i.autor || 'alguien'}`,
-                    } : {
-                        tipo: 'incidencias', destino: destino(i, true), n: 1, clave: `incidencia_resuelta:${i.id}`, marca: i.resuelta_at,
-                        texto: `Resuelta la incidencia #${i.id}`,
-                        detalle: `${i.clase_nombre || 'sin clase concreta'} · la resolvió ${i.resuelta_por || 'alguien'}`,
+            fuente('Incidencias', [], async () => {
+                const filas = (await pool.query(
+                    `SELECT i.id, i.estado, i.clase_nombre, i.resuelta_at, i.created_at, i.autor_id, i.responsable_id, i.implicados,
+                            TRIM(CONCAT(a.name, ' ', COALESCE(a.surname, ''))) AS autor,
+                            TRIM(CONCAT(rp.name, ' ', COALESCE(rp.surname, ''))) AS resuelta_por
+                     FROM aim_incidencias i
+                     LEFT JOIN users a ON a.user_id = i.autor_id
+                     LEFT JOIN users rp ON rp.user_id = i.resuelta_por
+                     WHERE (i.estado = 'abierta' AND $1::uuid = ANY(i.implicados)
+                            AND i.autor_id IS DISTINCT FROM $1::uuid AND i.responsable_id IS DISTINCT FROM $1::uuid)
+                        OR (i.estado = 'resuelta' AND i.resuelta_at > NOW() - INTERVAL '7 days' AND i.resuelta_por IS DISTINCT FROM $1::uuid
+                            AND ($1::uuid = ANY(i.implicados) OR i.autor_id = $1::uuid OR i.responsable_id = $1::uuid))
+                     ORDER BY COALESCE(i.resuelta_at, i.created_at) DESC`, [yo])).rows;
+                const destino = (i, resuelta) => enlaceIncidencia(i, yo, resuelta).slice(URL_PUBLICA_WEB.length);
+                const l = [];
+                for (const estado of ['abierta', 'resuelta']) {
+                    const lista = filas.filter(i => i.estado === estado), max = 5;
+                    for (const i of lista.slice(0, max)) {
+                        l.push(estado === 'abierta' ? {
+                            tipo: 'incidencias', destino: destino(i, false), n: 1, clave: `incidencia_implicado:${i.id}`, fecha: i.created_at,
+                            texto: `Te han implicado en la incidencia #${i.id}`,
+                            detalle: `${i.clase_nombre || 'sin clase concreta'} · la registró ${i.autor || 'alguien'}`,
+                        } : {
+                            tipo: 'incidencias', destino: destino(i, true), n: 1, clave: `incidencia_resuelta:${i.id}`, marca: i.resuelta_at, fecha: i.resuelta_at, prioridad: 3,
+                            texto: `Resuelta la incidencia #${i.id}`,
+                            detalle: `${i.clase_nombre || 'sin clase concreta'} · la resolvió ${i.resuelta_por || 'alguien'}`,
+                        });
+                    }
+                    if (lista.length > max) l.push({
+                        // Las resueltas también son de quien la registró o la llevaba: todas, no solo «Me implican».
+                        tipo: 'incidencias', destino: `/admin/incidencias?filtro=${estado === 'resuelta' ? 'todas&estado=resueltas' : 'implicado'}`, n: lista.length,
+                        clave: `incidencias_implicado:${estado}:resto`, prioridad: estado === 'resuelta' ? 3 : 2,
+                        texto: estado === 'abierta' ? `Y ${lista.length - max} ${plural(lista.length - max, 'incidencia', 'incidencias')} más en las que estás implicado`
+                            : `Y ${lista.length - max} ${plural(lista.length - max, 'incidencia resuelta', 'incidencias resueltas')} más`,
                     });
                 }
-                if (l.length > max) avisos.push({
-                    // Las resueltas también son de quien la registró o la llevaba: todas, no solo «Me implican».
-                    tipo: 'incidencias', destino: `/admin/incidencias?filtro=${estado === 'resuelta' ? 'todas&estado=resueltas' : 'implicado'}`, n: l.length,
-                    clave: `incidencias_implicado:${estado}:resto`,
-                    texto: estado === 'abierta' ? `Y ${l.length - max} incidencia${l.length - max !== 1 ? 's' : ''} más en las que estás implicado`
-                        : `Y ${l.length - max} incidencia${l.length - max !== 1 ? 's' : ''} más resuelta${l.length - max !== 1 ? 's' : ''}`,
-                });
-            }
+                return l;
+            });
         }
         // Solicitudes de las familias para dar o quitar el permiso de fotos (#170).
         if (recibe('fotos')) {
-            const sf = (await pool.query(
-                `SELECT COUNT(*)::int n FROM (${SQL_SOLICITUD_FOTOS}) s JOIN users u ON u.user_id = s.user_id WHERE u.club_id = $1`, [AIM_CLUB_ID])).rows[0].n;
-            if (sf) avisos.push({ tipo: 'permisos', texto: `${sf} solicitud${sf !== 1 ? 'es' : ''} de permiso de fotos`, detalle: 'confirmar o descartar en Gestión de alumnos', destino: '/admin/alumnos', n: sf });
-        }
-        // Alumnos que no vendrán a una clase individual (#406): a los profes de esa
-        // clase, para que citen a otra persona en el hueco. Solo cuenta lo que han
-        // dicho desde la última vez que lo vio: una vez abierto, el aviso se va.
-        if (recibe('speaking_rechazados')) {
-            const CLAVE_NO_VIENEN = 'speaking|/admin/speaking|famil dicho speak';
-            const visto = (await pool.query(`SELECT visto_at FROM aim_avisos_vistos WHERE user_id = $1 AND clave = $2`, [yo, CLAVE_NO_VIENEN])).rows[0]?.visto_at || null;
-            const nv = (await pool.query(
-                `SELECT COUNT(*)::int AS n, MAX(respondido_at) AS ultimo FROM aim_speaking
-                 WHERE confirmado = false AND fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date
-                   AND ($1::timestamptz IS NULL OR respondido_at > $1)
-                   AND ($2::uuid[] IS NULL OR group_id = ANY($2::uuid[]))`, [visto, misGrupos])).rows[0];
-            if (nv.n) avisos.push({ tipo: 'speaking', texto: `${nv.n} alumno${nv.n !== 1 ? 's no vendrán' : ' no vendrá'} a una clase individual`, detalle: 'puedes citar a otra persona en su hueco', destino: '/admin/clases-individuales', clave: CLAVE_NO_VIENEN, marca: nv.ultimo, n: nv.n });
+            fuente('Permiso de fotos', ['fotos_permiso'], async () => {
+                const n = (await avisoCompartido('fotos', () => pool.query(
+                    `SELECT COUNT(*)::int n FROM (${SQL_SOLICITUD_FOTOS}) s JOIN users u ON u.user_id = s.user_id WHERE u.club_id = $1`, [AIM_CLUB_ID]))).rows[0].n;
+                return n ? [{ tipo: 'permisos', clave: 'fotos_permiso', n, texto: `${n} ${plural(n, 'solicitud', 'solicitudes')} de permiso de fotos`, detalle: 'confirmar o descartar en Gestión de alumnos', destino: '/admin/alumnos' }] : [];
+            });
         }
 
+        const fallos = [];
+        const resultados = await enTandas(fuentes.map(f => async () => {
+            try { return { f, avisos: await f.fn() }; }
+            catch (e) {
+                console.error(`Campanita (${f.nombre}):`, e.message);
+                fallos.push(f.nombre);
+                return { f, avisos: [], fallo: true };
+            }
+        }));
+        const avisos = resultados.flatMap(r => r.avisos);
+        // Los contadores de las fuentes que han ido bien y ya no tienen nada: se
+        // olvidan, para que la próxima vez que haya algo vuelva a encenderse
+        // (antes un «47 cargos» visto dejaba apagados los 30 del mes siguiente).
+        const presentes = new Set(avisos.map(a => a.clave));
+        const olvidar = resultados.filter(r => !r.fallo).flatMap(r => r.f.claves).filter(k => !presentes.has(k));
+
         res.set('Cache-Control', 'no-store');
-        await conVistos(yo, avisos);
-        res.json({ total: avisos.reduce((s, a) => s + a.n, 0), sinLeer: avisos.filter(a => a.nuevo).length, avisos });
+        await conVistos(yo, avisos, { olvidar });
+        res.json({ total: avisos.reduce((s, a) => s + a.n, 0), sinLeer: avisos.filter(a => a.nuevo).length, avisos, fallos: [...new Set(fallos)] });
     } catch (err) {
         console.error('Error calculando los avisos:', err);
         res.status(500).json({ error: err.message });

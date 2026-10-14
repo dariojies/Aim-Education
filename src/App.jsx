@@ -33,6 +33,24 @@ export default function App() {
   const [sinConexion, setSinConexion] = useState(false);
   const [intento, setIntento] = useState(0);
 
+  // Al tocar un aviso del móvil se abre su sitio con ?aviso=clave&n=…: se da
+  // por visto (la campanita lo apaga) y se quita de la dirección (#415).
+  useEffect(() => {
+    if (!user) return;
+    const q = new URLSearchParams(window.location.search);
+    const clave = q.get('aviso');
+    if (!clave) return;
+    const n = Number.parseInt(q.get('n'), 10) || 0;
+    q.delete('aviso'); q.delete('n');
+    const limpia = window.location.pathname + (q.toString() ? `?${q}` : '');
+    window.history.replaceState(null, '', limpia);
+    setPath(limpia);
+    fetch('/api/avisos/vistos', {
+      method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ avisos: [{ clave, n }] }),
+    }).then(() => window.dispatchEvent(new CustomEvent('aim-avisos-vistos', { detail: [clave] }))).catch(() => {});
+  }, [path, user]);
+
   useEffect(() => {
     const onPop = () => {
       setPath(window.location.pathname + window.location.search);

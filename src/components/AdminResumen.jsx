@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { I } from './Icons.jsx';
 import { ACT_BY_ID } from './Shared.jsx';
+import { marcarAvisosVistos, ordenarAvisos } from './Campanita.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // El Resumen del panel (ticket #327): lo primero que se ve al entrar, distinto
@@ -126,11 +127,12 @@ function ParaAtender({ avisos, irRuta, como }) {
     );
   }
   if (avisos === null) return <Bloque titulo="Para atender"><p style={{ fontSize: 13, color: 'var(--ink-3)' }}>Cargando…</p></Bloque>;
-  const lista = todos ? avisos : avisos.slice(0, 4);
+  const ordenados = ordenarAvisos(avisos);
+  const lista = todos ? ordenados : ordenados.slice(0, 4);
   return (
     <Bloque titulo="Para atender" sub={avisos.length ? plural(avisos.length, 'cosa pendiente', 'cosas pendientes') : null}>
       {avisos.length === 0 ? <div className="res-vacio"><span className="status-pill ok">Todo al día</span></div> : lista.map((x, i) => (
-        <button key={x.clave || i} type="button" onClick={() => irRuta(x.destino)} className="payment-row res-fila"
+        <button key={x.clave || i} type="button" onClick={() => { if (x.nuevo) marcarAvisosVistos([x]); irRuta(x.destino); }} className="payment-row res-fila"
           style={{ gridTemplateColumns: 'auto minmax(0,1fr) auto', cursor: 'pointer' }} title={x.detalle || ''}>
           <span className="res-aviso-n">{x.n || '•'}</span>
           <span style={{ minWidth: 0 }}>
@@ -487,8 +489,9 @@ export default function AdminResumen({ permisos, ir, irRuta, refreshTrigger }) {
   const f = new Date(d.hoy + 'T12:00:00').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
   const fecha = f.charAt(0).toUpperCase() + f.slice(1);
   const esIT = d.vista === 'it';
-  // En la vista de IT los tickets ya están abajo: no se repiten arriba.
-  const pendientes = avisos && (esIT ? avisos.filter(a => !(a.tipo === 'tickets' && a.destino === '/admin/soporte' && !a.clave)) : avisos);
+  // En la vista de IT los tickets ya están abajo: los recuentos no se repiten
+  // arriba (los mensajes nuevos de un ticket, sí).
+  const pendientes = avisos && (esIT ? avisos.filter(a => !(a.tipo === 'tickets' && !String(a.clave || '').startsWith('ticket:'))) : avisos);
   const hacer = { instructor: vistaInstructor, secretaria: vistaSecretaria, direccion: vistaDireccion, it: vistaIT, trabajador: vistaTrabajador }[d.vista];
   const v = hacer ? hacer({ d: d.datos, mi: d.mi, clases, ir, irRuta, como: d.como }) : null;
 

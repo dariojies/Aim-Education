@@ -1828,7 +1828,7 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
               </div>
             </div>
             <div style={{display: "flex", gap: 12, alignItems: "center"}}>
-              <Campanita url="/api/me/notificaciones" onIr={(destino) => navTo(destino)}
+              <Campanita url="/api/me/notificaciones" onIr={(destino) => (String(destino).startsWith('/dashboard') ? go(destino) : navTo(destino))}
                 vacio="No tienes nada pendiente ahora mismo." />
               <div className="avatar">{initials}</div>
             </div>
