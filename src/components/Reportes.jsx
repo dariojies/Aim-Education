@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useRouter } from '../App.jsx';
 import { AdminReportes } from './AdminTulClases.jsx';
 import { InformeBeneficios, InformeDesglosePersonas } from './InformesGastos.jsx';
+import BillingHacienda from './BillingHacienda.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Reportes (ticket #416): cómo va el negocio, todo en un sitio y ordenado, para
@@ -14,8 +15,10 @@ import { InformeBeneficios, InformeDesglosePersonas } from './InformesGastos.jsx
 
 const PESTANAS = [
   ['resumen', 'Resumen'], ['ingresos', 'Ingresos'], ['cobros', 'Cobros y deudas'], ['gastos', 'Gastos y beneficio'],
-  ['prevision', 'Previsión'], ['alumnos', 'Alumnos y clases'], ['caja', 'Caja'],
+  ['prevision', 'Previsión'], ['alumnos', 'Alumnos y clases'], ['caja', 'Caja'], ['hacienda', 'Libro registro y prorrata'],
 ];
+// Las que no van por el mes de arriba: traen sus datos y su periodo ellas mismas.
+const PROPIAS = ['alumnos', 'hacienda'];
 const eur = (n) => Number(n || 0).toLocaleString('es-ES', { style: 'currency', currency: 'EUR', minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const eur0 = (n) => Number(n || 0).toLocaleString('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 });
 const num = (n) => Number(n || 0).toLocaleString('es-ES');
@@ -31,13 +34,13 @@ const SERIE = { MAT: 'Material (con IVA)', IVA: 'Con IVA', SIVA: 'Exentas de IVA
 const leer = (k, def) => { try { return localStorage.getItem(k) || def; } catch { return def; } };
 const guardar = (k, v) => { try { localStorage.setItem(k, v); } catch { /* sin almacenamiento */ } };
 
-export default function Reportes({ user, permisos = {} }) {
+export default function Reportes({ user, permisos = {}, showToast }) {
   // Sin las cifras generales (instructores): solo sus clases, sin dinero.
   if (permisos.reportesGenerales === false) return <AdminReportes user={user} permisos={permisos} />;
-  return <ReportesDireccion user={user} permisos={permisos} />;
+  return <ReportesDireccion user={user} permisos={permisos} showToast={showToast} />;
 }
 
-function ReportesDireccion({ user, permisos }) {
+function ReportesDireccion({ user, permisos, showToast }) {
   const [mes, setMes] = useState(mesActual);
   const [pestana, setPestanaE] = useState(() => { const p = leer('reportes.pestana', 'resumen'); return PESTANAS.some(([k]) => k === p) ? p : 'resumen'; });
   const setPestana = (p) => { setPestanaE(p); guardar('reportes.pestana', p); };
@@ -48,7 +51,7 @@ function ReportesDireccion({ user, permisos }) {
   const d = datos[clave];
 
   useEffect(() => {
-    if (['alumnos'].includes(pestana) || datos[clave]) return;
+    if (PROPIAS.includes(pestana) || datos[clave]) return;
     let vivo = true;
     setError(null);
     fetch(`/api/admin/reportes/${pestana}?mes=${mes}`, { credentials: 'include', cache: 'no-store' })
@@ -62,8 +65,8 @@ function ReportesDireccion({ user, permisos }) {
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
-      {/* El mes, para todas las pestañas */}
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: '10px 14px' }}>
+      {/* El mes, para todas las pestañas (el libro registro lleva su propio periodo) */}
+      {pestana !== 'hacienda' && <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: '10px 14px' }}>
         <button className="btn btn-icon" onClick={() => setMes(m => mover(m, -1))} aria-label="Mes anterior">‹</button>
         <span style={{ fontWeight: 800, fontSize: 16, minWidth: 150, textAlign: 'center', fontFamily: 'var(--font-display)' }}>{nombreMes(mes)}</span>
         <button className="btn btn-icon" onClick={() => setMes(m => mover(m, 1))} disabled={enCurso} aria-label="Mes siguiente">›</button>
@@ -73,7 +76,7 @@ function ReportesDireccion({ user, permisos }) {
         </span>
         <div style={{ flex: 1 }} />
         {pestana !== 'alumnos' && <button className="btn btn-sm btn-outline" onClick={recargar} title="Volver a calcular">Actualizar</button>}
-      </div>
+      </div>}
 
       <div role="tablist" className="scroll-oculto" style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 2 }}>
         {PESTANAS.map(([k, l]) => (
@@ -83,6 +86,7 @@ function ReportesDireccion({ user, permisos }) {
       </div>
 
       {pestana === 'alumnos' ? <AdminReportes user={user} permisos={permisos} mes={mes} />
+        : pestana === 'hacienda' ? <BillingHacienda showToast={showToast} />
         : error ? <Aviso tipo="mal">{error} <button className="btn btn-sm btn-outline" onClick={recargar} style={{ marginLeft: 8 }}>Reintentar</button></Aviso>
           : !d ? <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Calculando…</p>
             : pestana === 'resumen' ? <Resumen d={d} irA={setPestana} />
@@ -391,7 +395,7 @@ function Prevision({ d }) {
       {d.iva.length > 0 && (
         <Bloque titulo="IVA de las facturas" sub="el que se cobra y luego se ingresa a Hacienda, por trimestre">
           <Tabla columnas={['Trimestre', 'Base facturada', 'IVA']} filas={d.iva.map(x => ({ celdas: [x.trimestre, eur(x.base), <b>{eur(x.iva)}</b>] }))} />
-          <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>La prorrata y el libro registro están en Facturación → Hacienda.</p>
+          <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>La prorrata y el libro registro están en la pestaña «Libro registro y prorrata».</p>
         </Bloque>
       )}
     </div>

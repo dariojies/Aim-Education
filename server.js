@@ -10026,45 +10026,9 @@ app.put('/api/admin/billing/prorrata/provisional', authenticateSession, requireA
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Vacía las facturas de prueba para empezar de cero con la numeración real.
-// Es destructivo a propósito y solo debería usarse una vez, antes de emitir en
-// serio: borra recibos, rectificativos y el registro encadenado, y devuelve los
-// conceptos cobrados a pendientes para no perder lo que cada cliente debe.
-// No toca alumnos, clases, matrículas ni gastos.
-app.post('/api/admin/billing/vaciar-pruebas', authenticateSession, requireAdmin, async (req, res) => {
-    if (req.body?.confirmacion !== 'VACIAR FACTURACION') {
-        return res.status(400).json({ error: 'Para vaciar hay que escribir exactamente: VACIAR FACTURACION' });
-    }
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-        const antes = {
-            recibos: (await client.query('SELECT COUNT(*)::int c FROM aim_recibos')).rows[0].c,
-            registro: (await client.query('SELECT COUNT(*)::int c FROM aim_factura_registro')).rows[0].c,
-            cargosCobrados: (await client.query("SELECT COUNT(*)::int c FROM aim_cargos WHERE recibo_id IS NOT NULL OR estado <> 'pendiente'")).rows[0].c,
-        };
-        // Los conceptos vuelven a deberse: se sigue sabiendo qué debe cada cliente.
-        await client.query(
-            `UPDATE aim_cargos SET recibo_id = NULL, estado = 'pendiente', importe = NULL, descuento_mens_pct = NULL
-             WHERE recibo_id IS NOT NULL OR estado <> 'pendiente'`
-        );
-        await client.query('DELETE FROM aim_factura_eventos');
-        await client.query('DELETE FROM aim_factura_registro');
-        await client.query('DELETE FROM aim_recibo_rect_lineas');
-        await client.query('DELETE FROM aim_recibos');
-        await client.query('DELETE FROM aim_arqueos');
-        await client.query("SELECT setval('aim_recibos_numero_seq', 1, false)");
-        await client.query("SELECT setval('aim_recibos_rect_numero_seq', 1, false)");
-        // Y los contadores de cada serie vuelven a cero (ticket #291).
-        await client.query('DELETE FROM aim_serie_contador');
-        await client.query('COMMIT');
-        res.json({ success: true, borrados: antes });
-    } catch (err) {
-        await client.query('ROLLBACK');
-        console.error('Error vaciando la facturación de pruebas:', err);
-        res.status(500).json({ error: err.message });
-    } finally { client.release(); }
-});
+// Aquí estaba «Vaciar la facturación de pruebas»: borraba todas las facturas,
+// su registro y los arqueos. Se quitó (pantalla y ruta) cuando empezó a haber
+// facturas de verdad: no debe poder hacerse desde el panel.
 
 // ── Arqueo de caja ───────────────────────────────────────────────────────────
 // Lo cobrado de un día por medio de pago. Un rectificativo del mismo día resta,

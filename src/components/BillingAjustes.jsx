@@ -15,8 +15,6 @@ export default function BillingAjustes({ showToast }) {
   const [formato, setFormato] = useState(null);      // codigo -> { prefijo, anio, sep, digitos }
   const [siguiente, setSiguiente] = useState({});    // codigo -> nº por el que sigue
   const [guardando, setGuardando] = useState(false);
-  const [confirmacion, setConfirmacion] = useState('');
-  const [vaciando, setVaciando] = useState(false);
   const [corte, setCorte] = useState(null);       // día de corte del alta (#289)
   const [guardandoCorte, setGuardandoCorte] = useState(false);
   const [vf, setVf] = useState(null);            // VERI*FACTU (#232)
@@ -107,30 +105,8 @@ export default function BillingAjustes({ showToast }) {
     finally { setGuardando(false); }
   }
 
-  async function vaciar() {
-    if (!window.confirm(
-      'Se van a BORRAR todas las facturas, rectificativas, su registro y los arqueos de caja.\n\n' +
-      'Los conceptos cobrados vuelven a quedar pendientes, así que no se pierde lo que cada cliente debe.\n' +
-      'No se tocan alumnos, clases, matrículas ni gastos.\n\n' +
-      'Esto no tiene vuelta atrás. ¿Continuar?')) return;
-    setVaciando(true);
-    try {
-      const r = await fetch('/api/admin/billing/vaciar-pruebas', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-        body: JSON.stringify({ confirmacion }),
-      });
-      const d = await r.json();
-      if (r.ok) {
-        showToast?.(`Facturación vaciada: ${d.borrados.recibos} factura(s) y ${d.borrados.registro} asiento(s).`);
-        setConfirmacion('');
-        await cargar();
-      } else alert(d.error || 'No se pudo vaciar.');
-    } catch { alert('Error de conexión.'); }
-    finally { setVaciando(false); }
-  }
-
   if (!datos || !formato) return <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>;
-  const totalEmitidas = (datos.series || []).reduce((s, x) => s + (x.emitidas || 0), 0)
+
     + (datos.antiguas || []).reduce((s, x) => s + (x.emitidas || 0), 0);
 
   return (
@@ -318,29 +294,6 @@ export default function BillingAjustes({ showToast }) {
         </div>
       </div>
 
-      <div style={{ background: 'var(--bg-2)', border: '1px solid color-mix(in oklab, var(--orange) 40%, var(--line))', borderRadius: 16, padding: 16, display: 'grid', gap: 12 }}>
-        <div>
-          <h3 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: 'var(--orange)' }}>Vaciar la facturación de pruebas</h3>
-          <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--ink-2)', lineHeight: 1.6 }}>
-            Para empezar de cero con la numeración real. Borra <b>las {totalEmitidas} factura(s) emitidas</b>, sus
-            rectificativas, el registro encadenado y los arqueos de caja, y reinicia la numeración.
-            Los conceptos que estuvieran cobrados <b>vuelven a quedar pendientes</b>, así que no se pierde lo que
-            cada cliente debe. No se tocan alumnos, clases, matrículas ni gastos.
-          </p>
-          <p style={{ margin: '8px 0 0', fontSize: 12, fontWeight: 700, color: 'var(--orange)' }}>
-            Solo debe hacerse una vez, antes de emitir facturas de verdad. No tiene vuelta atrás.
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <input value={confirmacion} onChange={e => setConfirmacion(e.target.value)}
-            placeholder="Escribe: VACIAR FACTURACION"
-            style={{ ...inp, flex: 1, minWidth: 220 }} />
-          <button className="btn btn-sm" style={{ background: 'var(--orange)', color: 'white' }}
-            disabled={vaciando || confirmacion !== 'VACIAR FACTURACION'} onClick={vaciar}>
-            {vaciando ? 'Vaciando...' : 'Vaciar'}
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

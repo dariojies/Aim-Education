@@ -17,7 +17,6 @@ import { fmtFecha, fmtFechaHora, fmtFechaLarga, fmtFechaCorta } from '../fechas.
 import CampTarifas from './CampTarifas.jsx';
 import BillingArqueo from './BillingArqueo.jsx';
 import BillingAjustes from './BillingAjustes.jsx';
-import BillingHacienda from './BillingHacienda.jsx';
 // El ticket para la impresora de tickets del mostrador (XP-58IIH, #292).
 import { imprimirTicketRecibo } from '../ticket-recibo.js';
 import PasarListaClases from './PasarListaClases.jsx';
@@ -5116,7 +5115,7 @@ function AdminBilling({ showToast, enlace }) {
   return (
     <>
       <div style={{ display: 'flex', gap: 10, marginBottom: 22, borderBottom: '1px solid var(--line-2)', paddingBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-        {[['cobrar', 'Cobrar (TPV)'], ['recibos', 'Recibos'], ['arqueo', 'Arqueo de caja'], ['catalogo', `Catálogo${precios.length ? ` (${precios.length})` : ''}`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra${clasesMerged.length ? ` (${clasesMerged.length})` : ''}`], ['fichas', `Fichas${matriculas.length ? ` (${matriculas.length})` : ''}`], ['pendientes', 'Cargos pendientes'], ['hacienda', 'Libro registro y prorrata'], ['ajustes', 'Ajustes y Verifactu']].map(([id, label]) => (
+        {[['cobrar', 'Cobrar (TPV)'], ['recibos', 'Recibos'], ['arqueo', 'Arqueo de caja'], ['catalogo', `Catálogo${precios.length ? ` (${precios.length})` : ''}`], ['temporadas', 'Temporadas'], ['conceptos', `Qué se cobra${clasesMerged.length ? ` (${clasesMerged.length})` : ''}`], ['fichas', `Fichas${matriculas.length ? ` (${matriculas.length})` : ''}`], ['pendientes', 'Cargos pendientes'], ['ajustes', 'Ajustes y Verifactu']].map(([id, label]) => (
           <button key={id} className={`filter-pill ${tab === id ? 'is-active' : ''}`} onClick={() => setTab(id)} style={{ borderRadius: 8, padding: '8px 16px' }}>{label}</button>
         ))}
         <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: activa ? 'var(--teal)' : 'var(--orange)' }}>
@@ -5141,7 +5140,7 @@ function AdminBilling({ showToast, enlace }) {
       {tab === 'cobrar' && <BillingTPV showToast={showToast} />}
       {tab === 'arqueo' && <BillingArqueo showToast={showToast} />}
       {tab === 'ajustes' && <BillingAjustes showToast={showToast} />}
-      {tab === 'hacienda' && <BillingHacienda showToast={showToast} />}
+      {/* El libro registro y la prorrata están en Reportes. */}
 
       {/* ── Recibos (histórico) ── */}
       {tab === 'recibos' && <BillingRecibos showToast={showToast} />}
@@ -7137,7 +7136,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("portada") && <AjustesPortada showToast={showToast} />}
           {ver("ctas") && <AdminCtas showToast={showToast} />}
           {ver("settings") && <AdminSettings />}
-          {ver("reportes") && <Reportes user={user} permisos={permisos} />}
+          {ver("reportes") && <Reportes user={user} permisos={permisos} showToast={showToast} />}
           {ver("titulos") && <AdminExamenes showToast={showToast} />}
           {ver("almacen") && <AdminAlmacen showToast={showToast} />}
           {ver("objetos") && <AdminObjetosPerdidos showToast={showToast} />}
