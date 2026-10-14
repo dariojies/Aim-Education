@@ -17084,9 +17084,11 @@ app.get('/api/admin/speaking/historial', authenticateSession, requireIndividuale
 // aim_comunicaciones (tipo 'llamada', plantilla
 // 'llamada:faltas:{grupo}:{desde}:{racha}') que sale también en el historial de
 // la ficha. Esa racha cuenta como «contactada» mientras siga siendo la misma
-// (mismo alumno, clase y día en que empezó) y no haya faltado más desde la
-// llamada; si vuelve a faltar, el aviso vuelve, y una racha nueva (otro «desde»)
-// no se ve afectada por las llamadas de las anteriores.
+// (mismo alumno, clase y día en que empezó) y no haya faltado otras
+// FALTAS_PARA_LLAMAR veces desde la llamada (#414: si la familia ha dicho que
+// está enfermo y vuelve en una semana, no hay que llamar a la quinta falta).
+// Llamada con 4 → vuelve a avisar con 8, luego con 12… Una racha nueva (otro
+// «desde») no se ve afectada por las llamadas de las anteriores.
 const llamadaDeFaltas = (groupId, desde, racha) => `llamada:faltas:${groupId}:${desde}:${racha}`;
 async function rachasDeFaltas({ minimo = 1, studentId = null } = {}) {
     const r = await pool.query(
@@ -17153,8 +17155,11 @@ async function rachasDeFaltas({ minimo = 1, studentId = null } = {}) {
         racha: x.racha, rachaMes: x.racha_mes, desde: x.desde, ultimaFalta: x.ultima_falta,
         ultimaVez: x.ultima_vez, faltasMes: x.faltas_mes, clasesMes: x.clases_mes,
         contactos: x.contactos || null,
-        llamada: x.llamada_id ? { id: x.llamada_id, quien: x.llamada_quien || null, at: x.llamada_at, nota: x.llamada_nota || '', racha: x.llamada_racha } : null,
-        contactado: !!x.llamada_id && x.racha <= x.llamada_racha,
+        llamada: x.llamada_id ? {
+            id: x.llamada_id, quien: x.llamada_quien || null, at: x.llamada_at, nota: x.llamada_nota || '', racha: x.llamada_racha,
+            avisaDeNuevo: x.llamada_racha + FALTAS_PARA_LLAMAR,
+        } : null,
+        contactado: !!x.llamada_id && x.racha < x.llamada_racha + FALTAS_PARA_LLAMAR,
     })).map(f => ({ ...f, llamar: f.racha >= FALTAS_PARA_LLAMAR && !f.contactado }));
 }
 

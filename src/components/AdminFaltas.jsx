@@ -11,7 +11,8 @@ import { FALTAS_PARA_LLAMAR } from '../../permisos.js';
 // contar entre meses (la racha entera) o solo las de este mes. A partir de
 // FALTAS_PARA_LLAMAR seguidas hay que llamar, y a secretaría le llega el aviso
 // en la campanita. Cuando llama, lo apunta con «Ya he llamado» (#402): el aviso
-// se apaga hasta que vuelva a faltar, y la llamada queda en su ficha.
+// se apaga hasta que falte otras FALTAS_PARA_LLAMAR veces seguidas (#414), y la
+// llamada queda en su ficha.
 // Y el resumen de un mes: cuántas faltas tiene cada alumno (sumando sus clases)
 // y quién no ha venido ningún día.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -70,7 +71,7 @@ function FaltasSeguidas({ onAbrirFicha }) {
           Sale de la lista que pasan los profes: cuántas clases seguidas lleva cada alumno sin venir a su clase,
           hasta la última vez que vino. Una clase sin lista pasada no cuenta. A partir de {paraLlamar} faltas
           seguidas hay que llamar a la familia (te llega el aviso a la campanita). Cuando llames, pulsa
-          «Ya he llamado»: el aviso se quita hasta que vuelva a faltar y la llamada queda en su ficha.
+          «Ya he llamado»: el aviso se quita hasta que falte otras {paraLlamar} veces seguidas, y la llamada queda en su ficha.
         </p>
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginTop: 12 }}>
           <div style={{ display: 'inline-flex', border: '1px solid var(--line)', borderRadius: 999, overflow: 'hidden', background: 'var(--bg-2)' }}>
@@ -200,6 +201,10 @@ function Llamada({ f, onCambio }) {
         <span style={{ minWidth: 0 }}>
           <b style={{ color: 'var(--teal)' }}>Llamado</b>
           {l.quien ? ` · ${l.quien}` : ''} · {fmtFecha(l.at)}{l.nota ? ` · ${l.nota}` : ''}
+          <span style={{ display: 'block', fontSize: 11, color: 'var(--ink-3)' }}>
+            {f.racha > l.racha ? `${f.racha - l.racha} falta${f.racha - l.racha !== 1 ? 's' : ''} más desde la llamada · ` : ''}
+            vuelve a avisar si llega a {l.avisaDeNuevo}
+          </span>
         </span>
         <button type="button" className="btn btn-sm btn-ghost" style={{ padding: '2px 8px', fontSize: 11 }} disabled={enviando} onClick={deshacer}>Deshacer</button>
       </span>
@@ -209,7 +214,7 @@ function Llamada({ f, onCambio }) {
     <div style={{ display: 'grid', gap: 6 }}>
       {f.llamada && (
         <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
-          Se llamó el {fmtFecha(f.llamada.at)} con {f.llamada.racha} faltas y ha vuelto a faltar.
+          Se llamó el {fmtFecha(f.llamada.at)} con {f.llamada.racha} faltas y desde entonces ha faltado {f.racha - f.llamada.racha} veces más.
         </span>
       )}
       {!abierto ? (

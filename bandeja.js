@@ -50,14 +50,19 @@ export function etiquetaDe(nombre) {
 // Las conexiones con Gmail se reutilizan mientras se usan (#337): abrir una
 // nueva en cada clic tardaba un segundo largo. Se cierran solas a los 2 minutos
 // sin uso, y si una falla se tira y se abre otra.
-const conexiones = new Map(); // email → { client, pass, cierre, abriendo }
+// Una conexión de Gmail hace las cosas de una en una. Por eso las búsquedas
+// largas (el buzón de la ficha, las respuestas a campañas: 8-9 s en «Todos»)
+// van por otra, y la prueba de la vigilancia por otra más: si no, Correo se
+// quedaba esperando detrás, y la vigilancia daba el buzón por caído.
+const conexiones = new Map(); // «email|canal» → { client, pass, cierre, abriendo, enUso }
 const INACTIVA_MS = 120_000;
-async function conexion(buzon) {
-    const k = buzon.email;
+const claveDe = (buzon, canal) => `${buzon.email}|${canal}`;
+async function conexion(buzon, canal) {
+    const k = claveDe(buzon, canal);
     const c = conexiones.get(k);
     if (c && c.pass === buzon.pass) {
         if (c.abriendo) await c.abriendo.catch(() => {});
-        if (c.client?.usable) { clearTimeout(c.cierre); return c.client; }
+        if (c.client?.usable) { clearTimeout(c.cierre); c.enUso++; return c.client; }
         conexiones.delete(k);
     }
     // Con tiempos máximos (#362): sin ellos, si Gmail tardaba en contestar, la
@@ -67,11 +72,11 @@ async function conexion(buzon) {
         auth: { user: buzon.email, pass: buzon.pass },
         connectionTimeout: 12_000, greetingTimeout: 8_000, socketTimeout: 60_000,
     });
-    client.on('error', () => conexiones.delete(k)); // un corte de red no tumba el servidor
+    client.on('error', () => { if (conexiones.get(k)?.client === client) conexiones.delete(k); }); // un corte de red no tumba el servidor
     client.on('close', () => { if (conexiones.get(k)?.client === client) conexiones.delete(k); });
-    const entrada = { client, pass: buzon.pass, cierre: null, abriendo: client.connect() };
+    const entrada = { client, pass: buzon.pass, cierre: null, abriendo: client.connect(), enUso: 1 };
     conexiones.set(k, entrada);
-    try { await entrada.abriendo; } catch (e) { conexiones.delete(k); throw e; }
+    try { await entrada.abriendo; } catch (e) { if (conexiones.get(k) === entrada) conexiones.delete(k); throw e; }
     entrada.abriendo = null;
     return client;
 }
@@ -80,33 +85,43 @@ async function conexion(buzon) {
 // («Connection not available»). Con esos, se abre otra y se repite (#362).
 const fallaConexion = (e) => /Connection not available|NoConnection|closed|ECONNRESET|EPIPE|ETIMEDOUT|socket|timed? ?out|Unexpected close/i
     .test(`${e?.code || ''} ${e?.message || e}`);
-function tirar(buzon, client) {
-    if (conexiones.get(buzon.email)?.client === client) conexiones.delete(buzon.email);
+function tirar(buzon, canal, client) {
+    const k = claveDe(buzon, canal);
+    if (conexiones.get(k)?.client === client) conexiones.delete(k);
     try { client.close(); } catch { /* ya estaba cerrada */ }
 }
-async function conImap(buzon, fn, intento = 1) {
+// canal: 'correo' (lo que se pulsa en Correo), 'busquedas' o 'vigilancia'.
+async function conImap(buzon, fn, canal = 'correo', intento = 1) {
     let client;
-    try { client = await conexion(buzon); }
+    try { client = await conexion(buzon, canal); }
     catch (e) {
-        if (intento === 1 && fallaConexion(e)) return conImap(buzon, fn, 2);
+        if (intento === 1 && fallaConexion(e)) return conImap(buzon, fn, canal, 2);
         throw e;
     }
+    let reintentar = false;
     try { return await fn(client); }
     catch (e) {
         // Si la conexión se ha estropeado, fuera: se abre otra y se prueba una vez más.
         if (!client.usable || fallaConexion(e)) {
-            tirar(buzon, client);
-            if (intento === 1) return conImap(buzon, fn, 2);
+            tirar(buzon, canal, client);
+            reintentar = intento === 1;
         }
-        throw e;
+        if (!reintentar) throw e;
     } finally {
-        const c = client && conexiones.get(buzon.email);
-        if (c?.client === client) {
+        // Se cierra a los 2 minutos sin uso, contados desde que acaba lo último:
+        // antes el reloj lo ponía cualquiera que acabase, aunque otro siguiera
+        // usándola, y podía cerrársela en medio.
+        const c = conexiones.get(claveDe(buzon, canal));
+        if (c?.client === client && --c.enUso <= 0) {
+            c.enUso = 0;
             clearTimeout(c.cierre);
-            c.cierre = setTimeout(() => { conexiones.delete(buzon.email); client.logout().catch(() => {}); }, INACTIVA_MS);
+            c.cierre = setTimeout(() => {
+                if (conexiones.get(claveDe(buzon, canal)) === c && !c.enUso) { conexiones.delete(claveDe(buzon, canal)); client.logout().catch(() => {}); }
+            }, INACTIVA_MS);
             c.cierre.unref?.();
         }
     }
+    return conImap(buzon, fn, canal, 2);
 }
 // Las carpetas de cada buzón no cambian: se miran una vez por conexión.
 const carpetasCache = new WeakMap();
@@ -130,7 +145,7 @@ export async function probarBuzones() {
     return Promise.all(lista.map(async (b) => {
         const ini = Date.now();
         try {
-            await conImap(b, async (client) => { await client.noop(); });
+            await conImap(b, async (client) => { await client.noop(); }, 'vigilancia');
             return { email: b.email, general: !!b.general, ok: true, ms: Date.now() - ini };
         } catch (e) {
             return { email: b.email, general: !!b.general, ok: false, error: String(e?.message || e).slice(0, 200) };
@@ -169,7 +184,7 @@ export async function buscarRespuestas({ asunto, desde, emails }) {
             }
             return r;
         } finally { lock.release(); }
-    });
+    }, 'busquedas');
 }
 
 // Los correos del buzón general con unas direcciones (#341, historial de la
@@ -211,7 +226,7 @@ async function buscarCorreosCon(buzon, lista, max) {
             }
             return r.sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
         } finally { lock.release(); }
-    });
+    }, 'busquedas');
 }
 
 const direccion = (a) => (a ? { nombre: a.name || '', email: String(a.address || '').toLowerCase() } : null);
