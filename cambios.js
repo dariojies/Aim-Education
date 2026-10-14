@@ -29,7 +29,9 @@ export const REPO_GITHUB = 'dariojies/Aim-Education';
 export const APPS_CAMBIOS = {
     'Learning Dungeon': { repo: 'dariojies/Aim-tul', etiqueta: 'Learning Dungeon' },
     Brickslab: { repo: 'dariojies/aim-bricks', etiqueta: 'Aim Brickslab' },
-    KidsNGrow: { repo: 'Juanmallout4/aim-kidsngrow', etiqueta: 'KidsNGrow' },
+    // Es de otra cuenta de GitHub: un token de Darío no llega a él (los de grano
+    // fino solo ven los repositorios de una cuenta), así que lleva el suyo.
+    KidsNGrow: { repo: 'Juanmallout4/aim-kidsngrow', etiqueta: 'KidsNGrow', token: 'GITHUB_TOKEN_KIDSNGROW' },
     'Aim Training': { repo: 'dariojies/aim-training', etiqueta: 'Aim Training' },
 };
 const repoDe = (app) => APPS_CAMBIOS[app]?.repo || REPO_GITHUB;
@@ -49,6 +51,8 @@ export const shaValido = (s) => (typeof s === 'string' && ES_SHA.test(s) ? s.toL
 export function crearCambios({ pool, authenticateSession, requireSeccion, requirePermiso, permisos,
     fetch: fetchImpl = (...a) => globalThis.fetch(...a), token = () => process.env.GITHUB_TOKEN || '' }) {
     const router = express.Router();
+    // El token de la cuenta de GitHub de cada app (sin el suyo, el general).
+    const tokenDe = (app) => (APPS_CAMBIOS[app]?.token && process.env[APPS_CAMBIOS[app].token]) || token();
 
     const leer = async (id) => (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = $1`, [PREFIJO + id])).rows[0]?.valor || null;
 
@@ -104,9 +108,9 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
     async function cargarCommits(id) {
         // El repositorio es público: sin token también contesta (con un límite de
         // consultas por hora); con GITHUB_TOKEN, sin ese límite.
-        const tk = token();
         const e = await leer(id);
         if (!e) return { omitido: 'no existe' };
+        const tk = tokenDe(e.app);
         const base = shaValido(e.commitAnterior), cabeza = shaValido(e.commit);
         if (!base || !cabeza) return { omitido: 'sin commit anterior' };
         const r = await fetchImpl(`https://api.github.com/repos/${repoDe(e.app)}/compare/${base}...${cabeza}`, {
@@ -234,10 +238,11 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
             res.json({ success: true, commits: r.commits });
         } catch (err) {
             console.warn('[cambios] recargar commits:', err?.message || err);
+            const variable = APPS_CAMBIOS[(await leer(id).catch(() => null))?.app]?.token || 'GITHUB_TOKEN';
             res.status(502).json({ error: err?.sinAcceso
-                ? 'El repositorio de esta app es privado y el token de GitHub (GITHUB_TOKEN en Heroku) no llega a él: hay que darle acceso de lectura.'
+                ? `El repositorio de esta app es privado y el token de GitHub (${variable} en Heroku) no llega a él: hay que darle acceso de lectura.`
                 : err?.token
-                ? (token() ? 'El token de GitHub no vale o ha caducado: hay que renovarlo en Heroku (GITHUB_TOKEN).' : 'GitHub ha limitado las consultas sin token: prueba dentro de un rato.')
+                ? (token() || process.env[variable] ? `El token de GitHub no vale o ha caducado: hay que renovarlo en Heroku (${variable}).` : 'GitHub ha limitado las consultas sin token: prueba dentro de un rato.')
                 : 'GitHub no ha contestado bien. Prueba más tarde.' });
         }
     });
