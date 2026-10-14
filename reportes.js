@@ -316,7 +316,8 @@ export function crearReportes({ pool, clubId, authenticateSession, requirePermis
             gastos(p.desde, p.hasta), gastos(p.anterior.desde, p.anterior.hasta), dinero(p.desde, p.hasta),
             pool.query(`SELECT COALESCE(NULLIF(categoria, ''), 'Sin categoría') AS categoria, SUM(amount)::numeric AS total, COUNT(*)::int AS n
                         FROM aim_gastos WHERE ${rango} GROUP BY 1 ORDER BY 2 DESC`, [p.desde, p.hasta]),
-            pool.query(`SELECT CASE WHEN expense_type = 'especifico' THEN COALESCE(NULLIF(actividad, ''), 'Sin actividad') ELSE 'Comunes' END AS de,
+            pool.query(`SELECT CASE WHEN COALESCE(categoria, '') = 'Venta' THEN 'Material para vender'
+                                    WHEN expense_type = 'especifico' THEN COALESCE(NULLIF(actividad, ''), 'Sin actividad') ELSE 'Comunes' END AS de,
                                SUM(amount)::numeric AS total, COUNT(*)::int AS n
                         FROM aim_gastos WHERE ${rango} GROUP BY 1 ORDER BY 2 DESC`, [p.desde, p.hasta]),
             pool.query(`SELECT COUNT(*) FILTER (WHERE NOT COALESCE(is_paid, false))::int AS sin_pagar, COALESCE(SUM(amount) FILTER (WHERE NOT COALESCE(is_paid, false)), 0)::numeric AS sin_pagar_total,

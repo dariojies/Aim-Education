@@ -72,7 +72,7 @@ export default function AdminAlmacen({ showToast }) {
       body: JSON.stringify({ delta: n - it.stock, motivo: 'Recuento' }),
     });
     const d = await r.json().catch(() => ({}));
-    if (r.ok) { setItems(prev => prev.map(x => (x.id === it.id ? { ...x, stock: n, bajo: x.stockMinimo > 0 && n <= x.stockMinimo } : x))); }
+    if (r.ok) { setItems(prev => prev.map(x => (x.id === it.id ? { ...x, stock: n, bajo: x.stockMinimo > 0 && n < x.stockMinimo } : x))); }
     else { alert(d.error || 'No se pudo guardar.'); cargar(); }
   }
   async function cambiarMinimo(it, valor) {
@@ -82,7 +82,7 @@ export default function AdminAlmacen({ showToast }) {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
       body: JSON.stringify({ ...it, stockMinimo: n }),
     });
-    if (r.ok) setItems(prev => prev.map(x => (x.id === it.id ? { ...x, stockMinimo: n, bajo: n > 0 && x.stock <= n } : x)));
+    if (r.ok) setItems(prev => prev.map(x => (x.id === it.id ? { ...x, stockMinimo: n, bajo: n > 0 && x.stock < n } : x)));
     else { const d = await r.json().catch(() => ({})); alert(d.error || 'No se pudo guardar.'); cargar(); }
   }
   async function verMovs(it) {
@@ -117,7 +117,7 @@ export default function AdminAlmacen({ showToast }) {
       {filtrados.length > 0 && (
         <div className="data-table">
           <div className="data-table-head" style={{ gridTemplateColumns: '1.6fr 100px 100px 1.2fr 150px' }}>
-            <span>Artículo</span><span>Hay</span><span>Avisar si ≤</span><span>Se vende como</span><span></span>
+            <span>Artículo</span><span>Hay</span><span title="Lo que quieres tener como poco: avisa si hay menos. 0 = sin aviso">Mínimo</span><span>Se vende como</span><span></span>
           </div>
           {filtrados.map((it, i) => (
             <React.Fragment key={it.id}>
@@ -137,11 +137,11 @@ export default function AdminAlmacen({ showToast }) {
                 <input key={`s${it.id}:${it.stock}`} type="number" min="0" defaultValue={it.stock} aria-label={`Unidades de ${it.nombre}`}
                   onBlur={e => recuento(it, e.target.value)} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
                   style={{ ...inp, width: 64, padding: '6px 8px', fontWeight: 800, color: it.bajo ? 'var(--orange)' : 'var(--ink)' }} />
-                {it.bajo && <span title={`Mínimo ${it.stockMinimo}`} style={{ fontSize: 12 }}>⚠️</span>}
+                {it.bajo && <span title={`Hay menos de ${it.stockMinimo}`} style={{ fontSize: 12 }}>⚠️</span>}
               </span>
               <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                <span className="solo-movil" style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-3)', minWidth: 84 }}>Avisar si ≤</span>
-                <input key={`m${it.id}:${it.stockMinimo}`} type="number" min="0" defaultValue={it.stockMinimo} aria-label={`Aviso bajo mínimo de ${it.nombre}`}
+                <span className="solo-movil" style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-3)', minWidth: 84 }}>Mínimo</span>
+                <input key={`m${it.id}:${it.stockMinimo}`} type="number" min="0" defaultValue={it.stockMinimo} aria-label={`Mínimo de ${it.nombre} (avisa si hay menos)`} title="Avisa si hay menos. 0 = sin aviso"
                   onBlur={e => cambiarMinimo(it, e.target.value)} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
                   style={{ ...inp, width: 64, padding: '6px 8px' }} />
               </span>
@@ -223,7 +223,7 @@ export default function AdminAlmacen({ showToast }) {
                   <input type="number" min="0" value={edit.stock} onChange={e => setEdit(x => ({ ...x, stock: e.target.value }))} style={{ ...inp, width: '100%', marginTop: 4 }} />
                 </label>
               )}
-              <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-2)', flex: 1 }}>Aviso bajo mínimo
+              <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-2)', flex: 1 }}>Mínimo (avisa si hay menos; 0, sin aviso)
                 <input type="number" min="0" value={edit.stockMinimo} onChange={e => setEdit(x => ({ ...x, stockMinimo: e.target.value }))} style={{ ...inp, width: '100%', marginTop: 4 }} />
               </label>
             </div>

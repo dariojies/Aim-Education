@@ -125,6 +125,7 @@ export function InformeBeneficios({ periodo = null }) {
               niños apuntados y sus 5 h diarias, y <b>Taller/Evento</b> los inscritos y la duración de cada evento.
             </div>
             {datos.sinActividad > 0 && <div>La fila <b>General</b> son {eur(datos.sinActividad)} de ingresos que no son de ninguna actividad (material, matrícula, Pase Explorador…): cuentan en el total, pero no se les reparten gastos.</div>}
+            {datos.gastosVenta > 0 && <div>Los <b>{eur(datos.gastosVenta)}</b> de gastos de la categoría «Venta» (material comprado para venderlo) van en la fila <b>General</b>, contra lo que se cobra por ese material: no se le restan a ninguna actividad.</div>}
           </div>
         </>
       )}

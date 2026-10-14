@@ -14112,16 +14112,20 @@ async function repartoPorActividad(d, h, { soloSinPersona = false } = {}) {
            AND ($2::date IS NULL OR r.fecha <= $2::date)
          GROUP BY 1`, [d, h]
     );
+    // Los de categoría «Venta» (#418) son material comprado para venderlo: no
+    // son coste de ninguna actividad (aunque se apunte de cuál es), sino de lo
+    // que se vende, que cobra en la fila «General». Ni se imputan ni se reparten.
     const gas = await pool.query(
         `SELECT COALESCE(expense_type,'comun') AS tipo,
                 COALESCE(NULLIF(actividad,''),'') AS actividad,
                 COALESCE(reparto,'iguales') AS reparto,
+                COALESCE(categoria,'') = 'Venta' AS venta,
                 COALESCE(SUM(amount),0)::numeric AS total
          FROM aim_gastos
          WHERE ($1::date IS NULL OR (date AT TIME ZONE 'Europe/Madrid')::date >= $1::date)
            AND ($2::date IS NULL OR (date AT TIME ZONE 'Europe/Madrid')::date <= $2::date)
            ${soloSinPersona ? 'AND persona_id IS NULL' : ''}
-         GROUP BY 1,2,3`, [d, h]
+         GROUP BY 1,2,3,4`, [d, h]
     );
 
     // Los dos repartos que no salen del dinero: cuánta gente tiene cada
@@ -14200,8 +14204,10 @@ async function repartoPorActividad(d, h, { soloSinPersona = false } = {}) {
     const gastosDir = {};
     // Los comunes se agrupan por su criterio: cada bolsa se reparte a su modo.
     const bolsas = { iguales: 0, alumnos: 0, horas: 0 };
+    let gastosVenta = 0;
     for (const g of gas.rows) {
-        if (g.tipo === 'especifico' && g.actividad) gastosDir[g.actividad] = (gastosDir[g.actividad] || 0) + Number(g.total);
+        if (g.venta) gastosVenta += Number(g.total);
+        else if (g.tipo === 'especifico' && g.actividad) gastosDir[g.actividad] = (gastosDir[g.actividad] || 0) + Number(g.total);
         else bolsas[g.reparto in bolsas ? g.reparto : 'iguales'] += Number(g.total);
     }
     const gastosComunes = bolsas.iguales + bolsas.alumnos + bolsas.horas;
@@ -14243,7 +14249,7 @@ async function repartoPorActividad(d, h, { soloSinPersona = false } = {}) {
 
     return {
         nombres, ingresos, gastosDir, cuotas, cuotaDe, bolsas, gastosComunes,
-        alumnosDe, horasDe, sinActividad: r2Server(ingresos['Sin actividad'] || 0),
+        alumnosDe, horasDe, sinActividad: r2Server(ingresos['Sin actividad'] || 0), gastosVenta: r2Server(gastosVenta),
     };
 }
 
@@ -14266,7 +14272,8 @@ app.get('/api/admin/informes/beneficios', authenticateSession, requirePermiso('r
         }).sort((a, b) => b.beneficio - a.beneficio);
         // Lo cobrado que no es de ninguna actividad (material suelto, matrícula,
         // Pase Explorador…) va en su fila: antes se quedaba fuera del TOTAL (#416).
-        if (R.sinActividad) filas.push({ actividad: 'General (sin actividad)', ingresos: R.sinActividad, gastosDirectos: 0, gastosComunes: 0, beneficio: R.sinActividad, general: true });
+        // Ahí van también los gastos de material para vender (#418).
+        if (R.sinActividad || R.gastosVenta) filas.push({ actividad: 'General (sin actividad)', ingresos: R.sinActividad, gastosDirectos: R.gastosVenta, gastosComunes: 0, beneficio: r2Server(R.sinActividad - R.gastosVenta), general: true });
 
         res.set('Cache-Control', 'no-store');
         res.json({
@@ -14276,7 +14283,7 @@ app.get('/api/admin/informes/beneficios', authenticateSession, requirePermiso('r
                 alumnos: r2Server(R.bolsas.alumnos),
                 horas: r2Server(R.bolsas.horas),
             },
-            sinActividad: R.sinActividad,
+            sinActividad: R.sinActividad, gastosVenta: R.gastosVenta,
             totalGastosComunes: r2Server(R.gastosComunes),
             pesos: Object.fromEntries(R.nombres.map(n => [n, {
                 alumnos: R.alumnosDe[n] || 0,
@@ -16398,7 +16405,7 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
             fuente('Almacén', ['almacen_bajo'], async () => {
                 const bajos = (await avisoCompartido('almacen', () => pool.query(
                     `SELECT id, nombre, stock FROM aim_almacen
-                     WHERE stock_minimo > 0 AND stock <= stock_minimo ORDER BY stock - stock_minimo, nombre`))).rows;
+                     WHERE stock_minimo > 0 AND stock < stock_minimo ORDER BY stock - stock_minimo, nombre`))).rows;
                 return bajos.length ? [{
                     tipo: 'almacen', clave: 'almacen_bajo', n: bajos.length, destino: '/admin/almacen',
                     legado: `almacen:bajo:${bajos.map(b => b.id).sort((a, b) => a - b).join(',')}`.slice(0, 200),
@@ -21744,8 +21751,10 @@ app.get('/api/admin/almacen', authenticateSession, requireAdmin, async (req, res
             id: a.id, nombre: a.nombre, categoria: a.categoria,
             concepto: a.concepto, conceptoDesc: a.concepto_desc || null,
             stock: a.stock, stockMinimo: a.stock_minimo, notas: a.notas,
-            // Solo si se ha puesto un mínimo: recién traídos del catálogo están a 0.
-            bajo: a.stock_minimo > 0 && a.stock <= a.stock_minimo,
+            // El mínimo es lo que se quiere tener (#419): avisa si hay MENOS. Con
+            // mínimo 1, avisa al quedarse a 0 (antes, «avisar si ≤ 0» no se podía
+            // poner: 0 es «sin aviso», como los recién traídos del catálogo).
+            bajo: a.stock_minimo > 0 && a.stock < a.stock_minimo,
         })));
     } catch (err) { res.status(500).json({ error: err.message }); }
 });

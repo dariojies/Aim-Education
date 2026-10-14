@@ -1373,12 +1373,21 @@ function AdminGastos({ refreshTrigger, showToast }) {
                 <select value={edit.categoria || ''} onChange={e => setEdit(g => ({ ...g, categoria: e.target.value }))}>
                   <option value="">Sin categoría</option>
                   {['Material', 'Suministros', 'Alquiler', 'Personal', 'Servicios', 'Otros'].map(c => <option key={c} value={c}>{c}</option>)}
+                  {/* Material comprado para venderlo (#418): p. ej. protecciones de Fuji. */}
+                  <option value="Venta">Venta (material para vender)</option>
                 </select>
+                {edit.categoria === 'Venta' && (
+                  <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>
+                    No es un gasto de la actividad: es lo que se compra para venderlo. En el beneficio no se le resta a la actividad ni se reparte;
+                    va con lo que se cobra por el material (la fila «General»).
+                  </div>
+                )}
               </div>
 
               {/* Un gasto común no siempre se reparte igual: la luz no es como
-                  el material, así que lo decide cada gasto y no el informe. */}
-              {edit.tipo !== 'especifico' && (
+                  el material, así que lo decide cada gasto y no el informe. Los
+                  de venta no se reparten (#418). */}
+              {edit.tipo !== 'especifico' && edit.categoria !== 'Venta' && (
                 <div className="field">
                   <label>¿Cómo se reparte entre las actividades?</label>
                   <div style={{ display: 'grid', gap: 8 }}>
