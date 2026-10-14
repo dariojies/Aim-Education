@@ -19,7 +19,8 @@ import { fmtFecha, fmtFechaHora, fmtHora as fmtHoraCorta } from '../fechas.js';
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Las apps del grupo más 'General/A Futuro', para lo que no es de ninguna.
-const APPS = ['Aim Education', 'Learning Dungeon', 'Aim Training', 'Aim Brickslab', 'Aim Artemis', 'Aim Eventos', 'General/A Futuro'];
+// KidsNGrow (#199): los tickets que abren las guarderías desde esa app.
+const APPS = ['Aim Education', 'Learning Dungeon', 'Aim Training', 'Aim Brickslab', 'Aim Artemis', 'Aim Eventos', 'KidsNGrow', 'General/A Futuro'];
 
 const PRIORITY_COLOR = { high: 'var(--orange)', medium: '#FFD526', low: 'var(--teal)' };
 const PRIORITY_LABEL = { high: 'Alta', medium: 'Media', low: 'Baja' };
@@ -29,6 +30,8 @@ const CATEGORIAS = {
   familia: { label: 'Petición de familia', color: 'var(--teal)' },
   interna: { label: 'Tarea interna', color: '#3E63DD' },
   facturacion: { label: 'Facturación', color: '#B45309' },
+  // Las dudas que mandan las guarderías desde KidsNGrow.
+  duda: { label: 'Duda', color: '#0E7490' },
 };
 // El estado que se ve: «abierto» se parte en por atender, en curso y esperando.
 const ESTADOS = {
@@ -1565,7 +1568,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
 
               {/* Lo que pide */}
               <div style={{background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 12, padding: 14, marginBottom: 18}}>
-                <p style={{margin: "0 0 2px", fontSize: 13}}><b>{selected.name} {selected.surname || ''}</b> <span style={{color: "var(--ink-3)"}}>· {selected.email}{selected.creador_personal ? '' : ' · familia'}</span></p>
+                <p style={{margin: "0 0 2px", fontSize: 13}}><b>{selected.name} {selected.surname || ''}</b> <span style={{color: "var(--ink-3)"}}>· {selected.email}{selected.kng_centro ? ` · guardería ${selected.kng_centro} (KidsNGrow)` : selected.creador_personal ? '' : ' · familia'}</span></p>
                 <p style={{margin: "8px 0 0", fontSize: 14, color: "var(--ink-2)", lineHeight: 1.6, whiteSpace: "pre-wrap", wordBreak: "break-word"}}>{selected.description}</p>
                 {selected.tiene_adjunto && (
                   <div style={{marginTop: 10}}><Adjunto url={`/api/support/${selected.id}/adjunto`} nombre={selected.adjunto_nombre} mime={selected.adjunto_mime || 'image/png'} alto={220} /></div>

@@ -311,6 +311,21 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_mensajes_ticket ON tickets_mensajes(ticket_id, id)`);
+        // Tickets de KidsNGrow (#199): las guarderías que usan la app KidsNGrow
+        // (repo aim-kidsngrow) abren tickets aquí, con la etiqueta «KidsNGrow» y
+        // sin user_id (sus cuentas no son de esta web). Esta tabla dice de qué
+        // guardería y de quién son. La crea también KidsNGrow con el MISMO SQL
+        // (server/db.js, SQL_KNG_TICKETS): si se cambia, en los dos sitios.
+        await client.query(`
+    CREATE TABLE IF NOT EXISTS kng_tickets (
+        ticket_id INTEGER PRIMARY KEY REFERENCES tickets_registrosoporte(id) ON DELETE CASCADE,
+        centro_id UUID NOT NULL,
+        centro_nombre TEXT NOT NULL,
+        usuario_id UUID NOT NULL,
+        usuario_nombre TEXT NOT NULL,
+        usuario_email TEXT NOT NULL,
+        creado_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
         // Las respuestas del campo antiguo dev_response pasan a ser el primer mensaje
         // del hilo con el creador. Una sola vez: si el ticket ya tiene mensajes, no se toca.
         await client.query(`
@@ -15154,10 +15169,11 @@ app.get('/api/support', authenticateSession, async (req, res) => {
                    s.due_date, s.assigned_to, s.asignados_extra, s.app_label, s.dev_response, s.email_sent, s.recurrencia,
                    s.created_at, s.updated_at, s.resolved_at, s.vinculo_id,
                    (s.adjunto IS NOT NULL) AS tiene_adjunto, s.adjunto_nombre, s.adjunto_mime,
-                   COALESCE(u.name, 'Admin') as name,
+                   COALESCE(u.name, kt.usuario_nombre, 'Admin') as name,
                    COALESCE(u.surname, '') as surname,
-                   COALESCE(u.email, '') as email,
+                   COALESCE(u.email, kt.usuario_email, '') as email,
                    ${SQL_ES_PERSONAL('u')} AS creador_personal,
+                   kt.centro_nombre AS kng_centro,
                    assignee.name as assignee_name,
                    assignee.surname as assignee_surname,
                    (SELECT COUNT(*) FROM tickets_mensajes m WHERE m.ticket_id = s.id AND m.canal = 'equipo')::int AS msgs_equipo,
@@ -15177,6 +15193,7 @@ app.get('/api/support', authenticateSession, async (req, res) => {
             FROM tickets_registrosoporte s
             LEFT JOIN users u ON s.user_id = u.user_id
             LEFT JOIN users assignee ON s.assigned_to = assignee.user_id
+            LEFT JOIN kng_tickets kt ON kt.ticket_id = s.id
             ${soloMios ? 'WHERE s.user_id = $1 OR s.assigned_to = $1 OR $1 = ANY(s.asignados_extra)' : ''}
             ORDER BY s.created_at DESC
         `, [req.userSession.userId]);
@@ -15462,9 +15479,13 @@ app.get('/api/support/:id/mensajes', authenticateSession, async (req, res) => {
             `SELECT m.id, m.canal, m.cuerpo, m.created_at, m.autor_id,
                     m.archivo_nombre, m.archivo_mime,
                     (m.archivo IS NOT NULL) AS tiene_archivo,
-                    u.name AS autor_nombre, u.surname AS autor_apellido
+                    -- De KidsNGrow: quien abrió el ticket, o si no «Guardería X».
+                    COALESCE(u.name, CASE WHEN kt.ticket_id IS NOT NULL AND m.autor_id IS NOT NULL
+                        THEN CASE WHEN m.autor_id = kt.usuario_id THEN kt.usuario_nombre ELSE kt.centro_nombre END END) AS autor_nombre,
+                    COALESCE(u.surname, CASE WHEN kt.ticket_id IS NOT NULL AND m.autor_id IS NOT NULL THEN '(' || kt.centro_nombre || ')' END) AS autor_apellido
              FROM tickets_mensajes m
              LEFT JOIN users u ON u.user_id = m.autor_id
+             LEFT JOIN kng_tickets kt ON kt.ticket_id = m.ticket_id
              WHERE m.ticket_id = $1 AND m.canal = $2 AND m.id > $3
              ORDER BY m.id ASC`,
             [req.params.id, canal, desde]
@@ -16163,7 +16184,8 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
             fuente('Mensajes de soporte', ['tickets_mensajes_resto'], async () => {
                 const filas = (await pool.query(
                     `SELECT t.id, t.subject, COUNT(*)::int n, MAX(m.created_at) AS ultimo,
-                            (SELECT COALESCE(NULLIF(TRIM(CONCAT(u.name, ' ', u.surname)), ''), u.email)
+                            (SELECT COALESCE(NULLIF(TRIM(CONCAT(u.name, ' ', u.surname)), ''), u.email,
+                                             (SELECT k.usuario_nombre || ' (' || k.centro_nombre || ')' FROM kng_tickets k WHERE k.ticket_id = t.id))
                              FROM tickets_mensajes m2 LEFT JOIN users u ON u.user_id = m2.autor_id
                              WHERE m2.ticket_id = t.id AND COALESCE(m2.autor_id::text,'') <> $1
                              ORDER BY m2.created_at DESC LIMIT 1) AS quien
