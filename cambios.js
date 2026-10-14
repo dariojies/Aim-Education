@@ -13,11 +13,26 @@
 // una no reescribe las demás.
 //
 // El token de GitHub (de solo lectura) nunca se enseña ni se escribe en el log.
+//
+// Las otras apps (Learning Dungeon, Brickslab, KidsNGrow, Aim Training) también
+// salen, cada una en su subapartado: al compilarse dejan una marca y, al
+// arrancar el deploy en Heroku, la apuntan en la base compartida
+// (aim_ajustes 'deploy_app:<id>'). Aquí se recoge (procesarDeploysDeOtrasApps,
+// en el servidor) y se hace su entrada como las de Aim Education, con los
+// commits de SU repositorio y los tickets de esa app que esperaban el deploy.
 // ─────────────────────────────────────────────────────────────────────────────
 import crypto from 'crypto';
 import express from 'express';
 
 export const REPO_GITHUB = 'dariojies/Aim-Education';
+// Cada app: su repositorio y la etiqueta de sus tickets en Soporte.
+export const APPS_CAMBIOS = {
+    'Learning Dungeon': { repo: 'dariojies/Aim-tul', etiqueta: 'Learning Dungeon' },
+    Brickslab: { repo: 'dariojies/aim-bricks', etiqueta: 'Aim Brickslab' },
+    KidsNGrow: { repo: 'Juanmallout4/aim-kidsngrow', etiqueta: 'KidsNGrow' },
+    'Aim Training': { repo: 'dariojies/aim-training', etiqueta: 'Aim Training' },
+};
+const repoDe = (app) => APPS_CAMBIOS[app]?.repo || REPO_GITHUB;
 const PREFIJO = 'cambios:';
 const ES_SHA = /^[0-9a-f]{7,40}$/i;
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
@@ -40,18 +55,23 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
     // La entrada de un deploy nuevo. Se llama una sola vez por deploy (cuando el
     // servidor lo ve por primera vez) y nada más apuntarlo: si el arranque se
     // corta después, el deploy ya tiene su entrada. Si ya existía, no la pisa.
-    async function crearEntradaDeploy({ deployId, compilado = null, commit = null, release = null }) {
+    // app: null es Aim Education; si no, una de APPS_CAMBIOS.
+    async function crearEntradaDeploy({ deployId, compilado = null, commit = null, release = null, app = null, publicado = null }) {
         if (!ES_ID.test(String(deployId || '')) || String(deployId).startsWith('m-')) throw new Error('Id de deploy no válido.');
+        if (app && !APPS_CAMBIOS[app]) throw new Error('App no válida.');
         commit = shaValido(commit);
-        // El commit del último deploy con commit: lo que hay entre los dos es lo nuevo.
+        // El commit del último deploy de la misma app con commit: lo que hay
+        // entre los dos es lo nuevo.
         const ant = commit ? (await pool.query(
             `SELECT valor->>'commit' AS commit FROM aim_ajustes
              WHERE clave LIKE 'cambios:%' AND clave <> $1 AND valor->>'origen' = 'deploy' AND valor->>'commit' IS NOT NULL
-             ORDER BY (valor->>'publicado')::timestamptz DESC LIMIT 1`, [PREFIJO + deployId])).rows[0]?.commit : null;
+               AND COALESCE(valor->>'app', '') = $2
+             ORDER BY (valor->>'publicado')::timestamptz DESC LIMIT 1`, [PREFIJO + deployId, app || ''])).rows[0]?.commit : null;
         const valor = {
             deployId,
+            ...(app ? { app } : {}),
             compilado: compilado && !Number.isNaN(Date.parse(compilado)) ? new Date(compilado).toISOString() : null,
-            publicado: new Date().toISOString(),
+            publicado: publicado && !Number.isNaN(Date.parse(publicado)) ? new Date(publicado).toISOString() : new Date().toISOString(),
             commit,
             commitAnterior: shaValido(ant) && ant !== commit ? ant : null,
             release: release ? String(release).replace(/^v/i, '').slice(0, 20) : null,
@@ -89,7 +109,7 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
         if (!e) return { omitido: 'no existe' };
         const base = shaValido(e.commitAnterior), cabeza = shaValido(e.commit);
         if (!base || !cabeza) return { omitido: 'sin commit anterior' };
-        const r = await fetchImpl(`https://api.github.com/repos/${REPO_GITHUB}/compare/${base}...${cabeza}`, {
+        const r = await fetchImpl(`https://api.github.com/repos/${repoDe(e.app)}/compare/${base}...${cabeza}`, {
             headers: {
                 Accept: 'application/vnd.github+json',
                 ...(tk ? { Authorization: `Bearer ${tk}` } : {}),
@@ -99,6 +119,8 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
             signal: AbortSignal.timeout(10_000),
         });
         if (r.status === 401 || r.status === 403) throw Object.assign(new Error(`GitHub respondió ${r.status}`), { token: true });
+        // Un repositorio privado sin un token que llegue a él: GitHub dice que no existe.
+        if (r.status === 404) throw Object.assign(new Error(`GitHub no deja ver ${repoDe(e.app)}`), { sinAcceso: true });
         if (!r.ok) throw new Error(`GitHub respondió ${r.status}`);
         const d = await r.json();
         const commits = (Array.isArray(d?.commits) ? d.commits : [])
@@ -145,6 +167,8 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
                 entradas: r.rows.map(x => ({
                     ...x.valor,
                     id: x.clave.slice(PREFIJO.length),
+                    app: x.valor.app || null,
+                    repo: repoDe(x.valor.app),
                     tickets: x.valor.tickets || [],
                     commits: x.valor.commits || [],
                     editadoPor: x.editor || null,
@@ -154,6 +178,7 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
                 conGithub: true,
                 conToken: !!token(),
                 repo: REPO_GITHUB,
+                apps: Object.keys(APPS_CAMBIOS),
             });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
@@ -209,7 +234,9 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
             res.json({ success: true, commits: r.commits });
         } catch (err) {
             console.warn('[cambios] recargar commits:', err?.message || err);
-            res.status(502).json({ error: err?.token
+            res.status(502).json({ error: err?.sinAcceso
+                ? 'El repositorio de esta app es privado y el token de GitHub (GITHUB_TOKEN en Heroku) no llega a él: hay que darle acceso de lectura.'
+                : err?.token
                 ? (token() ? 'El token de GitHub no vale o ha caducado: hay que renovarlo en Heroku (GITHUB_TOKEN).' : 'GitHub ha limitado las consultas sin token: prueba dentro de un rato.')
                 : 'GitHub no ha contestado bien. Prueba más tarde.' });
         }

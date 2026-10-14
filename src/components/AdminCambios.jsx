@@ -12,8 +12,14 @@ import { novedadesDe, tituloDe } from '../novedades.js';
 // mano; secretaría y dirección lo leen (el servidor lo comprueba). Solo personal.
 // Se enseña como un historial por días: cada publicación con sus «Novedades»
 // (redactadas de los commits, src/novedades.js) y, al pie, sus tickets y sus
-// commits, plegados.
+// commits, plegados. Las otras apps (Learning Dungeon, Brickslab, KidsNGrow,
+// Aim Training) salen en cada día en su subapartado, con su color, y arriba se
+// puede elegir qué app ver.
 // ─────────────────────────────────────────────────────────────────────────────
+
+const PRINCIPAL = 'Aim Education';
+const COLOR_APP = { 'Learning Dungeon': '#7C3AED', Brickslab: '#C2410C', KidsNGrow: '#2F7D5B', 'Aim Training': '#0891B2' };
+const appDe = (e) => e.app || PRINCIPAL;
 
 // Los tickets de cada deploy, agrupados por su categoría de Soporte.
 const GRUPOS = [
@@ -85,6 +91,7 @@ export default function AdminCambios({ showToast }) {
   const [guardando, setGuardando] = useState(false);
   const [recargando, setRecargando] = useState(null);
   const [abiertos, setAbiertos] = useState(() => new Set());   // las entradas con los commits a la vista
+  const [verApp, setVerApp] = useState('todas');
   const alternar = (id) => setAbiertos(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
 
   const cargar = useCallback(async () => {
@@ -94,18 +101,21 @@ export default function AdminCambios({ showToast }) {
   useEffect(() => { cargar(); }, [cargar]);
 
   const abrirTicket = (id) => go(`/admin/soporte/${id}`);
-  const gh = (ruta) => `https://github.com/${datos?.repo}/${ruta}`;
+  // Cada entrada, a su repositorio (las de otras apps, al suyo).
+  const gh = (e, ruta) => `https://github.com/${e?.repo || datos?.repo}/${ruta}`;
+  const appsConEntradas = useMemo(() => [...new Set((datos?.entradas || []).map(appDe))], [datos]);
 
   const lista = useMemo(() => {
     if (!datos) return [];
     const n = q.trim().toLowerCase();
-    if (!n) return datos.entradas;
-    return datos.entradas.filter(e => [
+    const deApp = verApp === 'todas' ? datos.entradas : datos.entradas.filter(e => appDe(e) === verApp);
+    if (!n) return deApp;
+    return deApp.filter(e => [appDe(e),
       e.titulo, e.texto, e.commit, e.release ? `v${e.release}` : '',
       ...e.tickets.flatMap(t => [`#${t.id}`, t.asunto]),
       ...e.commits.flatMap(c => [c.mensaje, ...(c.novedades || [])]),
     ].some(v => String(v || '').toLowerCase().includes(n)));
-  }, [datos, q]);
+  }, [datos, q, verApp]);
 
   async function guardar(ev) {
     ev.preventDefault();
@@ -169,10 +179,10 @@ export default function AdminCambios({ showToast }) {
     const manual = e.origen === 'manual';
     const tickets = e.tickets.map(t => ({ ...t, grupo: GRUPOS.find(g => g[0] === (t.categoria || '')) || GRUPOS[GRUPOS.length - 1] }));
     const novedades = novedadesDe(e.commits);
-    const titulo = e.titulo || (manual ? 'Nota' : (tituloDe(novedades) || `Publicación de las ${fmtHora(e.publicado)}`));
+    const titulo = e.titulo || (manual ? 'Nota' : (tituloDe(novedades) || (e.app ? `Publicación de ${e.app}` : `Publicación de las ${fmtHora(e.publicado)}`)));
     const enEdicion = editando && !editando.nueva && editando.id === e.id;
     const abierto = abiertos.has(e.id);
-    const color = manual ? 'var(--teal)' : 'var(--purple)';
+    const color = manual ? 'var(--teal)' : e.app ? (COLOR_APP[e.app] || 'var(--ink-3)') : 'var(--purple)';
     const vacia = !e.texto && !novedades.length && !tickets.length;
     const firma = e.editadoPor && (e.titulo || e.texto);
     return (
@@ -182,6 +192,7 @@ export default function AdminCambios({ showToast }) {
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12, color: 'var(--ink-3)', minHeight: 30 }}>
             <span style={{ fontWeight: 800, color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums' }}>{fmtHora(e.publicado)}</span>
             {manual && <span style={chip('var(--teal)')}>Nota a mano</span>}
+            {e.app && <span style={chip(color)}>{e.app}</span>}
             {e.release && <span style={chip('var(--ink-3)')}>v{e.release}</span>}
             <div style={{ flex: 1 }} />
             {puede && !enEdicion && (
@@ -193,7 +204,7 @@ export default function AdminCambios({ showToast }) {
             {puede && !manual && e.commitAnterior && (
               <button type="button" className="btn btn-ghost" style={botonIcono} disabled={recargando === e.id} onClick={() => recargarCommits(e)}
                 aria-label="Recargar commits"
-                title={`Volver a pedir los commits a GitHub${datos.conToken ? '' : ' (sin GITHUB_TOKEN, GitHub limita las consultas: si falla, prueba un rato después)'}`}>
+                title={`Volver a pedir los commits a GitHub${datos.conToken ? '' : ' (sin GITHUB_TOKEN, GitHub limita las consultas: si falla, prueba un rato después)'}${e.app ? ` (repositorio ${e.repo})` : ''}`}>
                 <Recargar girando={recargando === e.id} />
               </button>
             )}
@@ -265,7 +276,7 @@ export default function AdminCambios({ showToast }) {
                   </button>
                 )}
                 {e.commit && (
-                  <a href={e.commitAnterior ? gh(`compare/${e.commitAnterior}...${e.commit}`) : gh(`commit/${e.commit}`)} target="_blank" rel="noreferrer"
+                  <a href={e.commitAnterior ? gh(e, `compare/${e.commitAnterior}...${e.commit}`) : gh(e, `commit/${e.commit}`)} target="_blank" rel="noreferrer"
                     style={{ ...enlace, fontWeight: 600, fontSize: 12 }} title={e.commitAnterior ? 'Comparar con la publicación anterior en GitHub' : 'Ver el commit en GitHub'}>
                     <span style={{ fontFamily: 'ui-monospace, monospace' }}>{e.commit.slice(0, 7)}</span> en GitHub ↗
                   </a>
@@ -276,7 +287,7 @@ export default function AdminCambios({ showToast }) {
                 <ul style={{ margin: 0, padding: '10px 12px', listStyle: 'none', display: 'grid', gap: 5, background: 'var(--bg-3)', borderRadius: 10 }}>
                   {e.commits.map(c => (
                     <li key={c.sha} style={{ fontSize: 13, display: 'flex', gap: 10, alignItems: 'baseline', color: 'var(--ink-2)' }}>
-                      <a href={gh(`commit/${c.sha}`)} target="_blank" rel="noreferrer" style={{ ...enlace, fontWeight: 600, fontFamily: 'ui-monospace, monospace', fontSize: 12, flex: 'none' }}>{c.sha.slice(0, 7)}</a>
+                      <a href={gh(e, `commit/${c.sha}`)} target="_blank" rel="noreferrer" style={{ ...enlace, fontWeight: 600, fontFamily: 'ui-monospace, monospace', fontSize: 12, flex: 'none' }}>{c.sha.slice(0, 7)}</a>
                       <span><ConTickets texto={c.mensaje} abrir={abrirTicket} /></span>
                     </li>
                   ))}
@@ -292,8 +303,18 @@ export default function AdminCambios({ showToast }) {
   return (
     <div style={{ display: 'grid', gap: 18, maxWidth: 860 }}>
       <p style={{ margin: 0, fontSize: 14, color: 'var(--ink-3)', lineHeight: 1.5 }}>
-        Cada vez que se publica la web, aquí queda lo nuevo: qué cambia y qué tickets resuelve.
+        Cada vez que se publica la web, aquí queda lo nuevo: qué cambia y qué tickets resuelve. Lo de las otras apps sale aparte, en su subapartado de cada día.
       </p>
+      {appsConEntradas.length > 1 && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} role="group" aria-label="Qué app ver">
+          {['todas', ...[...appsConEntradas].sort((a, b) => (a === PRINCIPAL ? -1 : b === PRINCIPAL ? 1 : a.localeCompare(b)))].map(a => (
+            <button key={a} type="button" className={`filter-pill ${verApp === a ? 'is-active' : ''}`} onClick={() => setVerApp(a)}
+              style={a !== 'todas' && a !== PRINCIPAL && verApp !== a ? { color: legible(COLOR_APP[a] || 'var(--ink-3)') } : undefined}>
+              {a === 'todas' ? 'Todas las apps' : a}
+            </button>
+          ))}
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         <div style={{ position: 'relative', flex: '1 1 240px', maxWidth: 420 }}>
           <I.Search width={15} height={15} style={{ position: 'absolute', left: 13, top: '50%', transform: 'translateY(-50%)', color: 'var(--ink-3)', pointerEvents: 'none' }} />
@@ -318,10 +339,29 @@ export default function AdminCambios({ showToast }) {
           <h2 style={{ margin: 0, fontSize: 13.5, fontWeight: 800, color: 'var(--ink)', display: 'flex', gap: 8, alignItems: 'baseline' }}>
             {etiquetaDia(d.fecha)}
           </h2>
-          <div style={{ position: 'relative', display: 'grid', gap: 14, paddingLeft: 28 }}>
-            <span aria-hidden="true" style={{ position: 'absolute', left: 6, top: 8, bottom: 8, width: 2, borderRadius: 2, background: 'var(--line)' }} />
-            {d.entradas.map(tarjeta)}
-          </div>
+          {(() => {
+            const principales = d.entradas.filter(e => !e.app);
+            const otras = [...new Set(d.entradas.filter(e => e.app).map(e => e.app))];
+            const linea = (lista) => (
+              <div style={{ position: 'relative', display: 'grid', gap: 14, paddingLeft: 28 }}>
+                <span aria-hidden="true" style={{ position: 'absolute', left: 6, top: 8, bottom: 8, width: 2, borderRadius: 2, background: 'var(--line)' }} />
+                {lista.map(tarjeta)}
+              </div>
+            );
+            return (
+              <>
+                {principales.length > 0 && linea(principales)}
+                {otras.map(a => (
+                  <div key={a} style={{ display: 'grid', gap: 10, marginLeft: principales.length ? 28 : 0 }}>
+                    <h3 style={{ margin: 0, fontSize: 12, fontWeight: 800, letterSpacing: '.05em', textTransform: 'uppercase', color: legible(COLOR_APP[a] || 'var(--ink-3)'), display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 3, background: COLOR_APP[a] || 'var(--ink-3)' }} />{a}
+                    </h3>
+                    {linea(d.entradas.filter(e => e.app === a))}
+                  </div>
+                ))}
+              </>
+            );
+          })()}
         </section>
       ))}
     </div>

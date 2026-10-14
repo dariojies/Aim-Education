@@ -18,7 +18,7 @@ import { crearRouterBandeja, buscarRespuestas, correosCon, buzonesPersonales, pr
 import { crearBrickslab } from './brickslab.js';
 import { crearAvisosPush, GRUPOS_AVISO } from './avisos-push.js';
 import { crearRouterCalendarioMovil, agendaEnRango, leerHora } from './calendario-movil.js';
-import { crearCambios } from './cambios.js';
+import { crearCambios, APPS_CAMBIOS } from './cambios.js';
 import { crearEvaluacion, crearTablasEvaluacion, sembrarCategoriasIngles } from './evaluacion.js';
 import { crearReportes, pendienteAhora, SQL_MOVIMIENTOS } from './reportes.js';
 import { enviarZipFotos, nombreArchivo as nombreEnZip } from './zip.js';
@@ -2268,6 +2268,9 @@ function initDbConReintentos(intento = 1) {
     initDb().then(() => {
         // Los móviles con avisos (#218), ya con su tabla creada.
         avisosPush.cargarTokens().catch(e => console.error('[avisos] tokens:', e.message));
+        // Los deploys de las otras apps, al arrancar y cada dos minutos.
+        setInterval(function deploysDeOtrasApps() { procesarDeploysDeOtrasApps().catch(e => console.error('[cambios] otras apps:', e.message)); }, 2 * 60_000);
+        procesarDeploysDeOtrasApps().catch(e => console.error('[cambios] otras apps:', e.message));
         return resolverEsperaDeploy().catch(e => console.error('[deploy] tickets en espera:', e.message));
     }).catch(err => {
         if (err?.code === '53300' && intento < 30) {
@@ -15242,6 +15245,16 @@ async function resolverEsperaDeploy() {
         commit: marca.commit || process.env.HEROKU_SLUG_COMMIT || null,
         release: process.env.HEROKU_RELEASE_VERSION || null,
     }).catch(e => console.error('[cambios] entrada del deploy:', e.message));
+    const resueltos = await resolverTicketsEnEspera('Aim Education', marca.fecha);
+    if (resueltos.length) await cambios.anotarTickets(marca.id, resueltos).catch(e => console.error('[cambios] tickets del deploy:', e.message));
+    // Los commits de GitHub, de fondo (con GITHUB_TOKEN si lo hay; el repositorio es público).
+    cambios.cargarCommitsEnSegundoPlano(marca.id);
+}
+
+// Los tickets de una app (su etiqueta en Soporte; sin etiqueta, Aim Education)
+// que esperaban el deploy desde antes de compilarlo: pasan a «Resuelto», con su
+// historial y el aviso a quien lo abrió. Devuelve [{ id, asunto, categoria }].
+async function resolverTicketsEnEspera(etiqueta, fecha) {
     const resueltos = [];
     const r = await pool.query(
         `SELECT s.id, s.subject, s.categoria, h.user_id AS quien
@@ -15250,9 +15263,9 @@ async function resolverEsperaDeploy() {
                             WHERE h.ticket_id = s.id AND h.campo = 'estado' AND h.despues = $1
                             ORDER BY h.created_at DESC, h.id DESC LIMIT 1) h ON TRUE
          WHERE s.status = 'open' AND s.etapa = 'espera_deploy'
-           AND 'Aim Education' = ANY(COALESCE(s.app_label, ARRAY['Aim Education']))
+           AND $3::text = ANY(COALESCE(s.app_label, ARRAY['Aim Education']))
            AND COALESCE(h.created_at, '-infinity') < $2::timestamptz
-         ORDER BY s.id`, [ETAPAS_TICKET.espera_deploy, marca.fecha]);
+         ORDER BY s.id`, [ETAPAS_TICKET.espera_deploy, fecha, etiqueta]);
     for (const t of r.rows) {
         const client = await pool.connect();
         try {
@@ -15269,10 +15282,37 @@ async function resolverEsperaDeploy() {
             console.error(`[deploy] no se pudo resolver el ticket #${t.id}:`, e.message || e);
         } finally { client.release(); }
     }
-    if (r.rowCount) console.log(`[deploy] ${r.rowCount} ticket(s) en espera de deploy pasan a resueltos: ${r.rows.map(t => '#' + t.id).join(', ')}`);
-    if (resueltos.length) await cambios.anotarTickets(marca.id, resueltos).catch(e => console.error('[cambios] tickets del deploy:', e.message));
-    // Los commits de GitHub, de fondo (con GITHUB_TOKEN si lo hay; el repositorio es público).
-    cambios.cargarCommitsEnSegundoPlano(marca.id);
+    if (resueltos.length) console.log(`[deploy] ${etiqueta}: ${resueltos.length} ticket(s) en espera de deploy pasan a resueltos: ${resueltos.map(t => '#' + t.id).join(', ')}`);
+    return resueltos;
+}
+
+// Los deploys de las otras apps (#cambios): cada una apunta el suyo al arrancar
+// en Heroku (aim_ajustes 'deploy_app:<id>'). Aquí se hace su entrada en Cambios,
+// se resuelven sus tickets en espera y se piden sus commits. Lo marca como
+// hecho quien lo coge, de una vez: con dos dynos, solo uno. Solo en Heroku (en
+// local, con CAMBIOS_OTRAS_APPS=1, para probarlo).
+async function procesarDeploysDeOtrasApps() {
+    if (!/^web/.test(process.env.DYNO || '') && !process.env.CAMBIOS_OTRAS_APPS) return;
+    const pendientes = (await pool.query(
+        `SELECT clave FROM aim_ajustes WHERE clave LIKE 'deploy_app:%' AND NOT COALESCE((valor->>'procesado')::boolean, false)
+         ORDER BY actualizado_at LIMIT 10`)).rows;
+    for (const { clave } of pendientes) {
+        const r = await pool.query(
+            `UPDATE aim_ajustes SET valor = valor || '{"procesado": true}'::jsonb, actualizado_at = NOW()
+             WHERE clave = $1 AND NOT COALESCE((valor->>'procesado')::boolean, false) RETURNING valor`, [clave]);
+        const m = r.rows[0]?.valor;
+        if (!m || !APPS_CAMBIOS[m.app]) continue;
+        try {
+            const entrada = await cambios.crearEntradaDeploy({ deployId: m.id, compilado: m.fecha, commit: m.commit, app: m.app, publicado: m.publicado });
+            if (!entrada) continue;
+            const resueltos = await resolverTicketsEnEspera(APPS_CAMBIOS[m.app].etiqueta, entrada.compilado || entrada.publicado);
+            if (resueltos.length) await cambios.anotarTickets(m.id, resueltos);
+            cambios.cargarCommitsEnSegundoPlano(m.id);
+            console.log(`[cambios] deploy de ${m.app} apuntado`);
+        } catch (e) { console.error(`[cambios] deploy de ${m.app}:`, e.message); }
+    }
+    // Las marcas ya recogidas no hacen falta pasados tres meses (la entrada se queda).
+    await pool.query(`DELETE FROM aim_ajustes WHERE clave LIKE 'deploy_app:%' AND (valor->>'procesado')::boolean AND actualizado_at < NOW() - INTERVAL '90 days'`);
 }
 
 // Respuestas guardadas, para lo que se contesta a menudo.
