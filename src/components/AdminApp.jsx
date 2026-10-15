@@ -6,6 +6,8 @@ import AdminCambios from './AdminCambios.jsx';
 import AdminEvaluacion from './AdminEvaluacion.jsx';
 import AdminAula from './AdminAula.jsx';
 import AdminTienda from './AdminTienda.jsx';
+import EditorTexto from './EditorTexto.jsx';
+import { renderMd } from './PublicActivities.jsx';
 import { useEnVivo } from '../envivo.js';
 import { ListaClases, colorOcupacion } from './AdminTulClases.jsx';
 import Reportes from './Reportes.jsx';
@@ -6783,7 +6785,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...editingItem, publishAt }),
+        body: JSON.stringify({ ...editingItem, publishAt, formato: 'html' }),
         credentials: 'include'
       });
       if (res.ok) {
@@ -7138,8 +7140,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
             />
           )}
           {ver("payments") && <AdminGastos refreshTrigger={refreshTrigger} showToast={showToast} />}
-          {ver("news") && <AdminNews refreshTrigger={refreshTrigger} onEditPost={(p) => { setEditingItem({ ...p, coverImageUrl: p.cover_image_url }); setActiveModal('edit-post'); }}
-            onNuevo={() => { setEditingItem({ title: '', slug: '', excerpt: '', content: '', coverImageUrl: '', category: 'general', status: 'draft' }); setActiveModal('new-post'); }} />}
+          {ver("news") && <AdminNews refreshTrigger={refreshTrigger} onEditPost={(p) => { setEditingItem({ ...p, coverImageUrl: p.cover_image_url, content: p.formato === 'html' ? p.content : renderMd(p.content), formato: 'html' }); setActiveModal('edit-post'); }}
+            onNuevo={() => { setEditingItem({ title: '', slug: '', excerpt: '', content: '', coverImageUrl: '', category: 'general', status: 'draft', formato: 'html' }); setActiveModal('new-post'); }} />}
           {ver("events") && <AdminEvents showToast={showToast} permisos={permisos} />}
           {ver("camp") && <AdminCamp showToast={showToast} permisos={permisos} />}
           {ver("billing") && <AdminBilling showToast={showToast} enlace={enlace} />}
@@ -7511,8 +7513,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         }}>
           <form onSubmit={handlePostSubmit} style={{
             backgroundColor: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 24,
-            width: '100%', maxWidth: 650, padding: 32, display: 'grid', gap: 14,
-            maxHeight: '90vh', overflowY: 'auto'
+            width: '100%', maxWidth: 920, padding: 32, display: 'grid', gap: 14,
+            maxHeight: '92vh', overflowY: 'auto'
           }}>
             <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: 'var(--ink)' }}>
               {activeModal === 'edit-post' ? 'Editar Entrada de Noticias' : 'Nueva Publicación de Noticias'}
@@ -7594,8 +7596,10 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
             </div>
 
             <div className="field">
-              <label>Contenido del Post (Soporta Markdown)</label>
-              <textarea value={editingItem.content || ''} onChange={e => setEditingItem({ ...editingItem, content: e.target.value })} required style={{ width: '100%', minHeight: 180, padding: '10px 14px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', fontFamily: 'inherit', resize: 'vertical' }} placeholder="Escribe el cuerpo de la noticia en formato Markdown..." />
+              <label>Contenido</label>
+              {/* Texto enriquecido (#438): títulos, negrita, listas, imágenes, botones y documentos. */}
+              <EditorTexto key={editingItem.id || 'nueva'} valor={editingItem.content || ''} subirImagen={subirImagenNoticia}
+                onChange={(html) => setEditingItem(x => ({ ...x, content: html }))} placeholder="Escribe aquí la noticia…" />
             </div>
 
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10 }}>

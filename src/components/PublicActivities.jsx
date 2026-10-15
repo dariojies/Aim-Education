@@ -182,7 +182,8 @@ export function PublicNews({ blog = false }) {
   );
 }
 
-function renderMd(text) {
+// El «markdown» sencillo de las noticias de antes (#438: las nuevas ya van en HTML).
+export function renderMd(text) {
   if (!text) return '';
   let html = text
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -224,6 +225,13 @@ export function PublicNewsDetail({ slug, blog = false }) {
   // useShare must be called unconditionally before any early returns (Rules of Hooks)
   const { share, copied } = useShare(slug, post?.title || '', base);
 
+  // El título de la pestaña, el de la noticia (#438; al entrar ya lo trae el servidor).
+  useEffect(() => {
+    if (!post?.title) return undefined;
+    const antes = document.title;
+    document.title = `${post.title} | Aim Education`;
+    return () => { document.title = antes; };
+  }, [post?.title]);
   useEffect(() => {
     setLoading(true); setNotFound(false); setPost(null);
     fetch(`/api/posts/${slug}`)
@@ -298,7 +306,7 @@ export function PublicNewsDetail({ slug, blog = false }) {
 
               <div
                 className="post-content"
-                dangerouslySetInnerHTML={{ __html: renderMd(post.content) }}
+                dangerouslySetInnerHTML={{ __html: post.formato === 'html' ? post.content : renderMd(post.content) }}
               />
 
               <div style={{marginTop: 48, paddingTop: 24, borderTop: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12}}>

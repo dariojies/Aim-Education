@@ -25,6 +25,8 @@ import { enviarZipFotos, nombreArchivo as nombreEnZip } from './zip.js';
 import { crearPublicaciones, crearTablasPublicaciones } from './publicaciones.js';
 import { crearAula, crearTablasAula, entregasPorCorregir, tareasCorregidas } from './aula.js';
 import { crearTienda, crearTablasTienda, pedidosPorAtender, pedidosEnMarcha } from './tienda.js';
+import { limpiarHtml, htmlParaFuera, textoDeHtml } from './noticias-html.js';
+import { crearSeo } from './seo.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
@@ -162,6 +164,20 @@ async function initDb() {
         // Noticia o artículo de blog (#426): las de blog salen en «Blog», no en
         // «Noticias» (un campeonato es noticia; cómo entrenar combates, blog).
         await client.query(`ALTER TABLE aim_education_posts ADD COLUMN IF NOT EXISTS tipo VARCHAR(10) NOT NULL DEFAULT 'noticia'`);
+        // El texto enriquecido (#438): 'html' las escritas con el editor nuevo
+        // (HTML ya limpio); 'md' las de antes, con su «markdown» sencillo.
+        await client.query(`ALTER TABLE aim_education_posts ADD COLUMN IF NOT EXISTS formato VARCHAR(10) NOT NULL DEFAULT 'md'`);
+        // Documentos que se descargan desde las noticias (#438): PDF, Word…
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_web_documentos (
+                id SERIAL PRIMARY KEY,
+                nombre VARCHAR(200) NOT NULL,
+                mime VARCHAR(150) NOT NULL,
+                bytes INTEGER NOT NULL,
+                datos BYTEA NOT NULL,
+                subido_por UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )`);
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_education_post_views (
                 id SERIAL PRIMARY KEY,
@@ -11207,6 +11223,43 @@ app.post('/api/admin/posts/imagen', authenticateSession, requireSeccion('news'),
     try { res.status(201).json({ url: await guardarImagenWeb({ mime: m[1], datos, nombre: req.body?.nombre, userId: req.userSession.userId }) }); }
     catch (err) { res.status(500).json({ error: err.message }); }
 });
+// Documentos para descargar desde las noticias (#438): llegan tal cual (no en
+// base64) y se sirven en /doc/<id>/<nombre>. El PDF se abre en el navegador; lo
+// demás se descarga.
+const MIME_DOCUMENTO = {
+    'application/pdf': 'pdf', 'application/msword': 'doc', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+    'application/vnd.ms-excel': 'xls', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+    'application/vnd.ms-powerpoint': 'ppt', 'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
+    'application/vnd.oasis.opendocument.text': 'odt', 'application/vnd.oasis.opendocument.spreadsheet': 'ods',
+    'text/plain': 'txt', 'application/zip': 'zip', 'image/jpeg': 'jpg', 'image/png': 'png',
+};
+const nombreDocumento = (n) => String(n || 'documento').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\w.\- ]+/g, '').trim().replace(/\s+/g, '-').slice(0, 120) || 'documento';
+app.post('/api/admin/posts/documento', authenticateSession, requireSeccion('news'), express.raw({ type: () => true, limit: '11mb' }), async (req, res) => {
+    const mime = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+    const datos = Buffer.isBuffer(req.body) ? req.body : null;
+    if (!datos?.length) return res.status(400).json({ error: 'No ha llegado el documento.' });
+    if (!MIME_DOCUMENTO[mime]) return res.status(400).json({ error: 'Ese tipo de archivo no se puede subir: PDF, Word, Excel, PowerPoint, OpenOffice, texto, ZIP o imagen.' });
+    if (datos.length > 10 * 1024 * 1024) return res.status(413).json({ error: 'El documento pasa de 10 MB.' });
+    try {
+        const nombre = String(req.query.nombre || '').slice(0, 200) || `documento.${MIME_DOCUMENTO[mime]}`;
+        const r = await pool.query(`INSERT INTO aim_web_documentos (nombre, mime, bytes, datos, subido_por) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+            [nombre, mime, datos.length, datos, req.userSession.userId]);
+        res.status(201).json({ url: `/doc/${r.rows[0].id}/${nombreDocumento(nombre)}`, nombre, bytes: datos.length });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.get('/doc/:id/:nombre?', async (req, res) => {
+    if (!/^\d+$/.test(req.params.id)) return res.status(404).end();
+    try {
+        const d = (await pool.query(`SELECT nombre, mime, datos FROM aim_web_documentos WHERE id = $1`, [req.params.id])).rows[0];
+        if (!d) return res.status(404).type('text/plain').send('Ese documento ya no está.');
+        res.set({
+            'Content-Type': d.mime, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'public, max-age=86400',
+            'Content-Disposition': `${d.mime === 'application/pdf' ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(d.nombre)}`,
+        }).send(d.datos);
+    } catch { res.status(500).end(); }
+});
+
 // Trae a la web las portadas que están en otros servidores.
 app.post('/api/admin/posts/importar-imagenes', authenticateSession, requireSeccion('news'), async (req, res) => {
     try {
@@ -14638,11 +14691,20 @@ app.get('/api/admin/posts', authenticateSession, async (req, res) => {
     }
 });
 
+// El cuerpo de una entrada: con el editor nuevo llega en HTML y se limpia (#438).
+function contenidoPost(body, formatoAntes = 'md') {
+    const formato = body.formato === 'html' ? 'html' : body.formato === 'md' ? 'md' : formatoAntes;
+    const content = formato === 'html' ? limpiarHtml(body.content) : String(body.content || '');
+    const vacio = formato === 'html' ? !textoDeHtml(content) && !/<img\b/i.test(content) : !content.trim();
+    return { formato, content, vacio };
+}
+
 app.post('/api/admin/posts', authenticateSession, async (req, res) => {
-    const { title, excerpt, content, coverImageUrl, cover_image_url, category, slug } = req.body;
+    const { title, excerpt, coverImageUrl, cover_image_url, category, slug } = req.body;
     let { status } = req.body;
     const imageUrl = coverImageUrl || cover_image_url;
-    if (!title || !content) return res.status(400).json({ error: 'Título y contenido son obligatorios.' });
+    const { formato, content, vacio } = contenidoPost(req.body);
+    if (!title || vacio) return res.status(400).json({ error: 'Título y contenido son obligatorios.' });
     // Programada (#338): se publica sola el día y la hora que se diga.
     const programada = status === 'scheduled' ? fechaFutura(req.body.publishAt) : null;
     if (status === 'scheduled' && !programada) return res.status(400).json({ error: 'Pon una fecha y hora de publicación que no haya pasado.' });
@@ -14656,9 +14718,9 @@ app.post('/api/admin/posts', authenticateSession, async (req, res) => {
 
     try {
         await pool.query(`
-            INSERT INTO aim_education_posts (id, title, slug, excerpt, content, cover_image_url, author_name, category, status, published_at, tipo)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-        `, [id, title, finalSlug, excerpt || null, content, imageUrl || null, authorName || 'Admin', category || 'general', status || 'draft', publishedAt, tipo]);
+            INSERT INTO aim_education_posts (id, title, slug, excerpt, content, cover_image_url, author_name, category, status, published_at, tipo, formato)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        `, [id, title, finalSlug, excerpt || null, content, imageUrl || null, authorName || 'Admin', category || 'general', status || 'draft', publishedAt, tipo, formato]);
 
         const result = await pool.query('SELECT * FROM aim_education_posts WHERE id = $1', [id]);
         const medios = req.body.enviarMedios ? await enviarAMedios(result.rows[0], req) : null;
@@ -14670,7 +14732,7 @@ app.post('/api/admin/posts', authenticateSession, async (req, res) => {
 });
 
 app.put('/api/admin/posts/:id', authenticateSession, async (req, res) => {
-    const { title, excerpt, content, coverImageUrl, cover_image_url, category, slug } = req.body;
+    const { title, excerpt, coverImageUrl, cover_image_url, category, slug } = req.body;
     let { status } = req.body;
     const imageUrl = coverImageUrl || cover_image_url;
     const programada = status === 'scheduled' ? fechaFutura(req.body.publishAt) : null;
@@ -14679,6 +14741,8 @@ app.put('/api/admin/posts/:id', authenticateSession, async (req, res) => {
     try {
         const current = await pool.query('SELECT * FROM aim_education_posts WHERE id = $1', [req.params.id]);
         if (current.rowCount === 0) return res.status(404).json({ error: 'Entrada no encontrada.' });
+        const { formato, content, vacio } = contenidoPost(req.body, current.rows[0].formato || 'md');
+        if (!title || vacio) return res.status(400).json({ error: 'Título y contenido son obligatorios.' });
 
         const wasPublished = current.rows[0].status === 'published';
         const willPublish = status === 'published';
@@ -14690,9 +14754,9 @@ app.put('/api/admin/posts/:id', authenticateSession, async (req, res) => {
         await pool.query(`
             UPDATE aim_education_posts
             SET title = $1, slug = $2, excerpt = $3, content = $4, cover_image_url = $5,
-                category = $6, status = $7, published_at = $8, updated_at = NOW(), tipo = $10
+                category = $6, status = $7, published_at = $8, updated_at = NOW(), tipo = $10, formato = $11
             WHERE id = $9
-        `, [title, finalSlug, excerpt || null, content, imageUrl || null, category || 'general', status || 'draft', publishedAt, req.params.id, tipo]);
+        `, [title, finalSlug, excerpt || null, content, imageUrl || null, category || 'general', status || 'draft', publishedAt, req.params.id, tipo, formato]);
 
         const result = await pool.query('SELECT * FROM aim_education_posts WHERE id = $1', [req.params.id]);
         const medios = req.body.enviarMedios ? await enviarAMedios(result.rows[0], req) : null;
@@ -14776,7 +14840,7 @@ async function enviarAMedios(post, req) {
 <h2 style="font-family:sans-serif;font-size:22px;margin:0 0 12px 0">${escapeXml(post.title)}</h2>
 ${portada ? `<img src="${escapeXml(portada)}" alt="" style="max-width:100%;height:auto;border-radius:8px;margin:0 0 16px 0">` : ''}
 ${post.excerpt ? `<p style="font-family:sans-serif;font-size:16px;line-height:1.6;color:#111827;margin:0 0 16px 0"><b>${escapeXml(post.excerpt)}</b></p>` : ''}
-${renderMarkdownEmail(post.content)}`;
+${post.formato === 'html' ? `<div style="font-family:sans-serif;font-size:16px;line-height:1.6;color:#111827">${htmlParaFuera(post.content, URL_PUBLICA_WEB)}</div>` : renderMarkdownEmail(post.content)}`;
     const enviados = [], fallos = [];
     for (const c of contactos) {
         const vars = { nombre: c.nombre || 'equipo de redacción', medio: c.medio, titulo: post.title, cuando, enlace, firma };
@@ -14787,7 +14851,7 @@ ${renderMarkdownEmail(post.content)}`;
                 from: `"${firma.replace(/"/g, '')} · AIM Education" <${process.env.EMAIL_USER}>`,
                 to: c.email, replyTo: process.env.EMAIL_USER,
                 subject: rellenar(plantilla.asunto) || post.title,
-                text: `${intro}\n\n———\n\n${post.title}\n\n${post.excerpt ? `${post.excerpt}\n\n` : ''}${post.content}${post.status === 'published' ? `\n\n${enlace}` : ''}`,
+                text: `${intro}\n\n———\n\n${post.title}\n\n${post.excerpt ? `${post.excerpt}\n\n` : ''}${post.formato === 'html' ? textoDeHtml(post.content) : post.content}${post.status === 'published' ? `\n\n${enlace}` : ''}`,
                 html: `<div style="font-family:sans-serif;font-size:15px;line-height:1.6;color:#111827">${intro.split(/\n\n+/).map(p => `<p style="margin:0 0 14px 0">${escapeXml(p).replace(/\n/g, '<br>')}</p>`).join('')}</div>${noticiaHtml}`,
             });
             enviados.push(c.email);
@@ -14843,7 +14907,7 @@ app.post('/api/posts/:id/click', async (req, res) => {
 app.get('/api/posts/:slug', async (req, res) => {
     try {
         const result = await pool.query(
-            `SELECT id, title, slug, excerpt, content, cover_image_url, author_name, category, view_count, published_at, tipo
+            `SELECT id, title, slug, excerpt, content, formato, cover_image_url, author_name, category, view_count, published_at, updated_at, tipo
              FROM aim_education_posts WHERE slug = $1 AND status = 'published'`,
             [req.params.slug]
         );
@@ -14872,7 +14936,7 @@ async function generateRssFeed(siteUrl, { categories, feedPath, feedTitle, feedD
     }
 
     const result = await pool.query(`
-        SELECT id, title, slug, excerpt, content, cover_image_url,
+        SELECT id, title, slug, excerpt, content, formato, cover_image_url,
                author_name, category, published_at, created_at
         FROM aim_education_posts
         ${whereClause}
@@ -14887,9 +14951,10 @@ async function generateRssFeed(siteUrl, { categories, feedPath, feedTitle, feedD
         const canonicalLink = `${siteUrl}/noticias/${post.slug}`;
         const trackingLink = `${siteUrl}/noticias/${post.slug}?utm_source=rss&amp;utm_medium=feed&amp;utm_campaign=aim-education-noticias`;
 
+        const cuerpo = post.formato === 'html' ? htmlParaFuera(post.content, siteUrl) : renderMarkdownEmail(post.content);
         const fullHtml = post.cover_image_url
-            ? `<img src="${escapeXml(post.cover_image_url)}" alt="${escapeXml(post.title)}" style="max-width:100%;height:auto;border-radius:8px;margin-bottom:20px">\n${renderMarkdownEmail(post.content)}`
-            : renderMarkdownEmail(post.content);
+            ? `<img src="${escapeXml(post.cover_image_url)}" alt="${escapeXml(post.title)}" style="max-width:100%;height:auto;border-radius:8px;margin-bottom:20px">\n${cuerpo}`
+            : cuerpo;
 
         const catLabel = CATEGORY_LABELS[post.category] || post.category;
 
@@ -15004,13 +15069,10 @@ app.get('/feed/:category.xml', async (req, res) => {
 // PUBLIC NEWS PAGES — served by the SPA (dist/index.html)
 // =============================================================================
 
-app.get('/noticias', (req, res) => {
-    res.sendFile(path.join(__dirname, 'dist/index.html'));
-});
-
-app.get('/noticias/:slug', (req, res) => {
-    res.sendFile(path.join(__dirname, 'dist/index.html'));
-});
+// Cada noticia, artículo, curso y producto con su título, descripción e imagen
+// para Google y las redes, y el sitemap.xml (#438).
+app.use(crearSeo({ pool, urlBase: () => URL_PUBLICA_WEB,
+    archivoIndex: () => path.join(__dirname, process.env.NODE_ENV === 'production' ? 'dist/index.html' : 'index.html') }).router);
 
 // =============================================================================
 // SUPPORT TICKET ROUTES

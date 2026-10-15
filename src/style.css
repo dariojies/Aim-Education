@@ -3832,6 +3832,34 @@ html[data-theme="dark"] .dash-nav button.is-active {
   color: var(--ink);
 }
 
+/* Lo del editor de texto enriquecido (#438) */
+.post-content a { color: var(--purple); font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+.post-content a.boton {
+  display: inline-block; padding: 12px 24px; border-radius: 999px; font-weight: 800; text-decoration: none;
+  background: var(--purple); color: #fff; border: 2px solid var(--purple); margin: 4px 0;
+  transition: transform var(--tx-fast, .15s) ease, box-shadow var(--tx-fast, .15s) ease;
+}
+.post-content a.boton:hover { transform: translateY(-1px); box-shadow: 0 6px 18px color-mix(in oklab, var(--purple) 30%, transparent); }
+.post-content a.boton.boton-borde { background: transparent; color: var(--purple); }
+.post-content ul, .post-content ol { margin: 0 0 20px; padding-left: 1.4em; }
+.post-content li { margin: 0 0 6px; }
+.post-content blockquote {
+  margin: 0 0 20px; padding: 6px 0 6px 18px; border-left: 4px solid var(--purple); color: var(--ink); font-style: italic;
+}
+.post-content hr { border: 0; border-top: 1px solid var(--line); margin: 32px 0; }
+.post-content figure { margin: 0 auto 24px; text-align: center; }
+.post-content figure img { display: block; width: 100%; height: auto; border-radius: 14px; }
+.post-content figure.img-mediana { max-width: 66%; }
+.post-content figure.img-pequena { max-width: 40%; }
+.post-content figcaption { font-size: 14px; color: var(--ink-3); margin-top: 8px; }
+.post-content img { max-width: 100%; height: auto; }
+@media (max-width: 640px) {
+  .post-content figure.img-mediana, .post-content figure.img-pequena { max-width: 100%; }
+}
+.editor-texto:empty::before { content: attr(data-placeholder); color: var(--ink-3); pointer-events: none; }
+.editor-texto figure img { cursor: pointer; }
+.editor-texto a { cursor: text; }
+
 /* Magic animated gradient text + sparkle stars */
 @keyframes background-pan {
   from {
