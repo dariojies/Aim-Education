@@ -293,6 +293,7 @@ function AimHeader({ route } = {}) {
     if (path === '/calendario') return 'calendar';
     if (path === '/noticias' || path.startsWith('/noticias/')) return 'news';
     if (path === '/blog' || path.startsWith('/blog/')) return 'blog';
+    if (path === '/aula' || path.startsWith('/aula/')) return 'aula';
     if (path === '/contacto') return 'contact';
     if (path === '/conocenos') return 'about';
     if (path === '/brickslab' || path === '/biblioteca') return 'brickslab';
@@ -308,6 +309,8 @@ function AimHeader({ route } = {}) {
     { id: "brickslab", label: "Brickslab", href: "/brickslab" },
     { id: "news", label: "Noticias", href: "/noticias" },
     { id: "blog", label: "Blog", href: "/blog" },
+    // Los cursos online (#433).
+    { id: "aula", label: "Aula", href: "/aula" },
     { id: "about", label: "Conócenos", href: "/conocenos" },
     { id: "contact", label: "Contacto", href: "/contacto" },
   ];

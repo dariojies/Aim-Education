@@ -115,6 +115,9 @@ export function permisosDe(rol) {
             galeria: !trabajador,
             // Evaluación (#411): los profes, de sus clases; la dirección, de todas.
             evaluacion: !trabajador,
+            // El aula virtual (#433): los profes, los cursos de los que son
+            // profesores (crearlos, su temario y corregir); el resto, todos.
+            aula: !trabajador,
             // Brickslab y Biblioteca (#291): préstamos, catálogo, permisos y
             // votaciones. Lo llevan secretaría y dirección.
             brickslab: mandaAlMenos(rol, 'secretaria'),
@@ -178,6 +181,9 @@ export function permisosDe(rol) {
         // El currículo de la evaluación (categorías, contenidos y objetivos, #411):
         // la dirección y el Equipo IT. Los profes lo usan, no lo cambian.
         editarCurriculo: jefe || rol === 'equipo_it',
+        // Aula virtual (#433): todos los cursos, sus precios y dar o quitar el
+        // acceso. Un instructor solo lleva los suyos y no toca dinero.
+        aulaCompleta: !instructor,
     };
 }
 
@@ -215,6 +221,9 @@ export const AVISOS = [
     { id: 'speaking_rechazados', grupo: 'Clases individuales', texto: 'Alumnos que no vendrán a una clase individual (se va al verlo)', quien: (p, rol) => p.secciones.speaking && rol === 'instructor',
       nota: () => 'solo de sus clases' },
     { id: 'fotos', grupo: 'Familias', texto: 'Solicitudes del permiso de fotos', quien: (p) => p.editarAlumnos },
+    // Las entregas del aula virtual (#433): los profes, de sus cursos.
+    { id: 'aula_por_corregir', grupo: 'Clases', texto: 'Tareas del aula virtual por corregir', quien: (p) => p.secciones.aula,
+      nota: (p) => (p.aulaCompleta ? null : 'solo de sus cursos') },
     // Los correos que no llegan (#430), para arreglar la dirección.
     { id: 'correos_rebotan', grupo: 'Correo', texto: 'Correos que rebotan (no les llega nada)', quien: (p) => p.secciones.comunicaciones },
     // La vigilancia de los servicios: si algo se cae, al Equipo IT y los superadmin.

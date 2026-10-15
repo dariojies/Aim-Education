@@ -413,7 +413,12 @@ export default function AuthScreen({ mode = 'login', onLoginSuccess }) {
     fetch('/api/auth/config', { cache: 'no-store' }).then(r => r.json()).then(d => setGoogle(!!d.google)).catch(() => {});
   }, []);
 
-  const irA = (v, url) => { setVista(v); setAvisoOk(''); window.history.replaceState(null, '', url); };
+  // Al cambiar de pestaña se conserva a dónde volver después (p. ej. un curso del aula, #433).
+  const irA = (v, url) => {
+    setVista(v); setAvisoOk('');
+    const vuelta = new URLSearchParams(window.location.search).get('volver');
+    window.history.replaceState(null, '', vuelta ? `${url}${url.includes('?') ? '&' : '?'}volver=${encodeURIComponent(vuelta)}` : url);
+  };
   const alLogin = () => irA('login', '/auth');
 
   return (

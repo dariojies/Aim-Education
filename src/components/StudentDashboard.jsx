@@ -8,6 +8,7 @@ import { useRouter } from '../App.jsx';
 import { UserSupport } from './AdminSupport.jsx';
 import { FotosFamilia } from './Galeria.jsx';
 import { BrickslabFamilia } from './Brickslab.jsx';
+import { MisCursos } from './Aula.jsx';
 import { fmtFecha } from '../fechas.js';
 import { esApp, compartirArchivo, abrirFuera, desactivarAvisos } from '../app-movil.js';
 import { TarjetaAvisos, AjustesAvisos } from './AvisosMovil.jsx';
@@ -1683,7 +1684,7 @@ function DashSettings() {
 
 // Cada sección del área con su dirección (/dashboard/pagos…): así el botón
 // atrás del navegador y del móvil vuelve a la anterior.
-const RUTA_SECCION = { overview: '', classes: 'clases', camp: 'campamento', attendance: 'asistencia', fotos: 'fotos', brickslab: 'brickslab', payments: 'pagos', wallet: 'cartera', profile: 'perfil', settings: 'ajustes', support: 'soporte', mas: 'mas' };
+const RUTA_SECCION = { overview: '', cursos: 'cursos', classes: 'clases', camp: 'campamento', attendance: 'asistencia', fotos: 'fotos', brickslab: 'brickslab', payments: 'pagos', wallet: 'cartera', profile: 'perfil', settings: 'ajustes', support: 'soporte', mas: 'mas' };
 // Abajo, en la app: lo de cada día. El resto, en «Más».
 const PESTANAS_APP = [
   { id: 'overview', label: 'Inicio', icon: <I.Dashboard /> },
@@ -1731,6 +1732,8 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
     { id: "fotos", label: "Fotos", icon: <I.Sparkle /> },
     // Sets de LEGO y libros para reservar (#291).
     { id: "brickslab", label: "Brickslab y Biblioteca", icon: <I.Package /> },
+    // Los cursos online del aula virtual (#433).
+    { id: "cursos", label: "Mis cursos", icon: <I.Birrete /> },
     { id: "payments", label: "Pagos y recibos", icon: <I.Wallet /> },
     // Aún vacía: en la app no se enseña.
     ...(esApp ? [] : [{ id: "wallet", label: "Mi cartera", icon: <I.CreditCard /> }]),
@@ -1846,6 +1849,7 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
           {view === "support" && <UserSupport user={user} />}
           {view === "fotos" && <FotosFamilia />}
           {view === "brickslab" && <BrickslabFamilia />}
+          {view === "cursos" && <MisCursos />}
           {view === "mas" && (
             <MasApp user={user} go={go} onIr={navTo} onSalir={handleLogout}
               items={navItems.concat(settingsItems).filter(it => !PESTANAS_APP.some(p => p.id === it.id))} />

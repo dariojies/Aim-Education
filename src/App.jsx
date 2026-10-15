@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, createContext, useContext, lazy, Suspense } from 'react';
 import PublicLanding from './components/PublicLanding';
 import { PublicActivities, PublicNews, PublicNewsDetail } from './components/PublicActivities';
+import AulaPublica from './components/Aula.jsx';
 import PublicActivity from './components/PublicActivity';
 import PublicCamp from './components/PublicCamp';
 import AuthScreen from './components/AuthScreen';
@@ -90,7 +91,7 @@ export default function App() {
     // Si venía de una sesión caducada, de vuelta a donde estaba.
     const volver = new URLSearchParams(window.location.search).get('volver') || '';
     const vale = volver.startsWith('/') && !volver.startsWith('//')
-      && (volver.startsWith('/dashboard') || (u?.canAccessAdmin && volver.startsWith('/admin')));
+      && (volver.startsWith('/dashboard') || volver.startsWith('/aula') || (u?.canAccessAdmin && volver.startsWith('/admin')));
     // En la app, /auth no se queda en el historial (el atrás no vuelve a entrar).
     const opc = esApp ? { replace: true } : undefined;
     cuentaEliminada.current = false;
@@ -199,6 +200,9 @@ export default function App() {
     screen = <PublicNews blog />;
   } else if (seg[0] === 'blog' && seg[1]) {
     screen = <PublicNewsDetail slug={seg[1]} blog />;
+  } else if (seg[0] === 'aula') {
+    // El aula virtual (#433): el catálogo, cada curso y el curso por dentro.
+    screen = <AulaPublica seg={seg} />;
   } else if (pathname === '/auth') {
     const mode = params.get('mode') || 'login';
     screen = <AuthScreen key={mode} mode={mode} onLoginSuccess={handleLoginSuccess} />;
@@ -206,7 +210,7 @@ export default function App() {
     if (!userChecked) return null;
     // A entrar, y luego de vuelta aquí (un aviso del móvil, la vuelta del banco…).
     if (!user) { go(`/auth?volver=${encodeURIComponent(path)}`, { replace: true }); return null; }
-    const dashSub = { campamento: 'camp', pagos: 'payments', clases: 'classes', asistencia: 'attendance', soporte: 'support', fotos: 'fotos', brickslab: 'brickslab', biblioteca: 'brickslab', perfil: 'profile', ajustes: 'settings', cartera: 'wallet', mas: 'mas' }[seg[1]] || 'overview';
+    const dashSub = { cursos: 'cursos', campamento: 'camp', pagos: 'payments', clases: 'classes', asistencia: 'attendance', soporte: 'support', fotos: 'fotos', brickslab: 'brickslab', biblioteca: 'brickslab', perfil: 'profile', ajustes: 'settings', cartera: 'wallet', mas: 'mas' }[seg[1]] || 'overview';
     screen = <StudentDashboard user={user} onLogout={handleLogout} subroute={dashSub} />;
   } else if (pathname.startsWith('/admin')) {
     if (!userChecked) return null;

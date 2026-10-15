@@ -17,6 +17,7 @@ export const RUTAS_ADMIN = {
   events: ['eventos'],
   galeria: ['fotos', 'galeria'],
   evaluacion: ['evaluacion'],
+  aula: ['aula', 'aula-virtual'],
   titulos: ['titulos'],
   reportes: ['reportes'],
   students: ['alumnos'],

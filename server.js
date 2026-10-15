@@ -23,6 +23,7 @@ import { crearEvaluacion, crearTablasEvaluacion, sembrarCategoriasIngles } from 
 import { crearReportes, pendienteAhora, SQL_MOVIMIENTOS } from './reportes.js';
 import { enviarZipFotos, nombreArchivo as nombreEnZip } from './zip.js';
 import { crearPublicaciones, crearTablasPublicaciones } from './publicaciones.js';
+import { crearAula, crearTablasAula, entregasPorCorregir, tareasCorregidas } from './aula.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
@@ -2283,6 +2284,9 @@ async function initDb() {
         await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_cargos_cliente ON aim_cargos(cliente_id)`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_cargos_recibo ON aim_cargos(recibo_id)`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_aim_cargos_estado ON aim_cargos(estado)`);
+        // El aula virtual (#433): cursos, temario, lo subido, inscripciones,
+        // progreso y entregas. Al final: sus cargos y precios ya existen.
+        await crearTablasAula(client);
     } finally {
         client.release();
     }
@@ -5142,6 +5146,10 @@ setInterval(function seguidoresRedes() { publicacionesRedes.fotoSeguidores(); },
 app.use(crearEvaluacion({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireSeccion, permisos, grupoSuyo }).router);
 // Reportes (#416): cómo va el negocio, con las mismas cuentas en todas partes.
 app.use(crearReportes({ pool, clubId: AIM_CLUB_ID, authenticateSession, requirePermiso, candidatosGeneracion, mesesDeTemporada, sqlEsIndividual }).router);
+// El aula virtual (#433). La sesión opcional y el pago online se declaran más
+// abajo: se pasan envueltos para leerlos al usarlos.
+app.use(crearAula({ pool, authenticateSession, requireSeccion, permisos,
+    sesionOpcional: (req) => sesionOpcional(req), pagosOnlineAbiertos: () => pagosOnlineAbiertos() }).router);
 
 // ── Redes sociales (#341) ────────────────────────────────────────────────────
 // Quién puede llevarlas (y recibir conversaciones asignadas).
@@ -13155,6 +13163,15 @@ async function avisosFamilia(me) {
             });
         }
 
+        // Tareas del aula virtual corregidas (#433), las de las dos últimas semanas.
+        for (const e of await tareasCorregidas(pool, me).catch(() => [])) {
+            avisos.push({
+                tipo: 'avisos', destino: `/aula/${e.curso_id}/curso?leccion=${e.leccion_id}`, clave: `aula:entrega:${e.id}`, marca: e.corregida_at, fecha: e.corregida_at,
+                texto: `Te han corregido «${e.titulo}»`,
+                detalle: `${e.curso} · ${e.nota != null ? `${String(Number(e.nota)).replace('.', ',')} / 10` : e.apto ? 'Apto' : 'No apto'}`,
+            });
+        }
+
         // 4) Novedades del club de los últimos quince días.
         const posts = await pool.query(
             `SELECT id, title, published_at FROM aim_education_posts
@@ -16741,6 +16758,16 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                     });
                 }
                 return l;
+            });
+        }
+        // Tareas del aula virtual por corregir (#433): de sus cursos, o de todos.
+        if (recibe('aula_por_corregir')) {
+            fuente('Aula virtual', ['aula_por_corregir'], async () => {
+                const x = await entregasPorCorregir(pool, { userId: yo, todos: !!permisosYo.aulaCompleta });
+                return x.n ? [{
+                    tipo: 'clases', clave: 'aula_por_corregir', n: x.n, marca: x.ultima, fecha: x.ultima, destino: '/admin/aula?corregir=1',
+                    texto: `${x.n} ${plural(x.n, 'tarea', 'tareas')} del aula virtual por corregir`, detalle: 'entregadas por los alumnos',
+                }] : [];
             });
         }
         // Correos que rebotan (#430): de campañas o de cualquier correo de info@.
