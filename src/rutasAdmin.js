@@ -44,7 +44,7 @@ export const RUTAS_ADMIN = {
 
 // Las pestañas de Comunicación tienen dirección propia (/admin/campanas…), y
 // también valen como /admin/comunicaciones/<pestaña>.
-export const PESTANAS_CRM = ['campanas', 'segmentos', 'automatismos', 'disenos', 'publicaciones'];
+export const PESTANAS_CRM = ['campanas', 'segmentos', 'automatismos', 'disenos', 'publicaciones', 'rebotes'];
 
 const SECCION_DE_RUTA = Object.fromEntries(
   Object.entries(RUTAS_ADMIN).flatMap(([id, rutas]) => rutas.map(r => [r, id]))

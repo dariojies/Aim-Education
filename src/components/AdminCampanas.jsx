@@ -537,9 +537,21 @@ function Resultados({ campana, correo, numero, onVolver, onAbrirFicha, showToast
 }
 
 // ── Correos que rebotan ──────────────────────────────────────────────────────
-function Rebotes({ onAbrirFicha, showToast }) {
+// En Campañas, plegado; en Comunicación → «Rebotes» (#430), abierto y con más
+// ayuda: de dónde viene cada rebote (una campaña u otro correo de info@) y qué
+// hacer según el motivo.
+// Qué hacer con un rebote, según su motivo.
+function queHacer(b) {
+  const m = `${b.motivo || ''} ${b.codigo || ''} ${b.detalle || ''}`.toLowerCase();
+  if (/no existe|does not exist|unknown user|user unknown|5\.1\.1|nosuchuser|no such user/.test(m)) return 'La dirección no existe: suele ser una letra mal escrita. Corrígela en su ficha.';
+  if (/lleno|full|quota|5\.2\.2|4\.2\.2/.test(m)) return 'Su buzón está lleno: díselo a la familia o pide otro correo.';
+  if (/dominio|domain|5\.1\.2|host/.test(m)) return 'El dominio del correo no existe (lo que va detrás de la @): corrígelo en su ficha.';
+  if (/spam|bloque|block|rechaz|denied|5\.7/.test(m)) return 'Su proveedor de correo nos rechaza: pide a la familia que nos añada a sus contactos o que dé otro correo.';
+  return b.tipo === 'duro' ? 'No llega: revisa el correo en su ficha o pide otro a la familia.' : 'Fallo pasajero: si se repite, revisa el correo con la familia.';
+}
+export function Rebotes({ onAbrirFicha, showToast, siempreAbierto = false, onIrARebotes }) {
   const [d, setD] = useState(null);
-  const [abierto, setAbierto] = useState(false);
+  const [abierto, setAbierto] = useState(siempreAbierto);
   const cargar = useCallback(() => api('/api/admin/rebotes').then(setD).catch(() => {}), []);
   useEffect(() => { cargar(); }, [cargar]);
   if (!d) return null;
@@ -549,33 +561,47 @@ function Rebotes({ onAbrirFicha, showToast }) {
   }
   return (
     <div className="panel" style={{ display: 'grid', gap: 10 }}>
-      <button type="button" onClick={() => setAbierto(a => !a)} aria-expanded={abierto}
-        style={{ display: 'flex', gap: 10, alignItems: 'center', background: 'none', border: 0, padding: 0, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', color: 'var(--ink)' }}>
-        <h2 style={{ margin: 0, fontSize: 17 }}>↩ Correos que rebotan</h2>
-        <Pildora texto={d.rebotes.length} color={d.rebotes.length ? 'var(--orange)' : 'var(--teal)'} />
-        <div style={{ flex: 1 }} />
-        <I.Chevron style={{ transform: abierto ? 'none' : 'rotate(-90deg)' }} />
-      </button>
+      {siempreAbierto ? (
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <h2 style={{ margin: 0, fontSize: 17 }}>↩ Correos que rebotan</h2>
+          <Pildora texto={d.rebotes.length} color={d.rebotes.length ? 'var(--orange)' : 'var(--teal)'} />
+        </div>
+      ) : (
+        <button type="button" onClick={() => setAbierto(a => !a)} aria-expanded={abierto}
+          style={{ display: 'flex', gap: 10, alignItems: 'center', background: 'none', border: 0, padding: 0, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', color: 'var(--ink)' }}>
+          <h2 style={{ margin: 0, fontSize: 17 }}>↩ Correos que rebotan</h2>
+          <Pildora texto={d.rebotes.length} color={d.rebotes.length ? 'var(--orange)' : 'var(--teal)'} />
+          <div style={{ flex: 1 }} />
+          <I.Chevron style={{ transform: abierto ? 'none' : 'rotate(-90deg)' }} />
+        </button>
+      )}
       <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
-        Correos que no llegan (dirección que no existe, buzón lleno…). No se les envía nada hasta que se cambie el correo en su ficha o se marque aquí como arreglado.
+        Correos que no llegan (dirección que no existe, buzón lleno…), de las campañas y de cualquier otro correo que sale de info@. No se les envía nada hasta que se cambie el correo en su ficha o se marque aquí como arreglado.
         {d.revisadoAt && ` Buzón revisado: ${fmtFechaHora(d.revisadoAt)}.`}
+        {!siempreAbierto && onIrARebotes && <> <button type="button" onClick={onIrARebotes} style={{ background: 'none', border: 0, padding: 0, fontFamily: 'inherit', fontSize: 12, fontWeight: 700, color: 'var(--purple)', cursor: 'pointer' }}>Verlos todos en «Rebotes» →</button></>}
       </span>
       {d.error && <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--orange)' }}>No se ha podido leer el buzón para detectar rebotes: {d.error}. Revisa que IMAP esté activado en info@.</span>}
       {abierto && (d.rebotes.length ? (
         <div className="data-table">
           <div className="data-table-head" style={{ gridTemplateColumns: '1.5fr 1.3fr 80px 1.6fr 120px 130px' }}>
-            <span>Correo</span><span>De quién</span><span>Tipo</span><span>Motivo</span><span>Desde</span><span />
+            <span>Correo</span><span>De quién</span><span>Tipo</span><span>Motivo y qué hacer</span><span>Desde</span><span />
           </div>
           {d.rebotes.map(b => (
             <div key={b.id} className="data-table-row" style={{ gridTemplateColumns: '1.5fr 1.3fr 80px 1.6fr 120px 130px', alignItems: 'center' }}>
-              <span style={{ fontSize: 13, fontWeight: 700, wordBreak: 'break-all' }}>{b.email}</span>
+              <span style={{ fontSize: 13, fontWeight: 700, wordBreak: 'break-all' }}>
+                {b.email}
+                <span style={{ display: 'block', fontSize: 11, fontWeight: 500, color: 'var(--ink-3)' }}>{b.campana ? `Campaña «${b.campana}»` : 'Otro correo de info@'}</span>
+              </span>
               <span style={{ fontSize: 12 }}>
                 {b.personas.length ? b.personas.map(p => (
                   <button key={p.id} type="button" onClick={() => onAbrirFicha?.({ id: p.id })} style={{ display: 'block', background: 'none', border: 0, padding: 0, fontFamily: 'inherit', fontSize: 12, fontWeight: 700, color: 'var(--ink)', cursor: 'pointer', textAlign: 'left' }}>{p.nombre}</button>
                 )) : <span style={{ color: 'var(--ink-3)' }}>Nadie lo tiene ya en su ficha</span>}
               </span>
               <Pildora texto={b.tipo === 'duro' ? 'Duro' : 'Suave'} color={b.tipo === 'duro' ? 'var(--orange)' : 'var(--ink-2)'} />
-              <span style={{ fontSize: 12 }} title={b.detalle || ''}>{b.motivo}{b.codigo ? <span style={{ color: 'var(--ink-3)' }}> · {b.codigo}</span> : null}</span>
+              <span style={{ fontSize: 12 }} title={b.detalle || ''}>
+                {b.motivo}{b.codigo ? <span style={{ color: 'var(--ink-3)' }}> · {b.codigo}</span> : null}
+                {siempreAbierto && <span style={{ display: 'block', fontSize: 11, color: 'var(--purple)', marginTop: 2 }}>{queHacer(b)}</span>}
+              </span>
               <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{fmtFechaHora(b.detectadoAt)}</span>
               <button type="button" className="btn btn-sm btn-outline" onClick={() => arreglado(b)}>Ya está arreglado</button>
             </div>
@@ -586,7 +612,7 @@ function Rebotes({ onAbrirFicha, showToast }) {
   );
 }
 
-export default function AdminCampanas({ showToast, onAbrirFicha, nuevaConSegmento, onEmpezada, onIrASegmentos }) {
+export default function AdminCampanas({ showToast, onAbrirFicha, nuevaConSegmento, onEmpezada, onIrASegmentos, onIrARebotes }) {
   const [lista, setLista] = useState(null);
   const [segmentos, setSegmentos] = useState([]);
   const [plantillas, setPlantillas] = useState([]);
@@ -665,7 +691,7 @@ export default function AdminCampanas({ showToast, onAbrirFicha, nuevaConSegment
           </button>
         );
       })}
-      <Rebotes onAbrirFicha={onAbrirFicha} showToast={showToast} />
+      <Rebotes onAbrirFicha={onAbrirFicha} showToast={showToast} onIrARebotes={onIrARebotes} />
     </div>
   );
 }

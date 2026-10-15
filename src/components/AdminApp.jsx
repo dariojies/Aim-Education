@@ -81,7 +81,7 @@ function aLocalInput(iso) {
 
 // El título de cada sección es el mismo nombre corto que lleva en el menú: si
 // el menú dice «Alumnos» y la página «Gestión de alumnos», parece otro sitio.
-const NOMBRE_PESTANA_CRM = { campanas: "Campañas", segmentos: "Segmentos", automatismos: "Automatismos", disenos: "Diseños", publicaciones: "Publicaciones" };
+const NOMBRE_PESTANA_CRM = { campanas: "Campañas", segmentos: "Segmentos", automatismos: "Automatismos", disenos: "Diseños", publicaciones: "Publicaciones", rebotes: "Correos que rebotan" };
 function sectionLabel(id, pestana) {
   if (id === "comunicaciones" && NOMBRE_PESTANA_CRM[pestana]) return NOMBRE_PESTANA_CRM[pestana];
   return ({
@@ -6908,6 +6908,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "comunicaciones", pestana: "segmentos", label: "Segmentos", icon: <I.Filter width={18} height={18} /> },
         { id: "comunicaciones", pestana: "automatismos", label: "Automatismos", icon: <I.Spark width={18} height={18} /> },
         { id: "comunicaciones", pestana: "disenos", label: "Diseños", icon: <I.Brush width={18} height={18} /> },
+        // Los correos que no llegan, de campañas o de cualquier otro (#430).
+        { id: "comunicaciones", pestana: "rebotes", label: "Correos que rebotan", icon: <I.Mail /> },
       ]
     },
     {

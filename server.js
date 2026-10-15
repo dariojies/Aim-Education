@@ -12737,13 +12737,17 @@ app.get('/api/admin/rebotes', authenticateSession, requireSeccion('comunicacione
     try {
         const r = await pool.query(
             `SELECT b.*, (SELECT json_agg(json_build_object('id', u.user_id, 'nombre', TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, '')))))
-                          FROM users u WHERE LOWER(u.email) = LOWER(b.email)) AS personas
-             FROM aim_correos_rebotados b WHERE b.resuelto_at IS NULL ORDER BY b.detectado_at DESC LIMIT 300`);
+                          FROM users u WHERE LOWER(u.email) = LOWER(b.email)) AS personas,
+                    c.nombre AS campana
+             FROM aim_correos_rebotados b
+             LEFT JOIN aim_campana_envios e ON e.id = b.envio_id LEFT JOIN aim_campanas c ON c.id = e.campana_id
+             WHERE b.resuelto_at IS NULL ORDER BY b.detectado_at DESC LIMIT 300`);
         const est = (await pool.query(`SELECT clave, valor FROM aim_ajustes WHERE clave IN ('rebotes_imap', 'rebotes_imap_error')`)).rows;
         const imap = Object.fromEntries(est.map(x => [x.clave, x.valor]));
         res.set('Cache-Control', 'no-store');
         res.json({
-            rebotes: r.rows.map(b => ({ id: b.id, email: b.email, tipo: b.tipo, codigo: b.codigo, motivo: b.motivo, detalle: b.detalle, detectadoAt: b.detectado_at, personas: b.personas || [] })),
+            // De dónde viene (#430): de una campaña o de cualquier otro correo de info@.
+            rebotes: r.rows.map(b => ({ id: b.id, email: b.email, tipo: b.tipo, codigo: b.codigo, motivo: b.motivo, detalle: b.detalle, detectadoAt: b.detectado_at, personas: b.personas || [], campana: b.campana || null })),
             revisadoAt: imap.rebotes_imap?.revisadoAt || null,
             error: imap.rebotes_imap_error && (!imap.rebotes_imap?.revisadoAt || imap.rebotes_imap_error.at > imap.rebotes_imap.revisadoAt) ? imap.rebotes_imap_error.error : null,
         });
@@ -16688,6 +16692,18 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                     });
                 }
                 return l;
+            });
+        }
+        // Correos que rebotan (#430): de campañas o de cualquier correo de info@.
+        // Se enciende con cada rebote nuevo.
+        if (recibe('correos_rebotan')) {
+            fuente('Correos que rebotan', ['correos_rebotan'], async () => {
+                const x = (await avisoCompartido('rebotes', () => pool.query(
+                    `SELECT COUNT(*)::int n, MAX(detectado_at) AS ultimo FROM aim_correos_rebotados WHERE resuelto_at IS NULL`))).rows[0];
+                return x.n ? [{
+                    tipo: 'correo', clave: 'correos_rebotan', n: x.n, marca: x.ultimo, fecha: x.ultimo, destino: '/admin/rebotes',
+                    texto: `${x.n} ${plural(x.n, 'correo rebota', 'correos rebotan')}`, detalle: 'no les llega nada hasta que se arregle la dirección',
+                }] : [];
             });
         }
         // Solicitudes de las familias para dar o quitar el permiso de fotos (#170).

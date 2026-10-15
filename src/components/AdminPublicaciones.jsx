@@ -58,11 +58,16 @@ function subir(url, blob, onProgreso) {
   });
 }
 
+// Una promesa con tiempo máximo: en el iPad (#424) algunas cosas no avisan ni
+// de que han fallado, y la subida se quedaba parada sin decir nada.
+const conPlazo = (promesa, ms, mensaje) => Promise.race([promesa, new Promise((_, ko) => setTimeout(() => ko(new Error(mensaje)), ms))]);
+
 // Una foto del ordenador o del móvil → JPG listo para Instagram.
 async function prepararFoto(file, paraInstagram) {
   const url = URL.createObjectURL(file);
   try {
-    const img = await new Promise((ok, ko) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => ko(new Error(`No se puede leer «${file.name}».`)); i.src = url; });
+    const img = await conPlazo(new Promise((ok, ko) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => ko(new Error(`No se puede leer «${file.name}». Si es del iPhone o el iPad, prueba a elegirla desde «Fotos» y no desde «Archivos».`)); i.src = url; }),
+      30_000, `«${file.name}» tarda demasiado en abrirse.`);
     let w = img.naturalWidth, h = img.naturalHeight;
     const k = Math.min(1, 2048 / Math.max(w, h));
     w = Math.round(w * k); h = Math.round(h * k);
@@ -73,32 +78,47 @@ async function prepararFoto(file, paraInstagram) {
     const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, W, H);
     g.drawImage(img, Math.round((W - w) / 2), Math.round((H - h) / 2), w, h);
     const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.9));
+    if (!blob) throw new Error(`No se ha podido preparar «${file.name}» (¿es demasiado grande?).`);
     const t = document.createElement('canvas'); const kt = 360 / Math.max(W, H); t.width = Math.round(W * kt); t.height = Math.round(H * kt);
     t.getContext('2d').drawImage(c, 0, 0, t.width, t.height);
     const mini = await new Promise(r => t.toBlob(r, 'image/jpeg', 0.8));
     return { blob, mini, ancho: W, alto: H, bandas: W !== w || H !== h };
   } finally { URL.revokeObjectURL(url); }
 }
-// Un vídeo: sus medidas y un fotograma para la miniatura.
+// Un vídeo: sus medidas y un fotograma para la miniatura. El iPad (#424) no
+// carga un vídeo que no está en pantalla ni lo deja «en línea» si no se pide:
+// se mete invisible en la página, se espera solo a sus datos básicos y, si el
+// fotograma no llega, se sube igual sin miniatura (no se queda parado).
 async function prepararVideo(file) {
-  const tipo = file.type === 'video/quicktime' ? 'video/quicktime' : file.type === 'video/mp4' ? 'video/mp4' : null;
+  const tipo = file.type === 'video/quicktime' || /\.mov$/i.test(file.name) ? 'video/quicktime'
+    : file.type === 'video/mp4' || /\.mp4$/i.test(file.name) ? 'video/mp4' : null;
   if (!tipo) throw new Error(`«${file.name}»: el vídeo tiene que ser MP4 o MOV.`);
   if (file.size > 100 * 1024 * 1024) throw new Error(`«${file.name}» pasa de 100 MB.`);
   const url = URL.createObjectURL(file);
+  const v = document.createElement('video');
+  v.muted = true; v.playsInline = true; v.setAttribute('playsinline', ''); v.setAttribute('webkit-playsinline', ''); v.preload = 'metadata';
+  Object.assign(v.style, { position: 'fixed', left: '-10000px', top: '0', width: '2px', height: '2px', opacity: '0' });
+  document.body.appendChild(v);
   try {
-    const v = document.createElement('video'); v.muted = true; v.preload = 'auto'; v.src = url;
-    await new Promise((ok, ko) => { v.onloadeddata = ok; v.onerror = () => ko(new Error(`No se puede leer «${file.name}».`)); });
-    v.currentTime = Math.min(1, (v.duration || 2) / 2);
-    await new Promise(ok => { v.onseeked = ok; setTimeout(ok, 1500); });
-    const c = document.createElement('canvas'); const k = 360 / Math.max(v.videoWidth || 360, v.videoHeight || 360);
-    c.width = Math.round((v.videoWidth || 360) * k); c.height = Math.round((v.videoHeight || 640) * k);
-    c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
-    const mini = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.8));
-    return { blob: new Blob([file], { type: tipo }), mini, ancho: v.videoWidth, alto: v.videoHeight, duracion: v.duration };
-  } finally { URL.revokeObjectURL(url); }
+    v.src = url; v.load();
+    await conPlazo(new Promise((ok, ko) => { v.onloadedmetadata = ok; v.onerror = () => ko(new Error(`No se puede leer «${file.name}».`)); }),
+      20_000, `No se ha podido abrir «${file.name}». Prueba con otro vídeo o desde el ordenador.`);
+    let mini = null;
+    try {
+      // Un fotograma de hacia el principio, si el navegador lo da.
+      await conPlazo(new Promise(ok => { v.onseeked = ok; v.currentTime = Math.min(1, (v.duration || 2) / 2); }), 4000, 'sin fotograma');
+      const c = document.createElement('canvas'); const k = 360 / Math.max(v.videoWidth || 360, v.videoHeight || 360);
+      c.width = Math.round((v.videoWidth || 360) * k); c.height = Math.round((v.videoHeight || 640) * k);
+      c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+      mini = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.8));
+    } catch { mini = null; }
+    return { blob: new Blob([file], { type: tipo }), mini, ancho: v.videoWidth || null, alto: v.videoHeight || null, duracion: v.duration };
+  } finally { v.removeAttribute('src'); v.remove(); URL.revokeObjectURL(url); }
 }
 
 const miniUrl = (m) => m.local || `/api/admin/publicaciones/medios/${m.id}/miniatura`;
+// Un vídeo sin miniatura (el iPad a veces no da el fotograma): un cuadro con ▶.
+const sinMiniatura = (m) => m.mime?.startsWith('video/') && m.archivo && !m.local;
 function Marca({ red, tam = 18 }) {
   const r = RED[red];
   return <span title={r.nombre} style={{ display: 'inline-grid', placeItems: 'center', width: tam, height: tam, borderRadius: 5, background: r.color, color: '#fff', fontSize: tam * 0.5, fontWeight: 900, flex: 'none' }}>{r.letra}</span>;
@@ -212,9 +232,9 @@ function Editor({ inicial, cuenta, onCerrar, showToast }) {
         const esVideo = f.type.startsWith('video/') || /\.(mp4|mov)$/i.test(f.name);
         const p = esVideo ? await prepararVideo(f) : await prepararFoto(f, redes.includes('instagram') && tipo !== 'story');
         if (p.bandas) notas.push(`«${f.name}» llevaba unas proporciones que Instagram no admite: se le han puesto bandas blancas.`);
-        const r = await subir(`/api/admin/publicaciones/${pid}/medios?ancho=${p.ancho}&alto=${p.alto}`, p.blob, (x) => setSubiendo({ nombre: f.name, progreso: x }));
+        const r = await subir(`/api/admin/publicaciones/${pid}/medios?ancho=${p.ancho || ''}&alto=${p.alto || ''}`, p.blob, (x) => setSubiendo({ nombre: f.name, progreso: x }));
         if (p.mini) await subir(`/api/admin/publicaciones/${pid}/medios/${r.id}/miniatura`, new Blob([p.mini], { type: 'image/jpeg' }));
-        setMedios(ms => [...ms, { id: r.id, mime: p.blob.type, ancho: p.ancho, alto: p.alto, local: URL.createObjectURL(p.mini || p.blob), archivo: true }]);
+        setMedios(ms => [...ms, { id: r.id, mime: p.blob.type, ancho: p.ancho, alto: p.alto, local: p.mini ? URL.createObjectURL(p.mini) : null, archivo: true }]);
         tocado.current = true;
       }
       setAviso(notas.length ? notas.join(' ') : null);
@@ -317,7 +337,8 @@ function Editor({ inicial, cuenta, onCerrar, showToast }) {
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {medios.map((m, i) => (
                   <div key={m.id} style={{ position: 'relative', width: 96, height: 96, borderRadius: 10, overflow: 'hidden', background: 'var(--bg-3)', border: '1px solid var(--line)' }}>
-                    <img src={miniUrl(m)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    {sinMiniatura(m) ? <span style={{ display: 'grid', placeItems: 'center', width: '100%', height: '100%', fontSize: 28, color: 'var(--ink-3)' }}>▶</span>
+                      : <img src={miniUrl(m)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
                     {m.mime.startsWith('video/') && <span style={{ position: 'absolute', left: 6, bottom: 6, background: 'rgba(0,0,0,.6)', color: '#fff', fontSize: 10, fontWeight: 800, padding: '2px 6px', borderRadius: 6 }}>▶ VÍDEO</span>}
                     {!soloVer && (
                       <span style={{ position: 'absolute', top: 4, right: 4, display: 'flex', gap: 3 }}>
@@ -329,10 +350,13 @@ function Editor({ inicial, cuenta, onCerrar, showToast }) {
                   </div>
                 ))}
                 {!soloVer && medios.length < 10 && (
-                  <label style={{ width: 96, height: 96, borderRadius: 10, border: '2px dashed var(--line)', display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--ink-3)', fontSize: 12, textAlign: 'center' }}
+                  <label style={{ position: 'relative', overflow: 'hidden', width: 96, height: 96, borderRadius: 10, border: '2px dashed var(--line)', display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--ink-3)', fontSize: 12, textAlign: 'center' }}
                     onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); añadir(e.dataTransfer.files); }}>
-                    <span><I.Plus width={18} height={18} /><br />Foto o vídeo</span>
-                    <input ref={archivo} type="file" accept="image/*,video/mp4,video/quicktime" multiple hidden onChange={e => añadir(e.target.files)} />
+                    <span><I.Plus width={18} height={18} /><br />{subiendo ? 'Subiendo…' : 'Foto o vídeo'}</span>
+                    {/* Encima del cuadro y transparente, no oculto: con «hidden» (display: none) el
+                        Safari del iPad no abría el selector (#424). */}
+                    <input ref={archivo} type="file" accept="image/*,video/*" multiple disabled={!!subiendo} onChange={e => añadir(e.target.files)}
+                      aria-label="Añadir foto o vídeo" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer', fontSize: 0 }} />
                   </label>
                 )}
               </div>
