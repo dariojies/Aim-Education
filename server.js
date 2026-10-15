@@ -1624,6 +1624,26 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_sesiones_user ON aim_sesiones (user_id)`);
+        // Quién ha entrado en la web y cuándo (#421): las sesiones se borran al
+        // caducar, así que esto es lo que queda. Primera vez, última y cuántas.
+        // Aparte de users (que comparte Learning Dungeon). De arranque, con las
+        // sesiones que hay.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_accesos (
+                user_id UUID PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                primer_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                ultimo_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                veces INTEGER NOT NULL DEFAULT 1
+            )`);
+        await client.query(`
+            INSERT INTO aim_accesos (user_id, primer_at, ultimo_at, veces)
+            SELECT s.user_id, MIN(s.created_at), MAX(COALESCE(s.usada_at, s.created_at)), COUNT(*)::int
+            FROM aim_sesiones s JOIN users u ON u.user_id = s.user_id GROUP BY s.user_id
+            ON CONFLICT (user_id) DO NOTHING`);
+        // Si abren los correos que salen de la ficha y los automáticos (#421),
+        // como ya se sabe de las campañas: una imagen invisible con su token.
+        await client.query(`ALTER TABLE aim_comunicaciones ADD COLUMN IF NOT EXISTS token VARCHAR(32), ADD COLUMN IF NOT EXISTS abierto_at TIMESTAMPTZ, ADD COLUMN IF NOT EXISTS aperturas INTEGER NOT NULL DEFAULT 0`);
+        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_comunicaciones_token ON aim_comunicaciones (token) WHERE token IS NOT NULL`);
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_avisos_vistos (
                 user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
@@ -2335,6 +2355,7 @@ async function sesionDeToken(token, res = null) {
         s.expiresAt = nueva;
         pool.query(`UPDATE aim_sesiones SET expira_at = to_timestamp($2 / 1000.0), usada_at = NOW() WHERE huella = $1`,
             [huellaSesion(token), nueva]).catch(() => {});
+        if (s.userId) pool.query(`UPDATE aim_accesos SET ultimo_at = NOW() WHERE user_id = $1`, [s.userId]).catch(() => {});
         // Con «mantenerme conectado», la cookie también se alarga.
         if (res && s.recordar) {
             res.cookie('aim_session', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'strict', path: '/', maxAge: SESSION_RECORDAR_MS });
@@ -2421,6 +2442,10 @@ async function abrirSesion(res, user, { recordar = true } = {}) {
         permisos: permisosEfectivos(rol),
         expiresAt: Date.now() + duracion,
     }, { recordar });
+    // Su primer y su último acceso a la web (#421).
+    pool.query(
+        `INSERT INTO aim_accesos (user_id) VALUES ($1)
+         ON CONFLICT (user_id) DO UPDATE SET ultimo_at = NOW(), veces = aim_accesos.veces + 1`, [user.user_id]).catch(() => {});
     res.cookie('aim_session', token, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
@@ -11380,6 +11405,23 @@ app.put('/api/admin/comunicaciones/plantillas', authenticateSession, requirePerm
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ¿Han entrado en la web? (#421) La persona y sus tutores, con su primer y
+// último acceso (desde que se apunta: octubre de 2026).
+app.get('/api/admin/comunicaciones/:personaId/accesos', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
+    try {
+        const ctx = await contextoCorreo(req.params.personaId);
+        if (!ctx) return res.status(404).json({ error: 'Esa persona no es del club.' });
+        const ids = ctx.destinatarios.map(d => d.personaId);
+        const r = await pool.query(`SELECT user_id, primer_at, ultimo_at, veces FROM aim_accesos WHERE user_id = ANY($1::uuid[])`, [ids]);
+        const de = new Map(r.rows.map(x => [String(x.user_id), x]));
+        res.set('Cache-Control', 'no-store');
+        res.json({ personas: ctx.destinatarios.map(d => {
+            const a = de.get(String(d.personaId));
+            return { id: d.personaId, nombre: d.nombre, relacion: d.relacion, primer: a?.primer_at || null, ultimo: a?.ultimo_at || null, veces: a?.veces || 0 };
+        }) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/admin/comunicaciones/:personaId/contexto', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
     try {
         const ctx = await contextoCorreo(req.params.personaId);
@@ -11430,17 +11472,21 @@ async function enviarYApuntar({ personaId, a, asunto, cuerpo, tipo, variables, p
     const d = diseno ? limpiarDiseno(diseno) : null;
     const cuerpoFinal = (d ? textoCorreo({ ...d, pie: false }, { vars: variables }) : rellenarPlantilla(String(cuerpo), variables)).slice(0, 8000);
     let estado = 'enviado', error = null;
+    // Para saber si lo abren (#421): la misma imagen invisible que las campañas.
+    const token = crypto.randomBytes(16).toString('hex');
     try {
         const c = await correoCrm({ cuerpo: cuerpoFinal, diseno: d, vars: variables, asunto: asuntoFinal, comercial: tipo === 'comercial' });
+        const pixel = `<img src="${URL_PUBLICA_WEB}/o/${token}.gif" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0">`;
+        const html = /<\/body>/i.test(c.html) ? c.html.replace(/<\/body>/i, `${pixel}</body>`) : `${c.html}${pixel}`;
         await mailTransporter.sendMail({
             from: `AIM Education <${process.env.EMAIL_USER}>`, replyTo: process.env.EMAIL_USER,
-            to: a.join(','), subject: asuntoFinal, text: c.text, html: c.html,
+            to: a.join(','), subject: asuntoFinal, text: c.text, html,
         });
     } catch (e) { estado = 'error'; error = String(e.message || e).slice(0, 500); }
     const ins = await pool.query(
-        `INSERT INTO aim_comunicaciones (persona_id, destinatarios, asunto, cuerpo, plantilla, tipo, estado, error, enviado_por)
-         VALUES ($1, $2::text[], $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-        [personaId, a, asuntoFinal, cuerpoFinal, plantilla ? String(plantilla).slice(0, 80) : null, tipo, estado, error, enviadoPor]);
+        `INSERT INTO aim_comunicaciones (persona_id, destinatarios, asunto, cuerpo, plantilla, tipo, estado, error, enviado_por, token)
+         VALUES ($1, $2::text[], $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+        [personaId, a, asuntoFinal, cuerpoFinal, plantilla ? String(plantilla).slice(0, 80) : null, tipo, estado, error, enviadoPor, estado === 'enviado' ? token : null]);
     return { id: ins.rows[0].id, estado, error };
 }
 
@@ -12556,6 +12602,8 @@ app.get('/o/:token.gif', async (req, res) => {
     res.set({ 'Content-Type': 'image/gif', 'Cache-Control': 'no-store, no-cache, must-revalidate, private' });
     if (/^[0-9a-f]{32}$/.test(req.params.token)) {
         pool.query(`UPDATE aim_campana_envios SET aperturas = aperturas + 1, abierto_at = COALESCE(abierto_at, NOW()) WHERE token = $1`, [req.params.token]).catch(() => {});
+        // Y los de la ficha y los automáticos (#421).
+        pool.query(`UPDATE aim_comunicaciones SET aperturas = aperturas + 1, abierto_at = COALESCE(abierto_at, NOW()) WHERE token = $1`, [req.params.token]).catch(() => {});
     }
     res.end(GIF_VACIO);
 });
@@ -12784,7 +12832,7 @@ app.post('/api/admin/rebotes/:id(\\d+)/resolver', authenticateSession, requirePe
 app.get('/api/admin/comunicaciones/:personaId', authenticateSession, requirePermiso('editarAlumnos'), async (req, res) => {
     try {
         const r = await pool.query(
-            `SELECT c.id, c.persona_id, c.destinatarios, c.asunto, c.cuerpo, c.plantilla, c.tipo, c.estado, c.error, c.created_at,
+            `SELECT c.id, c.persona_id, c.destinatarios, c.asunto, c.cuerpo, c.plantilla, c.tipo, c.estado, c.error, c.created_at, c.abierto_at, c.aperturas, (c.token IS NOT NULL) AS con_seguimiento,
                     TRIM(CONCAT(e.name, ' ', COALESCE(e.surname, ''))) AS quien,
                     TRIM(CONCAT(p.name, ' ', COALESCE(p.surname, ''))) AS ficha
              FROM aim_comunicaciones c
@@ -12799,6 +12847,7 @@ app.get('/api/admin/comunicaciones/:personaId', authenticateSession, requirePerm
                 id: x.id, fecha: x.created_at, asunto: x.asunto, cuerpo: x.cuerpo, plantilla: x.plantilla, tipo: x.tipo,
                 estado: x.estado, error: x.error, destinatarios: x.destinatarios, quien: x.quien || null,
                 desdeOtraFicha: x.persona_id !== req.params.personaId ? x.ficha : null,
+                abierto: x.abierto_at, aperturas: x.aperturas, seguimiento: x.con_seguimiento,
             })),
         });
     } catch (err) { res.status(500).json({ error: err.message }); }

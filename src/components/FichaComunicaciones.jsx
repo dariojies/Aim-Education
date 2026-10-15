@@ -79,7 +79,12 @@ const ETIQUETA = {
 };
 const enFiltro = (f, t) => f === 'todo' || f === t || (f === 'correo' && (t === 'buzon' || t === 'rebote' || t === 'red')) || (f === 'web' && t === 'visita');
 function estadoDe(x) {
-  if (x.tipo === 'correo') return [{ enviado: '✓ enviado', omitido: 'no enviado', error: '✗ error' }[x.estado] || x.estado, x.estado === 'enviado' ? 'var(--teal)' : x.estado === 'omitido' ? 'var(--ink-3)' : 'var(--orange)'];
+  if (x.tipo === 'correo') {
+    // Si lo abrieron (#421): los enviados desde que se mira (los de antes, solo «enviado»).
+    if (x.estado === 'enviado' && x.abierto) return ['✓ lo abrió', 'var(--teal)'];
+    if (x.estado === 'enviado' && x.seguimiento) return ['enviado · sin abrir', 'var(--ink-3)'];
+    return [{ enviado: '✓ enviado', omitido: 'no enviado', error: '✗ error' }[x.estado] || x.estado, x.estado === 'enviado' ? 'var(--teal)' : x.estado === 'omitido' ? 'var(--ink-3)' : 'var(--orange)'];
+  }
   if (x.tipo === 'campana') {
     if (x.estado === 'rebotado') return ['↩ rebotó', 'var(--orange)'];
     if (x.estado !== 'enviado') return [x.estado === 'omitido' ? 'no enviado' : '✗ no salió', 'var(--ink-3)'];
@@ -157,6 +162,7 @@ function Historial({ comunicaciones, eventos, buzon }) {
                 <span>Para: {x.destinatarios.join(', ')}{x.quien ? ` · lo envió ${x.quien}` : ''}{x.plantilla && !x.plantilla.startsWith('auto:') ? ` · plantilla «${x.plantilla}»` : ''}</span>
                 {x.desdeOtraFicha && <span>Enviado desde la ficha de {x.desdeOtraFicha}.</span>}
                 {x.plantilla?.startsWith('auto:') && <span>Automático.</span>}
+                {x.estado === 'enviado' && x.seguimiento && <span>{x.abierto ? `Lo abrió el ${fmtFechaHora(x.abierto)}${x.aperturas > 1 ? ` (${x.aperturas} veces)` : ''}.` : 'No consta que lo haya abierto (algunos programas de correo no lo avisan).'}</span>}
                 {x.error && <span style={{ color: 'var(--orange)' }}>{x.estado === 'omitido' ? 'No se envió: ' : 'Error: '}{x.error}</span>}
                 <div style={{ whiteSpace: 'pre-wrap', background: 'var(--bg-3)', borderRadius: 8, padding: 10, fontSize: 13, color: 'var(--ink)' }}>{x.cuerpo}</div>
               </div>
@@ -205,6 +211,7 @@ export default function FichaComunicaciones({ personaId, showToast }) {
   const [rebotes, setRebotes] = useState([]);
   const [eventos, setEventos] = useState([]);
   const [buzon, setBuzon] = useState(null);
+  const [accesos, setAccesos] = useState(null);   // si han entrado en la web (#421)
   // Con diseño (#326): el correo lleva imágenes, botones y colores.
   const [diseno, setDiseno] = useState(null);
   const [eligiendo, setEligiendo] = useState(false);
@@ -223,6 +230,8 @@ export default function FichaComunicaciones({ personaId, showToast }) {
         .then(r => (r.ok ? r.json() : { rebotes: [] })).then(d => setRebotes(d.rebotes || [])).catch(() => {});
       fetch(`/api/admin/comunicaciones/${personaId}/historia`, { credentials: 'include', cache: 'no-store' })
         .then(r => (r.ok ? r.json() : { eventos: [] })).then(d => setEventos(d.eventos || [])).catch(() => {});
+      fetch(`/api/admin/comunicaciones/${personaId}/accesos`, { credentials: 'include', cache: 'no-store' })
+        .then(r => (r.ok ? r.json() : null)).then(d => setAccesos(d?.personas || null)).catch(() => {});
       fetch(`/api/admin/comunicaciones/${personaId}/buzon`, { credentials: 'include', cache: 'no-store' })
         .then(r => (r.ok ? r.json() : { disponible: false, correos: [] })).then(setBuzon).catch(() => setBuzon({ disponible: false, correos: [] }));
       // Por defecto, a los tutores con correo; si no tiene, al propio alumno.
@@ -296,6 +305,22 @@ export default function FichaComunicaciones({ personaId, showToast }) {
         </button>
       )}>
       {sinCorreo && <p style={{ margin: '0 0 8px', fontSize: 12, color: 'var(--ink-3)' }}>Ni el alumno ni sus tutores tienen correo: habrá que llamar.</p>}
+      {/* ¿Han entrado en la web? (#421) El alumno y sus tutores. */}
+      {accesos?.length > 0 && (
+        <div style={{ display: 'grid', gap: 4, padding: '10px 12px', marginBottom: 10, borderRadius: 12, background: 'var(--bg-2)', border: '1px solid var(--line)', fontSize: 12 }}>
+          <b style={{ fontSize: 12, color: 'var(--ink-2)' }}>Acceso a la web</b>
+          {accesos.map(p => (
+            <div key={p.id} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
+              <span style={{ fontWeight: 700 }}>{p.nombre}</span>
+              <span style={{ color: 'var(--ink-3)' }}>· {p.relacion}</span>
+              {p.primer
+                ? <span style={{ color: 'var(--teal)', fontWeight: 700 }}>Entró por primera vez el {fmtFechaHora(p.primer)}{p.ultimo && p.ultimo !== p.primer ? ` · la última, el ${fmtFechaHora(p.ultimo)}` : ''}{p.veces > 1 ? ` · ${p.veces} veces` : ''}</span>
+                : <span style={{ color: 'var(--orange)', fontWeight: 700 }}>Nunca ha entrado</span>}
+            </div>
+          ))}
+          <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Se apunta desde octubre de 2026; las entradas de antes no constan.</span>
+        </div>
+      )}
       {/* Correos que rebotan: no reciben campañas ni automatismos hasta que se
           cambie el correo en la ficha o se marque aquí como arreglado. */}
       {rebotes.map(b => (
