@@ -3832,6 +3832,18 @@ html[data-theme="dark"] .dash-nav button.is-active {
   color: var(--ink);
 }
 
+/* El contenido previo que manda el servidor para Google (#425): se ve un
+   momento, hasta que arranca la web, así que que se lea bien. */
+.seo-previo { max-width: 920px; margin: 0 auto; padding: 20px 16px 48px; color: var(--ink); line-height: 1.6; }
+.seo-previo nav { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 14px; padding-bottom: 14px; margin-bottom: 24px; border-bottom: 1px solid var(--line); }
+.seo-previo nav a, .seo-previo li a { color: var(--purple); font-weight: 600; }
+.seo-previo h1 { font-family: var(--font-display); font-size: clamp(28px, 5vw, 44px); line-height: 1.1; margin: 0 0 14px; }
+.seo-previo h2 { font-family: var(--font-display); font-size: 22px; margin: 28px 0 10px; }
+.seo-previo ul { padding-left: 1.2em; }
+.seo-previo li { margin: 0 0 8px; color: var(--ink-2); }
+.seo-previo img { max-width: 100%; height: auto; border-radius: 14px; }
+.seo-previo footer { margin-top: 40px; font-size: 13px; color: var(--ink-3); }
+
 /* Lo del editor de texto enriquecido (#438) */
 .post-content a { color: var(--purple); font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
 .post-content a.boton {

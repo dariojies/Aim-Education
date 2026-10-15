@@ -27,6 +27,7 @@ import { crearAula, crearTablasAula, entregasPorCorregir, tareasCorregidas } fro
 import { crearTienda, crearTablasTienda, pedidosPorAtender, pedidosEnMarcha } from './tienda.js';
 import { limpiarHtml, htmlParaFuera, textoDeHtml } from './noticias-html.js';
 import { crearSeo } from './seo.js';
+import { crearIndexNow } from './indexnow.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
@@ -4176,7 +4177,9 @@ function fechaFutura(v) {
 }
 // Publicar lo programado (#338): las noticias cuya hora ha llegado.
 async function publicarProgramado() {
-    await pool.query(`UPDATE aim_education_posts SET status = 'published', updated_at = NOW() WHERE status = 'scheduled' AND published_at <= NOW()`).catch(() => {});
+    const r = await pool.query(`UPDATE aim_education_posts SET status = 'published', updated_at = NOW() WHERE status = 'scheduled' AND published_at <= NOW() RETURNING slug, tipo`).catch(() => ({ rows: [] }));
+    // A los buscadores, en cuanto sale (#425).
+    if (r.rows.length) avisarBuscadoresPosts(r.rows).catch(() => {});
 }
 setInterval(() => { publicarProgramado().catch(() => {}); }, 60_000);
 
@@ -14723,6 +14726,7 @@ app.post('/api/admin/posts', authenticateSession, async (req, res) => {
         `, [id, title, finalSlug, excerpt || null, content, imageUrl || null, authorName || 'Admin', category || 'general', status || 'draft', publishedAt, tipo, formato]);
 
         const result = await pool.query('SELECT * FROM aim_education_posts WHERE id = $1', [id]);
+        if (result.rows[0]?.status === 'published') avisarBuscadoresPosts([result.rows[0]]).catch(() => {});
         const medios = req.body.enviarMedios ? await enviarAMedios(result.rows[0], req) : null;
         res.status(201).json({ ...result.rows[0], ...(medios ? { medios } : {}) });
     } catch (err) {
@@ -14759,6 +14763,7 @@ app.put('/api/admin/posts/:id', authenticateSession, async (req, res) => {
         `, [title, finalSlug, excerpt || null, content, imageUrl || null, category || 'general', status || 'draft', publishedAt, req.params.id, tipo, formato]);
 
         const result = await pool.query('SELECT * FROM aim_education_posts WHERE id = $1', [req.params.id]);
+        if (result.rows[0]?.status === 'published') avisarBuscadoresPosts([result.rows[0]]).catch(() => {});
         const medios = req.body.enviarMedios ? await enviarAMedios(result.rows[0], req) : null;
         res.json({ ...result.rows[0], ...(medios ? { medios } : {}) });
     } catch (err) {
@@ -15069,10 +15074,18 @@ app.get('/feed/:category.xml', async (req, res) => {
 // PUBLIC NEWS PAGES — served by the SPA (dist/index.html)
 // =============================================================================
 
-// Cada noticia, artículo, curso y producto con su título, descripción e imagen
-// para Google y las redes, y el sitemap.xml (#438).
+// Cada página pública con su título, descripción, imagen, datos estructurados y
+// su contenido en HTML para Google y las redes; los sitemaps y el robots.txt
+// (#438, #425).
 app.use(crearSeo({ pool, urlBase: () => URL_PUBLICA_WEB,
     archivoIndex: () => path.join(__dirname, process.env.NODE_ENV === 'production' ? 'dist/index.html' : 'index.html') }).router);
+// IndexNow (#425): al publicar, aviso a los buscadores que lo usan (Bing…).
+const indexNow = crearIndexNow({ pool, urlBase: () => URL_PUBLICA_WEB });
+app.use(indexNow.router);
+async function avisarBuscadoresPosts(posts) {
+    const rutas = posts.flatMap(p => [`/${p.tipo === 'blog' ? 'blog' : 'noticias'}/${p.slug}`, p.tipo === 'blog' ? '/blog' : '/noticias']);
+    return indexNow.avisar(rutas);
+}
 
 // =============================================================================
 // SUPPORT TICKET ROUTES

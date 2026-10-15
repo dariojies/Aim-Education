@@ -7,6 +7,7 @@ import AdminEvaluacion from './AdminEvaluacion.jsx';
 import AdminAula from './AdminAula.jsx';
 import AdminTienda from './AdminTienda.jsx';
 import EditorTexto from './EditorTexto.jsx';
+import AsistenteSeo from './AsistenteSeo.jsx';
 import { renderMd } from './PublicActivities.jsx';
 import { useEnVivo } from '../envivo.js';
 import { ListaClases, colorOcupacion } from './AdminTulClases.jsx';
@@ -7140,7 +7141,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
             />
           )}
           {ver("payments") && <AdminGastos refreshTrigger={refreshTrigger} showToast={showToast} />}
-          {ver("news") && <AdminNews refreshTrigger={refreshTrigger} onEditPost={(p) => { setEditingItem({ ...p, coverImageUrl: p.cover_image_url, content: p.formato === 'html' ? p.content : renderMd(p.content), formato: 'html' }); setActiveModal('edit-post'); }}
+          {ver("news") && <AdminNews refreshTrigger={refreshTrigger} onEditPost={(p) => { setEditingItem({ ...p, coverImageUrl: p.cover_image_url, content: p.formato === 'html' ? p.content : renderMd(p.content), formato: 'html', _publicada: p.status === 'published' }); setActiveModal('edit-post'); }}
             onNuevo={() => { setEditingItem({ title: '', slug: '', excerpt: '', content: '', coverImageUrl: '', category: 'general', status: 'draft', formato: 'html' }); setActiveModal('new-post'); }} />}
           {ver("events") && <AdminEvents showToast={showToast} permisos={permisos} />}
           {ver("camp") && <AdminCamp showToast={showToast} permisos={permisos} />}
@@ -7600,6 +7601,12 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
               {/* Texto enriquecido (#438): títulos, negrita, listas, imágenes, botones y documentos. */}
               <EditorTexto key={editingItem.id || 'nueva'} valor={editingItem.content || ''} subirImagen={subirImagenNoticia}
                 onChange={(html) => setEditingItem(x => ({ ...x, content: html }))} placeholder="Escribe aquí la noticia…" />
+            </div>
+            <div className="field">
+              {/* Cómo sale en Google y qué cuidar para posicionarla (#425). */}
+              <AsistenteSeo titulo={editingItem.title || ''} extracto={editingItem.excerpt || ''} contenido={editingItem.content || ''}
+                slug={editingItem.slug} onSlug={(v) => setEditingItem(x => ({ ...x, slug: v }))} portada={editingItem.coverImageUrl || editingItem.cover_image_url}
+                tipo={editingItem.tipo} publicada={!!editingItem._publicada} />
             </div>
 
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10 }}>
