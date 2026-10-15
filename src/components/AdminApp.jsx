@@ -5,6 +5,7 @@ import EquipoIT from './EquipoIT.jsx';
 import AdminCambios from './AdminCambios.jsx';
 import AdminEvaluacion from './AdminEvaluacion.jsx';
 import AdminAula from './AdminAula.jsx';
+import AdminTienda from './AdminTienda.jsx';
 import { useEnVivo } from '../envivo.js';
 import { ListaClases, colorOcupacion } from './AdminTulClases.jsx';
 import Reportes from './Reportes.jsx';
@@ -108,6 +109,7 @@ function sectionLabel(id, pestana) {
     galeria: "Fotos",
     evaluacion: "Evaluación",
     aula: "Aula virtual",
+    tienda: "Tienda online",
     settings: "Ajustes",
     objetos: "Objetos perdidos",
     support: "Tickets",
@@ -6919,6 +6921,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
     {
       heading: "Club", items: [
         { id: "almacen", label: "Almacén", icon: <I.Package /> },
+        // Los productos y los pedidos de la tienda online (#432).
+        { id: "tienda", label: "Tienda online", icon: <I.Wallet /> },
         { id: "objetos", label: "Objetos perdidos", icon: <I.Search /> },
         // El préstamo de sets de LEGO y libros (#291).
         { id: "brickslab", label: "Brickslab y Biblioteca", icon: <I.Robot width={18} height={18} /> },
@@ -7163,6 +7167,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("reportes") && <Reportes user={user} permisos={permisos} showToast={showToast} />}
           {ver("titulos") && <AdminExamenes showToast={showToast} />}
           {ver("almacen") && <AdminAlmacen showToast={showToast} />}
+          {ver("tienda") && <AdminTienda showToast={showToast} />}
           {ver("objetos") && <AdminObjetosPerdidos showToast={showToast} />}
           {ver("speaking") && <AdminSpeaking showToast={showToast} />}
           {ver("faltas") && <AdminFaltas onAbrirFicha={abrirFicha} />}

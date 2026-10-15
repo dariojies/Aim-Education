@@ -331,6 +331,18 @@ header.aim-header.scrolled {
   margin-left: 24px;
 }
 
+/* Con el Aula y la Tienda (#432, #433) el menú ya no cabía: los enlaces, más
+   juntos; hasta 1300 px, algo más pequeños; y por debajo de 1180 px, el menú
+   de hamburguesa (como en el móvil; ver al final del archivo). */
+@media (min-width: 1181px) {
+  .aim-header .row { gap: 14px; }
+  .aim-header nav { gap: 15px; margin-left: 6px; }
+}
+@media (min-width: 1181px) and (max-width: 1300px) {
+  .aim-header nav { gap: 11px; }
+  header.aim-header nav a { font-size: 13px; }
+}
+
 .aim-header nav a {
   font-size: 14px;
   font-weight: 500;
@@ -3354,7 +3366,7 @@ html[data-theme="dark"] .dash-nav button.is-active {
   border-bottom: none;
 }
 
-@media (min-width: 1025px) {
+@media (min-width: 1181px) {
 
   .mobile-nav,
   .mobile-nav.open {
@@ -3362,7 +3374,7 @@ html[data-theme="dark"] .dash-nav button.is-active {
   }
 }
 
-@media (max-width: 1024px) {
+@media (max-width: 1180px) {
   .mobile-nav.open {
     display: flex;
   }
@@ -4474,3 +4486,10 @@ html.es-app [role="dialog"] { padding-top: calc(var(--app-arriba) + 12px) !impor
 .app-interruptor.is-on { background: var(--teal); }
 .app-interruptor.is-on span { transform: translateX(20px); }
 .app-interruptor:disabled { opacity: .6; }
+
+/* El menú de la web pasa a hamburguesa por debajo de 1180 px (#432): con todas
+   las secciones, los enlaces no caben antes. */
+@media (max-width: 1180px) {
+  .aim-header nav { display: none; }
+  .mobile-menu-btn { display: flex; align-items: center; justify-content: center; }
+}

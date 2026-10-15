@@ -32,6 +32,7 @@ export const RUTAS_ADMIN = {
   contactos: ['consultas'],
   comunicaciones: ['comunicaciones', 'crm'],
   almacen: ['almacen'],
+  tienda: ['tienda'],
   objetos: ['objetos', 'objetos-perdidos'],
   brickslab: ['brickslab'],
   portada: ['portada'],

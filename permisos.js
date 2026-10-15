@@ -97,6 +97,8 @@ export function permisosDe(rol) {
             objetos: !instructor,
             // El almacén (inventario) lo gestiona secretaría/dirección (ticket #250).
             almacen: !instructor,
+            // La tienda online (#432): productos y pedidos, como el almacén.
+            tienda: !instructor,
             reportes: !trabajador,
             events: !trabajador,
             news: !instructor,
@@ -233,6 +235,7 @@ export const AVISOS = [
     { id: 'correos_asignados', grupo: 'Correo', texto: 'Correos de info@ asignados a él', quien: (p) => p.secciones.bandeja },
     { id: 'redes_sin_leer', grupo: 'Correo', texto: 'Mensajes de redes sociales sin leer (suyos o sin asignar)', quien: (p) => p.secciones.redes },
     { id: 'almacen', grupo: 'Club', texto: 'Artículos del almacén por debajo del mínimo', quien: (p) => p.secciones.almacen },
+    { id: 'tienda_pedidos', grupo: 'Club', texto: 'Pedidos de la tienda pagados por preparar', quien: (p) => p.secciones.tienda },
     { id: 'brickslab_reservas', grupo: 'Club', texto: 'Reservas de Brickslab y Biblioteca por entregar', quien: (p) => p.secciones.brickslab },
     { id: 'incidencias_nuevas', grupo: 'Club', texto: 'Incidencias abiertas sin responsable', quien: (p) => p.gestionarIncidencias },
     { id: 'incidencias_mias', grupo: 'Club', texto: 'Incidencias que tiene que resolver', quien: todos },

@@ -24,6 +24,7 @@ import { crearReportes, pendienteAhora, SQL_MOVIMIENTOS } from './reportes.js';
 import { enviarZipFotos, nombreArchivo as nombreEnZip } from './zip.js';
 import { crearPublicaciones, crearTablasPublicaciones } from './publicaciones.js';
 import { crearAula, crearTablasAula, entregasPorCorregir, tareasCorregidas } from './aula.js';
+import { crearTienda, crearTablasTienda, pedidosPorAtender, pedidosEnMarcha } from './tienda.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
@@ -2287,6 +2288,8 @@ async function initDb() {
         // El aula virtual (#433): cursos, temario, lo subido, inscripciones,
         // progreso y entregas. Al final: sus cargos y precios ya existen.
         await crearTablasAula(client);
+        // La tienda online (#432): productos, fotos, variantes, pedidos y líneas.
+        await crearTablasTienda(client);
     } finally {
         client.release();
     }
@@ -2300,6 +2303,9 @@ function initDbConReintentos(intento = 1) {
         avisosPush.cargarTokens().catch(e => console.error('[avisos] tokens:', e.message));
         // Los deploys de las otras apps, al arrancar y cada dos minutos.
         setInterval(function deploysDeOtrasApps() { procesarDeploysDeOtrasApps().catch(e => console.error('[cambios] otras apps:', e.message)); }, 2 * 60_000);
+        // Los pedidos de la tienda sin pagar en su plazo se cancelan (#432). Solo
+        // en Heroku: en local se trabaja contra la misma base.
+        if (process.env.DYNO) setInterval(function tiendaCaducados() { tiendaOnline.cancelarCaducados().catch(e => console.error('[tienda] caducados:', e.message)); }, 30 * 60_000);
         procesarDeploysDeOtrasApps().catch(e => console.error('[cambios] otras apps:', e.message));
         return resolverEsperaDeploy().catch(e => console.error('[deploy] tickets en espera:', e.message));
     }).catch(err => {
@@ -5151,6 +5157,10 @@ app.use(crearReportes({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireP
 // abajo: se pasan envueltos para leerlos al usarlos.
 app.use(crearAula({ pool, authenticateSession, requireSeccion, permisos,
     sesionOpcional: (req) => sesionOpcional(req), pagosOnlineAbiertos: () => pagosOnlineAbiertos() }).router);
+// La tienda online (#432).
+const tiendaOnline = crearTienda({ pool, authenticateSession, requireSeccion,
+    sesionOpcional: (req) => sesionOpcional(req), pagosOnlineAbiertos: () => pagosOnlineAbiertos() });
+app.use(tiendaOnline.router);
 
 // ── Redes sociales (#341) ────────────────────────────────────────────────────
 // Quién puede llevarlas (y recibir conversaciones asignadas).
@@ -13164,6 +13174,15 @@ async function avisosFamilia(me) {
             });
         }
 
+        // Pedidos de la tienda listos para recoger o enviados (#432).
+        for (const p of await pedidosEnMarcha(pool, me).catch(() => [])) {
+            avisos.push({
+                tipo: 'avisos', destino: '/dashboard/pedidos', clave: `tienda:${p.id}:${p.estado}`, marca: p.cuando, fecha: p.cuando,
+                texto: p.estado === 'listo' ? `Tu pedido nº ${p.id} está listo para recoger` : `Tu pedido nº ${p.id} va de camino`,
+                detalle: p.estado === 'listo' ? 'pásate por secretaría' : 'enviado a la dirección que pusiste',
+            });
+        }
+
         // Tareas del aula virtual corregidas (#433), las de las dos últimas semanas.
         for (const e of await tareasCorregidas(pool, me).catch(() => [])) {
             avisos.push({
@@ -16759,6 +16778,16 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                     });
                 }
                 return l;
+            });
+        }
+        // Pedidos de la tienda pagados por preparar (#432).
+        if (recibe('tienda_pedidos')) {
+            fuente('Tienda', ['tienda_pedidos'], async () => {
+                const x = await pedidosPorAtender(pool);
+                return x.por_preparar ? [{
+                    tipo: 'pagos', clave: 'tienda_pedidos', n: x.por_preparar, marca: x.ultimo, fecha: x.ultimo, destino: '/admin/tienda',
+                    texto: `${x.por_preparar} ${plural(x.por_preparar, 'pedido', 'pedidos')} de la tienda por preparar`, detalle: 'pagados: hay que prepararlos y entregarlos o enviarlos',
+                }] : [];
             });
         }
         // Tareas del aula virtual por corregir (#433): de sus cursos, o de todos.

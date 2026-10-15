@@ -280,7 +280,7 @@ function AimHeader({ route } = {}) {
   // Close mobile menu on resize above breakpoint or route change
   useEffect(() => { setMenuOpen(false); }, [path]);
   useEffect(() => {
-    const onResize = () => { if (window.innerWidth > 1024) setMenuOpen(false); };
+    const onResize = () => { if (window.innerWidth > 1180) setMenuOpen(false); };
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
@@ -294,6 +294,7 @@ function AimHeader({ route } = {}) {
     if (path === '/noticias' || path.startsWith('/noticias/')) return 'news';
     if (path === '/blog' || path.startsWith('/blog/')) return 'blog';
     if (path === '/aula' || path.startsWith('/aula/')) return 'aula';
+    if (path === '/tienda' || path.startsWith('/tienda/')) return 'tienda';
     if (path === '/contacto') return 'contact';
     if (path === '/conocenos') return 'about';
     if (path === '/brickslab' || path === '/biblioteca') return 'brickslab';
@@ -311,6 +312,8 @@ function AimHeader({ route } = {}) {
     { id: "blog", label: "Blog", href: "/blog" },
     // Los cursos online (#433).
     { id: "aula", label: "Aula", href: "/aula" },
+    // El material del club (#432).
+    { id: "tienda", label: "Tienda", href: "/tienda" },
     { id: "about", label: "Conócenos", href: "/conocenos" },
     { id: "contact", label: "Contacto", href: "/contacto" },
   ];

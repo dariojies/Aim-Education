@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, createContext, useContext, laz
 import PublicLanding from './components/PublicLanding';
 import { PublicActivities, PublicNews, PublicNewsDetail } from './components/PublicActivities';
 import AulaPublica from './components/Aula.jsx';
+import TiendaPublica from './components/Tienda.jsx';
 import PublicActivity from './components/PublicActivity';
 import PublicCamp from './components/PublicCamp';
 import AuthScreen from './components/AuthScreen';
@@ -200,6 +201,9 @@ export default function App() {
     screen = <PublicNews blog />;
   } else if (seg[0] === 'blog' && seg[1]) {
     screen = <PublicNewsDetail slug={seg[1]} blog />;
+  } else if (seg[0] === 'tienda') {
+    // La tienda online (#432): el catálogo, cada producto y el carrito.
+    screen = <TiendaPublica seg={seg} />;
   } else if (seg[0] === 'aula') {
     // El aula virtual (#433): el catálogo, cada curso y el curso por dentro.
     screen = <AulaPublica seg={seg} />;
@@ -210,7 +214,7 @@ export default function App() {
     if (!userChecked) return null;
     // A entrar, y luego de vuelta aquí (un aviso del móvil, la vuelta del banco…).
     if (!user) { go(`/auth?volver=${encodeURIComponent(path)}`, { replace: true }); return null; }
-    const dashSub = { cursos: 'cursos', campamento: 'camp', pagos: 'payments', clases: 'classes', asistencia: 'attendance', soporte: 'support', fotos: 'fotos', brickslab: 'brickslab', biblioteca: 'brickslab', perfil: 'profile', ajustes: 'settings', cartera: 'wallet', mas: 'mas' }[seg[1]] || 'overview';
+    const dashSub = { pedidos: 'pedidos', cursos: 'cursos', campamento: 'camp', pagos: 'payments', clases: 'classes', asistencia: 'attendance', soporte: 'support', fotos: 'fotos', brickslab: 'brickslab', biblioteca: 'brickslab', perfil: 'profile', ajustes: 'settings', cartera: 'wallet', mas: 'mas' }[seg[1]] || 'overview';
     screen = <StudentDashboard user={user} onLogout={handleLogout} subroute={dashSub} />;
   } else if (pathname.startsWith('/admin')) {
     if (!userChecked) return null;
