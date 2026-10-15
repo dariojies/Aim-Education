@@ -439,6 +439,46 @@ export function crearEvaluacion({ pool, clubId, authenticateSession, requireSecc
         } catch (err) { fallo(res, err); }
     });
 
+    // La programación de una clase (#422): los días de un mes en que tiene clase
+    // (según su horario, sin los días que cierra el centro) y, de cada uno, si
+    // ya tiene la sesión preparada y si se ha evaluado.
+    router.get('/api/admin/evaluacion/calendario', ...ver, async (req, res) => {
+        try {
+            const g = await claseDe(req, req.query.grupo);
+            const mes = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(req.query.mes || '')) ? String(req.query.mes) : new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Madrid' }).slice(0, 7);
+            const [y, m] = mes.split('-').map(Number);
+            const ultimo = new Date(Date.UTC(y, m, 0)).getUTCDate();
+            const [ses, cierres, hechas] = await Promise.all([
+                pool.query(`SELECT sessions FROM tul_groups WHERE group_id = $1`, [g.group_id]),
+                pool.query(`SELECT fecha::text AS fecha, nombre FROM aim_calendario_laboral WHERE fecha BETWEEN $1::date AND $2::date`, [`${mes}-01`, `${mes}-${ultimo}`]).catch(() => ({ rows: [] })),
+                pool.query(
+                    `SELECT s.fecha::text AS fecha, jsonb_array_length(s.actividades)::int AS actividades,
+                            (SELECT COUNT(*) FROM aim_eval_notas n WHERE n.sesion_id = s.id)::int AS notas
+                     FROM aim_eval_sesiones s WHERE s.group_id = $1 AND s.fecha BETWEEN $2::date AND $3::date`, [g.group_id, `${mes}-01`, `${mes}-${ultimo}`]),
+            ]);
+            // Los días de la semana de su horario (0 = lunes, como en aim-tul) y sus horas.
+            const sesiones = Array.isArray(ses.rows[0]?.sessions) ? ses.rows[0].sessions : [];
+            const cerrado = new Map(cierres.rows.map(x => [x.fecha, x.nombre || 'Cerrado']));
+            const hecha = new Map(hechas.rows.map(x => [x.fecha, x]));
+            const dias = [];
+            for (let d = 1; d <= ultimo; d++) {
+                const fecha = `${mes}-${String(d).padStart(2, '0')}`;
+                const dia = (new Date(fecha + 'T12:00:00Z').getUTCDay() + 6) % 7;
+                const deHoy = sesiones.filter(s => (s?.days || []).map(Number).includes(dia));
+                // Un día con sesión guardada sale aunque ya no esté en el horario.
+                if (!deHoy.length && !hecha.has(fecha)) continue;
+                const h = hecha.get(fecha);
+                dias.push({
+                    fecha, horario: deHoy.map(s => [s.startTime, s.endTime].filter(Boolean).join('–')).filter(Boolean).join(', ') || null,
+                    cerrado: cerrado.get(fecha) || null,
+                    sesion: h ? { actividades: h.actividades, notas: h.notas } : null,
+                });
+            }
+            res.set('Cache-Control', 'no-store');
+            res.json({ clase: { id: g.group_id, nombre: g.name, actividad: g.actividad }, mes, dias });
+        } catch (err) { fallo(res, err); }
+    });
+
     // Las sesiones de una clase (para ver cuáles hay hechas).
     router.get('/api/admin/evaluacion/sesiones', ...ver, async (req, res) => {
         try {

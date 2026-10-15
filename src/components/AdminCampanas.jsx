@@ -355,7 +355,7 @@ function EditorCorreo({ campanaId, segmentos, correo, numero, plantillas, onVolv
             {!conDiseno && plantillas.length > 0 && (
               <select style={campo} value="" onChange={e => { const p = plantillas.find(x => x.id === e.target.value); if (p && (!(k.asunto || k.cuerpo) || window.confirm('¿Cambiar lo escrito por la plantilla?'))) setK(x => ({ ...x, asunto: p.asunto, cuerpo: p.cuerpo })); }} aria-label="Plantilla">
                 <option value="">— Empezar desde una plantilla (opcional) —</option>
-                {plantillas.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+                {plantillas.filter(p => p.id !== 'medios-noticia').map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
               </select>
             )}
             <input ref={asuntoRef} style={campo} placeholder="Asunto: lo primero que verán en su bandeja" value={k.asunto}

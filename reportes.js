@@ -45,10 +45,21 @@ export const SQL_MOVIMIENTOS = `
 // exentos al 100 % no cuentan.
 const SQL_IMPORTE_PENDIENTE = `(c.precio * (1 - COALESCE(c.descuento_pct, 0) / 100) * (1 + COALESCE(c.iva_pct, 0) / 100))`;
 const SQL_BASE_PENDIENTE = `(c.precio * (1 - COALESCE(c.descuento_pct, 0) / 100))`;
-// Mensualidad, Material, Matrícula, Campamento u Otros.
-const SQL_TIPO_CARGO = `(CASE WHEN c.concepto = '00000' OR c.origen = 'inscripcion' THEN 'Matrícula'
+// Las tres series de factura (#423): AIMMT (venta de material y productos),
+// AIMSP (actividades deportivas, con IVA) y AIMED (educativas, sin IVA). Todo lo
+// que va por AIMMT cuenta como «Ventas», sea de la actividad que sea; los bonos
+// (es_bono en el catálogo: Bono Flexi, Aim Pass, Pase Explorador) van aparte.
+// Hace falta «LEFT JOIN aim_precios pr ON pr.concepto = c.concepto».
+const SQL_ES_VENTA = (rc = 'rc') => `${rc}.serie IN ('MAT', 'MATR')`;
+export const SQL_GRUPO_INGRESO = (rc = 'rc') => `(CASE WHEN ${SQL_ES_VENTA(rc)} THEN 'Ventas' WHEN pr.es_bono THEN 'Bonos'
+                              ELSE COALESCE(NULLIF(c.actividad, ''), 'General') END)`;
+// Mensualidades, Ventas, Bonos, Matrícula, Campamento u Otros.
+const SQL_TIPO_CARGO = `(CASE WHEN ${SQL_ES_VENTA()} THEN 'Ventas (material y productos)'
+                              WHEN pr.es_bono THEN 'Bonos'
+                              WHEN c.concepto = '00000' OR c.origen = 'inscripcion' THEN 'Matrícula'
                               WHEN c.origen = 'campamento' THEN 'Campamento'
-                              ELSE COALESCE(NULLIF(c.tipo, ''), 'Otros') END)`;
+                              WHEN c.tipo = 'Mensualidad' THEN 'Mensualidades'
+                              ELSE 'Otros' END)`;
 
 // Lo que hay por cobrar ahora (lo usa también el Resumen del panel, para que
 // den lo mismo). Por alumnos: un cargo es de un alumno; la familia que paga
@@ -198,7 +209,8 @@ export function crearReportes({ pool, clubId, authenticateSession, requirePermis
                         FROM aim_cargos c WHERE c.estado = 'pendiente' AND c.recibo_id IS NULL AND COALESCE(c.descuento_pct, 0) < 100
                           AND c.mes < ${MES_ACTUAL} - INTERVAL '6 months'`),
             pool.query(`SELECT COALESCE(SUM(c.importe), 0)::numeric AS total FROM aim_cargos c JOIN aim_recibos rc ON rc.id = c.recibo_id
-                        WHERE rc.tipo <> 'rectificativo' AND rc.estado <> 'anulado' AND NULLIF(c.actividad, '') IS NULL AND rc.fecha BETWEEN $1::date AND $2::date`, [p.desde, p.hasta]),
+                        LEFT JOIN aim_precios pr ON pr.concepto = c.concepto
+                        WHERE rc.tipo <> 'rectificativo' AND rc.estado <> 'anulado' AND ${SQL_GRUPO_INGRESO()} = 'General' AND rc.fecha BETWEEN $1::date AND $2::date`, [p.desde, p.hasta]),
             pool.query(`SELECT COUNT(*)::int n, COALESCE(SUM(importe), 0)::numeric AS total FROM aim_tpv_pagos
                         WHERE entorno = 'real' AND estado <> 'pagado' AND (created_at AT TIME ZONE 'Europe/Madrid')::date BETWEEN $1::date AND $2::date`, [p.desde, p.hasta]),
         ]);
@@ -206,7 +218,7 @@ export function crearReportes({ pool, clubId, authenticateSession, requirePermis
         if (!g.n) l.push({ tipo: 'aviso', texto: 'No hay gastos apuntados este mes: el resultado es solo lo ingresado. Apúntalos en Gastos para ver el beneficio de verdad.' });
         const v = viejos.rows[0];
         if (v.n) l.push({ tipo: 'aviso', texto: `Hay ${v.n} cargo${v.n !== 1 ? 's' : ''} pendiente${v.n !== 1 ? 's' : ''} de hace más de seis meses (desde ${v.desde.slice(0, 7)}), por ${r2(v.total)} €: mira si siguen debiéndose o hay que quitarlos.` });
-        if (Number(sinAct.rows[0].total) > 0) l.push({ tipo: 'info', texto: `${r2(sinAct.rows[0].total)} € de ingresos de este mes no son de ninguna actividad (material, matrícula, Pase Explorador…): salen en «General».` });
+        if (Number(sinAct.rows[0].total) > 0) l.push({ tipo: 'info', texto: `${r2(sinAct.rows[0].total)} € de ingresos de este mes no son de ninguna actividad ni ventas ni bonos (matrícula, por ejemplo): salen en «General».` });
         const o = online.rows[0];
         if (o.n) l.push({ tipo: 'info', texto: `${o.n} pago${o.n !== 1 ? 's' : ''} por la web sin terminar o rechazado${o.n !== 1 ? 's' : ''} este mes (${r2(o.total)} €).` });
         return l;
@@ -218,22 +230,30 @@ export function crearReportes({ pool, clubId, authenticateSession, requirePermis
             // Lo cobrado por actividad (base y con IVA) y, restando, lo devuelto
             // con rectificativas por diferencias ese mes.
             `SELECT actividad, SUM(base)::numeric AS base, SUM(bruto)::numeric AS bruto, COUNT(DISTINCT cliente_id)::int AS alumnos FROM (
-                 SELECT COALESCE(NULLIF(c.actividad, ''), 'General') AS actividad, c.importe AS base,
+                 SELECT ${SQL_GRUPO_INGRESO()} AS actividad, c.importe AS base,
                         COALESCE(c.importe_bruto, c.importe * (1 + COALESCE(c.iva_pct, 0) / 100)) AS bruto, c.cliente_id
-                 FROM aim_cargos c JOIN aim_recibos rc ON rc.id = c.recibo_id
+                 FROM aim_cargos c JOIN aim_recibos rc ON rc.id = c.recibo_id LEFT JOIN aim_precios pr ON pr.concepto = c.concepto
                  WHERE rc.tipo <> 'rectificativo' AND rc.estado <> 'anulado' AND rc.fecha BETWEEN $1::date AND $2::date
                  UNION ALL
-                 SELECT COALESCE(NULLIF(c.actividad, ''), 'General'), l.base, l.base * (1 + COALESCE(l.iva_pct, 0) / 100), NULL
+                 SELECT ${SQL_GRUPO_INGRESO()}, l.base, l.base * (1 + COALESCE(l.iva_pct, 0) / 100), NULL
                  FROM aim_recibo_rect_lineas l JOIN aim_recibos rc ON rc.id = l.recibo_id LEFT JOIN aim_cargos c ON c.id = l.cargo_id
+                 LEFT JOIN aim_precios pr ON pr.concepto = c.concepto
                  WHERE rc.rect_metodo = 'diferencias' AND rc.estado <> 'anulado' AND rc.fecha BETWEEN $1::date AND $2::date
              ) t GROUP BY 1 ORDER BY 2 DESC`, [desde, hasta])).rows;
         const [d, dAnt, act, actAnt, tipos, medios, series, meses] = await Promise.all([
             dinero(p.desde, p.hasta), dinero(p.anterior.desde, p.anterior.hasta),
             actividades(p.desde, p.hasta), actividades(p.anterior.desde, p.anterior.hasta),
-            pool.query(`SELECT ${SQL_TIPO_CARGO} AS tipo, SUM(c.importe)::numeric AS base, COUNT(*)::int AS n
-                        FROM aim_cargos c JOIN aim_recibos rc ON rc.id = c.recibo_id
-                        WHERE rc.tipo <> 'rectificativo' AND rc.estado <> 'anulado' AND rc.fecha BETWEEN $1::date AND $2::date
-                        GROUP BY 1 ORDER BY 2 DESC`, [p.desde, p.hasta]),
+            // Por tipo, también con lo devuelto ese mes (como por actividad).
+            pool.query(`SELECT tipo, SUM(base)::numeric AS base, COUNT(*) FILTER (WHERE base > 0)::int AS n FROM (
+                          SELECT ${SQL_TIPO_CARGO} AS tipo, c.importe AS base
+                          FROM aim_cargos c JOIN aim_recibos rc ON rc.id = c.recibo_id LEFT JOIN aim_precios pr ON pr.concepto = c.concepto
+                          WHERE rc.tipo <> 'rectificativo' AND rc.estado <> 'anulado' AND rc.fecha BETWEEN $1::date AND $2::date
+                          UNION ALL
+                          SELECT ${SQL_TIPO_CARGO}, l.base
+                          FROM aim_recibo_rect_lineas l JOIN aim_recibos rc ON rc.id = l.recibo_id LEFT JOIN aim_cargos c ON c.id = l.cargo_id
+                          LEFT JOIN aim_precios pr ON pr.concepto = c.concepto
+                          WHERE rc.rect_metodo = 'diferencias' AND rc.estado <> 'anulado' AND rc.fecha BETWEEN $1::date AND $2::date
+                        ) t GROUP BY 1 ORDER BY 2 DESC`, [p.desde, p.hasta]),
             // Por cómo se pagó (los cobros con varios medios, repartidos).
             pool.query(`SELECT COALESCE(rp.medio, rc.medio_pago, 'otro') AS medio, SUM(COALESCE(rp.importe, rc.importe))::numeric AS total,
                                COUNT(DISTINCT COALESCE(rc.factura_grupo::text, rc.id::text))::int AS pagos
@@ -244,6 +264,8 @@ export function crearReportes({ pool, clubId, authenticateSession, requirePermis
                         FROM (${SQL_MOVIMIENTOS}) m WHERE m.fecha BETWEEN $1::date AND $2::date GROUP BY 1 ORDER BY 1`, [p.desde, p.hasta]),
             serie(p.mes),
         ]);
+        // El prefijo con el que sale cada serie en la factura (AIMMT, AIMSP, AIMED…).
+        const numeracion = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'numeracion'`)).rows[0]?.valor || {};
         const alumnosMes = meses[meses.length - 1].alumnos;
         const ant = Object.fromEntries(actAnt.map(a => [a.actividad, r2(a.base)]));
         return {
@@ -253,7 +275,7 @@ export function crearReportes({ pool, clubId, authenticateSession, requirePermis
             porActividad: act.map(a => ({ actividad: a.actividad, ingresos: r2(a.base), cobrado: r2(a.bruto), alumnos: a.alumnos, anterior: ant[a.actividad] || 0 })),
             porTipo: tipos.rows.map(t => ({ tipo: t.tipo, ingresos: r2(t.base), cargos: t.n })),
             porMedio: medios.rows.map(m => ({ medio: m.medio, total: r2(m.total), pagos: m.pagos })),
-            porSerie: series.rows.map(s => ({ serie: s.serie, ingresos: r2(s.base), cobrado: r2(s.total), iva: r2(Number(s.total) - Number(s.base)), facturas: s.facturas })),
+            porSerie: series.rows.map(s => ({ serie: s.serie, prefijo: numeracion[s.serie]?.prefijo || null, ingresos: r2(s.base), cobrado: r2(s.total), iva: r2(Number(s.total) - Number(s.base)), facturas: s.facturas })),
         };
     });
 

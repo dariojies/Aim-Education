@@ -7,6 +7,7 @@ import AdminEvaluacion from './AdminEvaluacion.jsx';
 import { useEnVivo } from '../envivo.js';
 import { ListaClases, colorOcupacion } from './AdminTulClases.jsx';
 import Reportes from './Reportes.jsx';
+import { MediosPanel, EnviarAMedios } from './MediosComunicacion.jsx';
 import { FiltroPeriodo, InformeBeneficios, InformeDesglosePersonas } from './InformesGastos.jsx';
 import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong, campDayParts, nombreMedioPago, CoronaCumple, COLOR_CUMPLE, coincideBusqueda } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
@@ -1489,6 +1490,9 @@ function AdminNews({ refreshTrigger, onEditPost, onNuevo }) {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [verMedios, setVerMedios] = useState(false);
+  const [nMedios, setNMedios] = useState(null);
+  useEffect(() => { fetch('/api/admin/medios', { credentials: 'include' }).then(r => (r.ok ? r.json() : null)).then(d => setNMedios(d?.contactos?.length ?? null)).catch(() => {}); }, []);
 
   useEffect(() => {
     Promise.all([
@@ -1546,8 +1550,12 @@ function AdminNews({ refreshTrigger, onEditPost, onNuevo }) {
               } catch (e) { alert(e.message); } finally { setTrayendo(false); }
             }}>{trayendo ? 'Trayendo…' : 'Traer las imágenes a la web'}</button>
         )}
+        <button className="btn btn-outline btn-sm" onClick={() => setVerMedios(v => !v)} title="Los contactos de prensa a los que se manda una noticia">
+          Medios de comunicación{nMedios != null ? ` · ${nMedios}` : ''}
+        </button>
         {onNuevo && <button className="btn btn-primary btn-sm" onClick={onNuevo}><I.Plus /> Nueva noticia</button>}
       </div>
+      {verMedios && <MediosPanel onCerrar={() => setVerMedios(false)} onCambio={setNMedios} />}
 
       <div className="data-table">
         <div className="data-table-head" style={{ gridTemplateColumns: "2.4fr 1fr 0.9fr 0.7fr 0.7fr 130px" }}>
@@ -1565,7 +1573,11 @@ function AdminNews({ refreshTrigger, onEditPost, onNuevo }) {
             <div key={p.id} className={`data-table-row ${a?.className || ""}`} style={{ gridTemplateColumns: "2.4fr 1fr 0.9fr 0.7fr 0.7fr 130px" }}>
               <div>
                 <div className="pri">{p.title}</div>
-                <div className="sec">{dateStr} · {p.author_name || "Admin"}</div>
+                <div className="sec">
+                  {dateStr} · {p.author_name || "Admin"}
+                  {p.tipo === 'blog' && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 800, textTransform: 'uppercase', color: 'var(--purple)' }}>· Blog</span>}
+                  {p.medios?.enviado_at && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 800, textTransform: 'uppercase', color: 'var(--teal)' }} title={`Mandada a los medios el ${fmtFecha(p.medios.enviado_at)}`}>· Enviada a medios</span>}
+                </div>
               </div>
               <div>
                 <span className="activity-pill">{a?.name || p.category || "General"}</span>
@@ -1576,7 +1588,7 @@ function AdminNews({ refreshTrigger, onEditPost, onNuevo }) {
               <div className="pri">{p.view_count || "—"}</div>
               <div className="pri" style={{ color: p.click_count ? "var(--teal)" : "var(--ink-3)" }}>{p.click_count || "—"}</div>
               <div className="row-actions">
-                <button className="icon-btn" title="Ver en web pública" onClick={() => window.open(`/noticias/${p.slug}`, '_blank')}><I.Eye /></button>
+                <button className="icon-btn" title="Ver en web pública" onClick={() => window.open(`/${p.tipo === 'blog' ? 'blog' : 'noticias'}/${p.slug}`, '_blank')}><I.Eye /></button>
                 <button className="icon-btn" title="Editar entrada" onClick={() => onEditPost(p)}><I.Edit /></button>
                 <button className="icon-btn danger" title="Eliminar entrada" onClick={() => deletePost(p.id)}><I.Trash /></button>
               </div>
@@ -6771,9 +6783,14 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         credentials: 'include'
       });
       if (res.ok) {
-        showToast(editingItem.status === 'scheduled'
+        const guardada = await res.json().catch(() => ({}));
+        const m = guardada.medios;
+        // A los medios (#428): cuántos correos salieron, o por qué no.
+        const medios = !m ? '' : m.error ? ` Medios: ${m.error}` : m.yaEnviada ? ' Ya se había mandado a los medios.'
+          : ` Mandada a ${m.enviados} medio${m.enviados !== 1 ? 's' : ''}${m.fallos?.length ? ` (${m.fallos.length} no salieron: ${m.fallos.map(f => f.email).join(', ')})` : ''}.`;
+        showToast((editingItem.status === 'scheduled'
           ? `Noticia programada: se publicará el ${new Date(publishAt).toLocaleString('es-ES', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}.`
-          : isEdit ? "Noticia modificada." : "Noticia publicada con éxito.");
+          : isEdit ? "Noticia modificada." : "Noticia publicada con éxito.") + medios);
         setRefreshTrigger(p => p + 1);
         setActiveModal(null);
       } else {
@@ -7508,6 +7525,14 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                 </select>
               </div>
               <div className="field">
+                {/* #426: una noticia (un campeonato) o un artículo de blog (cómo entrenar combates). */}
+                <label>¿Qué es?</label>
+                <select value={editingItem.tipo || 'noticia'} onChange={e => setEditingItem({ ...editingItem, tipo: e.target.value })} style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }}>
+                  <option value="noticia">Noticia (sale en «Noticias»)</option>
+                  <option value="blog">Artículo de blog (sale en «Blog»)</option>
+                </select>
+              </div>
+              <div className="field">
                 <label>Estado</label>
                 <select value={editingItem.status} onChange={e => setEditingItem({ ...editingItem, status: e.target.value })} style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }}>
                   <option value="draft">Borrador (Oculto)</option>
@@ -7523,6 +7548,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                 )}
               </div>
             </div>
+            <EnviarAMedios item={editingItem} onCambio={v => setEditingItem({ ...editingItem, enviarMedios: v })} />
 
             <div className="field">
               <label>Imagen de portada</label>

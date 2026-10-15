@@ -30,7 +30,8 @@ const nombreMes = (mes, corto = false) => {
 };
 const cambio = (a, b) => (b ? Math.round(((a - b) / Math.abs(b)) * 100) : null);
 const MEDIO = { efectivo: 'Efectivo', tarjeta: 'Tarjeta', bizum: 'Bizum', transferencia: 'Transferencia', tpv_online: 'Por la web', compensacion: 'Pase Explorador descontado', mixto: 'Varios' };
-const SERIE = { MAT: 'Material (con IVA)', IVA: 'Con IVA', SIVA: 'Exentas de IVA', MATR: 'Rectificativas de material', IVAR: 'Rectificativas con IVA', SIVAR: 'Rectificativas exentas' };
+// Las tres series (#423): venta de material y productos, actividades deportivas (con IVA) y educativas (sin IVA).
+const SERIE = { MAT: 'Venta de material y productos', IVA: 'Actividades deportivas (con IVA)', SIVA: 'Actividades educativas (sin IVA)', MATR: 'Rectificativas de ventas', IVAR: 'Rectificativas de deportivas', SIVAR: 'Rectificativas de educativas' };
 const leer = (k, def) => { try { return localStorage.getItem(k) || def; } catch { return def; } };
 const guardar = (k, v) => { try { localStorage.setItem(k, v); } catch { /* sin almacenamiento */ } };
 
@@ -265,9 +266,9 @@ function Ingresos({ d }) {
       </Bloque>
       <Bloque titulo="Por actividad" sub="sin IVA, comparado con el mes anterior">
         <Tabla columnas={['Actividad', 'Ingresos', 'Con IVA', 'Alumnos', 'Mes anterior', 'Cambio']}
-          filas={d.porActividad.map(x => ({ celdas: [<b>{x.actividad}</b>, <b>{eur(x.ingresos)}</b>, eur(x.cobrado), num(x.alumnos), eur(x.anterior), <Delta a={x.ingresos} b={x.anterior} />], estilo: x.actividad === 'General' ? { background: 'var(--bg-3)' } : undefined }))}
+          filas={d.porActividad.map(x => ({ celdas: [<b>{x.actividad === 'Ventas' ? 'Ventas (material y productos)' : x.actividad}</b>, <b>{eur(x.ingresos)}</b>, eur(x.cobrado), num(x.alumnos), eur(x.anterior), <Delta a={x.ingresos} b={x.anterior} />], estilo: ['General', 'Ventas', 'Bonos'].includes(x.actividad) ? { background: 'var(--bg-3)' } : undefined }))}
           pie={['Total', eur(d.ingresos), eur(d.cobrado), '', eur(a.ingresos), <Delta a={d.ingresos} b={a.ingresos} />]} />
-        {d.porActividad.some(x => x.actividad === 'General') && <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>«General» es lo que no es de ninguna actividad: material suelto, matrícula, Pase Explorador…</p>}
+        <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>«Ventas» es todo lo facturado en la serie de material y productos (AIMMT); «Bonos», los bonos y pases (Bono Flexi, Aim Pass, Pase Explorador); «General», lo que no es de ninguna actividad (la matrícula, por ejemplo).</p>
       </Bloque>
       <Rejilla>
         <Bloque titulo="Por tipo" sub="sin IVA">
@@ -279,7 +280,7 @@ function Ingresos({ d }) {
       </Rejilla>
       <Bloque titulo="Por serie de factura" sub="para cuadrar con el libro registro">
         <Tabla columnas={['Serie', 'Base', 'IVA', 'Total', 'Facturas']}
-          filas={d.porSerie.map(x => ({ celdas: [<span><b>{x.serie}</b> <span style={{ color: 'var(--ink-3)', fontSize: 12 }}>{SERIE[x.serie] || ''}</span></span>, eur(x.ingresos), eur(x.iva), eur(x.cobrado), num(x.facturas)] }))}
+          filas={d.porSerie.map(x => ({ celdas: [<span><b>{x.prefijo || x.serie}</b> <span style={{ color: 'var(--ink-3)', fontSize: 12 }}>{SERIE[x.serie] || ''}</span></span>, eur(x.ingresos), eur(x.iva), eur(x.cobrado), num(x.facturas)] }))}
           pie={['Total', eur(d.ingresos), eur(d.iva), eur(d.cobrado), num(d.porSerie.reduce((s, x) => s + x.facturas, 0))]} />
       </Bloque>
     </div>

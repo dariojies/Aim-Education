@@ -124,8 +124,8 @@ export function InformeBeneficios({ periodo = null }) {
               Los alumnos y las horas de cada actividad salen del horario. El <b>campamento</b> cuenta los
               niños apuntados y sus 5 h diarias, y <b>Taller/Evento</b> los inscritos y la duración de cada evento.
             </div>
-            {datos.sinActividad > 0 && <div>La fila <b>General</b> son {eur(datos.sinActividad)} de ingresos que no son de ninguna actividad (material, matrícula, Pase Explorador…): cuentan en el total, pero no se les reparten gastos.</div>}
-            {datos.gastosVenta > 0 && <div>Los <b>{eur(datos.gastosVenta)}</b> de gastos de la categoría «Venta» (material comprado para venderlo) van en la fila <b>General</b>, contra lo que se cobra por ese material: no se le restan a ninguna actividad.</div>}
+            {(datos.ventas > 0 || datos.bonos > 0 || datos.sinActividad > 0) && <div>Las filas <b>Ventas</b> (todo lo facturado en la serie de material y productos, AIMMT), <b>Bonos</b> y <b>General</b> (lo que no es de ninguna actividad, como la matrícula) cuentan en el total, pero no se les reparten los gastos comunes.</div>}
+            {datos.gastosVenta > 0 && <div>Los <b>{eur(datos.gastosVenta)}</b> de gastos de la categoría «Venta» (lo que se compra para venderlo) van en la fila <b>Ventas</b>, contra lo que se cobra por ello: no se le restan a ninguna actividad.</div>}
           </div>
         </>
       )}
@@ -214,7 +214,7 @@ export function InformeDesglosePersonas({ periodo = null }) {
           </div>
           {datos.sinActividad > 0 && (
             <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
-              No incluye <b>{eur(datos.sinActividad)}</b> de ingresos que no son de ninguna actividad (material, matrícula, Pase Explorador…): no son de ningún instructor.
+              No incluye <b>{eur(datos.sinActividad)}</b> de ingresos de ventas, bonos y otros que no son de ninguna actividad: no son de ningún instructor.
             </div>
           )}
           {(datos.sinInstructor.ingresos > 0 || datos.sinInstructor.gastos > 0) && (

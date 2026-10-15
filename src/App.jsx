@@ -194,6 +194,11 @@ export default function App() {
     screen = <PublicNews />;
   } else if (seg[0] === 'noticias' && seg[1]) {
     screen = <PublicNewsDetail slug={seg[1]} />;
+  } else if (pathname === '/blog') {
+    // Los artículos que no son noticias (#426): consejos, por qué leer…
+    screen = <PublicNews blog />;
+  } else if (seg[0] === 'blog' && seg[1]) {
+    screen = <PublicNewsDetail slug={seg[1]} blog />;
   } else if (pathname === '/auth') {
     const mode = params.get('mode') || 'login';
     screen = <AuthScreen key={mode} mode={mode} onLoginSuccess={handleLoginSuccess} />;

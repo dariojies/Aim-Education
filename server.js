@@ -157,6 +157,9 @@ async function initDb() {
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
+        // Noticia o artículo de blog (#426): las de blog salen en «Blog», no en
+        // «Noticias» (un campeonato es noticia; cómo entrenar combates, blog).
+        await client.query(`ALTER TABLE aim_education_posts ADD COLUMN IF NOT EXISTS tipo VARCHAR(10) NOT NULL DEFAULT 'noticia'`);
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_education_post_views (
                 id SERIAL PRIMARY KEY,
@@ -1810,6 +1813,9 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_galeria_fotos_album ON aim_galeria_fotos (album_id, orden, id)`);
+        // Un álbum puede ser de toda una temporada (#429): «2026/2027». Se van
+        // añadiendo fotos durante el curso y cada una lleva su día de subida.
+        await client.query(`ALTER TABLE aim_galeria_albumes ADD COLUMN IF NOT EXISTS temporada VARCHAR(9)`);
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_galeria_etiquetas (
                 foto_id INTEGER NOT NULL REFERENCES aim_galeria_fotos(id) ON DELETE CASCADE,
@@ -10926,6 +10932,7 @@ app.post('/api/admin/permisos/solicitudes/:userId', authenticateSession, require
 // «comercial» solo a quien lo acepta, y con el aviso de cómo darse de baja.
 // ═════════════════════════════════════════════════════════════════════════════
 const TIPOS_CORREO = ['servicio', 'actividades', 'comercial'];
+const PLANTILLA_MEDIOS = 'medios-noticia';
 const PLANTILLAS_POR_DEFECTO = [
     { id: 'recordatorio-pago', nombre: 'Recordatorio de pago', tipo: 'servicio',
       asunto: 'Recibos pendientes de {alumno}',
@@ -10939,10 +10946,18 @@ const PLANTILLAS_POR_DEFECTO = [
     { id: 'aviso', nombre: 'Aviso general', tipo: 'servicio',
       asunto: 'Aviso de AIM Education',
       cuerpo: 'Hola,\n\n\n\nUn saludo,\nAIM Education' },
+    // La presentación de una noticia a los medios de comunicación (#428). Debajo
+    // va siempre la noticia entera. {cuando}: que ya está publicada, con su
+    // enlace, o el día en que se publicará.
+    { id: PLANTILLA_MEDIOS, nombre: 'Medios de comunicación: noticia', tipo: 'servicio',
+      asunto: '{titulo}',
+      cuerpo: 'Hola, {nombre}:\n\nOs escribo desde AIM Education porque creo que esta noticia puede interesar en {medio}. {cuando}\n\nOs dejo el texto completo aquí debajo, por si os sirve. Si necesitáis fotos o hablar con alguien del club, contestad a este correo y lo preparamos.\n\nMuchas gracias y un saludo,\n{firma}\nAIM Education' },
 ];
 async function plantillasCorreo() {
     const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'plantillas_correo'`);
-    return Array.isArray(r.rows[0]?.valor) ? r.rows[0].valor : PLANTILLAS_POR_DEFECTO;
+    const lista = Array.isArray(r.rows[0]?.valor) ? r.rows[0].valor : PLANTILLAS_POR_DEFECTO;
+    // La de los medios (#428) está siempre, aunque se guardaran antes de que existiera.
+    return lista.some(p => p.id === PLANTILLA_MEDIOS) ? lista : [...lista, PLANTILLAS_POR_DEFECTO.find(p => p.id === PLANTILLA_MEDIOS)];
 }
 
 // A quién se le puede escribir desde la ficha de una persona: ella misma y sus
@@ -11561,7 +11576,7 @@ async function candidatosAutomatismo(id, cfg) {
             const mesAnt = sumarDiaISO(`${hoy.slice(0, 7)}-01`, -1).slice(0, 7);
             const n = await pool.query(
                 `SELECT title, slug FROM aim_education_posts
-                 WHERE status = 'published' AND (published_at AT TIME ZONE 'Europe/Madrid')::date >= $1::date
+                 WHERE status = 'published' AND tipo = 'noticia' AND (published_at AT TIME ZONE 'Europe/Madrid')::date >= $1::date
                    AND (published_at AT TIME ZONE 'Europe/Madrid')::date < $2::date
                  ORDER BY published_at`, [`${mesAnt}-01`, `${hoy.slice(0, 7)}-01`]);
             if (!n.rowCount) return [];
@@ -13067,23 +13082,30 @@ async function avisosFamilia(me) {
             });
         }
 
-        // Fotos nuevas en la galería (#364): álbumes publicados hace poco que le tocan.
+        // Fotos nuevas en la galería (#364, #429): los álbumes con fotos que le
+        // tocan subidas (o publicadas) en las dos últimas semanas. La marca y la
+        // fecha son las de la última foto, no las de cuando se creó el álbum: una
+        // foto subida hoy a un álbum de hace una semana sale como de hoy, y vuelve
+        // a avisar aunque el álbum ya se hubiera visto.
         const gal = await pool.query(
-            `SELECT al.id, al.titulo, al.publicado_at, COUNT(*)::int AS n
+            `SELECT al.id, al.titulo, MAX(GREATEST(f.created_at, al.publicado_at)) AS ultima,
+                    COUNT(*) FILTER (WHERE GREATEST(f.created_at, al.publicado_at) > NOW() - INTERVAL '14 days')::int AS n
              FROM aim_galeria_fotos f JOIN aim_galeria_albumes al ON al.id = f.album_id
-             WHERE al.publicado_at > NOW() - INTERVAL '14 days' AND ${SQL_FOTO_VISIBLE('$1::uuid[]')}
-             GROUP BY al.id, al.titulo, al.publicado_at ORDER BY al.publicado_at DESC LIMIT 5`, [fam]).catch(() => ({ rows: [] }));
+             WHERE ${SQL_FOTO_VISIBLE('$1::uuid[]')}
+             GROUP BY al.id, al.titulo
+             HAVING MAX(GREATEST(f.created_at, al.publicado_at)) > NOW() - INTERVAL '14 days'
+             ORDER BY ultima DESC LIMIT 5`, [fam]).catch(() => ({ rows: [] }));
         for (const a of gal.rows) {
             avisos.push({
                 tipo: 'galeria', destino: 'fotos', texto: `Fotos nuevas: ${a.titulo}`,
-                detalle: `${a.n} foto${a.n !== 1 ? 's' : ''}`, clave: `galeria:${a.id}`, marca: a.publicado_at, fecha: a.publicado_at,
+                detalle: `${a.n} foto${a.n !== 1 ? 's' : ''} nueva${a.n !== 1 ? 's' : ''}`, clave: `galeria:${a.id}`, marca: a.ultima, fecha: a.ultima,
             });
         }
 
         // 4) Novedades del club de los últimos quince días.
         const posts = await pool.query(
             `SELECT id, title, published_at FROM aim_education_posts
-             WHERE status = 'published' AND published_at > NOW() - INTERVAL '15 days'
+             WHERE status = 'published' AND tipo = 'noticia' AND published_at > NOW() - INTERVAL '15 days'
              ORDER BY published_at DESC LIMIT 3`);
         // Si ha dicho que no a las comunicaciones comerciales (#170), no se le enseñan.
         const sinComerciales = (await pool.query(`SELECT ${sqlUltimoConsentimiento('$1::uuid', 'comunicaciones')} IS FALSE AS no`, [me])).rows[0].no;
@@ -14069,12 +14091,16 @@ app.delete('/api/admin/proveedores/:id', authenticateSession, requireAdmin, asyn
 // a una persona concreta: en el desglose esos van enteros a esa persona, no se
 // reparten entre los instructores de la actividad.
 async function repartoPorActividad(d, h, { soloSinPersona = false } = {}) {
-    // Ingresos: importe base de cada cargo cobrado, agrupado por actividad.
+    // Ingresos: importe base de cada cargo cobrado, agrupado por actividad. Lo
+    // de la serie de material (AIMMT) va a «Ventas» y los bonos a «Bonos» (#423),
+    // cada uno en su fila: no son de ninguna actividad.
     const ing = await pool.query(
-        `SELECT COALESCE(NULLIF(c.actividad,''), 'Sin actividad') AS actividad,
+        `SELECT CASE WHEN r.serie IN ('MAT', 'MATR') THEN 'Ventas' WHEN pr.es_bono THEN 'Bonos'
+                     ELSE COALESCE(NULLIF(c.actividad,''), 'Sin actividad') END AS actividad,
                 COALESCE(SUM(c.importe),0)::numeric AS total
          FROM aim_cargos c
          JOIN aim_recibos r ON r.id = c.recibo_id
+         LEFT JOIN aim_precios pr ON pr.concepto = c.concepto
          WHERE c.estado = 'cobrado' AND r.estado <> 'anulado'
            AND ($1::date IS NULL OR r.fecha >= $1::date)
            AND ($2::date IS NULL OR r.fecha <= $2::date)
@@ -14186,7 +14212,7 @@ async function repartoPorActividad(d, h, { soloSinPersona = false } = {}) {
     const conVida = [CAMP_ACTIVIDAD, EVENTOS_ACTIVIDAD]
         .filter(n => (alumnosDe[n] || 0) > 0 || (horasDe[n] || 0) > 0);
     const nombres = [...new Set([...Object.keys(ingresos), ...Object.keys(gastosDir), ...conVida])]
-        .filter(n => n !== 'Sin actividad');
+        .filter(n => !['Sin actividad', 'Ventas', 'Bonos'].includes(n));
 
     // Reparte una bolsa según el peso de cada actividad. Sin pesos (nadie
     // matriculado, o ninguna hora en el horario) se cae a partes iguales,
@@ -14218,6 +14244,7 @@ async function repartoPorActividad(d, h, { soloSinPersona = false } = {}) {
     return {
         nombres, ingresos, gastosDir, cuotas, cuotaDe, bolsas, gastosComunes,
         alumnosDe, horasDe, sinActividad: r2Server(ingresos['Sin actividad'] || 0), gastosVenta: r2Server(gastosVenta),
+        ventas: r2Server(ingresos.Ventas || 0), bonos: r2Server(ingresos.Bonos || 0),
     };
 }
 
@@ -14240,8 +14267,12 @@ app.get('/api/admin/informes/beneficios', authenticateSession, requirePermiso('r
         }).sort((a, b) => b.beneficio - a.beneficio);
         // Lo cobrado que no es de ninguna actividad (material suelto, matrícula,
         // Pase Explorador…) va en su fila: antes se quedaba fuera del TOTAL (#416).
-        // Ahí van también los gastos de material para vender (#418).
-        if (R.sinActividad || R.gastosVenta) filas.push({ actividad: 'General (sin actividad)', ingresos: R.sinActividad, gastosDirectos: R.gastosVenta, gastosComunes: 0, beneficio: r2Server(R.sinActividad - R.gastosVenta), general: true });
+        // Las ventas de material y productos (AIMMT) con lo que se compró para
+        // venderlo (gastos de «Venta», #418), los bonos y lo demás sin actividad,
+        // cada uno en su fila (#423).
+        if (R.ventas || R.gastosVenta) filas.push({ actividad: 'Ventas (material y productos)', ingresos: R.ventas, gastosDirectos: R.gastosVenta, gastosComunes: 0, beneficio: r2Server(R.ventas - R.gastosVenta), general: true });
+        if (R.bonos) filas.push({ actividad: 'Bonos', ingresos: R.bonos, gastosDirectos: 0, gastosComunes: 0, beneficio: R.bonos, general: true });
+        if (R.sinActividad) filas.push({ actividad: 'General (sin actividad)', ingresos: R.sinActividad, gastosDirectos: 0, gastosComunes: 0, beneficio: R.sinActividad, general: true });
 
         res.set('Cache-Control', 'no-store');
         res.json({
@@ -14251,7 +14282,7 @@ app.get('/api/admin/informes/beneficios', authenticateSession, requirePermiso('r
                 alumnos: r2Server(R.bolsas.alumnos),
                 horas: r2Server(R.bolsas.horas),
             },
-            sinActividad: R.sinActividad, gastosVenta: R.gastosVenta,
+            sinActividad: R.sinActividad, gastosVenta: R.gastosVenta, ventas: R.ventas, bonos: R.bonos,
             totalGastosComunes: r2Server(R.gastosComunes),
             pesos: Object.fromEntries(R.nombres.map(n => [n, {
                 alumnos: R.alumnosDe[n] || 0,
@@ -14387,7 +14418,7 @@ app.get('/api/admin/informes/desglose-personas', authenticateSession, requirePer
         res.json({
             desde: desde || null, hasta: hasta || null,
             filas,
-            sinActividad: R.sinActividad,
+            sinActividad: r2Server(R.sinActividad + R.ventas + R.bonos),
             sinInstructor: { ingresos: r2Server(sinInstructor.ingresos), gastos: r2Server(sinInstructor.gastos) },
             totales: {
                 ingresos: r2Server(filas.reduce((s, f) => s + f.ingresos, 0) + sinInstructor.ingresos),
@@ -14508,7 +14539,10 @@ app.get('/api/admin/posts', authenticateSession, async (req, res) => {
             FROM aim_education_posts p
             ORDER BY p.created_at DESC
         `);
-        res.json(result.rows);
+        // Si ya se mandó a los medios de comunicación (#428), cuándo.
+        const medios = new Map((await pool.query(`SELECT clave, valor FROM aim_ajustes WHERE clave LIKE 'medios-post:%'`)).rows
+            .map(x => [x.clave.slice('medios-post:'.length), x.valor]));
+        res.json(result.rows.map(p => ({ ...p, medios: medios.get(p.id) || null })));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -14528,15 +14562,17 @@ app.post('/api/admin/posts', authenticateSession, async (req, res) => {
     const finalSlug = slug ? slugify(slug) : slugify(title);
     const authorName = `${req.userSession.firstName || ''} ${req.userSession.lastName || ''}`.trim();
     const publishedAt = status === 'published' ? new Date() : programada;
+    const tipo = req.body.tipo === 'blog' ? 'blog' : 'noticia';
 
     try {
         await pool.query(`
-            INSERT INTO aim_education_posts (id, title, slug, excerpt, content, cover_image_url, author_name, category, status, published_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        `, [id, title, finalSlug, excerpt || null, content, imageUrl || null, authorName || 'Admin', category || 'general', status || 'draft', publishedAt]);
+            INSERT INTO aim_education_posts (id, title, slug, excerpt, content, cover_image_url, author_name, category, status, published_at, tipo)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        `, [id, title, finalSlug, excerpt || null, content, imageUrl || null, authorName || 'Admin', category || 'general', status || 'draft', publishedAt, tipo]);
 
         const result = await pool.query('SELECT * FROM aim_education_posts WHERE id = $1', [id]);
-        res.status(201).json(result.rows[0]);
+        const medios = req.body.enviarMedios ? await enviarAMedios(result.rows[0], req) : null;
+        res.status(201).json({ ...result.rows[0], ...(medios ? { medios } : {}) });
     } catch (err) {
         if (err.code === '23505') return res.status(409).json({ error: 'Ya existe una entrada con ese slug. Usa un título diferente o edita el slug.' });
         res.status(500).json({ error: err.message });
@@ -14560,15 +14596,17 @@ app.put('/api/admin/posts/:id', authenticateSession, async (req, res) => {
             : willPublish && !wasPublished ? new Date() : current.rows[0].published_at;
         const finalSlug = slug ? slugify(slug) : slugify(title);
 
+        const tipo = req.body.tipo === undefined ? (current.rows[0].tipo || 'noticia') : req.body.tipo === 'blog' ? 'blog' : 'noticia';
         await pool.query(`
             UPDATE aim_education_posts
             SET title = $1, slug = $2, excerpt = $3, content = $4, cover_image_url = $5,
-                category = $6, status = $7, published_at = $8, updated_at = NOW()
+                category = $6, status = $7, published_at = $8, updated_at = NOW(), tipo = $10
             WHERE id = $9
-        `, [title, finalSlug, excerpt || null, content, imageUrl || null, category || 'general', status || 'draft', publishedAt, req.params.id]);
+        `, [title, finalSlug, excerpt || null, content, imageUrl || null, category || 'general', status || 'draft', publishedAt, req.params.id, tipo]);
 
         const result = await pool.query('SELECT * FROM aim_education_posts WHERE id = $1', [req.params.id]);
-        res.json(result.rows[0]);
+        const medios = req.body.enviarMedios ? await enviarAMedios(result.rows[0], req) : null;
+        res.json({ ...result.rows[0], ...(medios ? { medios } : {}) });
     } catch (err) {
         if (err.code === '23505') return res.status(409).json({ error: 'Ya existe una entrada con ese slug.' });
         res.status(500).json({ error: err.message });
@@ -14584,6 +14622,93 @@ app.delete('/api/admin/posts/:id', authenticateSession, async (req, res) => {
     }
 });
 
+// ── Medios de comunicación (#428) ──
+// Los contactos de prensa (aim_ajustes 'medios_contactos': [{ id, nombre, medio,
+// email }]) y el envío de una noticia: a cada uno, un correo suyo (nada de copia
+// a todos), desde info@ con el nombre de quien la manda, con la plantilla
+// «Medios de comunicación: noticia» y la noticia entera debajo. Una noticia se
+// manda una vez (queda apuntado en 'medios-post:<id>').
+const CLAVE_MEDIOS = 'medios_contactos';
+const ES_CORREO = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+async function contactosMedios() {
+    const v = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = $1`, [CLAVE_MEDIOS])).rows[0]?.valor;
+    return Array.isArray(v) ? v : [];
+}
+app.get('/api/admin/medios', authenticateSession, requireSeccion('news'), async (req, res) => {
+    try { res.set('Cache-Control', 'no-store'); res.json({ contactos: await contactosMedios(), correo: !!mailTransporter }); }
+    catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.put('/api/admin/medios', authenticateSession, requireSeccion('news'), async (req, res) => {
+    const lista = Array.isArray(req.body?.contactos) ? req.body.contactos.slice(0, 200) : null;
+    if (!lista) return res.status(400).json({ error: 'Falta la lista de contactos.' });
+    const limpios = [], vistos = new Set();
+    for (const c of lista) {
+        const email = String(c?.email || '').trim().toLowerCase().slice(0, 160);
+        const medio = String(c?.medio || '').trim().slice(0, 120);
+        const nombre = String(c?.nombre || '').trim().slice(0, 120);
+        if (!ES_CORREO.test(email)) return res.status(400).json({ error: `El correo «${email || '(vacío)'}» no es válido.` });
+        if (!medio) return res.status(400).json({ error: `Pon de qué medio es ${email}.` });
+        if (vistos.has(email)) continue;
+        vistos.add(email);
+        limpios.push({ id: String(c.id || '').slice(0, 40) || crypto.randomUUID(), nombre, medio, email });
+    }
+    try {
+        await pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ($1, $2::jsonb, NOW(), $3)
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+            [CLAVE_MEDIOS, JSON.stringify(limpios), req.userSession.userId]);
+        res.json({ success: true, contactos: limpios });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+// Manda la noticia a los medios. Solo si está publicada o programada, y una vez.
+async function enviarAMedios(post, req) {
+    if (!['published', 'scheduled'].includes(post.status)) return { error: 'Solo se manda a los medios una noticia publicada o programada.' };
+    const clave = `medios-post:${post.id}`;
+    const ya = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = $1`, [clave])).rows[0]?.valor;
+    if (ya?.enviado_at) return { yaEnviada: ya.enviado_at };
+    if (!mailTransporter) return { error: 'El correo no está configurado: no se ha mandado a los medios.' };
+    const contactos = await contactosMedios();
+    if (!contactos.length) return { error: 'No hay ningún medio de comunicación apuntado.' };
+    // Se apunta antes de mandar: si se guarda dos veces seguidas, no sale doble.
+    const apuntado = await pool.query(
+        `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ($1, $2::jsonb, NOW(), $3) ON CONFLICT (clave) DO NOTHING RETURNING clave`,
+        [clave, JSON.stringify({ enviado_at: new Date().toISOString(), enviando: true }), req.userSession.userId]);
+    if (!apuntado.rowCount) return { yaEnviada: true };
+    const plantilla = (await plantillasCorreo()).find(p => p.id === PLANTILLA_MEDIOS);
+    const firma = `${req.userSession.firstName || ''} ${req.userSession.lastName || ''}`.trim() || 'El equipo';
+    const enlace = `${URL_PUBLICA_WEB}/${post.tipo === 'blog' ? 'blog' : 'noticias'}/${post.slug}`;
+    const fecha = new Date(post.published_at || Date.now());
+    const cuando = post.status === 'scheduled'
+        ? `La publicaremos en nuestra web el ${fecha.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'Europe/Madrid' })} a las ${fecha.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Madrid' })}, así que os la mandamos con un poco de antelación.`
+        : `Ya está publicada en nuestra web: ${enlace}`;
+    const portada = post.cover_image_url ? (post.cover_image_url.startsWith('/') ? `${URL_PUBLICA_WEB}${post.cover_image_url}` : post.cover_image_url) : null;
+    const noticiaHtml = `<hr style="border:0;border-top:1px solid #e5e7eb;margin:28px 0">
+<h2 style="font-family:sans-serif;font-size:22px;margin:0 0 12px 0">${escapeXml(post.title)}</h2>
+${portada ? `<img src="${escapeXml(portada)}" alt="" style="max-width:100%;height:auto;border-radius:8px;margin:0 0 16px 0">` : ''}
+${post.excerpt ? `<p style="font-family:sans-serif;font-size:16px;line-height:1.6;color:#111827;margin:0 0 16px 0"><b>${escapeXml(post.excerpt)}</b></p>` : ''}
+${renderMarkdownEmail(post.content)}`;
+    const enviados = [], fallos = [];
+    for (const c of contactos) {
+        const vars = { nombre: c.nombre || 'equipo de redacción', medio: c.medio, titulo: post.title, cuando, enlace, firma };
+        const rellenar = (t) => String(t || '').replace(/\{(\w+)\}/g, (m, k) => (k in vars ? vars[k] : m));
+        const intro = rellenar(plantilla.cuerpo);
+        try {
+            await mailTransporter.sendMail({
+                from: `"${firma.replace(/"/g, '')} · AIM Education" <${process.env.EMAIL_USER}>`,
+                to: c.email, replyTo: process.env.EMAIL_USER,
+                subject: rellenar(plantilla.asunto) || post.title,
+                text: `${intro}\n\n———\n\n${post.title}\n\n${post.excerpt ? `${post.excerpt}\n\n` : ''}${post.content}${post.status === 'published' ? `\n\n${enlace}` : ''}`,
+                html: `<div style="font-family:sans-serif;font-size:15px;line-height:1.6;color:#111827">${intro.split(/\n\n+/).map(p => `<p style="margin:0 0 14px 0">${escapeXml(p).replace(/\n/g, '<br>')}</p>`).join('')}</div>${noticiaHtml}`,
+            });
+            enviados.push(c.email);
+        } catch (e) { fallos.push({ email: c.email, error: String(e.message || e).slice(0, 200) }); }
+    }
+    await pool.query(`UPDATE aim_ajustes SET valor = $2::jsonb, actualizado_at = NOW() WHERE clave = $1`,
+        [clave, JSON.stringify({ enviado_at: new Date().toISOString(), por: firma, a: enviados, fallos, modo: post.status })]);
+    if (fallos.length) console.warn(`[medios] «${post.title}»: ${fallos.length} correo(s) sin salir`);
+    return { enviados: enviados.length, fallos };
+}
+
 // =============================================================================
 // PUBLIC POSTS API
 // =============================================================================
@@ -14593,13 +14718,16 @@ app.get('/api/posts', async (req, res) => {
         const { category, limit = '20' } = req.query;
         const params = [];
         let where = `WHERE status = 'published'`;
+        // Por defecto, solo noticias (#426): el blog va en su apartado.
+        const tipo = req.query.tipo === 'blog' ? 'blog' : req.query.tipo === 'todos' ? null : 'noticia';
+        if (tipo) { params.push(tipo); where += ` AND tipo = $${params.length}`; }
         if (category) {
             params.push(category);
             where += ` AND category = $${params.length}`;
         }
         params.push(Math.min(parseInt(limit) || 20, 100));
         const result = await pool.query(
-            `SELECT id, title, slug, excerpt, cover_image_url, author_name, category, view_count, published_at
+            `SELECT id, title, slug, excerpt, cover_image_url, author_name, category, view_count, published_at, tipo
              FROM aim_education_posts ${where}
              ORDER BY published_at DESC NULLS LAST
              LIMIT $${params.length}`,
@@ -14625,7 +14753,7 @@ app.post('/api/posts/:id/click', async (req, res) => {
 app.get('/api/posts/:slug', async (req, res) => {
     try {
         const result = await pool.query(
-            `SELECT id, title, slug, excerpt, content, cover_image_url, author_name, category, view_count, published_at
+            `SELECT id, title, slug, excerpt, content, cover_image_url, author_name, category, view_count, published_at, tipo
              FROM aim_education_posts WHERE slug = $1 AND status = 'published'`,
             [req.params.slug]
         );
@@ -17091,8 +17219,14 @@ app.get('/api/admin/speaking/historial', authenticateSession, requireIndividuale
                 })),
             });
         }
+        // Con su clase de siempre (#427: Starters, Movers 1…): las clases no
+        // individuales en las que está de las actividades de sus citas.
         const r = await pool.query(
-            `SELECT d.student_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno,
+            `SELECT t.*, (SELECT array_agg(DISTINCT g.name ORDER BY g.name) FROM tul_group_students gs
+                            JOIN tul_groups g ON g.group_id = gs.group_id JOIN tul_activities a ON a.activity_id = g.activity_id
+                          WHERE gs.student_id = t.student_id AND a.club_id = $2 AND g.activity_id = ANY(t.acts) AND NOT ${sqlEsIndividual()}) AS clases
+             FROM (
+             SELECT d.student_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno, array_agg(DISTINCT d.activity_id) AS acts,
                     COUNT(*) FILTER (WHERE d.cita_id IS NOT NULL)::int AS citas,
                     COUNT(*) FILTER (WHERE d.asistencia IN ('present', 'late'))::int AS vino,
                     COUNT(*) FILTER (WHERE d.asistencia = 'absent')::int AS falto,
@@ -17104,8 +17238,8 @@ app.get('/api/admin/speaking/historial', authenticateSession, requireIndividuale
              FROM (${SQL_DIAS_SPEAKING}) d JOIN users u ON u.user_id = d.student_id
              WHERE ($1::uuid IS NULL OR d.activity_id = $1::uuid)
              GROUP BY d.student_id, u.name, u.surname
-             ORDER BY MAX(d.fecha) DESC, alumno`, [act]);
-        res.json({ alumnos: r.rows.map(x => ({ studentId: x.student_id, alumno: x.alumno, actividades: x.actividades || null, citas: x.citas, vino: x.vino, falto: x.falto, noPodia: x.no_podia, perdidas: x.perdidas, ultima: x.ultima, proxima: x.proxima })) });
+             ) t ORDER BY t.ultima DESC NULLS LAST, t.alumno`, [act, AIM_CLUB_ID]);
+        res.json({ alumnos: r.rows.map(x => ({ studentId: x.student_id, alumno: x.alumno, actividades: x.actividades || null, clases: x.clases || [], citas: x.citas, vino: x.vino, falto: x.falto, noPodia: x.no_podia, perdidas: x.perdidas, ultima: x.ultima, proxima: x.proxima })) });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -20143,6 +20277,7 @@ const mapAlbum = (a) => ({
     id: a.id, titulo: a.titulo, descripcion: a.descripcion || '', fecha: a.fecha, audiencia: a.audiencia,
     groupId: a.group_id, grupo: a.grupo || null, actividad: a.actividad || null, publicado: a.publicado, publicadoAt: a.publicado_at,
     fotos: a.fotos ?? undefined, portada: a.portada ?? null, etiquetados: a.etiquetados ?? undefined, sinPermiso: a.sin_permiso ?? undefined,
+    temporada: a.temporada || null, ultimaFoto: a.ultima_foto ?? undefined,
 });
 
 // Lo que se puede elegir al crear un álbum: las clases y las actividades del club.
@@ -20164,6 +20299,7 @@ app.get('/api/admin/galeria', authenticateSession, requireSeccion('galeria'), as
             `SELECT al.*, g.name AS grupo,
                     (SELECT COUNT(*) FROM aim_galeria_fotos f WHERE f.album_id = al.id)::int AS fotos,
                     (SELECT MIN(f.id) FROM aim_galeria_fotos f WHERE f.album_id = al.id) AS portada,
+                    (SELECT MAX(f.created_at) FROM aim_galeria_fotos f WHERE f.album_id = al.id) AS ultima_foto,
                     (SELECT COUNT(DISTINCT e.user_id) FROM aim_galeria_etiquetas e JOIN aim_galeria_fotos f ON f.id = e.foto_id WHERE f.album_id = al.id)::int AS etiquetados,
                     (SELECT COUNT(DISTINCT e.user_id) FROM aim_galeria_etiquetas e JOIN aim_galeria_fotos f ON f.id = e.foto_id JOIN users u ON u.user_id = e.user_id
                       WHERE f.album_id = al.id AND COALESCE(u.media_consent, false) = false)::int AS sin_permiso
@@ -20187,7 +20323,11 @@ function datosAlbum(b, antes = {}) {
     const fecha = b.fecha !== undefined ? b.fecha : (antes.fecha ? String(antes.fecha).slice(0, 10) : null);
     if (fecha && !/^\d{4}-\d{2}-\d{2}$/.test(fecha)) throw { httP: 400, msg: 'La fecha no es válida.' };
     const descripcion = b.descripcion !== undefined ? String(b.descripcion || '').trim().slice(0, 1000) || null : antes.descripcion;
-    return { titulo, audiencia, groupId, actividad, fecha, descripcion };
+    // De una temporada (#429): «2026/2027», dos años seguidos. Vacío = de una fecha.
+    const temporada = b.temporada !== undefined ? (String(b.temporada || '').trim() || null) : (antes.temporada || null);
+    const tm = temporada ? /^(\d{4})\/(\d{4})$/.exec(temporada) : null;
+    if (temporada && (!tm || Number(tm[2]) !== Number(tm[1]) + 1)) throw { httP: 400, msg: 'La temporada tiene que ser como «2026/2027».' };
+    return { titulo, audiencia, groupId, actividad, fecha, descripcion, temporada };
 }
 async function comprobarAmbitoAlbum(req, d) {
     const mis = await ambitoGaleria(req);
@@ -20200,9 +20340,9 @@ app.post('/api/admin/galeria', authenticateSession, requireSeccion('galeria'), a
         // Quién sale (solo en «solo quien sale»): se comprueba antes de crear nada.
         const elegidos = d.audiencia === 'etiquetados' && req.body?.personas !== undefined ? await limpiarElegidos(req, req.body.personas) : [];
         const r = await pool.query(
-            `INSERT INTO aim_galeria_albumes (titulo, descripcion, fecha, audiencia, group_id, actividad, created_by)
-             VALUES ($1, $2, COALESCE($3::date, CURRENT_DATE), $4, $5, $6, $7) RETURNING id`,
-            [d.titulo, d.descripcion, d.fecha, d.audiencia, d.groupId, d.actividad, req.userSession.userId]);
+            `INSERT INTO aim_galeria_albumes (titulo, descripcion, fecha, audiencia, group_id, actividad, created_by, temporada)
+             VALUES ($1, $2, COALESCE($3::date, CURRENT_DATE), $4, $5, $6, $7, $8) RETURNING id`,
+            [d.titulo, d.descripcion, d.fecha, d.audiencia, d.groupId, d.actividad, req.userSession.userId, d.temporada]);
         // Si no se puede guardar quién sale, el álbum tampoco se queda (así, al
         // reintentar, no sale un borrador repetido).
         if (elegidos.length) {
@@ -20229,9 +20369,10 @@ app.put('/api/admin/galeria/:id', authenticateSession, requireSeccion('galeria')
         const elegidos = d.audiencia !== 'etiquetados' ? [] : req.body?.personas !== undefined ? await limpiarElegidos(req, req.body.personas) : null;
         await pool.query(
             `UPDATE aim_galeria_albumes SET titulo = $2, descripcion = $3, fecha = COALESCE($4::date, fecha), audiencia = $5, group_id = $6,
-                    actividad = $7, publicado = $8, publicado_at = CASE WHEN $8 AND NOT publicado THEN NOW() ELSE publicado_at END, updated_at = NOW()
+                    actividad = $7, publicado = $8, publicado_at = CASE WHEN $8 AND NOT publicado THEN NOW() ELSE publicado_at END, updated_at = NOW(),
+                    temporada = $9
              WHERE id = $1`,
-            [antes.id, d.titulo, d.descripcion, d.fecha, d.audiencia, d.groupId, d.actividad, publicado]);
+            [antes.id, d.titulo, d.descripcion, d.fecha, d.audiencia, d.groupId, d.actividad, publicado, d.temporada]);
         if (elegidos) await guardarElegidos(req, antes.id, elegidos);
         // Fotos nuevas: al móvil de quien las puede ver (#218).
         if (publicado && !antes.publicado) avisosPush.avisarTodos();
@@ -20257,7 +20398,7 @@ app.get('/api/admin/galeria/:id', authenticateSession, requireSeccion('galeria')
         const id = (await albumPermitido(req, req.params.id)).id;
         const a = (await pool.query(`SELECT al.*, g.name AS grupo FROM aim_galeria_albumes al LEFT JOIN tul_groups g ON g.group_id = al.group_id WHERE al.id = $1`, [id])).rows[0];
         const [fotos, etiquetas, sugeridos, elegidos] = await Promise.all([
-            pool.query(`SELECT id, ancho, alto, bytes, pie FROM aim_galeria_fotos WHERE album_id = $1 ORDER BY orden, id`, [id]),
+            pool.query(`SELECT id, ancho, alto, bytes, pie, created_at FROM aim_galeria_fotos WHERE album_id = $1 ORDER BY orden, id`, [id]),
             pool.query(
                 `SELECT e.foto_id, e.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre, COALESCE(u.media_consent, false) AS permiso
                  FROM aim_galeria_etiquetas e JOIN aim_galeria_fotos f ON f.id = e.foto_id JOIN users u ON u.user_id = e.user_id
@@ -20275,7 +20416,7 @@ app.get('/api/admin/galeria/:id', authenticateSession, requireSeccion('galeria')
         res.set('Cache-Control', 'no-store');
         res.json({
             album: mapAlbum(a),
-            fotos: fotos.rows.map(f => ({ id: f.id, ancho: f.ancho, alto: f.alto, bytes: f.bytes, pie: f.pie || '', etiquetas: porFoto.get(f.id) || [] })),
+            fotos: fotos.rows.map(f => ({ id: f.id, ancho: f.ancho, alto: f.alto, bytes: f.bytes, pie: f.pie || '', subida: f.created_at, etiquetas: porFoto.get(f.id) || [] })),
             sugeridos: sugeridos.rows,
             elegidos,
         });
@@ -20330,6 +20471,8 @@ app.post('/api/admin/galeria/:id/fotos', authenticateSession, requireSeccion('ga
              VALUES ($1, $2, $3, $4, $5, $6, $7, (SELECT COALESCE(MAX(orden), 0) + 1 FROM aim_galeria_fotos WHERE album_id = $1), $8) RETURNING id`,
             [a.rows[0].id, foto.buf, mini.buf, foto.mime, Math.round(Number(req.body?.ancho)) || null, Math.round(Number(req.body?.alto)) || null, foto.buf.length, req.userSession.userId]);
         await pool.query(`UPDATE aim_galeria_albumes SET updated_at = NOW() WHERE id = $1`, [a.rows[0].id]);
+        // Si el álbum ya se ve, la foto nueva avisa (#429): la cola junta las que se suben seguidas.
+        if (a.rows[0].publicado) avisosPush.avisarTodos();
         res.status(201).json({ success: true, id: r.rows[0].id });
     } catch (err) { errGaleria(res, err); }
 });
@@ -20419,8 +20562,8 @@ app.get('/api/me/galeria', authenticateSession, async (req, res) => {
     try {
         const fam = await familiaIds(req.userSession.userId);
         const r = await pool.query(
-            `SELECT al.id AS album_id, al.titulo, al.descripcion, al.fecha, al.audiencia, al.actividad, g.name AS grupo, al.publicado_at,
-                    f.id, f.ancho, f.alto, f.pie,
+            `SELECT al.id AS album_id, al.titulo, al.descripcion, al.fecha, al.audiencia, al.actividad, g.name AS grupo, al.publicado_at, al.temporada,
+                    f.id, f.ancho, f.alto, f.pie, f.created_at AS subida,
                     (SELECT json_agg(json_build_object('id', u.user_id, 'nombre', u.name) ORDER BY u.name) FROM aim_galeria_etiquetas e JOIN users u ON u.user_id = e.user_id
                       WHERE e.foto_id = f.id AND e.user_id = ANY($1::uuid[])) AS de_los_mios
              FROM aim_galeria_fotos f JOIN aim_galeria_albumes al ON al.id = f.album_id LEFT JOIN tul_groups g ON g.group_id = al.group_id
@@ -20428,8 +20571,8 @@ app.get('/api/me/galeria', authenticateSession, async (req, res) => {
              ORDER BY al.fecha DESC, al.id DESC, f.orden, f.id`, [fam]);
         const albumes = new Map();
         for (const x of r.rows) {
-            if (!albumes.has(x.album_id)) albumes.set(x.album_id, { id: x.album_id, titulo: x.titulo, descripcion: x.descripcion || '', fecha: x.fecha, grupo: x.grupo, actividad: x.actividad, audiencia: x.audiencia, publicadoAt: x.publicado_at, fotos: [] });
-            albumes.get(x.album_id).fotos.push({ id: x.id, ancho: x.ancho, alto: x.alto, pie: x.pie || '', salen: x.de_los_mios || [] });
+            if (!albumes.has(x.album_id)) albumes.set(x.album_id, { id: x.album_id, titulo: x.titulo, descripcion: x.descripcion || '', fecha: x.fecha, grupo: x.grupo, actividad: x.actividad, audiencia: x.audiencia, publicadoAt: x.publicado_at, temporada: x.temporada || null, fotos: [] });
+            albumes.get(x.album_id).fotos.push({ id: x.id, ancho: x.ancho, alto: x.alto, pie: x.pie || '', subida: x.subida, salen: x.de_los_mios || [] });
         }
         const nombres = await pool.query(`SELECT user_id AS id, name AS nombre FROM users WHERE user_id = ANY($1::uuid[]) ORDER BY name`, [fam]);
         res.set('Cache-Control', 'no-store');

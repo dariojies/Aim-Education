@@ -5,6 +5,9 @@ import { fmtFechaLarga } from '../fechas.js';
 // ─────────────────────────────────────────────────────────────────────────────
 // Evaluación (ticket #411). Cuatro pestañas:
 //  · Sesiones: la clase de un día, con sus actividades (del fichero o nuevas),
+//    o, «por clase» (#422), el calendario de una clase con los días que tiene
+//    clase, cuáles están programados y cuáles no, para preparar las sesiones
+//    por adelantado y, llegado el día, abrirla y evaluar;
 //    qué contenidos trabajan, sus categorías y en cuál se evalúa cada una; debajo,
 //    las estrellas (1 a 3) de cada alumno en cada categoría evaluada ese día.
 //  · Notas del trimestre: la media de cada alumno por categoría, sobre 5.
@@ -129,6 +132,118 @@ function useActividadInicial(actividades) {
 
 // ── Sesiones ────────────────────────────────────────────────────────────────
 function Sesiones({ showToast }) {
+  const [modo, setModo] = useState(() => { try { return localStorage.getItem('evaluacion.modo') || 'clase'; } catch { return 'clase'; } });
+  const cambiarModo = (m) => { setModo(m); try { localStorage.setItem('evaluacion.modo', m); } catch { /* sin almacenamiento */ } };
+  const selector = (
+    <div style={{ display: 'flex', gap: 6 }}>
+      {[['clase', 'Por clase (programar)'], ['dia', 'Por día']].map(([v, l]) => (
+        <button key={v} className={`filter-pill ${modo === v ? 'is-active' : ''}`} onClick={() => cambiarModo(v)}>{l}</button>
+      ))}
+    </div>
+  );
+  return modo === 'clase' ? <PorClase selector={selector} showToast={showToast} /> : <PorDia selector={selector} showToast={showToast} />;
+}
+
+// La programación de una clase (#422): sus días de clase del mes en un
+// calendario, con cuáles están programados, evaluados o sin programar.
+const DIAS_SEMANA = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
+function PorClase({ selector, showToast }) {
+  const [grupos, setGrupos] = useState(null);
+  const [grupo, setGrupo] = useState(() => { try { return localStorage.getItem('evaluacion.grupo') || ''; } catch { return ''; } });
+  const [mes, setMes] = useState(hoyISO().slice(0, 7));
+  const [datos, setDatos] = useState(null);
+  const [error, setError] = useState(null);
+  const [abierta, setAbierta] = useState(null);   // la fecha de la sesión abierta
+  useEffect(() => { api('/api/admin/tul/groups').then(d => setGrupos((d.groups || []).filter(g => !g.individual))).catch(() => setGrupos([])); }, []);
+  const cargar = useCallback(() => {
+    if (!grupo) { setDatos(null); return; }
+    setDatos(null); setError(null);
+    api(`/api/admin/evaluacion/calendario?grupo=${grupo}&mes=${mes}`).then(setDatos).catch(e => setError(e.message));
+  }, [grupo, mes]);
+  useEffect(() => { cargar(); }, [cargar]);
+  const elegir = (id) => { setGrupo(id); try { localStorage.setItem('evaluacion.grupo', id); } catch { /* sin almacenamiento */ } };
+  const mover = (n) => { const [y, m] = mes.split('-').map(Number); const d = new Date(y, m - 1 + n, 1); setMes(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`); };
+  const g = (grupos || []).find(x => x.id === grupo);
+  if (abierta && g) return <Sesion clase={{ id: g.id, name: g.name }} fecha={abierta} onVolver={() => { setAbierta(null); cargar(); }} showToast={showToast} />;
+
+  const hoy = hoyISO();
+  const dias = datos?.dias || [];
+  const deClase = dias.filter(d => !d.cerrado);
+  const programadas = deClase.filter(d => d.sesion?.actividades > 0).length;
+  const sinProgramar = deClase.filter(d => !(d.sesion?.actividades > 0) && d.fecha >= hoy);
+  const estado = (d) => (d.cerrado ? { t: d.cerrado, c: 'var(--ink-3)', fondo: 'var(--bg-3)' }
+    : d.sesion?.notas > 0 ? { t: `Evaluada · ${d.sesion.notas} nota${d.sesion.notas !== 1 ? 's' : ''}`, c: 'var(--teal)', fondo: 'color-mix(in oklab, var(--teal) 12%, var(--bg-2))' }
+    : d.sesion?.actividades > 0 ? { t: `Programada · ${d.sesion.actividades} actividad${d.sesion.actividades !== 1 ? 'es' : ''}`, c: 'var(--purple)', fondo: 'color-mix(in oklab, var(--purple) 10%, var(--bg-2))' }
+    : d.fecha < hoy ? { t: 'Sin sesión', c: 'var(--ink-3)', fondo: 'var(--bg-2)' }
+    : { t: 'Sin programar', c: 'var(--orange)', fondo: 'var(--bg-2)' });
+  // La rejilla del mes: huecos hasta el lunes y un hueco por día.
+  const [y, m] = mes.split('-').map(Number);
+  const primero = (new Date(y, m - 1, 1).getDay() + 6) % 7;
+  const total = new Date(y, m, 0).getDate();
+  const porFecha = new Map(dias.map(d => [d.fecha, d]));
+  const celdas = [...Array(primero).fill(null), ...Array.from({ length: total }, (_, i) => `${mes}-${String(i + 1).padStart(2, '0')}`)];
+  const nombreMes = ((t) => t.charAt(0).toUpperCase() + t.slice(1))(new Date(y, m - 1, 1).toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }));
+
+  return (
+    <div style={{ display: 'grid', gap: 12 }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        {selector}
+        <select value={grupo} onChange={e => elegir(e.target.value)} style={{ ...campo, minWidth: 240 }} aria-label="Clase">
+          <option value="">{grupos === null ? 'Cargando clases…' : 'Elige la clase…'}</option>
+          {(grupos || []).map(x => <option key={x.id} value={x.id}>{x.name}</option>)}
+        </select>
+        {grupo && (
+          <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <button className="btn btn-sm btn-outline" onClick={() => mover(-1)} aria-label="Mes anterior">‹</button>
+            <b style={{ minWidth: 130, textAlign: 'center', fontSize: 14 }}>{nombreMes}</b>
+            <button className="btn btn-sm btn-outline" onClick={() => mover(1)} aria-label="Mes siguiente">›</button>
+          </span>
+        )}
+      </div>
+      {!grupo ? <p style={suave}>Elige una clase para ver sus días y programar las sesiones.</p>
+        : error ? <p style={{ color: 'var(--orange)', fontSize: 13 }}>{error}</p>
+        : !datos ? <p style={suave}>Cargando…</p> : (
+          <>
+            <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-2)' }}>
+              {deClase.length ? <><b>{deClase.length}</b> día{deClase.length !== 1 ? 's' : ''} de clase · <b style={{ color: 'var(--purple)' }}>{programadas} programado{programadas !== 1 ? 's' : ''}</b>
+                {sinProgramar.length > 0 && <> · <b style={{ color: 'var(--orange)' }}>{sinProgramar.length} por programar</b></>}</> : 'Este mes no tiene clase.'}
+            </p>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 6 }}>
+              {DIAS_SEMANA.map(d => <span key={d} style={{ ...suave, textAlign: 'center', fontWeight: 800 }}>{d}</span>)}
+              {celdas.map((f, i) => {
+                if (!f) return <span key={`v${i}`} />;
+                const d = porFecha.get(f);
+                const num = Number(f.slice(8));
+                if (!d) return <span key={f} style={{ minHeight: 64, padding: 6, fontSize: 12, color: 'var(--ink-3)', opacity: .45 }}>{num}</span>;
+                const e = estado(d);
+                return (
+                  <button key={f} type="button" disabled={!!d.cerrado} onClick={() => setAbierta(f)}
+                    title={`${fmtFechaLarga(f + 'T12:00:00')}${d.horario ? ` · ${d.horario}` : ''} · ${e.t}`}
+                    style={{ minHeight: 64, padding: 6, borderRadius: 10, border: `1.5px solid ${f === hoy ? 'var(--ink)' : e.c}`, background: e.fondo, cursor: d.cerrado ? 'default' : 'pointer', textAlign: 'left', fontFamily: 'inherit', display: 'grid', alignContent: 'start', gap: 2, minWidth: 0 }}>
+                    <b style={{ fontSize: 13, color: 'var(--ink)' }}>{num}</b>
+                    <span style={{ fontSize: 10.5, fontWeight: 700, color: e.c, lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis' }}>{e.t}</span>
+                  </button>
+                );
+              })}
+            </div>
+            {sinProgramar.length > 0 && (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--orange)' }}>Por programar:</span>
+                {sinProgramar.map(d => (
+                  <button key={d.fecha} className="filter-pill" onClick={() => setAbierta(d.fecha)} style={{ textTransform: 'capitalize' }}>
+                    {new Date(d.fecha + 'T12:00:00').toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' })}
+                  </button>
+                ))}
+              </div>
+            )}
+            <p style={{ margin: 0, ...suave }}>Pulsa un día para preparar su sesión (actividades y en qué se evalúa). El día de la clase, ábrela desde aquí para poner las estrellas.</p>
+          </>
+        )}
+    </div>
+  );
+}
+
+function PorDia({ selector, showToast }) {
   const [fecha, setFecha] = useState(hoyISO());
   const [clases, setClases] = useState(null);
   const [todas, setTodas] = useState(false);
@@ -145,6 +260,7 @@ function Sesiones({ showToast }) {
   return (
     <div style={{ display: 'grid', gap: 12 }}>
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        {selector}
         <input type="date" value={fecha} onChange={e => e.target.value && setFecha(e.target.value)} style={{ ...campo, fontWeight: 700 }} />
         <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-2)', textTransform: 'capitalize' }}>{fmtFechaLarga(fecha + 'T12:00:00')}</span>
         {todas && hayMias && (

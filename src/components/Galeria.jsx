@@ -24,6 +24,42 @@ const mb = (b) => `${(b / 1024 / 1024).toFixed(b > 100 * 1024 * 1024 ? 0 : 1)} M
 const CUPO_GALERIA = 700 * 1024 * 1024;
 const paraQuien = (a) => (a.audiencia === 'grupo' ? `Clase ${a.grupo || ''}` : a.audiencia === 'actividad' ? a.actividad : AUDIENCIAS[a.audiencia]?.label);
 
+// Temporadas (#429): de septiembre a agosto. Un álbum puede ser de toda una
+// temporada; los de una fecha cuentan en la temporada de esa fecha.
+const temporadaDe = (fecha) => {
+  const d = new Date(String(fecha || '').slice(0, 10) + 'T12:00:00');
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getMonth() >= 8 ? d.getFullYear() : d.getFullYear() - 1;
+  return `${y}/${y + 1}`;
+};
+const temporadasPosibles = () => {
+  const y = Number(temporadaDe(new Date().toLocaleDateString('sv-SE')).slice(0, 4));
+  return [`${y + 1}/${y + 2}`, `${y}/${y + 1}`, `${y - 1}/${y}`];
+};
+const temporadaDelAlbum = (a) => a.temporada || temporadaDe(a.fecha);
+// El día de la última foto (o el del álbum): lo más reciente, primero.
+const ultimaDe = (a) => {
+  const ult = a.ultimaFoto || (a.fotos || []).reduce((m, f) => (f.subida && f.subida > m ? f.subida : m), '') || null;
+  return new Date(ult || String(a.fecha).slice(0, 10)).getTime() || 0;
+};
+// [{ temporada, albumes }], la más reciente primero.
+function porTemporada(albumes) {
+  const m = new Map();
+  for (const a of [...albumes].sort((x, y) => ultimaDe(y) - ultimaDe(x))) {
+    const t = temporadaDelAlbum(a) || 'Sin fecha';
+    if (!m.has(t)) m.set(t, []);
+    m.get(t).push(a);
+  }
+  return [...m.entries()].sort((x, y) => y[0].localeCompare(x[0])).map(([temporada, lista]) => ({ temporada, albumes: lista }));
+}
+const cuandoAlbum = (a) => (a.temporada ? `Temporada ${a.temporada}` : fmtFecha(a.fecha));
+const diaLargo = (v) => { const t = new Date(v).toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' }); return t.charAt(0).toUpperCase() + t.slice(1); };
+const TituloTemporada = ({ t, n }) => (
+  <h3 style={{ margin: '6px 0 0', fontSize: 13, fontWeight: 800, color: 'var(--ink-2)', textTransform: 'uppercase', letterSpacing: '.05em' }}>
+    {t === 'Sin fecha' ? t : `Temporada ${t}`} <span style={{ fontWeight: 600, color: 'var(--ink-3)' }}>· {n} álbum{n !== 1 ? 'es' : ''}</span>
+  </h3>
+);
+
 const esHeic = (f) => /^image\/hei[cf]/i.test(f.type || '') || /\.hei[cf]$/i.test(f.name || '');
 // Abre la imagen. Las fotos del iPhone (HEIC) solo las entiende Safari: en el
 // resto se pasan a JPG aquí mismo con heic2any, que se descarga solo cuando hace
@@ -224,7 +260,7 @@ function QuienSale({ grupos, personas, onCambio }) {
 function FormAlbum({ inicial, opciones, onGuardar, onCancelar, guardando }) {
   // Un profe solo hace álbumes de sus clases: siempre «una clase».
   const soloClase = !!opciones.soloSusClases;
-  const [f, setF] = useState(() => ({ titulo: '', descripcion: '', fecha: new Date().toLocaleDateString('sv-SE'), audiencia: soloClase ? 'grupo' : 'etiquetados', groupId: soloClase && opciones.grupos.length === 1 ? opciones.grupos[0].id : '', actividad: '', personas: [], ...inicial }));
+  const [f, setF] = useState(() => ({ titulo: '', descripcion: '', fecha: new Date().toLocaleDateString('sv-SE'), audiencia: soloClase ? 'grupo' : 'etiquetados', groupId: soloClase && opciones.grupos.length === 1 ? opciones.grupos[0].id : '', actividad: '', personas: [], ...inicial, temporada: inicial?.temporada || '' }));
   const set = (k) => (e) => setF(x => ({ ...x, [k]: e.target.value }));
   // La gente elegida solo cuenta en «solo quien sale»: se mandan sus ids.
   const guardar = () => {
@@ -236,8 +272,21 @@ function FormAlbum({ inicial, opciones, onGuardar, onCancelar, guardando }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(220px, 100%), 1fr))', gap: 12 }}>
         <label style={{ display: 'grid', gap: 4, fontSize: 13, fontWeight: 700 }}>Título
           <input style={campo} value={f.titulo} onChange={set('titulo')} required maxLength={160} placeholder="Ej. Exhibición de Ballet · Navidad" /></label>
-        <label style={{ display: 'grid', gap: 4, fontSize: 13, fontWeight: 700 }}>Fecha
-          <input style={campo} type="date" value={String(f.fecha || '').slice(0, 10)} onChange={set('fecha')} /></label>
+        <div style={{ display: 'grid', gap: 4, fontSize: 13, fontWeight: 700 }}>
+          <span>¿De cuándo es?</span>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <button type="button" className={`filter-pill ${!f.temporada ? 'is-active' : ''}`} onClick={() => setF(x => ({ ...x, temporada: '' }))}>De un día</button>
+            <button type="button" className={`filter-pill ${f.temporada ? 'is-active' : ''}`} onClick={() => setF(x => ({ ...x, temporada: x.temporada || temporadaDe(x.fecha) || temporadasPosibles()[1] }))}>De toda una temporada</button>
+          </div>
+          {f.temporada ? (
+            <select style={campo} value={f.temporada} onChange={set('temporada')} aria-label="Temporada">
+              {[...new Set([f.temporada, ...temporadasPosibles()])].sort().reverse().map(t => <option key={t} value={t}>Temporada {t}</option>)}
+            </select>
+          ) : (
+            <input style={campo} type="date" value={String(f.fecha || '').slice(0, 10)} onChange={set('fecha')} aria-label="Fecha" />
+          )}
+          {f.temporada && <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--ink-3)' }}>Para ir añadiendo fotos durante todo el curso: cada una queda con su día de subida.</span>}
+        </div>
       </div>
       <div style={{ display: 'grid', gap: 6 }}>
         <span style={{ fontSize: 13, fontWeight: 700 }}>{soloClase ? '¿De qué clase es?' : '¿Quién lo ve?'}</span>
@@ -461,7 +510,7 @@ function Album({ id, opciones, onVolver, showToast }) {
       <button type="button" onClick={() => onVolver(false)} style={{ justifySelf: 'start', background: 'none', border: 0, padding: 0, cursor: 'pointer', color: 'var(--purple)', fontWeight: 700, fontSize: 13, fontFamily: 'inherit' }}>← Todos los álbumes</button>
       <div className="panel" style={{ margin: 0, display: 'grid', gap: 10 }}>
         {editando ? (
-          <FormAlbum inicial={{ ...a, fecha: String(a.fecha).slice(0, 10), groupId: a.groupId || '', actividad: a.actividad || '', personas: d.elegidos || [] }} opciones={opciones} guardando={guardando} onGuardar={guardarAlbum} onCancelar={() => setEditando(false)} />
+          <FormAlbum inicial={{ ...a, fecha: String(a.fecha).slice(0, 10), groupId: a.groupId || '', actividad: a.actividad || '', temporada: a.temporada || '', personas: d.elegidos || [] }} opciones={opciones} guardando={guardando} onGuardar={guardarAlbum} onCancelar={() => setEditando(false)} />
         ) : (
           <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
             <div style={{ flex: '1 1 260px', minWidth: 0 }}>
@@ -469,7 +518,7 @@ function Album({ id, opciones, onVolver, showToast }) {
                 <h2 style={{ margin: 0 }}>{a.titulo}</h2>
                 <span style={chip(a.publicado ? 'var(--teal)' : 'var(--ink-3)', { textTransform: 'uppercase' })}>{a.publicado ? 'Publicado' : 'Borrador'}</span>
               </div>
-              <p className="sub" style={{ margin: '4px 0 0' }}>{fmtFecha(a.fecha)} · Lo ve: <b>{paraQuien(a)}</b>{a.audiencia !== 'etiquetados' ? ' (y la familia de quien sale)' : ''} · {d.fotos.length} foto{d.fotos.length !== 1 ? 's' : ''}
+              <p className="sub" style={{ margin: '4px 0 0' }}>{cuandoAlbum(a)} · Lo ve: <b>{paraQuien(a)}</b>{a.audiencia !== 'etiquetados' ? ' (y la familia de quien sale)' : ''} · {d.fotos.length} foto{d.fotos.length !== 1 ? 's' : ''}
                 {a.audiencia === 'etiquetados' && d.elegidos?.length > 0 ? ` · ${d.elegidos.length} elegido${d.elegidos.length !== 1 ? 's' : ''} para etiquetar` : ''}</p>
               {a.descripcion && <p style={{ margin: '6px 0 0', fontSize: 14, color: 'var(--ink-2)' }}>{a.descripcion}</p>}
             </div>
@@ -615,8 +664,11 @@ export default function AdminGaleria({ showToast }) {
           Todavía no hay ningún álbum. Crea el primero con «Nuevo álbum».
         </div>
       )}
+      {porTemporada(lista || []).map(({ temporada, albumes }) => (
+      <React.Fragment key={temporada}>
+      <TituloTemporada t={temporada} n={albumes.length} />
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: 14 }}>
-        {(lista || []).map(a => (
+        {albumes.map(a => (
           <button key={a.id} type="button" onClick={() => setAlbum(a.id)}
             style={{ textAlign: 'left', padding: 0, border: '1px solid var(--line)', borderRadius: 16, overflow: 'hidden', background: 'var(--bg-2)', cursor: 'pointer', fontFamily: 'inherit', color: 'var(--ink)', display: 'grid' }}>
             <div style={{ aspectRatio: '4 / 3', background: 'var(--bg-3)', display: 'grid', placeItems: 'center', position: 'relative' }}>
@@ -625,12 +677,15 @@ export default function AdminGaleria({ showToast }) {
             </div>
             <div style={{ padding: '10px 12px', display: 'grid', gap: 3 }}>
               <b style={{ fontSize: 14 }}>{a.titulo}</b>
-              <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{fmtFecha(a.fecha)} · {a.fotos} foto{a.fotos !== 1 ? 's' : ''} · {paraQuien(a)}</span>
+              <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{cuandoAlbum(a)} · {a.fotos} foto{a.fotos !== 1 ? 's' : ''} · {paraQuien(a)}</span>
+              {a.temporada && a.ultimaFoto && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Última foto: {fmtFecha(a.ultimaFoto)}</span>}
               {a.sinPermiso > 0 && <span style={{ fontSize: 12, color: '#E5484D', fontWeight: 700 }}>⚠ {a.sinPermiso} sin permiso de fotos</span>}
             </div>
           </button>
         ))}
       </div>
+      </React.Fragment>
+      ))}
     </div>
   );
 }
@@ -647,7 +702,16 @@ export function FotosFamilia() {
   const albumes = (d?.albumes || []).map(a => ({ ...a, fotos: quien === 'todas' ? a.fotos : a.fotos.filter(f => f.salen.some(s => s.id === quien)) })).filter(a => a.fotos.length);
   const salenAlguna = new Set((d?.albumes || []).flatMap(a => a.fotos.flatMap(f => f.salen.map(s => s.id))));
   const album = albumes.find(a => a.id === albumAbierto) || null;
-  const fotos = album?.fotos || [];
+  // Las fotos de un álbum que va creciendo (de temporada, o subidas en días
+  // distintos), por el día de subida: lo último, arriba (#429).
+  const porDias = !!album && (!!album.temporada || new Set(album.fotos.map(f => String(f.subida || '').slice(0, 10))).size > 1);
+  const fotos = !album ? [] : porDias ? [...album.fotos].sort((x, y) => String(y.subida || '').slice(0, 10).localeCompare(String(x.subida || '').slice(0, 10))) : album.fotos;
+  const diasFotos = [];
+  fotos.forEach((f, i) => {
+    const k = String(f.subida || '').slice(0, 10);
+    if (diasFotos[diasFotos.length - 1]?.k !== k) diasFotos.push({ k, subida: f.subida, fotos: [] });
+    diasFotos[diasFotos.length - 1].fotos.push({ f, i });
+  });
   // Descargar de una vez (#420): un ZIP con las que se están viendo.
   const nombreDe = (id) => (d?.familia || []).find(p => p.id === id)?.nombre || '';
   const totalFotos = albumes.reduce((s, a) => s + a.fotos.length, 0);
@@ -688,17 +752,25 @@ export function FotosFamilia() {
       )}
       {!albumes.length && <p style={{ fontSize: 14, color: 'var(--ink-3)' }}>{d.albumes.length ? 'No hay fotos con este filtro.' : 'Todavía no hay fotos. Cuando el club suba las de vuestras clases, saldrán aquí y os avisaremos.'}</p>}
       {!album ? (
+        <div style={{ display: 'grid', gap: 12 }}>
+        {porTemporada(albumes).map(({ temporada, albumes: deTemporada }) => (
+        <React.Fragment key={temporada}>
+        <TituloTemporada t={temporada} n={deTemporada.length} />
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(200px, 100%), 1fr))', gap: 12 }}>
-          {albumes.map(a => (
+          {deTemporada.map(a => (
             <button key={a.id} type="button" onClick={() => setAlbumAbierto(a.id)}
               style={{ textAlign: 'left', padding: 0, border: '1px solid var(--line)', borderRadius: 16, overflow: 'hidden', background: 'var(--bg-2)', cursor: 'pointer', fontFamily: 'inherit', color: 'var(--ink)' }}>
               <img src={mini(a.fotos[0].id)} alt="" loading="lazy" style={{ width: '100%', aspectRatio: '4 / 3', objectFit: 'cover', display: 'block', background: 'var(--bg-3)' }} />
               <div style={{ padding: '10px 12px' }}>
                 <b style={{ display: 'block', fontSize: 14 }}>{a.titulo}</b>
-                <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{fmtFecha(a.fecha)} · {a.fotos.length} foto{a.fotos.length !== 1 ? 's' : ''}</span>
+                <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{cuandoAlbum(a)} · {a.fotos.length} foto{a.fotos.length !== 1 ? 's' : ''}</span>
+                {a.temporada && <span style={{ display: 'block', fontSize: 12, color: 'var(--ink-3)' }}>Última foto: {fmtFecha(new Date(ultimaDe(a)))}</span>}
               </div>
             </button>
           ))}
+        </div>
+        </React.Fragment>
+        ))}
         </div>
       ) : (
         <div style={{ display: 'grid', gap: 12 }}>
@@ -706,17 +778,22 @@ export function FotosFamilia() {
           <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
             <div style={{ flex: '1 1 220px', minWidth: 0 }}>
               <b style={{ fontSize: 17 }}>{album.titulo}</b>
-              <div style={{ fontSize: 13, color: 'var(--ink-3)' }}>{fmtFecha(album.fecha)}{album.descripcion ? ` · ${album.descripcion}` : ''}</div>
+              <div style={{ fontSize: 13, color: 'var(--ink-3)' }}>{cuandoAlbum(album)}{album.descripcion ? ` · ${album.descripcion}` : ''}</div>
             </div>
             <a className="btn btn-sm btn-outline" href={urlZip(album.id)}><I.Download width={14} height={14} /> {quien === 'todas' ? `Descargar el álbum (${fotos.length})` : `Descargar las ${fotos.length} donde sale ${nombreDe(quien)}`}</a>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(130px, 45%), 1fr))', gap: 6 }}>
-            {fotos.map((f, i) => (
-              <button key={f.id} type="button" onClick={() => setAbierta(i)} aria-label={`Foto ${i + 1}`} style={{ padding: 0, border: 0, borderRadius: 10, overflow: 'hidden', cursor: 'pointer', aspectRatio: '1', background: 'var(--bg-3)' }}>
-                <img src={mini(f.id)} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
-              </button>
-            ))}
-          </div>
+          {(porDias ? diasFotos : [{ k: 'todas', fotos: fotos.map((f, i) => ({ f, i })) }]).map(dia => (
+            <div key={dia.k} style={{ display: 'grid', gap: 6 }}>
+              {porDias && <b style={{ fontSize: 13, color: 'var(--ink-2)' }}>{dia.subida ? diaLargo(dia.subida) : 'Sin fecha'} <span style={{ fontWeight: 500, color: 'var(--ink-3)' }}>· {dia.fotos.length} foto{dia.fotos.length !== 1 ? 's' : ''}</span></b>}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(130px, 45%), 1fr))', gap: 6 }}>
+                {dia.fotos.map(({ f, i }) => (
+                  <button key={f.id} type="button" onClick={() => setAbierta(i)} aria-label={`Foto ${i + 1}`} style={{ padding: 0, border: 0, borderRadius: 10, overflow: 'hidden', cursor: 'pointer', aspectRatio: '1', background: 'var(--bg-3)' }}>
+                    <img src={mini(f.id)} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       )}
       {foto && (
@@ -730,6 +807,7 @@ export function FotosFamilia() {
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', color: '#fff', padding: '10px 4px 0' }}>
             <span style={{ flex: 1, minWidth: 0, fontSize: 14 }}>
               {foto.pie}{foto.pie && foto.salen.length ? ' · ' : ''}{foto.salen.length ? `Sale: ${foto.salen.map(s => s.nombre).join(', ')}` : ''}
+              {foto.subida && <span style={{ display: 'block', fontSize: 12, opacity: .75 }}>Subida el {fmtFecha(foto.subida)}</span>}
             </span>
             <a className="btn btn-sm" href={`${grande(foto.id)}?descargar=1`} style={{ background: '#fff', color: '#111' }}><I.Download width={14} height={14} /> Descargar</a>
             <button type="button" className="btn btn-sm" onClick={() => setAbierta(null)} style={{ background: 'rgba(255,255,255,.15)', color: '#fff' }}>Cerrar</button>

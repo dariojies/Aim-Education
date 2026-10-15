@@ -87,35 +87,48 @@ export function PublicActivities() {
   );
 }
 
-export function PublicNews() {
+export function PublicNews({ blog = false }) {
   const { go } = useRouter();
+  const base = blog ? '/blog' : '/noticias';
   const [posts, setPosts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("all");
 
   useEffect(() => {
-    fetch('/api/posts?limit=50')
+    fetch(`/api/posts?limit=50${blog ? '&tipo=blog' : ''}`)
       .then(r => r.ok ? r.json() : [])
       .then(d => { setPosts(Array.isArray(d) ? d : []); setLoading(false); })
       .catch(() => setLoading(false));
-  }, []);
+  }, [blog]);
 
   const cats = ["all", ...Array.from(new Set(posts.map(p => p.category).filter(Boolean)))];
   const visible = filter === "all" ? posts : posts.filter(p => p.category === filter);
 
   return (
     <>
-      <AimHeader route="news" />
+      <AimHeader route={blog ? 'blog' : 'news'} />
       <main style={{paddingTop: 0}}>
         <section className="block tight">
           <div className="container">
             <div style={{maxWidth: 720}}>
-              <span className="eyebrow purple">Foro y noticias</span>
-              <h1 className="title-display">Todo lo que pasa en <MagicText>Aim Education.</MagicText></h1>
-              <p className="section-lede" style={{marginTop: 18}}>
-                Noticias, eventos, convocatorias y novedades del club — directamente desde
-                el equipo.
-              </p>
+              {blog ? (
+                <>
+                  <span className="eyebrow purple">Blog</span>
+                  <h1 className="title-display">Ideas y consejos de <MagicText>Aim Education.</MagicText></h1>
+                  <p className="section-lede" style={{marginTop: 18}}>
+                    Lo que aprendemos en las clases, contado por el equipo: entrenamiento, lectura, idiomas y mucho más.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <span className="eyebrow purple">Foro y noticias</span>
+                  <h1 className="title-display">Todo lo que pasa en <MagicText>Aim Education.</MagicText></h1>
+                  <p className="section-lede" style={{marginTop: 18}}>
+                    Noticias, eventos, convocatorias y novedades del club — directamente desde
+                    el equipo.
+                  </p>
+                </>
+              )}
             </div>
 
             {cats.length > 1 && (
@@ -134,7 +147,7 @@ export function PublicNews() {
 
             {!loading && visible.length === 0 && (
               <div style={{marginTop: 48, textAlign: "center", color: "var(--ink-3)"}}>
-                <p style={{fontSize: 18, fontWeight: 600}}>Aún no hay noticias publicadas.</p>
+                <p style={{fontSize: 18, fontWeight: 600}}>{blog ? 'Aún no hay artículos en el blog.' : 'Aún no hay noticias publicadas.'}</p>
                 <p style={{fontSize: 14, marginTop: 8}}>Vuelve pronto — el equipo publicará novedades aquí.</p>
               </div>
             )}
@@ -145,7 +158,7 @@ export function PublicNews() {
                   const d = new Date(p.published_at || p.created_at);
                   const color = catColor(p.category);
                   return (
-                    <div key={p.id} style={{cursor: "pointer"}} onClick={() => go(`/noticias/${p.slug}`)}>
+                    <div key={p.id} style={{cursor: "pointer"}} onClick={() => go(`${base}/${p.slug}`)}>
                       <NewsCard
                         cat={p.category || "Aim"}
                         color={color}
@@ -186,10 +199,10 @@ function renderMd(text) {
 
 const MONTH_LONG = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
 
-function useShare(slug, title) {
+function useShare(slug, title, base = '/noticias') {
   const [copied, setCopied] = useState(false);
   function share() {
-    const url = window.location.origin + '/noticias/' + slug;
+    const url = window.location.origin + base + '/' + slug;
     if (navigator.share) {
       navigator.share({ title: title || 'AIM Education', text: (title || 'AIM Education') + ' — AIM Education', url }).catch(() => {});
     } else {
@@ -202,13 +215,14 @@ function useShare(slug, title) {
   return { share, copied };
 }
 
-export function PublicNewsDetail({ slug }) {
+export function PublicNewsDetail({ slug, blog = false }) {
   const { go } = useRouter();
+  const base = blog ? '/blog' : '/noticias';
   const [post, setPost] = useState(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   // useShare must be called unconditionally before any early returns (Rules of Hooks)
-  const { share, copied } = useShare(slug, post?.title || '');
+  const { share, copied } = useShare(slug, post?.title || '', base);
 
   useEffect(() => {
     setLoading(true); setNotFound(false); setPost(null);
@@ -220,7 +234,7 @@ export function PublicNewsDetail({ slug }) {
 
   if (loading) return (
     <>
-      <AimHeader route="news" />
+      <AimHeader route={blog ? 'blog' : 'news'} />
       <main style={{paddingTop: 0}}>
         <section className="block tight"><div className="container"><p style={{color: "var(--ink-3)"}}>Cargando…</p></div></section>
         <AimFooter />
@@ -230,14 +244,14 @@ export function PublicNewsDetail({ slug }) {
 
   if (notFound || !post) return (
     <>
-      <AimHeader route="news" />
+      <AimHeader route={blog ? 'blog' : 'news'} />
       <main style={{paddingTop: 0}}>
         <section className="block tight">
           <div className="container" style={{textAlign: "center", padding: "80px 0"}}>
             <div style={{fontSize: 64, marginBottom: 16}}>📰</div>
             <h1 className="title-display">Noticia no encontrada</h1>
             <p style={{color: "var(--ink-3)", marginTop: 12}}>Esta entrada no existe o ha sido eliminada.</p>
-            <button className="btn btn-outline" style={{marginTop: 28}} onClick={() => go("/noticias")}>← Volver a noticias</button>
+            <button className="btn btn-outline" style={{marginTop: 28}} onClick={() => go(base)}>{blog ? '← Volver al blog' : '← Volver a noticias'}</button>
           </div>
         </section>
         <AimFooter />
@@ -251,13 +265,13 @@ export function PublicNewsDetail({ slug }) {
 
   return (
     <>
-      <AimHeader route="news" />
+      <AimHeader route={blog ? 'blog' : 'news'} />
       <main style={{paddingTop: 0}}>
         <section className="block tight">
           <div className="container">
             <div style={{maxWidth: 760, margin: "0 auto"}}>
-              <button className="btn btn-ghost" style={{marginBottom: 28, padding: "6px 0", fontSize: 14, fontWeight: 600}} onClick={() => go("/noticias")}>
-                ← Volver a noticias
+              <button className="btn btn-ghost" style={{marginBottom: 28, padding: "6px 0", fontSize: 14, fontWeight: 600}} onClick={() => go(base)}>
+                {blog ? '← Volver al blog' : '← Volver a noticias'}
               </button>
 
               {post.cover_image_url && (
@@ -299,7 +313,7 @@ export function PublicNewsDetail({ slug }) {
                     <I.Share />
                     {copied ? "¡Copiado!" : "Compartir"}
                   </button>
-                  <button className="btn btn-outline" onClick={() => go("/noticias")}>← Más noticias</button>
+                  <button className="btn btn-outline" onClick={() => go(base)}>{blog ? '← Más artículos' : '← Más noticias'}</button>
                 </div>
               </div>
             </div>

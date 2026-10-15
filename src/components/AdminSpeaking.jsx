@@ -79,20 +79,32 @@ function HistorialSpeaking({ actividades }) {
   const [act, setAct] = useState('');
   const [abierto, setAbierto] = useState(null);
   const [dias, setDias] = useState({});
+  // Por su clase de siempre (#427): Starters, Movers 1, Movers 2…
+  const [porClase, setPorClase] = useState(true);
   useEffect(() => {
     setLista(null); setAbierto(null); setDias({});
     fetch(`/api/admin/speaking/historial${act ? `?activityId=${act}` : ''}`, { credentials: 'include', cache: 'no-store' })
       .then(r => (r.ok ? r.json() : { alumnos: [] })).then(d => setLista(d.alumnos || [])).catch(() => setLista([]));
   }, [act]);
-  async function abrir(id) {
-    if (abierto === id) { setAbierto(null); return; }
-    setAbierto(id);
+  // La fila abierta es «clase:alumno» (un alumno en dos clases sale dos veces).
+  async function abrir(id, clase = null) {
+    const k = `${clase}:${id}`;
+    if (abierto === k) { setAbierto(null); return; }
+    setAbierto(k);
     if (dias[id]) return;
     const d = await fetch(`/api/admin/speaking/historial?alumno=${id}${act ? `&activityId=${act}` : ''}`, { credentials: 'include', cache: 'no-store' }).then(r => (r.ok ? r.json() : null)).catch(() => null);
     setDias(x => ({ ...x, [id]: d?.dias || [] }));
   }
   const n = q.trim().toLowerCase();
-  const filas = (lista || []).filter(a => !n || a.alumno.toLowerCase().includes(n));
+  const filas = (lista || []).filter(a => !n || a.alumno.toLowerCase().includes(n) || (a.clases || []).some(c => c.toLowerCase().includes(n)));
+  // Cada alumno, en su clase (si va a dos, en las dos); sin clase, al final.
+  const grupos = [];
+  if (porClase) {
+    const m = new Map();
+    for (const a of filas) for (const c of (a.clases?.length ? a.clases : ['Sin clase'])) { if (!m.has(c)) m.set(c, []); m.get(c).push(a); }
+    const nombres = [...m.keys()].sort((x, y) => (x === 'Sin clase') - (y === 'Sin clase') || x.localeCompare(y, 'es', { numeric: true, sensitivity: 'base' }));
+    for (const c of nombres) grupos.push({ clase: c, filas: m.get(c).sort((x, y) => x.alumno.localeCompare(y.alumno, 'es')) });
+  } else grupos.push({ clase: null, filas });
   const tot = (lista || []).reduce((t, a) => ({ citas: t.citas + a.citas, vino: t.vino + a.vino, falto: t.falto + a.falto }), { citas: 0, vino: 0, falto: 0 });
   return (
     <div style={{ display: 'grid', gap: 12 }}>
@@ -104,6 +116,11 @@ function HistorialSpeaking({ actividades }) {
         <>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
             <div className="search-input" style={{ flex: '1 1 260px', maxWidth: 420 }}><I.Search /><input placeholder="Buscar alumno…" value={q} onChange={e => setQ(e.target.value)} aria-label="Buscar alumno" /></div>
+            <div style={{ display: 'inline-flex', border: '1px solid var(--line)', borderRadius: 999, overflow: 'hidden' }}>
+              {[[true, 'Por clase'], [false, 'Todos juntos']].map(([v, l]) => (
+                <button key={l} type="button" className={`filter-pill ${porClase === v ? 'is-active' : ''}`} style={{ border: 0, borderRadius: 0 }} onClick={() => { setPorClase(v); setAbierto(null); }}>{l}</button>
+              ))}
+            </div>
             <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>{lista.length} alumnos · {tot.citas} citas · <b style={{ color: 'var(--teal)' }}>{tot.vino} veces vinieron</b> · <b style={{ color: '#E5484D' }}>{tot.falto} faltas</b></span>
           </div>
           {!filas.length && <div style={{ padding: 24, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>{lista.length ? 'Nadie con ese nombre.' : 'Todavía no hay nadie que haya ido a una clase individual.'}</div>}
@@ -112,13 +129,20 @@ function HistorialSpeaking({ actividades }) {
               <div className="data-table-head" style={{ gridTemplateColumns: '1.5fr repeat(5, 84px) 1.1fr 1.1fr' }}>
                 <span>Alumno</span><span>Citas</span><span>Vino</span><span>Faltó</span><span>No podía</span><span>Perdidas</span><span>Última vez</span><span>Próxima</span>
               </div>
-              {filas.map(a => (
-                <React.Fragment key={a.studentId}>
-                  <div className="data-table-row" role="button" tabIndex={0} onClick={() => abrir(a.studentId)} onKeyDown={e => { if (e.key === 'Enter') abrir(a.studentId); }}
+              {grupos.map(g => (
+              <React.Fragment key={g.clase || 'todos'}>
+              {g.clase && (
+                <div style={{ padding: '10px 14px 6px', fontSize: 12, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--purple)', background: 'var(--bg-2)', borderTop: '1px solid var(--line)' }}>
+                  {g.clase} <span style={{ fontWeight: 600, color: 'var(--ink-3)', textTransform: 'none' }}>· {g.filas.length} alumno{g.filas.length !== 1 ? 's' : ''}</span>
+                </div>
+              )}
+              {g.filas.map(a => (
+                <React.Fragment key={`${g.clase}:${a.studentId}`}>
+                  <div className="data-table-row" role="button" tabIndex={0} onClick={() => abrir(a.studentId, g.clase)} onKeyDown={e => { if (e.key === 'Enter') abrir(a.studentId, g.clase); }}
                     style={{ gridTemplateColumns: '1.5fr repeat(5, 84px) 1.1fr 1.1fr', alignItems: 'center', cursor: 'pointer' }}>
                     <div className="pri" style={{ minWidth: 0 }}>
-                      {abierto === a.studentId ? '▾' : '▸'} {a.alumno}
-                      {a.actividades && <span style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--purple)' }}>{a.actividades}</span>}
+                      {abierto === `${g.clase}:${a.studentId}` ? '▾' : '▸'} {a.alumno}
+                      {(a.actividades || (!g.clase && a.clases?.length > 0)) && <span style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--purple)' }}>{[a.actividades, !g.clase ? (a.clases || []).join(', ') : null].filter(Boolean).join(' · ')}</span>}
                     </div>
                     <span>{a.citas}</span>
                     <span style={{ fontWeight: 800, color: 'var(--teal)' }}>{a.vino}</span>
@@ -128,7 +152,7 @@ function HistorialSpeaking({ actividades }) {
                     <span style={{ fontSize: 12 }}>{a.ultima ? fmtCorta(a.ultima) : '—'}</span>
                     <span style={{ fontSize: 12, color: 'var(--purple)' }}>{a.proxima ? fmtCorta(a.proxima) : '—'}</span>
                   </div>
-                  {abierto === a.studentId && (
+                  {abierto === `${g.clase}:${a.studentId}` && (
                     <div style={{ padding: '8px 14px 14px', display: 'grid', gap: 4, background: 'var(--bg-3)' }}>
                       {!dias[a.studentId] && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Cargando…</span>}
                       {(dias[a.studentId] || []).map((d, i) => {
@@ -145,6 +169,8 @@ function HistorialSpeaking({ actividades }) {
                     </div>
                   )}
                 </React.Fragment>
+              ))}
+              </React.Fragment>
               ))}
             </div>
           )}

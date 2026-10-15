@@ -291,7 +291,8 @@ function AimHeader({ route } = {}) {
     if (path.startsWith('/actividades')) return 'activities';
     if (path === '/campamento') return 'camp';
     if (path === '/calendario') return 'calendar';
-    if (path === '/noticias') return 'news';
+    if (path === '/noticias' || path.startsWith('/noticias/')) return 'news';
+    if (path === '/blog' || path.startsWith('/blog/')) return 'blog';
     if (path === '/contacto') return 'contact';
     if (path === '/conocenos') return 'about';
     if (path === '/brickslab' || path === '/biblioteca') return 'brickslab';
@@ -306,6 +307,7 @@ function AimHeader({ route } = {}) {
     // Los sets de LEGO y la biblioteca del club (#291).
     { id: "brickslab", label: "Brickslab", href: "/brickslab" },
     { id: "news", label: "Noticias", href: "/noticias" },
+    { id: "blog", label: "Blog", href: "/blog" },
     { id: "about", label: "Conócenos", href: "/conocenos" },
     { id: "contact", label: "Contacto", href: "/contacto" },
   ];
@@ -405,6 +407,7 @@ function AimFooter() {
               <li><a onClick={(e) => { e.preventDefault(); go("/calendario"); }} href="/calendario">Calendario</a></li>
               <li><a onClick={(e) => { e.preventDefault(); go("/campamento"); }} href="/campamento">Campamento</a></li>
               <li><a onClick={(e) => { e.preventDefault(); go("/noticias"); }} href="/noticias">Noticias</a></li>
+              <li><a onClick={(e) => { e.preventDefault(); go("/blog"); }} href="/blog">Blog</a></li>
               <li><a onClick={(e) => { e.preventDefault(); go("/conocenos"); }} href="/conocenos">Conócenos</a></li>
             </ul>
           </div>

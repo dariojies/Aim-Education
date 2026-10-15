@@ -351,7 +351,7 @@ export default function FichaComunicaciones({ personaId, showToast }) {
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <select style={{ ...campo, width: 'auto', flex: '1 1 220px' }} value={plantilla} onChange={e => usarPlantilla(e.target.value)}>
               <option value="">— Empezar desde una plantilla —</option>
-              {plantillas.map(p => <option key={p.id} value={p.id}>{p.nombre} ({NOMBRE_TIPO[p.tipo] || 'De servicio'})</option>)}
+              {plantillas.filter(p => p.id !== 'medios-noticia').map(p => <option key={p.id} value={p.id}>{p.nombre} ({NOMBRE_TIPO[p.tipo] || 'De servicio'})</option>)}
             </select>
             <button type="button" className="btn btn-sm btn-outline" onClick={() => setEditando(e => !e)}>{editando ? 'Cerrar plantillas' : 'Gestionar plantillas'}</button>
           </div>
