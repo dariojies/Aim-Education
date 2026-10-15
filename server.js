@@ -5145,7 +5145,8 @@ setInterval(function seguidoresRedes() { publicacionesRedes.fotoSeguidores(); },
 // Evaluación (#411): de los profes y la dirección; las familias no ven nada.
 app.use(crearEvaluacion({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireSeccion, permisos, grupoSuyo }).router);
 // Reportes (#416): cómo va el negocio, con las mismas cuentas en todas partes.
-app.use(crearReportes({ pool, clubId: AIM_CLUB_ID, authenticateSession, requirePermiso, candidatosGeneracion, mesesDeTemporada, sqlEsIndividual }).router);
+app.use(crearReportes({ pool, clubId: AIM_CLUB_ID, authenticateSession, requirePermiso, candidatosGeneracion, mesesDeTemporada, sqlEsIndividual,
+    empresa: () => EMPRESA_TICKET }).router);
 // El aula virtual (#433). La sesión opcional y el pago online se declaran más
 // abajo: se pasan envueltos para leerlos al usarlos.
 app.use(crearAula({ pool, authenticateSession, requireSeccion, permisos,

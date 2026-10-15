@@ -45,6 +45,73 @@ function esDocenteSes(s, id) {
     if (String(s?.instructorId || '') === String(id)) return true;
     return (Array.isArray(s?.instructors) ? s.instructors : []).some(d => String(d?.id || '') === String(id));
 }
+// Los alumnos apuntados al final de cada uno de los doce meses que acaban en
+// `hasta` (#434), en total y por actividad. Se reconstruye como la matrícula
+// de una fecha (matriculasEn): desde la de hoy, deshaciendo hacia atrás las
+// altas y bajas posteriores. Un alumno en dos grupos de la misma actividad
+// cuenta una vez en ella; en dos actividades, una en cada una y una en el total.
+// Los meses anteriores al primer movimiento apuntado no se pueden saber
+// (sinHistorial): se dicen, no se inventan.
+export async function alumnosPorMes(pool, clubId, { hasta = null, activityId = null, instructorId = null } = {}) {
+    const fechaMadrid = (d) => new Date(d).toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' });
+    const hoy = fechaMadrid(new Date());
+    let ref = /^\d{4}-\d{2}/.test(String(hasta || '')) ? String(hasta).slice(0, 7) : hoy.slice(0, 7);
+    if (ref > hoy.slice(0, 7)) ref = hoy.slice(0, 7);
+    const mesMas = (m, n) => { const [y, mm] = m.split('-').map(Number); const d = new Date(Date.UTC(y, mm - 1 + n, 1)); return d.toISOString().slice(0, 7); };
+    const ultimo = (m) => { const [y, mm] = m.split('-').map(Number); return new Date(Date.UTC(y, mm, 0)).toISOString().slice(0, 10); };
+    const meses = Array.from({ length: 12 }, (_, i) => mesMas(ref, i - 11));
+
+    const [acts, grupos, actuales, hist] = await Promise.all([
+        pool.query(`SELECT activity_id AS id, name FROM tul_activities WHERE club_id = $1 ORDER BY name`, [clubId]),
+        pool.query(`SELECT g.group_id, g.activity_id, g.sessions FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id WHERE a.club_id = $1`, [clubId]),
+        pool.query(`SELECT gs.student_id, gs.group_id FROM tul_group_students gs JOIN tul_groups g ON g.group_id = gs.group_id
+                    JOIN tul_activities a ON a.activity_id = g.activity_id WHERE a.club_id = $1`, [clubId]),
+        pool.query(`SELECT student_id, group_id, activity_name, action, created_at FROM tul_enrollment_history WHERE club_id = $1 ORDER BY created_at DESC`, [clubId]),
+    ]);
+    const grupo = new Map(grupos.rows.map(g => [String(g.group_id), g]));
+    const actPorNombre = new Map(acts.rows.map(a => [a.name, String(a.id)]));
+    // La actividad de un grupo; si el grupo ya no existe, por el nombre apuntado.
+    const actDe = (gid, nombre) => (grupo.get(String(gid))?.activity_id ? String(grupo.get(String(gid)).activity_id) : actPorNombre.get(nombre) || null);
+    const cuenta = (gid, act) => {
+        if (activityId) return act === String(activityId);
+        if (instructorId) {
+            const ses = grupo.get(String(gid))?.sessions;
+            return Array.isArray(ses) && ses.some(s => esDocenteSes(s, instructorId));
+        }
+        return true;
+    };
+
+    const parejas = new Map(actuales.rows.map(r => [`${r.student_id}|${r.group_id}`, { alumno: String(r.student_id), grupo: String(r.group_id), act: actDe(r.group_id) }]));
+    const eventos = hist.rows.map(e => ({ ...e, fecha: fechaMadrid(e.created_at) }));
+    const primero = eventos.length ? eventos[eventos.length - 1].fecha : null;
+    const res = [];
+    let i = 0;
+    for (const m of [...meses].reverse()) {
+        const fin = m === hoy.slice(0, 7) ? hoy : ultimo(m);
+        // Se deshace todo lo que pasó después del final de ese mes.
+        while (i < eventos.length && eventos[i].fecha > fin) {
+            const e = eventos[i++];
+            const k = `${e.student_id}|${e.group_id}`;
+            if (e.action === 'enrolled') parejas.delete(k);
+            else parejas.set(k, { alumno: String(e.student_id), grupo: String(e.group_id), act: actDe(e.group_id, e.activity_name) });
+        }
+        const total = new Set(), porAct = new Map();
+        for (const p of parejas.values()) {
+            if (!cuenta(p.grupo, p.act)) continue;
+            total.add(p.alumno);
+            if (p.act) { if (!porAct.has(p.act)) porAct.set(p.act, new Set()); porAct.get(p.act).add(p.alumno); }
+        }
+        res.unshift({ mes: m, fin, total: total.size, porAct: new Map([...porAct].map(([k, v]) => [k, v.size])), sinHistorial: !primero || fin < primero });
+    }
+    const actividades = acts.rows
+        .filter(a => (!activityId || String(a.id) === String(activityId)) && res.some(x => x.porAct.get(String(a.id))))
+        .map(a => ({ id: String(a.id), nombre: a.name, meses: res.map(x => x.porAct.get(String(a.id)) || 0) }));
+    return {
+        desde: primero, actividades,
+        meses: res.map(({ porAct, ...x }) => x),
+    };
+}
+
 // La misma comprobación en SQL, para una sesión `sess` ya desanidada con
 // jsonb_array_elements. `ph` es el placeholder del id (p. ej. "$2").
 const sqlEsDocente = (ph) =>
@@ -1748,6 +1815,14 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
                 totalGroupChanges: groupChanges.length,
                 newAccounts, totalNewAccounts: newAccounts.length,
             });
+        } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // Alumnos apuntados mes a mes, los últimos doce (#434).
+    router.get('/report/alumnos-por-mes', async (req, res) => {
+        try {
+            const { activityId, instructorId, hasta } = req.query;
+            res.json({ success: true, ...(await alumnosPorMes(pool, clubId, { hasta, activityId, instructorId })) });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
 

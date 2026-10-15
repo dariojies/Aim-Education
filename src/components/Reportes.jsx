@@ -77,6 +77,7 @@ function ReportesDireccion({ user, permisos, showToast }) {
         </span>
         <div style={{ flex: 1 }} />
         {pestana !== 'alumnos' && <button className="btn btn-sm btn-outline" onClick={recargar} title="Volver a calcular">Actualizar</button>}
+        <DescargarPdf mes={mes} />
       </div>}
 
       <div role="tablist" className="scroll-oculto" style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 2 }}>
@@ -96,6 +97,36 @@ function ReportesDireccion({ user, permisos, showToast }) {
                   : pestana === 'gastos' ? <Gastos d={d} />
                     : pestana === 'prevision' ? <Prevision d={d} />
                       : <Caja d={d} />}
+    </div>
+  );
+}
+
+// Los reportes del mes en PDF (#434): completos, o sin dinero para el equipo.
+function DescargarPdf({ mes }) {
+  const [abierto, setAbierto] = useState(false);
+  useEffect(() => {
+    if (!abierto) return;
+    const cerrar = (e) => { if (!e.target.closest?.('[data-descargar-pdf]')) setAbierto(false); };
+    document.addEventListener('click', cerrar);
+    return () => document.removeEventListener('click', cerrar);
+  }, [abierto]);
+  const opcion = (modo, titulo, detalle) => (
+    <a href={`/api/admin/reportes/pdf?mes=${mes}${modo ? `&modo=${modo}` : ''}`} onClick={() => setAbierto(false)}
+      style={{ display: 'grid', gap: 2, padding: '10px 12px', borderRadius: 10, textDecoration: 'none', color: 'var(--ink)' }}
+      onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-3)'; }} onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
+      <b style={{ fontSize: 14 }}>{titulo}</b><span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{detalle}</span>
+    </a>
+  );
+  return (
+    <div data-descargar-pdf style={{ position: 'relative' }}>
+      <button className="btn btn-sm btn-primary" onClick={() => setAbierto(a => !a)} aria-expanded={abierto}>Descargar PDF ▾</button>
+      {abierto && (
+        <div role="menu" style={{ position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 20, width: 'min(300px, 86vw)', padding: 6,
+          background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, boxShadow: 'var(--shadow)' }}>
+          {opcion('', 'Completo', 'Todo lo del mes: dinero, cobros, gastos, previsión, alumnos y clases.')}
+          {opcion('equipo', 'Para el equipo', 'Solo alumnos y clases, sin ninguna cifra económica.')}
+        </div>
+      )}
     </div>
   );
 }

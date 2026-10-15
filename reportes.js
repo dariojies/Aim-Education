@@ -23,6 +23,8 @@
 // Equipo IT y secretaría); un instructor no ve dinero.
 // ─────────────────────────────────────────────────────────────────────────────
 import express from 'express';
+import { alumnosPorMes } from './tul-clases.js';
+import { generarReportesPdf, nombreMes } from './reportes-pdf.js';
 
 export const HOY = `(now() AT TIME ZONE 'Europe/Madrid')::date`;
 const MES_ACTUAL = `date_trunc('month', ${HOY})::date`;
@@ -108,10 +110,12 @@ export function periodo(q) {
 // Los doce meses que acaban en el elegido.
 const docemeses = (mes) => Array.from({ length: 12 }, (_, i) => mesMas(mes, i - 11));
 
-export function crearReportes({ pool, clubId, authenticateSession, requirePermiso, candidatosGeneracion, mesesDeTemporada, sqlEsIndividual }) {
+export function crearReportes({ pool, clubId, authenticateSession, requirePermiso, candidatosGeneracion, mesesDeTemporada, sqlEsIndividual, empresa = () => null }) {
     const router = express.Router();
     const ver = [authenticateSession, requirePermiso('reportesGenerales')];
-    const ruta = (path, fn) => router.get(`/api/admin/reportes/${path}`, ...ver, async (req, res) => {
+    // Cada pestaña, también para el PDF (#434): las mismas cuentas que en pantalla.
+    const calculos = {};
+    const ruta = (path, fn) => (calculos[path] = fn, router.get(`/api/admin/reportes/${path}`, ...ver, async (req, res) => {
         try {
             res.set('Cache-Control', 'no-store');
             res.json(await fn(periodo(req.query.mes), req));
@@ -119,7 +123,7 @@ export function crearReportes({ pool, clubId, authenticateSession, requirePermis
             console.error(`Reportes (${path}):`, err);
             res.status(500).json({ error: 'No se ha podido calcular el informe.' });
         }
-    });
+    }));
 
     // Ingresos y cobros de un rango de días.
     async function dinero(desde, hasta) {
@@ -442,6 +446,44 @@ export function crearReportes({ pool, clubId, authenticateSession, requirePermis
             cerrados: dias.length, conDescuadre: dias.filter(d => d.descuadre !== 0).length,
             descuadre: r2(dias.reduce((s, d) => s + d.descuadre, 0)), efectivo: r2(efectivo.rows[0].total),
         };
+    });
+
+    // ── Los reportes del mes en PDF (#434) ──
+    // ?modo=equipo: solo alumnos y clases, sin dinero, para los trabajadores.
+    // Las plazas, por actividad (sin las clases individuales), para el PDF.
+    async function ocupacionPorActividad() {
+        const r = await pool.query(
+            `SELECT a.name AS nombre, COUNT(*)::int AS grupos, SUM(g.max_students)::int AS plazas,
+                    SUM(LEAST((SELECT COUNT(*) FROM tul_group_students gs WHERE gs.group_id = g.group_id), g.max_students))::int AS ocupadas,
+                    SUM((SELECT COUNT(*) FROM aim_lista_espera e WHERE e.group_id = g.group_id AND e.estado = 'esperando'))::int AS espera
+             FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+             WHERE a.club_id = $1 AND COALESCE(g.max_students, 0) > 0 AND NOT ${sqlEsIndividual()}
+             GROUP BY a.name ORDER BY a.name`, [clubId]);
+        return r.rows;
+    }
+    router.get('/api/admin/reportes/pdf', ...ver, async (req, res) => {
+        try {
+            const p = periodo(req.query.mes);
+            const equipo = req.query.modo === 'equipo';
+            const [alumnos, porMes, distribucion, resumen, ingresos, cobros, gastosMes, prevision] = await Promise.all([
+                alumnosYPlazas(p), alumnosPorMes(pool, clubId, { hasta: p.hasta }), ocupacionPorActividad(),
+                ...(equipo ? [] : [calculos.resumen(p), calculos.ingresos(p), calculos.cobros(p), calculos.gastos(p), calculos.prevision(p)]),
+            ]);
+            const nombre = `${equipo ? 'Alumnos y clases' : 'Reportes'} ${nombreMes(p.mes)}`
+                .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '-');
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `attachment; filename="${nombre}.pdf"`);
+            res.setHeader('Cache-Control', 'no-store');
+            generarReportesPdf({
+                mes: p.mes, hasta: p.hasta, enCurso: p.enCurso, equipo, empresa: empresa(),
+                generado: new Date().toLocaleString('es-ES', { timeZone: 'Europe/Madrid', day: 'numeric', month: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+                alumnos, porMes, distribucion, resumen, ingresos, cobros, gastos: gastosMes, prevision,
+            }, res);
+        } catch (err) {
+            console.error('Reportes (pdf):', err);
+            if (!res.headersSent) res.status(500).json({ error: 'No se ha podido preparar el PDF.' });
+            else res.end();
+        }
     });
 
     return { router };

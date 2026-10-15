@@ -973,6 +973,68 @@ function Barra({ pct, color = 'var(--teal)', marcas = true }) {
   );
 }
 
+// Alumnos apuntados mes a mes (#434): una barra por mes, con su número encima.
+// Los meses de antes del historial de altas y bajas salen «sin datos».
+const MES_CORTO = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+const mesCorto = (m) => `${MES_CORTO[Number(m.slice(5, 7)) - 1]} ${m.slice(2, 4)}`;
+function BarrasMeses({ meses, valores, color = 'var(--purple)', alto = 120, pequena = false }) {
+  const max = Math.max(1, ...valores.filter((_, i) => !meses[i].sinHistorial));
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <div style={{ display: 'flex', gap: pequena ? 3 : 6, alignItems: 'flex-end', minWidth: pequena ? 260 : 560 }}>
+        {meses.map((m, i) => {
+          const sin = m.sinHistorial;
+          const v = valores[i];
+          return (
+            <div key={m.mes} style={{ flex: 1, display: 'grid', gap: 3, textAlign: 'center', minWidth: 0 }}
+              title={sin ? `${mesCorto(m.mes)}: sin datos (el historial de altas y bajas empieza después)` : `${mesCorto(m.mes)}: ${v} alumno${v !== 1 ? 's' : ''}`}>
+              <span style={{ fontSize: pequena ? 9 : 11, fontWeight: 800, color: sin ? 'var(--ink-3)' : 'var(--ink)' }}>{sin ? '·' : v}</span>
+              <div style={{ height: alto, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
+                <div style={{ width: '100%', maxWidth: pequena ? 18 : 34, borderRadius: '5px 5px 0 0',
+                  height: sin ? 4 : `${Math.max(2, (v / max) * 100)}%`,
+                  background: sin ? 'repeating-linear-gradient(45deg, var(--line), var(--line) 3px, transparent 3px, transparent 6px)' : color }} />
+              </div>
+              {/* En las pequeñas no caben los nombres: la inicial (el nombre entero, al pasar por encima). */}
+              <span style={{ fontSize: pequena ? 9 : 10, color: 'var(--ink-3)', whiteSpace: 'nowrap' }}>{pequena ? MES_CORTO[Number(m.mes.slice(5, 7)) - 1][0].toUpperCase() : mesCorto(m.mes)}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function AlumnosPorMes({ datos, porActividad, titulo }) {
+  if (!datos) return null;
+  const hay = datos.meses.some(m => m.sinHistorial);
+  const nota = hay && datos.desde
+    ? `El historial de altas y bajas empieza el ${new Date(datos.desde + 'T12:00:00').toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })}: de antes no hay datos.`
+    : null;
+  return (
+    <Seccion titulo={titulo}>
+      {porActividad ? (
+        datos.actividades.length === 0 ? <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Sin alumnos en estos meses.</p> : (
+          <div style={{ display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
+            {datos.actividades.map(a => (
+              <div key={a.id} style={{ display: 'grid', gap: 6, padding: 12, borderRadius: 12, background: 'var(--bg-3)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 13 }}>
+                  <b>{a.nombre}</b><span style={{ color: 'var(--ink-3)' }}>ahora {a.meses[a.meses.length - 1]}</span>
+                </div>
+                <BarrasMeses meses={datos.meses} valores={a.meses} alto={70} pequena />
+              </div>
+            ))}
+          </div>
+        )
+      ) : (
+        <BarrasMeses meses={datos.meses} valores={datos.meses.map(m => m.total)} />
+      )}
+      <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
+        Alumnos apuntados al final de cada mes (el mes en curso, hoy). Quien está en dos grupos de una actividad cuenta una vez.{nota ? ` ${nota}` : ''}
+      </p>
+    </Seccion>
+  );
+}
+
 function Seccion({ titulo, children, extra }) {
   return (
     <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 16, display: 'grid', gap: 12 }}>
@@ -1014,6 +1076,7 @@ export function AdminReportes({ user, permisos = {}, mes = null }) {
   const [asistencia, setAsistencia] = useState([]);
   const [evaluaciones, setEvaluaciones] = useState([]);
   const [bonos, setBonos] = useState(null); // plazas ocupadas con bono (#253)
+  const [porMes, setPorMes] = useState(null); // alumnos mes a mes (#434)
   const [cargando, setCargando] = useState(false);
 
   const periodo = useMemo(() => {
@@ -1049,7 +1112,7 @@ export function AdminReportes({ user, permisos = {}, mes = null }) {
     setCargando(true);
     try {
       const rango = `from=${periodo.from}&to=${periodo.to}`;
-      const [a, ins, ov, rc, ch, gm, at, ev, bn] = await Promise.all([
+      const [a, ins, ov, rc, ch, gm, at, ev, bn, pm] = await Promise.all([
         api('/activities'), api('/instructors'),
         api(`/report/overview?hasta=${periodo.to}${segParams}`),
         api(`/report/roster-changes?${rango}${segParams}`),
@@ -1058,8 +1121,10 @@ export function AdminReportes({ user, permisos = {}, mes = null }) {
         api(`/report/attendance?${rango}${segParams}`),
         api(`/report/evaluations?${rango}${segParams}`),
         api(`/report/bonos?${rango}${segParams}`).catch(() => null),
+        api(`/report/alumnos-por-mes?hasta=${periodo.to}${segParams}`).catch(() => null),
       ]);
       setBonos(bn);
+      setPorMes(pm);
       setActividades(a.activities || []);
       setInstructores(ins.instructors || []);
       setOverview(ov); setRoster(rc); setChurn(ch); setGami(gm);
@@ -1144,6 +1209,13 @@ export function AdminReportes({ user, permisos = {}, mes = null }) {
           <Kpi titulo="Membresía media" valor={membresia ? membresia.texto : '—'} sub="estimada por el churn" />
         </div>
       )}
+
+      {/* Alumnos mes a mes (#434): por actividad, una gráfica de cada una; con
+          una elegida, la suya; en general o por monitor, el total. */}
+      <AlumnosPorMes datos={porMes} porActividad={segmento === 'activity' && !segmentoId}
+        titulo={segmento === 'activity' && segmentoId
+          ? `Alumnos por mes · ${actividades.find(a => String(a.id) === String(segmentoId))?.name || 'la actividad'}`
+          : segmento === 'activity' ? 'Alumnos por mes de cada actividad' : soloYo ? 'Tus alumnos por mes' : 'Alumnos por mes'} />
 
       {/* Distribución por actividad / grupos */}
       {overview && (
