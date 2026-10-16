@@ -68,6 +68,9 @@ export async function crearTablasTienda(client) {
             gestionado_por UUID REFERENCES users(user_id) ON DELETE SET NULL
         )`);
     await client.query(`CREATE INDEX IF NOT EXISTS ix_tienda_pedidos_user ON aim_tienda_pedidos (user_id)`);
+    // Envolver para regalo (#446): gratis, con un mensaje opcional para la tarjeta.
+    await client.query(`ALTER TABLE aim_tienda_pedidos ADD COLUMN IF NOT EXISTS regalo BOOLEAN NOT NULL DEFAULT false`);
+    await client.query(`ALTER TABLE aim_tienda_pedidos ADD COLUMN IF NOT EXISTS regalo_mensaje VARCHAR(300)`);
     await client.query(`CREATE INDEX IF NOT EXISTS ix_tienda_pedidos_estado ON aim_tienda_pedidos (estado)`);
     // Lo que lleva cada pedido: una línea por unidad, con su cargo (el envío, también).
     await client.query(`
@@ -226,6 +229,7 @@ export function crearTienda({ pool, authenticateSession, requireSeccion, sesionO
                 enviado: p.enviado_at, entregado: p.entregado_at, cancelado: p.cancelado_at, motivoCancelacion: p.motivo_cancelacion,
                 envio: p.entrega === 'envio' ? { nombre: p.nombre, telefono: p.telefono, direccion: p.direccion, cp: p.cp, ciudad: p.ciudad, provincia: p.provincia } : null,
                 notas: p.notas, cliente: { id: p.user_id, nombre: p.cliente, email: p.email, telefono: p.phone },
+                regalo: p.regalo ? { mensaje: p.regalo_mensaje || '' } : null,
                 lineas: [...grupos.values()], total: r2(mias.reduce((s, l) => s + Number(l.total || 0), 0)),
                 unidades: mias.filter(l => !l.envio).length,
                 cargosPendientes: p.estado === 'pendiente_pago' && !caducado ? pendientes : [],
@@ -308,11 +312,12 @@ export function crearTienda({ pool, authenticateSession, requireSeccion, sesionO
                 }
             }
             const yo = (await client.query(`SELECT TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS nombre FROM users WHERE user_id = $1`, [me])).rows[0];
+            const regalo = req.body?.regalo === true;
             const pedido = (await client.query(
-                `INSERT INTO aim_tienda_pedidos (user_id, entrega, nombre, telefono, direccion, cp, ciudad, provincia, notas)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+                `INSERT INTO aim_tienda_pedidos (user_id, entrega, nombre, telefono, direccion, cp, ciudad, provincia, notas, regalo, regalo_mensaje)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
                 [me, entrega, envio?.nombre || null, envio?.telefono || null, envio?.direccion || null, envio?.cp || null, envio?.ciudad || null, envio?.provincia || null,
-                 txt(req.body?.notas, 1000)])).rows[0].id;
+                 txt(req.body?.notas, 1000), regalo, regalo ? txt(req.body?.regaloMensaje, 300) : null])).rows[0].id;
             const cargoIds = [];
             const cargo = async (concepto, descripcion, tipo, precio, iva) => (await client.query(
                 `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, target_nombre, estado, origen)

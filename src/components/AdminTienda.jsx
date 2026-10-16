@@ -93,6 +93,23 @@ export default function AdminTienda({ showToast }) {
 
 // ── Pedidos ──
 const FILTROS = [['pagado', 'Por preparar'], ['abiertos', 'Pendientes de entregar'], ['pendiente_pago', 'Sin pagar'], ['entregado', 'Entregados'], ['cancelado', 'Cancelados'], ['', 'Todos']];
+// La nota que va dentro del paquete de un regalo (#446): lo que lleva, sin
+// precios, y el mensaje de quien lo regala.
+function imprimirNotaRegalo(p) {
+  const esc = (t) => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const w = window.open('', '_blank', 'width=520,height=640');
+  if (!w) { alert('El navegador ha bloqueado la ventana. Permite las ventanas emergentes de esta web.'); return; }
+  w.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Nota de regalo · pedido ${p.id}</title>
+<style>body{font-family:Arial,Helvetica,sans-serif;color:#222;margin:32px}h1{font-size:22px;margin:0 0 4px}.m{font-size:18px;line-height:1.5;margin:24px 0;padding:18px 20px;border:2px dashed #FF5FA2;border-radius:14px;white-space:pre-wrap}ul{padding-left:18px;font-size:14px;line-height:1.7}.p{font-size:12px;color:#777;margin-top:28px}</style>
+</head><body><h1>🎁 Un regalo para ti</h1>
+${p.regalo?.mensaje ? `<div class="m">${esc(p.regalo.mensaje)}</div>` : ''}
+<p style="font-size:13px;color:#555;margin:18px 0 4px">Lleva:</p>
+<ul>${p.lineas.filter(l => !l.envio).map(l => `<li>${l.cantidad} × ${esc(l.descripcion)}</li>`).join('')}</ul>
+<p class="p">AIM Education · pedido nº ${p.id}</p>
+<script>window.onload=()=>{window.print();}</script></body></html>`);
+  w.document.close();
+}
+
 function Pedidos({ showToast, onCambio }) {
   const [filtro, setFiltro] = useState('pagado');
   const [lista, setLista] = useState(null);
@@ -125,6 +142,7 @@ function Pedidos({ showToast, onCambio }) {
               <b style={{ fontSize: 15 }}>Nº {p.id}</b>
               <span style={pastilla(color)}>{p.estado === 'pagado' ? 'Pagado · por preparar' : txt}</span>
               <span style={pastilla(p.entrega === 'envio' ? 'var(--orange)' : 'var(--purple)')}>{p.entrega === 'envio' ? '🚚 Envío a casa' : '🏠 Recoge en el club'}</span>
+              {p.regalo && <span style={pastilla('#E0428A')}>🎁 Para regalo</span>}
               <span style={{ flex: 1 }} />
               <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{fmt(p.creado)}{p.pagado ? ` · pagado ${fmt(p.pagado)}` : ''}</span>
             </div>
@@ -141,6 +159,7 @@ function Pedidos({ showToast, onCambio }) {
                 <b>{p.cliente.nombre}</b>
                 <span style={{ color: 'var(--ink-3)' }}>{[p.cliente.email, p.cliente.telefono].filter(Boolean).join(' · ')}</span>
                 {p.envio && <span><b>Enviar a:</b> {p.envio.nombre} · {p.envio.direccion}, {p.envio.cp} {p.envio.ciudad}{p.envio.provincia ? ` (${p.envio.provincia})` : ''} · {p.envio.telefono}</span>}
+                {p.regalo && <span style={{ color: '#C2306F' }}><b>🎁 Envolver para regalo.</b>{p.regalo.mensaje ? <> Tarjeta: «{p.regalo.mensaje}»</> : ' Sin mensaje.'}</span>}
                 {p.notas && <span><b>Notas:</b> {p.notas}</span>}
                 {p.estado === 'cancelado' && p.motivoCancelacion && <span style={{ color: 'var(--ink-3)' }}>Cancelado: {p.motivoCancelacion}</span>}
               </div>
@@ -149,6 +168,7 @@ function Pedidos({ showToast, onCambio }) {
               {p.estado === 'pagado' && p.entrega === 'recogida' && <button type="button" className="btn btn-sm btn-primary" onClick={() => mover(p, 'listo')}>📦 Listo para recoger (avisar)</button>}
               {p.estado === 'pagado' && p.entrega === 'envio' && <button type="button" className="btn btn-sm btn-primary" onClick={() => mover(p, 'enviado')}>🚚 Marcar como enviado (avisar)</button>}
               {['pagado', 'listo', 'enviado'].includes(p.estado) && <button type="button" className="btn btn-sm btn-outline" onClick={() => mover(p, 'entregado')}>✓ Entregado</button>}
+              {p.regalo && p.estado !== 'cancelado' && <button type="button" className="btn btn-sm btn-outline" onClick={() => imprimirNotaRegalo(p)}>🎁 Imprimir nota de regalo</button>}
               {p.estado === 'pendiente_pago' && <button type="button" className="btn btn-sm btn-ghost" onClick={() => mover(p, 'cancelado')}>Cancelar pedido</button>}
             </div>
           </div>

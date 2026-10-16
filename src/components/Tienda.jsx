@@ -243,6 +243,9 @@ function Carrito() {
   const [entrega, setEntrega] = useState('recogida');
   const [dir, setDir] = useState({ nombre: user ? `${user.firstName || ''} ${user.lastName || ''}`.trim() : '', telefono: '', direccion: '', cp: '', ciudad: '', provincia: '' });
   const [notas, setNotas] = useState('');
+  // Envolver para regalo (#446): gratis, con una tarjeta opcional.
+  const [regalo, setRegalo] = useState(false);
+  const [mensaje, setMensaje] = useState('');
   const [yendo, setYendo] = useState(false);
   const [error, setError] = useState('');
   const [guardado, setGuardado] = useState(null);
@@ -261,7 +264,7 @@ function Carrito() {
     try {
       const r = await fetch('/api/tienda/pedidos', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-        body: JSON.stringify({ lineas: validas.map(l => ({ varianteId: l.varianteId, cantidad: l.cantidad })), entrega, direccion: entrega === 'envio' ? dir : null, notas }),
+        body: JSON.stringify({ lineas: validas.map(l => ({ varianteId: l.varianteId, cantidad: l.cantidad })), entrega, direccion: entrega === 'envio' ? dir : null, notas, regalo, regaloMensaje: regalo ? mensaje : '' }),
       });
       const x = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(x.error || 'No se ha podido hacer el pedido.');
@@ -336,6 +339,18 @@ function Carrito() {
                   ))}
                 </div>
               )}
+              <div style={{ display: 'grid', gap: 8, padding: '12px 14px', borderRadius: 12, border: `1px solid ${regalo ? 'var(--pink, #FF5FA2)' : 'var(--line)'}`, background: regalo ? 'color-mix(in oklab, #FF5FA2 7%, var(--bg-2))' : 'transparent' }}>
+                <label style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={regalo} onChange={e => setRegalo(e.target.checked)} />
+                  🎁 Envolver para regalo <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--teal)' }}>gratis</span>
+                </label>
+                {regalo && (
+                  <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 700, color: 'var(--ink-2)' }}>Mensaje para la tarjeta (opcional)
+                    <textarea rows={2} maxLength={300} value={mensaje} onChange={e => setMensaje(e.target.value)} style={{ ...inp, resize: 'vertical' }} placeholder="¡Feliz cumpleaños, campeón!" />
+                    <span style={{ fontWeight: 500, color: 'var(--ink-3)' }}>Va envuelto y con una nota sin precios.</span>
+                  </label>
+                )}
+              </div>
               <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 700, color: 'var(--ink-2)' }}>Notas (opcional)
                 <textarea rows={2} value={notas} onChange={e => setNotas(e.target.value)} style={{ ...inp, resize: 'vertical' }} placeholder="Para quién es, a qué clase va…" />
               </label>
@@ -411,7 +426,7 @@ export function MisPedidos() {
               <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, borderTop: '1px solid var(--line)', paddingTop: 4 }}><span>Total</span><span>{euros(p.total)}</span></div>
             </div>
             <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>
-              {p.entrega === 'envio' && p.envio ? `A: ${p.envio.nombre}, ${p.envio.direccion}, ${p.envio.cp} ${p.envio.ciudad}` : 'Recogida en el club'}
+              {p.regalo ? '🎁 Para regalo · ' : ''}{p.entrega === 'envio' && p.envio ? `A: ${p.envio.nombre}, ${p.envio.direccion}, ${p.envio.cp} ${p.envio.ciudad}` : 'Recogida en el club'}
               {p.estado === 'listo' ? ' · pásate por secretaría' : ''}
               {p.estado === 'cancelado' && p.motivoCancelacion ? ` · ${p.motivoCancelacion}` : ''}
             </span>
