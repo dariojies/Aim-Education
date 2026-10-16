@@ -95,6 +95,31 @@ export function clasesEnRango(grupos, userId, desde, hasta, cierres = {}) {
     return out.sort((a, b) => a.fecha.localeCompare(b.fecha) || String(a.hora).localeCompare(String(b.hora)));
 }
 
+// Las sustituciones (#445): en las clases que le cubren a alguien, quién le
+// sustituye; y las que cubre él, añadidas (con su hora de acabar y su aula,
+// del horario). `subs`: filas de aim_sustituciones con los dos nombres.
+export function aplicarSustituciones(clases, grupos, subs, userId, cierres = {}) {
+    const yo = String(userId);
+    const misma = (c, s) => c.fecha === s.fecha && String(c.grupoId) === String(s.group_id) && c.hora === s.hora;
+    for (const s of subs) {
+        if (String(s.ausente_id) === yo) {
+            const c = clases.find(x => misma(x, s));
+            if (c) c.sustituto = s.sustituto;
+        }
+        if (String(s.sustituto_id) === yo && !cierres[s.fecha] && !clases.some(x => misma(x, s))) {
+            const g = grupos.find(x => String(x.group_id) === String(s.group_id));
+            if (!g) continue;
+            const ses = (Array.isArray(g.sessions) ? g.sessions : []);
+            const se = ses.find(x => x?.startTime === s.hora && (x.days || []).map(Number).includes(diaSemana(s.fecha))) || ses.find(x => x?.startTime === s.hora);
+            clases.push({
+                id: `${g.group_id}-${s.hora}`, fecha: s.fecha, grupoId: g.group_id, grupo: g.name, actividad: g.actividad,
+                hora: s.hora, horaFin: se?.endTime || null, aula: se?.aulaName || null, sustituyeA: s.ausente,
+            });
+        }
+    }
+    return clases.sort((a, b) => a.fecha.localeCompare(b.fecha) || String(a.hora).localeCompare(String(b.hora)));
+}
+
 // Los eventos, uno por cada día que duran (dentro del rango). Un evento de un
 // fin de semana sale el sábado y el domingo, no solo el primer día.
 export function eventosEnRango(eventos, desde, hasta) {
@@ -132,7 +157,13 @@ export async function agendaEnRango(pool, { clubId, userId, desde, hasta, turnos
          WHERE docente_id = $1 AND event_date <= $3::date AND COALESCE(end_date, event_date) >= $2::date
          ORDER BY event_date, time`, [userId, desde, hasta])).rows;
     const hastaClases = finClases && finClases < hasta ? finClases : hasta;
-    const res = { cierres, clases: clasesEnRango(grupos, userId, desde, hastaClases, cierres), eventos };
+    // Las sustituciones (#445): las que le cubren y las que cubre.
+    const subs = (await pool.query(
+        `SELECT s.fecha::text AS fecha, s.group_id, s.hora, s.ausente_id, s.sustituto_id,
+                TRIM(CONCAT(ua.name, ' ', COALESCE(ua.surname, ''))) AS ausente, TRIM(CONCAT(us.name, ' ', COALESCE(us.surname, ''))) AS sustituto
+         FROM aim_sustituciones s JOIN users ua ON ua.user_id = s.ausente_id JOIN users us ON us.user_id = s.sustituto_id
+         WHERE (s.sustituto_id = $1 OR s.ausente_id = $1) AND s.fecha BETWEEN $2::date AND $3::date`, [userId, desde, hastaClases]).catch(() => ({ rows: [] }))).rows;
+    const res = { cierres, clases: aplicarSustituciones(clasesEnRango(grupos, userId, desde, hastaClases, cierres), grupos, subs, userId, cierres), eventos };
     if (!turnos) return res;
 
     res.horario = (await pool.query(
@@ -265,7 +296,7 @@ export function generarIcs({ nombreCalendario, userId = null, clases = [], event
         evento([
             `UID:clase-${c.grupoId}-${fechaIcs(c.fecha)}T${ini.replace(':', '')}${arroba}`,
             ...conHora(c.fecha, ini, leerHora(c.horaFin)),
-            `SUMMARY:${escaparTexto(c.grupo || 'Clase')}`,
+            `SUMMARY:${escaparTexto(`${c.grupo || 'Clase'}${c.sustituyeA ? ` (sustituyes a ${c.sustituyeA})` : c.sustituto ? ` (te sustituye ${c.sustituto})` : ''}`)}`,
             c.actividad && `DESCRIPTION:${escaparTexto(`Clase de ${c.actividad}`)}`,
             c.aula && `LOCATION:${escaparTexto(c.aula)}`,
             'CATEGORIES:Clase',

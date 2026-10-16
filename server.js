@@ -29,6 +29,7 @@ import { limpiarHtml, htmlParaFuera, textoDeHtml } from './noticias-html.js';
 import { crearSeo } from './seo.js';
 import { crearIndexNow } from './indexnow.js';
 import { crearAgrupaciones, crearTablasAgrupaciones } from './agrupaciones.js';
+import { crearSustituciones, crearTablasSustituciones, SQL_SUSTITUYE } from './sustituciones.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
@@ -2096,6 +2097,8 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_ausencias_user ON aim_ausencias (user_id, desde)`);
+        // Quién da las clases de un profe ausente (#445). Ver sustituciones.js.
+        await crearTablasSustituciones(client);
 
         // Inmutabilidad en la propia base de datos: ni la web ni nadie con acceso a
         // las tablas puede reescribir o borrar el registro. Los fichajes, sus
@@ -5090,6 +5093,8 @@ async function gruposDe(userId) {
          WHERE a.club_id = $1 AND (
              sess->>'instructorId' = $2
              OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(sess->'instructors', '[]'::jsonb)) d WHERE d->>'id' = $2)
+             -- O la sustituye estos días (#445).
+             OR ${SQL_SUSTITUYE('g.group_id', '$2')}
          )`,
         [AIM_CLUB_ID, String(userId)]
     );
@@ -5105,6 +5110,7 @@ async function grupoSuyo(req, groupId) {
          WHERE g.group_id = $1 AND (
              sess->>'instructorId' = $2
              OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(sess->'instructors', '[]'::jsonb)) d WHERE d->>'id' = $2)
+             OR ${SQL_SUSTITUYE('g.group_id', '$2')}
          ) LIMIT 1`,
         [groupId, String(req.userSession.userId)]
     );
@@ -5199,6 +5205,8 @@ setInterval(function publicarRedesProgramadas() { publicacionesRedes.publicarPen
 setInterval(function seguidoresRedes() { publicacionesRedes.fotoSeguidores(); }, 6 * 3600_000);
 // Evaluación (#411): de los profes y la dirección; las familias no ven nada.
 app.use(crearEvaluacion({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireSeccion, permisos, grupoSuyo }).router);
+// Sustitutos de un profe ausente (#445).
+app.use(crearSustituciones({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireAdmin, requireRol, rolEfectivo }).router);
 // Agrupaciones dentro de una clase (#441).
 app.use(crearAgrupaciones({ pool, authenticateSession, requireSeccion, grupoSuyo }).router);
 // Reportes (#416): cómo va el negocio, con las mismas cuentas en todas partes.
@@ -16777,6 +16785,22 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
             });
         }
 
+        // Clases en las que sustituye a un compañero (#445), de las dos próximas
+        // semanas: una por clase, hasta que la vea.
+        if (recibe('sustituciones')) {
+            fuente('Clases', [], async () => {
+                const r = await pool.query(
+                    `SELECT s.id, s.fecha::text AS fecha, s.hora, s.created_at, g.name AS grupo,
+                            TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS ausente
+                     FROM aim_sustituciones s JOIN users u ON u.user_id = s.ausente_id JOIN tul_groups g ON g.group_id = s.group_id
+                     WHERE s.sustituto_id = $1 AND s.fecha BETWEEN (now() AT TIME ZONE 'Europe/Madrid')::date AND (now() AT TIME ZONE 'Europe/Madrid')::date + 14
+                     ORDER BY s.fecha, s.hora LIMIT 20`, [yo]);
+                return r.rows.map(x => ({ tipo: 'clases', clave: `sustitucion:${x.id}`, marca: x.created_at, fecha: x.created_at,
+                    texto: `El ${fechaAviso(x.fecha)} sustituyes a ${x.ausente}`, detalle: `${x.grupo} a las ${x.hora}`,
+                    destino: `/admin/mi-dia?fecha=${x.fecha}` }));
+            });
+        }
+
         // Reservas citadas (#443): quién va en lugar de quién. Uno por reserva.
         if (recibe('speaking_reserva')) {
             fuente('Clases individuales', [], async () => {
@@ -21978,6 +22002,8 @@ app.post('/api/fichaje/ausencias/:id/cancelar', authenticateSession, requireAdmi
         await client.query(
             `UPDATE aim_ausencias SET estado = 'cancelada', resuelto_por = $2, resuelto_at = NOW(), respuesta = COALESCE($3, respuesta) WHERE id = $1`,
             [a.id, req.userSession.userId, motivo]);
+        // Sin ausencia, sin sustitutos (#445): cada uno vuelve a dar lo suyo.
+        await client.query(`DELETE FROM aim_sustituciones WHERE ausencia_id = $1`, [a.id]);
         await auditarFichaje(client, {
             evento: 'ausencia_cancelada', trabajadorId: a.user_id, actorId: req.userSession.userId, ip: ipDe(req),
             datos: { ausenciaId: a.id, estadoAnterior: a.estado, motivo },

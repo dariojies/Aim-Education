@@ -725,7 +725,80 @@ const ESTADO_AUS = {
 const fmtDiaCorto = (iso) => new Date(String(iso).slice(0, 10) + 'T12:00:00').toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' });
 const textoFechas = (a) => a.desde === a.hasta ? fmtDiaCorto(a.desde) : `${fmtDiaCorto(a.desde)} – ${fmtDiaCorto(a.hasta)} (${a.dias} días)`;
 
+// Quién da las clases del ausente esos días (#445): una por una o todas a la vez.
+function Sustitutos({ ausencia, onCerrar, showToast }) {
+  const [d, setD] = useState(null);
+  const [puestos, setPuestos] = useState({});
+  const [guardando, setGuardando] = useState(false);
+  const k = (c) => `${c.fecha}|${c.groupId}|${c.hora}`;
+  useEffect(() => {
+    fetch(`/api/admin/ausencias/${ausencia.id}/sustitutos`, { credentials: 'include', cache: 'no-store' })
+      .then(async r => { const x = await r.json(); if (!r.ok) throw new Error(x.error || 'No se ha podido cargar.'); return x; })
+      .then(x => { setD(x); setPuestos(Object.fromEntries(x.clases.map(c => [k(c), c.sustitutoId || '']))); })
+      .catch(e => setD({ error: e.message }));
+  }, [ausencia.id]);
+  useEffect(() => {
+    const f = (e) => { if (e.key === 'Escape') onCerrar(); };
+    window.addEventListener('keydown', f);
+    return () => window.removeEventListener('keydown', f);
+  }, [onCerrar]);
+  async function guardar() {
+    setGuardando(true);
+    try {
+      const r = await enviar(`/api/admin/ausencias/${ausencia.id}/sustitutos`, { asignaciones: d.clases.map(c => ({ fecha: c.fecha, groupId: c.groupId, hora: c.hora, sustitutoId: puestos[k(c)] || null })) }, 'PUT');
+      showToast?.(r.puestos ? 'Sustitutos guardados: les llega el aviso y lo ven en su Mi día.' : 'Guardado.');
+      onCerrar();
+    } catch (e) { alert(e.message); } finally { setGuardando(false); }
+  }
+  const sel = { fontFamily: 'inherit', fontSize: 13, padding: '6px 8px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)', maxWidth: '100%' };
+  const opciones = (d?.personal || []).map(p => <option key={p.id} value={p.id}>{p.nombre}</option>);
+  return (
+    <div role="dialog" aria-label="Sustitutos" onClick={onCerrar}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.4)', display: 'grid', placeItems: 'center', zIndex: 80, padding: 16 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, width: 'min(680px, 100%)', maxHeight: 'calc(100dvh - 40px)', display: 'grid', gridTemplateRows: 'auto 1fr auto', overflow: 'hidden' }}>
+        <div style={{ padding: '16px 18px 10px', display: 'grid', gap: 4 }}>
+          <b style={{ fontSize: 16 }}>👥 Sustitutos de {ausencia.trabajador}</b>
+          <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>{ausencia.tipoNombre} · {textoFechas(ausencia)}. El sustituto ve la clase en su Mi día, puede pasar lista y le llega un aviso. A las familias no se les dice nada.</span>
+        </div>
+        <div style={{ overflowY: 'auto', padding: '0 18px', display: 'grid', gap: 8, alignContent: 'start' }}>
+          {!d && <p style={{ color: 'var(--ink-3)', fontSize: 13 }}>Cargando…</p>}
+          {d?.error && <p style={{ color: 'var(--orange)', fontSize: 13 }}>{d.error}</p>}
+          {d?.clases && !d.clases.length && <p style={{ color: 'var(--ink-3)', fontSize: 13 }}>No tiene clases esos días (o son días de cierre).</p>}
+          {d?.clases?.length > 0 && (
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 13, fontWeight: 700, padding: '8px 10px', borderRadius: 10, background: 'var(--bg-3)' }}>
+              Todas a:
+              <select style={sel} value="" onChange={e => { const v = e.target.value; if (v) setPuestos(Object.fromEntries(d.clases.map(c => [k(c), v === 'nadie' ? '' : v]))); }}>
+                <option value="">Elegir…</option>
+                <option value="nadie">— Nadie —</option>
+                {opciones}
+              </select>
+              <span style={{ fontWeight: 500, color: 'var(--ink-3)' }}>({d.clases.length} clase{d.clases.length !== 1 ? 's' : ''})</span>
+            </label>
+          )}
+          {d?.clases?.map(c => (
+            <div key={k(c)} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '8px 0', borderBottom: '1px solid var(--line-2)' }}>
+              <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+                <div style={{ fontSize: 13.5, fontWeight: 700 }}>{c.grupo}</div>
+                <div style={{ fontSize: 12, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{fmtDiaCorto(c.fecha)} · {c.hora}{c.horaFin ? `–${c.horaFin}` : ''}{c.actividad ? ` · ${c.actividad}` : ''}</div>
+              </div>
+              <select style={{ ...sel, flex: '0 1 230px' }} aria-label={`Sustituto ${c.grupo} ${c.fecha}`} value={puestos[k(c)] || ''} onChange={e => setPuestos(p => ({ ...p, [k(c)]: e.target.value }))}>
+                <option value="">— Sin sustituto —</option>
+                {opciones}
+              </select>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', padding: '12px 18px', borderTop: '1px solid var(--line)' }}>
+          <button type="button" className="btn btn-sm btn-outline" onClick={onCerrar}>Cancelar</button>
+          <button type="button" className="btn btn-sm btn-primary" disabled={!d?.clases?.length || guardando} onClick={guardar}>{guardando ? 'Guardando…' : 'Guardar'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ListaAusencias({ ausencias, mostrarTrabajador, onCambio, showToast }) {
+  const [sustitutos, setSustitutos] = useState(null);
   async function resolver(a, aprobar) {
     let respuesta = null;
     if (!aprobar) {
@@ -762,6 +835,7 @@ function ListaAusencias({ ausencias, mostrarTrabajador, onCambio, showToast }) {
                   <button className="btn btn-sm btn-outline" onClick={() => resolver(a, false)}>Rechazar</button>
                 </>
               )}
+              {mostrarTrabajador && a.estado === 'aprobada' && <button className="btn btn-sm btn-outline" onClick={() => setSustitutos(a)} title="Quién da sus clases esos días">👥 Sustitutos</button>}
               {a.puedoCancelar && <button className="btn btn-sm btn-outline" onClick={() => cancelar(a)}>{a.estado === 'pendiente' ? 'Retirar' : 'Cancelar'}</button>}
             </div>
             <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
@@ -773,6 +847,7 @@ function ListaAusencias({ ausencias, mostrarTrabajador, onCambio, showToast }) {
           </div>
         );
       })}
+      {sustitutos && <Sustitutos ausencia={sustitutos} showToast={showToast} onCerrar={() => setSustitutos(null)} />}
     </div>
   );
 }

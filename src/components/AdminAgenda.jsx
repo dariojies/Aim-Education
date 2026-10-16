@@ -114,7 +114,8 @@ function ElegirTicket({ valor, onElegir, coger, onCoger, yo }) {
 
 export default function AdminAgenda({ showToast, user, puedePasarLista = false }) {
     const { go } = useRouter();
-    const [dia, setDia] = useState(HOY());
+    // Con ?fecha= (el aviso de una sustitución, #445) abre ese día.
+    const [dia, setDia] = useState(() => { try { const f = new URLSearchParams(window.location.search).get('fecha'); return /^\d{4}-\d{2}-\d{2}$/.test(f || '') ? f : HOY(); } catch { return HOY(); } });
     const [datos, setDatos] = useState(null);
     const [cargando, setCargando] = useState(false);
     const [editando, setEditando] = useState(null); // tarea nueva o existente
@@ -209,7 +210,9 @@ export default function AdminAgenda({ showToast, user, puedePasarLista = false }
     // Lo que ocupa cada franja: las clases y los eventos son intocables, las
     // tareas con hora se pintan encima de su hueco.
     const ocupado = [
-        ...(datos?.clases || []).map(c => ({ ...c, tipo: 'clase', nombre: c.grupo, detalle: [c.actividad, c.aula].filter(Boolean).join(' · ') })),
+        ...(datos?.clases || []).map(c => ({ ...c, tipo: 'clase', nombre: c.grupo,
+          // Sustituciones (#445): a quién cubre, o quién le cubre a él.
+          detalle: [c.sustituyeA ? `Sustituyes a ${c.sustituyeA}` : c.sustituto ? `Te sustituye ${c.sustituto}` : null, c.actividad, c.aula].filter(Boolean).join(' · ') })),
         ...(datos?.eventos || []).map(e => ({ ...e, tipo: 'evento', nombre: e.titulo, detalle: e.lugar })),
         // Las horas del Equipo IT, tal y como se planificaron en su apartado: ese
         // rato está ocupado y es lo que hay que fichar.
