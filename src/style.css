@@ -4563,3 +4563,22 @@ html.es-app [role="dialog"] { padding-top: calc(var(--app-arriba) + 12px) !impor
 .app-interruptor.is-on span { transform: translateX(20px); }
 .app-interruptor:disabled { opacity: .6; }
 
+
+/* #442: el menú del móvil. Es otro <nav> dentro de la cabecera, así que heredaba
+   lo del menú de escritorio (26 px entre enlaces, la sangría de 24 px que lo
+   sacaba por la derecha y la rayita de color de debajo). Además, la
+   hamburguesa va a la derecha del todo y el menú se abre encima de la página
+   (con su propio desplazamiento si no cabe), sin empujarla. */
+.aim-header .mobile-nav { gap: 0; margin-left: 0; flex: none; }
+.aim-header .mobile-nav a { font-size: 15px; font-weight: 600; color: var(--ink-2); }
+.aim-header .mobile-nav a::after { display: none; }
+.aim-header .mobile-nav a:hover { color: var(--ink); }
+@media (max-width: 1024px) {
+  .aim-header .actions { margin-left: auto; }
+  .aim-header .mobile-menu-btn { order: 3; margin-right: -8px; }
+  .aim-header .mobile-nav.open {
+    position: absolute; left: 0; right: 0; top: 100%;
+    max-height: calc(100dvh - 72px); overflow-y: auto; overscroll-behavior: contain;
+    box-shadow: 0 22px 30px -20px rgba(15, 23, 42, .35);
+  }
+}
