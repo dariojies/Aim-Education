@@ -16,6 +16,7 @@ export const TIPO_LECCION = {
   video: { nombre: 'Vídeo', icono: '🎬' },
   archivo: { nombre: 'Archivo', icono: '📎' },
   tarea: { nombre: 'Tarea', icono: '✏️' },
+  cuestionario: { nombre: 'Cuestionario', icono: '❓' },
 };
 export const mb = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(b >= 10 * 1048576 ? 0 : 1).replace('.', ',')} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
 const euros = (n) => `${Number(n).toFixed(2).replace('.', ',')} €`;
@@ -338,13 +339,13 @@ function AulaAprender({ id }) {
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', borderTop: '1px solid var(--line)', paddingTop: 16 }}>
                 <button type="button" className="btn btn-sm btn-outline" disabled={i <= 0} onClick={() => ir(i - 1)}>← Anterior</button>
                 <div style={{ flex: 1 }} />
-                {!c.gestor && l.tipo !== 'tarea' && (
+                {!c.gestor && l.tipo !== 'tarea' && l.tipo !== 'cuestionario' && (
                   <button type="button" className={`btn btn-sm ${l.hecha ? 'btn-ghost' : 'btn-outline'}`} onClick={() => marcar(l, !l.hecha)}>
                     {l.hecha ? '✓ Hecha' : 'Marcar como hecha'}
                   </button>
                 )}
                 <button type="button" className="btn btn-sm btn-primary" disabled={i >= todas.length - 1}
-                  onClick={() => { if (!c.gestor && !l.hecha && l.tipo !== 'tarea') marcar(l, true); ir(i + 1); }}>Siguiente →</button>
+                  onClick={() => { if (!c.gestor && !l.hecha && l.tipo !== 'tarea' && l.tipo !== 'cuestionario') marcar(l, true); ir(i + 1); }}>Siguiente →</button>
               </div>
               {!c.gestor && pct === 100 && <p style={{ margin: 0, padding: 14, borderRadius: 14, background: 'color-mix(in oklab, var(--teal) 12%, var(--bg-2))', fontWeight: 700 }}>🎉 ¡Has completado todo el curso!</p>}
             </>
@@ -376,9 +377,206 @@ function Leccion({ l, gestor, onEntregada }) {
           <a className="btn btn-sm btn-primary" href={`${l.archivo.url}?descargar=1`}><I.Download /> Descargar</a>
         </div>
       )}
+      {l.tipo === 'cuestionario' && <Cuestionario l={l} gestor={gestor} onHecho={onEntregada} />}
       {l.tipo === 'tarea' && (gestor
         ? <p style={{ margin: 0, fontSize: 14, color: 'var(--ink-3)' }}>Aquí el alumno escribe su respuesta o adjunta un archivo. Las entregas se corrigen desde el panel, en «Aula virtual».</p>
         : <Entrega l={l} onEntregada={onEntregada} />)}
+    </div>
+  );
+}
+
+// ═══════════════════════ Cuestionarios (#439) ═══════════════════════
+const LETRA = ['A', 'B', 'C', 'D'];
+const notaTexto = (n) => `${String(Math.round(Number(n) * 100) / 100).replace('.', ',')} / 10`;
+
+function Opcion({ letra, texto, estado, onClick, disabled }) {
+  const color = estado === 'bien' ? 'var(--teal)' : estado === 'mal' ? 'var(--pink)' : estado === 'elegida' ? 'var(--purple)' : 'var(--line)';
+  return (
+    <button type="button" onClick={onClick} disabled={disabled}
+      style={{ font: 'inherit', textAlign: 'left', display: 'flex', gap: 12, alignItems: 'center', width: '100%', padding: '12px 14px', borderRadius: 14,
+        cursor: disabled ? 'default' : 'pointer', border: `2px solid ${color}`, color: 'var(--ink)',
+        background: estado && estado !== 'nada' ? `color-mix(in oklab, ${color} 12%, var(--bg-2))` : 'var(--bg-2)' }}>
+      <b style={{ width: 30, height: 30, borderRadius: 99, display: 'grid', placeItems: 'center', flex: 'none', background: estado && estado !== 'nada' ? color : 'var(--bg-3)', color: estado && estado !== 'nada' ? '#fff' : 'var(--ink-2)' }}>{letra}</b>
+      <span style={{ flex: 1, fontSize: 16 }}>{texto}</span>
+      {estado === 'bien' && <span aria-label="Correcta">✓</span>}
+      {estado === 'mal' && <span aria-label="Incorrecta">✗</span>}
+    </button>
+  );
+}
+
+function Cuestionario({ l, gestor, onHecho }) {
+  const [d, setD] = useState(null);
+  const [error, setError] = useState('');
+  const cargar = useCallback(() => {
+    fetch(`/api/aula/lecciones/${l.id}/cuestionario`, { credentials: 'include', cache: 'no-store' })
+      .then(async r => { const x = await r.json().catch(() => ({})); if (!r.ok) throw new Error(x.error || 'No se puede abrir el cuestionario.'); setD(x); })
+      .catch(e => setError(e.message));
+  }, [l.id]);
+  useEffect(() => { cargar(); }, [cargar]);
+  if (error) return <p style={{ color: 'var(--pink)' }}>{error}</p>;
+  if (!d) return <p style={{ color: 'var(--ink-3)' }}>Cargando el cuestionario…</p>;
+  if (!d.preguntas.length) return <p style={{ color: 'var(--ink-3)' }}>Este cuestionario aún no tiene preguntas.</p>;
+  return d.modo === 'evaluable' && !gestor
+    ? <Evaluable d={d} l={l} recargar={() => { cargar(); onHecho?.(); }} />
+    : <Practica d={d} l={l} gestor={gestor} onHecho={onHecho} />;
+}
+
+// De práctica, como en Learning Dungeon: una a una, se ve al momento si está
+// bien; si no, se vuelve a intentar. Cuenta lo acertado a la primera.
+function Practica({ d, l, gestor, onHecho }) {
+  const ps = d.preguntas;
+  const [i, setI] = useState(0);
+  const [tocadas, setTocadas] = useState([]);       // las elegidas en la pregunta de ahora
+  const [primeras, setPrimeras] = useState({});     // { idPregunta: primera elegida }
+  const [fin, setFin] = useState(null);
+  const p = ps[i];
+  const acertada = tocadas.includes(p?.correcta);
+
+  function elegir(k) {
+    if (acertada || tocadas.includes(k)) return;
+    setTocadas(t => [...t, k]);
+    setPrimeras(x => (p.id in x ? x : { ...x, [p.id]: k }));
+  }
+  async function terminar() {
+    const aciertos = ps.filter(q => primeras[q.id] === q.correcta).length;
+    setFin({ aciertos, total: ps.length });
+    if (gestor) return;
+    await fetch(`/api/aula/lecciones/${l.id}/intentos`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ respuestas: primeras }) }).catch(() => {});
+    onHecho?.();
+  }
+  function otraVez() { setI(0); setTocadas([]); setPrimeras({}); setFin(null); }
+
+  if (fin) {
+    const pct = Math.round(100 * fin.aciertos / fin.total);
+    return (
+      <div style={{ ...tarjeta, padding: 24, display: 'grid', gap: 12, justifyItems: 'center', textAlign: 'center' }}>
+        <span style={{ fontSize: 44 }}>{pct === 100 ? '🏆' : pct >= 70 ? '🎉' : '💪'}</span>
+        <b style={{ fontSize: 22 }}>Has acertado {fin.aciertos} de {fin.total} a la primera</b>
+        <span style={{ color: 'var(--ink-3)' }}>{pct === 100 ? '¡Perfecto!' : pct >= 70 ? '¡Muy bien! Repítelo para afinar.' : 'Repítelo: a la segunda sale mejor.'}</span>
+        <button type="button" className="btn btn-primary btn-sm" onClick={otraVez}>Repetir</button>
+      </div>
+    );
+  }
+  return (
+    <div style={{ ...tarjeta, padding: 20, display: 'grid', gap: 14 }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 13, color: 'var(--ink-3)' }}>
+        <span style={{ fontWeight: 800, color: 'var(--purple)' }}>Práctica{gestor ? ' (vista del personal)' : ''}</span>
+        <span style={{ flex: 1 }} />
+        <span>Pregunta {i + 1} de {ps.length}</span>
+      </div>
+      <div style={{ height: 6, borderRadius: 99, background: 'var(--bg-3)', overflow: 'hidden' }}><div style={{ width: `${100 * i / ps.length}%`, height: '100%', background: 'var(--purple)', transition: 'width .3s' }} /></div>
+      {p.imagen && <img src={p.imagen} alt="" style={{ maxWidth: '100%', maxHeight: 280, objectFit: 'contain', justifySelf: 'center', borderRadius: 12 }} />}
+      <b style={{ fontSize: 20, lineHeight: 1.35 }}>{p.enunciado}</b>
+      <div style={{ display: 'grid', gap: 8 }}>
+        {p.opciones.map((o, k) => (
+          <Opcion key={k} letra={LETRA[k]} texto={o} disabled={acertada}
+            estado={tocadas.includes(k) ? (k === p.correcta ? 'bien' : 'mal') : acertada ? 'nada' : null} onClick={() => elegir(k)} />
+        ))}
+      </div>
+      {tocadas.length > 0 && !acertada && <span style={{ color: 'var(--pink)', fontWeight: 700 }}>No es esa. Prueba otra vez.</span>}
+      {acertada && (
+        <div style={{ display: 'grid', gap: 10 }}>
+          <span style={{ color: 'var(--teal)', fontWeight: 800 }}>{tocadas.length === 1 ? '¡Correcto!' : 'Ahora sí.'}</span>
+          {p.explicacion && <div style={{ padding: 12, borderRadius: 12, background: 'var(--bg-3)', fontSize: 14 }}><Texto texto={p.explicacion} /></div>}
+          <button type="button" className="btn btn-primary btn-sm" style={{ justifySelf: 'end' }}
+            onClick={() => { if (i + 1 < ps.length) { setI(i + 1); setTocadas([]); } else terminar(); }}>{i + 1 < ps.length ? 'Siguiente pregunta →' : 'Ver cómo me ha ido'}</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Correcciones({ detalle }) {
+  return (
+    <div style={{ display: 'grid', gap: 12 }}>
+      {detalle.map((q, n) => (
+        <div key={n} style={{ ...tarjeta, padding: 16, display: 'grid', gap: 8, borderColor: q.bien ? 'var(--teal)' : 'var(--pink)' }}>
+          <b>{n + 1}. {q.enunciado} <span style={{ color: q.bien ? 'var(--teal)' : 'var(--pink)' }}>{q.bien ? '✓' : '✗'}</span></b>
+          {q.imagen && <img src={q.imagen} alt="" style={{ maxWidth: '100%', maxHeight: 200, objectFit: 'contain', borderRadius: 10 }} />}
+          {q.opciones.map((o, k) => (
+            <Opcion key={k} letra={LETRA[k]} texto={o} disabled estado={k === q.correcta ? 'bien' : k === q.elegida ? 'mal' : 'nada'} />
+          ))}
+          {q.elegida == null && <span style={{ fontSize: 13, color: 'var(--pink)' }}>Sin contestar.</span>}
+          {q.explicacion && <div style={{ padding: 10, borderRadius: 10, background: 'var(--bg-3)', fontSize: 14 }}><Texto texto={q.explicacion} /></div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Evaluable: se contesta entero, se entrega y sale la nota con las correcciones.
+function Evaluable({ d, l, recargar }) {
+  const [haciendo, setHaciendo] = useState(false);
+  const [resp, setResp] = useState({});
+  const [enviando, setEnviando] = useState(false);
+  const [resultado, setResultado] = useState(null);
+  const [error, setError] = useState('');
+  const agotado = d.quedan === 0;
+  const contestadas = Object.keys(resp).length;
+
+  async function entregar() {
+    if (contestadas < d.preguntas.length && !window.confirm(`Te faltan ${d.preguntas.length - contestadas} por contestar. ¿Entregar igualmente?`)) return;
+    setEnviando(true); setError('');
+    try {
+      const r = await fetch(`/api/aula/lecciones/${l.id}/intentos`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ respuestas: resp }) });
+      const x = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(x.error || 'No se ha podido entregar.');
+      setResultado(x); setHaciendo(false); setResp({});
+      recargar();
+    } catch (e) { setError(e.message); } finally { setEnviando(false); }
+  }
+
+  if (resultado) {
+    return (
+      <div style={{ display: 'grid', gap: 14 }}>
+        <div style={{ ...tarjeta, padding: 20, display: 'grid', gap: 6, justifyItems: 'center', textAlign: 'center' }}>
+          <span style={{ fontSize: 13, color: 'var(--ink-3)', fontWeight: 700 }}>Tu nota</span>
+          <b style={{ fontSize: 40, color: resultado.nota >= 5 ? 'var(--teal)' : 'var(--pink)' }}>{notaTexto(resultado.nota)}</b>
+          <span>{resultado.aciertos} de {resultado.total} bien</span>
+          {/* d ya viene al día (se recarga al entregar): quedan los de después de este. */}
+          {(d.quedan == null || d.quedan > 0) && <button type="button" className="btn btn-outline btn-sm" onClick={() => setResultado(null)}>Volver a intentarlo</button>}
+        </div>
+        <Correcciones detalle={resultado.detalle} />
+      </div>
+    );
+  }
+  if (!haciendo) {
+    return (
+      <div style={{ ...tarjeta, padding: 20, display: 'grid', gap: 10 }}>
+        <b style={{ fontSize: 17 }}>Cuestionario evaluable · {d.preguntas.length} preguntas</b>
+        <span style={{ color: 'var(--ink-3)', fontSize: 14 }}>
+          Se contesta entero y se entrega: la nota es sobre 10. {d.intentos ? `Tienes ${d.intentos} ${d.intentos === 1 ? 'intento' : 'intentos'} (has usado ${d.usados}).` : 'Puedes repetirlo las veces que quieras; cuenta tu mejor nota.'}
+        </span>
+        {d.mejor != null && <span style={{ fontWeight: 800 }}>Tu mejor nota: {notaTexto(d.mejor)}</span>}
+        {!agotado && <button type="button" className="btn btn-primary btn-sm" style={{ justifySelf: 'start' }} onClick={() => setHaciendo(true)}>{d.usados ? 'Hacerlo otra vez' : 'Empezar'}</button>}
+        {agotado && <span style={{ color: 'var(--ink-3)', fontSize: 14 }}>Ya has usado todos los intentos.</span>}
+        {d.ultimo && (
+          <details>
+            <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Ver tu último intento ({notaTexto(d.ultimo.nota)})</summary>
+            <div style={{ marginTop: 10 }}><Correcciones detalle={d.ultimo.detalle} /></div>
+          </details>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: 'grid', gap: 14 }}>
+      {d.preguntas.map((p, n) => (
+        <div key={p.id} style={{ ...tarjeta, padding: 16, display: 'grid', gap: 8 }}>
+          <b>{n + 1}. {p.enunciado}</b>
+          {p.imagen && <img src={p.imagen} alt="" style={{ maxWidth: '100%', maxHeight: 240, objectFit: 'contain', borderRadius: 10 }} />}
+          {p.opciones.map((o, k) => (
+            <Opcion key={k} letra={LETRA[k]} texto={o} estado={resp[p.id] === k ? 'elegida' : null} onClick={() => setResp(x => ({ ...x, [p.id]: k }))} />
+          ))}
+        </div>
+      ))}
+      {error && <span style={{ color: 'var(--pink)', fontWeight: 700 }}>{error}</span>}
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', position: 'sticky', bottom: 0, padding: '10px 0', background: 'var(--bg)' }}>
+        <span style={{ fontSize: 14, color: 'var(--ink-3)' }}>{contestadas} de {d.preguntas.length} contestadas</span>
+        <span style={{ flex: 1 }} />
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setHaciendo(false); setResp({}); }}>Salir sin entregar</button>
+        <button type="button" className="btn btn-primary btn-sm" disabled={enviando} onClick={entregar}>{enviando ? 'Entregando…' : 'Entregar'}</button>
+      </div>
     </div>
   );
 }

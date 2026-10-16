@@ -236,7 +236,7 @@ function EditorCurso({ id, showToast, espacio, onCerrar }) {
       {pestana === 'temario' && <Temario c={c} recargar={cargar} showToast={showToast} espacio={espacio} />}
       {pestana === 'datos' && <DatosCurso c={c} recargar={cargar} showToast={showToast} onBorrado={onCerrar} />}
       {pestana === 'alumnos' && <Alumnos cursoId={c.id} showToast={showToast} />}
-      {pestana === 'entregas' && <Entregas cursoId={c.id} showToast={showToast} onCambio={cargar} />}
+      {pestana === 'entregas' && <><Entregas cursoId={c.id} showToast={showToast} onCambio={cargar} /><Resultados cursoId={c.id} /></>}
     </div>
   );
 }
@@ -387,6 +387,7 @@ function Temario({ c, recargar, showToast, espacio }) {
                   {l.tipo === 'video' && (l.videoUrl ? ' · por enlace' : l.archivo ? ` · subido (${mb(l.archivo.bytes)})` : '')}
                   {l.tipo === 'archivo' && l.archivo ? ` · ${l.archivo.nombre} (${mb(l.archivo.bytes)})` : ''}
                   {l.tipo === 'tarea' && ` · ${l.calificacion === 'nota' ? 'con nota' : 'apto / no apto'}`}
+                  {l.tipo === 'cuestionario' && ` · ${l.modo === 'evaluable' ? `evaluable${l.intentos ? `, ${l.intentos} ${l.intentos === 1 ? 'intento' : 'intentos'}` : ''}` : 'de práctica'} · ${l.preguntas} ${l.preguntas === 1 ? 'pregunta' : 'preguntas'}`}
                   {l.porCorregir > 0 && <b style={{ color: 'var(--pink)' }}> · {l.porCorregir} por corregir</b>}
                 </div>
               </div>
@@ -408,7 +409,14 @@ function Temario({ c, recargar, showToast, espacio }) {
 
 function EditorLeccion({ cursoId, temaId, l, espacio, onCerrar, onGuardado }) {
   const [f, setF] = useState({ tipo: l?.tipo || 'texto', titulo: l?.titulo || '', texto: l?.texto || '', videoUrl: l?.videoUrl || '',
-    calificacion: l?.calificacion || 'apto', archivoId: l?.archivo?.id || null, archivo: l?.archivo || null });
+    calificacion: l?.calificacion || 'apto', archivoId: l?.archivo?.id || null, archivo: l?.archivo || null,
+    modo: l?.modo || 'practica', intentos: l?.intentos ?? '' });
+  // Las preguntas de un cuestionario (#439): las que ya tiene, al editarlo.
+  const [preguntas, setPreguntas] = useState(l?.tipo === 'cuestionario' ? null : []);
+  useEffect(() => {
+    if (l?.tipo !== 'cuestionario') return;
+    api(`/api/admin/aula/lecciones/${l.id}/preguntas`).then(d => setPreguntas(d.preguntas.map(conCuatro))).catch(e => { alert(e.message); setPreguntas([]); });
+  }, [l?.id, l?.tipo]);
   const [modoVideo, setModoVideo] = useState(l?.archivo && !l?.videoUrl ? 'subido' : 'enlace');
   const [subida, setSubida] = useState(null);      // { nombre, pct }
   const [guardando, setGuardando] = useState(false);
@@ -432,8 +440,13 @@ function EditorLeccion({ cursoId, temaId, l, espacio, onCerrar, onGuardado }) {
     if (subida) return;
     // Por enlace no lleva archivo; el texto, nunca.
     const porEnlace = esVideo && modoVideo === 'enlace';
-    const body = { ...f, videoUrl: porEnlace ? f.videoUrl : '', archivoId: porEnlace || f.tipo === 'texto' ? null : f.archivoId };
+    const body = { ...f, videoUrl: porEnlace ? f.videoUrl : '', archivoId: porEnlace || f.tipo === 'texto' || f.tipo === 'cuestionario' ? null : f.archivoId };
     if (porEnlace && !embed) { alert('Pega el enlace de un vídeo de YouTube o de Vimeo.'); return; }
+    if (f.tipo === 'cuestionario') {
+      if (!preguntas?.length) { alert('Pon al menos una pregunta.'); return; }
+      body.preguntas = preguntas.map(p => ({ ...p, imagen: p.imagen || null }));
+      body.intentos = f.modo === 'evaluable' && f.intentos ? Number(f.intentos) : null;
+    }
     setGuardando(true);
     try {
       if (l) await api(`/api/admin/aula/lecciones/${l.id}`, { method: 'PUT', body });
@@ -443,7 +456,7 @@ function EditorLeccion({ cursoId, temaId, l, espacio, onCerrar, onGuardado }) {
   }
 
   return (
-    <Ventana titulo={l ? 'Editar lección' : 'Nueva lección'} onCerrar={() => { if (!subida) onCerrar(); }} ancho={640}>
+    <Ventana titulo={l ? 'Editar lección' : 'Nueva lección'} onCerrar={() => { if (!subida) onCerrar(); }} ancho={f.tipo === 'cuestionario' ? 840 : 640}>
       <form onSubmit={guardar} style={{ display: 'grid', gap: 12 }}>
         {!l && (
           <div style={{ display: 'grid', gap: 6, gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))' }}>
@@ -484,8 +497,8 @@ function EditorLeccion({ cursoId, temaId, l, espacio, onCerrar, onGuardado }) {
           ayuda="PDF, Word, PowerPoint, Excel, imágenes o audio, hasta 10 MB." />}
 
         <label style={etiqueta}>
-          {f.tipo === 'texto' ? 'Contenido' : f.tipo === 'tarea' ? 'Enunciado: qué tienen que hacer y entregar' : 'Texto que acompaña (opcional)'}
-          <textarea rows={f.tipo === 'texto' ? 12 : 6} value={f.texto} onChange={e => cambiar('texto', e.target.value)} style={{ ...inp, resize: 'vertical' }}
+          {f.tipo === 'texto' ? 'Contenido' : f.tipo === 'tarea' ? 'Enunciado: qué tienen que hacer y entregar' : f.tipo === 'cuestionario' ? 'Instrucciones (opcional)' : 'Texto que acompaña (opcional)'}
+          <textarea rows={f.tipo === 'texto' ? 12 : f.tipo === 'cuestionario' ? 2 : 6} value={f.texto} onChange={e => cambiar('texto', e.target.value)} style={{ ...inp, resize: 'vertical' }}
             required={f.tipo === 'texto' || f.tipo === 'tarea'} />
           <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}>Los saltos de línea se respetan y los enlaces (https://…) se pueden pulsar.</span>
         </label>
@@ -499,6 +512,29 @@ function EditorLeccion({ cursoId, temaId, l, espacio, onCerrar, onGuardado }) {
             </label>
             <Subida f={f} subida={subida} subir={subir} opcional accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.zip,image/*"
               ayuda="Opcional: una ficha o plantilla para que la descarguen (hasta 10 MB)." quitar={() => setF(x => ({ ...x, archivoId: null, archivo: null }))} />
+          </>
+        )}
+
+        {f.tipo === 'cuestionario' && (
+          <>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <label style={{ ...etiqueta, flex: 2, minWidth: 220 }}>Cómo es
+                <select value={f.modo} onChange={e => cambiar('modo', e.target.value)} style={inp}>
+                  <option value="practica">De práctica: una a una, se corrige al momento y se repite</option>
+                  <option value="evaluable">Evaluable: se entrega entero y saca nota sobre 10</option>
+                </select>
+              </label>
+              {f.modo === 'evaluable' && (
+                <label style={{ ...etiqueta, flex: 1, minWidth: 160 }}>Intentos
+                  <select value={f.intentos} onChange={e => cambiar('intentos', e.target.value)} style={inp}>
+                    <option value="">Sin límite (cuenta la mejor)</option>
+                    {[1, 2, 3, 5].map(n => <option key={n} value={n}>{n} {n === 1 ? 'intento' : 'intentos'}</option>)}
+                  </select>
+                </label>
+              )}
+            </div>
+            {preguntas == null ? <p style={{ color: 'var(--ink-3)' }}>Cargando las preguntas…</p>
+              : <EditorPreguntas preguntas={preguntas} setPreguntas={setPreguntas} cursoId={cursoId} />}
           </>
         )}
 
@@ -617,6 +653,174 @@ function DarAcceso({ cursoId, onCerrar, onHecho }) {
 }
 
 // ── Entregas y corrección ──
+// ── Cuestionarios (#439) ──
+const LETRAS = ['A', 'B', 'C', 'D'];
+const conCuatro = (p) => ({ ...p, opciones: [...p.opciones, '', '', '', ''].slice(0, 4), explicacion: p.explicacion || '', imagen: p.imagen || '' });
+const preguntaVacia = () => ({ enunciado: '', opciones: ['', '', '', ''], correcta: 0, explicacion: '', imagen: '' });
+// «Pegar varias»: 1. Pregunta / A) … / *B) … (el asterisco, la buena) / Explicación: …
+export function leerPreguntas(texto) {
+  const ps = [], malas = [];
+  let p = null;
+  const cerrar = () => { if (p) ps.push(p); p = null; };
+  for (const linea of String(texto || '').replace(/\r/g, '').split('\n')) {
+    const t = linea.trim();
+    if (!t) continue;
+    const op = t.match(/^(\*)?\s*([A-Da-d])\s*[).:-]\s*(\*)?\s*(.+?)\s*(\*)?$/);
+    const ex = t.match(/^explicaci[oó]n\s*:\s*(.+)$/i);
+    const num = t.match(/^(?:\d+\s*[.)-]|[-•])\s*(.+)$/);
+    if (op && p) {
+      const k = 'abcd'.indexOf(op[2].toLowerCase());
+      p.opciones[k] = op[4];
+      if (op[1] || op[3] || op[5]) p.correcta = k;
+    } else if (ex && p) p.explicacion = ex[1];
+    else if (num || !p || p.opciones.some(Boolean)) { cerrar(); p = { ...preguntaVacia(), correcta: -1, enunciado: num ? num[1] : t }; }
+    else p.enunciado += ` ${t}`;
+  }
+  cerrar();
+  ps.forEach((q, i) => { if (q.correcta < 0 || q.opciones.filter(Boolean).length < 2) malas.push(i + 1); });
+  return { preguntas: ps.map(q => ({ ...q, correcta: Math.max(0, q.correcta) })), malas };
+}
+
+function EditorPreguntas({ preguntas, setPreguntas, cursoId }) {
+  const [pegar, setPegar] = useState(null);
+  const [ld, setLd] = useState(null);
+  const [subiendo, setSubiendo] = useState(null);
+  const cambiar = (i, k, v) => setPreguntas(ps => ps.map((p, j) => (j === i ? { ...p, [k]: v } : p)));
+  const opcion = (i, k, v) => setPreguntas(ps => ps.map((p, j) => (j === i ? { ...p, opciones: p.opciones.map((o, n) => (n === k ? v : o)) } : p)));
+  const mover = (i, d) => setPreguntas(ps => { const x = [...ps]; const j = i + d; if (j < 0 || j >= x.length) return ps; [x[i], x[j]] = [x[j], x[i]]; return x; });
+
+  async function imagen(i, file) {
+    if (!file) return;
+    setSubiendo(i);
+    try { const id = await subirAlAula(cursoId, file); cambiar(i, 'imagen', `/api/aula/archivos/${id}`); }
+    catch (err) { alert(err.message); } finally { setSubiendo(null); }
+  }
+  function anadirPegadas() {
+    const r = leerPreguntas(pegar);
+    if (!r.preguntas.length) { alert('No he encontrado preguntas en ese texto.'); return; }
+    if (r.malas.length && !window.confirm(`En ${r.malas.length === 1 ? 'la pregunta' : 'las preguntas'} ${r.malas.join(', ')} no está marcada la buena (con *) o faltan respuestas: se añaden igual y lo arreglas aquí. ¿Seguir?`)) return;
+    setPreguntas(ps => [...ps, ...r.preguntas]); setPegar(null);
+  }
+  async function traerLd() {
+    setLd(x => ({ ...x, cargando: true }));
+    try {
+      const d = await api(`/api/admin/aula/learning-dungeon?nivel=${ld.nivel}&tipo=${ld.tipo}&sentido=${ld.sentido}&n=${ld.n}`);
+      if (!d.preguntas.length) { alert(d.disponibles ? 'No hay bastantes palabras para hacer preguntas con esas opciones.' : 'No hay vocabulario de Learning Dungeon con esas opciones.'); setLd(x => ({ ...x, cargando: false })); return; }
+      setPreguntas(ps => [...ps, ...d.preguntas.map(conCuatro)]); setLd(null);
+    } catch (err) { alert(err.message); setLd(x => ({ ...x, cargando: false })); }
+  }
+
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      <b style={{ fontSize: 14 }}>Preguntas ({preguntas.length})</b>
+      {preguntas.map((p, i) => (
+        <div key={i} style={{ border: '1px solid var(--line)', borderRadius: 12, padding: 12, display: 'grid', gap: 8, background: 'var(--bg-3)' }}>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <b style={{ fontSize: 13, color: 'var(--purple)', flex: 1 }}>Pregunta {i + 1}</b>
+            <button type="button" className="icon-btn" disabled={i === 0} onClick={() => mover(i, -1)} aria-label="Subir pregunta">↑</button>
+            <button type="button" className="icon-btn" disabled={i === preguntas.length - 1} onClick={() => mover(i, 1)} aria-label="Bajar pregunta">↓</button>
+            <button type="button" className="icon-btn danger" onClick={() => setPreguntas(ps => ps.filter((_, j) => j !== i))} aria-label="Quitar pregunta"><I.Trash /></button>
+          </div>
+          <textarea rows={2} value={p.enunciado} onChange={e => cambiar(i, 'enunciado', e.target.value)} placeholder="¿Cuál es…?" style={{ ...inp, resize: 'vertical' }} aria-label={`Enunciado de la pregunta ${i + 1}`} />
+          {p.opciones.map((o, k) => (
+            <label key={k} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input type="radio" name={`buena-${i}`} checked={p.correcta === k} onChange={() => cambiar(i, 'correcta', k)} aria-label={`La ${LETRAS[k]} es la buena`} />
+              <b style={{ width: 18 }}>{LETRAS[k]}</b>
+              <input value={o} onChange={e => opcion(i, k, e.target.value)} placeholder={k < 2 ? 'Respuesta' : 'Respuesta (opcional)'} style={{ ...inp, flex: 1, padding: '7px 10px', borderColor: p.correcta === k ? 'var(--teal)' : 'var(--line)' }} />
+            </label>
+          ))}
+          <input value={p.explicacion} onChange={e => cambiar(i, 'explicacion', e.target.value)} placeholder="Explicación de la respuesta (opcional): sale al corregir" style={{ ...inp, padding: '7px 10px' }} />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            {p.imagen && <img src={p.imagen} alt="" style={{ height: 48, borderRadius: 8 }} />}
+            <label className="btn btn-sm btn-ghost" style={{ position: 'relative', overflow: 'hidden', cursor: 'pointer' }}>
+              {subiendo === i ? 'Subiendo…' : p.imagen ? 'Cambiar imagen' : '🖼️ Imagen (opcional)'}
+              <input type="file" accept="image/*" disabled={subiendo != null} onChange={e => { imagen(i, e.target.files?.[0]); e.target.value = ''; }} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }} />
+            </label>
+            {p.imagen && <button type="button" className="btn btn-sm btn-ghost" onClick={() => cambiar(i, 'imagen', '')}>Quitar imagen</button>}
+          </div>
+        </div>
+      ))}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button type="button" className="btn btn-sm btn-outline" onClick={() => setPreguntas(ps => [...ps, preguntaVacia()])}><I.Plus /> Añadir pregunta</button>
+        <button type="button" className="btn btn-sm btn-outline" onClick={() => setPegar('')}>📋 Pegar varias</button>
+        <button type="button" className="btn btn-sm btn-outline" onClick={() => setLd({ nivel: 99, tipo: 'texto', sentido: 'significado', n: 10 })}>🐉 Desde Learning Dungeon</button>
+      </div>
+      {pegar != null && (
+        <div style={{ display: 'grid', gap: 6, padding: 12, borderRadius: 12, border: '1px dashed var(--line)' }}>
+          <b style={{ fontSize: 13 }}>Pega las preguntas</b>
+          <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Una pregunta numerada y debajo sus respuestas con A), B), C) y D); la buena, con un asterisco. «Explicación:» es opcional.</span>
+          <textarea rows={8} value={pegar} onChange={e => setPegar(e.target.value)} style={{ ...inp, fontFamily: 'monospace', fontSize: 13 }}
+            placeholder={'1. ¿Qué significa «Charyot»?\nA) Saludo\n*B) Atención\nC) Preparados\nExplicación: Charyot es la voz de atención.\n\n2. ¿Cuántos principios tiene el Taekwon-Do?\nA) Tres\n*B) Cinco\nC) Siete'} />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" className="btn btn-sm btn-primary" onClick={anadirPegadas}>Añadir</button>
+            <button type="button" className="btn btn-sm btn-ghost" onClick={() => setPegar(null)}>Cancelar</button>
+          </div>
+        </div>
+      )}
+      {ld && (
+        <div style={{ display: 'grid', gap: 8, padding: 12, borderRadius: 12, border: '1px dashed var(--line)' }}>
+          <b style={{ fontSize: 13 }}>Preguntas con el vocabulario de Learning Dungeon</b>
+          <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Se hacen con las palabras del juego (término y significado), con tres respuestas falsas de otras palabras. Se añaden aquí para que las revises antes de guardar.</span>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <label style={{ ...etiqueta, flex: 1, minWidth: 150 }}>Nivel (cinturón) hasta
+              <select value={ld.nivel} onChange={e => setLd(x => ({ ...x, nivel: Number(e.target.value) }))} style={inp}>
+                <option value={99}>Todos</option>{[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </label>
+            <label style={{ ...etiqueta, flex: 1, minWidth: 150 }}>Con
+              <select value={ld.tipo} onChange={e => setLd(x => ({ ...x, tipo: e.target.value }))} style={inp}>
+                <option value="texto">Palabras</option><option value="imagen">Imágenes (técnicas)</option>
+              </select>
+            </label>
+            {ld.tipo === 'texto' && (
+              <label style={{ ...etiqueta, flex: 1, minWidth: 170 }}>Pregunta por
+                <select value={ld.sentido} onChange={e => setLd(x => ({ ...x, sentido: e.target.value }))} style={inp}>
+                  <option value="significado">El significado</option><option value="termino">El término</option><option value="mixto">De las dos formas</option>
+                </select>
+              </label>
+            )}
+            <label style={{ ...etiqueta, width: 110 }}>Cuántas
+              <input type="number" min={1} max={50} value={ld.n} onChange={e => setLd(x => ({ ...x, n: e.target.value }))} style={inp} />
+            </label>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" className="btn btn-sm btn-primary" disabled={ld.cargando} onClick={traerLd}>{ld.cargando ? 'Haciendo…' : 'Añadir preguntas'}</button>
+            <button type="button" className="btn btn-sm btn-ghost" onClick={() => setLd(null)}>Cancelar</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Las notas de los cuestionarios del curso, por alumno.
+function Resultados({ cursoId }) {
+  const [lista, setLista] = useState(null);
+  useEffect(() => { api(`/api/admin/aula/cursos/${cursoId}/resultados`).then(setLista).catch(() => setLista([])); }, [cursoId]);
+  if (!lista?.length) return null;
+  const nota = (n) => String(Math.round(Number(n) * 100) / 100).replace('.', ',');
+  return (
+    <div style={{ display: 'grid', gap: 10, maxWidth: 900, marginTop: 18 }}>
+      <h3 style={{ margin: 0, fontSize: 16 }}>Cuestionarios</h3>
+      <div className="data-table">
+        <div className="data-table-head" style={{ gridTemplateColumns: '1.4fr 1.2fr 90px 90px 90px 1fr' }}>
+          <span>Cuestionario</span><span>Alumno</span><span>Intentos</span><span>Mejor</span><span>Última</span><span>Cuándo</span>
+        </div>
+        {lista.map((r, i) => (
+          <div key={i} className="data-table-row" style={{ gridTemplateColumns: '1.4fr 1.2fr 90px 90px 90px 1fr', alignItems: 'center' }}>
+            <span><b>{r.titulo}</b><div style={{ fontSize: 11, color: 'var(--ink-3)' }}>{r.modo === 'evaluable' ? 'Evaluable' : 'De práctica'}</div></span>
+            <span>{r.alumno}</span>
+            <span>{r.intentos}{r.max_intentos ? ` de ${r.max_intentos}` : ''}</span>
+            <span style={{ fontWeight: 800, color: r.mejor >= 5 ? 'var(--teal)' : 'var(--pink)' }}>{nota(r.mejor)}</span>
+            <span>{nota(r.ultima_nota)}</span>
+            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{fmtHora(r.ultimo)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Entregas({ cursoId, showToast, pendientesDeEntrada = true, onCambio }) {
   const [solo, setSolo] = useState(pendientesDeEntrada);
   const [lista, setLista] = useState(null);

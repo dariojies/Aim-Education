@@ -24,7 +24,8 @@ export const ACTIVIDAD_AULA = 'Aula virtual';
 // La formación online lleva siempre IVA (#440): no se elige.
 export const IVA_AULA = 21;
 const MAX_PORTADA = 2 * 1024 * 1024;
-const TIPOS = ['texto', 'video', 'archivo', 'tarea'];
+const TIPOS = ['texto', 'video', 'archivo', 'tarea', 'cuestionario'];
+const MAX_PREGUNTAS = 200;
 const MIME_VIDEO = ['video/mp4', 'video/quicktime', 'video/webm'];
 const MIME_ARCHIVO = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp',
     'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -84,7 +85,7 @@ export async function crearTablasAula(client) {
             id SERIAL PRIMARY KEY,
             curso_id INTEGER NOT NULL REFERENCES aim_aula_cursos(id) ON DELETE CASCADE,
             tema_id INTEGER NOT NULL REFERENCES aim_aula_temas(id) ON DELETE CASCADE,
-            tipo VARCHAR(10) NOT NULL CHECK (tipo IN ('texto','video','archivo','tarea')),
+            tipo VARCHAR(15) NOT NULL CHECK (tipo IN ('texto','video','archivo','tarea','cuestionario')),
             titulo VARCHAR(200) NOT NULL,
             texto TEXT,
             video_url TEXT,
@@ -131,6 +132,78 @@ export async function crearTablasAula(client) {
             corregida_at TIMESTAMPTZ,
             UNIQUE (leccion_id, user_id)
         )`);
+    // Cuestionarios (#439): tipo test de opción múltiple, de práctica (como
+    // Learning Dungeon: una a una, se corrige al momento y se repite) o
+    // evaluables (se entrega entero, nota sobre 10, intentos limitados).
+    await client.query(`ALTER TABLE aim_aula_lecciones ALTER COLUMN tipo TYPE VARCHAR(15)`);
+    const ck = (await client.query(`SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint WHERE conname = 'aim_aula_lecciones_tipo_check'`)).rows[0];
+    if (!ck || !ck.d.includes('cuestionario')) {
+        await client.query(`ALTER TABLE aim_aula_lecciones DROP CONSTRAINT IF EXISTS aim_aula_lecciones_tipo_check`);
+        await client.query(`ALTER TABLE aim_aula_lecciones ADD CONSTRAINT aim_aula_lecciones_tipo_check CHECK (tipo IN ('texto','video','archivo','tarea','cuestionario'))`);
+    }
+    await client.query(`ALTER TABLE aim_aula_lecciones ADD COLUMN IF NOT EXISTS modo VARCHAR(10) NOT NULL DEFAULT 'practica'`);
+    await client.query(`ALTER TABLE aim_aula_lecciones ADD COLUMN IF NOT EXISTS intentos INTEGER`);
+    await client.query(`
+        CREATE TABLE IF NOT EXISTS aim_aula_preguntas (
+            id SERIAL PRIMARY KEY,
+            leccion_id INTEGER NOT NULL REFERENCES aim_aula_lecciones(id) ON DELETE CASCADE,
+            orden INTEGER NOT NULL DEFAULT 0,
+            enunciado TEXT NOT NULL,
+            opciones JSONB NOT NULL,
+            correcta SMALLINT NOT NULL,
+            explicacion TEXT,
+            imagen TEXT
+        )`);
+    await client.query(`CREATE INDEX IF NOT EXISTS ix_aula_preguntas ON aim_aula_preguntas (leccion_id, orden)`);
+    // Cada intento guarda lo que se contestó con las preguntas tal cual eran:
+    // si luego se cambian, las correcciones de antes siguen teniendo sentido.
+    await client.query(`
+        CREATE TABLE IF NOT EXISTS aim_aula_intentos (
+            id SERIAL PRIMARY KEY,
+            leccion_id INTEGER NOT NULL REFERENCES aim_aula_lecciones(id) ON DELETE CASCADE,
+            user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            modo VARCHAR(10) NOT NULL,
+            respuestas JSONB NOT NULL,
+            aciertos INTEGER NOT NULL,
+            total INTEGER NOT NULL,
+            nota NUMERIC(4,2) NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+    await client.query(`CREATE INDEX IF NOT EXISTS ix_aula_intentos ON aim_aula_intentos (leccion_id, user_id)`);
+}
+
+// Las preguntas que llegan de la pantalla, limpias: enunciado, de 2 a 4
+// opciones, cuál es la buena, explicación e imagen (de fuera o subida al aula).
+export function limpiarPreguntas(lista) {
+    const ps = (Array.isArray(lista) ? lista : []).slice(0, MAX_PREGUNTAS + 1);
+    if (ps.length > MAX_PREGUNTAS) corta(400, `Como mucho ${MAX_PREGUNTAS} preguntas por cuestionario.`);
+    return ps.map((p, i) => {
+        const enunciado = txt(p?.enunciado, 2000);
+        // Las vacías del final (la D sin poner) se quitan; una vacía en medio, no:
+        // movería cuál es la buena.
+        const opciones = (Array.isArray(p?.opciones) ? p.opciones : []).map(o => txt(o, 500));
+        while (opciones.length && !opciones[opciones.length - 1]) opciones.pop();
+        if (!enunciado) corta(400, `La pregunta ${i + 1} no tiene enunciado.`);
+        if (opciones.some(o => !o)) corta(400, `La pregunta ${i + 1} tiene una respuesta vacía en medio.`);
+        if (opciones.length < 2 || opciones.length > 4) corta(400, `La pregunta ${i + 1} tiene que tener de 2 a 4 respuestas.`);
+        const correcta = Number(p?.correcta);
+        if (!Number.isInteger(correcta) || correcta < 0 || correcta >= opciones.length) corta(400, `Marca cuál es la respuesta buena de la pregunta ${i + 1}.`);
+        const img = String(p?.imagen || '').trim();
+        return { enunciado, opciones, correcta, explicacion: txt(p?.explicacion, 2000), imagen: /^https:\/\/\S{4,1000}$/.test(img) || /^\/api\/aula\/archivos\/\d+$/.test(img) ? img : null };
+    });
+}
+// Corrige unas respuestas ({ idPregunta: opción elegida }) y devuelve el
+// intento completo, con las preguntas tal cual (para guardarlo y enseñarlo).
+export function corregir(preguntas, respuestas) {
+    const r = respuestas && typeof respuestas === 'object' ? respuestas : {};
+    const detalle = preguntas.map(p => {
+        const e = r[p.id] ?? r[String(p.id)];
+        const elegida = Number.isInteger(Number(e)) && e !== null && e !== '' ? Number(e) : null;
+        return { id: p.id, enunciado: p.enunciado, opciones: p.opciones, imagen: p.imagen || null, elegida, correcta: p.correcta, bien: elegida === p.correcta, explicacion: p.explicacion || null };
+    });
+    const aciertos = detalle.filter(d => d.bien).length;
+    const total = detalle.length;
+    return { detalle, aciertos, total, nota: total ? Math.round((aciertos / total) * 1000) / 100 : 0 };
 }
 
 // El reproductor de un enlace de YouTube o Vimeo (null si no es de ninguno).
@@ -414,6 +487,13 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             const entregas = new Map((await pool.query(
                 `SELECT e.leccion_id, e.id, e.texto, e.archivo_nombre, (e.archivo IS NOT NULL) AS con_archivo, e.entregada_at, e.nota, e.apto, e.comentario, e.corregida_at
                  FROM aim_aula_entregas e JOIN aim_aula_lecciones l ON l.id = e.leccion_id WHERE l.curso_id = $1 AND e.user_id = $2`, [id, me])).rows.map(e => [e.leccion_id, e]));
+            // Los cuestionarios: cuántas preguntas y cómo le ha ido (#439).
+            const cuest = new Map((await pool.query(
+                `SELECT l.id, l.modo, l.intentos,
+                        (SELECT COUNT(*)::int FROM aim_aula_preguntas p WHERE p.leccion_id = l.id) AS preguntas,
+                        (SELECT COUNT(*)::int FROM aim_aula_intentos i WHERE i.leccion_id = l.id AND i.user_id = $2 AND i.modo = 'evaluable') AS usados,
+                        (SELECT MAX(i.nota) FROM aim_aula_intentos i WHERE i.leccion_id = l.id AND i.user_id = $2 AND i.modo = l.modo) AS mejor
+                 FROM aim_aula_lecciones l WHERE l.curso_id = $1 AND l.tipo = 'cuestionario'`, [id, me])).rows.map(x => [x.id, x]));
             res.set('Cache-Control', 'no-store');
             res.json({
                 id: c.id, titulo: c.titulo, profesor: c.profesor || null, gestor,
@@ -423,6 +503,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                     archivo: l.archivo_nombre && l.tipo !== 'video' ? { url: `/api/aula/archivos/${l.archivo_id}`, nombre: l.archivo_nombre, mime: l.archivo_mime, bytes: Number(l.archivo_bytes) } : null,
                     hecha: hechas.has(l.id),
                     entrega: l.tipo === 'tarea' && entregas.get(l.id) ? (({ leccion_id, con_archivo, ...e }) => ({ ...e, archivo: con_archivo ? `/api/aula/entregas/${e.id}/archivo` : null }))(entregas.get(l.id)) : null,
+                    cuestionario: l.tipo === 'cuestionario' && cuest.get(l.id) ? (({ id: x, mejor, ...q }) => ({ ...q, mejor: mejor == null ? null : Number(mejor) }))(cuest.get(l.id)) : undefined,
                 })) })),
             });
         } catch (err) { fallo(res, err); }
@@ -557,7 +638,8 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             const temas = (await pool.query(`SELECT id, titulo FROM aim_aula_temas WHERE curso_id = $1 ORDER BY orden, id`, [c.id])).rows;
             const lecs = (await pool.query(
                 `SELECT l.id, l.tema_id, l.tipo, l.titulo, l.texto, l.video_url, l.calificacion, l.archivo_id, a.nombre AS archivo_nombre, a.mime AS archivo_mime, a.bytes AS archivo_bytes,
-                        (SELECT COUNT(*)::int FROM aim_aula_entregas e WHERE e.leccion_id = l.id AND e.corregida_at IS NULL) AS por_corregir
+                        (SELECT COUNT(*)::int FROM aim_aula_entregas e WHERE e.leccion_id = l.id AND e.corregida_at IS NULL) AS por_corregir,
+                        l.modo, l.intentos, (SELECT COUNT(*)::int FROM aim_aula_preguntas p WHERE p.leccion_id = l.id) AS n_preguntas
                  FROM aim_aula_lecciones l LEFT JOIN aim_aula_archivos a ON a.id = l.archivo_id AND a.completo
                  WHERE l.curso_id = $1 ORDER BY l.orden, l.id`, [c.id])).rows;
             res.set('Cache-Control', 'no-store');
@@ -566,7 +648,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                 precio: c.concepto && c.precio_activo !== false ? Number(c.precio) : 0, ivaPct: c.concepto ? Number(c.iva_pct) : 21, total: totalDe(c), concepto: c.concepto,
                 portada: c.con_portada ? `/api/aula/cursos/${c.id}/portada?v=${new Date(c.updated_at).getTime()}` : null, completa: completa(req),
                 temas: temas.map(t => ({ ...t, lecciones: lecs.filter(l => l.tema_id === t.id).map(l => ({
-                    id: l.id, tipo: l.tipo, titulo: l.titulo, texto: l.texto, videoUrl: l.video_url, calificacion: l.calificacion, porCorregir: l.por_corregir,
+                    id: l.id, tipo: l.tipo, titulo: l.titulo, texto: l.texto, videoUrl: l.video_url, calificacion: l.calificacion, porCorregir: l.por_corregir, modo: l.modo, intentos: l.intentos, preguntas: l.n_preguntas,
                     archivo: l.archivo_nombre ? { id: l.archivo_id, nombre: l.archivo_nombre, mime: l.archivo_mime, bytes: Number(l.archivo_bytes) } : null,
                 })) })),
             });
@@ -716,7 +798,14 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
         const tipo = TIPOS.includes(body?.tipo) ? body.tipo : corta(400, 'Tipo de lección no válido.');
         const titulo = txt(body?.titulo, 200);
         if (!titulo) corta(400, 'Ponle un título a la lección.');
-        const d = { tipo, titulo, texto: txt(body?.texto, 50000), video_url: null, archivo_id: null, calificacion: body?.calificacion === 'nota' ? 'nota' : 'apto' };
+        const d = { tipo, titulo, texto: txt(body?.texto, 50000), video_url: null, archivo_id: null, calificacion: body?.calificacion === 'nota' ? 'nota' : 'apto', modo: 'practica', intentos: null, preguntas: null };
+        if (tipo === 'cuestionario') {
+            d.modo = body?.modo === 'evaluable' ? 'evaluable' : 'practica';
+            const n = Number(body?.intentos);
+            d.intentos = d.modo === 'evaluable' && Number.isInteger(n) && n > 0 ? Math.min(n, 20) : null;
+            d.preguntas = limpiarPreguntas(body?.preguntas);
+            if (!d.preguntas.length) corta(400, 'El cuestionario necesita al menos una pregunta.');
+        }
         if (tipo === 'video' && body?.videoUrl) {
             if (!incrustar(body.videoUrl)) corta(400, 'El enlace tiene que ser de un vídeo de YouTube o de Vimeo.');
             d.video_url = String(body.videoUrl).trim().slice(0, 500);
@@ -737,9 +826,10 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             const t = await temaEditable(req);
             const d = await datosLeccion(req.body, t.curso_id);
             const r = await pool.query(
-                `INSERT INTO aim_aula_lecciones (curso_id, tema_id, tipo, titulo, texto, video_url, archivo_id, calificacion, orden)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, (SELECT COALESCE(MAX(orden), 0) + 1 FROM aim_aula_lecciones WHERE tema_id = $2)) RETURNING id`,
-                [t.curso_id, t.id, d.tipo, d.titulo, d.texto, d.video_url, d.archivo_id, d.calificacion]);
+                `INSERT INTO aim_aula_lecciones (curso_id, tema_id, tipo, titulo, texto, video_url, archivo_id, calificacion, modo, intentos, orden)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, (SELECT COALESCE(MAX(orden), 0) + 1 FROM aim_aula_lecciones WHERE tema_id = $2)) RETURNING id`,
+                [t.curso_id, t.id, d.tipo, d.titulo, d.texto, d.video_url, d.archivo_id, d.calificacion, d.modo, d.intentos]);
+            if (d.preguntas) await guardarPreguntas(r.rows[0].id, d.preguntas);
             res.status(201).json({ success: true, id: r.rows[0].id });
         } catch (err) { fallo(res, err); }
     });
@@ -755,8 +845,9 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
         try {
             const l = await leccionEditable(req);
             const d = await datosLeccion({ ...req.body, tipo: l.tipo }, l.curso_id);
-            await pool.query(`UPDATE aim_aula_lecciones SET titulo = $2, texto = $3, video_url = $4, archivo_id = $5, calificacion = $6 WHERE id = $1`,
-                [l.id, d.titulo, d.texto, d.video_url, d.archivo_id, d.calificacion]);
+            await pool.query(`UPDATE aim_aula_lecciones SET titulo = $2, texto = $3, video_url = $4, archivo_id = $5, calificacion = $6, modo = $7, intentos = $8 WHERE id = $1`,
+                [l.id, d.titulo, d.texto, d.video_url, d.archivo_id, d.calificacion, d.modo, d.intentos]);
+            if (d.preguntas) await guardarPreguntas(l.id, d.preguntas);
             if (l.archivo_id && l.archivo_id !== d.archivo_id) await soltarArchivo(l.archivo_id);
             res.json({ success: true });
         } catch (err) { fallo(res, err); }
@@ -766,9 +857,133 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             const l = await leccionEditable(req);
             const n = (await pool.query(`SELECT COUNT(*)::int n FROM aim_aula_entregas WHERE leccion_id = $1`, [l.id])).rows[0].n;
             if (n && req.query.confirmar !== '1') corta(409, `Esta tarea tiene ${n} ${n === 1 ? 'entrega' : 'entregas'}: si la borras, se pierden.`);
+            const ni = (await pool.query(`SELECT COUNT(*)::int n FROM aim_aula_intentos WHERE leccion_id = $1 AND modo = 'evaluable'`, [l.id])).rows[0].n;
+            if (ni && req.query.confirmar !== '1') corta(409, `Este cuestionario tiene ${ni} ${ni === 1 ? 'intento con nota' : 'intentos con nota'}: si lo borras, se pierden.`);
             await pool.query(`DELETE FROM aim_aula_lecciones WHERE id = $1`, [l.id]);
             await soltarArchivo(l.archivo_id);
             res.json({ success: true });
+        } catch (err) { fallo(res, err); }
+    });
+
+    // ── Cuestionarios (#439) ──
+    async function guardarPreguntas(leccionId, preguntas) {
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            await client.query(`DELETE FROM aim_aula_preguntas WHERE leccion_id = $1`, [leccionId]);
+            for (let i = 0; i < preguntas.length; i++) {
+                const p = preguntas[i];
+                await client.query(`INSERT INTO aim_aula_preguntas (leccion_id, orden, enunciado, opciones, correcta, explicacion, imagen) VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7)`,
+                    [leccionId, i, p.enunciado, JSON.stringify(p.opciones), p.correcta, p.explicacion, p.imagen]);
+            }
+            await client.query('COMMIT');
+        } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
+    }
+    const preguntasDe = async (leccionId) => (await pool.query(
+        `SELECT id, enunciado, opciones, correcta, explicacion, imagen FROM aim_aula_preguntas WHERE leccion_id = $1 ORDER BY orden, id`, [leccionId])).rows;
+    router.get('/api/admin/aula/lecciones/:id/preguntas', ...gestion, async (req, res) => {
+        try {
+            const l = await leccionEditable(req);
+            res.set('Cache-Control', 'no-store');
+            res.json({ preguntas: await preguntasDe(l.id) });
+        } catch (err) { fallo(res, err); }
+    });
+    // Preguntas hechas con el vocabulario de Learning Dungeon (la misma base):
+    // «¿Qué significa…?» o al revés, con tres respuestas falsas de otras palabras.
+    router.get('/api/admin/aula/learning-dungeon', ...gestion, async (req, res) => {
+        try {
+            const nivel = Number.isInteger(Number(req.query.nivel)) ? Number(req.query.nivel) : 99;
+            const tipo = req.query.tipo === 'imagen' ? 'image' : 'text';
+            const sentido = ['significado', 'termino', 'mixto'].includes(req.query.sentido) ? req.query.sentido : 'significado';
+            const cuantas = Math.min(Math.max(Number(req.query.n) || 10, 1), 50);
+            const r = await pool.query(
+                `SELECT v.term, v.meaning, v.image_url, v.belt_level FROM tul_vocabulary v JOIN tul_clubs c ON c.club_id = v.club_id
+                 WHERE c.name ILIKE 'aim education%' AND COALESCE(v.content_type, 'text') = $1 AND COALESCE(v.belt_level, 0) <= $2
+                   AND COALESCE(v.term, '') <> '' AND COALESCE(v.meaning, '') <> ''
+                   -- Con imagen, solo las que se pueden enseñar (https): sin ella, la pregunta no tiene sentido.
+                   AND ($1 <> 'image' OR v.image_url ~ '^https://')`, [tipo, nivel]);
+            const todas = r.rows;
+            const baraja = (l) => { const x = [...l]; for (let i = x.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [x[i], x[j]] = [x[j], x[i]]; } return x; };
+            const preguntas = [];
+            for (const v of baraja(todas).slice(0, cuantas)) {
+                const alReves = tipo === 'image' || sentido === 'termino' || (sentido === 'mixto' && Math.random() < 0.5);
+                const buena = alReves ? v.term : v.meaning;
+                const falsas = baraja([...new Set(todas.map(x => (alReves ? x.term : x.meaning)).filter(x => x && x !== buena))]).slice(0, 3);
+                if (falsas.length < 1) continue;
+                const opciones = baraja([buena, ...falsas]);
+                preguntas.push({
+                    enunciado: tipo === 'image' ? '¿Qué es lo que se ve en la imagen?' : alReves ? `¿Cómo se dice «${v.meaning}»?` : `¿Qué significa «${v.term}»?`,
+                    opciones, correcta: opciones.indexOf(buena), explicacion: `${v.term}: ${v.meaning}`, imagen: tipo === 'image' && /^https:\/\//.test(v.image_url || '') ? v.image_url : null,
+                });
+            }
+            res.json({ preguntas, disponibles: todas.length });
+        } catch (err) { fallo(res, err); }
+    });
+    // El cuestionario para hacerlo. De práctica: con las respuestas buenas (se
+    // corrige al momento). Evaluable: sin ellas, y con sus intentos.
+    router.get('/api/aula/lecciones/:id/cuestionario', authenticateSession, async (req, res) => {
+        try {
+            const l = await leccion(idDe(req.params.id));
+            if (l.tipo !== 'cuestionario') corta(400, 'Esa lección no es un cuestionario.');
+            const { gestor } = await puedeVer(req, l.curso_id);
+            const ps = await preguntasDe(l.id);
+            const conSolucion = l.modo === 'practica' || gestor;
+            const intentos = (await pool.query(
+                `SELECT id, respuestas, aciertos, total, nota, created_at FROM aim_aula_intentos WHERE leccion_id = $1 AND user_id = $2 AND modo = $3 ORDER BY created_at`,
+                [l.id, req.userSession.userId, l.modo])).rows;
+            const usados = l.modo === 'evaluable' ? intentos.length : 0;
+            res.set('Cache-Control', 'no-store');
+            res.json({
+                modo: l.modo, intentos: l.intentos, usados, gestor,
+                quedan: l.modo === 'evaluable' && l.intentos ? Math.max(0, l.intentos - usados) : null,
+                mejor: intentos.length ? Math.max(...intentos.map(i => Number(i.nota))) : null,
+                ultimo: l.modo === 'evaluable' && intentos.length ? (({ respuestas, ...i }) => ({ ...i, nota: Number(i.nota), detalle: respuestas }))(intentos[intentos.length - 1]) : null,
+                preguntas: ps.map(p => (conSolucion ? p : { id: p.id, enunciado: p.enunciado, opciones: p.opciones, imagen: p.imagen })),
+            });
+        } catch (err) { fallo(res, err); }
+    });
+    // Entregar un intento: se corrige aquí (aunque la práctica ya se corrija en
+    // pantalla) y la lección cuenta como hecha.
+    router.post('/api/aula/lecciones/:id/intentos', authenticateSession, async (req, res) => {
+        const client = await pool.connect();
+        try {
+            const l = await leccion(idDe(req.params.id));
+            if (l.tipo !== 'cuestionario') corta(400, 'Esa lección no es un cuestionario.');
+            const { gestor } = await puedeVer(req, l.curso_id);
+            const me = req.userSession.userId;
+            const ps = await preguntasDe(l.id);
+            if (!ps.length) corta(400, 'Este cuestionario aún no tiene preguntas.');
+            const res1 = corregir(ps, req.body?.respuestas);
+            if (gestor) return res.json({ ...res1, guardado: false });
+            await client.query('BEGIN');
+            // Uno detrás de otro: con dos pestañas no se cuela un intento de más.
+            await client.query(`SELECT pg_advisory_xact_lock(439, $1)`, [l.id]);
+            if (l.modo === 'evaluable' && l.intentos) {
+                const usados = (await client.query(`SELECT COUNT(*)::int n FROM aim_aula_intentos WHERE leccion_id = $1 AND user_id = $2 AND modo = 'evaluable'`, [l.id, me])).rows[0].n;
+                if (usados >= l.intentos) corta(409, 'Ya has usado todos los intentos de este cuestionario.');
+            }
+            await client.query(`INSERT INTO aim_aula_intentos (leccion_id, user_id, modo, respuestas, aciertos, total, nota) VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7)`,
+                [l.id, me, l.modo, JSON.stringify(res1.detalle), res1.aciertos, res1.total, res1.nota]);
+            await client.query(`INSERT INTO aim_aula_progreso (user_id, leccion_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [me, l.id]);
+            await client.query('COMMIT');
+            res.json({ ...res1, guardado: true });
+        } catch (err) { await client.query('ROLLBACK').catch(() => {}); fallo(res, err); } finally { client.release(); }
+    });
+    // Los resultados de los cuestionarios de un curso, por alumno.
+    router.get('/api/admin/aula/cursos/:id/resultados', ...gestion, async (req, res) => {
+        try {
+            const c = await editable(req, idDe(req.params.id));
+            const r = await pool.query(
+                `SELECT l.id AS leccion_id, l.titulo, l.modo, l.intentos AS max_intentos, i.user_id,
+                        TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno,
+                        COUNT(*)::int AS intentos, MAX(i.nota) AS mejor, MAX(i.created_at) AS ultimo,
+                        (ARRAY_AGG(i.nota ORDER BY i.created_at DESC))[1] AS ultima_nota
+                 FROM aim_aula_intentos i JOIN aim_aula_lecciones l ON l.id = i.leccion_id JOIN users u ON u.user_id = i.user_id
+                 WHERE l.curso_id = $1 AND i.modo = l.modo
+                 GROUP BY l.id, l.titulo, l.modo, l.intentos, i.user_id, u.name, u.surname
+                 ORDER BY l.titulo, alumno`, [c.id]);
+            res.set('Cache-Control', 'no-store');
+            res.json(r.rows.map(x => ({ ...x, mejor: Number(x.mejor), ultima_nota: Number(x.ultima_nota) })));
         } catch (err) { fallo(res, err); }
     });
 
