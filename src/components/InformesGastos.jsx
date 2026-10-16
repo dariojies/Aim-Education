@@ -124,7 +124,7 @@ export function InformeBeneficios({ periodo = null }) {
               Los alumnos y las horas de cada actividad salen del horario. El <b>campamento</b> cuenta los
               niños apuntados y sus 5 h diarias, y <b>Taller/Evento</b> los inscritos y la duración de cada evento.
             </div>
-            {(datos.ventas > 0 || datos.bonos > 0 || datos.sinActividad > 0) && <div>Las filas <b>Ventas</b> (todo lo facturado en la serie de material y productos, AIMMT), <b>Bonos</b> y <b>General</b> (lo que no es de ninguna actividad, como la matrícula) cuentan en el total, pero no se les reparten los gastos comunes.</div>}
+            {(datos.ventas > 0 || datos.bonos > 0 || datos.online > 0 || datos.sinActividad > 0) && <div>Las filas <b>Ventas</b> (todo lo facturado en la serie de material y productos, AIMMT), <b>Cursos online</b> (el aula virtual, AIMON), <b>Bonos</b> y <b>General</b> (lo que no es de ninguna actividad, como la matrícula) cuentan en el total, pero no se les reparten los gastos comunes.</div>}
             {datos.gastosVenta > 0 && <div>Los <b>{eur(datos.gastosVenta)}</b> de gastos de la categoría «Venta» (lo que se compra para venderlo) van en la fila <b>Ventas</b>, contra lo que se cobra por ello: no se le restan a ninguna actividad.</div>}
           </div>
         </>

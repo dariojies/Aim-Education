@@ -3547,6 +3547,7 @@ const SERIES_FACTURA = [
   ['MAT', 'Material y venta de bienes'],
   ['IVA', 'Servicios con IVA'],
   ['SIVA', 'Enseñanza exenta de IVA'],
+  ['ON', 'Cursos online (AIMON, con IVA)'],
 ];
 const nombreSerie = (cod) => SERIES_FACTURA.find(([c]) => c === cod)?.[1] || cod;
 // La que le tocaría si no se fija a mano: el material es entrega de bienes, y

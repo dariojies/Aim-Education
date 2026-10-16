@@ -5211,7 +5211,7 @@ app.use(crearSustituciones({ pool, clubId: AIM_CLUB_ID, authenticateSession, req
 app.use(crearAgrupaciones({ pool, authenticateSession, requireSeccion, grupoSuyo }).router);
 // Reportes (#416): cómo va el negocio, con las mismas cuentas en todas partes.
 app.use(crearReportes({ pool, clubId: AIM_CLUB_ID, authenticateSession, requirePermiso, candidatosGeneracion, mesesDeTemporada, sqlEsIndividual,
-    empresa: () => EMPRESA_TICKET }).router);
+    empresa: () => EMPRESA_TICKET, prefijoSerie: (s) => FORMATO_NUMERACION[s]?.prefijo ?? null }).router);
 // El aula virtual (#433). La sesión opcional y el pago online se declaran más
 // abajo: se pasan envueltos para leerlos al usarlos.
 app.use(crearAula({ pool, authenticateSession, requireSeccion, permisos,
@@ -8982,6 +8982,7 @@ app.post('/api/admin/billing/tpv/cobrar', authenticateSession, requireAdmin, asy
 //   MAT  entregas de bienes (material, equipación), siempre con IVA
 //   IVA  servicios sujetos y no exentos (robótica, campamentos, eventos…)
 //   SIVA enseñanza exenta del artículo 20.Uno.9º de la Ley del IVA
+//   ON   cursos online del aula virtual (#451), siempre con IVA (AIMON…)
 // Cada una con su numeración correlativa e independiente, que es lo que pide el
 // artículo 6.1.a del RD 1619/2012. Las rectificativas van en serie aparte (eso
 // sí es obligatorio), y una por cada serie: rectificar una factura exenta no
@@ -8990,6 +8991,7 @@ const SERIES_FACTURA = [
     { codigo: 'MAT', nombre: 'Material y venta de bienes', rect: 'MATR', bloque: 'Entregas de bienes sujetas al 21 %' },
     { codigo: 'IVA', nombre: 'Servicios con IVA', rect: 'IVAR', bloque: 'Prestaciones de servicios sujetas y no exentas' },
     { codigo: 'SIVA', nombre: 'Enseñanza exenta de IVA', rect: 'SIVAR', bloque: 'Exentas por el art. 20.Uno.9º de la Ley 37/1992' },
+    { codigo: 'ON', nombre: 'Cursos online', rect: 'ONR', bloque: 'Cursos online (aula virtual), sujetos al 21 %' },
 ];
 const SERIE_POR_DEFECTO = 'SIVA';
 // Todas las series, incluidas las rectificativas, en el orden en que se enseñan.
@@ -9010,6 +9012,8 @@ let FORMATO_NUMERACION = {
     R: { prefijo: 'R-', anio: 'no', sep: '', digitos: 0 },
     MAT: formatoDe('AimMat'), IVA: formatoDe('AimIVA'), SIVA: formatoDe('AimSIVA'),
     MATR: formatoDe('AimMatR'), IVAR: formatoDe('AimIVAR'), SIVAR: formatoDe('AimSIVAR'),
+    // Los cursos online (#451): AIMON2026-00001 (se puede cambiar en Ajustes de facturación).
+    ON: { prefijo: 'AIMON', anio: '4', sep: '-', digitos: 5 }, ONR: { prefijo: 'R-AIMON', anio: '4', sep: '-', digitos: 5 },
 };
 
 // Lo guardado puede venir del formato viejo, donde 'anio' era un sí/no.
@@ -14326,7 +14330,7 @@ async function repartoPorActividad(d, h, { soloSinPersona = false } = {}) {
     // de la serie de material (AIMMT) va a «Ventas» y los bonos a «Bonos» (#423),
     // cada uno en su fila: no son de ninguna actividad.
     const ing = await pool.query(
-        `SELECT CASE WHEN r.serie IN ('MAT', 'MATR') THEN 'Ventas' WHEN pr.es_bono THEN 'Bonos'
+        `SELECT CASE WHEN r.serie IN ('MAT', 'MATR') THEN 'Ventas' WHEN r.serie IN ('ON', 'ONR') THEN 'Cursos online' WHEN pr.es_bono THEN 'Bonos'
                      ELSE COALESCE(NULLIF(c.actividad,''), 'Sin actividad') END AS actividad,
                 COALESCE(SUM(c.importe),0)::numeric AS total
          FROM aim_cargos c
@@ -14443,7 +14447,7 @@ async function repartoPorActividad(d, h, { soloSinPersona = false } = {}) {
     const conVida = [CAMP_ACTIVIDAD, EVENTOS_ACTIVIDAD]
         .filter(n => (alumnosDe[n] || 0) > 0 || (horasDe[n] || 0) > 0);
     const nombres = [...new Set([...Object.keys(ingresos), ...Object.keys(gastosDir), ...conVida])]
-        .filter(n => !['Sin actividad', 'Ventas', 'Bonos'].includes(n));
+        .filter(n => !['Sin actividad', 'Ventas', 'Bonos', 'Cursos online'].includes(n));
 
     // Reparte una bolsa según el peso de cada actividad. Sin pesos (nadie
     // matriculado, o ninguna hora en el horario) se cae a partes iguales,
@@ -14476,6 +14480,7 @@ async function repartoPorActividad(d, h, { soloSinPersona = false } = {}) {
         nombres, ingresos, gastosDir, cuotas, cuotaDe, bolsas, gastosComunes,
         alumnosDe, horasDe, sinActividad: r2Server(ingresos['Sin actividad'] || 0), gastosVenta: r2Server(gastosVenta),
         ventas: r2Server(ingresos.Ventas || 0), bonos: r2Server(ingresos.Bonos || 0),
+        online: r2Server(ingresos['Cursos online'] || 0),
     };
 }
 
@@ -14503,6 +14508,8 @@ app.get('/api/admin/informes/beneficios', authenticateSession, requirePermiso('r
         // cada uno en su fila (#423).
         if (R.ventas || R.gastosVenta) filas.push({ actividad: 'Ventas (material y productos)', ingresos: R.ventas, gastosDirectos: R.gastosVenta, gastosComunes: 0, beneficio: r2Server(R.ventas - R.gastosVenta), general: true });
         if (R.bonos) filas.push({ actividad: 'Bonos', ingresos: R.bonos, gastosDirectos: 0, gastosComunes: 0, beneficio: R.bonos, general: true });
+        // Los cursos online del aula virtual (serie AIMON, #451), en su fila.
+        if (R.online) filas.push({ actividad: 'Cursos online', ingresos: R.online, gastosDirectos: 0, gastosComunes: 0, beneficio: R.online, general: true });
         if (R.sinActividad) filas.push({ actividad: 'General (sin actividad)', ingresos: R.sinActividad, gastosDirectos: 0, gastosComunes: 0, beneficio: R.sinActividad, general: true });
 
         res.set('Cache-Control', 'no-store');
@@ -14513,7 +14520,7 @@ app.get('/api/admin/informes/beneficios', authenticateSession, requirePermiso('r
                 alumnos: r2Server(R.bolsas.alumnos),
                 horas: r2Server(R.bolsas.horas),
             },
-            sinActividad: R.sinActividad, gastosVenta: R.gastosVenta, ventas: R.ventas, bonos: R.bonos,
+            sinActividad: R.sinActividad, gastosVenta: R.gastosVenta, ventas: R.ventas, bonos: R.bonos, online: R.online,
             totalGastosComunes: r2Server(R.gastosComunes),
             pesos: Object.fromEntries(R.nombres.map(n => [n, {
                 alumnos: R.alumnosDe[n] || 0,
@@ -14649,7 +14656,7 @@ app.get('/api/admin/informes/desglose-personas', authenticateSession, requirePer
         res.json({
             desde: desde || null, hasta: hasta || null,
             filas,
-            sinActividad: r2Server(R.sinActividad + R.ventas + R.bonos),
+            sinActividad: r2Server(R.sinActividad + R.ventas + R.bonos + R.online),
             sinInstructor: { ingresos: r2Server(sinInstructor.ingresos), gastos: r2Server(sinInstructor.gastos) },
             totales: {
                 ingresos: r2Server(filas.reduce((s, f) => s + f.ingresos, 0) + sinInstructor.ingresos),

@@ -53,10 +53,13 @@ const SQL_BASE_PENDIENTE = `(c.precio * (1 - COALESCE(c.descuento_pct, 0) / 100)
 // (es_bono en el catálogo: Bono Flexi, Aim Pass, Pase Explorador) van aparte.
 // Hace falta «LEFT JOIN aim_precios pr ON pr.concepto = c.concepto».
 const SQL_ES_VENTA = (rc = 'rc') => `${rc}.serie IN ('MAT', 'MATR')`;
-export const SQL_GRUPO_INGRESO = (rc = 'rc') => `(CASE WHEN ${SQL_ES_VENTA(rc)} THEN 'Ventas' WHEN pr.es_bono THEN 'Bonos'
+// Los cursos online del aula virtual (#451): su serie, AIMON, y su grupo.
+const SQL_ES_ONLINE = (rc = 'rc') => `${rc}.serie IN ('ON', 'ONR')`;
+export const SQL_GRUPO_INGRESO = (rc = 'rc') => `(CASE WHEN ${SQL_ES_VENTA(rc)} THEN 'Ventas' WHEN ${SQL_ES_ONLINE(rc)} THEN 'Cursos online' WHEN pr.es_bono THEN 'Bonos'
                               ELSE COALESCE(NULLIF(c.actividad, ''), 'General') END)`;
 // Mensualidades, Ventas, Bonos, Matrícula, Campamento u Otros.
 const SQL_TIPO_CARGO = `(CASE WHEN ${SQL_ES_VENTA()} THEN 'Ventas (material y productos)'
+                              WHEN ${SQL_ES_ONLINE()} THEN 'Cursos online'
                               WHEN pr.es_bono THEN 'Bonos'
                               WHEN c.concepto = '00000' OR c.origen = 'inscripcion' THEN 'Matrícula'
                               WHEN c.origen = 'campamento' THEN 'Campamento'
@@ -110,7 +113,7 @@ export function periodo(q) {
 // Los doce meses que acaban en el elegido.
 const docemeses = (mes) => Array.from({ length: 12 }, (_, i) => mesMas(mes, i - 11));
 
-export function crearReportes({ pool, clubId, authenticateSession, requirePermiso, candidatosGeneracion, mesesDeTemporada, sqlEsIndividual, empresa = () => null }) {
+export function crearReportes({ pool, clubId, authenticateSession, requirePermiso, candidatosGeneracion, mesesDeTemporada, sqlEsIndividual, empresa = () => null, prefijoSerie = () => null }) {
     const router = express.Router();
     const ver = [authenticateSession, requirePermiso('reportesGenerales')];
     // Cada pestaña, también para el PDF (#434): las mismas cuentas que en pantalla.
@@ -279,7 +282,7 @@ export function crearReportes({ pool, clubId, authenticateSession, requirePermis
             porActividad: act.map(a => ({ actividad: a.actividad, ingresos: r2(a.base), cobrado: r2(a.bruto), alumnos: a.alumnos, anterior: ant[a.actividad] || 0 })),
             porTipo: tipos.rows.map(t => ({ tipo: t.tipo, ingresos: r2(t.base), cargos: t.n })),
             porMedio: medios.rows.map(m => ({ medio: m.medio, total: r2(m.total), pagos: m.pagos })),
-            porSerie: series.rows.map(s => ({ serie: s.serie, prefijo: numeracion[s.serie]?.prefijo || null, ingresos: r2(s.base), cobrado: r2(s.total), iva: r2(Number(s.total) - Number(s.base)), facturas: s.facturas })),
+            porSerie: series.rows.map(s => ({ serie: s.serie, prefijo: numeracion[s.serie]?.prefijo || prefijoSerie(s.serie) || null, ingresos: r2(s.base), cobrado: r2(s.total), iva: r2(Number(s.total) - Number(s.base)), facturas: s.facturas })),
         };
     });
 

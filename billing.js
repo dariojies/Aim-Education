@@ -177,7 +177,8 @@ export function calcularRecibo(lineas) {
 // Esta es la ÚNICA cuenta que vale para cobrar: la usan la pantalla del TPV, el
 // cobro, el pago por internet y la emisión de las facturas, así que lo que se ve,
 // lo que se cobra y lo que suman las facturas es siempre lo mismo, al céntimo.
-export const SERIES_COBRO = ['MAT', 'IVA', 'SIVA'];
+// ON (#451): los cursos online del aula virtual, siempre con IVA.
+export const SERIES_COBRO = ['MAT', 'IVA', 'SIVA', 'ON'];
 
 // A qué serie va una línea: la que fije su concepto y, si no, el material es
 // entrega de bienes y del resto decide el IVA.

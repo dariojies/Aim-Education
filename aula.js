@@ -98,6 +98,9 @@ export async function crearTablasAula(client) {
     // La parte gratis de un curso de pago: las lecciones marcadas las ve
     // cualquiera con cuenta, sin apuntarse ni pagar.
     await client.query(`ALTER TABLE aim_aula_lecciones ADD COLUMN IF NOT EXISTS gratis BOOLEAN NOT NULL DEFAULT false`);
+    // Los cursos online se facturan en su serie (AIMON, #451): también los que ya
+    // tenían precio. Lo ya facturado se queda como está.
+    await client.query(`UPDATE aim_precios SET serie_fiscal = 'ON' WHERE concepto LIKE 'AULA-%' AND serie_fiscal IS NULL`).catch(() => {});
     await client.query(`
         CREATE TABLE IF NOT EXISTS aim_aula_inscripciones (
             id SERIAL PRIMARY KEY,
@@ -693,9 +696,10 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
         const concepto = conceptoDe(c.id);
         if (precio > 0) {
             await client.query(
-                `INSERT INTO aim_precios (concepto, descripcion, precio, tipo, iva_pct, activo) VALUES ($1, $2, $3, 'Otros', $4, true)
+                // Se factura en la serie de los cursos online (AIMON, #451).
+                `INSERT INTO aim_precios (concepto, descripcion, precio, tipo, iva_pct, activo, serie_fiscal) VALUES ($1, $2, $3, 'Otros', $4, true, 'ON')
                  ON CONFLICT (concepto) DO UPDATE SET descripcion = EXCLUDED.descripcion, precio = EXCLUDED.precio, iva_pct = EXCLUDED.iva_pct,
-                     activo = true, updated_at = NOW()`, [concepto, `Curso online: ${titulo}`.slice(0, 255), precio, ivaPct]);
+                     activo = true, serie_fiscal = 'ON', updated_at = NOW()`, [concepto, `Curso online: ${titulo}`.slice(0, 255), precio, ivaPct]);
             await client.query(`UPDATE aim_aula_cursos SET concepto = $2 WHERE id = $1`, [c.id, concepto]);
         } else if (c.concepto) {
             // Pasa a gratis: el concepto se queda (lo usan los cargos de antes), apagado.

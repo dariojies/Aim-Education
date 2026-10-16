@@ -29,6 +29,8 @@ export const TIPOS_OPERACION_DEFECTO = {
     MATR: 'Nacional',
     IVAR: 'Nacional',
     SIVAR: 'Nacional',
+    ON: 'Nacional',
+    ONR: 'Nacional',
 };
 
 // Las líneas de IVA de un registro. Si por lo que sea no guardó el desglose (los

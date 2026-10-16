@@ -299,7 +299,7 @@ function Ingresos({ d }) {
         <Tabla columnas={['Actividad', 'Ingresos', 'Con IVA', 'Alumnos', 'Mes anterior', 'Cambio']}
           filas={d.porActividad.map(x => ({ celdas: [<b>{x.actividad === 'Ventas' ? 'Ventas (material y productos)' : x.actividad}</b>, <b>{eur(x.ingresos)}</b>, eur(x.cobrado), num(x.alumnos), eur(x.anterior), <Delta a={x.ingresos} b={x.anterior} />], estilo: ['General', 'Ventas', 'Bonos'].includes(x.actividad) ? { background: 'var(--bg-3)' } : undefined }))}
           pie={['Total', eur(d.ingresos), eur(d.cobrado), '', eur(a.ingresos), <Delta a={d.ingresos} b={a.ingresos} />]} />
-        <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>«Ventas» es todo lo facturado en la serie de material y productos (AIMMT); «Bonos», los bonos y pases (Bono Flexi, Aim Pass, Pase Explorador); «General», lo que no es de ninguna actividad (la matrícula, por ejemplo).</p>
+        <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>«Ventas» es todo lo facturado en la serie de material y productos (AIMMT); «Cursos online», lo del aula virtual (AIMON); «Bonos», los bonos y pases (Bono Flexi, Aim Pass, Pase Explorador); «General», lo que no es de ninguna actividad (la matrícula, por ejemplo).</p>
       </Bloque>
       <Rejilla>
         <Bloque titulo="Por tipo" sub="sin IVA">
