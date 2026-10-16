@@ -79,7 +79,7 @@ function AimHeader({ route } = {}) {
   // Close mobile menu on resize above breakpoint or route change
   useEffect(() => { setMenuOpen(false); }, [path]);
   useEffect(() => {
-    const onResize = () => { if (window.innerWidth > 1180) setMenuOpen(false); };
+    const onResize = () => { if (window.innerWidth > 1024) setMenuOpen(false); };
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
@@ -100,34 +100,63 @@ function AimHeader({ route } = {}) {
     return '';
   })();
 
-  const links = [
+  // El menú, agrupado (con el Aula y la Tienda ya no cabía todo suelto): lo de
+  // cada día a la vista y lo demás en tres desplegables.
+  const grupos = [
     { id: "home", label: "Inicio", href: "/" },
-    { id: "activities", label: "Actividades", href: "/actividades" },
-    { id: "camp", label: "Campamento", href: "/campamento" },
-    { id: "calendar", label: "Calendario", href: "/calendario" },
-    // Los sets de LEGO y la biblioteca del club (#291).
-    { id: "brickslab", label: "Brickslab", href: "/brickslab" },
-    { id: "news", label: "Noticias", href: "/noticias" },
-    { id: "blog", label: "Blog", href: "/blog" },
-    // Los cursos online (#433).
-    { id: "aula", label: "Aula", href: "/aula" },
-    // El material del club (#432).
+    { id: "actividades", label: "Actividades", activos: ["activities", "camp", "calendar"], hijos: [
+      { id: "activities", label: "Todas las actividades", href: "/actividades", detalle: "Taekwondo, ballet, inglés, robótica…" },
+      { id: "camp", label: "Campamento de verano", href: "/campamento", detalle: "De 4 a 14 años, por la mañana" },
+      { id: "calendar", label: "Calendario", href: "/calendario", detalle: "Eventos, exámenes y fechas" },
+    ] },
+    // Los cursos online (#433) y el material del club (#432).
+    { id: "aula", label: "Aula virtual", href: "/aula" },
     { id: "tienda", label: "Tienda", href: "/tienda" },
-    { id: "about", label: "Conócenos", href: "/conocenos" },
-    { id: "contact", label: "Contacto", href: "/contacto" },
+    { id: "novedades", label: "Novedades", activos: ["news", "blog"], hijos: [
+      { id: "news", label: "Noticias", href: "/noticias", detalle: "Lo que pasa en el club" },
+      { id: "blog", label: "Blog", href: "/blog", detalle: "Ideas y consejos del equipo" },
+    ] },
+    { id: "club", label: "El club", activos: ["about", "brickslab", "contact"], hijos: [
+      { id: "about", label: "Conócenos", href: "/conocenos", detalle: "Quiénes somos" },
+      // Los sets de LEGO y la biblioteca del club (#291).
+      { id: "brickslab", label: "Brickslab y Biblioteca", href: "/brickslab", detalle: "LEGO y libros para llevar a casa" },
+      { id: "contact", label: "Contacto", href: "/contacto", detalle: "Escríbenos o ven a vernos" },
+    ] },
   ];
+  // El desplegable abierto con un toque (en el ordenador se abre también al pasar por encima).
+  const [abierto, setAbierto] = useState(null);
+  useEffect(() => { setAbierto(null); }, [path]);
+  useEffect(() => {
+    if (!abierto) return undefined;
+    const cerrar = (e) => { if (!e.target.closest?.('.menu-grupo')) setAbierto(null); };
+    const esc = (e) => { if (e.key === 'Escape') { setAbierto(null); document.activeElement?.blur?.(); } };
+    document.addEventListener('click', cerrar); document.addEventListener('keydown', esc);
+    return () => { document.removeEventListener('click', cerrar); document.removeEventListener('keydown', esc); };
+  }, [abierto]);
+  const ir = (href) => (e) => { e.preventDefault(); setAbierto(null); setMenuOpen(false); e.currentTarget.blur?.(); go(href); };
+  const Flecha = () => <svg className="menu-flecha" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>;
+  const Desplegable = ({ g, alDerecha }) => (
+    <div className={`menu-grupo${abierto === g.id ? ' abierto' : ''}`}>
+      <button type="button" className={`menu-boton${(g.activos || []).includes(activeRoute) ? ' is-active' : ''}`} aria-haspopup="true" aria-expanded={abierto === g.id}
+        onClick={() => setAbierto(a => (a === g.id ? null : g.id))}>{g.label} <Flecha /></button>
+      <div className={`menu-panel${alDerecha ? ' derecha' : ''}`} role="menu">
+        {g.hijos.map(h => (
+          <a key={h.id} role="menuitem" href={h.href} className={activeRoute === h.id ? 'is-active' : ''} onClick={h.accion || ir(h.href)}>
+            <b>{h.label}</b>{h.detalle && <span>{h.detalle}</span>}
+          </a>
+        ))}
+      </div>
+    </div>
+  );
 
   return (
     <header className={`aim-header${scrolled ? ' scrolled' : ''}`}>
       <div className="row">
         <AimLogo onClick={() => go('/')} />
-        <nav>
-          {links.map(l => (
-            <a key={l.id}
-              className={activeRoute === l.id ? "is-active" : ""}
-              onClick={(e) => { e.preventDefault(); go(l.href); setMenuOpen(false); }}
-              href={l.href}>{l.label}</a>
-          ))}
+        <nav aria-label="Secciones">
+          {grupos.map(g => (g.hijos ? <Desplegable key={g.id} g={g} /> : (
+            <a key={g.id} className={activeRoute === g.id ? "is-active" : ""} onClick={ir(g.href)} href={g.href}>{g.label}</a>
+          )))}
         </nav>
         <div className="actions">
           <button
@@ -141,35 +170,39 @@ function AimHeader({ route } = {}) {
             }
           </button>
           {user ? (
-            <>
-              {/* Quien trabaja en el club también puede ser familia: desde aquí
-                  entra a lo suyo sin pasar por el panel. */}
-              {user.canAccessAdmin && (
-                <button className="btn btn-brand solo-escritorio" onClick={() => go('/dashboard')}>Perfil</button>
-              )}
-              <button className="btn btn-gradient" onClick={() => go(user.canAccessAdmin ? '/admin' : '/dashboard')}>
-                {user.canAccessAdmin ? 'Panel Admin' : 'Mi cuenta'}
-              </button>
-            </>
+            // Un solo botón: quien trabaja en el club (que también puede ser
+            // familia) elige ahí entre el panel y su área.
+            user.canAccessAdmin ? (
+              <div className="menu-cuenta">
+                <Desplegable alDerecha g={{ id: 'cuenta', label: 'Mi cuenta', hijos: [
+                  { id: 'admin', label: 'Panel de admin', href: '/admin', detalle: 'La gestión del club' },
+                  { id: 'familia', label: 'Mi área de familia', href: '/dashboard', detalle: 'Clases, pagos y fotos' },
+                ] }} />
+              </div>
+            ) : (
+              <button className="btn btn-gradient" onClick={() => go('/dashboard')}>Mi cuenta</button>
+            )
           ) : (
             <>
-              <button className="btn btn-ghost" onClick={() => go('/auth')}>Iniciar sesión</button>
+              <button className="btn btn-ghost" onClick={() => go('/auth')}>Entrar</button>
               <button className="btn btn-gradient" onClick={() => go('/auth?mode=register')}>Registrarme</button>
             </>
           )}
         </div>
       </div>
-      <nav className={`mobile-nav${menuOpen ? ' open' : ''}`}>
-        {links.map(l => (
-          <a key={l.id} href={l.href} onClick={(e) => { e.preventDefault(); go(l.href); setMenuOpen(false); }}>{l.label}</a>
-        ))}
+      <nav className={`mobile-nav${menuOpen ? ' open' : ''}`} aria-label="Secciones">
+        {grupos.map(g => (g.hijos ? (
+          <div key={g.id} className="mobile-grupo">
+            <span>{g.label}</span>
+            {g.hijos.map(h => <a key={h.id} href={h.href} onClick={ir(h.href)}>{h.label}</a>)}
+          </div>
+        ) : <a key={g.id} href={g.href} onClick={ir(g.href)}>{g.label}</a>))}
         {user && (
-          <a href="/dashboard" onClick={(e) => { e.preventDefault(); go('/dashboard'); setMenuOpen(false); }}>
-            {user.canAccessAdmin ? 'Perfil' : 'Mi cuenta'}
-          </a>
-        )}
-        {user?.canAccessAdmin && (
-          <a href="/admin" onClick={(e) => { e.preventDefault(); go('/admin'); setMenuOpen(false); }}>Panel Admin</a>
+          <div className="mobile-grupo">
+            <span>Mi cuenta</span>
+            {user.canAccessAdmin && <a href="/admin" onClick={ir('/admin')}>Panel de admin</a>}
+            <a href="/dashboard" onClick={ir('/dashboard')}>{user.canAccessAdmin ? 'Mi área de familia' : 'Mi área'}</a>
+          </div>
         )}
       </nav>
     </header>

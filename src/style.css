@@ -331,17 +331,53 @@ header.aim-header.scrolled {
   margin-left: 24px;
 }
 
-/* Con el Aula y la Tienda (#432, #433) el menú ya no cabía: los enlaces, más
-   juntos; hasta 1300 px, algo más pequeños; y por debajo de 1180 px, el menú
-   de hamburguesa (como en el móvil; ver al final del archivo). */
-@media (min-width: 1181px) {
-  .aim-header .row { gap: 14px; }
-  .aim-header nav { gap: 15px; margin-left: 6px; }
+/* El menú agrupado en desplegables (Actividades, Novedades, El club y Mi
+   cuenta): se abren al pasar por encima o con un toque. */
+.aim-header nav { align-items: center; }
+.menu-grupo { position: relative; }
+.menu-boton {
+  font: inherit; font-size: 14px; font-weight: 500; color: var(--ink-2); background: none; border: 0; cursor: pointer;
+  padding: 6px 0; display: inline-flex; align-items: center; gap: 5px; position: relative;
 }
-@media (min-width: 1181px) and (max-width: 1300px) {
-  .aim-header nav { gap: 11px; }
-  header.aim-header nav a { font-size: 13px; }
+.menu-boton:hover, .menu-boton.is-active, .menu-grupo.abierto > .menu-boton { color: var(--ink); }
+.menu-boton.is-active::after {
+  content: ""; position: absolute; left: 0; right: 15px; bottom: -2px; height: 2px; border-radius: 2px;
+  background: linear-gradient(90deg, #5233A8, #FF99D3, #FFD526, #21B668);
 }
+.menu-flecha { transition: transform .15s ease; opacity: .6; }
+.menu-grupo.abierto .menu-flecha { transform: rotate(180deg); }
+.menu-panel {
+  position: absolute; top: calc(100% + 10px); left: -14px; z-index: 60; min-width: 260px; padding: 8px;
+  display: none; gap: 2px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 16px;
+  box-shadow: 0 18px 40px -12px rgba(15, 23, 42, .25);
+}
+.menu-panel.derecha { left: auto; right: 0; }
+/* Un puente invisible: al bajar el ratón al panel, no se cierra. */
+.menu-panel::before { content: ""; position: absolute; left: 0; right: 0; top: -12px; height: 12px; }
+.menu-grupo.abierto > .menu-panel { display: grid; }
+@media (hover: hover) {
+  .menu-grupo:hover > .menu-panel, .menu-grupo:focus-within > .menu-panel { display: grid; }
+  .menu-grupo:hover .menu-flecha { transform: rotate(180deg); }
+}
+.aim-header nav .menu-panel a, .menu-cuenta .menu-panel a {
+  display: grid; gap: 1px; padding: 9px 12px; border-radius: 10px; font-size: 14px; color: var(--ink);
+}
+.aim-header nav .menu-panel a::after, .menu-cuenta .menu-panel a::after { display: none; }
+.menu-panel a:hover, .menu-panel a.is-active { background: var(--bg-3); }
+.menu-panel a b { font-weight: 700; }
+.menu-panel a span { font-size: 12px; color: var(--ink-3); font-weight: 500; }
+/* «Mi cuenta» del personal: un botón con el aspecto del de siempre. */
+.menu-cuenta .menu-boton {
+  padding: 10px 18px; border-radius: 12px; color: #fff; font-weight: 700;
+  background: linear-gradient(135deg, #5233A8, #B06AD9 60%, #FF99D3);
+}
+.menu-cuenta .menu-boton:hover { color: #fff; filter: brightness(1.05); }
+.menu-cuenta .menu-flecha { opacity: .9; }
+.mobile-nav { align-items: stretch; text-align: left; }
+.mobile-nav > a, .mobile-grupo { width: 100%; box-sizing: border-box; }
+.mobile-grupo { display: grid; justify-items: start; padding: 10px 0 4px; border-bottom: 1px solid var(--line-2); }
+.mobile-grupo > span { font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--purple); }
+.mobile-grupo a { border-bottom: 0 !important; padding: 8px 0 8px 10px !important; }
 
 .aim-header nav a {
   font-size: 14px;
@@ -3366,7 +3402,7 @@ html[data-theme="dark"] .dash-nav button.is-active {
   border-bottom: none;
 }
 
-@media (min-width: 1181px) {
+@media (min-width: 1025px) {
 
   .mobile-nav,
   .mobile-nav.open {
@@ -3374,7 +3410,7 @@ html[data-theme="dark"] .dash-nav button.is-active {
   }
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 1024px) {
   .mobile-nav.open {
     display: flex;
   }
@@ -4527,9 +4563,3 @@ html.es-app [role="dialog"] { padding-top: calc(var(--app-arriba) + 12px) !impor
 .app-interruptor.is-on span { transform: translateX(20px); }
 .app-interruptor:disabled { opacity: .6; }
 
-/* El menú de la web pasa a hamburguesa por debajo de 1180 px (#432): con todas
-   las secciones, los enlaces no caben antes. */
-@media (max-width: 1180px) {
-  .aim-header nav { display: none; }
-  .mobile-menu-btn { display: flex; align-items: center; justify-content: center; }
-}
