@@ -21,6 +21,8 @@ export const MAX_VIDEO = 100 * 1024 * 1024;
 export const MAX_ARCHIVO = 10 * 1024 * 1024;
 export const TOPE_TOTAL = 400 * 1024 * 1024;
 export const ACTIVIDAD_AULA = 'Aula virtual';
+// La formación online lleva siempre IVA (#440): no se elige.
+export const IVA_AULA = 21;
 const MAX_PORTADA = 2 * 1024 * 1024;
 const TIPOS = ['texto', 'video', 'archivo', 'tarea'];
 const MIME_VIDEO = ['video/mp4', 'video/quicktime', 'video/webm'];
@@ -596,8 +598,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
     function precioDeBody(body) {
         const precio = body?.precio == null || body.precio === '' ? 0 : r2(String(body.precio).replace(',', '.'));
         if (!Number.isFinite(precio) || precio < 0 || precio > 10000) corta(400, 'El precio no es válido.');
-        const iva = Number(body?.ivaPct ?? 21);
-        if (![0, 4, 10, 21].includes(iva)) corta(400, 'El IVA tiene que ser 0, 4, 10 o 21 %.');
+        const iva = IVA_AULA;
         return { precio, iva };
     }
     router.post('/api/admin/aula/cursos', ...gestion, async (req, res) => {

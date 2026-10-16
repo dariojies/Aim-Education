@@ -190,23 +190,18 @@ function Ventana({ titulo, onCerrar, children, ancho = 520 }) {
   );
 }
 
+// La formación online lleva siempre el 21 % de IVA (#440): no se elige.
+const IVA_AULA = 21;
 function Precio({ valor, cambiar }) {
   const p = Number(String(valor.precio || '').replace(',', '.')) || 0;
-  const total = p * (1 + Number(valor.ivaPct) / 100);
+  const total = p * (1 + IVA_AULA / 100);
   return (
     <div style={{ display: 'grid', gap: 6 }}>
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-        <label style={{ ...etiqueta, flex: 1, minWidth: 140 }}>Precio sin IVA (vacío = gratis)
-          <input inputMode="decimal" value={valor.precio ?? ''} onChange={e => cambiar('precio', e.target.value)} style={inp} placeholder="0,00" />
-        </label>
-        <label style={{ ...etiqueta, width: 150 }}>IVA
-          <select value={valor.ivaPct} onChange={e => cambiar('ivaPct', Number(e.target.value))} style={inp}>
-            <option value={21}>21 %</option><option value={10}>10 %</option><option value={4}>4 %</option><option value={0}>Exento (0 %)</option>
-          </select>
-        </label>
-      </div>
+      <label style={{ ...etiqueta, maxWidth: 260 }}>Precio sin IVA (vacío = gratis)
+        <input inputMode="decimal" value={valor.precio ?? ''} onChange={e => cambiar('precio', e.target.value)} style={inp} placeholder="0,00" />
+      </label>
       <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
-        {p > 0 ? <>Pagará <b>{euros(total)}</b>. Se cobra con tarjeta o Bizum al apuntarse, o en secretaría, y sale su factura como cualquier cobro.</> : 'Gratis: se apunta y entra al momento.'}
+        {p > 0 ? <>Con el 21 % de IVA (la formación online siempre lo lleva), pagará <b>{euros(total)}</b>. Se cobra con tarjeta o Bizum al apuntarse, o en secretaría, y sale su factura como cualquier cobro.</> : 'Gratis: se apunta y entra al momento.'}
       </span>
     </div>
   );
