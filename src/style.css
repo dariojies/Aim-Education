@@ -4295,8 +4295,12 @@ body { overflow-wrap: break-word; }
   background: radial-gradient(circle at 30% 20%, color-mix(in oklab, var(--bk-c, #FFD526) 30%, var(--bg-3)), var(--bg-3));
   color: var(--ink-3); border: 0; padding: 0; width: 100%;
 }
-.bk-portada img { width: 100%; height: 100%; object-fit: cover; transition: transform .35s ease; }
-.bk-portada.libro img { object-fit: contain; padding: 10px; box-sizing: border-box; filter: drop-shadow(0 8px 14px rgba(0,0,0,.18)); }
+/* #444: la foto llena el hueco entero, como en la app de Brickslab. Antes, la de
+   los libros iba «contenida» con margen, pero sin tope de alto: salía más alta
+   que el hueco, cortada por abajo y con una franja al lado. Las portadas de los
+   libros se ven desde arriba (donde va el título). */
+.bk-portada img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transition: transform .35s ease; }
+.bk-portada.libro img { object-position: center 12%; }
 .bk-card:hover .bk-portada img { transform: scale(1.04); }
 .bk-sellos { position: absolute; inset: 10px 10px auto 10px; display: flex; justify-content: space-between; gap: 6px; pointer-events: none; }
 .bk-sello {
@@ -4428,8 +4432,8 @@ body { overflow-wrap: break-word; }
 .bk-combo-op .pr { margin-left: auto; font-weight: 800; white-space: nowrap; }
 
 /* Ficha: la imagen llena su lado y los sellos van en los datos. En el móvil, las cifras más juntas. */
-.bk-ficha .bk-portada img { position: absolute; inset: 0; }
-.bk-ficha .bk-portada.libro img { padding: 18px; }
+/* En la ficha, el libro se ve entero. */
+.bk-ficha .bk-portada.libro img { object-fit: contain; padding: 18px; box-sizing: border-box; filter: drop-shadow(0 8px 14px rgba(0,0,0,.18)); }
 .bk-ficha .bk-sellos { display: none; }
 @media (max-width: 640px) {
   .bk-resumen { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
