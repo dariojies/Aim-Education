@@ -437,7 +437,8 @@ export default function AdminAgenda({ showToast, user, puedePasarLista = false }
             {editando && (
                 <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 2000, display: 'grid', placeItems: 'center', padding: 20 }}
                     onClick={e => { if (e.target === e.currentTarget) setEditando(null); }}>
-                    <form onSubmit={guardar} style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 460, padding: 24, display: 'grid', gap: 14 }}>
+                    {/* Nunca más alta que la pantalla: con la lista de tickets, el «Guardar» se salía por abajo. */}
+                    <form onSubmit={guardar} style={{ background: 'var(--bg-2)', borderRadius: 20, width: '100%', maxWidth: 460, maxHeight: 'calc(100dvh - 40px)', overflowY: 'auto', padding: '24px 24px 0', display: 'grid', gap: 14 }}>
                         <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>
                             {editando.id ? 'Cambiar la tarea' : 'Nueva tarea'}
                         </h3>
@@ -499,7 +500,8 @@ export default function AdminAgenda({ showToast, user, puedePasarLista = false }
                                 onChange={e => setEditando({ ...editando, notas: e.target.value })}
                                 style={{ width: '100%', fontFamily: 'inherit', fontSize: 14, padding: 12, background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 10, color: 'var(--ink)', resize: 'vertical' }} />
                         </div>
-                        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                        {/* Los botones, siempre a la vista aunque haya que bajar. */}
+                        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', position: 'sticky', bottom: 0, background: 'var(--bg-2)', padding: '12px 0 20px', borderTop: '1px solid var(--line)' }}>
                             <button type="button" className="btn btn-sm btn-outline" onClick={() => setEditando(null)}>Cancelar</button>
                             <button type="submit" className="btn btn-sm btn-primary" disabled={guardando}>
                                 {guardando ? 'Guardando...' : 'Guardar'}
