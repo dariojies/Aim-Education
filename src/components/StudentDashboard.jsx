@@ -1020,6 +1020,36 @@ function PagoPendiente({ onPagado, onPagoHecho }) {
   );
 }
 
+// Todas las facturas de un año en un ZIP (#447): las que están a su nombre, sin
+// las anuladas. Elige el año entre los que tiene alguna.
+function DescargarFacturasAnio({ recibos }) {
+  const anios = [...new Set(recibos.filter(r => r.mia && r.estado !== 'anulado' && r.fecha).map(r => String(r.fecha).slice(0, 4)))].sort().reverse();
+  const [anio, setAnio] = useState('');
+  const elegido = anios.includes(anio) ? anio : anios[0];
+  const [bajando, setBajando] = useState(false);
+  if (!anios.length) return null;
+  const url = `/api/me/recibos/zip?anio=${elegido}`;
+  const n = recibos.filter(r => r.mia && r.estado !== 'anulado' && String(r.fecha).startsWith(elegido)).length;
+  return (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', margin: '0 0 6px', padding: '10px 12px', borderRadius: 12, background: 'var(--bg-3)' }}>
+      <span style={{ fontSize: 13, fontWeight: 700 }}>Todas las facturas de</span>
+      <select value={elegido} onChange={e => setAnio(e.target.value)} aria-label="Año"
+        style={{ fontFamily: 'inherit', fontSize: 13, fontWeight: 700, padding: '5px 8px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)' }}>
+        {anios.map(a => <option key={a} value={a}>{a}</option>)}
+      </select>
+      {esApp ? (
+        <button type="button" className="btn btn-sm btn-outline" disabled={bajando}
+          onClick={async () => { setBajando(true); try { await compartirArchivo(url, `Facturas ${elegido}`); } catch (e) { alert(e.message); } finally { setBajando(false); } }}>
+          <I.Download /> {bajando ? 'Preparando…' : `Descargar (${n})`}
+        </button>
+      ) : (
+        <a className="btn btn-sm btn-outline" href={url} download><I.Download /> Descargar {n === 1 ? 'la factura' : `las ${n}`} (.zip)</a>
+      )}
+      <span style={{ fontSize: 11.5, color: 'var(--ink-3)', flexBasis: '100%' }}>Las que están a tu nombre, en un archivo .zip con un PDF por factura.</span>
+    </div>
+  );
+}
+
 function DashPayments() {
   const [recibos, setRecibos] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1067,6 +1097,7 @@ function DashPayments() {
       <div className="panel">
         <h2><I.Wallet /> Mis facturas</h2>
         <p className="sub">Los pagos de la familia. Toca uno para ver el detalle.</p>
+        <DescargarFacturasAnio recibos={recibos} />
 
         {loading && <EmptyState text="Cargando recibos..." />}
         {!loading && recibos.length === 0 && (

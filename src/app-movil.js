@@ -55,7 +55,7 @@ function nombreDe(res, url) {
     return n.replace(/[\\/:*?"<>|]/g, '_');
   }
   const tipo = res.headers.get('Content-Type') || '';
-  const ext = tipo.includes('pdf') ? 'pdf' : tipo.includes('png') ? 'png' : tipo.includes('jpeg') || tipo.includes('jpg') ? 'jpg' : 'bin';
+  const ext = tipo.includes('pdf') ? 'pdf' : tipo.includes('zip') ? 'zip' : tipo.includes('png') ? 'png' : tipo.includes('jpeg') || tipo.includes('jpg') ? 'jpg' : 'bin';
   return `aim-${url.split('/').filter(Boolean).slice(-2).join('-').replace(/[^\w-]/g, '')}.${ext}`;
 }
 // Baja el archivo (con la sesión de la app) y abre «compartir» del móvil, desde

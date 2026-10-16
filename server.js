@@ -21,7 +21,7 @@ import { crearRouterCalendarioMovil, agendaEnRango, leerHora } from './calendari
 import { crearCambios, APPS_CAMBIOS } from './cambios.js';
 import { crearEvaluacion, crearTablasEvaluacion, sembrarCategoriasIngles } from './evaluacion.js';
 import { crearReportes, pendienteAhora, SQL_MOVIMIENTOS } from './reportes.js';
-import { enviarZipFotos, nombreArchivo as nombreEnZip } from './zip.js';
+import { enviarZipFotos, nombreArchivo as nombreEnZip, crearZip, cabeceraAdjunto } from './zip.js';
 import { crearPublicaciones, crearTablasPublicaciones } from './publicaciones.js';
 import { crearAula, crearTablasAula, entregasPorCorregir, tareasCorregidas } from './aula.js';
 import { crearTienda, crearTablasTienda, pedidosPorAtender, pedidosEnMarcha } from './tienda.js';
@@ -10853,6 +10853,51 @@ app.get('/api/me/recibos/:id/pdf', authenticateSession, async (req, res) => {
     } catch (err) {
         console.error('[RECIBO PDF]', err);
         res.status(500).send('No se ha podido generar el recibo.');
+    }
+});
+
+// Todas las facturas de un año de golpe (#447), en un ZIP: las que están a su
+// nombre (las mismas que se puede descargar una a una), sin las anuladas. Cada
+// PDF se hace en memoria y se manda al ZIP en cuanto está.
+app.get('/api/me/recibos/zip', authenticateSession, async (req, res) => {
+    const me = req.userSession.userId;
+    const anio = Number(req.query.anio);
+    if (!Number.isInteger(anio) || anio < 2000 || anio > 2100) return res.status(400).json({ error: 'Elige el año.' });
+    let zip = null;
+    try {
+        const r = await pool.query(
+            `SELECT rc.id, rc.fecha, u.name, u.surname FROM aim_recibos rc JOIN users u ON u.user_id = rc.pagador_id
+             WHERE rc.pagador_id = $1 AND EXTRACT(YEAR FROM rc.fecha) = $2 AND COALESCE(rc.estado, '') <> 'anulado'
+             ORDER BY rc.fecha, rc.id LIMIT 500`, [me, anio]);
+        if (!r.rows.length) return res.status(404).json({ error: `No tienes facturas a tu nombre de ${anio}.` });
+        const quien = nombreEnZip(`${r.rows[0].name || ''} ${r.rows[0].surname || ''}`.trim(), 50);
+        res.set('Content-Type', 'application/zip');
+        res.set('Content-Disposition', cabeceraAdjunto(`Facturas ${anio} - ${quien}.zip`));
+        res.set('Cache-Control', 'private, no-store');
+        res.set('X-Content-Type-Options', 'nosniff');
+        zip = crearZip(res);
+        const enMemoria = (t) => new Promise((ok, ko) => {
+            const salida = new PassThrough(), trozos = [];
+            salida.on('data', c => trozos.push(c)).on('end', () => ok(Buffer.concat(trozos))).on('error', ko);
+            generarReciboPdf(t, salida);
+        });
+        for (const x of r.rows) {
+            if (zip.cortada) break;
+            const t = await ticketDeRecibo(x.id);
+            if (!t) continue;
+            t.verifactu = await datosVerifactuDeFactura(x.id);
+            const numero = (t.recibo.numeroVisible || `${t.recibo.serie}-${t.recibo.numero}`).replace(/[^\w.-]/g, '');
+            const dia = String(x.fecha).slice(0, 10);   // DATE llega como texto
+            await zip.anadir(`${dia} factura-${numero}.pdf`, await enMemoria(t), new Date(`${dia}T12:00:00Z`));
+        }
+        if (!zip.cortada) await zip.cerrar();
+    } catch (err) {
+        if (!err?.cortada) console.error('[RECIBOS ZIP]', err);
+        if (!res.headersSent) {
+            res.removeHeader('Content-Disposition');
+            res.set('Content-Type', 'application/json');
+            res.status(500).json({ error: 'No se han podido preparar las facturas. Vuelve a intentarlo.' });
+        } else res.destroy();
     }
 });
 
