@@ -311,7 +311,9 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
     return (
       <div className="panel" style={{ display: 'grid', gap: 8 }}>
         <h2 style={{ margin: 0 }}><I.Mail /> Correo</h2>
-        <p style={{ margin: 0, color: 'var(--ink-2)' }}>{info.error || 'Todavía no hay ningún buzón conectado.'} Los pasos para conectarlos están en el ticket #317.</p>
+        <p style={{ margin: 0, color: 'var(--ink-2)' }}>{info.error || (info.miCorreo && info.dominio && !String(info.miCorreo).toLowerCase().endsWith(`@${info.dominio}`)
+          ? `Aquí sale tu correo de @${info.dominio}, pero has entrado con ${info.miCorreo}. Pide a la dirección que ponga tu correo del club en tu cuenta.`
+          : 'Tu correo todavía no está conectado. Avisa a IT (ticket #449).')}</p>
       </div>
     );
   }
@@ -335,7 +337,7 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
         <button type="button" className="btn btn-sm btn-primary" onClick={() => escribir('nuevo')}><I.Plus width={14} height={14} /> Escribir</button>
       </div>
       {!info.tengoBuzon && buzon === 'general' && (
-        <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Tu buzón ({info.miCorreo}) no está conectado: cuando IT lo conecte (ticket #317), saldrá aquí al lado del general.</p>
+        <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Tu buzón ({info.miCorreo}) no está conectado: {info.dominio && !String(info.miCorreo || '').toLowerCase().endsWith(`@${info.dominio}`) ? `solo se conectan los correos de @${info.dominio}.` : 'cuando IT lo conecte (ticket #449), saldrá aquí al lado del general.'}</p>
       )}
 
       {vista === 'programados' ? <Programados buzon={buzon} showToast={showToast} /> : (

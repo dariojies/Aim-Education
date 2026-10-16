@@ -131,8 +131,9 @@ export function permisosDe(rol) {
             faltas: mandaAlMenos(rol, 'secretaria'),
             // CRM: segmentos, campañas y correo del club (tickets #310-#316).
             comunicaciones: mandaAlMenos(rol, 'secretaria'),
-            // La bandeja de correo: el buzón general (info@) y el suyo (#317).
-            bandeja: mandaAlMenos(rol, 'secretaria'),
+            // La bandeja de correo: el suyo de @aimeducation.es (#449, todo el
+            // personal) y, para secretaría y dirección, el general (info@, #317).
+            bandeja: true,
             // Los mensajes de Messenger, Instagram y WhatsApp (#341), como el correo.
             redes: mandaAlMenos(rol, 'secretaria'),
             // La planificación del Equipo IT: la ven secretaría y dirección; solo
@@ -186,6 +187,12 @@ export function permisosDe(rol) {
         // Aula virtual (#433): todos los cursos, sus precios y dar o quitar el
         // acceso. Un instructor solo lleva los suyos y no toca dinero.
         aulaCompleta: !instructor,
+        // El buzón general (info@) dentro de «Correo» (#449): nunca un profe ni un
+        // trabajador, aunque se les dé el apartado. Ellos ven solo el suyo.
+        correoGeneral: mandaAlMenos(rol, 'secretaria'),
+        // Poner un correo del dominio (@aimeducation.es) en una ficha: da entrada a
+        // ese buzón (#449), así que solo la dirección.
+        correoDelDominio: jefe,
     };
 }
 
@@ -232,7 +239,7 @@ export const AVISOS = [
     { id: 'servicios_caidos', grupo: 'Sistema', texto: 'Servicios de la web con problemas', quien: (p) => p.editarEquipoIT },
     { id: 'contactos', grupo: 'Familias', texto: 'Consultas de la web sin atender', quien: (p) => p.secciones.contactos },
     { id: 'candidatos', grupo: 'Club', texto: 'Candidaturas nuevas de «Trabaja con nosotros»', quien: (p) => p.secciones.candidatos },
-    { id: 'correos_asignados', grupo: 'Correo', texto: 'Correos de info@ asignados a él', quien: (p) => p.secciones.bandeja },
+    { id: 'correos_asignados', grupo: 'Correo', texto: 'Correos de info@ asignados a él', quien: (p) => p.secciones.bandeja && p.correoGeneral },
     { id: 'redes_sin_leer', grupo: 'Correo', texto: 'Mensajes de redes sociales sin leer (suyos o sin asignar)', quien: (p) => p.secciones.redes },
     { id: 'almacen', grupo: 'Club', texto: 'Artículos del almacén por debajo del mínimo', quien: (p) => p.secciones.almacen },
     { id: 'tienda_pedidos', grupo: 'Club', texto: 'Pedidos de la tienda pagados por preparar', quien: (p) => p.secciones.tienda },

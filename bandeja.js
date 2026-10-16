@@ -1,19 +1,26 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Bandeja de correo del CRM (ticket #317). Dos buzones por persona como mucho:
-//   · el general del club (info@, el de EMAIL_USER / EMAIL_PASS), que ve todo el
-//     que tiene el apartado «Correo»;
-//   · el suyo, si lo tiene conectado. Solo lo ve su dueño: el servidor elige el
-//     buzón por el correo con el que se ha entrado a la app, nunca por lo que
-//     pida la pantalla.
-// Cada buzón se conecta con una contraseña de aplicación de Google puesta en
-// Heroku (variables BUZON_<LO_QUE_SEA> = «correo contraseña»). Nada de esto se
-// guarda en la base de datos.
+//   · el general del club (info@, el de EMAIL_USER / EMAIL_PASS), que ve solo
+//     secretaría y dirección (correoGeneral, #449), nunca un profe ni un trabajador;
+//   · el suyo. Solo lo ve su dueño: el servidor elige el buzón por el correo con
+//     el que se ha entrado a la app, nunca por lo que pida la pantalla.
+// Cómo se entra en cada buzón:
+//   · con la cuenta de servicio de Google Workspace (#449, GOOGLE_CUENTA_SERVICIO
+//     en Heroku, con delegación en todo el dominio): cualquier cuenta
+//     @aimeducation.es, sin contraseñas. Un profe nuevo con su cuenta del dominio
+//     ya tiene su correo aquí; si se va, se suspende su cuenta en Workspace y deja
+//     de funcionar. Por eso un correo del dominio en una ficha solo lo pone la
+//     dirección (si no, cualquiera se pondría el de otro);
+//   · o con una contraseña de aplicación (variables BUZON_<LO_QUE_SEA> = «correo
+//     contraseña»), lo de antes: si existe para ese correo, manda.
+// Nada de esto se guarda en la base de datos.
 //
 // Los correos no se copian a la base: se leen de Gmail al momento (IMAP) y se
 // envían por Gmail (SMTP), así quedan en «Enviados» como siempre. Asignar un
 // correo de info@ a un compañero es una etiqueta de Gmail («AIM-nombre»), así
 // que también se ve desde Gmail.
 // ─────────────────────────────────────────────────────────────────────────────
+import crypto from 'crypto';
 import express from 'express';
 import { ImapFlow } from 'imapflow';
 import nodemailer from 'nodemailer';
@@ -36,9 +43,69 @@ export function buzonesPersonales() {
         .map(([k, v]) => ({ variable: k, ...leerBuzon(v) }))
         .filter(b => b.email && b.pass);
 }
-const buzonGeneral = () => (process.env.EMAIL_USER && process.env.EMAIL_PASS
-    ? { email: String(process.env.EMAIL_USER).toLowerCase(), pass: process.env.EMAIL_PASS, general: true } : null);
-const buzonDe = (email) => buzonesPersonales().find(b => b.email === String(email || '').toLowerCase()) || null;
+// ── La cuenta de servicio de Google Workspace (#449) ──
+// GOOGLE_CUENTA_SERVICIO: el JSON de su clave tal cual (o en base64). Con la
+// delegación de todo el dominio para https://mail.google.com/, el servidor pide
+// a Google un permiso de una hora para el buzón de una persona del dominio y
+// entra con él (IMAP y SMTP con XOAUTH2).
+export function cuentaServicio() {
+    const v = String(process.env.GOOGLE_CUENTA_SERVICIO || '').trim();
+    if (!v) return null;
+    try {
+        const j = JSON.parse(v.startsWith('{') ? v : Buffer.from(v, 'base64').toString('utf8'));
+        return j.client_email && j.private_key ? { email: j.client_email, clave: String(j.private_key).replace(/\\n/g, '\n') } : null;
+    } catch { return null; }
+}
+export const dominioCorreo = () => String(process.env.CORREO_DOMINIO || 'aimeducation.es').trim().toLowerCase().replace(/^@/, '');
+export const esDelDominio = (email) => String(email || '').trim().toLowerCase().endsWith(`@${dominioCorreo()}`);
+const permisosGoogle = new Map(); // correo → { token, hasta }
+async function tokenGoogle(email) {
+    const g = permisosGoogle.get(email);
+    if (g && g.hasta > Date.now() + 120_000) return g.token;
+    const cs = cuentaServicio();
+    if (!cs) throw Object.assign(new Error('Falta la cuenta de servicio (GOOGLE_CUENTA_SERVICIO).'), { google: true });
+    const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+    const ahora = Math.floor(Date.now() / 1000);
+    const sinFirma = `${b64({ alg: 'RS256', typ: 'JWT' })}.${b64({ iss: cs.email, sub: email, scope: 'https://mail.google.com/', aud: 'https://oauth2.googleapis.com/token', iat: ahora, exp: ahora + 3600 })}`;
+    const firma = crypto.createSign('RSA-SHA256').update(sinFirma).sign(cs.clave, 'base64url');
+    const r = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: `${sinFirma}.${firma}` }),
+        signal: AbortSignal.timeout(10_000),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.access_token) {
+        // «invalid_grant · Invalid email or User ID»: esa cuenta no existe en
+        // Workspace (o está suspendida). Lo demás es la configuración.
+        // Google dice lo mismo si la que no existe es la cuenta de servicio: se
+        // comprueba con el general (que existe seguro) antes de echarle la culpa a la persona.
+        let sinBuzon = d.error === 'invalid_grant' && /email|user/i.test(d.error_description || '');
+        if (sinBuzon && email !== correoGeneral() && esDelDominio(correoGeneral())) {
+            sinBuzon = await tokenGoogle(correoGeneral()).then(() => true, () => false);
+        }
+        throw Object.assign(new Error(`Google: ${d.error || r.status}${d.error_description ? ` (${d.error_description})` : ''}`), { google: true, sinBuzon });
+    }
+    permisosGoogle.set(email, { token: d.access_token, hasta: Date.now() + (Number(d.expires_in) || 3600) * 1000 });
+    return d.access_token;
+}
+const auth = async (buzon) => (buzon.oauth ? { user: buzon.email, accessToken: await tokenGoogle(buzon.email) } : { user: buzon.email, pass: buzon.pass });
+
+const correoGeneral = () => String(process.env.EMAIL_USER || '').trim().toLowerCase();
+const buzonGeneral = () => {
+    const email = correoGeneral();
+    if (!email) return null;
+    if (process.env.EMAIL_PASS) return { email, pass: process.env.EMAIL_PASS, general: true };
+    return cuentaServicio() && esDelDominio(email) ? { email, oauth: true, general: true } : null;
+};
+// El buzón propio de alguien: el de su contraseña de aplicación o, con la cuenta
+// de servicio, el de su cuenta del dominio. Nunca el general por esta vía.
+const buzonDe = (email) => {
+    const e = String(email || '').trim().toLowerCase();
+    const b = buzonesPersonales().find(x => x.email === e);
+    if (b) return b;
+    if (e && e !== correoGeneral() && cuentaServicio() && esDelDominio(e)) return { email: e, oauth: true };
+    return null;
+};
 
 // La etiqueta de asignación de una persona: «AIM-patricia-jimenez».
 export function etiquetaDe(nombre) {
@@ -69,7 +136,7 @@ async function conexion(buzon, canal) {
     // petición se quedaba colgada y Heroku la cortaba a los 30 s con un 503.
     const client = new ImapFlow({
         host: IMAP_HOST(), port: 993, secure: true, logger: false,
-        auth: { user: buzon.email, pass: buzon.pass },
+        auth: await auth(buzon),
         connectionTimeout: 12_000, greetingTimeout: 8_000, socketTimeout: 60_000,
     });
     client.on('error', () => { if (conexiones.get(k)?.client === client) conexiones.delete(k); }); // un corte de red no tumba el servidor
@@ -140,8 +207,21 @@ const carpetaDe = (c, v) => (v === 'enviados' ? c.enviados : v === 'todos' ? c.t
 
 // Para la vigilancia del Equipo IT: ¿se puede entrar en cada buzón de Gmail?
 // Usa la misma conexión que el correo (si ya está abierta, solo un NOOP).
+// Con la cuenta de servicio (#449), además: ¿Google le da permiso? Se prueba
+// con el general (es del dominio), sin abrir el buzón.
 export async function probarBuzones() {
     const lista = [buzonGeneral(), ...buzonesPersonales()].filter(Boolean);
+    const cs = cuentaServicio();
+    const prueba = cs && esDelDominio(correoGeneral()) ? (async () => {
+        const ini = Date.now();
+        try { await tokenGoogle(correoGeneral()); return { email: `cuenta de servicio (${cs.email})`, general: false, ok: true, ms: Date.now() - ini }; }
+        catch (e) { return { email: `cuenta de servicio (${cs.email})`, general: false, ok: false, error: String(e?.message || e).slice(0, 200) }; }
+    })() : null;
+    if (process.env.GOOGLE_CUENTA_SERVICIO && !cs) return [{ email: 'cuenta de servicio', general: false, ok: false, error: 'GOOGLE_CUENTA_SERVICIO no es el JSON de una clave.' },
+        ...(await probarBuzonesImap(lista))];
+    return [...(await probarBuzonesImap(lista)), ...(prueba ? [await prueba] : [])];
+}
+async function probarBuzonesImap(lista) {
     return Promise.all(lista.map(async (b) => {
         const ini = Date.now();
         try {
@@ -263,17 +343,21 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
     // La regla que le toca a un remitente (la de su correo manda sobre la del dominio).
     const reglaDe = (lista, email) => lista.find(r => !r.remitente.startsWith('@') && casa(r, email)) || lista.find(r => casa(r, email)) || null;
 
+    // El general (info@) solo para secretaría y dirección (#449): un profe o un
+    // trabajador tiene «Correo» para ver el suyo.
+    const veGeneral = (req) => !!permisos(req)?.correoGeneral;
     // Qué buzón es: 'general' o 'mio'. Nunca el de otra persona.
     function resolver(req, res) {
         const cual = req.params.buzon;
         if (cual === 'general') {
+            if (!veGeneral(req)) { res.status(403).json({ error: 'El buzón general es de secretaría y dirección.' }); return null; }
             const b = buzonGeneral();
             if (!b) { res.status(503).json({ error: 'El buzón general no está conectado (faltan EMAIL_USER y EMAIL_PASS en Heroku).' }); return null; }
             return b;
         }
         if (cual === 'mio') {
             const b = buzonDe(req.userSession.email);
-            if (!b) { res.status(404).json({ error: 'Tu buzón no está conectado. Mira el ticket #317.' }); return null; }
+            if (!b) { res.status(404).json({ error: `Tu cuenta (${req.userSession.email}) no tiene un buzón de @${dominioCorreo()} conectado.` }); return null; }
             return b;
         }
         res.status(404).json({ error: 'Ese buzón no existe.' });
@@ -281,6 +365,8 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
     }
     const error = (res, e) => {
         const m = String(e?.responseText || e?.message || e);
+        if (e?.sinBuzon) return res.status(404).json({ error: `Esa cuenta no tiene buzón en Google Workspace (o está suspendida). Si es nueva, puede tardar unos minutos.` });
+        if (e?.google) { console.warn('[bandeja] cuenta de servicio:', m); return res.status(502).json({ error: 'Google no deja entrar en el buzón con la cuenta de servicio. Avisa a IT (ticket #449).' }); }
         const auth = /AUTHENTICATIONFAILED|Invalid credentials|authenticate|Application-specific/i.test(m);
         if (auth) return res.status(502).json({ error: 'Gmail no acepta la contraseña de este buzón: hay que crear otra (ticket #317).' });
         if (fallaConexion(e)) return res.status(503).json({ error: 'Gmail no ha contestado a tiempo. Vuelve a intentarlo en un momento (botón ↻).' });
@@ -290,7 +376,7 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
     // Los buzones que ve esta persona y a quién se le pueden pasar correos.
     router.get('/buzones', async (req, res) => {
         try {
-            const g = buzonGeneral();
+            const g = veGeneral(req) ? buzonGeneral() : null;
             const mio = buzonDe(req.userSession.email);
             const lista = await companeros();
             res.set('Cache-Control', 'no-store');
@@ -300,7 +386,7 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
                     mio && { id: 'mio', nombre: 'El mío', email: mio.email },
                 ].filter(Boolean),
                 // Sin buzón propio: para decirle cómo conectarlo.
-                miCorreo: req.userSession.email, tengoBuzon: !!mio,
+                miCorreo: req.userSession.email, tengoBuzon: !!mio, dominio: dominioCorreo(),
                 companeros: lista.map(c => ({ id: c.id, nombre: c.nombre, email: c.email, etiqueta: etiquetaDe(c.nombre), yo: String(c.id) === String(req.userSession.userId) })),
             });
         } catch (e) { res.status(500).json({ error: e.message }); }
@@ -462,6 +548,8 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
         } catch (e) { error(res, e); }
     });
 
+    // Las reglas son del general: solo quien lo ve.
+    router.use('/general/reglas', (req, res, next) => (veGeneral(req) ? next() : res.status(403).json({ error: 'El buzón general es de secretaría y dirección.' })));
     router.get('/general/reglas', async (req, res) => {
         try {
             const lista = await companeros();
@@ -609,7 +697,8 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
             if (m) correo.attachments.push({ filename: a.nombre, content: Buffer.from(m[2], 'base64'), contentType: m[1] });
         }
         const nombre = buzon.general ? 'AIM Education' : String(autor || '').trim();
-        const envio = nodemailer.createTransport({ host: 'smtp.gmail.com', port: 465, secure: true, auth: { user: buzon.email, pass: buzon.pass } });
+        const envio = nodemailer.createTransport({ host: 'smtp.gmail.com', port: 465, secure: true,
+            auth: buzon.oauth ? { type: 'OAuth2', ...(await auth(buzon)) } : { user: buzon.email, pass: buzon.pass } });
         await envio.sendMail({
             from: nombre ? `${nombre} <${buzon.email}>` : buzon.email,
             to: e.para.join(', '), cc: e.cc.length ? e.cc.join(', ') : undefined,
@@ -618,6 +707,8 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
     }
     const errorEnvio = (e) => {
         const m = String(e?.response || e?.message || e);
+        if (e?.sinBuzon) return 'Esa cuenta no tiene buzón en Google Workspace (o está suspendida).';
+        if (e?.google) return 'Google no deja enviar con la cuenta de servicio. Avisa a IT (ticket #449).';
         return /535|Username and Password|auth/i.test(m) ? 'Gmail no acepta la contraseña de este buzón (ticket #317).' : `No se ha podido enviar: ${m}`;
     };
 

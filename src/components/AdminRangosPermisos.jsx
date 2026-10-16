@@ -23,6 +23,8 @@ const MATIZ = {
   equipo_it: (p) => (!p.editarEquipoIT ? 'solo ver' : null),
   // Lo escriben el Equipo IT y los superadmin (#397).
   cambios: (p) => (!p.editarCambios ? 'solo ver' : null),
+  // #449: info@ solo para secretaría y dirección.
+  bandeja: (p) => (!p.correoGeneral ? 'solo el suyo' : null),
   evaluacion: (p) => (p.soloSusGrupos ? 'sus clases' : !p.editarCurriculo ? 'sin tocar el currículo' : null),
   overview: (p, rol) => ({ trabajador: 'su día', instructor: 'sus clases', secretaria: 'el día del club', club_owner: 'negocio' }[rol]),
 };

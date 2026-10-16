@@ -14,7 +14,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 import nodemailer from 'nodemailer';
 import { calcularRecibo, calcularCobro, serieDeLinea, mesAGenerar, mesDeAlta, tieneMilesimas, brutoMilesimas } from './billing.js';
 import { crearRouterTulClases } from './tul-clases.js';
-import { crearRouterBandeja, buscarRespuestas, correosCon, buzonesPersonales, probarBuzones } from './bandeja.js';
+import { crearRouterBandeja, buscarRespuestas, correosCon, buzonesPersonales, probarBuzones, cuentaServicio, esDelDominio, dominioCorreo } from './bandeja.js';
 import { crearBrickslab, crearTablaImagenesBricks } from './brickslab.js';
 import { crearAvisosPush, GRUPOS_AVISO } from './avisos-push.js';
 import { crearRouterCalendarioMovil, agendaEnRango, leerHora } from './calendario-movil.js';
@@ -3593,6 +3593,13 @@ app.put('/api/users/:id', authenticateSession, requirePermiso('editarAlumnos'), 
     // Sin correo (#321): se conserva el interno que ya tuviera o se le crea uno
     // (con su usuario, para que pueda entrar).
     let emailLower = email?.trim() ? email.toLowerCase().trim() : null;
+    // Un correo del dominio (@aimeducation.es) da entrada a ese buzón en «Correo»
+    // (#449): ponerlo o cambiarlo solo lo hace la dirección. Si no, cualquiera
+    // que edite fichas se pondría el de otra persona en la suya.
+    if (emailLower && esDelDominio(emailLower) && !permisos(req).correoDelDominio) {
+        const antes = (await pool.query(`SELECT LOWER(email) AS email FROM users WHERE user_id = $1`, [id])).rows[0]?.email;
+        if (antes !== emailLower) return res.status(403).json({ error: `Un correo @${dominioCorreo()} da acceso a ese buzón: solo lo puede poner la dirección.` });
+    }
     if (!emailLower) {
         const act = await pool.query(`SELECT email, username FROM users WHERE user_id = $1`, [id]);
         const a = act.rows[0];
@@ -5142,7 +5149,8 @@ async function companerosCorreo() {
          WHERE u.club_id = $1 OR ar.rango IS NOT NULL OR u.dev_role = 'superadmin'`, [AIM_CLUB_ID]);
     return r.rows
         .map(u => ({ u, rol: rolEfectivo(u.role, u.dev_role, u.rango) }))
-        .filter(({ u, rol }) => rol && permisosEfectivos(rol).secciones.bandeja && u.email && !esCorreoInterno(u.email))
+        // Los correos de info@ se asignan o se pasan a quien ve info@ (#449).
+        .filter(({ u, rol }) => rol && permisosEfectivos(rol).secciones.bandeja && permisosEfectivos(rol).correoGeneral && u.email && !esCorreoInterno(u.email))
         .map(({ u }) => ({ id: u.user_id, nombre: `${u.name || ''} ${u.surname || ''}`.trim(), email: String(u.email).toLowerCase() }))
         .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
 }
@@ -19798,7 +19806,8 @@ app.get('/api/admin/diagnostico', authenticateSession, requireSeccion('equipo_it
                 pagos30d: pagosTpv,
             },
             web: process.env.PUBLIC_BASE_URL || null,
-            correo: { general: process.env.EMAIL_USER || null, listo: !!mailTransporter, buzones: buzonesPersonales().map(b => b.email) },
+            correo: { general: process.env.EMAIL_USER || null, listo: !!mailTransporter, buzones: buzonesPersonales().map(b => b.email),
+                      cuentaServicio: cuentaServicio()?.email || null },
             google: googleActivo(),
             verifactu: { modo: AJUSTES_VERIFACTU.modo, entorno: AJUSTES_VERIFACTU.entorno, certificado: hayCertificadoVerifactu() },
             redes: { ...redesOn, webhook: !!(process.env.META_VERIFY_TOKEN && process.env.META_APP_SECRET) },
