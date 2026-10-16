@@ -416,6 +416,124 @@ export function crearReportes({ pool, clubId, authenticateSession, requirePermis
         };
     });
 
+    // ── Previsión del año natural (#450) ──
+    // Enero a diciembre. Lo que ya ha pasado es lo facturado (sin IVA). Cada
+    // mes que falta se estima de dos maneras y vale la mayor:
+    //  · por años anteriores: lo que lleva facturado el año × lo que pesa ese mes
+    //    frente a los meses ya cerrados, con el peso medio de cada mes en los años
+    //    completos de antes (hasta tres). Si un año facturó 1.000 € todos los
+    //    meses, diciembre es 1/12 del año: con lo de enero a noviembre de este
+    //    año, diciembre ≈ eso / 11. Sin ningún año completo, el mismo mes del
+    //    año anterior, si se sabe.
+    //  · por matrículas: las cuotas ya generadas sin cobrar y las que se
+    //    generarían con los alumnos de hoy (solo meses de la temporada activa).
+    //    Es lo mínimo que entra; lo de años anteriores recoge además lo que no son
+    //    cuotas (campamento, material, eventos…).
+    // Lo de antes de la web se anota a mano (facturación de años anteriores, en
+    // aim_ajustes); un mes anotado manda sobre lo que tenga la web.
+    const CLAVE_HISTORICO = 'facturacion_historica';
+    const ES_MES = /^\d{4}-(0[1-9]|1[0-2])$/;
+    async function historico() {
+        const v = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = $1`, [CLAVE_HISTORICO])).rows[0]?.valor;
+        return v?.meses && typeof v.meses === 'object' ? v.meses : {};
+    }
+    router.get('/api/admin/reportes/historico', ...ver, async (req, res) => {
+        try {
+            const ano = Number(req.query.ano) || new Date().getFullYear() - 1;
+            const hist = await historico();
+            const web = Object.fromEntries((await pool.query(
+                `SELECT to_char(m.fecha, 'YYYY-MM') AS mes, SUM(m.base)::numeric AS base FROM (${SQL_MOVIMIENTOS}) m
+                 WHERE m.fecha >= $1::date AND m.fecha < $2::date GROUP BY 1`, [`${ano}-01-01`, `${ano + 1}-01-01`])).rows.map(x => [x.mes, r2(x.base)]));
+            res.set('Cache-Control', 'no-store');
+            res.json({ ano, meses: Array.from({ length: 12 }, (_, i) => { const mes = `${ano}-${String(i + 1).padStart(2, '0')}`; return { mes, anotado: hist[mes] ?? null, web: web[mes] ?? null }; }) });
+        } catch (err) { console.error('Reportes (histórico):', err); res.status(500).json({ error: 'No se ha podido cargar.' }); }
+    });
+    // { meses: { 'AAAA-MM': importe sin IVA | null (quitar) } }
+    router.put('/api/admin/reportes/historico', ...ver, async (req, res) => {
+        try {
+            const cambios = req.body?.meses && typeof req.body.meses === 'object' ? Object.entries(req.body.meses).slice(0, 120) : [];
+            const hist = await historico();
+            for (const [mes, v] of cambios) {
+                if (!ES_MES.test(mes)) return res.status(400).json({ error: `Mes no válido: ${mes}` });
+                if (v === null || v === '') { delete hist[mes]; continue; }
+                const n = Number(String(v).replace(',', '.'));
+                if (!Number.isFinite(n) || n < 0 || n > 10_000_000) return res.status(400).json({ error: `Importe no válido en ${mes}.` });
+                hist[mes] = r2(n);
+            }
+            await pool.query(
+                `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ($1, $2::jsonb, NOW(), $3)
+                 ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+                [CLAVE_HISTORICO, JSON.stringify({ meses: hist }), req.userSession.userId]);
+            res.json({ success: true });
+        } catch (err) { console.error('Reportes (histórico):', err); res.status(500).json({ error: 'No se ha podido guardar.' }); }
+    });
+    ruta('prevision-anual', async (p, req) => {
+        const actual = p.hoy.slice(0, 7);
+        const ano = /^\d{4}$/.test(String(req?.query?.ano || '')) ? Number(req.query.ano) : Number(p.hoy.slice(0, 4));
+        const MES = (y, i) => `${y}-${String(i).padStart(2, '0')}`;
+        const hist = await historico();
+        const web = Object.fromEntries((await pool.query(
+            `SELECT to_char(m.fecha, 'YYYY-MM') AS mes, SUM(m.base)::numeric AS base FROM (${SQL_MOVIMIENTOS}) m
+             WHERE m.fecha >= $1::date AND m.fecha < $2::date GROUP BY 1`, [`${ano - 3}-01-01`, `${ano + 1}-01-01`])).rows.map(x => [x.mes, Number(x.base)]));
+        const dato = (mes) => (hist[mes] != null ? { v: Number(hist[mes]), origen: 'anotado' } : web[mes] != null ? { v: web[mes], origen: 'web' } : null);
+        const totalAno = (y) => Array.from({ length: 12 }, (_, i) => dato(MES(y, i + 1))?.v || 0).reduce((s, x) => s + x, 0);
+        // Los años completos de antes (con los doce meses sabidos) dan el peso de cada mes.
+        const anosBase = [ano - 1, ano - 2, ano - 3].filter(y => MES(y, 12) < actual
+            && Array.from({ length: 12 }, (_, i) => dato(MES(y, i + 1))).every(Boolean) && totalAno(y) > 0);
+        const pesos = anosBase.length ? Array.from({ length: 12 }, (_, i) => anosBase.reduce((s, y) => s + dato(MES(y, i + 1)).v / totalAno(y), 0) / anosBase.length) : null;
+        // Matrículas: lo pendiente de cada mes del año y lo que se generaría (temporada activa).
+        const pend = Object.fromEntries((await pool.query(
+            `SELECT to_char(c.mes, 'YYYY-MM') AS mes, SUM(${SQL_BASE_PENDIENTE})::numeric AS base FROM aim_cargos c
+             WHERE c.estado = 'pendiente' AND c.recibo_id IS NULL AND COALESCE(c.descuento_pct, 0) < 100 AND c.mes >= $1::date AND c.mes < $2::date
+             GROUP BY 1`, [`${ano}-01-01`, `${ano + 1}-01-01`])).rows.map(x => [x.mes, Number(x.base)]));
+        const temp = (await pool.query('SELECT id, nombre FROM aim_temporadas WHERE activa = true')).rows[0];
+        const rango = temp ? mesesDeTemporada(temp.nombre) : null;
+        const previsto = {};
+        if (rango) {
+            for (let i = 1; i <= 12; i++) {
+                const m = MES(ano, i);
+                if (m <= actual || m < rango.inicio.slice(0, 7) || m > rango.fin.slice(0, 7)) continue;
+                const filas = (await candidatosGeneracion(temp.id, `${m}-01`)).filter(r => !r.ya_existe);
+                previsto[m] = filas.reduce((s, r) => s + Number(r.precio) * (1 - Number(r.descuento_pct) / 100), 0);
+            }
+        }
+        const conocidos = Array.from({ length: 12 }, (_, i) => i + 1).filter(i => MES(ano, i) < actual && dato(MES(ano, i)));
+        const ytd = conocidos.reduce((s, i) => s + dato(MES(ano, i)).v, 0);
+        const pesoConocido = pesos ? conocidos.reduce((s, i) => s + pesos[i - 1], 0) : 0;
+        const porHistorico = (i) => {
+            if (pesos && pesoConocido > 0) return r2(ytd * pesos[i - 1] / pesoConocido);
+            const antes = dato(MES(ano - 1, i));
+            return antes ? r2(antes.v) : null;
+        };
+        const meses = Array.from({ length: 12 }, (_, k) => {
+            const i = k + 1, mes = MES(ano, i);
+            const estado = mes < actual ? 'pasado' : mes === actual ? 'actual' : 'futuro';
+            const d = dato(mes);
+            const real = estado === 'futuro' ? 0 : (d ? r2(d.v) : null);
+            const pendiente = r2(pend[mes] || 0);
+            const matriculas = estado === 'pasado' ? null : (pend[mes] || previsto[mes] ? r2((pend[mes] || 0) + (previsto[mes] || 0)) : null);
+            const historicoMes = estado === 'pasado' ? null : porHistorico(i);
+            // El mes en curso: lo facturado y lo pendiente, o lo de años anteriores si es más.
+            const estimado = estado === 'pasado' ? null
+                : estado === 'actual' ? r2(Math.max((real || 0) + pendiente, historicoMes || 0))
+                : (historicoMes == null && matriculas == null ? null : r2(Math.max(historicoMes || 0, matriculas || 0)));
+            return { mes, estado, real, origen: d?.origen || null, pendiente, matriculas, historico: historicoMes, estimado };
+        });
+        const suma = (f) => r2(meses.reduce((s, m) => s + (f(m) || 0), 0));
+        // Facturado: hasta hoy (también lo de este mes). Lo que falta: lo que queda
+        // por entrar este mes y los siguientes.
+        const facturado = suma(m => (m.estado === 'futuro' ? 0 : m.real));
+        const pendientePasado = suma(m => (m.estado === 'pasado' ? m.pendiente : 0));
+        const resto = suma(m => (m.estado === 'actual' ? Math.max(0, (m.estimado || 0) - (m.real || 0)) : m.estimado));
+        const anterior = MES(ano - 1, 12) < actual && Array.from({ length: 12 }, (_, i) => dato(MES(ano - 1, i + 1))).every(Boolean) ? r2(totalAno(ano - 1)) : null;
+        return {
+            periodo: p, ano, meses, anosBase, temporada: temp?.nombre || null,
+            facturado, pendiente: pendientePasado, resto, estimacion: r2(facturado + pendientePasado + resto),
+            sinDato: meses.filter(m => m.estado === 'pasado' && m.real == null).map(m => m.mes),
+            anterior,
+        };
+    });
+
     // ── Caja: los cierres del mes ──
     ruta('caja', async (p) => {
         const MEDIOS = ['efectivo', 'tarjeta', 'bizum', 'transferencia'];

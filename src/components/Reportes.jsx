@@ -31,7 +31,7 @@ const nombreMes = (mes, corto = false) => {
 const cambio = (a, b) => (b ? Math.round(((a - b) / Math.abs(b)) * 100) : null);
 const MEDIO = { efectivo: 'Efectivo', tarjeta: 'Tarjeta', bizum: 'Bizum', transferencia: 'Transferencia', tpv_online: 'Por la web', compensacion: 'Pase Explorador descontado', mixto: 'Varios' };
 // Las tres series (#423): venta de material y productos, actividades deportivas (con IVA) y educativas (sin IVA).
-const SERIE = { MAT: 'Venta de material y productos', IVA: 'Actividades deportivas (con IVA)', SIVA: 'Actividades educativas (sin IVA)', MATR: 'Rectificativas de ventas', IVAR: 'Rectificativas de deportivas', SIVAR: 'Rectificativas de educativas' };
+const SERIE = { MAT: 'Venta de material y productos', IVA: 'Actividades deportivas (con IVA)', SIVA: 'Actividades educativas (sin IVA)', ON: 'Cursos online (con IVA)', MATR: 'Rectificativas de ventas', IVAR: 'Rectificativas de deportivas', SIVAR: 'Rectificativas de educativas', ONR: 'Rectificativas de cursos online' };
 const leer = (k, def) => { try { return localStorage.getItem(k) || def; } catch { return def; } };
 const guardar = (k, v) => { try { localStorage.setItem(k, v); } catch { /* sin almacenamiento */ } };
 
@@ -95,7 +95,7 @@ function ReportesDireccion({ user, permisos, showToast }) {
               : pestana === 'ingresos' ? <Ingresos d={d} />
                 : pestana === 'cobros' ? <Cobros d={d} />
                   : pestana === 'gastos' ? <Gastos d={d} />
-                    : pestana === 'prevision' ? <Prevision d={d} />
+                    : pestana === 'prevision' ? <PrevisionModos d={d} showToast={showToast} />
                       : <Caja d={d} />}
     </div>
   );
@@ -402,6 +402,134 @@ function Gastos({ d }) {
 }
 
 // ── Previsión ───────────────────────────────────────────────────────────────
+// De la temporada o del año natural (#450).
+function PrevisionModos({ d, showToast }) {
+  const [modo, setModoE] = useState(() => leer('reportes.prevision', 'temporada'));
+  const setModo = (m) => { setModoE(m); guardar('reportes.prevision', m); };
+  return (
+    <div style={{ display: 'grid', gap: 16 }}>
+      <div role="tablist" aria-label="Previsión de" style={{ display: 'inline-flex', gap: 2, justifySelf: 'start', border: '1px solid var(--line)', borderRadius: 999, background: 'var(--bg-2)', padding: 3 }}>
+        {[['temporada', `Temporada${d.temporada ? ` ${d.temporada}` : ''}`], ['anual', 'Año natural']].map(([k, t]) => (
+          <button key={k} type="button" role="tab" aria-selected={modo === k} onClick={() => setModo(k)}
+            style={{ font: 'inherit', fontSize: 13, fontWeight: 800, padding: '6px 14px', borderRadius: 999, border: 0, cursor: 'pointer', background: modo === k ? 'var(--ink)' : 'transparent', color: modo === k ? 'var(--bg)' : 'var(--ink-2)' }}>{t}</button>
+        ))}
+      </div>
+      {modo === 'anual' ? <PrevisionAnual showToast={showToast} /> : <Prevision d={d} />}
+    </div>
+  );
+}
+
+function PrevisionAnual({ showToast }) {
+  const hoyAno = Number(mesActual().slice(0, 4));
+  const [ano, setAno] = useState(hoyAno);
+  const [d, setD] = useState(null);
+  const [error, setError] = useState('');
+  const [editar, setEditar] = useState(false);
+  const cargar = () => {
+    setD(null); setError('');
+    fetch(`/api/admin/reportes/prevision-anual?ano=${ano}`, { credentials: 'include', cache: 'no-store' })
+      .then(async r => { const x = await r.json().catch(() => ({})); if (!r.ok) throw new Error(x.error || 'No se ha podido calcular.'); setD(x); })
+      .catch(e => setError(e.message));
+  };
+  useEffect(cargar, [ano]); // eslint-disable-line react-hooks/exhaustive-deps
+  const selector = (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+      <button className="btn btn-icon" onClick={() => setAno(a => a - 1)} aria-label="Año anterior">‹</button>
+      <b style={{ fontFamily: 'var(--font-display)', fontSize: 18, minWidth: 60, textAlign: 'center' }}>{ano}</b>
+      <button className="btn btn-icon" onClick={() => setAno(a => a + 1)} disabled={ano >= hoyAno + 1} aria-label="Año siguiente">›</button>
+    </div>
+  );
+  if (error) return <>{selector}<Aviso tipo="mal">{error}</Aviso></>;
+  if (!d) return <>{selector}<p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Calculando…</p></>;
+  const actual = d.periodo.hoy.slice(0, 7);
+  return (
+    <div style={{ display: 'grid', gap: 16 }}>
+      {selector}
+      <Cifras>
+        <Cifra etiqueta={`Año ${d.ano} (estimado)`} valor={d.estimacion} tono="bien" antes={d.anterior ?? undefined} detalle="facturado + pendiente + lo que falta (sin IVA)" />
+        <Cifra etiqueta="Facturado" valor={d.facturado} detalle="hasta hoy" />
+        <Cifra etiqueta="Pendiente de cobrar" valor={d.pendiente} detalle="cuotas de meses pasados" tono={d.pendiente ? 'aviso' : null} />
+        <Cifra etiqueta="Lo que falta (estimado)" valor={d.resto} detalle="lo que queda de este mes y los siguientes" />
+      </Cifras>
+      <Aviso>
+        Cada mes que falta se estima de dos maneras y se toma la mayor: <b>por años anteriores</b> (lo que lleva facturado el año, repartido según lo que pesó cada mes
+        {d.anosBase.length ? ` en ${d.anosBase.join(', ')}` : ''}) y <b>por matrículas</b> (las cuotas pendientes y las que se generarían con los alumnos de hoy{d.temporada ? `, temporada ${d.temporada}` : ''}).
+        {!d.anosBase.length && <> Todavía no hay ningún año completo de antes: se usa el mismo mes del año anterior, si se sabe. Puedes anotar la facturación de antes de la web abajo.</>}
+        {d.sinDato.length > 0 && <> Faltan datos de {d.sinDato.map(m => nombreMes(m, true)).join(', ')}: anótalos abajo para que la estimación sea más fina.</>}
+      </Aviso>
+      <Bloque titulo="Mes a mes" sub="sin IVA">
+        <Meses meses={d.meses.map(m => ({ ...m, realG: m.real || 0, pendG: m.estado === 'pasado' ? m.pendiente : 0, estG: m.estimado || 0 }))} actual={actual}
+          series={[{ k: 'realG', nombre: 'Facturado', color: 'var(--teal)', ancho: 10 }, { k: 'pendG', nombre: 'Pendiente', color: 'var(--orange)', ancho: 10 }, { k: 'estG', nombre: 'Estimado', color: 'var(--purple)', ancho: 10, opacidad: 0.6 }]} />
+        <Tabla columnas={['Mes', 'Facturado', 'Pendiente', 'Por años anteriores', 'Por matrículas', 'Estimado']}
+          filas={d.meses.map(m => ({
+            celdas: [
+              <span style={{ fontWeight: m.estado === 'actual' ? 800 : 500 }}>{nombreMes(m.mes)}{m.estado === 'actual' ? ' · ahora' : ''}{m.origen === 'anotado' ? <span style={{ fontSize: 11, color: 'var(--ink-3)' }}> · anotado</span> : null}</span>,
+              m.estado === 'futuro' ? '—' : m.real == null ? <span style={{ color: 'var(--orange)' }}>sin dato</span> : eur(m.real),
+              m.pendiente ? eur(m.pendiente) : '—',
+              m.historico == null ? '—' : eur(m.historico),
+              m.matriculas == null ? '—' : eur(m.matriculas),
+              m.estimado == null ? (m.estado === 'pasado' ? '' : '—') : <b>{eur(m.estimado)}</b>,
+            ],
+            estilo: m.estado === 'pasado' ? { color: 'var(--ink-2)' } : undefined,
+          }))}
+          pie={[`Año ${d.ano}`, eur(d.facturado), eur(d.pendiente), '', '', eur(d.estimacion)]} />
+        {d.anterior != null && <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Año {d.ano - 1}: {eur(d.anterior)}.</p>}
+      </Bloque>
+      <Bloque titulo="Facturación de años anteriores" sub="la de antes de la web, para estimar mejor (sin IVA)"
+        extra={<button className="btn btn-sm btn-outline" onClick={() => setEditar(e => !e)}>{editar ? 'Cerrar' : 'Anotar'}</button>}>
+        {editar ? <EditorHistorico anoInicial={d.ano - 1} onGuardado={() => { showToast?.('Guardado.'); cargar(); }} />
+          : <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Lo facturado cada mes antes de usar la web (de la gestoría o del programa de antes). Lo que ya está en la web se coge solo.</p>}
+      </Bloque>
+    </div>
+  );
+}
+
+function EditorHistorico({ anoInicial, onGuardado }) {
+  const [ano, setAno] = useState(anoInicial);
+  const [filas, setFilas] = useState(null);
+  const [valores, setValores] = useState({});
+  const [guardando, setGuardando] = useState(false);
+  useEffect(() => {
+    setFilas(null);
+    fetch(`/api/admin/reportes/historico?ano=${ano}`, { credentials: 'include', cache: 'no-store' })
+      .then(r => r.json()).then(x => { setFilas(x.meses || []); setValores(Object.fromEntries((x.meses || []).map(m => [m.mes, m.anotado == null ? '' : String(m.anotado).replace('.', ',')]))); })
+      .catch(() => setFilas([]));
+  }, [ano]);
+  async function guardarTodo() {
+    setGuardando(true);
+    try {
+      const meses = Object.fromEntries(filas.map(m => [m.mes, String(valores[m.mes] ?? '').trim() === '' ? null : (String(valores[m.mes]).includes(',') ? String(valores[m.mes]).replace(/\./g, '').replace(',', '.') : String(valores[m.mes]))]));
+      const r = await fetch('/api/admin/reportes/historico', { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meses }) });
+      const x = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(x.error || 'No se ha podido guardar.');
+      onGuardado();
+    } catch (e) { alert(e.message); } finally { setGuardando(false); }
+  }
+  const campo = { fontFamily: 'inherit', fontSize: 14, padding: '6px 8px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', width: '100%', boxSizing: 'border-box', textAlign: 'right' };
+  return (
+    <div style={{ display: 'grid', gap: 12 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <button className="btn btn-icon" onClick={() => setAno(a => a - 1)} aria-label="Año anterior">‹</button>
+        <b style={{ minWidth: 50, textAlign: 'center' }}>{ano}</b>
+        <button className="btn btn-icon" onClick={() => setAno(a => a + 1)} aria-label="Año siguiente">›</button>
+      </div>
+      {!filas ? <p style={{ color: 'var(--ink-3)', fontSize: 13 }}>Cargando…</p> : (
+        <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))' }}>
+          {filas.map(m => (
+            <label key={m.mes} style={{ display: 'grid', gap: 3, fontSize: 12, fontWeight: 700 }}>
+              {nombreMes(m.mes, true)}
+              <input inputMode="decimal" value={valores[m.mes] ?? ''} onChange={e => setValores(v => ({ ...v, [m.mes]: e.target.value }))}
+                placeholder={m.web != null ? `${eur0(m.web)} (web)` : '—'} style={campo} aria-label={`Facturado en ${nombreMes(m.mes)}`} />
+            </label>
+          ))}
+        </div>
+      )}
+      <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>En euros, sin IVA. En blanco, se usa lo que tenga la web (lo que sale en gris). Un mes anotado manda sobre la web.</p>
+      <button className="btn btn-sm btn-primary" style={{ justifySelf: 'start' }} disabled={!filas || guardando} onClick={guardarTodo}>{guardando ? 'Guardando…' : `Guardar ${ano}`}</button>
+    </div>
+  );
+}
+
 function Prevision({ d }) {
   if (!d.meses.length) return <Aviso>No hay una temporada activa: la previsión sale de la temporada y sus matrículas.</Aviso>;
   return (
