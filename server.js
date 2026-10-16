@@ -1161,6 +1161,23 @@ async function initDb() {
         // Cuándo NO puede venir cada alumno a Speaking (ticket #363), para citarle
         // solo cuando pueda. no_puede = [{ dia: 0-6 (0 = lunes), desde, hasta }];
         // sin horas es el día entero. Lo apunta secretaría o la propia familia.
+        // Reservas de una cita (#443): si el citado dice que no puede, se cita
+        // solo al primer reserva (en su orden) en ese mismo hueco. Al llamarle se
+        // apunta cuándo y su cita nueva; si ese tampoco puede, va el siguiente.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_speaking_reservas (
+                id SERIAL PRIMARY KEY,
+                speaking_id INTEGER NOT NULL REFERENCES aim_speaking(id) ON DELETE CASCADE,
+                student_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                orden SMALLINT NOT NULL DEFAULT 0,
+                created_by UUID REFERENCES users(user_id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                llamado_at TIMESTAMPTZ,
+                llamado_cita_id INTEGER REFERENCES aim_speaking(id) ON DELETE SET NULL,
+                UNIQUE (speaking_id, student_id)
+            )
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS ix_speaking_reservas_llamado ON aim_speaking_reservas (llamado_cita_id)`);
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_speaking_disponibilidad (
                 student_id UUID PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
@@ -16749,12 +16766,31 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
             fuente('Clases individuales', [], async () => {
                 const CLAVE_NO_VIENEN = 'speaking|/admin/speaking|famil dicho speak';
                 const visto = (await pool.query(`SELECT visto_at FROM aim_avisos_vistos WHERE user_id = $1 AND clave = $2`, [yo, CLAVE_NO_VIENEN])).rows[0]?.visto_at || null;
+                // Los huecos que ya ha cubierto un reserva (#443) no hace falta llenarlos.
                 const nv = (await pool.query(
                     `SELECT COUNT(*)::int AS n, MAX(respondido_at) AS ultimo FROM aim_speaking
                      WHERE confirmado = false AND fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date
+                       AND NOT EXISTS (SELECT 1 FROM aim_speaking_reservas rv WHERE rv.speaking_id = aim_speaking.id AND rv.llamado_cita_id IS NOT NULL)
                        AND ($1::timestamptz IS NULL OR respondido_at > $1)
                        AND ($2::uuid[] IS NULL OR group_id = ANY($2::uuid[]))`, [visto, misGrupos])).rows[0];
                 return nv.n ? [{ tipo: 'speaking', clave: CLAVE_NO_VIENEN, marca: nv.ultimo, fecha: nv.ultimo, n: nv.n, texto: `${nv.n} ${plural(nv.n, 'alumno no vendrá', 'alumnos no vendrán')} a una clase individual`, detalle: 'puedes citar a otra persona en su hueco', destino: '/admin/clases-individuales' }] : [];
+            });
+        }
+
+        // Reservas citadas (#443): quién va en lugar de quién. Uno por reserva.
+        if (recibe('speaking_reserva')) {
+            fuente('Clases individuales', [], async () => {
+                const r = await pool.query(
+                    `SELECT r.id, r.llamado_at, s2.fecha,
+                            TRIM(CONCAT(ur.name, ' ', COALESCE(ur.surname, ''))) AS reserva, TRIM(CONCAT(ut.name, ' ', COALESCE(ut.surname, ''))) AS titular
+                     FROM aim_speaking_reservas r JOIN aim_speaking s2 ON s2.id = r.llamado_cita_id JOIN aim_speaking s1 ON s1.id = r.speaking_id
+                     JOIN users ur ON ur.user_id = r.student_id JOIN users ut ON ut.user_id = s1.student_id
+                     WHERE r.llamado_at > NOW() - INTERVAL '3 days' AND s2.fecha >= (now() AT TIME ZONE 'Europe/Madrid')::date
+                       AND ($1::uuid[] IS NULL OR s2.group_id = ANY($1::uuid[]))
+                     ORDER BY r.llamado_at DESC LIMIT 10`, [misGrupos]);
+                return r.rows.map(x => ({ tipo: 'speaking', clave: `speaking-reserva:${x.id}`, marca: x.llamado_at, fecha: x.llamado_at,
+                    texto: `${x.reserva} va a la clase individual del ${fechaAviso(x.fecha)} en lugar de ${x.titular}`,
+                    detalle: 'era su reserva: le ha llegado el correo para confirmar', destino: '/admin/clases-individuales' }));
             });
         }
 
@@ -17125,6 +17161,58 @@ async function enviarCorreosSpeaking(ids, { tipo = 'inicial' } = {}) {
     }));
 }
 
+// La reserva (#443): cuando alguien citado dice que no puede (por el enlace, desde
+// su área o porque lo apunta secretaría), se cita en su hueco al primer reserva
+// que quede, con las mismas franjas, y le llega el correo de siempre para
+// confirmar. Las reservas cuelgan de la primera cita: si el reserva tampoco
+// puede, se llama al siguiente. Si el hueco ya lo cubre un reserva, no se hace nada.
+async function llamarReserva(citaId) {
+    const client = await pool.connect();
+    let nueva = null, alumno = null;
+    try {
+        await client.query('BEGIN');
+        const c = (await client.query(
+            `SELECT *, fecha >= ${SQL_HOY_MADRID} AS vigente FROM aim_speaking WHERE id = $1 FOR UPDATE`, [citaId])).rows[0];
+        if (!c || c.confirmado !== false || !c.vigente) { await client.query('ROLLBACK'); return null; }
+        let raiz = c.id;
+        for (let i = 0; i < 20; i++) {
+            const p = (await client.query(`SELECT speaking_id FROM aim_speaking_reservas WHERE llamado_cita_id = $1`, [raiz])).rows[0];
+            if (!p) break;
+            raiz = p.speaking_id;
+        }
+        // Uno detrás de otro para la misma cita (dos «no» a la vez no llaman a dos).
+        await client.query(`SELECT pg_advisory_xact_lock(443, $1)`, [raiz]);
+        const cubierto = (await client.query(
+            `SELECT 1 FROM aim_speaking_reservas r JOIN aim_speaking s ON s.id = r.llamado_cita_id
+             WHERE r.speaking_id = $1 AND s.confirmado IS DISTINCT FROM false LIMIT 1`, [raiz])).rowCount;
+        if (cubierto) { await client.query('ROLLBACK'); return null; }
+        const pendientes = (await client.query(
+            `SELECT * FROM aim_speaking_reservas WHERE speaking_id = $1 AND llamado_at IS NULL ORDER BY orden, id`, [raiz])).rows;
+        for (const r of pendientes) {
+            // Si ya tiene otra clase individual ese día, se pasa al siguiente.
+            const ins = await client.query(
+                `INSERT INTO aim_speaking (fecha, student_id, franjas, token, created_by, group_id, hora_inicio, hora_fin)
+                 VALUES ($1::date, $2, $3::smallint[], $4, $5, $6, $7, $8)
+                 ON CONFLICT (fecha, student_id) DO NOTHING RETURNING id`,
+                [c.fecha, r.student_id, c.franjas, crypto.randomBytes(20).toString('hex'), r.created_by, c.group_id, c.hora_inicio, c.hora_fin]);
+            if (!ins.rowCount) continue;
+            await client.query(`UPDATE aim_speaking_reservas SET llamado_at = NOW(), llamado_cita_id = $2 WHERE id = $1`, [r.id, ins.rows[0].id]);
+            nueva = ins.rows[0].id; alumno = r.student_id;
+            break;
+        }
+        await client.query('COMMIT');
+    } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('[speaking reserva]', e.message);
+        return null;
+    } finally { client.release(); }
+    if (nueva) {
+        enviarCorreosSpeaking([nueva]).catch(e => console.error('[speaking mail]', e.message));
+        avisosPush.avisarFamilias([alumno]);
+    }
+    return nueva;
+}
+
 // Segundo aviso automático (ticket #241), uno solo por alumno y sesión (guardado
 // por recordatorio_enviado, así que aunque se llame a menudo solo manda una vez).
 // Con el plazo de confirmación: el último día del plazo se avisa a quien aún no
@@ -17422,9 +17510,22 @@ app.get('/api/admin/speaking', authenticateSession, requireIndividuales, async (
                AND ($2::uuid IS NULL OR a.activity_id = $2::uuid)
              ORDER BY s.fecha, a.name, g.name, alumno`, [desde, act]);
         const disp = await disponibilidadDe([...new Set(r.rows.map(x => x.student_id))]);
+        // Las reservas (#443): las de cada cita y, en la cita de un reserva ya
+        // llamado, de quién era reserva.
+        const ids = r.rows.map(x => x.id);
+        const rs = ids.length ? (await pool.query(
+            `SELECT r.id, r.speaking_id, r.student_id, r.orden, r.llamado_at, r.llamado_cita_id,
+                    TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno,
+                    TRIM(CONCAT(ut.name, ' ', COALESCE(ut.surname, ''))) AS titular
+             FROM aim_speaking_reservas r JOIN users u ON u.user_id = r.student_id
+             JOIN aim_speaking s ON s.id = r.speaking_id JOIN users ut ON ut.user_id = s.student_id
+             WHERE r.speaking_id = ANY($1::int[]) OR r.llamado_cita_id = ANY($1::int[])
+             ORDER BY r.orden, r.id`, [ids])).rows : [];
         res.set('Cache-Control', 'no-store');
         res.json({
             sesiones: r.rows.map(x => ({
+                reservas: rs.filter(y => y.speaking_id === x.id).map(y => ({ id: y.id, studentId: y.student_id, alumno: y.alumno, llamado: y.llamado_at, citaId: y.llamado_cita_id })),
+                reservaDe: rs.find(y => y.llamado_cita_id === x.id)?.titular || null,
                 // Lo que tiene anotado que no puede y si choca con esta cita (#363).
                 noPuede: disp.get(x.student_id)?.noPuede || [], notaNoPuede: disp.get(x.student_id)?.nota || '',
                 choque: choqueSpeaking(disp.get(x.student_id)?.noPuede, x.fecha, x.hora_inicio, x.hora_fin, x.franjas),
@@ -17734,6 +17835,44 @@ app.patch('/api/admin/speaking/:id', authenticateSession, requireIndividuales, a
         }
         const r = await pool.query(`UPDATE aim_speaking SET ${campos.join(', ')} WHERE id = $${vals.length} RETURNING id`, vals);
         if (!r.rowCount) return res.status(404).json({ error: 'Esa sesión no existe.' });
+        // No puede (#443): se llama a su reserva, si tiene.
+        const reserva = req.body.confirmado === false ? await llamarReserva(r.rows[0].id) : null;
+        res.json({ success: true, reservaLlamada: !!reserva });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Añadir un reserva a una cita (#443), al final de la cola. Si el citado ya ha
+// dicho que no, se le llama en el momento.
+app.post('/api/admin/speaking/:id/reservas', authenticateSession, requireIndividuales, async (req, res) => {
+    const studentId = String(req.body?.studentId || '');
+    if (!UUID_RE.test(studentId)) return res.status(400).json({ error: 'Elige al alumno.' });
+    try {
+        const c = (await pool.query(`SELECT id, student_id, confirmado, fecha >= ${SQL_HOY_MADRID} AS vigente FROM aim_speaking WHERE id = $1`, [Number(req.params.id) || 0])).rows[0];
+        if (!c) return res.status(404).json({ error: 'Esa cita ya no existe.' });
+        if (!c.vigente) return res.status(400).json({ error: 'Esa clase ya ha pasado.' });
+        if (c.student_id === studentId) return res.status(400).json({ error: 'Es el mismo alumno de la cita.' });
+        const u = (await pool.query(`SELECT 1 FROM users WHERE user_id = $1 AND club_id = $2`, [studentId, AIM_CLUB_ID])).rowCount;
+        if (!u) return res.status(404).json({ error: 'Ese alumno no está.' });
+        // La cita de un reserva ya llamado: sus reservas son los de la cita original.
+        for (let i = 0; i < 20; i++) {
+            const p = (await pool.query(`SELECT r.speaking_id, s.student_id FROM aim_speaking_reservas r JOIN aim_speaking s ON s.id = r.speaking_id WHERE r.llamado_cita_id = $1`, [c.id])).rows[0];
+            if (!p) break;
+            c.id = p.speaking_id;
+            if (p.student_id === studentId) return res.status(400).json({ error: 'Es el alumno de la cita original.' });
+        }
+        const r = await pool.query(
+            `INSERT INTO aim_speaking_reservas (speaking_id, student_id, orden, created_by)
+             VALUES ($1, $2, (SELECT COALESCE(MAX(orden), 0) + 1 FROM aim_speaking_reservas WHERE speaking_id = $1), $3)
+             ON CONFLICT (speaking_id, student_id) DO NOTHING RETURNING id`, [c.id, studentId, req.userSession.userId]);
+        if (!r.rowCount) return res.status(409).json({ error: 'Ya es reserva de esa cita.' });
+        const llamada = c.confirmado === false ? await llamarReserva(c.id) : null;
+        res.status(201).json({ success: true, id: r.rows[0].id, llamado: !!llamada });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.delete('/api/admin/speaking/reservas/:rid', authenticateSession, requireIndividuales, async (req, res) => {
+    try {
+        const r = await pool.query(`DELETE FROM aim_speaking_reservas WHERE id = $1 AND llamado_at IS NULL RETURNING id`, [Number(req.params.rid) || 0]);
+        if (!r.rowCount) return res.status(409).json({ error: 'Ese reserva ya se ha llamado: si no va a venir, quítale su cita.' });
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -17769,6 +17908,7 @@ app.get('/speaking/:token/:r', async (req, res) => {
         const act = await pool.query(
             `SELECT a.name FROM aim_speaking s JOIN tul_groups g ON g.group_id = s.group_id
              JOIN tul_activities a ON a.activity_id = g.activity_id WHERE s.token = $1`, [req.params.token]);
+        if (upd.rowCount && !si) await llamarReserva(upd.rows[0].id); // #443 (no falla: se apunta en el log)
         res.set('Content-Type', 'text/html; charset=utf-8').send(paginaSpeaking(upd.rowCount > 0, si, limitePerdido, act.rows[0]?.name || null));
     } catch (err) {
         res.status(500).set('Content-Type', 'text/html; charset=utf-8').send(paginaSpeaking(false, false));
@@ -17838,6 +17978,7 @@ app.post('/api/me/speaking/:id/confirmar', authenticateSession, async (req, res)
             if (p.rows[0] && si) return res.status(409).json({ error: `El plazo para confirmar acabó el ${fechaLarga(p.rows[0].limite)}: esa clase se ha perdido.` });
             return res.status(404).json({ error: 'Esa sesión no es de tu familia o ya ha pasado.' });
         }
+        if (!si) await llamarReserva(r.rows[0].id); // #443
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });

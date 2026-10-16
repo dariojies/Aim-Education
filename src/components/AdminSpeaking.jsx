@@ -268,6 +268,79 @@ function ClasesIndividualesConfig({ showToast, onGuardado }) {
   );
 }
 
+// Los reservas de una cita (#443): si el citado dice que no puede, se cita solo
+// al primero que quede (con sus mismas franjas) y le llega el correo para
+// confirmar; si tampoco puede, al siguiente.
+function ReservasCita({ s, onCambio, showToast }) {
+  const [abierto, setAbierto] = useState(false);
+  const [q, setQ] = useState('');
+  const [sug, setSug] = useState([]);
+  useEffect(() => {
+    if (!abierto) return undefined;
+    const t = setTimeout(() => {
+      const p = new URLSearchParams({ q: q.trim(), ...(s.activityId ? { activityId: s.activityId } : { todos: '1' }) });
+      fetch(`/api/admin/speaking/alumnos?${p}`, { credentials: 'include', cache: 'no-store' })
+        .then(r => (r.ok ? r.json() : { alumnos: [] }))
+        .then(d => setSug((d.alumnos || []).filter(a => a.id !== s.studentId && !(s.reservas || []).some(x => x.studentId === a.id)).slice(0, 8)))
+        .catch(() => setSug([]));
+    }, 250);
+    return () => clearTimeout(t);
+  }, [q, abierto, s]);
+  async function anadir(a) {
+    const r = await fetch(`/api/admin/speaking/${s.id}/reservas`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ studentId: a.id }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) return alert(d.error || 'No se ha podido añadir.');
+    showToast?.(d.llamado ? `${a.name} citado en el hueco (ya le ha llegado el correo).` : `${a.name} queda de reserva.`);
+    setQ(''); setAbierto(false); onCambio();
+  }
+  async function quitar(x) {
+    const r = await fetch(`/api/admin/speaking/reservas/${x.id}`, { method: 'DELETE', credentials: 'include' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) return alert(d.error || 'No se ha podido quitar.');
+    onCambio();
+  }
+  const reservas = s.reservas || [];
+  const pendientes = reservas.filter(x => !x.llamado);
+  // En la cita de un reserva no se añaden más: van en la del titular.
+  const pasada = s.perdida || s.confirmado === true || !!s.reservaDe;
+  if (!reservas.length && pasada && !s.reservaDe) return null;
+  const chip = { fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999, display: 'inline-flex', gap: 5, alignItems: 'center' };
+  return (
+    <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center', marginTop: 4, fontWeight: 400 }}>
+      {s.reservaDe && <span style={{ ...chip, color: 'var(--purple)', background: 'color-mix(in oklab, var(--purple) 11%, var(--bg-2))' }}>Reserva de {s.reservaDe}</span>}
+      {reservas.filter(x => x.llamado).map(x => (
+        <span key={x.id} style={{ ...chip, color: 'var(--teal)', background: 'color-mix(in oklab, var(--teal) 11%, var(--bg-2))' }}>→ citado {x.alumno}</span>
+      ))}
+      {pendientes.map((x, i) => (
+        <span key={x.id} style={{ ...chip, color: 'var(--ink-2)', background: 'var(--bg-3)' }} title="Reserva: se le cita si el alumno no puede">
+          Reserva {i + 1}: {x.alumno}
+          <button type="button" onClick={() => quitar(x)} aria-label={`Quitar a ${x.alumno} de reserva`} style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer', color: 'var(--ink-3)', fontSize: 13, lineHeight: 1 }}>×</button>
+        </span>
+      ))}
+      {!pasada && (abierto ? (
+        <span style={{ position: 'relative' }}>
+          <input autoFocus value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => { if (e.key === 'Escape') setAbierto(false); }} placeholder="Buscar alumno de reserva…"
+            style={{ fontFamily: 'inherit', fontSize: 12, padding: '4px 8px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)', width: 190 }} />
+          {sug.length > 0 && (
+            <span role="listbox" style={{ position: 'absolute', zIndex: 20, top: '100%', left: 0, marginTop: 2, minWidth: 230, display: 'grid', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, boxShadow: 'var(--shadow)', overflow: 'hidden' }}>
+              {sug.map(a => (
+                <button key={a.id} type="button" role="option" onClick={() => anadir(a)}
+                  style={{ textAlign: 'left', background: 'none', border: 0, borderBottom: '1px solid var(--line-2)', padding: '7px 10px', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12.5, color: 'var(--ink)' }}>
+                  <b>{a.name}</b>{a.grupos ? <span style={{ color: 'var(--ink-3)' }}> · {a.grupos}</span> : null}
+                </button>
+              ))}
+            </span>
+          )}
+          <button type="button" onClick={() => setAbierto(false)} style={{ marginLeft: 4, background: 'none', border: 0, cursor: 'pointer', fontSize: 11, color: 'var(--ink-3)', fontFamily: 'inherit' }}>cancelar</button>
+        </span>
+      ) : (
+        <button type="button" onClick={() => setAbierto(true)} title="Si no puede venir, se cita solo a su reserva"
+          style={{ ...chip, border: '1px dashed var(--line)', background: 'none', color: 'var(--ink-3)', cursor: 'pointer', fontFamily: 'inherit' }}>+ reserva</button>
+      ))}
+    </div>
+  );
+}
+
 export default function AdminSpeaking({ showToast }) {
   // Citas (apuntar y confirmar), el historial de cada alumno (#367) o qué
   // clases son individuales (#388).
@@ -435,7 +508,10 @@ export default function AdminSpeaking({ showToast }) {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
       body: JSON.stringify({ confirmado }),
     }).catch(() => null);
-    if (!r?.ok) { showToast?.('No se ha podido guardar. Vuelve a intentarlo.'); await cargar(); }
+    if (!r?.ok) { showToast?.('No se ha podido guardar. Vuelve a intentarlo.'); await cargar(); return; }
+    // Si tenía reserva, ya se le ha citado (#443): se ve en la lista.
+    const d = await r.json().catch(() => ({}));
+    if (d.reservaLlamada) { showToast?.('No puede: se ha citado a su reserva (le ha llegado el correo).'); await cargar(); }
   }
   async function borrar(s) {
     if (!window.confirm(`¿Quitar a ${s.alumno} de la clase individual del ${fmtDia(s.fecha)}?`)) return;
@@ -655,6 +731,7 @@ export default function AdminSpeaking({ showToast }) {
                       style={{ display: 'block', background: 'none', border: 0, padding: 0, fontSize: 11, fontWeight: 600, color: 'var(--ink-3)', cursor: 'pointer', textDecoration: 'underline dotted', fontFamily: 'inherit' }}>
                       {(s.noPuede || []).length || s.notaNoPuede ? 'cambiar cuándo no puede' : 'anotar cuándo no puede'}
                     </button>
+                    <ReservasCita s={s} onCambio={cargar} showToast={showToast} />
                   </div>
                   <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--purple)' }}>{franjasFila(s)}</span>
                   <span style={{ fontSize: 12, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.contactos || 'sin contacto'}</span>

@@ -227,6 +227,8 @@ export const AVISOS = [
     // Llamar es cosa de secretaría; quien no viene, de los profes de esa clase,
     // que citan a otra persona en el hueco (#406).
     { id: 'speaking_por_llamar', grupo: 'Clases individuales', texto: 'Alumnos de clases individuales sin contestar, por llamar a los padres', quien: (p, rol) => p.secciones.speaking && rol !== 'instructor' },
+    // Al que no puede le sustituye su reserva (#443): quién va en lugar de quién.
+    { id: 'speaking_reserva', grupo: 'Clases individuales', texto: 'Se ha citado a un reserva porque el alumno no podía', quien: (p) => p.secciones.speaking },
     { id: 'speaking_rechazados', grupo: 'Clases individuales', texto: 'Alumnos que no vendrán a una clase individual (se va al verlo)', quien: (p, rol) => p.secciones.speaking && rol === 'instructor',
       nota: () => 'solo de sus clases' },
     { id: 'fotos', grupo: 'Familias', texto: 'Solicitudes del permiso de fotos', quien: (p) => p.editarAlumnos },
