@@ -42,6 +42,23 @@ const xml = (t) => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').
 
 // onEvento (#218): avisa al móvil de las familias. Con personas, a sus familias;
 // sin ellas, a todas (una votación nueva).
+// Las fotos subidas desde el dispositivo (sets, libros, opciones de votación):
+// una tabla compartida con la app aim-bricks, que la crea igual. Cada app sirve
+// las suyas en su propia dirección, y esa dirección es la que va en imageUrl.
+export async function crearTablaImagenesBricks(client) {
+    await client.query(`
+        CREATE TABLE IF NOT EXISTS "bricks_imagenes" (
+            "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            "clubId" UUID,
+            "mime" VARCHAR(40) NOT NULL,
+            "bytes" INTEGER NOT NULL,
+            "datos" BYTEA NOT NULL,
+            "subidoPor" UUID,
+            "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+}
+const MIME_IMAGEN = ['image/jpeg', 'image/png', 'image/webp'];
+
 export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatricula, sqlPagandoDesde, urlPublica = '', onCambio = () => {}, onEvento = () => {} }) {
     const err = (res, e) => (e?.httP ? res.status(e.httP).json({ error: e.msg }) : (console.error('[BRICKSLAB]', e), res.status(500).json({ error: 'Algo ha fallado. Prueba otra vez.' })));
     const fallo = (httP, msg) => ({ httP, msg });
@@ -393,6 +410,16 @@ export function crearBrickslab({ pool, clubId, familiaIds, generarCargosDeMatric
         } catch (e) { err(res, e); }
     });
 
+    // Las fotos subidas desde el dispositivo: no cambian nunca (una nueva es otra dirección).
+    publico.get('/imagenes/:id', async (req, res) => {
+        try {
+            if (!UUID.test(req.params.id)) return res.status(404).end();
+            const f = (await pool.query(`SELECT "mime", "datos" FROM "bricks_imagenes" WHERE "id" = $1`, [req.params.id])).rows[0];
+            if (!f) return res.status(404).end();
+            res.set({ 'Content-Type': f.mime, 'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' });
+            res.send(f.datos);
+        } catch (e) { err(res, e); }
+    });
     publico.get('/articulos/:id/parecidos', async (req, res) => {
         try { res.set('Cache-Control', 'public, max-age=300'); res.json({ ids: await parecidos(req.params.id) }); }
         catch (e) { err(res, e); }
@@ -640,6 +667,20 @@ ${cuerpo}
 
     // ═══ Panel (secretaría y dirección) ═══
     const admin = express.Router();
+    // Una foto desde el dispositivo (ya reducida en el navegador): se guarda y se
+    // devuelve su dirección pública, que es la que se pone en el artículo.
+    admin.post('/imagenes', express.raw({ type: () => true, limit: '4mb' }), async (req, res) => {
+        try {
+            const mime = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+            const datos = Buffer.isBuffer(req.body) ? req.body : null;
+            if (!datos?.length) throw fallo(400, 'No ha llegado la foto.');
+            if (!MIME_IMAGEN.includes(mime)) throw fallo(400, 'La foto tiene que ser JPG, PNG o WebP.');
+            if (datos.length > 3 * 1024 * 1024) throw fallo(400, 'La foto pasa de 3 MB.');
+            const r = await pool.query(`INSERT INTO "bricks_imagenes" ("clubId", "mime", "bytes", "datos", "subidoPor") VALUES ($1,$2,$3,$4,$5) RETURNING "id"`,
+                [clubId, mime, datos.length, datos, req.userSession?.userId || null]);
+            res.status(201).json({ url: `${urlPublica}/api/brickslab/imagenes/${r.rows[0].id}` });
+        } catch (e) { err(res, e); }
+    });
     admin.get('/', async (req, res) => {
         try {
             const [cats, items, vivas, devueltas, a, pro] = await Promise.all([categorias(), articulos(), reservasDe(), reservasDe({ vivas: false, limite: 60 }), ajustes(), precioPro()]);

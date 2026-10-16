@@ -23,6 +23,46 @@ async function api(url, opts = {}) {
   return d;
 }
 
+// Una foto desde el dispositivo (como en la galería): se reduce aquí a JPG de
+// 1600 px como mucho (si ya era pequeña y pesa menos así, va tal cual), se sube
+// y se devuelve su dirección, que va donde el enlace.
+async function subirFoto(file) {
+  if (!/^image\//.test(file.type)) throw new Error(`«${file.name}» no es una foto.`);
+  const url = URL.createObjectURL(file);
+  let blob;
+  try {
+    const img = await new Promise((ok, ko) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => ko(new Error(`No se puede leer «${file.name}».`)); i.src = url; });
+    const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+    const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+    const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+    blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85));
+    if (k === 1 && /^image\/(jpeg|png|webp)$/.test(file.type) && (!blob || file.size < blob.size)) blob = file;
+  } finally { URL.revokeObjectURL(url); }
+  if (!blob) throw new Error(`No se ha podido preparar «${file.name}».`);
+  const r = await fetch('/api/admin/brickslab/imagenes', { method: 'POST', credentials: 'include', headers: { 'Content-Type': blob.type || 'image/jpeg' }, body: blob });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || `Error ${r.status}`);
+  return d.url;
+}
+function BotonFoto({ onUrl, compacto = false }) {
+  const [subiendo, setSubiendo] = useState(false);
+  const [error, setError] = useState('');
+  return (
+    <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+      <label className="btn btn-sm btn-outline" style={{ cursor: subiendo ? 'wait' : 'pointer', whiteSpace: 'nowrap', margin: 0 }} title="Subir una foto desde este dispositivo" aria-label={compacto ? 'Subir una foto desde este dispositivo' : undefined}>
+        <input type="file" accept="image/*" hidden disabled={subiendo} onChange={async (e) => {
+          const f = e.target.files?.[0]; e.target.value = '';
+          if (!f) return;
+          setSubiendo(true); setError('');
+          try { onUrl(await subirFoto(f)); } catch (err) { setError(err.message); } finally { setSubiendo(false); }
+        }} />
+        {subiendo ? 'Subiendo…' : <><I.Camara width={14} height={14} />{!compacto && ' Desde el dispositivo'}</>}
+      </label>
+      {error && <span style={{ fontSize: 12, color: 'var(--orange)', fontWeight: 700 }}>{error}</span>}
+    </span>
+  );
+}
+
 function Modal({ titulo, onCerrar, children, ancho = 640 }) {
   useEffect(() => {
     const k = (e) => { if (e.key === 'Escape') onCerrar(); };
@@ -300,9 +340,13 @@ function Catalogo({ d, hacer }) {
             </div>
           )}
           <label style={etiqueta}>Descripción<textarea rows={3} value={ed.descripcion} onChange={e => setEd(x => ({ ...x, descripcion: e.target.value }))} style={{ ...campo, resize: 'vertical' }} /></label>
-          <label style={etiqueta}>Imagen (enlace https://)
-            <input value={ed.imagen} onChange={e => setEd(x => ({ ...x, imagen: e.target.value }))} placeholder="https://…" style={campo} />
-          </label>
+          <div style={etiqueta}>
+            <label htmlFor="bk-imagen">Imagen (una foto del dispositivo o un enlace https://)</label>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <input id="bk-imagen" value={ed.imagen} onChange={e => setEd(x => ({ ...x, imagen: e.target.value }))} placeholder="https://…" style={{ ...campo, flex: '1 1 220px', width: 'auto' }} />
+              <BotonFoto onUrl={u => setEd(x => ({ ...x, imagen: u }))} />
+            </div>
+          </div>
           {ed.id && ed.valoraciones > 0 && <OpinionesAdmin id={ed.id} />}
           {ed.imagen && /^https:\/\//.test(ed.imagen) && <img src={ed.imagen} alt="" referrerPolicy="no-referrer" style={{ maxHeight: 140, maxWidth: '100%', objectFit: 'contain', justifySelf: 'start', borderRadius: 8, background: '#fff' }} />}
           <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 13, fontWeight: 700 }}>
@@ -558,9 +602,10 @@ function Votaciones({ showToast }) {
           <label style={etiqueta}>Se cierra (opcional)<input type="datetime-local" value={ed.hasta} onChange={e => setEd(x => ({ ...x, hasta: e.target.value }))} style={{ ...campo, width: 'auto' }} /></label>
           <b style={{ fontSize: 13 }}>Opciones</b>
           {ed.opciones.map((o, i) => (
-            <div key={o.id || i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8 }}>
+            <div key={o.id || i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto auto', gap: 8, alignItems: 'center' }}>
               <input value={o.titulo} onChange={e => setEd(x => ({ ...x, opciones: x.opciones.map((y, j) => (j === i ? { ...y, titulo: e.target.value } : y)) }))} placeholder="Nombre del set" style={campo} />
               <input value={o.imagen} onChange={e => setEd(x => ({ ...x, opciones: x.opciones.map((y, j) => (j === i ? { ...y, imagen: e.target.value } : y)) }))} placeholder="Imagen (https://…)" style={campo} />
+              <BotonFoto compacto onUrl={u => setEd(x => ({ ...x, opciones: x.opciones.map((y, j) => (j === i ? { ...y, imagen: u } : y)) }))} />
               <button type="button" className="icon-btn" aria-label="Quitar opción" disabled={ed.opciones.length <= 2} onClick={() => setEd(x => ({ ...x, opciones: x.opciones.filter((_, j) => j !== i) }))}><I.Trash width={14} height={14} /></button>
             </div>
           ))}

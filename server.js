@@ -15,7 +15,7 @@ import nodemailer from 'nodemailer';
 import { calcularRecibo, calcularCobro, serieDeLinea, mesAGenerar, mesDeAlta, tieneMilesimas, brutoMilesimas } from './billing.js';
 import { crearRouterTulClases } from './tul-clases.js';
 import { crearRouterBandeja, buscarRespuestas, correosCon, buzonesPersonales, probarBuzones } from './bandeja.js';
-import { crearBrickslab } from './brickslab.js';
+import { crearBrickslab, crearTablaImagenesBricks } from './brickslab.js';
 import { crearAvisosPush, GRUPOS_AVISO } from './avisos-push.js';
 import { crearRouterCalendarioMovil, agendaEnRango, leerHora } from './calendario-movil.js';
 import { crearCambios, APPS_CAMBIOS } from './cambios.js';
@@ -1792,6 +1792,8 @@ async function initDb() {
         await crearTablasEvaluacion(client);
         // Agrupaciones dentro de una clase (#441): subgrupos para ver la lista repartida.
         await crearTablasAgrupaciones(client);
+        // Fotos de Brickslab subidas desde el dispositivo (compartida con la app aim-bricks).
+        await crearTablaImagenesBricks(client);
         await sembrarCategoriasIngles(client, AIM_CLUB_ID).catch(e => console.warn('[evaluación] categorías de inglés:', e.message));
         // Valoraciones de Brickslab (#87, autorizadas): de 1 a 5 estrellas y un
         // comentario, una por persona y artículo. La comparten esta web y la app de
