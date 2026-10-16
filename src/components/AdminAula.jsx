@@ -388,6 +388,7 @@ function Temario({ c, recargar, showToast, espacio }) {
                   {l.tipo === 'archivo' && l.archivo ? ` · ${l.archivo.nombre} (${mb(l.archivo.bytes)})` : ''}
                   {l.tipo === 'tarea' && ` · ${l.calificacion === 'nota' ? 'con nota' : 'apto / no apto'}`}
                   {l.tipo === 'cuestionario' && ` · ${l.modo === 'evaluable' ? `evaluable${l.intentos ? `, ${l.intentos} ${l.intentos === 1 ? 'intento' : 'intentos'}` : ''}` : 'de práctica'} · ${l.preguntas} ${l.preguntas === 1 ? 'pregunta' : 'preguntas'}`}
+                  {l.gratis && <b style={{ color: 'var(--teal)' }}> · 🔓 gratis</b>}
                   {l.porCorregir > 0 && <b style={{ color: 'var(--pink)' }}> · {l.porCorregir} por corregir</b>}
                 </div>
               </div>
@@ -410,7 +411,7 @@ function Temario({ c, recargar, showToast, espacio }) {
 function EditorLeccion({ cursoId, temaId, l, espacio, onCerrar, onGuardado }) {
   const [f, setF] = useState({ tipo: l?.tipo || 'texto', titulo: l?.titulo || '', texto: l?.texto || '', videoUrl: l?.videoUrl || '',
     calificacion: l?.calificacion || 'apto', archivoId: l?.archivo?.id || null, archivo: l?.archivo || null,
-    modo: l?.modo || 'practica', intentos: l?.intentos ?? '' });
+    modo: l?.modo || 'practica', intentos: l?.intentos ?? '', gratis: !!l?.gratis });
   // Las preguntas de un cuestionario (#439): las que ya tiene, al editarlo.
   const [preguntas, setPreguntas] = useState(l?.tipo === 'cuestionario' ? null : []);
   useEffect(() => {
@@ -537,6 +538,11 @@ function EditorLeccion({ cursoId, temaId, l, espacio, onCerrar, onGuardado }) {
               : <EditorPreguntas preguntas={preguntas} setPreguntas={setPreguntas} cursoId={cursoId} />}
           </>
         )}
+
+        <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', fontSize: 13, padding: '10px 12px', borderRadius: 10, background: f.gratis ? 'color-mix(in oklab, var(--teal) 10%, var(--bg-2))' : 'var(--bg-3)', cursor: 'pointer' }}>
+          <input type="checkbox" checked={f.gratis} onChange={e => cambiar('gratis', e.target.checked)} style={{ marginTop: 2 }} />
+          <span><b>🔓 Gratis (vista previa)</b><br /><span style={{ color: 'var(--ink-3)' }}>En un curso de pago, esta lección la puede ver cualquiera con cuenta sin pagar; las demás salen con candado y el botón de comprar.</span></span>
+        </label>
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <button type="button" className="btn btn-sm btn-outline" disabled={!!subida} onClick={onCerrar}>Cancelar</button>

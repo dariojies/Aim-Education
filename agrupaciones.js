@@ -4,8 +4,8 @@
 // del cole», con 2 años A, B y C; «Equipos de 4»…), cada una con sus
 // subgrupos. Al pasar lista se elige una y los alumnos salen agrupados.
 //
-// Los alumnos de la clase siguen siendo los de tul_group_students (de Learning
-// Dungeon, que no se toca): aquí solo se apunta en qué subgrupo va cada uno.
+// Los alumnos de la clase siguen siendo los de tul_group_students (los mismos
+// que en Learning Dungeon): aquí solo se apunta en qué subgrupo va cada uno.
 // Un alumno que deja la clase sale solo de la vista (su fila se queda, por si
 // vuelve); si se borra la clase, se borra todo.
 // Lo lleva quien gestiona las clases; un profe, solo las clases que da.

@@ -210,7 +210,12 @@ function FichaCurso({ id }) {
                   {haciendo ? 'Un momento…' : c.gratis ? 'Apuntarme gratis' : c.pagoOnline ? 'Apuntarme y pagar' : 'Apuntarme'}
                 </button>
               )}
-              {!c.sesion && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Para apuntarte necesitas una cuenta en la web (es gratis). Si ya la tienes, entra con ella.</span>}
+              {c.parteGratis && !c.mio?.acceso && !c.gestor && (
+                <button type="button" className="btn btn-outline" onClick={() => go(c.sesion ? `/aula/${id}/curso` : `/auth?mode=register&volver=${encodeURIComponent(`/aula/${id}/curso`)}`)}>
+                  🔓 Ver gratis las primeras lecciones
+                </button>
+              )}
+              {!c.sesion && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Para apuntarte{c.parteGratis ? ' o ver lo gratis' : ''} necesitas una cuenta en la web (es gratis). Si ya la tienes, entra con ella.</span>}
               {c.gestor && <a className="btn btn-outline btn-sm" href={`/aula/${id}/curso`} onClick={e => { e.preventDefault(); go(`/aula/${id}/curso`); }}>Ver el contenido (personal)</a>}
               {aviso && <span style={{ fontSize: 13, color: 'var(--pink)' }}>{aviso}</span>}
             </div>
@@ -224,8 +229,9 @@ function FichaCurso({ id }) {
               <div key={t.id} style={{ ...tarjeta, padding: 18, display: 'grid', gap: 8 }}>
                 <b style={{ fontSize: 16 }}>{i + 1}. {t.titulo}</b>
                 {t.lecciones.map(l => (
-                  <span key={l.id} style={{ display: 'flex', gap: 10, fontSize: 14, color: 'var(--ink-2)' }}>
+                  <span key={l.id} style={{ display: 'flex', gap: 10, fontSize: 14, color: 'var(--ink-2)', alignItems: 'center' }}>
                     <span style={{ width: 20, textAlign: 'center' }}>{TIPO_LECCION[l.tipo].icono}</span>{l.titulo}
+                    {l.gratis && <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--teal)', background: 'color-mix(in oklab, var(--teal) 12%, var(--bg-2))', padding: '1px 8px', borderRadius: 999 }}>Gratis</span>}
                   </span>
                 ))}
               </div>
@@ -262,7 +268,9 @@ function AulaAprender({ id }) {
   useEffect(() => {
     if (!todas.length || actual) return;
     const pedida = Number(new URLSearchParams(path.includes('?') ? path.slice(path.indexOf('?')) : '').get('leccion'));
-    setActual((todas.find(l => l.id === pedida) || todas.find(l => !l.hecha) || todas[0]).id);
+    // En la parte gratis, se empieza por una que se pueda ver.
+    const abiertas = todas.filter(l => !l.bloqueada);
+    setActual((todas.find(l => l.id === pedida) || abiertas.find(l => !l.hecha) || abiertas[0] || todas[0]).id);
   }, [todas, actual, path]);
   const l = todas.find(x => x.id === actual);
   const i = todas.findIndex(x => x.id === actual);
@@ -282,10 +290,10 @@ function AulaAprender({ id }) {
 
   const cabecera = (
     <header style={{ position: 'sticky', top: 0, zIndex: 20, display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', background: 'var(--bg-2)', borderBottom: '1px solid var(--line)' }}>
-      <a href={`/aula/${id}`} onClick={e => { e.preventDefault(); go(c?.gestor ? `/aula/${id}` : '/dashboard/cursos'); }} aria-label="Salir del curso"
+      <a href={`/aula/${id}`} onClick={e => { e.preventDefault(); go(c?.gestor || c?.previa ? `/aula/${id}` : '/dashboard/cursos'); }} aria-label="Salir del curso"
         style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 800, fontSize: 14, color: 'var(--ink-2)', textDecoration: 'none' }}>←</a>
       <b style={{ flex: 1, minWidth: 0, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c?.titulo || 'Aula virtual'}</b>
-      {c && !c.gestor && <Progreso pct={pct} ancho={140} />}
+      {c && !c.gestor && !c.previa && <Progreso pct={pct} ancho={140} />}
       {c && <button type="button" className="btn btn-sm btn-outline aula-boton-temario" onClick={() => setMenu(m => !m)}>Temario</button>}
     </header>
   );
@@ -301,8 +309,8 @@ function AulaAprender({ id }) {
             <button key={x.id} type="button" onClick={() => ir(todas.findIndex(y => y.id === x.id))}
               style={{ font: 'inherit', textAlign: 'left', cursor: 'pointer', display: 'flex', gap: 8, alignItems: 'center', padding: '8px 10px', borderRadius: 10, border: 0,
                 background: x.id === actual ? 'color-mix(in oklab, var(--purple) 12%, var(--bg-2))' : 'transparent', color: 'var(--ink)', fontWeight: x.id === actual ? 800 : 500, fontSize: 14 }}>
-              <span style={{ width: 20, flex: 'none', textAlign: 'center', color: x.hecha ? 'var(--teal)' : 'inherit' }}>{x.hecha ? '✓' : TIPO_LECCION[x.tipo].icono}</span>
-              <span style={{ flex: 1 }}>{x.titulo}</span>
+              <span style={{ width: 20, flex: 'none', textAlign: 'center', color: x.hecha ? 'var(--teal)' : 'inherit' }}>{x.bloqueada ? '🔒' : x.hecha ? '✓' : TIPO_LECCION[x.tipo].icono}</span>
+              <span style={{ flex: 1, color: x.bloqueada ? 'var(--ink-3)' : undefined }}>{x.titulo}</span>
             </button>
           ))}
         </div>
@@ -329,13 +337,31 @@ function AulaAprender({ id }) {
         <aside className={`aula-indice${menu ? ' abierto' : ''}`} style={{ ...tarjeta, padding: 14 }}>{indice}</aside>
         <article style={{ display: 'grid', gap: 18, alignContent: 'start' }}>
           {c.gestor && <p style={{ margin: 0, padding: 10, borderRadius: 12, background: 'color-mix(in oklab, var(--purple) 10%, var(--bg-2))', fontSize: 13 }}>Lo estás viendo como personal: así lo ven los alumnos (tu progreso no cuenta).</p>}
-          {l && (
+          {c.previa && (
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', padding: '12px 14px', borderRadius: 12, background: 'color-mix(in oklab, var(--teal) 10%, var(--bg-2))', fontSize: 14 }}>
+              <span style={{ flex: 1, minWidth: 200 }}>🔓 Estás viendo la parte gratis. Las lecciones con 🔒 son del curso completo.</span>
+              <button type="button" className="btn btn-sm btn-primary" onClick={() => go(`/aula/${id}`)}>Conseguir el curso completo{c.precio ? ` · ${euros(c.precio)}` : ''}</button>
+            </div>
+          )}
+          {l && l.bloqueada && (
+            <div style={{ ...tarjeta, padding: 28, display: 'grid', gap: 12, justifyItems: 'start' }}>
+              <span style={{ fontSize: 13, color: 'var(--ink-3)', fontWeight: 700 }}>{l.tema} · {TIPO_LECCION[l.tipo].nombre}</span>
+              <h1 style={{ margin: 0, fontSize: 'clamp(22px, 4vw, 30px)' }}>🔒 {l.titulo}</h1>
+              <p style={{ margin: 0, color: 'var(--ink-2)' }}>Esta lección es del curso completo. Consíguelo para verla, junto con todo lo demás.</p>
+              <button type="button" className="btn btn-primary" onClick={() => go(`/aula/${id}`)}>Conseguir el curso completo{c.precio ? ` · ${euros(c.precio)}` : ''}</button>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button type="button" className="btn btn-sm btn-outline" disabled={i <= 0} onClick={() => ir(i - 1)}>← Anterior</button>
+                <button type="button" className="btn btn-sm btn-outline" disabled={i >= todas.length - 1} onClick={() => ir(i + 1)}>Siguiente →</button>
+              </div>
+            </div>
+          )}
+          {l && !l.bloqueada && (
             <>
               <div style={{ display: 'grid', gap: 4 }}>
                 <span style={{ fontSize: 13, color: 'var(--ink-3)', fontWeight: 700 }}>{l.tema} · {TIPO_LECCION[l.tipo].nombre}</span>
                 <h1 style={{ margin: 0, fontSize: 'clamp(24px, 4vw, 34px)', lineHeight: 1.15 }}>{l.titulo}</h1>
               </div>
-              <Leccion key={l.id} l={l} gestor={c.gestor} onEntregada={cargar} />
+              <Leccion key={l.id} l={l} gestor={c.gestor} previa={c.previa} onEntregada={cargar} />
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', borderTop: '1px solid var(--line)', paddingTop: 16 }}>
                 <button type="button" className="btn btn-sm btn-outline" disabled={i <= 0} onClick={() => ir(i - 1)}>← Anterior</button>
                 <div style={{ flex: 1 }} />
@@ -347,7 +373,7 @@ function AulaAprender({ id }) {
                 <button type="button" className="btn btn-sm btn-primary" disabled={i >= todas.length - 1}
                   onClick={() => { if (!c.gestor && !l.hecha && l.tipo !== 'tarea' && l.tipo !== 'cuestionario') marcar(l, true); ir(i + 1); }}>Siguiente →</button>
               </div>
-              {!c.gestor && pct === 100 && <p style={{ margin: 0, padding: 14, borderRadius: 14, background: 'color-mix(in oklab, var(--teal) 12%, var(--bg-2))', fontWeight: 700 }}>🎉 ¡Has completado todo el curso!</p>}
+              {!c.gestor && !c.previa && pct === 100 && <p style={{ margin: 0, padding: 14, borderRadius: 14, background: 'color-mix(in oklab, var(--teal) 12%, var(--bg-2))', fontWeight: 700 }}>🎉 ¡Has completado todo el curso!</p>}
             </>
           )}
         </article>
@@ -356,7 +382,7 @@ function AulaAprender({ id }) {
   );
 }
 
-function Leccion({ l, gestor, onEntregada }) {
+function Leccion({ l, gestor, previa, onEntregada }) {
   return (
     <div style={{ display: 'grid', gap: 16 }}>
       {l.tipo === 'video' && l.video?.embed && (
@@ -380,6 +406,7 @@ function Leccion({ l, gestor, onEntregada }) {
       {l.tipo === 'cuestionario' && <Cuestionario l={l} gestor={gestor} onHecho={onEntregada} />}
       {l.tipo === 'tarea' && (gestor
         ? <p style={{ margin: 0, fontSize: 14, color: 'var(--ink-3)' }}>Aquí el alumno escribe su respuesta o adjunta un archivo. Las entregas se corrigen desde el panel, en «Aula virtual».</p>
+        : previa ? <p style={{ margin: 0, fontSize: 14, color: 'var(--ink-3)' }}>Para entregar la tarea y que te la corrijan, consigue el curso completo.</p>
         : <Entrega l={l} onEntregada={onEntregada} />)}
     </div>
   );

@@ -95,6 +95,9 @@ export async function crearTablasAula(client) {
             orden INTEGER NOT NULL DEFAULT 0,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )`);
+    // La parte gratis de un curso de pago: las lecciones marcadas las ve
+    // cualquiera con cuenta, sin apuntarse ni pagar.
+    await client.query(`ALTER TABLE aim_aula_lecciones ADD COLUMN IF NOT EXISTS gratis BOOLEAN NOT NULL DEFAULT false`);
     await client.query(`
         CREATE TABLE IF NOT EXISTS aim_aula_inscripciones (
             id SERIAL PRIMARY KEY,
@@ -282,6 +285,16 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
         }
         return { c, gestor: false, ins };
     }
+    // Una lección de la parte gratis la ve cualquiera con cuenta (si el curso
+    // está publicado); las demás, como siempre.
+    async function puedeVerLeccion(req, l) {
+        try { return await puedeVer(req, l.curso_id); } catch (e) {
+            if (e.status !== 403 || !l.gratis) throw e;
+            const c = await curso(l.curso_id);
+            if (!c.publicado) throw e;
+            return { c, gestor: false, ins: null, previa: true };
+        }
+    }
     async function leccion(id) {
         const l = (await pool.query(`SELECT * FROM aim_aula_lecciones WHERE id = $1`, [id])).rows[0];
         if (!l) corta(404, 'Esa lección ya no existe.');
@@ -372,7 +385,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             const gestor = s?.canAccessAdmin && permisos({ userSession: s }).secciones?.aula;
             if (!c.publicado && !gestor) corta(404, 'Ese curso no existe.');
             const temas = (await pool.query(`SELECT id, titulo FROM aim_aula_temas WHERE curso_id = $1 ORDER BY orden, id`, [id])).rows;
-            const lecs = (await pool.query(`SELECT id, tema_id, tipo, titulo FROM aim_aula_lecciones WHERE curso_id = $1 ORDER BY orden, id`, [id])).rows;
+            const lecs = (await pool.query(`SELECT id, tema_id, tipo, titulo, gratis FROM aim_aula_lecciones WHERE curso_id = $1 ORDER BY orden, id`, [id])).rows;
             let mio = null;
             if (s?.userId) {
                 const ins = await inscripcion(id, s.userId);
@@ -386,7 +399,9 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                 id: c.id, titulo: c.titulo, resumen: c.resumen, descripcion: c.descripcion, profesor: c.profesor || null, publicado: c.publicado,
                 portada: c.con_portada ? `/api/aula/cursos/${c.id}/portada?v=${new Date(c.updated_at).getTime()}` : null,
                 precio: totalDe(c), gratis: !totalDe(c), conIva: Number(c.iva_pct) > 0,
-                temas: temas.map(t => ({ ...t, lecciones: lecs.filter(l => l.tema_id === t.id).map(({ id: lid, tipo, titulo }) => ({ id: lid, tipo, titulo })) })),
+                temas: temas.map(t => ({ ...t, lecciones: lecs.filter(l => l.tema_id === t.id).map(({ id: lid, tipo, titulo, gratis }) => ({ id: lid, tipo, titulo, gratis: !!totalDe(c) && gratis })) })),
+                // Curso de pago con parte gratis: se puede ver eso sin pagar.
+                parteGratis: !!totalDe(c) && lecs.some(l => l.gratis),
                 sesion: !!s?.userId, mio, gestor: !!gestor, pagoOnline: pagosOnlineAbiertos(),
             });
         } catch (err) { fallo(res, err); }
@@ -474,11 +489,20 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
     router.get('/api/aula/cursos/:id/contenido', authenticateSession, async (req, res) => {
         try {
             const id = idDe(req.params.id);
-            const { c, gestor } = await puedeVer(req, id);
+            // Sin acceso, pero con parte gratis: se ve eso y lo demás va con candado.
+            let acceso;
+            try { acceso = await puedeVer(req, id); } catch (e) {
+                if (e.status !== 403) throw e;
+                const c0 = await curso(id);
+                const hay = c0.publicado && (await pool.query(`SELECT 1 FROM aim_aula_lecciones WHERE curso_id = $1 AND gratis LIMIT 1`, [id])).rowCount;
+                if (!hay) throw e;
+                acceso = { c: c0, gestor: false, previa: true };
+            }
+            const { c, gestor, previa } = acceso;
             const me = req.userSession.userId;
             const temas = (await pool.query(`SELECT id, titulo FROM aim_aula_temas WHERE curso_id = $1 ORDER BY orden, id`, [id])).rows;
             const lecs = (await pool.query(
-                `SELECT l.id, l.tema_id, l.tipo, l.titulo, l.texto, l.video_url, l.calificacion, l.archivo_id,
+                `SELECT l.id, l.tema_id, l.tipo, l.titulo, l.texto, l.video_url, l.calificacion, l.archivo_id, l.gratis,
                         a.nombre AS archivo_nombre, a.mime AS archivo_mime, a.bytes AS archivo_bytes
                  FROM aim_aula_lecciones l LEFT JOIN aim_aula_archivos a ON a.id = l.archivo_id AND a.completo
                  WHERE l.curso_id = $1 ORDER BY l.orden, l.id`, [id])).rows;
@@ -497,7 +521,9 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             res.set('Cache-Control', 'no-store');
             res.json({
                 id: c.id, titulo: c.titulo, profesor: c.profesor || null, gestor,
-                temas: temas.map(t => ({ ...t, lecciones: lecs.filter(l => l.tema_id === t.id).map(l => ({
+                previa: !!previa, precio: totalDe(c),
+                temas: temas.map(t => ({ ...t, lecciones: lecs.filter(l => l.tema_id === t.id).map(l => (previa && !l.gratis ? { id: l.id, tipo: l.tipo, titulo: l.titulo, bloqueada: true } : {
+                    gratis: !!l.gratis,
                     id: l.id, tipo: l.tipo, titulo: l.titulo, texto: l.texto, calificacion: l.tipo === 'tarea' ? l.calificacion : undefined,
                     video: l.tipo === 'video' ? (l.video_url ? { embed: incrustar(l.video_url), url: l.video_url } : l.archivo_nombre ? { src: `/api/aula/archivos/${l.archivo_id}`, mime: l.archivo_mime } : null) : undefined,
                     archivo: l.archivo_nombre && l.tipo !== 'video' ? { url: `/api/aula/archivos/${l.archivo_id}`, nombre: l.archivo_nombre, mime: l.archivo_mime, bytes: Number(l.archivo_bytes) } : null,
@@ -512,7 +538,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
     router.post('/api/aula/lecciones/:id/hecha', authenticateSession, async (req, res) => {
         try {
             const l = await leccion(idDe(req.params.id));
-            await puedeVer(req, l.curso_id);
+            await puedeVerLeccion(req, l);
             if (req.body?.hecha === false) await pool.query(`DELETE FROM aim_aula_progreso WHERE user_id = $1 AND leccion_id = $2`, [req.userSession.userId, l.id]);
             else await pool.query(`INSERT INTO aim_aula_progreso (user_id, leccion_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [req.userSession.userId, l.id]);
             res.json({ success: true });
@@ -523,7 +549,13 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
     const verArchivo = async (req, res) => {
         try {
             const a = await archivoMeta(idDe(req.params.id));
-            await puedeVer(req, a.curso_id);
+            await puedeVer(req, a.curso_id).catch(async (e) => {
+                // El de una lección de la parte gratis, también sin pagar.
+                if (e.status !== 403) throw e;
+                const g = (await pool.query(
+                    `SELECT 1 FROM aim_aula_lecciones l JOIN aim_aula_cursos c ON c.id = l.curso_id WHERE l.archivo_id = $1 AND l.gratis AND c.publicado LIMIT 1`, [a.id])).rowCount;
+                if (!g) throw e;
+            });
             await servirArchivo(req, res, a, { descarga: req.query.descargar === '1' });
         } catch (err) { if (!res.headersSent) fallo(res, err); else res.destroy(); }
     };
@@ -639,7 +671,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             const lecs = (await pool.query(
                 `SELECT l.id, l.tema_id, l.tipo, l.titulo, l.texto, l.video_url, l.calificacion, l.archivo_id, a.nombre AS archivo_nombre, a.mime AS archivo_mime, a.bytes AS archivo_bytes,
                         (SELECT COUNT(*)::int FROM aim_aula_entregas e WHERE e.leccion_id = l.id AND e.corregida_at IS NULL) AS por_corregir,
-                        l.modo, l.intentos, (SELECT COUNT(*)::int FROM aim_aula_preguntas p WHERE p.leccion_id = l.id) AS n_preguntas
+                        l.modo, l.intentos, l.gratis, (SELECT COUNT(*)::int FROM aim_aula_preguntas p WHERE p.leccion_id = l.id) AS n_preguntas
                  FROM aim_aula_lecciones l LEFT JOIN aim_aula_archivos a ON a.id = l.archivo_id AND a.completo
                  WHERE l.curso_id = $1 ORDER BY l.orden, l.id`, [c.id])).rows;
             res.set('Cache-Control', 'no-store');
@@ -648,7 +680,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                 precio: c.concepto && c.precio_activo !== false ? Number(c.precio) : 0, ivaPct: c.concepto ? Number(c.iva_pct) : 21, total: totalDe(c), concepto: c.concepto,
                 portada: c.con_portada ? `/api/aula/cursos/${c.id}/portada?v=${new Date(c.updated_at).getTime()}` : null, completa: completa(req),
                 temas: temas.map(t => ({ ...t, lecciones: lecs.filter(l => l.tema_id === t.id).map(l => ({
-                    id: l.id, tipo: l.tipo, titulo: l.titulo, texto: l.texto, videoUrl: l.video_url, calificacion: l.calificacion, porCorregir: l.por_corregir, modo: l.modo, intentos: l.intentos, preguntas: l.n_preguntas,
+                    id: l.id, tipo: l.tipo, titulo: l.titulo, texto: l.texto, videoUrl: l.video_url, calificacion: l.calificacion, porCorregir: l.por_corregir, modo: l.modo, intentos: l.intentos, preguntas: l.n_preguntas, gratis: l.gratis,
                     archivo: l.archivo_nombre ? { id: l.archivo_id, nombre: l.archivo_nombre, mime: l.archivo_mime, bytes: Number(l.archivo_bytes) } : null,
                 })) })),
             });
@@ -798,7 +830,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
         const tipo = TIPOS.includes(body?.tipo) ? body.tipo : corta(400, 'Tipo de lección no válido.');
         const titulo = txt(body?.titulo, 200);
         if (!titulo) corta(400, 'Ponle un título a la lección.');
-        const d = { tipo, titulo, texto: txt(body?.texto, 50000), video_url: null, archivo_id: null, calificacion: body?.calificacion === 'nota' ? 'nota' : 'apto', modo: 'practica', intentos: null, preguntas: null };
+        const d = { tipo, titulo, texto: txt(body?.texto, 50000), video_url: null, archivo_id: null, calificacion: body?.calificacion === 'nota' ? 'nota' : 'apto', modo: 'practica', intentos: null, preguntas: null, gratis: body?.gratis === true };
         if (tipo === 'cuestionario') {
             d.modo = body?.modo === 'evaluable' ? 'evaluable' : 'practica';
             const n = Number(body?.intentos);
@@ -826,9 +858,9 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             const t = await temaEditable(req);
             const d = await datosLeccion(req.body, t.curso_id);
             const r = await pool.query(
-                `INSERT INTO aim_aula_lecciones (curso_id, tema_id, tipo, titulo, texto, video_url, archivo_id, calificacion, modo, intentos, orden)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, (SELECT COALESCE(MAX(orden), 0) + 1 FROM aim_aula_lecciones WHERE tema_id = $2)) RETURNING id`,
-                [t.curso_id, t.id, d.tipo, d.titulo, d.texto, d.video_url, d.archivo_id, d.calificacion, d.modo, d.intentos]);
+                `INSERT INTO aim_aula_lecciones (curso_id, tema_id, tipo, titulo, texto, video_url, archivo_id, calificacion, modo, intentos, gratis, orden)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, (SELECT COALESCE(MAX(orden), 0) + 1 FROM aim_aula_lecciones WHERE tema_id = $2)) RETURNING id`,
+                [t.curso_id, t.id, d.tipo, d.titulo, d.texto, d.video_url, d.archivo_id, d.calificacion, d.modo, d.intentos, d.gratis]);
             if (d.preguntas) await guardarPreguntas(r.rows[0].id, d.preguntas);
             res.status(201).json({ success: true, id: r.rows[0].id });
         } catch (err) { fallo(res, err); }
@@ -845,8 +877,8 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
         try {
             const l = await leccionEditable(req);
             const d = await datosLeccion({ ...req.body, tipo: l.tipo }, l.curso_id);
-            await pool.query(`UPDATE aim_aula_lecciones SET titulo = $2, texto = $3, video_url = $4, archivo_id = $5, calificacion = $6, modo = $7, intentos = $8 WHERE id = $1`,
-                [l.id, d.titulo, d.texto, d.video_url, d.archivo_id, d.calificacion, d.modo, d.intentos]);
+            await pool.query(`UPDATE aim_aula_lecciones SET titulo = $2, texto = $3, video_url = $4, archivo_id = $5, calificacion = $6, modo = $7, intentos = $8, gratis = $9 WHERE id = $1`,
+                [l.id, d.titulo, d.texto, d.video_url, d.archivo_id, d.calificacion, d.modo, d.intentos, d.gratis]);
             if (d.preguntas) await guardarPreguntas(l.id, d.preguntas);
             if (l.archivo_id && l.archivo_id !== d.archivo_id) await soltarArchivo(l.archivo_id);
             res.json({ success: true });
@@ -925,7 +957,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
         try {
             const l = await leccion(idDe(req.params.id));
             if (l.tipo !== 'cuestionario') corta(400, 'Esa lección no es un cuestionario.');
-            const { gestor } = await puedeVer(req, l.curso_id);
+            const { gestor } = await puedeVerLeccion(req, l);
             const ps = await preguntasDe(l.id);
             const conSolucion = l.modo === 'practica' || gestor;
             const intentos = (await pool.query(
@@ -949,7 +981,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
         try {
             const l = await leccion(idDe(req.params.id));
             if (l.tipo !== 'cuestionario') corta(400, 'Esa lección no es un cuestionario.');
-            const { gestor } = await puedeVer(req, l.curso_id);
+            const { gestor } = await puedeVerLeccion(req, l);
             const me = req.userSession.userId;
             const ps = await preguntasDe(l.id);
             if (!ps.length) corta(400, 'Este cuestionario aún no tiene preguntas.');

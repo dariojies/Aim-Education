@@ -5,10 +5,11 @@
 // móvil, puede pasar lista en ellas y le llega un aviso; al ausente le sale
 // quién le sustituye. A las familias no se les dice nada.
 //
-// Las clases salen del horario (tul_groups, de Learning Dungeon, que no se
-// toca): una fila por clase concreta (día, grupo y hora de empezar). Las
-// ausencias y los fichajes no se tocan: si se cancela la ausencia, se quitan
-// sus sustituciones.
+// Las clases salen del horario (tul_groups, el de la web, compartido con
+// Learning Dungeon). El horario es semanal y una sustitución es de un día, así
+// que va aparte: una fila por clase concreta (día, grupo y hora de empezar).
+// Las ausencias y los fichajes no se tocan: si se cancela la ausencia, se
+// quitan sus sustituciones.
 // ─────────────────────────────────────────────────────────────────────────────
 import express from 'express';
 import { clasesEnRango } from './calendario-movil.js';
