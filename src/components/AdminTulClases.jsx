@@ -3,6 +3,7 @@ import { I } from './Icons.jsx';
 import { Insignia, AcordeonClases, ChipEdad, edadDe } from './FichaAlumnoClases.jsx';
 import { fmtMesAno } from '../fechas.js';
 import { ICONOS, dibujoDe, IconoActividad } from './IconoActividad.jsx';
+import { GestorAgrupaciones } from './Agrupaciones.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Lista de clases y Reportes: el menú de gestión de Aim-Tul recreado en nuestra
@@ -526,6 +527,7 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
   const [eligiendoProvisional, setEligiendoProvisional] = useState(false);
   const [guardando, setGuardando] = useState(false);
   const [asignarPlaza, setAsignarPlaza] = useState(false); // pop-up al liberarse un hueco
+  const [agrupaciones, setAgrupaciones] = useState(false);  // #441: subgrupos de la clase
   const buscador = useRef(null);
 
   // Si se ha entrado desde "+ Lista de espera", el cursor ya está en el buscador.
@@ -710,7 +712,10 @@ function AlumnosDeGrupo({ grupo, onVolver, showToast }) {
         {espera.length > 0 && (
           <Etiqueta color="var(--purple)">{espera.length} en espera</Etiqueta>
         )}
+        <div style={{ flex: 1 }} />
+        <button type="button" className="btn btn-sm btn-outline" onClick={() => setAgrupaciones(true)} title="Repartir a los alumnos en subgrupos (por su clase del cole, en equipos…)">👥 Agrupaciones</button>
       </div>
+      {agrupaciones && <GestorAgrupaciones groupId={grupo.id} nombreClase={grupo.name} onCerrar={() => setAgrupaciones(false)} />}
 
       {/* Alta: se busca, se elige y se confirma. Nada se apunta de golpe. */}
       <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: 14, display: 'grid', gap: 10 }}>

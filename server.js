@@ -28,6 +28,7 @@ import { crearTienda, crearTablasTienda, pedidosPorAtender, pedidosEnMarcha } fr
 import { limpiarHtml, htmlParaFuera, textoDeHtml } from './noticias-html.js';
 import { crearSeo } from './seo.js';
 import { crearIndexNow } from './indexnow.js';
+import { crearAgrupaciones, crearTablasAgrupaciones } from './agrupaciones.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
@@ -1789,6 +1790,8 @@ async function initDb() {
         // Evaluación (#411): currículo, fichero de actividades, sesiones y notas.
         // Tablas solo de esta web (las de Learning Dungeon no se tocan).
         await crearTablasEvaluacion(client);
+        // Agrupaciones dentro de una clase (#441): subgrupos para ver la lista repartida.
+        await crearTablasAgrupaciones(client);
         await sembrarCategoriasIngles(client, AIM_CLUB_ID).catch(e => console.warn('[evaluación] categorías de inglés:', e.message));
         // Valoraciones de Brickslab (#87, autorizadas): de 1 a 5 estrellas y un
         // comentario, una por persona y artículo. La comparten esta web y la app de
@@ -5169,6 +5172,8 @@ setInterval(function publicarRedesProgramadas() { publicacionesRedes.publicarPen
 setInterval(function seguidoresRedes() { publicacionesRedes.fotoSeguidores(); }, 6 * 3600_000);
 // Evaluación (#411): de los profes y la dirección; las familias no ven nada.
 app.use(crearEvaluacion({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireSeccion, permisos, grupoSuyo }).router);
+// Agrupaciones dentro de una clase (#441).
+app.use(crearAgrupaciones({ pool, authenticateSession, requireSeccion, grupoSuyo }).router);
 // Reportes (#416): cómo va el negocio, con las mismas cuentas en todas partes.
 app.use(crearReportes({ pool, clubId: AIM_CLUB_ID, authenticateSession, requirePermiso, candidatosGeneracion, mesesDeTemporada, sqlEsIndividual,
     empresa: () => EMPRESA_TICKET }).router);

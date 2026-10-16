@@ -4,6 +4,7 @@ import { fmtFechaLarga, fmtFecha } from '../fechas.js';
 import { colorOcupacion } from './AdminTulClases.jsx';
 import { COLOR_CUMPLE } from './Shared.jsx';
 import { FormIncidencia } from './AdminIncidencias.jsx';
+import { useAgrupaciones, SelectorAgrupacion, GestorAgrupaciones, repartir, TituloSubgrupo } from './Agrupaciones.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pasar lista de las clases del día.
@@ -58,6 +59,9 @@ export default function PasarListaClases({ showToast, abrir = null }) {
   const [bonosSug, setBonosSug] = useState([]);
   // Registrar una incidencia de esta clase (#383), con sus alumnos a mano.
   const [incidencia, setIncidencia] = useState(false);
+  // Agrupaciones de la clase abierta (#441): cuál se mira y la ventana para hacerlas.
+  const ag = useAgrupaciones(clase?.id);
+  const [gestorAgr, setGestorAgr] = useState(false);
 
   const cargarClases = useCallback(async (f) => {
     setCargando(true);
@@ -200,11 +204,16 @@ export default function PasarListaClases({ showToast, abrir = null }) {
   function imprimir() {
     if (!clase || !alumnos.length) return;
     const esc = (t) => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const filas = alumnos.map(a => `
+    const fila = (a) => `
       <tr><td>${esc(a.nombre)}</td><td>${esc(a.cinturon || '')}</td>
       <td class="c">${a.status === 'present' ? '✓' : ''}</td>
       <td class="c">${a.status === 'late' ? '✓' : ''}</td>
-      <td class="c">${a.status === 'absent' ? '✓' : ''}</td></tr>`).join('');
+      <td class="c">${a.status === 'absent' ? '✓' : ''}</td></tr>`;
+    // Con una agrupación elegida (#441), la lista sale repartida por subgrupos.
+    const grupos = repartir(ag.actual, alumnos);
+    const filas = grupos
+      ? grupos.map(g => `<tr><th colspan="5" style="background:#fff;color:#222;border-bottom:1px solid #ccc;padding-top:14px">${esc(g.subgrupo.nombre)} (${g.alumnos.length})</th></tr>${g.alumnos.map(fila).join('')}`).join('')
+      : alumnos.map(fila).join('');
     const html = `
       <style>
         #print-lista { font-family: sans-serif; color: #222; padding: 24px; }
@@ -322,9 +331,15 @@ export default function PasarListaClases({ showToast, abrir = null }) {
                 🎫 {esFuturo ? 'Reservar con bono' : 'Con bono'}
               </button>
             )}
-            <button className="btn btn-sm btn-outline" onClick={imprimir} disabled={!alumnos.length}><I.Print /> Imprimir</button>
+            <button className="btn btn-sm btn-outline" onClick={imprimir} disabled={!alumnos.length}><I.Print /> Imprimir{ag.actual ? ' por subgrupos' : ''}</button>
             <button className="btn btn-sm btn-outline" onClick={() => setIncidencia(true)} title="Dejar registrado algo que ha pasado en esta clase">⚠️ Incidencia</button>
           </div>
+          {/* Agrupaciones (#441): ver a los alumnos repartidos en sus subgrupos. */}
+          {!meta.speaking && <SelectorAgrupacion ag={ag} onGestionar={() => setGestorAgr(true)} />}
+          {gestorAgr && (
+            <GestorAgrupaciones groupId={clase.id} nombreClase={clase.name} inicial={ag.elegida} onCerrar={() => setGestorAgr(false)}
+              onCambio={(id) => { ag.recargar(); if (id) ag.setElegida(id); }} />
+          )}
           {incidencia && (
             <FormIncidencia grupo={{ id: clase.id, nombre: `${clase.activityName ? `${clase.activityName} · ` : ''}${clase.name}` }}
               sugeridos={alumnos.map(a => ({ id: a.id, nombre: a.nombre }))} showToast={showToast}
@@ -389,10 +404,12 @@ export default function PasarListaClases({ showToast, abrir = null }) {
               confirmados y aparte los que aún no han contestado (#253). */}
           {(meta.speaking
             ? [['Confirmados', alumnos.filter(a => a.speaking !== 'pendiente')], ['Sin contestar (por si vienen)', alumnos.filter(a => a.speaking === 'pendiente')]]
+            : ag.actual ? repartir(ag.actual, alumnos).map(g => [g.subgrupo, g.alumnos])
             : [[null, alumnos]]
           ).filter(([, lista]) => lista.length).map(([titulo, lista]) => (
-            <div key={titulo || 'todos'} style={{ display: 'grid', gap: 8 }}>
+            <div key={titulo?.id ?? titulo ?? 'todos'} style={{ display: 'grid', gap: 8 }}>
               {titulo && meta.speaking && <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--ink-2)' }}>{titulo} ({lista.length})</div>}
+              {titulo && !meta.speaking && <TituloSubgrupo subgrupo={titulo} n={lista.length} />}
               <div className="camp-card-grid">
                 {lista.map(a => <TarjetaAlumno key={a.id} a={a} onMarcar={marcar} onQuitarReserva={quitarReserva} />)}
               </div>
