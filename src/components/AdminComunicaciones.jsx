@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { I } from './Icons.jsx';
 import AdminCampanas, { Rebotes } from './AdminCampanas.jsx';
 import AdminAutomatismos from './AdminAutomatismos.jsx';
-import AdminDisenoCorreos from './AdminDisenoCorreos.jsx';
 import AdminPublicaciones from './AdminPublicaciones.jsx';
 import { TIPOS_CORREO, describirSegmento } from './crmTextos.js';
 import { Paso, Opcion } from './CrmPiezas.jsx';
@@ -42,7 +41,6 @@ export default function AdminComunicaciones({ showToast, onAbrirFicha, pestana: 
         <button type="button" style={{ ...pastilla(pestana === 'segmentos'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('segmentos')}>Segmentos</button>
         <button type="button" style={{ ...pastilla(pestana === 'campanas'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('campanas')}>Campañas</button>
         <button type="button" style={{ ...pastilla(pestana === 'automatismos'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('automatismos')}>Automatismos</button>
-        <button type="button" style={{ ...pastilla(pestana === 'disenos'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('disenos')}>Diseños</button>
         <button type="button" style={{ ...pastilla(pestana === 'rebotes'), padding: '8px 16px', fontSize: 13 }} onClick={() => setPestana('rebotes')}>Rebotes</button>
       </div>
       {pestana === 'segmentos' && <Segmentos showToast={showToast} onAbrirFicha={onAbrirFicha}
@@ -50,7 +48,6 @@ export default function AdminComunicaciones({ showToast, onAbrirFicha, pestana: 
       {pestana === 'campanas' && <AdminCampanas showToast={showToast} onAbrirFicha={onAbrirFicha} onIrARebotes={() => setPestana('rebotes')}
         nuevaConSegmento={campanaCon} onEmpezada={() => setCampanaCon(null)} onIrASegmentos={() => setPestana('segmentos')} />}
       {pestana === 'automatismos' && <AdminAutomatismos showToast={showToast} onAbrirFicha={onAbrirFicha} />}
-      {pestana === 'disenos' && <AdminDisenoCorreos showToast={showToast} />}
       {pestana === 'publicaciones' && <AdminPublicaciones showToast={showToast} />}
       {pestana === 'rebotes' && <Rebotes onAbrirFicha={onAbrirFicha} showToast={showToast} siempreAbierto />}
     </div>

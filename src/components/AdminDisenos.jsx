@@ -6,9 +6,13 @@ import {
   pedirFuentes, altoTexto, rellenar, miniatura, exportarDiseno,
 } from '../disenos/render.js';
 import { PLANTILLAS } from '../disenos/plantillas.js';
+import { Plantillas as PlantillasCorreo, Marca as MarcaCorreo } from './AdminDisenoCorreos.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Diseño gráfico: el «Canva» del club. Carteles, posts, historias y diplomas en un
+// Aim Design: todo lo que se diseña en el club, en un solo sitio. Las imágenes
+// y los diplomas (aquí) y los correos (plantillas y marca, AdminDisenoCorreos).
+//
+// Imágenes y diplomas: el «Canva» del club. Carteles, posts, historias y diplomas en un
 // lienzo libre: textos, imágenes y formas que se mueven, se cambian de tamaño
 // y se giran; capas, alinear, deshacer; y se exporta a PNG, JPG o PDF. Los de
 // tipo diploma llevan huecos ({alumno}, {curso}…) y son los diplomas del aula.
@@ -29,8 +33,37 @@ async function api(url, { method = 'GET', body } = {}) {
   return d;
 }
 
-// ═══════════════════════ La lista ═══════════════════════
-export default function AdminDisenos({ showToast }) {
+// ═══════════════════════ Aim Design ═══════════════════════
+const PESTANAS_DESIGN = [['imagenes', 'Imágenes y diplomas'], ['correos', 'Plantillas de correo'], ['marca', 'Marca de los correos']];
+const pastillaDesign = (activa) => ({
+  padding: '8px 16px', fontSize: 13, borderRadius: 999, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 700,
+  border: `1px solid ${activa ? 'var(--ink)' : 'var(--line)'}`, background: activa ? 'var(--ink)' : 'var(--bg-2)', color: activa ? '#fff' : 'var(--ink-2)',
+});
+export default function AimDesign({ showToast, pestana: inicial, conCorreos = true }) {
+  const pestanas = conCorreos ? PESTANAS_DESIGN : PESTANAS_DESIGN.slice(0, 1);
+  const [pestana, setPestana] = useState(pestanas.some(([k]) => k === inicial) ? inicial : 'imagenes');
+  useEffect(() => { if (pestanas.some(([k]) => k === inicial)) setPestana(inicial); }, [inicial]); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <div style={{ display: 'grid', gap: 18 }}>
+      {pestanas.length > 1 && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {pestanas.map(([k, t]) => <button key={k} type="button" style={pastillaDesign(pestana === k)} onClick={() => setPestana(k)}>{t}</button>)}
+        </div>
+      )}
+      {pestana === 'imagenes' && <DisenosGraficos showToast={showToast} />}
+      {pestana === 'correos' && <PlantillasCorreo showToast={showToast} />}
+      {pestana === 'marca' && (
+        <div style={{ display: 'grid', gap: 12 }}>
+          <p style={{ margin: 0, color: 'var(--ink-2)', fontSize: 14, maxWidth: 760 }}>El logo, los colores, la letra y el pie que llevan todos los correos del club.</p>
+          <MarcaCorreo showToast={showToast} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════ La lista de imágenes y diplomas ═══════════════════════
+function DisenosGraficos({ showToast }) {
   const [datos, setDatos] = useState(null);
   const [abierto, setAbierto] = useState(null);       // { id, nombre, tipo, datos }
   const [nuevo, setNuevo] = useState(false);
@@ -365,7 +398,7 @@ function Editor({ inicial, showToast, onCerrar }) {
     <div style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'var(--bg)', display: 'grid', gridTemplateRows: 'auto 1fr' }}>
       {/* Barra de arriba */}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '10px 14px', borderBottom: '1px solid var(--line)', background: 'var(--bg-2)' }}>
-        <button type="button" style={botonBarra} onClick={cerrar}>← Diseño gráfico</button>
+        <button type="button" style={botonBarra} onClick={cerrar}>← Aim Design</button>
         <input value={nombre} onChange={e => { setNombre(e.target.value); setSucio(true); }} aria-label="Nombre del diseño" style={{ ...inp, width: 230, fontWeight: 700, fontSize: 14 }} />
         <select value={tipo} onChange={e => { setTipo(e.target.value); setSucio(true); }} aria-label="Tipo" style={{ ...inp, width: 'auto' }}>
           <option value="libre">Diseño</option><option value="diploma">Diploma del aula</option>

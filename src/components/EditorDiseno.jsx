@@ -743,7 +743,7 @@ export default function EditorDiseno({
                 <label style={{ ...etiqueta, display: 'flex', gap: 8, alignItems: 'center' }}>
                   <input type="checkbox" checked={diseno.pie !== false} onChange={e => cambiar(d => ({ ...d, pie: e.target.checked }))} /> <span>Pie con los datos del club</span>
                 </label>
-                <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>El logo, los colores del club y el texto del pie se cambian en <b>CRM → Diseño de correos → Marca</b>, y valen para todos los correos.</p>
+                <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>El logo, los colores del club y el texto del pie se cambian en <b>Aim Design → Marca de los correos</b>, y valen para todos los correos.</p>
               </div>
             )}
           </div>

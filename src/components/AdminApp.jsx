@@ -88,7 +88,7 @@ function aLocalInput(iso) {
 
 // El título de cada sección es el mismo nombre corto que lleva en el menú: si
 // el menú dice «Alumnos» y la página «Gestión de alumnos», parece otro sitio.
-const NOMBRE_PESTANA_CRM = { campanas: "Campañas", segmentos: "Segmentos", automatismos: "Automatismos", disenos: "Diseños", publicaciones: "Publicaciones", rebotes: "Correos que rebotan" };
+const NOMBRE_PESTANA_CRM = { campanas: "Campañas", segmentos: "Segmentos", automatismos: "Automatismos", publicaciones: "Publicaciones", rebotes: "Correos que rebotan" };
 function sectionLabel(id, pestana) {
   if (id === "comunicaciones" && NOMBRE_PESTANA_CRM[pestana]) return NOMBRE_PESTANA_CRM[pestana];
   return ({
@@ -111,7 +111,7 @@ function sectionLabel(id, pestana) {
     candidatos: "Candidatos",
     incidencias: "Incidencias",
     brickslab: "Brickslab y Biblioteca",
-    grafico: "Diseño gráfico",
+    grafico: "Aim Design",
     galeria: "Fotos",
     evaluacion: "Evaluación",
     aula: "Aula virtual",
@@ -6905,11 +6905,10 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         // Publicar y programar en Facebook e Instagram, con sus estadísticas (#410).
         { id: "comunicaciones", pestana: "publicaciones", label: "Publicaciones", icon: <I.Calendar width={18} height={18} /> },
         { id: "comunicaciones", pestana: "campanas", label: "Campañas", icon: <I.Enviar /> },
-        // Carteles, posts, historias y diplomas, como en Canva.
-        { id: "grafico", label: "Diseño gráfico", icon: <I.Brush width={18} height={18} /> },
+        // Aim Design: carteles, posts, diplomas y los correos, todo lo que se diseña.
+        { id: "grafico", label: "Aim Design", icon: <I.Brush width={18} height={18} /> },
         { id: "comunicaciones", pestana: "segmentos", label: "Segmentos", icon: <I.Filter width={18} height={18} /> },
         { id: "comunicaciones", pestana: "automatismos", label: "Automatismos", icon: <I.Spark width={18} height={18} /> },
-        { id: "comunicaciones", pestana: "disenos", label: "Diseños", icon: <I.Brush width={18} height={18} /> },
         // Los correos que no llegan, de campañas o de cualquier otro (#430).
         { id: "comunicaciones", pestana: "rebotes", label: "Correos que rebotan", icon: <I.Mail /> },
       ]
@@ -7090,7 +7089,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("brickslab") && <AdminBrickslab showToast={showToast} enlace={enlace} />}
           {ver("galeria") && <AdminGaleria showToast={showToast} />}
           {ver("bandeja") && <AdminBandeja showToast={showToast} onAbrirFicha={abrirFicha} />}
-          {ver("grafico") && <AdminDisenos showToast={showToast} />}
+          {ver("grafico") && <AdminDisenos showToast={showToast} conCorreos={!!permisos.secciones.comunicaciones}
+            pestana={seccionDeRuta(enlace?.seg || [], enlace?.params || {}).pestana} />}
           {ver("redes") && <AdminRedes showToast={showToast} onAbrirFicha={abrirFicha} />}
           {ver("rangos") && <AdminRangosPermisos grupos={gruposMenu} showToast={showToast} />}
           {ver("overview") && <AdminResumen permisos={permisos} refreshTrigger={refreshTrigger} ir={navTo} irRuta={(ruta) => go(ruta)} />}

@@ -29,7 +29,7 @@ const AL_APAGAR = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CRM → Diseño de correos (ticket #326). Dos cosas:
+// Diseño de correos (ticket #326), dentro de Aim Design. Dos cosas:
 //  · Plantillas: los diseños del club para campañas y correos sueltos.
 //  · Marca: logo, colores, letra y pie, que llevan TODOS los correos.
 // Los correos que manda la app sola (clases individuales, contraseñas, fichaje…) se
@@ -71,7 +71,7 @@ export default function AdminDisenoCorreos({ showToast }) {
 }
 
 // ── Plantillas del club ─────────────────────────────────────────────────────
-function Plantillas({ showToast }) {
+export function Plantillas({ showToast }) {
   const marca = useMarca();
   const [lista, setLista] = useState(null);
   const [eligiendo, setEligiendo] = useState(false);
@@ -233,7 +233,7 @@ export function CorreosSistema({ showToast }) {
 }
 
 // ── Marca ───────────────────────────────────────────────────────────────────
-function Marca({ showToast }) {
+export function Marca({ showToast }) {
   const [m, setM] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [subiendo, setSubiendo] = useState(false);

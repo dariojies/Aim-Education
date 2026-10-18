@@ -8,7 +8,7 @@
 // Los de tipo «diploma» llevan huecos ({alumno}, {curso}…) y son los diplomas
 // del aula virtual: uno por defecto (aim_ajustes «diploma_diseno») y, si un
 // curso quiere otro, el suyo (aim_aula_cursos.diploma_diseno_id).
-// Lo llevan secretaría y la dirección (sección «grafico», «Diseño gráfico»).
+// Lo llevan secretaría y la dirección (sección «grafico», «Aim Design»).
 // (No confundir con los diseños de correo de Comunicación.)
 // ─────────────────────────────────────────────────────────────────────────────
 import express from 'express';

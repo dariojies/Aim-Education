@@ -28,7 +28,9 @@ export const RUTAS_ADMIN = {
   // 'recibos' es el nombre antiguo: esa sección ahora son los gastos del club.
   payments: ['gastos', 'recibos'],
   bandeja: ['correo'],
-  grafico: ['diseno-grafico'],
+  // Aim Design: imágenes, diplomas y correos. /admin/disenos era la pestaña
+  // de los correos en Comunicación y /admin/diseno-grafico, la de las imágenes.
+  grafico: ['aim-design', 'diseno-grafico', 'disenos'],
   redes: ['redes'],
   contactos: ['consultas'],
   comunicaciones: ['comunicaciones', 'crm'],
@@ -47,7 +49,7 @@ export const RUTAS_ADMIN = {
 
 // Las pestañas de Comunicación tienen dirección propia (/admin/campanas…), y
 // también valen como /admin/comunicaciones/<pestaña>.
-export const PESTANAS_CRM = ['campanas', 'segmentos', 'automatismos', 'disenos', 'publicaciones', 'rebotes'];
+export const PESTANAS_CRM = ['campanas', 'segmentos', 'automatismos', 'publicaciones', 'rebotes'];
 
 const SECCION_DE_RUTA = Object.fromEntries(
   Object.entries(RUTAS_ADMIN).flatMap(([id, rutas]) => rutas.map(r => [r, id]))
@@ -62,6 +64,8 @@ export function seccionDeRuta(seg = [], params = {}) {
   if (s === 'clases' && (seg[2] === 'lista' || params.vista === 'asistencia')) return { view: 'pasarlista', pestana: null };
   if (PESTANAS_CRM.includes(s)) return { view: 'comunicaciones', pestana: s };
   const view = SECCION_DE_RUTA[s] || 'overview';
+  // Aim Design: /admin/aim-design/correos…; la de antes de los correos, a su pestaña.
+  if (view === 'grafico') return { view, pestana: s === 'disenos' ? 'correos' : seg[2] || null };
   const pestana = view === 'comunicaciones' && PESTANAS_CRM.includes(seg[2]) ? seg[2] : null;
   return { view, pestana };
 }
