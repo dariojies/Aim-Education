@@ -152,7 +152,7 @@ function AimHeader({ route } = {}) {
   return (
     <header className={`aim-header${scrolled ? ' scrolled' : ''}`}>
       <div className="row">
-        <AimLogo auto onClick={() => go('/')} />
+        <AimLogo onClick={() => go('/')} />
         <nav aria-label="Secciones">
           {grupos.map(g => (g.hijos ? <Desplegable key={g.id} g={g} /> : (
             <a key={g.id} className={activeRoute === g.id ? "is-active" : ""} onClick={ir(g.href)} href={g.href}>{g.label}</a>
