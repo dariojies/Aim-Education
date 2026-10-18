@@ -3,6 +3,7 @@ import { I } from './Icons.jsx';
 import { useRouter } from '../App.jsx';
 import { incrustarVideo, TIPO_LECCION, Texto, mb } from './Aula.jsx';
 import { imagenSubible } from '../imagenes.js';
+import { DudasGestion } from './AulaDudas.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Aula virtual, la gestión (ticket #433): los cursos con su temario (temas y
@@ -91,22 +92,26 @@ export default function AdminAula({ showToast }) {
   const [error, setError] = useState('');
   const [abierto, setAbierto] = useState(null);       // id del curso en edición
   const [nuevo, setNuevo] = useState(null);
-  const [pestana, setPestana] = useState(() => (/[?&]corregir=1/.test(path || window.location.search) ? 'corregir' : 'cursos'));
+  const [pestana, setPestana] = useState(() => { const q = path || window.location.search; return /[?&]corregir=1/.test(q) ? 'corregir' : /[?&]dudas=1/.test(q) ? 'dudas' : 'cursos'; });
 
   const cargar = useCallback(() => {
     api('/api/admin/aula').then(d => { setDatos(d); setError(''); }).catch(e => setError(e.message));
   }, []);
   useEffect(() => { cargar(); }, [cargar]);
-  useEffect(() => { if (/[?&]corregir=1/.test(path || '')) { setPestana('corregir'); setAbierto(null); } }, [path]);
+  useEffect(() => {
+    if (/[?&]corregir=1/.test(path || '')) { setPestana('corregir'); setAbierto(null); }
+    if (/[?&]dudas=1/.test(path || '')) { setPestana('dudas'); setAbierto(null); }
+  }, [path]);
 
   if (abierto) return <EditorCurso id={abierto} showToast={showToast} espacio={datos?.espacio} onCerrar={() => { setAbierto(null); cargar(); }} />;
 
   const porCorregir = datos?.cursos.reduce((s, c) => s + c.porCorregir, 0) || 0;
+  const dudas = datos?.cursos.reduce((s, c) => s + (c.dudas || 0), 0) || 0;
   return (
     <div style={{ display: 'grid', gap: 16 }}>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <div className="seg" style={{ display: 'flex', gap: 4, background: 'var(--bg-3)', padding: 4, borderRadius: 999 }}>
-          {[['cursos', 'Cursos'], ['corregir', `Por corregir${porCorregir ? ` · ${porCorregir}` : ''}`]].map(([id, t]) => (
+          {[['cursos', 'Cursos'], ['corregir', `Por corregir${porCorregir ? ` · ${porCorregir}` : ''}`], ['dudas', `Dudas${dudas ? ` · ${dudas}` : ''}`]].map(([id, t]) => (
             <button key={id} type="button" onClick={() => setPestana(id)} className={`btn btn-sm ${pestana === id ? 'btn-primary' : 'btn-ghost'}`} style={{ borderRadius: 999 }}>{t}</button>
           ))}
         </div>
@@ -119,6 +124,7 @@ export default function AdminAula({ showToast }) {
       {!datos && !error && <p style={{ color: 'var(--ink-3)' }}>Cargando…</p>}
 
       {pestana === 'corregir' && datos && <Entregas showToast={showToast} pendientesDeEntrada onCambio={cargar} />}
+      {pestana === 'dudas' && datos && <DudasGestion onCambio={cargar} />}
 
       {pestana === 'cursos' && datos && (datos.cursos.length === 0 ? (
         <div style={{ ...tarjeta, borderStyle: 'dashed', textAlign: 'center', color: 'var(--ink-3)', padding: 32 }}>
@@ -136,6 +142,7 @@ export default function AdminAula({ showToast }) {
                   <span className={`pill ${c.publicado ? 'teal' : ''}`} style={pastilla(c.publicado ? 'var(--teal)' : 'var(--ink-3)')}>{c.publicado ? 'Publicado' : 'Borrador'}</span>
                   <span style={pastilla(c.gratis ? 'var(--purple)' : 'var(--orange)')}>{c.gratis ? 'Gratis' : euros(c.precio)}</span>
                   {c.porCorregir > 0 && <span style={pastilla('var(--pink)')}>{c.porCorregir} por corregir</span>}
+                  {c.dudas > 0 && <span style={pastilla('var(--orange)')}>{c.dudas} {c.dudas === 1 ? 'duda' : 'dudas'}</span>}
                 </div>
                 <b style={{ fontSize: 15 }}>{c.titulo}</b>
                 <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
@@ -320,7 +327,7 @@ function DatosCurso({ c, recargar, showToast, onBorrado }) {
           <option value="">El del aula por defecto{diplomas?.porDefecto ? ` (${diplomas.diplomas.find(d => d.id === diplomas.porDefecto)?.nombre || 'diseñado'})` : ' (el de siempre)'}</option>
           {(diplomas?.diplomas || []).map(d => <option key={d.id} value={d.id}>{d.nombre}</option>)}
         </select>
-        <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}>Los diplomas se diseñan en Comunicación → Diseño gráfico (como un diploma de Canva, con el nombre del alumno, el curso y la fecha).</span>
+        <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}>Los diplomas se diseñan en Comunicación → Aim Design (como un diploma de Canva, con el nombre del alumno, el curso y la fecha).</span>
       </label>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <button type="submit" className="btn btn-primary btn-sm" disabled={guardando}>{guardando ? 'Guardando…' : 'Guardar'}</button>

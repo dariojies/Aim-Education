@@ -131,7 +131,7 @@ export function permisosDe(rol) {
             faltas: mandaAlMenos(rol, 'secretaria'),
             // CRM: segmentos, campañas y correo del club (tickets #310-#316).
             comunicaciones: mandaAlMenos(rol, 'secretaria'),
-            // Diseño gráfico (el «Canva» del club): carteles, posts, historias y diplomas.
+            // Aim Design (el «Canva» del club): carteles, posts, historias y diplomas.
             grafico: mandaAlMenos(rol, 'secretaria'),
             // La bandeja de correo: el suyo de @aimeducation.es (#449, todo el
             // personal) y, para secretaría y dirección, el general (info@, #317).
@@ -239,6 +239,9 @@ export const AVISOS = [
     // Las entregas del aula virtual (#433): los profes, de sus cursos.
     { id: 'aula_por_corregir', grupo: 'Clases', texto: 'Tareas del aula virtual por corregir', quien: (p) => p.secciones.aula,
       nota: (p) => (p.aulaCompleta ? null : 'solo de sus cursos') },
+    // Las dudas de los alumnos (#461): el profesor del curso; si no tiene, secretaría.
+    { id: 'aula_dudas', grupo: 'Clases', texto: 'Dudas del aula virtual por contestar', quien: (p) => p.secciones.aula,
+      nota: (p) => (p.aulaCompleta ? 'de sus cursos y de los que no tienen profesor' : 'solo de sus cursos') },
     // Los correos que no llegan (#430), para arreglar la dirección.
     { id: 'correos_rebotan', grupo: 'Correo', texto: 'Correos que rebotan (no les llega nada)', quien: (p) => p.secciones.comunicaciones },
     // La vigilancia de los servicios: si algo se cae, al Equipo IT y los superadmin.

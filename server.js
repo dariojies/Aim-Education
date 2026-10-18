@@ -23,7 +23,7 @@ import { crearEvaluacion, crearTablasEvaluacion, sembrarCategoriasIngles } from 
 import { crearReportes, pendienteAhora, SQL_MOVIMIENTOS } from './reportes.js';
 import { enviarZipFotos, nombreArchivo as nombreEnZip, crearZip, cabeceraAdjunto } from './zip.js';
 import { crearPublicaciones, crearTablasPublicaciones } from './publicaciones.js';
-import { crearAula, crearTablasAula, entregasPorCorregir, tareasCorregidas } from './aula.js';
+import { crearAula, crearTablasAula, entregasPorCorregir, tareasCorregidas, dudasPorResponder, dudasContestadas } from './aula.js';
 import { crearTienda, crearTablasTienda, pedidosPorAtender, pedidosEnMarcha } from './tienda.js';
 import { limpiarHtml, htmlParaFuera, textoDeHtml } from './noticias-html.js';
 import { crearSeo } from './seo.js';
@@ -13342,6 +13342,15 @@ async function avisosFamilia(me) {
             });
         }
 
+        // Dudas del aula virtual contestadas (#461).
+        for (const d of await dudasContestadas(pool, me).catch(() => [])) {
+            avisos.push({
+                tipo: 'avisos', destino: `/aula/${d.curso_id}/curso?duda=${d.id}`, clave: `aula:duda:${d.id}`, marca: d.ultima, fecha: d.ultima,
+                texto: `${d.es_profesor ? 'Te han contestado' : 'Un compañero ha contestado'} tu duda «${d.titulo}»`,
+                detalle: d.curso,
+            });
+        }
+
         // 4) Novedades del club de los últimos quince días.
         const posts = await pool.query(
             `SELECT id, title, published_at FROM aim_education_posts
@@ -17004,6 +17013,17 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                 return x.n ? [{
                     tipo: 'clases', clave: 'aula_por_corregir', n: x.n, marca: x.ultima, fecha: x.ultima, destino: '/admin/aula?corregir=1',
                     texto: `${x.n} ${plural(x.n, 'tarea', 'tareas')} del aula virtual por corregir`, detalle: 'entregadas por los alumnos',
+                }] : [];
+            });
+        }
+        // Dudas del aula virtual por contestar (#461): de sus cursos; con el aula
+        // completa, también las de los cursos sin profesor.
+        if (recibe('aula_dudas')) {
+            fuente('Aula virtual', ['aula_dudas'], async () => {
+                const x = await dudasPorResponder(pool, { userId: yo, todos: !!permisosYo.aulaCompleta });
+                return x.n ? [{
+                    tipo: 'clases', clave: 'aula_dudas', n: x.n, marca: x.ultima, fecha: x.ultima, destino: '/admin/aula?dudas=1',
+                    texto: `${x.n} ${plural(x.n, 'duda', 'dudas')} del aula virtual por contestar`, detalle: 'preguntas de los alumnos al profesor',
                 }] : [];
             });
         }

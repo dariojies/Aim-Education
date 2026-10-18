@@ -179,6 +179,27 @@ export async function crearTablasAula(client) {
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )`);
     await client.query(`CREATE INDEX IF NOT EXISTS ix_aula_intentos ON aim_aula_intentos (leccion_id, user_id)`);
+    // Dudas al profesor (#461): la pregunta (duda_id NULL) y sus respuestas, en
+    // la misma tabla. Privada (el alumno y quien lleva el curso) o compartida
+    // con todo el curso, donde también pueden contestar los compañeros.
+    await client.query(`
+        CREATE TABLE IF NOT EXISTS aim_aula_dudas (
+            id SERIAL PRIMARY KEY,
+            curso_id INTEGER NOT NULL REFERENCES aim_aula_cursos(id) ON DELETE CASCADE,
+            duda_id INTEGER REFERENCES aim_aula_dudas(id) ON DELETE CASCADE,
+            leccion_id INTEGER REFERENCES aim_aula_lecciones(id) ON DELETE SET NULL,
+            user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+            es_profesor BOOLEAN NOT NULL DEFAULT false,
+            titulo VARCHAR(200),
+            cuerpo TEXT NOT NULL,
+            imagen BYTEA,
+            imagen_mime VARCHAR(60),
+            publica BOOLEAN NOT NULL DEFAULT false,
+            estado VARCHAR(10) NOT NULL DEFAULT 'abierta',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+    await client.query(`CREATE INDEX IF NOT EXISTS ix_aula_dudas ON aim_aula_dudas (curso_id) WHERE duda_id IS NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS ix_aula_dudas_hilo ON aim_aula_dudas (duda_id)`);
 }
 
 // Las preguntas que llegan de la pantalla, limpias: enunciado, de 2 a 4
@@ -672,6 +693,145 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
         } catch (err) { fallo(res, err); }
     });
 
+    // ── Dudas al profesor (#461) ──
+    // Las ve su alumno y quien lleva el curso; las compartidas, todo el curso.
+    // Las contesta el profesor del curso (o, si no tiene, secretaría); en las
+    // compartidas, también los compañeros.
+    const nombreCorto = (x) => `${x.name || ''}${x.surname ? ` ${x.surname.trim()[0]}.` : ''}`.trim() || 'Alumno';
+    const nombreEntero = (x) => `${x.name || ''} ${x.surname || ''}`.trim() || 'Alumno';
+    const resumenDuda = (d, { gestor, yo }) => ({
+        id: d.id, cursoId: d.curso_id, curso: d.curso, titulo: d.titulo, leccionId: d.leccion_id, leccion: d.leccion || null,
+        publica: d.publica, estado: d.estado, mia: String(d.user_id) === String(yo),
+        autor: gestor ? nombreEntero(d) : nombreCorto(d), respuestas: d.respuestas, creada: d.created_at, ultima: d.ultima,
+        pendiente: d.estado === 'abierta' && !d.ultima_profesor,
+    });
+    async function dudaDe(req, id) {
+        const d = (await pool.query(`${SQL_DUDAS} d.id = $1`, [id])).rows[0];
+        if (!d) corta(404, 'Esa duda ya no está.');
+        const { gestor } = await puedeVer(req, d.curso_id);
+        const mia = String(d.user_id) === String(req.userSession.userId);
+        if (!gestor && !mia && !d.publica) corta(403, 'Esa duda es privada.');
+        return { d, gestor, mia };
+    }
+    const MIME_IMAGEN = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+
+    router.get('/api/aula/cursos/:id/dudas', authenticateSession, async (req, res) => {
+        try {
+            const { c, gestor } = await puedeVer(req, idDe(req.params.id));
+            const yo = req.userSession.userId;
+            const r = await pool.query(`${SQL_DUDAS} d.curso_id = $1 ${gestor ? '' : 'AND (d.publica OR d.user_id = $2)'} ORDER BY ul.created_at DESC LIMIT 300`,
+                gestor ? [c.id] : [c.id, yo]);
+            res.set('Cache-Control', 'no-store');
+            res.json({ gestor, dudas: r.rows.map(d => resumenDuda(d, { gestor, yo })) });
+        } catch (err) { fallo(res, err); }
+    });
+    router.post('/api/aula/cursos/:id/dudas', authenticateSession, async (req, res) => {
+        try {
+            const { c, gestor } = await puedeVer(req, idDe(req.params.id));
+            if (gestor) corta(400, 'Las dudas las preguntan los alumnos: tú las contestas.');
+            const titulo = txt(req.body?.titulo, 200), cuerpo = txt(req.body?.cuerpo, 10000);
+            if (!titulo) corta(400, 'Ponle un título a tu duda.');
+            if (!cuerpo) corta(400, 'Cuenta tu duda.');
+            let leccionId = null;
+            if (req.body?.leccionId) {
+                const l = (await pool.query(`SELECT id FROM aim_aula_lecciones WHERE id = $1 AND curso_id = $2`, [Number(req.body.leccionId) || 0, c.id])).rows[0];
+                leccionId = l?.id || null;
+            }
+            const r = await pool.query(
+                `INSERT INTO aim_aula_dudas (curso_id, leccion_id, user_id, titulo, cuerpo, publica) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+                [c.id, leccionId, req.userSession.userId, titulo, cuerpo, req.body?.publica === true]);
+            res.status(201).json({ success: true, id: r.rows[0].id, mensajeId: r.rows[0].id });
+        } catch (err) { fallo(res, err); }
+    });
+    router.get('/api/aula/dudas/:id', authenticateSession, async (req, res) => {
+        try {
+            const { d, gestor } = await dudaDe(req, idDe(req.params.id));
+            const yo = req.userSession.userId;
+            const m = await pool.query(
+                `SELECT m.id, m.user_id, m.es_profesor, m.cuerpo, m.created_at, (m.imagen IS NOT NULL) AS con_imagen, u.name, u.surname
+                 FROM aim_aula_dudas m LEFT JOIN users u ON u.user_id = m.user_id
+                 WHERE m.id = $1 OR m.duda_id = $1 ORDER BY m.created_at, m.id`, [d.id]);
+            res.set('Cache-Control', 'no-store');
+            res.json({
+                ...resumenDuda(d, { gestor, yo }), gestor,
+                mensajes: m.rows.map(x => ({
+                    id: x.id, mio: String(x.user_id) === String(yo), esProfesor: x.es_profesor, cuerpo: x.cuerpo, fecha: x.created_at,
+                    autor: x.es_profesor || gestor ? nombreEntero(x) : nombreCorto(x),
+                    imagen: x.con_imagen ? `/api/aula/dudas/mensajes/${x.id}/imagen` : null,
+                    puedeBorrar: gestor || String(x.user_id) === String(yo),
+                })),
+            });
+        } catch (err) { fallo(res, err); }
+    });
+    // Contestar: quien lleva el curso, su alumno y, si es compartida, los compañeros.
+    // Si el alumno vuelve a escribir en una resuelta, se abre otra vez.
+    router.post('/api/aula/dudas/:id/mensajes', authenticateSession, async (req, res) => {
+        try {
+            const { d, gestor, mia } = await dudaDe(req, idDe(req.params.id));
+            const cuerpo = txt(req.body?.cuerpo, 10000);
+            if (!cuerpo) corta(400, 'Escribe algo.');
+            const r = await pool.query(
+                `INSERT INTO aim_aula_dudas (curso_id, duda_id, user_id, es_profesor, cuerpo) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+                [d.curso_id, d.id, req.userSession.userId, gestor, cuerpo]);
+            if (mia && d.estado === 'resuelta') await pool.query(`UPDATE aim_aula_dudas SET estado = 'abierta' WHERE id = $1`, [d.id]);
+            res.status(201).json({ success: true, id: r.rows[0].id });
+        } catch (err) { fallo(res, err); }
+    });
+    // Resuelta o abierta (su alumno o quien lleva el curso) y compartirla: la
+    // comparte su alumno; quien lleva el curso solo puede dejarla privada.
+    router.put('/api/aula/dudas/:id', authenticateSession, async (req, res) => {
+        try {
+            const { d, gestor, mia } = await dudaDe(req, idDe(req.params.id));
+            if (!gestor && !mia) corta(403, 'Esa duda no es tuya.');
+            const estado = ['abierta', 'resuelta'].includes(req.body?.estado) ? req.body.estado : d.estado;
+            let publica = d.publica;
+            if (typeof req.body?.publica === 'boolean') {
+                if (req.body.publica && !mia) corta(403, 'Solo quien la pregunta puede compartirla con el curso.');
+                publica = req.body.publica;
+            }
+            await pool.query(`UPDATE aim_aula_dudas SET estado = $2, publica = $3 WHERE id = $1`, [d.id, estado, publica]);
+            res.json({ success: true });
+        } catch (err) { fallo(res, err); }
+    });
+    // Borrar un mensaje: el suyo, o cualquiera quien lleva el curso. El primero
+    // se lleva la duda entera.
+    async function mensajeDe(req) {
+        const m = (await pool.query(`SELECT id, duda_id, user_id, created_at, imagen_mime FROM aim_aula_dudas WHERE id = $1`, [idDe(req.params.id)])).rows[0];
+        if (!m) corta(404, 'Ese mensaje ya no está.');
+        return { m, ...(await dudaDe(req, m.duda_id || m.id)) };
+    }
+    router.delete('/api/aula/dudas/mensajes/:id', authenticateSession, async (req, res) => {
+        try {
+            const { m, gestor } = await mensajeDe(req);
+            if (!gestor && String(m.user_id) !== String(req.userSession.userId)) corta(403, 'Solo puedes borrar lo tuyo.');
+            await pool.query(`DELETE FROM aim_aula_dudas WHERE id = $1`, [m.id]);
+            res.json({ success: true, duda: !m.duda_id });
+        } catch (err) { fallo(res, err); }
+    });
+    // Una foto con el mensaje (una captura del ejercicio…), tal cual, justo después de escribirlo.
+    router.put('/api/aula/dudas/mensajes/:id/imagen', authenticateSession, crudo('6mb'), async (req, res) => {
+        try {
+            const { m } = await mensajeDe(req);
+            if (String(m.user_id) !== String(req.userSession.userId)) corta(403, 'Solo puedes poner la foto en tu mensaje.');
+            if (Date.now() - new Date(m.created_at).getTime() > 30 * 60 * 1000) corta(400, 'Ese mensaje ya no se puede cambiar.');
+            const datos = Buffer.isBuffer(req.body) ? req.body : null;
+            const mime = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+            if (!datos?.length) corta(400, 'No ha llegado la imagen.');
+            if (!MIME_IMAGEN.includes(mime)) corta(400, 'Solo imágenes (JPG, PNG, WebP o GIF).');
+            if (datos.length > 5 * 1048576) corta(400, 'La imagen pasa de 5 MB.');
+            await pool.query(`UPDATE aim_aula_dudas SET imagen = $2, imagen_mime = $3 WHERE id = $1`, [m.id, datos, mime]);
+            res.json({ success: true });
+        } catch (err) { fallo(res, err); }
+    });
+    router.get('/api/aula/dudas/mensajes/:id/imagen', authenticateSession, async (req, res) => {
+        try {
+            const { m } = await mensajeDe(req);
+            const x = (await pool.query(`SELECT imagen, imagen_mime FROM aim_aula_dudas WHERE id = $1`, [m.id])).rows[0];
+            if (!x?.imagen) corta(404, 'No hay imagen.');
+            res.set({ 'Content-Type': x.imagen_mime, 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' }).send(x.imagen);
+        } catch (err) { fallo(res, err); }
+    });
+
     // ════════════════════════ Gestión ════════════════════════
 
     router.get('/api/admin/aula', ...gestion, async (req, res) => {
@@ -687,14 +847,15 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                         (SELECT COUNT(*)::int FROM aim_aula_inscripciones i LEFT JOIN aim_cargos cg ON cg.id = i.cargo_id
                           WHERE i.curso_id = c.id AND i.estado = 'pendiente_pago' AND NOT ${SQL_ACCESO('i', 'cg')}) AS por_pagar,
                         (SELECT COUNT(*)::int FROM aim_aula_entregas e JOIN aim_aula_lecciones l ON l.id = e.leccion_id
-                          WHERE l.curso_id = c.id AND e.corregida_at IS NULL) AS por_corregir
+                          WHERE l.curso_id = c.id AND e.corregida_at IS NULL) AS por_corregir,
+                        (SELECT COUNT(*)::int FROM aim_aula_dudas d WHERE d.curso_id = c.id AND d.duda_id IS NULL AND ${SQL_DUDA_PENDIENTE}) AS dudas
                  FROM aim_aula_cursos c LEFT JOIN aim_precios p ON p.concepto = c.concepto LEFT JOIN users u ON u.user_id = c.profesor_id
                  ${todos ? '' : 'WHERE c.profesor_id = $1'} ORDER BY c.orden, c.created_at DESC`, todos ? [] : [req.userSession.userId]);
             res.set('Cache-Control', 'no-store');
             res.json({
                 completa: todos, espacio: { usado: await espacioUsado(), tope: TOPE_TOTAL, maxVideo: MAX_VIDEO, maxArchivo: MAX_ARCHIVO },
                 cursos: r.rows.map(c => ({ id: c.id, titulo: c.titulo, publicado: c.publicado, profesor: c.profesor || null, lecciones: c.lecciones,
-                    alumnos: c.alumnos, porPagar: c.por_pagar, porCorregir: c.por_corregir, precio: totalDe(c), gratis: !totalDe(c),
+                    alumnos: c.alumnos, porPagar: c.por_pagar, porCorregir: c.por_corregir, dudas: c.dudas, precio: totalDe(c), gratis: !totalDe(c),
                     portada: c.con_portada ? `/api/aula/cursos/${c.id}/portada?v=${new Date(c.updated_at).getTime()}` : null })),
             });
         } catch (err) { fallo(res, err); }
@@ -1189,6 +1350,20 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
         } catch (err) { fallo(res, err); }
     });
 
+    // ── Dudas de todos sus cursos (o de todos, con el aula completa) ──
+    router.get('/api/admin/aula/dudas', ...gestion, async (req, res) => {
+        try {
+            const vals = [];
+            let filtro = 'TRUE';
+            if (req.query.curso) { const c = await editable(req, idDe(req.query.curso)); vals.push(c.id); filtro = `d.curso_id = $${vals.length}`; }
+            else if (!completa(req)) { vals.push(req.userSession.userId); filtro = `cu.profesor_id = $${vals.length}`; }
+            if (req.query.pendientes === '1') filtro += ` AND ${SQL_DUDA_PENDIENTE}`;
+            const r = await pool.query(`${SQL_DUDAS} ${filtro} ORDER BY (${SQL_DUDA_PENDIENTE}) DESC, ul.created_at DESC LIMIT 300`, vals);
+            res.set('Cache-Control', 'no-store');
+            res.json(r.rows.map(d => resumenDuda(d, { gestor: true, yo: req.userSession.userId })));
+        } catch (err) { fallo(res, err); }
+    });
+
     // ── Corregir ──
     router.get('/api/admin/aula/entregas', ...gestion, async (req, res) => {
         try {
@@ -1236,6 +1411,21 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
     return { router };
 }
 
+// Las dudas (#461) con su último mensaje: por contestar si es del alumno (o de
+// un compañero) y no está resuelta. Se completa con el WHERE.
+const SQL_ULTIMO = `LEFT JOIN LATERAL (SELECT m.created_at, m.es_profesor, m.user_id FROM aim_aula_dudas m
+    WHERE m.id = d.id OR m.duda_id = d.id ORDER BY m.created_at DESC, m.id DESC LIMIT 1) ul ON true`;
+const SQL_DUDA_PENDIENTE = `(d.estado = 'abierta' AND NOT COALESCE((SELECT m.es_profesor FROM aim_aula_dudas m
+    WHERE m.id = d.id OR m.duda_id = d.id ORDER BY m.created_at DESC, m.id DESC LIMIT 1), false))`;
+const SQL_DUDAS = `
+    SELECT d.id, d.curso_id, d.titulo, d.leccion_id, d.publica, d.estado, d.user_id, d.created_at, cu.titulo AS curso, l.titulo AS leccion,
+           u.name, u.surname, (SELECT COUNT(*)::int FROM aim_aula_dudas m WHERE m.duda_id = d.id) AS respuestas,
+           ul.created_at AS ultima, ul.es_profesor AS ultima_profesor
+    FROM aim_aula_dudas d JOIN aim_aula_cursos cu ON cu.id = d.curso_id
+    LEFT JOIN aim_aula_lecciones l ON l.id = d.leccion_id LEFT JOIN users u ON u.user_id = d.user_id
+    ${SQL_ULTIMO}
+    WHERE d.duda_id IS NULL AND`;
+
 // ── Para la campanita ──
 // Del personal: las entregas sin corregir de los cursos que lleva (o de todos).
 export async function entregasPorCorregir(pool, { userId, todos }) {
@@ -1243,6 +1433,22 @@ export async function entregasPorCorregir(pool, { userId, todos }) {
         `SELECT COUNT(*)::int n, MAX(e.entregada_at) AS ultima FROM aim_aula_entregas e
          JOIN aim_aula_lecciones l ON l.id = e.leccion_id JOIN aim_aula_cursos cu ON cu.id = l.curso_id
          WHERE e.corregida_at IS NULL ${todos ? '' : 'AND cu.profesor_id = $1'}`, todos ? [] : [userId])).rows[0];
+}
+// Del personal: las dudas por contestar del profesor del curso; con el aula
+// completa, también las de los cursos sin profesor.
+export async function dudasPorResponder(pool, { userId, todos }) {
+    return (await pool.query(
+        `SELECT COUNT(*)::int n, MAX(ul.created_at) AS ultima FROM aim_aula_dudas d JOIN aim_aula_cursos cu ON cu.id = d.curso_id ${SQL_ULTIMO}
+         WHERE d.duda_id IS NULL AND d.estado = 'abierta' AND NOT ul.es_profesor
+           AND (cu.profesor_id = $1 ${todos ? 'OR cu.profesor_id IS NULL' : ''})`, [userId])).rows[0];
+}
+// De quien pregunta: sus dudas con respuesta nueva (de otro) en las dos últimas semanas.
+export async function dudasContestadas(pool, userId) {
+    return (await pool.query(
+        `SELECT d.id, d.titulo, d.curso_id, cu.titulo AS curso, d.leccion_id, ul.created_at AS ultima, ul.es_profesor
+         FROM aim_aula_dudas d JOIN aim_aula_cursos cu ON cu.id = d.curso_id ${SQL_ULTIMO}
+         WHERE d.duda_id IS NULL AND d.user_id = $1 AND ul.user_id IS DISTINCT FROM $1 AND ul.created_at > NOW() - INTERVAL '14 days'
+         ORDER BY ul.created_at DESC LIMIT 5`, [userId])).rows;
 }
 // De quien hace el curso: sus tareas corregidas en las dos últimas semanas.
 export async function tareasCorregidas(pool, userId) {

@@ -3,6 +3,7 @@ import { I } from './Icons.jsx';
 import { AimHeader, AimFooter, MagicText } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 import { imagenSubible } from '../imagenes.js';
+import { DudasCurso } from './AulaDudas.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Aula virtual (ticket #433), la parte de quien hace los cursos:
@@ -322,6 +323,11 @@ function AulaAprender({ id }) {
   }, [todas, actual, path]);
   const l = todas.find(x => x.id === actual);
   const i = todas.findIndex(x => x.id === actual);
+  // Una duda concreta (?duda=, desde el aviso de que la han contestado).
+  const dudaPedida = Number(new URLSearchParams(path.includes('?') ? path.slice(path.indexOf('?')) : '').get('duda')) || null;
+  useEffect(() => {
+    if (dudaPedida && c) setTimeout(() => document.getElementById('aula-dudas')?.scrollIntoView({ behavior: 'smooth' }), 300);
+  }, [dudaPedida, !!c]); // eslint-disable-line react-hooks/exhaustive-deps
   const hechas = todas.filter(x => x.hecha).length;
   const pct = todas.length ? Math.round(100 * hechas / todas.length) : 0;
 
@@ -347,6 +353,7 @@ function AulaAprender({ id }) {
         style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 800, fontSize: 14, color: 'var(--ink-2)', textDecoration: 'none' }}>←</a>
       <b style={{ flex: 1, minWidth: 0, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c?.titulo || 'Aula virtual'}</b>
       {c && !c.gestor && !c.previa && <Progreso pct={pct} ancho={140} />}
+      {c && !c.previa && <button type="button" className="btn btn-sm btn-outline" onClick={() => document.getElementById('aula-dudas')?.scrollIntoView({ behavior: 'smooth' })}>💬 Dudas</button>}
       {c && <button type="button" className="btn btn-sm btn-outline aula-boton-temario" onClick={() => setMenu(m => !m)}>Temario</button>}
     </header>
   );
@@ -430,6 +437,7 @@ function AulaAprender({ id }) {
               )}
             </>
           )}
+          {!c.previa && <DudasCurso cursoId={id} leccion={l && !l.bloqueada ? l : null} gestor={c.gestor} abrir={dudaPedida} />}
         </article>
       </div>
     </div>
