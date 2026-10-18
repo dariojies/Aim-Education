@@ -105,22 +105,22 @@ function AimHeader({ route } = {}) {
   const grupos = [
     { id: "home", label: "Inicio", href: "/" },
     { id: "actividades", label: "Actividades", activos: ["activities", "camp", "calendar"], hijos: [
-      { id: "activities", label: "Todas las actividades", href: "/actividades", detalle: "Taekwondo, ballet, inglés, robótica…" },
-      { id: "camp", label: "Campamento de verano", href: "/campamento", detalle: "De 4 a 14 años, por la mañana" },
-      { id: "calendar", label: "Calendario", href: "/calendario", detalle: "Eventos, exámenes y fechas" },
+      { id: "activities", label: "Todas las actividades", href: "/actividades", detalle: "Taekwondo, ballet, inglés, robótica…", icono: <I.Sparkle />, color: "#5233A8" },
+      { id: "camp", label: "Campamento de verano", href: "/campamento", detalle: "De 4 a 14 años, por la mañana", icono: <I.Sun />, color: "#F5A400" },
+      { id: "calendar", label: "Calendario", href: "/calendario", detalle: "Eventos, exámenes y fechas", icono: <I.Calendar />, color: "#00A6DA" },
     ] },
     // Los cursos online (#433) y el material del club (#432).
     { id: "aula", label: "Aula virtual", href: "/aula" },
     { id: "tienda", label: "Tienda", href: "/tienda" },
     { id: "novedades", label: "Novedades", activos: ["news", "blog"], hijos: [
-      { id: "news", label: "Noticias", href: "/noticias", detalle: "Lo que pasa en el club" },
-      { id: "blog", label: "Blog", href: "/blog", detalle: "Ideas y consejos del equipo" },
+      { id: "news", label: "Noticias", href: "/noticias", detalle: "Lo que pasa en el club", icono: <I.Newspaper />, color: "#E8559F" },
+      { id: "blog", label: "Blog", href: "/blog", detalle: "Ideas y consejos del equipo", icono: <I.Bulb />, color: "#F5A400" },
     ] },
     { id: "club", label: "El club", activos: ["about", "brickslab", "contact"], hijos: [
-      { id: "about", label: "Conócenos", href: "/conocenos", detalle: "Quiénes somos" },
+      { id: "about", label: "Conócenos", href: "/conocenos", detalle: "Quiénes somos", icono: <I.Heart />, color: "#E8559F" },
       // Los sets de LEGO y la biblioteca del club (#291).
-      { id: "brickslab", label: "Brickslab y Biblioteca", href: "/brickslab", detalle: "LEGO y libros para llevar a casa" },
-      { id: "contact", label: "Contacto", href: "/contacto", detalle: "Escríbenos o ven a vernos" },
+      { id: "brickslab", label: "Brickslab y Biblioteca", href: "/brickslab", detalle: "LEGO y libros para llevar a casa", icono: <I.Robot />, color: "#21B668" },
+      { id: "contact", label: "Contacto", href: "/contacto", detalle: "Escríbenos o ven a vernos", icono: <I.Mail />, color: "#00A6DA" },
     ] },
   ];
   // El desplegable abierto con un toque (en el ordenador se abre también al pasar por encima).
@@ -135,14 +135,15 @@ function AimHeader({ route } = {}) {
   }, [abierto]);
   const ir = (href) => (e) => { e.preventDefault(); setAbierto(null); setMenuOpen(false); e.currentTarget.blur?.(); go(href); };
   const Flecha = () => <svg className="menu-flecha" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>;
-  const Desplegable = ({ g, alDerecha }) => (
+  const Desplegable = ({ g, alDerecha, claseBoton = '' }) => (
     <div className={`menu-grupo${abierto === g.id ? ' abierto' : ''}`}>
-      <button type="button" className={`menu-boton${(g.activos || []).includes(activeRoute) ? ' is-active' : ''}`} aria-haspopup="true" aria-expanded={abierto === g.id}
+      <button type="button" className={`menu-boton${(g.activos || []).includes(activeRoute) ? ' is-active' : ''}${claseBoton}`} aria-haspopup="true" aria-expanded={abierto === g.id}
         onClick={() => setAbierto(a => (a === g.id ? null : g.id))}>{g.label} <Flecha /></button>
       <div className={`menu-panel${alDerecha ? ' derecha' : ''}`} role="menu">
         {g.hijos.map(h => (
-          <a key={h.id} role="menuitem" href={h.href} className={activeRoute === h.id ? 'is-active' : ''} onClick={h.accion || ir(h.href)}>
-            <b>{h.label}</b>{h.detalle && <span>{h.detalle}</span>}
+          <a key={h.id} role="menuitem" href={h.href} className={activeRoute === h.id ? 'is-active' : ''} onClick={h.accion || ir(h.href)} style={h.color ? { '--c': h.color } : undefined}>
+            {h.icono && <i className="menu-icono" aria-hidden="true">{h.icono}</i>}
+            <span className="menu-texto"><b>{h.label}</b>{h.detalle && <span>{h.detalle}</span>}</span>
           </a>
         ))}
       </div>
@@ -174,9 +175,9 @@ function AimHeader({ route } = {}) {
             // familia) elige ahí entre el panel y su área.
             user.canAccessAdmin ? (
               <div className="menu-cuenta">
-                <Desplegable alDerecha g={{ id: 'cuenta', label: 'Mi cuenta', hijos: [
-                  { id: 'admin', label: 'Panel de admin', href: '/admin', detalle: 'La gestión del club' },
-                  { id: 'familia', label: 'Mi área de familia', href: '/dashboard', detalle: 'Clases, pagos y fotos' },
+                <Desplegable alDerecha claseBoton=" btn btn-gradient" g={{ id: 'cuenta', label: 'Mi cuenta', hijos: [
+                  { id: 'admin', label: 'Panel de admin', href: '/admin', detalle: 'La gestión del club', icono: <I.Dashboard />, color: "#5233A8" },
+                  { id: 'familia', label: 'Mi área de familia', href: '/dashboard', detalle: 'Clases, pagos y fotos', icono: <I.Users />, color: "#21B668" },
                 ] }} />
               </div>
             ) : (

@@ -365,14 +365,44 @@ header.aim-header.scrolled {
 .aim-header nav .menu-panel a::after, .menu-cuenta .menu-panel a::after { display: none; }
 .menu-panel a:hover, .menu-panel a.is-active { background: var(--bg-3); }
 .menu-panel a b { font-weight: 700; }
-.menu-panel a span { font-size: 12px; color: var(--ink-3); font-weight: 500; }
-/* «Mi cuenta» del personal: un botón con el aspecto del de siempre. */
-.menu-cuenta .menu-boton {
-  padding: 10px 18px; border-radius: 12px; color: #fff; font-weight: 700;
-  background: linear-gradient(135deg, #5233A8, #B06AD9 60%, #FF99D3);
-}
-.menu-cuenta .menu-boton:hover { color: #fff; filter: brightness(1.05); }
+.menu-panel a .menu-texto { display: grid; gap: 1px; }
+.menu-panel a .menu-texto span { font-size: 12px; color: var(--ink-3); font-weight: 500; }
+/* «Mi cuenta» del personal: el mismo botón de arcoíris animado (btn-gradient)
+   que el de las familias, con su flecha. */
+.menu-cuenta .menu-grupo .menu-boton.btn-gradient { color: #fff; padding: 12px 20px; font-weight: 600; }
 .menu-cuenta .menu-flecha { opacity: .9; }
+
+/* Cada opción con su icono de color (--c, en Shared.jsx), como las fichas de
+   la portada, y una flecha al pasar por encima. El panel entra deslizándose y lleva arriba
+   una franja de arcoíris. (Se anima sin opacidad: con el desenfoque de la
+   barra, Chrome lo dejaba medio transparente.) */
+@keyframes menu-entra { from { transform: translateY(-8px); clip-path: inset(0 0 100% 0 round 20px); } to { transform: none; clip-path: inset(0 0 0 0 round 20px); } }
+.menu-grupo.abierto > .menu-panel { animation: menu-entra .18s ease-out; }
+@media (hover: hover) { .menu-grupo:hover > .menu-panel { animation: menu-entra .18s ease-out; } }
+@media (prefers-reduced-motion: reduce) { .menu-grupo > .menu-panel { animation: none !important; } }
+.menu-panel { min-width: 310px; padding: 12px 10px 10px; border-radius: 20px; }
+.menu-panel::after {
+  content: ""; position: absolute; left: 18px; right: 18px; top: 0; height: 3px; border-radius: 0 0 3px 3px;
+  background: linear-gradient(90deg, #5233A8, #FF99D3, #FFD526, #21B668, #00BBF4, #5233A8); background-size: 200% 100%;
+  animation: background-pan 6s linear infinite;
+}
+.aim-header nav .menu-panel a, .menu-cuenta .menu-panel a {
+  grid-template-columns: auto 1fr auto; align-items: center; column-gap: 12px; padding: 9px 12px 9px 9px; position: relative;
+  transition: background .15s ease;
+}
+.menu-icono {
+  display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; font-style: normal;
+  color: #fff; background: var(--c); box-shadow: 0 6px 14px -6px var(--c); transition: transform .15s ease;
+}
+.menu-icono svg { width: 19px; height: 19px; }
+.menu-panel a::before {
+  content: "→"; grid-column: 3; grid-row: 1; font-weight: 700; color: var(--ink-3); opacity: 0; transform: translateX(-4px); transition: opacity .15s ease, transform .15s ease;
+}
+.menu-panel a:hover::before { opacity: 1; transform: none; }
+.menu-panel a:hover .menu-icono { transform: scale(1.06); }
+/* La fila elegida se tiñe de su color. */
+.menu-panel a[style]:hover, .menu-panel a[style].is-active { background: color-mix(in oklab, var(--c) 9%, var(--bg-2)); }
+.menu-panel a[style]:hover b { color: color-mix(in oklab, var(--c) 80%, var(--ink)); }
 .mobile-nav { align-items: stretch; text-align: left; }
 .mobile-nav > a, .mobile-grupo { width: 100%; box-sizing: border-box; }
 .mobile-grupo { display: grid; justify-items: start; padding: 10px 0 4px; border-bottom: 1px solid var(--line-2); }
