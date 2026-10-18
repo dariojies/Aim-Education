@@ -80,11 +80,26 @@ function estadoLeccion(x) {
   return null;
 }
 // El diploma de aprovechamiento (#455), al terminar todo el curso.
+// Si el diploma está diseñado en «Diseños», se pinta aquí con sus datos y sale
+// en PDF; si no, el PDF de siempre, hecho en el servidor.
 function BotonDiploma({ url, grande = false }) {
+  const [haciendo, setHaciendo] = useState(false);
   if (!url) return null;
+  async function bajar(e) {
+    e.preventDefault();
+    setHaciendo(true);
+    try {
+      const r = await fetch(`${url}?formato=datos`, { credentials: 'include', cache: 'no-store' });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || 'No se ha podido preparar el diploma.');
+      if (!d.diseno) { window.location.href = `${url}?descargar=1`; return; }
+      const { exportarDiseno } = await import('../disenos/render.js');
+      await exportarDiseno(d.diseno, 'pdf', d.nombre || 'Diploma', { variables: d.variables });
+    } catch (err) { alert(err.message); } finally { setHaciendo(false); }
+  }
   return (
-    <a className={`btn ${grande ? 'btn-primary' : 'btn-sm btn-outline'}`} href={`${url}?descargar=1`} style={{ justifySelf: 'start' }}>
-      🎓 Descargar mi diploma
+    <a className={`btn ${grande ? 'btn-primary' : 'btn-sm btn-outline'}`} href={`${url}?descargar=1`} onClick={bajar} style={{ justifySelf: 'start' }}>
+      🎓 {haciendo ? 'Preparando el diploma…' : 'Descargar mi diploma'}
     </a>
   );
 }

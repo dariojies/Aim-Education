@@ -23,6 +23,7 @@
     "express": "^4.18.2",
     "heic2any": "^0.0.4",
     "imapflow": "^1.7.8",
+    "jspdf": "^2.5.2",
     "lucide-react": "^0.563.0",
     "mailparser": "^3.9.31",
     "nodemailer": "^8.0.10",

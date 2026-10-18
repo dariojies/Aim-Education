@@ -17,6 +17,7 @@
 import express from 'express';
 import crypto from 'crypto';
 import { generarDiplomaPdf } from './diploma-pdf.js';
+import { disenoDiploma } from './disenos.js';
 
 export const TROZO = 2 * 1024 * 1024;
 export const MAX_VIDEO = 100 * 1024 * 1024;
@@ -254,7 +255,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
     const esGestor = (req) => !!req.userSession?.canAccessAdmin && !!permisos(req).secciones?.aula;
     async function curso(id) {
         const c = (await pool.query(
-            `SELECT c.id, c.titulo, c.resumen, c.descripcion, c.profesor_id, c.publicado, c.concepto, c.updated_at,
+            `SELECT c.id, c.titulo, c.resumen, c.descripcion, c.profesor_id, c.publicado, c.concepto, c.updated_at, c.diploma_diseno_id,
                     (c.portada IS NOT NULL) AS con_portada, p.precio, p.iva_pct, p.activo AS precio_activo,
                     TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS profesor
              FROM aim_aula_cursos c
@@ -434,6 +435,15 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             if (!x.lecciones || x.hechas < x.lecciones) corta(403, 'El diploma sale al terminar todas las lecciones del curso.');
             const u = (await pool.query(`SELECT TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS nombre FROM users WHERE user_id = $1`, [me])).rows[0];
             const codigo = crypto.createHash('sha256').update(`aim-diploma:${id}:${me}`).digest('hex').slice(0, 10).toUpperCase();
+            // Con un diploma diseñado en «Diseños», el navegador lo pinta con estos datos.
+            if (req.query.formato === 'datos') {
+                res.set('Cache-Control', 'private, no-store');
+                return res.json({
+                    diseno: await disenoDiploma(pool, id), nombre: `Diploma ${c.titulo}`,
+                    variables: { alumno: u?.nombre || 'Alumno', curso: c.titulo, profesor: c.profesor || '', lecciones: String(x.lecciones), codigo,
+                        fecha: new Date(x.terminado).toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Madrid' }) },
+                });
+            }
             res.setHeader('Content-Type', 'application/pdf');
             const nombre = String(c.titulo).normalize('NFD').replace(/\p{M}/gu, '').replace(/[^\w]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || id;
             res.setHeader('Content-Disposition', `${req.query.descargar ? 'attachment' : 'inline'}; filename="diploma-${nombre}.pdf"`);
@@ -715,7 +725,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                  WHERE l.curso_id = $1 ORDER BY l.orden, l.id`, [c.id])).rows;
             res.set('Cache-Control', 'no-store');
             res.json({
-                id: c.id, titulo: c.titulo, resumen: c.resumen, descripcion: c.descripcion, publicado: c.publicado, profesorId: c.profesor_id, profesor: c.profesor || null,
+                id: c.id, titulo: c.titulo, resumen: c.resumen, descripcion: c.descripcion, publicado: c.publicado, profesorId: c.profesor_id, profesor: c.profesor || null, diplomaDisenoId: c.diploma_diseno_id || null,
                 precio: c.concepto && c.precio_activo !== false ? Number(c.precio) : 0, ivaPct: c.concepto ? Number(c.iva_pct) : 21, total: totalDe(c), concepto: c.concepto,
                 portada: c.con_portada ? `/api/aula/cursos/${c.id}/portada?v=${new Date(c.updated_at).getTime()}` : null, completa: completa(req),
                 temas: temas.map(t => ({ ...t, lecciones: lecs.filter(l => l.tema_id === t.id).map(l => ({
@@ -780,6 +790,12 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             await client.query(
                 `UPDATE aim_aula_cursos SET titulo = $2, resumen = $3, descripcion = $4, publicado = $5, updated_at = NOW()${completa(req) && req.body?.profesorId !== undefined ? ', profesor_id = $6' : ''} WHERE id = $1`,
                 [c.id, d.titulo, d.resumen, d.descripcion, d.publicado, ...(completa(req) && req.body?.profesorId !== undefined ? [req.body.profesorId || null] : [])]);
+            // Su diploma (un diseño de tipo diploma) o el de por defecto (null).
+            if (req.body?.diplomaDisenoId !== undefined) {
+                const did = req.body.diplomaDisenoId ? Number(req.body.diplomaDisenoId) : null;
+                if (did && !(await client.query(`SELECT 1 FROM aim_disenos WHERE id = $1 AND tipo = 'diploma'`, [did])).rowCount) corta(400, 'Ese diseño no es un diploma.');
+                await client.query(`UPDATE aim_aula_cursos SET diploma_diseno_id = $2 WHERE id = $1`, [c.id, did]);
+            }
             if (completa(req)) { const p = precioDeBody(req.body); await guardarPrecio(client, c, p.precio, p.iva, d.titulo); }
             await client.query('COMMIT');
             res.json({ success: true });

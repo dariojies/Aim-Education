@@ -30,6 +30,7 @@ import { crearSeo } from './seo.js';
 import { crearIndexNow } from './indexnow.js';
 import { crearAgrupaciones, crearTablasAgrupaciones } from './agrupaciones.js';
 import { crearSustituciones, crearTablasSustituciones, SQL_SUSTITUYE } from './sustituciones.js';
+import { crearDisenos, crearTablasDisenos } from './disenos.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
@@ -2330,6 +2331,8 @@ async function initDb() {
         // El aula virtual (#433): cursos, temario, lo subido, inscripciones,
         // progreso y entregas. Al final: sus cargos y precios ya existen.
         await crearTablasAula(client);
+        // Diseños (el «Canva» del club) y el diploma de cada curso. Ver disenos.js.
+        await crearTablasDisenos(client);
         // La tienda online (#432): productos, fotos, variantes, pedidos y líneas.
         await crearTablasTienda(client);
     } finally {
@@ -5205,6 +5208,8 @@ setInterval(function publicarRedesProgramadas() { publicacionesRedes.publicarPen
 setInterval(function seguidoresRedes() { publicacionesRedes.fotoSeguidores(); }, 6 * 3600_000);
 // Evaluación (#411): de los profes y la dirección; las familias no ven nada.
 app.use(crearEvaluacion({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireSeccion, permisos, grupoSuyo }).router);
+// Diseños: carteles, posts y diplomas (el «Canva» del club).
+app.use(crearDisenos({ pool, authenticateSession, requireSeccion }).router);
 // Sustitutos de un profe ausente (#445).
 app.use(crearSustituciones({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireAdmin, requireRol, rolEfectivo }).router);
 // Agrupaciones dentro de una clase (#441).

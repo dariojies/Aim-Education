@@ -246,8 +246,12 @@ function EditorCurso({ id, showToast, espacio, onCerrar }) {
 
 function DatosCurso({ c, recargar, showToast, onBorrado }) {
   const [f, setF] = useState({ titulo: c.titulo, resumen: c.resumen || '', descripcion: c.descripcion || '', publicado: c.publicado,
-    profesorId: c.profesorId || '', precio: c.precio ? String(c.precio).replace('.', ',') : '', ivaPct: c.ivaPct ?? 21 });
+    profesorId: c.profesorId || '', precio: c.precio ? String(c.precio).replace('.', ',') : '', ivaPct: c.ivaPct ?? 21,
+    diplomaDisenoId: c.diplomaDisenoId ? String(c.diplomaDisenoId) : '' });
   const [profes, setProfes] = useState([]);
+  // Los diplomas diseñados en «Diseños» (para elegir el de este curso).
+  const [diplomas, setDiplomas] = useState(null);
+  useEffect(() => { api('/api/admin/disenos-diplomas').then(setDiplomas).catch(() => setDiplomas({ diplomas: [] })); }, []);
   const [guardando, setGuardando] = useState(false);
   const [subiendo, setSubiendo] = useState(false);
   useEffect(() => { if (c.completa) api('/api/admin/aula/profesores').then(setProfes).catch(() => {}); }, [c.completa]);
@@ -311,6 +315,13 @@ function DatosCurso({ c, recargar, showToast, onBorrado }) {
           {c.total ? `Precio: ${euros(c.total)}.` : 'Curso gratis.'} El precio lo pone secretaría o la dirección.
         </p>
       )}
+      <label style={etiqueta}>Diploma al terminar el curso
+        <select value={f.diplomaDisenoId} onChange={e => cambiar('diplomaDisenoId', e.target.value)} style={inp}>
+          <option value="">El del aula por defecto{diplomas?.porDefecto ? ` (${diplomas.diplomas.find(d => d.id === diplomas.porDefecto)?.nombre || 'diseñado'})` : ' (el de siempre)'}</option>
+          {(diplomas?.diplomas || []).map(d => <option key={d.id} value={d.id}>{d.nombre}</option>)}
+        </select>
+        <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}>Los diplomas se diseñan en Comunicación → Diseño gráfico (como un diploma de Canva, con el nombre del alumno, el curso y la fecha).</span>
+      </label>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <button type="submit" className="btn btn-primary btn-sm" disabled={guardando}>{guardando ? 'Guardando…' : 'Guardar'}</button>
         <div style={{ flex: 1 }} />

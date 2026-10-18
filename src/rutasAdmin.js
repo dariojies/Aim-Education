@@ -28,6 +28,7 @@ export const RUTAS_ADMIN = {
   // 'recibos' es el nombre antiguo: esa sección ahora son los gastos del club.
   payments: ['gastos', 'recibos'],
   bandeja: ['correo'],
+  grafico: ['diseno-grafico'],
   redes: ['redes'],
   contactos: ['consultas'],
   comunicaciones: ['comunicaciones', 'crm'],

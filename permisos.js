@@ -131,6 +131,8 @@ export function permisosDe(rol) {
             faltas: mandaAlMenos(rol, 'secretaria'),
             // CRM: segmentos, campañas y correo del club (tickets #310-#316).
             comunicaciones: mandaAlMenos(rol, 'secretaria'),
+            // Diseño gráfico (el «Canva» del club): carteles, posts, historias y diplomas.
+            grafico: mandaAlMenos(rol, 'secretaria'),
             // La bandeja de correo: el suyo de @aimeducation.es (#449, todo el
             // personal) y, para secretaría y dirección, el general (info@, #317).
             bandeja: true,

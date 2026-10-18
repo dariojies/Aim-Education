@@ -43,6 +43,7 @@ import AdminCtas from './AdminCtas.jsx';
 import AdminRedes from './AdminRedes.jsx';
 import FusionarFichas, { AvisoRepetida } from './FusionarFichas.jsx';
 import AdminBandeja from './AdminBandeja.jsx';
+import AdminDisenos from './AdminDisenos.jsx';
 import AdminAlmacen from './AdminAlmacen.jsx';
 import AdminContactos from './AdminContactos.jsx';
 import AdminCandidatos from './AdminCandidatos.jsx';
@@ -110,6 +111,7 @@ function sectionLabel(id, pestana) {
     candidatos: "Candidatos",
     incidencias: "Incidencias",
     brickslab: "Brickslab y Biblioteca",
+    grafico: "Diseño gráfico",
     galeria: "Fotos",
     evaluacion: "Evaluación",
     aula: "Aula virtual",
@@ -6903,6 +6905,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         // Publicar y programar en Facebook e Instagram, con sus estadísticas (#410).
         { id: "comunicaciones", pestana: "publicaciones", label: "Publicaciones", icon: <I.Calendar width={18} height={18} /> },
         { id: "comunicaciones", pestana: "campanas", label: "Campañas", icon: <I.Enviar /> },
+        // Carteles, posts, historias y diplomas, como en Canva.
+        { id: "grafico", label: "Diseño gráfico", icon: <I.Brush width={18} height={18} /> },
         { id: "comunicaciones", pestana: "segmentos", label: "Segmentos", icon: <I.Filter width={18} height={18} /> },
         { id: "comunicaciones", pestana: "automatismos", label: "Automatismos", icon: <I.Spark width={18} height={18} /> },
         { id: "comunicaciones", pestana: "disenos", label: "Diseños", icon: <I.Brush width={18} height={18} /> },
@@ -7086,6 +7090,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("brickslab") && <AdminBrickslab showToast={showToast} enlace={enlace} />}
           {ver("galeria") && <AdminGaleria showToast={showToast} />}
           {ver("bandeja") && <AdminBandeja showToast={showToast} onAbrirFicha={abrirFicha} />}
+          {ver("grafico") && <AdminDisenos showToast={showToast} />}
           {ver("redes") && <AdminRedes showToast={showToast} onAbrirFicha={abrirFicha} />}
           {ver("rangos") && <AdminRangosPermisos grupos={gruposMenu} showToast={showToast} />}
           {ver("overview") && <AdminResumen permisos={permisos} refreshTrigger={refreshTrigger} ir={navTo} irRuta={(ruta) => go(ruta)} />}
