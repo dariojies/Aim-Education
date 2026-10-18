@@ -4586,3 +4586,42 @@ html.es-app [role="dialog"] { padding-top: calc(var(--app-arriba) + 12px) !impor
     box-shadow: 0 22px 30px -20px rgba(15, 23, 42, .35);
   }
 }
+
+/* #456: la barra de arriba, con más presencia. En el ordenador, los apartados
+   van en una cápsula centrada (cada uno, una píldora; el de la página en la que
+   se está, en morado suave en vez de la rayita), la barra tiene su fondo y su
+   filo, y al bajar coge una sombra suave. En el móvil no cambia (hamburguesa). */
+@media (min-width: 1025px) {
+  header.aim-header {
+    background: color-mix(in oklab, var(--bg) 80%, transparent);
+    border-bottom-color: color-mix(in oklab, var(--line) 70%, transparent);
+  }
+  header.aim-header.scrolled { box-shadow: 0 12px 32px -22px rgba(15, 23, 42, .45); }
+  .aim-header .row { padding-top: 12px; padding-bottom: 12px; gap: 18px; }
+  .aim-header .row > nav {
+    flex: 0 1 auto; margin: 0 auto; gap: 2px; padding: 5px;
+    border-radius: 999px; background: var(--bg-2); border: 1px solid var(--line);
+    box-shadow: 0 8px 22px -16px rgba(15, 23, 42, .35);
+  }
+  .aim-header .row > nav > a,
+  .aim-header .row > nav .menu-boton {
+    padding: 8px 14px; border-radius: 999px; font-weight: 600; color: var(--ink-2);
+    transition: background-color var(--tx-fast) ease, color var(--tx-fast) ease;
+  }
+  .aim-header .row > nav > a::after,
+  .aim-header .row > nav .menu-boton.is-active::after { display: none; }
+  .aim-header .row > nav > a:hover,
+  .aim-header .row > nav .menu-boton:hover,
+  .aim-header .row > nav .menu-grupo.abierto > .menu-boton { background: var(--bg-3); color: var(--ink); }
+  .aim-header .row > nav > a.is-active,
+  .aim-header .row > nav .menu-boton.is-active {
+    background: color-mix(in oklab, var(--purple) 13%, var(--bg-2)); color: var(--purple);
+  }
+  .aim-header .row > nav .menu-panel { top: calc(100% + 12px); }
+}
+@media (min-width: 1025px) and (max-width: 1200px) {
+  .aim-header .row > nav > a,
+  .aim-header .row > nav .menu-boton { padding: 8px 10px; font-size: 13px; }
+}
+html[data-theme="dark"] .aim-header .row > nav > a.is-active,
+html[data-theme="dark"] .aim-header .row > nav .menu-boton.is-active { color: #C9B8FF; }
