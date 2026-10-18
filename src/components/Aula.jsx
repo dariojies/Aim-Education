@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { I } from './Icons.jsx';
 import { AimHeader, AimFooter, MagicText } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
+import { imagenSubible } from '../imagenes.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Aula virtual (ticket #433), la parte de quien hace los cursos:
@@ -63,6 +64,28 @@ function Progreso({ pct, ancho = '100%' }) {
       </div>
       <b style={{ fontSize: 12 }}>{pct} %</b>
     </div>
+  );
+}
+
+// Cómo va una lección (#455): las de leer, ver o descargar se terminan al
+// abrirlas; un cuestionario, al sacar un 5; una tarea, cuando el profesor la aprueba.
+function estadoLeccion(x) {
+  if (x.bloqueada) return { icono: '🔒', texto: 'Del curso completo', color: 'var(--ink-3)' };
+  if (x.hecha) return { icono: '✓', texto: x.tipo === 'tarea' || x.tipo === 'cuestionario' ? 'Aprobada' : 'Vista', color: 'var(--teal)' };
+  if (x.tipo === 'tarea' && x.entrega) {
+    if (!x.entrega.corregida_at) return { icono: '⏳', texto: 'Entregada: falta que la corrija el profesor', color: 'var(--orange)' };
+    return { icono: '✗', texto: 'No superada: vuelve a entregarla', color: 'var(--pink)' };
+  }
+  if (x.tipo === 'cuestionario' && x.cuestionario?.mejor != null) return { icono: '✗', texto: 'Aún sin aprobar: saca un 5 para superarlo', color: 'var(--pink)' };
+  return null;
+}
+// El diploma de aprovechamiento (#455), al terminar todo el curso.
+function BotonDiploma({ url, grande = false }) {
+  if (!url) return null;
+  return (
+    <a className={`btn ${grande ? 'btn-primary' : 'btn-sm btn-outline'}`} href={`${url}?descargar=1`} style={{ justifySelf: 'start' }}>
+      🎓 Descargar mi diploma
+    </a>
   );
 }
 
@@ -197,7 +220,17 @@ function FichaCurso({ id }) {
               <b style={{ fontSize: 28 }}>{c.gratis ? 'Gratis' : euros(c.precio)}</b>
               {!c.gratis && <span style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: -8 }}>{c.conIva ? 'IVA incluido. ' : ''}Pago único, con tarjeta o Bizum, o en secretaría.</span>}
               {c.mio?.acceso ? (
-                <button type="button" className="btn btn-primary" onClick={() => go(`/aula/${id}/curso`)}>Entrar al curso <I.Arrow /></button>
+                <>
+                  {/* Su avance (#455). */}
+                  <div style={{ display: 'grid', gap: 4 }}>
+                    <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>{c.mio.hechas} de {c.mio.lecciones} {c.mio.lecciones === 1 ? 'lección terminada' : 'lecciones terminadas'}</span>
+                    <Progreso pct={c.mio.progreso} />
+                  </div>
+                  {c.mio.diploma
+                    ? <><span style={{ fontWeight: 800, color: 'var(--teal)' }}>🎉 ¡Curso completado!</span><BotonDiploma url={c.mio.diploma} grande /></>
+                    : null}
+                  <button type="button" className={`btn ${c.mio.diploma ? 'btn-outline' : 'btn-primary'}`} onClick={() => go(`/aula/${id}/curso`)}>{c.mio.diploma ? 'Repasar el curso' : c.mio.hechas ? 'Seguir con el curso' : 'Entrar al curso'} <I.Arrow /></button>
+                </>
               ) : c.mio?.pendientePago ? (
                 <>
                   <span style={{ fontSize: 14 }}>Estás apuntado. Entrarás en cuanto esté pagado.</span>
@@ -230,7 +263,7 @@ function FichaCurso({ id }) {
                 <b style={{ fontSize: 16 }}>{i + 1}. {t.titulo}</b>
                 {t.lecciones.map(l => (
                   <span key={l.id} style={{ display: 'flex', gap: 10, fontSize: 14, color: 'var(--ink-2)', alignItems: 'center' }}>
-                    <span style={{ width: 20, textAlign: 'center' }}>{TIPO_LECCION[l.tipo].icono}</span>{l.titulo}
+                    <span style={{ width: 20, textAlign: 'center', color: l.hecha ? 'var(--teal)' : undefined }}>{l.hecha ? '✓' : TIPO_LECCION[l.tipo].icono}</span>{l.titulo}
                     {l.gratis && <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--teal)', background: 'color-mix(in oklab, var(--teal) 12%, var(--bg-2))', padding: '1px 8px', borderRadius: 999 }}>Gratis</span>}
                   </span>
                 ))}
@@ -277,6 +310,11 @@ function AulaAprender({ id }) {
   const hechas = todas.filter(x => x.hecha).length;
   const pct = todas.length ? Math.round(100 * hechas / todas.length) : 0;
 
+  // Las de leer, ver o descargar cuentan como terminadas al abrirlas (#455).
+  useEffect(() => {
+    if (!c || c.gestor || !l || l.bloqueada || l.hecha || !['texto', 'video', 'archivo'].includes(l.tipo)) return;
+    marcar(l, true);
+  }, [l?.id, c?.gestor]); // eslint-disable-line react-hooks/exhaustive-deps
   async function marcar(leccion, hecha) {
     setC(x => ({ ...x, temas: x.temas.map(t => ({ ...t, lecciones: t.lecciones.map(y => (y.id === leccion.id ? { ...y, hecha } : y)) })) }));
     await fetch(`/api/aula/lecciones/${leccion.id}/hecha`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hecha }) }).catch(() => {});
@@ -309,7 +347,7 @@ function AulaAprender({ id }) {
             <button key={x.id} type="button" onClick={() => ir(todas.findIndex(y => y.id === x.id))}
               style={{ font: 'inherit', textAlign: 'left', cursor: 'pointer', display: 'flex', gap: 8, alignItems: 'center', padding: '8px 10px', borderRadius: 10, border: 0,
                 background: x.id === actual ? 'color-mix(in oklab, var(--purple) 12%, var(--bg-2))' : 'transparent', color: 'var(--ink)', fontWeight: x.id === actual ? 800 : 500, fontSize: 14 }}>
-              <span style={{ width: 20, flex: 'none', textAlign: 'center', color: x.hecha ? 'var(--teal)' : 'inherit' }}>{x.bloqueada ? '🔒' : x.hecha ? '✓' : TIPO_LECCION[x.tipo].icono}</span>
+              <span title={estadoLeccion(x)?.texto} style={{ width: 20, flex: 'none', textAlign: 'center', fontWeight: 800, color: estadoLeccion(x)?.color || 'inherit' }}>{estadoLeccion(x)?.icono || TIPO_LECCION[x.tipo].icono}</span>
               <span style={{ flex: 1, color: x.bloqueada ? 'var(--ink-3)' : undefined }}>{x.titulo}</span>
             </button>
           ))}
@@ -365,15 +403,16 @@ function AulaAprender({ id }) {
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', borderTop: '1px solid var(--line)', paddingTop: 16 }}>
                 <button type="button" className="btn btn-sm btn-outline" disabled={i <= 0} onClick={() => ir(i - 1)}>← Anterior</button>
                 <div style={{ flex: 1 }} />
-                {!c.gestor && l.tipo !== 'tarea' && l.tipo !== 'cuestionario' && (
-                  <button type="button" className={`btn btn-sm ${l.hecha ? 'btn-ghost' : 'btn-outline'}`} onClick={() => marcar(l, !l.hecha)}>
-                    {l.hecha ? '✓ Hecha' : 'Marcar como hecha'}
-                  </button>
-                )}
-                <button type="button" className="btn btn-sm btn-primary" disabled={i >= todas.length - 1}
-                  onClick={() => { if (!c.gestor && !l.hecha && l.tipo !== 'tarea' && l.tipo !== 'cuestionario') marcar(l, true); ir(i + 1); }}>Siguiente →</button>
+                {!c.gestor && estadoLeccion(l) && <span style={{ fontSize: 13, fontWeight: 800, color: estadoLeccion(l).color }}>{estadoLeccion(l).icono} {estadoLeccion(l).texto}</span>}
+                <button type="button" className="btn btn-sm btn-primary" disabled={i >= todas.length - 1} onClick={() => ir(i + 1)}>Siguiente →</button>
               </div>
-              {!c.gestor && !c.previa && pct === 100 && <p style={{ margin: 0, padding: 14, borderRadius: 14, background: 'color-mix(in oklab, var(--teal) 12%, var(--bg-2))', fontWeight: 700 }}>🎉 ¡Has completado todo el curso!</p>}
+              {!c.gestor && !c.previa && pct === 100 && (
+                <div style={{ padding: 16, borderRadius: 14, background: 'color-mix(in oklab, var(--teal) 12%, var(--bg-2))', display: 'grid', gap: 10 }}>
+                  <b style={{ fontSize: 16 }}>🎉 ¡Has completado todo el curso!</b>
+                  <span style={{ fontSize: 14, color: 'var(--ink-2)' }}>Ya tienes tu diploma de aprovechamiento.</span>
+                  <BotonDiploma url={`/api/aula/cursos/${id}/diploma`} grande />
+                </div>
+              )}
             </>
           )}
         </article>
@@ -448,10 +487,19 @@ function Cuestionario({ l, gestor, onHecho }) {
     : <Practica d={d} l={l} gestor={gestor} onHecho={onHecho} />;
 }
 
+// #453: las preguntas y sus respuestas salen en otro orden cada vez. Cada
+// opción guarda su número de verdad (k): eso es lo que se contesta y se corrige.
+function barajar(lista) {
+  const a = [...lista];
+  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
+}
+const barajarCuestionario = (preguntas) => barajar(preguntas).map(p => ({ ...p, orden: barajar(p.opciones.map((_, k) => k)) }));
+
 // De práctica, como en Learning Dungeon: una a una, se ve al momento si está
 // bien; si no, se vuelve a intentar. Cuenta lo acertado a la primera.
 function Practica({ d, l, gestor, onHecho }) {
-  const ps = d.preguntas;
+  const [ps, setPs] = useState(() => barajarCuestionario(d.preguntas));
   const [i, setI] = useState(0);
   const [tocadas, setTocadas] = useState([]);       // las elegidas en la pregunta de ahora
   const [primeras, setPrimeras] = useState({});     // { idPregunta: primera elegida }
@@ -471,7 +519,7 @@ function Practica({ d, l, gestor, onHecho }) {
     await fetch(`/api/aula/lecciones/${l.id}/intentos`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ respuestas: primeras }) }).catch(() => {});
     onHecho?.();
   }
-  function otraVez() { setI(0); setTocadas([]); setPrimeras({}); setFin(null); }
+  function otraVez() { setPs(barajarCuestionario(d.preguntas)); setI(0); setTocadas([]); setPrimeras({}); setFin(null); }
 
   if (fin) {
     const pct = Math.round(100 * fin.aciertos / fin.total);
@@ -495,8 +543,8 @@ function Practica({ d, l, gestor, onHecho }) {
       {p.imagen && <img src={p.imagen} alt="" style={{ maxWidth: '100%', maxHeight: 280, objectFit: 'contain', justifySelf: 'center', borderRadius: 12 }} />}
       <b style={{ fontSize: 20, lineHeight: 1.35 }}>{p.enunciado}</b>
       <div style={{ display: 'grid', gap: 8 }}>
-        {p.opciones.map((o, k) => (
-          <Opcion key={k} letra={LETRA[k]} texto={o} disabled={acertada}
+        {p.orden.map((k, pos) => (
+          <Opcion key={k} letra={LETRA[pos]} texto={p.opciones[k]} disabled={acertada}
             estado={tocadas.includes(k) ? (k === p.correcta ? 'bien' : 'mal') : acertada ? 'nada' : null} onClick={() => elegir(k)} />
         ))}
       </div>
@@ -533,7 +581,10 @@ function Correcciones({ detalle }) {
 
 // Evaluable: se contesta entero, se entrega y sale la nota con las correcciones.
 function Evaluable({ d, l, recargar }) {
-  const [haciendo, setHaciendo] = useState(false);
+  const [haciendo, setHaciendoE] = useState(false);
+  const [ps, setPs] = useState(() => barajarCuestionario(d.preguntas));
+  // Cada intento, en otro orden.
+  const setHaciendo = (v) => { if (v) setPs(barajarCuestionario(d.preguntas)); setHaciendoE(v); };
   const [resp, setResp] = useState({});
   const [enviando, setEnviando] = useState(false);
   const [resultado, setResultado] = useState(null);
@@ -588,12 +639,12 @@ function Evaluable({ d, l, recargar }) {
   }
   return (
     <div style={{ display: 'grid', gap: 14 }}>
-      {d.preguntas.map((p, n) => (
+      {ps.map((p, n) => (
         <div key={p.id} style={{ ...tarjeta, padding: 16, display: 'grid', gap: 8 }}>
           <b>{n + 1}. {p.enunciado}</b>
           {p.imagen && <img src={p.imagen} alt="" style={{ maxWidth: '100%', maxHeight: 240, objectFit: 'contain', borderRadius: 10 }} />}
-          {p.opciones.map((o, k) => (
-            <Opcion key={k} letra={LETRA[k]} texto={o} estado={resp[p.id] === k ? 'elegida' : null} onClick={() => setResp(x => ({ ...x, [p.id]: k }))} />
+          {p.orden.map((k, pos) => (
+            <Opcion key={k} letra={LETRA[pos]} texto={p.opciones[k]} estado={resp[p.id] === k ? 'elegida' : null} onClick={() => setResp(x => ({ ...x, [p.id]: k }))} />
           ))}
         </div>
       ))}
@@ -667,7 +718,7 @@ function Entrega({ l, onEntregada }) {
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             <label className="btn btn-sm btn-outline" style={{ position: 'relative', overflow: 'hidden', cursor: 'pointer' }}>
               📎 {archivo ? 'Cambiar archivo' : 'Adjuntar archivo'}
-              <input type="file" onChange={x => { setArchivo(x.target.files?.[0] || null); x.target.value = ''; }} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }} />
+              <input type="file" onChange={async x => { const f = x.target.files?.[0] || null; x.target.value = ''; setArchivo(f ? await imagenSubible(f) : null); }} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }} />
             </label>
             {archivo && <span style={{ fontSize: 13 }}>{archivo.name} ({mb(archivo.size)})</span>}
             {!archivo && e?.archivo && !quitar && <span style={{ fontSize: 13 }}>Se queda el que entregaste ({e.archivo_nombre}) · <button type="button" onClick={() => setQuitar(true)} style={{ font: 'inherit', background: 'none', border: 0, color: 'var(--pink)', cursor: 'pointer', padding: 0 }}>quitarlo</button></span>}
@@ -713,7 +764,8 @@ export function MisCursos() {
                 {c.acceso ? (
                   <>
                     <Progreso pct={c.progreso} />
-                    <button type="button" className="btn btn-primary btn-sm" onClick={() => go(`/aula/${c.id}/curso`)}>{c.hechas ? 'Seguir' : 'Empezar'}</button>
+                    {c.progreso === 100 && c.lecciones > 0 && <BotonDiploma url={`/api/aula/cursos/${c.id}/diploma`} />}
+                    <button type="button" className="btn btn-primary btn-sm" onClick={() => go(`/aula/${c.id}/curso`)}>{c.progreso === 100 ? 'Repasar' : c.hechas ? 'Seguir' : 'Empezar'}</button>
                   </>
                 ) : (
                   <>

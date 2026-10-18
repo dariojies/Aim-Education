@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { I } from './Icons.jsx';
 import { useRouter } from '../App.jsx';
 import { incrustarVideo, TIPO_LECCION, Texto, mb } from './Aula.jsx';
+import { imagenSubible } from '../imagenes.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Aula virtual, la gestión (ticket #433): los cursos con su temario (temas y
@@ -43,9 +44,11 @@ export async function subirAlAula(cursoId, file, onProgreso) {
   }
   return ini.id;
 }
-// Algunos navegadores (el iPad con .mov, Windows con .docx) no dan el tipo.
+// Algunos navegadores (el iPad con .mov, Windows con .docx) no dan el tipo, y
+// Safari llama a algunos de otra manera (audio/x-m4a, x-zip-compressed…).
+const ALIAS_TIPO = { 'audio/x-m4a': 'audio/mp4', 'audio/m4a': 'audio/mp4', 'audio/mp3': 'audio/mpeg', 'application/x-zip-compressed': 'application/zip', 'image/jpg': 'image/jpeg' };
 function tipoDe(file) {
-  if (file.type) return file.type;
+  if (file.type) return ALIAS_TIPO[file.type] || file.type;
   const ext = (file.name.split('.').pop() || '').toLowerCase();
   return ({ mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
     docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', doc: 'application/msword',
@@ -427,6 +430,8 @@ function EditorLeccion({ cursoId, temaId, l, espacio, onCerrar, onGuardado }) {
 
   async function subir(file) {
     if (!file) return;
+    // Una foto del iPad (HEIC) o muy grande: a JPG antes de subirla (#455).
+    if (!esVideo) file = await imagenSubible(file);
     const max = esVideo ? espacio?.maxVideo : espacio?.maxArchivo;
     if (max && file.size > max) { alert(esVideo ? 'El vídeo pasa de 100 MB. Súbelo a YouTube (como «oculto») o a Vimeo y pega aquí el enlace.' : 'El archivo pasa de 10 MB.'); return; }
     setSubida({ nombre: file.name, pct: 0 });

@@ -15,6 +15,8 @@
 //    de los que es profesor, y sin tocar precios ni accesos (aulaCompleta).
 // ─────────────────────────────────────────────────────────────────────────────
 import express from 'express';
+import crypto from 'crypto';
+import { generarDiplomaPdf } from './diploma-pdf.js';
 
 export const TROZO = 2 * 1024 * 1024;
 export const MAX_VIDEO = 100 * 1024 * 1024;
@@ -389,12 +391,18 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             if (!c.publicado && !gestor) corta(404, 'Ese curso no existe.');
             const temas = (await pool.query(`SELECT id, titulo FROM aim_aula_temas WHERE curso_id = $1 ORDER BY orden, id`, [id])).rows;
             const lecs = (await pool.query(`SELECT id, tema_id, tipo, titulo, gratis FROM aim_aula_lecciones WHERE curso_id = $1 ORDER BY orden, id`, [id])).rows;
-            let mio = null;
+            let mio = null, hechas = new Set();
             if (s?.userId) {
                 const ins = await inscripcion(id, s.userId);
                 if (ins && ins.estado !== 'baja') {
                     const pagable = ins.cargo_id && ins.cargo_estado === 'pendiente';
-                    mio = { acceso: ins.acceso, pendientePago: !ins.acceso && ins.estado === 'pendiente_pago', cargoId: pagable ? ins.cargo_id : null };
+                    // Su avance (#455): lo terminado, el porcentaje y, al 100 %, el diploma.
+                    hechas = new Set((await pool.query(
+                        `SELECT pr.leccion_id FROM aim_aula_progreso pr JOIN aim_aula_lecciones l ON l.id = pr.leccion_id WHERE l.curso_id = $1 AND pr.user_id = $2`, [id, s.userId])).rows.map(x => x.leccion_id));
+                    const n = lecs.filter(l => hechas.has(l.id)).length;
+                    mio = { acceso: ins.acceso, pendientePago: !ins.acceso && ins.estado === 'pendiente_pago', cargoId: pagable ? ins.cargo_id : null,
+                        hechas: n, lecciones: lecs.length, progreso: lecs.length ? Math.round(100 * n / lecs.length) : 0,
+                        diploma: ins.acceso && lecs.length > 0 && n === lecs.length ? `/api/aula/cursos/${id}/diploma` : null };
                 }
             }
             res.set('Cache-Control', 'no-store');
@@ -402,11 +410,35 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                 id: c.id, titulo: c.titulo, resumen: c.resumen, descripcion: c.descripcion, profesor: c.profesor || null, publicado: c.publicado,
                 portada: c.con_portada ? `/api/aula/cursos/${c.id}/portada?v=${new Date(c.updated_at).getTime()}` : null,
                 precio: totalDe(c), gratis: !totalDe(c), conIva: Number(c.iva_pct) > 0,
-                temas: temas.map(t => ({ ...t, lecciones: lecs.filter(l => l.tema_id === t.id).map(({ id: lid, tipo, titulo, gratis }) => ({ id: lid, tipo, titulo, gratis: !!totalDe(c) && gratis })) })),
+                temas: temas.map(t => ({ ...t, lecciones: lecs.filter(l => l.tema_id === t.id).map(({ id: lid, tipo, titulo, gratis }) => ({ id: lid, tipo, titulo, gratis: !!totalDe(c) && gratis, hecha: hechas.has(lid) })) })),
                 // Curso de pago con parte gratis: se puede ver eso sin pagar.
                 parteGratis: !!totalDe(c) && lecs.some(l => l.gratis),
                 sesion: !!s?.userId, mio, gestor: !!gestor, pagoOnline: pagosOnlineAbiertos(),
             });
+        } catch (err) { fallo(res, err); }
+    });
+
+    // El diploma de aprovechamiento (#455): para quien ha terminado todas las
+    // lecciones del curso. La fecha, la del día en que terminó la última.
+    router.get('/api/aula/cursos/:id/diploma', authenticateSession, async (req, res) => {
+        try {
+            const id = idDe(req.params.id);
+            const c = await curso(id);
+            const me = req.userSession.userId;
+            const ins = await inscripcion(id, me);
+            if (!ins?.acceso) corta(403, 'No estás apuntado a este curso.');
+            const x = (await pool.query(
+                `SELECT (SELECT COUNT(*)::int FROM aim_aula_lecciones WHERE curso_id = $1) AS lecciones,
+                        COUNT(*)::int AS hechas, MAX(pr.completada_at) AS terminado
+                 FROM aim_aula_progreso pr JOIN aim_aula_lecciones l ON l.id = pr.leccion_id WHERE l.curso_id = $1 AND pr.user_id = $2`, [id, me])).rows[0];
+            if (!x.lecciones || x.hechas < x.lecciones) corta(403, 'El diploma sale al terminar todas las lecciones del curso.');
+            const u = (await pool.query(`SELECT TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS nombre FROM users WHERE user_id = $1`, [me])).rows[0];
+            const codigo = crypto.createHash('sha256').update(`aim-diploma:${id}:${me}`).digest('hex').slice(0, 10).toUpperCase();
+            res.setHeader('Content-Type', 'application/pdf');
+            const nombre = String(c.titulo).normalize('NFD').replace(/\p{M}/gu, '').replace(/[^\w]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || id;
+            res.setHeader('Content-Disposition', `${req.query.descargar ? 'attachment' : 'inline'}; filename="diploma-${nombre}.pdf"`);
+            res.setHeader('Cache-Control', 'private, no-store');
+            generarDiplomaPdf({ alumno: u?.nombre || 'Alumno', curso: c.titulo, profesor: c.profesor || null, lecciones: x.lecciones, terminado: x.terminado, codigo }, res);
         } catch (err) { fallo(res, err); }
     });
 
@@ -542,6 +574,9 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
         try {
             const l = await leccion(idDe(req.params.id));
             await puedeVerLeccion(req, l);
+            // Las tareas cuentan al aprobarlas el profesor y los cuestionarios al
+            // sacar un 5 (#455): esas no se marcan a mano.
+            if (l.tipo === 'tarea' || l.tipo === 'cuestionario') corta(400, 'Esta lección se termina al aprobarla.');
             if (req.body?.hecha === false) await pool.query(`DELETE FROM aim_aula_progreso WHERE user_id = $1 AND leccion_id = $2`, [req.userSession.userId, l.id]);
             else await pool.query(`INSERT INTO aim_aula_progreso (user_id, leccion_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [req.userSession.userId, l.id]);
             res.json({ success: true });
@@ -590,7 +625,8 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                 await pool.query(`DELETE FROM aim_aula_entregas WHERE id = $1`, [r.rows[0].id]);
                 corta(400, 'Escribe algo o adjunta un archivo.');
             }
-            await pool.query(`INSERT INTO aim_aula_progreso (user_id, leccion_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [req.userSession.userId, l.id]);
+            // Entregada (o vuelta a entregar) no es terminada: lo es al aprobarla (#455).
+            await pool.query(`DELETE FROM aim_aula_progreso WHERE user_id = $1 AND leccion_id = $2`, [req.userSession.userId, l.id]);
             res.json({ success: true, id: r.rows[0].id });
         } catch (err) { fallo(res, err); }
     });
@@ -606,7 +642,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                 `INSERT INTO aim_aula_entregas (leccion_id, user_id, archivo, archivo_nombre, archivo_mime) VALUES ($1, $2, $3, $4, $5)
                  ON CONFLICT (leccion_id, user_id) DO UPDATE SET archivo = EXCLUDED.archivo, archivo_nombre = EXCLUDED.archivo_nombre,
                      archivo_mime = EXCLUDED.archivo_mime, ${SIN_CORREGIR}`, [l.id, req.userSession.userId, datos, nombre, mime]);
-            await pool.query(`INSERT INTO aim_aula_progreso (user_id, leccion_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [req.userSession.userId, l.id]);
+            await pool.query(`DELETE FROM aim_aula_progreso WHERE user_id = $1 AND leccion_id = $2`, [req.userSession.userId, l.id]);
             res.json({ success: true });
         } catch (err) { fallo(res, err); }
     });
@@ -1000,7 +1036,8 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             }
             await client.query(`INSERT INTO aim_aula_intentos (leccion_id, user_id, modo, respuestas, aciertos, total, nota) VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7)`,
                 [l.id, me, l.modo, JSON.stringify(res1.detalle), res1.aciertos, res1.total, res1.nota]);
-            await client.query(`INSERT INTO aim_aula_progreso (user_id, leccion_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [me, l.id]);
+            // Terminado con un 5 o más (#455); un intento peor no quita lo ya aprobado.
+            if (Number(res1.nota) >= 5) await client.query(`INSERT INTO aim_aula_progreso (user_id, leccion_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [me, l.id]);
             await client.query('COMMIT');
             res.json({ ...res1, guardado: true });
         } catch (err) { await client.query('ROLLBACK').catch(() => {}); fallo(res, err); } finally { client.release(); }
@@ -1158,7 +1195,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
     router.put('/api/admin/aula/entregas/:id', ...gestion, async (req, res) => {
         try {
             const e = (await pool.query(
-                `SELECT e.id, l.curso_id, l.calificacion FROM aim_aula_entregas e JOIN aim_aula_lecciones l ON l.id = e.leccion_id WHERE e.id = $1`, [idDe(req.params.id)])).rows[0];
+                `SELECT e.id, e.user_id, e.leccion_id, l.curso_id, l.calificacion FROM aim_aula_entregas e JOIN aim_aula_lecciones l ON l.id = e.leccion_id WHERE e.id = $1`, [idDe(req.params.id)])).rows[0];
             if (!e) corta(404, 'Esa entrega ya no está.');
             await editable(req, e.curso_id);
             let nota = null, apto = null;
@@ -1173,6 +1210,9 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             }
             await pool.query(`UPDATE aim_aula_entregas SET nota = $2, apto = $3, comentario = $4, corregida_por = $5, corregida_at = NOW() WHERE id = $1`,
                 [e.id, nota, apto, txt(req.body?.comentario, 5000), req.userSession.userId]);
+            // La tarea está terminada si se aprueba (#455).
+            if (apto) await pool.query(`INSERT INTO aim_aula_progreso (user_id, leccion_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [e.user_id, e.leccion_id]);
+            else await pool.query(`DELETE FROM aim_aula_progreso WHERE user_id = $1 AND leccion_id = $2`, [e.user_id, e.leccion_id]);
             res.json({ success: true });
         } catch (err) { fallo(res, err); }
     });
