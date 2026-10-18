@@ -200,7 +200,29 @@ export async function crearTablasAula(client) {
         )`);
     await client.query(`CREATE INDEX IF NOT EXISTS ix_aula_dudas ON aim_aula_dudas (curso_id) WHERE duda_id IS NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS ix_aula_dudas_hilo ON aim_aula_dudas (duda_id)`);
+    // La valoración del curso (#463): la rellena el alumno al terminarlo, antes
+    // de su diploma. Seis notas del 1 al 5, si lo recomendaría y qué mejoraría.
+    await client.query(`
+        CREATE TABLE IF NOT EXISTS aim_aula_valoraciones (
+            id SERIAL PRIMARY KEY,
+            curso_id INTEGER NOT NULL REFERENCES aim_aula_cursos(id) ON DELETE CASCADE,
+            user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            calidad SMALLINT NOT NULL CHECK (calidad BETWEEN 1 AND 5),
+            claridad SMALLINT NOT NULL CHECK (claridad BETWEEN 1 AND 5),
+            dominio SMALLINT NOT NULL CHECK (dominio BETWEEN 1 AND 5),
+            seguir SMALLINT NOT NULL CHECK (seguir BETWEEN 1 AND 5),
+            utilidad SMALLINT NOT NULL CHECK (utilidad BETWEEN 1 AND 5),
+            materiales SMALLINT NOT NULL CHECK (materiales BETWEEN 1 AND 5),
+            recomendaria VARCHAR(12) NOT NULL CHECK (recomendaria IN ('si','probable_si','probable_no','no')),
+            mejoras TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (curso_id, user_id)
+        )`);
 }
+
+// Las preguntas de la valoración (#463); los textos, en src/components/AulaValoracion.jsx.
+export const NOTAS_VALORACION = ['calidad', 'claridad', 'dominio', 'seguir', 'utilidad', 'materiales'];
+const RECOMIENDA = ['si', 'probable_si', 'probable_no', 'no'];
 
 // Las preguntas que llegan de la pantalla, limpias: enunciado, de 2 a 4
 // opciones, cuál es la buena, explicación e imagen (de fuera o subida al aula).
@@ -423,7 +445,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                         `SELECT pr.leccion_id FROM aim_aula_progreso pr JOIN aim_aula_lecciones l ON l.id = pr.leccion_id WHERE l.curso_id = $1 AND pr.user_id = $2`, [id, s.userId])).rows.map(x => x.leccion_id));
                     const n = lecs.filter(l => hechas.has(l.id)).length;
                     mio = { acceso: ins.acceso, pendientePago: !ins.acceso && ins.estado === 'pendiente_pago', cargoId: pagable ? ins.cargo_id : null,
-                        hechas: n, lecciones: lecs.length, progreso: lecs.length ? Math.round(100 * n / lecs.length) : 0,
+                        hechas: n, lecciones: lecs.length, progreso: lecs.length ? Math.round(100 * n / lecs.length) : 0, valorado: await valorado(id, s.userId),
                         diploma: ins.acceso && lecs.length > 0 && n === lecs.length ? `/api/aula/cursos/${id}/diploma` : null };
                 }
             }
@@ -437,6 +459,35 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                 parteGratis: !!totalDe(c) && lecs.some(l => l.gratis),
                 sesion: !!s?.userId, mio, gestor: !!gestor, pagoOnline: pagosOnlineAbiertos(),
             });
+        } catch (err) { fallo(res, err); }
+    });
+
+    // ── La valoración del curso (#463): al terminarlo, para tener el diploma ──
+    async function valorado(cursoId, userId) {
+        return (await pool.query(`SELECT 1 FROM aim_aula_valoraciones WHERE curso_id = $1 AND user_id = $2`, [cursoId, userId])).rowCount > 0;
+    }
+    router.post('/api/aula/cursos/:id/valoracion', authenticateSession, async (req, res) => {
+        try {
+            const id = idDe(req.params.id);
+            const me = req.userSession.userId;
+            const ins = await inscripcion(id, me);
+            if (!ins?.acceso) corta(403, 'No estás apuntado a este curso.');
+            const x = (await pool.query(
+                `SELECT (SELECT COUNT(*)::int FROM aim_aula_lecciones WHERE curso_id = $1) AS lecciones, COUNT(*)::int AS hechas
+                 FROM aim_aula_progreso pr JOIN aim_aula_lecciones l ON l.id = pr.leccion_id WHERE l.curso_id = $1 AND pr.user_id = $2`, [id, me])).rows[0];
+            if (!x.lecciones || x.hechas < x.lecciones) corta(400, 'La valoración se hace al terminar el curso.');
+            const b = req.body || {};
+            const notas = NOTAS_VALORACION.map(k => Number(b[k]));
+            if (notas.some(n => !Number.isInteger(n) || n < 1 || n > 5)) corta(400, 'Contesta todas las preguntas del 1 al 5.');
+            if (!RECOMIENDA.includes(b.recomendaria)) corta(400, 'Dinos si recomendarías el curso.');
+            // Si la vuelve a mandar, se queda la última.
+            await pool.query(
+                `INSERT INTO aim_aula_valoraciones (curso_id, user_id, ${NOTAS_VALORACION.join(', ')}, recomendaria, mejoras)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                 ON CONFLICT (curso_id, user_id) DO UPDATE SET ${NOTAS_VALORACION.map(k => `${k} = EXCLUDED.${k}`).join(', ')},
+                     recomendaria = EXCLUDED.recomendaria, mejoras = EXCLUDED.mejoras, created_at = NOW()`,
+                [id, me, ...notas, b.recomendaria, txt(b.mejoras, 3000)]);
+            res.json({ success: true });
         } catch (err) { fallo(res, err); }
     });
 
@@ -454,6 +505,8 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                         COUNT(*)::int AS hechas, MAX(pr.completada_at) AS terminado
                  FROM aim_aula_progreso pr JOIN aim_aula_lecciones l ON l.id = pr.leccion_id WHERE l.curso_id = $1 AND pr.user_id = $2`, [id, me])).rows[0];
             if (!x.lecciones || x.hechas < x.lecciones) corta(403, 'El diploma sale al terminar todas las lecciones del curso.');
+            // Antes del diploma, la valoración del curso (#463).
+            if (!(await valorado(id, me))) return res.status(409).json({ error: 'Antes de tu diploma, valora el curso: son dos minutos.', valorar: true });
             const u = (await pool.query(`SELECT TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS nombre FROM users WHERE user_id = $1`, [me])).rows[0];
             const codigo = crypto.createHash('sha256').update(`aim-diploma:${id}:${me}`).digest('hex').slice(0, 10).toUpperCase();
             // Con un diploma diseñado en «Diseños», el navegador lo pinta con estos datos.
@@ -537,7 +590,8 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             const r = await pool.query(
                 `SELECT cu.id, cu.titulo, cu.resumen, (cu.portada IS NOT NULL) AS con_portada, cu.updated_at, i.estado, ${SQL_ACCESO()} AS acceso,
                         CASE WHEN i.cargo_id IS NOT NULL AND c.estado = 'pendiente' THEN i.cargo_id END AS cargo_id,
-                        (SELECT COUNT(*)::int FROM aim_aula_lecciones l WHERE l.curso_id = cu.id) AS lecciones, ${SQL_PROGRESO} AS hechas
+                        (SELECT COUNT(*)::int FROM aim_aula_lecciones l WHERE l.curso_id = cu.id) AS lecciones, ${SQL_PROGRESO} AS hechas,
+                        EXISTS (SELECT 1 FROM aim_aula_valoraciones v WHERE v.curso_id = cu.id AND v.user_id = i.user_id) AS valorado
                  FROM aim_aula_inscripciones i JOIN aim_aula_cursos cu ON cu.id = i.curso_id
                  LEFT JOIN aim_cargos c ON c.id = i.cargo_id
                  WHERE i.user_id = $1 AND i.estado <> 'baja' ORDER BY i.created_at DESC`, [req.userSession.userId]);
@@ -546,7 +600,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             res.json({ cursosPublicados: hay, pagoOnline: pagosOnlineAbiertos(), cursos: r.rows.map(x => ({
                 id: x.id, titulo: x.titulo, resumen: x.resumen, acceso: x.acceso, pendientePago: !x.acceso && x.estado === 'pendiente_pago', cargoId: x.cargo_id,
                 portada: x.con_portada ? `/api/aula/cursos/${x.id}/portada?v=${new Date(x.updated_at).getTime()}` : null,
-                lecciones: x.lecciones, hechas: x.hechas, progreso: x.lecciones ? Math.round(100 * x.hechas / x.lecciones) : 0,
+                lecciones: x.lecciones, hechas: x.hechas, progreso: x.lecciones ? Math.round(100 * x.hechas / x.lecciones) : 0, valorado: x.valorado,
             })) });
         } catch (err) { fallo(res, err); }
     });
@@ -587,7 +641,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             res.set('Cache-Control', 'no-store');
             res.json({
                 id: c.id, titulo: c.titulo, profesor: c.profesor || null, gestor,
-                previa: !!previa, precio: totalDe(c),
+                previa: !!previa, precio: totalDe(c), valorado: !gestor && !previa ? await valorado(c.id, me) : true,
                 temas: temas.map(t => ({ ...t, lecciones: lecs.filter(l => l.tema_id === t.id).map(l => (previa && !l.gratis ? { id: l.id, tipo: l.tipo, titulo: l.titulo, bloqueada: true } : {
                     gratis: !!l.gratis,
                     id: l.id, tipo: l.tipo, titulo: l.titulo, texto: l.texto, calificacion: l.tipo === 'tarea' ? l.calificacion : undefined,
@@ -1347,6 +1401,34 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             await pool.query(`UPDATE aim_aula_inscripciones SET estado = $2::varchar, origen = CASE WHEN $2::varchar = 'activa' AND estado <> 'activa' THEN 'secretaria' ELSE origen END,
                               activada_at = CASE WHEN $2::varchar = 'activa' THEN COALESCE(activada_at, NOW()) ELSE activada_at END WHERE id = $1`, [i.id, estado]);
             res.json({ success: true });
+        } catch (err) { fallo(res, err); }
+    });
+
+    // ── Las valoraciones de un curso (#463): las medias, si lo recomendarían y
+    // qué mejorarían. Secretaría y la dirección, con el nombre de cada alumno;
+    // el profesor, las de su curso sin nombres (y los comentarios, barajados).
+    router.get('/api/admin/aula/cursos/:id/valoraciones', ...gestion, async (req, res) => {
+        try {
+            const c = await editable(req, idDe(req.params.id));
+            const conNombre = completa(req);
+            const r = await pool.query(
+                `SELECT v.*, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno
+                 FROM aim_aula_valoraciones v LEFT JOIN users u ON u.user_id = v.user_id
+                 WHERE v.curso_id = $1 ORDER BY v.created_at DESC`, [c.id]);
+            const v = r.rows;
+            const media = (k) => (v.length ? Math.round(10 * v.reduce((s, x) => s + x[k], 0) / v.length) / 10 : null);
+            const reparto = (k) => [1, 2, 3, 4, 5].map(n => v.filter(x => x[k] === n).length);
+            const comentarios = v.filter(x => x.mejoras).map(x => (conNombre ? { texto: x.mejoras, alumno: x.alumno, fecha: x.created_at } : { texto: x.mejoras }));
+            if (!conNombre) comentarios.sort((a, b) => a.texto.localeCompare(b.texto));
+            res.set('Cache-Control', 'no-store');
+            res.json({
+                total: v.length, conNombre,
+                notas: Object.fromEntries(NOTAS_VALORACION.map(k => [k, { media: media(k), reparto: reparto(k) }])),
+                recomendaria: Object.fromEntries(RECOMIENDA.map(k => [k, v.filter(x => x.recomendaria === k).length])),
+                comentarios,
+                respuestas: conNombre ? v.map(x => ({ alumno: x.alumno, fecha: x.created_at, recomendaria: x.recomendaria, mejoras: x.mejoras,
+                    ...Object.fromEntries(NOTAS_VALORACION.map(k => [k, x[k]])) })) : undefined,
+            });
         } catch (err) { fallo(res, err); }
     });
 

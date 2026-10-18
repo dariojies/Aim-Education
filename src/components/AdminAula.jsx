@@ -4,6 +4,7 @@ import { useRouter } from '../App.jsx';
 import { incrustarVideo, TIPO_LECCION, Texto, mb } from './Aula.jsx';
 import { imagenSubible } from '../imagenes.js';
 import { DudasGestion } from './AulaDudas.jsx';
+import { ValoracionesCurso } from './AulaValoracion.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Aula virtual, la gestión (ticket #433): los cursos con su temario (temas y
@@ -237,7 +238,7 @@ function EditorCurso({ id, showToast, espacio, onCerrar }) {
         <a className="btn btn-sm btn-outline" href={`/aula/${c.id}/curso`} target="_blank" rel="noreferrer"><I.Eye /> Verlo como alumno</a>
       </div>
       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', borderBottom: '1px solid var(--line)' }}>
-        {[['temario', 'Temario'], ['datos', 'Datos y precio'], ['alumnos', 'Alumnos'], ['entregas', `Entregas${porCorregir ? ` · ${porCorregir}` : ''}`]].map(([k, t]) => (
+        {[['temario', 'Temario'], ['datos', 'Datos y precio'], ['alumnos', 'Alumnos'], ['entregas', `Entregas${porCorregir ? ` · ${porCorregir}` : ''}`], ['valoraciones', 'Valoraciones']].map(([k, t]) => (
           <button key={k} type="button" onClick={() => setPestana(k)}
             style={{ font: 'inherit', fontSize: 14, fontWeight: 800, padding: '8px 14px', background: 'none', border: 0, cursor: 'pointer',
               color: pestana === k ? 'var(--purple)' : 'var(--ink-3)', borderBottom: `2px solid ${pestana === k ? 'var(--purple)' : 'transparent'}`, marginBottom: -1 }}>{t}</button>
@@ -245,6 +246,7 @@ function EditorCurso({ id, showToast, espacio, onCerrar }) {
       </div>
       {pestana === 'temario' && <Temario c={c} recargar={cargar} showToast={showToast} espacio={espacio} />}
       {pestana === 'datos' && <DatosCurso c={c} recargar={cargar} showToast={showToast} onBorrado={onCerrar} />}
+      {pestana === 'valoraciones' && <ValoracionesCurso cursoId={c.id} />}
       {pestana === 'alumnos' && <Alumnos cursoId={c.id} showToast={showToast} />}
       {pestana === 'entregas' && <><Entregas cursoId={c.id} showToast={showToast} onCambio={cargar} /><Resultados cursoId={c.id} /></>}
     </div>

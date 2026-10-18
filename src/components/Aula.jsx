@@ -4,6 +4,7 @@ import { AimHeader, AimFooter, MagicText } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 import { imagenSubible } from '../imagenes.js';
 import { DudasCurso } from './AulaDudas.jsx';
+import { Valoracion } from './AulaValoracion.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Aula virtual (ticket #433), la parte de quien hace los cursos:
@@ -83,15 +84,26 @@ function estadoLeccion(x) {
 // El diploma de aprovechamiento (#455), al terminar todo el curso.
 // Si el diploma está diseñado en «Diseños», se pinta aquí con sus datos y sale
 // en PDF; si no, el PDF de siempre, hecho en el servidor.
-function BotonDiploma({ url, grande = false }) {
+// Sin la valoración del curso (#463), el botón lleva a hacerla.
+function BotonDiploma({ url, grande = false, valorar = false }) {
+  const { go } = useRouter();
   const [haciendo, setHaciendo] = useState(false);
   if (!url) return null;
+  const aValorar = () => go(`${url.replace(/\/diploma$/, '').replace('/api/aula/cursos/', '/aula/')}/curso?valorar=1`);
+  if (valorar) {
+    return (
+      <button type="button" className={`btn ${grande ? 'btn-primary' : 'btn-sm btn-outline'}`} onClick={aValorar} style={{ justifySelf: 'start' }}>
+        ⭐ Valora el curso y consigue tu diploma
+      </button>
+    );
+  }
   async function bajar(e) {
     e.preventDefault();
     setHaciendo(true);
     try {
       const r = await fetch(`${url}?formato=datos`, { credentials: 'include', cache: 'no-store' });
       const d = await r.json().catch(() => ({}));
+      if (d.valorar) { aValorar(); return; }
       if (!r.ok) throw new Error(d.error || 'No se ha podido preparar el diploma.');
       if (!d.diseno) { window.location.href = `${url}?descargar=1`; return; }
       const { exportarDiseno } = await import('../disenos/render.js');
@@ -243,7 +255,7 @@ function FichaCurso({ id }) {
                     <Progreso pct={c.mio.progreso} />
                   </div>
                   {c.mio.diploma
-                    ? <><span style={{ fontWeight: 800, color: 'var(--teal)' }}>🎉 ¡Curso completado!</span><BotonDiploma url={c.mio.diploma} grande /></>
+                    ? <><span style={{ fontWeight: 800, color: 'var(--teal)' }}>🎉 ¡Curso completado!</span><BotonDiploma url={c.mio.diploma} grande valorar={!c.mio.valorado} /></>
                     : null}
                   <button type="button" className={`btn ${c.mio.diploma ? 'btn-outline' : 'btn-primary'}`} onClick={() => go(`/aula/${id}/curso`)}>{c.mio.diploma ? 'Repasar el curso' : c.mio.hechas ? 'Seguir con el curso' : 'Entrar al curso'} <I.Arrow /></button>
                 </>
@@ -328,6 +340,11 @@ function AulaAprender({ id }) {
   useEffect(() => {
     if (dudaPedida && c) setTimeout(() => document.getElementById('aula-dudas')?.scrollIntoView({ behavior: 'smooth' }), 300);
   }, [dudaPedida, !!c]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A valorar el curso (?valorar=1, desde el botón del diploma).
+  const aValorar = /[?&]valorar=1/.test(path);
+  useEffect(() => {
+    if (aValorar && c) setTimeout(() => document.getElementById('aula-valoracion')?.scrollIntoView({ behavior: 'smooth' }), 300);
+  }, [aValorar, !!c]); // eslint-disable-line react-hooks/exhaustive-deps
   const hechas = todas.filter(x => x.hecha).length;
   const pct = todas.length ? Math.round(100 * hechas / todas.length) : 0;
 
@@ -428,7 +445,8 @@ function AulaAprender({ id }) {
                 {!c.gestor && estadoLeccion(l) && <span style={{ fontSize: 13, fontWeight: 800, color: estadoLeccion(l).color }}>{estadoLeccion(l).icono} {estadoLeccion(l).texto}</span>}
                 <button type="button" className="btn btn-sm btn-primary" disabled={i >= todas.length - 1} onClick={() => ir(i + 1)}>Siguiente →</button>
               </div>
-              {!c.gestor && !c.previa && pct === 100 && (
+              {!c.gestor && !c.previa && pct === 100 && !c.valorado && <Valoracion cursoId={id} onHecha={() => setC(x => ({ ...x, valorado: true }))} />}
+              {!c.gestor && !c.previa && pct === 100 && c.valorado && (
                 <div style={{ padding: 16, borderRadius: 14, background: 'color-mix(in oklab, var(--teal) 12%, var(--bg-2))', display: 'grid', gap: 10 }}>
                   <b style={{ fontSize: 16 }}>🎉 ¡Has completado todo el curso!</b>
                   <span style={{ fontSize: 14, color: 'var(--ink-2)' }}>Ya tienes tu diploma de aprovechamiento.</span>
@@ -787,7 +805,7 @@ export function MisCursos() {
                 {c.acceso ? (
                   <>
                     <Progreso pct={c.progreso} />
-                    {c.progreso === 100 && c.lecciones > 0 && <BotonDiploma url={`/api/aula/cursos/${c.id}/diploma`} />}
+                    {c.progreso === 100 && c.lecciones > 0 && <BotonDiploma url={`/api/aula/cursos/${c.id}/diploma`} valorar={!c.valorado} />}
                     <button type="button" className="btn btn-primary btn-sm" onClick={() => go(`/aula/${c.id}/curso`)}>{c.progreso === 100 ? 'Repasar' : c.hechas ? 'Seguir' : 'Empezar'}</button>
                   </>
                 ) : (
