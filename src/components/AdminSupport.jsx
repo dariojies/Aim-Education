@@ -143,8 +143,36 @@ function leerArchivo(file) {
     fr.readAsDataURL(file);
   });
 }
+// Las fotos y capturas del móvil o del iPad (#454): suelen pasar de 4 MB (pantalla
+// retina) o venir en HEIC, y se rechazaban. Se reducen aquí, en el navegador, a
+// 2000 px como mucho y en JPG (como en la galería); las pequeñas van tal cual.
+const MAX_LADO = 2000;
+const IMAGEN_POR_NOMBRE = /\.(heic|heif|png|jpe?g|gif|webp)$/i;
+const esImagenArchivo = (f) => /^image\//.test(f?.type || '') || IMAGEN_POR_NOMBRE.test(f?.name || '');
+async function prepararImagen(file) {
+  if (/^image\/(png|jpe?g|gif|webp)$/.test(file.type || '') && file.size <= 1.5 * 1024 * 1024) return { file };
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((ok, ko) => { const i = new Image(); i.onload = () => ok(i); i.onerror = ko; i.src = url; });
+    const k = Math.min(1, MAX_LADO / Math.max(img.naturalWidth || img.width, img.naturalHeight || img.height));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round((img.naturalWidth || img.width) * k)); c.height = Math.max(1, Math.round((img.naturalHeight || img.height) * k));
+    const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+    const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85));
+    if (!blob) throw new Error('sin imagen');
+    const nombre = `${String(file.name || 'foto').replace(/\.[^.]+$/, '') || 'foto'}.jpg`;
+    return { file: new File([blob], nombre, { type: 'image/jpeg' }) };
+  } catch {
+    return { error: `No se puede leer la imagen «${file.name || 'foto'}». Prueba con una captura de pantalla o en JPG.` };
+  } finally { URL.revokeObjectURL(url); }
+}
 async function aceptarArchivo(file) {
   if (!file) return {};
+  if (esImagenArchivo(file)) {
+    const r = await prepararImagen(file);
+    if (r.error) return r;
+    file = r.file;
+  }
   if (!TIPOS_ARCHIVO.test(file.type || '')) return { error: 'Ese tipo de archivo no se puede adjuntar: imágenes, PDF, Word, Excel, texto o zip.' };
   if (file.size > MAX_ARCHIVO) return { error: 'El archivo no puede pasar de 4 MB.' };
   const archivo = await leerArchivo(file);
@@ -154,10 +182,25 @@ async function aceptarArchivo(file) {
   }
   return { archivo };
 }
-function archivoDelPortapapeles(e) {
-  for (const it of e.clipboardData?.items || []) if (it.type?.startsWith('image/')) return it.getAsFile();
-  return null;
+// Varios a la vez (#454): se aceptan los que valen y se dice qué ha fallado.
+const MAX_ADJUNTOS = 10;
+async function aceptarArchivos(files) {
+  const lista = [...(files || [])].filter(Boolean);
+  const archivos = [], errores = [];
+  for (const f of lista.slice(0, MAX_ADJUNTOS)) {
+    const { archivo, error } = await aceptarArchivo(f);
+    if (archivo) archivos.push(archivo);
+    else if (error) errores.push(lista.length > 1 ? `${f.name}: ${error}` : error);
+  }
+  if (lista.length > MAX_ADJUNTOS) errores.push(`Como mucho ${MAX_ADJUNTOS} archivos a la vez.`);
+  return { archivos, error: errores.join(' ') };
 }
+function archivosDelPortapapeles(e) {
+  return [...(e.clipboardData?.items || [])].filter(it => it.type?.startsWith('image/')).map(it => it.getAsFile()).filter(Boolean);
+}
+// El input de archivo, escondido sin «display: none» (en el iPad, a veces no se
+// abría): va dentro de una etiqueta, que es lo que se pulsa.
+const inputEscondido = { position: 'absolute', width: 1, height: 1, opacity: 0, overflow: 'hidden', pointerEvents: 'none' };
 // Un archivo adjunto ya subido: la imagen se ve; lo demás, como ficha para abrir.
 function Adjunto({ url, nombre, mime, alto = 200 }) {
   if (esImagen(mime)) {
@@ -175,45 +218,66 @@ function Adjunto({ url, nombre, mime, alto = 200 }) {
     </a>
   );
 }
-// Adjuntar al crear: pegando con Ctrl+V, arrastrándolo encima o con el botón.
-function AdjuntarArchivo({ archivo, onArchivo, onError, ayuda }) {
-  const [encima, setEncima] = useState(false);
-  const inputRef = useRef(null);
-  async function tomar(file) {
-    const { archivo: a, error } = await aceptarArchivo(file);
-    if (error) onError?.(error);
-    else if (a) { onError?.(''); onArchivo(a); }
-  }
-  if (archivo) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 10, border: '1px solid var(--line)', borderRadius: 10, background: 'var(--bg-3)' }}>
-        {esImagen(archivo.mime)
-          ? <img src={archivo.data} alt="" style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 8, flexShrink: 0 }} />
-          : <span aria-hidden="true" style={{ fontSize: 22 }}>📎</span>}
-        <span style={{ flex: 1, minWidth: 0, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{archivo.nombre}</span>
-        <button type="button" className="btn btn-sm btn-outline" onClick={() => onArchivo(null)}>Quitar</button>
-      </div>
-    );
-  }
+// La lista de lo que se va a adjuntar, cada uno con su «Quitar».
+function ListaAdjuntos({ archivos, onQuitar, mini = false }) {
+  if (!archivos.length) return null;
   return (
-    <div
-      onDragOver={e => { e.preventDefault(); setEncima(true); }}
-      onDragLeave={() => setEncima(false)}
-      onDrop={e => { e.preventDefault(); setEncima(false); tomar(e.dataTransfer.files?.[0]); }}
-      onClick={() => inputRef.current?.click()}
-      style={{
-        border: `1.5px dashed ${encima ? 'var(--purple)' : 'var(--line)'}`,
-        background: encima ? 'color-mix(in oklab, var(--purple) 8%, var(--bg-3))' : 'var(--bg-3)',
-        borderRadius: 10, padding: '14px 16px', textAlign: 'center', cursor: 'pointer',
-      }}>
-      <span className="btn btn-sm btn-outline" style={{ pointerEvents: 'none' }}>Adjuntar archivo</span>
-      <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 6 }}>
-        {ayuda || 'Una captura, un PDF, un Excel… Pégala con Ctrl+V o arrástrala aquí. Máx. 4 MB.'}
-      </div>
-      <input ref={inputRef} type="file" accept={ACEPTA} style={{ display: 'none' }}
-        onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; tomar(f); }} />
+    <div style={{ display: 'grid', gap: 6 }}>
+      {archivos.map((a, i) => (
+        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: mini ? 0 : 8, border: mini ? 0 : '1px solid var(--line)', borderRadius: 10, background: mini ? 'transparent' : 'var(--bg-3)', fontSize: mini ? 12 : 13 }}>
+          {esImagen(a.mime)
+            ? <img src={a.data} alt="" style={{ width: mini ? 40 : 48, height: mini ? 40 : 48, objectFit: 'cover', borderRadius: 8, flexShrink: 0 }} />
+            : <span aria-hidden="true" style={{ fontSize: 22 }}>📎</span>}
+          <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.nombre}</span>
+          <button type="button" className="btn btn-sm btn-outline" onClick={() => onQuitar(i)}>Quitar</button>
+        </div>
+      ))}
     </div>
   );
+}
+// Adjuntar al crear: pegando con Ctrl+V, arrastrándolos encima o con el botón.
+// Varios a la vez (#454).
+function AdjuntarArchivos({ archivos, onArchivos, onError, ayuda }) {
+  const [encima, setEncima] = useState(false);
+  async function tomar(files) {
+    const { archivos: nuevos, error } = await aceptarArchivos(files);
+    onError?.(error || '');
+    if (nuevos.length) onArchivos([...archivos, ...nuevos].slice(0, MAX_ADJUNTOS));
+  }
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      <ListaAdjuntos archivos={archivos} onQuitar={i => onArchivos(archivos.filter((_, j) => j !== i))} />
+      {archivos.length < MAX_ADJUNTOS && (
+        <label
+          onDragOver={e => { e.preventDefault(); setEncima(true); }}
+          onDragLeave={() => setEncima(false)}
+          onDrop={e => { e.preventDefault(); setEncima(false); tomar(e.dataTransfer.files); }}
+          style={{
+            display: 'block', position: 'relative',
+            border: `1.5px dashed ${encima ? 'var(--purple)' : 'var(--line)'}`,
+            background: encima ? 'color-mix(in oklab, var(--purple) 8%, var(--bg-3))' : 'var(--bg-3)',
+            borderRadius: 10, padding: '14px 16px', textAlign: 'center', cursor: 'pointer',
+          }}>
+          <span className="btn btn-sm btn-outline" style={{ pointerEvents: 'none' }}>{archivos.length ? 'Añadir más' : 'Adjuntar archivos'}</span>
+          <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 6 }}>
+            {ayuda || 'Capturas, PDF, Excel… Puedes elegir varios a la vez, pegarlos con Ctrl+V o arrastrarlos aquí. Máx. 4 MB cada uno.'}
+          </div>
+          <input type="file" accept={ACEPTA} multiple style={inputEscondido}
+            onChange={e => { const fs = [...(e.target.files || [])]; e.target.value = ''; tomar(fs); }} />
+        </label>
+      )}
+    </div>
+  );
+}
+// Los demás adjuntos de un ticket nuevo (el primero va con el ticket): cada uno
+// en un mensaje de su conversación.
+async function subirAdjuntosExtra(ticketId, canal, extra) {
+  for (const a of extra) {
+    await fetch(`/api/support/${ticketId}/mensajes`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+      body: JSON.stringify({ canal, cuerpo: '', archivo: a.data, archivoNombre: a.nombre, archivoMime: a.mime }),
+    }).catch(() => {});
+  }
 }
 
 function fmtHora(str) {
@@ -289,7 +353,7 @@ function RespuestasGuardadas({ onUsar, onCerrar }) {
 function TicketChat({ ticketId, canal, alto = 260, staff = false, onLeido }) {
   const [mensajes, setMensajes] = useState([]);
   const [texto, setTexto] = useState('');
-  const [archivo, setArchivo] = useState(null);
+  const [archivos, setArchivos] = useState([]);
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState('');
   const [verRespuestas, setVerRespuestas] = useState(false);
@@ -344,35 +408,45 @@ function TicketChat({ ticketId, canal, alto = 260, staff = false, onLeido }) {
     if (caja.scrollHeight - caja.scrollTop - caja.clientHeight < 160) finRef.current?.scrollIntoView({ block: 'nearest' });
   }, [mensajes]);
 
+  // El texto va con el primer adjunto; los demás, cada uno en su mensaje (#454).
   async function enviar(e) {
     e?.preventDefault();
-    if (!texto.trim() && !archivo) return;
+    if (enviando || (!texto.trim() && !archivos.length)) return;
     setEnviando(true); setError('');
     try {
-      const r = await fetch(`/api/support/${ticketId}/mensajes`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-        body: JSON.stringify({ canal, cuerpo: texto, archivo: archivo?.data || null, archivoNombre: archivo?.nombre || null, archivoMime: archivo?.mime || null }),
-      });
-      const d = await r.json().catch(() => ({}));
-      if (r.ok) {
-        setTexto(''); setArchivo(null);
+      const envios = archivos.length ? archivos.map((a, i) => ({ cuerpo: i === 0 ? texto : '', a })) : [{ cuerpo: texto, a: null }];
+      let fallo = null, hechos = 0;
+      for (const x of envios) {
+        const r = await fetch(`/api/support/${ticketId}/mensajes`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+          body: JSON.stringify({ canal, cuerpo: x.cuerpo, archivo: x.a?.data || null, archivoNombre: x.a?.nombre || null, archivoMime: x.a?.mime || null }),
+        });
+        if (!r.ok) { fallo = (await r.json().catch(() => ({}))).error || 'No se pudo enviar.'; break; }
+        hechos++;
+      }
+      if (hechos) {
+        setTexto(''); setArchivos(prev => prev.slice(Math.max(0, hechos - (archivos.length ? 0 : 1))));
         const rr = await fetch(`/api/support/${ticketId}/mensajes?canal=${canal}&desde=${ultimoId.current}`, { credentials: 'include', cache: 'no-store' });
         if (rr.ok) añadir((await rr.json()).mensajes || []);
-      } else setError(d.error || 'No se pudo enviar.');
+      }
+      if (fallo) setError(fallo);
     } catch { setError('Error de conexión.'); }
     finally { setEnviando(false); }
   }
-  async function tomarArchivo(file) {
-    const { archivo: a, error: err } = await aceptarArchivo(file);
-    if (err) setError(err);
-    else if (a) { setError(''); setArchivo(a); }
+  async function tomarArchivos(files) {
+    const { archivos: nuevos, error: err } = await aceptarArchivos(files);
+    setError(err || '');
+    if (nuevos.length) setArchivos(prev => [...prev, ...nuevos].slice(0, MAX_ADJUNTOS));
   }
   async function pegar(e) {
-    const f = archivoDelPortapapeles(e);
-    if (!f) return;
+    const fs = archivosDelPortapapeles(e);
+    if (!fs.length) return;
     e.preventDefault();
-    await tomarArchivo(f);
+    await tomarArchivos(fs);
   }
+  // En el chat del equipo, con teclado de ordenador, Enter envía y Mayús+Enter
+  // salta de línea. En el móvil, Enter es salto de línea (se envía con el botón).
+  const enterEnvia = canal === 'equipo' && typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: fine)').matches;
   function usarRespuesta(t) {
     setTexto(x => (x.trim() ? `${x.trimEnd()}\n\n${t}` : t));
     setVerRespuestas(false);
@@ -404,22 +478,16 @@ function TicketChat({ ticketId, canal, alto = 260, staff = false, onLeido }) {
 
       <form onSubmit={enviar} style={{ marginTop: 10 }}>
         {verRespuestas && <RespuestasGuardadas onUsar={usarRespuesta} onCerrar={() => setVerRespuestas(false)} />}
-        {archivo && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 12, color: 'var(--ink-2)' }}>
-            {esImagen(archivo.mime) ? <img src={archivo.data} alt="" style={{ width: 40, height: 40, objectFit: 'cover', borderRadius: 6 }} /> : <span aria-hidden="true">📎</span>}
-            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{archivo.nombre}</span>
-            <button type="button" className="btn btn-sm btn-outline" onClick={() => setArchivo(null)}>Quitar</button>
-          </div>
-        )}
+        {archivos.length > 0 && <div style={{ marginBottom: 8, color: 'var(--ink-2)' }}><ListaAdjuntos mini archivos={archivos} onQuitar={i => setArchivos(prev => prev.filter((_, j) => j !== i))} /></div>}
         <textarea ref={textoRef} value={texto} onChange={e => setTexto(e.target.value)} rows={3} onPaste={pegar}
-          onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) enviar(e); }}
-          placeholder="Escribe un mensaje… (Ctrl+V pega una captura, Ctrl+Enter envía)"
+          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent?.isComposing && (enterEnvia || e.ctrlKey || e.metaKey)) enviar(e); }}
+          placeholder={enterEnvia ? 'Escribe un mensaje… (Enter envía, Mayús+Enter salta de línea; Ctrl+V pega una captura)' : 'Escribe un mensaje… (Ctrl+V pega una captura, Ctrl+Enter envía)'}
           aria-label="Mensaje"
           style={{ width: '100%', resize: 'vertical', fontFamily: 'inherit', fontSize: 14, padding: 10, background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 10, color: 'var(--ink)' }} />
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6 }}>
-          <label className="btn btn-sm btn-outline" style={{ cursor: 'pointer' }} title="Adjuntar un archivo (imagen, PDF, Excel…)">
-            📎 Adjuntar<input type="file" accept={ACEPTA} style={{ display: 'none' }}
-              onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; tomarArchivo(f); }} />
+          <label className="btn btn-sm btn-outline" style={{ cursor: 'pointer', position: 'relative' }} title="Adjuntar archivos (imágenes, PDF, Excel…): puedes elegir varios">
+            📎 Adjuntar<input type="file" accept={ACEPTA} multiple style={inputEscondido}
+              onChange={e => { const fs = [...(e.target.files || [])]; e.target.value = ''; tomarArchivos(fs); }} />
           </label>
           {staff && (
             <button type="button" className={`btn btn-sm ${verRespuestas ? 'btn-primary' : 'btn-outline'}`} onClick={() => setVerRespuestas(v => !v)}>
@@ -427,7 +495,7 @@ function TicketChat({ ticketId, canal, alto = 260, staff = false, onLeido }) {
             </button>
           )}
           <div style={{ flex: 1 }} />
-          <button type="submit" className="btn btn-sm btn-primary" disabled={enviando || (!texto.trim() && !archivo)}>
+          <button type="submit" className="btn btn-sm btn-primary" disabled={enviando || (!texto.trim() && !archivos.length)}>
             {enviando ? 'Enviando…' : 'Enviar'}
           </button>
         </div>
@@ -690,7 +758,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
   const [description, setDescription] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submitMsg, setSubmitMsg] = useState('');
-  const [archivoAlta, setArchivoAlta] = useState(null);
+  const [archivosAlta, setArchivosAlta] = useState([]);
   const [nuevaPrioridad, setNuevaPrioridad] = useState('low');
   const [nuevaCategoria, setNuevaCategoria] = useState('');
   const [nuevosAsignados, setNuevosAsignados] = useState([]);
@@ -899,7 +967,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
         body: JSON.stringify({
           subject, description,
-          adjunto: archivoAlta?.data || null, adjuntoNombre: archivoAlta?.nombre || null, adjuntoMime: archivoAlta?.mime || null,
+          adjunto: archivosAlta[0]?.data || null, adjuntoNombre: archivosAlta[0]?.nombre || null, adjuntoMime: archivosAlta[0]?.mime || null,
           priority: nuevaPrioridad, categoria: nuevaCategoria || null, assignedIds: nuevosAsignados,
           dueDate: nuevaFecha || null, appLabel: nuevasApps.length ? nuevasApps : ['Aim Education'],
           recurrencia: nuevaRecurrencia || null,
@@ -907,7 +975,9 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
       });
       const d = await r.json().catch(() => ({}));
       if (d.success) {
-        setSubject(''); setDescription(''); setArchivoAlta(null);
+        // Los demás adjuntos, al chat del equipo del ticket.
+        if (archivosAlta.length > 1) await subirAdjuntosExtra(d.ticketId, 'equipo', archivosAlta.slice(1));
+        setSubject(''); setDescription(''); setArchivosAlta([]);
         setNuevaPrioridad('low'); setNuevaCategoria(''); setNuevosAsignados([]); setNuevaFecha(''); setNuevasApps(['Aim Education']); setNuevaRecurrencia('');
         await fetchTickets(true);
         setActiveTab('list');
@@ -917,12 +987,12 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
     finally { setSubmitting(false); }
   }
   async function pegarEnAlta(e) {
-    const f = archivoDelPortapapeles(e);
-    if (!f) return;
+    const fs = archivosDelPortapapeles(e);
+    if (!fs.length) return;
     e.preventDefault();
-    const { archivo, error } = await aceptarArchivo(f);
-    if (error) setSubmitMsg(error);
-    else { setSubmitMsg(''); setArchivoAlta(archivo); }
+    const { archivos, error } = await aceptarArchivos(fs);
+    setSubmitMsg(error || '');
+    if (archivos.length) setArchivosAlta(prev => [...prev, ...archivos].slice(0, MAX_ADJUNTOS));
   }
 
   // ── Filtrado ──
@@ -1216,8 +1286,8 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
               <textarea placeholder="Qué pasa, dónde, cómo reproducirlo…" value={description} onChange={e => setDescription(e.target.value)} required rows={6} style={{width: "100%", resize: "vertical", fontFamily: "inherit", fontSize: 14, padding: 12, background: "var(--bg-3)", border: "1px solid var(--line)", borderRadius: 10, color: "var(--ink)"}} />
             </div>
             <div className="field">
-              <label>Adjunto (opcional)</label>
-              <AdjuntarArchivo archivo={archivoAlta} onArchivo={setArchivoAlta} onError={m => setSubmitMsg(m)} />
+              <label>Adjuntos (opcional)</label>
+              <AdjuntarArchivos archivos={archivosAlta} onArchivos={setArchivosAlta} onError={m => setSubmitMsg(m)} />
             </div>
 
             <div style={{marginTop: 6, padding: 14, background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 12, display: "grid", gap: 14}}>
@@ -1710,7 +1780,7 @@ const ESTADO_FAMILIA = {
 export function UserSupport() {
   const [subject, setSubject] = useState('');
   const [description, setDescription] = useState('');
-  const [archivo, setArchivo] = useState(null);
+  const [archivos, setArchivos] = useState([]);
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState(null); // { ok, texto }
   const [misTickets, setMisTickets] = useState([]);
@@ -1742,12 +1812,12 @@ export function UserSupport() {
   }, [path, misTickets]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function pegarEnAlta(e) {
-    const f = archivoDelPortapapeles(e);
-    if (!f) return;
+    const fs = archivosDelPortapapeles(e);
+    if (!fs.length) return;
     e.preventDefault();
-    const { archivo: a, error } = await aceptarArchivo(f);
-    if (error) setMsg({ ok: false, texto: error });
-    else { setMsg(null); setArchivo(a); }
+    const { archivos: nuevos, error } = await aceptarArchivos(fs);
+    setMsg(error ? { ok: false, texto: error } : null);
+    if (nuevos.length) setArchivos(prev => [...prev, ...nuevos].slice(0, MAX_ADJUNTOS));
   }
 
   async function submit(e) {
@@ -1756,12 +1826,13 @@ export function UserSupport() {
     try {
       const r = await fetch('/api/support', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-        body: JSON.stringify({ subject, description, adjunto: archivo?.data || null, adjuntoNombre: archivo?.nombre || null, adjuntoMime: archivo?.mime || null }),
+        body: JSON.stringify({ subject, description, adjunto: archivos[0]?.data || null, adjuntoNombre: archivos[0]?.nombre || null, adjuntoMime: archivos[0]?.mime || null }),
       });
       const d = await r.json().catch(() => ({}));
       if (d.success) {
+        if (archivos.length > 1) await subirAdjuntosExtra(d.ticketId, 'creador', archivos.slice(1));
         setMsg({ ok: true, texto: 'Consulta enviada. Te contestaremos aquí y te avisaremos por correo.' });
-        setSubject(''); setDescription(''); setArchivo(null);
+        setSubject(''); setDescription(''); setArchivos([]);
         cargar();
       } else setMsg({ ok: false, texto: d.error || 'No se ha podido enviar.' });
     } catch { setMsg({ ok: false, texto: 'Error de conexión.' }); }
@@ -1827,9 +1898,9 @@ export function UserSupport() {
               <textarea placeholder="Describe tu consulta o problema con el mayor detalle posible…" value={description} onChange={e => setDescription(e.target.value)} required rows={5} style={{ width: '100%', resize: 'vertical', fontFamily: 'inherit', fontSize: 14, padding: 12, background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 10, color: 'var(--ink)' }} />
             </div>
             <div className="field">
-              <label>Adjunto (opcional)</label>
-              <AdjuntarArchivo archivo={archivo} onArchivo={setArchivo} onError={m => setMsg(m ? { ok: false, texto: m } : null)}
-                ayuda="Una captura ayuda mucho a entender el problema. Pégala con Ctrl+V, arrástrala aquí o búscala. También PDF. Máx. 4 MB." />
+              <label>Adjuntos (opcional)</label>
+              <AdjuntarArchivos archivos={archivos} onArchivos={setArchivos} onError={m => setMsg(m ? { ok: false, texto: m } : null)}
+                ayuda="Una captura ayuda mucho a entender el problema. Puedes elegir varias, pegarlas con Ctrl+V o arrastrarlas aquí. También PDF. Máx. 4 MB cada una." />
             </div>
             {msg && <p role="status" style={{ color: msg.ok ? 'var(--teal)' : 'var(--orange)', fontWeight: 600, fontSize: 13, marginBottom: 12 }}>{msg.texto}</p>}
             <button type="submit" className="btn btn-gradient" disabled={loading}>
