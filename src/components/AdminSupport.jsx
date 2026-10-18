@@ -4,6 +4,7 @@ import { alAtras } from '../app-movil.js';
 import { useRouter } from '../App.jsx';
 import { I } from './Icons.jsx';
 import { fmtFecha, fmtFechaHora, fmtHora as fmtHoraCorta } from '../fechas.js';
+import { imprimirHtml } from '../imprimir.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Soporte. El equipo lo usa como su lista de trabajo (bugs, mejoras, tareas) y
@@ -1018,16 +1019,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
           <div><strong>Fecha límite:</strong><br>${t.due_date ? fmtDate(t.due_date) : 'Sin fecha'}</div>
         </div>
       </div>`).join('')}`;
-    const style = document.createElement('style');
-    style.id = 'support-print-style';
-    style.innerHTML = `@media print { body > *:not(#support-print-root) { display: none !important; } #support-print-root { display: block !important; position: static; background: white; } } #support-print-root { display: none; }`;
-    document.head.appendChild(style);
-    const el = document.createElement('div');
-    el.id = 'support-print-root';
-    el.innerHTML = html;
-    document.body.appendChild(el);
-    window.print();
-    setTimeout(() => { document.getElementById('support-print-style')?.remove(); document.getElementById('support-print-root')?.remove(); }, 1000);
+    imprimirHtml('support-print-root', html);
   }
   async function copyText() {
     let text = `REPORTE DE TICKETS — ${fmtFecha(new Date())} · ${filtered.length} tickets\n${'─'.repeat(50)}\n\n`;

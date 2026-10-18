@@ -50,6 +50,7 @@ import AdminIncidencias from './AdminIncidencias.jsx';
 import AdminBrickslab from './AdminBrickslab.jsx';
 import AdminGaleria from './Galeria.jsx';
 import { IconoActividad } from './IconoActividad.jsx';
+import { imprimirHtml } from '../imprimir.js';
 
 const fichaCardTitulo = { margin: '0 0 12px', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--ink-3)' };
 
@@ -683,20 +684,7 @@ function AdminClasses({ enlace, classSlots, setClassSlots, activities = [], clas
       ${leyenda}
       <p class="pie">Aim Education · Urb. Terrazas de Doña Lola, Local 1 · 11203 Algeciras (Cádiz)</p>`;
 
-    const style = document.createElement('style');
-    style.id = 'print-horario-style';
-    style.innerHTML = `@media print { body > *:not(#print-horario) { display: none !important; } #print-horario { display: block !important; position: static; background: white; } }`;
-    document.head.appendChild(style);
-    const el = document.createElement('div');
-    el.id = 'print-horario';
-    el.style.display = 'none';
-    el.innerHTML = html;
-    document.body.appendChild(el);
-    window.print();
-    setTimeout(() => {
-      document.getElementById('print-horario-style')?.remove();
-      document.getElementById('print-horario')?.remove();
-    }, 1000);
+    imprimirHtml('print-horario', html);
   }
 
   // Pestañas de la sección: el horario semanal y la gestión de clases. Pasar

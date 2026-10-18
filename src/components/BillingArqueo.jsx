@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { I } from './Icons.jsx';
 import { fmtFecha, fmtFechaHora, fmtHora } from '../fechas.js';
 import { nombreMedioPago } from './Shared.jsx';
+import { imprimirHtml } from '../imprimir.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Arqueo de caja: cierre de cada día.
@@ -246,20 +247,7 @@ export default function BillingArqueo({ showToast }) {
       <div class="coment">${esc(comentario) || '—'}</div>
       <div class="firma"><span>Cerrado por: ______________________</span><span>Firma: ______________________</span></div>`;
 
-    const style = document.createElement('style');
-    style.id = 'print-arqueo-style';
-    style.innerHTML = `@media print { body > *:not(#print-arqueo) { display: none !important; } #print-arqueo { display: block !important; } }`;
-    document.head.appendChild(style);
-    const el = document.createElement('div');
-    el.id = 'print-arqueo';
-    el.style.display = 'none';
-    el.innerHTML = html;
-    document.body.appendChild(el);
-    window.print();
-    setTimeout(() => {
-      document.getElementById('print-arqueo-style')?.remove();
-      document.getElementById('print-arqueo')?.remove();
-    }, 1000);
+    imprimirHtml('print-arqueo', html);
   }
 
   if (!datos) return <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>;

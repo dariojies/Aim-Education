@@ -5,6 +5,7 @@ import { colorOcupacion } from './AdminTulClases.jsx';
 import { COLOR_CUMPLE } from './Shared.jsx';
 import { FormIncidencia } from './AdminIncidencias.jsx';
 import { useAgrupaciones, SelectorAgrupacion, GestorAgrupaciones, repartir, TituloSubgrupo } from './Agrupaciones.jsx';
+import { imprimirHtml } from '../imprimir.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pasar lista de las clases del día.
@@ -228,20 +229,7 @@ export default function PasarListaClases({ showToast, abrir = null }) {
       <p class="meta">${fmtFechaLarga(fecha + 'T12:00:00')} · ${esc(clase.horario)}${clase.instructor ? ` · ${esc(clase.instructor)}` : ''}</p>
       <table><thead><tr><th>Alumno</th><th>Cinturón</th><th class="c">Vino</th><th class="c">Tarde</th><th class="c">Faltó</th></tr></thead>
       <tbody>${filas}</tbody></table>`;
-    const style = document.createElement('style');
-    style.id = 'print-lista-style';
-    style.innerHTML = `@media print { body > *:not(#print-lista) { display: none !important; } #print-lista { display: block !important; } }`;
-    document.head.appendChild(style);
-    const el = document.createElement('div');
-    el.id = 'print-lista';
-    el.style.display = 'none';
-    el.innerHTML = html;
-    document.body.appendChild(el);
-    window.print();
-    setTimeout(() => {
-      document.getElementById('print-lista-style')?.remove();
-      document.getElementById('print-lista')?.remove();
-    }, 1000);
+    imprimirHtml('print-lista', html);
   }
 
   const presentes = alumnos.filter(a => a.status === 'present' || a.status === 'late').length;
