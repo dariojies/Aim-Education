@@ -108,10 +108,12 @@ export const DOCS_LEGALES = [
         'Atender las consultas que nos hagas por el formulario de contacto, por correo, por teléfono o por mensaje privado en nuestras redes (Facebook Messenger, Instagram o WhatsApp). Esos mensajes nos llegan a través de Meta, que los trata según su propia política (facebook.com/privacy/policy).',
         'Cuidar de la seguridad de los alumnos: los datos de salud que la familia nos facilite (alergias, enfermedades, medicación, contacto de emergencia) se usan solo para ese fin.',
         'Enviarte noticias, eventos y ofertas del club, solo si nos lo has autorizado. Puedes retirarlo cuando quieras.',
+        'Saber si se abren los correos que te enviamos y en qué enlaces se pulsa, para comprobar que los avisos llegan y mejorar lo que enviamos (ver «Medición de los correos», más abajo).',
         'Comercio electrónico: el pago por internet de mensualidades, inscripciones y material.',
         'Conocer qué páginas de esta web visitas, solo si aceptas las cookies de análisis, para atenderte mejor. Si eres de una familia del club o nos escribes por el formulario, lo relacionamos con tu ficha.',
       ]],
       ['p', 'Los datos no se utilizan para tomar decisiones automatizadas. Solo si aceptas las cookies de análisis relacionamos las páginas que visitas con tu ficha, para saber qué te interesa; puedes retirarlo cuando quieras desde «Configurar cookies» y lo guardado se borra.'],
+      ['p', 'Medición de los correos. Los correos que te envía el club (avisos, comunicaciones de sus actividades, comerciales y los de bienvenida, faltas o cumpleaños) llevan una imagen invisible que nos dice si se abren y cuándo; los de las campañas llevan además enlaces que pasan por nuestra web, para saber en cuáles se pulsa. Lo guardamos con el registro de ese envío y lo usamos solo para comprobar que los avisos llegan, saber qué interesa y mejorar lo que enviamos: no se usa para nada más ni se cede a nadie. Los correos automáticos de la web (recibos, contraseñas, confirmaciones de las clases individuales y avisos de tu cuenta) no llevan esta medición. Puedes evitarla bloqueando las imágenes en tu programa de correo y, en las comunicaciones de sus actividades y las comerciales, retirando el permiso cuando quieras.'],
 
       ['h', '3. Plazo de conservación'],
       ['p', 'Conservamos los datos mientras se mantenga la relación con el club o sean necesarios para las finalidades indicadas y, después, durante los plazos que exige la ley: los documentos contables y las facturas, seis años (Código de Comercio) y los necesarios a efectos fiscales mientras la Administración pueda comprobarlos; el registro de jornada del personal, cuatro años. Las consultas del formulario de contacto se conservan el tiempo necesario para atenderlas. Las candidaturas de «Trabaja con nosotros», mientras puedan servir para futuros procesos de selección del club, salvo que nos pidas antes que las borremos. Las visitas a la web (con las cookies de análisis aceptadas), 13 meses como mucho.'],
@@ -121,7 +123,8 @@ export const DOCS_LEGALES = [
       ['ul', [
         'Art. 6.1.b RGPD, la ejecución de un contrato: la gestión de la cuenta, las inscripciones, los cobros y la organización de las clases.',
         'Art. 6.1.c RGPD, el cumplimiento de obligaciones legales: facturación, contabilidad y obligaciones fiscales.',
-        'Art. 6.1.a RGPD, tu consentimiento: el formulario de contacto, las candidaturas de «Trabaja con nosotros», las comunicaciones comerciales y el análisis de las páginas que visitas.',
+        'Art. 6.1.a RGPD, tu consentimiento: el formulario de contacto, las candidaturas de «Trabaja con nosotros», las comunicaciones de sus actividades y las comerciales (con la medición de si se abren y en qué se pulsa), y el análisis de las páginas que visitas.',
+        'Art. 6.1.f RGPD, el interés legítimo del club en comprobar que llegan los avisos necesarios para la relación con la familia: la medición de si se abren los correos de servicio.',
         'Art. 9.2.a RGPD, el consentimiento explícito de la familia para los datos de salud.',
       ]],
       ['p', 'No estás obligado a facilitarnos los datos, pero sin los necesarios no podremos gestionar la inscripción ni atender tu consulta.'],

@@ -103,7 +103,7 @@ export default function PublicContacto() {
                   </label>
                   <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.5 }}>
                     <input type="checkbox" checked={comunicaciones} onChange={e => setComunicaciones(e.target.checked)} style={{ marginTop: 3, accentColor: 'var(--purple)' }} />
-                    <span>Quiero recibir por correo información de las actividades, campamentos y ofertas del club. Es opcional y puedo darme de baja cuando quiera.</span>
+                    <span>Quiero recibir por correo información de las actividades, campamentos y ofertas del club (se mira si se abren y en qué se pulsa). Es opcional y puedo darme de baja cuando quiera.</span>
                   </label>
                   <div style={{ padding: '10px 12px', borderRadius: 10, background: 'var(--bg-3)', fontSize: 11.5, color: 'var(--ink-3)', lineHeight: 1.55 }}>
                     <b>Protección de datos.</b> Responsable: AIM Deporte y Educación S.L. Finalidad: atender tu consulta y, si lo

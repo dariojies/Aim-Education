@@ -1474,8 +1474,8 @@ function PermisosFamilia() {
           <div key={p.id} style={{ border: '1px solid var(--line)', borderRadius: 14, padding: 14, display: 'grid', gap: 12, background: 'var(--bg-2)' }}>
             <div style={{ fontWeight: 800, fontSize: 15 }}>{p.nombre}{p.yo ? ' (tú)' : ''}</div>
             {[
-              ['comActividades', 'Comunicaciones de sus actividades', 'Avisos e información de las actividades en las que está apuntado/a (clases individuales, exámenes…).'],
-              ['comComerciales', 'Comunicaciones comerciales', 'Novedades, eventos y ofertas de otras actividades del club.'],
+              ['comActividades', 'Comunicaciones de sus actividades', 'Avisos e información de las actividades en las que está apuntado/a (clases individuales, exámenes…). Miramos si se abren y en qué se pulsa.'],
+              ['comComerciales', 'Comunicaciones comerciales', 'Novedades, eventos y ofertas de otras actividades del club. Miramos si se abren y en qué se pulsa.'],
             ].map(([campo, titulo, ayuda]) => (
               <div key={campo} style={fila}>
                 <div style={{ flex: '1 1 240px', minWidth: 0 }}>
