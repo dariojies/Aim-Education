@@ -1493,7 +1493,7 @@ html[data-actaccents="off"] .act-card.solid {
   color: var(--act, var(--teal));
 }
 
-.news-card h4 {
+.news-card h3, .news-card h4 {
   font-family: var(--font-display);
   font-weight: 800;
   font-size: 17px;
@@ -1585,7 +1585,7 @@ html[data-actaccents="off"] .act-card.solid {
   color: var(--ink-3);
 }
 
-.cal-event .info h5 {
+.cal-event .info h4, .cal-event .info h5 {
   margin: 0;
   font-size: 13px;
   font-weight: 700;
@@ -1665,7 +1665,7 @@ html[data-actaccents="off"] .act-card.solid {
   background: var(--orange);
 }
 
-.value-card h4 {
+.value-card h3, .value-card h4 {
   margin: 0;
   font-family: var(--font-display);
   font-size: 17px;
@@ -1712,7 +1712,7 @@ html[data-actaccents="off"] .act-card.solid {
   margin-bottom: 40px;
 }
 
-.foot-grid h5 {
+.foot-grid h2, .foot-grid h5 {
   font-size: 12px;
   font-weight: 800;
   letter-spacing: .14em;

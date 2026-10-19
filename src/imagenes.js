@@ -1,3 +1,7 @@
+// Una imagen subida (/ci/…) a la medida en que se enseña: el servidor la
+// manda reducida (y en WebP) en vez de la original. Las demás, tal cual.
+export const aMedida = (url, ancho) => (url && /^(https?:\/\/[^/]+)?\/ci\/[\w-]+$/.test(url) ? `${url}?w=${ancho}` : url);
+
 // Una foto para una lección o una entrega: las HEIC (iPad, iPhone) y las que
 // pasan de 2 MB se pasan a JPG de 2000 px como mucho; lo demás, tal cual (#455).
 export async function imagenSubible(file) {

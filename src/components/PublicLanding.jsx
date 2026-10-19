@@ -6,6 +6,7 @@ import { TarjetaActividad } from './PublicActivity.jsx';
 import { useClasesPublicas, fichasWeb } from './clasesPublicas.js';
 import { useRouter } from '../App.jsx';
 import { ContenidoExterno, useCookiesExternas } from './Cookies.jsx';
+import { aMedida } from '../imagenes.js';
 
 const CAT_COLOR = { taekwondo: '#21B668', ballet: '#FF99D3', ingles: '#00BBF4', robotica: '#FFD526', baile: '#AF99FF', pintura: '#5233A8', funcional: '#FF4F15', pilates: '#BFD300', camaleon: '#25D8BA', competicion: '#21B668', club: '#5233A8', general: '#5233A8', shelfie: '#FF99D3' };
 const catColor = c => CAT_COLOR[c] || '#5233A8';
@@ -248,7 +249,7 @@ function BrandTile({ hueco, go }) {
       title={hueco.titulo || (a ? `Ver ${a.name}` : 'Ver más')}>
 
       {conImagen && (
-        <img className={`tile-foto ${aSangre ? '' : 'dentro'}`} src={hueco.imagenUrl} alt={hueco.titulo || ''} />
+        <img className={`tile-foto ${aSangre ? '' : 'dentro'}`} src={aMedida(hueco.imagenUrl, 800)} alt={hueco.titulo || ''} />
       )}
       {conPatron && <div className="tile-foto tile-patron" />}
 
@@ -269,7 +270,7 @@ function NewsCard({ cat, color, img, ph, title, date, body }) {
   return (
     <div className="news-card">
       <div className="img" style={img ? { aspectRatio: 'auto', background: 'var(--bg-3)' } : { background: `linear-gradient(135deg, ${color}, color-mix(in oklab, ${color} 55%, #000))` }}>
-        {img && <img src={img} alt="" style={{ width: "100%", height: "auto", display: "block" }} />}
+        {img && <img src={aMedida(img, 800)} alt={title} loading="lazy" style={{ width: "100%", height: "auto", display: "block" }} />}
         <div className="badge-date">
           <div className="d">{date.d}</div>
           <div className="m">{date.m}</div>
@@ -278,7 +279,7 @@ function NewsCard({ cat, color, img, ph, title, date, body }) {
       </div>
       <div className="body">
         <span className="cat" style={{ color }}>{cat}</span>
-        <h4>{title}</h4>
+        <h3>{title}</h3>
         <p>{body}</p>
       </div>
     </div>
@@ -514,7 +515,7 @@ export default function PublicLanding() {
                         <div key={`e${ev.id}`} className="cal-event" onClick={() => go("/calendario")}>
                           <div className="date"><div className="d">{d.getDate()}</div><div className="m">{MONTH_ABBR[d.getMonth()]}</div></div>
                           <div className="info">
-                            <h5>{ev.title}</h5>
+                            <h4>{ev.title}</h4>
                             <p>{sub || "Evento del club"}</p>
                           </div>
                         </div>
@@ -526,7 +527,7 @@ export default function PublicLanding() {
                       <div key={`c${c.desde}`} className="cal-event cal-cierre" onClick={() => go("/calendario")}>
                         <div className="date"><div className="d">{d.getDate()}</div><div className="m">{MONTH_ABBR[d.getMonth()]}</div></div>
                         <div className="info">
-                          <h5>Cerrado · {c.nombre || c.tipoNombre}</h5>
+                          <h4>Cerrado · {c.nombre || c.tipoNombre}</h4>
                           <p>{varios ? `Del ${d.getDate()} ${MONTH_ABBR[d.getMonth()]} al ${h.getDate()} ${MONTH_ABBR[h.getMonth()]} · no hay clases` : 'No hay clases'}</p>
                         </div>
                       </div>
@@ -572,17 +573,17 @@ export default function PublicLanding() {
               <div style={{display: "grid", gap: 14}}>
                 <div className="value-card v-innov">
                   <div className="icon"><I.Bulb /></div>
-                  <h4>Innovación</h4>
+                  <h3>Innovación</h3>
                   <p>Perseguimos la innovación para ofrecer <b>nuevas oportunidades</b> a nuestros alumnos.</p>
                 </div>
                 <div className="value-card v-excel">
                   <div className="icon"><I.Trophy /></div>
-                  <h4>Excelencia</h4>
+                  <h3>Excelencia</h3>
                   <p>Nos exigimos lo mejor para ofrecer <b>excelencia</b> en nuestros servicios.</p>
                 </div>
                 <div className="value-card v-passion">
                   <div className="icon"><I.Heart /></div>
-                  <h4>Pasión</h4>
+                  <h3>Pasión</h3>
                   <p>Sentimos <b>pasión</b> por nuestro trabajo. Disfrutamos de cada clase.</p>
                 </div>
               </div>

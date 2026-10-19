@@ -49,6 +49,7 @@ import { PassThrough } from 'stream';
 import { escalaDe, escalasDelClub, resultadoDe, baremoDe, matriculaExamenDe } from './rangos.js';
 import { rolEfectivo, rolVisible, permisosDe, mandaAlMenos, ROLES_STAFF, NOMBRE_ROL, NOMBRE_RANGO, RANGOS_PROPIOS, RANGOS_ASIGNABLES, recibeAviso, aplicarAjustesPermisos, limpiarAjustesPermisos, RANGOS_EDITABLES, FALTAS_PARA_LLAMAR } from './permisos.js';
 import { htmlCorreo, textoCorreo, disenoDesdeTexto, limpiarDiseno, limpiarMarca, faltanObligatorios, ejemplosDe, CORREOS_SISTEMA, MARCA_POR_DEFECTO } from './correo-diseno.js';
+import sharp from 'sharp';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -75,6 +76,8 @@ const PAUSA_CARGOS = { desde: '2026-09-01', hasta: '2026-09-30' };
 const cargosEnPausa = () => { const h = hoyMadrid(); return h >= PAUSA_CARGOS.desde && h <= PAUSA_CARGOS.hasta; };
 
 const app = express();
+// No hace falta decirle a nadie con qué está hecho el servidor.
+app.disable('x-powered-by');
 const port = process.env.PORT || 3000;
 
 // --- Database ---
@@ -6095,9 +6098,17 @@ app.get('/api/landing/mosaico/:id/imagen', async (req, res) => {
     try {
         const r = await pool.query(`SELECT mime, datos FROM aim_portada_imagenes WHERE id = $1`, [req.params.id]);
         if (!r.rowCount) return res.status(404).end();
-        res.set('Content-Type', r.rows[0].mime);
+        let { mime, datos } = r.rows[0];
+        // Un cuadro del mosaico no pasa de 1200 px de ancho (el doble de lo que
+        // ocupa): la foto tal cual la subieron puede pesar casi 2 MB.
+        if (mime !== 'image/gif') {
+            res.set('Vary', 'Accept');
+            try { ({ buf: datos, mime } = await imagenAMedida(`mosaico-${req.params.id}-${req.query.v || ''}`, datos, mime, 1200, /image\/webp/.test(req.headers.accept || ''))); }
+            catch (e) { console.error('[mosaico] no se ha podido ajustar', req.params.id, e.message); }
+        }
+        res.set('Content-Type', mime);
         res.set('Cache-Control', 'public, max-age=31536000, immutable');
-        res.send(r.rows[0].datos);
+        res.send(datos);
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -11259,13 +11270,46 @@ const horaMadridAhora = () => Number(new Date().toLocaleString('en-GB', { timeZo
 
 // Imágenes de los correos: públicas (Gmail las pide sin sesión) y para siempre
 // (un correo ya enviado sigue apuntando a ellas).
+// Con ?w=, la imagen a esa medida (la portada y las noticias no necesitan la
+// foto original, que puede pesar 1,5 MB): en WebP si el navegador lo admite y,
+// si no, en JPG o PNG. Solo unas medidas fijas, y las últimas hechas se guardan
+// en memoria. Los GIF (pueden ser animados) y los correos, siempre la original.
+const ANCHOS_CI = [320, 480, 640, 800, 1200, 1600];
+const cacheCi = new Map();
+let bytesCacheCi = 0;
+const TOPE_CACHE_CI = 40 * 1024 * 1024;
+sharp.cache(false);
+sharp.concurrency(1);
+async function imagenAMedida(id, datos, mime, ancho, webp) {
+    const clave = `${id}:${ancho}:${webp ? 'w' : 'o'}`;
+    const ya = cacheCi.get(clave);
+    if (ya) { cacheCi.delete(clave); cacheCi.set(clave, ya); return ya; }
+    // Sin WebP: PNG solo si tiene transparencia (una foto en PNG pesa mucho más).
+    const formato = webp ? 'webp' : mime === 'image/png' && (await sharp(datos).metadata()).hasAlpha ? 'png' : 'jpeg';
+    let img = sharp(datos).rotate().resize({ width: ancho, withoutEnlargement: true });
+    img = formato === 'webp' ? img.webp({ quality: 78 }) : formato === 'png' ? img.png({ compressionLevel: 9 }) : img.flatten({ background: '#ffffff' }).jpeg({ quality: 80, mozjpeg: true });
+    const buf = await img.toBuffer();
+    const x = buf.length < datos.length ? { buf, mime: `image/${formato}` } : { buf: datos, mime };
+    cacheCi.set(clave, x); bytesCacheCi += x.buf.length;
+    for (const [k, v] of cacheCi) { if (bytesCacheCi <= TOPE_CACHE_CI) break; cacheCi.delete(k); bytesCacheCi -= v.buf.length; }
+    return x;
+}
 app.get('/ci/:id', async (req, res) => {
     try {
-        const r = await pool.query(`SELECT mime, datos FROM aim_correo_imagenes WHERE id = $1`, [String(req.params.id).slice(0, 40)]);
+        const id = String(req.params.id).slice(0, 40);
+        const r = await pool.query(`SELECT mime, datos FROM aim_correo_imagenes WHERE id = $1`, [id]);
         if (!r.rowCount) return res.status(404).end();
-        res.set('Content-Type', r.rows[0].mime);
+        let { mime, datos } = r.rows[0];
+        const pedido = Number(req.query.w);
+        if (pedido > 0 && mime !== 'image/gif') {
+            const ancho = ANCHOS_CI.find(a => a >= pedido) || ANCHOS_CI[ANCHOS_CI.length - 1];
+            res.set('Vary', 'Accept');
+            try { ({ buf: datos, mime } = await imagenAMedida(id, datos, mime, ancho, /image\/webp/.test(req.headers.accept || ''))); }
+            catch (e) { console.error('[ci] no se ha podido ajustar', id, e.message); }
+        }
+        res.set('Content-Type', mime);
         res.set('Cache-Control', 'public, max-age=31536000, immutable');
-        res.send(r.rows[0].datos);
+        res.send(datos);
     } catch { res.status(500).end(); }
 });
 
@@ -22616,6 +22660,8 @@ if (process.env.NODE_ENV !== 'production') {
         setHeaders(res, ruta) {
             if (/[\\/]assets[\\/]/.test(ruta)) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
             else if (ruta.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache');
+            // El favicon y los demás de la raíz: un día, como las imágenes de /src.
+            else res.setHeader('Cache-Control', 'public, max-age=86400');
         },
     }));
 }

@@ -35,10 +35,11 @@ export const NEGOCIO = {
 const SECCIONES = [['/', 'Inicio'], ['/actividades', 'Actividades'], ['/campamento', 'Campamento de verano'], ['/calendario', 'Calendario'],
     ['/noticias', 'Noticias'], ['/blog', 'Blog'], ['/aula', 'Aula virtual'], ['/tienda', 'Tienda'], ['/brickslab', 'Brickslab y Biblioteca'],
     ['/conocenos', 'Conócenos'], ['/contacto', 'Contacto']];
-// Las páginas fijas: título y descripción para Google.
+// Las páginas fijas: título y descripción para Google. El título, de 50 a 60
+// letras, y la descripción, de 120 a 160: más largos, Google los corta.
 const FIJAS = {
-    '/': { tituloCompleto: 'Aim Education Algeciras | Taekwondo, ballet, inglés y robótica',
-        descripcion: 'Academia en Algeciras con Taekwon-Do ITF, Ballet (Royal Academy of Dance), inglés Cambridge, robótica y STEM, baile, pilates y más. Formación integral con valores para niños y adultos.' },
+    '/': { tituloCompleto: 'Aim Education Algeciras: taekwondo, ballet, inglés, robótica',
+        descripcion: 'Academia en Algeciras con Taekwon-Do ITF, ballet RAD, inglés Cambridge, robótica y STEM, baile y pilates. Formación integral con valores para niños y adultos.' },
     '/actividades': { titulo: 'Actividades en Algeciras: taekwondo, ballet, inglés y más',
         descripcion: 'Todas las actividades de Aim Education en Algeciras: artes marciales, danza, idiomas, robótica, arte y deporte, con grupos por edades y horarios.' },
     '/campamento': { titulo: 'Campamento de verano en Algeciras',
@@ -140,11 +141,27 @@ export function crearSeo({ pool, urlBase, archivoIndex }) {
             ...FIJAS['/'], jsonld: [negocioLd(), { '@context': 'https://schema.org', '@type': 'WebSite', name: NEGOCIO.nombre, url: `${base()}/`, inLanguage: 'es-ES' }],
             contenido: previo({
                 h1: 'Aim Education: innovación educativa y pasión en Algeciras', intro: FIJAS['/'].descripcion,
-                cuerpo: `<h2>Actividades</h2><ul>${actividadesWeb().map(e => `<li><a href="${e.ruta}">${esc(e.texto)}</a> — ${esc(e.detalle)}</li>`).join('')}</ul>`,
+                // Lo mismo que dice la portada, para quien no ejecuta JavaScript
+                // (y los asistentes de IA, que leen esto).
+                cuerpo: `<p>Taekwondo, ballet, inglés, robótica y mucho más. Una formación integral en valores, en un entorno de respeto y tolerancia. Cada actividad está diseñada para sacar lo mejor de cada alumno.</p>
+<h2>Actividades</h2><ul>${actividadesWeb().map(e => `<li><a href="${e.ruta}">${esc(e.texto)}</a> — ${esc(e.detalle)}</li>`).join('')}</ul>
+<h2>Una formación integral y con valores</h2>
+<p>Nuestra misión es proporcionar una formación integral, fomentando los valores fundamentales entre nuestros alumnos en un entorno de respeto y tolerancia. Utilizamos una amplia variedad de actividades como herramienta principal en nuestro programa educativo, diseñadas y organizadas para adaptarse específicamente a las características de cada grupo.</p>
+<p>Nuestras actividades se clasifican por grupos de edad, desde los 3 años hasta la edad adulta. Así la enseñanza se ajusta a la edad y las necesidades de cada estudiante. Además, limitamos las plazas de todas las actividades para trabajar en grupos reducidos, con la atención más personalizada posible.</p>
+<h3>Innovación</h3><p>Perseguimos la innovación para ofrecer nuevas oportunidades a nuestros alumnos.</p>
+<h3>Excelencia</h3><p>Nos exigimos lo mejor para ofrecer excelencia en nuestros servicios.</p>
+<h3>Pasión</h3><p>Sentimos pasión por nuestro trabajo. Disfrutamos de cada clase.</p>
+<h2>¿Listo para empezar este curso?</h2>
+<p>Reserva tu plaza online. ¿Quieres probar antes? Con el Pase Explorador tienes un bono de 3 sesiones para probar las actividades que quieras y ver en cuál te apuntas. <a href="/actividades">Ver horarios</a>.</p>`,
                 tituloEnlaces: 'Últimas noticias', enlaces: enlacesPosts(noticias),
             }),
         };
     }));
+    // Las direcciones de la web antigua (contactar.php…) aún tienen enlaces de
+    // fuera: a su página de ahora, con una redirección permanente.
+    const ANTIGUAS = { 'contactar.php': '/contacto', 'contacto.php': '/contacto', 'index.php': '/', 'actividades.php': '/actividades', 'noticias.php': '/noticias' };
+    router.get(/^\/[\w-]+\.php$/i, (req, res) => res.redirect(301, ANTIGUAS[req.path.slice(1).toLowerCase()] || '/'));
+
     router.get('/actividades', pagina(async () => ({
         ...FIJAS['/actividades'], jsonld: migas([['/', 'Inicio'], ['/actividades', 'Actividades']]),
         contenido: previo({ h1: 'Actividades en Aim Education (Algeciras)', intro: FIJAS['/actividades'].descripcion, enlaces: actividadesWeb() }),

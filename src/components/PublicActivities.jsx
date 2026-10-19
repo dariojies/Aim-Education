@@ -4,6 +4,7 @@ import { AimHeader, AimFooter, MagicText } from './Shared.jsx';
 import { TarjetaActividad } from './PublicActivity.jsx';
 import { useClasesPublicas, fichasWeb } from './clasesPublicas.js';
 import { useRouter } from '../App.jsx';
+import { aMedida } from '../imagenes.js';
 
 const CAT_COLOR = { taekwondo: '#21B668', ballet: '#FF99D3', ingles: '#00BBF4', robotica: '#FFD526', baile: '#AF99FF', pintura: '#5233A8', funcional: '#FF4F15', pilates: '#BFD300', camaleon: '#25D8BA', competicion: '#21B668', club: '#5233A8', general: '#5233A8', shelfie: '#FF99D3' };
 const catColor = c => CAT_COLOR[c] || '#5233A8';
@@ -13,7 +14,7 @@ function NewsCard({ cat, color = '#5233A8', img, ph, title, date, body, href }) 
   const inner = (
     <div className="news-card" style={{ height: "100%" }}>
       <div className="img" style={img ? { aspectRatio: 'auto', background: 'var(--bg-3)' } : { background: `linear-gradient(135deg, ${color}, color-mix(in oklab, ${color} 55%, #000))` }}>
-        {img && <img src={img} alt="" style={{ width: "100%", height: "auto", display: "block" }} />}
+        {img && <img src={aMedida(img, 800)} alt={title} loading="lazy" style={{ width: "100%", height: "auto", display: "block" }} />}
         <div className="badge-date">
           <div className="d">{date.d}</div>
           <div className="m">{date.m}</div>
@@ -22,7 +23,7 @@ function NewsCard({ cat, color = '#5233A8', img, ph, title, date, body, href }) 
       </div>
       <div className="body">
         <span className="cat" style={{ color }}>{cat}</span>
-        <h4>{title}</h4>
+        <h3>{title}</h3>
         <p>{body}</p>
       </div>
     </div>
@@ -284,7 +285,7 @@ export function PublicNewsDetail({ slug, blog = false }) {
 
               {post.cover_image_url && (
                 <img
-                  src={post.cover_image_url}
+                  src={aMedida(post.cover_image_url, 1600)}
                   alt={post.title}
                   style={{width: "100%", height: "auto", display: "block", borderRadius: 18, marginBottom: 32, boxShadow: "var(--shadow)"}}
                 />

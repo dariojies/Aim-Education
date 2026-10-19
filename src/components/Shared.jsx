@@ -239,7 +239,7 @@ function AimFooter() {
             </div>
           </div>
           <div>
-            <h5>Plataforma</h5>
+            <h2>Plataforma</h2>
             <ul>
               <li><a onClick={(e) => { e.preventDefault(); go("/"); }} href="/">Inicio</a></li>
               <li><a onClick={(e) => { e.preventDefault(); go("/actividades"); }} href="/actividades">Actividades</a></li>
@@ -251,7 +251,7 @@ function AimFooter() {
             </ul>
           </div>
           <div>
-            <h5>Mi cuenta</h5>
+            <h2>Mi cuenta</h2>
             <ul>
               <li><a onClick={(e) => { e.preventDefault(); go("/auth"); }} href="/auth">Iniciar sesión</a></li>
               <li><a onClick={(e) => { e.preventDefault(); go("/auth?mode=register"); }} href="/auth?mode=register">Registrarme</a></li>
@@ -260,7 +260,7 @@ function AimFooter() {
             </ul>
           </div>
           <div>
-            <h5>Contacto</h5>
+            <h2>Contacto</h2>
             <ul>
               {/* Un enlace de maps.google sin app concreta: en el móvil lo coge
                   la aplicación de mapas que tenga puesta cada uno. */}
@@ -278,7 +278,7 @@ function AimFooter() {
           </div>
           {/* Textos legales (ticket #295). */}
           <div>
-            <h5>Legal</h5>
+            <h2>Legal</h2>
             <ul>
               {DOCS_LEGALES.map(d => (
                 <li key={d.id}><a onClick={(e) => { e.preventDefault(); go(`/legal/${d.id}`); }} href={`/legal/${d.id}`}>{d.titulo}</a></li>
@@ -290,22 +290,22 @@ function AimFooter() {
 
         <div className="certs" style={{ display: "flex", gap: "24px", flexWrap: "wrap", alignItems: "center" }}>
           <a href="/actividades/camaleon" className="cert-chip" style={{ display: "inline-block", transition: "transform 0.2s", textDecoration: "none" }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.05)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}>
-            <img src="/src/logos/camaleon.png" alt="Programa Camaleón" style={{ height: "48px", width: "auto", objectFit: "contain", display: "block" }} />
+            <img src="/src/logos/camaleon.png" width={425} height={160} loading="lazy" alt="Programa Camaleón" style={{ height: "48px", width: "auto", objectFit: "contain", display: "block" }} />
           </a>
           <a href="https://www.taekwondoitf.es" target="_blank" rel="noopener noreferrer" className="cert-chip" style={{ display: "inline-block", transition: "transform 0.2s", textDecoration: "none" }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.05)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}>
-            <img src="/src/logos/itfespana.png" alt="Taekwon-Do ITF España" style={{ height: "48px", width: "auto", objectFit: "contain", display: "block" }} />
+            <img src="/src/logos/itfespana.png" width={191} height={160} loading="lazy" alt="Taekwon-Do ITF España" style={{ height: "48px", width: "auto", objectFit: "contain", display: "block" }} />
           </a>
           <a href="https://www.rad.org.es" target="_blank" rel="noopener noreferrer" className="cert-chip" style={{ display: "inline-block", transition: "transform 0.2s", textDecoration: "none" }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.05)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}>
-            <img src="/src/logos/RADRT.png" alt="Royal Academy of Dance" style={{ height: "48px", width: "auto", objectFit: "contain", display: "block" }} />
+            <img src="/src/logos/RADRT.png" width={160} height={160} loading="lazy" alt="Royal Academy of Dance" style={{ height: "48px", width: "auto", objectFit: "contain", display: "block" }} />
           </a>
           <a href="https://www.cambridgeenglish.org/es/" target="_blank" rel="noopener noreferrer" className="cert-chip" style={{ display: "inline-block", transition: "transform 0.2s", textDecoration: "none" }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.05)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}>
-            <img src="/src/logos/Cambridge.png" alt="Cambridge English 2025-2026" style={{ height: "48px", width: "auto", objectFit: "contain", display: "block" }} />
+            <img src="/src/logos/Cambridge.png" width={288} height={160} loading="lazy" alt="Cambridge English 2025-2026" style={{ height: "48px", width: "auto", objectFit: "contain", display: "block" }} />
           </a>
           <span className="cert-chip" style={{ display: "inline-block", transition: "transform 0.2s" }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.05)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}>
-            <img src="/src/logos/palyandkick.png" alt="Play &amp; Kick" style={{ height: "48px", width: "auto", objectFit: "contain", display: "block" }} />
+            <img src="/src/logos/palyandkick.png" width={255} height={160} loading="lazy" alt="Play &amp; Kick" style={{ height: "48px", width: "auto", objectFit: "contain", display: "block" }} />
           </span>
           <a href="https://www.colefandalucia.com" target="_blank" rel="noopener noreferrer" className="cert-chip" style={{ display: "inline-block", transition: "transform 0.2s", textDecoration: "none" }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.05)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}>
-            <img src="/src/logos/COLEF-Andalucia.png" alt="COLEF Andalucía" style={{ height: "48px", width: "auto", objectFit: "contain", display: "block" }} />
+            <img src="/src/logos/COLEF-Andalucia.png" width={160} height={160} loading="lazy" alt="COLEF Andalucía" style={{ height: "48px", width: "auto", objectFit: "contain", display: "block" }} />
           </a>
         </div>
 
