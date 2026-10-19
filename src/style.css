@@ -1212,13 +1212,8 @@ html[data-actaccents="off"] [class*="act-"] {
 }
 
 /* Un día que el club cierra, en «Próximos eventos» de la portada (#377). */
-.cal-event.cal-cierre {
-  background: rgba(0, 0, 0, .14);
-  border-style: dashed;
-}
 .cal-event.cal-cierre .date {
-  background: rgba(255, 255, 255, .85);
-  color: #b45309;
+  background: #F5A400;
 }
 
 @media (max-width: 860px) {
@@ -1454,7 +1449,8 @@ html[data-actaccents="off"] .act-card.solid {
   font-weight: 800;
   font-size: 20px;
   line-height: 1;
-  color: var(--ink);
+  /* Sobre blanco también en modo oscuro: colores fijos. */
+  color: #17151c;
 }
 
 .news-card .img .badge-date .m {
@@ -1462,7 +1458,7 @@ html[data-actaccents="off"] .act-card.solid {
   font-weight: 800;
   letter-spacing: .12em;
   text-transform: uppercase;
-  color: var(--ink-3);
+  color: #6b6b76;
   margin-top: 2px;
 }
 
@@ -1510,25 +1506,21 @@ html[data-actaccents="off"] .act-card.solid {
 }
 
 /* Calendar mini card */
+/* «Próximos eventos» de la portada: el arcoíris de la marca en diagonal y
+   cada fecha en una tarjeta blanca (los eventos en morado, los días que el
+   club cierra en naranja). Mide lo que su contenido, no lo que las noticias. */
 .calendar-card {
-  background: var(--grad-aim);
+  background: var(--grad-aim-diag);
   border-radius: var(--radius);
   padding: 24px;
   color: white;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 10px;
+  align-self: start;
   position: relative;
   overflow: hidden;
   box-shadow: var(--shadow);
-}
-
-.calendar-card::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(180deg, transparent, rgba(0, 0, 0, .15));
-  pointer-events: none;
 }
 
 .calendar-card h3 {
@@ -1545,29 +1537,29 @@ html[data-actaccents="off"] .act-card.solid {
   display: flex;
   gap: 14px;
   align-items: center;
-  background: rgba(255, 255, 255, .16);
-  border: 1px solid rgba(255, 255, 255, .22);
-  padding: 12px 14px;
+  /* Blanca también en modo oscuro: los colores van fijos. */
+  background: #fff;
+  color: #17151c;
+  padding: 10px 12px;
   border-radius: 14px;
+  box-shadow: 0 6px 16px -10px rgba(0, 0, 0, .45);
   position: relative;
   z-index: 1;
-  transition: background var(--tx-base) ease, transform var(--tx-base) ease;
+  transition: transform var(--tx-base) ease;
   cursor: pointer;
-  backdrop-filter: blur(4px);
 }
 
 .cal-event:hover {
-  background: rgba(255, 255, 255, .24);
   transform: translateX(3px);
 }
 
 .cal-event .date {
   text-align: center;
-  background: white;
-  color: var(--ink);
-  border-radius: 8px;
-  padding: 5px 8px;
-  min-width: 40px;
+  background: #5233A8;
+  color: #fff;
+  border-radius: 10px;
+  padding: 6px 8px;
+  min-width: 44px;
 }
 
 .cal-event .date .d {
@@ -1582,21 +1574,22 @@ html[data-actaccents="off"] .act-card.solid {
   font-weight: 800;
   letter-spacing: .1em;
   text-transform: uppercase;
-  color: var(--ink-3);
+  color: rgba(255, 255, 255, .85);
 }
 
 .cal-event .info h4, .cal-event .info h5 {
   margin: 0;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   line-height: 1.2;
 }
 
 .cal-event .info p {
   margin: 2px 0 0;
-  font-size: 11px;
-  color: rgba(255, 255, 255, .75);
+  font-size: 12px;
+  color: #6b6b76;
 }
+
 
 /* =============================================================
    Sobre nosotros / Values strip

@@ -527,14 +527,14 @@ export default function PublicLanding() {
                       <div key={`c${c.desde}`} className="cal-event cal-cierre" onClick={() => go("/calendario")}>
                         <div className="date"><div className="d">{d.getDate()}</div><div className="m">{MONTH_ABBR[d.getMonth()]}</div></div>
                         <div className="info">
-                          <h4>Cerrado · {c.nombre || c.tipoNombre}</h4>
-                          <p>{varios ? `Del ${d.getDate()} ${MONTH_ABBR[d.getMonth()]} al ${h.getDate()} ${MONTH_ABBR[h.getMonth()]} · no hay clases` : 'No hay clases'}</p>
+                          <h4>{c.nombre || c.tipoNombre}</h4>
+                          <p>{varios ? `Cerrado del ${d.getDate()} ${MONTH_ABBR[d.getMonth()]} al ${h.getDate()} ${MONTH_ABBR[h.getMonth()]}` : 'Cerrado · no hay clases'}</p>
                         </div>
                       </div>
                     );
                   });
                 })()}
-                <button className="btn btn-primary btn-block" onClick={() => go("/calendario")} style={{background: "white", color: "var(--ink)"}}>
+                <button className="btn btn-primary btn-block" onClick={() => go("/calendario")} style={{background: "white", color: "#17151c"}}>
                   Ver calendario completo
                 </button>
               </div>
