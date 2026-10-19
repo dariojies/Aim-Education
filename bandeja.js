@@ -224,13 +224,30 @@ export async function probarBuzones() {
 async function probarBuzonesImap(lista) {
     return Promise.all(lista.map(async (b) => {
         const ini = Date.now();
+        const probar = () => conImap(b, async (client) => { await client.noop(); }, 'vigilancia');
         try {
-            await conImap(b, async (client) => { await client.noop(); }, 'vigilancia');
+            // Un «no» suelto de Gmail no es una avería: se prueba otra vez a los
+            // pocos segundos (salvo si es la contraseña, que no se arregla sola).
+            try { await probar(); } catch (e) {
+                if (e?.authenticationFailed) throw e;
+                await new Promise(ok => setTimeout(ok, 4000));
+                await probar();
+            }
             return { email: b.email, general: !!b.general, ok: true, ms: Date.now() - ini };
         } catch (e) {
-            return { email: b.email, general: !!b.general, ok: false, error: String(e?.message || e).slice(0, 200) };
+            return { email: b.email, general: !!b.general, ok: false, error: motivoImap(e, b).slice(0, 300) };
         }
     }));
+}
+// «Command failed» es lo que dice la librería cuando Gmail contesta que no; el
+// porqué va aparte (responseText). Se dan los dos, y la pista si es la contraseña.
+function motivoImap(e, b) {
+    const gmail = String(e?.responseText || '').trim();
+    const base = [String(e?.message || e), gmail && gmail !== e?.message ? `Gmail: ${gmail}` : null].filter(Boolean).join(' · ');
+    if (e?.authenticationFailed) {
+        return `${base} · ${b.oauth ? 'Google no deja entrar a la cuenta de servicio en este buzón.' : 'Gmail no acepta la contraseña de aplicación: ¿se ha cambiado la contraseña de la cuenta o se ha borrado esa contraseña de aplicación?'}`;
+    }
+    return base;
 }
 
 // Respuestas a un correo de campaña (#341): las campañas salen con «responder a»
