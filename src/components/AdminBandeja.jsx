@@ -3,9 +3,10 @@ import { I } from './Icons.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Correo (ticket #317): el buzón general del club (info@) y el tuyo. En el
-// general los correos se asignan a un compañero y se marcan como hechos; los
-// tuyos se pasan a un compañero reenviándoselos. Se lee y se envía por Gmail al
-// momento, así que lo que se hace aquí se ve también en Gmail.
+// general los correos se asignan a un compañero; los tuyos se pasan a un
+// compañero reenviándoselos. En los dos, lo resuelto se marca como hecho: sale
+// de la entrada y queda en «Hechos» (#465, sin un «Archivar» aparte). Se lee y
+// se envía por Gmail al momento, así que lo que se hace aquí se ve en Gmail.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // La lista a la izquierda y el detalle a la derecha (también lo usan las redes).
@@ -30,7 +31,7 @@ export const ESTILO_BANDEJA = `
 const chipFila = (color) => ({ fontSize: 10.5, fontWeight: 800, padding: '1px 7px', borderRadius: 999, color, background: `color-mix(in oklab, ${color} 13%, transparent)`, border: `1px solid color-mix(in oklab, ${color} 35%, transparent)` });
 const VISTAS = {
   general: [['entrada', 'Entrada'], ['sin_asignar', 'Sin asignar'], ['mios', 'Asignados a mí'], ['hechos', 'Hechos'], ['enviados', 'Enviados'], ['programados', 'Programados'], ['spam', 'Spam']],
-  mio: [['entrada', 'Entrada'], ['enviados', 'Enviados'], ['programados', 'Programados'], ['spam', 'Spam']],
+  mio: [['entrada', 'Entrada'], ['hechos', 'Hechos'], ['enviados', 'Enviados'], ['programados', 'Programados'], ['spam', 'Spam']],
 };
 const api = async (url, opts = {}) => {
   const r = await fetch(url, { credentials: 'include', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, ...opts, body: opts.body ? JSON.stringify(opts.body) : undefined });
@@ -416,9 +417,6 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
                         <label title="Los próximos correos de este remitente se le asignarán solos" style={{ display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12, fontWeight: 700, color: 'var(--ink-2)', cursor: 'pointer' }}>
                           <input type="checkbox" checked={siempre} onChange={e => setSiempre(e.target.checked)} /> y todos los de este remitente
                         </label>
-                        {detalle.hecho
-                          ? <button type="button" className="btn btn-sm btn-outline" onClick={() => accion('reabrir', {}, 'Vuelve a estar pendiente.')}>Reabrir</button>
-                          : <button type="button" className="btn btn-sm btn-outline" title="Sale de la entrada y queda en «Hechos»" onClick={() => accion('hecho', {}, 'Hecho: está en «Hechos».')}>✓ Hecho</button>}
                       </>
                     ) : (
                       <select value="" onChange={e => { const c = companeros.find(x => String(x.id) === e.target.value); if (c) escribir('reenviar', { para: c.email, texto: `Hola ${c.nombre.split(' ')[0]}, te paso este correo.\n` }); }}
@@ -427,7 +425,11 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
                         {companeros.filter(c => !c.yo).map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
                       </select>
                     )}
-                    {vista !== 'enviados' && vista !== 'spam' && <button type="button" className="btn btn-sm btn-outline" onClick={() => accion('archivar', {}, 'Archivado (sigue en Gmail, en «Todos»).')}>Archivar</button>}
+                    {/* Un solo botón (#465): hecho = archivado, y se encuentra siempre
+                        en «Hechos». Lo que no vale para nada, a la papelera. */}
+                    {vista !== 'enviados' && vista !== 'spam' && (detalle.hecho
+                      ? <button type="button" className="btn btn-sm btn-outline" onClick={() => accion('reabrir', {}, 'Vuelve a la entrada.')}>Reabrir</button>
+                      : <button type="button" className="btn btn-sm btn-outline" title="Sale de la entrada y queda guardado en «Hechos»" onClick={() => accion('hecho', {}, 'Hecho: está en «Hechos».')}>✓ Hecho</button>)}
                     <button type="button" className="btn btn-sm btn-outline" title="Marcar como no leído" onClick={() => accion('no_leido', {}, 'Marcado como no leído.')}>No leído</button>
                     <button type="button" className="btn btn-sm btn-outline" title="A la papelera" onClick={() => { if (window.confirm('¿Mandar este correo a la papelera?')) accion('papelera', {}, 'En la papelera.'); }}><I.Trash width={14} height={14} /></button>
                   </div>

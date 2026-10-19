@@ -411,8 +411,8 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
 
     // La lista de una carpeta.
     //  entrada · sin_asignar · mios (asignados a mí, sin hacer) · hechos · enviados · spam
-    // En el general, «hecho» es archivar (#384): sale de la entrada y queda solo
-    // en «Hechos» (todos los hechos, de quien sea).
+    // «Hecho» es archivar (#384, #465): sale de la entrada y queda solo en
+    // «Hechos» (en el general, los de todos; en el tuyo, los tuyos).
     router.get('/:buzon/mensajes', async (req, res) => {
         const buzon = resolver(req, res); if (!buzon) return;
         const vista = String(req.query.vista || 'entrada');
@@ -433,10 +433,10 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
                 } else if (buzon.general && vista === 'mios' && gmail) {
                     carpeta = c.todos || c.entrada;
                     criterio = { gmraw: `label:${miEtiqueta} -label:${ETIQUETA_HECHO}${texto}` };
-                } else if (buzon.general && vista === 'hechos' && gmail) {
+                } else if (vista === 'hechos' && gmail) {
                     carpeta = c.todos || c.entrada;
                     criterio = { gmraw: `label:${ETIQUETA_HECHO}${texto}` };
-                } else if (buzon.general && gmail) {
+                } else if (gmail) {
                     // La entrada, sin lo hecho (lo que se marcó antes de que «hecho» archivara).
                     criterio = { gmraw: `-label:${ETIQUETA_HECHO}${texto}` };
                 } else if (q && gmail) criterio = { gmraw: q };
@@ -607,7 +607,7 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
             if (['asignar', 'hecho', 'reabrir'].includes(accion) && req.body?.vista === 'spam') {
                 return res.status(400).json({ error: 'Primero sácalo del spam («No es spam»).' });
             }
-            if (['asignar', 'hecho', 'reabrir'].includes(accion) && !buzon.general) {
+            if (accion === 'asignar' && !buzon.general) {
                 return res.status(400).json({ error: 'Solo se asignan los correos del buzón general. Los tuyos se reenvían.' });
             }
             let destino = null;
