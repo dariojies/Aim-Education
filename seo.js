@@ -38,7 +38,7 @@ const SECCIONES = [['/', 'Inicio'], ['/actividades', 'Actividades'], ['/campamen
 // Las páginas fijas: título y descripción para Google. El título, de 50 a 60
 // letras, y la descripción, de 120 a 160: más largos, Google los corta.
 const FIJAS = {
-    '/': { tituloCompleto: 'Aim Education Algeciras: taekwondo, ballet, inglés, robótica',
+    '/': { tituloCompleto: 'Aim Education Algeciras: Taekwondo, Ballet, Inglés, Robótica',
         descripcion: 'Academia en Algeciras con Taekwon-Do ITF, ballet RAD, inglés Cambridge, robótica y STEM, baile y pilates. Formación integral con valores para niños y adultos.' },
     '/actividades': { titulo: 'Actividades en Algeciras: taekwondo, ballet, inglés y más',
         descripcion: 'Todas las actividades de Aim Education en Algeciras: artes marciales, danza, idiomas, robótica, arte y deporte, con grupos por edades y horarios.' },
@@ -171,7 +171,7 @@ export function crearSeo({ pool, urlBase, archivoIndex }) {
         // Las actividades nuevas del panel no están en el catálogo: la página de siempre.
         if (!a) return { titulo: 'Actividades', descripcion: FIJAS['/actividades'].descripcion };
         // Con el nombre con que la busca la gente (Taekwon-Do → «taekwondo»).
-        const descripcion = corto(`${a.name}${a.tambien?.length ? ` (${a.tambien[0].toLowerCase()})` : ''} en Algeciras. ${a.long || a.lede || ''}`);
+        const descripcion = corto(`${a.name}${a.tambien?.length ? ` (${a.tambien[0]})` : ''} en Algeciras. ${a.long || a.lede || ''}`);
         return {
             titulo: `${a.name} en Algeciras`, descripcion, imagen: a.fullAsset || a.iconAsset,
             jsonld: [migas([['/', 'Inicio'], ['/actividades', 'Actividades'], [`/actividades/${a.id}`, a.name]]),

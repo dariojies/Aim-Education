@@ -46,7 +46,7 @@ export default function AsistenteSeo({ titulo, extracto, contenido, slug, onSlug
     { ok: a.imagenes === 0 || a.sinAlt === 0, texto: a.imagenes ? `Imágenes con descripción (${a.imagenes - a.sinAlt} de ${a.imagenes})` : 'Imágenes con descripción (no hay imágenes)', ayuda: 'Pulsa la imagen y vuelve a ponerla con «Qué se ve».' },
     { ok: a.internos > 0, texto: 'Algún enlace a otra página de la web', ayuda: 'Por ejemplo, a la actividad de la que habla o a Contacto: ayuda a Google a recorrer la web.' },
     ...(k ? [
-      { ok: tiene(titulo), texto: `La palabra clave está en el título`, ayuda: 'Lo que buscaría la gente: «taekwondo Algeciras», «campamento de verano»…' },
+      { ok: tiene(titulo), texto: `La palabra clave está en el título`, ayuda: 'Lo que buscaría la gente: «Taekwondo Algeciras», «campamento de verano»…' },
       { ok: tiene(a.primerParrafo) || tiene(extracto), texto: 'La palabra clave sale al principio del texto', ayuda: 'En el extracto o en el primer párrafo.' },
       { ok: tiene(direccion.replace(/-/g, ' ')), texto: 'La palabra clave está en la dirección', ayuda: 'Cámbiala abajo mientras no esté publicada.' },
     ] : []),
@@ -77,7 +77,7 @@ export default function AsistenteSeo({ titulo, extracto, contenido, slug, onSlug
               <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}>{publicada ? 'Ya está publicada: cambiarla rompería los enlaces que ya se han compartido.' : 'Corta y con las palabras importantes. Si la dejas vacía, sale del título.'}</span>
             </label>
             <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-2)', display: 'grid', gap: 4, flex: 1, minWidth: 180 }}>Palabra clave (opcional)
-              <input value={clave} onChange={e => setClave(e.target.value)} placeholder="taekwondo Algeciras"
+              <input value={clave} onChange={e => setClave(e.target.value)} placeholder="Taekwondo Algeciras"
                 style={{ fontFamily: 'inherit', fontSize: 14, padding: '8px 10px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)' }} />
               <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}>Lo que buscaría alguien para encontrarla. No se guarda.</span>
             </label>

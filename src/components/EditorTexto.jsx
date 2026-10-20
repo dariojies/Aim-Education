@@ -288,7 +288,7 @@ export default function EditorTexto({ valor, onChange, subirImagen, placeholder 
                 catch (err) { alert(err.message); setVentana(v => ({ ...v, subiendo: false })); }
               }} />
           </label>
-          <label style={etiqueta}>Qué se ve (para Google y para quien no ve la imagen)<input value={ventana.alt} onChange={e => setVentana(v => ({ ...v, alt: e.target.value }))} style={inp} placeholder="Alumnos de taekwondo en el campeonato" /></label>
+          <label style={etiqueta}>Qué se ve (para Google y para quien no ve la imagen)<input value={ventana.alt} onChange={e => setVentana(v => ({ ...v, alt: e.target.value }))} style={inp} placeholder="Alumnos de Taekwon-Do en el campeonato" /></label>
           <label style={etiqueta}>Pie de foto (opcional)<input value={ventana.pie} onChange={e => setVentana(v => ({ ...v, pie: e.target.value }))} style={inp} /></label>
           <label style={etiqueta}>Tamaño
             <select value={ventana.tamano} onChange={e => setVentana(v => ({ ...v, tamano: e.target.value }))} style={inp}>

@@ -11,7 +11,7 @@ export const ACTIVITIES = [
     ages: "Desde 3 años · ITF España",
     // Cómo lo busca la gente (para Google), y la frase que lo explica en su página.
     tambien: ["Taekwondo", "Taekwondo ITF"],
-    nota: "¿Taekwon-Do o taekwondo? Es el mismo arte marcial. En la ITF lo escribimos Taekwon-Do, separado y con guion, como lo escribió su fundador, el general Choi Hong Hi.",
+    nota: "¿Taekwon-Do o Taekwondo? Es el mismo arte marcial. En la ITF lo escribimos Taekwon-Do, separado y con guion, como lo escribió su fundador, el general Choi Hong Hi.",
     aprender: [
       "Técnica completa: formas (tul), combate y defensa personal",
       "Cortesía, integridad, autocontrol y perseverancia",
