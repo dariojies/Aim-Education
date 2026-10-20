@@ -9,6 +9,9 @@ export const ACTIVITIES = [
     tag: "Artes marciales", lede: "Despierta tu fuerza interior y supera tus límites.",
     long: "Arte marcial tradicional de origen coreano en el que se usan las piernas y las manos, con cinco principios: cortesía, integridad, autocontrol, perseverancia y espíritu indomable. Incluye técnicas de defensa personal fáciles de aprender y una filosofía de no violencia y autodisciplina que también ayuda fuera del tatami. Clases en un ambiente seguro y divertido para todas las edades; quien quiere, además, compite.",
     ages: "Desde 3 años · ITF España",
+    // Cómo lo busca la gente (para Google), y la frase que lo explica en su página.
+    tambien: ["Taekwondo", "Taekwondo ITF"],
+    nota: "¿Taekwon-Do o taekwondo? Es el mismo arte marcial. En la ITF lo escribimos Taekwon-Do, separado y con guion, como lo escribió su fundador, el general Choi Hong Hi.",
     aprender: [
       "Técnica completa: formas (tul), combate y defensa personal",
       "Cortesía, integridad, autocontrol y perseverancia",

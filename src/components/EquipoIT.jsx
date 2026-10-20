@@ -131,7 +131,13 @@ function Planificacion({ showToast }) {
         <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Nadie tiene el rango de Equipo IT todavía.</p>
       ) : (
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 4, minWidth: 820 }}>
+          <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 4, minWidth: 900, tableLayout: 'fixed' }}>
+            {/* Anchos fijos: una nota larga no ensancha su día (se corta y se lee entera al abrirla). */}
+            <colgroup>
+              <col style={{ width: 150 }} />
+              {datos.dias.map(f => <col key={f} />)}
+              <col style={{ width: 56 }} />
+            </colgroup>
             <thead>
               <tr>
                 <th style={{ textAlign: 'left', fontSize: 11, color: 'var(--ink-3)', fontWeight: 800, padding: '4px 6px' }}>Persona</th>
@@ -146,19 +152,20 @@ function Planificacion({ showToast }) {
             <tbody>
               {datos.miembros.map(m => (
                 <tr key={m.userId}>
-                  <td style={{ fontSize: 13, fontWeight: 800, padding: '6px', verticalAlign: 'top', whiteSpace: 'nowrap' }}>{m.nombre}</td>
+                  <td style={{ fontSize: 13, fontWeight: 800, padding: '6px', verticalAlign: 'top', overflowWrap: 'anywhere' }}>{m.nombre}</td>
                   {datos.dias.map(f => {
                     const bloques = deCelda(m.userId, f);
                     return (
-                      <td key={f} style={{ verticalAlign: 'top', background: f === hoy ? 'color-mix(in oklab, var(--purple) 7%, var(--bg-2))' : 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, padding: 5, minWidth: 96 }}>
+                      <td key={f} style={{ verticalAlign: 'top', background: f === hoy ? 'color-mix(in oklab, var(--purple) 7%, var(--bg-2))' : 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, padding: 5, overflow: 'hidden' }}>
                         <div style={{ display: 'grid', gap: 4 }}>
                           {bloques.map(b => (
-                            <button key={b.id} type="button" disabled={!puede}
+                            <button key={b.id} type="button" disabled={!puede} title={b.nota || undefined}
                               onClick={() => setEditando({ id: b.id, userId: b.userId, fecha: b.fecha, inicio: b.inicio, fin: b.fin, nota: b.nota })}
                               style={{ textAlign: 'left', border: 'none', borderRadius: 7, padding: '4px 6px', fontFamily: 'inherit', cursor: puede ? 'pointer' : 'default',
-                                background: 'color-mix(in oklab, var(--teal) 16%, var(--bg-3))', color: 'var(--ink)' }}>
+                                background: 'color-mix(in oklab, var(--teal) 16%, var(--bg-3))', color: 'var(--ink)', minWidth: 0 }}>
                               <div style={{ fontSize: 12, fontWeight: 800 }}>{b.inicio}–{b.fin}</div>
-                              {b.nota && <div style={{ fontSize: 11, color: 'var(--ink-2)' }}>{b.nota}</div>}
+                              {/* Como mucho tres líneas; entera al pasar el ratón o al abrirlo. */}
+                              {b.nota && <div style={{ fontSize: 11, lineHeight: 1.35, color: 'var(--ink-2)', overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{b.nota}</div>}
                             </button>
                           ))}
                           {puede && (
@@ -205,9 +212,9 @@ function Planificacion({ showToast }) {
               </label>
             </div>
             <label style={{ display: 'grid', gap: 4, fontSize: 12 }}>
-              <span style={{ fontWeight: 700, color: 'var(--ink-2)' }}>Nota (opcional)</span>
-              <input value={editando.nota} maxLength={200} placeholder="p. ej. en remoto, migración de la base…"
-                onChange={e => setEditando(x => ({ ...x, nota: e.target.value }))} style={inp} />
+              <span style={{ fontWeight: 700, color: 'var(--ink-2)', display: 'flex' }}>Nota (opcional)<span style={{ marginLeft: 'auto', fontWeight: 500, color: 'var(--ink-3)' }}>{(editando.nota || '').length}/200</span></span>
+              <textarea value={editando.nota || ''} maxLength={200} rows={3} placeholder="p. ej. en remoto, migración de la base…"
+                onChange={e => setEditando(x => ({ ...x, nota: e.target.value }))} style={{ ...inp, resize: 'vertical', lineHeight: 1.4 }} />
             </label>
             <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
               {editando.id && <button type="button" className="btn btn-sm btn-outline" style={{ color: 'var(--orange)' }} onClick={quitar}><I.Trash /> Quitar</button>}

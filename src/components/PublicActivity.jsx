@@ -173,6 +173,10 @@ export default function PublicActivity({ id }) {
                 <span className="eyebrow purple">Qué es</span>
                 <h2 className="section-title">Sobre {act.name}</h2>
                 <p style={{ fontSize: 17, color: "var(--ink-2)", lineHeight: 1.6, marginTop: 16 }}>{act.long}</p>
+                {/* Sin partir los nombres con guion («Taekwon-Do») al final de la línea. */}
+                {act.nota && <p style={{ fontSize: 15, color: "var(--ink-3)", lineHeight: 1.6, marginTop: 10 }}>
+                  {act.nota.split(/(\S+-\S+)/).map((t, i) => (i % 2 ? <span key={i} style={{ whiteSpace: "nowrap" }}>{t}</span> : t))}
+                </p>}
 
                 {act.aprender?.length > 0 && (
                   <div style={{ marginTop: 36 }}>

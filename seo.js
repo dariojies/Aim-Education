@@ -170,15 +170,16 @@ export function crearSeo({ pool, urlBase, archivoIndex }) {
         const a = ACTIVITIES.find(x => x.id === req.params.id);
         // Las actividades nuevas del panel no están en el catálogo: la página de siempre.
         if (!a) return { titulo: 'Actividades', descripcion: FIJAS['/actividades'].descripcion };
-        const descripcion = corto(`${a.name} en Algeciras. ${a.long || a.lede || ''}`);
+        // Con el nombre con que la busca la gente (Taekwon-Do → «taekwondo»).
+        const descripcion = corto(`${a.name}${a.tambien?.length ? ` (${a.tambien[0].toLowerCase()})` : ''} en Algeciras. ${a.long || a.lede || ''}`);
         return {
             titulo: `${a.name} en Algeciras`, descripcion, imagen: a.fullAsset || a.iconAsset,
             jsonld: [migas([['/', 'Inicio'], ['/actividades', 'Actividades'], [`/actividades/${a.id}`, a.name]]),
-                { '@context': 'https://schema.org', '@type': 'Service', name: a.name, serviceType: a.tag, description: a.long || a.lede,
+                { '@context': 'https://schema.org', '@type': 'Service', name: a.name, ...(a.tambien?.length ? { alternateName: a.tambien } : {}), serviceType: a.tag, description: a.long || a.lede,
                   provider: { '@id': `${base()}/#organizacion`, '@type': 'EducationalOrganization', name: NEGOCIO.nombre }, areaServed: { '@type': 'City', name: NEGOCIO.ciudad } }],
             contenido: previo({
                 h1: `${a.name} en Algeciras`, intro: a.lede,
-                cuerpo: `${a.long ? `<p>${esc(a.long)}</p>` : ''}${a.ages ? `<p>${esc(a.ages)}</p>` : ''}${a.aprender?.length ? `<h2>Qué se aprende</h2><ul>${a.aprender.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}`,
+                cuerpo: `${a.long ? `<p>${esc(a.long)}</p>` : ''}${a.nota ? `<p>${esc(a.nota)}</p>` : ''}${a.ages ? `<p>${esc(a.ages)}</p>` : ''}${a.aprender?.length ? `<h2>Qué se aprende</h2><ul>${a.aprender.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}`,
                 tituloEnlaces: 'Otras actividades', enlaces: actividadesWeb().filter(e => e.ruta !== `/actividades/${a.id}`),
             }),
         };
