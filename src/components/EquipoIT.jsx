@@ -71,6 +71,8 @@ function Planificacion({ showToast }) {
   useEffect(() => { cargar(); }, [cargar]);
 
   const puede = !!datos?.puedeEditar;
+  // El IT Junior: solo su fila.
+  const puedeFila = (userId) => puede || (!!datos?.puedeEditarMio && String(userId) === String(datos?.yo));
 
   async function guardar(e) {
     e.preventDefault();
@@ -120,7 +122,9 @@ function Planificacion({ showToast }) {
       <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
         {puede
           ? 'Toca un día para añadir un tramo, o un tramo para cambiarlo o quitarlo. «Copiar la semana anterior» solo rellena a quien aún no tenga nada esta semana.'
-          : 'Solo el Equipo IT puede cambiar esta planificación.'}
+          : datos.puedeEditarMio
+            ? 'Toca un día de tu fila para añadir un tramo, o uno tuyo para cambiarlo o quitarlo. Los de los demás los pone el Equipo IT.'
+            : 'Solo el Equipo IT puede cambiar esta planificación.'}
       </p>
       <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
         Lo que se ponga aquí son las horas que cada uno tiene que fichar ese día —mandan sobre su horario
@@ -159,21 +163,21 @@ function Planificacion({ showToast }) {
                       <td key={f} style={{ verticalAlign: 'top', background: f === hoy ? 'color-mix(in oklab, var(--purple) 7%, var(--bg-2))' : 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, padding: 5, overflow: 'hidden' }}>
                         <div style={{ display: 'grid', gap: 4 }}>
                           {bloques.map(b => (
-                            <button key={b.id} type="button" disabled={!puede} title={b.nota || undefined}
+                            <button key={b.id} type="button" disabled={!puedeFila(m.userId)} title={b.nota || undefined}
                               onClick={() => setEditando({ id: b.id, userId: b.userId, fecha: b.fecha, inicio: b.inicio, fin: b.fin, nota: b.nota })}
-                              style={{ textAlign: 'left', border: 'none', borderRadius: 7, padding: '4px 6px', fontFamily: 'inherit', cursor: puede ? 'pointer' : 'default',
+                              style={{ textAlign: 'left', border: 'none', borderRadius: 7, padding: '4px 6px', fontFamily: 'inherit', cursor: puedeFila(m.userId) ? 'pointer' : 'default',
                                 background: 'color-mix(in oklab, var(--teal) 16%, var(--bg-3))', color: 'var(--ink)', minWidth: 0 }}>
                               <div style={{ fontSize: 12, fontWeight: 800 }}>{b.inicio}–{b.fin}</div>
                               {/* Como mucho tres líneas; entera al pasar el ratón o al abrirlo. */}
                               {b.nota && <div style={{ fontSize: 11, lineHeight: 1.35, color: 'var(--ink-2)', overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{b.nota}</div>}
                             </button>
                           ))}
-                          {puede && (
+                          {puedeFila(m.userId) && (
                             <button type="button" onClick={() => setEditando({ userId: m.userId, fecha: f, inicio: '09:00', fin: '14:00', nota: '' })}
                               style={{ border: '1px dashed var(--line)', background: 'transparent', borderRadius: 7, padding: '2px 0', color: 'var(--ink-3)', cursor: 'pointer', fontSize: 14 }}
                               aria-label="Añadir tramo">+</button>
                           )}
-                          {!puede && !bloques.length && <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>—</span>}
+                          {!puedeFila(m.userId) && !bloques.length && <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>—</span>}
                         </div>
                       </td>
                     );
@@ -194,7 +198,7 @@ function Planificacion({ showToast }) {
             <label style={{ display: 'grid', gap: 4, fontSize: 12 }}>
               <span style={{ fontWeight: 700, color: 'var(--ink-2)' }}>Persona</span>
               <select value={editando.userId} onChange={e => setEditando(x => ({ ...x, userId: e.target.value }))} style={inp}>
-                {datos.miembros.map(m => <option key={m.userId} value={m.userId}>{m.nombre}</option>)}
+                {datos.miembros.filter(m => puedeFila(m.userId)).map(m => <option key={m.userId} value={m.userId}>{m.nombre}</option>)}
               </select>
             </label>
             <label style={{ display: 'grid', gap: 4, fontSize: 12 }}>

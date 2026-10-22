@@ -48,7 +48,7 @@ import compression from 'compression';
 import { filasLibroRegistro, generarLibroRegistro, prorrataDe, TIPOS_OPERACION_DEFECTO } from './libro-registro.js';
 import { PassThrough } from 'stream';
 import { escalaDe, escalasDelClub, resultadoDe, baremoDe, matriculaExamenDe } from './rangos.js';
-import { rolEfectivo, rolVisible, permisosDe, mandaAlMenos, ROLES_STAFF, NOMBRE_ROL, NOMBRE_RANGO, RANGOS_PROPIOS, RANGOS_ASIGNABLES, recibeAviso, AVISOS, aplicarAjustesPermisos, limpiarAjustesPermisos, RANGOS_EDITABLES, FALTAS_PARA_LLAMAR } from './permisos.js';
+import { rolEfectivo, rolVisible, permisosDe, mandaAlMenos, daClase, ROLES_STAFF, NOMBRE_ROL, NOMBRE_RANGO, RANGOS_PROPIOS, RANGOS_ASIGNABLES, recibeAviso, AVISOS, aplicarAjustesPermisos, limpiarAjustesPermisos, RANGOS_EDITABLES, FALTAS_PARA_LLAMAR } from './permisos.js';
 import { htmlCorreo, textoCorreo, disenoDesdeTexto, limpiarDiseno, limpiarMarca, faltanObligatorios, ejemplosDe, CORREOS_SISTEMA, MARCA_POR_DEFECTO } from './correo-diseno.js';
 import sharp from 'sharp';
 
@@ -3526,7 +3526,7 @@ app.post('/api/users', authenticateSession, requirePermiso('editarAlumnos'), asy
     // es cosa de la dirección: si no, cualquiera con acceso al panel podría
     // hacerse jefe.
     const rolPedido = RANGOS_ASIGNABLES.includes(rol) && rol !== 'student' ? rol : null;
-    if (['secretaria', 'club_owner', 'equipo_it'].includes(rolPedido) && !mandaAlMenos(req.userSession.rol, 'club_owner')) {
+    if (['secretaria', 'club_owner', 'equipo_it', 'it_junior'].includes(rolPedido) && !mandaAlMenos(req.userSession.rol, 'club_owner')) {
         return res.status(403).json({ error: 'Solo la dirección puede dar ese rango.' });
     }
     // Los rangos solo de Aim Education no van en la cuenta (la comparten otras
@@ -11857,7 +11857,7 @@ async function candidatosAutomatismo(id, cfg) {
              JOIN tul_groups g ON g.group_id = s.group_id JOIN tul_activities a ON a.activity_id = g.activity_id
              JOIN users u ON u.user_id = s.student_id
              WHERE a.club_id = $1 AND COALESCE(u.role, 'student') NOT IN ('instructor', 'club_owner', 'superadmin')
-               AND NOT EXISTS (SELECT 1 FROM aim_rangos rg WHERE rg.user_id = u.user_id AND rg.rango IN ('trabajador', 'secretaria', 'equipo_it'))`,
+               AND NOT EXISTS (SELECT 1 FROM aim_rangos rg WHERE rg.user_id = u.user_id AND rg.rango IN ('trabajador', 'secretaria', 'equipo_it', 'it_junior'))`,
             [AIM_CLUB_ID]);
         return al.rows.map(x => ({ personaId: x.student_id, marca, extra }));
     }
@@ -12057,7 +12057,7 @@ function sqlSegmento(f, vals) {
     const w = [`u.club_id = $1`,
         // Solo alumnos (no personal del club).
         `COALESCE(u.role, 'student') NOT IN ('instructor', 'club_owner', 'superadmin')`,
-        `NOT EXISTS (SELECT 1 FROM aim_rangos rg WHERE rg.user_id = u.user_id AND rg.rango IN ('trabajador', 'secretaria', 'equipo_it'))`,
+        `NOT EXISTS (SELECT 1 FROM aim_rangos rg WHERE rg.user_id = u.user_id AND rg.rango IN ('trabajador', 'secretaria', 'equipo_it', 'it_junior'))`,
         `(EXISTS (SELECT 1 FROM tul_group_students s WHERE s.student_id = u.user_id)
           OR EXISTS (SELECT 1 FROM tul_enrollment_history h WHERE h.student_id = u.user_id AND h.club_id = $1)
           OR EXISTS (SELECT 1 FROM aim_camp_children cc WHERE cc.alumno_id = u.user_id))`];
@@ -16264,6 +16264,8 @@ const VISTAS_RESUMEN = { direccion: 'Dirección', secretaria: 'Secretaría', it:
 function vistasResumenDe(ses) {
     const rol = ses?.rol;
     if (rol === 'trabajador' || rol === 'instructor' || rol === 'secretaria') return [rol];
+    // El IT Junior: lo suyo de instructor y la vista de IT (sin asomarse a otros).
+    if (rol === 'it_junior') return ['instructor', 'it'];
     const propia = rol === 'equipo_it' ? 'it' : rol === 'club_owner' ? 'direccion'
         : ({ equipo_it: 'it', secretaria: 'secretaria', instructor: 'instructor', club_owner: 'direccion' }[ses?.rolVisible] || 'direccion');
     // La dirección y el Equipo IT pueden ver todas, también la de un instructor o
@@ -16554,7 +16556,7 @@ app.get('/api/admin/resumen', authenticateSession, requireAdmin, async (req, res
         // Ver el de un instructor o un trabajador concreto (solo quien puede ver
         // otras vistas): se elige de la lista; si no, el primero.
         let quien = ses.userId, personas = null, como = null;
-        if (vistas.length > 1 && (vista === 'instructor' || vista === 'trabajador')) {
+        if (vistas.length > 1 && (vista === 'instructor' || vista === 'trabajador') && ses.rol !== 'it_junior') {
             personas = (await pool.query(
                 `SELECT u.user_id AS id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre FROM users u
                  WHERE u.club_id = $1 AND ${sqlRango('u')} = $2 ORDER BY 2`, [AIM_CLUB_ID, vista])).rows;
@@ -20397,7 +20399,7 @@ const lunesDe = (iso) => {
 async function miembrosEquipoIT(cliente = pool) {
     const r = await cliente.query(
         `SELECT u.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre
-         FROM users u WHERE u.club_id = $1 AND LOWER(${sqlRango('u')}) = 'equipo_it' ORDER BY nombre`, [AIM_CLUB_ID]);
+         FROM users u WHERE u.club_id = $1 AND LOWER(${sqlRango('u')}) IN ('equipo_it', 'it_junior') ORDER BY nombre`, [AIM_CLUB_ID]);
     return r.rows.map(x => ({ userId: x.user_id, nombre: x.nombre }));
 }
 
@@ -20418,6 +20420,8 @@ app.get('/api/admin/equipo-it', authenticateSession, requireSeccion('equipo_it')
             miembros,
             bloques: b.rows.map(x => ({ id: x.id, userId: x.user_id, fecha: x.fecha, inicio: x.inicio, fin: x.fin, nota: x.nota || '' })),
             puedeEditar: !!permisos(req).editarEquipoIT,
+            // El IT Junior solo lo suyo.
+            puedeEditarMio: !!permisos(req).editarMiEquipoIT, yo: req.userSession.userId,
         });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -20442,10 +20446,17 @@ async function validarTramoIT(body, excluirId = null) {
     return { userId, fecha, inicio, fin, nota };
 }
 
-app.post('/api/admin/equipo-it/tramos', authenticateSession, requireSeccion('equipo_it'), requirePermiso('editarEquipoIT'), async (req, res) => {
+// El Equipo IT planifica a todos; el IT Junior, solo sus propios tramos.
+const puedePlanificarIT = (req, userId) => {
+    const p = permisos(req);
+    return !!p.editarEquipoIT || (!!p.editarMiEquipoIT && String(userId) === String(req.userSession.userId));
+};
+const NO_PLANIFICA = 'Solo puedes cambiar tus propios tramos.';
+app.post('/api/admin/equipo-it/tramos', authenticateSession, requireSeccion('equipo_it'), async (req, res) => {
     try {
         const t = await validarTramoIT(req.body);
         if (t.error) return res.status(400).json({ error: t.error });
+        if (!puedePlanificarIT(req, t.userId)) return res.status(403).json({ error: NO_PLANIFICA });
         const r = await pool.query(
             `INSERT INTO aim_it_planificacion (user_id, fecha, inicio, fin, nota, created_by)
              VALUES ($1, $2::date, $3::time, $4::time, $5, $6) RETURNING id`,
@@ -20454,12 +20465,14 @@ app.post('/api/admin/equipo-it/tramos', authenticateSession, requireSeccion('equ
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.put('/api/admin/equipo-it/tramos/:id', authenticateSession, requireSeccion('equipo_it'), requirePermiso('editarEquipoIT'), async (req, res) => {
+app.put('/api/admin/equipo-it/tramos/:id', authenticateSession, requireSeccion('equipo_it'), async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) return res.status(400).json({ error: 'Tramo no válido.' });
     try {
         const t = await validarTramoIT(req.body, id);
         if (t.error) return res.status(400).json({ error: t.error });
+        const antes = (await pool.query(`SELECT user_id FROM aim_it_planificacion WHERE id = $1`, [id])).rows[0];
+        if (antes && (!puedePlanificarIT(req, antes.user_id) || !puedePlanificarIT(req, t.userId))) return res.status(403).json({ error: NO_PLANIFICA });
         const r = await pool.query(
             `UPDATE aim_it_planificacion SET user_id = $1, fecha = $2::date, inicio = $3::time, fin = $4::time, nota = $5, updated_at = NOW()
              WHERE id = $6 RETURNING id`, [t.userId, t.fecha, t.inicio, t.fin, t.nota, id]);
@@ -20468,8 +20481,10 @@ app.put('/api/admin/equipo-it/tramos/:id', authenticateSession, requireSeccion('
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.delete('/api/admin/equipo-it/tramos/:id', authenticateSession, requireSeccion('equipo_it'), requirePermiso('editarEquipoIT'), async (req, res) => {
+app.delete('/api/admin/equipo-it/tramos/:id', authenticateSession, requireSeccion('equipo_it'), async (req, res) => {
     try {
+        const antes = (await pool.query(`SELECT user_id FROM aim_it_planificacion WHERE id = $1`, [Number(req.params.id) || 0])).rows[0];
+        if (antes && !puedePlanificarIT(req, antes.user_id)) return res.status(403).json({ error: NO_PLANIFICA });
         const r = await pool.query(`DELETE FROM aim_it_planificacion WHERE id = $1 RETURNING id`, [Number(req.params.id) || 0]);
         if (!r.rowCount) return res.status(404).json({ error: 'Ese tramo ya no existe.' });
         res.json({ success: true });
@@ -21313,7 +21328,7 @@ const mapIncidencia = (x) => ({
     responsable: x.responsable_id ? { id: x.responsable_id, nombre: x.responsable } : null,
     fechaLimite: x.limite || null, resolucion: x.resolucion || '', resueltaPor: x.resuelta_por || null, resueltaAt: x.resuelta_at,
 });
-const ROLES_PERSONAL_SQL = `('trabajador', 'instructor', 'secretaria', 'club_owner', 'equipo_it')`;
+const ROLES_PERSONAL_SQL = `('trabajador', 'instructor', 'secretaria', 'club_owner', 'equipo_it', 'it_junior')`;
 const UUID_INCIDENCIA = /^[0-9a-f-]{36}$/i;
 // Los implicados que llegan del formulario: ids válidos, sin repetir, como mucho
 // 40 y solo de gente del club.
@@ -22375,7 +22390,7 @@ async function cerrarFichajesAbiertos() {
         const ahoraMin = (() => { const [h, m] = new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/Madrid', hour: '2-digit', minute: '2-digit' }).split(':').map(Number); return h * 60 + m; })();
         for (const a of abiertos.rows) {
             if (!['entrada', 'pausa_fin', 'pausa_inicio'].includes(a.tipo)) continue;
-            if (cfg.modo === 'instructores' && rolEfectivo(a.role, a.dev_role, a.rango) !== 'instructor') continue;
+            if (cfg.modo === 'instructores' && !daClase(rolEfectivo(a.role, a.dev_role, a.rango))) continue;
             // La entrada de esta jornada: el día y la hora en que empezó.
             const ent = (await pool.query(
                 `SELECT f.dia::text AS dia, to_char(f.ts AT TIME ZONE 'Europe/Madrid', 'HH24:MI') AS hora FROM aim_fichajes f

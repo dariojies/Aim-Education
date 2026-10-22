@@ -9,7 +9,7 @@ import { permisosDe, NOMBRE_ROL, AVISOS, recibeAviso, aplicarAjustesPermisos, li
 // y lo que deja hacer).
 // ─────────────────────────────────────────────────────────────────────────────
 
-const ROLES = ['trabajador', 'instructor', 'secretaria', 'club_owner'];
+const ROLES = ['trabajador', 'instructor', 'it_junior', 'secretaria', 'club_owner'];
 
 // Lo que cambia dentro de un apartado según el rango (cuando lo ve, pero no entero).
 const MATIZ = {
@@ -20,13 +20,13 @@ const MATIZ = {
   camp: (p) => (!p.campCompleto ? 'lista y agenda del día' : null),
   support: (p) => (!p.soporteCompleto ? 'sus tickets' : null),
   fichaje: (p) => (!p.fichajesGestion ? 'solo el suyo' : 'el de todos'),
-  equipo_it: (p) => (!p.editarEquipoIT ? 'solo ver' : null),
+  equipo_it: (p) => (p.editarEquipoIT ? null : p.editarMiEquipoIT ? 'sus tramos' : 'solo ver'),
   // Lo escriben el Equipo IT y los superadmin (#397).
   cambios: (p) => (!p.editarCambios ? 'solo ver' : null),
   // #449: info@ solo para secretaría y dirección.
   bandeja: (p) => (!p.correoGeneral ? 'solo el suyo' : null),
   evaluacion: (p) => (p.soloSusGrupos ? 'sus clases' : !p.editarCurriculo ? 'sin tocar el currículo' : null),
-  overview: (p, rol) => ({ trabajador: 'su día', instructor: 'sus clases', secretaria: 'el día del club', club_owner: 'negocio' }[rol]),
+  overview: (p, rol) => ({ trabajador: 'su día', instructor: 'sus clases', it_junior: 'sus clases y lo de IT', secretaria: 'el día del club', club_owner: 'negocio' }[rol]),
 };
 
 const RESUMEN = {

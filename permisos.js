@@ -13,8 +13,10 @@
 // recepción…) está por debajo del instructor y por encima del alumno: entra al
 // panel para fichar. 'secretaria' va por encima de los instructores y por debajo
 // del dueño del club, que ve lo mismo salvo los ajustes. El Equipo IT tiene los
-// mismos privilegios que el dueño del club.
-export const RANGO = { trabajador: 1, instructor: 2, secretaria: 3, club_owner: 4, equipo_it: 4, superadmin: 5 };
+// mismos privilegios que el dueño del club. El IT Junior es quien acaba de entrar
+// al Equipo IT: ve lo de un instructor (muchos además dan clase) más la
+// planificación del equipo, y lleva los tickets que se le asignan.
+export const RANGO = { trabajador: 1, instructor: 2, it_junior: 2, secretaria: 3, club_owner: 4, equipo_it: 4, superadmin: 5 };
 export const ROLES_STAFF = Object.keys(RANGO);
 
 export const NOMBRE_ROL = {
@@ -23,20 +25,25 @@ export const NOMBRE_ROL = {
     secretaria: 'Secretaría',
     club_owner: 'Dueño del club',
     equipo_it: 'Equipo IT',
+    it_junior: 'IT Junior',
     superadmin: 'Superadmin',
 };
 
 // Rangos que solo existen en Aim Education. La cuenta la comparten otras apps
 // (Aim-Tul solo conoce alumno, instructor y dueño), así que estos no se escriben
 // en ella: van en la tabla aim_rangos, y allí cada uno sigue con el suyo.
-export const RANGOS_PROPIOS = ['trabajador', 'secretaria', 'equipo_it'];
+// Al IT Junior que además da clase se le deja la cuenta como instructor: sigue
+// dando sus clases (y en Learning Dungeon) y aquí manda su rango.
+export const RANGOS_PROPIOS = ['trabajador', 'secretaria', 'equipo_it', 'it_junior'];
 // Los que se pueden dar desde el panel. El superadmin no: es un rango de
 // desarrollo, para gente concreta, y no se muestra en ningún sitio.
-export const RANGOS_ASIGNABLES = ['student', 'trabajador', 'instructor', 'secretaria', 'club_owner', 'equipo_it'];
+export const RANGOS_ASIGNABLES = ['student', 'trabajador', 'instructor', 'secretaria', 'club_owner', 'it_junior', 'equipo_it'];
 export const NOMBRE_RANGO = {
     student: 'Alumno', trabajador: 'Trabajador', instructor: 'Instructor', secretaria: 'Secretaría',
-    club_owner: 'Dueño del club', equipo_it: 'Equipo IT',
+    club_owner: 'Dueño del club', it_junior: 'IT Junior', equipo_it: 'Equipo IT',
 };
+// Quien da clase en el panel: el instructor y el IT Junior (que puede darlas).
+export const daClase = (rol) => rol === 'instructor' || rol === 'it_junior';
 
 // El rango de alguien en Aim Education: el propio (aim_rangos) si lo tiene y, si
 // no, el de su cuenta.
@@ -65,8 +72,11 @@ export const mandaAlMenos = (rol, minimo) => (RANGO[rol] || 0) >= (RANGO[minimo]
 export function permisosDe(rol) {
     // El trabajador solo entra a lo suyo: fichar, su día y soporte.
     const trabajador = rol === 'trabajador';
-    // Lo que no ve un instructor tampoco lo ve un trabajador.
-    const instructor = rol === 'instructor' || trabajador;
+    // El IT Junior ve lo de un instructor (sus clases, si las da) más la
+    // planificación del Equipo IT, y solo sus tickets.
+    const itJunior = rol === 'it_junior';
+    // Lo que no ve un instructor tampoco lo ve un trabajador (ni un IT Junior).
+    const instructor = rol === 'instructor' || trabajador || itJunior;
     const jefe = mandaAlMenos(rol, 'club_owner');
 
     return {
@@ -140,7 +150,7 @@ export function permisosDe(rol) {
             redes: mandaAlMenos(rol, 'secretaria'),
             // La planificación del Equipo IT: la ven secretaría y dirección; solo
             // la tocan el propio equipo y los superadmin (editarEquipoIT).
-            equipo_it: mandaAlMenos(rol, 'secretaria'),
+            equipo_it: mandaAlMenos(rol, 'secretaria') || itJunior,
             // El registro de cambios de cada deploy (#397): lo leen secretaría y
             // dirección; lo escriben el Equipo IT y los superadmin (editarCambios).
             cambios: mandaAlMenos(rol, 'secretaria'),
@@ -166,7 +176,7 @@ export function permisosDe(rol) {
         editarEventos: !instructor,
         verDineroEventos: !instructor,
         // Un instructor pide que se cree un evento; lo aprueba el club.
-        pedirEventos: rol === 'instructor',
+        pedirEventos: daClase(rol),
         // En soporte ve sus tickets, como cualquiera desde su perfil.
         soporteCompleto: !instructor,
         // Ver los fichajes de TODO el personal, corregir olvidos y exportar para la
@@ -174,6 +184,8 @@ export function permisosDe(rol) {
         fichajesGestion: mandaAlMenos(rol, 'secretaria'),
         // Planificar las semanas del Equipo IT: el equipo y los superadmin.
         editarEquipoIT: rol === 'equipo_it' || rol === 'superadmin',
+        // El IT Junior: solo sus propios tramos de la planificación.
+        editarMiEquipoIT: itJunior,
         // Escribir en «Cambios» (#397): título y texto de cada deploy y entradas a mano.
         editarCambios: rol === 'equipo_it' || rol === 'superadmin',
         // Dar o quitar rangos del club (dueño del club y por encima).
@@ -228,12 +240,12 @@ export const AVISOS = [
     // él, el aviso llevaría a una página que no le abre.
     // Llamar es cosa de secretaría; quien no viene, de los profes de esa clase,
     // que citan a otra persona en el hueco (#406).
-    { id: 'speaking_por_llamar', grupo: 'Clases individuales', texto: 'Alumnos de clases individuales sin contestar, por llamar a los padres', quien: (p, rol) => p.secciones.speaking && rol !== 'instructor' },
+    { id: 'speaking_por_llamar', grupo: 'Clases individuales', texto: 'Alumnos de clases individuales sin contestar, por llamar a los padres', quien: (p, rol) => p.secciones.speaking && !daClase(rol) },
     // Las clases que da en lugar de un compañero ausente (#445).
     { id: 'sustituciones', grupo: 'Clases', texto: 'Clases en las que sustituye a un compañero', quien: (p, rol) => rol !== 'trabajador' },
     // Al que no puede le sustituye su reserva (#443): quién va en lugar de quién.
     { id: 'speaking_reserva', grupo: 'Clases individuales', texto: 'Se ha citado a un reserva porque el alumno no podía', quien: (p) => p.secciones.speaking },
-    { id: 'speaking_rechazados', grupo: 'Clases individuales', texto: 'Alumnos que no vendrán a una clase individual (se va al verlo)', quien: (p, rol) => p.secciones.speaking && rol === 'instructor',
+    { id: 'speaking_rechazados', grupo: 'Clases individuales', texto: 'Alumnos que no vendrán a una clase individual (se va al verlo)', quien: (p, rol) => p.secciones.speaking && daClase(rol),
       nota: () => 'solo de sus clases' },
     { id: 'fotos', grupo: 'Familias', texto: 'Solicitudes del permiso de fotos', quien: (p) => p.editarAlumnos },
     // Las entregas del aula virtual (#433): los profes, de sus cursos.
@@ -279,7 +291,7 @@ export function recibeAviso(id, permisos, rol) {
 // Desde «Rangos y permisos» el dueño del club puede cambiar qué apartados ve
 // cada rango y qué avisos le llegan. Se guardan solo los cambios respecto a lo
 // de fábrica: { rol: { secciones: { id: bool }, avisos: { id: bool } } }.
-export const RANGOS_EDITABLES = ['trabajador', 'instructor', 'secretaria', 'club_owner'];
+export const RANGOS_EDITABLES = ['trabajador', 'instructor', 'it_junior', 'secretaria', 'club_owner'];
 // Lo que no se puede cambiar: el fichaje es obligatorio por ley para todo el
 // personal, y el dueño no puede quedarse sin «Rangos y permisos» ni «Ajustes»
 // (nadie podría deshacerlo). «Rangos y permisos» es solo de la dirección.

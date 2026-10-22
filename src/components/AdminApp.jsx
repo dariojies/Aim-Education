@@ -2453,7 +2453,7 @@ Le llegará un correo a ${u.email} con un enlace para poner su contraseña (vale
                 {puedeCambiarRangos ? (
                   <select value={u.rango || 'instructor'} onChange={e => cambiarRol(u, e.target.value)}
                     style={{ marginTop: 2, fontFamily: 'inherit', fontSize: 12, padding: '2px 6px', borderRadius: 6, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink-2)' }}>
-                    {['trabajador', 'instructor', 'secretaria', 'club_owner', 'equipo_it'].map(r => <option key={r} value={r}>{NOMBRE_RANGO[r]}</option>)}
+                    {['trabajador', 'instructor', 'secretaria', 'club_owner', 'it_junior', 'equipo_it'].map(r => <option key={r} value={r}>{NOMBRE_RANGO[r]}</option>)}
                   </select>
                 ) : <div className="sec">{etiquetaRol(u)}</div>}
               </div>
@@ -7259,7 +7259,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                       Rango en el club
                       <select value={editingItem.rol} onChange={e => setEditingItem({ ...editingItem, rol: e.target.value })}
                         style={{ fontFamily: 'inherit', fontSize: 14, padding: '9px 11px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }}>
-                        {['trabajador', 'instructor', ...(permisos.cambiarRangos ? ['secretaria', 'club_owner', 'equipo_it'] : [])]
+                        {['trabajador', 'instructor', ...(permisos.cambiarRangos ? ['secretaria', 'club_owner', 'it_junior', 'equipo_it'] : [])]
                           .map(r => <option key={r} value={r}>{NOMBRE_RANGO[r]}</option>)}
                       </select>
                     </label>
