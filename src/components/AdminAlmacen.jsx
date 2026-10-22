@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { I } from './Icons.jsx';
 import { textoPlano, coincideBusqueda } from './Shared.jsx';
+import { imprimirHtml } from '../imprimir.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Almacén / inventario (ticket #250). El club ve lo que tiene en stock. Cada
@@ -20,6 +21,7 @@ export default function AdminAlmacen({ showToast }) {
   const [edit, setEdit] = useState(null);   // artículo en edición/alta
   const [movs, setMovs] = useState(null);   // { item, lista }
   const [q, setQ] = useState('');
+  const [entradas, setEntradas] = useState(false);
 
   const cargar = useCallback(async () => {
     setCargando(true);
@@ -104,6 +106,7 @@ export default function AdminAlmacen({ showToast }) {
         <div className="search-input" style={{ maxWidth: 320 }}><I.Search /><input placeholder="Buscar artículo..." value={q} onChange={e => setQ(e.target.value)} /></div>
         {bajos > 0 && <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--orange)', background: 'color-mix(in oklab, var(--orange) 12%, var(--bg-2))', padding: '4px 12px', borderRadius: 999 }}>⚠️ {bajos} bajo mínimo</span>}
         <div style={{ flex: 1 }} />
+        <button className="btn btn-sm btn-outline" onClick={() => setEntradas(true)} title="Toda la mercancía que entró un día, junta">Entradas del día</button>
         <button className="btn btn-sm btn-primary" onClick={() => setEdit(vacio())}><I.Plus /> Nuevo artículo</button>
       </div>
 
@@ -235,6 +238,8 @@ export default function AdminAlmacen({ showToast }) {
         </div>
       )}
 
+      {entradas && <EntradasDelDia onCerrar={() => setEntradas(false)} />}
+
       {/* Movimientos */}
       {movs && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.4)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }} onClick={() => setMovs(null)}>
@@ -252,6 +257,82 @@ export default function AdminAlmacen({ showToast }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ═══════════════════════ Entradas del día (#466) ═══════════════════════
+// Lo que se dio de entrada un día (uno a uno, desde cada artículo), en una
+// lista: cada artículo con sus unidades, y el total. Se puede imprimir.
+const hoyLocal = () => new Date().toLocaleDateString('sv-SE');
+const otroDia = (f, n) => { const d = new Date(`${f}T12:00:00`); d.setDate(d.getDate() + n); return d.toLocaleDateString('sv-SE'); };
+const diaLargo = (f) => new Date(`${f}T12:00:00`).toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+const escHtml = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function EntradasDelDia({ onCerrar }) {
+  const [fecha, setFecha] = useState(hoyLocal());
+  const [d, setD] = useState(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    setD(null); setError('');
+    fetch(`/api/admin/almacen/entradas?fecha=${fecha}`, { credentials: 'include', cache: 'no-store' })
+      .then(async r => { const x = await r.json().catch(() => ({})); if (!r.ok) throw new Error(x.error || 'No se ha podido cargar.'); setD(x); })
+      .catch(e => setError(e.message));
+  }, [fecha]);
+  const motivoTxt = (m) => m.filter(x => !/^recuento$/i.test(x)).join(' · ');
+  function imprimir() {
+    const filas = d.articulos.map(a => `<tr><td>${escHtml(a.nombre)}${a.categoria ? `<div style="color:#777;font-size:11px">${escHtml(a.categoria)}</div>` : ''}</td><td style="text-align:right;font-weight:700">+${a.unidades}</td><td style="text-align:right">${a.stock}</td></tr>`).join('');
+    imprimirHtml('entradas-almacen', `<div style="font-family:Arial,sans-serif;padding:24px;color:#111">
+      <h2 style="margin:0 0 4px">Entrada de mercancía</h2><div style="color:#555;margin-bottom:16px">${escHtml(diaLargo(fecha))}</div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="text-align:left;border-bottom:2px solid #111"><th style="padding:6px 4px">Artículo</th><th style="text-align:right;padding:6px 4px">Entraron</th><th style="text-align:right;padding:6px 4px">Hay ahora</th></tr></thead>
+      <tbody>${filas}</tbody><tfoot><tr style="border-top:2px solid #111"><td style="padding:8px 4px;font-weight:700">Total (${d.articulos.length} artículos)</td><td style="text-align:right;padding:8px 4px;font-weight:700">+${d.total}</td><td></td></tr></tfoot></table>
+      <style>#entradas-almacen td{padding:6px 4px;border-bottom:1px solid #ddd}</style></div>`);
+  }
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.4)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }} onClick={onCerrar}>
+      <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 20, display: 'grid', gap: 12, width: 'min(620px, 100%)', maxHeight: '88vh', overflowY: 'auto' }}>
+        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>Entradas del día</h3>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button type="button" className="btn btn-sm btn-outline" onClick={() => setFecha(f => otroDia(f, -1))} aria-label="Día anterior">‹</button>
+          <input type="date" value={fecha} max={hoyLocal()} onChange={e => e.target.value && setFecha(e.target.value)} style={{ ...inp, padding: '6px 9px' }} />
+          <button type="button" className="btn btn-sm btn-outline" disabled={fecha >= hoyLocal()} onClick={() => setFecha(f => otroDia(f, 1))} aria-label="Día siguiente">›</button>
+          {fecha !== hoyLocal() && <button type="button" className="btn btn-sm btn-ghost" onClick={() => setFecha(hoyLocal())}>Hoy</button>}
+          <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>{diaLargo(fecha).replace(/^./, c => c.toUpperCase())}</span>
+        </div>
+        <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Todo lo que se sumó a mano ese día (entradas de mercancía y recuentos al alza), junto por artículo. Las ventas no cuentan.</p>
+        {error && <p style={{ margin: 0, color: 'var(--orange)', fontSize: 13 }}>{error}</p>}
+        {!d && !error && <p style={{ margin: 0, color: 'var(--ink-3)', fontSize: 13 }}>Cargando...</p>}
+        {d && !d.articulos.length && <p style={{ margin: 0, color: 'var(--ink-3)', fontSize: 13 }}>Ese día no entró nada.</p>}
+        {d && d.articulos.length > 0 && (
+          <>
+            <div style={{ display: 'grid', gap: 0, border: '1px solid var(--line)', borderRadius: 12, overflow: 'hidden' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 80px 80px', gap: 8, padding: '8px 12px', background: 'var(--bg-3)', fontSize: 11, fontWeight: 800, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '.06em' }}>
+                <span>Artículo</span><span style={{ textAlign: 'right' }}>Entraron</span><span style={{ textAlign: 'right' }}>Hay ahora</span>
+              </div>
+              {d.articulos.map(a => (
+                <div key={a.id} style={{ display: 'grid', gridTemplateColumns: '1fr 80px 80px', gap: 8, padding: '8px 12px', borderTop: '1px solid var(--line-2)', alignItems: 'baseline', fontSize: 14 }}>
+                  <span style={{ minWidth: 0 }}>
+                    <b>{a.nombre}</b>
+                    <span style={{ display: 'block', fontSize: 11, color: 'var(--ink-3)' }}>
+                      {[a.categoria, motivoTxt(a.motivos), a.veces > 1 ? `en ${a.veces} veces` : null, a.quienes.join(', ')].filter(Boolean).join(' · ')}
+                    </span>
+                  </span>
+                  <b style={{ textAlign: 'right', color: 'var(--teal)' }}>+{a.unidades}</b>
+                  <span style={{ textAlign: 'right', color: 'var(--ink-2)' }}>{a.stock}</span>
+                </div>
+              ))}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 80px 80px', gap: 8, padding: '10px 12px', borderTop: '2px solid var(--line)', fontSize: 14, fontWeight: 800 }}>
+                <span>Total · {d.articulos.length} {d.articulos.length === 1 ? 'artículo' : 'artículos'}</span>
+                <span style={{ textAlign: 'right', color: 'var(--teal)' }}>+{d.total}</span><span />
+              </div>
+            </div>
+          </>
+        )}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          {d && d.articulos.length > 0 && <button type="button" className="btn btn-sm btn-outline" onClick={imprimir}>Imprimir</button>}
+          <button type="button" className="btn btn-sm btn-primary" onClick={onCerrar}>Cerrar</button>
+        </div>
+      </div>
     </div>
   );
 }

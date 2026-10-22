@@ -22531,6 +22531,27 @@ app.post('/api/admin/almacen/:id/ajuste', authenticateSession, requireAdmin, asy
     } finally { client.release(); }
 });
 
+// La mercancía que entró un día (#466): lo que se sumó a mano (entradas y
+// recuentos al alza), junto por artículo. Las ventas y lo que se resta, no.
+app.get('/api/admin/almacen/entradas', authenticateSession, requireAdmin, async (req, res) => {
+    const fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.fecha || '')) ? req.query.fecha : hoyMadrid();
+    try {
+        const r = await pool.query(
+            `SELECT a.id, a.nombre, a.categoria, a.stock, SUM(m.delta)::int AS unidades, COUNT(*)::int AS veces, MAX(m.created_at) AS ultima,
+                    ARRAY_AGG(DISTINCT m.motivo) FILTER (WHERE m.motivo IS NOT NULL) AS motivos,
+                    ARRAY_AGG(DISTINCT TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, '')))) FILTER (WHERE u.user_id IS NOT NULL) AS quienes
+             FROM aim_almacen_movimientos m JOIN aim_almacen a ON a.id = m.almacen_id LEFT JOIN users u ON u.user_id = m.usuario_id
+             WHERE m.delta > 0 AND m.recibo_id IS NULL AND (m.created_at AT TIME ZONE 'Europe/Madrid')::date = $1::date
+             GROUP BY a.id ORDER BY a.categoria NULLS LAST, a.nombre`, [fecha]);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            fecha, total: r.rows.reduce((s, x) => s + x.unidades, 0),
+            articulos: r.rows.map(x => ({ id: x.id, nombre: x.nombre, categoria: x.categoria, unidades: x.unidades, veces: x.veces, stock: x.stock,
+                ultima: x.ultima, motivos: x.motivos || [], quienes: x.quienes || [] })),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/admin/almacen/:id/movimientos', authenticateSession, requireAdmin, async (req, res) => {
     try {
         const r = await pool.query(
