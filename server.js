@@ -22707,8 +22707,10 @@ app.get('/api/admin/superadmins', authenticateSession, async (req, res) => {
     try {
         const result = await pool.query(`
             SELECT user_id as id, name, surname, email
-            FROM users
+            FROM users u
             WHERE role = 'superadmin' OR dev_role = 'superadmin' OR role = 'SuperAdmin'
+               -- Y el Equipo IT, también los IT Junior: llevan tickets.
+               OR EXISTS (SELECT 1 FROM aim_rangos ar WHERE ar.user_id = u.user_id AND ar.rango IN ('equipo_it', 'it_junior'))
             ORDER BY name ASC
         `);
         res.json({ success: true, superadmins: result.rows });
