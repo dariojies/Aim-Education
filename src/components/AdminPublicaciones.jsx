@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { I } from './Icons.jsx';
+import ConexionMeta from './ConexionMeta.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Publicaciones en redes (ticket #410), dentro de Comunicación: nuestro propio
@@ -162,10 +163,9 @@ function Conexion({ cuenta, onRecargar }) {
   if (!cuenta) return <p style={suave}>Comprobando la conexión con Facebook e Instagram…</p>;
   if (!cuenta.conectado) {
     return (
-      <div style={{ ...caja, borderColor: 'color-mix(in oklab, var(--orange) 40%, var(--line))' }}>
-        <b style={{ color: 'var(--orange)' }}>Sin conexión con Meta</b>
-        <span style={{ fontSize: 13 }}>{cuenta.motivo}</span>
-        <span style={suave}>Se puede preparar y programar igual; saldrá cuando esté conectado (si no, se marcará con error y se reintenta).</span>
+      <div style={{ display: 'grid', gap: 6 }}>
+        <ConexionMeta onCambio={onRecargar} />
+        <span style={suave}>{cuenta.motivo} Se puede preparar y programar igual; saldrá cuando esté conectado (si no, se marcará con error y se reintenta).</span>
       </div>
     );
   }
@@ -185,9 +185,10 @@ function Conexion({ cuenta, onRecargar }) {
         <span style={{ fontSize: 12, color: '#B45309', flexBasis: '100%' }}>
           {faltan.length > 0 && <>Al token de la página le faltan permisos para publicar: <b>{faltan.join(', ')}</b>. </>}
           {faltanE.length > 0 && <>Para las estadísticas: <b>{faltanE.join(', ')}</b>. </>}
-          Hay que generar el token de nuevo en Meta con esos permisos y ponerlo en Heroku (META_PAGE_TOKEN).
+          Se arregla volviendo a conectar con todos los permisos marcados:
         </span>
       )}
+      {(faltan.length > 0 || faltanE.length > 0) && <div style={{ flexBasis: '100%' }}><ConexionMeta onCambio={onRecargar} /></div>}
     </div>
   );
 }

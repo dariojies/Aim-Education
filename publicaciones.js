@@ -5,7 +5,7 @@
 // se programa, y aquí se ven el calendario y las estadísticas de las cuentas.
 //
 // Usa la misma app de Meta que «Redes sociales» (#341) y su token de la página
-// (META_PAGE_TOKEN, en Heroku). Para publicar, ese token necesita los permisos
+// (el de «Conectar con Facebook», #468, o si no META_PAGE_TOKEN en Heroku). Para publicar, ese token necesita los permisos
 // pages_manage_posts y, para Instagram, instagram_basic e instagram_content_publish;
 // para las estadísticas, read_insights e instagram_manage_insights. La pantalla
 // dice cuáles faltan. La cuenta de Instagram tiene que ser profesional y estar
@@ -18,6 +18,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import express from 'express';
 import crypto from 'crypto';
+import { tokenPagina } from './meta-conexion.js';
 
 const REDES = ['facebook', 'instagram'];
 const TIPOS = ['post', 'reel', 'story'];
@@ -86,7 +87,8 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
     const router = express.Router();
     const ver = [authenticateSession, requireSeccion('comunicaciones')];
     const GRAPH = () => (process.env.META_GRAPH_URL || 'https://graph.facebook.com/v21.0').replace(/\/+$/, '');
-    const TOKEN = () => process.env.META_PAGE_TOKEN || '';
+    // El de «Conectar con Facebook» (#468) o, si no, el de Heroku.
+    const TOKEN = () => tokenPagina();
     const BASE_MEDIOS = () => (process.env.URL_MEDIOS_PUBLICA || urlPublica).replace(/\/+$/, '');
 
     // Una llamada a la API de Meta, con su error en claro.
@@ -110,7 +112,7 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
     // ── La cuenta: la página, su Instagram y los permisos del token ──
     let cuentaCache = null;
     async function cuentaMeta(forzar = false) {
-        if (!TOKEN()) return { conectado: false, motivo: 'Falta el token de la página (META_PAGE_TOKEN en Heroku).' };
+        if (!TOKEN()) return { conectado: false, motivo: 'No está conectado: pulsa «Conectar con Facebook».' };
         if (!forzar && cuentaCache && Date.now() - cuentaCache.t < 10 * 60_000) return cuentaCache.v;
         let v;
         try {
@@ -573,5 +575,5 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
         try { res.set('Cache-Control', 'no-store'); res.json(await estadisticas(req.query.forzar === '1')); } catch (err) { fallo(res, err); }
     });
 
-    return { router, publicarPendientes, fotoSeguidores, cuentaMeta };
+    return { router, publicarPendientes, fotoSeguidores, cuentaMeta, olvidarCuenta: () => { cuentaCache = null; } };
 }

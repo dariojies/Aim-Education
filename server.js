@@ -23,6 +23,7 @@ import { crearEvaluacion, crearTablasEvaluacion, sembrarCategoriasIngles } from 
 import { crearReportes, pendienteAhora, SQL_MOVIMIENTOS } from './reportes.js';
 import { enviarZipFotos, nombreArchivo as nombreEnZip, crearZip, cabeceraAdjunto } from './zip.js';
 import { crearPublicaciones, crearTablasPublicaciones } from './publicaciones.js';
+import { crearConexionMeta, cargarConexionMeta, tokenPagina, conexionMeta } from './meta-conexion.js';
 import { crearAula, crearTablasAula, entregasPorCorregir, tareasCorregidas, dudasPorResponder, dudasContestadas } from './aula.js';
 import { crearTienda, crearTablasTienda, pedidosPorAtender, pedidosEnMarcha } from './tienda.js';
 import { limpiarHtml, htmlParaFuera, textoDeHtml } from './noticias-html.js';
@@ -2347,6 +2348,8 @@ async function initDb() {
 // nuevas no se creaban hasta el siguiente reinicio. Ahora se reintenta.
 function initDbConReintentos(intento = 1) {
     initDb().then(() => {
+        // La conexión con Facebook e Instagram hecha con el botón (#468).
+        cargarConexionMeta(pool);
         // Los móviles con avisos (#218), ya con su tabla creada.
         avisosPush.cargarTokens().catch(e => console.error('[avisos] tokens:', e.message));
         // Los deploys de las otras apps, al arrancar y cada dos minutos.
@@ -5207,6 +5210,8 @@ app.use(cambios.router);
 // minuto sale lo programado; cada 6 horas se apuntan los seguidores.
 const publicacionesRedes = crearPublicaciones({ pool, authenticateSession, requireSeccion, urlPublica: URL_PUBLICA_WEB });
 app.use(publicacionesRedes.router);
+// «Conectar con Facebook» (#468): el token de la página sin pasar por Heroku.
+app.use(crearConexionMeta({ pool, authenticateSession, requireAdmin, urlPublica: URL_PUBLICA_WEB, alCambiar: () => publicacionesRedes.olvidarCuenta() }).router);
 setInterval(function publicarRedesProgramadas() { publicacionesRedes.publicarPendientes(); }, 60_000);
 setInterval(function seguidoresRedes() { publicacionesRedes.fotoSeguidores(); }, 6 * 3600_000);
 // Evaluación (#411): de los profes y la dirección; las familias no ven nada.
@@ -20216,12 +20221,16 @@ const COMPROBACIONES = [
     { id: 'meta', grupo: 'Comunicación', nombre: 'Facebook e Instagram', cadaMin: 30, fn: async () => {
         const c = await publicacionesRedes.cuentaMeta(true);
         const ultimo = (await pool.query(`SELECT MAX(created_at) AS t FROM aim_social_mensajes WHERE entrante`).catch(() => ({ rows: [{}] }))).rows[0]?.t;
-        if (!process.env.META_PAGE_TOKEN) return { estado: 'apagado', detalle: 'Sin token de la página (META_PAGE_TOKEN)' };
+        if (!tokenPagina()) return { estado: 'apagado', detalle: 'Sin conectar: «Conectar con Facebook» en Redes sociales' };
         if (!c.conectado) return { estado: 'error', detalle: c.motivo };
         const faltan = [...(c.faltan || []), ...(c.faltanEstadisticas || [])];
+        // Meta corta el acceso a los 90 días de conectar (#468): se avisa dos semanas antes.
+        const caduca = conexionMeta()?.datosCaducan ? new Date(conexionMeta().datosCaducan) : null;
+        const dias = caduca ? Math.floor((caduca - Date.now()) / 86_400_000) : null;
+        const fechaCaduca = caduca ? caduca.toLocaleDateString('es-ES', { day: 'numeric', month: 'long', timeZone: 'Europe/Madrid' }) : '';
         return {
-            estado: c.faltan?.length ? 'aviso' : 'ok',
-            detalle: `${c.facebook.nombre}${c.instagram ? ` · @${c.instagram.usuario}` : ' · sin Instagram vinculado'}${faltan.length ? ` · faltan permisos: ${faltan.join(', ')}` : ''} · último mensaje recibido: ${haceCuanto(ultimo)}`,
+            estado: dias !== null && dias < 0 ? 'error' : c.faltan?.length || (dias !== null && dias <= 14) ? 'aviso' : 'ok',
+            detalle: `${c.facebook.nombre}${c.instagram ? ` · @${c.instagram.usuario}` : ' · sin Instagram vinculado'}${faltan.length ? ` · faltan permisos: ${faltan.join(', ')}` : ''}${dias !== null && dias <= 14 ? ` · ${dias < 0 ? 'el acceso de Meta ha caducado' : `el acceso de Meta caduca el ${fechaCaduca}`}: vuelve a pulsar «Conectar con Facebook»` : ''} · último mensaje recibido: ${haceCuanto(ultimo)}`,
         };
     } },
     { id: 'whatsapp', grupo: 'Comunicación', nombre: 'WhatsApp', cadaMin: 360, fn: async () =>

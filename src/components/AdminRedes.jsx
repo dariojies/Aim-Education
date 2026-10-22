@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { I } from './Icons.jsx';
 import { ESTILO_BANDEJA } from './AdminBandeja.jsx';
+import ConexionMeta from './ConexionMeta.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Redes sociales (ticket #341): los mensajes privados de Messenger, Instagram y
 // WhatsApp, para contestarlos desde aquí, repartirlos entre el equipo y fichar
 // a quien escribe (unirlo a su ficha o guardarlo como consulta web). Mientras no
-// estén conectadas, se explica qué falta (los pasos, en el ticket #341).
+// estén conectadas, se explica qué falta. Facebook e Instagram se conectan con
+// el botón de ConexionMeta (#468); WhatsApp, con sus claves en Heroku.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const CANALES = { messenger: ['Messenger', '#0866FF'], instagram: ['Instagram', '#D62976'], whatsapp: ['WhatsApp', '#1FA855'] };
@@ -180,18 +182,12 @@ export default function AdminRedes({ showToast, onAbrirFicha }) {
   useEffect(() => { const t = setInterval(cargar, 30_000); return () => clearInterval(t); }, [cargar]);
 
   if (!estado) return <p style={{ color: 'var(--ink-3)' }}>Cargando…</p>;
-  const conectados = Object.entries(estado.canales).filter(([, v]) => v).map(([k]) => CANALES[k][0]);
   const hayAlgo = estado.cuentas.length > 0;
   return (
     <div style={{ display: 'grid', gap: 12 }}>
-      {(!conectados.length || !estado.webhook) && (
-        <div className="panel" style={{ display: 'grid', gap: 6, margin: 0 }}>
-          <b>{conectados.length ? `Conectado: ${conectados.join(', ')}` : 'Todavía no hay ninguna red conectada'}</b>
-          <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>
-            Para que lleguen aquí los mensajes de Messenger, Instagram y WhatsApp hay que conectar la cuenta de Meta del club y poner sus claves en Heroku.
-            Los pasos, uno a uno, están en el ticket #341. {!estado.webhook && 'Falta además el aviso de Meta (META_VERIFY_TOKEN y META_APP_SECRET).'}
-          </span>
-        </div>
+      <ConexionMeta onCambio={() => api('/estado').then(setEstado).catch(() => {})} />
+      {!estado.webhook && (
+        <span style={{ fontSize: 12, color: 'var(--orange)' }}>Falta el aviso de Meta para que lleguen los mensajes (META_VERIFY_TOKEN y META_APP_SECRET en Heroku).</span>
       )}
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
         <div style={{ display: 'inline-flex', border: '1px solid var(--line)', borderRadius: 999, background: 'var(--bg-2)', padding: 3, gap: 2, flexWrap: 'wrap' }}>

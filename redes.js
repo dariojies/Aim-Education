@@ -6,7 +6,8 @@
 // contesta. Las claves van en variables de Heroku, nunca en el código:
 //   META_VERIFY_TOKEN  la palabra secreta que se pone al dar de alta el webhook
 //   META_APP_SECRET    la clave secreta de la app de Meta (firma los avisos)
-//   META_PAGE_TOKEN    el token de la página de Facebook (Messenger e Instagram)
+//   META_PAGE_TOKEN    el token de la página de Facebook (Messenger e Instagram);
+//                      ahora mejor con «Conectar con Facebook» (#468, meta-conexion.js)
 //   WHATSAPP_TOKEN     el token del usuario del sistema (WhatsApp Business)
 //   WHATSAPP_PHONE_ID  el identificador del número de WhatsApp
 // Los pasos para conseguirlas están en el ticket #341.
@@ -16,14 +17,16 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import express from 'express';
 import crypto from 'crypto';
+import { tokenPagina } from './meta-conexion.js';
 
 const GRAPH = 'https://graph.facebook.com/v21.0';
 export const CANALES = { messenger: 'Messenger', instagram: 'Instagram', whatsapp: 'WhatsApp' };
 const VENTANA_MS = 24 * 3600_000;
 
+// El token de la página: el de «Conectar con Facebook» (#468) o el de Heroku.
 export const canalesActivos = () => ({
-    messenger: !!process.env.META_PAGE_TOKEN,
-    instagram: !!process.env.META_PAGE_TOKEN,
+    messenger: !!tokenPagina(),
+    instagram: !!tokenPagina(),
     whatsapp: !!(process.env.WHATSAPP_TOKEN && process.env.WHATSAPP_PHONE_ID),
 });
 
@@ -125,7 +128,7 @@ export function crearRedes({ pool, companeros, fichaPorTelefono, clubId }) {
     // teléfono, su ficha si ya es del club.
     async function completar(id, canal, externo, telefono) {
         let nombre = null, usuario = null;
-        const token = process.env.META_PAGE_TOKEN;
+        const token = tokenPagina();
         if (canal === 'messenger' && token) {
             const p = await graph(`/${externo}?fields=first_name,last_name`, { token }).catch(() => null);
             if (p) nombre = [p.first_name, p.last_name].filter(Boolean).join(' ') || null;
@@ -191,9 +194,9 @@ export function crearRedes({ pool, companeros, fichaPorTelefono, clubId }) {
             });
             return d.messages?.[0]?.id || null;
         }
-        if (!process.env.META_PAGE_TOKEN) throw new Error(`${CANALES[conv.canal]} no está conectado todavía (ticket #341).`);
+        if (!tokenPagina()) throw new Error(`${CANALES[conv.canal]} no está conectado todavía: «Conectar con Facebook», arriba.`);
         const d = await graph('/me/messages', {
-            method: 'POST', token: process.env.META_PAGE_TOKEN,
+            method: 'POST', token: tokenPagina(),
             body: { recipient: { id: conv.externo_id }, messaging_type: 'RESPONSE', message: { text: texto } },
         });
         return d.message_id || null;
