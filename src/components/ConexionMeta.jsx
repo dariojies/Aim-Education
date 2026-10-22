@@ -32,7 +32,10 @@ export default function ConexionMeta({ onCambio }) {
     const q = new URLSearchParams(window.location.search);
     const meta = q.get('meta');
     if (!meta) return;
-    if (meta === 'elegir') pedir(`/api/admin/meta/elegir?clave=${encodeURIComponent(q.get('clave') || '')}`).then(d => setPaginas({ clave: q.get('clave'), lista: d.paginas })).catch(e => setVuelta({ tipo: 'error', texto: e.message }));
+    // La clave se guarda ya: justo abajo se quita de la dirección y la lista de
+    // páginas llega después (antes se leía entonces, vacía, y salía «Ha caducado»).
+    const clave = q.get('clave') || '';
+    if (meta === 'elegir') pedir(`/api/admin/meta/elegir?clave=${encodeURIComponent(clave)}`).then(d => setPaginas({ clave, lista: d.paginas })).catch(e => setVuelta({ tipo: 'error', texto: e.message }));
     else if (meta === 'conectado') { setVuelta({ tipo: 'ok', texto: 'Conectado. Ya se pueden recibir mensajes y publicar en Facebook e Instagram.' }); onCambio?.(); }
     else if (meta === 'cancelado') setVuelta({ tipo: 'aviso', texto: 'No se ha conectado: se canceló en Facebook.' });
     else setVuelta({ tipo: 'error', texto: q.get('motivo') || 'No se ha podido conectar.' });
