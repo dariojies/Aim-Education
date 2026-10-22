@@ -22779,7 +22779,18 @@ app.get('/', (req, res) => {
     }
 });
 
+// Lo que no ha cogido nadie. Antes todo devolvía la portada con un 200 y Google
+// contaba cada dirección inventada como copia de la portada (Search Console:
+// «Duplicada: el usuario no ha indicado ninguna versión canónica»). Ahora:
+//  · un archivo que no existe (un /assets/ de un deploy viejo…): 404 sin más;
+//  · una página de la web sin versión para Google (el área de familias, el
+//    curso por dentro…): la web, sin indexar;
+//  · cualquier otra cosa: 404 y sin indexar (la web enseña su portada igual).
+const PAGINAS_WEB = /^\/(dashboard|auth|actividades|campamento|calendario|legal|contacto|brickslab|biblioteca|conocenos|noticias|blog|tienda|aula)(\/|$)/;
 app.get('*', (req, res) => {
+    if (/\.[a-z0-9]{1,8}$/i.test(req.path)) return res.status(404).type('text/plain').send('No existe.');
+    res.set('X-Robots-Tag', 'noindex');
+    if (req.path !== '/' && !PAGINAS_WEB.test(req.path)) res.status(404);
     if (process.env.NODE_ENV === 'production') {
         res.sendFile(path.join(__dirname, 'dist/index.html'));
     } else {

@@ -19,6 +19,7 @@ import express from 'express';
 import fs from 'fs';
 import { textoDeHtml, cuerpoHtml } from './noticias-html.js';
 import { ACTIVITIES } from './src/actividadesWeb.js';
+import { DOCS_LEGALES } from './src/legal/textos.js';
 
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const corto = (s, n = 160) => { const t = String(s || '').replace(/\s+/g, ' ').trim(); return t.length > n ? `${t.slice(0, n - 1).replace(/\s+\S*$/, '')}…` : t; };
@@ -128,6 +129,21 @@ export function crearSeo({ pool, urlBase, archivoIndex }) {
     const enlacesPosts = (ps) => ps.map(p => ({ ruta: rutaPost(p), texto: p.title, detalle: `${p.published_at ? `${fechaLarga(p.published_at)}. ` : ''}${resumenPost(p)}` }));
     const actividadesWeb = () => ACTIVITIES.filter(a => !a.enlace).map(a => ({ ruta: `/actividades/${a.id}`, texto: a.name, detalle: [a.tag, a.lede, a.ages].filter(Boolean).join(' · ') }));
 
+    // Una sola dirección por página (Search Console: «Duplicada: Google ha
+    // elegido otra canónica»): /Actividades y /actividades/ llevan a
+    // /actividades, e /index.html a la portada. Solo en las secciones públicas:
+    // los enlaces con claves (bajas, clases individuales…) distinguen mayúsculas.
+    const SECCIONES_PUBLICAS = new Set(['actividades', 'campamento', 'calendario', 'legal', 'contacto', 'brickslab', 'biblioteca', 'conocenos', 'noticias', 'blog', 'tienda', 'aula']);
+    router.use((req, res, next) => {
+        if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+        const q = req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : '';
+        if (req.path === '/index.html') return res.redirect(301, `/${q}`);
+        const m = req.path.match(/^\/([^/]+)(.*)$/);
+        if (!m || !SECCIONES_PUBLICAS.has(m[1].toLowerCase())) return next();
+        const limpio = `/${m[1].toLowerCase()}${m[2]}`.replace(/\/+$/, '');
+        return limpio === req.path ? next() : res.redirect(301, `${limpio}${q}`);
+    });
+
     // Las zonas privadas no se indexan.
     router.use((req, res, next) => {
         if (/^\/(admin|dashboard|auth)(\/|$)/.test(req.path)) res.set('X-Robots-Tag', 'noindex, nofollow');
@@ -169,7 +185,7 @@ export function crearSeo({ pool, urlBase, archivoIndex }) {
     router.get('/actividades/:id', pagina(async (req) => {
         const a = ACTIVITIES.find(x => x.id === req.params.id);
         // Las actividades nuevas del panel no están en el catálogo: la página de siempre.
-        if (!a) return { titulo: 'Actividades', descripcion: FIJAS['/actividades'].descripcion };
+        if (!a) return { titulo: 'Actividades', descripcion: FIJAS['/actividades'].descripcion, canonica: '/actividades' };
         // Con el nombre con que la busca la gente (Taekwon-Do → «taekwondo»).
         const descripcion = corto(`${a.name}${a.tambien?.length ? ` (${a.tambien[0]})` : ''} en Algeciras. ${a.long || a.lede || ''}`);
         return {
@@ -194,6 +210,23 @@ export function crearSeo({ pool, urlBase, archivoIndex }) {
             };
         }));
     }
+
+    // ── Textos legales (cada uno con su título, su canónica y su texto: antes
+    // salían con los de la portada y Google los tomaba por copias suyas) ──
+    const bloqueHtml = ([tipo, v]) => tipo === 'h' ? `<h2>${esc(v)}</h2>`
+        : tipo === 'p' ? `<p>${esc(v)}</p>`
+            : tipo === 'ul' ? `<ul>${v.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`
+                : tipo === 'tabla' ? `<table>${v.map((fila, i) => `<tr>${fila.map(c => (i ? `<td>${esc(c)}</td>` : `<th>${esc(c)}</th>`)).join('')}</tr>`).join('')}</table>` : '';
+    router.get(['/legal', '/legal/:id'], pagina(async (req) => {
+        const d = DOCS_LEGALES.find(x => x.id === (req.params.id || 'aviso-legal'));
+        if (!d) return noExiste('Ese texto legal');
+        const resumen = corto(d.bloques.filter(b => b[0] === 'p').map(b => b[1]).join(' '));
+        return {
+            titulo: d.titulo, descripcion: resumen, canonica: `/legal/${d.id}`,
+            jsonld: migas([['/', 'Inicio'], [`/legal/${d.id}`, d.titulo]]),
+            contenido: previo({ h1: d.titulo, cuerpo: d.bloques.map(bloqueHtml).join('') }),
+        };
+    }));
 
     // ── Noticias y blog ──
     for (const [ruta, tipo, nombre] of [['/noticias', 'noticia', 'Noticias'], ['/blog', 'blog', 'Blog']]) {
