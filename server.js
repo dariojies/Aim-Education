@@ -48,7 +48,7 @@ import compression from 'compression';
 import { filasLibroRegistro, generarLibroRegistro, prorrataDe, TIPOS_OPERACION_DEFECTO } from './libro-registro.js';
 import { PassThrough } from 'stream';
 import { escalaDe, escalasDelClub, resultadoDe, baremoDe, matriculaExamenDe } from './rangos.js';
-import { rolEfectivo, rolVisible, permisosDe, mandaAlMenos, ROLES_STAFF, NOMBRE_ROL, NOMBRE_RANGO, RANGOS_PROPIOS, RANGOS_ASIGNABLES, recibeAviso, aplicarAjustesPermisos, limpiarAjustesPermisos, RANGOS_EDITABLES, FALTAS_PARA_LLAMAR } from './permisos.js';
+import { rolEfectivo, rolVisible, permisosDe, mandaAlMenos, ROLES_STAFF, NOMBRE_ROL, NOMBRE_RANGO, RANGOS_PROPIOS, RANGOS_ASIGNABLES, recibeAviso, AVISOS, aplicarAjustesPermisos, limpiarAjustesPermisos, RANGOS_EDITABLES, FALTAS_PARA_LLAMAR } from './permisos.js';
 import { htmlCorreo, textoCorreo, disenoDesdeTexto, limpiarDiseno, limpiarMarca, faltanObligatorios, ejemplosDe, CORREOS_SISTEMA, MARCA_POR_DEFECTO } from './correo-diseno.js';
 import sharp from 'sharp';
 
@@ -16186,7 +16186,11 @@ function claveDerivada(a) {
     return `${a.tipo}|${a.destino}|${palabras.join(' ')}`.slice(0, 200);
 }
 const claveAviso = (a) => (a.clave ? String(a.clave).slice(0, 200) : claveDerivada(a));
-async function conVistos(userId, avisos, { olvidar = [] } = {}) {
+// Lo visto que sigue pendiente vuelve a avisar pasado su plazo (campanita del
+// panel): lo urgente a las 4 h, lo normal al día siguiente; lo de «para
+// enterarse», solo si cambia.
+const PLAZO_RECORDAR = { 1: 4 * 3600_000, 2: 24 * 3600_000, 3: 0 };
+async function conVistos(userId, avisos, { olvidar = [], recordar = false } = {}) {
     const legados = new Map();
     for (const a of avisos) {
         const antes = [a.legado, a.clave ? claveDerivada(a) : null].flat().filter(Boolean).map(k => String(k).slice(0, 200));
@@ -16212,10 +16216,17 @@ async function conVistos(userId, avisos, { olvidar = [] } = {}) {
                 [userId, a.clave, v.n, v.visto_at]);
         }
         if (!v) { a.nuevo = true; continue; }
-        if (a.marca) { a.nuevo = new Date(a.marca) > new Date(v.visto_at); continue; }
-        a.nuevo = a.n > v.n;
-        if (a.n < v.n) {
-            await pool.query(`UPDATE aim_avisos_vistos SET n = $3 WHERE user_id = $1 AND clave = $2`, [userId, a.clave, a.n]);
+        if (a.marca) a.nuevo = new Date(a.marca) > new Date(v.visto_at);
+        else {
+            a.nuevo = a.n > v.n;
+            if (a.n < v.n) {
+                await pool.query(`UPDATE aim_avisos_vistos SET n = $3 WHERE user_id = $1 AND clave = $2`, [userId, a.clave, a.n]);
+            }
+        }
+        const plazo = recordar ? PLAZO_RECORDAR[a.prioridad || 2] : 0;
+        if (!a.nuevo && plazo && Date.now() - new Date(v.visto_at).getTime() >= plazo) {
+            a.nuevo = true;
+            a.recordatorio = new Date(v.visto_at).toISOString();   // desde cuándo estaba visto
         }
     }
     return avisos;
@@ -16600,14 +16611,48 @@ async function enTandas(tareas, max = 3) {
 // llevan «marca» (la fecha de la última): se encienden si entra algo nuevo, no
 // cuando se resuelve la más reciente. «prioridad»: 1 urgente, 2 normal, 3 para
 // enterarse.
+// Lo que cada uno quiere de la campanita del panel: qué avisos se apaga (de los
+// que le tocan por su rango) y si quiere la notificación del ordenador.
+const CLAVE_PREFS_AVISOS = (userId) => `avisos_usuario:${userId}`;
+async function preferenciasAvisos(userId) {
+    const v = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = $1`, [CLAVE_PREFS_AVISOS(userId)]).catch(() => ({ rows: [] }))).rows[0]?.valor || {};
+    return { apagados: Array.isArray(v.apagados) ? v.apagados : [], escritorio: v.escritorio !== false };
+}
+app.get('/api/admin/avisos/mios', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const p = permisos(req), rol = req.userSession?.rol;
+        const prefs = await preferenciasAvisos(req.userSession.userId);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            escritorio: prefs.escritorio,
+            avisos: AVISOS.filter(a => recibeAviso(a.id, p, rol)).map(a => ({ id: a.id, grupo: a.grupo, texto: a.texto, nota: a.nota?.(p, rol) || null, activo: !prefs.apagados.includes(a.id) })),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.put('/api/admin/avisos/mios', authenticateSession, requireAdmin, async (req, res) => {
+    try {
+        const p = permisos(req), rol = req.userSession?.rol;
+        const suyos = new Set(AVISOS.filter(a => recibeAviso(a.id, p, rol)).map(a => a.id));
+        const apagados = (Array.isArray(req.body?.apagados) ? req.body.apagados : []).map(String).filter(id => suyos.has(id));
+        const valor = { apagados: [...new Set(apagados)], escritorio: req.body?.escritorio !== false };
+        await pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ($1, $2::jsonb, NOW(), $3)
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+            [CLAVE_PREFS_AVISOS(req.userSession.userId), JSON.stringify(valor), req.userSession.userId]);
+        res.json({ success: true, ...valor });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (req, res) => {
     const yo = req.userSession.userId;
     const permisosYo = permisos(req);
     // Quién recibe cada aviso está en permisos.js (AVISOS): lo mismo que enseña
     // la página «Rangos y permisos» (#333).
-    const recibe = (id) => recibeAviso(id, permisosYo, req.userSession?.rol);
     const plural = (n, uno, varios) => (n === 1 ? uno : varios);
     try {
+        // Y lo que cada uno ha apagado para sí (⚙ en la campanita).
+        const prefs = await preferenciasAvisos(yo);
+        const recibe = (id) => !prefs.apagados.includes(id) && recibeAviso(id, permisosYo, req.userSession?.rol);
         const misGrupos = permisosYo.soloSusGrupos ? await gruposDe(yo) : null;
         // { nombre, claves (las fijas que puede dar), fn → lista de avisos }
         const fuentes = [];
@@ -17117,8 +17162,9 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         const olvidar = resultados.filter(r => !r.fallo).flatMap(r => r.f.claves).filter(k => !presentes.has(k));
 
         res.set('Cache-Control', 'no-store');
-        await conVistos(yo, avisos, { olvidar });
-        res.json({ total: avisos.reduce((s, a) => s + a.n, 0), sinLeer: avisos.filter(a => a.nuevo).length, avisos, fallos: [...new Set(fallos)] });
+        await conVistos(yo, avisos, { olvidar, recordar: true });
+        res.json({ total: avisos.reduce((s, a) => s + a.n, 0), sinLeer: avisos.filter(a => a.nuevo).length, avisos, fallos: [...new Set(fallos)],
+            escritorio: prefs.escritorio });
     } catch (err) {
         console.error('Error calculando los avisos:', err);
         res.status(500).json({ error: err.message });

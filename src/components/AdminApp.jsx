@@ -7073,7 +7073,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                   hacer (solo avisaba de «próximamente») y un «Nuevo» que solo
                   servía en Alumnos y en Noticias y en el resto no hacía nada:
                   ahora cada apartado que crea algo lleva su propio botón. */}
-              <Campanita onIr={(destino) => go(destino)} />
+              <Campanita panel onIr={(destino) => go(destino)} />
             </div>
           </div>
 
