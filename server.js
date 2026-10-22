@@ -108,7 +108,10 @@ pg.types.setTypeParser(1114, v => (v == null ? v : new Date(v.replace(' ', 'T') 
 // (que en un cobro dejaba sin saber si se había cobrado o no).
 // PG_POOL_MAX permite ajustarlo sin tocar el código (p. ej. si otra app que
 // comparte la base acapara conexiones).
-const LIMITES_POOL = { max: Math.min(Math.max(Number(process.env.PG_POOL_MAX) || 8, 1), 15), idleTimeoutMillis: 30000, connectionTimeoutMillis: 20000 };
+const LIMITES_POOL = { max: Math.min(Math.max(Number(process.env.PG_POOL_MAX) || 8, 1), 15), idleTimeoutMillis: 30000, connectionTimeoutMillis: 20000,
+    // Con su nombre en la base: la vigilancia dice de quién es cada conexión (la
+    // base es de varias apps) en vez de «(sin nombre)».
+    application_name: process.env.DYNO ? `aim-education ${process.env.DYNO}` : 'aim-education (local)' };
 const pool = process.env.DATABASE_URL
     ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, ...LIMITES_POOL })
     : new Pool({
@@ -20120,8 +20123,17 @@ app.get('/api/admin/diagnostico', authenticateSession, requireSeccion('equipo_it
 // Qué se comprueba de cada servicio, cada cuánto y qué es «bien», «aviso» o
 // «error». vigilancia.js las lanza, las cronometra y guarda su historial; si una
 // pasa a error, sale en la campanita del Equipo IT.
-const LIMITE_CONEXIONES_BASE = 20;     // Heroku Postgres Essential-0
-const LIMITE_BASE_MB = 1024;
+// Lo que da el plan de Heroku Postgres (la base no lo dice: max_connections es
+// el del servidor compartido). El nuestro, Essential-2 desde el 15/10/2026; si se
+// cambia de plan, PLAN_BASE en Heroku.
+const PLANES_BASE = {
+    'essential-0': { conexiones: 20, mb: 1024 },
+    'essential-1': { conexiones: 20, mb: 10 * 1024 },
+    'essential-2': { conexiones: 40, mb: 32 * 1024 },
+};
+const PLAN_BASE = PLANES_BASE[String(process.env.PLAN_BASE || '').toLowerCase()] ? String(process.env.PLAN_BASE).toLowerCase() : 'essential-2';
+const LIMITE_CONEXIONES_BASE = PLANES_BASE[PLAN_BASE].conexiones;
+const LIMITE_BASE_MB = PLANES_BASE[PLAN_BASE].mb;
 const LIMITE_MEMORIA_MB = 512;         // un dyno básico de Heroku
 const conPlazo = (url, opts = {}) => fetch(url, { ...opts, signal: AbortSignal.timeout(10_000) });
 const haceCuanto = (t) => {
@@ -20165,7 +20177,7 @@ const COMPROBACIONES = [
         const uso = mb / LIMITE_BASE_MB, con = r.conexiones / LIMITE_CONEXIONES_BASE;
         return {
             estado: uso > 0.95 || con >= 1 ? 'error' : uso > 0.8 || con >= 0.8 || ms > 1000 || pool.waitingCount > 0 ? 'aviso' : 'ok',
-            detalle: `Responde en ${ms} ms · ${mb} MB de ${LIMITE_BASE_MB} MB · ${r.conexiones} de ${LIMITE_CONEXIONES_BASE} conexiones (esta web: ${pool.totalCount} de ${LIMITES_POOL.max}${pool.waitingCount ? `, ${pool.waitingCount} esperando` : ''})`,
+            detalle: `Responde en ${ms} ms · ${mb} MB de ${LIMITE_BASE_MB >= 10240 ? `${LIMITE_BASE_MB / 1024} GB` : `${LIMITE_BASE_MB} MB`} · ${r.conexiones} de ${LIMITE_CONEXIONES_BASE} conexiones del plan ${PLAN_BASE} (esta web: ${pool.totalCount} de ${LIMITES_POOL.max}${pool.waitingCount ? `, ${pool.waitingCount} esperando` : ''})`,
             datos: { mb, conexiones: r.conexiones, porApp },
         };
     } },
