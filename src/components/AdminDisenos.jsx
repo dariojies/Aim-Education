@@ -1022,14 +1022,18 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
     setVerTamano(false);
   }
   // ── Ver la animación en el lienzo ──
+  const sonando = useRef(null);
+  const pararMusica = () => { sonando.current?.pause(); sonando.current = null; };
+  useEffect(() => pararMusica, []);
   function verAnimacion() {
-    if (tiempo != null) { cancelAnimationFrame(anim.current); setTiempo(null); return; }
+    if (tiempo != null) { cancelAnimationFrame(anim.current); pararMusica(); setTiempo(null); return; }
     if (edicion.current) document.activeElement?.blur?.();
     setSeleccion([]); setRecortando(null);
-    const dur = duracionAnimacion(docRef.current), t0 = performance.now();
+    const dur = duracionAnimacion(docRef.current), t0 = performance.now(), m = docRef.current.animacion?.musica;
+    if (m?.url) { const a = new Audio(m.url); a.currentTime = m.desde || 0; a.volume = m.volumen ?? 0.8; a.play().catch(() => {}); sonando.current = a; }
     const paso = () => {
       const t = (performance.now() - t0) / 1000;
-      if (t > dur + 0.4) { setTiempo(null); return; }
+      if (t > dur + 0.4) { pararMusica(); setTiempo(null); return; }
       setTiempo(t); anim.current = requestAnimationFrame(paso);
     };
     anim.current = requestAnimationFrame(paso);
@@ -2229,8 +2233,45 @@ function PanelAnimar({ doc, diseno, elegido, tiempo, onVer, tramos, cambiarEl, a
           {!['latido', 'flotar'].includes(a.tipo) && <Rango etiqueta="Dura" valor={a.duracion || 0.8} min={0.2} max={3} paso={0.1} sufijo=" s" tramos={tramos} onCambio={(v) => cambiarEl({ anim: { ...a, duracion: v } })} />}
         </>}
       </>}
+      <PanelMusica musica={doc.animacion?.musica} cambiar={(m) => aplicarDoc(d => ({ ...d, animacion: { ...(d.animacion || {}), musica: m || undefined } }))} tramos={tramos} />
       <button type="button" className="btn btn-sm btn-outline" onClick={onExportar} disabled={!tieneAnimacion(diseno)}>Exportar en GIF o vídeo</button>
     </div>
+  );
+}
+// La música del vídeo: se sube una canción, desde qué segundo y a qué volumen.
+function PanelMusica({ musica, cambiar, tramos }) {
+  const [subiendo, setSubiendo] = useState(false);
+  async function subir(f) {
+    setSubiendo(true);
+    try {
+      const r = await fetch(`/api/admin/disenos/musica?nombre=${encodeURIComponent(f.name)}`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/octet-stream' }, body: f });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || 'No se ha podido subir.');
+      cambiar({ url: d.url, nombre: d.nombre, desde: 0, volumen: 0.8 });
+    } catch (e) { alert(e.message); } finally { setSubiendo(false); }
+  }
+  return (
+    <>
+      <div style={seccionT}>Música del vídeo</div>
+      {musica?.url ? (
+        <div style={{ display: 'grid', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>🎵 {musica.nombre}</span>
+            <button type="button" className="icon-btn" aria-label="Quitar la música" onClick={() => cambiar(null)}><I.X /></button>
+          </div>
+          <Num etiqueta="Empieza en el segundo" valor={musica.desde || 0} onCambio={(v) => cambiar({ ...musica, desde: Math.max(0, v) })} min={0} />
+          <Rango etiqueta="Volumen" valor={Math.round((musica.volumen ?? 0.8) * 100)} min={5} max={100} sufijo=" %" tramos={tramos} onCambio={(v) => cambiar({ ...musica, volumen: v / 100 })} />
+          <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Suena al ver la animación y va dentro del vídeo (el GIF no lleva sonido).</span>
+        </div>
+      ) : (
+        <label className="btn btn-sm btn-outline" style={{ position: 'relative', cursor: 'pointer', justifyContent: 'center' }}>
+          {subiendo ? 'Subiendo…' : '🎵 Poner música (MP3, M4A…)'}
+          <input type="file" accept="audio/*,.mp3,.m4a,.ogg,.wav" disabled={subiendo} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }}
+            onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) subir(f); }} />
+        </label>
+      )}
+      {!musica?.url && <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Usa música libre de derechos (la Biblioteca de audio de YouTube o Pixabay Music, por ejemplo). Instagram también deja poner música al publicar.</span>}
+    </>
   );
 }
 
@@ -2622,7 +2663,7 @@ function EnlaceParaVer({ id, inicial, sucio, guardar, onCerrar }) {
 // se sale de lo que admite (de 4:5 a 1,91:1).
 function PublicarEnRedes({ doc, pagina, ejemplo, permiso, estado, onPedir, onRevision, onCerrar, onHecho }) {
   const actual = paginaDe(doc, pagina), n = numPaginas(doc), ratio = doc.ancho / doc.alto;
-  const fv = formatoVideo(), animada = tieneAnimacion(actual), puedeVideo = animada && fv?.ext === 'mp4';
+  const fv = formatoVideo(!!doc.animacion?.musica?.url), animada = tieneAnimacion(actual), puedeVideo = animada && fv?.ext === 'mp4';
   const [comoVideo, setComoVideo] = useState(puedeVideo);
   const [redes, setRedes] = useState(['facebook', 'instagram']);
   const [tipo, setTipo] = useState(1 / ratio > 1.6 ? 'story' : puedeVideo ? 'reel' : 'post');
@@ -2764,7 +2805,7 @@ function ParaImprenta({ doc, nombre, ejemplo, onCerrar }) {
 
 // Historias animadas: GIF o vídeo.
 function ExportarAnimacion({ diseno, nombre, onCerrar }) {
-  const f = formatoVideo();
+  const f = formatoVideo(!!diseno.animacion?.musica?.url);
   const [prog, setProg] = useState(null);
   async function hacer(como) {
     try {
@@ -2784,7 +2825,7 @@ function ExportarAnimacion({ diseno, nombre, onCerrar }) {
       <p style={{ margin: 0, fontSize: 13 }}>Esta página con sus animaciones, {duracionAnimacion(diseno)} segundos (se cambia en «Animar»).</p>
       <div style={{ display: 'grid', gap: 8 }}>
         {opcion('video', `Vídeo ${f ? f.ext.toUpperCase() : ''}`, 'Para historias y reels de Instagram y Facebook. Tarda lo que dura el vídeo.', !f)}
-        {opcion('gif', 'GIF', 'Para WhatsApp, correos y webs. Más pequeño y con menos colores.', false)}
+        {opcion('gif', 'GIF', `Para WhatsApp, correos y webs. Más pequeño y con menos colores${diseno.animacion?.musica?.url ? '; sin la música' : ''}.`, false)}
       </div>
       {f?.ext === 'webm' && <span style={{ fontSize: 12.5, color: '#B45309' }}>Este navegador graba en WebM, que Instagram no admite. Con Chrome o Safari al día sale en MP4.</span>}
       {!f && <span style={{ fontSize: 12.5, color: '#B45309' }}>Este navegador no graba vídeo: usa el GIF o abre Aim Design en Chrome.</span>}

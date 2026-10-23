@@ -419,6 +419,30 @@ export function crearDisenos({ pool, clubId, authenticateSession, requireSeccion
         } catch (err) { fallo(res, err); }
     });
 
+    // ── Música para los vídeos (va con el diseño; el archivo, a aim_web_documentos) ──
+    const FORMATO_AUDIO = (b) => {
+        const cab = b.subarray(0, 4).toString('latin1');
+        if (cab.startsWith('ID3') || (b[0] === 0xff && (b[1] & 0xe0) === 0xe0)) return ['audio/mpeg', 'mp3'];
+        if (b.subarray(4, 8).toString('latin1') === 'ftyp') return ['audio/mp4', 'm4a'];
+        if (cab === 'OggS') return ['audio/ogg', 'ogg'];
+        if (cab === 'RIFF' && b.subarray(8, 12).toString('latin1') === 'WAVE') return ['audio/wav', 'wav'];
+        return null;
+    };
+    router.post('/api/admin/disenos/musica', ...gestion, express.raw({ type: () => true, limit: '16mb' }), async (req, res) => {
+        try {
+            const datos = Buffer.isBuffer(req.body) ? req.body : null;
+            if (!datos || datos.length < 16) corta(400, 'No ha llegado la música.');
+            const f = FORMATO_AUDIO(datos);
+            if (!f) corta(400, 'Tiene que ser MP3, M4A, OGG o WAV.');
+            if (datos.length > 15 * 1024 * 1024) corta(413, 'La música pesa demasiado (máximo 15 MB).');
+            const nombre = String(req.query.nombre || '').replace(/[^\p{L}\p{N} ._()-]/gu, '').trim().slice(0, 80) || `musica.${f[1]}`;
+            const archivo = `${nombre.replace(/\.[a-z0-9]+$/i, '').normalize('NFD').replace(/\p{M}/gu, '').replace(/[^\w]+/g, '-') || 'musica'}.${f[1]}`;
+            const r = await pool.query(`INSERT INTO aim_web_documentos (nombre, mime, bytes, datos, subido_por) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+                [archivo, f[0], datos.length, datos, req.userSession.userId]);
+            res.status(201).json({ success: true, url: `/doc/${r.rows[0].id}/${archivo}`, nombre });
+        } catch (err) { fallo(res, err); }
+    });
+
     // ── Letras propias: se suben aquí y salen en todos los diseños ──
     const leerFuentes = async () => (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'disenos_fuentes'`)).rows[0]?.valor?.fuentes || [];
     const guardarFuentes = (lista, userId) => pool.query(
