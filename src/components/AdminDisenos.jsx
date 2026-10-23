@@ -452,6 +452,18 @@ const cajaDe = (els) => {
   const x = Math.min(...els.map(e => e.x)), y = Math.min(...els.map(e => e.y));
   return { x, y, w: Math.max(...els.map(e => e.x + e.w)) - x, h: Math.max(...els.map(e => e.y + e.h)) - y };
 };
+// Un elemento, más grande o más pequeño (k) desde el punto (ax, ay), sin deformarlo:
+// su centro se aleja o se acerca a ese punto y lo de dentro (letra, grosores,
+// esquinas, sombras) crece con él. Para cambiar de tamaño varios a la vez (#481).
+const PROPIAS_ESCALA = ['radio', 'espaciado', 'contornoGrosor', 'resalteMargen', 'sombraX', 'sombraY', 'sombraDifu', 'margenCelda'];
+function escalarElemento(o, k, ax, ay) {
+  const w = o.w * k, h = o.h * k, cx = ax + (o.x + o.w / 2 - ax) * k, cy = ay + (o.y + o.h / 2 - ay) * k;
+  const n = { ...o, w: Math.round(w), h: Math.round(h), x: Math.round(cx - w / 2), y: Math.round(cy - h / 2) };
+  if (o.tamano) n.tamano = Math.max(6, Math.round(o.tamano * k));
+  if (o.grosor) n.grosor = Math.max(1, Math.round(o.grosor * k * 10) / 10);
+  for (const p of PROPIAS_ESCALA) if (o[p]) n[p] = Math.round(o[p] * k * 10) / 10;
+  return n;
+}
 // Elegir uno de un grupo elige el grupo entero.
 const conGrupo = (elementos, ids) => {
   const g = new Set(elementos.filter(e => ids.includes(e.id) && e.grupo).map(e => e.grupo));
@@ -1162,6 +1174,17 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
   }
 
   // ── Arrastrar, cambiar de tamaño, girar, encuadrar y elegir con un recuadro ──
+  // Varios elegidos: las esquinas de su caja los cambian de tamaño a todos a la vez,
+  // con la misma proporción, desde la esquina de enfrente (#481).
+  function empezarEscala(ev, hx, hy) {
+    ev.stopPropagation();
+    setMenu(null);
+    if (ev.button > 0) return;
+    ev.preventDefault();
+    const v = vista(), els = v.elementos.filter(e => selRef.current.includes(e.id) && !e.bloqueado && !fijo(e));
+    if (els.length < 2) return;
+    arrastre.current = { modo: 'escalar', x0: ev.clientX, y0: ev.clientY, hx, hy, caja: cajaDe(els), otros: els.map(e => ({ ...e })), movido: false, previo: docRef.current, pagina: paginaRef.current };
+  }
   function empezar(ev, idEl, modo, hx = 0, hy = 0) {
     ev.stopPropagation();
     setMenu(null);
@@ -1224,6 +1247,16 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
       if (a.modo === 'toque') return;
       if (a.modo === 'recuadro') { setRecuadro({ x: Math.min(a.x0, ev.clientX), y: Math.min(a.y0, ev.clientY), w: Math.abs(dxp), h: Math.abs(dyp) }); return; }
       const dx = dxp / escala, dy = dyp / escala;
+      if (a.modo === 'escalar') {
+        const { caja, hx, hy } = a;
+        // Lo que más crezca de los dos lados manda; ninguno baja de 4 px.
+        const menor = Math.max(1, Math.min(...a.otros.map(o => Math.min(o.w, o.h))));
+        const k = Math.max(4 / menor, Math.max((caja.w + hx * dx) / caja.w, (caja.h + hy * dy) / caja.h));
+        const ax = hx < 0 ? caja.x + caja.w : caja.x, ay = hy < 0 ? caja.y + caja.h : caja.y;
+        const nuevos = new Map(a.otros.map(o => [o.id, escalarElemento(o, k, ax, ay)]));
+        setDoc(d => { const n = cambiarElementos(d, a.pagina, e => (nuevos.has(e.id) ? ajustarTexto(nuevos.get(e.id), ejemplo) : e)); docRef.current = n; return n; });
+        return;
+      }
       const e0 = a.el0, rad = (e0.rot || 0) * Math.PI / 180;
       if (a.modo === 'mover') {
         const bb = a.caja, { ancho: W, alto: H } = paginaDe(docRef.current, a.pagina), umbral = 8 / escala, gs = [];
@@ -1824,6 +1857,12 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
                 );
               })}
               {cajaVarios && tiempo == null && <div style={{ position: 'absolute', pointerEvents: 'none', left: cajaVarios.x * escala - 4, top: cajaVarios.y * escala - 4, width: cajaVarios.w * escala + 8, height: cajaVarios.h * escala + 8, border: '1.5px dashed #7C5CFF', borderRadius: 4 }} />}
+              {cajaVarios && tiempo == null && !lapiz && elegidos.filter(e => !e.bloqueado && !fijo(e)).length > 1 && [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([hx, hy]) => (
+                <span key={`todos${hx}${hy}`} onPointerDown={(ev) => empezarEscala(ev, hx, hy)} title="Cambiar el tamaño de todos a la vez, sin deformarlos" aria-label="Cambiar el tamaño de lo elegido"
+                  style={{ position: 'absolute', width: asa, height: asa, borderRadius: asa > 12 ? 99 : 3, boxSizing: 'border-box', background: '#fff', border: '2px solid #7C5CFF', zIndex: 6, touchAction: 'none',
+                    left: cajaVarios.x * escala - 4 + (hx > 0 ? cajaVarios.w * escala + 8 : 0) - asa / 2, top: cajaVarios.y * escala - 4 + (hy > 0 ? cajaVarios.h * escala + 8 : 0) - asa / 2,
+                    cursor: hx === hy ? 'nwse-resize' : 'nesw-resize' }} />
+              ))}
               {guias.map((g, i) => g.cota ? <Cota key={i} c={g.cota} escala={escala} /> : <div key={i} style={{ position: 'absolute', pointerEvents: 'none', background: '#FF5FA2', ...(g.v != null ? { left: g.v * escala, top: 0, width: 1, height: '100%' } : { top: g.h * escala, left: 0, height: 1, width: '100%' }) }} />)}
               {trazo && lapiz && (
                 <svg viewBox={`0 0 ${diseno.ancho} ${diseno.alto}`} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }} aria-hidden="true">
