@@ -383,7 +383,7 @@ function NuevoDiseno({ equipo = [], onCerrar, onCrear }) {
 }
 
 // ═══════════════════════ El editor ═══════════════════════
-const NOMBRE_TIPO = { texto: 'Texto', imagen: 'Imagen', rect: 'Rectángulo', elipse: 'Círculo', forma: 'Forma', icono: 'Icono', linea: 'Línea', qr: 'Código QR', tabla: 'Tabla', grafico: 'Gráfico' };
+const NOMBRE_TIPO = { trazo: 'Dibujo', texto: 'Texto', imagen: 'Imagen', rect: 'Rectángulo', elipse: 'Círculo', forma: 'Forma', icono: 'Icono', linea: 'Línea', qr: 'Código QR', tabla: 'Tabla', grafico: 'Gráfico' };
 const etiquetaElemento = (e) => (e.tipo === 'texto' ? `«${String(e.texto || '').split('\n')[0].slice(0, 26)}»`
   : e.tipo === 'forma' ? FIGURAS.find(f => f.id === e.figura)?.nombre || 'Forma'
     : e.tipo === 'icono' ? `Icono: ${ICONOS.find(i => i.id === e.icono)?.nombre || String(e.icono || '').replace(/^m:/, '').replace(/_/g, ' ')}`
@@ -474,6 +474,8 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
   const [hojaPequena, setHojaPequena] = useState(false); // en el móvil: las propiedades, encogidas
   const toques = useRef(new Set()), ultimoToque = useRef(null), dobleHecho = useRef(0);
   const [menu, setMenu] = useState(null);             // el menú del botón derecho: { x, y, id? }
+  const [lapiz, setLapiz] = useState(null);           // dibujar a mano alzada: { color, grosor }
+  const [trazo, setTrazo] = useState(null);           // los puntos del trazo que se está dibujando
   const [ayudas, setAyudas] = useState(() => { try { return JSON.parse(localStorage.getItem('aim_design_ayudas')) || {}; } catch { return {}; } });
   const { go } = useRouter();
   const scrollRef = useRef(null), anclaZoom = useRef(null), copiaRef = useRef(null), yo = useRef({});
@@ -553,7 +555,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
   }
   // Si llega un segundo dedo, lo que se estaba arrastrando se queda donde está.
   function cortarArrastre() {
-    const a = arrastre.current; arrastre.current = null;
+    const a = arrastre.current; arrastre.current = null; setTrazo(null);
     setRecuadro(null); setGuias([]);
     if (a?.movido && a.previo) { setHist(h => ({ atras: [...h.atras.slice(-99), a.previo], adelante: [] })); setSucio(true); }
   }
@@ -676,6 +678,25 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
     else anadirIcono(`m:${n}`, d);
   }
   const anadirMarco = (figura) => { const w = Math.round(base * 0.42); anadir({ tipo: 'imagen', url: null, marco: figura, ajuste: 'cubrir', w, h: figura === 'arco' ? Math.round(w * 1.25) : w, radio: figura === 'rect' ? Math.round(base * 0.03) : 0 }); };
+  // Dibujar a mano alzada: con el lápiz, arrastrar sobre el diseño dibuja; cada trazo es un
+  // elemento (se mueve, se cambia de color, se deshace con Ctrl+Z).
+  function empezarADibujar() {
+    setSeleccion([]); setRecortando(null); setMenu(null);
+    if (movil) setPanelAbierto(false);
+    setLapiz(l => l || { color: '#5233A8', grosor: Math.max(2, Math.round(base * 0.008)) });
+  }
+  function terminarTrazo(pts) {
+    setTrazo(null);
+    if (!pts?.length || !lapiz) return;
+    const g = lapiz.grosor, m = g / 2 + 1;
+    const xs = pts.map(q => q[0]), ys = pts.map(q => q[1]);
+    const x0 = Math.min(...xs) - m, y0 = Math.min(...ys) - m, w = Math.max(...xs) + m - x0, h = Math.max(...ys) + m - y0;
+    const r4 = (v) => Math.round(v * 10000) / 10000;
+    const e = { id: nuevoId(), tipo: 'trazo', rot: 0, opacidad: 1, color: lapiz.color, grosor: g,
+      x: Math.round(x0), y: Math.round(y0), w: Math.max(1, Math.round(w)), h: Math.max(1, Math.round(h)),
+      puntos: pts.map(([px, py]) => [r4((px - Math.round(x0)) / Math.max(1, Math.round(w))), r4((py - Math.round(y0)) / Math.max(1, Math.round(h)))]) };
+    aplicar(d => ({ ...d, elementos: [...d.elementos, e] }));
+  }
   // Buscar y cambiar en todas las páginas (lo fijo del todo, no; su contenido, sí).
   const intocable = (e) => fijo(e) && !soloContenido(e);
   function cambiarTextos(q, por, mayus) {
@@ -1009,6 +1030,11 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
   useEffect(() => {
     const mover = (ev) => {
       const a = arrastre.current; if (!a) return;
+      if (a.modo === 'dibujo') {
+        const r = lienzoRef.current.getBoundingClientRect(), pt = [(ev.clientX - r.left) / escala, (ev.clientY - r.top) / escala], u = a.pts[a.pts.length - 1];
+        if (Math.hypot(pt[0] - u[0], pt[1] - u[1]) * escala >= 2 && a.pts.length < 3000) { a.pts.push(pt); setTrazo([...a.pts]); }
+        return;
+      }
       const dxp = ev.clientX - a.x0, dyp = ev.clientY - a.y0;
       if (!a.movido && Math.abs(dxp) + Math.abs(dyp) < (ev.pointerType === 'touch' ? 6 : 3)) return;
       a.movido = true;
@@ -1066,6 +1092,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
       tramoTerminar();
       const a = arrastre.current; arrastre.current = null; setGuias([]);
       if (!a) return;
+      if (a.modo === 'dibujo') { yo.current.terminarTrazo(a.pts); return; }
       if (a.modo === 'toque') { if (!a.movido) setSeleccion([]); return; }
       if (a.modo === 'recuadro') {
         setRecuadro(null);
@@ -1107,6 +1134,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
       if (enCampo || ventana) return;
       if (menu && ev.key === 'Escape') { setMenu(null); return; }
       if (recortando && (ev.key === 'Enter' || ev.key === 'Escape')) { ev.preventDefault(); setRecortando(null); return; }
+      if (lapiz && ev.key === 'Escape') { ev.preventDefault(); setLapiz(null); setTrazo(null); return; }
       if (ctrl && (k === 'c' || k === 'x') && seleccion.length && !window.getSelection()?.toString()) { ev.preventDefault(); copiar(k === 'x'); return; }
       if (ctrl && k === 'z') { ev.preventDefault(); if (ev.shiftKey) rehacer(); else deshacer(); }
       else if (ctrl && k === 'y') { ev.preventDefault(); rehacer(); }
@@ -1193,7 +1221,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
     if (hayOtros.current) postVivo({ tipo: 'cursor', x: Math.round(ultimoCursor.current.x), y: Math.round(ultimoCursor.current.y), pagina, sel: seleccion });
   }, [seleccion, pagina]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  yo.current = { guardar, porGuardar, hacerZoom, zoomA, cortarArrastre, escala, leerCopia, pegarElementos, anadirImagen, anadirTexto, ventana, alVivo, mandarCambios };
+  yo.current = { terminarTrazo, lapiz, guardar, porGuardar, hacerZoom, zoomA, cortarArrastre, escala, leerCopia, pegarElementos, anadirImagen, anadirTexto, ventana, alVivo, mandarCambios };
 
   // ── Guardar y exportar ──
   // ¿Hay algo distinto de lo último guardado? (Un diseño nuevo, solo cuando se ha tocado.)
@@ -1465,7 +1493,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
           )}
           {panelAbierto && <>
           {panel === 'anadir' && (
-            <PanelAnadir tipo={tipo} kit={kit} anadirTexto={anadirTexto} anadirForma={anadirForma} anadirIcono={anadirIcono} anadirMarco={anadirMarco} anadirImagen={anadirImagen} anadirCollage={anadirCollage} verIconos={() => verIconos()} anadirQr={anadirQr} anadirTabla={anadirTabla} anadirGrafico={anadirGrafico}
+            <PanelAnadir tipo={tipo} kit={kit} anadirTexto={anadirTexto} anadirForma={anadirForma} anadirIcono={anadirIcono} anadirMarco={anadirMarco} anadirImagen={anadirImagen} anadirCollage={anadirCollage} verIconos={() => verIconos()} dibujar={empezarADibujar} anadirQr={anadirQr} anadirTabla={anadirTabla} anadirGrafico={anadirGrafico}
               anadirBloque={anadirBloque} verFotos={() => setVentana('fotos')} verBanco={() => setVentana('banco')} subir={subir} />
           )}
           {panel === 'estilos' && <PanelEstilos doc={doc} aplicarDoc={aplicarDoc} showToast={showToast} respetar={esDireccion ? null : fijo} fondoFijo={marcaFija} />}
@@ -1532,6 +1560,12 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
             const sc = scrollRef.current;
             if (sc && ev.target === sc && (ev.nativeEvent.offsetX > sc.clientWidth || ev.nativeEvent.offsetY > sc.clientHeight)) return;
             setRecortando(null);
+            if (lapiz) {
+              const r = lienzoRef.current.getBoundingClientRect(), pt = [(ev.clientX - r.left) / escala, (ev.clientY - r.top) / escala];
+              arrastre.current = ev.pointerType === 'touch' && toques.current.size > 1 ? null : { modo: 'dibujo', pts: [pt], x0: ev.clientX, y0: ev.clientY, movido: true };
+              setTrazo(arrastre.current ? [pt] : null);
+              return;
+            }
             // Con el dedo, un hueco mueve la vista (y tocarlo sin más deja de elegir).
             if (ev.pointerType === 'touch') { arrastre.current = toques.current.size > 1 ? null : { modo: 'toque', x0: ev.clientX, y0: ev.clientY, movido: false }; return; }
             arrastre.current = { modo: 'recuadro', x0: ev.clientX, y0: ev.clientY, shift: ev.shiftKey, movido: false };
@@ -1544,7 +1578,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
           style={{ position: 'relative', overflow: 'hidden', display: 'grid', gridTemplateRows: 'minmax(0, 1fr) auto', justifyItems: 'center', ...(movil ? { gridRow: 1, gridColumn: 1, paddingBottom: hoja || 0, boxSizing: 'border-box' } : {}),
             background: 'repeating-conic-gradient(color-mix(in oklab, var(--ink) 4%, var(--bg)) 0% 25%, var(--bg) 0% 50%) 50% / 24px 24px',
             outline: soltando ? '3px dashed #7C5CFF' : 'none', outlineOffset: -6 }}>
-          <div ref={scrollRef} style={{ overflow: 'auto', width: '100%', height: '100%', minHeight: 0, touchAction: 'pan-x pan-y' }}>
+          <div ref={scrollRef} style={{ overflow: 'auto', width: '100%', height: '100%', minHeight: 0, touchAction: lapiz ? 'none' : 'pan-x pan-y', cursor: lapiz ? 'crosshair' : undefined }}>
           <div style={{ display: 'grid', placeItems: 'center', minWidth: '100%', minHeight: '100%', width: 'max-content', height: 'max-content', padding: movil ? 12 : 40, boxSizing: 'border-box' }}>
           <div style={{ position: 'relative', width: diseno.ancho * escala, height: diseno.alto * escala, boxShadow: '0 10px 40px -10px rgba(0,0,0,.35)' }}>
             {fantasma && <div style={{ position: 'absolute', left: fantasma.x * escala, top: fantasma.y * escala, width: fantasma.w * escala, height: fantasma.h * escala, background: `center / 100% 100% no-repeat url(${fantasma.url})`, opacity: 0.35, pointerEvents: 'none' }} />}
@@ -1561,7 +1595,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
                   title={e.id === sel && !e.bloqueado && !editando ? (e.tipo === 'texto' ? 'Doble clic para escribir' : e.tipo === 'imagen' && e.url ? 'Doble clic para recortar' : e.tipo === 'imagen' ? 'Suelta aquí una foto' : undefined) : undefined}
                   style={{ position: 'absolute', left: e.x * escala, top: e.y * escala, width: e.w * escala, height: e.h * escala, transform: `rotate(${e.rot || 0}deg)`,
                     cursor: e.bloqueado || (fijo(e) && recortando !== e.id) ? 'default' : recortando === e.id ? 'grab' : e.tipo === 'texto' && e.id === sel ? 'text' : 'move',
-                    outline: seleccion.includes(e.id) && editando?.id !== e.id ? `2px ${recortando === e.id ? 'dashed' : 'solid'} #7C5CFF` : 'none', outlineOffset: 1, touchAction: 'none', WebkitTouchCallout: 'none', userSelect: 'none' }}>
+                    outline: seleccion.includes(e.id) && editando?.id !== e.id ? `2px ${recortando === e.id ? 'dashed' : 'solid'} #7C5CFF` : 'none', outlineOffset: 1, touchAction: 'none', WebkitTouchCallout: 'none', userSelect: 'none', pointerEvents: lapiz ? 'none' : undefined }}>
                   {seleccion.includes(e.id) && e.candado && (esDireccion || fijo(e)) && editando?.id !== e.id && (
                     <span title={esDireccion ? 'Fijo para el resto del equipo' : 'Lo ha dejado fijo la dirección'} aria-label="Fijo"
                       style={{ position: 'absolute', right: -12, top: -12, width: 22, height: 22, borderRadius: 99, background: '#fff', border: '2px solid #7C5CFF', display: 'grid', placeItems: 'center', fontSize: 11, pointerEvents: 'none' }}>🔒</span>
@@ -1599,6 +1633,11 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
               })}
               {cajaVarios && tiempo == null && <div style={{ position: 'absolute', pointerEvents: 'none', left: cajaVarios.x * escala - 4, top: cajaVarios.y * escala - 4, width: cajaVarios.w * escala + 8, height: cajaVarios.h * escala + 8, border: '1.5px dashed #7C5CFF', borderRadius: 4 }} />}
               {guias.map((g, i) => <div key={i} style={{ position: 'absolute', pointerEvents: 'none', background: '#FF5FA2', ...(g.v != null ? { left: g.v * escala, top: 0, width: 1, height: '100%' } : { top: g.h * escala, left: 0, height: 1, width: '100%' }) }} />)}
+              {trazo && lapiz && (
+                <svg viewBox={`0 0 ${diseno.ancho} ${diseno.alto}`} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }} aria-hidden="true">
+                  <polyline points={trazo.map(q => q.join(',')).join(' ')} fill="none" stroke={lapiz.color} strokeWidth={lapiz.grosor} strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
               {editando && (() => {
                 const el = diseno.elementos.find(x => x.id === editando.id);
                 return el ? <TextoEnLienzo key={el.id} e={el} escala={escala} punto={editando.punto} sinFormato={soloContenido(el)} onCambio={(t) => cambiarEl(el.id, t, { historia: false })}
@@ -1609,8 +1648,17 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
           </div>
           </div>
           {/* Las páginas, el zoom y las ayudas */}
-          <div onPointerDown={ev => ev.stopPropagation()} style={{ display: hoja && !recortada ? 'none' : 'flex', gap: movil ? 2 : 6, alignItems: 'center', padding: movil ? '4px 6px' : '8px 10px', margin: movil ? '0 0 8px' : '0 0 12px', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, boxShadow: 'var(--shadow)', flexWrap: 'wrap', justifyContent: 'center', maxWidth: '95%' }}>
-            {recortada ? <>
+          <div onPointerDown={ev => ev.stopPropagation()} style={{ display: hoja && !recortada && !lapiz ? 'none' : 'flex', gap: movil ? 2 : 6, alignItems: 'center', padding: movil ? '4px 6px' : '8px 10px', margin: movil ? '0 0 8px' : '0 0 12px', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, boxShadow: 'var(--shadow)', flexWrap: 'wrap', justifyContent: 'center', maxWidth: '95%' }}>
+            {lapiz ? <>
+              <span style={{ fontSize: 12.5, fontWeight: 700 }}>✏️ Dibuja encima</span>
+              {COLORES_LAPIZ.map(col => (
+                <button key={col} type="button" aria-label={`Color ${col}`} aria-pressed={lapiz.color === col} onClick={() => setLapiz(l => ({ ...l, color: col }))}
+                  style={{ width: 24, height: 24, borderRadius: 99, cursor: 'pointer', background: col, border: lapiz.color === col ? '3px solid #7C5CFF' : '1px solid var(--line)', boxSizing: 'border-box' }} />
+              ))}
+              <input type="color" value={lapiz.color} onChange={x => setLapiz(l => ({ ...l, color: x.target.value }))} aria-label="Otro color" style={{ width: 28, height: 26, padding: 0, border: 0, background: 'none' }} />
+              <input type="range" min="1" max={Math.max(20, Math.round(base * 0.05))} value={lapiz.grosor} aria-label="Grosor del lápiz" onChange={x => setLapiz(l => ({ ...l, grosor: Number(x.target.value) }))} style={{ width: movil ? 80 : 110 }} />
+              <button type="button" className="btn btn-sm btn-primary" onClick={() => { setLapiz(null); setTrazo(null); }}>Hecho</button>
+            </> : recortada ? <>
               <span style={{ fontSize: 12.5, fontWeight: 700 }}>✂ Arrastra la foto para encuadrarla · Zoom</span>
               <input type="range" min="1" max="4" step="0.05" value={recortada.encuadre?.zoom || 1} aria-label="Zoom de la foto"
                 onPointerDown={tramos.empezar} onPointerUp={tramos.terminar}
@@ -1735,6 +1783,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
               <span>Pulsa algo del lienzo para cambiarlo. Arrástralo para moverlo, tira de los cuadraditos para el tamaño y del círculo de arriba para girarlo.</span>
               <span>Varios a la vez: con Mayús + clic o arrastrando un recuadro desde un hueco. Doble clic en un texto para escribir y en una foto para recortarla. Las fotos del panel (o del ordenador) se pueden soltar encima de un marco.</span>
               {tactil && <span>Con el dedo: toca algo para elegirlo y arrástralo para moverlo; toca dos veces un texto para escribir o una foto para recortarla; mantén pulsado para más opciones. Pellizca para acercar o alejar, y arrastra por un hueco para moverte por el diseño.</span>}
+              <span>Para dibujar a mano: «Añadir → Dibujar a mano alzada». Cada trazo se puede mover o borrar después; Ctrl+Z quita el último.</span>
               <span>Para cambiar una fecha o un horario en todas las páginas a la vez: 🔍 Buscar y cambiar (Ctrl+F).</span>
               <span>Atajos: Ctrl+C / Ctrl+X / Ctrl+V copian, cortan y pegan (también imágenes y textos del ordenador), Supr borra, Ctrl+D duplica, Ctrl+G agrupa (con Mayús, desagrupa), Ctrl+A elige todo, Ctrl+Z deshace, las flechas mueven (con Mayús, de 10 en 10), Ctrl+S guarda. Zoom: Ctrl + rueda, Ctrl + y Ctrl −. Con el botón derecho, más opciones.</span>
               <span>Lo que tiene 🔒 lo ha dejado fijo la dirección (para que todo salga con la imagen del club): según el caso, no se toca o solo se cambia el texto o la foto.</span>
@@ -1756,6 +1805,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
   );
 }
 const CUADRADOS_EDITOR = ['qr', 'icono'];
+const COLORES_LAPIZ = ['#1A1A1A', '#FFFFFF', '#5233A8', '#FF5FA2', '#F99B35', '#FFD526', '#21B668', '#00BBF4'];
 // Collages de fotos: cada hueco, [x, y, ancho, alto] en partes de la página.
 const COLLAGES = [
   ['2 en columnas', [[0, 0, 0.5, 1], [0.5, 0, 0.5, 1]]],
@@ -1812,7 +1862,7 @@ function BotonSubir({ texto, onArchivo, className = 'btn btn-sm btn-outline' }) 
   );
 }
 
-function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirMarco, anadirImagen, anadirCollage, verIconos, anadirQr, anadirTabla, anadirGrafico, anadirBloque, verFotos, verBanco, subir }) {
+function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirMarco, anadirImagen, anadirCollage, verIconos, dibujar, anadirQr, anadirTabla, anadirGrafico, anadirBloque, verFotos, verBanco, subir }) {
   const [subidas, setSubidas] = useState(null);
   const [qr, setQr] = useState('');
   const [mas, setMas] = useState({});
@@ -1836,6 +1886,9 @@ function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirM
           </div>
         </>
       )}
+
+      <div style={seccionT}>Dibujar</div>
+      <button type="button" style={{ ...bloque, fontSize: 13, fontWeight: 700, display: 'flex', gap: 8, alignItems: 'center' }} onClick={dibujar}>✏️ Dibujar a mano alzada</button>
 
       <div style={seccionT}>Formas</div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 5 }}>
@@ -2277,6 +2330,12 @@ function Propiedades({ e, tipo, esDireccion, cambiar, textoRef, subir, acciones,
         {e.tipo === 'rect' && <Num etiqueta="Esquinas redondeadas" valor={e.radio || 0} onCambio={(v) => cambiar({ radio: Math.max(0, v) })} min={0} />}
       </>}
 
+      {e.tipo === 'trazo' && (
+        <div style={fila}>
+          <Color etiqueta="Color" valor={e.color || '#1A1A1A'} onCambio={(v) => cambiar({ color: v })} />
+          <Num etiqueta="Grosor" valor={e.grosor || 8} onCambio={(v) => cambiar({ grosor: Math.max(1, v) })} min={1} />
+        </div>
+      )}
       {e.tipo === 'linea' && <>
         <div style={fila}>
           <Color etiqueta="Color" valor={e.color || '#1A1A1A'} onCambio={(v) => cambiar({ color: v })} />

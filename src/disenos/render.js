@@ -513,7 +513,19 @@ export function pintarDiseno(ctx, diseno, { imagenes = new Map(), variables = nu
     if (e.espejoH || e.espejoV) ctx.scale(e.espejoH ? -1 : 1, e.espejoV ? -1 : 1);
     const x = -e.w / 2, y = -e.h / 2;
     if (e.sombra) ponerSombra(ctx, e);
-    if (e.tipo === 'rect' || e.tipo === 'elipse' || e.tipo === 'forma') {
+    if (e.tipo === 'trazo') {
+      // Dibujo a mano alzada: sus puntos (en partes de su caja), suavizados.
+      const ps = e.puntos || [];
+      if (ps.length) {
+        const P = ([u, v]) => [x + u * e.w, y + v * e.h];
+        let [ax, ay] = P(ps[0]);
+        ctx.beginPath(); ctx.moveTo(ax, ay);
+        if (ps.length === 1) ctx.lineTo(ax + 0.01, ay);
+        for (let i = 1; i < ps.length; i++) { const [bx, by] = P(ps[i]); ctx.quadraticCurveTo(ax, ay, (ax + bx) / 2, (ay + by) / 2); ax = bx; ay = by; }
+        ctx.lineTo(ax, ay);
+        ctx.strokeStyle = e.color || '#1A1A1A'; ctx.lineWidth = e.grosor || 8; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.stroke();
+      }
+    } else if (e.tipo === 'rect' || e.tipo === 'elipse' || e.tipo === 'forma') {
       caminoFigura(ctx, e.tipo === 'forma' ? e.figura : e.tipo, x, y, e.w, e.h, e.radio);
       if (e.relleno && e.relleno !== 'transparent') { ctx.fillStyle = e.relleno2 ? degradado(ctx, x, y, e.w, e.h, e.relleno, e.relleno2, e.angulo) : e.relleno; ctx.fill(); }
       quitarSombra(ctx);
