@@ -5220,7 +5220,7 @@ setInterval(function seguidoresRedes() { publicacionesRedes.fotoSeguidores(); },
 // Evaluación (#411): de los profes y la dirección; las familias no ven nada.
 app.use(crearEvaluacion({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireSeccion, permisos, grupoSuyo }).router);
 // Diseños: carteles, posts y diplomas (el «Canva» del club).
-app.use(crearDisenos({ pool, authenticateSession, requireSeccion }).router);
+app.use(crearDisenos({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireSeccion }).router);
 // Sustitutos de un profe ausente (#445).
 app.use(crearSustituciones({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireAdmin, requireRol, rolEfectivo }).router);
 // Agrupaciones dentro de una clase (#441).
@@ -11371,6 +11371,14 @@ app.post('/api/admin/posts/imagen', authenticateSession, requireSeccion('news'),
     if (datos.length > 4 * 1024 * 1024) return res.status(413).json({ error: 'La imagen pesa demasiado (máximo 4 MB).' });
     try { res.status(201).json({ url: await guardarImagenWeb({ mime: m[1], datos, nombre: req.body?.nombre, userId: req.userSession.userId }) }); }
     catch (err) { res.status(500).json({ error: err.message }); }
+});
+// Las imágenes hechas en Aim Design («Usar → Para correos y noticias»), para elegirlas de portada.
+app.get('/api/admin/posts/imagenes-design', authenticateSession, requireSeccion('news'), async (req, res) => {
+    try {
+        const r = await pool.query(`SELECT id, nombre, ancho, alto, bytes, created_at FROM aim_correo_imagenes WHERE nombre LIKE 'Aim Design · %' ORDER BY created_at DESC LIMIT 60`);
+        res.set('Cache-Control', 'no-store');
+        res.json({ imagenes: r.rows.map(mapImagen) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 // Documentos para descargar desde las noticias (#438): llegan tal cual (no en
 // base64) y se sirven en /doc/<id>/<nombre>. El PDF se abre en el navegador; lo

@@ -7,7 +7,11 @@
 // diseño. Cada elemento tiene su caja (x, y, w, h), su giro (rot, en grados,
 // alrededor del centro) y su opacidad; los textos pueden llevar huecos como
 // {alumno} que se rellenan al exportar (diplomas).
+//
+// Tipos de elemento: texto, imagen, rect, elipse, linea y qr (un código QR que
+// se dibuja aquí mismo, a la medida, para que salga nítido en cualquier tamaño).
 // ─────────────────────────────────────────────────────────────────────────────
+import QRCode from 'qrcode';
 
 // Tamaños listos. Los A4/A3 a 150 ppp (de sobra para imprimir y no pesan).
 export const TAMANOS = [
@@ -45,6 +49,10 @@ export const VARIABLES_DIPLOMA = [
   { id: 'profesor', nombre: 'Profesor del curso', ejemplo: 'Darío Francisco' },
   { id: 'lecciones', nombre: 'Número de lecciones', ejemplo: '12' },
   { id: 'codigo', nombre: 'Código del diploma', ejemplo: '35604DF46F' },
+  // Estos solo se rellenan en los diplomas en lote (de una clase o de un examen).
+  { id: 'nivel', nombre: 'Nivel o cinturón (diplomas en lote)', ejemplo: 'Cinturón amarillo', lote: true },
+  { id: 'grupo', nombre: 'Clase o convocatoria (diplomas en lote)', ejemplo: 'Infantil lunes y miércoles', lote: true },
+  { id: 'resultado', nombre: 'Resultado del examen (diplomas en lote)', ejemplo: 'Sobresaliente', lote: true },
 ];
 export const EJEMPLO_DIPLOMA = Object.fromEntries(VARIABLES_DIPLOMA.map(v => [v.id, v.ejemplo]));
 export const rellenar = (texto, variables) => (variables
@@ -133,6 +141,55 @@ export function lineasTexto(ctx, e, texto) {
   return lineas;
 }
 export const altoTexto = (ctx, e, texto) => lineasTexto(ctx, e, texto).length * (e.tamano || 48) * (e.interlineado || 1.25);
+// La caja de un texto se ajusta a lo que ocupa (con los huecos rellenos).
+let medidor = null;
+export function ajustarTexto(e, variables) {
+  if (e.tipo !== 'texto' || typeof document === 'undefined') return e;
+  medidor = medidor || document.createElement('canvas').getContext('2d');
+  return { ...e, h: Math.max(10, Math.ceil(altoTexto(medidor, e, rellenar(e.texto, variables)))) };
+}
+
+// Dónde cae un punto de la caja de un texto (en píxeles del diseño, desde su
+// esquina) dentro del texto: para dejar ahí el cursor al escribir en el lienzo.
+export function posicionEnTexto(e, dx, dy) {
+  const texto = String(e.texto || '');
+  if (typeof document === 'undefined' || !texto) return texto.length;
+  medidor = medidor || document.createElement('canvas').getContext('2d');
+  const lineas = lineasTexto(medidor, e, texto);
+  const lh = (e.tamano || 48) * (e.interlineado || 1.25);
+  const arriba = e.vertical === 'arriba' ? 0 : (e.h - lineas.length * lh) / 2;
+  const n = Math.max(0, Math.min(lineas.length - 1, Math.floor((dy - arriba) / lh)));
+  // Dónde empieza cada línea en el texto (una vacía es un salto de párrafo).
+  const fuente = e.mayusculas ? texto.toUpperCase() : texto;
+  let pos = 0, inicio = 0;
+  for (let i = 0; i <= n; i++) {
+    const j = lineas[i] ? fuente.indexOf(lineas[i], pos) : i === 0 ? 0 : fuente.indexOf('\n', pos) + 1;
+    inicio = j > 0 || (j === 0 && i === 0) ? j : pos;
+    pos = inicio + lineas[i].length;
+  }
+  const linea = lineas[n], ancho = medidor.measureText(linea).width;
+  const x0 = e.alinear === 'centro' ? (e.w - ancho) / 2 : e.alinear === 'derecha' ? e.w - ancho : 0;
+  let mejor = 0, dist = Infinity;
+  for (let c = 0; c <= linea.length; c++) {
+    const d = Math.abs(medidor.measureText(linea.slice(0, c)).width - (dx - x0));
+    if (d < dist) { dist = d; mejor = c; }
+  }
+  if ('letterSpacing' in medidor) medidor.letterSpacing = '0px';
+  return Math.min(texto.length, inicio + mejor);
+}
+
+// Los cuadraditos de un QR (se guardan: un diseño con un QR se pinta muchas veces).
+const cacheQr = new Map();
+function matrizQr(texto) {
+  const t = String(texto || '').trim() || 'https://www.aimeducation.es';
+  if (!cacheQr.has(t)) {
+    let m = null;
+    try { const q = QRCode.create(t, { errorCorrectionLevel: 'M' }); m = { n: q.modules.size, datos: q.modules.data }; } catch { m = null; }
+    if (cacheQr.size > 50) cacheQr.clear();
+    cacheQr.set(t, m);
+  }
+  return cacheQr.get(t);
+}
 
 export function pintarDiseno(ctx, diseno, { imagenes = new Map(), variables = null, ocultar = null } = {}) {
   const { ancho: W, alto: H } = diseno;
@@ -166,6 +223,25 @@ export function pintarDiseno(ctx, diseno, { imagenes = new Map(), variables = nu
       ctx.strokeStyle = e.color || '#1A1A1A'; ctx.lineWidth = e.grosor || 4; ctx.lineCap = 'round';
       if (e.discontinua) ctx.setLineDash([e.grosor * 3, e.grosor * 2.5]);
       ctx.stroke();
+    } else if (e.tipo === 'qr') {
+      const lado = Math.min(e.w, e.h), conFondo = e.fondo && e.fondo !== 'transparent';
+      if (conFondo) { caminoRedondeado(ctx, -lado / 2, -lado / 2, lado, lado, e.radio); ctx.fillStyle = e.fondo; ctx.fill(); }
+      ctx.shadowColor = 'transparent';
+      const m = matrizQr(e.texto);
+      if (m) {
+        // Con fondo, su margen de dos cuadraditos (lo que necesita el móvil para leerlo).
+        const margen = conFondo ? 2 : 0, k = lado / (m.n + margen * 2), o = -lado / 2 + margen * k;
+        ctx.fillStyle = e.color || '#1A1A1A';
+        // Fila a fila, los tramos seguidos de una vez: sin rayitas entre cuadraditos.
+        for (let f = 0; f < m.n; f++) {
+          for (let c = 0; c < m.n; c++) {
+            if (!m.datos[f * m.n + c]) continue;
+            let fin = c; while (fin + 1 < m.n && m.datos[f * m.n + fin + 1]) fin++;
+            ctx.fillRect(o + c * k, o + f * k, (fin - c + 1) * k, k + 0.6);
+            c = fin;
+          }
+        }
+      }
     } else if (e.tipo === 'imagen') {
       ctx.save();
       caminoRedondeado(ctx, x, y, e.w, e.h, e.radio); ctx.clip();
@@ -190,6 +266,47 @@ export function pintarDiseno(ctx, diseno, { imagenes = new Map(), variables = nu
   ctx.restore();
 }
 
+// ── Cambiar de tamaño «con magia»: lo mismo, en otro tamaño ─────────────────
+// Cada cosa conserva su sitio relativo (lo que toca un borde sigue pegado a él)
+// y su proporción, a la escala del lado que menos crece; lo que ocupa el lienzo
+// de lado a lado (un fondo, una franja) se estira; y los textos aprovechan el
+// ancho que ganan, con la letra a escala.
+export function adaptarDiseno(d, ancho, alto, variables = null) {
+  const sx = ancho / d.ancho, sy = alto / d.alto, k = Math.min(sx, sy);
+  const eje = (pos, tam, total, nuevo, nuevoTotal, s) => {
+    const antes = pos, despues = total - (pos + tam), pegado = total * 0.02;
+    if (antes >= 0 && antes <= pegado) return antes * k;
+    if (despues >= 0 && despues <= pegado) return nuevoTotal - nuevo - despues * k;
+    return (pos + tam / 2) * s - nuevo / 2;
+  };
+  const elementos = (d.elementos || []).map(e => {
+    const todoAncho = e.w >= d.ancho * 0.95, todoAlto = e.h >= d.alto * 0.95;
+    const dentro = e.x >= 0 && e.y >= 0 && e.x + e.w <= d.ancho + 1 && e.y + e.h <= d.alto + 1;
+    let n = { ...e };
+    for (const p of ['radio', 'espaciado']) if (e[p]) n[p] = Math.round(e[p] * k * 10) / 10;
+    if (e.tamano) n.tamano = Math.max(6, Math.round(e.tamano * k));
+    if (e.grosor) n.grosor = Math.max(1, Math.round(e.grosor * k));
+    if (e.tipo === 'texto') {
+      n.w = Math.round(Math.max(e.w * k, Math.min(e.w * sx, ancho * 0.94)));
+      n = ajustarTexto(n, variables);
+    } else if (e.tipo === 'linea') {
+      n.w = Math.round(todoAncho ? e.w * sx : e.w * k); n.h = Math.max(16, Math.round(e.h * k));
+    } else if (e.tipo === 'qr') {
+      n.w = n.h = Math.round(Math.min(e.w, e.h) * k);
+    } else {
+      n.w = Math.round(todoAncho ? e.w * sx : e.w * k); n.h = Math.round(todoAlto ? e.h * sy : e.h * k);
+      if (e.tipo === 'imagen' && todoAncho && todoAlto) n.ajuste = 'cubrir';
+    }
+    n.x = Math.round(eje(e.x, e.w, d.ancho, n.w, ancho, sx));
+    n.y = Math.round(eje(e.y, e.h, d.alto, n.h, alto, sy));
+    if (dentro) {
+      n.x = Math.max(0, Math.min(n.x, ancho - n.w)); n.y = Math.max(0, Math.min(n.y, alto - n.h));
+    }
+    return n;
+  });
+  return { ...d, ancho, alto, elementos };
+}
+
 // Pinta el diseño entero en un canvas nuevo (para exportar o miniaturas).
 export async function lienzoDe(diseno, { variables = null, ancho = null } = {}) {
   await cargarFuentes(diseno);
@@ -211,6 +328,16 @@ function descargar(blob, nombre) {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 20000);
 }
+// Un PDF del tamaño del diseño (A4/A3 si lo es) y cómo se le añade otra página.
+async function pdfPara(diseno) {
+  const { jsPDF } = await import('jspdf');
+  const t = TAMANOS.find(x => x.ancho === diseno.ancho && x.alto === diseno.alto)?.pdf;
+  const orientacion = diseno.ancho >= diseno.alto ? 'landscape' : 'portrait';
+  const doc = t ? new jsPDF({ orientation: t.orientacion, unit: 'mm', format: t.formato })
+    : new jsPDF({ orientation: orientacion, unit: 'px', format: [diseno.ancho, diseno.alto], hotfixes: ['px_scaling'] });
+  const otra = () => (t ? doc.addPage(t.formato, t.orientacion) : doc.addPage([diseno.ancho, diseno.alto], orientacion));
+  return { doc, otra, pw: doc.internal.pageSize.getWidth(), ph: doc.internal.pageSize.getHeight() };
+}
 // Exporta: 'png', 'jpg' o 'pdf'. Con `escala` (1, 2) para PNG/JPG más grandes.
 export async function exportarDiseno(diseno, formato, nombre, { variables = null, escala = 1 } = {}) {
   const c = await lienzoDe(diseno, { variables, ancho: Math.round(diseno.ancho * escala) });
@@ -220,11 +347,18 @@ export async function exportarDiseno(diseno, formato, nombre, { variables = null
     descargar(blob, `${base}.${formato}`);
     return;
   }
-  const { jsPDF } = await import('jspdf');
-  const t = TAMANOS.find(x => x.ancho === diseno.ancho && x.alto === diseno.alto)?.pdf;
-  const doc = t ? new jsPDF({ orientation: t.orientacion, unit: 'mm', format: t.formato })
-    : new jsPDF({ orientation: diseno.ancho >= diseno.alto ? 'landscape' : 'portrait', unit: 'px', format: [diseno.ancho, diseno.alto], hotfixes: ['px_scaling'] });
-  const pw = doc.internal.pageSize.getWidth(), ph = doc.internal.pageSize.getHeight();
+  const { doc, pw, ph } = await pdfPara(diseno);
   doc.addImage(c.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, pw, ph);
   doc.save(`${base}.pdf`);
+}
+// Diplomas en lote: un solo PDF con una página por persona, cada una con sus datos.
+export async function exportarLote(diseno, listaVariables, nombre, onProgreso) {
+  const { doc, otra, pw, ph } = await pdfPara(diseno);
+  for (let i = 0; i < listaVariables.length; i++) {
+    if (i) otra();
+    const c = await lienzoDe(diseno, { variables: listaVariables[i] });
+    doc.addImage(c.toDataURL('image/jpeg', 0.9), 'JPEG', 0, 0, pw, ph);
+    onProgreso?.(i + 1, listaVariables.length);
+  }
+  doc.save(`${nombreArchivo(nombre)}.pdf`);
 }

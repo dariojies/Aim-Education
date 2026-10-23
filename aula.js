@@ -514,7 +514,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                 res.set('Cache-Control', 'private, no-store');
                 return res.json({
                     diseno: await disenoDiploma(pool, id), nombre: `Diploma ${c.titulo}`,
-                    variables: { alumno: u?.nombre || 'Alumno', curso: c.titulo, profesor: c.profesor || '', lecciones: String(x.lecciones), codigo,
+                    variables: { alumno: u?.nombre || 'Alumno', curso: c.titulo, profesor: c.profesor || '', lecciones: String(x.lecciones), codigo, nivel: '', grupo: '', resultado: '',
                         fecha: new Date(x.terminado).toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Madrid' }) },
                 });
             }

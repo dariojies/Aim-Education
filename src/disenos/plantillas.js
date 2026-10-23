@@ -7,6 +7,10 @@ const LOGO_BLANCO = '/src/brand/Aim_White.png';
 const COLORES = ['#5233A8', '#FF5FA2', '#F99B35', '#FFD526', '#21B668', '#00BBF4'];
 const txt = (o) => ({ id: nuevoId(), tipo: 'texto', rot: 0, opacidad: 1, fuente: 'Montserrat', color: '#1A1A1A', alinear: 'centro', interlineado: 1.2, ...o });
 const franjas = (ancho, y, alto) => COLORES.map((c, i) => ({ id: nuevoId(), tipo: 'rect', x: (ancho / 6) * i, y, w: ancho / 6 + 1, h: alto, rot: 0, opacidad: 1, relleno: c, radio: 0 }));
+// El alto de un texto: sus líneas por la letra y el interlineado (el editor lo ajusta luego).
+const alto = (lineas, tamano, interlineado = 1.2) => Math.round(lineas * tamano * interlineado);
+const forma = (tipo, o) => ({ id: nuevoId(), tipo, rot: 0, opacidad: 1, radio: 0, ...o });
+const logo = (o) => ({ id: nuevoId(), tipo: 'imagen', url: LOGO, rot: 0, opacidad: 1, ajuste: 'contener', radio: 0, ...o });
 
 export const PLANTILLAS = [
   {
@@ -71,6 +75,99 @@ export const PLANTILLAS = [
         txt({ x: 200, y: 1400, w: 1354, h: 260, texto: 'Cuenta aquí de qué va, quién puede venir y qué hay que traer.', tamano: 52, color: '#374151', interlineado: 1.35 }),
         ...franjas(1754, 2440, 40),
         { id: nuevoId(), tipo: 'imagen', url: LOGO, x: 627, y: 2150, w: 500, h: 190, rot: 0, opacidad: 1, ajuste: 'contener', radio: 0 },
+      ],
+    }),
+  },
+  {
+    id: 'horario', nombre: 'Horario de una actividad', tipo: 'libre', tamano: 'igv',
+    crear: () => ({
+      ancho: 1080, alto: 1350, fondo: { tipo: 'degradado', color: '#5233A8', color2: '#00BBF4', angulo: 150 },
+      elementos: [
+        txt({ x: 80, y: 110, w: 920, h: alto(1, 150, 1), texto: 'HORARIO', tamano: 150, fuente: 'Bebas Neue', color: '#ffffff', interlineado: 1, espaciado: 6 }),
+        txt({ x: 80, y: 270, w: 920, h: alto(1, 46), texto: 'Taekwon-Do · Temporada 2026/2027', tamano: 46, negrita: true, color: '#ffffff', opacidad: 0.92 }),
+        forma('rect', { x: 80, y: 390, w: 920, h: 700, relleno: '#ffffff', radio: 36, sombra: true }),
+        txt({ x: 130, y: 450, w: 820, h: alto(6, 42, 1.5), texto: 'Lunes y miércoles · 17:30 – 18:30\nInfantil (de 4 a 7 años)\n\nMartes y jueves · 18:30 – 19:30\nJuvenil y adultos\n', tamano: 42, color: '#1A1A1A', interlineado: 1.5, alinear: 'izquierda', vertical: 'arriba' }),
+        txt({ x: 130, y: 990, w: 820, h: alto(1, 26), texto: 'Truco: «Añadir → Datos del club» pone el horario de verdad.', tamano: 26, color: '#6B7280', alinear: 'izquierda' }),
+        logo({ url: LOGO_BLANCO, x: 390, y: 1160, w: 300, h: 110 }),
+      ],
+    }),
+  },
+  {
+    id: 'examen', nombre: 'Examen de cinturón', tipo: 'libre', tamano: 'a4v',
+    crear: () => ({
+      ancho: 1240, alto: 1754, fondo: { tipo: 'color', color: '#FFFFFF' },
+      elementos: [
+        ...['#FFFFFF', '#FFD526', '#21B668', '#00BBF4', '#E53935', '#1A1A1A'].map((c, i) => forma('rect', { x: 0, y: 120 + i * 46, w: 1240, h: 46, relleno: c, borde: '#E5E7EB', grosor: i === 0 ? 2 : 0 })),
+        txt({ x: 80, y: 480, w: 1080, h: alto(2, 150, 0.95), texto: 'EXAMEN DE\nCINTURÓN', tamano: 150, fuente: 'Bebas Neue', color: '#5233A8', interlineado: 0.95, espaciado: 4 }),
+        txt({ x: 80, y: 820, w: 1080, h: alto(1, 58), texto: 'Sábado 13 de diciembre · 10:00', tamano: 58, negrita: true, color: '#1A1A1A' }),
+        txt({ x: 80, y: 910, w: 1080, h: alto(1, 40), texto: 'En el dojang de Aim Education', tamano: 40, color: '#6B7280' }),
+        forma('rect', { x: 140, y: 1040, w: 960, h: 300, relleno: '#F6F4EF', radio: 28 }),
+        txt({ x: 190, y: 1085, w: 860, h: alto(3, 36, 1.4), texto: 'Trae el dobok limpio y planchado, la matrícula pagada y muchas ganas. ¡Mucha suerte a todos!', tamano: 36, color: '#374151', interlineado: 1.4 }),
+        logo({ x: 445, y: 1480, w: 350, h: 130 }),
+      ],
+    }),
+  },
+  {
+    id: 'resultados', nombre: 'Resultados de competición', tipo: 'libre', tamano: 'ig',
+    crear: () => ({
+      ancho: 1080, alto: 1080, fondo: { tipo: 'color', color: '#17151C' },
+      elementos: [
+        ...franjas(1080, 0, 14),
+        txt({ x: 60, y: 90, w: 960, h: alto(1, 150, 1), texto: '¡RESULTADOS!', tamano: 150, fuente: 'Bebas Neue', color: '#FFFFFF', interlineado: 1, espaciado: 4 }),
+        txt({ x: 60, y: 260, w: 960, h: alto(1, 44), texto: 'Campeonato de Andalucía ITF · Sevilla', tamano: 44, negrita: true, color: '#FFD526' }),
+        ...[['#FFD526', '3', 'Oros', 120], ['#C9CDD6', '2', 'Platas', 410], ['#D08A4E', '4', 'Bronces', 700]].flatMap(([c, n, t, x]) => [
+          forma('elipse', { x, y: 400, w: 260, h: 260, relleno: c }),
+          txt({ x, y: 455, w: 260, h: alto(1, 130, 1), texto: n, tamano: 130, negrita: true, color: '#17151C', interlineado: 1, fuente: 'Plus Jakarta Sans' }),
+          txt({ x, y: 690, w: 260, h: alto(1, 40), texto: t, tamano: 40, negrita: true, color: '#FFFFFF' }),
+        ]),
+        txt({ x: 90, y: 800, w: 900, h: alto(1, 40), texto: '¡Enhorabuena, equipo! Orgullosos de vosotros.', tamano: 40, color: '#FFFFFF', opacidad: 0.85 }),
+        logo({ url: LOGO_BLANCO, x: 390, y: 920, w: 300, h: 110 }),
+      ],
+    }),
+  },
+  {
+    id: 'cumpleanos', nombre: 'Feliz cumpleaños', tipo: 'libre', tamano: 'ig',
+    crear: () => ({
+      ancho: 1080, alto: 1080, fondo: { tipo: 'degradado', color: '#FFE36E', color2: '#FF8FC0', angulo: 135 },
+      elementos: [
+        ...[[60, 80, 90, '#5233A8'], [900, 120, 70, '#00BBF4'], [140, 860, 60, '#21B668'], [880, 840, 110, '#F99B35'], [500, 60, 40, '#FFFFFF'], [40, 480, 44, '#FFFFFF']]
+          .map(([x, y, d, c]) => forma('elipse', { x, y, w: d, h: d, relleno: c, opacidad: 0.8 })),
+        txt({ x: 80, y: 280, w: 920, h: alto(2, 120, 1.05), texto: '¡Feliz\ncumpleaños!', tamano: 120, fuente: 'Pacifico', color: '#5233A8', interlineado: 1.05 }),
+        txt({ x: 80, y: 570, w: 920, h: alto(1, 80), texto: 'Nombre', tamano: 80, negrita: true, color: '#17151C', fuente: 'Plus Jakarta Sans' }),
+        txt({ x: 140, y: 700, w: 800, h: alto(2, 40, 1.3), texto: 'Todo el club te desea un día genial. ¡A por muchos más!', tamano: 40, color: '#374151', interlineado: 1.3 }),
+        logo({ x: 415, y: 930, w: 250, h: 94 }),
+      ],
+    }),
+  },
+  {
+    id: 'festivo', nombre: 'Cerrado por festivo', tipo: 'libre', tamano: 'ig',
+    crear: () => ({
+      ancho: 1080, alto: 1080, fondo: { tipo: 'color', color: '#F6F4EF' },
+      elementos: [
+        ...franjas(1080, 0, 20), ...franjas(1080, 1060, 20),
+        txt({ x: 60, y: 260, w: 960, h: alto(1, 200, 1), texto: 'CERRADO', tamano: 200, fuente: 'Bebas Neue', color: '#5233A8', interlineado: 1, espaciado: 8 }),
+        txt({ x: 80, y: 500, w: 920, h: alto(1, 52), texto: 'Lunes 8 de diciembre', tamano: 52, negrita: true, color: '#17151C' }),
+        txt({ x: 80, y: 580, w: 920, h: alto(1, 40), texto: 'Día de la Inmaculada', tamano: 40, color: '#6B7280' }),
+        txt({ x: 140, y: 700, w: 800, h: alto(1, 38), texto: 'No hay clases. ¡Nos vemos el martes!', tamano: 38, color: '#374151' }),
+        logo({ x: 400, y: 880, w: 280, h: 105 }),
+      ],
+    }),
+  },
+  {
+    id: 'campamento', nombre: 'Cartel del campamento', tipo: 'libre', tamano: 'a3v',
+    crear: () => ({
+      ancho: 1754, alto: 2480, fondo: { tipo: 'color', color: '#FFFFFF' },
+      elementos: [
+        forma('rect', { x: 0, y: 0, w: 1754, h: 1180, relleno: '#21B668', relleno2: '#00BBF4', angulo: 135 }),
+        forma('elipse', { x: 1280, y: -180, w: 620, h: 620, relleno: '#FFD526', opacidad: 0.9 }),
+        txt({ x: 120, y: 300, w: 1514, h: alto(2, 230, 0.95), texto: 'CAMPAMENTO\nDE VERANO', tamano: 230, fuente: 'Bebas Neue', color: '#FFFFFF', interlineado: 0.95, alinear: 'izquierda' }),
+        txt({ x: 120, y: 820, w: 1514, h: alto(1, 70), texto: 'Del 22 de junio al 31 de julio', tamano: 70, negrita: true, color: '#FFFFFF', alinear: 'izquierda' }),
+        txt({ x: 120, y: 920, w: 1514, h: alto(1, 56), texto: 'De 9:00 a 14:00 · De 3 a 14 años', tamano: 56, color: '#FFFFFF', alinear: 'izquierda', opacidad: 0.92 }),
+        txt({ x: 120, y: 1320, w: 1000, h: alto(4, 58, 1.35), texto: 'Deporte, inglés, robótica, manualidades y mucha diversión, con monitores titulados.', tamano: 58, color: '#374151', interlineado: 1.35, alinear: 'izquierda' }),
+        { id: nuevoId(), tipo: 'qr', texto: 'https://www.aimeducation.es/campamento', x: 1214, y: 1300, w: 420, h: 420, rot: 0, opacidad: 1, color: '#17151C', fondo: '#FFFFFF', radio: 0 },
+        txt({ x: 1164, y: 1740, w: 520, h: alto(1, 40), texto: 'Apúntate aquí', tamano: 40, negrita: true, color: '#21B668' }),
+        logo({ x: 627, y: 2120, w: 500, h: 190 }),
+        ...franjas(1754, 2440, 40),
       ],
     }),
   },

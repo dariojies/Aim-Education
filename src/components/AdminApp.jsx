@@ -43,7 +43,7 @@ import AdminCtas from './AdminCtas.jsx';
 import AdminRedes from './AdminRedes.jsx';
 import FusionarFichas, { AvisoRepetida } from './FusionarFichas.jsx';
 import AdminBandeja from './AdminBandeja.jsx';
-import AdminDisenos from './AdminDisenos.jsx';
+import AdminDisenos, { ElegirDeAimDesign } from './AdminDisenos.jsx';
 import AdminAlmacen from './AdminAlmacen.jsx';
 import AdminContactos from './AdminContactos.jsx';
 import AdminCandidatos from './AdminCandidatos.jsx';
@@ -7579,6 +7579,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                     }} />
                 </label>
                 {editingItem.coverImageUrl && <button type="button" className="btn btn-sm btn-outline" onClick={() => setEditingItem(x => ({ ...x, coverImageUrl: '' }))}>Quitar</button>}
+                <ElegirDeAimDesign onElegir={(url) => setEditingItem(x => ({ ...x, coverImageUrl: url }))} />
               </div>
               {editingItem.coverImageUrl && /^https?:\/\//.test(editingItem.coverImageUrl) && (
                 <span style={{ fontSize: 12, color: 'var(--orange)' }}>Esta imagen está en otro servidor: si allí la borran, desaparece. Súbela aquí, o usa «Traer las imágenes a la web» en la lista de noticias.</span>

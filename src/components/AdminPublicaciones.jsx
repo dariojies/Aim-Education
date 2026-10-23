@@ -134,6 +134,16 @@ export default function AdminPublicaciones({ showToast }) {
     try { setLista((await api('/api/admin/publicaciones')).publicaciones || []); } catch (e) { showToast?.(e.message); setLista([]); }
   }, [showToast]);
   useEffect(() => { cargar(); api('/api/admin/publicaciones/cuenta').then(setCuenta).catch(() => setCuenta({ conectado: false, motivo: 'No se ha podido comprobar la conexión con Meta.' })); }, [cargar]);
+  // /admin/publicaciones?abrir=<id> (lo usa Aim Design al crear un borrador): se abre al cargar.
+  const abrirAlCargar = useRef(new URLSearchParams(window.location.search).get('abrir'));
+  useEffect(() => {
+    const id = Number(abrirAlCargar.current);
+    if (!id || !lista) return;
+    abrirAlCargar.current = null;
+    window.history.replaceState(null, '', window.location.pathname);
+    const p = lista.find(x => x.id === id);
+    if (p) setEditando(p);
+  }, [lista]);
   // Mientras algo se está publicando, se mira cada pocos segundos cómo va.
   const enCurso = (lista || []).some(p => p.estado === 'publicando');
   useEffect(() => { if (!enCurso) return undefined; const t = setInterval(cargar, 4000); return () => clearInterval(t); }, [enCurso, cargar]);
