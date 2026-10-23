@@ -3,7 +3,7 @@ import { I } from './Icons.jsx';
 import { subirImagen } from './EditorDiseno.jsx';
 import { useRouter } from '../App.jsx';
 import {
-  TAMANOS, FUENTES_DISENO, VARIABLES_DIPLOMA, EJEMPLO_DIPLOMA, nuevoId, pintarDiseno, cargarImagenes, cargarImagen, cargarFuentes, cargarFuentePropia,
+  TAMANOS, FUENTES_DISENO, VARIABLES_DIPLOMA, EJEMPLO_DIPLOMA, VARIABLES_AUTO, EJEMPLO_AUTO, nuevoId, pintarDiseno, cargarImagenes, cargarImagen, cargarFuentes, cargarFuentePropia,
   pedirFuentes, miniatura, exportarDiseno, exportarLote, exportarImprenta, medidasImprenta, SANGRADO_MM, lienzoDe, ajustarTexto, adaptarDiseno,
   paginaDe, conPagina, numPaginas, todasLasPaginas, ANIMACIONES, tieneAnimacion, duracionAnimacion,
 } from '../disenos/render.js';
@@ -149,6 +149,22 @@ function DisenosGraficos({ showToast, puedePublicar }) {
     try { await api('/api/admin/disenos-diploma', { method: 'PUT', body: { id: datos.diplomaPorDefecto === d.id ? null : d.id } }); showToast?.(datos.diplomaPorDefecto === d.id ? 'El aula vuelve al diploma de siempre.' : 'Es el diploma del aula por defecto.'); cargar(); }
     catch (e) { alert(e.message); }
   }
+  // Lo que sale solo (#471): elegir un diseño es confirmarlo (solo la dirección).
+  const USOS_AUTO = { festivo: 'Historia de los festivos', cumple: 'Felicitación de cumpleaños' };
+  async function elegirAuto(d, uso) {
+    const quitar = datos.automaticos?.[uso] === d.id;
+    if (!quitar) {
+      const aviso = uso === 'festivo'
+        ? `¿Confirmar «${d.nombre}» como la historia de los festivos?\n\nCada festivo (los nacionales, autonómicos y locales de Fichaje → Vacaciones y festivos) se publicará solo como historia de Instagram a las 00:00 de ese día, rellenando {dia}, {festivo} y {vuelta}. Se verá programada en Publicaciones desde una semana antes (y ahí se puede quitar).${d.ancho === 1080 && d.alto === 1920 ? '' : '\n\nOjo: este diseño no tiene el tamaño de una historia (1080 × 1920) e Instagram la enseñará con bordes. Mejor una copia en «Usar → En otros tamaños → Historia».'}`
+        : `¿Confirmar «${d.nombre}» como la felicitación de cumpleaños?\n\nIrá como imagen en el correo de cumpleaños de cada alumno, rellenando {nombre} y {edad}.${datos.cumpleEncendido ? '' : '\n\nOjo: el automatismo «Felicitación de cumpleaños» está apagado (Comunicación → Automatismos). Hasta que se encienda, no sale.'}`;
+      if (!window.confirm(aviso)) return;
+    }
+    try {
+      await api('/api/admin/disenos-automatico', { method: 'PUT', body: { uso, id: quitar ? null : d.id } });
+      showToast?.(quitar ? `Ya no hay ${USOS_AUTO[uso].toLowerCase()}.` : uso === 'festivo' ? 'Confirmada: las historias de los festivos salen con este diseño.' : 'Confirmada: las felicitaciones de cumpleaños llevan este diseño.');
+      cargar();
+    } catch (e) { alert(e.message); }
+  }
   async function moverA(d, valor) {
     let c = valor;
     if (valor === '__nueva') { c = window.prompt('Nombre de la carpeta nueva:', ''); if (!c?.trim()) return; c = c.trim(); }
@@ -173,7 +189,8 @@ function DisenosGraficos({ showToast, puedePublicar }) {
     </button>
   );
 
-  if (abierto) return <SinPantallaEnBlanco onCerrar={() => { setAbierto(null); setPanelInicial(null); cargar(); }}><Editor inicial={abierto} panelInicial={panelInicial} showToast={showToast} puedePublicar={puedePublicar} esDireccion={!!datos?.puedoAprobar} onCerrar={() => { setAbierto(null); setPanelInicial(null); cargar(); }} /></SinPantallaEnBlanco>;
+  if (abierto) return <SinPantallaEnBlanco onCerrar={() => { setAbierto(null); setPanelInicial(null); cargar(); }}><Editor inicial={abierto} panelInicial={panelInicial} showToast={showToast} puedePublicar={puedePublicar} esDireccion={!!datos?.puedoAprobar}
+    usoAuto={abierto.id ? Object.keys(datos?.automaticos || {}).find(u => datos.automaticos[u] === abierto.id) || abierto.usoAuto || null : null} onCerrar={() => { setAbierto(null); setPanelInicial(null); cargar(); }} /></SinPantallaEnBlanco>;
   return (
     <div style={{ display: 'grid', gap: 14 }}>
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -219,6 +236,12 @@ function DisenosGraficos({ showToast, puedePublicar }) {
                   {d.comentarios > 0 && <span title="Comentarios sin resolver" style={{ fontSize: 11.5, fontWeight: 800, color: 'var(--purple)' }}>💬 {d.comentarios}</span>}
                   {d.plantilla && <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--purple)' }}>★ Plantilla del equipo</span>}
                   {d.tipo === 'diploma' && datos.diplomaPorDefecto === d.id && <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--teal)' }}>✓ Diploma del aula por defecto</span>}
+                  {!enPapelera && Object.entries(USOS_AUTO).filter(([u]) => datos.automaticos?.[u] === d.id).map(([u, t]) => (
+                    <span key={u} style={{ fontSize: 11, fontWeight: 800, color: 'var(--teal)' }}>
+                      ✓ {t}{u === 'cumple' && !datos.cumpleEncendido ? ' (el correo de cumpleaños está apagado)' : ''}
+                      {' · '}<a href={`/api/admin/disenos/${d.id}/como-sale?uso=${u}`} target="_blank" rel="noreferrer" style={{ color: 'inherit' }}>Ver cómo sale</a>
+                    </span>
+                  ))}
                 </div>
                 {enPapelera ? (
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -235,6 +258,13 @@ function DisenosGraficos({ showToast, puedePublicar }) {
                   <button type="button" className="btn btn-sm btn-outline" onClick={() => abrir(d.id)}><I.Edit width={13} height={13} /> Abrir</button>
                   <button type="button" className="btn btn-sm btn-ghost" onClick={() => duplicar(d)}>Duplicar</button>
                   {d.tipo === 'diploma' && <button type="button" className="btn btn-sm btn-ghost" onClick={() => porDefecto(d)}>{datos.diplomaPorDefecto === d.id ? 'Quitar de por defecto' : 'Diploma por defecto'}</button>}
+                  {d.tipo !== 'diploma' && datos.puedoAprobar && (
+                    <select value="" onChange={e => e.target.value && elegirAuto(d, e.target.value)} aria-label={`Que «${d.nombre}» salga solo`} title="Plantillas que salen solas: la historia de los festivos y la felicitación de cumpleaños"
+                      style={{ ...inp, fontSize: 12, padding: '4px 6px', width: 'auto' }}>
+                      <option value="">Que salga solo…</option>
+                      {Object.entries(USOS_AUTO).map(([u, t]) => <option key={u} value={u}>{datos.automaticos?.[u] === d.id ? `Quitar: ${t}` : t}</option>)}
+                    </select>
+                  )}
                   <button type="button" className="icon-btn danger" onClick={() => borrar(d)} aria-label="A la papelera" title="A la papelera"><I.Trash /></button>
                 </div>
                 </>}
@@ -521,7 +551,8 @@ const arrastrable = (url, ancho, alto) => ({
   onDragStart: (ev) => { ev.dataTransfer.setData(TIPO_ARRASTRE, JSON.stringify({ url, ancho, alto })); ev.dataTransfer.effectAllowed = 'copy'; },
 });
 
-function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esDireccion = false }) {
+// usoAuto: si es la plantilla de lo que sale solo ('festivo', 'cumple'; #471): sus huecos.
+function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esDireccion = false, usoAuto = null }) {
   const [id, setId] = useState(inicial.id);
   const [nombre, setNombre] = useState(inicial.nombre || 'Diseño sin nombre');
   const [tipo, setTipo] = useState(inicial.tipo || 'libre');
@@ -586,7 +617,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
   const selRef = useRef(seleccion); selRef.current = seleccion;
   const diseno = useMemo(() => paginaDe(doc, pagina), [doc, pagina]);
   const vista = () => paginaDe(docRef.current, paginaRef.current);
-  const ejemplo = tipo === 'diploma' ? EJEMPLO_DIPLOMA : null;
+  const ejemplo = tipo === 'diploma' ? EJEMPLO_DIPLOMA : usoAuto ? EJEMPLO_AUTO[usoAuto] : null;
   const sel = seleccion.length === 1 ? seleccion[0] : null;
   const setSel = useCallback((x) => setSeleccion(x ? [x] : []), []);
   const elegido = sel ? diseno.elementos.find(e => e.id === sel) || null : null;
@@ -1597,7 +1628,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
           {panelAbierto && <>
           {panel === 'anadir' && (
             <PanelAnadir tipo={tipo} kit={kit} anadirTexto={anadirTexto} anadirForma={anadirForma} anadirIcono={anadirIcono} anadirMarco={anadirMarco} anadirImagen={anadirImagen} anadirCollage={anadirCollage} verIconos={() => verIconos()} dibujar={empezarADibujar} anadirQr={anadirQr} anadirTabla={anadirTabla} anadirGrafico={anadirGrafico}
-              anadirBloque={anadirBloque} verFotos={() => setVentana('fotos')} verBanco={() => setVentana('banco')} subir={subir} />
+              anadirBloque={anadirBloque} verFotos={() => setVentana('fotos')} verBanco={() => setVentana('banco')} subir={subir} usoAuto={usoAuto} />
           )}
           {panel === 'estilos' && <PanelEstilos doc={doc} aplicarDoc={aplicarDoc} showToast={showToast} respetar={esDireccion ? null : fijo} fondoFijo={marcaFija} />}
           {panel === 'fondo' && marcaFija && <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>🔒 La dirección ha dejado fijo el fondo de esta plantilla.</span>}
@@ -1965,7 +1996,7 @@ function BotonSubir({ texto, onArchivo, className = 'btn btn-sm btn-outline' }) 
   );
 }
 
-function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirMarco, anadirImagen, anadirCollage, verIconos, dibujar, anadirQr, anadirTabla, anadirGrafico, anadirBloque, verFotos, verBanco, subir }) {
+function PanelAnadir({ usoAuto, tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirMarco, anadirImagen, anadirCollage, verIconos, dibujar, anadirQr, anadirTabla, anadirGrafico, anadirBloque, verFotos, verBanco, subir }) {
   const [subidas, setSubidas] = useState(null);
   const [qr, setQr] = useState('');
   const [mas, setMas] = useState({});
@@ -1987,6 +2018,15 @@ function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirM
           <div style={seccionT}>Huecos del diploma</div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {VARIABLES_DIPLOMA.map(v => <button key={v.id} type="button" className="btn btn-sm btn-outline" title={v.nombre} style={v.lote ? { borderStyle: 'dashed' } : undefined} onClick={() => anadirTexto(v.id === 'alumno' ? 'titulo' : 'subtitulo', `{${v.id}}`)}>{`{${v.id}}`}</button>)}
+          </div>
+        </>
+      )}
+      {usoAuto && VARIABLES_AUTO[usoAuto] && (
+        <>
+          <div style={seccionT}>{usoAuto === 'festivo' ? 'Huecos de la historia del festivo' : 'Huecos de la felicitación'}</div>
+          <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Se rellenan solos al publicarla o enviarla. Aquí se ven con un ejemplo.</span>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {VARIABLES_AUTO[usoAuto].map(v => <button key={v.id} type="button" className="btn btn-sm btn-outline" title={v.nombre} onClick={() => anadirTexto(v.id === 'dia' || v.id === 'nombre' ? 'titulo' : 'subtitulo', `{${v.id}}`)}>{`{${v.id}}`}</button>)}
           </div>
         </>
       )}

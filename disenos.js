@@ -52,6 +52,7 @@ import express from 'express';
 import crypto from 'crypto';
 import { limpiarMarca, MARCA_POR_DEFECTO } from './correo-diseno.js';
 import sharp from 'sharp';
+import { USOS_AUTOMATICOS, automaticosElegidos, elegirAutomatico, programarHistoriasFestivos, pruebaAutomatico } from './disenos-automaticos.js';
 
 export async function crearTablasDisenos(client) {
     await client.query(`
@@ -251,7 +252,10 @@ export function crearDisenos({ pool, clubId, authenticateSession, requireSeccion
                  WHERE (d.datos ? 'papelera') = $1 ORDER BY d.updated_at DESC LIMIT 500`, [req.query.papelera === '1']);
             res.set('Cache-Control', 'no-store');
             const papelera = (await pool.query(`SELECT COUNT(*)::int n FROM aim_disenos WHERE datos ? 'papelera'`)).rows[0].n;
-            res.json({ disenos: r.rows.map(resumen), diplomaPorDefecto: await diplomaPorDefecto(), puedoAprobar: esDireccion(req), papelera });
+            // Las plantillas que salen solas (#471) y si el correo de cumpleaños está encendido.
+            const auto = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'automatismos_crm'`)).rows[0]?.valor || {};
+            res.json({ disenos: r.rows.map(resumen), diplomaPorDefecto: await diplomaPorDefecto(), puedoAprobar: esDireccion(req), papelera,
+                automaticos: await automaticosElegidos(pool), cumpleEncendido: !!auto.cumple?.activo });
         } catch (err) { fallo(res, err); }
     });
     // ── En vivo: varias personas en el mismo diseño ──
@@ -667,7 +671,9 @@ export function crearDisenos({ pool, clubId, authenticateSession, requireSeccion
             const x = (await pool.query(`SELECT * FROM aim_disenos WHERE id = $1`, [Number(req.params.id) || 0])).rows[0];
             if (!x) corta(404, 'Ese diseño ya no existe.');
             res.set('Cache-Control', 'no-store');
-            res.json({ ...resumen(x), datos: x.datos });
+            // Si es la plantilla de algo que sale solo (#471), para que el editor enseñe sus huecos.
+            const auto = await automaticosElegidos(pool);
+            res.json({ ...resumen(x), datos: x.datos, usoAuto: Object.keys(auto).find(u => auto[u] === x.id) || null });
         } catch (err) { fallo(res, err); }
     });
     router.post('/api/admin/disenos', ...gestion, async (req, res) => {
@@ -837,6 +843,8 @@ export function crearDisenos({ pool, clubId, authenticateSession, requireSeccion
                 const r = await pool.query(`DELETE FROM aim_disenos WHERE id = $1 AND datos ? 'papelera' RETURNING id`, [id]);
                 if (!r.rowCount) corta(409, 'Solo se borra para siempre lo que está en la papelera.');
                 if (await diplomaPorDefecto() === id) await pool.query(`DELETE FROM aim_ajustes WHERE clave = $1`, [CLAVE_DIPLOMA]);
+                const auto = await automaticosElegidos(pool);
+                for (const uso of Object.keys(auto)) if (auto[uso] === id) await elegirAutomatico(pool, uso, null, req.userSession.userId);
                 return res.json({ success: true });
             }
             const r = await pool.query(`UPDATE aim_disenos SET datos = jsonb_set(datos, '{papelera}', to_jsonb(NOW()::text)) WHERE id = $1 RETURNING id`, [id]);
@@ -865,6 +873,36 @@ export function crearDisenos({ pool, clubId, authenticateSession, requireSeccion
                     [CLAVE_DIPLOMA, JSON.stringify({ id }), req.userSession.userId]);
             } else await pool.query(`DELETE FROM aim_ajustes WHERE clave = $1`, [CLAVE_DIPLOMA]);
             res.json({ success: true });
+        } catch (err) { fallo(res, err); }
+    });
+    // La plantilla de lo que sale solo (#471): la historia de los festivos y la
+    // felicitación de cumpleaños. Elegirla es confirmarla: solo la dirección.
+    router.put('/api/admin/disenos-automatico', ...gestion, async (req, res) => {
+        try {
+            const uso = String(req.body?.uso || '');
+            if (!USOS_AUTOMATICOS[uso]) corta(400, 'Ese uso no existe.');
+            if (!esDireccion(req)) corta(403, 'Solo la dirección puede confirmar las plantillas que salen solas.');
+            const id = req.body?.id ? Number(req.body.id) : null;
+            if (id) {
+                const x = (await pool.query(`SELECT tipo, datos ? 'papelera' AS papelera FROM aim_disenos WHERE id = $1`, [id])).rows[0];
+                if (!x || x.papelera) corta(404, 'Ese diseño ya no existe.');
+                if (x.tipo === 'diploma') corta(400, 'Un diploma no puede ser esta plantilla.');
+            }
+            await elegirAutomatico(pool, uso, id, req.userSession.userId);
+            if (uso === 'festivo') programarHistoriasFestivos(pool).catch(() => {});
+            res.json({ success: true });
+        } catch (err) { fallo(res, err); }
+    });
+    // Cómo saldrá un diseño como historia de un festivo o felicitación (pintado
+    // por el servidor, igual que saldrá de verdad), con el próximo festivo o un ejemplo.
+    router.get('/api/admin/disenos/:id/como-sale', ...gestion, async (req, res) => {
+        try {
+            const uso = String(req.query.uso || '');
+            if (!USOS_AUTOMATICOS[uso]) corta(400, 'Ese uso no existe.');
+            const d = (await pool.query(`SELECT datos FROM aim_disenos WHERE id = $1`, [Number(req.params.id) || 0])).rows[0];
+            if (!d) corta(404, 'Ese diseño ya no existe.');
+            const img = await pruebaAutomatico(pool, uso, d.datos);
+            res.set('Content-Type', img.mime).set('Cache-Control', 'no-store').send(img.buf);
         } catch (err) { fallo(res, err); }
     });
     // Para elegir el diploma de un curso (lo usa el aula, con su propio permiso).

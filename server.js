@@ -32,6 +32,8 @@ import { crearIndexNow } from './indexnow.js';
 import { crearAgrupaciones, crearTablasAgrupaciones } from './agrupaciones.js';
 import { crearSustituciones, crearTablasSustituciones, SQL_SUSTITUYE } from './sustituciones.js';
 import { crearDisenos, crearTablasDisenos, disenosPorAprobar, revisionDeMisDisenos, mencionesDe } from './disenos.js';
+import { configurarDisenosServidor } from './disenos-servidor.js';
+import { programarHistoriasFestivos, felicitacionCumple } from './disenos-automaticos.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
@@ -49,7 +51,7 @@ import { filasLibroRegistro, generarLibroRegistro, prorrataDe, TIPOS_OPERACION_D
 import { PassThrough } from 'stream';
 import { escalaDe, escalasDelClub, resultadoDe, baremoDe, matriculaExamenDe } from './rangos.js';
 import { rolEfectivo, rolVisible, permisosDe, mandaAlMenos, daClase, ROLES_STAFF, NOMBRE_ROL, NOMBRE_RANGO, RANGOS_PROPIOS, RANGOS_ASIGNABLES, recibeAviso, AVISOS, aplicarAjustesPermisos, limpiarAjustesPermisos, RANGOS_EDITABLES, FALTAS_PARA_LLAMAR } from './permisos.js';
-import { htmlCorreo, textoCorreo, disenoDesdeTexto, limpiarDiseno, limpiarMarca, faltanObligatorios, ejemplosDe, CORREOS_SISTEMA, MARCA_POR_DEFECTO } from './correo-diseno.js';
+import { htmlCorreo, textoCorreo, disenoDesdeTexto, nuevoBloque, limpiarDiseno, limpiarMarca, faltanObligatorios, ejemplosDe, CORREOS_SISTEMA, MARCA_POR_DEFECTO } from './correo-diseno.js';
 import sharp from 'sharp';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -11717,7 +11719,9 @@ app.post('/api/admin/comunicaciones/:personaId/enviar', authenticateSession, req
 // Envía un correo de la ficha y lo apunta en su historial (lo usan la ficha y
 // los automatismos). 'plantilla' guarda de dónde salió; en los automatismos es
 // su marca (auto:…), que sirve para no mandarlo dos veces.
-async function enviarYApuntar({ personaId, a, asunto, cuerpo, tipo, variables, plantilla = null, enviadoPor = null, diseno = null }) {
+// imagen ({ buf, mime }): una imagen que va dentro del correo, arriba (la felicitación
+// de cumpleaños hecha en Aim Design, #471).
+async function enviarYApuntar({ personaId, a, asunto, cuerpo, tipo, variables, plantilla = null, enviadoPor = null, diseno = null, imagen = null }) {
     const asuntoFinal = rellenarPlantilla(String(asunto).trim(), variables).slice(0, 200);
     // Con diseño, en el historial queda su versión en texto.
     const d = diseno ? limpiarDiseno(diseno) : null;
@@ -11725,13 +11729,19 @@ async function enviarYApuntar({ personaId, a, asunto, cuerpo, tipo, variables, p
     let estado = 'enviado', error = null;
     // Para saber si lo abren (#421): la misma imagen invisible que las campañas.
     const token = crypto.randomBytes(16).toString('hex');
+    let conImagen = d;
+    if (imagen) {
+        const base = d || disenoDesdeTexto(cuerpoFinal);
+        conImagen = { ...base, bloques: [{ ...nuevoBloque('imagen'), src: 'cid:aim-imagen', alt: asuntoFinal, ancho: 100 }, ...(base.bloques || [])] };
+    }
     try {
-        const c = await correoCrm({ cuerpo: cuerpoFinal, diseno: d, vars: variables, asunto: asuntoFinal, comercial: tipo === 'comercial' });
+        const c = await correoCrm({ cuerpo: cuerpoFinal, diseno: conImagen, vars: variables, asunto: asuntoFinal, comercial: tipo === 'comercial' });
         const pixel = `<img src="${URL_PUBLICA_WEB}/o/${token}.gif" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0">`;
         const html = /<\/body>/i.test(c.html) ? c.html.replace(/<\/body>/i, `${pixel}</body>`) : `${c.html}${pixel}`;
         await mailTransporter.sendMail({
             from: `AIM Education <${process.env.EMAIL_USER}>`, replyTo: process.env.EMAIL_USER,
             to: a.join(','), subject: asuntoFinal, text: c.text, html,
+            ...(imagen ? { attachments: [{ filename: imagen.mime === 'image/png' ? 'felicitacion.png' : 'felicitacion.jpg', content: imagen.buf, contentType: imagen.mime, cid: 'aim-imagen' }] } : {}),
         });
     } catch (e) { estado = 'error'; error = String(e.message || e).slice(0, 500); }
     const ins = await pool.query(
@@ -11959,9 +11969,15 @@ async function ejecutarAutomatismos() {
                         [cand.personaId, AUTOMATISMOS[id].nombre, cand.marca, d.fuera]);
                     continue;
                 }
+                // El cumpleaños, con la felicitación de Aim Design si hay una elegida (#471).
+                let imagen = null;
+                if (id === 'cumple') {
+                    imagen = await felicitacionCumple(pool, { nombre: d.ctx.variables.nombre, edad: cand.extra.edad })
+                        .catch(e => { console.error('[automatismos] felicitación de cumpleaños:', e.message); return null; });
+                }
                 const env = await enviarYApuntar({
                     personaId: cand.personaId, a: d.para.map(x => x.email), asunto: c.asunto, cuerpo: c.cuerpo, diseno: c.diseno,
-                    tipo: 'actividades', variables: { ...d.ctx.variables, ...cand.extra }, plantilla: cand.marca,
+                    tipo: 'actividades', variables: { ...d.ctx.variables, ...cand.extra }, plantilla: cand.marca, imagen,
                 });
                 if (ya && env.estado === 'enviado') d.para.forEach(x => ya.add(x.email.toLowerCase()));
             }
@@ -22959,6 +22975,8 @@ app.get('*', (req, res) => {
 });
 
 const servidor = app.listen(port, () => {
+    // Aim Design pinta en el servidor (#471): las imágenes con ruta se piden aquí mismo.
+    configurarDisenosServidor({ urlBase: `http://127.0.0.1:${port}` });
     // Los permisos cambiados en «Rangos y permisos» (#333).
     cargarAjustesPermisos().catch(e => console.error('[permisos]', e.message));
     // El formato de numeración vive en la base: se carga al arrancar.
@@ -22990,6 +23008,9 @@ const servidor = app.listen(port, () => {
     // Automatismos (CRM 7, #316): bienvenida, faltas y cumpleaños, cada 15 min.
     setTimeout(ejecutarAutomatismos, 60 * 1000);
     setInterval(ejecutarAutomatismos, 15 * 60 * 1000);
+    // Aim Design (#471): las historias de los festivos, programadas en Publicaciones.
+    setTimeout(function historiasDeFestivos() { programarHistoriasFestivos(pool); }, 2 * 60 * 1000);
+    setInterval(function historiasDeFestivos() { programarHistoriasFestivos(pool); }, 10 * 60 * 1000);
     // Soporte: aviso diario de tickets vencidos o parados y resumen semanal.
     setTimeout(avisosSoportePeriodicos, 90 * 1000);
     setInterval(avisosSoportePeriodicos, 15 * 60 * 1000);

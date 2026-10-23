@@ -68,6 +68,20 @@ export const VARIABLES_DIPLOMA = [
   { id: 'resultado', nombre: 'Resultado del examen (diplomas en lote)', ejemplo: 'Sobresaliente', lote: true },
 ];
 export const EJEMPLO_DIPLOMA = Object.fromEntries(VARIABLES_DIPLOMA.map(v => [v.id, v.ejemplo]));
+// Los huecos de las plantillas que salen solas (#471): la historia de un festivo y
+// la felicitación de cumpleaños (ver disenos-automaticos.js, que los rellena).
+export const VARIABLES_AUTO = {
+  festivo: [
+    { id: 'dia', nombre: 'El día del festivo', ejemplo: 'Lunes 8 de diciembre' },
+    { id: 'festivo', nombre: 'Qué festivo es', ejemplo: 'Día de la Inmaculada Concepción' },
+    { id: 'vuelta', nombre: 'Cuándo se vuelve', ejemplo: 'el martes' },
+  ],
+  cumple: [
+    { id: 'nombre', nombre: 'Nombre del alumno', ejemplo: 'Lucía' },
+    { id: 'edad', nombre: 'Años que cumple', ejemplo: '9' },
+  ],
+};
+export const EJEMPLO_AUTO = Object.fromEntries(Object.entries(VARIABLES_AUTO).map(([k, l]) => [k, Object.fromEntries(l.map(v => [v.id, v.ejemplo]))]));
 export const rellenar = (texto, variables) => (variables
   ? String(texto ?? '').replace(/\{(\w+)\}/g, (m, k) => (variables[k] != null ? String(variables[k]) : m))
   : String(texto ?? ''));
@@ -92,6 +106,19 @@ export function conPagina(d, i, v) {
 export const todasLasPaginas = (d) => Array.from({ length: numPaginas(d) }, (_, i) => paginaDe(d, i));
 const todosLosElementos = (d) => [...(d?.elementos || []), ...(d?.paginas || []).flatMap(p => p.elementos || [])];
 
+// ── Dónde se pinta ──────────────────────────────────────────────────────────
+// En el navegador, su canvas, sus imágenes y sus letras. El servidor (las
+// historias de los festivos y las felicitaciones, #471) pone los suyos con
+// usarEntorno: { lienzo(w, h), cargarImagen(url), cargarFuentes(elementos) }.
+const entorno = {};
+export function usarEntorno(e) { Object.assign(entorno, e); }
+const hayLienzo = () => !!entorno.lienzo || typeof document !== 'undefined';
+function crearLienzo(w, h) {
+  if (entorno.lienzo) return entorno.lienzo(w, h);
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  return c;
+}
+
 // ── Cargar lo que hace falta antes de pintar ────────────────────────────────
 // La hoja de las letras de Google: una sola vez, y todos esperan a la misma.
 let hoja = null;
@@ -115,9 +142,10 @@ export function cargarFuentePropia(nombre, url) {
   return fuentesPropias.get(nombre);
 }
 export async function cargarFuentes(diseno) {
-  if (typeof document === 'undefined') return;
   // Los textos y lo demás que lleva letra (tablas y gráficos).
   const conLetra = todosLosElementos(diseno).filter(e => e.tipo === 'texto' || e.tipo === 'tabla' || e.tipo === 'grafico');
+  if (entorno.cargarFuentes) { await entorno.cargarFuentes(conLetra); return; }
+  if (typeof document === 'undefined') return;
   if (conLetra.some(e => FUENTES_DISENO.find(x => x.id === (e.fuente || 'Montserrat'))?.google)) await hojaFuentes();
   await Promise.all(conLetra.flatMap(e => (e.fuenteUrl ? [cargarFuentePropia(e.fuente, e.fuenteUrl)]
     : [400, 700].map(peso => document.fonts?.load?.(`${e.cursiva ? 'italic ' : ''}${peso} 40px "${e.fuente || 'Montserrat'}"`).catch(() => null)))));
@@ -130,6 +158,7 @@ export function pedirFuentes() {
 const cacheImg = new Map();
 export function cargarImagen(url) {
   if (!url) return Promise.resolve(null);
+  if (entorno.cargarImagen) return entorno.cargarImagen(url);
   if (!cacheImg.has(url)) {
     cacheImg.set(url, new Promise(ok => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => ok(null); i.src = url; }));
   }
@@ -148,14 +177,14 @@ export async function cargarImagenes(diseno) {
 export const sinFiltros = (f) => !f || (!f.brillo && !f.contraste && !f.saturacion && !f.calidez && !f.bn && !f.sepia);
 const cacheFiltros = new WeakMap();
 function conFiltros(img, f) {
-  if (!img || sinFiltros(f) || typeof document === 'undefined') return img;
+  if (!img || sinFiltros(f) || !hayLienzo()) return img;
   const clave = [f.brillo || 0, f.contraste || 0, f.saturacion || 0, f.calidez || 0, !!f.bn, !!f.sepia].join('|');
   let m = cacheFiltros.get(img);
   if (!m) { m = new Map(); cacheFiltros.set(img, m); }
   if (m.has(clave)) return m.get(clave);
   const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
   const k = Math.min(1, 2400 / Math.max(iw, ih));
-  const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(iw * k)); c.height = Math.max(1, Math.round(ih * k));
+  const c = crearLienzo(Math.max(1, Math.round(iw * k)), Math.max(1, Math.round(ih * k)));
   const g = c.getContext('2d', { willReadFrequently: true });
   g.drawImage(img, 0, 0, c.width, c.height);
   let datos;
@@ -324,7 +353,7 @@ function pintarRico(ctx, e, trozos, x, y, letras, contorno) {
 
 // La caja de un texto se ajusta a lo que ocupa (con los huecos rellenos).
 let medidor = null;
-const elMedidor = () => (medidor = medidor || document.createElement('canvas').getContext('2d'));
+const elMedidor = () => (medidor = medidor || crearLienzo(1, 1).getContext('2d'));
 export function ajustarTexto(e, variables) {
   if (e.tipo === 'tabla' && typeof document !== 'undefined') return { ...e, h: Math.max(10, Math.ceil(disposicionTabla(elMedidor(), e, t => rellenar(t, variables)).alto)) };
   if (e.tipo !== 'texto' || typeof document === 'undefined') return e;
@@ -647,8 +676,7 @@ export async function lienzoDe(diseno, { variables = null, ancho = null, tiempo 
   await cargarFuentes(diseno);
   const imagenes = await cargarImagenes(diseno);
   const k = ancho ? ancho / diseno.ancho : 1;
-  const c = document.createElement('canvas');
-  c.width = Math.round(diseno.ancho * k); c.height = Math.round(diseno.alto * k);
+  const c = crearLienzo(Math.round(diseno.ancho * k), Math.round(diseno.alto * k));
   const ctx = c.getContext('2d');
   ctx.scale(k, k);
   pintarDiseno(ctx, diseno, { imagenes, variables, tiempo, sinFondo });
