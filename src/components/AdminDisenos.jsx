@@ -10,6 +10,7 @@ import {
 import { FIGURAS, MARCOS, ICONOS, ICONOS_ACTIVIDAD, svgFigura } from '../disenos/formas.js';
 import { formatoVideo, grabarVideo, exportarGif, exportarVideo } from '../disenos/animacion.js';
 import { diferencias, aplicarOps } from '../disenos/vivo.js';
+import { COLORES_GRAFICO, CLASES_GRAFICO } from '../disenos/tablas.js';
 import { quitarFondo } from '../disenos/fondo.js';
 import { PALETAS_LISTAS, PARES_LETRAS, aplicarEstilo, coloresDe, contraste } from '../disenos/estilos.js';
 import { PLANTILLAS } from '../disenos/plantillas.js';
@@ -310,7 +311,7 @@ function NuevoDiseno({ equipo = [], onCerrar, onCrear }) {
 }
 
 // ═══════════════════════ El editor ═══════════════════════
-const NOMBRE_TIPO = { texto: 'Texto', imagen: 'Imagen', rect: 'Rectángulo', elipse: 'Círculo', forma: 'Forma', icono: 'Icono', linea: 'Línea', qr: 'Código QR' };
+const NOMBRE_TIPO = { texto: 'Texto', imagen: 'Imagen', rect: 'Rectángulo', elipse: 'Círculo', forma: 'Forma', icono: 'Icono', linea: 'Línea', qr: 'Código QR', tabla: 'Tabla', grafico: 'Gráfico' };
 const etiquetaElemento = (e) => (e.tipo === 'texto' ? `«${String(e.texto || '').split('\n')[0].slice(0, 26)}»`
   : e.tipo === 'forma' ? FIGURAS.find(f => f.id === e.figura)?.nombre || 'Forma'
     : e.tipo === 'icono' ? `Icono: ${ICONOS.find(i => i.id === e.icono)?.nombre || ''}`
@@ -533,6 +534,12 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
     anadir({ tipo: 'imagen', url, w, h, ajuste: 'contener', radio: 0, ...(punto ? { x: Math.round(punto.x - w / 2), y: Math.round(punto.y - h / 2) } : {}) });
   };
   const anadirQr = (texto) => { const lado = Math.round(base * 0.28); anadir({ tipo: 'qr', texto, w: lado, h: lado, color: '#1A1A1A', fondo: '#FFFFFF', radio: 0 }); };
+  const anadirTabla = (celdas) => anadir({ tipo: 'tabla', celdas: celdas || [['Día', 'Hora', 'Clase'], ['Lunes', '17:30', 'Infantil'], ['Miércoles', '18:30', 'Adultos']],
+    cabecera: true, rayas: true, fuente: 'Montserrat', tamano: Math.round(base * 0.03), color: '#1A1A1A', fondoCabecera: '#5233A8', colorCabecera: '#FFFFFF', fondoFilas: '#FFFFFF', fondoRayas: '#F3F0FA',
+    borde: '#E5E1F2', grosor: 2, radio: Math.round(base * 0.015), alinear: 'izquierda', w: Math.round(diseno.ancho * 0.8), h: 100 });
+  const anadirGrafico = (clase) => anadir({ tipo: 'grafico', clase, datos: [{ etiqueta: 'Oros', valor: 3 }, { etiqueta: 'Platas', valor: 5 }, { etiqueta: 'Bronces', valor: 4 }],
+    colores: ['#FFD526', '#B8BCC6', '#D08A4E'], fuente: 'Montserrat', tamano: Math.round(base * 0.026), color: '#1A1A1A', valores: true,
+    w: Math.round(base * (clase === 'circular' || clase === 'anillo' ? 0.62 : 0.6)), h: Math.round(base * (clase === 'circular' || clase === 'anillo' ? 0.36 : 0.42)) });
   // Un título y su texto debajo (el horario, los eventos…), en el centro.
   function anadirBloque(titulo, cuerpo) {
     const w = Math.round(diseno.ancho * 0.8), x = Math.round((diseno.ancho - w) / 2), hueco = Math.round(base * 0.03);
@@ -818,17 +825,17 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
         const lx = dx * Math.cos(rad) + dy * Math.sin(rad), ly = -dx * Math.sin(rad) + dy * Math.cos(rad);
         let nw = a.hx ? Math.max(10, e0.w + a.hx * lx) : e0.w, nh = a.hy ? Math.max(10, e0.h + a.hy * ly) : e0.h;
         const esquina = a.hx && a.hy;
-        if (esquina && (['imagen', 'texto', 'qr', 'icono'].includes(e0.tipo) || ev.shiftKey)) {
+        if (esquina && (['imagen', 'texto', 'qr', 'icono', 'tabla'].includes(e0.tipo) || ev.shiftKey)) {
           const k = Math.max(nw / e0.w, nh / e0.h); nw = e0.w * k; nh = e0.h * k;
         }
         const sx = a.hx * (nw - e0.w) / 2, sy = a.hy * (nh - e0.h) / 2;
         const cx = e0.x + e0.w / 2 + sx * Math.cos(rad) - sy * Math.sin(rad), cy = e0.y + e0.h / 2 + sx * Math.sin(rad) + sy * Math.cos(rad);
         c = { w: Math.round(nw), h: Math.round(nh), x: Math.round(cx - nw / 2), y: Math.round(cy - nh / 2) };
         // Un texto por la esquina crece con su letra (y sus efectos).
-        if (e0.tipo === 'texto' && esquina) {
+        if ((e0.tipo === 'texto' || e0.tipo === 'tabla') && esquina) {
           const k = nw / e0.w;
           c.tamano = Math.max(6, Math.round((e0.tamano || 48) * k));
-          for (const p of ['contornoGrosor', 'resalteMargen', 'sombraX', 'sombraY', 'sombraDifu', 'espaciado']) if (e0[p]) c[p] = Math.round(e0[p] * k * 10) / 10;
+          for (const p of ['contornoGrosor', 'resalteMargen', 'sombraX', 'sombraY', 'sombraDifu', 'espaciado', 'margenCelda']) if (e0[p]) c[p] = Math.round(e0[p] * k * 10) / 10;
         }
         if (e0.tipo === 'linea') { c.h = e0.h; c.y = Math.round(cy - e0.h / 2); }
       } else if (a.modo === 'girar') {
@@ -941,7 +948,12 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
     if (!id || typeof EventSource === 'undefined') return undefined;
     const es = new EventSource(`/api/admin/disenos/${id}/vivo?cliente=${cliente}`);
     es.onmessage = (ev) => { let m; try { m = JSON.parse(ev.data); } catch { return; } yo.current.alVivo(m); };
-    return () => { es.close(); clearTimeout(temporizador.current); };
+    // Al salir de la página (recargar, cerrar, irse), fuera de la sala: el navegador
+    // puede guardar la página «congelada» y la conexión seguiría abierta.
+    const salir = () => es.close();
+    const volver = (ev) => { if (ev.persisted) window.location.reload(); };
+    window.addEventListener('pagehide', salir); window.addEventListener('pageshow', volver);
+    return () => { window.removeEventListener('pagehide', salir); window.removeEventListener('pageshow', volver); es.close(); clearTimeout(temporizador.current); };
   }, [id, cliente]);
   // Lo que cambio, a los demás (como mucho cada 90 ms).
   useEffect(() => {
@@ -1118,7 +1130,7 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
             ))}
           </div>
           {panel === 'anadir' && (
-            <PanelAnadir tipo={tipo} kit={kit} anadirTexto={anadirTexto} anadirForma={anadirForma} anadirIcono={anadirIcono} anadirMarco={anadirMarco} anadirImagen={anadirImagen} anadirQr={anadirQr}
+            <PanelAnadir tipo={tipo} kit={kit} anadirTexto={anadirTexto} anadirForma={anadirForma} anadirIcono={anadirIcono} anadirMarco={anadirMarco} anadirImagen={anadirImagen} anadirQr={anadirQr} anadirTabla={anadirTabla} anadirGrafico={anadirGrafico}
               anadirBloque={anadirBloque} verFotos={() => setVentana('fotos')} verBanco={() => setVentana('banco')} subir={subir} />
           )}
           {panel === 'estilos' && <PanelEstilos doc={doc} aplicarDoc={aplicarDoc} showToast={showToast} />}
@@ -1370,7 +1382,7 @@ function BotonSubir({ texto, onArchivo, className = 'btn btn-sm btn-outline' }) 
   );
 }
 
-function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirMarco, anadirImagen, anadirQr, anadirBloque, verFotos, verBanco, subir }) {
+function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirMarco, anadirImagen, anadirQr, anadirTabla, anadirGrafico, anadirBloque, verFotos, verBanco, subir }) {
   const [subidas, setSubidas] = useState(null);
   const [qr, setQr] = useState('');
   const [mas, setMas] = useState({});
@@ -1402,6 +1414,24 @@ function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirM
         <button type="button" style={cuadro} onClick={() => anadirForma('linea')} title="Línea" aria-label="Línea"><span style={{ display: 'inline-block', width: 26, height: 3, background: 'var(--ink)' }} /></button>
       </div>
       {verTodo('formas', `Ver todas las formas (${FIGURAS.length})`)}
+
+      <div style={seccionT}>Tablas y gráficos</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 5 }}>
+        <button type="button" style={{ ...cuadro, height: 50 }} onClick={() => anadirTabla()} title="Tabla" aria-label="Tabla">
+          <svg viewBox="0 0 30 22" width="30" height="22"><rect x="1" y="1" width="28" height="20" rx="3" fill="none" stroke="#5233A8" strokeWidth="1.6" /><rect x="1" y="1" width="28" height="6" rx="2" fill="#5233A8" /><path d="M1 14h28M11 7v14M20 7v14" stroke="#5233A8" strokeWidth="1.2" /></svg>
+        </button>
+        {CLASES_GRAFICO.map(([k, t]) => (
+          <button key={k} type="button" style={{ ...cuadro, height: 50 }} onClick={() => anadirGrafico(k)} title={`Gráfico de ${t.toLowerCase()}`} aria-label={`Gráfico de ${t.toLowerCase()}`}>
+            <svg viewBox="0 0 30 22" width="30" height="22">{{
+              columnas: <><rect x="3" y="10" width="6" height="11" fill="#5233A8" /><rect x="12" y="4" width="6" height="17" fill="#FF5FA2" /><rect x="21" y="13" width="6" height="8" fill="#F99B35" /></>,
+              barras: <><rect x="2" y="2" width="22" height="5" fill="#5233A8" /><rect x="2" y="9" width="14" height="5" fill="#FF5FA2" /><rect x="2" y="16" width="26" height="5" fill="#F99B35" /></>,
+              circular: <><circle cx="15" cy="11" r="10" fill="#5233A8" /><path d="M15 11V1a10 10 0 0 1 9.5 13z" fill="#FF5FA2" /></>,
+              anillo: <><circle cx="15" cy="11" r="10" fill="none" stroke="#5233A8" strokeWidth="5" /><path d="M15 1a10 10 0 0 1 9.5 13" fill="none" stroke="#FF5FA2" strokeWidth="5" /></>,
+              lineas: <path d="M2 18l8-8 6 5 12-12" fill="none" stroke="#5233A8" strokeWidth="2.4" strokeLinejoin="round" strokeLinecap="round" />,
+            }[k]}</svg>
+          </button>
+        ))}
+      </div>
 
       <div style={seccionT}>Iconos</div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 5 }}>
@@ -1450,7 +1480,7 @@ function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirM
         <button type="submit" className="btn btn-sm btn-primary" disabled={!qr.trim()}>QR</button>
       </form>
 
-      <DatosDelClub anadirBloque={anadirBloque} kit={kit} />
+      <DatosDelClub anadirBloque={anadirBloque} anadirTabla={anadirTabla} kit={kit} />
 
       <div style={seccionT}>Imágenes</div>
       <BotonSubir texto="⬆ Subir una imagen" onArchivo={(f) => subir(f, (r) => anadirImagen(r.url, r.ancho, r.alto))} />
@@ -1718,6 +1748,9 @@ function Propiedades({ e, tipo, cambiar, textoRef, subir, acciones, onEscribir, 
         <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Que se lea bien: cuadros oscuros sobre fondo claro. Pruébalo con el móvil antes de imprimir.</span>
       </>}
 
+      {e.tipo === 'tabla' && <EditorTabla e={e} cambiar={cambiar} />}
+      {e.tipo === 'grafico' && <EditorGrafico e={e} cambiar={cambiar} />}
+
       {e.tipo === 'icono' && <>
         <Color etiqueta="Color" valor={e.color || '#1A1A1A'} onCambio={(v) => cambiar({ color: v })} />
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 4 }}>
@@ -1930,6 +1963,96 @@ function PanelEstilos({ doc, aplicarDoc, showToast }) {
         </label>
       ))}
     </div>
+  );
+}
+
+// ── Tablas: las celdas, filas y columnas, y sus colores ──
+function EditorTabla({ e, cambiar }) {
+  const celdas = e.celdas?.length ? e.celdas : [['']];
+  const n = Math.max(...celdas.map(f => f.length), 1);
+  const poner = (i, j, v) => cambiar({ celdas: celdas.map((f, a) => (a === i ? Array.from({ length: n }, (_, b) => (b === j ? v : f[b] ?? '')) : f)) });
+  const fila = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, alignItems: 'start' };
+  const celdaEstilo = { ...inp, padding: '5px 6px', fontSize: 12, minWidth: 0 };
+  return (
+    <>
+      <div style={seccionT}>Celdas</div>
+      <div style={{ display: 'grid', gap: 3, gridTemplateColumns: `repeat(${n}, minmax(0, 1fr))`, maxHeight: 320, overflowY: 'auto' }}>
+        {celdas.map((f, i) => Array.from({ length: n }, (_, j) => (
+          <input key={`${i}-${j}`} value={f[j] ?? ''} onChange={x => poner(i, j, x.target.value)} aria-label={`Fila ${i + 1}, columna ${j + 1}`}
+            style={{ ...celdaEstilo, fontWeight: e.cabecera && i === 0 ? 800 : 400 }} />
+        )))}
+      </div>
+      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+        <button type="button" className="btn btn-sm btn-outline" onClick={() => cambiar({ celdas: [...celdas, Array(n).fill('')] })}>＋ Fila</button>
+        <button type="button" className="btn btn-sm btn-outline" disabled={celdas.length < 2} onClick={() => cambiar({ celdas: celdas.slice(0, -1) })}>− Fila</button>
+        <button type="button" className="btn btn-sm btn-outline" disabled={n >= 8} onClick={() => cambiar({ celdas: celdas.map(f => [...Array.from({ length: n }, (_, b) => f[b] ?? ''), '']), anchos: undefined })}>＋ Columna</button>
+        <button type="button" className="btn btn-sm btn-outline" disabled={n < 2} onClick={() => cambiar({ celdas: celdas.map(f => f.slice(0, n - 1)), anchos: undefined })}>− Columna</button>
+      </div>
+      <div style={{ display: 'flex', gap: 14 }}>
+        <label style={casillaEstilo}><input type="checkbox" checked={!!e.cabecera} onChange={x => cambiar({ cabecera: x.target.checked })} /> Cabecera</label>
+        <label style={casillaEstilo}><input type="checkbox" checked={!!e.rayas} onChange={x => cambiar({ rayas: x.target.checked })} /> Filas a rayas</label>
+      </div>
+      <div style={fila}>
+        <Num etiqueta="Tamaño de la letra" valor={e.tamano || 30} onCambio={(v) => cambiar({ tamano: Math.max(6, v) })} min={6} />
+        <label style={etq}>Letra
+          <select value={e.fuente || 'Montserrat'} onChange={x => cambiar({ fuente: x.target.value })} style={inp}>{FUENTES_DISENO.map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}</select>
+        </label>
+      </div>
+      <div style={{ display: 'flex', gap: 4 }}>
+        {[['izquierda', '⇤'], ['centro', '↔'], ['derecha', '⇥']].map(([k, t]) => <button key={k} type="button" className={`btn btn-sm ${(e.alinear || 'izquierda') === k ? 'btn-primary' : 'btn-outline'}`} onClick={() => cambiar({ alinear: k })} title={`Alinear a la ${k}`}>{t}</button>)}
+      </div>
+      {e.cabecera && <div style={fila}>
+        <Color etiqueta="Fondo de la cabecera" valor={e.fondoCabecera || '#5233A8'} onCambio={(v) => cambiar({ fondoCabecera: v })} />
+        <Color etiqueta="Letra de la cabecera" valor={e.colorCabecera || '#FFFFFF'} onCambio={(v) => cambiar({ colorCabecera: v })} />
+      </div>}
+      <div style={fila}>
+        <Color etiqueta="Fondo de las filas" valor={e.fondoFilas} onCambio={(v) => cambiar({ fondoFilas: v })} permiteNada />
+        {e.rayas && <Color etiqueta="Las rayas" valor={e.fondoRayas || '#F3F0FA'} onCambio={(v) => cambiar({ fondoRayas: v })} />}
+      </div>
+      <Color etiqueta="Color del texto" valor={e.color || '#1A1A1A'} onCambio={(v) => cambiar({ color: v })} />
+      <div style={fila}>
+        <Color etiqueta="Líneas" valor={e.borde || '#E5E1F2'} onCambio={(v) => cambiar({ borde: v })} permiteNada />
+        <Num etiqueta="Grosor" valor={e.grosor ?? 2} onCambio={(v) => cambiar({ grosor: Math.max(0, v) })} min={0} />
+      </div>
+      <Num etiqueta="Esquinas redondeadas" valor={e.radio || 0} onCambio={(v) => cambiar({ radio: Math.max(0, v) })} min={0} />
+    </>
+  );
+}
+
+// ── Gráficos: el tipo, los datos y los colores ──
+function EditorGrafico({ e, cambiar }) {
+  const datos = e.datos || [];
+  const colores = e.colores?.length ? e.colores : COLORES_GRAFICO;
+  const poner = (i, c) => cambiar({ datos: datos.map((d, a) => (a === i ? { ...d, ...c } : d)) });
+  const fila = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, alignItems: 'start' };
+  return (
+    <>
+      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+        {CLASES_GRAFICO.map(([k, t]) => <button key={k} type="button" className={`btn btn-sm ${e.clase === k ? 'btn-primary' : 'btn-outline'}`} onClick={() => cambiar({ clase: k })}>{t}</button>)}
+      </div>
+      <div style={seccionT}>Datos</div>
+      <div style={{ display: 'grid', gap: 4 }}>
+        {datos.map((d, i) => (
+          <div key={i} style={{ display: 'grid', gridTemplateColumns: '22px 1fr 76px 26px', gap: 4, alignItems: 'center' }}>
+            <input type="color" value={colores[i % colores.length]} aria-label={`Color de ${d.etiqueta}`} style={{ width: 22, height: 26, padding: 0, border: 0, background: 'none' }}
+              onChange={x => { const l = Array.from({ length: Math.max(colores.length, datos.length) }, (_, a) => colores[a % colores.length]); l[i] = x.target.value; cambiar({ colores: l }); }} />
+            <input value={d.etiqueta} onChange={x => poner(i, { etiqueta: x.target.value })} aria-label={`Nombre ${i + 1}`} style={{ ...inp, padding: '5px 6px' }} />
+            <input type="number" value={d.valor} onChange={x => poner(i, { valor: x.target.value === '' ? '' : Number(x.target.value) })} aria-label={`Valor ${i + 1}`} style={{ ...inp, padding: '5px 6px' }} />
+            <button type="button" className="icon-btn" aria-label={`Quitar ${d.etiqueta}`} onClick={() => cambiar({ datos: datos.filter((_, a) => a !== i) })}><I.X /></button>
+          </div>
+        ))}
+      </div>
+      <button type="button" className="btn btn-sm btn-outline" disabled={datos.length >= 12} onClick={() => cambiar({ datos: [...datos, { etiqueta: `Dato ${datos.length + 1}`, valor: 1 }] })}>＋ Dato</button>
+      <label style={casillaEstilo}><input type="checkbox" checked={e.valores !== false} onChange={x => cambiar({ valores: x.target.checked })} /> Enseñar los números</label>
+      <div style={{ display: 'flex', gap: 4 }}>
+        <button type="button" className="btn btn-sm btn-ghost" style={{ fontSize: 12 }} onClick={() => cambiar({ colores: COLORES_GRAFICO })}>Colores del club</button>
+        <button type="button" className="btn btn-sm btn-ghost" style={{ fontSize: 12 }} onClick={() => cambiar({ colores: [colores[0]] })}>Todo de un color</button>
+      </div>
+      <div style={fila}>
+        <Num etiqueta="Tamaño de la letra" valor={e.tamano || 28} onCambio={(v) => cambiar({ tamano: Math.max(6, v) })} min={6} />
+        <Color etiqueta="Color del texto" valor={e.color || '#1A1A1A'} onCambio={(v) => cambiar({ color: v })} />
+      </div>
+    </>
   );
 }
 
@@ -2165,7 +2288,7 @@ const fechaCorta = (v) => new Date(`${String(v).slice(0, 10)}T12:00:00`).toLocal
 
 // El horario y los próximos eventos de verdad (los mismos que la web), como
 // texto que luego se retoca.
-function DatosDelClub({ anadirBloque, kit }) {
+function DatosDelClub({ anadirBloque, anadirTabla, kit }) {
   const [clases, setClases] = useState(null);
   const [eventos, setEventos] = useState(null);
   const [act, setAct] = useState('');
@@ -2180,6 +2303,12 @@ function DatosDelClub({ anadirBloque, kit }) {
       .map(g => [g.nombre, ...g.sesiones.map(s => `${diasTexto(s.dias)} · ${s.inicio}${s.fin ? `–${s.fin}` : ''}`)].join('\n')).join('\n\n');
     anadirBloque(`Horario de ${nombreWeb(a.nombre)}`, cuerpo);
   }
+  // El mismo horario, en una tabla (una fila por grupo y sesión).
+  function horarioTabla() {
+    const a = conHorario.find(x => x.id === act) || conHorario[0]; if (!a) return;
+    const filas = a.grupos.filter(g => g.sesiones?.length).flatMap(g => g.sesiones.map(se => [g.nombre, diasTexto(se.dias), `${se.inicio}${se.fin ? `–${se.fin}` : ''}`]));
+    anadirTabla([['Grupo', 'Días', 'Hora'], ...filas]);
+  }
   function proximos() {
     const lista = (eventos || []).slice(0, 6); if (!lista.length) return;
     anadirBloque('Próximos eventos', lista.map(ev => `${fechaCorta(ev.date)}${ev.time ? ` · ${String(ev.time).slice(0, 5)}` : ''} · ${ev.title}`).join('\n'));
@@ -2192,6 +2321,7 @@ function DatosDelClub({ anadirBloque, kit }) {
           {!clases ? <option>Cargando…</option> : !conHorario.length ? <option>Sin horarios</option> : conHorario.map(a => <option key={a.id} value={a.id}>{nombreWeb(a.nombre)}</option>)}
         </select>
         <button type="button" className="btn btn-sm btn-outline" disabled={!conHorario.length} onClick={horario}>Horario</button>
+        <button type="button" className="btn btn-sm btn-outline" disabled={!conHorario.length} onClick={horarioTabla} title="El horario, en una tabla">▦</button>
       </div>
       <button type="button" className="btn btn-sm btn-outline" disabled={!eventos?.length} onClick={proximos}>
         {!eventos ? 'Cargando eventos…' : eventos.length ? `Próximos eventos (${Math.min(6, eventos.length)})` : 'No hay eventos próximos'}

@@ -16,10 +16,12 @@
 // Tipos de elemento: texto (con contorno, sombra de color, fondo y curva),
 // imagen (con marco, recorte y filtros; sin foto es un marco donde soltarla),
 // rect, elipse, forma (estrella, flecha, bocadillo… ver formas.js), icono,
-// linea y qr. Cualquiera puede llevar una animación (anim) para las historias.
+// linea, qr, tabla y grafico (ver tablas.js). Cualquiera puede llevar una
+// animación (anim) para las historias.
 // ─────────────────────────────────────────────────────────────────────────────
 import QRCode from 'qrcode';
 import { caminoFigura, pathIcono } from './formas.js';
+import { pintarTabla, pintarGrafico, disposicionTabla } from './tablas.js';
 
 // Tamaños listos. Los A4/A3 a 150 ppp (de sobra para imprimir y no pesan).
 export const TAMANOS = [
@@ -235,6 +237,7 @@ const curvo = (e) => e.tipo === 'texto' && Math.abs(e.curva || 0) >= 1;
 let medidor = null;
 const elMedidor = () => (medidor = medidor || document.createElement('canvas').getContext('2d'));
 export function ajustarTexto(e, variables) {
+  if (e.tipo === 'tabla' && typeof document !== 'undefined') return { ...e, h: Math.max(10, Math.ceil(disposicionTabla(elMedidor(), e, t => rellenar(t, variables)).alto)) };
   if (e.tipo !== 'texto' || typeof document === 'undefined') return e;
   if (curvo(e)) {
     const g = geometriaCurva(elMedidor(), e, rellenar(e.texto, variables));
@@ -473,6 +476,11 @@ export function pintarDiseno(ctx, diseno, { imagenes = new Map(), variables = nu
       }
       ctx.restore();
       if (e.borde && e.grosor) { caminoFigura(ctx, marco, x, y, e.w, e.h, e.radio); ctx.strokeStyle = e.borde; ctx.lineWidth = e.grosor; ctx.stroke(); }
+    } else if (e.tipo === 'tabla') {
+      pintarTabla(ctx, e, x, y, t => rellenar(t, variables));
+    } else if (e.tipo === 'grafico') {
+      quitarSombra(ctx);
+      pintarGrafico(ctx, e, x, y);
     } else if (e.tipo === 'texto') {
       pintarTexto(ctx, e, rellenar(e.texto, variables), x, y, an?.letras ?? null);
       if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
@@ -503,8 +511,9 @@ function adaptarElementos(elementos, d, ancho, alto, variables) {
     for (const p of ['radio', 'espaciado', 'contornoGrosor', 'resalteMargen', 'sombraX', 'sombraY', 'sombraDifu']) if (e[p]) n[p] = Math.round(e[p] * k * 10) / 10;
     if (e.tamano) n.tamano = Math.max(6, Math.round(e.tamano * k));
     if (e.grosor) n.grosor = Math.max(1, Math.round(e.grosor * k));
-    if (e.tipo === 'texto') {
+    if (e.tipo === 'texto' || e.tipo === 'tabla') {
       n.w = Math.round(Math.max(e.w * k, Math.min(e.w * sx, ancho * 0.94)));
+      if (e.margenCelda) n.margenCelda = Math.round(e.margenCelda * k);
       n = ajustarTexto(n, variables);
     } else if (e.tipo === 'linea') {
       n.w = Math.round(todoAncho ? e.w * sx : e.w * k); n.h = Math.max(16, Math.round(e.h * k));

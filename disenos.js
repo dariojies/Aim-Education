@@ -238,13 +238,17 @@ export function crearDisenos({ pool, clubId, authenticateSession, requireSeccion
         enviar(res, { tipo: 'hola', yo: cliente, color, participantes: quienes(sala) });
         aLosDemas(sala, cliente, { tipo: 'entra', cliente, nombre, color, userId: req.userSession.userId, responde: veterano });
         // Latido: el router de Heroku corta a los 55 s sin nada.
-        const latido = setInterval(() => { try { res.write(': latido\n\n'); } catch { /* cerrada */ } }, 20_000);
-        req.on('close', () => {
+        let fuera = false;
+        const irse = () => {
+            if (fuera) return;
+            fuera = true;
             clearInterval(latido);
             sala.clientes.delete(cliente);
             aLosDemas(sala, cliente, { tipo: 'sale', cliente });
             if (!sala.clientes.size) salas.delete(id);
-        });
+        };
+        const latido = setInterval(() => { if (res.destroyed || res.writableEnded) irse(); else { try { res.write(': latido\n\n'); } catch { irse(); } } }, 20_000);
+        res.on('close', irse);
     });
     router.post('/api/admin/disenos/:id/vivo', ...gestion, (req, res) => {
         const sala = salas.get(Number(req.params.id) || 0), de = String(req.body?.cliente || '');
