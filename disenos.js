@@ -19,6 +19,16 @@
 //  · los datos para los diplomas en lote: los alumnos de una clase o los de una
 //    convocatoria de examen;
 //  · y guarda un diseño terminado en las imágenes de los correos y las noticias.
+//
+// El trabajo en equipo:
+//  · versiones (aim_disenos_versiones): al guardar, lo que había se guarda como
+//    versión si la última tiene más de 20 minutos (como mucho 50 por diseño);
+//  · revisión (aim_disenos_comentarios): comentarios (de todo el diseño o de un
+//    elemento) y los pasos de la aprobación: «pedir», «aprobado», «cambios». Lo
+//    aprueba la dirección (dueño del club o superadmin). El aprobado guarda la
+//    huella del diseño: si después se cambia, vuelve a necesitar aprobación;
+//  · carpetas (datos.carpeta) y letras propias (los archivos van a
+//    aim_web_documentos, /doc/…; la lista, a aim_ajustes «disenos_fuentes»).
 // ─────────────────────────────────────────────────────────────────────────────
 import express from 'express';
 import crypto from 'crypto';
@@ -40,6 +50,67 @@ export async function crearTablasDisenos(client) {
         )`);
     // El diploma propio de un curso (si no, el de por defecto).
     await client.query(`ALTER TABLE aim_aula_cursos ADD COLUMN IF NOT EXISTS diploma_diseno_id INTEGER REFERENCES aim_disenos(id) ON DELETE SET NULL`).catch(() => {});
+    // Versiones de cada diseño (para volver a como estaba).
+    await client.query(`
+        CREATE TABLE IF NOT EXISTS aim_disenos_versiones (
+            id SERIAL PRIMARY KEY,
+            diseno_id INTEGER NOT NULL REFERENCES aim_disenos(id) ON DELETE CASCADE,
+            nombre VARCHAR(150),
+            datos JSONB NOT NULL,
+            miniatura TEXT,
+            creado_por UUID REFERENCES users(user_id) ON DELETE SET NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+    await client.query(`CREATE INDEX IF NOT EXISTS ix_disenos_versiones ON aim_disenos_versiones (diseno_id, created_at DESC)`);
+    // Comentarios y pasos de la aprobación.
+    await client.query(`
+        CREATE TABLE IF NOT EXISTS aim_disenos_comentarios (
+            id SERIAL PRIMARY KEY,
+            diseno_id INTEGER NOT NULL REFERENCES aim_disenos(id) ON DELETE CASCADE,
+            tipo VARCHAR(12) NOT NULL DEFAULT 'comentario',
+            texto TEXT,
+            elemento_id VARCHAR(40),
+            pagina SMALLINT,
+            huella VARCHAR(32),
+            resuelto BOOLEAN NOT NULL DEFAULT false,
+            autor_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+    await client.query(`CREATE INDEX IF NOT EXISTS ix_disenos_comentarios ON aim_disenos_comentarios (diseno_id, created_at)`);
+}
+
+// La huella de un diseño para la aprobación (sin la carpeta ni la marca de plantilla).
+const SQL_HUELLA = (d) => `md5((${d}.datos - 'carpeta' - 'esPlantilla')::text)`;
+// El último paso de la aprobación de un diseño (pedir, aprobado o cambios).
+const SQL_DECISION = (d) => `(SELECT row_to_json(x) FROM (SELECT c.tipo, c.huella, c.created_at FROM aim_disenos_comentarios c
+    WHERE c.diseno_id = ${d}.id AND c.tipo IN ('pedir', 'aprobado', 'cambios') ORDER BY c.created_at DESC, c.id DESC LIMIT 1) x)`;
+// sin_pedir · pendiente · aprobado · cambios (pide cambios) · cambiado (aprobado, pero se ha tocado después)
+function estadoRevision(decision, huella) {
+    if (!decision) return 'sin_pedir';
+    if (decision.tipo === 'pedir') return 'pendiente';
+    if (decision.tipo === 'cambios') return 'cambios';
+    return decision.huella === huella ? 'aprobado' : 'cambiado';
+}
+// La dirección: la que aprueba.
+const esDireccion = (req) => ['club_owner', 'superadmin'].includes(req.userSession?.rol);
+const MAX_VERSIONES = 50;
+const MINUTOS_ENTRE_VERSIONES = 20;
+
+// Para la campanita: los diseños esperando a la dirección…
+export async function disenosPorAprobar(pool) {
+    const r = await pool.query(
+        `SELECT COUNT(*)::int n, MAX((x->>'created_at')::timestamptz) AS ultima, MIN(d.id) AS id
+         FROM aim_disenos d CROSS JOIN LATERAL (SELECT ${SQL_DECISION('d')} AS x) y WHERE y.x->>'tipo' = 'pedir'`);
+    return r.rows[0];
+}
+// …y a quien los hizo: comentarios o respuestas de otros en los suyos (último mes).
+export async function revisionDeMisDisenos(pool, userId) {
+    const r = await pool.query(
+        `SELECT COUNT(DISTINCT d.id)::int n, MAX(c.created_at) AS ultima, MIN(d.id) AS id
+         FROM aim_disenos d JOIN aim_disenos_comentarios c ON c.diseno_id = d.id
+         WHERE d.creado_por = $1 AND c.autor_id IS DISTINCT FROM $1 AND c.tipo IN ('comentario', 'aprobado', 'cambios')
+           AND c.created_at > NOW() - INTERVAL '30 days'`, [userId]);
+    return r.rows[0];
 }
 
 const corta = (status, error) => { const e = new Error(error); e.status = status; throw e; };
@@ -76,7 +147,13 @@ function limpiar(body) {
     if (!d || typeof d !== 'object') corta(400, 'Falta el diseño.');
     const ancho = Math.round(Number(d.ancho)), alto = Math.round(Number(d.alto));
     if (!(ancho >= 50 && ancho <= 6000 && alto >= 50 && alto <= 6000)) corta(400, 'El tamaño tiene que estar entre 50 y 6000 píxeles.');
-    if (!Array.isArray(d.elementos) || d.elementos.length > 400) corta(400, 'Como mucho 400 elementos por diseño.');
+    if (!Array.isArray(d.elementos) || d.elementos.length > 400) corta(400, 'Como mucho 400 elementos por página.');
+    // Varias páginas (carruseles, folletos): la primera es el propio diseño y el resto van en «paginas».
+    if (d.paginas !== undefined) {
+        if (!Array.isArray(d.paginas) || d.paginas.length > 19) corta(400, 'Como mucho 20 páginas por diseño.');
+        if (d.paginas.some(p => !p || !Array.isArray(p.elementos) || p.elementos.length > 400)) corta(400, 'Como mucho 400 elementos por página.');
+    }
+    if (d.carpeta !== undefined && d.carpeta !== null) d.carpeta = String(d.carpeta).trim().slice(0, 60) || undefined;
     const json = JSON.stringify(d);
     if (json.length > MAX_DATOS) corta(400, 'El diseño es demasiado grande. ¿Hay alguna imagen pegada dentro? Súbela.');
     if (/"url"\s*:\s*"data:/.test(json)) corta(400, 'Las imágenes se suben, no se pegan dentro del diseño.');
@@ -88,7 +165,9 @@ export function crearDisenos({ pool, clubId, authenticateSession, requireSeccion
     const router = express.Router();
     const gestion = [authenticateSession, requireSeccion('grafico')];
     const resumen = (x) => ({ id: x.id, nombre: x.nombre, tipo: x.tipo, ancho: x.ancho, alto: x.alto, miniatura: x.miniatura, autor: x.autor || null, actualizado: x.updated_at,
-        plantilla: x.plantilla ?? x.datos?.esPlantilla === true });
+        plantilla: x.plantilla ?? x.datos?.esPlantilla === true, carpeta: x.carpeta ?? x.datos?.carpeta ?? null,
+        paginas: x.paginas ?? 1 + (Array.isArray(x.datos?.paginas) ? x.datos.paginas.length : 0),
+        revision: x.huella ? estadoRevision(x.decision, x.huella) : undefined, comentarios: x.comentarios ?? undefined });
 
     async function diplomaPorDefecto() {
         const v = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = $1`, [CLAVE_DIPLOMA])).rows[0]?.valor;
@@ -99,12 +178,61 @@ export function crearDisenos({ pool, clubId, authenticateSession, requireSeccion
         try {
             const r = await pool.query(
                 `SELECT d.id, d.nombre, d.tipo, d.ancho, d.alto, d.miniatura, d.updated_at, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS autor,
-                        COALESCE((d.datos->>'esPlantilla')::boolean, false) AS plantilla
+                        COALESCE((d.datos->>'esPlantilla')::boolean, false) AS plantilla, d.datos->>'carpeta' AS carpeta,
+                        1 + COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(d.datos->'paginas') = 'array' THEN d.datos->'paginas' END), 0) AS paginas,
+                        ${SQL_HUELLA('d')} AS huella, ${SQL_DECISION('d')} AS decision,
+                        (SELECT COUNT(*) FROM aim_disenos_comentarios c WHERE c.diseno_id = d.id AND c.tipo = 'comentario' AND NOT c.resuelto)::int AS comentarios
                  FROM aim_disenos d LEFT JOIN users u ON u.user_id = d.creado_por ORDER BY d.updated_at DESC LIMIT 500`);
             res.set('Cache-Control', 'no-store');
-            res.json({ disenos: r.rows.map(resumen), diplomaPorDefecto: await diplomaPorDefecto() });
+            res.json({ disenos: r.rows.map(resumen), diplomaPorDefecto: await diplomaPorDefecto(), puedoAprobar: esDireccion(req) });
         } catch (err) { fallo(res, err); }
     });
+    // ── Letras propias: se suben aquí y salen en todos los diseños ──
+    const leerFuentes = async () => (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'disenos_fuentes'`)).rows[0]?.valor?.fuentes || [];
+    const guardarFuentes = (lista, userId) => pool.query(
+        `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('disenos_fuentes', $1::jsonb, NOW(), $2)
+         ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+        [JSON.stringify({ fuentes: lista }), userId]);
+    router.get('/api/admin/disenos/fuentes', ...gestion, async (req, res) => {
+        try { res.set('Cache-Control', 'no-store'); res.json({ fuentes: await leerFuentes() }); } catch (err) { fallo(res, err); }
+    });
+    // El archivo llega tal cual (TTF, OTF, WOFF o WOFF2): se mira por dentro qué es.
+    const FORMATO_FUENTE = (b) => {
+        const cab = b.subarray(0, 4).toString('latin1');
+        if (cab === 'wOF2') return ['font/woff2', 'woff2'];
+        if (cab === 'wOFF') return ['font/woff', 'woff'];
+        if (cab === 'OTTO') return ['font/otf', 'otf'];
+        if (cab === 'true' || b.readUInt32BE(0) === 0x00010000) return ['font/ttf', 'ttf'];
+        return null;
+    };
+    router.post('/api/admin/disenos/fuentes', ...gestion, express.raw({ type: () => true, limit: '6mb' }), async (req, res) => {
+        try {
+            const datos = Buffer.isBuffer(req.body) ? req.body : null;
+            if (!datos || datos.length < 12) corta(400, 'No ha llegado el archivo de la letra.');
+            const f = FORMATO_FUENTE(datos);
+            if (!f) corta(400, 'Tiene que ser una letra en TTF, OTF, WOFF o WOFF2.');
+            if (datos.length > 5 * 1024 * 1024) corta(413, 'La letra pesa demasiado (máximo 5 MB).');
+            const nombre = String(req.query.nombre || '').replace(/[^\p{L}\p{N} \-]/gu, '').replace(/\s+/g, ' ').trim().slice(0, 60);
+            if (!nombre) corta(400, 'Ponle un nombre a la letra.');
+            const lista = await leerFuentes();
+            if (lista.some(x => x.nombre.toLowerCase() === nombre.toLowerCase())) corta(409, 'Ya hay una letra con ese nombre.');
+            const archivo = `${nombre.normalize('NFD').replace(/\p{M}/gu, '').replace(/[^\w]+/g, '-')}.${f[1]}`;
+            const r = await pool.query(`INSERT INTO aim_web_documentos (nombre, mime, bytes, datos, subido_por) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+                [archivo, f[0], datos.length, datos, req.userSession.userId]);
+            const fuente = { id: r.rows[0].id, nombre, url: `/doc/${r.rows[0].id}/${archivo}` };
+            await guardarFuentes([...lista, fuente], req.userSession.userId);
+            res.status(201).json({ success: true, fuente });
+        } catch (err) { fallo(res, err); }
+    });
+    // Quitarla de la lista (el archivo se queda: algún diseño puede usarla todavía).
+    router.delete('/api/admin/disenos/fuentes/:id', ...gestion, async (req, res) => {
+        try {
+            const lista = await leerFuentes();
+            await guardarFuentes(lista.filter(x => String(x.id) !== String(req.params.id)), req.userSession.userId);
+            res.json({ success: true });
+        } catch (err) { fallo(res, err); }
+    });
+
     // ── La marca: los colores y el logo de «Marca de los correos» y los del club ──
     router.get('/api/admin/disenos/marca', ...gestion, async (req, res) => {
         try {
@@ -234,6 +362,15 @@ export function crearDisenos({ pool, clubId, authenticateSession, requireSeccion
     router.put('/api/admin/disenos/:id', ...gestion, async (req, res) => {
         try {
             const d = limpiar(req.body);
+            // Lo que había, como versión, si ha cambiado y la última es de hace rato.
+            await pool.query(
+                `INSERT INTO aim_disenos_versiones (diseno_id, nombre, datos, miniatura, creado_por, created_at)
+                 SELECT d.id, d.nombre, d.datos, d.miniatura, $3, d.updated_at FROM aim_disenos d
+                 WHERE d.id = $1 AND md5(d.datos::text) <> md5($2::jsonb::text)
+                   AND NOT EXISTS (SELECT 1 FROM aim_disenos_versiones v WHERE v.diseno_id = d.id
+                                   AND v.created_at > NOW() - INTERVAL '${MINUTOS_ENTRE_VERSIONES} minutes')`,
+                [Number(req.params.id) || 0, d.json, req.userSession.userId]);
+            await podarVersiones(Number(req.params.id) || 0);
             const r = await pool.query(
                 `UPDATE aim_disenos SET nombre = $2, tipo = $3, ancho = $4, alto = $5, datos = $6::jsonb, miniatura = COALESCE($7, miniatura), updated_at = NOW()
                  WHERE id = $1 RETURNING id`, [Number(req.params.id) || 0, d.nombre, d.tipo, d.ancho, d.alto, d.json, d.mini]);
@@ -241,6 +378,121 @@ export function crearDisenos({ pool, clubId, authenticateSession, requireSeccion
             res.json({ success: true });
         } catch (err) { fallo(res, err); }
     });
+    // ── Carpeta (sin tocar la fecha ni la aprobación) ──
+    router.patch('/api/admin/disenos/:id/carpeta', ...gestion, async (req, res) => {
+        try {
+            const carpeta = String(req.body?.carpeta || '').trim().slice(0, 60);
+            const r = await pool.query(
+                `UPDATE aim_disenos SET datos = CASE WHEN $2 = '' THEN datos - 'carpeta' ELSE jsonb_set(datos, '{carpeta}', to_jsonb($2::text)) END
+                 WHERE id = $1 RETURNING id`, [Number(req.params.id) || 0, carpeta]);
+            if (!r.rowCount) corta(404, 'Ese diseño ya no existe.');
+            res.json({ success: true });
+        } catch (err) { fallo(res, err); }
+    });
+
+    // ── Versiones ──
+    async function podarVersiones(id) {
+        await pool.query(
+            `DELETE FROM aim_disenos_versiones WHERE diseno_id = $1 AND id NOT IN
+               (SELECT id FROM aim_disenos_versiones WHERE diseno_id = $1 ORDER BY created_at DESC, id DESC LIMIT ${MAX_VERSIONES})`, [id]);
+    }
+    router.get('/api/admin/disenos/:id/versiones', ...gestion, async (req, res) => {
+        try {
+            const r = await pool.query(
+                `SELECT v.id, v.nombre, v.miniatura, v.created_at, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS autor
+                 FROM aim_disenos_versiones v LEFT JOIN users u ON u.user_id = v.creado_por
+                 WHERE v.diseno_id = $1 ORDER BY v.created_at DESC, v.id DESC`, [Number(req.params.id) || 0]);
+            res.set('Cache-Control', 'no-store');
+            res.json({ versiones: r.rows.map(v => ({ id: v.id, nombre: v.nombre, miniatura: v.miniatura, fecha: v.created_at, autor: v.autor || null })) });
+        } catch (err) { fallo(res, err); }
+    });
+    router.get('/api/admin/disenos/:id/versiones/:vid', ...gestion, async (req, res) => {
+        try {
+            const v = (await pool.query(`SELECT nombre, datos, created_at FROM aim_disenos_versiones WHERE id = $2 AND diseno_id = $1`,
+                [Number(req.params.id) || 0, Number(req.params.vid) || 0])).rows[0];
+            if (!v) corta(404, 'Esa versión ya no está.');
+            res.set('Cache-Control', 'no-store');
+            res.json({ nombre: v.nombre, datos: v.datos, fecha: v.created_at });
+        } catch (err) { fallo(res, err); }
+    });
+    // Guardar ya cómo está (antes de volver a una versión anterior, para no perderlo).
+    router.post('/api/admin/disenos/:id/versiones', ...gestion, async (req, res) => {
+        try {
+            const r = await pool.query(
+                `INSERT INTO aim_disenos_versiones (diseno_id, nombre, datos, miniatura, creado_por, created_at)
+                 SELECT d.id, d.nombre, d.datos, d.miniatura, $2, d.updated_at FROM aim_disenos d WHERE d.id = $1
+                   AND NOT EXISTS (SELECT 1 FROM aim_disenos_versiones v WHERE v.diseno_id = d.id AND md5(v.datos::text) = md5(d.datos::text))
+                 RETURNING id`, [Number(req.params.id) || 0, req.userSession.userId]);
+            await podarVersiones(Number(req.params.id) || 0);
+            res.status(201).json({ success: true, nueva: !!r.rowCount });
+        } catch (err) { fallo(res, err); }
+    });
+
+    // ── Revisión: comentarios y aprobación ──
+    async function revisionDe(req, id) {
+        const d = (await pool.query(`SELECT d.id, d.creado_por, ${SQL_HUELLA('d')} AS huella, ${SQL_DECISION('d')} AS decision FROM aim_disenos d WHERE d.id = $1`, [id])).rows[0];
+        if (!d) corta(404, 'Ese diseño ya no existe.');
+        const c = await pool.query(
+            `SELECT c.id, c.tipo, c.texto, c.elemento_id, c.pagina, c.resuelto, c.created_at, c.autor_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS autor
+             FROM aim_disenos_comentarios c LEFT JOIN users u ON u.user_id = c.autor_id WHERE c.diseno_id = $1 ORDER BY c.created_at, c.id`, [id]);
+        const yo = req.userSession.userId;
+        return {
+            estado: estadoRevision(d.decision, d.huella), puedoAprobar: esDireccion(req),
+            comentarios: c.rows.map(x => ({
+                id: x.id, tipo: x.tipo, texto: x.texto || '', elementoId: x.elemento_id, pagina: x.pagina, resuelto: x.resuelto, fecha: x.created_at,
+                autor: x.autor || 'Alguien que ya no está', mio: x.autor_id === yo,
+            })),
+        };
+    }
+    router.get('/api/admin/disenos/:id/revision', ...gestion, async (req, res) => {
+        try { res.set('Cache-Control', 'no-store'); res.json(await revisionDe(req, Number(req.params.id) || 0)); } catch (err) { fallo(res, err); }
+    });
+    router.post('/api/admin/disenos/:id/comentarios', ...gestion, async (req, res) => {
+        try {
+            const id = Number(req.params.id) || 0;
+            const texto = String(req.body?.texto || '').trim().slice(0, 2000);
+            if (!texto) corta(400, 'Escribe el comentario.');
+            const elemento = req.body?.elementoId ? String(req.body.elementoId).slice(0, 40) : null;
+            const pagina = Number.isInteger(req.body?.pagina) && req.body.pagina >= 0 && req.body.pagina < 20 ? req.body.pagina : null;
+            const r = await pool.query(`INSERT INTO aim_disenos_comentarios (diseno_id, tipo, texto, elemento_id, pagina, autor_id)
+                SELECT id, 'comentario', $2, $3, $4, $5 FROM aim_disenos WHERE id = $1 RETURNING id`, [id, texto, elemento, pagina, req.userSession.userId]);
+            if (!r.rowCount) corta(404, 'Ese diseño ya no existe.');
+            res.status(201).json(await revisionDe(req, id));
+        } catch (err) { fallo(res, err); }
+    });
+    router.patch('/api/admin/disenos/:id/comentarios/:cid', ...gestion, async (req, res) => {
+        try {
+            const id = Number(req.params.id) || 0;
+            await pool.query(`UPDATE aim_disenos_comentarios SET resuelto = $3 WHERE id = $2 AND diseno_id = $1 AND tipo = 'comentario'`,
+                [id, Number(req.params.cid) || 0, !!req.body?.resuelto]);
+            res.json(await revisionDe(req, id));
+        } catch (err) { fallo(res, err); }
+    });
+    router.delete('/api/admin/disenos/:id/comentarios/:cid', ...gestion, async (req, res) => {
+        try {
+            const id = Number(req.params.id) || 0;
+            const r = await pool.query(`DELETE FROM aim_disenos_comentarios WHERE id = $2 AND diseno_id = $1 AND tipo = 'comentario' AND (autor_id = $3 OR $4) RETURNING id`,
+                [id, Number(req.params.cid) || 0, req.userSession.userId, esDireccion(req)]);
+            if (!r.rowCount) corta(403, 'Solo se borran los comentarios propios.');
+            res.json(await revisionDe(req, id));
+        } catch (err) { fallo(res, err); }
+    });
+    // Pedir la aprobación (cualquiera) o decidir (la dirección): con un comentario opcional.
+    router.post('/api/admin/disenos/:id/revision', ...gestion, async (req, res) => {
+        try {
+            const id = Number(req.params.id) || 0;
+            const accion = req.body?.accion;
+            if (!['pedir', 'aprobado', 'cambios'].includes(accion)) corta(400, 'No se sabe qué hacer.');
+            if (accion !== 'pedir' && !esDireccion(req)) corta(403, 'Lo aprueba la dirección.');
+            const texto = String(req.body?.texto || '').trim().slice(0, 2000) || null;
+            if (accion === 'cambios' && !texto) corta(400, 'Di qué hay que cambiar.');
+            const r = await pool.query(`INSERT INTO aim_disenos_comentarios (diseno_id, tipo, texto, huella, autor_id)
+                SELECT d.id, $2, $3, ${SQL_HUELLA('d')}, $4 FROM aim_disenos d WHERE d.id = $1 RETURNING id`, [id, accion, texto, req.userSession.userId]);
+            if (!r.rowCount) corta(404, 'Ese diseño ya no existe.');
+            res.status(201).json(await revisionDe(req, id));
+        } catch (err) { fallo(res, err); }
+    });
+
     router.post('/api/admin/disenos/:id/duplicar', ...gestion, async (req, res) => {
         try {
             const r = await pool.query(

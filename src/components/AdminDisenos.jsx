@@ -3,9 +3,12 @@ import { I } from './Icons.jsx';
 import { subirImagen } from './EditorDiseno.jsx';
 import { useRouter } from '../App.jsx';
 import {
-  TAMANOS, FUENTES_DISENO, VARIABLES_DIPLOMA, EJEMPLO_DIPLOMA, nuevoId, pintarDiseno, cargarImagenes, cargarImagen, cargarFuentes,
-  pedirFuentes, miniatura, exportarDiseno, exportarLote, lienzoDe, ajustarTexto, adaptarDiseno, posicionEnTexto,
+  TAMANOS, FUENTES_DISENO, VARIABLES_DIPLOMA, EJEMPLO_DIPLOMA, nuevoId, pintarDiseno, cargarImagenes, cargarImagen, cargarFuentes, cargarFuentePropia,
+  pedirFuentes, miniatura, exportarDiseno, exportarLote, exportarImprenta, medidasImprenta, SANGRADO_MM, lienzoDe, ajustarTexto, adaptarDiseno, posicionEnTexto,
+  paginaDe, conPagina, numPaginas, todasLasPaginas, ANIMACIONES, tieneAnimacion, duracionAnimacion,
 } from '../disenos/render.js';
+import { FIGURAS, MARCOS, ICONOS, ICONOS_ACTIVIDAD, svgFigura } from '../disenos/formas.js';
+import { formatoVideo, grabarVideo, exportarGif, exportarVideo } from '../disenos/animacion.js';
 import { PLANTILLAS } from '../disenos/plantillas.js';
 import { Plantillas as PlantillasCorreo, Marca as MarcaCorreo } from './AdminDisenoCorreos.jsx';
 
@@ -25,6 +28,14 @@ import { Plantillas as PlantillasCorreo, Marca as MarcaCorreo } from './AdminDis
 // publicar en redes (un borrador en Publicaciones), el mismo diseño en otros
 // tamaños, diplomas en lote (un PDF para toda una clase o un examen), guardarlo
 // para los correos y las noticias, y plantillas del equipo.
+//
+// Y además: varias cosas a la vez (Mayús + clic o un recuadro) para moverlas,
+// agruparlas, alinearlas y repartirlas; formas, iconos y marcos para fotos; las
+// fotos se recortan (doble clic) y llevan filtros; efectos de texto (contorno,
+// sombra de color, fondo, curva); varias páginas (carruseles, folletos);
+// animaciones (GIF y vídeo); PDF de imprenta; letras propias; carpetas y
+// buscador; y la revisión en equipo: comentarios, aprobación de la dirección
+// (sin ella no se publica en redes) y versiones para volver atrás.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const inp = { fontFamily: 'inherit', fontSize: 13, padding: '7px 9px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', width: '100%', boxSizing: 'border-box' };
@@ -91,43 +102,98 @@ function DisenosGraficos({ showToast, puedePublicar }) {
   const [datos, setDatos] = useState(null);
   const [abierto, setAbierto] = useState(null);       // { id, nombre, tipo, datos }
   const [nuevo, setNuevo] = useState(false);
+  const [buscar, setBuscar] = useState('');
+  // '' todas · '__sin' sin carpeta · '__plantillas' · '__aprobar' (esperan a la dirección) · o el nombre de una carpeta
+  const [carpeta, setCarpeta] = useState(() => { try { return localStorage.getItem('aim_design_carpeta') || ''; } catch { return ''; } });
   const cargar = useCallback(() => api('/api/admin/disenos').then(setDatos).catch(e => alert(e.message)), []);
   useEffect(() => { cargar(); }, [cargar]);
+  useEffect(() => { try { localStorage.setItem('aim_design_carpeta', carpeta); } catch { /* sin almacenamiento */ } }, [carpeta]);
 
   async function abrir(id) {
     try { const d = await api(`/api/admin/disenos/${id}`); setAbierto(d); } catch (e) { alert(e.message); }
   }
+  // Desde la campanita: ?abrir=<id> o ?revision=1 (los que esperan aprobación).
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search), a = Number(q.get('abrir'));
+    if (q.get('revision')) setCarpeta('__aprobar');
+    if (a) abrir(a);
+    if (a || q.get('revision')) window.history.replaceState(null, '', window.location.pathname);
+  }, []);
   async function duplicar(d) { try { await api(`/api/admin/disenos/${d.id}/duplicar`, { method: 'POST' }); showToast?.('Duplicado.'); cargar(); } catch (e) { alert(e.message); } }
   async function borrar(d) {
-    if (!window.confirm(`¿Borrar «${d.nombre}»? No se puede deshacer.`)) return;
+    if (!window.confirm(`¿Borrar «${d.nombre}»? No se puede deshacer (se borran también sus versiones y comentarios).`)) return;
     try { await api(`/api/admin/disenos/${d.id}`, { method: 'DELETE' }); showToast?.('Borrado.'); cargar(); } catch (e) { alert(e.message); }
   }
   async function porDefecto(d) {
     try { await api('/api/admin/disenos-diploma', { method: 'PUT', body: { id: datos.diplomaPorDefecto === d.id ? null : d.id } }); showToast?.(datos.diplomaPorDefecto === d.id ? 'El aula vuelve al diploma de siempre.' : 'Es el diploma del aula por defecto.'); cargar(); }
     catch (e) { alert(e.message); }
   }
+  async function moverA(d, valor) {
+    let c = valor;
+    if (valor === '__nueva') { c = window.prompt('Nombre de la carpeta nueva:', ''); if (!c?.trim()) return; c = c.trim(); }
+    try { await api(`/api/admin/disenos/${d.id}/carpeta`, { method: 'PATCH', body: { carpeta: c } }); cargar(); } catch (e) { alert(e.message); }
+  }
+  const todos = datos?.disenos || [];
+  const carpetas = useMemo(() => [...new Set(todos.map(d => d.carpeta).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es')), [todos]);
+  const sinTildes = (s) => String(s || '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+  const q = sinTildes(buscar.trim());
+  const lista = todos.filter(d => {
+    if (carpeta === '__sin' && d.carpeta) return false;
+    if (carpeta === '__plantillas' && !d.plantilla) return false;
+    if (carpeta === '__aprobar' && d.revision !== 'pendiente') return false;
+    if (carpeta && !carpeta.startsWith('__') && d.carpeta !== carpeta) return false;
+    return !q || sinTildes(`${d.nombre} ${d.carpeta || ''} ${d.autor || ''}`).includes(q);
+  });
+  const porAprobar = todos.filter(d => d.revision === 'pendiente').length;
+  const pastilla = (k, t, n) => (
+    <button key={k} type="button" className={`filter-pill ${carpeta === k ? 'is-active' : ''}`} onClick={() => setCarpeta(k)} style={{ borderRadius: 999, padding: '6px 12px', fontSize: 12.5 }}>
+      {t}{n != null ? <span style={{ opacity: 0.6, marginLeft: 4 }}>{n}</span> : null}
+    </button>
+  );
 
   if (abierto) return <Editor inicial={abierto} showToast={showToast} puedePublicar={puedePublicar} onCerrar={() => { setAbierto(null); cargar(); }} />;
   return (
-    <div style={{ display: 'grid', gap: 16 }}>
+    <div style={{ display: 'grid', gap: 14 }}>
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-        <p style={{ margin: 0, color: 'var(--ink-2)', fontSize: 14, flex: '1 1 300px' }}>Carteles, posts, historias y diplomas, como en Canva. Se exportan a PNG, JPG o PDF; los diplomas los usa el aula virtual.</p>
+        <p style={{ margin: 0, color: 'var(--ink-2)', fontSize: 14, flex: '1 1 300px' }}>Carteles, posts, carruseles, historias animadas y diplomas, como en Canva. Se exportan a PNG, JPG, PDF (también de imprenta), GIF o vídeo; los diplomas los usa el aula virtual.</p>
+        <input type="search" value={buscar} onChange={e => setBuscar(e.target.value)} placeholder="Buscar un diseño…" aria-label="Buscar un diseño" style={{ ...inp, width: 220 }} />
         <button type="button" className="btn btn-primary btn-sm" onClick={() => setNuevo(true)}><I.Plus /> Nuevo diseño</button>
       </div>
-      {!datos ? <p style={{ color: 'var(--ink-3)' }}>Cargando…</p> : !datos.disenos.length ? (
+      {datos && todos.length > 0 && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          {pastilla('', 'Todos', todos.length)}
+          {carpetas.map(c => pastilla(c, `📁 ${c}`, todos.filter(d => d.carpeta === c).length))}
+          {carpetas.length > 0 && pastilla('__sin', 'Sin carpeta', todos.filter(d => !d.carpeta).length)}
+          {todos.some(d => d.plantilla) && pastilla('__plantillas', '★ Plantillas del equipo')}
+          {(porAprobar > 0 || carpeta === '__aprobar') && pastilla('__aprobar', datos.puedoAprobar ? '⏳ Esperan tu aprobación' : '⏳ Esperan aprobación', porAprobar)}
+        </div>
+      )}
+      {!datos ? <p style={{ color: 'var(--ink-3)' }}>Cargando…</p> : !todos.length ? (
         <div style={{ padding: 30, textAlign: 'center', border: '1px dashed var(--line)', borderRadius: 16, color: 'var(--ink-3)' }}>Aún no hay diseños. Empieza por una plantilla o un tamaño en blanco.</div>
+      ) : !lista.length ? (
+        <div style={{ padding: 24, textAlign: 'center', border: '1px dashed var(--line)', borderRadius: 16, color: 'var(--ink-3)' }}>{q ? `Nada con «${buscar}».` : 'Aquí no hay ninguno.'}</div>
       ) : (
         <div style={{ display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))' }}>
-          {datos.disenos.map(d => (
+          {lista.map(d => (
             <div key={d.id} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, overflow: 'hidden', display: 'grid' }}>
-              <button type="button" onClick={() => abrir(d.id)} style={{ border: 0, padding: 0, cursor: 'pointer', background: 'var(--bg-3)', aspectRatio: '4 / 3', display: 'grid', placeItems: 'center' }} aria-label={`Abrir ${d.nombre}`}>
+              <button type="button" onClick={() => abrir(d.id)} style={{ border: 0, padding: 0, cursor: 'pointer', background: 'var(--bg-3)', aspectRatio: '4 / 3', display: 'grid', placeItems: 'center', position: 'relative' }} aria-label={`Abrir ${d.nombre}`}>
                 {d.miniatura ? <img src={d.miniatura} alt="" style={{ maxWidth: '92%', maxHeight: '92%', boxShadow: '0 4px 14px rgba(0,0,0,.15)' }} /> : <span style={{ color: 'var(--ink-3)' }}>Sin vista previa</span>}
+                {d.paginas > 1 && <span style={{ position: 'absolute', right: 8, top: 8, fontSize: 11, fontWeight: 800, background: 'rgba(0,0,0,.65)', color: '#fff', borderRadius: 999, padding: '2px 8px' }}>{d.paginas} páginas</span>}
               </button>
               <div style={{ padding: 12, display: 'grid', gap: 6 }}>
                 <b style={{ fontSize: 14 }}>{d.nombre}</b>
                 <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{tamanoTexto(d)}{d.tipo === 'diploma' ? ' · diploma' : ''}</span>
-                {d.plantilla && <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--purple)' }}>★ Plantilla del equipo</span>}
-                {d.tipo === 'diploma' && datos.diplomaPorDefecto === d.id && <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--teal)' }}>✓ Diploma del aula por defecto</span>}
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                  {d.revision && d.revision !== 'sin_pedir' && <EstadoRevision estado={d.revision} pequeno />}
+                  {d.comentarios > 0 && <span title="Comentarios sin resolver" style={{ fontSize: 11.5, fontWeight: 800, color: 'var(--purple)' }}>💬 {d.comentarios}</span>}
+                  {d.plantilla && <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--purple)' }}>★ Plantilla del equipo</span>}
+                  {d.tipo === 'diploma' && datos.diplomaPorDefecto === d.id && <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--teal)' }}>✓ Diploma del aula por defecto</span>}
+                </div>
+                <select value={d.carpeta || ''} onChange={e => moverA(d, e.target.value)} aria-label={`Carpeta de ${d.nombre}`} style={{ ...inp, fontSize: 12, padding: '4px 6px' }}>
+                  <option value="">Sin carpeta</option>
+                  {carpetas.map(c => <option key={c} value={c}>📁 {c}</option>)}
+                  <option value="__nueva">＋ Carpeta nueva…</option>
+                </select>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   <button type="button" className="btn btn-sm btn-outline" onClick={() => abrir(d.id)}><I.Edit width={13} height={13} /> Abrir</button>
                   <button type="button" className="btn btn-sm btn-ghost" onClick={() => duplicar(d)}>Duplicar</button>
@@ -139,7 +205,8 @@ function DisenosGraficos({ showToast, puedePublicar }) {
           ))}
         </div>
       )}
-      {nuevo && <NuevoDiseno equipo={(datos?.disenos || []).filter(d => d.plantilla)} onCerrar={() => setNuevo(false)} onCrear={(d) => { setNuevo(false); setAbierto(d); }} />}
+      {nuevo && <NuevoDiseno equipo={todos.filter(d => d.plantilla)} onCerrar={() => setNuevo(false)}
+        onCrear={(d) => { setNuevo(false); setAbierto(carpeta && !carpeta.startsWith('__') ? { ...d, datos: { ...d.datos, carpeta } } : d); }} />}
     </div>
   );
 }
@@ -213,15 +280,58 @@ function NuevoDiseno({ equipo = [], onCerrar, onCrear }) {
 }
 
 // ═══════════════════════ El editor ═══════════════════════
-const NOMBRE_TIPO = { texto: 'Texto', imagen: 'Imagen', rect: 'Rectángulo', elipse: 'Círculo', linea: 'Línea', qr: 'Código QR' };
-const etiquetaElemento = (e) => (e.tipo === 'texto' ? `«${String(e.texto || '').split('\n')[0].slice(0, 26)}»` : NOMBRE_TIPO[e.tipo] || e.tipo);
+const NOMBRE_TIPO = { texto: 'Texto', imagen: 'Imagen', rect: 'Rectángulo', elipse: 'Círculo', forma: 'Forma', icono: 'Icono', linea: 'Línea', qr: 'Código QR' };
+const etiquetaElemento = (e) => (e.tipo === 'texto' ? `«${String(e.texto || '').split('\n')[0].slice(0, 26)}»`
+  : e.tipo === 'forma' ? FIGURAS.find(f => f.id === e.figura)?.nombre || 'Forma'
+    : e.tipo === 'icono' ? `Icono: ${ICONOS.find(i => i.id === e.icono)?.nombre || ''}`
+      : e.tipo === 'imagen' && !e.url ? 'Marco para una foto' : NOMBRE_TIPO[e.tipo] || e.tipo);
+// La caja que ocupan varios elementos (sin contar su giro).
+const cajaDe = (els) => {
+  const x = Math.min(...els.map(e => e.x)), y = Math.min(...els.map(e => e.y));
+  return { x, y, w: Math.max(...els.map(e => e.x + e.w)) - x, h: Math.max(...els.map(e => e.y + e.h)) - y };
+};
+// Elegir uno de un grupo elige el grupo entero.
+const conGrupo = (elementos, ids) => {
+  const g = new Set(elementos.filter(e => ids.includes(e.id) && e.grupo).map(e => e.grupo));
+  return elementos.filter(e => ids.includes(e.id) || (e.grupo && g.has(e.grupo))).map(e => e.id);
+};
+// ¿Cae el punto (en píxeles del diseño) dentro del elemento, con su giro?
+function dentroDe(e, px, py) {
+  const a = -(e.rot || 0) * Math.PI / 180, cx = e.x + e.w / 2, cy = e.y + e.h / 2;
+  const lx = (px - cx) * Math.cos(a) - (py - cy) * Math.sin(a), ly = (px - cx) * Math.sin(a) + (py - cy) * Math.cos(a);
+  return Math.abs(lx) <= e.w / 2 && Math.abs(ly) <= e.h / 2;
+}
+// Las líneas guía: el borde o el centro de lo que se mueve, cerca de una línea, se pega a ella.
+function encaje(pos, tam, lineas, umbral) {
+  let mejor = null;
+  for (const off of [0, tam / 2, tam]) for (const l of lineas) {
+    const d = l - (pos + off);
+    if (Math.abs(d) < umbral && (!mejor || Math.abs(d) < Math.abs(mejor.d))) mejor = { d, l };
+  }
+  return mejor;
+}
+// Los elementos de la página p, cambiados con fn.
+const cambiarElementos = (d, p, fn) => { const v = paginaDe(d, p); return conPagina(d, p, { ...v, elementos: v.elementos.map(fn) }); };
+// El diseño rehecho desde la lista de sus páginas ({ fondo, elementos }).
+const desdePaginas = (d, lista) => {
+  const { paginas, ...resto } = d; // eslint-disable-line no-unused-vars
+  return { ...resto, fondo: lista[0].fondo, elementos: lista[0].elementos, ...(lista.length > 1 ? { paginas: lista.slice(1) } : {}) };
+};
+const paginasDe = (d) => todasLasPaginas(d).map(v => ({ fondo: v.fondo, elementos: v.elementos }));
+// Lo que se arrastra desde el panel (una imagen) hasta el lienzo o un marco.
+const TIPO_ARRASTRE = 'application/x-aim-design';
+const arrastrable = (url, ancho, alto) => ({
+  draggable: true,
+  onDragStart: (ev) => { ev.dataTransfer.setData(TIPO_ARRASTRE, JSON.stringify({ url, ancho, alto })); ev.dataTransfer.effectAllowed = 'copy'; },
+});
 
 function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
   const [id, setId] = useState(inicial.id);
   const [nombre, setNombre] = useState(inicial.nombre || 'Diseño sin nombre');
   const [tipo, setTipo] = useState(inicial.tipo || 'libre');
-  const [diseno, setDiseno] = useState(inicial.datos);
-  const [sel, setSel] = useState(null);
+  const [doc, setDoc] = useState(inicial.datos);
+  const [pagina, setPagina] = useState(0);
+  const [seleccion, setSeleccion] = useState([]);
   const [hist, setHist] = useState({ atras: [], adelante: [] });
   const [sucio, setSucio] = useState(!inicial.id);
   const [guardando, setGuardando] = useState(false);
@@ -229,32 +339,55 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
   const [imagenes, setImagenes] = useState(new Map());
   const [version, setVersion] = useState(0);
   const [guias, setGuias] = useState([]);
+  const [recuadro, setRecuadro] = useState(null);     // el recuadro de elegir arrastrando
   const [verExportar, setVerExportar] = useState(false);
   const [verTamano, setVerTamano] = useState(false);
   const [zona, setZona] = useState({ w: 800, h: 600 });
   const [editando, setEditando] = useState(null);     // { id, cursor }: el texto que se escribe en el lienzo
+  const [recortando, setRecortando] = useState(null); // la foto que se encuadra dentro de su caja
+  const [tiempo, setTiempo] = useState(null);         // la animación, mientras se ve
   const [verUsar, setVerUsar] = useState(false);
-  const [ventana, setVentana] = useState(null);       // 'redes' | 'tamanos' | 'lote' | 'biblioteca' | 'fotos'
+  const [ventana, setVentana] = useState(null);       // 'redes' | 'tamanos' | 'lote' | 'biblioteca' | 'fotos' | 'animacion' | 'imprenta'
   const [kit, setKit] = useState(null);
+  const [fuentesClub, setFuentesClub] = useState([]);
+  const [revision, setRevision] = useState(null);
+  const [soltando, setSoltando] = useState(false);
   const { go } = useRouter();
-  const zonaRef = useRef(null), lienzoRef = useRef(null), textoRef = useRef(null), arrastre = useRef(null), edicion = useRef(null);
-  const disenoRef = useRef(diseno); disenoRef.current = diseno;
+  const zonaRef = useRef(null), lienzoRef = useRef(null), textoRef = useRef(null), arrastre = useRef(null), edicion = useRef(null), tramo = useRef(null), anim = useRef(null);
+  const docRef = useRef(doc); docRef.current = doc;
+  const paginaRef = useRef(pagina); paginaRef.current = pagina;
+  const selRef = useRef(seleccion); selRef.current = seleccion;
+  const diseno = useMemo(() => paginaDe(doc, pagina), [doc, pagina]);
+  const vista = () => paginaDe(docRef.current, paginaRef.current);
   const ejemplo = tipo === 'diploma' ? EJEMPLO_DIPLOMA : null;
-  const elegido = diseno.elementos.find(e => e.id === sel) || null;
+  const sel = seleccion.length === 1 ? seleccion[0] : null;
+  const setSel = useCallback((x) => setSeleccion(x ? [x] : []), []);
+  const elegido = sel ? diseno.elementos.find(e => e.id === sel) || null : null;
+  const elegidos = useMemo(() => diseno.elementos.filter(e => seleccion.includes(e.id)), [diseno, seleccion]);
+  const paginas = numPaginas(doc);
+  const kitConFuentes = useMemo(() => ({ ...(kit || {}), fuentes: fuentesClub }), [kit, fuentesClub]);
 
-  useEffect(() => { pedirFuentes(); api('/api/admin/disenos/marca').then(setKit).catch(() => setKit(null)); }, []);
-  // El tamaño del hueco central, para que el lienzo quepa entero.
+  useEffect(() => {
+    pedirFuentes();
+    api('/api/admin/disenos/marca').then(setKit).catch(() => setKit(null));
+    api('/api/admin/disenos/fuentes').then(d => { setFuentesClub(d.fuentes || []); (d.fuentes || []).forEach(f => cargarFuentePropia(f.nombre, f.url)); }).catch(() => {});
+  }, []);
+  const cargarRevision = useCallback(() => { if (id) api(`/api/admin/disenos/${id}/revision`).then(setRevision).catch(() => {}); }, [id]);
+  useEffect(() => { cargarRevision(); }, [cargarRevision]);
+  useEffect(() => { if (pagina >= paginas) setPagina(paginas - 1); }, [pagina, paginas]);
+  useEffect(() => () => cancelAnimationFrame(anim.current), []);
+  // El tamaño del hueco central, para que el lienzo quepa entero (con la barra de páginas debajo).
   useEffect(() => {
     const el = zonaRef.current; if (!el) return undefined;
     const ro = new ResizeObserver(([x]) => setZona({ w: x.contentRect.width, h: x.contentRect.height }));
     ro.observe(el); return () => ro.disconnect();
   }, []);
-  const escala = Math.max(0.05, Math.min((zona.w - 48) / diseno.ancho, (zona.h - 48) / diseno.alto));
+  const escala = Math.max(0.05, Math.min((zona.w - 48) / diseno.ancho, (zona.h - 110) / diseno.alto));
 
   // Imágenes y fuentes: al cargarse, se vuelve a pintar.
   const urls = useMemo(() => [diseno.fondo?.tipo === 'imagen' ? diseno.fondo.url : null, ...diseno.elementos.filter(e => e.tipo === 'imagen').map(e => e.url)].filter(Boolean).join('|'), [diseno]);
   useEffect(() => { cargarImagenes(diseno).then(m => { setImagenes(m); }); }, [urls]); // eslint-disable-line react-hooks/exhaustive-deps
-  const fuentes = useMemo(() => diseno.elementos.filter(e => e.tipo === 'texto').map(e => `${e.fuente}|${e.negrita}|${e.cursiva}`).join(','), [diseno]);
+  const fuentes = useMemo(() => diseno.elementos.filter(e => e.tipo === 'texto').map(e => `${e.fuente}|${e.negrita}|${e.cursiva}|${e.fuenteUrl || ''}`).join(','), [diseno]);
   useEffect(() => { cargarFuentes(diseno).then(() => setVersion(v => v + 1)); }, [fuentes]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Pintar.
@@ -265,36 +398,48 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
     const ctx = c.getContext('2d');
     ctx.setTransform(escala * dpr, 0, 0, escala * dpr, 0, 0);
     // El texto que se está escribiendo no se pinta: se ve el de la caja de escribir.
-    pintarDiseno(ctx, diseno, { imagenes, variables: ejemplo, ocultar: editando?.id });
-  }, [diseno, escala, imagenes, version, ejemplo, editando]);
+    pintarDiseno(ctx, diseno, { imagenes, variables: ejemplo, ocultar: editando?.id, tiempo, editor: tiempo == null });
+  }, [diseno, escala, imagenes, version, ejemplo, editando, tiempo]);
 
   // ── Cambios con deshacer ──
-  const aplicar = useCallback((fn, { historia = true } = {}) => {
-    const prev = disenoRef.current, sig = fn(prev);
+  // aplicar: cambia la página que se ve; aplicarDoc: el diseño entero (páginas, tamaño).
+  const aplicarDoc = useCallback((fn, { historia = true } = {}) => {
+    const prev = docRef.current, sig = fn(prev);
     if (sig === prev) return;
     if (historia) setHist(h => ({ atras: [...h.atras.slice(-99), prev], adelante: [] }));
-    disenoRef.current = sig;
-    setDiseno(sig); setSucio(true);
+    docRef.current = sig;
+    setDoc(sig); setSucio(true);
   }, []);
-  const cambiarEl = (idEl, cambios, opts) => aplicar(d => ({ ...d, elementos: d.elementos.map(e => (e.id === idEl ? ajustarTexto({ ...e, ...cambios }, ejemplo) : e)) }), opts);
+  const aplicar = useCallback((fn, opts) => aplicarDoc(d => {
+    const v = paginaDe(d, paginaRef.current), sv = fn(v);
+    return sv === v ? d : conPagina(d, paginaRef.current, sv);
+  }, opts), [aplicarDoc]);
+  // Un deslizador: todo lo que se mueve mientras se arrastra es un solo paso de deshacer.
+  const tramoTerminar = () => {
+    const t = tramo.current; tramo.current = null;
+    if (t && t !== docRef.current) setHist(h => ({ atras: [...h.atras.slice(-99), t], adelante: [] }));
+  };
+  const tramos = { empezar: () => { if (!tramo.current) tramo.current = docRef.current; }, terminar: tramoTerminar };
+  const cambiarEl = (idEl, cambios, opts) => aplicar(d => ({ ...d, elementos: d.elementos.map(e => (e.id === idEl ? ajustarTexto({ ...e, ...cambios }, ejemplo) : e)) }), { historia: !tramo.current, ...opts });
+  const cambiarVarios = (ids, fn) => aplicar(d => ({ ...d, elementos: d.elementos.map(e => (ids.includes(e.id) ? ajustarTexto(fn(e), ejemplo) : e)) }));
   function deshacer() {
     if (!hist.atras.length) return;
     const prev = hist.atras[hist.atras.length - 1];
-    setHist({ atras: hist.atras.slice(0, -1), adelante: [diseno, ...hist.adelante] });
-    disenoRef.current = prev; setDiseno(prev); setSucio(true);
+    setHist({ atras: hist.atras.slice(0, -1), adelante: [doc, ...hist.adelante] });
+    docRef.current = prev; setDoc(prev); setSucio(true);
   }
   function rehacer() {
     if (!hist.adelante.length) return;
     const sig = hist.adelante[0];
-    setHist({ atras: [...hist.atras, diseno], adelante: hist.adelante.slice(1) });
-    disenoRef.current = sig; setDiseno(sig); setSucio(true);
+    setHist({ atras: [...hist.atras, doc], adelante: hist.adelante.slice(1) });
+    docRef.current = sig; setDoc(sig); setSucio(true);
   }
 
   function anadir(el) {
     const e = ajustarTexto({ rot: 0, opacidad: 1, ...el, id: nuevoId() }, ejemplo);
     e.x = el.x ?? Math.round((diseno.ancho - e.w) / 2); e.y = el.y ?? Math.round((diseno.alto - e.h) / 2);
     aplicar(d => ({ ...d, elementos: [...d.elementos, e] }));
-    setSel(e.id); setPanel('anadir');
+    setSel(e.id); setRecortando(null);
   }
   const base = Math.min(diseno.ancho, diseno.alto);
   const anadirTexto = (nivel, texto) => anadir({ tipo: 'texto', texto: texto || { titulo: 'Un título', subtitulo: 'Un subtítulo', texto: 'Escribe aquí tu texto' }[nivel],
@@ -302,11 +447,20 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
     negrita: nivel !== 'texto', color: '#1A1A1A', alinear: 'centro', interlineado: 1.25 });
   const anadirForma = (t) => anadir(t === 'linea'
     ? { tipo: 'linea', w: Math.round(diseno.ancho * 0.4), h: 24, color: '#1A1A1A', grosor: Math.max(3, Math.round(base * 0.004)) }
-    : { tipo: t, w: Math.round(base * 0.3), h: Math.round(base * 0.3), relleno: t === 'rect' ? '#5233A8' : '#FF5FA2', radio: t === 'rect' ? Math.round(base * 0.02) : 0, borde: '#1A1A1A', grosor: 0 });
-  const anadirImagen = async (url, ancho, alto) => {
+    : t === 'rect' || t === 'elipse'
+      ? { tipo: t, w: Math.round(base * 0.3), h: Math.round(base * 0.3), relleno: t === 'rect' ? '#5233A8' : '#FF5FA2', radio: t === 'rect' ? Math.round(base * 0.02) : 0, borde: '#1A1A1A', grosor: 0 }
+      : { tipo: 'forma', figura: t, w: Math.round(base * (['flecha', 'flecha2', 'cinta', 'chevron'].includes(t) ? 0.4 : 0.3)), h: Math.round(base * (['flecha', 'flecha2', 'cinta'].includes(t) ? 0.2 : 0.3)),
+        relleno: { estrella: '#FFD526', corazon: '#FF5FA2', sello: '#F99B35', destello: '#FFD526', bocadillo: '#FFFFFF', bocadillo2: '#FFFFFF', nube: '#FFFFFF' }[t] || '#5233A8',
+        borde: '#1A1A1A', grosor: ['bocadillo', 'bocadillo2', 'nube'].includes(t) ? Math.max(2, Math.round(base * 0.004)) : 0 });
+  const anadirIcono = (icono) => { const lado = Math.round(base * 0.16); anadir({ tipo: 'icono', icono, w: lado, h: lado, color: '#5233A8' }); };
+  const anadirMarco = (figura) => { const w = Math.round(base * 0.42); anadir({ tipo: 'imagen', url: null, marco: figura, ajuste: 'cubrir', w, h: figura === 'arco' ? Math.round(w * 1.25) : w, radio: figura === 'rect' ? Math.round(base * 0.03) : 0 }); };
+  // Una imagen: si lo elegido es un marco vacío, va dentro; si no, se añade (en el punto, si se ha soltado ahí).
+  const anadirImagen = async (url, ancho, alto, punto = null) => {
+    const v = vista(), marco = selRef.current.length === 1 ? v.elementos.find(e => e.id === selRef.current[0] && e.tipo === 'imagen' && !e.url) : null;
+    if (marco && !punto) { cambiarEl(marco.id, { url, encuadre: null, ajuste: 'cubrir' }); return; }
     if (!ancho || !alto) { const i = await cargarImagen(url); ancho = i?.naturalWidth || 600; alto = i?.naturalHeight || 600; }
-    const k = Math.min(1, (diseno.ancho * 0.5) / ancho, (diseno.alto * 0.5) / alto);
-    anadir({ tipo: 'imagen', url, w: Math.round(ancho * k), h: Math.round(alto * k), ajuste: 'contener', radio: 0 });
+    const k = Math.min(1, (diseno.ancho * 0.5) / ancho, (diseno.alto * 0.5) / alto), w = Math.round(ancho * k), h = Math.round(alto * k);
+    anadir({ tipo: 'imagen', url, w, h, ajuste: 'contener', radio: 0, ...(punto ? { x: Math.round(punto.x - w / 2), y: Math.round(punto.y - h / 2) } : {}) });
   };
   const anadirQr = (texto) => { const lado = Math.round(base * 0.28); anadir({ tipo: 'qr', texto, w: lado, h: lado, color: '#1A1A1A', fondo: '#FFFFFF', radio: 0 }); };
   // Un título y su texto debajo (el horario, los eventos…), en el centro.
@@ -316,38 +470,118 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
     const c = ajustarTexto({ ...t, id: nuevoId(), texto: cuerpo, fuente: 'Montserrat', tamano: Math.round(base * 0.032), negrita: false, interlineado: 1.45 }, ejemplo);
     t.y = Math.max(0, Math.round((diseno.alto - (t.h + hueco + c.h)) / 2)); c.y = t.y + t.h + hueco;
     aplicar(d => ({ ...d, elementos: [...d.elementos, t, c] }));
-    setSel(c.id); setPanel('anadir');
+    setSel(c.id);
   }
   async function subir(file, alSubir) {
     if (!file) return;
     try { const r = await subirImagen(file); alSubir(r); } catch (e) { alert(e.message); }
   }
-  function borrarSel() { if (!sel) return; aplicar(d => ({ ...d, elementos: d.elementos.filter(e => e.id !== sel) })); setSel(null); }
-  function duplicarSel() {
-    if (!elegido) return;
-    const c = { ...elegido, id: nuevoId(), x: elegido.x + 30, y: elegido.y + 30 };
-    aplicar(d => ({ ...d, elementos: [...d.elementos, c] })); setSel(c.id);
+  // Soltar en el lienzo una imagen del panel o un archivo del ordenador: dentro
+  // de la foto o el marco que haya debajo (la cambia) o, si no, donde se suelta.
+  async function soltar(ev) {
+    ev.preventDefault(); setSoltando(false);
+    const r = lienzoRef.current.getBoundingClientRect(), p = { x: (ev.clientX - r.left) / escala, y: (ev.clientY - r.top) / escala };
+    let img = null;
+    const dato = ev.dataTransfer.getData(TIPO_ARRASTRE);
+    if (dato) { try { img = JSON.parse(dato); } catch { img = null; } }
+    else if (ev.dataTransfer.files?.[0]) {
+      const f = ev.dataTransfer.files[0];
+      if (!/^image\//.test(f.type)) return;
+      try { img = await subirImagen(f); } catch (e) { alert(e.message); return; }
+    }
+    if (!img?.url) return;
+    const destino = [...vista().elementos].reverse().find(e => !e.oculto && !e.bloqueado && e.tipo === 'imagen' && dentroDe(e, p.x, p.y));
+    if (destino) {
+      cambiarEl(destino.id, { url: img.url, encuadre: null, ...(destino.url ? {} : { ajuste: 'cubrir' }) });
+      setSel(destino.id);
+    } else anadirImagen(img.url, img.ancho, img.alto, p);
   }
+
+  // ── Lo elegido (uno o varios) ──
+  function borrarSel() { if (!seleccion.length) return; aplicar(d => ({ ...d, elementos: d.elementos.filter(e => !seleccion.includes(e.id)) })); setSeleccion([]); }
+  function duplicarSel() {
+    if (!elegidos.length) return;
+    const grupos = new Map();
+    const grupoNuevo = (g) => { if (!grupos.has(g)) grupos.set(g, nuevoId()); return grupos.get(g); };
+    const copias = elegidos.map(e => ({ ...e, id: nuevoId(), x: e.x + 30, y: e.y + 30, ...(e.grupo ? { grupo: grupoNuevo(e.grupo) } : {}) }));
+    aplicar(d => ({ ...d, elementos: [...d.elementos, ...copias] })); setSeleccion(copias.map(c => c.id));
+  }
+  function agrupar() { if (seleccion.length < 2) return; const g = nuevoId(); cambiarVarios(seleccion, e => ({ ...e, grupo: g })); }
+  function desagrupar() { cambiarVarios(seleccion, ({ grupo, ...resto }) => resto); } // eslint-disable-line no-unused-vars
+  function moverSel(dx, dy) { aplicar(d => ({ ...d, elementos: d.elementos.map(e => (seleccion.includes(e.id) && !e.bloqueado ? { ...e, x: e.x + dx, y: e.y + dy } : e)) })); }
   function capa(dir) {
     aplicar(d => {
-      const l = [...d.elementos]; const i = l.findIndex(e => e.id === sel); if (i < 0) return d;
-      const [e] = l.splice(i, 1);
-      const j = dir === 'frente' ? l.length : dir === 'fondo' ? 0 : Math.max(0, Math.min(l.length, i + dir));
-      l.splice(j, 0, e); return { ...d, elementos: l };
+      const dentro = d.elementos.filter(e => seleccion.includes(e.id)), fuera = d.elementos.filter(e => !seleccion.includes(e.id));
+      if (!dentro.length) return d;
+      if (dir === 'frente') return { ...d, elementos: [...fuera, ...dentro] };
+      if (dir === 'fondo') return { ...d, elementos: [...dentro, ...fuera] };
+      if (dentro.length > 1) return d;
+      const l = [...d.elementos]; const i = l.findIndex(e => e.id === dentro[0].id);
+      const [e] = l.splice(i, 1); l.splice(Math.max(0, Math.min(l.length, i + dir)), 0, e);
+      return { ...d, elementos: l };
     });
   }
+  // Uno, respecto al lienzo.
   function alinear(como) {
     if (!elegido) return;
     const { ancho: W, alto: H } = diseno;
     const pos = { izq: { x: 0 }, centroH: { x: (W - elegido.w) / 2 }, der: { x: W - elegido.w }, arriba: { y: 0 }, centroV: { y: (H - elegido.h) / 2 }, abajo: { y: H - elegido.h } }[como];
     cambiarEl(elegido.id, Object.fromEntries(Object.entries(pos).map(([k, v]) => [k, Math.round(v)])));
   }
+  // Varios, entre ellos (respecto a la caja que ocupan).
+  function alinearVarios(como) {
+    if (elegidos.length < 2) return;
+    const c = cajaDe(elegidos);
+    const pos = (e) => ({ izq: { x: c.x }, centroH: { x: c.x + c.w / 2 - e.w / 2 }, der: { x: c.x + c.w - e.w }, arriba: { y: c.y }, centroV: { y: c.y + c.h / 2 - e.h / 2 }, abajo: { y: c.y + c.h - e.h } }[como]);
+    cambiarVarios(seleccion, e => (e.bloqueado ? e : { ...e, ...Object.fromEntries(Object.entries(pos(e)).map(([k, v]) => [k, Math.round(v)])) }));
+  }
+  // Repartir: el mismo hueco entre cada uno (los de los extremos no se mueven).
+  function repartir(eje) {
+    if (elegidos.length < 3) return;
+    const [p, t] = eje === 'h' ? ['x', 'w'] : ['y', 'h'];
+    const orden = [...elegidos].sort((a, b) => (a[p] + a[t] / 2) - (b[p] + b[t] / 2));
+    const ini = orden[0][p], fin = orden[orden.length - 1][p] + orden[orden.length - 1][t];
+    const hueco = (fin - ini - orden.reduce((s, e) => s + e[t], 0)) / (orden.length - 1);
+    const nuevo = new Map(); let cur = ini;
+    for (const e of orden) { nuevo.set(e.id, Math.round(cur)); cur += e[t] + hueco; }
+    cambiarVarios(seleccion, e => ({ ...e, [p]: nuevo.get(e.id) }));
+  }
+
+  // ── Páginas (carruseles, folletos de dos caras) ──
+  function irPagina(i) {
+    if (edicion.current) document.activeElement?.blur?.();
+    setRecortando(null); setSeleccion([]); setPagina(Math.max(0, Math.min(numPaginas(docRef.current) - 1, i)));
+  }
+  function nuevaPagina() {
+    if (paginas >= 20) { alert('Como mucho 20 páginas.'); return; }
+    const p = paginaRef.current;
+    aplicarDoc(d => { const l = paginasDe(d); l.splice(p + 1, 0, { fondo: { ...(l[p].fondo || { tipo: 'color', color: '#ffffff' }) }, elementos: [] }); return desdePaginas(d, l); });
+    irPagina(p + 1);
+  }
+  function duplicarPagina() {
+    if (paginas >= 20) { alert('Como mucho 20 páginas.'); return; }
+    const p = paginaRef.current;
+    aplicarDoc(d => { const l = paginasDe(d); l.splice(p + 1, 0, { fondo: l[p].fondo, elementos: l[p].elementos.map(e => ({ ...e, id: nuevoId() })) }); return desdePaginas(d, l); });
+    irPagina(p + 1);
+  }
+  function borrarPagina() {
+    if (paginas < 2 || !window.confirm(`¿Borrar la página ${pagina + 1}? (Ctrl+Z la recupera.)`)) return;
+    const p = paginaRef.current;
+    aplicarDoc(d => desdePaginas(d, paginasDe(d).filter((_, i) => i !== p)));
+    irPagina(Math.max(0, p - 1));
+  }
+  function moverPagina(dir) {
+    const p = paginaRef.current, q = p + dir;
+    if (q < 0 || q >= paginas) return;
+    aplicarDoc(d => { const l = paginasDe(d); [l[p], l[q]] = [l[q], l[p]]; return desdePaginas(d, l); });
+    setPagina(q);
+  }
 
   // ── Escribir en el propio lienzo: doble clic en un texto (o Intro con él elegido) ──
   // Se escribe en una caja encima, con la misma letra; al salir (clic fuera, Esc)
   // todo lo escrito es un solo paso de deshacer.
   function editarTexto(idEl, punto) {
-    const el = disenoRef.current.elementos.find(e => e.id === idEl);
+    const el = vista().elementos.find(e => e.id === idEl);
     if (!el || el.tipo !== 'texto' || el.bloqueado) return;
     let cursor = String(el.texto || '').length;
     if (punto && lienzoRef.current) {
@@ -357,53 +591,100 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
       const a = -(el.rot || 0) * Math.PI / 180, vx = punto.x - cx, vy = punto.y - cy;
       cursor = posicionEnTexto(el, (vx * Math.cos(a) - vy * Math.sin(a)) / escala + el.w / 2, (vx * Math.sin(a) + vy * Math.cos(a)) / escala + el.h / 2);
     }
-    edicion.current = { id: idEl, previo: disenoRef.current };
+    edicion.current = { id: idEl, previo: docRef.current };
     setSel(idEl); setEditando({ id: idEl, cursor });
   }
   function terminarTexto() {
     const ed = edicion.current; edicion.current = null; setEditando(null);
-    if (ed && disenoRef.current !== ed.previo) setHist(h => ({ atras: [...h.atras.slice(-99), ed.previo], adelante: [] }));
+    if (ed && docRef.current !== ed.previo) setHist(h => ({ atras: [...h.atras.slice(-99), ed.previo], adelante: [] }));
+  }
+  // ── Recortar una foto: se arrastra la foto dentro de su caja y se acerca con el zoom ──
+  function recortar(idEl) {
+    const el = vista().elementos.find(e => e.id === idEl);
+    if (!el || el.tipo !== 'imagen' || !el.url || el.bloqueado) return;
+    if (!el.encuadre) cambiarEl(idEl, { encuadre: { zoom: 1, x: 0.5, y: 0.5 } });
+    setSel(idEl); setRecortando(idEl);
   }
 
-  // ── Arrastrar, cambiar de tamaño y girar ──
+  // ── Arrastrar, cambiar de tamaño, girar, encuadrar y elegir con un recuadro ──
   function empezar(ev, idEl, modo, hx = 0, hy = 0) {
-    ev.stopPropagation(); ev.preventDefault();
+    ev.stopPropagation();
+    if (ev.button > 0) return;
+    ev.preventDefault();
     if (edicion.current) document.activeElement?.blur?.();
-    const el = disenoRef.current.elementos.find(e => e.id === idEl);
-    setSel(idEl);
-    if (!el || el.bloqueado) return;
-    arrastre.current = { modo, id: idEl, x0: ev.clientX, y0: ev.clientY, el0: { ...el }, hx, hy, movido: false, previo: disenoRef.current };
+    const v = vista(), el = v.elementos.find(e => e.id === idEl);
+    if (!el) return;
+    if (recortando && recortando !== idEl) setRecortando(null);
+    let m = modo;
+    if (m === 'mover' && recortando === idEl) m = 'encuadre';
+    // Mayús + clic: añadir o quitar de lo elegido.
+    if (m === 'mover' && ev.shiftKey) {
+      const g = conGrupo(v.elementos, [idEl]), todos = g.every(x => selRef.current.includes(x));
+      setSeleccion(s => (todos ? s.filter(x => !g.includes(x)) : [...new Set([...s, ...g])]));
+      return;
+    }
+    const nueva = m === 'mover' ? (selRef.current.includes(idEl) ? selRef.current : conGrupo(v.elementos, [idEl])) : [idEl];
+    setSeleccion(nueva);
+    const a = { modo: m, id: idEl, x0: ev.clientX, y0: ev.clientY, el0: { ...el }, hx, hy, movido: false, previo: docRef.current, pagina: paginaRef.current };
+    if (m === 'mover') {
+      const mueven = v.elementos.filter(e => nueva.includes(e.id) && !e.bloqueado);
+      if (!mueven.length) return;
+      const quietos = v.elementos.filter(e => !nueva.includes(e.id) && !e.oculto);
+      arrastre.current = { ...a, otros: mueven.map(e => ({ ...e })), caja: cajaDe(mueven),
+        lineasV: quietos.flatMap(e => [e.x, e.x + e.w / 2, e.x + e.w]), lineasH: quietos.flatMap(e => [e.y, e.y + e.h / 2, e.y + e.h]) };
+      return;
+    }
+    if (el.bloqueado) return;
+    if (m === 'encuadre') {
+      const i = imagenes.get(el.url); if (!i) return;
+      a.img = { w: i.naturalWidth || i.width, h: i.naturalHeight || i.height };
+    }
+    arrastre.current = a;
   }
   useEffect(() => {
     const mover = (ev) => {
       const a = arrastre.current; if (!a) return;
-      const dx = (ev.clientX - a.x0) / escala, dy = (ev.clientY - a.y0) / escala;
-      if (!a.movido && Math.abs(dx) + Math.abs(dy) < 2 / escala) return;
+      const dxp = ev.clientX - a.x0, dyp = ev.clientY - a.y0;
+      if (!a.movido && Math.abs(dxp) + Math.abs(dyp) < 3) return;
       a.movido = true;
+      if (a.modo === 'recuadro') { setRecuadro({ x: Math.min(a.x0, ev.clientX), y: Math.min(a.y0, ev.clientY), w: Math.abs(dxp), h: Math.abs(dyp) }); return; }
+      const dx = dxp / escala, dy = dyp / escala;
       const e0 = a.el0, rad = (e0.rot || 0) * Math.PI / 180;
-      let c = {};
       if (a.modo === 'mover') {
-        let x = e0.x + dx, y = e0.y + dy;
-        const { ancho: W, alto: H } = disenoRef.current, umbral = 8 / escala, gs = [];
-        const cx = x + e0.w / 2, cy = y + e0.h / 2;
-        if (Math.abs(cx - W / 2) < umbral) { x = W / 2 - e0.w / 2; gs.push({ v: W / 2 }); }
-        else if (Math.abs(x) < umbral) { x = 0; gs.push({ v: 0 }); } else if (Math.abs(x + e0.w - W) < umbral) { x = W - e0.w; gs.push({ v: W }); }
-        if (Math.abs(cy - H / 2) < umbral) { y = H / 2 - e0.h / 2; gs.push({ h: H / 2 }); }
-        else if (Math.abs(y) < umbral) { y = 0; gs.push({ h: 0 }); } else if (Math.abs(y + e0.h - H) < umbral) { y = H - e0.h; gs.push({ h: H }); }
+        const bb = a.caja, { ancho: W, alto: H } = paginaDe(docRef.current, a.pagina), umbral = 8 / escala, gs = [];
+        let x = bb.x + dx, y = bb.y + dy;
+        const ex = encaje(x, bb.w, [0, W / 2, W, ...a.lineasV], umbral), ey = encaje(y, bb.h, [0, H / 2, H, ...a.lineasH], umbral);
+        if (ex) { x += ex.d; gs.push({ v: ex.l }); }
+        if (ey) { y += ey.d; gs.push({ h: ey.l }); }
         setGuias(gs);
-        c = { x: Math.round(x), y: Math.round(y) };
+        const ddx = Math.round(x - bb.x), ddy = Math.round(y - bb.y);
+        const pos = new Map(a.otros.map(o => [o.id, { x: o.x + ddx, y: o.y + ddy }]));
+        setDoc(d => { const n = cambiarElementos(d, a.pagina, e => (pos.has(e.id) ? { ...e, ...pos.get(e.id) } : e)); docRef.current = n; return n; });
+        return;
+      }
+      let c = {};
+      if (a.modo === 'encuadre') {
+        const enc = e0.encuadre || { zoom: 1, x: 0.5, y: 0.5 };
+        const k = Math.max(e0.w / a.img.w, e0.h / a.img.h) * Math.max(1, enc.zoom || 1), dw = a.img.w * k, dh = a.img.h * k;
+        const lx = dx * Math.cos(rad) + dy * Math.sin(rad), ly = -dx * Math.sin(rad) + dy * Math.cos(rad);
+        const lim = (v, m) => Math.max(m, Math.min(1 - m, v));
+        c = { encuadre: { ...enc, x: lim((enc.x ?? 0.5) - lx / dw, e0.w / 2 / dw), y: lim((enc.y ?? 0.5) - ly / dh, e0.h / 2 / dh) } };
       } else if (a.modo === 'tamano') {
         const lx = dx * Math.cos(rad) + dy * Math.sin(rad), ly = -dx * Math.sin(rad) + dy * Math.cos(rad);
         let nw = a.hx ? Math.max(10, e0.w + a.hx * lx) : e0.w, nh = a.hy ? Math.max(10, e0.h + a.hy * ly) : e0.h;
         const esquina = a.hx && a.hy;
-        if (esquina && (e0.tipo === 'imagen' || e0.tipo === 'texto' || e0.tipo === 'qr' || ev.shiftKey)) {
+        if (esquina && (['imagen', 'texto', 'qr', 'icono'].includes(e0.tipo) || ev.shiftKey)) {
           const k = Math.max(nw / e0.w, nh / e0.h); nw = e0.w * k; nh = e0.h * k;
         }
         const sx = a.hx * (nw - e0.w) / 2, sy = a.hy * (nh - e0.h) / 2;
         const cx = e0.x + e0.w / 2 + sx * Math.cos(rad) - sy * Math.sin(rad), cy = e0.y + e0.h / 2 + sx * Math.sin(rad) + sy * Math.cos(rad);
         c = { w: Math.round(nw), h: Math.round(nh), x: Math.round(cx - nw / 2), y: Math.round(cy - nh / 2) };
-        // Un texto por la esquina crece con su letra.
-        if (e0.tipo === 'texto' && esquina) c.tamano = Math.max(6, Math.round((e0.tamano || 48) * nw / e0.w));
+        // Un texto por la esquina crece con su letra (y sus efectos).
+        if (e0.tipo === 'texto' && esquina) {
+          const k = nw / e0.w;
+          c.tamano = Math.max(6, Math.round((e0.tamano || 48) * k));
+          for (const p of ['contornoGrosor', 'resalteMargen', 'sombraX', 'sombraY', 'sombraDifu', 'espaciado']) if (e0[p]) c[p] = Math.round(e0[p] * k * 10) / 10;
+        }
         if (e0.tipo === 'linea') { c.h = e0.h; c.y = Math.round(cy - e0.h / 2); }
       } else if (a.modo === 'girar') {
         const r = lienzoRef.current.getBoundingClientRect();
@@ -413,35 +694,50 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
         else for (const s of [0, 90, 180, 270, 360, -90]) if (Math.abs(g - s) < 4) g = s;
         c = { rot: ((g % 360) + 360) % 360 };
       }
-      setDiseno(d => ({ ...d, elementos: d.elementos.map(e => (e.id === a.id ? ajustarTexto({ ...e, ...c }, ejemplo) : e)) }));
+      setDoc(d => { const n = cambiarElementos(d, a.pagina, e => (e.id === a.id ? ajustarTexto({ ...e, ...c }, ejemplo) : e)); docRef.current = n; return n; });
     };
-    const soltar = () => {
+    const soltarPuntero = (ev) => {
+      tramoTerminar();
       const a = arrastre.current; arrastre.current = null; setGuias([]);
-      if (a?.movido) { setHist(h => ({ atras: [...h.atras.slice(-99), a.previo], adelante: [] })); setSucio(true); }
+      if (!a) return;
+      if (a.modo === 'recuadro') {
+        setRecuadro(null);
+        if (!a.movido) { if (!a.shift) setSeleccion([]); return; }
+        const r = lienzoRef.current.getBoundingClientRect();
+        const x1 = (Math.min(a.x0, ev.clientX) - r.left) / escala, x2 = (Math.max(a.x0, ev.clientX) - r.left) / escala;
+        const y1 = (Math.min(a.y0, ev.clientY) - r.top) / escala, y2 = (Math.max(a.y0, ev.clientY) - r.top) / escala;
+        const v = paginaDe(docRef.current, paginaRef.current);
+        const tocados = v.elementos.filter(e => !e.oculto && !e.bloqueado && e.x < x2 && e.x + e.w > x1 && e.y < y2 && e.y + e.h > y1).map(e => e.id);
+        const ids = conGrupo(v.elementos, tocados);
+        setSeleccion(s => (a.shift ? [...new Set([...s, ...ids])] : ids));
+        return;
+      }
+      if (a.movido) { setHist(h => ({ atras: [...h.atras.slice(-99), a.previo], adelante: [] })); setSucio(true); }
     };
-    window.addEventListener('pointermove', mover); window.addEventListener('pointerup', soltar);
-    return () => { window.removeEventListener('pointermove', mover); window.removeEventListener('pointerup', soltar); };
-  }, [escala, ejemplo]);
+    window.addEventListener('pointermove', mover); window.addEventListener('pointerup', soltarPuntero);
+    return () => { window.removeEventListener('pointermove', mover); window.removeEventListener('pointerup', soltarPuntero); };
+  }, [escala, ejemplo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Teclado ──
   useEffect(() => {
     const f = (ev) => {
       const enCampo = /^(INPUT|TEXTAREA|SELECT)$/.test(ev.target?.tagName || '') || ev.target?.isContentEditable;
-      const ctrl = ev.ctrlKey || ev.metaKey;
-      if (ctrl && ev.key.toLowerCase() === 's') { ev.preventDefault(); guardar(); return; }
-      if (enCampo) return;
-      if (ctrl && ev.key.toLowerCase() === 'z') { ev.preventDefault(); if (ev.shiftKey) rehacer(); else deshacer(); }
-      else if (ctrl && ev.key.toLowerCase() === 'y') { ev.preventDefault(); rehacer(); }
-      else if (ctrl && ev.key.toLowerCase() === 'd') { ev.preventDefault(); duplicarSel(); }
-      else if ((ev.key === 'Delete' || ev.key === 'Backspace') && sel) { ev.preventDefault(); borrarSel(); }
-      else if (ev.key === 'Escape') setSel(null);
+      const ctrl = ev.ctrlKey || ev.metaKey, k = ev.key.toLowerCase();
+      if (ctrl && k === 's') { ev.preventDefault(); guardar(); return; }
+      if (enCampo || ventana) return;
+      if (recortando && (ev.key === 'Enter' || ev.key === 'Escape')) { ev.preventDefault(); setRecortando(null); return; }
+      if (ctrl && k === 'z') { ev.preventDefault(); if (ev.shiftKey) rehacer(); else deshacer(); }
+      else if (ctrl && k === 'y') { ev.preventDefault(); rehacer(); }
+      else if (ctrl && k === 'd') { ev.preventDefault(); duplicarSel(); }
+      else if (ctrl && k === 'a') { ev.preventDefault(); setSeleccion(diseno.elementos.filter(e => !e.oculto && !e.bloqueado).map(e => e.id)); }
+      else if (ctrl && k === 'g') { ev.preventDefault(); if (ev.shiftKey) desagrupar(); else agrupar(); }
+      else if ((ev.key === 'Delete' || ev.key === 'Backspace') && seleccion.length) { ev.preventDefault(); borrarSel(); }
+      else if (ev.key === 'Escape') setSeleccion([]);
       else if (ev.key === 'Enter' && sel && elegido?.tipo === 'texto') { ev.preventDefault(); editarTexto(sel); }
-      else if (sel && ev.key.startsWith('Arrow')) {
+      else if (seleccion.length && ev.key.startsWith('Arrow')) {
         ev.preventDefault();
-        const p = ev.shiftKey ? 10 : 1, el = disenoRef.current.elementos.find(e => e.id === sel);
-        if (!el || el.bloqueado) return;
-        const d = { ArrowLeft: [-p, 0], ArrowRight: [p, 0], ArrowUp: [0, -p], ArrowDown: [0, p] }[ev.key];
-        cambiarEl(sel, { x: el.x + d[0], y: el.y + d[1] });
+        const p = ev.shiftKey ? 10 : 1, d = { ArrowLeft: [-p, 0], ArrowRight: [p, 0], ArrowUp: [0, -p], ArrowDown: [0, p] }[ev.key];
+        if (d) moverSel(d[0], d[1]);
       }
     };
     window.addEventListener('keydown', f); return () => window.removeEventListener('keydown', f);
@@ -452,22 +748,36 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
     if (guardando) return;
     setGuardando(true);
     try {
-      const mini = await miniatura(diseno, ejemplo).catch(() => null);
-      const body = { nombre, tipo, datos: diseno, miniatura: mini };
+      const mini = await miniatura(doc, ejemplo).catch(() => null);
+      const body = { nombre, tipo, datos: doc, miniatura: mini };
       if (id) await api(`/api/admin/disenos/${id}`, { method: 'PUT', body });
       else { const r = await api('/api/admin/disenos', { method: 'POST', body }); setId(r.id); }
       setSucio(false); showToast?.('Diseño guardado.');
+      cargarRevision();
     } catch (e) { alert(e.message); } finally { setGuardando(false); }
   }
   async function exportar(formato, escalaExp = 1) {
     setVerExportar(false);
-    try { await exportarDiseno(diseno, formato, nombre, { variables: ejemplo, escala: escalaExp }); }
+    try { await exportarDiseno(doc, formato, nombre, { variables: ejemplo, escala: escalaExp }); }
     catch (e) { alert(`No se ha podido exportar: ${e.message}`); }
   }
   function cerrar() { if (sucio && !window.confirm('Hay cambios sin guardar. ¿Salir sin guardarlos?')) return; onCerrar(); }
   function cambiarTamano(t, ajustar) {
-    aplicar(d => (ajustar ? adaptarDiseno(d, t.ancho, t.alto, ejemplo) : { ...d, ancho: t.ancho, alto: t.alto }));
+    aplicarDoc(d => (ajustar ? adaptarDiseno(d, t.ancho, t.alto, ejemplo) : { ...d, ancho: t.ancho, alto: t.alto }));
     setVerTamano(false);
+  }
+  // ── Ver la animación en el lienzo ──
+  function verAnimacion() {
+    if (tiempo != null) { cancelAnimationFrame(anim.current); setTiempo(null); return; }
+    if (edicion.current) document.activeElement?.blur?.();
+    setSeleccion([]); setRecortando(null);
+    const dur = duracionAnimacion(docRef.current), t0 = performance.now();
+    const paso = () => {
+      const t = (performance.now() - t0) / 1000;
+      if (t > dur + 0.4) { setTiempo(null); return; }
+      setTiempo(t); anim.current = requestAnimationFrame(paso);
+    };
+    anim.current = requestAnimationFrame(paso);
   }
   // ── Usar el diseño en otro sitio ──
   async function guardarSiHaceFalta() { if (sucio) await guardar(); }
@@ -476,18 +786,44 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
     const n = window.prompt('Nombre de la plantilla (la verá todo el equipo al pulsar «Nuevo diseño»):', nombre);
     if (!n?.trim()) return;
     try {
-      const mini = await miniatura(diseno, ejemplo).catch(() => null);
-      await api('/api/admin/disenos', { method: 'POST', body: { nombre: n.trim(), tipo, datos: { ...diseno, esPlantilla: true }, miniatura: mini } });
+      const mini = await miniatura(doc, ejemplo).catch(() => null);
+      const { carpeta, ...datos } = doc; // eslint-disable-line no-unused-vars
+      await api('/api/admin/disenos', { method: 'POST', body: { nombre: n.trim(), tipo, datos: { ...datos, esPlantilla: true }, miniatura: mini } });
       showToast?.('Guardada como plantilla del equipo: sale al pulsar «Nuevo diseño».');
     } catch (e) { alert(e.message); }
   }
   const usar = (v) => { setVerUsar(false); setVerExportar(false); setVentana(v); };
+  // Publicar en redes: con la aprobación de la dirección (la dirección, directamente).
+  const permisoRedes = !id ? { ok: false, motivo: 'Guarda el diseño y pide a la dirección que lo apruebe.' }
+    : revision?.puedoAprobar ? { ok: true }
+      : sucio ? { ok: false, motivo: 'Hay cambios sin guardar: guárdalos y, si hace falta, pide otra vez la aprobación.' }
+        : revision?.estado === 'aprobado' ? { ok: true }
+          : { ok: false, motivo: { pendiente: 'Está esperando la aprobación de la dirección.', cambios: 'La dirección ha pedido cambios: míralos en «Revisión».', cambiado: 'Se ha cambiado después de aprobarlo: hay que pedir otra vez la aprobación.' }[revision?.estado] || 'Antes de publicarlo, la dirección tiene que aprobarlo.' };
+  async function pedirAprobacion(texto) {
+    if (!id) return;
+    if (sucio) await guardar();
+    try { setRevision(await api(`/api/admin/disenos/${id}/revision`, { method: 'POST', body: { accion: 'pedir', texto } })); showToast?.('Pedida la aprobación a la dirección.'); }
+    catch (e) { alert(e.message); }
+  }
 
   const marco = { position: 'absolute', left: 0, top: 0, width: diseno.ancho * escala, height: diseno.alto * escala };
   const botonBarra = { font: 'inherit', fontSize: 13, fontWeight: 700, padding: '7px 11px', borderRadius: 9, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)', cursor: 'pointer', display: 'inline-flex', gap: 6, alignItems: 'center' };
+  const pendientes = (revision?.comentarios || []).filter(c => c.tipo === 'comentario' && !c.resuelto).length;
+  const animada = tieneAnimacion(diseno);
+  const cajaVarios = elegidos.length > 1 ? cajaDe(elegidos) : null;
+  const recortada = recortando ? diseno.elementos.find(e => e.id === recortando) : null;
+  const fantasma = (() => {
+    // Al recortar (sin giro), la foto entera se ve tenue alrededor de su caja.
+    const e = recortada, i = e && imagenes.get(e.url);
+    if (!i || e.rot) return null;
+    const iw = i.naturalWidth || i.width, ih = i.naturalHeight || i.height, enc = e.encuadre || { zoom: 1, x: 0.5, y: 0.5 };
+    const k = Math.max(e.w / iw, e.h / ih) * Math.max(1, enc.zoom || 1), dw = iw * k, dh = ih * k;
+    const dx = Math.min(e.x, Math.max(e.x + e.w - dw, e.x + e.w / 2 - (enc.x ?? 0.5) * dw)), dy = Math.min(e.y, Math.max(e.y + e.h - dh, e.y + e.h / 2 - (enc.y ?? 0.5) * dh));
+    return { url: e.url, x: dx, y: dy, w: dw, h: dh };
+  })();
 
   return (
-    <KitMarca.Provider value={kit}>
+    <KitMarca.Provider value={kitConFuentes}>
     <div style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'var(--bg)', display: 'grid', gridTemplateRows: 'auto 1fr' }}>
       {/* Barra de arriba */}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '10px 14px', borderBottom: '1px solid var(--line)', background: 'var(--bg-2)' }}>
@@ -497,9 +833,10 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
           <option value="libre">Diseño</option><option value="diploma">Diploma del aula</option>
         </select>
         <button type="button" style={botonBarra} onClick={() => setVerTamano(true)} title="Cambiar el tamaño del lienzo">{tamanoTexto(diseno)}</button>
-        {diseno.esPlantilla && (
+        {revision && revision.estado !== 'sin_pedir' && <EstadoRevision estado={revision.estado} onClick={() => setPanel('revision')} />}
+        {doc.esPlantilla && (
           <label style={{ fontSize: 12, fontWeight: 800, color: 'var(--purple)', display: 'inline-flex', gap: 6, alignItems: 'center' }} title="Sale en «Nuevo diseño» para todo el equipo">
-            <input type="checkbox" checked onChange={() => { if (window.confirm('¿Deja de ser una plantilla del equipo? (El diseño se queda.)')) aplicar(d => { const { esPlantilla, ...resto } = d; return resto; }); }} /> ★ Plantilla del equipo
+            <input type="checkbox" checked onChange={() => { if (window.confirm('¿Deja de ser una plantilla del equipo? (El diseño se queda.)')) aplicarDoc(d => { const { esPlantilla, ...resto } = d; return resto; }); }} /> ★ Plantilla del equipo
           </label>
         )}
         <div style={{ flex: 1 }} />
@@ -508,9 +845,15 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
         <div style={{ position: 'relative' }}>
           <button type="button" style={botonBarra} onClick={() => { setVerExportar(v => !v); setVerUsar(false); }}><I.Download width={14} height={14} /> Exportar</button>
           {verExportar && (
-            <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 5, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, boxShadow: 'var(--shadow)', padding: 6, display: 'grid', minWidth: 220 }}>
-              {[['png', 1, 'PNG', 'Con la mejor calidad'], ['png', 2, 'PNG al doble', `${diseno.ancho * 2} × ${diseno.alto * 2} px`], ['jpg', 1, 'JPG', 'Pesa menos (redes, WhatsApp)'], ['pdf', 1, 'PDF', 'Para imprimir']].map(([f, k, t, d]) => (
+            <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 5, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, boxShadow: 'var(--shadow)', padding: 6, display: 'grid', minWidth: 240 }}>
+              {[['png', 1, 'PNG', paginas > 1 ? `Un archivo por página (${paginas})` : 'Con la mejor calidad'], ['png', 2, 'PNG al doble', `${diseno.ancho * 2} × ${diseno.alto * 2} px`],
+                ['jpg', 1, 'JPG', 'Pesa menos (redes, WhatsApp)'], ['pdf', 1, 'PDF', paginas > 1 ? `Las ${paginas} páginas, para ver o imprimir en casa` : 'Para ver o imprimir en casa']].map(([f, k, t, d]) => (
                 <button key={`${f}${k}`} type="button" onClick={() => exportar(f, k)} style={{ font: 'inherit', textAlign: 'left', padding: '8px 10px', border: 0, borderRadius: 8, background: 'none', color: 'var(--ink)', cursor: 'pointer', display: 'grid' }}>
+                  <b style={{ fontSize: 13 }}>{t}</b><span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>{d}</span>
+                </button>
+              ))}
+              {[['imprenta', 'PDF de imprenta', 'A 300 ppp, con 3 mm de sangrado y marcas de corte'], ['animacion', 'GIF o vídeo', animada ? 'La página con su animación (historias)' : 'Primero, anima algo en «Animar»']].map(([k, t, d]) => (
+                <button key={k} type="button" onClick={() => usar(k)} disabled={k === 'animacion' && !animada} style={{ font: 'inherit', textAlign: 'left', padding: '8px 10px', border: 0, borderRadius: 8, background: 'none', color: 'var(--ink)', cursor: 'pointer', display: 'grid', opacity: k === 'animacion' && !animada ? 0.55 : 1 }}>
                   <b style={{ fontSize: 13 }}>{t}</b><span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>{d}</span>
                 </button>
               ))}
@@ -523,7 +866,7 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
           {verUsar && (
             <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 5, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, boxShadow: 'var(--shadow)', padding: 6, display: 'grid', minWidth: 270 }}>
               {[
-                puedePublicar && ['redes', 'Publicar en redes', 'Un borrador en Publicaciones, listo para Facebook e Instagram'],
+                puedePublicar && ['redes', 'Publicar en redes', permisoRedes.ok ? (paginas > 1 ? `Un carrusel con las ${paginas} páginas, en Publicaciones` : 'Un borrador en Publicaciones, listo para Facebook e Instagram') : '🔒 Necesita la aprobación de la dirección'],
                 ['tamanos', 'En otros tamaños', 'El mismo diseño como post, historia, A4…'],
                 tipo === 'diploma' && ['lote', 'Diplomas en lote', 'Un PDF con uno para cada alumno de una clase o un examen'],
                 ['biblioteca', 'Para correos y noticias', 'Se guarda en las imágenes de la web'],
@@ -539,48 +882,87 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
         <button type="button" className="btn btn-sm btn-primary" disabled={guardando} onClick={guardar}>{guardando ? 'Guardando…' : sucio ? 'Guardar' : '✓ Guardado'}</button>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '272px minmax(0, 1fr) 282px', minHeight: 0 }}>
-        {/* Izquierda: añadir, fondo y capas */}
+      <div style={{ display: 'grid', gridTemplateColumns: '286px minmax(0, 1fr) 292px', minHeight: 0 }}>
+        {/* Izquierda: añadir, fondo, capas, animar y revisión */}
         <aside style={{ borderRight: '1px solid var(--line)', background: 'var(--bg-2)', overflowY: 'auto', padding: 12, display: 'grid', gap: 10, alignContent: 'start' }}>
-          <div style={{ display: 'flex', gap: 4 }}>
-            {[['anadir', 'Añadir'], ['fondo', 'Fondo'], ['capas', 'Capas']].map(([k, t]) => (
-              <button key={k} type="button" onClick={() => setPanel(k)} className={`btn btn-sm ${panel === k ? 'btn-primary' : 'btn-ghost'}`} style={{ flex: 1 }}>{t}</button>
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            {[['anadir', 'Añadir'], ['fondo', 'Fondo'], ['capas', 'Capas'], ['animar', 'Animar'], ['revision', `Revisión${pendientes ? ` (${pendientes})` : ''}`]].map(([k, t]) => (
+              <button key={k} type="button" onClick={() => setPanel(k)} className={`btn btn-sm ${panel === k ? 'btn-primary' : 'btn-ghost'}`} style={{ flex: '1 1 28%', padding: '6px 4px', fontSize: 12.5 }}>{t}</button>
             ))}
           </div>
           {panel === 'anadir' && (
-            <PanelAnadir tipo={tipo} kit={kit} anadirTexto={anadirTexto} anadirForma={anadirForma} anadirImagen={anadirImagen} anadirQr={anadirQr}
+            <PanelAnadir tipo={tipo} kit={kit} anadirTexto={anadirTexto} anadirForma={anadirForma} anadirIcono={anadirIcono} anadirMarco={anadirMarco} anadirImagen={anadirImagen} anadirQr={anadirQr}
               anadirBloque={anadirBloque} verFotos={() => setVentana('fotos')} subir={subir} />
           )}
           {panel === 'fondo' && <PanelFondo fondo={diseno.fondo || {}} cambiar={(f) => aplicar(d => ({ ...d, fondo: { ...d.fondo, ...f } }))} subir={subir} />}
           {panel === 'capas' && (
             <div style={{ display: 'grid', gap: 4 }}>
-              {!diseno.elementos.length && <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>Aún no hay nada en el lienzo.</span>}
+              {!diseno.elementos.length && <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>Aún no hay nada en esta página.</span>}
+              {diseno.elementos.length > 0 && <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Con Mayús, se eligen varios.</span>}
               {[...diseno.elementos].reverse().map(e => (
-                <div key={e.id} onClick={() => setSel(e.id)} style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '6px 8px', borderRadius: 8, cursor: 'pointer', fontSize: 13,
-                  background: e.id === sel ? 'color-mix(in oklab, var(--purple) 12%, var(--bg-2))' : 'var(--bg-3)', opacity: e.oculto ? 0.5 : 1 }}>
+                <div key={e.id} onClick={(x) => (x.shiftKey ? setSeleccion(s => (s.includes(e.id) ? s.filter(y => y !== e.id) : [...s, e.id])) : setSel(e.id))}
+                  style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '6px 8px', borderRadius: 8, cursor: 'pointer', fontSize: 13,
+                    background: seleccion.includes(e.id) ? 'color-mix(in oklab, var(--purple) 12%, var(--bg-2))' : 'var(--bg-3)', opacity: e.oculto ? 0.5 : 1,
+                    borderLeft: e.grupo ? '3px solid var(--purple)' : '3px solid transparent' }}>
                   <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{etiquetaElemento(e)}</span>
+                  {e.anim?.tipo && <span title="Animado" style={{ fontSize: 11 }}>✨</span>}
                   <button type="button" title={e.oculto ? 'Mostrar' : 'Ocultar'} onClick={(x) => { x.stopPropagation(); cambiarEl(e.id, { oculto: !e.oculto }); }} style={{ border: 0, background: 'none', cursor: 'pointer', color: 'var(--ink-2)' }}>{e.oculto ? '🚫' : '👁'}</button>
                   <button type="button" title={e.bloqueado ? 'Desbloquear' : 'Bloquear'} onClick={(x) => { x.stopPropagation(); cambiarEl(e.id, { bloqueado: !e.bloqueado }); }} style={{ border: 0, background: 'none', cursor: 'pointer', color: 'var(--ink-2)' }}>{e.bloqueado ? '🔒' : '🔓'}</button>
                 </div>
               ))}
             </div>
           )}
+          {panel === 'animar' && (
+            <PanelAnimar doc={doc} diseno={diseno} elegido={elegido} tiempo={tiempo} onVer={verAnimacion} tramos={tramos}
+              cambiarEl={(c) => elegido && cambiarEl(elegido.id, c)} aplicar={aplicar} aplicarDoc={aplicarDoc} onExportar={() => usar('animacion')} />
+          )}
+          {panel === 'revision' && (
+            <PanelRevision id={id} revision={revision} setRevision={setRevision} sucio={sucio} guardar={guardar} pedir={pedirAprobacion}
+              elegido={elegido} pagina={pagina} showToast={showToast}
+              onIr={(c) => { if (c.pagina != null) irPagina(c.pagina); if (c.elementoId) setTimeout(() => setSel(c.elementoId), 0); }}
+              onVolver={async (v) => {
+                try {
+                  if (!sucio) await api(`/api/admin/disenos/${id}/versiones`, { method: 'POST' });
+                  const d = await api(`/api/admin/disenos/${id}/versiones/${v.id}`);
+                  aplicarDoc(() => d.datos); setSeleccion([]); setPagina(0);
+                  showToast?.('Has vuelto a esa versión. Guarda para quedarte con ella (Ctrl+Z lo deshace).');
+                } catch (e) { alert(e.message); }
+              }} />
+          )}
         </aside>
 
-        {/* Centro: el lienzo */}
-        <div ref={zonaRef} onPointerDown={() => { if (edicion.current) document.activeElement?.blur?.(); setSel(null); }} style={{ position: 'relative', overflow: 'hidden', display: 'grid', placeItems: 'center',
-          background: 'repeating-conic-gradient(color-mix(in oklab, var(--ink) 4%, var(--bg)) 0% 25%, var(--bg) 0% 50%) 50% / 24px 24px' }}>
+        {/* Centro: el lienzo y las páginas */}
+        <div ref={zonaRef}
+          onPointerDown={(ev) => {
+            if (edicion.current) document.activeElement?.blur?.();
+            if (ev.button > 0 || tiempo != null) return;
+            setRecortando(null);
+            arrastre.current = { modo: 'recuadro', x0: ev.clientX, y0: ev.clientY, shift: ev.shiftKey, movido: false };
+          }}
+          onDragOver={(ev) => { if ([...ev.dataTransfer.types].some(t => t === TIPO_ARRASTRE || t === 'Files')) { ev.preventDefault(); setSoltando(true); } }}
+          onDragLeave={(ev) => { if (ev.currentTarget === ev.target) setSoltando(false); }}
+          onDrop={soltar}
+          style={{ position: 'relative', overflow: 'hidden', display: 'grid', placeItems: 'center', gridTemplateRows: 'minmax(0, 1fr) auto',
+            background: 'repeating-conic-gradient(color-mix(in oklab, var(--ink) 4%, var(--bg)) 0% 25%, var(--bg) 0% 50%) 50% / 24px 24px',
+            outline: soltando ? '3px dashed #7C5CFF' : 'none', outlineOffset: -6 }}>
           <div style={{ position: 'relative', width: diseno.ancho * escala, height: diseno.alto * escala, boxShadow: '0 10px 40px -10px rgba(0,0,0,.35)' }}>
+            {fantasma && <div style={{ position: 'absolute', left: fantasma.x * escala, top: fantasma.y * escala, width: fantasma.w * escala, height: fantasma.h * escala, background: `center / 100% 100% no-repeat url(${fantasma.url})`, opacity: 0.35, pointerEvents: 'none' }} />}
             <canvas ref={lienzoRef} style={{ ...marco, width: diseno.ancho * escala, height: diseno.alto * escala, display: 'block' }} />
             <div style={marco}>
-              {diseno.elementos.map(e => (e.oculto ? null : (
-                <div key={e.id} onPointerDown={(ev) => empezar(ev, e.id, 'mover')} onDoubleClick={(ev) => { if (e.tipo === 'texto') editarTexto(e.id, { x: ev.clientX, y: ev.clientY }); }}
-                  title={e.tipo === 'texto' && !e.bloqueado && e.id === sel && !editando ? 'Doble clic para escribir' : undefined}
+              {tiempo == null && diseno.elementos.map(e => (e.oculto ? null : (
+                <div key={e.id} onPointerDown={(ev) => empezar(ev, e.id, 'mover')}
+                  onDoubleClick={(ev) => {
+                    if (e.tipo === 'texto') editarTexto(e.id, { x: ev.clientX, y: ev.clientY });
+                    else if (e.tipo === 'imagen' && e.url) recortar(e.id);
+                    else if (e.grupo) setSel(e.id);
+                  }}
+                  title={e.id === sel && !e.bloqueado && !editando ? (e.tipo === 'texto' ? 'Doble clic para escribir' : e.tipo === 'imagen' && e.url ? 'Doble clic para recortar' : e.tipo === 'imagen' ? 'Suelta aquí una foto' : undefined) : undefined}
                   style={{ position: 'absolute', left: e.x * escala, top: e.y * escala, width: e.w * escala, height: e.h * escala, transform: `rotate(${e.rot || 0}deg)`,
-                    cursor: e.bloqueado ? 'default' : e.tipo === 'texto' && e.id === sel ? 'text' : 'move', outline: e.id === sel && editando?.id !== e.id ? '2px solid #7C5CFF' : 'none', outlineOffset: 1, touchAction: 'none' }}>
-                  {e.id === sel && !e.bloqueado && editando?.id !== e.id && (
+                    cursor: e.bloqueado ? 'default' : recortando === e.id ? 'grab' : e.tipo === 'texto' && e.id === sel ? 'text' : 'move',
+                    outline: seleccion.includes(e.id) && editando?.id !== e.id ? `2px ${recortando === e.id ? 'dashed' : 'solid'} #7C5CFF` : 'none', outlineOffset: 1, touchAction: 'none' }}>
+                  {e.id === sel && !e.bloqueado && editando?.id !== e.id && recortando !== e.id && (
                     <>
-                      {[[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0]].filter(([hx, hy]) => (e.tipo === 'linea' ? hy === 0 : e.tipo === 'qr' ? hx && hy : true)).map(([hx, hy]) => (
+                      {[[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0]].filter(([hx, hy]) => (e.tipo === 'linea' ? hy === 0 : CUADRADOS_EDITOR.includes(e.tipo) ? hx && hy : true)).map(([hx, hy]) => (
                         <span key={`${hx}${hy}`} onPointerDown={(ev) => empezar(ev, e.id, 'tamano', hx, hy)}
                           style={{ position: 'absolute', width: 12, height: 12, borderRadius: 3, background: '#fff', border: '2px solid #7C5CFF', left: `calc(${(hx + 1) * 50}% - 6px)`, top: `calc(${(hy + 1) * 50}% - 6px)`,
                             cursor: hx && hy ? (hx === hy ? 'nwse-resize' : 'nesw-resize') : hx ? 'ew-resize' : 'ns-resize', touchAction: 'none' }} />
@@ -591,6 +973,7 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
                   )}
                 </div>
               )))}
+              {cajaVarios && tiempo == null && <div style={{ position: 'absolute', pointerEvents: 'none', left: cajaVarios.x * escala - 4, top: cajaVarios.y * escala - 4, width: cajaVarios.w * escala + 8, height: cajaVarios.h * escala + 8, border: '1.5px dashed #7C5CFF', borderRadius: 4 }} />}
               {guias.map((g, i) => <div key={i} style={{ position: 'absolute', pointerEvents: 'none', background: '#FF5FA2', ...(g.v != null ? { left: g.v * escala, top: 0, width: 1, height: '100%' } : { top: g.h * escala, left: 0, height: 1, width: '100%' }) }} />)}
               {editando && (() => {
                 const el = diseno.elementos.find(x => x.id === editando.id);
@@ -598,19 +981,49 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
               })()}
             </div>
           </div>
+          {/* Las páginas */}
+          <div onPointerDown={ev => ev.stopPropagation()} style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '8px 10px', margin: '0 0 12px', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, boxShadow: 'var(--shadow)', flexWrap: 'wrap', justifyContent: 'center', maxWidth: '95%' }}>
+            {recortada ? <>
+              <span style={{ fontSize: 12.5, fontWeight: 700 }}>✂ Arrastra la foto para encuadrarla · Zoom</span>
+              <input type="range" min="1" max="4" step="0.05" value={recortada.encuadre?.zoom || 1} aria-label="Zoom de la foto"
+                onPointerDown={tramos.empezar} onPointerUp={tramos.terminar}
+                onChange={x => cambiarEl(recortada.id, { encuadre: { ...(recortada.encuadre || { x: 0.5, y: 0.5 }), zoom: Number(x.target.value) } })} />
+              <button type="button" className="btn btn-sm btn-primary" onClick={() => setRecortando(null)}>Hecho</button>
+            </> : <>
+            {Array.from({ length: paginas }, (_, i) => (
+              <button key={i} type="button" onClick={() => irPagina(i)} aria-label={`Página ${i + 1}`} aria-current={i === pagina}
+                style={{ minWidth: 30, height: 30, borderRadius: 8, cursor: 'pointer', font: 'inherit', fontSize: 13, fontWeight: 800, border: `2px solid ${i === pagina ? '#7C5CFF' : 'var(--line)'}`, background: i === pagina ? 'color-mix(in oklab, #7C5CFF 12%, var(--bg-2))' : 'var(--bg-3)', color: 'var(--ink)' }}>{i + 1}</button>
+            ))}
+            <button type="button" className="btn btn-sm btn-ghost" onClick={nuevaPagina} title="Añadir una página (carrusel, folleto de dos caras…)">＋ Página</button>
+            {paginas > 1 && <>
+              <span style={{ width: 1, height: 22, background: 'var(--line)' }} />
+              <button type="button" className="btn btn-sm btn-ghost" disabled={pagina === 0} onClick={() => moverPagina(-1)} title="Moverla antes">◀</button>
+              <button type="button" className="btn btn-sm btn-ghost" disabled={pagina === paginas - 1} onClick={() => moverPagina(1)} title="Moverla después">▶</button>
+            </>}
+            <button type="button" className="btn btn-sm btn-ghost" onClick={duplicarPagina} title="Duplicar esta página">⧉</button>
+            {paginas > 1 && <button type="button" className="btn btn-sm btn-ghost" onClick={borrarPagina} title="Borrar esta página" style={{ color: 'var(--orange)' }}>🗑</button>}
+            </>}
+          </div>
+          {recuadro && <div style={{ position: 'fixed', left: recuadro.x, top: recuadro.y, width: recuadro.w, height: recuadro.h, border: '1px solid #7C5CFF', background: 'rgba(124,92,255,.1)', pointerEvents: 'none', zIndex: 4 }} />}
         </div>
 
         {/* Derecha: lo que se puede cambiar */}
         <aside style={{ borderLeft: '1px solid var(--line)', background: 'var(--bg-2)', overflowY: 'auto', padding: 12, display: 'grid', gap: 10, alignContent: 'start' }}>
-          {!elegido ? (
+          {elegidos.length > 1 ? (
+            <PanelVarios elegidos={elegidos} agrupar={agrupar} desagrupar={desagrupar} alinear={alinearVarios} repartir={repartir}
+              duplicar={duplicarSel} borrar={borrarSel} capa={capa} bloquear={(b) => cambiarVarios(seleccion, e => ({ ...e, bloqueado: b }))} />
+          ) : !elegido ? (
             <div style={{ fontSize: 13, color: 'var(--ink-3)', display: 'grid', gap: 8 }}>
               <b style={{ color: 'var(--ink)' }}>Nada elegido</b>
               <span>Pulsa algo del lienzo para cambiarlo. Arrástralo para moverlo, tira de los cuadraditos para el tamaño y del círculo de arriba para girarlo.</span>
-              <span>Atajos: Supr borra, Ctrl+D duplica, Ctrl+Z deshace, las flechas mueven (con Mayús, de 10 en 10), Ctrl+S guarda.</span>
+              <span>Varios a la vez: con Mayús + clic o arrastrando un recuadro desde un hueco. Doble clic en un texto para escribir y en una foto para recortarla. Las fotos del panel (o del ordenador) se pueden soltar encima de un marco.</span>
+              <span>Atajos: Supr borra, Ctrl+D duplica, Ctrl+G agrupa (con Mayús, desagrupa), Ctrl+A elige todo, Ctrl+Z deshace, las flechas mueven (con Mayús, de 10 en 10), Ctrl+S guarda.</span>
               {tipo === 'diploma' && <span style={{ color: 'var(--purple)' }}>Es un diploma: los huecos ({'{alumno}'}, {'{curso}'}…) se ven con datos de ejemplo y a cada alumno le salen los suyos.</span>}
             </div>
           ) : (
-            <Propiedades e={elegido} tipo={tipo} cambiar={(c) => cambiarEl(elegido.id, c)} textoRef={textoRef} subir={subir} onEscribir={() => editarTexto(elegido.id)}
+            <Propiedades e={elegido} tipo={tipo} cambiar={(c) => cambiarEl(elegido.id, c)} textoRef={textoRef} subir={subir} tramos={tramos}
+              onEscribir={() => editarTexto(elegido.id)} onRecortar={() => (recortando ? setRecortando(null) : recortar(elegido.id))} recortando={recortando === elegido.id}
+              verFotos={() => setVentana('fotos')} onFuentesCambiadas={setFuentesClub}
               acciones={{ duplicar: duplicarSel, borrar: borrarSel, capa, alinear }} />
           )}
         </aside>
@@ -621,16 +1034,20 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
           <CambiarTamano actual={diseno} onElegir={cambiarTamano} />
         </Ventana>
       )}
-      {ventana === 'redes' && <PublicarEnRedes diseno={diseno} ejemplo={ejemplo} onCerrar={() => setVentana(null)}
-        onHecho={async (id) => { await guardarSiHaceFalta().catch(() => {}); go(`/admin/publicaciones?abrir=${id}`); }} />}
-      {ventana === 'tamanos' && <OtrosTamanos diseno={diseno} nombre={nombre} tipo={tipo} ejemplo={ejemplo} showToast={showToast} onCerrar={() => setVentana(null)} />}
-      {ventana === 'lote' && <DiplomasEnLote diseno={diseno} nombre={nombre} onCerrar={() => setVentana(null)} />}
+      {ventana === 'redes' && <PublicarEnRedes doc={doc} pagina={pagina} ejemplo={ejemplo} permiso={permisoRedes} estado={revision?.estado} onPedir={pedirAprobacion}
+        onRevision={() => { setVentana(null); setPanel('revision'); }} onCerrar={() => setVentana(null)}
+        onHecho={async (pid) => { await guardarSiHaceFalta().catch(() => {}); go(`/admin/publicaciones?abrir=${pid}`); }} />}
+      {ventana === 'tamanos' && <OtrosTamanos diseno={doc} nombre={nombre} tipo={tipo} ejemplo={ejemplo} showToast={showToast} onCerrar={() => setVentana(null)} />}
+      {ventana === 'lote' && <DiplomasEnLote diseno={doc} nombre={nombre} onCerrar={() => setVentana(null)} />}
       {ventana === 'biblioteca' && <ParaCorreosYNoticias diseno={diseno} nombre={nombre} ejemplo={ejemplo} onCerrar={() => setVentana(null)} />}
+      {ventana === 'imprenta' && <ParaImprenta doc={doc} nombre={nombre} ejemplo={ejemplo} onCerrar={() => setVentana(null)} />}
+      {ventana === 'animacion' && <ExportarAnimacion diseno={diseno} nombre={nombre} onCerrar={() => setVentana(null)} />}
       {ventana === 'fotos' && <FotosDelClub onCerrar={() => setVentana(null)} onElegir={(f) => { setVentana(null); anadirImagen(`/api/admin/disenos/foto-club/${f.id}/grande`, f.ancho, f.alto); }} />}
     </div>
     </KitMarca.Provider>
   );
 }
+const CUADRADOS_EDITOR = ['qr', 'icono'];
 
 function CambiarTamano({ actual, onElegir }) {
   const [ajustar, setAjustar] = useState(true);
@@ -661,11 +1078,15 @@ function BotonSubir({ texto, onArchivo, className = 'btn btn-sm btn-outline' }) 
   );
 }
 
-function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirImagen, anadirQr, anadirBloque, verFotos, subir }) {
+function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirMarco, anadirImagen, anadirQr, anadirBloque, verFotos, subir }) {
   const [subidas, setSubidas] = useState(null);
   const [qr, setQr] = useState('');
+  const [mas, setMas] = useState({});
   useEffect(() => { api('/api/admin/correo/imagenes').then(d => setSubidas(Array.isArray(d) ? d : d.imagenes || [])).catch(() => setSubidas([])); }, []);
   const bloque = { font: 'inherit', cursor: 'pointer', padding: '10px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', textAlign: 'left' };
+  const cuadro = { ...bloque, display: 'grid', placeItems: 'center', padding: 6, height: 44, textAlign: 'center' };
+  const svg = (html) => <span style={{ width: 26, height: 26, display: 'block' }} dangerouslySetInnerHTML={{ __html: html.replace('<svg ', '<svg width="100%" height="100%" ') }} />;
+  const verTodo = (k, t) => !mas[k] && <button type="button" className="btn btn-sm btn-ghost" style={{ fontSize: 12, justifySelf: 'start' }} onClick={() => setMas(m => ({ ...m, [k]: true }))}>{t}</button>;
   return (
     <div style={{ display: 'grid', gap: 8 }}>
       <div style={seccionT}>Texto</div>
@@ -680,12 +1101,52 @@ function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirImagen, anadir
           </div>
         </>
       )}
+
       <div style={seccionT}>Formas</div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
-        <button type="button" style={{ ...bloque, textAlign: 'center' }} onClick={() => anadirForma('rect')} title="Rectángulo"><span style={{ display: 'inline-block', width: 30, height: 22, background: '#5233A8', borderRadius: 4 }} /></button>
-        <button type="button" style={{ ...bloque, textAlign: 'center' }} onClick={() => anadirForma('elipse')} title="Círculo"><span style={{ display: 'inline-block', width: 24, height: 24, background: '#FF5FA2', borderRadius: 99 }} /></button>
-        <button type="button" style={{ ...bloque, textAlign: 'center' }} onClick={() => anadirForma('linea')} title="Línea"><span style={{ display: 'inline-block', width: 30, height: 3, background: 'var(--ink)', verticalAlign: 'middle' }} /></button>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 5 }}>
+        {(mas.formas ? FIGURAS : FIGURAS.slice(0, 9)).map(f => (
+          <button key={f.id} type="button" style={{ ...cuadro, color: '#5233A8' }} title={f.nombre} aria-label={f.nombre} onClick={() => anadirForma(f.id)}>{svg(svgFigura(f.id))}</button>
+        ))}
+        <button type="button" style={cuadro} onClick={() => anadirForma('linea')} title="Línea" aria-label="Línea"><span style={{ display: 'inline-block', width: 26, height: 3, background: 'var(--ink)' }} /></button>
       </div>
+      {verTodo('formas', `Ver todas las formas (${FIGURAS.length})`)}
+
+      <div style={seccionT}>Iconos</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 5 }}>
+        {(mas.iconos ? ICONOS : ICONOS.slice(0, 12)).map(i => (
+          <button key={i.id} type="button" style={{ ...cuadro, height: 38, color: '#5233A8' }} title={i.nombre} aria-label={i.nombre} onClick={() => anadirIcono(i.id)}>
+            <svg viewBox="0 0 24 24" width="22" height="22"><path d={i.d} fill="currentColor" /></svg>
+          </button>
+        ))}
+      </div>
+      {verTodo('iconos', `Ver todos los iconos (${ICONOS.length})`)}
+
+      <div style={seccionT}>Actividades del club</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 5 }}>
+        {ICONOS_ACTIVIDAD.map(a => (
+          <button key={a.icono} type="button" style={{ ...cuadro, padding: 3 }} title={`${a.nombre} (arrástralo o pulsa)`} onClick={() => anadirImagen(a.icono)} {...arrastrable(a.icono)}>
+            <img src={a.icono} alt={a.nombre} style={{ maxWidth: '100%', maxHeight: 36, borderRadius: 6 }} draggable={false} />
+          </button>
+        ))}
+      </div>
+      {mas.submarcas ? (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 5 }}>
+          {ICONOS_ACTIVIDAD.map(a => (
+            <button key={a.logo} type="button" style={{ ...cuadro, height: 54 }} title={`Logo de ${a.nombre}`} onClick={() => anadirImagen(a.logo)} {...arrastrable(a.logo)}>
+              <img src={a.logo} alt={`Logo de ${a.nombre}`} style={{ maxWidth: '95%', maxHeight: 44 }} draggable={false} />
+            </button>
+          ))}
+        </div>
+      ) : verTodo('submarcas', 'Ver el logo de cada actividad')}
+
+      <div style={seccionT}>Marcos para fotos</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 5 }}>
+        {MARCOS.map(m => (
+          <button key={m} type="button" style={{ ...cuadro, color: '#B9AEDF' }} title={`Marco: ${FIGURAS.find(f => f.id === m)?.nombre}`} aria-label={`Marco ${FIGURAS.find(f => f.id === m)?.nombre}`} onClick={() => anadirMarco(m)}>{svg(svgFigura(m))}</button>
+        ))}
+      </div>
+      <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Suelta encima una foto (del panel o del ordenador) y se recorta con su forma.</span>
+
       <div style={seccionT}>Código QR</div>
       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
         {ENLACES_QR.map(([t, u]) => <button key={t} type="button" className="btn btn-sm btn-outline" style={{ padding: '3px 8px', fontSize: 12 }} title={u} onClick={() => anadirQr(u)}>{t}</button>)}
@@ -705,21 +1166,22 @@ function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirImagen, anadir
       <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>La marca</span>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
         {[...(kit?.logo && !LOGOS_MARCA.some(([u]) => u === kit.logo) ? [[kit.logo, 'Logo de los correos']] : []), ...LOGOS_MARCA].map(([u, t, oscuro]) => (
-          <button key={u} type="button" style={{ ...bloque, display: 'grid', placeItems: 'center', height: 56, ...(oscuro ? { background: '#2a2a2a' } : {}) }} onClick={() => anadirImagen(u)} title={t}><img src={u} alt={t} style={{ maxWidth: '90%', maxHeight: 40 }} /></button>
+          <button key={u} type="button" style={{ ...bloque, display: 'grid', placeItems: 'center', height: 56, ...(oscuro ? { background: '#2a2a2a' } : {}) }} onClick={() => anadirImagen(u)} title={t} {...arrastrable(u)}><img src={u} alt={t} style={{ maxWidth: '90%', maxHeight: 40 }} draggable={false} /></button>
         ))}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
-        {PEGATINAS.map((u, i) => <button key={u} type="button" style={{ ...bloque, display: 'grid', placeItems: 'center', height: 64, padding: 4 }} onClick={() => anadirImagen(u)} title={`Pegatina ${i + 1}`}><img src={u} alt={`Pegatina ${i + 1}`} style={{ maxWidth: '100%', maxHeight: 54 }} /></button>)}
+        {PEGATINAS.map((u, i) => <button key={u} type="button" style={{ ...bloque, display: 'grid', placeItems: 'center', height: 64, padding: 4 }} onClick={() => anadirImagen(u)} title={`Pegatina ${i + 1}`} {...arrastrable(u)}><img src={u} alt={`Pegatina ${i + 1}`} style={{ maxWidth: '100%', maxHeight: 54 }} draggable={false} /></button>)}
       </div>
       {subidas?.length > 0 && (
         <>
-          <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Ya subidas</span>
+          <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Ya subidas (arrástralas o pulsa)</span>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
-            {subidas.slice(0, 30).map(x => (
-              <button key={x.id} type="button" onClick={() => anadirImagen(x.url, x.ancho, x.alto)} title={x.nombre || ''}
-                style={{ border: '1px solid var(--line)', borderRadius: 8, padding: 0, aspectRatio: '1', background: `center / cover no-repeat url(${x.url}), var(--bg-3)`, cursor: 'pointer' }} />
+            {subidas.slice(0, mas.subidas ? 120 : 30).map(x => (
+              <button key={x.id} type="button" onClick={() => anadirImagen(x.url, x.ancho, x.alto)} title={x.nombre || ''} {...arrastrable(x.url, x.ancho, x.alto)}
+                style={{ border: '1px solid var(--line)', borderRadius: 8, padding: 0, aspectRatio: '1', background: `center / cover no-repeat url(${x.url}?w=320), var(--bg-3)`, cursor: 'pointer' }} />
             ))}
           </div>
+          {subidas.length > 30 && verTodo('subidas', `Ver más (${subidas.length})`)}
         </>
       )}
     </div>
@@ -778,13 +1240,145 @@ function PanelFondo({ fondo, cambiar, subir }) {
   );
 }
 
-function Propiedades({ e, tipo, cambiar, textoRef, subir, acciones, onEscribir }) {
+// Un deslizador: lo que cambia mientras se arrastra es un solo paso de deshacer.
+function Rango({ etiqueta, valor, min, max, paso = 1, onCambio, tramos, sufijo = '' }) {
+  return (
+    <label style={etq}>
+      <span style={{ display: 'flex', justifyContent: 'space-between' }}>{etiqueta}<span style={{ fontWeight: 600, color: 'var(--ink-3)' }}>{Math.round((valor ?? 0) * 100) / 100}{sufijo}</span></span>
+      <input type="range" min={min} max={max} step={paso} value={valor ?? 0} onPointerDown={tramos?.empezar} onPointerUp={tramos?.terminar} onChange={e => onCambio(Number(e.target.value))} />
+    </label>
+  );
+}
+const casillaEstilo = { display: 'flex', gap: 6, alignItems: 'center', fontSize: 12.5, fontWeight: 700 };
+
+// La letra: las de siempre y las que sube el club.
+function ElegirFuente({ e, cambiar, onFuentesCambiadas }) {
+  const kit = useContext(KitMarca);
+  const propias = kit?.fuentes || [];
+  const [subiendo, setSubiendo] = useState(false);
+  async function subirFuente(f) {
+    const nombre = window.prompt('¿Cómo se llama esta letra? (Así saldrá en la lista.)', f.name.replace(/\.(ttf|otf|woff2?)$/i, '').replace(/[-_]+/g, ' '));
+    if (!nombre?.trim()) return;
+    setSubiendo(true);
+    try {
+      const r = await fetch(`/api/admin/disenos/fuentes?nombre=${encodeURIComponent(nombre.trim())}`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/octet-stream' }, body: f });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || 'No se ha podido subir la letra.');
+      await cargarFuentePropia(d.fuente.nombre, d.fuente.url);
+      onFuentesCambiadas?.([...propias, d.fuente]);
+      cambiar({ fuente: d.fuente.nombre, fuenteUrl: d.fuente.url });
+    } catch (x) { alert(x.message); } finally { setSubiendo(false); }
+  }
+  const valor = e.fuente || 'Montserrat';
+  return (
+    <div style={etq}>
+      <span>Fuente</span>
+      <select value={valor} aria-label="Fuente" style={{ ...inp, fontFamily: `"${valor}"` }}
+        onChange={x => { const p = propias.find(f => f.nombre === x.target.value); cambiar(p ? { fuente: p.nombre, fuenteUrl: p.url } : { fuente: x.target.value, fuenteUrl: undefined }); }}>
+        <optgroup label="Las de siempre">{FUENTES_DISENO.map(f => <option key={f.id} value={f.id} style={{ fontFamily: `"${f.id}"` }}>{f.nombre}</option>)}</optgroup>
+        {propias.length > 0 && <optgroup label="Las del club">{propias.map(f => <option key={f.id} value={f.nombre} style={{ fontFamily: `"${f.nombre}"` }}>{f.nombre}</option>)}</optgroup>}
+        {e.fuenteUrl && !propias.some(f => f.nombre === valor) && <option value={valor}>{valor}</option>}
+      </select>
+      <label className="btn btn-sm btn-ghost" style={{ justifySelf: 'start', cursor: 'pointer', position: 'relative', fontSize: 12 }}>
+        {subiendo ? 'Subiendo…' : '⬆ Subir una letra (TTF, OTF, WOFF)'}
+        <input type="file" accept=".ttf,.otf,.woff,.woff2" disabled={subiendo} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }}
+          onChange={x => { const f = x.target.files?.[0]; x.target.value = ''; if (f) subirFuente(f); }} />
+      </label>
+    </div>
+  );
+}
+
+// La sombra (de cualquier cosa): color, transparencia, hacia dónde y cuánto difumina.
+function ControlesSombra({ e, cambiar, tramos }) {
+  return (
+    <div style={{ display: 'grid', gap: 8, paddingLeft: 10, borderLeft: '2px solid var(--line)' }}>
+      <Color etiqueta="Color de la sombra" valor={e.sombraColor || '#000000'} onCambio={(v) => cambiar({ sombraColor: v })} />
+      <Rango etiqueta="Intensidad" valor={Math.round((e.sombraOpacidad ?? 0.28) * 100)} min={5} max={100} onCambio={(v) => cambiar({ sombraOpacidad: v / 100 })} tramos={tramos} sufijo=" %" />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+        <Rango etiqueta="A los lados" valor={e.sombraX ?? 0} min={-80} max={80} onCambio={(v) => cambiar({ sombraX: v })} tramos={tramos} />
+        <Rango etiqueta="Abajo" valor={e.sombraY ?? 8} min={-80} max={80} onCambio={(v) => cambiar({ sombraY: v })} tramos={tramos} />
+      </div>
+      <Rango etiqueta="Difuminado" valor={e.sombraDifu ?? 24} min={0} max={150} onCambio={(v) => cambiar({ sombraDifu: v })} tramos={tramos} />
+    </div>
+  );
+}
+
+// Efectos de texto: contorno, sombra de color (neón), fondo detrás y curva.
+function EfectosTexto({ e, cambiar, tramos }) {
+  const T = e.tamano || 48;
+  const estilos = [
+    ['Ninguno', { sombra: false, contorno: null, contornoGrosor: 0, resalte: null, curva: 0 }],
+    ['Sombra', { sombra: true, sombraColor: '#000000', sombraOpacidad: 0.35, sombraX: Math.round(T * 0.05), sombraY: Math.round(T * 0.08), sombraDifu: Math.round(T * 0.12) }],
+    ['Neón', { sombra: true, sombraColor: e.color && e.color !== 'transparent' ? e.color : '#FF5FA2', sombraOpacidad: 0.95, sombraX: 0, sombraY: 0, sombraDifu: Math.round(T * 0.45) }],
+    ['Contorno', { contorno: '#1A1A1A', contornoGrosor: Math.max(1, Math.round(T * 0.05)) }],
+    ['Fondo', { resalte: '#FFD526', resalteMargen: Math.round(T * 0.3) }],
+    ['Curvo', { curva: 45 }],
+  ];
+  return (
+    <>
+      <div style={seccionT}>Efectos</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4 }}>
+        {estilos.map(([t, c]) => <button key={t} type="button" className="btn btn-sm btn-outline" style={{ padding: '4px 6px', fontSize: 12 }} onClick={() => cambiar(c)}>{t}</button>)}
+      </div>
+      <label style={casillaEstilo}><input type="checkbox" checked={!!e.contorno && e.contornoGrosor > 0} onChange={x => cambiar(x.target.checked ? { contorno: e.contorno || '#1A1A1A', contornoGrosor: e.contornoGrosor || Math.max(1, Math.round(T * 0.05)) } : { contornoGrosor: 0 })} /> Contorno</label>
+      {!!e.contorno && e.contornoGrosor > 0 && (
+        <div style={{ display: 'grid', gap: 8, paddingLeft: 10, borderLeft: '2px solid var(--line)' }}>
+          <Color etiqueta="Color del contorno" valor={e.contorno} onCambio={(v) => cambiar({ contorno: v })} />
+          <Rango etiqueta="Grosor" valor={e.contornoGrosor} min={1} max={Math.max(20, Math.round(T * 0.25))} onCambio={(v) => cambiar({ contornoGrosor: v })} tramos={tramos} />
+        </div>
+      )}
+      <label style={casillaEstilo}><input type="checkbox" checked={!!e.sombra} onChange={x => cambiar({ sombra: x.target.checked })} /> Sombra</label>
+      {e.sombra && <ControlesSombra e={e} cambiar={cambiar} tramos={tramos} />}
+      <label style={casillaEstilo}><input type="checkbox" checked={!!e.resalte && e.resalte !== 'transparent'} onChange={x => cambiar({ resalte: x.target.checked ? '#FFD526' : null })} /> Fondo detrás del texto</label>
+      {!!e.resalte && e.resalte !== 'transparent' && (
+        <div style={{ display: 'grid', gap: 8, paddingLeft: 10, borderLeft: '2px solid var(--line)' }}>
+          <Color etiqueta="Color del fondo" valor={e.resalte} onCambio={(v) => cambiar({ resalte: v })} />
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            <Rango etiqueta="Margen" valor={Math.round(e.resalteMargen ?? T * 0.3)} min={0} max={Math.round(T * 1.2)} onCambio={(v) => cambiar({ resalteMargen: v })} tramos={tramos} />
+            <Rango etiqueta="Redondeo" valor={Math.round(e.resalteRadio ?? (e.resalteMargen ?? T * 0.3) * 0.6)} min={0} max={Math.round(T)} onCambio={(v) => cambiar({ resalteRadio: v })} tramos={tramos} />
+          </div>
+        </div>
+      )}
+      <Rango etiqueta="Curva (0, recto)" valor={e.curva || 0} min={-100} max={100} onCambio={(v) => cambiar({ curva: Math.abs(v) < 3 ? 0 : v })} tramos={tramos} />
+      {!!e.curva && <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>El texto curvo va en una sola línea. Negativo: hacia abajo, como una sonrisa.</span>}
+    </>
+  );
+}
+
+// Filtros de una foto: los listos y a mano.
+const FILTROS_LISTOS = [['Original', {}], ['B/N', { bn: true, contraste: 10 }], ['Vivo', { saturacion: 35, contraste: 15 }], ['Cálido', { calidez: 35, saturacion: 10 }],
+  ['Frío', { calidez: -35 }], ['Sepia', { sepia: true }], ['Suave', { brillo: 10, contraste: -15, saturacion: -15 }], ['Intenso', { contraste: 35, brillo: -5 }]];
+function FiltrosFoto({ e, cambiar, tramos }) {
+  const f = e.filtros || {};
+  const pon = (c) => cambiar({ filtros: { ...f, ...c } });
+  return (
+    <>
+      <div style={seccionT}>Filtros</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 4 }}>
+        {FILTROS_LISTOS.map(([t, c]) => <button key={t} type="button" className="btn btn-sm btn-outline" style={{ padding: '4px 4px', fontSize: 11.5 }} onClick={() => cambiar({ filtros: c })}>{t}</button>)}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+        <Rango etiqueta="Brillo" valor={f.brillo || 0} min={-100} max={100} onCambio={(v) => pon({ brillo: v })} tramos={tramos} />
+        <Rango etiqueta="Contraste" valor={f.contraste || 0} min={-100} max={100} onCambio={(v) => pon({ contraste: v })} tramos={tramos} />
+        <Rango etiqueta="Saturación" valor={f.saturacion || 0} min={-100} max={100} onCambio={(v) => pon({ saturacion: v })} tramos={tramos} />
+        <Rango etiqueta="Calidez" valor={f.calidez || 0} min={-100} max={100} onCambio={(v) => pon({ calidez: v })} tramos={tramos} />
+      </div>
+      <div style={{ display: 'flex', gap: 14 }}>
+        <label style={casillaEstilo}><input type="checkbox" checked={!!f.bn} onChange={x => pon({ bn: x.target.checked })} /> Blanco y negro</label>
+        <label style={casillaEstilo}><input type="checkbox" checked={!!f.sepia} onChange={x => pon({ sepia: x.target.checked })} /> Sepia</label>
+      </div>
+    </>
+  );
+}
+
+function Propiedades({ e, tipo, cambiar, textoRef, subir, acciones, onEscribir, onRecortar, recortando, verFotos, onFuentesCambiadas, tramos }) {
   const fila = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, alignItems: 'start' };
   const alinearBtn = (k, t, titulo) => <button key={k} type="button" className="btn btn-sm btn-ghost" title={titulo} onClick={() => acciones.alinear(k)} style={{ padding: '4px 6px' }}>{t}</button>;
+  const nombre = e.tipo === 'forma' ? FIGURAS.find(f => f.id === e.figura)?.nombre || 'Forma' : e.tipo === 'imagen' && !e.url ? 'Marco para una foto' : NOMBRE_TIPO[e.tipo];
   return (
     <div style={{ display: 'grid', gap: 10 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <b style={{ flex: 1 }}>{NOMBRE_TIPO[e.tipo]}</b>
+        <b style={{ flex: 1 }}>{nombre}{e.grupo ? ' (de un grupo)' : ''}</b>
         <button type="button" className="btn btn-sm btn-ghost" onClick={acciones.duplicar} title="Duplicar (Ctrl+D)">⧉</button>
         <button type="button" className="icon-btn danger" onClick={acciones.borrar} aria-label="Borrar (Supr)"><I.Trash /></button>
       </div>
@@ -799,11 +1393,7 @@ function Propiedades({ e, tipo, cambiar, textoRef, subir, acciones, onEscribir }
             {VARIABLES_DIPLOMA.map(v => <button key={v.id} type="button" className="btn btn-sm btn-ghost" style={{ padding: '2px 6px', fontSize: 11 }} title={`Añadir ${v.nombre.toLowerCase()}`} onClick={() => cambiar({ texto: `${e.texto}{${v.id}}` })}>{`{${v.id}}`}</button>)}
           </div>
         )}
-        <label style={etq}>Fuente
-          <select value={e.fuente || 'Montserrat'} onChange={x => cambiar({ fuente: x.target.value })} style={{ ...inp, fontFamily: `"${e.fuente || 'Montserrat'}"` }}>
-            {FUENTES_DISENO.map(f => <option key={f.id} value={f.id} style={{ fontFamily: `"${f.id}"` }}>{f.nombre}</option>)}
-          </select>
-        </label>
+        <ElegirFuente e={e} cambiar={cambiar} onFuentesCambiadas={onFuentesCambiadas} />
         <div style={fila}>
           <Num etiqueta="Tamaño" valor={e.tamano || 48} onCambio={(v) => cambiar({ tamano: Math.max(4, v) })} min={4} max={1000} />
           <Color etiqueta="Color" valor={e.color || '#1A1A1A'} onCambio={(v) => cambiar({ color: v })} />
@@ -820,6 +1410,7 @@ function Propiedades({ e, tipo, cambiar, textoRef, subir, acciones, onEscribir }
           <Num etiqueta="Interlineado" valor={e.interlineado || 1.25} onCambio={(v) => cambiar({ interlineado: Math.max(0.6, v) })} min={0.6} max={3} paso={0.05} />
           <Num etiqueta="Espaciado" valor={e.espaciado || 0} onCambio={(v) => cambiar({ espaciado: v })} min={-10} max={60} />
         </div>
+        <EfectosTexto e={e} cambiar={cambiar} tramos={tramos} />
       </>}
 
       {e.tipo === 'qr' && <>
@@ -834,17 +1425,65 @@ function Propiedades({ e, tipo, cambiar, textoRef, subir, acciones, onEscribir }
         <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Que se lea bien: cuadros oscuros sobre fondo claro. Pruébalo con el móvil antes de imprimir.</span>
       </>}
 
-      {e.tipo === 'imagen' && <>
-        <BotonSubir texto="Cambiar la imagen" onArchivo={(f) => subir(f, (r) => cambiar({ url: r.url }))} />
-        <label style={etq}>Cómo se ve en su caja
-          <select value={e.ajuste || 'contener'} onChange={x => cambiar({ ajuste: x.target.value })} style={inp}>
-            <option value="contener">Entera</option><option value="cubrir">Llenando la caja (recorta)</option><option value="estirar">Estirada</option>
-          </select>
-        </label>
-        <Num etiqueta="Esquinas redondeadas" valor={e.radio || 0} onCambio={(v) => cambiar({ radio: Math.max(0, v) })} min={0} />
+      {e.tipo === 'icono' && <>
+        <Color etiqueta="Color" valor={e.color || '#1A1A1A'} onCambio={(v) => cambiar({ color: v })} />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 4 }}>
+          {ICONOS.map(i => (
+            <button key={i.id} type="button" title={i.nombre} aria-label={i.nombre} onClick={() => cambiar({ icono: i.id })}
+              style={{ height: 34, borderRadius: 8, cursor: 'pointer', display: 'grid', placeItems: 'center', border: `1px solid ${e.icono === i.id ? 'var(--purple)' : 'var(--line)'}`, background: 'var(--bg-3)', color: 'var(--ink)' }}>
+              <svg viewBox="0 0 24 24" width="18" height="18"><path d={i.d} fill="currentColor" /></svg>
+            </button>
+          ))}
+        </div>
       </>}
 
-      {(e.tipo === 'rect' || e.tipo === 'elipse') && <>
+      {e.tipo === 'imagen' && <>
+        {!e.url ? (
+          <div style={{ display: 'grid', gap: 6, fontSize: 12.5, color: 'var(--ink-2)' }}>
+            <span>Un marco vacío: suelta encima una foto del panel o del ordenador, o elígela aquí.</span>
+            <BotonSubir texto="⬆ Subir una foto" onArchivo={(f) => subir(f, (r) => cambiar({ url: r.url, encuadre: null, ajuste: 'cubrir' }))} />
+            <button type="button" className="btn btn-sm btn-outline" onClick={verFotos}>📷 Fotos del club</button>
+          </div>
+        ) : <>
+          <BotonSubir texto="Cambiar la imagen" onArchivo={(f) => subir(f, (r) => cambiar({ url: r.url, encuadre: null }))} />
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <button type="button" className={`btn btn-sm ${recortando ? 'btn-primary' : 'btn-outline'}`} onClick={onRecortar}>{recortando ? '✓ Terminar de recortar' : '✂ Recortar'}</button>
+            {e.encuadre && !recortando && <button type="button" className="btn btn-sm btn-ghost" onClick={() => cambiar({ encuadre: null })}>Quitar el recorte</button>}
+          </div>
+          {recortando && <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Arrastra la foto dentro de su caja y usa el zoom de abajo. Cambia la caja de tamaño para recortarla más.</span>}
+        </>}
+        <div style={seccionT}>Marco</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 4 }}>
+          {MARCOS.map(m => (
+            <button key={m} type="button" title={FIGURAS.find(f => f.id === m)?.nombre} onClick={() => cambiar({ marco: m, ...(m !== 'rect' && !e.encuadre ? { ajuste: 'cubrir' } : {}) })}
+              style={{ height: 34, borderRadius: 8, cursor: 'pointer', padding: 4, display: 'grid', placeItems: 'center', border: `2px solid ${(e.marco || 'rect') === m ? 'var(--purple)' : 'var(--line)'}`, background: 'var(--bg-3)', color: '#9C91C7' }}>
+              <span style={{ width: 20, height: 20, display: 'block' }} dangerouslySetInnerHTML={{ __html: svgFigura(m).replace('<svg ', '<svg width="100%" height="100%" ') }} />
+            </button>
+          ))}
+        </div>
+        {!e.encuadre && e.url && (
+          <label style={etq}>Cómo se ve en su caja
+            <select value={e.ajuste || 'contener'} onChange={x => cambiar({ ajuste: x.target.value })} style={inp}>
+              <option value="contener">Entera</option><option value="cubrir">Llenando la caja (recorta)</option><option value="estirar">Estirada</option>
+            </select>
+          </label>
+        )}
+        {(e.marco || 'rect') === 'rect' && <Num etiqueta="Esquinas redondeadas" valor={e.radio || 0} onCambio={(v) => cambiar({ radio: Math.max(0, v) })} min={0} />}
+        <div style={fila}>
+          <Color etiqueta="Borde" valor={e.borde || '#FFFFFF'} onCambio={(v) => cambiar({ borde: v })} />
+          <Num etiqueta="Grosor del borde" valor={e.grosor || 0} onCambio={(v) => cambiar({ grosor: Math.max(0, v) })} min={0} />
+        </div>
+        {e.url && <FiltrosFoto e={e} cambiar={cambiar} tramos={tramos} />}
+      </>}
+
+      {(e.tipo === 'rect' || e.tipo === 'elipse' || e.tipo === 'forma') && <>
+        {e.tipo === 'forma' && (
+          <label style={etq}>Forma
+            <select value={e.figura} onChange={x => cambiar({ figura: x.target.value })} style={inp}>
+              {FIGURAS.filter(f => f.id !== 'rect' && f.id !== 'elipse').map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
+            </select>
+          </label>
+        )}
         <Color etiqueta="Relleno" valor={e.relleno} onCambio={(v) => cambiar({ relleno: v })} permiteNada />
         <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12.5 }}><input type="checkbox" checked={!!e.relleno2} onChange={x => cambiar({ relleno2: x.target.checked ? '#00BBF4' : null })} /> Degradado</label>
         {e.relleno2 && <div style={fila}><Color etiqueta="Hasta" valor={e.relleno2} onCambio={(v) => cambiar({ relleno2: v })} /><Num etiqueta="Ángulo" valor={e.angulo ?? 135} onCambio={(v) => cambiar({ angulo: v })} min={0} max={360} /></div>}
@@ -867,12 +1506,15 @@ function Propiedades({ e, tipo, cambiar, textoRef, subir, acciones, onEscribir }
       <div style={fila}>
         <Num etiqueta="X" valor={e.x} onCambio={(v) => cambiar({ x: v })} />
         <Num etiqueta="Y" valor={e.y} onCambio={(v) => cambiar({ y: v })} />
-        <Num etiqueta={e.tipo === 'qr' ? 'Lado' : 'Ancho'} valor={e.w} onCambio={(v) => cambiar(e.tipo === 'qr' ? { w: Math.max(40, v), h: Math.max(40, v) } : { w: Math.max(5, v) })} min={5} />
-        {e.tipo !== 'texto' && e.tipo !== 'linea' && e.tipo !== 'qr' && <Num etiqueta="Alto" valor={e.h} onCambio={(v) => cambiar({ h: Math.max(5, v) })} min={5} />}
+        <Num etiqueta={CUADRADOS_EDITOR.includes(e.tipo) ? 'Lado' : 'Ancho'} valor={e.w} onCambio={(v) => cambiar(CUADRADOS_EDITOR.includes(e.tipo) ? { w: Math.max(20, v), h: Math.max(20, v) } : { w: Math.max(5, v) })} min={5} />
+        {e.tipo !== 'texto' && e.tipo !== 'linea' && !CUADRADOS_EDITOR.includes(e.tipo) && <Num etiqueta="Alto" valor={e.h} onCambio={(v) => cambiar({ h: Math.max(5, v) })} min={5} />}
         <Num etiqueta="Giro (grados)" valor={e.rot || 0} onCambio={(v) => cambiar({ rot: ((v % 360) + 360) % 360 })} min={0} max={360} />
       </div>
-      <label style={etq}>Transparencia<input type="range" min="0.05" max="1" step="0.05" value={e.opacidad ?? 1} onChange={x => cambiar({ opacidad: Number(x.target.value) })} /></label>
-      {e.tipo !== 'linea' && <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12.5 }}><input type="checkbox" checked={!!e.sombra} onChange={x => cambiar({ sombra: x.target.checked })} /> Sombra</label>}
+      <Rango etiqueta="Transparencia" valor={Math.round((e.opacidad ?? 1) * 100)} min={5} max={100} onCambio={(v) => cambiar({ opacidad: v / 100 })} tramos={tramos} sufijo=" %" />
+      {e.tipo !== 'linea' && e.tipo !== 'texto' && <>
+        <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12.5 }}><input type="checkbox" checked={!!e.sombra} onChange={x => cambiar({ sombra: x.target.checked })} /> Sombra</label>
+        {e.sombra && <ControlesSombra e={e} cambiar={cambiar} tramos={tramos} />}
+      </>}
       <div style={seccionT}>Alinear en el lienzo</div>
       <div style={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
         {alinearBtn('izq', '⇤', 'A la izquierda')}{alinearBtn('centroH', '↔', 'Al centro')}{alinearBtn('der', '⇥', 'A la derecha')}
@@ -886,6 +1528,189 @@ function Propiedades({ e, tipo, cambiar, textoRef, subir, acciones, onEscribir }
         <button type="button" className="btn btn-sm btn-outline" onClick={() => acciones.capa('fondo')}>Al fondo</button>
       </div>
       <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12.5 }}><input type="checkbox" checked={!!e.bloqueado} onChange={x => cambiar({ bloqueado: x.target.checked })} /> Bloqueado (no se mueve sin querer)</label>
+    </div>
+  );
+}
+
+// Varias cosas elegidas: agrupar, alinear entre ellas y repartir el espacio.
+function PanelVarios({ elegidos, agrupar, desagrupar, alinear, repartir, duplicar, borrar, capa, bloquear }) {
+  const agrupados = elegidos.every(e => e.grupo && e.grupo === elegidos[0].grupo);
+  const alinearBtn = (k, t, titulo) => <button key={k} type="button" className="btn btn-sm btn-outline" title={titulo} onClick={() => alinear(k)} style={{ padding: '4px 8px' }}>{t}</button>;
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <b style={{ flex: 1 }}>{elegidos.length} elementos{agrupados ? ' · un grupo' : ''}</b>
+        <button type="button" className="btn btn-sm btn-ghost" onClick={duplicar} title="Duplicar (Ctrl+D)">⧉</button>
+        <button type="button" className="icon-btn danger" onClick={borrar} aria-label="Borrar (Supr)"><I.Trash /></button>
+      </div>
+      {agrupados
+        ? <button type="button" className="btn btn-sm btn-outline" onClick={desagrupar}>Desagrupar (Ctrl+Mayús+G)</button>
+        : <button type="button" className="btn btn-sm btn-primary" onClick={agrupar}>Agrupar (Ctrl+G)</button>}
+      <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>{agrupados ? 'Se eligen y se mueven juntos. Doble clic en uno para tocarlo solo.' : 'Agrupados, se eligen y se mueven juntos.'}</span>
+      <div style={seccionT}>Alinear entre ellos</div>
+      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+        {alinearBtn('izq', '⇤', 'A la izquierda')}{alinearBtn('centroH', '↔', 'Centrados')}{alinearBtn('der', '⇥', 'A la derecha')}
+        {alinearBtn('arriba', '⤒', 'Arriba')}{alinearBtn('centroV', '↕', 'En medio')}{alinearBtn('abajo', '⤓', 'Abajo')}
+      </div>
+      <div style={seccionT}>Repartir el espacio</div>
+      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+        <button type="button" className="btn btn-sm btn-outline" disabled={elegidos.length < 3} onClick={() => repartir('h')}>↔ En horizontal</button>
+        <button type="button" className="btn btn-sm btn-outline" disabled={elegidos.length < 3} onClick={() => repartir('v')}>↕ En vertical</button>
+      </div>
+      {elegidos.length < 3 && <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Repartir, con tres o más.</span>}
+      <div style={seccionT}>Capa</div>
+      <div style={{ display: 'flex', gap: 4 }}>
+        <button type="button" className="btn btn-sm btn-outline" onClick={() => capa('frente')}>Al frente</button>
+        <button type="button" className="btn btn-sm btn-outline" onClick={() => capa('fondo')}>Al fondo</button>
+      </div>
+      <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12.5 }}>
+        <input type="checkbox" checked={elegidos.every(e => e.bloqueado)} onChange={x => bloquear(x.target.checked)} /> Bloqueados
+      </label>
+    </div>
+  );
+}
+
+// Animar: lo que entra y cuándo (historias y reels).
+function PanelAnimar({ doc, diseno, elegido, tiempo, onVer, tramos, cambiarEl, aplicar, aplicarDoc, onExportar }) {
+  const dur = duracionAnimacion(doc);
+  function todo(tipoA) {
+    aplicar(d => {
+      let i = 0;
+      return { ...d, elementos: d.elementos.map(e => {
+        const { anim, ...resto } = e; // eslint-disable-line no-unused-vars
+        if (!tipoA) return resto;
+        // Lo que ocupa todo el fondo no se anima.
+        if (e.w >= d.ancho * 0.95 && e.h >= d.alto * 0.95) return resto;
+        const a = { tipo: tipoA, retraso: Math.round(i * 0.3 * 100) / 100, duracion: 0.8 };
+        i += 1;
+        return { ...resto, anim: a };
+      }) };
+    });
+  }
+  const a = elegido?.anim;
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      <p style={{ margin: 0, fontSize: 12.5, color: 'var(--ink-2)' }}>Para historias y reels: cada cosa entra a su tiempo. Se exporta en GIF o vídeo, y se puede publicar en redes como vídeo.</p>
+      <button type="button" className="btn btn-sm btn-primary" onClick={onVer}>{tiempo != null ? '■ Parar' : '▶ Ver la animación'}</button>
+      {tiempo != null && <progress value={tiempo} max={dur} style={{ width: '100%' }} />}
+      <label style={etq}>Duración del vídeo
+        <select value={dur} onChange={x => aplicarDoc(d => ({ ...d, animacion: { ...(d.animacion || {}), duracion: Number(x.target.value) } }))} style={inp}>
+          {[3, 5, 8, 10, 15].map(s => <option key={s} value={s}>{s} segundos</option>)}
+        </select>
+      </label>
+      <div style={seccionT}>Animar toda la página</div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
+        {[['aparecer', 'Aparecer uno a uno'], ['subir', 'Subir uno a uno'], ['zoom', 'Crecer uno a uno'], ['izquierda', 'Entrar de lado'], ['rebote', 'Rebotar uno a uno'], [null, 'Quitar las animaciones']].map(([k, t]) => (
+          <button key={t} type="button" className="btn btn-sm btn-outline" style={{ fontSize: 12, padding: '5px 6px', whiteSpace: 'normal', lineHeight: 1.2, minWidth: 0 }} onClick={() => todo(k)}>{t}</button>
+        ))}
+      </div>
+      <div style={seccionT}>{elegido ? 'Lo elegido' : 'Elige algo para animarlo a su aire'}</div>
+      {elegido && <>
+        <select value={a?.tipo || ''} aria-label="Animación" style={inp}
+          onChange={x => cambiarEl({ anim: x.target.value ? { retraso: a?.retraso || 0, duracion: a?.duracion || 0.8, tipo: x.target.value } : undefined })}>
+          <option value="">Sin animación</option>
+          {ANIMACIONES.filter(t => t.id !== 'escribir' || elegido.tipo === 'texto').map(t => <option key={t.id} value={t.id}>{t.nombre}</option>)}
+        </select>
+        {a?.tipo && <>
+          <Rango etiqueta="Empieza en" valor={a.retraso || 0} min={0} max={dur} paso={0.1} sufijo=" s" tramos={tramos} onCambio={(v) => cambiarEl({ anim: { ...a, retraso: v } })} />
+          {!['latido', 'flotar'].includes(a.tipo) && <Rango etiqueta="Dura" valor={a.duracion || 0.8} min={0.2} max={3} paso={0.1} sufijo=" s" tramos={tramos} onCambio={(v) => cambiarEl({ anim: { ...a, duracion: v } })} />}
+        </>}
+      </>}
+      <button type="button" className="btn btn-sm btn-outline" onClick={onExportar} disabled={!tieneAnimacion(diseno)}>Exportar en GIF o vídeo</button>
+    </div>
+  );
+}
+
+// ── Revisión en equipo: estado de la aprobación, comentarios y versiones ──
+const NOMBRE_ESTADO = {
+  sin_pedir: ['Sin pedir aprobación', 'var(--ink-3)'], pendiente: ['⏳ Esperando a la dirección', '#B45309'], aprobado: ['✓ Aprobado', 'var(--teal)'],
+  cambios: ['✎ Pide cambios', 'var(--orange)'], cambiado: ['Cambiado tras aprobarse', '#B45309'],
+};
+function EstadoRevision({ estado, onClick, pequeno }) {
+  const [t, c] = NOMBRE_ESTADO[estado] || NOMBRE_ESTADO.sin_pedir;
+  const estilo = { font: 'inherit', fontSize: pequeno ? 11 : 12, fontWeight: 800, color: c, border: `1px solid ${c}`, background: 'transparent', borderRadius: 999, padding: pequeno ? '1px 8px' : '3px 10px' };
+  return onClick ? <button type="button" onClick={onClick} style={{ ...estilo, cursor: 'pointer' }}>{t}</button> : <span style={estilo}>{t}</span>;
+}
+const fechaHora = (v) => new Date(v).toLocaleString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Madrid' });
+const PASO_REVISION = { pedir: '⏳ pidió la aprobación', aprobado: '✓ lo aprobó', cambios: '✎ pidió cambios' };
+function PanelRevision({ id, revision, setRevision, sucio, guardar, pedir, elegido, pagina, onIr, onVolver }) {
+  const [texto, setTexto] = useState('');
+  const [sobre, setSobre] = useState(true);
+  const [decision, setDecision] = useState('');
+  const [versiones, setVersiones] = useState(null);
+  useEffect(() => { if (id) api(`/api/admin/disenos/${id}/versiones`).then(d => setVersiones(d.versiones || [])).catch(() => setVersiones([])); }, [id, revision]);
+  if (!id) return (
+    <div style={{ display: 'grid', gap: 8, fontSize: 13, color: 'var(--ink-2)' }}>
+      <span>Guarda el diseño para comentarlo, pedir la aprobación de la dirección y ver sus versiones.</span>
+      <button type="button" className="btn btn-sm btn-primary" onClick={guardar}>Guardar</button>
+    </div>
+  );
+  if (!revision) return <span style={{ color: 'var(--ink-3)' }}>Cargando…</span>;
+  const llamar = async (url, method = 'POST', body) => { try { setRevision(await api(url, { method, body })); return true; } catch (e) { alert(e.message); return false; } };
+  async function comentar() {
+    if (!texto.trim()) return;
+    if (await llamar(`/api/admin/disenos/${id}/comentarios`, 'POST', { texto, elementoId: sobre && elegido ? elegido.id : null, pagina })) setTexto('');
+  }
+  async function decidir(accion) {
+    if (accion === 'cambios' && !decision.trim()) { alert('Escribe qué hay que cambiar.'); return; }
+    if (sucio) await guardar();
+    if (await llamar(`/api/admin/disenos/${id}/revision`, 'POST', { accion, texto: decision })) setDecision('');
+  }
+  const { estado, puedoAprobar, comentarios } = revision;
+  const explicacion = {
+    sin_pedir: 'Para publicarlo en redes, la dirección tiene que aprobarlo.',
+    pendiente: puedoAprobar ? 'Espera tu aprobación.' : 'La dirección ya lo tiene en la campanita.',
+    aprobado: 'Aprobado: ya se puede publicar en redes. Si se cambia, habrá que aprobarlo otra vez.',
+    cambios: 'La dirección ha pedido cambios: cuando estén, vuelve a pedir la aprobación.',
+    cambiado: 'Se ha cambiado después de aprobarlo: hay que aprobarlo otra vez.',
+  }[estado];
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      <div><EstadoRevision estado={estado} /></div>
+      <span style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>{explicacion}{sucio ? ' (Hay cambios sin guardar.)' : ''}</span>
+      {!puedoAprobar && ['sin_pedir', 'cambios', 'cambiado'].includes(estado) && <button type="button" className="btn btn-sm btn-primary" onClick={() => pedir()}>Pedir la aprobación a la dirección</button>}
+      {puedoAprobar && estado !== 'aprobado' && <>
+        <textarea rows={2} value={decision} onChange={e => setDecision(e.target.value)} placeholder="Si pides cambios, di cuáles" style={{ ...inp, resize: 'vertical' }} />
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button type="button" className="btn btn-sm btn-primary" onClick={() => decidir('aprobado')}>✓ Aprobar</button>
+          <button type="button" className="btn btn-sm btn-outline" onClick={() => decidir('cambios')}>Pedir cambios</button>
+        </div>
+      </>}
+
+      <div style={seccionT}>Comentarios</div>
+      {!comentarios.length && <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>Aún no hay ninguno.</span>}
+      {comentarios.map(c => (c.tipo !== 'comentario' ? (
+        <div key={c.id} style={{ fontSize: 12, color: 'var(--ink-2)', fontStyle: 'italic' }}>
+          <b style={{ fontStyle: 'normal' }}>{c.autor}</b> {PASO_REVISION[c.tipo]} · {fechaHora(c.fecha)}{c.texto ? <>: «{c.texto}»</> : null}
+        </div>
+      ) : (
+        <div key={c.id} style={{ background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 10, padding: '8px 10px', display: 'grid', gap: 4, opacity: c.resuelto ? 0.55 : 1 }}>
+          <div style={{ display: 'flex', gap: 6, fontSize: 12 }}><b style={{ flex: 1 }}>{c.autor}</b><span style={{ color: 'var(--ink-3)' }}>{fechaHora(c.fecha)}</span></div>
+          <div style={{ fontSize: 13, whiteSpace: 'pre-wrap', textDecoration: c.resuelto ? 'line-through' : 'none' }}>{c.texto}</div>
+          <div style={{ display: 'flex', gap: 10, fontSize: 12 }}>
+            {(c.elementoId || c.pagina != null) && <button type="button" className="link-btn" style={{ border: 0, background: 'none', padding: 0, color: 'var(--purple)', cursor: 'pointer', font: 'inherit' }} onClick={() => onIr(c)}>{c.elementoId ? 'Ver dónde' : `Página ${c.pagina + 1}`}</button>}
+            <button type="button" style={{ border: 0, background: 'none', padding: 0, color: 'var(--ink-2)', cursor: 'pointer', font: 'inherit' }} onClick={() => llamar(`/api/admin/disenos/${id}/comentarios/${c.id}`, 'PATCH', { resuelto: !c.resuelto })}>{c.resuelto ? 'Reabrir' : '✓ Resuelto'}</button>
+            {(c.mio || puedoAprobar) && <button type="button" style={{ border: 0, background: 'none', padding: 0, color: 'var(--orange)', cursor: 'pointer', font: 'inherit' }} onClick={() => { if (window.confirm('¿Borrar este comentario?')) llamar(`/api/admin/disenos/${id}/comentarios/${c.id}`, 'DELETE'); }}>Borrar</button>}
+          </div>
+        </div>
+      )))}
+      <textarea rows={3} value={texto} onChange={e => setTexto(e.target.value)} placeholder="Escribe un comentario para el equipo…" style={{ ...inp, resize: 'vertical' }} />
+      {elegido && <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}><input type="checkbox" checked={sobre} onChange={e => setSobre(e.target.checked)} /> Sobre lo elegido ({etiquetaElemento(elegido)})</label>}
+      <button type="button" className="btn btn-sm btn-outline" disabled={!texto.trim()} onClick={comentar}>Comentar</button>
+
+      <div style={seccionT}>Versiones</div>
+      <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Al guardar se queda una copia de cómo estaba, si la anterior tiene más de 20 minutos (las 50 últimas).</span>
+      {!versiones ? <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>Cargando…</span> : !versiones.length ? <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>Aún no hay versiones anteriores.</span> : (
+        <div style={{ display: 'grid', gap: 6 }}>
+          {versiones.map(v => (
+            <div key={v.id} style={{ display: 'flex', gap: 8, alignItems: 'center', background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 10, padding: 6 }}>
+              <span style={{ width: 54, height: 42, flex: 'none', display: 'grid', placeItems: 'center', background: 'var(--bg-2)', borderRadius: 6 }}>{v.miniatura && <img src={v.miniatura} alt="" style={{ maxWidth: '95%', maxHeight: '95%' }} />}</span>
+              <span style={{ flex: 1, fontSize: 12.5, display: 'grid' }}><b>{fechaHora(v.fecha)}</b>{v.nombre && <span style={{ color: 'var(--ink-3)', fontSize: 11.5 }}>{v.nombre}</span>}</span>
+              <button type="button" className="btn btn-sm btn-ghost" style={{ fontSize: 12 }} onClick={() => { if (window.confirm(`¿Volver a como estaba el ${fechaHora(v.fecha)}? Lo de ahora se guarda antes como versión.`)) onVolver(v); }}>Volver a esta</button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1005,60 +1830,106 @@ function FotosDelClub({ onCerrar, onElegir }) {
 // Publicar en redes: el diseño como foto de un borrador de Publicaciones (que
 // luego se programa o se publica allí). Para Instagram, con bandas blancas si
 // se sale de lo que admite (de 4:5 a 1,91:1).
-function PublicarEnRedes({ diseno, ejemplo, onCerrar, onHecho }) {
-  const ratio = diseno.ancho / diseno.alto;
+function PublicarEnRedes({ doc, pagina, ejemplo, permiso, estado, onPedir, onRevision, onCerrar, onHecho }) {
+  const actual = paginaDe(doc, pagina), n = numPaginas(doc), ratio = doc.ancho / doc.alto;
+  const fv = formatoVideo(), animada = tieneAnimacion(actual), puedeVideo = animada && fv?.ext === 'mp4';
+  const [comoVideo, setComoVideo] = useState(puedeVideo);
   const [redes, setRedes] = useState(['facebook', 'instagram']);
-  const [tipo, setTipo] = useState(1 / ratio > 1.6 ? 'story' : 'post');
+  const [tipo, setTipo] = useState(1 / ratio > 1.6 ? 'story' : puedeVideo ? 'reel' : 'post');
   const [texto, setTexto] = useState('');
   const [paso, setPaso] = useState(null);
   const [error, setError] = useState(null);
-  const bandas = redes.includes('instagram') && tipo === 'post' && (ratio < 0.8 || ratio > 1.91);
+  useEffect(() => { if (comoVideo && tipo === 'post') setTipo('reel'); if (!comoVideo && tipo === 'reel') setTipo('post'); }, [comoVideo]); // eslint-disable-line react-hooks/exhaustive-deps
+  const carrusel = !comoVideo && tipo === 'post' && n > 1;
+  const bandas = !comoVideo && redes.includes('instagram') && tipo === 'post' && (ratio < 0.8 || ratio > 1.91);
+  // Una página como foto JPG (con bandas blancas si Instagram no admite sus proporciones).
+  async function foto(v) {
+    const k = Math.min(1, 2048 / Math.max(v.ancho, v.alto));
+    const c = await lienzoDe(v, { variables: ejemplo, ancho: Math.round(v.ancho * k) });
+    let W = c.width, H = c.height;
+    if (bandas) { if (W / H < 0.8) W = Math.round(H * 0.8); else H = Math.round(W / 1.91); }
+    const f = document.createElement('canvas'); f.width = W; f.height = H;
+    const g = f.getContext('2d'); g.fillStyle = '#ffffff'; g.fillRect(0, 0, W, H);
+    g.drawImage(c, Math.round((W - c.width) / 2), Math.round((H - c.height) / 2));
+    return { blob: await lienzoAJpeg(f, 0.9), lienzo: f, W, H };
+  }
+  async function miniDe(lienzo, W, H) {
+    const t = document.createElement('canvas'), kt = 360 / Math.max(W, H);
+    t.width = Math.round(W * kt); t.height = Math.round(H * kt);
+    t.getContext('2d').drawImage(lienzo, 0, 0, t.width, t.height);
+    return lienzoAJpeg(t, 0.8);
+  }
+  async function subirMedio(pid, blob, W, H, mini) {
+    const r = await fetch(`/api/admin/publicaciones/${pid}/medios?ancho=${W}&alto=${H}`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': blob.type }, body: blob });
+    const m = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(m.error || 'No se ha podido subir.');
+    if (mini) await fetch(`/api/admin/publicaciones/${pid}/medios/${m.id}/miniatura`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'image/jpeg' }, body: mini }).catch(() => {});
+  }
   async function crear() {
     setError(null);
     let id = null;
     try {
-      setPaso('Preparando la imagen…');
-      const k = Math.min(1, 2048 / Math.max(diseno.ancho, diseno.alto));
-      const c = await lienzoDe(diseno, { variables: ejemplo, ancho: Math.round(diseno.ancho * k) });
-      let W = c.width, H = c.height;
-      if (bandas) { if (W / H < 0.8) W = Math.round(H * 0.8); else H = Math.round(W / 1.91); }
-      const f = document.createElement('canvas'); f.width = W; f.height = H;
-      const g = f.getContext('2d'); g.fillStyle = '#ffffff'; g.fillRect(0, 0, W, H);
-      g.drawImage(c, Math.round((W - c.width) / 2), Math.round((H - c.height) / 2));
-      const foto = await lienzoAJpeg(f, 0.9);
+      // Primero se prepara todo (lo que puede fallar) y luego se crea el borrador.
+      const medios = [];
+      if (comoVideo) {
+        const v = await grabarVideo(actual, { onProgreso: (t, d) => setPaso(`Grabando el vídeo… ${Math.round(t)} de ${d} s`) });
+        const portada = await lienzoDe(actual, { variables: ejemplo, ancho: 360, tiempo: duracionAnimacion(doc) });
+        medios.push({ blob: v.blob, W: v.ancho, H: v.alto, mini: await lienzoAJpeg(portada, 0.8) });
+      } else {
+        const lista = carrusel ? todasLasPaginas(doc).slice(0, 10) : [actual];
+        for (let i = 0; i < lista.length; i++) {
+          setPaso(lista.length > 1 ? `Preparando la página ${i + 1} de ${lista.length}…` : 'Preparando la imagen…');
+          const f = await foto(lista[i]);
+          medios.push({ blob: f.blob, W: f.W, H: f.H, mini: f.blob.size >= 400_000 ? await miniDe(f.lienzo, f.W, f.H) : null });
+        }
+      }
       setPaso('Creando el borrador…');
       ({ id } = await api('/api/admin/publicaciones', { method: 'POST', body: { texto, redes, tipo } }));
-      const r = await fetch(`/api/admin/publicaciones/${id}/medios?ancho=${W}&alto=${H}`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'image/jpeg' }, body: foto });
-      const m = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(m.error || 'No se ha podido subir la imagen.');
-      // La miniatura, si la foto es grande (la del calendario de Publicaciones).
-      if (foto.size >= 400_000) {
-        const t = document.createElement('canvas'), kt = 360 / Math.max(W, H);
-        t.width = Math.round(W * kt); t.height = Math.round(H * kt);
-        t.getContext('2d').drawImage(f, 0, 0, t.width, t.height);
-        await fetch(`/api/admin/publicaciones/${id}/medios/${m.id}/miniatura`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'image/jpeg' }, body: await lienzoAJpeg(t, 0.8) }).catch(() => {});
+      for (let i = 0; i < medios.length; i++) {
+        setPaso(medios.length > 1 ? `Subiendo ${i + 1} de ${medios.length}…` : 'Subiendo…');
+        await subirMedio(id, medios[i].blob, medios[i].W, medios[i].H, medios[i].mini);
       }
       setPaso('Abriendo Publicaciones…');
       await onHecho(id);
     } catch (e) {
-      // Sin su foto, el borrador no sirve: fuera.
+      // A medias, el borrador no sirve: fuera.
       if (id) await api(`/api/admin/publicaciones/${id}`, { method: 'DELETE' }).catch(() => {});
       setError(e.message); setPaso(null);
     }
   }
+  if (!permiso.ok) return (
+    <Ventana titulo="Publicar en redes" onCerrar={onCerrar} ancho={520}>
+      <p style={{ margin: 0, fontSize: 14 }}>🔒 {permiso.motivo}</p>
+      <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>La dirección aprueba lo que sale en las redes del club. Le llega a la campanita y, en cuanto lo apruebe, te llega a ti el aviso.</span>
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+        <button type="button" className="btn btn-sm btn-ghost" onClick={onCerrar}>Cerrar</button>
+        <button type="button" className="btn btn-sm btn-outline" onClick={onRevision}>Ver la revisión</button>
+        {estado && ['sin_pedir', 'cambios', 'cambiado'].includes(estado) && <button type="button" className="btn btn-sm btn-primary" onClick={async () => { await onPedir(); onCerrar(); }}>Pedir la aprobación</button>}
+      </div>
+    </Ventana>
+  );
   const casilla = (r, t) => (
     <label key={r} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13.5, fontWeight: 700 }}>
       <input type="checkbox" checked={redes.includes(r)} onChange={x => setRedes(v => (x.target.checked ? [...v, r] : v.filter(y => y !== r)))} /> {t}
     </label>
   );
+  const tipos = comoVideo ? [['reel', 'Reel'], ['story', 'Historia']] : [['post', n > 1 ? 'Carrusel' : 'Publicación'], ['story', 'Historia']];
   return (
-    <Ventana titulo="Publicar en redes" onCerrar={paso ? () => {} : onCerrar} ancho={560}>
-      <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-2)' }}>Se crea un <b>borrador en Publicaciones</b> con este diseño de foto. No sale nada hasta que allí lo programes o pulses «Publicar».</p>
+    <Ventana titulo="Publicar en redes" onCerrar={paso ? () => {} : onCerrar} ancho={580}>
+      <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-2)' }}>Se crea un <b>borrador en Publicaciones</b> con este diseño. No sale nada hasta que allí lo programes o pulses «Publicar».</p>
       <div style={{ display: 'flex', gap: 18 }}>{casilla('facebook', 'Facebook')}{casilla('instagram', 'Instagram')}</div>
+      {animada && (
+        <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+          <input type="checkbox" checked={comoVideo} disabled={!puedeVideo} onChange={x => setComoVideo(x.target.checked)} /> Con la animación (vídeo de {duracionAnimacion(doc)} s)
+          {!puedeVideo && <span style={{ color: '#B45309', fontSize: 12 }}> · este navegador no graba MP4: usa Chrome o Safari al día</span>}
+        </label>
+      )}
       <div style={{ display: 'flex', gap: 6 }}>
-        {[['post', 'Publicación'], ['story', 'Historia']].map(([k, t]) => <button key={k} type="button" className={`btn btn-sm ${tipo === k ? 'btn-primary' : 'btn-outline'}`} onClick={() => setTipo(k)}>{t}</button>)}
+        {tipos.map(([k, t]) => <button key={k} type="button" className={`btn btn-sm ${tipo === k ? 'btn-primary' : 'btn-outline'}`} onClick={() => setTipo(k)}>{t}</button>)}
       </div>
-      {tipo === 'post' && <label style={etq}>Texto de la publicación (se puede cambiar luego)
+      {carrusel && <span style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>Las {Math.min(10, n)} páginas, como carrusel (una foto por página){n > 10 ? ': Instagram admite 10 como mucho' : ''}.</span>}
+      {!carrusel && n > 1 && !comoVideo && <span style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>Una historia lleva una sola imagen: la página {pagina + 1}.</span>}
+      {tipo !== 'story' && <label style={etq}>Texto de la publicación (se puede cambiar luego)
         <textarea rows={4} value={texto} onChange={e => setTexto(e.target.value)} style={{ ...inp, resize: 'vertical', fontSize: 14 }} />
       </label>}
       {bandas && <span style={{ fontSize: 12.5, color: '#B45309' }}>Instagram no admite estas proporciones en una publicación: se le pondrán bandas blancas. Si no las quieres, haz una copia «En otros tamaños» como post de Instagram.</span>}
@@ -1069,6 +1940,65 @@ function PublicarEnRedes({ diseno, ejemplo, onCerrar, onHecho }) {
         <button type="button" className="btn btn-sm btn-ghost" disabled={!!paso} onClick={onCerrar}>Cancelar</button>
         <button type="button" className="btn btn-sm btn-primary" disabled={!!paso || !redes.length} onClick={crear}>Crear el borrador y abrirlo</button>
       </div>
+    </Ventana>
+  );
+}
+
+// PDF de imprenta: a 300 ppp, con sangrado y marcas de corte.
+function ParaImprenta({ doc, nombre, ejemplo, onCerrar }) {
+  const [wmm, hmm] = medidasImprenta(doc), n = numPaginas(doc);
+  const [prog, setProg] = useState(null);
+  const papel = TAMANOS.some(t => t.pdf && t.ancho === doc.ancho && t.alto === doc.alto);
+  async function crear() {
+    setProg(`Preparando${n > 1 ? ` la página 1 de ${n}` : ''}…`);
+    try { await exportarImprenta(doc, nombre, { variables: ejemplo, onProgreso: (h, t) => setProg(h < t ? `Preparando la página ${h + 1} de ${t}…` : 'Guardando el PDF…') }); onCerrar(); }
+    catch (e) { alert(`No se ha podido crear: ${e.message}`); setProg(null); }
+  }
+  return (
+    <Ventana titulo="PDF de imprenta" onCerrar={prog ? () => {} : onCerrar} ancho={560}>
+      <p style={{ margin: 0, fontSize: 13.5 }}>Para mandarlo a la imprenta: <b>{wmm} × {hmm} mm</b> al corte{n > 1 ? `, ${n} páginas` : ''}, a 300 ppp, con <b>{SANGRADO_MM} mm de sangrado</b> alrededor y <b>marcas de corte</b> en las esquinas.</p>
+      <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, color: 'var(--ink-2)', display: 'grid', gap: 4 }}>
+        <li>Lo que llega al borde del diseño (fondos, franjas) se alarga hasta el sangrado, para que no quede un filo blanco al cortar.</li>
+        <li>Deja los textos y los logos a 5 mm o más del borde: el corte nunca es exacto.</li>
+        <li>Sale en color RGB; si la imprenta lo quiere en CMYK, lo convierte ella.</li>
+        {!papel && <li>Este tamaño no es un A4 ni un A3: se calcula a 150 ppp de sus píxeles.</li>}
+      </ul>
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
+        {prog && <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>{prog}</span>}
+        <button type="button" className="btn btn-sm btn-ghost" disabled={!!prog} onClick={onCerrar}>Cancelar</button>
+        <button type="button" className="btn btn-sm btn-primary" disabled={!!prog} onClick={crear}>Crear el PDF de imprenta</button>
+      </div>
+    </Ventana>
+  );
+}
+
+// Historias animadas: GIF o vídeo.
+function ExportarAnimacion({ diseno, nombre, onCerrar }) {
+  const f = formatoVideo();
+  const [prog, setProg] = useState(null);
+  async function hacer(como) {
+    try {
+      if (como === 'gif') { setProg('Haciendo el GIF…'); await exportarGif(diseno, nombre, { onProgreso: (h, t) => setProg(`Haciendo el GIF… ${Math.round((h / t) * 100)} %`) }); }
+      else { setProg('Grabando…'); await exportarVideo(diseno, nombre, { onProgreso: (t, d) => setProg(`Grabando el vídeo… ${Math.round(t)} de ${d} s`) }); }
+      onCerrar();
+    } catch (e) { alert(`No se ha podido hacer: ${e.message}`); setProg(null); }
+  }
+  const opcion = (k, t, d, desactivado) => (
+    <button key={k} type="button" disabled={!!prog || desactivado} onClick={() => hacer(k)}
+      style={{ font: 'inherit', textAlign: 'left', padding: '12px 14px', borderRadius: 12, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', cursor: 'pointer', display: 'grid', gap: 3, opacity: desactivado ? 0.5 : 1 }}>
+      <b>{t}</b><span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{d}</span>
+    </button>
+  );
+  return (
+    <Ventana titulo="Historia animada" onCerrar={prog ? () => {} : onCerrar} ancho={520}>
+      <p style={{ margin: 0, fontSize: 13 }}>Esta página con sus animaciones, {duracionAnimacion(diseno)} segundos (se cambia en «Animar»).</p>
+      <div style={{ display: 'grid', gap: 8 }}>
+        {opcion('video', `Vídeo ${f ? f.ext.toUpperCase() : ''}`, 'Para historias y reels de Instagram y Facebook. Tarda lo que dura el vídeo.', !f)}
+        {opcion('gif', 'GIF', 'Para WhatsApp, correos y webs. Más pequeño y con menos colores.', false)}
+      </div>
+      {f?.ext === 'webm' && <span style={{ fontSize: 12.5, color: '#B45309' }}>Este navegador graba en WebM, que Instagram no admite. Con Chrome o Safari al día sale en MP4.</span>}
+      {!f && <span style={{ fontSize: 12.5, color: '#B45309' }}>Este navegador no graba vídeo: usa el GIF o abre Aim Design en Chrome.</span>}
+      {prog && <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>{prog}</span>}
     </Ventana>
   );
 }
@@ -1159,7 +2089,7 @@ function DiplomasEnLote({ diseno, nombre, onCerrar }) {
     }).catch(e => setDatos({ error: e.message }));
   }, [origen, elegido]);
   // Los huecos del diseño que en este lote saldrían vacíos.
-  const usados = useMemo(() => [...new Set(diseno.elementos.filter(e => e.tipo === 'texto').flatMap(e => [...String(e.texto || '').matchAll(/\{(\w+)\}/g)].map(m => m[1])))], [diseno]);
+  const usados = useMemo(() => [...new Set(todasLasPaginas(diseno).flatMap(p => p.elementos).filter(e => e.tipo === 'texto').flatMap(e => [...String(e.texto || '').matchAll(/\{(\w+)\}/g)].map(m => m[1])))], [diseno]);
   const vacios = datos?.personas ? usados.filter(h => h !== 'fecha' && !(h === 'profesor' && profesor) && !datos.personas.some(p => p.variables[h])) : [];
   const lista = (origenes?.[origen === 'grupo' ? 'grupos' : 'convocatorias'] || []).filter(x => (origen === 'grupo' ? x.alumnos : x.participantes) > 0);
   async function crear() {

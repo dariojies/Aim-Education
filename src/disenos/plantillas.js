@@ -172,6 +172,62 @@ export const PLANTILLAS = [
     }),
   },
   {
+    id: 'carrusel', nombre: 'Carrusel de Instagram (3 páginas)', tipo: 'libre', tamano: 'igv',
+    crear: () => {
+      const fondo = { tipo: 'degradado', color: '#5233A8', color2: '#FF5FA2', angulo: 150 };
+      const flecha = () => ({ id: nuevoId(), tipo: 'forma', figura: 'flecha', x: 860, y: 1200, w: 140, h: 70, rot: 0, opacidad: 0.9, relleno: '#FFFFFF', borde: '#1A1A1A', grosor: 0 });
+      const num = (n) => txt({ x: 80, y: 90, w: 300, h: alto(1, 40), texto: `${n} / 3`, tamano: 40, negrita: true, color: '#FFFFFF', alinear: 'izquierda', opacidad: 0.8 });
+      return {
+        ancho: 1080, alto: 1350, fondo,
+        elementos: [
+          num(1),
+          txt({ x: 80, y: 360, w: 920, h: alto(3, 120, 1.05), texto: '3 razones para\nempezar\nTaekwon-Do', tamano: 120, negrita: true, color: '#FFFFFF', fuente: 'Plus Jakarta Sans', interlineado: 1.05, alinear: 'izquierda' }),
+          txt({ x: 80, y: 820, w: 920, h: alto(1, 44), texto: 'Desliza para verlas →', tamano: 44, color: '#FFFFFF', alinear: 'izquierda', opacidad: 0.9 }),
+          flecha(),
+        ],
+        paginas: [
+          { fondo, elementos: [
+            num(2),
+            { id: nuevoId(), tipo: 'icono', icono: 'trofeo', x: 80, y: 260, w: 200, h: 200, rot: 0, opacidad: 1, color: '#FFD526' },
+            txt({ x: 80, y: 520, w: 920, h: alto(2, 90, 1.1), texto: 'Confianza y\ndisciplina', tamano: 90, negrita: true, color: '#FFFFFF', fuente: 'Plus Jakarta Sans', interlineado: 1.1, alinear: 'izquierda' }),
+            txt({ x: 80, y: 760, w: 900, h: alto(3, 42, 1.35), texto: 'Cada cinturón es una meta que se consigue con constancia. Y se nota fuera del tatami.', tamano: 42, color: '#FFFFFF', interlineado: 1.35, alinear: 'izquierda', opacidad: 0.92 }),
+            flecha(),
+          ] },
+          { fondo, elementos: [
+            num(3),
+            txt({ x: 80, y: 260, w: 920, h: alto(2, 100, 1.05), texto: '¿Lo\nprobamos?', tamano: 100, negrita: true, color: '#FFFFFF', fuente: 'Plus Jakarta Sans', interlineado: 1.05, alinear: 'izquierda' }),
+            txt({ x: 80, y: 520, w: 560, h: alto(3, 42, 1.35), texto: 'La primera clase es de prueba. Apúntate desde el código.', tamano: 42, color: '#FFFFFF', interlineado: 1.35, alinear: 'izquierda' }),
+            { id: nuevoId(), tipo: 'qr', texto: 'https://www.aimeducation.es/auth?mode=register', x: 680, y: 500, w: 320, h: 320, rot: 0, opacidad: 1, color: '#17151C', fondo: '#FFFFFF', radio: 0 },
+            logo({ url: LOGO_BLANCO, x: 390, y: 1150, w: 300, h: 110 }),
+          ] },
+        ],
+      };
+    },
+  },
+  {
+    id: 'folleto', nombre: 'Folleto A4 (dos caras)', tipo: 'libre', tamano: 'a4v',
+    crear: () => ({
+      ancho: 1240, alto: 1754, fondo: { tipo: 'color', color: '#FFFFFF' },
+      elementos: [
+        { id: nuevoId(), tipo: 'imagen', url: null, marco: 'rect', ajuste: 'cubrir', x: 0, y: 0, w: 1240, h: 900, rot: 0, opacidad: 1, radio: 0 },
+        ...franjas(1240, 900, 18),
+        txt({ x: 90, y: 980, w: 1060, h: alto(2, 110, 1.05), texto: 'Aim Education\nAlgeciras', tamano: 110, negrita: true, color: '#5233A8', fuente: 'Plus Jakarta Sans', interlineado: 1.05, alinear: 'izquierda' }),
+        txt({ x: 90, y: 1250, w: 1000, h: alto(3, 42, 1.35), texto: 'Taekwon-Do, ballet, baile, inglés, robótica y mucho más, para niños y mayores.', tamano: 42, color: '#374151', interlineado: 1.35, alinear: 'izquierda' }),
+        logo({ x: 90, y: 1560, w: 330, h: 124 }),
+        txt({ x: 760, y: 1600, w: 400, h: alto(1, 32), texto: 'Dale la vuelta →', tamano: 32, negrita: true, color: '#FF5FA2', alinear: 'derecha' }),
+      ],
+      paginas: [
+        { fondo: { tipo: 'color', color: '#F6F4EF' }, elementos: [
+          txt({ x: 90, y: 120, w: 1060, h: alto(1, 80), texto: 'Nuestras actividades', tamano: 80, negrita: true, color: '#17151C', fuente: 'Plus Jakarta Sans', alinear: 'izquierda' }),
+          txt({ x: 90, y: 260, w: 1060, h: alto(8, 40, 1.5), texto: '· Taekwon-Do ITF\n· Ballet clásico y baile moderno\n· Inglés\n· Robótica y STEM\n· Pilates y entrenamiento funcional\n· Campamento de verano\n\nTruco: «Añadir → Datos del club» pone el horario de verdad.', tamano: 40, color: '#374151', interlineado: 1.5, alinear: 'izquierda', vertical: 'arriba' }),
+          { id: nuevoId(), tipo: 'qr', texto: 'https://www.aimeducation.es/actividades', x: 90, y: 1200, w: 340, h: 340, rot: 0, opacidad: 1, color: '#17151C', fondo: '#FFFFFF', radio: 0 },
+          txt({ x: 480, y: 1250, w: 670, h: alto(3, 40, 1.4), texto: 'Toda la información y los horarios en la web.\nwww.aimeducation.es · 956 742 216', tamano: 40, color: '#17151C', interlineado: 1.4, alinear: 'izquierda' }),
+          ...franjas(1240, 1714, 40),
+        ] },
+      ],
+    }),
+  },
+  {
     id: 'historia', nombre: 'Historia', tipo: 'libre', tamano: 'historia',
     crear: () => ({
       ancho: 1080, alto: 1920, fondo: { tipo: 'degradado', color: '#21B668', color2: '#00BBF4', angulo: 160 },

@@ -31,7 +31,7 @@ import { crearSeo } from './seo.js';
 import { crearIndexNow } from './indexnow.js';
 import { crearAgrupaciones, crearTablasAgrupaciones } from './agrupaciones.js';
 import { crearSustituciones, crearTablasSustituciones, SQL_SUSTITUYE } from './sustituciones.js';
-import { crearDisenos, crearTablasDisenos } from './disenos.js';
+import { crearDisenos, crearTablasDisenos, disenosPorAprobar, revisionDeMisDisenos } from './disenos.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
@@ -17131,6 +17131,25 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                 return x.n ? [{
                     tipo: 'clases', clave: 'aula_dudas', n: x.n, marca: x.ultima, fecha: x.ultima, destino: '/admin/aula?dudas=1',
                     texto: `${x.n} ${plural(x.n, 'duda', 'dudas')} del aula virtual por contestar`, detalle: 'preguntas de los alumnos al profesor',
+                }] : [];
+            });
+        }
+        // Aim Design: lo que espera a la dirección y lo que le han dicho a quien lo diseñó.
+        if (recibe('disenos_por_aprobar')) {
+            fuente('Aim Design', ['disenos_por_aprobar'], async () => {
+                const x = await disenosPorAprobar(pool);
+                return x.n ? [{
+                    tipo: 'design', clave: 'disenos_por_aprobar', n: x.n, marca: x.ultima, fecha: x.ultima, destino: x.n === 1 ? `/admin/aim-design?abrir=${x.id}` : '/admin/aim-design?revision=1',
+                    texto: `${x.n} ${plural(x.n, 'diseño espera', 'diseños esperan')} tu aprobación`, detalle: 'antes de publicarlos en redes',
+                }] : [];
+            });
+        }
+        if (recibe('disenos_revision')) {
+            fuente('Aim Design', ['disenos_revision'], async () => {
+                const x = await revisionDeMisDisenos(pool, yo);
+                return x.n ? [{
+                    tipo: 'design', clave: 'disenos_revision', n: x.n, marca: x.ultima, fecha: x.ultima, prioridad: 3, destino: x.n === 1 ? `/admin/aim-design?abrir=${x.id}` : '/admin/aim-design',
+                    texto: x.n === 1 ? 'Novedades en la revisión de un diseño tuyo' : `Novedades en la revisión de ${x.n} diseños tuyos`, detalle: 'comentarios o la respuesta de la dirección',
                 }] : [];
             });
         }

@@ -72,6 +72,7 @@ const COLOR = {
   soporte: 'var(--purple)',
   galeria: '#FF99D3',
   avisos: '#00BBF4',
+  design: '#FF5FA2',
 };
 const TITULO = {
   sistema: 'La web',
@@ -90,6 +91,7 @@ const TITULO = {
   incidencias: 'Incidencias',
   brickslab: 'Brickslab',
   galeria: 'Fotos',
+  design: 'Aim Design',
   correo: 'Correo',
   redes: 'Redes sociales',
   pagos: 'Pagos',

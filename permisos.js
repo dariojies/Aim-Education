@@ -254,6 +254,9 @@ export const AVISOS = [
     // Las dudas de los alumnos (#461): el profesor del curso; si no tiene, secretaría.
     { id: 'aula_dudas', grupo: 'Clases', texto: 'Dudas del aula virtual por contestar', quien: (p) => p.secciones.aula,
       nota: (p) => (p.aulaCompleta ? 'de sus cursos y de los que no tienen profesor' : 'solo de sus cursos') },
+    // Aim Design: la dirección aprueba lo que se va a publicar; quien lo diseñó se entera de la respuesta.
+    { id: 'disenos_por_aprobar', grupo: 'Club', texto: 'Diseños de Aim Design esperando su aprobación', quien: (p, rol) => p.secciones.grafico && rol === 'club_owner' },
+    { id: 'disenos_revision', grupo: 'Club', texto: 'Comentarios y respuestas en sus diseños de Aim Design', quien: (p) => p.secciones.grafico },
     // Los correos que no llegan (#430), para arreglar la dirección.
     { id: 'correos_rebotan', grupo: 'Correo', texto: 'Correos que rebotan (no les llega nada)', quien: (p) => p.secciones.comunicaciones },
     // La vigilancia de los servicios: si algo se cae, al Equipo IT y los superadmin.
