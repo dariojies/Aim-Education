@@ -385,6 +385,9 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
   const [soltando, setSoltando] = useState(false);
   const [zoom, setZoom] = useState(null);             // null: que quepa entero
   const [procesando, setProcesando] = useState(null); // un aviso mientras se hace algo largo (quitar el fondo)
+  // La pantalla, como en Canva: una barra de iconos a la izquierda que abre y cierra su
+  // panel, y las propiedades flotando sobre el lienzo solo cuando hay algo elegido.
+  const [panelAbierto, setPanelAbierto] = useState(true);
   const [menu, setMenu] = useState(null);             // el menú del botón derecho: { x, y, id? }
   const [ayudas, setAyudas] = useState(() => { try { return JSON.parse(localStorage.getItem('aim_design_ayudas')) || {}; } catch { return {}; } });
   const { go } = useRouter();
@@ -1121,14 +1124,37 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
         <button type="button" className="btn btn-sm btn-primary" disabled={guardando} onClick={guardar}>{guardando ? 'Guardando…' : sucio ? 'Guardar' : '✓ Guardado'}</button>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '286px minmax(0, 1fr) 292px', minHeight: 0 }}>
-        {/* Izquierda: añadir, fondo, capas, animar y revisión */}
-        <aside style={{ borderRight: '1px solid var(--line)', background: 'var(--bg-2)', overflowY: 'auto', padding: 12, display: 'grid', gap: 10, alignContent: 'start' }}>
-          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-            {[['anadir', 'Añadir'], ['estilos', 'Estilos'], ['fondo', 'Fondo'], ['capas', 'Capas'], ['animar', 'Animar'], ['revision', `Revisión${pendientes ? ` (${pendientes})` : ''}`]].map(([k, t]) => (
-              <button key={k} type="button" onClick={() => setPanel(k)} className={`btn btn-sm ${panel === k ? 'btn-primary' : 'btn-ghost'}`} style={{ flex: '1 1 28%', padding: '6px 4px', fontSize: 12.5 }}>{t}</button>
-            ))}
-          </div>
+      <div style={{ position: 'relative', display: 'grid', minHeight: 0, gridTemplateColumns: `76px ${panelAbierto ? '300px' : '0px'} minmax(0, 1fr)` }}>
+        {(
+          <nav aria-label="Paneles" style={{ background: 'var(--bg-2)', borderRight: '1px solid var(--line)', display: 'grid', alignContent: 'start', gap: 2, padding: '10px 6px', overflowY: 'auto' }}>
+            {PANELES_EDITOR.map(([k, t, icono]) => {
+              const activo = panel === k && panelAbierto;
+              return (
+                <button key={k} type="button" aria-pressed={activo} title={activo ? `Cerrar «${t}»` : t}
+                  onClick={() => { if (activo) setPanelAbierto(false); else { setPanel(k); setPanelAbierto(true); } }}
+                  style={{ position: 'relative', font: 'inherit', display: 'grid', placeItems: 'center', gap: 4, padding: '9px 2px', borderRadius: 10, border: 0, cursor: 'pointer', fontSize: 10.5, fontWeight: 700,
+                    background: activo ? 'color-mix(in oklab, var(--purple) 14%, var(--bg-2))' : 'none', color: activo ? 'var(--purple)' : 'var(--ink-2)' }}>
+                  {icono}<span>{t}</span>
+                  {k === 'revision' && pendientes > 0 && <span style={{ position: 'absolute', top: 4, right: 10, minWidth: 16, height: 16, borderRadius: 99, background: 'var(--orange)', color: '#fff', fontSize: 10, display: 'grid', placeItems: 'center' }}>{pendientes}</span>}
+                </button>
+              );
+            })}
+            <span style={{ height: 1, background: 'var(--line)', margin: '6px 8px' }} />
+            <button type="button" title="Cómo se usa (atajos)" onClick={() => setVentana('ayuda')}
+              style={{ font: 'inherit', display: 'grid', placeItems: 'center', gap: 4, padding: '9px 2px', borderRadius: 10, border: 0, cursor: 'pointer', fontSize: 10.5, fontWeight: 700, background: 'none', color: 'var(--ink-2)' }}>
+              {icono(<><circle cx="12" cy="12" r="9" /><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6" /><path d="M12 17h.01" /></>)}<span>Ayuda</span>
+            </button>
+          </nav>
+        )}
+        {/* Izquierda: añadir, estilos, fondo, capas, animar y revisión */}
+        <aside style={{ borderRight: panelAbierto ? '1px solid var(--line)' : 0, background: 'var(--bg-2)', overflowY: 'auto', padding: panelAbierto ? 12 : 0, display: 'grid', gap: 10, alignContent: 'start', minWidth: 0 }}>
+          {panelAbierto && (
+            <div style={{ display: 'flex', alignItems: 'center' }}>
+              <b style={{ flex: 1, fontSize: 15 }}>{PANELES_EDITOR.find(x => x[0] === panel)?.[1]}</b>
+              <button type="button" className="icon-btn" onClick={() => setPanelAbierto(false)} title="Cerrar el panel (más sitio para el diseño)" aria-label="Cerrar el panel">«</button>
+            </div>
+          )}
+          {panelAbierto && <>
           {panel === 'anadir' && (
             <PanelAnadir tipo={tipo} kit={kit} anadirTexto={anadirTexto} anadirForma={anadirForma} anadirIcono={anadirIcono} anadirMarco={anadirMarco} anadirImagen={anadirImagen} anadirQr={anadirQr} anadirTabla={anadirTabla} anadirGrafico={anadirGrafico}
               anadirBloque={anadirBloque} verFotos={() => setVentana('fotos')} verBanco={() => setVentana('banco')} subir={subir} />
@@ -1169,6 +1195,7 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
                 } catch (e) { alert(e.message); }
               }} />
           )}
+          </>}
         </aside>
 
         {/* Centro: el lienzo y las páginas */}
@@ -1311,18 +1338,15 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
         </div>
 
         {/* Derecha: lo que se puede cambiar */}
-        <aside style={{ borderLeft: '1px solid var(--line)', background: 'var(--bg-2)', overflowY: 'auto', padding: 12, display: 'grid', gap: 10, alignContent: 'start' }}>
+        {elegidos.length > 0 && (
+        <aside onPointerDown={ev => ev.stopPropagation()}
+          style={{ position: 'absolute', right: 14, top: 14, bottom: 14, width: 300, zIndex: 20, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, boxShadow: '0 12px 40px -12px rgba(0,0,0,.35)', overflowY: 'auto', padding: 12, display: 'grid', gap: 10, alignContent: 'start' }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: -6 }}>
+            <button type="button" className="icon-btn" onClick={() => setSeleccion([])} title="Cerrar (deja de elegir)" aria-label="Cerrar las propiedades"><I.X /></button>
+          </div>
           {elegidos.length > 1 ? (
             <PanelVarios elegidos={elegidos} voltear={voltear} agrupar={agrupar} desagrupar={desagrupar} alinear={alinearVarios} repartir={repartir}
               duplicar={duplicarSel} borrar={borrarSel} capa={capa} bloquear={(b) => cambiarVarios(seleccion, e => ({ ...e, bloqueado: b }))} />
-          ) : !elegido ? (
-            <div style={{ fontSize: 13, color: 'var(--ink-3)', display: 'grid', gap: 8 }}>
-              <b style={{ color: 'var(--ink)' }}>Nada elegido</b>
-              <span>Pulsa algo del lienzo para cambiarlo. Arrástralo para moverlo, tira de los cuadraditos para el tamaño y del círculo de arriba para girarlo.</span>
-              <span>Varios a la vez: con Mayús + clic o arrastrando un recuadro desde un hueco. Doble clic en un texto para escribir y en una foto para recortarla. Las fotos del panel (o del ordenador) se pueden soltar encima de un marco.</span>
-              <span>Atajos: Ctrl+C / Ctrl+X / Ctrl+V copian, cortan y pegan (también imágenes y textos del ordenador), Supr borra, Ctrl+D duplica, Ctrl+G agrupa (con Mayús, desagrupa), Ctrl+A elige todo, Ctrl+Z deshace, las flechas mueven (con Mayús, de 10 en 10), Ctrl+S guarda. Zoom: Ctrl + rueda, Ctrl + y Ctrl −. Con el botón derecho, más opciones.</span>
-              {tipo === 'diploma' && <span style={{ color: 'var(--purple)' }}>Es un diploma: los huecos ({'{alumno}'}, {'{curso}'}…) se ven con datos de ejemplo y a cada alumno le salen los suyos.</span>}
-            </div>
           ) : (
             <Propiedades e={elegido} tipo={tipo} cambiar={(c) => cambiarEl(elegido.id, c)} textoRef={textoRef} subir={subir} tramos={tramos} voltear={voltear}
               onEscribir={() => editarTexto(elegido.id)} onRecortar={() => (recortando ? setRecortando(null) : recortar(elegido.id))} recortando={recortando === elegido.id} onQuitarFondo={quitarFondoSel}
@@ -1330,6 +1354,7 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
               acciones={{ duplicar: duplicarSel, borrar: borrarSel, capa, alinear }} />
           )}
         </aside>
+        )}
       </div>
 
       {verTamano && (
@@ -1345,6 +1370,16 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
       {ventana === 'biblioteca' && <ParaCorreosYNoticias diseno={diseno} nombre={nombre} ejemplo={ejemplo} onCerrar={() => setVentana(null)} />}
       {ventana === 'imprenta' && <ParaImprenta doc={doc} nombre={nombre} ejemplo={ejemplo} onCerrar={() => setVentana(null)} />}
       {ventana === 'animacion' && <ExportarAnimacion diseno={diseno} nombre={nombre} onCerrar={() => setVentana(null)} />}
+      {ventana === 'ayuda' && (
+        <Ventana titulo="Cómo se usa" onCerrar={() => setVentana(null)} ancho={560}>
+          <div style={{ fontSize: 13.5, color: 'var(--ink-2)', display: 'grid', gap: 10 }}>
+              <span>Pulsa algo del lienzo para cambiarlo. Arrástralo para moverlo, tira de los cuadraditos para el tamaño y del círculo de arriba para girarlo.</span>
+              <span>Varios a la vez: con Mayús + clic o arrastrando un recuadro desde un hueco. Doble clic en un texto para escribir y en una foto para recortarla. Las fotos del panel (o del ordenador) se pueden soltar encima de un marco.</span>
+              <span>Atajos: Ctrl+C / Ctrl+X / Ctrl+V copian, cortan y pegan (también imágenes y textos del ordenador), Supr borra, Ctrl+D duplica, Ctrl+G agrupa (con Mayús, desagrupa), Ctrl+A elige todo, Ctrl+Z deshace, las flechas mueven (con Mayús, de 10 en 10), Ctrl+S guarda. Zoom: Ctrl + rueda, Ctrl + y Ctrl −. Con el botón derecho, más opciones.</span>
+              {tipo === 'diploma' && <span style={{ color: 'var(--purple)' }}>Es un diploma: los huecos ({'{alumno}'}, {'{curso}'}…) se ven con datos de ejemplo y a cada alumno le salen los suyos.</span>}
+          </div>
+        </Ventana>
+      )}
       {ventana === 'banco' && <FotosDeBanco onCerrar={() => setVentana(null)} onElegir={(f) => { setVentana(null); anadirImagen(f.url, f.ancho, f.alto); }} />}
       {ventana === 'fotos' && <FotosDelClub onCerrar={() => setVentana(null)} onElegir={(f) => { setVentana(null); anadirImagen(`/api/admin/disenos/foto-club/${f.id}/grande`, f.ancho, f.alto); }} />}
     </div>
@@ -1352,6 +1387,15 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
   );
 }
 const CUADRADOS_EDITOR = ['qr', 'icono'];
+const icono = (d) => <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{d}</svg>;
+const PANELES_EDITOR = [
+  ['anadir', 'Añadir', icono(<><rect x="3" y="3" width="18" height="18" rx="4" /><path d="M12 8v8M8 12h8" /></>)],
+  ['estilos', 'Estilos', icono(<><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.6-1.6 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-.9.7-1.6 1.6-1.6H16a5 5 0 0 0 5-5C21 6.4 17 3 12 3z" /><circle cx="7.5" cy="11" r="1" /><circle cx="10.5" cy="7.5" r="1" /><circle cx="15" cy="7.5" r="1" /></>)],
+  ['fondo', 'Fondo', icono(<><rect x="3" y="4" width="18" height="16" rx="3" /><circle cx="9" cy="10" r="1.6" /><path d="M21 16l-5-5-8 8" /></>)],
+  ['capas', 'Capas', icono(<><path d="M12 3l9 5-9 5-9-5 9-5z" /><path d="M3 13l9 5 9-5" /></>)],
+  ['animar', 'Animar', icono(<><circle cx="12" cy="12" r="9" /><path d="M10 8.5v7l6-3.5-6-3.5z" /></>)],
+  ['revision', 'Revisión', icono(<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z" />)],
+];
 
 function CambiarTamano({ actual, onElegir }) {
   const [ajustar, setAjustar] = useState(true);
