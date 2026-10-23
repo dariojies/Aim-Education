@@ -41,6 +41,8 @@ const ESTADOS = {
   esperando: { label: 'Esperando respuesta', color: 'var(--orange)', cambio: { status: 'open', etapa: 'esperando' } },
   // Hecho pero sin publicar: con el siguiente deploy pasa solo a «Resuelto».
   espera_deploy: { label: 'Espera de deploy', color: '#2563EB', cambio: { status: 'open', etapa: 'espera_deploy' } },
+  // Está, pero aún no hace falta hacerlo: medio oculto en el tablero y sin avisos.
+  pausa: { label: 'En pausa', color: '#94A3B8', cambio: { status: 'open', etapa: 'pausa' } },
   resolved: { label: 'Resuelto', color: 'var(--teal)', cambio: { status: 'resolved' } },
   closed: { label: 'Cerrado', color: 'var(--ink-3)', cambio: { status: 'closed' } },
 };
@@ -87,10 +89,10 @@ function duracion(ms) {
 const tardanza = (t) => (t?.created_at && t?.resolved_at ? duracion(new Date(t.resolved_at) - new Date(t.created_at)) : null);
 const primeraRespuesta = (t) => (t?.created_at && t?.primera_respuesta_at ? duracion(new Date(t.primera_respuesta_at) - new Date(t.created_at)) : null);
 const hoyISO = () => new Date().toLocaleDateString('sv-SE');
-const esVencido = (t) => t.status === 'open' && t.due_date && String(t.due_date).slice(0, 10) < hoyISO();
+const esVencido = (t) => t.status === 'open' && t.etapa !== 'pausa' && t.due_date && String(t.due_date).slice(0, 10) < hoyISO();
 const diasSinMoverse = (t) => Math.floor((Date.now() - new Date(t.updated_at || t.created_at).getTime()) / 86400000);
-// Lo que espera al deploy no está parado: ya está hecho.
-const esParado = (t, dias) => t.status === 'open' && t.etapa !== 'espera_deploy' && diasSinMoverse(t) >= dias;
+// Lo que espera al deploy no está parado: ya está hecho. Lo que está en pausa, tampoco.
+const esParado = (t, dias) => t.status === 'open' && t.etapa !== 'espera_deploy' && t.etapa !== 'pausa' && diasSinMoverse(t) >= dias;
 
 // Encargados (pueden ser varios; el principal va primero).
 const encargadosDe = t => (t.asignados?.length ? t.asignados
@@ -740,6 +742,8 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
 
   const [activeTab, setActiveTab] = useState(['list', 'resumen', 'recientes'].includes(prefs.tab) ? prefs.tab : 'list');
   const [vista, setVista] = useState(() => prefs.vista || (() => { try { return localStorage.getItem('soporte-vista') || 'lista'; } catch { return 'lista'; } })());
+  // La columna «En pausa» va recogida (una línea por ticket) hasta que se pide verla.
+  const [verPausa, setVerPausa] = useState(false);
   // Filtros (con lo que se tenía la última vez).
   const [fEstado, setFEstado] = useState(prefs.fEstado || 'activos');       // activos | abierto | en_curso | esperando | resolved | closed | todos
   const [fCategoria, setFCategoria] = useState(prefs.fCategoria || 'todas');
@@ -1103,6 +1107,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
     { id: 'en_curso', titulo: 'En curso', de: t => estadoDe(t) === 'en_curso' },
     { id: 'esperando', titulo: 'Esperando respuesta', de: t => estadoDe(t) === 'esperando' },
     { id: 'espera_deploy', titulo: 'Espera de deploy', de: t => estadoDe(t) === 'espera_deploy' },
+    { id: 'pausa', titulo: 'En pausa', de: t => estadoDe(t) === 'pausa' },
     { id: 'resolved', titulo: 'Hecho (7 días)', de: t => ['resolved', 'closed'].includes(t.status) && t.resolved_at && Date.now() - new Date(t.resolved_at).getTime() <= 7 * 86400000 },
   ];
   const paraTablero = useMemo(() => filtrar(tickets, { conEstado: false }), [filtrar, tickets]);
@@ -1503,7 +1508,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
           {!loading && vista === 'tablero' && (
             <>
               <p style={{margin: "0 0 10px", fontSize: 12, color: "var(--ink-3)"}}>Coge un ticket y llévalo a otra columna para cambiar su estado (Esc lo devuelve). En el móvil, ábrelo y cámbialo arriba.</p>
-              <div ref={tableroRef} style={{display: "grid", gridTemplateColumns: `repeat(${COLUMNAS.length}, minmax(215px, 1fr))`, gap: 10, overflowX: "auto", paddingBottom: 8}}>
+              <div ref={tableroRef} style={{display: "grid", gridTemplateColumns: COLUMNAS.map(c => (c.id === 'pausa' && !verPausa ? 'minmax(150px, 0.6fr)' : 'minmax(215px, 1fr)')).join(' '), gap: 10, overflowX: "auto", paddingBottom: 8}}>
                 {COLUMNAS.map(col => {
                   const suyos = paraTablero.filter(col.de);
                   const color = ESTADOS[col.id].color;
@@ -1524,6 +1529,11 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
                         <span style={{width: 10, height: 10, borderRadius: 99, background: color, boxShadow: destino ? `0 0 0 4px color-mix(in oklab, ${color} 25%, transparent)` : 'none', transition: 'box-shadow .18s ease'}} />
                         <b style={{fontSize: 13}}>{col.titulo}</b>
                         <span style={{fontSize: 12, color: "var(--ink-3)"}}>{suyos.length}</span>
+                        {col.id === 'pausa' && suyos.length > 0 && (
+                          <button type="button" onClick={() => setVerPausa(v => !v)} style={{marginLeft: "auto", fontFamily: "inherit", fontSize: 11, fontWeight: 700, border: 0, background: "none", color: "var(--ink-3)", cursor: "pointer", padding: 0}}>
+                            {verPausa ? 'Recoger' : 'Ver'}
+                          </button>
+                        )}
                       </div>
                       {/* El hueco donde caerá, del tamaño de la tarjeta. */}
                       <div aria-hidden="true" style={{
@@ -1533,13 +1543,20 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
                         display: 'grid', placeItems: 'center', fontSize: 12, fontWeight: 800, color,
                         transition: 'height .2s ease, opacity .2s ease, margin .2s ease',
                       }}>{destino ? 'Suelta aquí' : ''}</div>
-                      {suyos.map(t => (
-                        <div key={t.id} data-tablero={t.id}>
+                      {suyos.map(t => (col.id === 'pausa' && !verPausa ? (
+                        // En pausa, medio ocultos: una línea en gris (se abren, se arrastran y «Ver» los enseña enteros).
+                        <div key={t.id} data-tablero={t.id} onPointerDown={e => empezarArrastre(e, t)} onClick={() => abrirDesdeTablero(t)} title={t.subject}
+                          style={{fontSize: 12, color: "var(--ink-3)", padding: "5px 6px", borderRadius: 8, border: "1px dashed var(--line)", cursor: "grab", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                            opacity: arrastrando?.id === t.id && aterrizando !== t.id ? 0.35 : aterrizando === t.id ? 0 : 0.75, touchAction: "none"}}>
+                          <b>#{t.id}</b> {t.subject}
+                        </div>
+                      ) : (
+                        <div key={t.id} data-tablero={t.id} style={col.id === 'pausa' ? {opacity: 0.6} : undefined}>
                           <TarjetaTicket t={t} diasParado={diasParado} compacta onAbrir={abrirDesdeTablero}
                             onPointerDown={e => empezarArrastre(e, t)}
                             fantasma={arrastrando?.id === t.id && aterrizando !== t.id} oculto={aterrizando === t.id} />
                         </div>
-                      ))}
+                      )))}
                       {!suyos.length && !destino && <span style={{fontSize: 12, color: "var(--ink-3)", padding: "8px 4px"}}>Nada aquí.</span>}
                     </div>
                   );
@@ -1773,6 +1790,8 @@ const ESTADO_FAMILIA = {
   en_curso: { label: 'Lo estamos mirando', color: 'var(--purple)' },
   esperando: { label: 'Esperando tu respuesta', color: 'var(--orange)' },
   espera_deploy: { label: 'Solucionada, se publica pronto', color: '#2563EB' },
+  // La pausa es cosa interna: para la familia sigue «recibida».
+  pausa: { label: 'Recibida', color: '#ccac00' },
   resolved: { label: 'Resuelta', color: 'var(--teal)' },
   closed: { label: 'Cerrada', color: 'var(--ink-3)' },
 };

@@ -546,7 +546,7 @@ async function initDb() {
         // se genera solo el siguiente con la fecha límite corrida.
         await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS recurrencia VARCHAR(20)`);
         // Soporte mejorado: la etapa de un ticket abierto ('en_curso',
-        // 'esperando' o 'espera_deploy'; sin etapa, está por atender). Va aparte del estado para que
+        // 'esperando', 'espera_deploy' o 'pausa'; sin etapa, está por atender). Va aparte del estado para que
         // Aim-Tul y Brickslab, que comparten la tabla, lo sigan viendo «abierto».
         await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS etapa VARCHAR(20)`);
         // Qué es: error, mejora, familia, interna o facturacion.
@@ -15373,7 +15373,8 @@ async function destinatariosTicket({ creador, encargados }) {
 
 // ── Soporte mejorado ─────────────────────────────────────────────────────────
 // Etapas de un ticket abierto, categorías, adjuntos y quién es del personal.
-const ETAPAS_TICKET = { en_curso: 'En curso', esperando: 'Esperando respuesta', espera_deploy: 'Espera de deploy' };
+// En pausa: está, pero aún no hace falta hacerlo (no cuenta como parado, vencido ni sin asignar).
+const ETAPAS_TICKET = { en_curso: 'En curso', esperando: 'Esperando respuesta', espera_deploy: 'Espera de deploy', pausa: 'En pausa' };
 const CATEGORIAS_TICKET = { error: 'Error', mejora: 'Mejora', familia: 'Petición de familia', interna: 'Tarea interna', facturacion: 'Facturación' };
 const ESTADOS_TICKET = { open: 'Abierto', resolved: 'Resuelto', closed: 'Cerrado' };
 const PRIORIDADES_TICKET = { low: 'Baja', medium: 'Media', high: 'Alta' };
@@ -15954,7 +15955,7 @@ async function resumenSoporte(dias = 7) {
                     COUNT(*) FILTER (WHERE status = 'open')::int AS abiertos,
                     COUNT(*) FILTER (WHERE status = 'open' AND assigned_to IS NULL AND cardinality(COALESCE(asignados_extra, '{}')) = 0)::int AS sin_asignar,
                     COUNT(*) FILTER (WHERE status = 'open' AND due_date IS NOT NULL AND due_date::date < (NOW() AT TIME ZONE 'Europe/Madrid')::date)::int AS vencidos,
-                    COUNT(*) FILTER (WHERE status = 'open' AND etapa IS DISTINCT FROM 'espera_deploy' AND COALESCE(updated_at, created_at) < NOW() - $2 * INTERVAL '1 day')::int AS parados,
+                    COUNT(*) FILTER (WHERE status = 'open' AND COALESCE(etapa, '') NOT IN ('espera_deploy', 'pausa') AND COALESCE(updated_at, created_at) < NOW() - $2 * INTERVAL '1 day')::int AS parados,
                     percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (resolved_at - created_at)) / 3600)
                         FILTER (WHERE resolved_at > NOW() - $1 * INTERVAL '1 day') AS horas_resolver,
                     (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (pr - t.created_at)) / 3600)
@@ -16189,7 +16190,7 @@ async function avisosSoportePeriodicos() {
                             EXTRACT(DAY FROM NOW() - COALESCE(s.updated_at, s.created_at))::int AS dias
                      FROM tickets_registrosoporte s
                      CROSS JOIN LATERAL unnest(array_prepend(s.assigned_to, COALESCE(s.asignados_extra, '{}'))) AS e(user_id)
-                     WHERE s.status = 'open' AND e.user_id IS NOT NULL
+                     WHERE s.status = 'open' AND e.user_id IS NOT NULL AND s.etapa IS DISTINCT FROM 'pausa'
                        AND ((s.due_date IS NOT NULL AND s.due_date::date < $1::date)
                             OR (s.etapa IS DISTINCT FROM 'espera_deploy' AND COALESCE(s.updated_at, s.created_at) < NOW() - $2 * INTERVAL '1 day'))
                      ORDER BY s.due_date NULLS LAST, s.id`, [hoy, dias]);
@@ -16756,7 +16757,7 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                                                AND due_date::date < (NOW() AT TIME ZONE 'Europe/Madrid')::date)::int AS vencidos,
                             COUNT(*) FILTER (WHERE (assigned_to = $1 OR $1 = ANY(asignados_extra)) AND etapa IS DISTINCT FROM 'espera_deploy'
                                                AND COALESCE(updated_at, created_at) < NOW() - $2 * INTERVAL '1 day')::int AS parados
-                     FROM tickets_registrosoporte WHERE status = 'open'`, [yo, dias])).rows[0];
+                     FROM tickets_registrosoporte WHERE status = 'open' AND etapa IS DISTINCT FROM 'pausa'`, [yo, dias])).rows[0];
                 const l = [];
                 // Cada aviso lleva a lo suyo (#360): la lista filtrada, no Soporte a secas.
                 if (t.sin_asignar && recibe('tickets_sin_asignar')) l.push({ tipo: 'tickets', clave: 'tickets_sin_asignar', n: t.sin_asignar, prioridad: t.urgentes ? 1 : 2, texto: `${t.sin_asignar} ${plural(t.sin_asignar, 'ticket', 'tickets')} sin asignar`, detalle: t.urgentes ? `${t.urgentes} de prioridad alta` : null, destino: '/admin/soporte?filtro=sin_asignar' });
