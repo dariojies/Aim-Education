@@ -24,7 +24,7 @@ import { crearReportes, pendienteAhora, SQL_MOVIMIENTOS } from './reportes.js';
 import { enviarZipFotos, nombreArchivo as nombreEnZip, crearZip, cabeceraAdjunto } from './zip.js';
 import { crearPublicaciones, crearTablasPublicaciones } from './publicaciones.js';
 import { crearConexionMeta, cargarConexionMeta, tokenPagina, conexionMeta } from './meta-conexion.js';
-import { crearAula, crearTablasAula, entregasPorCorregir, tareasCorregidas, dudasPorResponder, dudasContestadas, avisosAulaDe, avisosAulaPendientes, marcarAvisoAula, soltarAvisoAula } from './aula.js';
+import { crearAula, crearTablasAula, entregasPorCorregir, tareasCorregidas, dudasPorResponder, dudasContestadas, avisosAulaDe, avisosAulaPendientes, marcarAvisoAula, soltarAvisoAula, anunciosAulaDe } from './aula.js';
 import { crearTienda, crearTablasTienda, pedidosPorAtender, pedidosEnMarcha } from './tienda.js';
 import { limpiarHtml, htmlParaFuera, textoDeHtml } from './noticias-html.js';
 import { crearSeo } from './seo.js';
@@ -5247,7 +5247,7 @@ app.use(crearReportes({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireP
 // El aula virtual (#433). La sesión opcional y el pago online se declaran más
 // abajo: se pasan envueltos para leerlos al usarlos.
 app.use(crearAula({ pool, authenticateSession, requireSeccion, permisos,
-    sesionOpcional: (req) => sesionOpcional(req), pagosOnlineAbiertos: () => pagosOnlineAbiertos() , avisar: (x) => (mailTransporter ? mandarAvisoAula(x) : Promise.resolve(false)) }).router);
+    sesionOpcional: (req) => sesionOpcional(req), pagosOnlineAbiertos: () => pagosOnlineAbiertos() , avisar: (x) => avisoAulaDelProfesor(x) }).router);
 // La tienda online (#432).
 const tiendaOnline = crearTienda({ pool, authenticateSession, requireSeccion,
     sesionOpcional: (req) => sesionOpcional(req), pagosOnlineAbiertos: () => pagosOnlineAbiertos() });
@@ -13440,6 +13440,12 @@ async function avisosFamilia(me) {
                         : [`${de}ya está abierta «${a.titulo}»`, a.abre_at];
                 avisos.push({ tipo: 'avisos', destino: `/aula/${a.curso_id}/curso?leccion=${a.id}`, clave: `aula:${a.tipo === 'directo' ? 'directo' : 'leccion'}:${a.id}:${a.user_id}`, marca: fecha, fecha, texto, detalle: a.curso });
             }
+            for (const a of await anunciosAulaDe(pool, [me, ...hijos]).catch(() => [])) {
+                const de = String(a.user_id) === String(me) ? '' : `${a.nombre}: `;
+                const corto = a.texto.length > 70 ? `${a.texto.slice(0, 68).trim()}…` : a.texto;
+                avisos.push({ tipo: 'avisos', destino: `/aula/${a.curso_id}/curso?anuncios=1`, clave: `aula:anuncio:${a.id}:${a.user_id}`, marca: a.created_at, fecha: a.created_at,
+                    texto: `${de}📢 «${corto}»`, detalle: a.curso });
+            }
         }
 
         // Dudas del aula virtual contestadas (#461).
@@ -21393,7 +21399,7 @@ async function correosAvisoAula(userId) {
     const lista = [x.email, ...(x.menor || !x.email ? x.padres : [])].map(e => String(e || '').trim().toLowerCase()).filter(e => e && !esCorreoInterno(e));
     return [...new Set(lista)];
 }
-const PLANTILLA_AVISO_AULA = { abre: 'aula_leccion_nueva', plazo: 'aula_tarea_plazo', directo1d: 'aula_directo', directo1h: 'aula_directo', inactivo: 'aula_inactivo' };
+const PLANTILLA_AVISO_AULA = { abre: 'aula_leccion_nueva', plazo: 'aula_tarea_plazo', directo1d: 'aula_directo', directo1h: 'aula_directo', inactivo: 'aula_inactivo', anuncio: 'aula_anuncio' };
 function datosAvisoAula(x) {
     const enlace = `${URL_PUBLICA_WEB}/aula/${x.curso_id}/curso${x.leccion_id ? `?leccion=${x.leccion_id}` : ''}`;
     const hora = (d) => new Date(d).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Madrid' });
@@ -21406,6 +21412,7 @@ function datosAvisoAula(x) {
     const base = { alumno: x.alumno, curso: x.curso, enlace };
     if (x.aviso === 'abre') return { ...base, leccion: x.titulo };
     if (x.aviso === 'plazo') return { ...base, tarea: x.titulo, cuando: cuando(x.plazo_at) };
+    if (x.aviso === 'anuncio') return { ...base, profesor: x.autor };
     if (x.aviso === 'inactivo') return { ...base, dias: String(x.dias), quedan: String(x.quedan), hace: x.nunca ? ' y aún no ha entrado' : x.dias >= 3 ? `: hace ${x.dias} días que no entra` : '' };
     return { ...base, clase: x.titulo, cuando: x.aviso === 'directo1h' ? `dentro de un rato, a las ${hora(x.directo_at)}` : cuando(x.directo_at), meet: x.enlace || x.meet_url || enlace };
 }
@@ -21413,9 +21420,26 @@ function datosAvisoAula(x) {
 async function mandarAvisoAula(x) {
     const correos = await correosAvisoAula(x.user_id);
     if (!correos.length) return false;
-    const c = await correoSistema(PLANTILLA_AVISO_AULA[x.aviso], datosAvisoAula(x));
+    // El texto de un anuncio va tal cual (escapado), con sus saltos de línea.
+    const esc = (t) => String(t).replace(/[&<>"]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
+    const extra = x.aviso === 'anuncio' ? {
+        automaticos: { anuncio: `<div style="padding:14px 16px;border-left:4px solid #5233A8;background:#f6f3ff;border-radius:8px;white-space:pre-wrap">${esc(x.texto)}</div>` },
+        automaticosTexto: { anuncio: x.texto },
+    } : {};
+    const c = await correoSistema(PLANTILLA_AVISO_AULA[x.aviso], datosAvisoAula(x), extra);
     await mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: correos.join(','), ...c });
     return true;
+}
+// Lo que manda el profesor desde el curso: un recordatorio a uno, o un anuncio a
+// todos (este, al móvil también, y respetando el «no» a los avisos de actividades).
+async function avisoAulaDelProfesor(x) {
+    if (x.aviso === 'anuncio') {
+        avisosPush.avisarFamilias([x.user_id]);
+        if ((await estadoCorreosSistema()).aula_anuncio?.apagado) return false;
+        const act = (await pool.query(`SELECT ${sqlUltimoConsentimiento('$1::uuid', 'actividades')} AS a`, [x.user_id])).rows[0]?.a;
+        if (act === false) return false;
+    }
+    return mailTransporter ? mandarAvisoAula(x) : false;
 }
 async function recordatoriosAula() {
     if (!mailTransporter) return;

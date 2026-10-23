@@ -918,6 +918,22 @@ export const CORREOS_SISTEMA = {
             PEQ('Es por Google Meet: desde el ordenador se entra con el navegador y desde el móvil, con la app de Meet.'),
         ]),
     },
+    aula_anuncio: {
+        grupo: 'familias', nombre: 'Aula virtual: anuncio del profesor', cuando: 'Cuando el profesor publica un anuncio en el curso y marca «Mandarlo también por correo». A cada alumno (y a su familia, si es menor).',
+        asunto: 'Aviso del curso «{curso}»',
+        variables: {
+            alumno: { que: 'Nombre y apellidos del alumno', ejemplo: 'Lucía García' }, curso: { que: 'El curso', ejemplo: 'Inglés para viajar' },
+            profesor: { que: 'Quién lo escribe', ejemplo: 'Marta Ruiz' }, enlace: { que: 'Enlace al curso', ejemplo: 'https://www.aimeducation.es/aula/3/curso' },
+        },
+        automaticos: { anuncio: { nombre: 'El anuncio', ejemplo: '<div style="padding:14px 16px;border-left:4px solid #5233A8;background:#f6f3ff;border-radius:8px">Mañana la clase en directo es a las 19:00, no a las 18:00.</div>' } },
+        obligatorio: ['anuncio'],
+        diseno: () => d([
+            T('Hola,'),
+            T('**{profesor}** ha publicado un aviso en el curso **«{curso}»** de **{alumno}**:'),
+            AUTO('anuncio'),
+            BTN([{ texto: 'Ir al curso', url: '{enlace}', fondo: '', color: '#ffffff' }]),
+        ]),
+    },
     aula_inactivo: {
         grupo: 'familias', nombre: 'Aula virtual: ¿seguimos con el curso?', cuando: 'A quien lleva unos días sin entrar en un curso que no ha terminado (una vez cada vez que lo deja). El profesor también puede mandarlo.',
         asunto: '¿Seguimos con «{curso}»?',

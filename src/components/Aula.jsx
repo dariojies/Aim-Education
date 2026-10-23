@@ -484,6 +484,7 @@ function AulaAprender({ id }) {
         <aside className={`aula-indice${menu ? ' abierto' : ''}`} style={{ ...tarjeta, padding: 14 }}>{indice}</aside>
         <article style={{ display: 'grid', gap: 18, alignContent: 'start' }}>
           {c.gestor && <p style={{ margin: 0, padding: 10, borderRadius: 12, background: 'color-mix(in oklab, var(--purple) 10%, var(--bg-2))', fontSize: 13 }}>Lo estás viendo como personal: así lo ven los alumnos (tu progreso no cuenta).</p>}
+          {c.anuncios?.length > 0 && <AnunciosCurso anuncios={c.anuncios} abrir={/[?&]anuncios=1/.test(path)} />}
           {c.previa && (
             <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', padding: '12px 14px', borderRadius: 12, background: 'color-mix(in oklab, var(--teal) 10%, var(--bg-2))', fontSize: 14 }}>
               <span style={{ flex: 1, minWidth: 200 }}>🔓 Estás viendo la parte gratis. Las lecciones con 🔒 son del curso completo.</span>
@@ -573,6 +574,27 @@ function Leccion({ l, gestor, previa, curso, onEntregada, onVista, actualizar })
         : previa ? <p style={{ margin: 0, fontSize: 14, color: 'var(--ink-3)' }}>Para entregar la tarea y que te la corrijan, consigue el curso completo.</p>
         : <Entrega l={l} onEntregada={onEntregada} />)}
       {!gestor && <Apuntes l={l} onGuardado={(t) => actualizar?.(l.id, { apuntes: t })} />}
+    </div>
+  );
+}
+
+// Los anuncios del profesor: el último, a la vista; los demás, desplegando.
+function AnunciosCurso({ anuncios, abrir }) {
+  const [todos, setTodos] = useState(abrir);
+  const nuevo = (a) => Date.now() - new Date(a.created_at).getTime() < 7 * 86400000;
+  const uno = (a) => (
+    <div key={a.id} style={{ display: 'grid', gap: 4 }}>
+      <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{fmtHora(a.created_at)}{a.autor ? ` · ${a.autor}` : ''}{nuevo(a) && <b style={{ marginLeft: 6, color: 'var(--pink)' }}>Nuevo</b>}</span>
+      <Texto texto={a.texto} />
+    </div>
+  );
+  return (
+    <div id="aula-anuncios" style={{ ...tarjeta, padding: 16, display: 'grid', gap: 10, borderColor: nuevo(anuncios[0]) ? 'var(--purple)' : undefined }}>
+      <b style={{ fontSize: 15 }}>📢 Anuncios del profesor</b>
+      {uno(anuncios[0])}
+      {anuncios.length > 1 && (todos
+        ? anuncios.slice(1).map(a => <div key={a.id} style={{ borderTop: '1px solid var(--line)', paddingTop: 10 }}>{uno(a)}</div>)
+        : <button type="button" className="btn btn-sm btn-ghost" style={{ justifySelf: 'start' }} onClick={() => setTodos(true)}>Ver los {anuncios.length - 1} anteriores</button>)}
     </div>
   );
 }

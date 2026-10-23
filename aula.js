@@ -243,6 +243,16 @@ export async function crearTablasAula(client) {
             enviado_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             PRIMARY KEY (user_id, clave)
         )`);
+    // Los anuncios del profesor a todo el curso («mañana la clase es a las 19:00»).
+    await client.query(`
+        CREATE TABLE IF NOT EXISTS aim_aula_anuncios (
+            id SERIAL PRIMARY KEY,
+            curso_id INTEGER NOT NULL REFERENCES aim_aula_cursos(id) ON DELETE CASCADE,
+            autor_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+            texto TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+    await client.query(`CREATE INDEX IF NOT EXISTS ix_aula_anuncios ON aim_aula_anuncios (curso_id, created_at DESC)`);
     // La valoración del curso (#463): la rellena el alumno al terminarlo, antes
     // de su diploma. Seis notas del 1 al 5, si lo recomendaría y qué mejoraría.
     await client.query(`
@@ -320,6 +330,18 @@ export function incrustar(url) {
 }
 
 const corta = (status, error) => { const e = new Error(error); e.status = status; throw e; };
+// Fechas en la hora de Madrid: moverlas N días deja la misma hora aunque entre
+// medias cambie la hora (de verano a invierno).
+const partesMadrid = (d) => Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Madrid', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
+    .formatToParts(d).filter(p => p.type !== 'literal').map(p => [p.type, Number(p.value)]));
+function enMadrid(y, m, d, h, mi, s) {
+    const quiero = Date.UTC(y, m - 1, d, h, mi, s);
+    let t = quiero;
+    for (let k = 0; k < 3; k++) { const p = partesMadrid(new Date(t)); t += quiero - Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second); }
+    return new Date(t);
+}
+export const moverDias = (f, dias) => { if (!f || !dias) return f || null; const p = partesMadrid(new Date(f)); return enMadrid(p.year, p.month, p.day + dias, p.hour, p.minute, p.second); };
+const diaMadrid = (f) => { const p = partesMadrid(new Date(f)); return Date.UTC(p.year, p.month - 1, p.day); };
 // Los evaluables con tiempo límite: al empezar, una marca firmada de cuándo (no se
 // guarda nada); al entregar, si ha pasado el tiempo (con un minuto y medio de
 // margen por la conexión), no cuenta.
@@ -470,6 +492,12 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
         if (!a || !a.completo) corta(404, 'Ese archivo no está.');
         return a;
     }
+    // Los otros cursos que usan algo subido (las copias de un curso lo comparten): en
+    // una lección o como imagen de una pregunta.
+    const cursosQueUsan = async (archivoId, menos) => (await pool.query(
+        `SELECT curso_id FROM aim_aula_lecciones WHERE archivo_id = $1 AND curso_id <> $2
+         UNION SELECT l.curso_id FROM aim_aula_preguntas p JOIN aim_aula_lecciones l ON l.id = p.leccion_id WHERE p.imagen = $3 AND l.curso_id <> $2`,
+        [archivoId, menos, `/api/aula/archivos/${archivoId}`])).rows.map(x => x.curso_id);
     const espacioUsado = async () => Number((await pool.query(
         `SELECT COALESCE(SUM(bytes), 0)::bigint AS b FROM aim_aula_archivos WHERE parte_de IS NULL`)).rows[0].b);
 
@@ -752,9 +780,12 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                 at: l.directo_at, min: l.directo_min || 60, enlace: httpsOk(l.enlace) || httpsOk(c.meet_url),
                 grabacion: l.video_url ? { embed: incrustar(l.video_url), url: l.video_url } : l.archivo_nombre ? { src: `/api/aula/archivos/${l.archivo_id}`, mime: l.archivo_mime } : null,
             });
+            const anuncios = previa ? [] : (await pool.query(
+                `SELECT a.id, a.texto, a.created_at, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS autor
+                 FROM aim_aula_anuncios a LEFT JOIN users u ON u.user_id = a.autor_id WHERE a.curso_id = $1 ORDER BY a.created_at DESC LIMIT 20`, [id])).rows;
             res.set('Cache-Control', 'no-store');
             res.json({
-                id: c.id, titulo: c.titulo, profesor: c.profesor || null, gestor,
+                id: c.id, titulo: c.titulo, profesor: c.profesor || null, gestor, anuncios,
                 previa: !!previa, precio: totalDe(c), valorado: !gestor && !previa ? await valorado(c.id, me) : true,
                 temas: temas.map(t => ({ ...t, lecciones: lecs.filter(l => l.tema_id === t.id).map(l => (previa && !l.gratis ? { id: l.id, tipo: l.tipo, titulo: l.titulo, bloqueada: true }
                   : cerradas.has(l.id) ? { id: l.id, tipo: l.tipo, titulo: l.titulo, cerrada: cerradas.get(l.id), hecha: hechas.has(l.id), directo: l.tipo === 'directo' ? { at: l.directo_at, min: l.directo_min || 60 } : undefined } : {
@@ -859,8 +890,10 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
         try {
             const a = await archivoMeta(idDe(req.params.id));
             await puedeVer(req, a.curso_id).catch(async (e) => {
-                // El de una lección de la parte gratis, también sin pagar.
                 if (e.status !== 403) throw e;
+                // Un curso duplicado usa lo subido del original: vale cualquiera de los cursos que lo usan.
+                for (const otro of await cursosQueUsan(a.id, a.curso_id)) { if (await puedeVer(req, otro).then(() => true, () => false)) return; }
+                // El de una lección de la parte gratis, también sin pagar.
                 const g = (await pool.query(
                     `SELECT 1 FROM aim_aula_lecciones l JOIN aim_aula_cursos c ON c.id = l.curso_id WHERE l.archivo_id = $1 AND l.gratis AND c.publicado LIMIT 1`, [a.id])).rowCount;
                 if (!g) throw e;
@@ -1218,6 +1251,14 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             const c = await editable(req, idDe(req.params.id));
             const n = (await pool.query(`SELECT COUNT(*)::int n FROM aim_aula_inscripciones WHERE curso_id = $1`, [c.id])).rows[0].n;
             if (n) corta(409, `Hay ${n} ${n === 1 ? 'persona apuntada' : 'personas apuntadas'}: en vez de borrarlo, quítalo de publicado.`);
+            await pool.query(
+                `UPDATE aim_aula_archivos a SET curso_id = x.otro FROM (
+                   SELECT DISTINCT ON (a2.id) a2.id, u.curso_id AS otro FROM aim_aula_archivos a2
+                   JOIN (SELECT archivo_id AS aid, curso_id FROM aim_aula_lecciones WHERE archivo_id IS NOT NULL
+                         UNION SELECT NULLIF(regexp_replace(p.imagen, '^/api/aula/archivos/', ''), p.imagen)::int, l.curso_id
+                         FROM aim_aula_preguntas p JOIN aim_aula_lecciones l ON l.id = p.leccion_id WHERE p.imagen ~ '^/api/aula/archivos/[0-9]+$') u ON u.aid = a2.id
+                   WHERE a2.curso_id = $1 AND a2.parte_de IS NULL AND u.curso_id <> $1) x
+                 WHERE a.id = x.id`, [c.id]);
             await pool.query(`DELETE FROM aim_aula_cursos WHERE id = $1`, [c.id]);
             if (c.concepto) await pool.query(`UPDATE aim_precios SET activo = false, updated_at = NOW() WHERE concepto = $1`, [c.concepto]);
             res.json({ success: true });
@@ -1233,6 +1274,49 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             await pool.query(`UPDATE aim_aula_cursos SET portada = $2, portada_mime = $3, updated_at = NOW() WHERE id = $1`, [c.id, datos, datos ? mime : null]);
             res.json({ success: true });
         } catch (err) { fallo(res, err); }
+    });
+
+    // ── Duplicar un curso (para la temporada siguiente) ──
+    // Todo el temario, los cuestionarios y lo subido (compartido, sin ocupar más),
+    // sin publicar y sin alumnos. Con «inicio» (YYYY-MM-DD), todas las fechas se
+    // mueven los mismos días para que la primera caiga ese día (a la misma hora).
+    router.post('/api/admin/aula/cursos/:id/duplicar', ...gestion, async (req, res) => {
+        const client = await pool.connect();
+        try {
+            const c = await editable(req, idDe(req.params.id));
+            const titulo = txt(req.body?.titulo, 200) || `${c.titulo} (copia)`;
+            const temas = (await client.query(`SELECT * FROM aim_aula_temas WHERE curso_id = $1 ORDER BY orden, id`, [c.id])).rows;
+            const lecs = (await client.query(`SELECT * FROM aim_aula_lecciones WHERE curso_id = $1 ORDER BY orden, id`, [c.id])).rows;
+            const fechas = lecs.flatMap(l => [l.abre_at, l.plazo_at, l.directo_at]).filter(Boolean);
+            let dias = 0;
+            if (req.body?.inicio) {
+                const m = String(req.body.inicio).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+                if (!m) corta(400, 'La fecha de inicio no es válida.');
+                if (fechas.length) dias = Math.round((Date.UTC(+m[1], +m[2] - 1, +m[3]) - diaMadrid(new Date(Math.min(...fechas.map(f => new Date(f).getTime()))))) / 86400000);
+            }
+            await client.query('BEGIN');
+            const nuevo = (await client.query(
+                `INSERT INTO aim_aula_cursos (titulo, resumen, descripcion, portada, portada_mime, profesor_id, publicado, meet_url, diploma_diseno_id, creado_por)
+                 SELECT $2, resumen, descripcion, portada, portada_mime, profesor_id, false, meet_url, diploma_diseno_id, $3 FROM aim_aula_cursos WHERE id = $1 RETURNING id`,
+                [c.id, titulo, req.userSession.userId])).rows[0];
+            // El precio, si lo tenía (solo quien puede poner precios).
+            if (completa(req) && precioDe(c)) await guardarPrecio(client, { id: nuevo.id, concepto: null }, Number(c.precio), Number(c.iva_pct ?? IVA_AULA), titulo);
+            const temaNuevo = new Map();
+            for (const t of temas) temaNuevo.set(t.id, (await client.query(`INSERT INTO aim_aula_temas (curso_id, titulo, orden) VALUES ($1, $2, $3) RETURNING id`, [nuevo.id, t.titulo, t.orden])).rows[0].id);
+            for (const l of lecs) {
+                const id = (await client.query(
+                    `INSERT INTO aim_aula_lecciones (curso_id, tema_id, tipo, titulo, texto, video_url, archivo_id, calificacion, orden, gratis, modo, intentos,
+                            abre_at, tras_anterior, plazo_at, directo_at, directo_min, enlace, nota_minima, tiempo_min)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id`,
+                    [nuevo.id, temaNuevo.get(l.tema_id), l.tipo, l.titulo, l.texto, l.video_url, l.archivo_id, l.calificacion, l.orden, l.gratis, l.modo, l.intentos,
+                        moverDias(l.abre_at, dias), l.tras_anterior, moverDias(l.plazo_at, dias), moverDias(l.directo_at, dias), l.directo_min, l.enlace, l.nota_minima, l.tiempo_min])).rows[0].id;
+                await client.query(
+                    `INSERT INTO aim_aula_preguntas (leccion_id, orden, enunciado, opciones, correcta, explicacion, imagen)
+                     SELECT $2, orden, enunciado, opciones, correcta, explicacion, imagen FROM aim_aula_preguntas WHERE leccion_id = $1`, [l.id, id]);
+            }
+            await client.query('COMMIT');
+            res.status(201).json({ success: true, id: nuevo.id, dias, fechas: fechas.length, conPrecio: completa(req) && !!precioDe(c) });
+        } catch (err) { await client.query('ROLLBACK').catch(() => {}); fallo(res, err); } finally { client.release(); }
     });
 
     // ── Temario ──
@@ -1587,7 +1671,11 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
     router.get('/api/admin/aula/archivos/:id', ...gestion, async (req, res) => {
         try {
             const a = await archivoMeta(idDe(req.params.id));
-            await editable(req, a.curso_id);
+            await editable(req, a.curso_id).catch(async (e) => {
+                if (e.status !== 403) throw e;
+                for (const otro of await cursosQueUsan(a.id, a.curso_id)) { if (await editable(req, otro).then(() => true, () => false)) return; }
+                throw e;
+            });
             await servirArchivo(req, res, a);
         } catch (err) { if (!res.headersSent) fallo(res, err); else res.destroy(); }
     });
@@ -1644,6 +1732,91 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             await pool.query(`UPDATE aim_aula_inscripciones SET estado = $2::varchar, origen = CASE WHEN $2::varchar = 'activa' AND estado <> 'activa' THEN 'secretaria' ELSE origen END,
                               activada_at = CASE WHEN $2::varchar = 'activa' THEN COALESCE(activada_at, NOW()) ELSE activada_at END WHERE id = $1`, [i.id, estado]);
             res.json({ success: true });
+        } catch (err) { fallo(res, err); }
+    });
+
+    // ── Anuncios del profesor a todo el curso ──
+    // Salen en el curso y en la campanita; con «correo», también por correo a cada
+    // alumno (y a su familia si es menor), en segundo plano y una vez.
+    router.get('/api/admin/aula/cursos/:id/anuncios', ...gestion, async (req, res) => {
+        try {
+            const c = await editable(req, idDe(req.params.id));
+            const r = await pool.query(
+                `SELECT a.id, a.texto, a.created_at, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS autor,
+                        (SELECT COUNT(*)::int FROM aim_aula_avisos v WHERE v.clave = 'anuncio:' || a.id) AS enviados
+                 FROM aim_aula_anuncios a LEFT JOIN users u ON u.user_id = a.autor_id WHERE a.curso_id = $1 ORDER BY a.created_at DESC`, [c.id]);
+            res.set('Cache-Control', 'no-store');
+            res.json(r.rows);
+        } catch (err) { fallo(res, err); }
+    });
+    router.post('/api/admin/aula/cursos/:id/anuncios', ...gestion, async (req, res) => {
+        try {
+            const c = await editable(req, idDe(req.params.id));
+            const texto = txt(req.body?.texto, 4000);
+            if (!texto) corta(400, 'Escribe el anuncio.');
+            const a = (await pool.query(`INSERT INTO aim_aula_anuncios (curso_id, autor_id, texto) VALUES ($1, $2, $3) RETURNING id, created_at`, [c.id, req.userSession.userId, texto])).rows[0];
+            const alumnos = (await pool.query(
+                `SELECT i.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno FROM aim_aula_inscripciones i
+                 LEFT JOIN aim_cargos c ON c.id = i.cargo_id JOIN users u ON u.user_id = i.user_id
+                 WHERE i.curso_id = $1 AND i.estado <> 'baja' AND ${SQL_ACCESO()}`, [c.id])).rows;
+            const yo = (await pool.query(`SELECT TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS n FROM users WHERE user_id = $1`, [req.userSession.userId])).rows[0]?.n || 'El profesor';
+            if (req.body?.correo !== false && avisar) {
+                // En segundo plano: el profesor no espera a que salgan todos.
+                (async () => {
+                    for (const x of alumnos) {
+                        const clave = `anuncio:${a.id}`;
+                        if (!(await marcarAvisoAula(pool, x.user_id, clave))) continue;
+                        try {
+                            await avisar({ aviso: 'anuncio', user_id: x.user_id, alumno: x.alumno, curso_id: c.id, curso: c.titulo, texto, autor: yo });
+                        } catch (e) { await soltarAvisoAula(pool, x.user_id, clave).catch(() => {}); console.error('[aula anuncio]', e.message); }
+                    }
+                })().catch(e => console.error('[aula anuncio]', e.message));
+            }
+            res.status(201).json({ success: true, id: a.id, alumnos: alumnos.length });
+        } catch (err) { fallo(res, err); }
+    });
+    router.delete('/api/admin/aula/anuncios/:id', ...gestion, async (req, res) => {
+        try {
+            const a = (await pool.query(`SELECT * FROM aim_aula_anuncios WHERE id = $1`, [idDe(req.params.id)])).rows[0];
+            if (!a) corta(404, 'Ese anuncio ya no está.');
+            await editable(req, a.curso_id);
+            await pool.query(`DELETE FROM aim_aula_anuncios WHERE id = $1`, [a.id]);
+            res.json({ success: true });
+        } catch (err) { fallo(res, err); }
+    });
+
+    // ── Apuntar a una clase entera del club (sus alumnos de la temporada activa) ──
+    router.get('/api/admin/aula/clases', ...gestion, async (req, res) => {
+        try {
+            if (!completa(req)) corta(403, 'Apuntar una clase lo hace secretaría o la dirección.');
+            const r = await pool.query(
+                `SELECT m.clase_ref AS id, MAX(m.clase_nombre) AS nombre, MAX(m.actividad) AS actividad, COUNT(DISTINCT m.user_id)::int AS alumnos
+                 FROM aim_matriculas m JOIN aim_temporadas t ON t.id = m.temporada_id AND t.activa
+                 WHERE m.baja IS NULL OR m.baja > CURRENT_DATE
+                 GROUP BY m.clase_ref ORDER BY MAX(m.actividad), MAX(m.clase_nombre)`);
+            res.set('Cache-Control', 'no-store');
+            res.json(r.rows);
+        } catch (err) { fallo(res, err); }
+    });
+    router.post('/api/admin/aula/cursos/:id/alumnos/clase', ...gestion, async (req, res) => {
+        try {
+            if (!completa(req)) corta(403, 'Apuntar una clase lo hace secretaría o la dirección.');
+            const c = await curso(idDe(req.params.id));
+            const ref = String(req.body?.claseId || '');
+            if (!/^[0-9a-f-]{36}$/i.test(ref)) corta(400, 'Elige una clase.');
+            const gente = (await pool.query(
+                `SELECT DISTINCT m.user_id FROM aim_matriculas m JOIN aim_temporadas t ON t.id = m.temporada_id AND t.activa
+                 WHERE m.clase_ref = $1::uuid AND (m.baja IS NULL OR m.baja > CURRENT_DATE)`, [ref])).rows.map(x => x.user_id);
+            if (!gente.length) corta(400, 'Esa clase no tiene alumnos esta temporada.');
+            // Los que ya estaban dentro se quedan como estaban (con su fecha y su forma de entrar).
+            const r = await pool.query(
+                `INSERT INTO aim_aula_inscripciones (curso_id, user_id, estado, origen, activada_at)
+                 SELECT $1, u, 'activa', 'clase', NOW() FROM unnest($2::uuid[]) AS u
+                 ON CONFLICT (curso_id, user_id) DO UPDATE SET estado = 'activa', origen = 'clase', activada_at = COALESCE(aim_aula_inscripciones.activada_at, NOW())
+                 WHERE aim_aula_inscripciones.estado <> 'activa'
+                 RETURNING user_id`, [c.id, gente]);
+            const sinCuenta = (await pool.query(`SELECT COUNT(*)::int n FROM users WHERE user_id = ANY($1::uuid[]) AND (password IS NULL OR COALESCE(email, '') = '')`, [gente])).rows[0].n;
+            res.json({ success: true, apuntados: r.rowCount, yaEstaban: gente.length - r.rowCount, sinCuenta });
         } catch (err) { fallo(res, err); }
     });
 
@@ -1901,4 +2074,15 @@ export async function marcarAvisoAula(pool, userId, clave) {
 }
 export async function soltarAvisoAula(pool, userId, clave) {
     await pool.query(`DELETE FROM aim_aula_avisos WHERE user_id = $1 AND clave = $2`, [userId, String(clave).slice(0, 80)]);
+}
+
+// Los anuncios de los cursos de estas personas, de las dos últimas semanas (para la campanita).
+export async function anunciosAulaDe(pool, userIds) {
+    if (!userIds?.length) return [];
+    return (await pool.query(
+        `SELECT a.id, a.texto, a.created_at, cu.id AS curso_id, cu.titulo AS curso, i.user_id, u.name AS nombre
+         FROM aim_aula_anuncios a JOIN aim_aula_cursos cu ON cu.id = a.curso_id JOIN aim_aula_inscripciones i ON i.curso_id = a.curso_id
+         LEFT JOIN aim_cargos c ON c.id = i.cargo_id JOIN users u ON u.user_id = i.user_id
+         WHERE i.user_id = ANY($1::uuid[]) AND i.estado <> 'baja' AND ${SQL_ACCESO()} AND a.created_at > NOW() - INTERVAL '14 days'
+         ORDER BY a.created_at DESC LIMIT 10`, [userIds])).rows;
 }

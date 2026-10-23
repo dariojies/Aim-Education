@@ -108,7 +108,7 @@ export default function AdminAula({ showToast }) {
     if (/[?&]dudas=1/.test(path || '')) { setPestana('dudas'); setAbierto(null); }
   }, [path]);
 
-  if (abierto) return <EditorCurso id={abierto} showToast={showToast} espacio={datos?.espacio} onCerrar={() => { setAbierto(null); cargar(); }} />;
+  if (abierto) return <EditorCurso id={abierto} showToast={showToast} espacio={datos?.espacio} onCerrar={() => { setAbierto(null); cargar(); }} onAbrir={(nid) => { setAbierto(nid); cargar(); }} />;
 
   const porCorregir = datos?.cursos.reduce((s, c) => s + c.porCorregir, 0) || 0;
   const dudas = datos?.cursos.reduce((s, c) => s + (c.dudas || 0), 0) || 0;
@@ -224,9 +224,10 @@ function Precio({ valor, cambiar }) {
 
 // ═══════════════════════ Un curso ═══════════════════════
 
-function EditorCurso({ id, showToast, espacio, onCerrar }) {
+function EditorCurso({ id, showToast, espacio, onCerrar, onAbrir }) {
   const [c, setC] = useState(null);
   const [pestana, setPestana] = useState('temario');
+  const [duplicando, setDuplicando] = useState(false);
   const [error, setError] = useState('');
   const cargar = useCallback(() => { api(`/api/admin/aula/cursos/${id}`).then(setC).catch(e => setError(e.message)); }, [id]);
   useEffect(() => { cargar(); }, [cargar]);
@@ -239,10 +240,12 @@ function EditorCurso({ id, showToast, espacio, onCerrar }) {
         <button type="button" className="btn btn-sm btn-outline" onClick={onCerrar}>← Cursos</button>
         <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, flex: 1, minWidth: 200 }}>{c.titulo}</h2>
         <span style={pastilla(c.publicado ? 'var(--teal)' : 'var(--ink-3)')}>{c.publicado ? 'Publicado' : 'Borrador'}</span>
+        <button type="button" className="btn btn-sm btn-outline" onClick={() => setDuplicando(true)} title="Una copia con todo el temario, sin alumnos (para otra temporada)">⧉ Duplicar</button>
         <a className="btn btn-sm btn-outline" href={`/aula/${c.id}/curso`} target="_blank" rel="noreferrer"><I.Eye /> Verlo como alumno</a>
       </div>
+      {duplicando && <Duplicar c={c} onCerrar={() => setDuplicando(false)} onHecho={(d) => { setDuplicando(false); showToast?.(`Curso duplicado${d.fechas ? `: ${d.fechas} ${d.fechas === 1 ? 'fecha movida' : 'fechas movidas'} ${Math.abs(d.dias)} días` : ''}. Está sin publicar.`); onAbrir?.(d.id); }} />}
       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', borderBottom: '1px solid var(--line)' }}>
-        {[['temario', 'Temario'], ['datos', 'Datos y precio'], ['alumnos', 'Alumnos'], ['entregas', `Entregas${porCorregir ? ` · ${porCorregir}` : ''}`], ['valoraciones', 'Valoraciones']].map(([k, t]) => (
+        {[['temario', 'Temario'], ['datos', 'Datos y precio'], ['alumnos', 'Alumnos'], ['anuncios', 'Anuncios'], ['entregas', `Entregas${porCorregir ? ` · ${porCorregir}` : ''}`], ['valoraciones', 'Valoraciones']].map(([k, t]) => (
           <button key={k} type="button" onClick={() => setPestana(k)}
             style={{ font: 'inherit', fontSize: 14, fontWeight: 800, padding: '8px 14px', background: 'none', border: 0, cursor: 'pointer',
               color: pestana === k ? 'var(--purple)' : 'var(--ink-3)', borderBottom: `2px solid ${pestana === k ? 'var(--purple)' : 'transparent'}`, marginBottom: -1 }}>{t}</button>
@@ -252,7 +255,101 @@ function EditorCurso({ id, showToast, espacio, onCerrar }) {
       {pestana === 'datos' && <DatosCurso c={c} recargar={cargar} showToast={showToast} onBorrado={onCerrar} />}
       {pestana === 'valoraciones' && <ValoracionesCurso cursoId={c.id} />}
       {pestana === 'alumnos' && <Alumnos cursoId={c.id} showToast={showToast} />}
+      {pestana === 'anuncios' && <Anuncios cursoId={c.id} showToast={showToast} />}
       {pestana === 'entregas' && <><Entregas cursoId={c.id} showToast={showToast} onCambio={cargar} /><Resultados cursoId={c.id} /></>}
+    </div>
+  );
+}
+
+// Duplicar (para otra temporada): todo el temario sin alumnos; con fecha de
+// inicio, todas las fechas se mueven los mismos días.
+const diaDe = (d) => { const x = new Date(d); return Date.UTC(x.getFullYear(), x.getMonth(), x.getDate()); };
+const dia = (d) => new Date(d).toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+function Duplicar({ c, onCerrar, onHecho }) {
+  const fechas = c.temas.flatMap(t => t.lecciones.flatMap(l => [l.abreAt, l.plazoAt, l.directoAt])).filter(Boolean).map(f => new Date(f)).sort((a, b) => a - b);
+  const [titulo, setTitulo] = useState(`${c.titulo} (copia)`);
+  const [inicio, setInicio] = useState('');
+  const [haciendo, setHaciendo] = useState(false);
+  const dias = inicio && fechas.length ? Math.round((Date.UTC(...inicio.split('-').map((n, i) => Number(n) - (i === 1 ? 1 : 0))) - diaDe(fechas[0])) / 86400000) : 0;
+  const mover = (f) => new Date(new Date(f).getFullYear(), new Date(f).getMonth(), new Date(f).getDate() + dias);
+  async function duplicar(e) {
+    e.preventDefault();
+    if (fechas.length && !inicio && !window.confirm('Las fechas (aperturas, plazos y clases en directo) se quedarán como están. ¿Duplicar así?')) return;
+    setHaciendo(true);
+    try { onHecho(await api(`/api/admin/aula/cursos/${c.id}/duplicar`, { method: 'POST', body: { titulo, inicio: inicio || null } })); }
+    catch (err) { alert(err.message); setHaciendo(false); }
+  }
+  return (
+    <Ventana titulo="Duplicar el curso" onCerrar={onCerrar}>
+      <form onSubmit={duplicar} style={{ display: 'grid', gap: 12 }}>
+        <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-2)' }}>Se copia todo el temario (lecciones, cuestionarios, vídeos y archivos, sin ocupar más espacio), el profesor, el Meet y el precio. Sin alumnos y sin publicar.</p>
+        <label style={etiqueta}>Título del nuevo<input required value={titulo} onChange={e => setTitulo(e.target.value)} style={inp} /></label>
+        {fechas.length > 0 ? (
+          <>
+            <label style={{ ...etiqueta, maxWidth: 260 }}>¿Cuándo empieza el nuevo?
+              <input type="date" value={inicio} onChange={e => setInicio(e.target.value)} style={inp} />
+            </label>
+            <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>
+              {inicio
+                ? <>La primera fecha (<b>{dia(fechas[0])}</b>) pasa al <b>{dia(mover(fechas[0]))}</b> y todas se mueven lo mismo ({Math.abs(dias)} días {dias >= 0 ? 'después' : 'antes'}, a la misma hora): la última queda el <b>{dia(mover(fechas[fechas.length - 1]))}</b>. {fechas.length} {fechas.length === 1 ? 'fecha' : 'fechas'} en total.</>
+                : <>Tiene {fechas.length} {fechas.length === 1 ? 'fecha' : 'fechas'} (aperturas, plazos y clases en directo), desde el {dia(fechas[0])}. Pon cuándo empieza el nuevo y se recolocan todas.</>}
+            </span>
+          </>
+        ) : <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>Este curso no tiene fechas: la copia sirve tal cual.</span>}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button type="button" className="btn btn-sm btn-outline" onClick={onCerrar}>Cancelar</button>
+          <button type="submit" className="btn btn-sm btn-primary" disabled={haciendo || !titulo.trim()}>{haciendo ? 'Duplicando…' : 'Duplicar'}</button>
+        </div>
+      </form>
+    </Ventana>
+  );
+}
+
+// Los anuncios del profesor a todo el curso: en el curso, en la campanita y, si
+// se quiere, por correo (a cada alumno y, si es menor, a su familia).
+function Anuncios({ cursoId, showToast }) {
+  const [lista, setLista] = useState(null);
+  const [texto, setTexto] = useState('');
+  const [correo, setCorreo] = useState(true);
+  const [enviando, setEnviando] = useState(false);
+  const cargar = useCallback(() => { api(`/api/admin/aula/cursos/${cursoId}/anuncios`).then(setLista).catch(e => alert(e.message)); }, [cursoId]);
+  useEffect(() => { cargar(); }, [cargar]);
+  async function publicar(e) {
+    e.preventDefault();
+    setEnviando(true);
+    try {
+      const r = await api(`/api/admin/aula/cursos/${cursoId}/anuncios`, { method: 'POST', body: { texto, correo } });
+      setTexto('');
+      showToast?.(`Anuncio publicado${correo && r.alumnos ? `: le llega por correo a ${r.alumnos} ${r.alumnos === 1 ? 'alumno' : 'alumnos'}` : ''}.`);
+      cargar();
+    } catch (err) { alert(err.message); } finally { setEnviando(false); }
+  }
+  async function borrar(a) {
+    if (!window.confirm('¿Quitar este anuncio del curso? (Los correos ya enviados no se pueden deshacer.)')) return;
+    try { await api(`/api/admin/aula/anuncios/${a.id}`, { method: 'DELETE' }); cargar(); } catch (err) { alert(err.message); }
+  }
+  return (
+    <div style={{ display: 'grid', gap: 14, maxWidth: 760 }}>
+      <form onSubmit={publicar} style={{ ...tarjeta, display: 'grid', gap: 10 }}>
+        <label style={etiqueta}>Nuevo anuncio para todo el curso
+          <textarea rows={4} required value={texto} onChange={e => setTexto(e.target.value)} placeholder="Por ejemplo: «Mañana la clase en directo es a las 19:00, no a las 18:00» o «He subido material extra en el tema 3»." style={{ ...inp, resize: 'vertical' }} />
+        </label>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+          <input type="checkbox" checked={correo} onChange={e => setCorreo(e.target.checked)} /> Mandarlo también por correo (a cada alumno y, si es menor, a su familia)
+        </label>
+        <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Sale arriba del curso y en la campanita (y en el móvil, con la app).</span>
+        <button type="submit" className="btn btn-sm btn-primary" style={{ justifySelf: 'start' }} disabled={enviando || !texto.trim()}>{enviando ? 'Publicando…' : '📢 Publicar el anuncio'}</button>
+      </form>
+      {lista && lista.length === 0 && <p style={{ margin: 0, color: 'var(--ink-3)', fontSize: 14 }}>Todavía no hay anuncios.</p>}
+      {(lista || []).map(a => (
+        <div key={a.id} style={{ ...tarjeta, display: 'grid', gap: 6 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <span style={{ flex: 1, fontSize: 12, color: 'var(--ink-3)' }}>{fmtHora(a.created_at)}{a.autor ? ` · ${a.autor}` : ''}{a.enviados ? ` · por correo a ${a.enviados}` : ''}</span>
+            <button type="button" className="icon-btn danger" onClick={() => borrar(a)} aria-label="Quitar el anuncio"><I.Trash /></button>
+          </div>
+          <Texto texto={a.texto} />
+        </div>
+      ))}
     </div>
   );
 }
@@ -678,6 +775,7 @@ function Subida({ f, subida, subir, accept, ayuda, opcional, quitar }) {
 function Alumnos({ cursoId, showToast }) {
   const [d, setD] = useState(null);
   const [buscar, setBuscar] = useState(false);
+  const [clase, setClase] = useState(false);
   const cargar = useCallback(() => { api(`/api/admin/aula/cursos/${cursoId}/alumnos`).then(setD).catch(e => alert(e.message)); }, [cursoId]);
   useEffect(() => { cargar(); }, [cargar]);
   async function recordar(a) {
@@ -700,6 +798,7 @@ function Alumnos({ cursoId, showToast }) {
         <span style={{ fontSize: 13, color: 'var(--ink-3)', flex: 1 }}>
           {d.alumnos.filter(a => a.estado === 'dentro').length} dentro{d.alumnos.some(a => a.estado === 'por_pagar') ? ` · ${d.alumnos.filter(a => a.estado === 'por_pagar').length} por pagar (entran solos al cobrarles el cargo, por internet o en secretaría)` : ''}
         </span>
+        {d.completa && <button type="button" className="btn btn-sm btn-outline" onClick={() => setClase(true)}>👥 Apuntar una clase</button>}
         {d.completa && <button type="button" className="btn btn-sm btn-primary" onClick={() => setBuscar(true)}><I.Plus /> Dar acceso a alguien</button>}
       </div>
       {atras.length > 0 && (
@@ -715,7 +814,7 @@ function Alumnos({ cursoId, showToast }) {
           {d.alumnos.map(a => (
             <div key={a.id} className="data-table-row" style={{ gridTemplateColumns: '1.5fr 100px 1fr 1fr 1.1fr 150px', alignItems: 'center', opacity: a.estado === 'baja' ? 0.6 : 1,
               background: a.atras ? 'color-mix(in oklab, var(--orange) 6%, transparent)' : undefined }}>
-              <div><div className="pri">{a.nombre}</div><div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{a.email || ''}{a.origen === 'secretaria' ? ' · acceso dado en el club' : ''} · desde {fmt(a.desde)}</div></div>
+              <div><div className="pri">{a.nombre}</div><div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{a.email || ''}{a.origen === 'secretaria' ? ' · acceso dado en el club' : a.origen === 'clase' ? ' · apuntado con su clase' : ''} · desde {fmt(a.desde)}</div></div>
               <span><span style={pastilla(ESTADO[a.estado][1])}>{ESTADO[a.estado][0]}</span></span>
               <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ flex: 1, height: 6, borderRadius: 99, background: 'var(--bg-3)', overflow: 'hidden', maxWidth: 120 }}><span style={{ display: 'block', width: `${a.progreso}%`, height: '100%', background: 'var(--teal)' }} /></span>
@@ -739,7 +838,44 @@ function Alumnos({ cursoId, showToast }) {
         </div>
       )}
       {buscar && <DarAcceso cursoId={cursoId} onCerrar={() => setBuscar(false)} onHecho={() => { setBuscar(false); showToast?.('Acceso dado.'); cargar(); }} />}
+      {clase && <ApuntarClase cursoId={cursoId} onCerrar={() => setClase(false)} onHecho={(r) => {
+        setClase(false);
+        showToast?.(`${r.apuntados ? `Apuntados ${r.apuntados}` : 'No había nadie nuevo'}${r.yaEstaban ? ` (${r.yaEstaban} ya estaban)` : ''}.${r.sinCuenta ? ` ${r.sinCuenta} no tienen cuenta en la web para entrar.` : ''}`);
+        cargar();
+      }} />}
     </div>
+  );
+}
+
+// Apuntar a todos los alumnos de una clase del club (de la temporada activa).
+function ApuntarClase({ cursoId, onCerrar, onHecho }) {
+  const [clases, setClases] = useState(null);
+  const [q, setQ] = useState('');
+  const [haciendo, setHaciendo] = useState(null);
+  useEffect(() => { api('/api/admin/aula/clases').then(setClases).catch(e => { alert(e.message); onCerrar(); }); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const lista = (clases || []).filter(k => !q.trim() || `${k.actividad} ${k.nombre}`.toLowerCase().includes(q.trim().toLowerCase()));
+  async function apuntar(k) {
+    if (!window.confirm(`¿Apuntar al curso a los ${k.alumnos} alumnos de ${k.actividad} · ${k.nombre}? Entran sin pagar (como «Dar acceso»).`)) return;
+    setHaciendo(k.id);
+    try { onHecho(await api(`/api/admin/aula/cursos/${cursoId}/alumnos/clase`, { method: 'POST', body: { claseId: k.id } })); }
+    catch (err) { alert(err.message); setHaciendo(null); }
+  }
+  return (
+    <Ventana titulo="Apuntar una clase entera" onCerrar={onCerrar}>
+      <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Todos los alumnos de la clase esta temporada entran al curso (los que ya estaban, se quedan como estaban). Útil si una clase usa el aula para los deberes.</p>
+      <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="Busca la clase o la actividad…" style={inp} />
+      {!clases ? <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>Cargando…</span> : (
+        <div style={{ display: 'grid', gap: 6, maxHeight: 380, overflowY: 'auto' }}>
+          {!lista.length && <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>Ninguna clase con eso.</span>}
+          {lista.map(k => (
+            <div key={k.id} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 10px', borderRadius: 10, background: 'var(--bg-3)' }}>
+              <div style={{ flex: 1 }}><b style={{ fontSize: 13 }}>{k.nombre}</b><div style={{ fontSize: 11, color: 'var(--ink-3)' }}>{k.actividad} · {k.alumnos} {k.alumnos === 1 ? 'alumno' : 'alumnos'}</div></div>
+              <button type="button" className="btn btn-sm btn-primary" disabled={!!haciendo} onClick={() => apuntar(k)}>{haciendo === k.id ? 'Apuntando…' : 'Apuntar'}</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </Ventana>
   );
 }
 
