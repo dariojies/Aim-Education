@@ -172,7 +172,7 @@ function DisenosGraficos({ showToast, puedePublicar }) {
     </button>
   );
 
-  if (abierto) return <Editor inicial={abierto} panelInicial={panelInicial} showToast={showToast} puedePublicar={puedePublicar} onCerrar={() => { setAbierto(null); setPanelInicial(null); cargar(); }} />;
+  if (abierto) return <Editor inicial={abierto} panelInicial={panelInicial} showToast={showToast} puedePublicar={puedePublicar} esDireccion={!!datos?.puedoAprobar} onCerrar={() => { setAbierto(null); setPanelInicial(null); cargar(); }} />;
   return (
     <div style={{ display: 'grid', gap: 14 }}>
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -427,7 +427,7 @@ const arrastrable = (url, ancho, alto) => ({
   onDragStart: (ev) => { ev.dataTransfer.setData(TIPO_ARRASTRE, JSON.stringify({ url, ancho, alto })); ev.dataTransfer.effectAllowed = 'copy'; },
 });
 
-function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
+function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esDireccion = false }) {
   const [id, setId] = useState(inicial.id);
   const [nombre, setNombre] = useState(inicial.nombre || 'Diseño sin nombre');
   const [tipo, setTipo] = useState(inicial.tipo || 'libre');
@@ -496,6 +496,14 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
   const elegido = sel ? diseno.elementos.find(e => e.id === sel) || null : null;
   const elegidos = useMemo(() => diseno.elementos.filter(e => seleccion.includes(e.id)), [diseno, seleccion]);
   const paginas = numPaginas(doc);
+  // Plantillas con partes fijas: lo que la dirección deja con candado, el resto del equipo
+  // no lo mueve ni lo cambia ('todo') o solo le cambia lo que dice o la foto ('contenido').
+  // marcaFija: además, el fondo, el tamaño y los colores de lo fijo.
+  const fijo = (e) => !esDireccion && !!e?.candado;
+  const soloContenido = (e) => fijo(e) && e.candado === 'contenido';
+  const marcaFija = !esDireccion && !!doc.marcaFija;
+  const sinCandado = (e) => { if (esDireccion || !e.candado) return e; const { candado, ...r } = e; return r; }; // eslint-disable-line no-unused-vars
+  const fotoPara = useRef(null);
   const kitConFuentes = useMemo(() => ({ ...(kit || {}), fuentes: fuentesClub }), [kit, fuentesClub]);
 
   useEffect(() => {
@@ -626,7 +634,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
   };
   const tramos = { empezar: () => { if (!tramo.current) tramo.current = docRef.current; }, terminar: tramoTerminar };
   const cambiarEl = (idEl, cambios, opts) => aplicar(d => ({ ...d, elementos: d.elementos.map(e => (e.id === idEl ? ajustarTexto({ ...e, ...cambios }, ejemplo) : e)) }), { historia: !tramo.current, ...opts });
-  const cambiarVarios = (ids, fn) => aplicar(d => ({ ...d, elementos: d.elementos.map(e => (ids.includes(e.id) ? ajustarTexto(fn(e), ejemplo) : e)) }));
+  const cambiarVarios = (ids, fn) => aplicar(d => ({ ...d, elementos: d.elementos.map(e => (ids.includes(e.id) && !fijo(e) ? ajustarTexto(fn(e), ejemplo) : e)) }));
   function deshacer() {
     if (!hist.atras.length) return;
     const prev = hist.atras[hist.atras.length - 1];
@@ -667,6 +675,26 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
     else anadirIcono(`m:${n}`, d);
   }
   const anadirMarco = (figura) => { const w = Math.round(base * 0.42); anadir({ tipo: 'imagen', url: null, marco: figura, ajuste: 'cubrir', w, h: figura === 'arco' ? Math.round(w * 1.25) : w, radio: figura === 'rect' ? Math.round(base * 0.03) : 0 }); };
+  // La dirección: fijar la estructura de una vez. Logos y adornos, fijos del todo; textos,
+  // fotos, tablas y gráficos, solo su contenido; y el fondo, el tamaño y los colores.
+  function cadaElemento(fn) {
+    return (d) => {
+      let r = d;
+      for (let i = 0; i < numPaginas(d); i++) { const v = paginaDe(r, i); r = conPagina(r, i, { ...v, elementos: v.elementos.map(fn) }); }
+      return r;
+    };
+  }
+  function fijarEstructura() {
+    const logos = new Set([...LOGOS_MARCA.map(([u]) => u), kit?.logo, ...ICONOS_ACTIVIDAD.flatMap(a => [a.icono, a.logo])].filter(Boolean));
+    const aFijar = cadaElemento(e => ({ ...e, candado: CON_CONTENIDO.includes(e.tipo) && !(e.tipo === 'imagen' && logos.has(e.url)) ? 'contenido' : 'todo' }));
+    aplicarDoc(d => aFijar({ ...d, marcaFija: true }));
+    showToast?.('Estructura fija: el resto del equipo solo cambiará textos, fotos, tablas y datos. Guárdalo como plantilla del equipo para que lo usen.');
+  }
+  function quitarCandados() {
+    const libre = cadaElemento(({ candado, ...e }) => e); // eslint-disable-line no-unused-vars
+    aplicarDoc(d => { const { marcaFija, ...r } = libre(d); return r; }); // eslint-disable-line no-unused-vars
+    showToast?.('Sin candados: el resto del equipo puede cambiarlo todo.');
+  }
   // Un collage: marcos vacíos que llenan la página (con separación o sin ella), por debajo
   // de lo que ya hay. Las fotos que se eligen después van llenando sus huecos, por orden.
   function anadirCollage(huecos, separado) {
@@ -725,7 +753,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
       try { img = await subirImagen(f); } catch (e) { alert(e.message); return; }
     }
     if (!img?.url) return;
-    const destino = [...vista().elementos].reverse().find(e => !e.oculto && !e.bloqueado && e.tipo === 'imagen' && dentroDe(e, p.x, p.y));
+    const destino = [...vista().elementos].reverse().find(e => !e.oculto && !e.bloqueado && !(fijo(e) && !soloContenido(e)) && e.tipo === 'imagen' && dentroDe(e, p.x, p.y));
     if (destino) {
       cambiarEl(destino.id, { url: img.url, encuadre: null, ...(destino.url ? {} : { ajuste: 'cubrir' }) });
       setSel(destino.id);
@@ -755,7 +783,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
     if (!mismo && (caja.x + caja.w > diseno.ancho || caja.y + caja.h > diseno.alto || caja.x < 0 || caja.y < 0)) {
       dx = Math.round((diseno.ancho - caja.w) / 2 - caja.x); dy = Math.round((diseno.alto - caja.h) / 2 - caja.y);
     }
-    const nuevos = c.elementos.map(e => ({ ...e, id: nuevoId(), x: e.x + dx, y: e.y + dy, ...(e.grupo ? { grupo: grupoNuevo(e.grupo) } : {}) }));
+    const nuevos = c.elementos.map(e => sinCandado({ ...e, id: nuevoId(), x: e.x + dx, y: e.y + dy, ...(e.grupo ? { grupo: grupoNuevo(e.grupo) } : {}) }));
     aplicar(d => ({ ...d, elementos: [...d.elementos, ...nuevos] }));
     setSeleccion(nuevos.map(e => e.id)); setRecortando(null);
     if (mismo) guardarCopia({ ...c, elementos: nuevos });
@@ -779,7 +807,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
   // Quitar el fondo de una foto (en el navegador). La de antes se guarda para recuperarla.
   async function quitarFondoSel() {
     const el = elegido;
-    if (!el || el.tipo !== 'imagen' || !el.url) return;
+    if (!el || el.tipo !== 'imagen' || !el.url || fijo(el)) return;
     if (el.url.startsWith('/api/admin/disenos/foto-club/')) {
       alert('A las fotos de la galería no se les quita el fondo: la foto recortada saldría de la galería y dejaría de depender del permiso de fotos. Usa una foto subida.');
       return;
@@ -804,20 +832,26 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
   }
 
   // ── Lo elegido (uno o varios) ──
-  function borrarSel() { if (!seleccion.length) return; aplicar(d => ({ ...d, elementos: d.elementos.filter(e => !seleccion.includes(e.id)) })); setSeleccion([]); }
+  function borrarSel() {
+    if (!seleccion.length) return;
+    const quedan = elegidos.filter(fijo).map(e => e.id);
+    aplicar(d => ({ ...d, elementos: d.elementos.filter(e => !seleccion.includes(e.id) || quedan.includes(e.id)) }));
+    setSeleccion(quedan);
+    if (quedan.length) showToast?.('Lo que ha dejado fijo la dirección no se puede borrar.');
+  }
   function duplicarSel() {
     if (!elegidos.length) return;
     const grupos = new Map();
     const grupoNuevo = (g) => { if (!grupos.has(g)) grupos.set(g, nuevoId()); return grupos.get(g); };
-    const copias = elegidos.map(e => ({ ...e, id: nuevoId(), x: e.x + 30, y: e.y + 30, ...(e.grupo ? { grupo: grupoNuevo(e.grupo) } : {}) }));
+    const copias = elegidos.map(e => sinCandado({ ...e, id: nuevoId(), x: e.x + 30, y: e.y + 30, ...(e.grupo ? { grupo: grupoNuevo(e.grupo) } : {}) }));
     aplicar(d => ({ ...d, elementos: [...d.elementos, ...copias] })); setSeleccion(copias.map(c => c.id));
   }
   function agrupar() { if (seleccion.length < 2) return; const g = nuevoId(); cambiarVarios(seleccion, e => ({ ...e, grupo: g })); }
   function desagrupar() { cambiarVarios(seleccion, ({ grupo, ...resto }) => resto); } // eslint-disable-line no-unused-vars
-  function moverSel(dx, dy) { aplicar(d => ({ ...d, elementos: d.elementos.map(e => (seleccion.includes(e.id) && !e.bloqueado ? { ...e, x: e.x + dx, y: e.y + dy } : e)) })); }
+  function moverSel(dx, dy) { aplicar(d => ({ ...d, elementos: d.elementos.map(e => (seleccion.includes(e.id) && !e.bloqueado && !fijo(e) ? { ...e, x: e.x + dx, y: e.y + dy } : e)) })); }
   function capa(dir) {
     aplicar(d => {
-      const dentro = d.elementos.filter(e => seleccion.includes(e.id)), fuera = d.elementos.filter(e => !seleccion.includes(e.id));
+      const dentro = d.elementos.filter(e => seleccion.includes(e.id) && !fijo(e)), fuera = d.elementos.filter(e => !dentro.includes(e));
       if (!dentro.length) return d;
       if (dir === 'frente') return { ...d, elementos: [...fuera, ...dentro] };
       if (dir === 'fondo') return { ...d, elementos: [...dentro, ...fuera] };
@@ -829,7 +863,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
   }
   // Uno, respecto al lienzo.
   function alinear(como) {
-    if (!elegido) return;
+    if (!elegido || fijo(elegido)) return;
     const { ancho: W, alto: H } = diseno;
     const pos = { izq: { x: 0 }, centroH: { x: (W - elegido.w) / 2 }, der: { x: W - elegido.w }, arriba: { y: 0 }, centroV: { y: (H - elegido.h) / 2 }, abajo: { y: H - elegido.h } }[como];
     cambiarEl(elegido.id, Object.fromEntries(Object.entries(pos).map(([k, v]) => [k, Math.round(v)])));
@@ -871,6 +905,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
     irPagina(p + 1);
   }
   function borrarPagina() {
+    if (paginas > 1 && diseno.elementos.some(fijo)) { showToast?.('Esta página tiene partes que ha dejado fijas la dirección: no se puede borrar.'); return; }
     if (paginas < 2 || !window.confirm(`¿Borrar la página ${pagina + 1}? (Ctrl+Z la recupera.)`)) return;
     const p = paginaRef.current;
     aplicarDoc(d => desdePaginas(d, paginasDe(d).filter((_, i) => i !== p)));
@@ -888,7 +923,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
   // todo lo escrito es un solo paso de deshacer.
   function editarTexto(idEl, punto) {
     const el = vista().elementos.find(e => e.id === idEl);
-    if (!el || el.tipo !== 'texto' || el.bloqueado) return;
+    if (!el || el.tipo !== 'texto' || el.bloqueado || (fijo(el) && !soloContenido(el))) return;
     edicion.current = { id: idEl, previo: docRef.current };
     setSel(idEl); setEditando({ id: idEl, punto: punto || null });
   }
@@ -899,7 +934,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
   // ── Recortar una foto: se arrastra la foto dentro de su caja y se acerca con el zoom ──
   function recortar(idEl) {
     const el = vista().elementos.find(e => e.id === idEl);
-    if (!el || el.tipo !== 'imagen' || !el.url || el.bloqueado) return;
+    if (!el || el.tipo !== 'imagen' || !el.url || el.bloqueado || (fijo(el) && !soloContenido(el))) return;
     if (!el.encuadre) cambiarEl(idEl, { encuadre: { zoom: 1, x: 0.5, y: 0.5 } });
     setSel(idEl); setRecortando(idEl);
   }
@@ -942,7 +977,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
     setSeleccion(nueva);
     const a = { modo: m, id: idEl, x0: ev.clientX, y0: ev.clientY, el0: { ...el }, hx, hy, movido: false, previo: docRef.current, pagina: paginaRef.current };
     if (m === 'mover') {
-      const mueven = v.elementos.filter(e => nueva.includes(e.id) && !e.bloqueado);
+      const mueven = v.elementos.filter(e => nueva.includes(e.id) && !e.bloqueado && !fijo(e));
       if (!mueven.length) return;
       const quietos = v.elementos.filter(e => !nueva.includes(e.id) && !e.oculto);
       const { ancho: W, alto: H } = v, extraV = [], extraH = [];
@@ -952,7 +987,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
         lineasV: [...quietos.flatMap(e => [e.x, e.x + e.w / 2, e.x + e.w]), ...extraV], lineasH: [...quietos.flatMap(e => [e.y, e.y + e.h / 2, e.y + e.h]), ...extraH] };
       return;
     }
-    if (el.bloqueado) return;
+    if (el.bloqueado || (fijo(el) && !(m === 'encuadre' && soloContenido(el)))) return;
     if (m === 'encuadre') {
       const i = imagenes.get(el.url); if (!i) return;
       a.img = { w: i.naturalWidth || i.width, h: i.naturalHeight || i.height };
@@ -1310,7 +1345,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
         <select value={tipo} onChange={e => { setTipo(e.target.value); setSucio(true); }} aria-label="Tipo" style={{ ...inp, width: 'auto', ...masBarra }}>
           <option value="libre">Diseño</option><option value="diploma">Diploma del aula</option>
         </select>
-        <button type="button" style={{ ...botonBarra, ...masBarra }} onClick={() => setVerTamano(true)} title="Cambiar el tamaño del lienzo">{tamanoTexto(diseno)}</button>
+        <button type="button" style={{ ...botonBarra, ...masBarra }} onClick={() => (marcaFija ? showToast?.('La dirección ha dejado fijo el tamaño de esta plantilla. Para otros tamaños: «Usar → En otros tamaños».') : setVerTamano(true))} title="Cambiar el tamaño del lienzo">{tamanoTexto(diseno)}</button>
         </>}
         {revision && revision.estado !== 'sin_pedir' && verExtra && <span style={masBarra}><EstadoRevision estado={revision.estado} onClick={() => { setPanel('revision'); setPanelAbierto(true); }} /></span>}
         {vivos.length > 0 && (
@@ -1419,11 +1454,22 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
             <PanelAnadir tipo={tipo} kit={kit} anadirTexto={anadirTexto} anadirForma={anadirForma} anadirIcono={anadirIcono} anadirMarco={anadirMarco} anadirImagen={anadirImagen} anadirCollage={anadirCollage} verIconos={() => verIconos()} anadirQr={anadirQr} anadirTabla={anadirTabla} anadirGrafico={anadirGrafico}
               anadirBloque={anadirBloque} verFotos={() => setVentana('fotos')} verBanco={() => setVentana('banco')} subir={subir} />
           )}
-          {panel === 'estilos' && <PanelEstilos doc={doc} aplicarDoc={aplicarDoc} showToast={showToast} />}
-          {panel === 'fondo' && <PanelFondo fondo={diseno.fondo || {}} cambiar={(f) => aplicar(d => ({ ...d, fondo: { ...d.fondo, ...f } }))} subir={subir} />}
+          {panel === 'estilos' && <PanelEstilos doc={doc} aplicarDoc={aplicarDoc} showToast={showToast} respetar={esDireccion ? null : fijo} fondoFijo={marcaFija} />}
+          {panel === 'fondo' && marcaFija && <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>🔒 La dirección ha dejado fijo el fondo de esta plantilla.</span>}
+          {panel === 'fondo' && !marcaFija && <PanelFondo fondo={diseno.fondo || {}} cambiar={(f) => aplicar(d => ({ ...d, fondo: { ...d.fondo, ...f } }))} subir={subir} />}
           {panel === 'capas' && (
             <div style={{ display: 'grid', gap: 4 }}>
               {!diseno.elementos.length && <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>Aún no hay nada en esta página.</span>}
+              {esDireccion && diseno.elementos.length > 0 && (
+                <div style={{ border: '1px dashed var(--line)', borderRadius: 10, padding: 10, display: 'grid', gap: 6, fontSize: 12.5, marginBottom: 6 }}>
+                  <b>Para el resto del equipo</b>
+                  <span style={{ color: 'var(--ink-3)' }}>{doc.marcaFija ? 'Ahora mismo, el resto del equipo solo puede cambiar los textos, las fotos, las tablas y los datos de lo que tiene 🔐 (y nada del fondo, el tamaño ni lo demás).' : 'Deja fija la imagen del club (logos, colores, fondo y dónde va cada cosa): el resto del equipo solo cambiará los textos y las fotos. Luego se puede ajustar en cada elemento.'}</span>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    <button type="button" className="btn btn-sm btn-outline" onClick={fijarEstructura}>🔐 {doc.marcaFija ? 'Volver a fijarla entera' : 'Fijar la estructura'}</button>
+                    {(doc.marcaFija || todasLasPaginas(doc).some(v => v.elementos.some(e => e.candado))) && <button type="button" className="btn btn-sm btn-ghost" onClick={quitarCandados}>Quitar los candados</button>}
+                  </div>
+                </div>
+              )}
               {diseno.elementos.length > 0 && <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Con Mayús, se eligen varios.</span>}
               {[...diseno.elementos].reverse().map(e => (
                 <div key={e.id} onClick={(x) => (x.shiftKey ? setSeleccion(s => (s.includes(e.id) ? s.filter(y => y !== e.id) : [...s, e.id])) : setSel(e.id))}
@@ -1432,8 +1478,11 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
                     borderLeft: e.grupo ? '3px solid var(--purple)' : '3px solid transparent' }}>
                   <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{etiquetaElemento(e)}</span>
                   {e.anim?.tipo && <span title="Animado" style={{ fontSize: 11 }}>✨</span>}
+                  {e.candado && esDireccion && <span title={e.candado === 'todo' ? 'Fijo para el resto del equipo' : 'El resto del equipo solo cambia su contenido'} style={{ fontSize: 11 }}>🔐</span>}
+                  {fijo(e) ? <span title="Lo ha dejado fijo la dirección" style={{ fontSize: 12 }}>🔒</span> : <>
                   <button type="button" title={e.oculto ? 'Mostrar' : 'Ocultar'} onClick={(x) => { x.stopPropagation(); cambiarEl(e.id, { oculto: !e.oculto }); }} style={{ border: 0, background: 'none', cursor: 'pointer', color: 'var(--ink-2)' }}>{e.oculto ? '🚫' : '👁'}</button>
                   <button type="button" title={e.bloqueado ? 'Desbloquear' : 'Bloquear'} onClick={(x) => { x.stopPropagation(); cambiarEl(e.id, { bloqueado: !e.bloqueado }); }} style={{ border: 0, background: 'none', cursor: 'pointer', color: 'var(--ink-2)' }}>{e.bloqueado ? '🔒' : '🔓'}</button>
+                  </>}
                 </div>
               ))}
             </div>
@@ -1497,9 +1546,13 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
                   onDoubleClick={(ev) => { if (performance.now() - dobleHecho.current > 600) dobleClic(e, ev); }}
                   title={e.id === sel && !e.bloqueado && !editando ? (e.tipo === 'texto' ? 'Doble clic para escribir' : e.tipo === 'imagen' && e.url ? 'Doble clic para recortar' : e.tipo === 'imagen' ? 'Suelta aquí una foto' : undefined) : undefined}
                   style={{ position: 'absolute', left: e.x * escala, top: e.y * escala, width: e.w * escala, height: e.h * escala, transform: `rotate(${e.rot || 0}deg)`,
-                    cursor: e.bloqueado ? 'default' : recortando === e.id ? 'grab' : e.tipo === 'texto' && e.id === sel ? 'text' : 'move',
+                    cursor: e.bloqueado || (fijo(e) && recortando !== e.id) ? 'default' : recortando === e.id ? 'grab' : e.tipo === 'texto' && e.id === sel ? 'text' : 'move',
                     outline: seleccion.includes(e.id) && editando?.id !== e.id ? `2px ${recortando === e.id ? 'dashed' : 'solid'} #7C5CFF` : 'none', outlineOffset: 1, touchAction: 'none', WebkitTouchCallout: 'none', userSelect: 'none' }}>
-                  {e.id === sel && !e.bloqueado && editando?.id !== e.id && recortando !== e.id && (
+                  {seleccion.includes(e.id) && e.candado && (esDireccion || fijo(e)) && editando?.id !== e.id && (
+                    <span title={esDireccion ? 'Fijo para el resto del equipo' : 'Lo ha dejado fijo la dirección'} aria-label="Fijo"
+                      style={{ position: 'absolute', right: -12, top: -12, width: 22, height: 22, borderRadius: 99, background: '#fff', border: '2px solid #7C5CFF', display: 'grid', placeItems: 'center', fontSize: 11, pointerEvents: 'none' }}>🔒</span>
+                  )}
+                  {e.id === sel && !e.bloqueado && !fijo(e) && editando?.id !== e.id && recortando !== e.id && (
                     <>
                       {[[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0]].filter(([hx, hy]) => (e.tipo === 'linea' ? hy === 0 : CUADRADOS_EDITOR.includes(e.tipo) ? hx && hy : true)).map(([hx, hy]) => (
                         <span key={`${hx}${hy}`} onPointerDown={(ev) => empezar(ev, e.id, 'tamano', hx, hy)}
@@ -1534,7 +1587,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
               {guias.map((g, i) => <div key={i} style={{ position: 'absolute', pointerEvents: 'none', background: '#FF5FA2', ...(g.v != null ? { left: g.v * escala, top: 0, width: 1, height: '100%' } : { top: g.h * escala, left: 0, height: 1, width: '100%' }) }} />)}
               {editando && (() => {
                 const el = diseno.elementos.find(x => x.id === editando.id);
-                return el ? <TextoEnLienzo key={el.id} e={el} escala={escala} punto={editando.punto} onCambio={(t) => cambiarEl(el.id, t, { historia: false })}
+                return el ? <TextoEnLienzo key={el.id} e={el} escala={escala} punto={editando.punto} sinFormato={soloContenido(el)} onCambio={(t) => cambiarEl(el.id, t, { historia: false })}
                   onLista={(lista) => cambiarEl(el.id, { lista }, { historia: false })} onFin={terminarTexto} /> : null;
               })()}
             </div>
@@ -1574,7 +1627,12 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
             </>}
           </div>
           {menu && (
-            <MenuContextual x={menu.x} y={menu.y} onCerrar={() => setMenu(null)} opciones={menu.id ? [
+            <MenuContextual x={menu.x} y={menu.y} onCerrar={() => setMenu(null)} opciones={menu.id ? (elegidos.some(fijo) ? [
+              ['Copiar', 'Ctrl+C', () => copiar()],
+              soloContenido(elegido) && elegido.tipo === 'texto' && ['Escribir', 'Intro', () => editarTexto(elegido.id)],
+              soloContenido(elegido) && elegido.tipo === 'imagen' && elegido.url && ['Recortar', 'doble clic', () => recortar(elegido.id)],
+              null, ['🔒 Lo ha dejado fijo la dirección', '', () => {}],
+            ] : [
               ['Copiar', 'Ctrl+C', () => copiar()], ['Cortar', 'Ctrl+X', () => copiar(true)], leerCopia() && ['Pegar', 'Ctrl+V', () => pegarElementos(leerCopia())],
               ['Duplicar', 'Ctrl+D', duplicarSel], null,
               elegido?.tipo === 'texto' && !elegido.bloqueado && ['Escribir', 'Intro', () => editarTexto(elegido.id)],
@@ -1586,7 +1644,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
               elegidos.every(e => e.bloqueado) ? ['Desbloquear', '', () => cambiarVarios(seleccion, e => ({ ...e, bloqueado: false }))] : ['Bloquear', '', () => cambiarVarios(seleccion, e => ({ ...e, bloqueado: true }))],
               id && ['Comentar…', '', () => setPanel('revision')], null,
               ['Borrar', 'Supr', borrarSel, true],
-            ] : [
+            ]) : [
               leerCopia() && ['Pegar', 'Ctrl+V', () => pegarElementos(leerCopia())],
               ['Elegir todo', 'Ctrl+A', () => setSeleccion(diseno.elementos.filter(e => !e.oculto && !e.bloqueado).map(e => e.id))],
               ['Añadir una página', '', nuevaPagina], null,
@@ -1619,8 +1677,12 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
           {movil && hojaPequena ? null : elegidos.length > 1 ? (
             <PanelVarios elegidos={elegidos} voltear={voltear} agrupar={agrupar} desagrupar={desagrupar} alinear={alinearVarios} repartir={repartir}
               duplicar={duplicarSel} borrar={borrarSel} capa={capa} bloquear={(b) => cambiarVarios(seleccion, e => ({ ...e, bloqueado: b }))} />
+          ) : fijo(elegido) ? (
+            <PropiedadesFijas e={elegido} cambiar={(c) => cambiarEl(elegido.id, c)} subir={subir} onEscribir={() => editarTexto(elegido.id)}
+              onRecortar={() => (recortando ? setRecortando(null) : recortar(elegido.id))} recortando={recortando === elegido.id}
+              verFotos={() => { fotoPara.current = elegido.id; setVentana('fotos'); }} />
           ) : (
-            <Propiedades e={elegido} tipo={tipo} cambiar={(c) => cambiarEl(elegido.id, c)} textoRef={textoRef} subir={subir} tramos={tramos} voltear={voltear}
+            <Propiedades e={elegido} tipo={tipo} esDireccion={esDireccion} cambiar={(c) => cambiarEl(elegido.id, c)} textoRef={textoRef} subir={subir} tramos={tramos} voltear={voltear}
               onEscribir={() => editarTexto(elegido.id)} onRecortar={() => (recortando ? setRecortando(null) : recortar(elegido.id))} recortando={recortando === elegido.id} onQuitarFondo={quitarFondoSel}
               verFotos={() => setVentana('fotos')} verIconos={verIconos} onFuentesCambiadas={setFuentesClub}
               acciones={{ duplicar: duplicarSel, borrar: borrarSel, capa, alinear }} />
@@ -1660,13 +1722,18 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
               <span>Varios a la vez: con Mayús + clic o arrastrando un recuadro desde un hueco. Doble clic en un texto para escribir y en una foto para recortarla. Las fotos del panel (o del ordenador) se pueden soltar encima de un marco.</span>
               {tactil && <span>Con el dedo: toca algo para elegirlo y arrástralo para moverlo; toca dos veces un texto para escribir o una foto para recortarla; mantén pulsado para más opciones. Pellizca para acercar o alejar, y arrastra por un hueco para moverte por el diseño.</span>}
               <span>Atajos: Ctrl+C / Ctrl+X / Ctrl+V copian, cortan y pegan (también imágenes y textos del ordenador), Supr borra, Ctrl+D duplica, Ctrl+G agrupa (con Mayús, desagrupa), Ctrl+A elige todo, Ctrl+Z deshace, las flechas mueven (con Mayús, de 10 en 10), Ctrl+S guarda. Zoom: Ctrl + rueda, Ctrl + y Ctrl −. Con el botón derecho, más opciones.</span>
+              <span>Lo que tiene 🔒 lo ha dejado fijo la dirección (para que todo salga con la imagen del club): según el caso, no se toca o solo se cambia el texto o la foto.</span>
               {tipo === 'diploma' && <span style={{ color: 'var(--purple)' }}>Es un diploma: los huecos ({'{alumno}'}, {'{curso}'}…) se ven con datos de ejemplo y a cada alumno le salen los suyos.</span>}
           </div>
         </Ventana>
       )}
       {ventana === 'iconos' && <BibliotecaIconos onCerrar={() => setVentana(null)} onElegir={elegirIcono} />}
       {ventana === 'banco' && <FotosDeBanco onCerrar={() => setVentana(null)} onElegir={(f) => { setVentana(null); anadirImagen(f.url, f.ancho, f.alto); }} />}
-      {ventana === 'fotos' && <FotosDelClub onCerrar={() => setVentana(null)} onElegir={(f) => { setVentana(null); anadirImagen(`/api/admin/disenos/foto-club/${f.id}/grande`, f.ancho, f.alto); }} />}
+      {ventana === 'fotos' && <FotosDelClub onCerrar={() => { fotoPara.current = null; setVentana(null); }} onElegir={(f) => {
+        setVentana(null);
+        const url = `/api/admin/disenos/foto-club/${f.id}/grande`;
+        if (fotoPara.current) { cambiarEl(fotoPara.current, { url, encuadre: null }); fotoPara.current = null; } else anadirImagen(url, f.ancho, f.alto);
+      }} />}
     </div>
     </KitMarca.Provider>
   );
@@ -2053,7 +2120,7 @@ function FiltrosFoto({ e, cambiar, tramos }) {
   );
 }
 
-function Propiedades({ e, tipo, cambiar, textoRef, subir, acciones, onEscribir, onRecortar, recortando, verFotos, verIconos, onFuentesCambiadas, tramos, voltear, onQuitarFondo }) {
+function Propiedades({ e, tipo, esDireccion, cambiar, textoRef, subir, acciones, onEscribir, onRecortar, recortando, verFotos, verIconos, onFuentesCambiadas, tramos, voltear, onQuitarFondo }) {
   const fila = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, alignItems: 'start' };
   const alinearBtn = (k, t, titulo) => <button key={k} type="button" className="btn btn-sm btn-ghost" title={titulo} onClick={() => acciones.alinear(k)} style={{ padding: '4px 6px' }}>{t}</button>;
   const nombre = e.tipo === 'forma' ? FIGURAS.find(f => f.id === e.figura)?.nombre || 'Forma' : e.tipo === 'imagen' && !e.url ? 'Marco para una foto' : NOMBRE_TIPO[e.tipo];
@@ -2232,6 +2299,49 @@ function Propiedades({ e, tipo, cambiar, textoRef, subir, acciones, onEscribir, 
         <button type="button" className="btn btn-sm btn-outline" onClick={() => acciones.capa('fondo')}>Al fondo</button>
       </div>
       <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12.5 }}><input type="checkbox" checked={!!e.bloqueado} onChange={x => cambiar({ bloqueado: x.target.checked })} /> Bloqueado (no se mueve sin querer)</label>
+      {esDireccion && (
+        <label style={etq}>Para el resto del equipo
+          <select value={e.candado || ''} onChange={x => cambiar({ candado: x.target.value || undefined })} style={inp}>
+            <option value="">Libre: lo pueden cambiar todo</option>
+            {CON_CONTENIDO.includes(e.tipo) && <option value="contenido">{{ texto: 'Solo pueden cambiar lo que dice', imagen: 'Solo pueden cambiar la foto', tabla: 'Solo pueden cambiar las celdas', grafico: 'Solo pueden cambiar los datos' }[e.tipo]}</option>}
+            <option value="todo">Fijo: no lo mueven ni lo cambian</option>
+          </select>
+        </label>
+      )}
+    </div>
+  );
+}
+
+// Lo que se puede dejar con «solo su contenido» (lo demás, fijo del todo o libre).
+const CON_CONTENIDO = ['texto', 'imagen', 'tabla', 'grafico'];
+// Lo que la dirección ha dejado fijo (para el resto del equipo): se dice por qué y, si
+// se puede, se cambia lo que dice, la foto, las celdas o los datos.
+function PropiedadesFijas({ e, cambiar, subir, onEscribir, onRecortar, recortando, verFotos }) {
+  const contenido = e.candado === 'contenido';
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      <b>🔒 {e.tipo === 'imagen' && !e.url ? 'Marco para una foto' : NOMBRE_TIPO[e.tipo] || 'Elemento'}, fijo</b>
+      <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>
+        {!contenido ? 'La dirección lo ha dejado fijo para que todo salga con la imagen del club: no se mueve ni se cambia.'
+          : { texto: 'La dirección lo ha dejado fijo: se puede cambiar lo que dice, pero no su sitio ni su estilo.', imagen: 'La dirección lo ha dejado fijo: se puede cambiar la foto (y encuadrarla), pero no su sitio ni su forma.',
+            tabla: 'La dirección lo ha dejado fijo: se pueden cambiar las celdas, pero no su sitio ni sus colores.', grafico: 'La dirección lo ha dejado fijo: se pueden cambiar los datos, pero no su sitio ni sus colores.' }[e.tipo]}
+      </span>
+      {contenido && e.tipo === 'texto' && <>
+        <label style={etq}>Texto
+          <textarea rows={3} value={e.texto} onChange={x => cambiar({ texto: x.target.value, trozos: undefined })} style={{ ...inp, resize: 'vertical', fontSize: 14 }} />
+        </label>
+        <button type="button" className="btn btn-sm btn-ghost" style={{ justifySelf: 'start', fontSize: 12 }} onClick={onEscribir}>✎ Escribir en el lienzo</button>
+      </>}
+      {contenido && e.tipo === 'imagen' && <>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <button type="button" className="btn btn-sm btn-outline" onClick={verFotos}>Fotos del club</button>
+          <BotonSubir texto="⬆ Subir otra" onArchivo={(f) => subir(f, (r) => cambiar({ url: r.url, encuadre: null }))} />
+          {e.url && <button type="button" className="btn btn-sm btn-outline" onClick={onRecortar}>{recortando ? 'Hecho' : '✂ Recortar'}</button>}
+        </div>
+        <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>También se puede soltar una foto encima.</span>
+      </>}
+      {contenido && e.tipo === 'tabla' && <EditorTabla e={e} cambiar={cambiar} />}
+      {contenido && e.tipo === 'grafico' && <EditorGrafico e={e} cambiar={cambiar} />}
     </div>
   );
 }
@@ -2261,7 +2371,7 @@ function MenuContextual({ x, y, opciones, onCerrar }) {
 
 // Estilos: los colores y las letras de todo el diseño, de una vez. Combinaciones
 // listas, «Mezclar» (otro reparto de la misma paleta) y el kit de la marca.
-function PanelEstilos({ doc, aplicarDoc, showToast }) {
+function PanelEstilos({ doc, aplicarDoc, showToast, respetar = null, fondoFijo = false }) {
   const marca = useContext(KitMarca);
   const [kit, setKit] = useState(null);
   const [ultima, setUltima] = useState(null);
@@ -2274,7 +2384,7 @@ function PanelEstilos({ doc, aplicarDoc, showToast }) {
   const propias = marca?.fuentes || [];
   const todasLetras = [...FUENTES_DISENO.map(f => ({ fuente: f.id, nombre: f.nombre })), ...propias.map(f => ({ fuente: f.nombre, nombre: `${f.nombre} (del club)`, url: f.url }))];
   function aplicar(paleta, letras, g = 0) {
-    aplicarDoc(d => aplicarEstilo(d, { paleta: paleta?.colores || null, letras, giro: g }));
+    aplicarDoc(d => aplicarEstilo(d, { paleta: paleta?.colores || null, letras, giro: g, respetar, fondoFijo }));
     if (paleta) setUltima(paleta);
     setGiro(g);
   }
@@ -2701,7 +2811,7 @@ function PanelRevision({ id, revision, setRevision, sucio, guardar, pedir, elegi
 // subrayado, tachado, color) y para hacer listas. Esc, Ctrl+Intro o pulsar
 // fuera, y listo. Ctrl+B / Ctrl+I / Ctrl+U también funcionan.
 const DE_EJEMPLO = /^(Un título|Un subtítulo|Escribe aquí tu texto|Título del post|Nombre|Tu mensaje\naquí)$/;
-function TextoEnLienzo({ e, escala, punto, onCambio, onLista, onFin }) {
+function TextoEnLienzo({ e, escala, punto, onCambio, onLista, onFin, sinFormato = false }) {
   const ref = useRef(null), barra = useRef(null);
   const kit = useContext(KitMarca);
   // La barra de formato, que no se salga de la pantalla (en el móvil, sobre todo).
@@ -2735,7 +2845,7 @@ function TextoEnLienzo({ e, escala, punto, onCambio, onLista, onFin }) {
   );
   return (
     <>
-      <div ref={barra} onPointerDown={ev => ev.stopPropagation()} role="toolbar" aria-label="Formato del texto"
+      {!sinFormato && <div ref={barra} onPointerDown={ev => ev.stopPropagation()} role="toolbar" aria-label="Formato del texto"
         style={{ position: 'absolute', left: e.x * k + corre, top: Math.max(-46, e.y * k - 46), zIndex: 6, display: 'flex', gap: 2, alignItems: 'center', padding: 4, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, boxShadow: 'var(--shadow)', whiteSpace: 'nowrap', maxWidth: 'calc(100vw - 16px)', overflowX: 'auto', boxSizing: 'border-box' }}>
         {boton('N', 'Negrita (Ctrl+B)', () => orden('bold'), false, { fontWeight: 900 })}
         {boton('K', 'Cursiva (Ctrl+I)', () => orden('italic'), false, { fontStyle: 'italic' })}
@@ -2750,7 +2860,7 @@ function TextoEnLienzo({ e, escala, punto, onCambio, onLista, onFin }) {
         {boton('•≡', 'Lista con viñetas', () => onLista(e.lista === 'puntos' ? undefined : 'puntos'), e.lista === 'puntos')}
         {boton('1.', 'Lista numerada', () => onLista(e.lista === 'numeros' ? undefined : 'numeros'), e.lista === 'numeros')}
         {boton('⌫', 'Quitar el formato de lo elegido', () => orden('removeFormat'))}
-      </div>
+      </div>}
       <div ref={ref} contentEditable suppressContentEditableWarning role="textbox" aria-multiline="true" aria-label="Escribir el texto" spellCheck
         onInput={avisar}
         onBlur={(ev) => { if (barra.current?.contains(ev.relatedTarget)) return; avisar(); onFin(); }}
@@ -2759,7 +2869,7 @@ function TextoEnLienzo({ e, escala, punto, onCambio, onLista, onFin }) {
           const ctrl = x.ctrlKey || x.metaKey, tecla = x.key.toLowerCase();
           if (x.key === 'Escape' || (x.key === 'Enter' && ctrl)) { x.preventDefault(); x.currentTarget.blur(); }
           else if (x.key === 'Enter') { x.preventDefault(); document.execCommand('insertLineBreak'); avisar(); }
-          else if (ctrl && ['b', 'i', 'u'].includes(tecla)) { x.preventDefault(); orden({ b: 'bold', i: 'italic', u: 'underline' }[tecla]); }
+          else if (ctrl && ['b', 'i', 'u'].includes(tecla)) { x.preventDefault(); if (!sinFormato) orden({ b: 'bold', i: 'italic', u: 'underline' }[tecla]); }
         }}
         onPaste={x => { x.preventDefault(); document.execCommand('insertText', false, x.clipboardData.getData('text/plain')); avisar(); }}
         style={{

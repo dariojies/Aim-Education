@@ -64,7 +64,7 @@ export function coloresDe(d) {
 }
 
 // paleta: lista de colores (o null para no tocarlos); letras: { titulos, texto } (o null).
-export function aplicarEstilo(d, { paleta = null, letras = null, giro = 0 } = {}) {
+export function aplicarEstilo(d, { paleta = null, letras = null, giro = 0, respetar = null, fondoFijo = false } = {}) {
   const base = Math.min(d.ancho, d.alto);
   const mapa = new Map();
   if (paleta?.length) {
@@ -75,10 +75,10 @@ export function aplicarEstilo(d, { paleta = null, letras = null, giro = 0 } = {}
   let r = d;
   for (let i = 0; i < numPaginas(d); i++) {
     const v = paginaDe(r, i);
-    const fondo = v.fondo?.tipo === 'imagen' || !paleta ? v.fondo : { ...v.fondo, color: nuevo(v.fondo?.color), ...(v.fondo?.color2 ? { color2: nuevo(v.fondo.color2) } : {}) };
+    const fondo = fondoFijo || v.fondo?.tipo === 'imagen' || !paleta ? v.fondo : { ...v.fondo, color: nuevo(v.fondo?.color), ...(v.fondo?.color2 ? { color2: nuevo(v.fondo.color2) } : {}) };
     const colorFondo = fondo?.tipo === 'imagen' ? '#808080' : fondo?.color || '#FFFFFF';
     const elementos = v.elementos.map(e => {
-      if (e.tipo === 'qr') return e;
+      if (e.tipo === 'qr' || respetar?.(e)) return e;
       let n = { ...e };
       if (paleta) {
         for (const k of ['color', 'relleno', 'relleno2', 'borde', 'contorno', 'resalte', 'fondoCabecera', 'fondoFilas', 'fondoRayas']) if (n[k]) n[k] = nuevo(n[k]);
