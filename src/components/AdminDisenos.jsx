@@ -77,7 +77,7 @@ const lienzoAJpeg = (c, calidad = 0.9) => new Promise((ok, ko) => c.toBlob(b => 
 async function api(url, { method = 'GET', body } = {}) {
   const r = await fetch(url, { method, credentials: 'include', cache: 'no-store', headers: body ? { 'Content-Type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined });
   const d = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(d.error || 'No se ha podido hacer.');
+  if (!r.ok) throw Object.assign(new Error(d.error || 'No se ha podido hacer.'), { status: r.status });
   return d;
 }
 
@@ -441,7 +441,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
   // Guardado automático: lo último guardado, el guardado en curso y los fallos seguidos
   // (sin conexión: se reintenta cada vez más espaciado).
   const guardadoRef = useRef({ datos: inicial.datos, nombre: inicial.nombre || 'Diseño sin nombre', tipo: inicial.tipo || 'libre' });
-  const enCurso = useRef(null), idRef = useRef(inicial.id), miniPendiente = useRef(false), ultimaMini = useRef(0), primerCambio = useRef(0);
+  const enCurso = useRef(null), avisoRechazo = useRef(false), idRef = useRef(inicial.id), miniPendiente = useRef(false), ultimaMini = useRef(0), primerCambio = useRef(0);
   const [fallos, setFallos] = useState(0);
   // La copia del navegador (si la última vez algo no llegó a guardarse).
   const [respaldo, setRespaldo] = useState(() => leerRespaldo(inicial));
@@ -1243,14 +1243,19 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
         else { const r = await api('/api/admin/disenos', { method: 'POST', body }); idRef.current = r.id; setId(r.id); }
         if (mini) { ultimaMini.current = Date.now(); miniPendiente.current = false; } else miniPendiente.current = true;
         guardadoRef.current = { datos, nombre: n, tipo: t };
-        setSucio(porGuardar()); setFallos(0);
+        setSucio(porGuardar()); setFallos(0); avisoRechazo.current = false;
         borrarRespaldo(idRef.current);
         if (!auto) showToast?.('Diseño guardado.');
         cargarRevision();
         if (hayOtros.current) postVivo({ tipo: 'guardado' });
         return true;
       } catch (e) {
-        if (auto) setFallos(f => f + 1); else alert(e.message);
+        // Solo: se reintenta (sin conexión, o un candado que la dirección acaba de poner y
+        // aún no ha guardado); si el servidor lo rechaza, se dice por qué, una vez.
+        if (auto) {
+          setFallos(f => f + 1);
+          if (e.status >= 400 && e.status < 500 && !avisoRechazo.current) { avisoRechazo.current = true; showToast?.(`No se ha podido guardar: ${e.message}`); }
+        } else alert(e.message);
         return false;
       } finally { setGuardando(false); }
     })();
@@ -2416,8 +2421,8 @@ function PropiedadesFijas({ e, cambiar, subir, onEscribir, onRecortar, recortand
         </div>
         <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>También se puede soltar una foto encima.</span>
       </>}
-      {contenido && e.tipo === 'tabla' && <EditorTabla e={e} cambiar={cambiar} />}
-      {contenido && e.tipo === 'grafico' && <EditorGrafico e={e} cambiar={cambiar} />}
+      {contenido && e.tipo === 'tabla' && <EditorTabla e={e} cambiar={cambiar} soloContenido />}
+      {contenido && e.tipo === 'grafico' && <EditorGrafico e={e} cambiar={cambiar} soloContenido />}
     </div>
   );
 }
@@ -2522,7 +2527,7 @@ function PanelEstilos({ doc, aplicarDoc, showToast, respetar = null, fondoFijo =
 }
 
 // ── Tablas: las celdas, filas y columnas, y sus colores ──
-function EditorTabla({ e, cambiar }) {
+function EditorTabla({ e, cambiar, soloContenido = false }) {
   const celdas = e.celdas?.length ? e.celdas : [['']];
   const n = Math.max(...celdas.map(f => f.length), 1);
   const poner = (i, j, v) => cambiar({ celdas: celdas.map((f, a) => (a === i ? Array.from({ length: n }, (_, b) => (b === j ? v : f[b] ?? '')) : f)) });
@@ -2543,6 +2548,7 @@ function EditorTabla({ e, cambiar }) {
         <button type="button" className="btn btn-sm btn-outline" disabled={n >= 8} onClick={() => cambiar({ celdas: celdas.map(f => [...Array.from({ length: n }, (_, b) => f[b] ?? ''), '']), anchos: undefined })}>＋ Columna</button>
         <button type="button" className="btn btn-sm btn-outline" disabled={n < 2} onClick={() => cambiar({ celdas: celdas.map(f => f.slice(0, n - 1)), anchos: undefined })}>− Columna</button>
       </div>
+      {!soloContenido && <>
       <div style={{ display: 'flex', gap: 14 }}>
         <label style={casillaEstilo}><input type="checkbox" checked={!!e.cabecera} onChange={x => cambiar({ cabecera: x.target.checked })} /> Cabecera</label>
         <label style={casillaEstilo}><input type="checkbox" checked={!!e.rayas} onChange={x => cambiar({ rayas: x.target.checked })} /> Filas a rayas</label>
@@ -2570,27 +2576,28 @@ function EditorTabla({ e, cambiar }) {
         <Num etiqueta="Grosor" valor={e.grosor ?? 2} onCambio={(v) => cambiar({ grosor: Math.max(0, v) })} min={0} />
       </div>
       <Num etiqueta="Esquinas redondeadas" valor={e.radio || 0} onCambio={(v) => cambiar({ radio: Math.max(0, v) })} min={0} />
+      </>}
     </>
   );
 }
 
 // ── Gráficos: el tipo, los datos y los colores ──
-function EditorGrafico({ e, cambiar }) {
+function EditorGrafico({ e, cambiar, soloContenido = false }) {
   const datos = e.datos || [];
   const colores = e.colores?.length ? e.colores : COLORES_GRAFICO;
   const poner = (i, c) => cambiar({ datos: datos.map((d, a) => (a === i ? { ...d, ...c } : d)) });
   const fila = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, alignItems: 'start' };
   return (
     <>
-      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+      {!soloContenido && <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
         {CLASES_GRAFICO.map(([k, t]) => <button key={k} type="button" className={`btn btn-sm ${e.clase === k ? 'btn-primary' : 'btn-outline'}`} onClick={() => cambiar({ clase: k })}>{t}</button>)}
-      </div>
+      </div>}
       <div style={seccionT}>Datos</div>
       <div style={{ display: 'grid', gap: 4 }}>
         {datos.map((d, i) => (
-          <div key={i} style={{ display: 'grid', gridTemplateColumns: '22px 1fr 76px 26px', gap: 4, alignItems: 'center' }}>
-            <input type="color" value={colores[i % colores.length]} aria-label={`Color de ${d.etiqueta}`} style={{ width: 22, height: 26, padding: 0, border: 0, background: 'none' }}
-              onChange={x => { const l = Array.from({ length: Math.max(colores.length, datos.length) }, (_, a) => colores[a % colores.length]); l[i] = x.target.value; cambiar({ colores: l }); }} />
+          <div key={i} style={{ display: 'grid', gridTemplateColumns: soloContenido ? '1fr 76px 26px' : '22px 1fr 76px 26px', gap: 4, alignItems: 'center' }}>
+            {!soloContenido && <input type="color" value={colores[i % colores.length]} aria-label={`Color de ${d.etiqueta}`} style={{ width: 22, height: 26, padding: 0, border: 0, background: 'none' }}
+              onChange={x => { const l = Array.from({ length: Math.max(colores.length, datos.length) }, (_, a) => colores[a % colores.length]); l[i] = x.target.value; cambiar({ colores: l }); }} />}
             <input value={d.etiqueta} onChange={x => poner(i, { etiqueta: x.target.value })} aria-label={`Nombre ${i + 1}`} style={{ ...inp, padding: '5px 6px' }} />
             <input type="number" value={d.valor} onChange={x => poner(i, { valor: x.target.value === '' ? '' : Number(x.target.value) })} aria-label={`Valor ${i + 1}`} style={{ ...inp, padding: '5px 6px' }} />
             <button type="button" className="icon-btn" aria-label={`Quitar ${d.etiqueta}`} onClick={() => cambiar({ datos: datos.filter((_, a) => a !== i) })}><I.X /></button>
@@ -2598,6 +2605,7 @@ function EditorGrafico({ e, cambiar }) {
         ))}
       </div>
       <button type="button" className="btn btn-sm btn-outline" disabled={datos.length >= 12} onClick={() => cambiar({ datos: [...datos, { etiqueta: `Dato ${datos.length + 1}`, valor: 1 }] })}>＋ Dato</button>
+      {!soloContenido && <>
       <label style={casillaEstilo}><input type="checkbox" checked={e.valores !== false} onChange={x => cambiar({ valores: x.target.checked })} /> Enseñar los números</label>
       <div style={{ display: 'flex', gap: 4 }}>
         <button type="button" className="btn btn-sm btn-ghost" style={{ fontSize: 12 }} onClick={() => cambiar({ colores: COLORES_GRAFICO })}>Colores del club</button>
@@ -2607,6 +2615,7 @@ function EditorGrafico({ e, cambiar }) {
         <Num etiqueta="Tamaño de la letra" valor={e.tamano || 28} onCambio={(v) => cambiar({ tamano: Math.max(6, v) })} min={6} />
         <Color etiqueta="Color del texto" valor={e.color || '#1A1A1A'} onCambio={(v) => cambiar({ color: v })} />
       </div>
+      </>}
     </>
   );
 }

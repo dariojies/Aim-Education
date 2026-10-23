@@ -115,6 +115,39 @@ function estadoRevision(decision, huella) {
 }
 // La dirección: la que aprueba.
 const esDireccion = (req) => ['club_owner', 'superadmin'].includes(req.userSession?.rol);
+
+// ── Los candados de las plantillas (lo que la dirección deja fijo) ──
+// Quien no es de la dirección no puede cambiar lo fijo, tampoco por la API: se compara
+// con lo guardado. Lo fijo del todo, igual; lo de «solo contenido», igual salvo lo que
+// el editor deja cambiar (y el alto que se ajusta solo; un texto curvo, también x y w).
+// Los candados no se ponen ni se quitan, lo fijo no se borra y, con la marca fija, el
+// tamaño y los fondos no cambian.
+const CONTENIDO_LIBRE = { texto: ['texto', 'trozos', 'h'], imagen: ['url', 'encuadre', 'ajuste'], tabla: ['celdas', 'anchos', 'h'], grafico: ['datos'] };
+const ordenado = (v) => (Array.isArray(v) ? v.map(ordenado)
+    : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).filter(k => v[k] !== undefined && v[k] !== null).sort().map(k => [k, ordenado(v[k])])) : v);
+const igual = (a, b) => JSON.stringify(ordenado(a)) === JSON.stringify(ordenado(b));
+const elementosDe = (d) => [...(d?.elementos || []), ...(Array.isArray(d?.paginas) ? d.paginas.flatMap(p => p?.elementos || []) : [])].filter(e => e && typeof e === 'object');
+const fondosDe = (d) => [d?.fondo, ...(Array.isArray(d?.paginas) ? d.paginas.map(p => p?.fondo) : [])];
+function saltaCandados(antes, despues) {
+    const viejos = new Map(elementosDe(antes).filter(e => e.candado).map(e => [e.id, e]));
+    for (const e of elementosDe(despues)) if (e.candado && !viejos.has(e.id)) return 'Solo la dirección puede dejar partes fijas.';
+    const nuevos = new Map(elementosDe(despues).map(e => [e.id, e]));
+    for (const [id, v] of viejos) {
+        const n = nuevos.get(id);
+        if (!n) return 'Lo que ha dejado fijo la dirección no se puede borrar.';
+        if (n.candado !== v.candado) return 'Solo la dirección puede quitar los candados.';
+        const libres = v.candado === 'contenido' ? [...(CONTENIDO_LIBRE[v.tipo] || []), ...(v.tipo === 'texto' && (v.curva || n.curva) ? ['x', 'w'] : [])] : [];
+        const sin = (e) => Object.fromEntries(Object.entries(e).filter(([k]) => !libres.includes(k)));
+        if (!igual(sin(v), sin(n))) return 'Eso cambia partes que ha dejado fijas la dirección.';
+    }
+    if (antes?.marcaFija) {
+        if (!despues.marcaFija) return 'Solo la dirección puede quitar los candados.';
+        if (antes.ancho !== despues.ancho || antes.alto !== despues.alto) return 'La dirección ha dejado fijo el tamaño de esta plantilla.';
+        const fondos = fondosDe(antes);
+        if (fondosDe(despues).some(f => !fondos.some(x => igual(x, f)))) return 'La dirección ha dejado fijo el fondo de esta plantilla.';
+    }
+    return null;
+}
 const MAX_VERSIONES = 50;
 const MINUTOS_ENTRE_VERSIONES = 20;
 
@@ -649,6 +682,11 @@ export function crearDisenos({ pool, clubId, authenticateSession, requireSeccion
     router.put('/api/admin/disenos/:id', ...gestion, async (req, res) => {
         try {
             const d = limpiar(req.body);
+            if (!esDireccion(req)) {
+                const antes = (await pool.query(`SELECT datos FROM aim_disenos WHERE id = $1`, [Number(req.params.id) || 0])).rows[0]?.datos;
+                const mal = antes && saltaCandados(antes, JSON.parse(d.json));
+                if (mal) corta(403, mal);
+            }
             // Lo que había, como versión, si ha cambiado y la última es de hace rato.
             await pool.query(
                 `INSERT INTO aim_disenos_versiones (diseno_id, nombre, datos, miniatura, creado_por, created_at)
