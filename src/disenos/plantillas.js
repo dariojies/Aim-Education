@@ -2,7 +2,7 @@
 // luego se cambia todo lo que haga falta. Los colores son los de la marca.
 // Las de temporada llevan sus meses (temporada: [9, 10]…): en «Nuevo diseño»
 // salen primero las de estas fechas.
-import { nuevoId } from './render.js';
+import { nuevoId, TAMANOS, adaptarDiseno } from './render.js';
 
 const LOGO = '/src/brand/Aim_Horizontal.png';
 const LOGO_BLANCO = '/src/brand/Aim_White.png';
@@ -85,7 +85,7 @@ export const PLANTILLAS = [
     }),
   },
   {
-    id: 'horario', nombre: 'Horario de una actividad', tipo: 'libre', tamano: 'igv',
+    id: 'horario', nombre: 'Horario de una actividad', tipo: 'libre', tamano: 'ig',
     crear: () => ({
       ancho: 1080, alto: 1350, fondo: { tipo: 'degradado', color: '#5233A8', color2: '#00BBF4', angulo: 150 },
       elementos: [
@@ -178,7 +178,7 @@ export const PLANTILLAS = [
     }),
   },
   {
-    id: 'carrusel', nombre: 'Carrusel de Instagram (3 páginas)', tipo: 'libre', tamano: 'igv',
+    id: 'carrusel', nombre: 'Carrusel de Instagram (3 páginas)', tipo: 'libre', tamano: 'ig',
     crear: () => {
       const fondo = { tipo: 'degradado', color: '#5233A8', color2: '#FF5FA2', angulo: 150 };
       const flecha = () => ({ id: nuevoId(), tipo: 'forma', figura: 'flecha', x: 860, y: 1200, w: 140, h: 70, rot: 0, opacidad: 0.9, relleno: '#FFFFFF', borde: '#1A1A1A', grosor: 0 });
@@ -235,7 +235,7 @@ export const PLANTILLAS = [
   },
   // ── De temporada ──
   {
-    id: 'vuelta', nombre: 'Vuelta al cole', tipo: 'libre', tamano: 'igv', temporada: [8, 9],
+    id: 'vuelta', nombre: 'Vuelta al cole', tipo: 'libre', tamano: 'ig', temporada: [8, 9],
     crear: () => ({
       ancho: 1080, alto: 1350, fondo: { tipo: 'degradado', color: '#FFD526', color2: '#F99B35', angulo: 160 },
       elementos: [
@@ -293,7 +293,7 @@ export const PLANTILLAS = [
     }),
   },
   {
-    id: 'horario-navidad', nombre: 'Horario de Navidad', tipo: 'libre', tamano: 'igv', temporada: [11, 12],
+    id: 'horario-navidad', nombre: 'Horario de Navidad', tipo: 'libre', tamano: 'ig', temporada: [11, 12],
     crear: () => ({
       ancho: 1080, alto: 1350, fondo: { tipo: 'color', color: '#F6F4EF' },
       elementos: [
@@ -375,3 +375,10 @@ export const PLANTILLAS = [
     }),
   },
 ];
+
+// Las que se dibujaron en otro tamaño (los posts, cuadrados) salen ya en el suyo: el post
+// de Instagram es 4:5 (#472). Se adaptan como «En otros tamaños».
+for (const p of PLANTILLAS) {
+  const t = TAMANOS.find(x => x.id === p.tamano), crear = p.crear;
+  p.crear = () => { const d = crear(); return t && (d.ancho !== t.ancho || d.alto !== t.alto) ? adaptarDiseno(d, t.ancho, t.alto) : d; };
+}

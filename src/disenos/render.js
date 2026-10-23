@@ -28,8 +28,9 @@ export const TAMANOS = [
   { id: 'a4h', nombre: 'A4 apaisado', ancho: 1754, alto: 1240, pdf: { formato: 'a4', orientacion: 'landscape' } },
   { id: 'a4v', nombre: 'A4 vertical', ancho: 1240, alto: 1754, pdf: { formato: 'a4', orientacion: 'portrait' } },
   { id: 'a3v', nombre: 'Cartel A3', ancho: 1754, alto: 2480, pdf: { formato: 'a3', orientacion: 'portrait' } },
-  { id: 'ig', nombre: 'Post de Instagram', ancho: 1080, alto: 1080 },
-  { id: 'igv', nombre: 'Instagram vertical', ancho: 1080, alto: 1350 },
+  // El post de Instagram, el de siempre del club: un poco más alto que ancho (4:5, #472).
+  { id: 'ig', nombre: 'Post de Instagram', ancho: 1080, alto: 1350 },
+  { id: 'igc', nombre: 'Post cuadrado', ancho: 1080, alto: 1080 },
   { id: 'historia', nombre: 'Historia (Instagram, WhatsApp)', ancho: 1080, alto: 1920 },
   { id: 'fb', nombre: 'Portada de Facebook', ancho: 1640, alto: 624 },
   { id: 'pres', nombre: 'Presentación 16:9', ancho: 1920, alto: 1080 },
