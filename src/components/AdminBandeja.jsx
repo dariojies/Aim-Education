@@ -247,11 +247,12 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
   const actual = info?.buzones.find(b => b.id === buzon);
   const yo = info?.companeros.find(c => c.yo);
 
-  const cargar = useCallback(async () => {
+  // fresco: el botón ↻ (el servidor recuerda la lista unos segundos, #477).
+  const cargar = useCallback(async (fresco = false) => {
     if (!actual || vista === 'programados') return;
     setError(null);
     try {
-      const d = await api(`/api/admin/bandeja/${buzon}/mensajes?vista=${vista}&pagina=${pagina}&q=${encodeURIComponent(buscar)}`);
+      const d = await api(`/api/admin/bandeja/${buzon}/mensajes?vista=${vista}&pagina=${pagina}&q=${encodeURIComponent(buscar)}${fresco === true ? '&fresco=1' : ''}`);
       setLista(d.mensajes); setTotal(d.total);
     } catch (e) { setError(e.message); setLista([]); }
   }, [actual, buzon, vista, pagina, buscar]);
@@ -261,12 +262,10 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
   async function abrir(m) {
     setSel(m.uid); setDetalle(null); setImagenes(false);
     try {
-      const d = await api(`/api/admin/bandeja/${buzon}/mensajes/${m.uid}?vista=${vista}`);
+      // Se marca como leído en la misma petición (#477).
+      const d = await api(`/api/admin/bandeja/${buzon}/mensajes/${m.uid}?vista=${vista}&leer=1`);
       setDetalle(d);
-      if (!d.leido) {
-        api(`/api/admin/bandeja/${buzon}/mensajes/${m.uid}/accion`, { method: 'POST', body: { accion: 'leido', vista } }).catch(() => {});
-        setLista(l => l?.map(x => (x.uid === m.uid ? { ...x, leido: true } : x)));
-      }
+      if (d.leido) setLista(l => l?.map(x => (x.uid === m.uid ? { ...x, leido: true } : x)));
     } catch (e) { alert(e.message); setSel(null); }
   }
   async function accion(nombre, extra = {}, aviso) {
@@ -333,7 +332,7 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
         <form onSubmit={e => { e.preventDefault(); setBuscar(q.trim()); }} style={{ display: 'flex', gap: 6, flex: '1 1 220px' }}>
           <input style={{ ...campo, borderRadius: 999 }} value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar (como en Gmail: de:, asunto:…)" />
         </form>
-        <button type="button" className="btn btn-sm btn-outline" onClick={cargar} title="Actualizar">↻</button>
+        <button type="button" className="btn btn-sm btn-outline" onClick={() => cargar(true)} title="Actualizar">↻</button>
         {buzon === 'general' && <button type="button" className="btn btn-sm btn-outline" onClick={() => setVerReglas(true)} title="Correos de un remitente que van siempre a la misma persona">Reglas</button>}
         <button type="button" className="btn btn-sm btn-primary" onClick={() => escribir('nuevo')}><I.Plus width={14} height={14} /> Escribir</button>
       </div>

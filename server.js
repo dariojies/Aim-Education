@@ -14,7 +14,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 import nodemailer from 'nodemailer';
 import { calcularRecibo, calcularCobro, serieDeLinea, mesAGenerar, mesDeAlta, tieneMilesimas, brutoMilesimas } from './billing.js';
 import { crearRouterTulClases } from './tul-clases.js';
-import { crearRouterBandeja, buscarRespuestas, correosCon, buzonesPersonales, probarBuzones, cuentaServicio, esDelDominio, dominioCorreo } from './bandeja.js';
+import { crearRouterBandeja, buscarRespuestas, correosCon, buzonesPersonales, probarBuzones, cuentaServicio, esDelDominio, dominioCorreo, calentarCorreo, mantenerCorreoVivo } from './bandeja.js';
 import { crearBrickslab, crearTablaImagenesBricks } from './brickslab.js';
 import { crearAvisosPush, GRUPOS_AVISO } from './avisos-push.js';
 import { crearRouterCalendarioMovil, agendaEnRango, leerHora } from './calendario-movil.js';
@@ -23023,6 +23023,10 @@ const servidor = app.listen(port, () => {
     setInterval(ejecutarAutomatismos, 15 * 60 * 1000);
     // Aim Design (#471): las historias de los festivos, programadas en Publicaciones.
     setTimeout(function historiasDeFestivos() { programarHistoriasFestivos(pool); }, 2 * 60 * 1000);
+    // Correo siempre a punto (#477): el buzón general, abierto desde el arranque, y las
+    // conexiones con Gmail, vivas (conectar tarda de 1 a 7 segundos).
+    setTimeout(function abrirCorreo() { calentarCorreo(); }, 20 * 1000);
+    setInterval(function mantenerCorreoAPunto() { mantenerCorreoVivo(); }, 4 * 60 * 1000);
     // Los vídeos de Aim Design que ya no usa nadie, una vez al día.
     setTimeout(function limpiarVideos() { limpiarMedios(pool); }, 5 * 60 * 1000);
     setInterval(function limpiarVideos() { limpiarMedios(pool); limpiarMediosPantalla(pool); }, 24 * 3600 * 1000);

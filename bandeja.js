@@ -123,6 +123,9 @@ export function etiquetaDe(nombre) {
 // quedaba esperando detrás, y la vigilancia daba el buzón por caído.
 const conexiones = new Map(); // «email|canal» → { client, pass, cierre, abriendo, enUso }
 const INACTIVA_MS = 120_000;
+// La de Correo aguanta más (#477): conectar con Gmail tarda de 1 a 7 segundos, y con
+// 2 minutos casi cada vez que alguien abría Correo había que volver a conectar.
+const INACTIVA_CORREO_MS = 20 * 60_000;
 const claveDe = (buzon, canal) => `${buzon.email}|${canal}`;
 async function conexion(buzon, canal) {
     const k = claveDe(buzon, canal);
@@ -184,12 +187,29 @@ async function conImap(buzon, fn, canal = 'correo', intento = 1) {
             clearTimeout(c.cierre);
             c.cierre = setTimeout(() => {
                 if (conexiones.get(claveDe(buzon, canal)) === c && !c.enUso) { conexiones.delete(claveDe(buzon, canal)); client.logout().catch(() => {}); }
-            }, INACTIVA_MS);
+            }, canal === 'correo' ? INACTIVA_CORREO_MS : INACTIVA_MS);
             c.cierre.unref?.();
         }
     }
     return conImap(buzon, fn, canal, 2);
 }
+// Correo siempre a punto (#477). Gmail cierra sin avisar las conexiones que llevan
+// un rato quietas; un NOOP cada pocos minutos las mantiene. La del buzón general
+// (el que más se usa) se abre al arrancar y, si se cae, se vuelve a abrir aquí;
+// las de los buzones propios viven mientras se usan (20 minutos sin uso).
+export async function calentarCorreo(buzon = buzonGeneral()) {
+    if (!buzon) return;
+    await conImap(buzon, async (client) => { await carpetas(client); }, 'correo').catch(() => {});
+}
+export async function mantenerCorreoVivo() {
+    const general = buzonGeneral();
+    if (general) await conImap(general, async (client) => { await carpetas(client); await client.noop(); }, 'correo').catch(() => {});
+    for (const [k, c] of conexiones) {
+        if (!k.endsWith('|correo') || (general && k === claveDe(general, 'correo'))) continue;
+        if (c.client?.usable && !c.enUso && !c.abriendo) c.client.noop().catch(() => {});
+    }
+}
+
 // Las carpetas de cada buzón no cambian: se miran una vez por conexión.
 const carpetasCache = new WeakMap();
 // Las carpetas especiales de Gmail (sus nombres cambian con el idioma).
@@ -340,6 +360,15 @@ const conAdjuntos = (bs) => {
 
 export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
     const router = express.Router();
+    // Las listas recordadas (#477): «correo|vista|página|búsqueda|quién» → { v, t }.
+    const listas = new Map();
+    const LISTA_MS = 45_000;
+    const olvidarListas = (email) => { for (const k of listas.keys()) if (!email || k.startsWith(`${email}|`)) listas.delete(k); };
+    // Cualquier cambio (marcar, asignar, enviar, reglas…) olvida las listas de ese buzón.
+    router.use((req, res, next) => {
+        if (req.method !== 'GET') res.on('finish', () => olvidarListas(null));
+        next();
+    });
 
     // ── Reglas de asignación (#339): «todos los de este remitente, a X» ──
     // remitente: un correo («ana@x.es») o un dominio entero («@colegio.es»).
@@ -395,6 +424,9 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
         try {
             const g = veGeneral(req) ? buzonGeneral() : null;
             const mio = buzonDe(req.userSession.email);
+            // Se van conectando ya (#477): cuando llegue la lista, el buzón está abierto.
+            if (g) calentarCorreo(g);
+            if (mio) calentarCorreo(mio);
             const lista = await companeros();
             res.set('Cache-Control', 'no-store');
             res.json({
@@ -418,6 +450,13 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
         const vista = String(req.query.vista || 'entrada');
         const pagina = Math.max(0, Number(req.query.pagina) || 0);
         const q = String(req.query.q || '').trim().slice(0, 200).replace(/["\\]/g, ' ');
+        const claveLista = `${buzon.email}|${vista}|${pagina}|${q}|${req.userSession.userId}`;
+        const guardada = listas.get(claveLista);
+        if (guardada && Date.now() - guardada.t < LISTA_MS && req.query.fresco !== '1') {
+            res.set('Cache-Control', 'no-store');
+            return res.json({ ...guardada.v, pagina, porPagina: POR_PAGINA });
+        }
+        const t0 = Date.now(), tiempos = {};
         try {
             const lista = await companeros();
             const miEtiqueta = etiquetaDe(lista.find(c => String(c.id) === String(req.userSession.userId))?.nombre || req.userSession.firstName);
@@ -441,9 +480,13 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
                     criterio = { gmraw: `-label:${ETIQUETA_HECHO}${texto}` };
                 } else if (q && gmail) criterio = { gmraw: q };
                 if (!carpeta) return { mensajes: [], total: 0, carpeta: null };
+                tiempos.conectar = Date.now() - t0;
                 const lock = await client.getMailboxLock(carpeta);
                 try {
+                    const t1 = Date.now();
                     const uids = (await client.search(criterio, { uid: true })) || [];
+                    tiempos.buscar = Date.now() - t1;
+                    const t2 = Date.now();
                     uids.sort((a, b) => b - a);
                     const trozo = uids.slice(pagina * POR_PAGINA, (pagina + 1) * POR_PAGINA);
                     const mensajes = [];
@@ -464,6 +507,7 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
                         }
                     }
                     mensajes.sort((a, b) => b.uid - a.uid);
+                    tiempos.traer = Date.now() - t2;
                     if (buzon.general && vista !== 'enviados' && vista !== 'spam') {
                         const rs = await reglas().catch(() => []);
                         for (const m of mensajes) {
@@ -478,6 +522,10 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
                     return { mensajes, total: uids.length, carpeta };
                 } finally { lock.release(); }
             });
+            const ms = Date.now() - t0;
+            if (ms > 2000) console.warn(`[bandeja] lista lenta (${vista}): ${ms} ms · conectar y abrir ${tiempos.conectar ?? '?'} ms, buscar ${tiempos.buscar ?? '?'} ms, traer ${tiempos.traer ?? '?'} ms`);
+            listas.set(claveLista, { v: r, t: Date.now() });
+            while (listas.size > 100) listas.delete(listas.keys().next().value);
             res.set('Cache-Control', 'no-store');
             res.json({ ...r, pagina, porPagina: POR_PAGINA });
         } catch (e) { error(res, e); }
@@ -518,9 +566,20 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
     router.get('/:buzon/mensajes/:uid(\\d+)', async (req, res) => {
         const buzon = resolver(req, res); if (!buzon) return;
         try {
+            const t0 = Date.now();
             const r = await leerUno(buzon, carpetaDeVista(req.query.vista), req.params.uid);
             if (!r) return res.status(404).json({ error: 'Ese correo ya no está.' });
             const { m, p } = r;
+            // Marcarlo como leído aquí mismo (#477): antes era otra petición, a la cola detrás.
+            let leido = m.flags?.has?.('\\Seen') || false;
+            if (!leido && req.query.leer === '1') {
+                await conImap(buzon, async (client) => {
+                    const c = await carpetas(client);
+                    const lock = await client.getMailboxLock(carpetaDe(c, carpetaDeVista(req.query.vista)) || c.entrada);
+                    try { await client.messageFlagsAdd(String(m.uid), ['\\Seen'], { uid: true }); } finally { lock.release(); }
+                }).then(() => { leido = true; olvidarListas(buzon.email); }).catch(() => {});
+            }
+            if (Date.now() - t0 > 2000) console.warn(`[bandeja] abrir un correo: ${Date.now() - t0} ms (${Math.round((m.source?.length || 0) / 1024)} KB)`);
             // Las imágenes pegadas en el correo (cid:) van dentro; las de fuera no
             // se cargan hasta que se pida (son las que chivan que se ha abierto).
             let html = p.html || '';
@@ -544,7 +603,7 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
                 adjuntos: (p.attachments || []).filter(a => !a.related)
                     .map((a) => ({ i: p.attachments.indexOf(a), nombre: a.filename || 'adjunto', tipo: a.contentType, bytes: a.size })),
                 messageId: p.messageId || null, referencias: [].concat(p.references || []),
-                leido: m.flags?.has?.('\\Seen') || false,
+                leido,
                 asignado: asignado ? { id: asignado.id, nombre: asignado.nombre } : null,
                 hecho: etiquetas.includes(ETIQUETA_HECHO),
                 ficha: de ? await fichaDe(de.email).catch(() => null) : null,
