@@ -23,11 +23,12 @@ export const TROZO = 2 * 1024 * 1024;
 export const MAX_VIDEO = 100 * 1024 * 1024;
 export const MAX_ARCHIVO = 10 * 1024 * 1024;
 export const TOPE_TOTAL = 400 * 1024 * 1024;
+import { crearTablasScorm, prepararPaquete, servirArchivoScorm, rutaLimpia, segundosDe, tiempoEn, notaDe, estadoDe } from './aula-scorm.js';
 export const ACTIVIDAD_AULA = 'Aula virtual';
 // La formación online lleva siempre IVA (#440): no se elige.
 export const IVA_AULA = 21;
 const MAX_PORTADA = 2 * 1024 * 1024;
-const TIPOS = ['texto', 'video', 'archivo', 'tarea', 'cuestionario', 'directo'];
+const TIPOS = ['texto', 'video', 'archivo', 'tarea', 'cuestionario', 'directo', 'scorm'];
 const MAX_PREGUNTAS = 200;
 const MIME_VIDEO = ['video/mp4', 'video/quicktime', 'video/webm'];
 const MIME_ARCHIVO = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp',
@@ -146,9 +147,10 @@ export async function crearTablasAula(client) {
     // evaluables (se entrega entero, nota sobre 10, intentos limitados).
     await client.query(`ALTER TABLE aim_aula_lecciones ALTER COLUMN tipo TYPE VARCHAR(15)`);
     const ck = (await client.query(`SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint WHERE conname = 'aim_aula_lecciones_tipo_check'`)).rows[0];
-    if (!ck || !ck.d.includes('directo')) {
+    // Los paquetes SCORM (#475), un tipo más.
+    if (!ck || !ck.d.includes('scorm')) {
         await client.query(`ALTER TABLE aim_aula_lecciones DROP CONSTRAINT IF EXISTS aim_aula_lecciones_tipo_check`);
-        await client.query(`ALTER TABLE aim_aula_lecciones ADD CONSTRAINT aim_aula_lecciones_tipo_check CHECK (tipo IN ('texto','video','archivo','tarea','cuestionario','directo'))`);
+        await client.query(`ALTER TABLE aim_aula_lecciones ADD CONSTRAINT aim_aula_lecciones_tipo_check CHECK (tipo IN ('texto','video','archivo','tarea','cuestionario','directo','scorm'))`);
     }
     await client.query(`ALTER TABLE aim_aula_lecciones ADD COLUMN IF NOT EXISTS modo VARCHAR(10) NOT NULL DEFAULT 'practica'`);
     await client.query(`ALTER TABLE aim_aula_lecciones ADD COLUMN IF NOT EXISTS intentos INTEGER`);
@@ -271,6 +273,8 @@ export async function crearTablasAula(client) {
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             UNIQUE (curso_id, user_id)
         )`);
+    // Los paquetes SCORM (#475): ver aula-scorm.js.
+    await crearTablasScorm(client);
 }
 
 // Las preguntas de la valoración (#463); los textos, en src/components/AulaValoracion.jsx.
@@ -767,6 +771,16 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                 `SELECT v.leccion_id, v.segundos FROM aim_aula_vistas v JOIN aim_aula_lecciones l ON l.id = v.leccion_id WHERE l.curso_id = $1 AND v.user_id = $2`, [id, me])).rows.map(x => [x.leccion_id, x.segundos]));
             const apuntes = new Map((await pool.query(
                 `SELECT a.leccion_id, a.texto FROM aim_aula_apuntes a JOIN aim_aula_lecciones l ON l.id = a.leccion_id WHERE l.curso_id = $1 AND a.user_id = $2`, [id, me])).rows.map(x => [x.leccion_id, x.texto]));
+            // Los SCORM (#475): sus actividades y cómo le va en cada una.
+            const scorms = new Map((await pool.query(
+                `SELECT l.id, s.version, s.titulo, s.scos FROM aim_aula_lecciones l JOIN aim_aula_scorm s ON s.archivo_id = l.archivo_id AND s.estado = 'listo'
+                 WHERE l.curso_id = $1 AND l.tipo = 'scorm'`, [id])).rows.map(x => [x.id, x]));
+            const avanceScorm = new Map();
+            for (const x of (await pool.query(
+                `SELECT d.leccion_id, d.sco, d.estado, d.nota, d.hecho FROM aim_aula_scorm_datos d JOIN aim_aula_lecciones l ON l.id = d.leccion_id WHERE l.curso_id = $1 AND d.user_id = $2`, [id, me])).rows) {
+                if (!avanceScorm.has(x.leccion_id)) avanceScorm.set(x.leccion_id, {});
+                avanceScorm.get(x.leccion_id)[x.sco] = { estado: x.estado, nota: x.nota == null ? null : Number(x.nota), hecho: x.hecho };
+            }
             const cuest = new Map((await pool.query(
                 `SELECT l.id, l.modo, l.intentos, l.nota_minima, l.tiempo_min,
                         (SELECT COUNT(*)::int FROM aim_aula_preguntas p WHERE p.leccion_id = l.id) AS preguntas,
@@ -792,7 +806,11 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                     gratis: !!l.gratis, abreAt: l.abre_at, plazoAt: l.tipo === 'tarea' ? l.plazo_at : undefined, directo: directo(l),
                     id: l.id, tipo: l.tipo, titulo: l.titulo, texto: l.texto, calificacion: l.tipo === 'tarea' ? l.calificacion : undefined,
                     video: l.tipo === 'video' ? (l.video_url ? { embed: incrustar(l.video_url), url: l.video_url } : l.archivo_nombre ? { src: `/api/aula/archivos/${l.archivo_id}`, mime: l.archivo_mime } : null) : undefined,
-                    archivo: l.archivo_nombre && l.tipo !== 'video' && l.tipo !== 'directo' ? { url: `/api/aula/archivos/${l.archivo_id}`, nombre: l.archivo_nombre, mime: l.archivo_mime, bytes: Number(l.archivo_bytes) } : null,
+                    scorm: l.tipo === 'scorm' && scorms.get(l.id) ? (({ version, titulo, scos }) => ({
+                        version, titulo, base: `/api/aula/scorm/${l.id}/`,
+                        actividades: scos.map(sc => ({ id: sc.id, titulo: sc.titulo, href: sc.href, ...(avanceScorm.get(l.id)?.[sc.id] || {}) })),
+                    }))(scorms.get(l.id)) : undefined,
+                    archivo: l.archivo_nombre && l.tipo !== 'video' && l.tipo !== 'directo' && l.tipo !== 'scorm' ? { url: `/api/aula/archivos/${l.archivo_id}`, nombre: l.archivo_nombre, mime: l.archivo_mime, bytes: Number(l.archivo_bytes) } : null,
                     hecha: hechas.has(l.id),
                     entrega: l.tipo === 'tarea' && entregas.get(l.id) ? (({ leccion_id, con_archivo, ...e }) => ({ ...e, archivo: con_archivo ? `/api/aula/entregas/${e.id}/archivo` : null }))(entregas.get(l.id)) : null,
                     cuestionario: l.tipo === 'cuestionario' && cuest.get(l.id) ? (({ id: x, mejor, nota_minima: nm, tiempo_min: tm, ...q }) => ({ ...q, mejor: mejor == null ? null : Number(mejor), notaMinima: nm == null ? 5 : Number(nm), tiempoMin: tm || null }))(cuest.get(l.id)) : undefined,
@@ -809,7 +827,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             await exigirAbierta(req, l, gestor);
             // Las tareas cuentan al aprobarlas el profesor y los cuestionarios al
             // sacar un 5 (#455): esas no se marcan a mano.
-            if (l.tipo === 'tarea' || l.tipo === 'cuestionario') corta(400, 'Esta lección se termina al aprobarla.');
+            if (l.tipo === 'tarea' || l.tipo === 'cuestionario' || l.tipo === 'scorm') corta(400, 'Esta lección se termina al aprobarla.');
             if (req.body?.hecha === false) await pool.query(`DELETE FROM aim_aula_progreso WHERE user_id = $1 AND leccion_id = $2`, [req.userSession.userId, l.id]);
             else await pool.query(`INSERT INTO aim_aula_progreso (user_id, leccion_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [req.userSession.userId, l.id]);
             res.json({ success: true });
@@ -903,6 +921,96 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
     };
     router.get('/api/aula/archivos/:id', authenticateSession, verArchivo);
     router.head('/api/aula/archivos/:id', authenticateSession, verArchivo);
+
+    // ── SCORM (#475): el paquete y lo que guarda el alumno ──
+    // Quién puede ver cada lección se recuerda un rato: un paquete pide decenas de archivos.
+    const accesoScorm = new Map();   // «usuario|lección» → { l, gestor, t }
+    async function leccionScorm(req) {
+        const id = idDe(req.params.id), k = `${req.userSession.userId}|${id}`, g = accesoScorm.get(k);
+        if (g && Date.now() - g.t < 10 * 60_000) return g;
+        const l = await leccion(id);
+        if (l.tipo !== 'scorm') corta(400, 'Esa lección no es un paquete SCORM.');
+        const { gestor } = await puedeVerLeccion(req, l);
+        await exigirAbierta(req, l, gestor);
+        const s = (await pool.query(`SELECT version, scos FROM aim_aula_scorm WHERE archivo_id = $1 AND estado = 'listo'`, [l.archivo_id])).rows[0];
+        if (!s) corta(404, 'Este paquete aún no está listo.');
+        const r = { l, gestor, scorm: s, t: Date.now() };
+        accesoScorm.set(k, r);
+        while (accesoScorm.size > 500) accesoScorm.delete(accesoScorm.keys().next().value);
+        return r;
+    }
+    const servirScorm = async (req, res) => {
+        try {
+            const { l } = await leccionScorm(req);
+            await servirArchivoScorm(pool, req, res, l.archivo_id, rutaLimpia(decodeURIComponent(req.params[0] || '')));
+        } catch (err) { if (!res.headersSent) fallo(res, err); else res.destroy(); }
+    };
+    router.get('/api/aula/scorm/:id/*', authenticateSession, servirScorm);
+    router.head('/api/aula/scorm/:id/*', authenticateSession, servirScorm);
+    // Lo guardado de una actividad, para seguir donde lo dejó.
+    router.get('/api/aula/lecciones/:id/scorm', authenticateSession, async (req, res) => {
+        try {
+            const { l, gestor, scorm } = await leccionScorm(req);
+            const sco = scorm.scos.find(x => x.id === req.query.sco) || scorm.scos[0];
+            const d = gestor ? null : (await pool.query(`SELECT cmi FROM aim_aula_scorm_datos WHERE leccion_id = $1 AND user_id = $2 AND sco = $3`, [l.id, req.userSession.userId, sco.id])).rows[0];
+            const u = (await pool.query(`SELECT name, surname FROM users WHERE user_id = $1`, [req.userSession.userId])).rows[0] || {};
+            const cmi = d?.cmi || {};
+            const salida = scorm.version === '2004' ? cmi['cmi.exit'] : cmi['cmi.core.exit'];
+            res.set('Cache-Control', 'no-store');
+            res.json({
+                version: scorm.version, sco: sco.id, gestor,
+                alumno: { id: req.userSession.userId, nombre: scorm.version === '2004' ? `${u.name || ''} ${u.surname || ''}`.trim() : `${u.surname || ''}, ${u.name || ''}`.replace(/^, /, '') },
+                // Lo que se guardó, menos lo de esa sesión (empieza otra).
+                cmi: Object.fromEntries(Object.entries(cmi).filter(([k]) => !/^cmi\.(core\.)?(session_time|exit)$/.test(k))),
+                entrada: salida === 'suspend' ? 'resume' : d ? '' : 'ab-initio',
+                masteryScore: sco.masteryScore ?? null, launchData: sco.launchData || '',
+            });
+        } catch (err) { fallo(res, err); }
+    });
+    // Guardar (Commit) y terminar (Finish/Terminate): el estado y la nota, y si
+    // aprueba, la lección queda hecha (como un cuestionario; lo aprobado no se quita).
+    router.post('/api/aula/lecciones/:id/scorm', authenticateSession, async (req, res) => {
+        const client = await pool.connect();
+        try {
+            const { l, gestor, scorm } = await leccionScorm(req);
+            if (gestor) return res.json({ success: true, guardado: false });
+            const me = req.userSession.userId;
+            const sco = scorm.scos.find(x => x.id === req.body?.sco) || scorm.scos[0];
+            // De uno en uno por alumno y actividad: al terminar, el paquete guarda y
+            // termina seguido, y si no, uno pisaba el tiempo sumado del otro.
+            await client.query('BEGIN');
+            await client.query(`SELECT pg_advisory_xact_lock(475, hashtext($1))`, [`${l.id}|${me}|${sco.id}`]);
+            const recibido = req.body?.cmi && typeof req.body.cmi === 'object' ? req.body.cmi : {};
+            const cmi = {};
+            for (const [k, v] of Object.entries(recibido).slice(0, 4000)) if (/^cmi\.[\w.]+$/.test(k) && k.length <= 255) cmi[k] = String(v ?? '').slice(0, 65536);
+            const antes = (await client.query(`SELECT cmi, hecho FROM aim_aula_scorm_datos WHERE leccion_id = $1 AND user_id = $2 AND sco = $3`, [l.id, me, sco.id])).rows[0];
+            const v = scorm.version, kTotal = v === '2004' ? 'cmi.total_time' : 'cmi.core.total_time', kSesion = v === '2004' ? 'cmi.session_time' : 'cmi.core.session_time';
+            // Al terminar, el tiempo de esta vez se suma al total.
+            const total = segundosDe(antes?.cmi?.[kTotal]) + (req.body?.terminar ? segundosDe(cmi[kSesion]) : 0);
+            const guardar = { ...(antes?.cmi || {}), ...cmi, [kTotal]: tiempoEn(v, total) };
+            // SCORM 1.2 con nota mínima en el paquete: «completado» con nota aprueba o suspende.
+            if (v === '1.2' && sco.masteryScore != null && guardar['cmi.core.score.raw'] !== undefined && guardar['cmi.core.score.raw'] !== '' && ['completed', 'incomplete'].includes(guardar['cmi.core.lesson_status'])) {
+                guardar['cmi.core.lesson_status'] = Number(guardar['cmi.core.score.raw']) >= Number(sco.masteryScore) ? 'passed' : 'failed';
+            }
+            const { estado, hecho } = estadoDe(v, guardar);
+            const nota = notaDe(v, guardar);
+            // nota: la mejor (como en los cuestionarios); ultima: la de ahora.
+            await client.query(
+                `INSERT INTO aim_aula_scorm_datos (leccion_id, user_id, sco, cmi, estado, nota, ultima, hecho, sesiones, updated_at)
+                 VALUES ($1, $2, $3, $4::jsonb, $5, $6, $6, $7, $8, NOW())
+                 ON CONFLICT (leccion_id, user_id, sco) DO UPDATE SET cmi = EXCLUDED.cmi, estado = EXCLUDED.estado,
+                     nota = GREATEST(aim_aula_scorm_datos.nota, EXCLUDED.nota), ultima = COALESCE(EXCLUDED.ultima, aim_aula_scorm_datos.ultima),
+                     hecho = aim_aula_scorm_datos.hecho OR EXCLUDED.hecho, sesiones = aim_aula_scorm_datos.sesiones + $8, updated_at = NOW()`,
+                [l.id, me, sco.id, JSON.stringify(guardar), estado, nota, hecho, req.body?.terminar ? 1 : 0]);
+            // La lección, hecha cuando lo están todas sus actividades.
+            const n = (await client.query(`SELECT COUNT(*)::int n FROM aim_aula_scorm_datos WHERE leccion_id = $1 AND user_id = $2 AND hecho AND sco = ANY($3::text[])`,
+                [l.id, me, scorm.scos.map(x => x.id)])).rows[0].n;
+            const terminada = n >= scorm.scos.length;
+            if (terminada) await client.query(`INSERT INTO aim_aula_progreso (user_id, leccion_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [me, l.id]);
+            await client.query('COMMIT');
+            res.json({ success: true, guardado: true, estado, nota, hecho, leccionHecha: terminada });
+        } catch (err) { await client.query('ROLLBACK').catch(() => {}); fallo(res, err); } finally { client.release(); }
+    });
 
     // Entregar una tarea: el texto (JSON) y, si hay, el archivo (aparte, tal cual).
     // Volver a entregar quita la corrección: el profesor la vuelve a ver.
@@ -1154,6 +1262,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             const temas = (await pool.query(`SELECT id, titulo FROM aim_aula_temas WHERE curso_id = $1 ORDER BY orden, id`, [c.id])).rows;
             const lecs = (await pool.query(
                 `SELECT l.id, l.tema_id, l.tipo, l.titulo, l.texto, l.video_url, l.calificacion, l.archivo_id, a.nombre AS archivo_nombre, a.mime AS archivo_mime, a.bytes AS archivo_bytes,
+                        (SELECT row_to_json(x) FROM (SELECT estado, error, version, titulo, scos, archivos FROM aim_aula_scorm s WHERE s.archivo_id = l.archivo_id) x) AS scorm,
                         (SELECT COUNT(*)::int FROM aim_aula_entregas e WHERE e.leccion_id = l.id AND e.corregida_at IS NULL) AS por_corregir,
                         l.modo, l.intentos, l.gratis, (SELECT COUNT(*)::int FROM aim_aula_preguntas p WHERE p.leccion_id = l.id) AS n_preguntas,
                         l.abre_at, l.tras_anterior, l.plazo_at, l.directo_at, l.directo_min, l.enlace, l.nota_minima, l.tiempo_min
@@ -1169,6 +1278,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                     abreAt: l.abre_at, trasAnterior: l.tras_anterior, plazoAt: l.plazo_at, directoAt: l.directo_at, directoMin: l.directo_min, enlace: l.enlace || '',
                     notaMinima: l.nota_minima == null ? null : Number(l.nota_minima), tiempoMin: l.tiempo_min,
                     archivo: l.archivo_nombre ? { id: l.archivo_id, nombre: l.archivo_nombre, mime: l.archivo_mime, bytes: Number(l.archivo_bytes) } : null,
+                    scorm: l.tipo === 'scorm' ? infoScorm(l.scorm) : undefined,
                 })) })),
             });
         } catch (err) { fallo(res, err); }
@@ -1423,6 +1533,11 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
         }
         if (tipo === 'video' && !d.video_url && !d.archivo_id) corta(400, 'Pega el enlace del vídeo o súbelo.');
         if (tipo === 'archivo' && !d.archivo_id) corta(400, 'Sube el archivo de la lección.');
+        if (tipo === 'scorm') {
+            if (!d.archivo_id) corta(400, 'Sube el paquete SCORM (el ZIP).');
+            const x = (await pool.query(`SELECT estado, error FROM aim_aula_scorm WHERE archivo_id = $1`, [d.archivo_id])).rows[0];
+            if (x?.estado !== 'listo') corta(400, x?.estado === 'error' ? `El paquete no vale: ${x.error}` : 'El paquete aún se está preparando: espera un momento.');
+        }
         if ((tipo === 'video' || tipo === 'directo') && d.video_url) d.archivo_id = null;
         return d;
     }
@@ -1469,6 +1584,8 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             if (n && req.query.confirmar !== '1') corta(409, `Esta tarea tiene ${n} ${n === 1 ? 'entrega' : 'entregas'}: si la borras, se pierden.`);
             const ni = (await pool.query(`SELECT COUNT(*)::int n FROM aim_aula_intentos WHERE leccion_id = $1 AND modo = 'evaluable'`, [l.id])).rows[0].n;
             if (ni && req.query.confirmar !== '1') corta(409, `Este cuestionario tiene ${ni} ${ni === 1 ? 'intento con nota' : 'intentos con nota'}: si lo borras, se pierden.`);
+            const ns = (await pool.query(`SELECT COUNT(DISTINCT user_id)::int n FROM aim_aula_scorm_datos WHERE leccion_id = $1`, [l.id])).rows[0].n;
+            if (ns && req.query.confirmar !== '1') corta(409, `Este paquete SCORM tiene el avance de ${ns} ${ns === 1 ? 'alumno' : 'alumnos'}: si lo borras, se pierde.`);
             await pool.query(`DELETE FROM aim_aula_lecciones WHERE id = $1`, [l.id]);
             await soltarArchivo(l.archivo_id);
             res.json({ success: true });
@@ -1605,8 +1722,16 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                  WHERE l.curso_id = $1 AND i.modo = l.modo
                  GROUP BY l.id, l.titulo, l.modo, l.intentos, i.user_id, u.name, u.surname
                  ORDER BY l.titulo, alumno`, [c.id]);
+            // Los SCORM (#475): una fila por alumno y paquete (la nota, la media de sus actividades).
+            const s = await pool.query(
+                `SELECT l.id AS leccion_id, l.titulo, 'scorm' AS modo, NULL::int AS max_intentos, d.user_id,
+                        TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno, SUM(d.sesiones)::int AS intentos,
+                        AVG(d.nota) AS mejor, MAX(d.updated_at) AS ultimo, AVG(d.ultima) AS ultima_nota, BOOL_AND(d.hecho) AS hecho,
+                        STRING_AGG(DISTINCT d.estado, ', ') AS estado
+                 FROM aim_aula_scorm_datos d JOIN aim_aula_lecciones l ON l.id = d.leccion_id JOIN users u ON u.user_id = d.user_id
+                 WHERE l.curso_id = $1 GROUP BY l.id, l.titulo, d.user_id, u.name, u.surname ORDER BY l.titulo, alumno`, [c.id]);
             res.set('Cache-Control', 'no-store');
-            res.json(r.rows.map(x => ({ ...x, mejor: Number(x.mejor), ultima_nota: Number(x.ultima_nota) })));
+            res.json([...r.rows, ...s.rows].map(x => ({ ...x, mejor: x.mejor == null ? null : Number(x.mejor), ultima_nota: x.ultima_nota == null ? null : Number(x.ultima_nota) })));
         } catch (err) { fallo(res, err); }
     });
 
@@ -1619,9 +1744,12 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             const bytes = Number(req.body?.bytes);
             if (!Number.isInteger(bytes) || bytes <= 0) corta(400, 'El archivo está vacío.');
             const video = MIME_VIDEO.includes(mime);
+            const scorm = req.body?.scorm === true;
+            if (scorm && mime !== 'application/zip') corta(400, 'Un paquete SCORM es un archivo ZIP.');
+            if (scorm && bytes > MAX_VIDEO) corta(400, 'El paquete pasa de 100 MB.');
             if (!video && !MIME_ARCHIVO.includes(mime)) corta(400, 'Ese tipo de archivo no se puede subir (vídeos MP4, MOV o WebM; documentos PDF, Word, PowerPoint, Excel, imágenes o audio).');
             if (video && bytes > MAX_VIDEO) corta(400, 'El vídeo pasa de 100 MB. Súbelo a YouTube (oculto) o a Vimeo y pega el enlace.');
-            if (!video && bytes > MAX_ARCHIVO) corta(400, 'El archivo pasa de 10 MB.');
+            if (!video && !scorm && bytes > MAX_ARCHIVO) corta(400, 'El archivo pasa de 10 MB.');
             // Lo que se quedó a medias hace más de un día ya no va a terminar.
             await pool.query(`DELETE FROM aim_aula_archivos WHERE parte_de IS NULL AND NOT completo AND created_at < NOW() - INTERVAL '1 day'`);
             const usado = await espacioUsado();
@@ -1658,6 +1786,26 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                 return res.json({ success: true, completo: k === total });
             }
             res.json({ success: true });
+        } catch (err) { fallo(res, err); }
+    });
+    // ── SCORM (#475): preparar el ZIP subido (en segundo plano) y ver cómo va ──
+    const infoScorm = (x) => (x ? { estado: x.estado, error: x.error || null, version: x.version, titulo: x.titulo, actividades: (x.scos || []).length, archivos: x.archivos } : null);
+    router.post('/api/admin/aula/archivos/:id/scorm', ...gestion, async (req, res) => {
+        try {
+            const a = await archivoEditable(req);
+            if (!a.completo) corta(409, 'El ZIP aún no ha terminado de subirse.');
+            const x = (await pool.query(`SELECT * FROM aim_aula_scorm WHERE archivo_id = $1`, [a.id])).rows[0];
+            if (x?.estado === 'listo') return res.json(infoScorm(x));
+            prepararPaquete(pool, a.id, TROZO);
+            res.status(202).json({ estado: 'preparando' });
+        } catch (err) { fallo(res, err); }
+    });
+    router.get('/api/admin/aula/archivos/:id/scorm', ...gestion, async (req, res) => {
+        try {
+            const a = await archivoEditable(req);
+            const x = (await pool.query(`SELECT * FROM aim_aula_scorm WHERE archivo_id = $1`, [a.id])).rows[0];
+            res.set('Cache-Control', 'no-store');
+            res.json(infoScorm(x) || { estado: 'sin_preparar' });
         } catch (err) { fallo(res, err); }
     });
     router.delete('/api/admin/aula/archivos/:id', ...gestion, async (req, res) => {

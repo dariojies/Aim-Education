@@ -37,8 +37,9 @@ async function api(url, { method = 'GET', body, raw, tipo } = {}) {
 
 // Sube un archivo por trozos (como los guarda el servidor). Si un trozo falla,
 // lo reintenta antes de rendirse.
-export async function subirAlAula(cursoId, file, onProgreso) {
-  const ini = await api(`/api/admin/aula/cursos/${cursoId}/archivos`, { method: 'POST', body: { nombre: file.name, mime: tipoDe(file), bytes: file.size } });
+// extra: { scorm: true } para un paquete SCORM (un ZIP de hasta 100 MB, #475).
+export async function subirAlAula(cursoId, file, onProgreso, extra = {}) {
+  const ini = await api(`/api/admin/aula/cursos/${cursoId}/archivos`, { method: 'POST', body: { nombre: file.name, mime: tipoDe(file), bytes: file.size, ...extra } });
   for (let n = 0; n < ini.trozos; n++) {
     const parte = file.slice(n * ini.trozo, Math.min(file.size, (n + 1) * ini.trozo));
     let intento = 0;
@@ -514,6 +515,7 @@ function Temario({ c, recargar, showToast, espacio }) {
                   {TIPO_LECCION[l.tipo].nombre}
                   {l.tipo === 'video' && (l.videoUrl ? ' · por enlace' : l.archivo ? ` · subido (${mb(l.archivo.bytes)})` : '')}
                   {l.tipo === 'archivo' && l.archivo ? ` · ${l.archivo.nombre} (${mb(l.archivo.bytes)})` : ''}
+                  {l.tipo === 'scorm' && l.scorm ? ` · SCORM ${l.scorm.version || ''}${l.scorm.actividades > 1 ? ` · ${l.scorm.actividades} actividades` : ''}` : ''}
                   {l.tipo === 'tarea' && ` · ${l.calificacion === 'nota' ? 'con nota' : 'apto / no apto'}`}
                   {l.tipo === 'cuestionario' && ` · ${l.modo === 'evaluable' ? `evaluable${l.intentos ? `, ${l.intentos} ${l.intentos === 1 ? 'intento' : 'intentos'}` : ''}` : 'de práctica'} · ${l.preguntas} ${l.preguntas === 1 ? 'pregunta' : 'preguntas'}${l.notaMinima != null && l.notaMinima !== 5 ? ` · se aprueba con un ${l.notaMinima}` : ''}${l.tiempoMin ? ` · ${l.tiempoMin} min` : ''}`}
                   {l.tipo === 'directo' && l.directoAt && ` · ${corta(l.directoAt)} (${l.directoMin || 60} min)${l.videoUrl || l.archivo ? ' · con grabación' : ''}`}
@@ -555,14 +557,33 @@ function EditorLeccion({ cursoId, temaId, l, espacio, meetCurso, onCerrar, onGua
     api(`/api/admin/aula/lecciones/${l.id}/preguntas`).then(d => setPreguntas(d.preguntas.map(conCuatro))).catch(e => { alert(e.message); setPreguntas([]); });
   }, [l?.id, l?.tipo]);
   const [modoVideo, setModoVideo] = useState(l?.archivo && !l?.videoUrl ? 'subido' : 'enlace');
+  // El paquete SCORM (#475): se prepara en el servidor después de subirlo.
+  const [scorm, setScorm] = useState(l?.scorm || null);
   const [subida, setSubida] = useState(null);      // { nombre, pct }
   const [guardando, setGuardando] = useState(false);
   const cambiar = (k, v) => setF(x => ({ ...x, [k]: v }));
   const esVideo = f.tipo === 'video' || f.tipo === 'directo';
   const embed = esVideo && modoVideo === 'enlace' && f.videoUrl ? incrustarVideo(f.videoUrl) : null;
 
+  async function subirScorm(file) {
+    if (!file) return;
+    if (!/\.zip$/i.test(file.name)) { alert('Un paquete SCORM es un archivo ZIP (expórtalo «para SCORM» desde tu herramienta).'); return; }
+    if (espacio?.maxVideo && file.size > espacio.maxVideo) { alert('El paquete pasa de 100 MB.'); return; }
+    setSubida({ nombre: file.name, pct: 0 });
+    try {
+      const id = await subirAlAula(cursoId, file, pct => setSubida({ nombre: file.name, pct }), { scorm: true });
+      setF(x => ({ ...x, archivoId: id, archivo: { id, nombre: file.name, bytes: file.size } }));
+      setScorm({ estado: 'preparando' });
+      let r = await api(`/api/admin/aula/archivos/${id}/scorm`, { method: 'POST' });
+      for (let i = 0; r.estado === 'preparando' && i < 300; i++) { await new Promise(ok => setTimeout(ok, 2000)); r = await api(`/api/admin/aula/archivos/${id}/scorm`); }
+      setScorm(r);
+      if (r.estado === 'listo' && !f.titulo && r.titulo) setF(x => ({ ...x, titulo: x.titulo || r.titulo }));
+    } catch (err) { alert(err.message); setScorm(null); }
+    finally { setSubida(null); }
+  }
   async function subir(file) {
     if (!file) return;
+    if (f.tipo === 'scorm') { await subirScorm(file); return; }
     // Una foto del iPad (HEIC) o muy grande: a JPG antes de subirla (#455).
     if (!esVideo) file = await imagenSubible(file);
     const max = esVideo ? espacio?.maxVideo : espacio?.maxArchivo;
@@ -586,6 +607,7 @@ function EditorLeccion({ cursoId, temaId, l, espacio, meetCurso, onCerrar, onGua
     if (porEnlace && !embed && (f.tipo === 'video' || f.videoUrl)) { alert('Pega el enlace de un vídeo de YouTube o de Vimeo.'); return; }
     if (f.abre === 'fecha' && !f.abreAt) { alert('Elige el día y la hora en que se abre.'); return; }
     if (f.tipo === 'directo' && !f.directoAt) { alert('Pon el día y la hora de la clase.'); return; }
+    if (f.tipo === 'scorm' && scorm?.estado !== 'listo') { alert(scorm?.estado === 'error' ? `El paquete no vale: ${scorm.error}` : 'Sube el paquete SCORM y espera a que esté listo.'); return; }
     if (f.tipo === 'cuestionario') {
       if (!preguntas?.length) { alert('Pon al menos una pregunta.'); return; }
       body.preguntas = preguntas.map(p => ({ ...p, imagen: p.imagen || null }));
@@ -659,6 +681,20 @@ function EditorLeccion({ cursoId, temaId, l, espacio, meetCurso, onCerrar, onGua
         )}
         {f.tipo === 'archivo' && <Subida f={f} subida={subida} subir={subir} accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.zip,.mp3,.m4a,image/*"
           ayuda="PDF, Word, PowerPoint, Excel, imágenes o audio, hasta 10 MB." />}
+        {f.tipo === 'scorm' && (
+          <div style={{ display: 'grid', gap: 8 }}>
+            <Subida f={f} subida={subida} subir={subir} accept=".zip,application/zip"
+              ayuda={`El ZIP que exporta tu herramienta (Articulate, iSpring, Captivate, H5P…) «para SCORM», 1.2 o 2004. Hasta 100 MB; ocupa espacio del aula${espacio ? ` (${mb(espacio.usado)} de ${mb(espacio.tope)} usados)` : ''}.`} />
+            {scorm?.estado === 'preparando' && <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>⏳ Preparando el paquete (se descomprime y se mira por dónde empieza)…</span>}
+            {scorm?.estado === 'error' && <span style={{ fontSize: 13, color: 'var(--pink)' }}>✕ {scorm.error}</span>}
+            {scorm?.estado === 'listo' && (
+              <span style={{ fontSize: 13, color: 'var(--teal)', fontWeight: 700 }}>
+                ✓ SCORM {scorm.version} · «{scorm.titulo}» · {scorm.actividades} {scorm.actividades === 1 ? 'actividad' : 'actividades'} · {scorm.archivos} archivos
+              </span>
+            )}
+            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Cuenta como un cuestionario: la lección queda aprobada cuando el paquete dice «aprobado» o «completado» (no si dice «suspendido»), y la nota sale en Resultados.</span>
+          </div>
+        )}
 
         <label style={etiqueta}>
           {f.tipo === 'texto' ? 'Contenido' : f.tipo === 'tarea' ? 'Enunciado: qué tienen que hacer y entregar' : f.tipo === 'cuestionario' ? 'Instrucciones (opcional)' : 'Texto que acompaña (opcional)'}
@@ -1063,7 +1099,7 @@ function Resultados({ cursoId }) {
   const nota = (n) => String(Math.round(Number(n) * 100) / 100).replace('.', ',');
   return (
     <div style={{ display: 'grid', gap: 10, maxWidth: 900, marginTop: 18 }}>
-      <h3 style={{ margin: 0, fontSize: 16 }}>Cuestionarios</h3>
+      <h3 style={{ margin: 0, fontSize: 16 }}>Cuestionarios y actividades SCORM</h3>
       {dificiles.length > 0 && (
         <div style={{ ...tarjeta, display: 'grid', gap: 8 }}>
           <b style={{ fontSize: 14 }}>Las preguntas que más se fallan (a la primera)</b>
@@ -1085,11 +1121,11 @@ function Resultados({ cursoId }) {
         </div>
         {lista.map((r, i) => (
           <div key={i} className="data-table-row" style={{ gridTemplateColumns: '1.4fr 1.2fr 90px 90px 90px 1fr', alignItems: 'center' }}>
-            <span><b>{r.titulo}</b><div style={{ fontSize: 11, color: 'var(--ink-3)' }}>{r.modo === 'evaluable' ? 'Evaluable' : 'De práctica'}</div></span>
+            <span><b>{r.titulo}</b><div style={{ fontSize: 11, color: 'var(--ink-3)' }}>{r.modo === 'scorm' ? `SCORM · ${r.hecho ? 'aprobado' : r.estado === 'failed' ? 'suspendido' : 'sin terminar'}` : r.modo === 'evaluable' ? 'Evaluable' : 'De práctica'}</div></span>
             <span>{r.alumno}</span>
             <span>{r.intentos}{r.max_intentos ? ` de ${r.max_intentos}` : ''}</span>
-            <span style={{ fontWeight: 800, color: r.mejor >= 5 ? 'var(--teal)' : 'var(--pink)' }}>{nota(r.mejor)}</span>
-            <span>{nota(r.ultima_nota)}</span>
+            <span style={{ fontWeight: 800, color: (r.modo === 'scorm' ? r.hecho : r.mejor >= 5) ? 'var(--teal)' : 'var(--pink)' }}>{r.mejor == null ? '—' : nota(r.mejor)}</span>
+            <span>{r.ultima_nota == null ? '—' : nota(r.ultima_nota)}</span>
             <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{fmtHora(r.ultimo)}</span>
           </div>
         ))}

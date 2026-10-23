@@ -5,6 +5,7 @@ import { useRouter } from '../App.jsx';
 import { imagenSubible } from '../imagenes.js';
 import { DudasCurso } from './AulaDudas.jsx';
 import { Valoracion } from './AulaValoracion.jsx';
+import { crearApiScorm } from '../aula/scormApi.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Aula virtual (ticket #433), la parte de quien hace los cursos:
@@ -21,6 +22,7 @@ export const TIPO_LECCION = {
   tarea: { nombre: 'Tarea', icono: '✏️' },
   cuestionario: { nombre: 'Cuestionario', icono: '❓' },
   directo: { nombre: 'Clase en directo', icono: '📡' },
+  scorm: { nombre: 'Actividad SCORM', icono: '🧩' },
 };
 export const mb = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(b >= 10 * 1048576 ? 0 : 1).replace('.', ',')} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
 const euros = (n) => `${Number(n).toFixed(2).replace('.', ',')} €`;
@@ -83,7 +85,8 @@ function Progreso({ pct, ancho = '100%' }) {
 function estadoLeccion(x) {
   if (x.bloqueada) return { icono: '🔒', texto: 'Del curso completo', color: 'var(--ink-3)' };
   if (x.cerrada && !x.hecha) return { icono: '🔒', texto: textoCerrada(x), color: 'var(--ink-3)' };
-  if (x.hecha) return { icono: '✓', texto: x.tipo === 'tarea' || x.tipo === 'cuestionario' ? 'Aprobada' : 'Vista', color: 'var(--teal)' };
+  if (x.hecha) return { icono: '✓', texto: x.tipo === 'tarea' || x.tipo === 'cuestionario' || x.tipo === 'scorm' ? 'Aprobada' : 'Vista', color: 'var(--teal)' };
+  if (x.tipo === 'scorm' && x.scorm?.actividades?.some(a => a.estado === 'failed')) return { icono: '✗', texto: 'Aún sin aprobar: vuelve a intentarlo', color: 'var(--pink)' };
   if (x.tipo === 'tarea' && x.entrega) {
     if (!x.entrega.corregida_at) return { icono: '⏳', texto: 'Entregada: falta que la corrija el profesor', color: 'var(--orange)' };
     return { icono: '✗', texto: 'No superada: vuelve a entregarla', color: 'var(--pink)' };
@@ -569,11 +572,78 @@ function Leccion({ l, gestor, previa, curso, onEntregada, onVista, actualizar })
         </div>
       )}
       {l.tipo === 'cuestionario' && <Cuestionario l={l} gestor={gestor} onHecho={onEntregada} />}
+      {l.tipo === 'scorm' && (l.scorm ? <PaqueteScorm l={l} gestor={gestor} onCambio={onEntregada} />
+        : <p style={{ color: 'var(--ink-3)' }}>Esta actividad aún no está disponible.</p>)}
       {l.tipo === 'tarea' && (gestor
         ? <p style={{ margin: 0, fontSize: 14, color: 'var(--ink-3)' }}>Aquí el alumno escribe su respuesta o adjunta un archivo. Las entregas se corrigen desde el panel, en «Aula virtual».</p>
         : previa ? <p style={{ margin: 0, fontSize: 14, color: 'var(--ink-3)' }}>Para entregar la tarea y que te la corrijan, consigue el curso completo.</p>
         : <Entrega l={l} onEntregada={onEntregada} />)}
       {!gestor && <Apuntes l={l} onGuardado={(t) => actualizar?.(l.id, { apuntes: t })} />}
+    </div>
+  );
+}
+
+// ── Una actividad SCORM (#475) ──
+// El paquete va en un marco; la página le da la API de SCORM que busca (ver
+// src/aula/scormApi.js) y lo que guarda va al servidor. Si tiene varias
+// actividades, se elige cuál. La lección queda aprobada cuando lo están todas.
+const ESTADO_SCORM = {
+  passed: ['Aprobada', 'var(--teal)'], completed: ['Completada', 'var(--teal)'], failed: ['Suspendida', 'var(--pink)'],
+  incomplete: ['Sin terminar', 'var(--orange)'], browsed: ['Vista', 'var(--ink-3)'], 'not attempted': ['Sin empezar', 'var(--ink-3)'], unknown: ['Sin terminar', 'var(--orange)'],
+};
+function PaqueteScorm({ l, gestor, onCambio }) {
+  const acts = l.scorm.actividades;
+  const [sco, setSco] = useState(() => (acts.find(a => !a.hecho) || acts[0]).id);
+  const [listo, setListo] = useState(false);
+  const [error, setError] = useState(null);
+  const caja = useRef(null);
+  const avisar = useRef(onCambio); avisar.current = onCambio;
+  useEffect(() => {
+    let vivo = true, api = null;
+    setListo(false); setError(null);
+    fetch(`/api/aula/lecciones/${l.id}/scorm?sco=${encodeURIComponent(sco)}`, { credentials: 'include', cache: 'no-store' })
+      .then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || 'No se ha podido abrir la actividad.'); return d; })
+      .then(datos => {
+        if (!vivo) return;
+        api = crearApiScorm({
+          ...datos,
+          guardar: (cmi, terminar) => fetch(`/api/aula/lecciones/${l.id}/scorm`, {
+            method: 'POST', credentials: 'include', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sco: datos.sco, cmi, terminar }),
+          }).then(r => r.json()).then(r => { if (terminar || r.hecho) avisar.current?.(); return r; }),
+        });
+        api.instalar();
+        setListo(true);
+      })
+      .catch(e => vivo && setError(e.message));
+    return () => { vivo = false; api?.quitar(); };
+  }, [l.id, sco]);
+  const act = acts.find(a => a.id === sco) || acts[0];
+  const etiqueta = (a) => (a.estado ? ESTADO_SCORM[a.estado] || [a.estado, 'var(--ink-3)'] : ESTADO_SCORM['not attempted']);
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      {acts.length > 1 && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {acts.map((a, i) => (
+            <button key={a.id} type="button" className={`btn btn-sm ${a.id === sco ? 'btn-primary' : 'btn-outline'}`} onClick={() => setSco(a.id)}>
+              {i + 1}. {a.titulo} <span style={{ marginLeft: 6, fontSize: 11, color: a.id === sco ? 'inherit' : etiqueta(a)[1] }}>· {etiqueta(a)[0]}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', fontSize: 13 }}>
+        <b style={{ color: etiqueta(act)[1] }}>{etiqueta(act)[0]}</b>
+        {act.nota != null && <span>· Nota: <b>{String(act.nota).replace('.', ',')}</b></span>}
+        {gestor && <span style={{ color: 'var(--ink-3)' }}>· Como profesor, lo ves sin que se guarde nada.</span>}
+        <span style={{ flex: 1 }} />
+        <button type="button" className="btn btn-sm btn-outline" onClick={() => caja.current?.requestFullscreen?.()}>⛶ Pantalla completa</button>
+      </div>
+      {error ? <p style={{ color: 'var(--pink)' }}>{error}</p> : (
+        <div ref={caja} style={{ background: '#fff', borderRadius: 12, overflow: 'hidden', border: '1px solid var(--line)' }}>
+          {listo ? <iframe key={act.id} title={act.titulo} src={`${l.scorm.base}${act.href}`} style={{ display: 'block', width: '100%', height: 'min(80vh, 720px)', border: 0 }} allow="fullscreen; autoplay" allowFullScreen />
+            : <div style={{ height: 300, display: 'grid', placeItems: 'center', color: 'var(--ink-3)' }}>Cargando la actividad…</div>}
+        </div>
+      )}
+      <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Lo que hagas se guarda solo: si lo dejas a medias, al volver sigue donde lo dejaste.</span>
     </div>
   );
 }
