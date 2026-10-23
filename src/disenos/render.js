@@ -393,16 +393,17 @@ function pintarTexto(ctx, e, texto, x, y, letras) {
 
 // opciones: imagenes (Map url → img), variables (huecos de diploma), ocultar
 // (id o lista de ids que no se pintan: el texto que se escribe), tiempo (para
-// las animaciones, en segundos) y editor (pinta los marcos vacíos).
-export function pintarDiseno(ctx, diseno, { imagenes = new Map(), variables = null, ocultar = null, tiempo = null, editor = false } = {}) {
+// las animaciones, en segundos), editor (pinta los marcos vacíos) y sinFondo
+// (para un PNG transparente).
+export function pintarDiseno(ctx, diseno, { imagenes = new Map(), variables = null, ocultar = null, tiempo = null, editor = false, sinFondo = false } = {}) {
   const { ancho: W, alto: H } = diseno;
   const oculto = (idEl) => (Array.isArray(ocultar) ? ocultar.includes(idEl) : idEl === ocultar);
   ctx.save();
   ctx.clearRect(0, 0, W, H);
-  const f = diseno.fondo || { tipo: 'color', color: '#ffffff' };
-  if (f.tipo === 'degradado') ctx.fillStyle = degradado(ctx, 0, 0, W, H, f.color, f.color2, f.angulo);
+  const f = sinFondo ? { tipo: 'nada' } : diseno.fondo || { tipo: 'color', color: '#ffffff' };
+  if (f.tipo === 'nada') { /* transparente */ } else if (f.tipo === 'degradado') ctx.fillStyle = degradado(ctx, 0, 0, W, H, f.color, f.color2, f.angulo);
   else ctx.fillStyle = f.color || '#ffffff';
-  ctx.fillRect(0, 0, W, H);
+  if (f.tipo !== 'nada') ctx.fillRect(0, 0, W, H);
   if (f.tipo === 'imagen') {
     ctx.globalAlpha = f.opacidad ?? 1;
     dibujarImagen(ctx, imagenes.get(f.url), 0, 0, W, H, 'cubrir');
@@ -417,6 +418,8 @@ export function pintarDiseno(ctx, diseno, { imagenes = new Map(), variables = nu
     ctx.translate(e.x + e.w / 2 + (an?.dx || 0), e.y + e.h / 2 + (an?.dy || 0));
     if (e.rot || an?.rot) ctx.rotate(((e.rot || 0) + (an?.rot || 0)) * Math.PI / 180);
     if (an?.esc != null) ctx.scale(an.esc, an.esc);
+    // Volteado en espejo.
+    if (e.espejoH || e.espejoV) ctx.scale(e.espejoH ? -1 : 1, e.espejoV ? -1 : 1);
     const x = -e.w / 2, y = -e.h / 2;
     if (e.sombra) ponerSombra(ctx, e);
     if (e.tipo === 'rect' || e.tipo === 'elipse' || e.tipo === 'forma') {
@@ -525,7 +528,7 @@ export function adaptarDiseno(d, ancho, alto, variables = null) {
 }
 
 // Pinta una página en un canvas nuevo (para exportar o miniaturas).
-export async function lienzoDe(diseno, { variables = null, ancho = null, tiempo = null } = {}) {
+export async function lienzoDe(diseno, { variables = null, ancho = null, tiempo = null, sinFondo = false } = {}) {
   await cargarFuentes(diseno);
   const imagenes = await cargarImagenes(diseno);
   const k = ancho ? ancho / diseno.ancho : 1;
@@ -533,7 +536,7 @@ export async function lienzoDe(diseno, { variables = null, ancho = null, tiempo 
   c.width = Math.round(diseno.ancho * k); c.height = Math.round(diseno.alto * k);
   const ctx = c.getContext('2d');
   ctx.scale(k, k);
-  pintarDiseno(ctx, diseno, { imagenes, variables, tiempo });
+  pintarDiseno(ctx, diseno, { imagenes, variables, tiempo, sinFondo });
   return c;
 }
 export const miniatura = async (diseno, variables) => (await lienzoDe(diseno, { variables, ancho: 420 })).toDataURL('image/jpeg', 0.8);
@@ -557,13 +560,13 @@ async function pdfPara(diseno) {
 }
 // Exporta: 'png', 'jpg' o 'pdf'. Con `escala` (1, 2) para PNG/JPG más grandes.
 // El PDF lleva todas las páginas; en PNG/JPG, `pagina` (o todas, una por archivo).
-export async function exportarDiseno(diseno, formato, nombre, { variables = null, escala = 1, pagina = null } = {}) {
+export async function exportarDiseno(diseno, formato, nombre, { variables = null, escala = 1, pagina = null, sinFondo = false } = {}) {
   const base = nombreArchivo(nombre), n = numPaginas(diseno);
   if (formato === 'png' || formato === 'jpg') {
     const paginas = pagina != null ? [pagina] : Array.from({ length: n }, (_, i) => i);
     for (const i of paginas) {
       const v = paginaDe(diseno, i);
-      const c = await lienzoDe(v, { variables, ancho: Math.round(v.ancho * escala) });
+      const c = await lienzoDe(v, { variables, ancho: Math.round(v.ancho * escala), sinFondo: sinFondo && formato === 'png' });
       const blob = await new Promise(r => c.toBlob(r, formato === 'png' ? 'image/png' : 'image/jpeg', 0.92));
       descargar(blob, `${base}${n > 1 ? `-${i + 1}` : ''}.${formato}`);
       if (paginas.length > 1) await new Promise(r => setTimeout(r, 400));

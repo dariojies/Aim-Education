@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo, useContext, createContext } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useContext, createContext } from 'react';
 import { I } from './Icons.jsx';
 import { subirImagen } from './EditorDiseno.jsx';
 import { useRouter } from '../App.jsx';
@@ -105,9 +105,10 @@ function DisenosGraficos({ showToast, puedePublicar }) {
   const [buscar, setBuscar] = useState('');
   // '' todas · '__sin' sin carpeta · '__plantillas' · '__aprobar' (esperan a la dirección) · o el nombre de una carpeta
   const [carpeta, setCarpeta] = useState(() => { try { return localStorage.getItem('aim_design_carpeta') || ''; } catch { return ''; } });
-  const cargar = useCallback(() => api('/api/admin/disenos').then(setDatos).catch(e => alert(e.message)), []);
+  const enPapelera = carpeta === '__papelera';
+  const cargar = useCallback(() => api(`/api/admin/disenos${enPapelera ? '?papelera=1' : ''}`).then(setDatos).catch(e => alert(e.message)), [enPapelera]);
   useEffect(() => { cargar(); }, [cargar]);
-  useEffect(() => { try { localStorage.setItem('aim_design_carpeta', carpeta); } catch { /* sin almacenamiento */ } }, [carpeta]);
+  useEffect(() => { try { localStorage.setItem('aim_design_carpeta', enPapelera ? '' : carpeta); } catch { /* sin almacenamiento */ } }, [carpeta, enPapelera]);
 
   async function abrir(id) {
     try { const d = await api(`/api/admin/disenos/${id}`); setAbierto(d); } catch (e) { alert(e.message); }
@@ -121,8 +122,13 @@ function DisenosGraficos({ showToast, puedePublicar }) {
   }, []);
   async function duplicar(d) { try { await api(`/api/admin/disenos/${d.id}/duplicar`, { method: 'POST' }); showToast?.('Duplicado.'); cargar(); } catch (e) { alert(e.message); } }
   async function borrar(d) {
-    if (!window.confirm(`¿Borrar «${d.nombre}»? No se puede deshacer (se borran también sus versiones y comentarios).`)) return;
-    try { await api(`/api/admin/disenos/${d.id}`, { method: 'DELETE' }); showToast?.('Borrado.'); cargar(); } catch (e) { alert(e.message); }
+    if (!window.confirm(`¿Mover «${d.nombre}» a la papelera? Se puede recuperar durante 30 días.`)) return;
+    try { await api(`/api/admin/disenos/${d.id}`, { method: 'DELETE' }); showToast?.('A la papelera (30 días para recuperarlo).'); cargar(); } catch (e) { alert(e.message); }
+  }
+  async function restaurar(d) { try { await api(`/api/admin/disenos/${d.id}/restaurar`, { method: 'POST' }); showToast?.('Recuperado.'); cargar(); } catch (e) { alert(e.message); } }
+  async function borrarDelTodo(d) {
+    if (!window.confirm(`¿Borrar «${d.nombre}» para siempre? Se borran también sus versiones y comentarios. No se puede deshacer.`)) return;
+    try { await api(`/api/admin/disenos/${d.id}?definitivo=1`, { method: 'DELETE' }); showToast?.('Borrado para siempre.'); cargar(); } catch (e) { alert(e.message); }
   }
   async function porDefecto(d) {
     try { await api('/api/admin/disenos-diploma', { method: 'PUT', body: { id: datos.diplomaPorDefecto === d.id ? null : d.id } }); showToast?.(datos.diplomaPorDefecto === d.id ? 'El aula vuelve al diploma de siempre.' : 'Es el diploma del aula por defecto.'); cargar(); }
@@ -142,6 +148,7 @@ function DisenosGraficos({ showToast, puedePublicar }) {
     if (carpeta === '__plantillas' && !d.plantilla) return false;
     if (carpeta === '__aprobar' && d.revision !== 'pendiente') return false;
     if (carpeta && !carpeta.startsWith('__') && d.carpeta !== carpeta) return false;
+    if (enPapelera) return !q || sinTildes(d.nombre).includes(q);
     return !q || sinTildes(`${d.nombre} ${d.carpeta || ''} ${d.autor || ''}`).includes(q);
   });
   const porAprobar = todos.filter(d => d.revision === 'pendiente').length;
@@ -159,16 +166,25 @@ function DisenosGraficos({ showToast, puedePublicar }) {
         <input type="search" value={buscar} onChange={e => setBuscar(e.target.value)} placeholder="Buscar un diseño…" aria-label="Buscar un diseño" style={{ ...inp, width: 220 }} />
         <button type="button" className="btn btn-primary btn-sm" onClick={() => setNuevo(true)}><I.Plus /> Nuevo diseño</button>
       </div>
-      {datos && todos.length > 0 && (
+      {datos && !enPapelera && (todos.length > 0 || datos.papelera > 0) && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
           {pastilla('', 'Todos', todos.length)}
           {carpetas.map(c => pastilla(c, `📁 ${c}`, todos.filter(d => d.carpeta === c).length))}
           {carpetas.length > 0 && pastilla('__sin', 'Sin carpeta', todos.filter(d => !d.carpeta).length)}
           {todos.some(d => d.plantilla) && pastilla('__plantillas', '★ Plantillas del equipo')}
           {(porAprobar > 0 || carpeta === '__aprobar') && pastilla('__aprobar', datos.puedoAprobar ? '⏳ Esperan tu aprobación' : '⏳ Esperan aprobación', porAprobar)}
+          {datos.papelera > 0 && pastilla('__papelera', '🗑 Papelera', datos.papelera)}
         </div>
       )}
-      {!datos ? <p style={{ color: 'var(--ink-3)' }}>Cargando…</p> : !todos.length ? (
+      {enPapelera && (
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', fontSize: 13, color: 'var(--ink-2)' }}>
+          <button type="button" className="btn btn-sm btn-outline" onClick={() => setCarpeta('')}>← Volver a los diseños</button>
+          <span>La papelera: lo que lleva más de 30 días se borra solo.</span>
+        </div>
+      )}
+      {!datos ? <p style={{ color: 'var(--ink-3)' }}>Cargando…</p> : !todos.length && enPapelera ? (
+        <div style={{ padding: 30, textAlign: 'center', border: '1px dashed var(--line)', borderRadius: 16, color: 'var(--ink-3)' }}>La papelera está vacía.</div>
+      ) : !todos.length ? (
         <div style={{ padding: 30, textAlign: 'center', border: '1px dashed var(--line)', borderRadius: 16, color: 'var(--ink-3)' }}>Aún no hay diseños. Empieza por una plantilla o un tamaño en blanco.</div>
       ) : !lista.length ? (
         <div style={{ padding: 24, textAlign: 'center', border: '1px dashed var(--line)', borderRadius: 16, color: 'var(--ink-3)' }}>{q ? `Nada con «${buscar}».` : 'Aquí no hay ninguno.'}</div>
@@ -176,7 +192,7 @@ function DisenosGraficos({ showToast, puedePublicar }) {
         <div style={{ display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))' }}>
           {lista.map(d => (
             <div key={d.id} style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, overflow: 'hidden', display: 'grid' }}>
-              <button type="button" onClick={() => abrir(d.id)} style={{ border: 0, padding: 0, cursor: 'pointer', background: 'var(--bg-3)', aspectRatio: '4 / 3', display: 'grid', placeItems: 'center', position: 'relative' }} aria-label={`Abrir ${d.nombre}`}>
+              <button type="button" onClick={() => (enPapelera ? restaurar(d) : abrir(d.id))} title={enPapelera ? 'Recuperar' : undefined} style={{ border: 0, padding: 0, cursor: 'pointer', background: 'var(--bg-3)', aspectRatio: '4 / 3', display: 'grid', placeItems: 'center', position: 'relative' }} aria-label={`Abrir ${d.nombre}`}>
                 {d.miniatura ? <img src={d.miniatura} alt="" style={{ maxWidth: '92%', maxHeight: '92%', boxShadow: '0 4px 14px rgba(0,0,0,.15)' }} /> : <span style={{ color: 'var(--ink-3)' }}>Sin vista previa</span>}
                 {d.paginas > 1 && <span style={{ position: 'absolute', right: 8, top: 8, fontSize: 11, fontWeight: 800, background: 'rgba(0,0,0,.65)', color: '#fff', borderRadius: 999, padding: '2px 8px' }}>{d.paginas} páginas</span>}
               </button>
@@ -189,6 +205,12 @@ function DisenosGraficos({ showToast, puedePublicar }) {
                   {d.plantilla && <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--purple)' }}>★ Plantilla del equipo</span>}
                   {d.tipo === 'diploma' && datos.diplomaPorDefecto === d.id && <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--teal)' }}>✓ Diploma del aula por defecto</span>}
                 </div>
+                {enPapelera ? (
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    <button type="button" className="btn btn-sm btn-primary" onClick={() => restaurar(d)}>Recuperar</button>
+                    <button type="button" className="btn btn-sm btn-ghost" style={{ color: 'var(--orange)' }} onClick={() => borrarDelTodo(d)}>Borrar para siempre</button>
+                  </div>
+                ) : <>
                 <select value={d.carpeta || ''} onChange={e => moverA(d, e.target.value)} aria-label={`Carpeta de ${d.nombre}`} style={{ ...inp, fontSize: 12, padding: '4px 6px' }}>
                   <option value="">Sin carpeta</option>
                   {carpetas.map(c => <option key={c} value={c}>📁 {c}</option>)}
@@ -198,8 +220,9 @@ function DisenosGraficos({ showToast, puedePublicar }) {
                   <button type="button" className="btn btn-sm btn-outline" onClick={() => abrir(d.id)}><I.Edit width={13} height={13} /> Abrir</button>
                   <button type="button" className="btn btn-sm btn-ghost" onClick={() => duplicar(d)}>Duplicar</button>
                   {d.tipo === 'diploma' && <button type="button" className="btn btn-sm btn-ghost" onClick={() => porDefecto(d)}>{datos.diplomaPorDefecto === d.id ? 'Quitar de por defecto' : 'Diploma por defecto'}</button>}
-                  <button type="button" className="icon-btn danger" onClick={() => borrar(d)} aria-label="Borrar"><I.Trash /></button>
+                  <button type="button" className="icon-btn danger" onClick={() => borrar(d)} aria-label="A la papelera" title="A la papelera"><I.Trash /></button>
                 </div>
+                </>}
               </div>
             </div>
           ))}
@@ -352,7 +375,11 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
   const [fuentesClub, setFuentesClub] = useState([]);
   const [revision, setRevision] = useState(null);
   const [soltando, setSoltando] = useState(false);
+  const [zoom, setZoom] = useState(null);             // null: que quepa entero
+  const [menu, setMenu] = useState(null);             // el menú del botón derecho: { x, y, id? }
+  const [ayudas, setAyudas] = useState(() => { try { return JSON.parse(localStorage.getItem('aim_design_ayudas')) || {}; } catch { return {}; } });
   const { go } = useRouter();
+  const scrollRef = useRef(null), anclaZoom = useRef(null), copiaRef = useRef(null), yo = useRef({});
   const zonaRef = useRef(null), lienzoRef = useRef(null), textoRef = useRef(null), arrastre = useRef(null), edicion = useRef(null), tramo = useRef(null), anim = useRef(null);
   const docRef = useRef(doc); docRef.current = doc;
   const paginaRef = useRef(pagina); paginaRef.current = pagina;
@@ -382,7 +409,36 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
     const ro = new ResizeObserver(([x]) => setZona({ w: x.contentRect.width, h: x.contentRect.height }));
     ro.observe(el); return () => ro.disconnect();
   }, []);
-  const escala = Math.max(0.05, Math.min((zona.w - 48) / diseno.ancho, (zona.h - 110) / diseno.alto));
+  const ajustada = Math.max(0.05, Math.min((zona.w - 48) / diseno.ancho, (zona.h - 110) / diseno.alto));
+  const escala = zoom ? Math.max(0.05, Math.min(6, zoom)) : ajustada;
+  // La cuadrícula y los márgenes de seguridad (5 mm en papel; si no, el 5 % del lado corto).
+  const enPapel = TAMANOS.some(t => t.pdf && t.ancho === diseno.ancho && t.alto === diseno.alto);
+  const pasoRejilla = Math.max(10, Math.round(Math.min(diseno.ancho, diseno.alto) / 12));
+  const margenSeguro = enPapel ? 30 : Math.round(Math.min(diseno.ancho, diseno.alto) * 0.05);
+  useEffect(() => { try { localStorage.setItem('aim_design_ayudas', JSON.stringify(ayudas)); } catch { /* sin almacenamiento */ } }, [ayudas]);
+  // ── Zoom: Ctrl + rueda (donde está el ratón), Ctrl + / Ctrl - / Ctrl 0, o los botones de abajo ──
+  const PASOS_ZOOM = [0.1, 0.17, 0.25, 0.33, 0.5, 0.67, 0.75, 1, 1.25, 1.5, 2, 3, 4, 6];
+  function hacerZoom(dir, punto) {
+    if (!dir) { setZoom(null); return; }
+    const sig = dir > 0 ? PASOS_ZOOM.find(z => z > escala * 1.01) || 6 : [...PASOS_ZOOM].reverse().find(z => z < escala * 0.99) || 0.1;
+    const r = lienzoRef.current?.getBoundingClientRect();
+    const p = punto || (r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null);
+    if (r && p) anclaZoom.current = { px: (p.x - r.left) / escala, py: (p.y - r.top) / escala, cx: p.x, cy: p.y };
+    setZoom(sig);
+  }
+  useLayoutEffect(() => {
+    const a = anclaZoom.current; anclaZoom.current = null;
+    const sc = scrollRef.current;
+    if (!a || !sc || !lienzoRef.current) return;
+    const r = lienzoRef.current.getBoundingClientRect();
+    sc.scrollLeft += r.left + a.px * escala - a.cx; sc.scrollTop += r.top + a.py * escala - a.cy;
+  }, [escala]);
+  useEffect(() => {
+    const z = zonaRef.current; if (!z) return undefined;
+    const f = (ev) => { if (!(ev.ctrlKey || ev.metaKey)) return; ev.preventDefault(); yo.current.hacerZoom(ev.deltaY < 0 ? 1 : -1, { x: ev.clientX, y: ev.clientY }); };
+    z.addEventListener('wheel', f, { passive: false });
+    return () => z.removeEventListener('wheel', f);
+  }, []);
 
   // Imágenes y fuentes: al cargarse, se vuelve a pintar.
   const urls = useMemo(() => [diseno.fondo?.tipo === 'imagen' ? diseno.fondo.url : null, ...diseno.elementos.filter(e => e.tipo === 'imagen').map(e => e.url)].filter(Boolean).join('|'), [diseno]);
@@ -393,7 +449,8 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
   // Pintar.
   useEffect(() => {
     const c = lienzoRef.current; if (!c) return;
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const lado = Math.max(diseno.ancho, diseno.alto) * escala;
+    const dpr = Math.min(Math.min(2, window.devicePixelRatio || 1), 8000 / lado);
     c.width = Math.round(diseno.ancho * escala * dpr); c.height = Math.round(diseno.alto * escala * dpr);
     const ctx = c.getContext('2d');
     ctx.setTransform(escala * dpr, 0, 0, escala * dpr, 0, 0);
@@ -495,6 +552,59 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
       cambiarEl(destino.id, { url: img.url, encuadre: null, ...(destino.url ? {} : { ajuste: 'cubrir' }) });
       setSel(destino.id);
     } else anadirImagen(img.url, img.ancho, img.alto, p);
+  }
+
+  // ── Copiar, cortar y pegar (también entre páginas, diseños y pestañas) ──
+  const CLAVE_COPIA = 'aim_design_copia';
+  const dondeEstoy = `${id || 'nuevo'}:${pagina}`;
+  function leerCopia() { try { return JSON.parse(localStorage.getItem(CLAVE_COPIA)) || copiaRef.current; } catch { return copiaRef.current; } }
+  function guardarCopia(c) { copiaRef.current = c; try { localStorage.setItem(CLAVE_COPIA, JSON.stringify(c)); } catch { /* sin espacio */ } }
+  function copiar(cortar = false) {
+    if (!elegidos.length) return;
+    const c = { elementos: elegidos, origen: dondeEstoy, t: Date.now() };
+    guardarCopia(c);
+    // En el portapapeles del ordenador, una marca: así Ctrl+V sabe que es lo copiado aquí.
+    navigator.clipboard?.writeText?.(`aim-design:${c.t}`).catch(() => {});
+    if (cortar) borrarSel();
+    showToast?.(`${cortar ? 'Cortado' : 'Copiado'}${elegidos.length > 1 ? ` (${elegidos.length})` : ''}: Ctrl+V lo pega aquí, en otra página o en otro diseño.`);
+  }
+  function pegarElementos(c) {
+    if (!c?.elementos?.length) return false;
+    const mismo = c.origen === dondeEstoy, caja = cajaDe(c.elementos);
+    const grupos = new Map(), grupoNuevo = (g) => { if (!grupos.has(g)) grupos.set(g, nuevoId()); return grupos.get(g); };
+    // Aquí mismo, un poco desplazado; en otro sitio, donde estaba (o en el centro, si no cabe).
+    let dx = mismo ? 30 : 0, dy = mismo ? 30 : 0;
+    if (!mismo && (caja.x + caja.w > diseno.ancho || caja.y + caja.h > diseno.alto || caja.x < 0 || caja.y < 0)) {
+      dx = Math.round((diseno.ancho - caja.w) / 2 - caja.x); dy = Math.round((diseno.alto - caja.h) / 2 - caja.y);
+    }
+    const nuevos = c.elementos.map(e => ({ ...e, id: nuevoId(), x: e.x + dx, y: e.y + dy, ...(e.grupo ? { grupo: grupoNuevo(e.grupo) } : {}) }));
+    aplicar(d => ({ ...d, elementos: [...d.elementos, ...nuevos] }));
+    setSeleccion(nuevos.map(e => e.id)); setRecortando(null);
+    if (mismo) guardarCopia({ ...c, elementos: nuevos });
+    return true;
+  }
+  useEffect(() => {
+    // Pegar: lo copiado en Aim Design, una imagen o un texto del ordenador.
+    const f = async (ev) => {
+      const t = ev.target;
+      if (/^(INPUT|TEXTAREA|SELECT)$/.test(t?.tagName || '') || t?.isContentEditable || yo.current.ventana) return;
+      const dt = ev.clipboardData; if (!dt) return;
+      const archivo = [...dt.files].find(x => /^image\//.test(x.type)), texto = dt.getData('text/plain') || '', copia = yo.current.leerCopia();
+      ev.preventDefault();
+      if (archivo) { try { const r = await subirImagen(archivo); yo.current.anadirImagen(r.url, r.ancho, r.alto); } catch (e) { alert(e.message); } return; }
+      if (copia && (!texto.trim() || texto.startsWith('aim-design:'))) { yo.current.pegarElementos(copia); return; }
+      if (texto.trim() && !texto.startsWith('aim-design:')) yo.current.anadirTexto('texto', texto.trim().slice(0, 2000));
+    };
+    window.addEventListener('paste', f);
+    return () => window.removeEventListener('paste', f);
+  }, []);
+  // Voltear: uno, en su sitio; varios, como un bloque (también se cambian de lado).
+  function voltear(eje) {
+    if (!elegidos.length) return;
+    const c = cajaDe(elegidos), varios = elegidos.length > 1;
+    cambiarVarios(seleccion, e => (eje === 'h'
+      ? { ...e, espejoH: !e.espejoH, rot: e.rot ? (360 - e.rot) % 360 : 0, ...(varios ? { x: Math.round(c.x + c.w - (e.x - c.x) - e.w) } : {}) }
+      : { ...e, espejoV: !e.espejoV, rot: e.rot ? (360 - e.rot) % 360 : 0, ...(varios ? { y: Math.round(c.y + c.h - (e.y - c.y) - e.h) } : {}) }));
   }
 
   // ── Lo elegido (uno o varios) ──
@@ -609,6 +719,7 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
   // ── Arrastrar, cambiar de tamaño, girar, encuadrar y elegir con un recuadro ──
   function empezar(ev, idEl, modo, hx = 0, hy = 0) {
     ev.stopPropagation();
+    setMenu(null);
     if (ev.button > 0) return;
     ev.preventDefault();
     if (edicion.current) document.activeElement?.blur?.();
@@ -630,8 +741,11 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
       const mueven = v.elementos.filter(e => nueva.includes(e.id) && !e.bloqueado);
       if (!mueven.length) return;
       const quietos = v.elementos.filter(e => !nueva.includes(e.id) && !e.oculto);
+      const { ancho: W, alto: H } = v, extraV = [], extraH = [];
+      if (ayudas.cuadricula) { for (let p = pasoRejilla; p < W; p += pasoRejilla) extraV.push(p); for (let p = pasoRejilla; p < H; p += pasoRejilla) extraH.push(p); }
+      if (ayudas.margenes) { extraV.push(margenSeguro, W - margenSeguro); extraH.push(margenSeguro, H - margenSeguro); }
       arrastre.current = { ...a, otros: mueven.map(e => ({ ...e })), caja: cajaDe(mueven),
-        lineasV: quietos.flatMap(e => [e.x, e.x + e.w / 2, e.x + e.w]), lineasH: quietos.flatMap(e => [e.y, e.y + e.h / 2, e.y + e.h]) };
+        lineasV: [...quietos.flatMap(e => [e.x, e.x + e.w / 2, e.x + e.w]), ...extraV], lineasH: [...quietos.flatMap(e => [e.y, e.y + e.h / 2, e.y + e.h]), ...extraH] };
       return;
     }
     if (el.bloqueado) return;
@@ -724,8 +838,11 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
       const enCampo = /^(INPUT|TEXTAREA|SELECT)$/.test(ev.target?.tagName || '') || ev.target?.isContentEditable;
       const ctrl = ev.ctrlKey || ev.metaKey, k = ev.key.toLowerCase();
       if (ctrl && k === 's') { ev.preventDefault(); guardar(); return; }
+      if (ctrl && (k === '+' || k === '=' || k === '-' || k === '0')) { ev.preventDefault(); hacerZoom(k === '0' ? 0 : k === '-' ? -1 : 1); return; }
       if (enCampo || ventana) return;
+      if (menu && ev.key === 'Escape') { setMenu(null); return; }
       if (recortando && (ev.key === 'Enter' || ev.key === 'Escape')) { ev.preventDefault(); setRecortando(null); return; }
+      if (ctrl && (k === 'c' || k === 'x') && seleccion.length && !window.getSelection()?.toString()) { ev.preventDefault(); copiar(k === 'x'); return; }
       if (ctrl && k === 'z') { ev.preventDefault(); if (ev.shiftKey) rehacer(); else deshacer(); }
       else if (ctrl && k === 'y') { ev.preventDefault(); rehacer(); }
       else if (ctrl && k === 'd') { ev.preventDefault(); duplicarSel(); }
@@ -743,6 +860,8 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
     window.addEventListener('keydown', f); return () => window.removeEventListener('keydown', f);
   });
 
+  yo.current = { hacerZoom, leerCopia, pegarElementos, anadirImagen, anadirTexto, ventana };
+
   // ── Guardar y exportar ──
   async function guardar() {
     if (guardando) return;
@@ -756,9 +875,9 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
       cargarRevision();
     } catch (e) { alert(e.message); } finally { setGuardando(false); }
   }
-  async function exportar(formato, escalaExp = 1) {
+  async function exportar(formato, escalaExp = 1, sinFondo = false) {
     setVerExportar(false);
-    try { await exportarDiseno(doc, formato, nombre, { variables: ejemplo, escala: escalaExp }); }
+    try { await exportarDiseno(doc, formato, nombre, { variables: ejemplo, escala: escalaExp, sinFondo }); }
     catch (e) { alert(`No se ha podido exportar: ${e.message}`); }
   }
   function cerrar() { if (sucio && !window.confirm('Hay cambios sin guardar. ¿Salir sin guardarlos?')) return; onCerrar(); }
@@ -847,8 +966,9 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
           {verExportar && (
             <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 5, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, boxShadow: 'var(--shadow)', padding: 6, display: 'grid', minWidth: 240 }}>
               {[['png', 1, 'PNG', paginas > 1 ? `Un archivo por página (${paginas})` : 'Con la mejor calidad'], ['png', 2, 'PNG al doble', `${diseno.ancho * 2} × ${diseno.alto * 2} px`],
-                ['jpg', 1, 'JPG', 'Pesa menos (redes, WhatsApp)'], ['pdf', 1, 'PDF', paginas > 1 ? `Las ${paginas} páginas, para ver o imprimir en casa` : 'Para ver o imprimir en casa']].map(([f, k, t, d]) => (
-                <button key={`${f}${k}`} type="button" onClick={() => exportar(f, k)} style={{ font: 'inherit', textAlign: 'left', padding: '8px 10px', border: 0, borderRadius: 8, background: 'none', color: 'var(--ink)', cursor: 'pointer', display: 'grid' }}>
+                ['png', 1, 'PNG sin fondo', 'Transparente: para logos, pegatinas y montajes', true],
+                ['jpg', 1, 'JPG', 'Pesa menos (redes, WhatsApp)'], ['pdf', 1, 'PDF', paginas > 1 ? `Las ${paginas} páginas, para ver o imprimir en casa` : 'Para ver o imprimir en casa']].map(([f, k, t, d, sinFondo]) => (
+                <button key={`${f}${k}${t}`} type="button" onClick={() => exportar(f, k, !!sinFondo)} style={{ font: 'inherit', textAlign: 'left', padding: '8px 10px', border: 0, borderRadius: 8, background: 'none', color: 'var(--ink)', cursor: 'pointer', display: 'grid' }}>
                   <b style={{ fontSize: 13 }}>{t}</b><span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>{d}</span>
                 </button>
               ))}
@@ -935,22 +1055,34 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
         <div ref={zonaRef}
           onPointerDown={(ev) => {
             if (edicion.current) document.activeElement?.blur?.();
+            setMenu(null);
             if (ev.button > 0 || tiempo != null) return;
+            // En la barra de desplazamiento, nada.
+            const sc = scrollRef.current;
+            if (sc && ev.target === sc && (ev.nativeEvent.offsetX > sc.clientWidth || ev.nativeEvent.offsetY > sc.clientHeight)) return;
             setRecortando(null);
             arrastre.current = { modo: 'recuadro', x0: ev.clientX, y0: ev.clientY, shift: ev.shiftKey, movido: false };
           }}
+          onContextMenu={(ev) => { ev.preventDefault(); if (tiempo == null) setMenu({ x: ev.clientX, y: ev.clientY }); }}
           onDragOver={(ev) => { if ([...ev.dataTransfer.types].some(t => t === TIPO_ARRASTRE || t === 'Files')) { ev.preventDefault(); setSoltando(true); } }}
           onDragLeave={(ev) => { if (ev.currentTarget === ev.target) setSoltando(false); }}
           onDrop={soltar}
-          style={{ position: 'relative', overflow: 'hidden', display: 'grid', placeItems: 'center', gridTemplateRows: 'minmax(0, 1fr) auto',
+          style={{ position: 'relative', overflow: 'hidden', display: 'grid', gridTemplateRows: 'minmax(0, 1fr) auto', justifyItems: 'center',
             background: 'repeating-conic-gradient(color-mix(in oklab, var(--ink) 4%, var(--bg)) 0% 25%, var(--bg) 0% 50%) 50% / 24px 24px',
             outline: soltando ? '3px dashed #7C5CFF' : 'none', outlineOffset: -6 }}>
+          <div ref={scrollRef} style={{ overflow: 'auto', width: '100%', height: '100%', minHeight: 0 }}>
+          <div style={{ display: 'grid', placeItems: 'center', minWidth: '100%', minHeight: '100%', width: 'max-content', height: 'max-content', padding: 40, boxSizing: 'border-box' }}>
           <div style={{ position: 'relative', width: diseno.ancho * escala, height: diseno.alto * escala, boxShadow: '0 10px 40px -10px rgba(0,0,0,.35)' }}>
             {fantasma && <div style={{ position: 'absolute', left: fantasma.x * escala, top: fantasma.y * escala, width: fantasma.w * escala, height: fantasma.h * escala, background: `center / 100% 100% no-repeat url(${fantasma.url})`, opacity: 0.35, pointerEvents: 'none' }} />}
             <canvas ref={lienzoRef} style={{ ...marco, width: diseno.ancho * escala, height: diseno.alto * escala, display: 'block' }} />
             <div style={marco}>
               {tiempo == null && diseno.elementos.map(e => (e.oculto ? null : (
                 <div key={e.id} onPointerDown={(ev) => empezar(ev, e.id, 'mover')}
+                  onContextMenu={(ev) => {
+                    ev.preventDefault(); ev.stopPropagation();
+                    if (!selRef.current.includes(e.id)) setSeleccion(conGrupo(vista().elementos, [e.id]));
+                    setMenu({ x: ev.clientX, y: ev.clientY, id: e.id });
+                  }}
                   onDoubleClick={(ev) => {
                     if (e.tipo === 'texto') editarTexto(e.id, { x: ev.clientX, y: ev.clientY });
                     else if (e.tipo === 'imagen' && e.url) recortar(e.id);
@@ -973,6 +1105,9 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
                   )}
                 </div>
               )))}
+              {ayudas.cuadricula && tiempo == null && <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', backgroundSize: `${pasoRejilla * escala}px ${pasoRejilla * escala}px`,
+                backgroundImage: 'linear-gradient(to right, rgba(124,92,255,.22) 1px, transparent 1px), linear-gradient(to bottom, rgba(124,92,255,.22) 1px, transparent 1px)' }} />}
+              {ayudas.margenes && tiempo == null && <div title="Margen de seguridad: lo importante, por dentro" style={{ position: 'absolute', pointerEvents: 'none', left: margenSeguro * escala, top: margenSeguro * escala, right: margenSeguro * escala, bottom: margenSeguro * escala, border: '1.5px dashed #FF5FA2' }} />}
               {cajaVarios && tiempo == null && <div style={{ position: 'absolute', pointerEvents: 'none', left: cajaVarios.x * escala - 4, top: cajaVarios.y * escala - 4, width: cajaVarios.w * escala + 8, height: cajaVarios.h * escala + 8, border: '1.5px dashed #7C5CFF', borderRadius: 4 }} />}
               {guias.map((g, i) => <div key={i} style={{ position: 'absolute', pointerEvents: 'none', background: '#FF5FA2', ...(g.v != null ? { left: g.v * escala, top: 0, width: 1, height: '100%' } : { top: g.h * escala, left: 0, height: 1, width: '100%' }) }} />)}
               {editando && (() => {
@@ -981,7 +1116,9 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
               })()}
             </div>
           </div>
-          {/* Las páginas */}
+          </div>
+          </div>
+          {/* Las páginas, el zoom y las ayudas */}
           <div onPointerDown={ev => ev.stopPropagation()} style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '8px 10px', margin: '0 0 12px', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, boxShadow: 'var(--shadow)', flexWrap: 'wrap', justifyContent: 'center', maxWidth: '95%' }}>
             {recortada ? <>
               <span style={{ fontSize: 12.5, fontWeight: 700 }}>✂ Arrastra la foto para encuadrarla · Zoom</span>
@@ -1002,26 +1139,54 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
             </>}
             <button type="button" className="btn btn-sm btn-ghost" onClick={duplicarPagina} title="Duplicar esta página">⧉</button>
             {paginas > 1 && <button type="button" className="btn btn-sm btn-ghost" onClick={borrarPagina} title="Borrar esta página" style={{ color: 'var(--orange)' }}>🗑</button>}
+            <span style={{ width: 1, height: 22, background: 'var(--line)' }} />
+            <button type="button" className="btn btn-sm btn-ghost" onClick={() => hacerZoom(-1)} title="Alejar (Ctrl -)" aria-label="Alejar">−</button>
+            <button type="button" className="btn btn-sm btn-ghost" onClick={() => hacerZoom(0)} title="Que quepa entero (Ctrl 0)" style={{ minWidth: 56, fontVariantNumeric: 'tabular-nums' }}>{Math.round(escala * 100)} %</button>
+            <button type="button" className="btn btn-sm btn-ghost" onClick={() => hacerZoom(1)} title="Acercar (Ctrl +, o Ctrl + rueda)" aria-label="Acercar">＋</button>
+            <span style={{ width: 1, height: 22, background: 'var(--line)' }} />
+            <button type="button" className={`btn btn-sm ${ayudas.cuadricula ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setAyudas(a => ({ ...a, cuadricula: !a.cuadricula }))} title="Cuadrícula (lo que se mueve se pega a ella)">▦</button>
+            <button type="button" className={`btn btn-sm ${ayudas.margenes ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setAyudas(a => ({ ...a, margenes: !a.margenes }))} title={`Márgenes de seguridad (${enPapel ? '5 mm' : 'el 5 %'})`}>⬚</button>
             </>}
           </div>
+          {menu && (
+            <MenuContextual x={menu.x} y={menu.y} onCerrar={() => setMenu(null)} opciones={menu.id ? [
+              ['Copiar', 'Ctrl+C', () => copiar()], ['Cortar', 'Ctrl+X', () => copiar(true)], leerCopia() && ['Pegar', 'Ctrl+V', () => pegarElementos(leerCopia())],
+              ['Duplicar', 'Ctrl+D', duplicarSel], null,
+              elegido?.tipo === 'texto' && !elegido.bloqueado && ['Escribir', 'Intro', () => editarTexto(elegido.id)],
+              elegido?.tipo === 'imagen' && elegido.url && !elegido.bloqueado && ['Recortar', 'doble clic', () => recortar(elegido.id)],
+              ['Voltear en horizontal', '', () => voltear('h')], ['Voltear en vertical', '', () => voltear('v')],
+              elegidos.length > 1 && (elegidos.every(e => e.grupo && e.grupo === elegidos[0].grupo) ? ['Desagrupar', 'Ctrl+Mayús+G', desagrupar] : ['Agrupar', 'Ctrl+G', agrupar]),
+              ['Al frente', '', () => capa('frente')], ['Al fondo', '', () => capa('fondo')],
+              elegidos.every(e => e.bloqueado) ? ['Desbloquear', '', () => cambiarVarios(seleccion, e => ({ ...e, bloqueado: false }))] : ['Bloquear', '', () => cambiarVarios(seleccion, e => ({ ...e, bloqueado: true }))],
+              id && ['Comentar…', '', () => setPanel('revision')], null,
+              ['Borrar', 'Supr', borrarSel, true],
+            ] : [
+              leerCopia() && ['Pegar', 'Ctrl+V', () => pegarElementos(leerCopia())],
+              ['Elegir todo', 'Ctrl+A', () => setSeleccion(diseno.elementos.filter(e => !e.oculto && !e.bloqueado).map(e => e.id))],
+              ['Añadir una página', '', nuevaPagina], null,
+              [ayudas.cuadricula ? 'Quitar la cuadrícula' : 'Ver la cuadrícula', '', () => setAyudas(a => ({ ...a, cuadricula: !a.cuadricula }))],
+              [ayudas.margenes ? 'Quitar los márgenes' : 'Ver los márgenes de seguridad', '', () => setAyudas(a => ({ ...a, margenes: !a.margenes }))],
+              zoom && ['Que quepa entero', 'Ctrl+0', () => hacerZoom(0)],
+            ]} />
+          )}
           {recuadro && <div style={{ position: 'fixed', left: recuadro.x, top: recuadro.y, width: recuadro.w, height: recuadro.h, border: '1px solid #7C5CFF', background: 'rgba(124,92,255,.1)', pointerEvents: 'none', zIndex: 4 }} />}
         </div>
 
         {/* Derecha: lo que se puede cambiar */}
         <aside style={{ borderLeft: '1px solid var(--line)', background: 'var(--bg-2)', overflowY: 'auto', padding: 12, display: 'grid', gap: 10, alignContent: 'start' }}>
           {elegidos.length > 1 ? (
-            <PanelVarios elegidos={elegidos} agrupar={agrupar} desagrupar={desagrupar} alinear={alinearVarios} repartir={repartir}
+            <PanelVarios elegidos={elegidos} voltear={voltear} agrupar={agrupar} desagrupar={desagrupar} alinear={alinearVarios} repartir={repartir}
               duplicar={duplicarSel} borrar={borrarSel} capa={capa} bloquear={(b) => cambiarVarios(seleccion, e => ({ ...e, bloqueado: b }))} />
           ) : !elegido ? (
             <div style={{ fontSize: 13, color: 'var(--ink-3)', display: 'grid', gap: 8 }}>
               <b style={{ color: 'var(--ink)' }}>Nada elegido</b>
               <span>Pulsa algo del lienzo para cambiarlo. Arrástralo para moverlo, tira de los cuadraditos para el tamaño y del círculo de arriba para girarlo.</span>
               <span>Varios a la vez: con Mayús + clic o arrastrando un recuadro desde un hueco. Doble clic en un texto para escribir y en una foto para recortarla. Las fotos del panel (o del ordenador) se pueden soltar encima de un marco.</span>
-              <span>Atajos: Supr borra, Ctrl+D duplica, Ctrl+G agrupa (con Mayús, desagrupa), Ctrl+A elige todo, Ctrl+Z deshace, las flechas mueven (con Mayús, de 10 en 10), Ctrl+S guarda.</span>
+              <span>Atajos: Ctrl+C / Ctrl+X / Ctrl+V copian, cortan y pegan (también imágenes y textos del ordenador), Supr borra, Ctrl+D duplica, Ctrl+G agrupa (con Mayús, desagrupa), Ctrl+A elige todo, Ctrl+Z deshace, las flechas mueven (con Mayús, de 10 en 10), Ctrl+S guarda. Zoom: Ctrl + rueda, Ctrl + y Ctrl −. Con el botón derecho, más opciones.</span>
               {tipo === 'diploma' && <span style={{ color: 'var(--purple)' }}>Es un diploma: los huecos ({'{alumno}'}, {'{curso}'}…) se ven con datos de ejemplo y a cada alumno le salen los suyos.</span>}
             </div>
           ) : (
-            <Propiedades e={elegido} tipo={tipo} cambiar={(c) => cambiarEl(elegido.id, c)} textoRef={textoRef} subir={subir} tramos={tramos}
+            <Propiedades e={elegido} tipo={tipo} cambiar={(c) => cambiarEl(elegido.id, c)} textoRef={textoRef} subir={subir} tramos={tramos} voltear={voltear}
               onEscribir={() => editarTexto(elegido.id)} onRecortar={() => (recortando ? setRecortando(null) : recortar(elegido.id))} recortando={recortando === elegido.id}
               verFotos={() => setVentana('fotos')} onFuentesCambiadas={setFuentesClub}
               acciones={{ duplicar: duplicarSel, borrar: borrarSel, capa, alinear }} />
@@ -1371,7 +1536,7 @@ function FiltrosFoto({ e, cambiar, tramos }) {
   );
 }
 
-function Propiedades({ e, tipo, cambiar, textoRef, subir, acciones, onEscribir, onRecortar, recortando, verFotos, onFuentesCambiadas, tramos }) {
+function Propiedades({ e, tipo, cambiar, textoRef, subir, acciones, onEscribir, onRecortar, recortando, verFotos, onFuentesCambiadas, tramos, voltear }) {
   const fila = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, alignItems: 'start' };
   const alinearBtn = (k, t, titulo) => <button key={k} type="button" className="btn btn-sm btn-ghost" title={titulo} onClick={() => acciones.alinear(k)} style={{ padding: '4px 6px' }}>{t}</button>;
   const nombre = e.tipo === 'forma' ? FIGURAS.find(f => f.id === e.figura)?.nombre || 'Forma' : e.tipo === 'imagen' && !e.url ? 'Marco para una foto' : NOMBRE_TIPO[e.tipo];
@@ -1510,6 +1675,11 @@ function Propiedades({ e, tipo, cambiar, textoRef, subir, acciones, onEscribir, 
         {e.tipo !== 'texto' && e.tipo !== 'linea' && !CUADRADOS_EDITOR.includes(e.tipo) && <Num etiqueta="Alto" valor={e.h} onCambio={(v) => cambiar({ h: Math.max(5, v) })} min={5} />}
         <Num etiqueta="Giro (grados)" valor={e.rot || 0} onCambio={(v) => cambiar({ rot: ((v % 360) + 360) % 360 })} min={0} max={360} />
       </div>
+      <div style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 12.5, fontWeight: 700, color: 'var(--ink-2)' }}>
+        Voltear
+        <button type="button" className={`btn btn-sm ${e.espejoH ? 'btn-primary' : 'btn-outline'}`} onClick={() => voltear('h')} title="En horizontal (espejo)">⇋</button>
+        <button type="button" className={`btn btn-sm ${e.espejoV ? 'btn-primary' : 'btn-outline'}`} onClick={() => voltear('v')} title="En vertical">⇵</button>
+      </div>
       <Rango etiqueta="Transparencia" valor={Math.round((e.opacidad ?? 1) * 100)} min={5} max={100} onCambio={(v) => cambiar({ opacidad: v / 100 })} tramos={tramos} sufijo=" %" />
       {e.tipo !== 'linea' && e.tipo !== 'texto' && <>
         <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12.5 }}><input type="checkbox" checked={!!e.sombra} onChange={x => cambiar({ sombra: x.target.checked })} /> Sombra</label>
@@ -1532,8 +1702,31 @@ function Propiedades({ e, tipo, cambiar, textoRef, subir, acciones, onEscribir, 
   );
 }
 
+// El menú del botón derecho: [texto, atajo, acción, peligrosa] o null (una raya).
+function MenuContextual({ x, y, opciones, onCerrar }) {
+  const ref = useRef(null);
+  const [pos, setPos] = useState({ x, y });
+  useLayoutEffect(() => {
+    const r = ref.current?.getBoundingClientRect(); if (!r) return;
+    setPos({ x: Math.min(x, window.innerWidth - r.width - 8), y: Math.min(y, window.innerHeight - r.height - 8) });
+  }, [x, y]);
+  const lista = opciones.filter(o => o !== false && o !== undefined && o !== 0 && o !== '').filter((o, i, l) => o || (i > 0 && l[i - 1] && i < l.length - 1));
+  return (
+    <div ref={ref} role="menu" onPointerDown={ev => ev.stopPropagation()} onContextMenu={ev => ev.preventDefault()}
+      style={{ position: 'fixed', left: pos.x, top: pos.y, zIndex: 95, minWidth: 230, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, boxShadow: 'var(--shadow)', padding: 5, display: 'grid' }}>
+      {lista.map((o, i) => (o ? (
+        <button key={o[0]} type="button" role="menuitem" onClick={() => { onCerrar(); o[2](); }}
+          style={{ font: 'inherit', fontSize: 13, textAlign: 'left', padding: '7px 10px', border: 0, borderRadius: 7, background: 'none', cursor: 'pointer', display: 'flex', gap: 12, color: o[3] ? 'var(--orange)' : 'var(--ink)' }}
+          onMouseEnter={ev => { ev.currentTarget.style.background = 'var(--bg-3)'; }} onMouseLeave={ev => { ev.currentTarget.style.background = 'none'; }}>
+          <span style={{ flex: 1 }}>{o[0]}</span>{o[1] && <span style={{ color: 'var(--ink-3)', fontSize: 11.5 }}>{o[1]}</span>}
+        </button>
+      ) : <div key={`r${i}`} style={{ height: 1, background: 'var(--line)', margin: '4px 6px' }} />))}
+    </div>
+  );
+}
+
 // Varias cosas elegidas: agrupar, alinear entre ellas y repartir el espacio.
-function PanelVarios({ elegidos, agrupar, desagrupar, alinear, repartir, duplicar, borrar, capa, bloquear }) {
+function PanelVarios({ elegidos, voltear, agrupar, desagrupar, alinear, repartir, duplicar, borrar, capa, bloquear }) {
   const agrupados = elegidos.every(e => e.grupo && e.grupo === elegidos[0].grupo);
   const alinearBtn = (k, t, titulo) => <button key={k} type="button" className="btn btn-sm btn-outline" title={titulo} onClick={() => alinear(k)} style={{ padding: '4px 8px' }}>{t}</button>;
   return (
@@ -1558,6 +1751,11 @@ function PanelVarios({ elegidos, agrupar, desagrupar, alinear, repartir, duplica
         <button type="button" className="btn btn-sm btn-outline" disabled={elegidos.length < 3} onClick={() => repartir('v')}>↕ En vertical</button>
       </div>
       {elegidos.length < 3 && <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Repartir, con tres o más.</span>}
+      <div style={seccionT}>Voltear el bloque</div>
+      <div style={{ display: 'flex', gap: 4 }}>
+        <button type="button" className="btn btn-sm btn-outline" onClick={() => voltear('h')}>⇋ En horizontal</button>
+        <button type="button" className="btn btn-sm btn-outline" onClick={() => voltear('v')}>⇵ En vertical</button>
+      </div>
       <div style={seccionT}>Capa</div>
       <div style={{ display: 'flex', gap: 4 }}>
         <button type="button" className="btn btn-sm btn-outline" onClick={() => capa('frente')}>Al frente</button>

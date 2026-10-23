@@ -28,7 +28,10 @@
 //    aprueba la dirección (dueño del club o superadmin). El aprobado guarda la
 //    huella del diseño: si después se cambia, vuelve a necesitar aprobación;
 //  · carpetas (datos.carpeta) y letras propias (los archivos van a
-//    aim_web_documentos, /doc/…; la lista, a aim_ajustes «disenos_fuentes»).
+//    aim_web_documentos, /doc/…; la lista, a aim_ajustes «disenos_fuentes»);
+//  · la papelera (datos.papelera, con la fecha): lo borrado se recupera durante
+//    30 días y luego se borra de verdad. Carpeta, papelera y el enlace para ver
+//    los lleva el servidor: al guardar desde el editor no se pierden.
 // ─────────────────────────────────────────────────────────────────────────────
 import express from 'express';
 import crypto from 'crypto';
@@ -80,7 +83,10 @@ export async function crearTablasDisenos(client) {
 }
 
 // La huella de un diseño para la aprobación (sin la carpeta ni la marca de plantilla).
-const SQL_HUELLA = (d) => `md5((${d}.datos - 'carpeta' - 'esPlantilla')::text)`;
+const SQL_HUELLA = (d) => `md5((${d}.datos - 'carpeta' - 'esPlantilla' - 'papelera' - 'enlace')::text)`;
+// Lo que guarda el servidor dentro del diseño y el editor no toca.
+const SQL_CONSERVAR = `jsonb_strip_nulls(jsonb_build_object('carpeta', datos->'carpeta', 'papelera', datos->'papelera', 'enlace', datos->'enlace'))`;
+const DIAS_PAPELERA = 30;
 // El último paso de la aprobación de un diseño (pedir, aprobado o cambios).
 const SQL_DECISION = (d) => `(SELECT row_to_json(x) FROM (SELECT c.tipo, c.huella, c.created_at FROM aim_disenos_comentarios c
     WHERE c.diseno_id = ${d}.id AND c.tipo IN ('pedir', 'aprobado', 'cambios') ORDER BY c.created_at DESC, c.id DESC LIMIT 1) x)`;
@@ -100,7 +106,7 @@ const MINUTOS_ENTRE_VERSIONES = 20;
 export async function disenosPorAprobar(pool) {
     const r = await pool.query(
         `SELECT COUNT(*)::int n, MAX((x->>'created_at')::timestamptz) AS ultima, MIN(d.id) AS id
-         FROM aim_disenos d CROSS JOIN LATERAL (SELECT ${SQL_DECISION('d')} AS x) y WHERE y.x->>'tipo' = 'pedir'`);
+         FROM aim_disenos d CROSS JOIN LATERAL (SELECT ${SQL_DECISION('d')} AS x) y WHERE y.x->>'tipo' = 'pedir' AND NOT d.datos ? 'papelera'`);
     return r.rows[0];
 }
 // …y a quien los hizo: comentarios o respuestas de otros en los suyos (último mes).
@@ -108,7 +114,7 @@ export async function revisionDeMisDisenos(pool, userId) {
     const r = await pool.query(
         `SELECT COUNT(DISTINCT d.id)::int n, MAX(c.created_at) AS ultima, MIN(d.id) AS id
          FROM aim_disenos d JOIN aim_disenos_comentarios c ON c.diseno_id = d.id
-         WHERE d.creado_por = $1 AND c.autor_id IS DISTINCT FROM $1 AND c.tipo IN ('comentario', 'aprobado', 'cambios')
+         WHERE d.creado_por = $1 AND NOT d.datos ? 'papelera' AND c.autor_id IS DISTINCT FROM $1 AND c.tipo IN ('comentario', 'aprobado', 'cambios')
            AND c.created_at > NOW() - INTERVAL '30 days'`, [userId]);
     return r.rows[0];
 }
@@ -176,15 +182,18 @@ export function crearDisenos({ pool, clubId, authenticateSession, requireSeccion
 
     router.get('/api/admin/disenos', ...gestion, async (req, res) => {
         try {
+            await pool.query(`DELETE FROM aim_disenos WHERE datos ? 'papelera' AND (datos->>'papelera')::timestamptz < NOW() - INTERVAL '${DIAS_PAPELERA} days'`).catch(() => {});
             const r = await pool.query(
                 `SELECT d.id, d.nombre, d.tipo, d.ancho, d.alto, d.miniatura, d.updated_at, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS autor,
                         COALESCE((d.datos->>'esPlantilla')::boolean, false) AS plantilla, d.datos->>'carpeta' AS carpeta,
                         1 + COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(d.datos->'paginas') = 'array' THEN d.datos->'paginas' END), 0) AS paginas,
                         ${SQL_HUELLA('d')} AS huella, ${SQL_DECISION('d')} AS decision,
                         (SELECT COUNT(*) FROM aim_disenos_comentarios c WHERE c.diseno_id = d.id AND c.tipo = 'comentario' AND NOT c.resuelto)::int AS comentarios
-                 FROM aim_disenos d LEFT JOIN users u ON u.user_id = d.creado_por ORDER BY d.updated_at DESC LIMIT 500`);
+                 FROM aim_disenos d LEFT JOIN users u ON u.user_id = d.creado_por
+                 WHERE (d.datos ? 'papelera') = $1 ORDER BY d.updated_at DESC LIMIT 500`, [req.query.papelera === '1']);
             res.set('Cache-Control', 'no-store');
-            res.json({ disenos: r.rows.map(resumen), diplomaPorDefecto: await diplomaPorDefecto(), puedoAprobar: esDireccion(req) });
+            const papelera = (await pool.query(`SELECT COUNT(*)::int n FROM aim_disenos WHERE datos ? 'papelera'`)).rows[0].n;
+            res.json({ disenos: r.rows.map(resumen), diplomaPorDefecto: await diplomaPorDefecto(), puedoAprobar: esDireccion(req), papelera });
         } catch (err) { fallo(res, err); }
     });
     // ── Letras propias: se suben aquí y salen en todos los diseños ──
@@ -366,13 +375,15 @@ export function crearDisenos({ pool, clubId, authenticateSession, requireSeccion
             await pool.query(
                 `INSERT INTO aim_disenos_versiones (diseno_id, nombre, datos, miniatura, creado_por, created_at)
                  SELECT d.id, d.nombre, d.datos, d.miniatura, $3, d.updated_at FROM aim_disenos d
-                 WHERE d.id = $1 AND md5(d.datos::text) <> md5($2::jsonb::text)
+                 WHERE d.id = $1 AND md5((d.datos - 'carpeta' - 'papelera' - 'enlace')::text) <> md5(($2::jsonb - 'carpeta' - 'papelera' - 'enlace')::text)
                    AND NOT EXISTS (SELECT 1 FROM aim_disenos_versiones v WHERE v.diseno_id = d.id
                                    AND v.created_at > NOW() - INTERVAL '${MINUTOS_ENTRE_VERSIONES} minutes')`,
                 [Number(req.params.id) || 0, d.json, req.userSession.userId]);
             await podarVersiones(Number(req.params.id) || 0);
             const r = await pool.query(
-                `UPDATE aim_disenos SET nombre = $2, tipo = $3, ancho = $4, alto = $5, datos = $6::jsonb, miniatura = COALESCE($7, miniatura), updated_at = NOW()
+                `UPDATE aim_disenos SET nombre = $2, tipo = $3, ancho = $4, alto = $5,
+                        datos = ($6::jsonb - 'carpeta' - 'papelera' - 'enlace') || ${SQL_CONSERVAR},
+                        miniatura = COALESCE($7, miniatura), updated_at = NOW()
                  WHERE id = $1 RETURNING id`, [Number(req.params.id) || 0, d.nombre, d.tipo, d.ancho, d.alto, d.json, d.mini]);
             if (!r.rowCount) corta(404, 'Ese diseño ya no existe.');
             res.json({ success: true });
@@ -506,8 +517,21 @@ export function crearDisenos({ pool, clubId, authenticateSession, requireSeccion
     router.delete('/api/admin/disenos/:id', ...gestion, async (req, res) => {
         try {
             const id = Number(req.params.id) || 0;
-            await pool.query(`DELETE FROM aim_disenos WHERE id = $1`, [id]);
-            if (await diplomaPorDefecto() === id) await pool.query(`DELETE FROM aim_ajustes WHERE clave = $1`, [CLAVE_DIPLOMA]);
+            if (req.query.definitivo === '1') {
+                const r = await pool.query(`DELETE FROM aim_disenos WHERE id = $1 AND datos ? 'papelera' RETURNING id`, [id]);
+                if (!r.rowCount) corta(409, 'Solo se borra para siempre lo que está en la papelera.');
+                if (await diplomaPorDefecto() === id) await pool.query(`DELETE FROM aim_ajustes WHERE clave = $1`, [CLAVE_DIPLOMA]);
+                return res.json({ success: true });
+            }
+            const r = await pool.query(`UPDATE aim_disenos SET datos = jsonb_set(datos, '{papelera}', to_jsonb(NOW()::text)) WHERE id = $1 RETURNING id`, [id]);
+            if (!r.rowCount) corta(404, 'Ese diseño ya no existe.');
+            res.json({ success: true, papelera: true });
+        } catch (err) { fallo(res, err); }
+    });
+    router.post('/api/admin/disenos/:id/restaurar', ...gestion, async (req, res) => {
+        try {
+            const r = await pool.query(`UPDATE aim_disenos SET datos = datos - 'papelera' WHERE id = $1 RETURNING id`, [Number(req.params.id) || 0]);
+            if (!r.rowCount) corta(404, 'Ese diseño ya no existe.');
             res.json({ success: true });
         } catch (err) { fallo(res, err); }
     });
@@ -530,7 +554,7 @@ export function crearDisenos({ pool, clubId, authenticateSession, requireSeccion
     // Para elegir el diploma de un curso (lo usa el aula, con su propio permiso).
     router.get('/api/admin/disenos-diplomas', authenticateSession, requireSeccion('aula'), async (req, res) => {
         try {
-            const r = await pool.query(`SELECT id, nombre, miniatura FROM aim_disenos WHERE tipo = 'diploma' ORDER BY nombre`);
+            const r = await pool.query(`SELECT id, nombre, miniatura FROM aim_disenos WHERE tipo = 'diploma' AND NOT datos ? 'papelera' ORDER BY nombre`);
             res.set('Cache-Control', 'no-store');
             res.json({ diplomas: r.rows, porDefecto: await diplomaPorDefecto() });
         } catch (err) { fallo(res, err); }
@@ -542,8 +566,8 @@ export function crearDisenos({ pool, clubId, authenticateSession, requireSeccion
 // El diseño del diploma de un curso: el suyo o el de por defecto (null si no hay).
 export async function disenoDiploma(pool, cursoId) {
     const r = (await pool.query(
-        `SELECT d.datos FROM aim_disenos d WHERE d.tipo = 'diploma' AND d.id = COALESCE(
-            (SELECT diploma_diseno_id FROM aim_aula_cursos WHERE id = $1),
+        `SELECT d.datos FROM aim_disenos d WHERE d.tipo = 'diploma' AND NOT d.datos ? 'papelera' AND d.id = COALESCE(
+            (SELECT c.diploma_diseno_id FROM aim_aula_cursos c JOIN aim_disenos x ON x.id = c.diploma_diseno_id AND NOT x.datos ? 'papelera' WHERE c.id = $1),
             (SELECT (valor->>'id')::int FROM aim_ajustes WHERE clave = '${CLAVE_DIPLOMA}'))`, [cursoId])).rows[0];
     return r?.datos || null;
 }
