@@ -320,6 +320,18 @@ export function incrustar(url) {
 }
 
 const corta = (status, error) => { const e = new Error(error); e.status = status; throw e; };
+// Los evaluables con tiempo límite: al empezar, una marca firmada de cuándo (no se
+// guarda nada); al entregar, si ha pasado el tiempo (con un minuto y medio de
+// margen por la conexión), no cuenta.
+const LLAVE_TIEMPO = crypto.createHash('sha256').update(`aim-aula-tiempo:${process.env.DATABASE_URL || ''}`).digest();
+const firmaTiempo = (txt) => crypto.createHmac('sha256', LLAVE_TIEMPO).update(txt).digest('base64url');
+const marcaTiempo = (leccionId, userId, t = Date.now()) => `${t}.${firmaTiempo(`${leccionId}:${userId}:${t}`)}`;
+function segundosDesde(marca, leccionId, userId) {
+    const [t, f] = String(marca || '').split('.');
+    if (!t || !f || firmaTiempo(`${leccionId}:${userId}:${t}`) !== f) return null;
+    return (Date.now() - Number(t)) / 1000;
+}
+const MARGEN_TIEMPO = 90;
 const fallo = (res, err) => {
     if (!err.status) console.error('[aula]', err.message);
     res.status(err.status || 500).json({ error: err.status ? err.message : 'No se ha podido hacer. Inténtalo otra vez.' });
@@ -723,8 +735,12 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                 `SELECT e.leccion_id, e.id, e.texto, e.archivo_nombre, (e.archivo IS NOT NULL) AS con_archivo, e.entregada_at, e.nota, e.apto, e.comentario, e.corregida_at
                  FROM aim_aula_entregas e JOIN aim_aula_lecciones l ON l.id = e.leccion_id WHERE l.curso_id = $1 AND e.user_id = $2`, [id, me])).rows.map(e => [e.leccion_id, e]));
             // Los cuestionarios: cuántas preguntas y cómo le ha ido (#439).
+            const vistas = new Map(gestor ? [] : (await pool.query(
+                `SELECT v.leccion_id, v.segundos FROM aim_aula_vistas v JOIN aim_aula_lecciones l ON l.id = v.leccion_id WHERE l.curso_id = $1 AND v.user_id = $2`, [id, me])).rows.map(x => [x.leccion_id, x.segundos]));
+            const apuntes = new Map((await pool.query(
+                `SELECT a.leccion_id, a.texto FROM aim_aula_apuntes a JOIN aim_aula_lecciones l ON l.id = a.leccion_id WHERE l.curso_id = $1 AND a.user_id = $2`, [id, me])).rows.map(x => [x.leccion_id, x.texto]));
             const cuest = new Map((await pool.query(
-                `SELECT l.id, l.modo, l.intentos,
+                `SELECT l.id, l.modo, l.intentos, l.nota_minima, l.tiempo_min,
                         (SELECT COUNT(*)::int FROM aim_aula_preguntas p WHERE p.leccion_id = l.id) AS preguntas,
                         (SELECT COUNT(*)::int FROM aim_aula_intentos i WHERE i.leccion_id = l.id AND i.user_id = $2 AND i.modo = 'evaluable') AS usados,
                         (SELECT MAX(i.nota) FROM aim_aula_intentos i WHERE i.leccion_id = l.id AND i.user_id = $2 AND i.modo = l.modo) AS mejor
@@ -748,7 +764,8 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                     archivo: l.archivo_nombre && l.tipo !== 'video' && l.tipo !== 'directo' ? { url: `/api/aula/archivos/${l.archivo_id}`, nombre: l.archivo_nombre, mime: l.archivo_mime, bytes: Number(l.archivo_bytes) } : null,
                     hecha: hechas.has(l.id),
                     entrega: l.tipo === 'tarea' && entregas.get(l.id) ? (({ leccion_id, con_archivo, ...e }) => ({ ...e, archivo: con_archivo ? `/api/aula/entregas/${e.id}/archivo` : null }))(entregas.get(l.id)) : null,
-                    cuestionario: l.tipo === 'cuestionario' && cuest.get(l.id) ? (({ id: x, mejor, ...q }) => ({ ...q, mejor: mejor == null ? null : Number(mejor) }))(cuest.get(l.id)) : undefined,
+                    cuestionario: l.tipo === 'cuestionario' && cuest.get(l.id) ? (({ id: x, mejor, nota_minima: nm, tiempo_min: tm, ...q }) => ({ ...q, mejor: mejor == null ? null : Number(mejor), notaMinima: nm == null ? 5 : Number(nm), tiempoMin: tm || null }))(cuest.get(l.id)) : undefined,
+                    vista: vistas.get(l.id) || 0, apuntes: apuntes.get(l.id) || '',
                 })) })),
             });
         } catch (err) { fallo(res, err); }
@@ -765,6 +782,75 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             if (req.body?.hecha === false) await pool.query(`DELETE FROM aim_aula_progreso WHERE user_id = $1 AND leccion_id = $2`, [req.userSession.userId, l.id]);
             else await pool.query(`INSERT INTO aim_aula_progreso (user_id, leccion_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [req.userSession.userId, l.id]);
             res.json({ success: true });
+        } catch (err) { fallo(res, err); }
+    });
+
+    // Por dónde va en un vídeo (para seguir donde lo dejó). Al terminarlo, vuelve a 0.
+    router.post('/api/aula/lecciones/:id/vista', authenticateSession, async (req, res) => {
+        try {
+            const l = await leccion(idDe(req.params.id));
+            const { gestor } = await puedeVerLeccion(req, l);
+            if (gestor) return res.json({ success: true });
+            const seg = Math.max(0, Math.min(86400, Math.round(Number(req.body?.segundos) || 0)));
+            const dur = Number(req.body?.duracion) > 0 ? Math.min(86400, Math.round(Number(req.body.duracion))) : null;
+            await pool.query(
+                `INSERT INTO aim_aula_vistas (user_id, leccion_id, segundos, duracion) VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (user_id, leccion_id) DO UPDATE SET segundos = EXCLUDED.segundos, duracion = COALESCE(EXCLUDED.duracion, aim_aula_vistas.duracion), updated_at = NOW()`,
+                [req.userSession.userId, l.id, seg, dur]);
+            res.json({ success: true });
+        } catch (err) { fallo(res, err); }
+    });
+    // Los apuntes del alumno en una lección (vacíos: se borran).
+    router.put('/api/aula/lecciones/:id/apuntes', authenticateSession, async (req, res) => {
+        try {
+            const l = await leccion(idDe(req.params.id));
+            await puedeVerLeccion(req, l);
+            const texto = String(req.body?.texto ?? '').slice(0, 20000);
+            if (!texto.trim()) await pool.query(`DELETE FROM aim_aula_apuntes WHERE user_id = $1 AND leccion_id = $2`, [req.userSession.userId, l.id]);
+            else await pool.query(
+                `INSERT INTO aim_aula_apuntes (user_id, leccion_id, texto) VALUES ($1, $2, $3)
+                 ON CONFLICT (user_id, leccion_id) DO UPDATE SET texto = EXCLUDED.texto, updated_at = NOW()`, [req.userSession.userId, l.id, texto]);
+            res.json({ success: true });
+        } catch (err) { fallo(res, err); }
+    });
+    // Todos sus apuntes del curso, en el orden del temario (para leerlos, bajarlos o imprimirlos).
+    router.get('/api/aula/cursos/:id/apuntes', authenticateSession, async (req, res) => {
+        try {
+            const { c } = await puedeVer(req, idDe(req.params.id));
+            const r = await pool.query(
+                `SELECT l.id, t.titulo AS tema, l.titulo AS leccion, a.texto, a.updated_at
+                 FROM aim_aula_apuntes a JOIN aim_aula_lecciones l ON l.id = a.leccion_id JOIN aim_aula_temas t ON t.id = l.tema_id
+                 WHERE l.curso_id = $1 AND a.user_id = $2 ORDER BY t.orden, t.id, l.orden, l.id`, [c.id, req.userSession.userId]);
+            res.set('Cache-Control', 'no-store');
+            res.json({ curso: c.titulo, apuntes: r.rows });
+        } catch (err) { fallo(res, err); }
+    });
+    // Comprobar un diploma por su código (el que lleva impreso): para cualquiera,
+    // con un límite de comprobaciones por minuto. Vale si terminó el curso (o lo
+    // valoró, que se hace al terminarlo: así sigue valiendo si luego se añaden lecciones).
+    const comprobaciones = new Map();
+    router.get('/api/aula/diplomas/:codigo', async (req, res) => {
+        try {
+            const ip = String(req.ip || ''), ahora = Date.now();
+            const lista = (comprobaciones.get(ip) || []).filter(t => t > ahora - 60_000);
+            lista.push(ahora); comprobaciones.set(ip, lista);
+            if (comprobaciones.size > 5000) comprobaciones.clear();
+            if (lista.length > 20) corta(429, 'Demasiadas comprobaciones seguidas: espera un minuto.');
+            res.set('Cache-Control', 'no-store');
+            const codigo = String(req.params.codigo || '').trim().toUpperCase();
+            if (!/^[0-9A-F]{10}$/.test(codigo)) return res.json({ valido: false });
+            const r = await pool.query(`SELECT curso_id, user_id FROM aim_aula_inscripciones WHERE estado <> 'baja'`);
+            const x = r.rows.find(i => crypto.createHash('sha256').update(`aim-diploma:${i.curso_id}:${i.user_id}`).digest('hex').slice(0, 10).toUpperCase() === codigo);
+            if (!x) return res.json({ valido: false });
+            const d = (await pool.query(
+                `SELECT c.titulo, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno, TRIM(CONCAT(p.name, ' ', COALESCE(p.surname, ''))) AS profesor,
+                        (SELECT COUNT(*)::int FROM aim_aula_lecciones l WHERE l.curso_id = c.id) AS lecciones,
+                        (SELECT COUNT(*)::int FROM aim_aula_progreso pr JOIN aim_aula_lecciones l ON l.id = pr.leccion_id WHERE l.curso_id = c.id AND pr.user_id = $2) AS hechas,
+                        (SELECT MAX(pr.completada_at) FROM aim_aula_progreso pr JOIN aim_aula_lecciones l ON l.id = pr.leccion_id WHERE l.curso_id = c.id AND pr.user_id = $2) AS terminado,
+                        EXISTS (SELECT 1 FROM aim_aula_valoraciones v WHERE v.curso_id = c.id AND v.user_id = $2) AS valorado
+                 FROM aim_aula_cursos c JOIN users u ON u.user_id = $2 LEFT JOIN users p ON p.user_id = c.profesor_id WHERE c.id = $1`, [x.curso_id, x.user_id])).rows[0];
+            if (!d || !(d.valorado || (d.lecciones > 0 && d.hechas >= d.lecciones))) return res.json({ valido: false });
+            res.json({ valido: true, codigo, alumno: d.alumno, curso: d.titulo, profesor: d.profesor || null, fecha: d.terminado });
         } catch (err) { fallo(res, err); }
     });
 
@@ -1373,9 +1459,12 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                 `SELECT id, respuestas, aciertos, total, nota, created_at FROM aim_aula_intentos WHERE leccion_id = $1 AND user_id = $2 AND modo = $3 ORDER BY created_at`,
                 [l.id, req.userSession.userId, l.modo])).rows;
             const usados = l.modo === 'evaluable' ? intentos.length : 0;
+            // Al empezar un evaluable con tiempo: la marca de cuándo.
+            const conTiempo = l.modo === 'evaluable' && l.tiempo_min && !gestor;
             res.set('Cache-Control', 'no-store');
             res.json({
-                modo: l.modo, intentos: l.intentos, usados, gestor,
+                modo: l.modo, intentos: l.intentos, usados, gestor, notaMinima: l.nota_minima == null ? 5 : Number(l.nota_minima), tiempoMin: l.tiempo_min || null,
+                empezado: conTiempo && req.query.empezar === '1' ? marcaTiempo(l.id, req.userSession.userId) : undefined,
                 quedan: l.modo === 'evaluable' && l.intentos ? Math.max(0, l.intentos - usados) : null,
                 mejor: intentos.length ? Math.max(...intentos.map(i => Number(i.nota))) : null,
                 ultimo: l.modo === 'evaluable' && intentos.length ? (({ respuestas, ...i }) => ({ ...i, nota: Number(i.nota), detalle: respuestas }))(intentos[intentos.length - 1]) : null,
@@ -1397,6 +1486,11 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             if (!ps.length) corta(400, 'Este cuestionario aún no tiene preguntas.');
             const res1 = corregir(ps, req.body?.respuestas);
             if (gestor) return res.json({ ...res1, guardado: false });
+            if (l.modo === 'evaluable' && l.tiempo_min) {
+                const seg = segundosDesde(req.body?.empezado, l.id, me);
+                if (seg == null) corta(400, 'Empieza el cuestionario desde su botón «Empezar».');
+                if (seg > l.tiempo_min * 60 + MARGEN_TIEMPO) corta(409, 'Se acabó el tiempo de este intento: no cuenta. Puedes volver a empezarlo.');
+            }
             await client.query('BEGIN');
             // Uno detrás de otro: con dos pestañas no se cuela un intento de más.
             await client.query(`SELECT pg_advisory_xact_lock(439, $1)`, [l.id]);
@@ -1406,10 +1500,12 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             }
             await client.query(`INSERT INTO aim_aula_intentos (leccion_id, user_id, modo, respuestas, aciertos, total, nota) VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7)`,
                 [l.id, me, l.modo, JSON.stringify(res1.detalle), res1.aciertos, res1.total, res1.nota]);
-            // Terminado con un 5 o más (#455); un intento peor no quita lo ya aprobado.
-            if (Number(res1.nota) >= 5) await client.query(`INSERT INTO aim_aula_progreso (user_id, leccion_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [me, l.id]);
+            // Terminado con la nota para aprobar (un 5 si no se ha puesto otra, #455); un
+            // intento peor no quita lo ya aprobado.
+            const minima = l.nota_minima == null ? 5 : Number(l.nota_minima);
+            if (Number(res1.nota) >= minima) await client.query(`INSERT INTO aim_aula_progreso (user_id, leccion_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [me, l.id]);
             await client.query('COMMIT');
-            res.json({ ...res1, guardado: true });
+            res.json({ ...res1, guardado: true, notaMinima: minima, aprobado: Number(res1.nota) >= minima });
         } catch (err) { await client.query('ROLLBACK').catch(() => {}); fallo(res, err); } finally { client.release(); }
     });
     // Los resultados de los cuestionarios de un curso, por alumno.

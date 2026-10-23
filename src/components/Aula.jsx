@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { I } from './Icons.jsx';
 import { AimHeader, AimFooter, MagicText } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
@@ -88,7 +88,7 @@ function estadoLeccion(x) {
     if (!x.entrega.corregida_at) return { icono: '⏳', texto: 'Entregada: falta que la corrija el profesor', color: 'var(--orange)' };
     return { icono: '✗', texto: 'No superada: vuelve a entregarla', color: 'var(--pink)' };
   }
-  if (x.tipo === 'cuestionario' && x.cuestionario?.mejor != null) return { icono: '✗', texto: 'Aún sin aprobar: saca un 5 para superarlo', color: 'var(--pink)' };
+  if (x.tipo === 'cuestionario' && x.cuestionario?.mejor != null) return { icono: '✗', texto: `Aún sin aprobar: saca un ${String(x.cuestionario.notaMinima ?? 5).replace('.', ',')} para superarlo`, color: 'var(--pink)' };
   return null;
 }
 // El diploma de aprovechamiento (#455), al terminar todo el curso.
@@ -148,7 +148,7 @@ export default function AulaPublica({ seg }) {
     <>
       <AimHeader route="aula" />
       <main style={{ paddingTop: 0 }}>
-        {id ? <FichaCurso id={id} /> : <Catalogo />}
+        {seg[1] === 'diplomas' ? <ComprobarDiploma /> : id ? <FichaCurso id={id} /> : <Catalogo />}
         <AimFooter />
       </main>
     </>
@@ -200,6 +200,57 @@ function Catalogo() {
             ))}
           </div>
         )}
+        <p style={{ marginTop: 36, fontSize: 14, color: 'var(--ink-3)' }}>¿Tienes un diploma del aula virtual? <a href="/aula/diplomas" onClick={e => { e.preventDefault(); go('/aula/diplomas'); }} style={{ color: 'var(--purple)', fontWeight: 700 }}>Compruébalo aquí</a>.</p>
+      </div>
+    </section>
+  );
+}
+
+// Comprobar un diploma por su código (el que lleva impreso abajo).
+function ComprobarDiploma() {
+  const { go, path } = useRouter();
+  const inicial = new URLSearchParams(path.includes('?') ? path.slice(path.indexOf('?')) : '').get('codigo') || '';
+  const [codigo, setCodigo] = useState(inicial);
+  const [r, setR] = useState(null);
+  const [mirando, setMirando] = useState(false);
+  const comprobar = useCallback(async (cod) => {
+    const k = String(cod || '').trim().toUpperCase();
+    if (!k) return;
+    setMirando(true);
+    try {
+      const x = await fetch(`/api/aula/diplomas/${encodeURIComponent(k)}`, { cache: 'no-store' });
+      const d = await x.json().catch(() => ({}));
+      setR(x.ok ? d : { error: d.error || 'No se ha podido comprobar.' });
+    } catch { setR({ error: 'No se ha podido comprobar.' }); } finally { setMirando(false); }
+  }, []);
+  useEffect(() => { if (inicial) comprobar(inicial); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <section className="block tight">
+      <div className="container" style={{ maxWidth: 640, display: 'grid', gap: 18 }}>
+        <a href="/aula" onClick={e => { e.preventDefault(); go('/aula'); }} style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink-3)' }}>← Aula virtual</a>
+        <span className="eyebrow purple">Aula virtual</span>
+        <h1 className="title-display" style={{ fontSize: 'clamp(28px, 5vw, 42px)' }}>Comprobar un diploma</h1>
+        <p style={{ margin: 0, color: 'var(--ink-2)' }}>Escribe el código que lleva el diploma abajo (10 letras y números) y te decimos si es de verdad de Aim Education.</p>
+        <form onSubmit={e => { e.preventDefault(); comprobar(codigo); }} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <input value={codigo} onChange={e => { setCodigo(e.target.value); setR(null); }} placeholder="Por ejemplo, 3F9A1C07B2" aria-label="Código del diploma" maxLength={14}
+            style={{ flex: '1 1 220px', fontFamily: 'inherit', fontSize: 18, letterSpacing: '.08em', textTransform: 'uppercase', padding: '12px 14px', borderRadius: 12, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)' }} />
+          <button type="submit" className="btn btn-primary" disabled={mirando || !codigo.trim()}>{mirando ? 'Comprobando…' : 'Comprobar'}</button>
+        </form>
+        {r?.valido && (
+          <div role="status" style={{ ...tarjeta, padding: 22, display: 'grid', gap: 8, borderColor: 'var(--teal)', background: 'color-mix(in oklab, var(--teal) 9%, var(--bg-2))' }}>
+            <b style={{ fontSize: 20, color: 'var(--teal)' }}>✓ Diploma válido</b>
+            <span style={{ fontSize: 16 }}><b>{r.alumno}</b> ha terminado el curso <b>«{r.curso}»</b> del aula virtual de Aim Education{r.fecha ? ` el ${new Date(r.fecha).toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })}` : ''}.</span>
+            {r.profesor && <span style={{ fontSize: 14, color: 'var(--ink-2)' }}>Profesor: {r.profesor}</span>}
+            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Código {r.codigo}</span>
+          </div>
+        )}
+        {r && r.valido === false && (
+          <div role="status" style={{ ...tarjeta, padding: 22, display: 'grid', gap: 6, borderColor: 'var(--pink)' }}>
+            <b style={{ fontSize: 18, color: 'var(--pink)' }}>No hay ningún diploma con ese código</b>
+            <span style={{ fontSize: 14, color: 'var(--ink-2)' }}>Revisa que esté bien escrito (son 10 letras y números). Si crees que es un error, escríbenos.</span>
+          </div>
+        )}
+        {r?.error && <p style={{ margin: 0, color: 'var(--pink)', fontWeight: 700 }}>{r.error}</p>}
       </div>
     </section>
   );
@@ -324,6 +375,9 @@ function AulaAprender({ id }) {
   const [error, setError] = useState('');
   const [actual, setActual] = useState(null);
   const [menu, setMenu] = useState(false);
+  const [verApuntes, setVerApuntes] = useState(false);
+  // Lo que cambia en una lección sin recargar el curso (sus apuntes, por dónde va el vídeo).
+  const actualizar = useCallback((lid, cambios) => setC(x => (x ? { ...x, temas: x.temas.map(t => ({ ...t, lecciones: t.lecciones.map(y => (y.id === lid ? { ...y, ...cambios } : y)) })) } : x)), []);
   const cargar = useCallback(() => {
     return fetch(`/api/aula/cursos/${id}/contenido`, { credentials: 'include', cache: 'no-store' })
       .then(async r => {
@@ -383,6 +437,7 @@ function AulaAprender({ id }) {
         style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 800, fontSize: 14, color: 'var(--ink-2)', textDecoration: 'none' }}>←</a>
       <b style={{ flex: 1, minWidth: 0, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c?.titulo || 'Aula virtual'}</b>
       {c && !c.gestor && !c.previa && <Progreso pct={pct} ancho={140} />}
+      {c && !c.gestor && !c.previa && <button type="button" className="btn btn-sm btn-outline" onClick={() => setVerApuntes(true)}>📝 Apuntes</button>}
       {c && !c.previa && <button type="button" className="btn btn-sm btn-outline" onClick={() => document.getElementById('aula-dudas')?.scrollIntoView({ behavior: 'smooth' })}>💬 Dudas</button>}
       {c && <button type="button" className="btn btn-sm btn-outline aula-boton-temario" onClick={() => setMenu(m => !m)}>Temario</button>}
     </header>
@@ -465,7 +520,7 @@ function AulaAprender({ id }) {
                 <span style={{ fontSize: 13, color: 'var(--ink-3)', fontWeight: 700 }}>{l.tema} · {TIPO_LECCION[l.tipo].nombre}</span>
                 <h1 style={{ margin: 0, fontSize: 'clamp(24px, 4vw, 34px)', lineHeight: 1.15 }}>{l.titulo}</h1>
               </div>
-              <Leccion key={l.id} l={l} gestor={c.gestor} previa={c.previa} curso={c.titulo} onEntregada={cargar} onVista={() => { if (!l.hecha && !c.gestor) marcar(l, true); }} />
+              <Leccion key={l.id} l={l} gestor={c.gestor} previa={c.previa} curso={c.titulo} onEntregada={cargar} onVista={() => { if (!l.hecha && !c.gestor) marcar(l, true); }} actualizar={actualizar} />
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', borderTop: '1px solid var(--line)', paddingTop: 16 }}>
                 <button type="button" className="btn btn-sm btn-outline" disabled={i <= 0} onClick={() => ir(i - 1)}>← Anterior</button>
                 <div style={{ flex: 1 }} />
@@ -482,6 +537,7 @@ function AulaAprender({ id }) {
               )}
             </>
           )}
+          {verApuntes && <MisApuntes cursoId={id} onCerrar={() => setVerApuntes(false)} />}
           {!c.previa && <DudasCurso cursoId={id} leccion={l && !l.bloqueada && !l.cerrada ? l : null} gestor={c.gestor} abrir={dudaPedida} />}
         </article>
       </div>
@@ -489,25 +545,18 @@ function AulaAprender({ id }) {
   );
 }
 
-function Leccion({ l, gestor, previa, curso, onEntregada, onVista }) {
+function Leccion({ l, gestor, previa, curso, onEntregada, onVista, actualizar }) {
   const vencida = l.plazoAt && new Date(l.plazoAt) < new Date();
   return (
     <div style={{ display: 'grid', gap: 16 }}>
-      {l.tipo === 'directo' && <ClaseDirecto l={l} curso={curso} gestor={gestor} onVista={onVista} />}
+      {l.tipo === 'directo' && <ClaseDirecto l={l} curso={curso} gestor={gestor} onVista={onVista} actualizar={actualizar} />}
       {l.tipo === 'tarea' && l.plazoAt && (
         <div style={{ padding: '10px 14px', borderRadius: 12, fontSize: 14, fontWeight: 700,
           background: `color-mix(in oklab, ${vencida ? 'var(--pink)' : 'var(--orange)'} 12%, var(--bg-2))` }}>
           {vencida ? `⏰ El plazo acabó ${fechaLarga(l.plazoAt)}. ${l.entrega ? '' : 'Aún puedes entregarla: saldrá como «fuera de plazo».'}` : `⏰ Entrega hasta ${fechaLarga(l.plazoAt)}.`}
         </div>
       )}
-      {l.tipo === 'video' && l.video?.embed && (
-        <div style={{ aspectRatio: '16 / 9', borderRadius: 16, overflow: 'hidden', background: '#000' }}>
-          <iframe src={l.video.embed} title={l.titulo} style={{ width: '100%', height: '100%', border: 0 }} allow="encrypted-media; picture-in-picture; fullscreen" allowFullScreen />
-        </div>
-      )}
-      {l.tipo === 'video' && l.video?.src && (
-        <video src={l.video.src} controls playsInline preload="metadata" controlsList="nodownload" style={{ width: '100%', maxHeight: '75vh', borderRadius: 16, background: '#000' }} />
-      )}
+      {l.tipo === 'video' && l.video && <VideoConMemoria l={l} video={l.video} gestor={gestor} actualizar={actualizar} />}
       {l.tipo === 'video' && !l.video && <p style={{ color: 'var(--ink-3)' }}>Este vídeo aún no está disponible.</p>}
       {l.texto && <div style={{ ...tarjeta, padding: 20, fontSize: 16 }}><Texto texto={l.texto} /></div>}
       {l.archivo && (
@@ -523,6 +572,167 @@ function Leccion({ l, gestor, previa, curso, onEntregada, onVista }) {
         ? <p style={{ margin: 0, fontSize: 14, color: 'var(--ink-3)' }}>Aquí el alumno escribe su respuesta o adjunta un archivo. Las entregas se corrigen desde el panel, en «Aula virtual».</p>
         : previa ? <p style={{ margin: 0, fontSize: 14, color: 'var(--ink-3)' }}>Para entregar la tarea y que te la corrijan, consigue el curso completo.</p>
         : <Entrega l={l} onEntregada={onEntregada} />)}
+      {!gestor && <Apuntes l={l} onGuardado={(t) => actualizar?.(l.id, { apuntes: t })} />}
+    </div>
+  );
+}
+
+// ═══════════════════════ El vídeo que se acuerda de por dónde iba ═══════════════════════
+// Lo subido (<video>), YouTube y Vimeo (por su API de mensajes: sin cargar nada más).
+// Cada 10 segundos, al pausar y al salir se guarda por dónde va; si lo termina,
+// vuelve a empezar desde el principio la próxima vez.
+const minutos = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+function VideoConMemoria({ l, video, gestor, actualizar }) {
+  const [desde, setDesde] = useState(() => (!gestor && l.vista > 10 ? l.vista : 0));
+  const [aviso, setAviso] = useState(!gestor && l.vista > 10);
+  const pos = useRef(desde), dur = useRef(0), guardado = useRef(l.vista || 0), movido = useRef(false), marco = useRef(null), vid = useRef(null);
+  const embed = useMemo(() => {
+    if (!video?.embed) return null;
+    const u = new URL(video.embed);
+    if (/youtube/.test(u.hostname)) {
+      u.searchParams.set('enablejsapi', '1'); u.searchParams.set('origin', window.location.origin);
+      if (desde) u.searchParams.set('start', String(Math.floor(desde)));
+    } else { u.searchParams.set('api', '1'); if (desde) u.hash = `t=${Math.floor(desde)}s`; }
+    return u.toString();
+  }, [video?.embed, desde]);
+  const guardar = useCallback((final = false) => {
+    if (gestor || !movido.current) return;
+    let s = Math.floor(pos.current);
+    const d = dur.current;
+    if (d && d - s < 15) s = 0;
+    if (!final && Math.abs(s - guardado.current) < 3) return;
+    guardado.current = s;
+    actualizar?.(l.id, { vista: s });
+    fetch(`/api/aula/lecciones/${l.id}/vista`, { method: 'POST', credentials: 'include', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ segundos: s, duracion: d ? Math.round(d) : null }) }).catch(() => {});
+  }, [l.id, gestor, actualizar]);
+  useEffect(() => {
+    const f = (ev) => {
+      let host = '';
+      try { host = new URL(ev.origin).hostname; } catch { return; }
+      if (!/(^|\.)youtube(-nocookie)?\.com$|^player\.vimeo\.com$/.test(host)) return;
+      let d = ev.data;
+      if (typeof d === 'string') { try { d = JSON.parse(d); } catch { return; } }
+      if (d?.event === 'infoDelivery' && d.info) {
+        if (typeof d.info.currentTime === 'number' && d.info.currentTime > 0) { pos.current = d.info.currentTime; movido.current = true; }
+        if (d.info.duration) dur.current = d.info.duration;
+      }
+      if (d?.event === 'ready' && host === 'player.vimeo.com') marco.current?.contentWindow?.postMessage(JSON.stringify({ method: 'addEventListener', value: 'timeupdate' }), '*');
+      if (d?.event === 'timeupdate' && d.data) { pos.current = d.data.seconds; dur.current = d.data.duration; movido.current = true; }
+    };
+    window.addEventListener('message', f);
+    const t = setInterval(() => guardar(), 10000);
+    const salir = () => guardar(true);
+    window.addEventListener('pagehide', salir);
+    return () => { window.removeEventListener('message', f); clearInterval(t); window.removeEventListener('pagehide', salir); guardar(true); };
+  }, [guardar]);
+  const alCargar = () => {
+    // YouTube: que nos vaya contando por dónde va.
+    if (/youtube/.test(embed || '')) marco.current?.contentWindow?.postMessage(JSON.stringify({ event: 'listening', id: l.id, channel: 'widget' }), '*');
+  };
+  const desdeElPrincipio = () => {
+    setAviso(false); pos.current = 0; movido.current = true;
+    if (vid.current) vid.current.currentTime = 0; else setDesde(0);
+  };
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      {aviso && (
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '8px 12px', borderRadius: 12, fontSize: 14, background: 'color-mix(in oklab, var(--purple) 9%, var(--bg-2))' }}>
+          <span style={{ flex: 1 }}>▶ Sigues por donde lo dejaste (minuto {minutos(desde)}).</span>
+          <button type="button" className="btn btn-sm btn-ghost" onClick={desdeElPrincipio}>Empezar desde el principio</button>
+        </div>
+      )}
+      {embed && (
+        <div style={{ aspectRatio: '16 / 9', borderRadius: 16, overflow: 'hidden', background: '#000' }}>
+          <iframe key={embed} ref={marco} src={embed} onLoad={alCargar} title={l.titulo} style={{ width: '100%', height: '100%', border: 0 }} allow="encrypted-media; picture-in-picture; fullscreen" allowFullScreen />
+        </div>
+      )}
+      {video?.src && (
+        <video ref={vid} src={video.src} controls playsInline preload="metadata" controlsList="nodownload" style={{ width: '100%', maxHeight: '75vh', borderRadius: 16, background: '#000' }}
+          onLoadedMetadata={e => { dur.current = e.currentTarget.duration || 0; if (desde && desde < dur.current - 15) e.currentTarget.currentTime = desde; }}
+          onTimeUpdate={e => { pos.current = e.currentTarget.currentTime; dur.current = e.currentTarget.duration || dur.current; movido.current = true; if (aviso && Math.abs(pos.current - desde) > 20) setAviso(false); }}
+          onPause={() => guardar()} onEnded={() => { pos.current = dur.current; guardar(true); }} />
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════ Apuntes ═══════════════════════
+// Los de la lección (se guardan solos) y todos los del curso (para leerlos,
+// bajarlos o imprimirlos). Solo los ve quien los escribe.
+function Apuntes({ l, onGuardado }) {
+  const [texto, setTexto] = useState(l.apuntes || '');
+  const [estado, setEstado] = useState('');
+  const [abierto, setAbierto] = useState(!!l.apuntes);
+  const temp = useRef(null), ultimo = useRef(l.apuntes || ''), actual = useRef(texto);
+  const guardar = useCallback(async (v) => {
+    clearTimeout(temp.current); temp.current = null;
+    if (v === ultimo.current) return;
+    setEstado('Guardando…');
+    try {
+      const r = await fetch(`/api/aula/lecciones/${l.id}/apuntes`, { method: 'PUT', credentials: 'include', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ texto: v }) });
+      if (!r.ok) throw new Error();
+      ultimo.current = v; onGuardado?.(v); setEstado('Guardado');
+    } catch { setEstado('No se ha podido guardar: vuelve a intentarlo'); }
+  }, [l.id, onGuardado]);
+  // Al cambiar de lección, lo que quede por guardar se guarda.
+  useEffect(() => () => { if (temp.current) guardar(actual.current); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const cambiar = (v) => { setTexto(v); actual.current = v; setEstado(''); clearTimeout(temp.current); temp.current = setTimeout(() => guardar(v), 1000); };
+  if (!abierto) return <button type="button" className="btn btn-sm btn-ghost" style={{ justifySelf: 'start' }} onClick={() => setAbierto(true)}>📝 Tomar apuntes de esta lección</button>;
+  return (
+    <div style={{ ...tarjeta, padding: 14, display: 'grid', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <b style={{ flex: 1 }}>📝 Mis apuntes</b>
+        <span style={{ fontSize: 12, color: estado.startsWith('No') ? 'var(--pink)' : 'var(--ink-3)' }}>{estado || 'Se guardan solos · solo los ves tú'}</span>
+      </div>
+      <textarea aria-label="Mis apuntes de esta lección" rows={5} value={texto} onChange={e => cambiar(e.target.value)} onBlur={() => guardar(texto)}
+        placeholder="Escribe aquí lo que quieras recordar de esta lección."
+        style={{ fontFamily: 'inherit', fontSize: 15, lineHeight: 1.5, padding: 12, borderRadius: 12, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', resize: 'vertical' }} />
+    </div>
+  );
+}
+function MisApuntes({ cursoId, onCerrar }) {
+  const [d, setD] = useState(null);
+  useEffect(() => {
+    fetch(`/api/aula/cursos/${cursoId}/apuntes`, { credentials: 'include', cache: 'no-store' }).then(r => (r.ok ? r.json() : { apuntes: [] })).then(setD).catch(() => setD({ apuntes: [] }));
+    const f = (e) => { if (e.key === 'Escape') onCerrar(); };
+    window.addEventListener('keydown', f); return () => window.removeEventListener('keydown', f);
+  }, [cursoId, onCerrar]);
+  const comoTexto = () => [`Mis apuntes · ${d.curso}`, '', ...d.apuntes.flatMap(a => [`── ${a.tema} · ${a.leccion} ──`, a.texto, ''])].join('\n');
+  function bajar() {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([comoTexto()], { type: 'text/plain;charset=utf-8' }));
+    a.download = `apuntes-${String(d.curso).normalize('NFD').replace(/\p{M}/gu, '').replace(/[^\w]+/g, '-').toLowerCase()}.txt`; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }
+  function imprimir() {
+    const esc = (t) => String(t).replace(/[&<>]/g, x => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[x]));
+    const w = window.open('', '_blank');
+    if (!w) return;
+    w.document.write(`<!doctype html><meta charset="utf-8"><title>Mis apuntes · ${esc(d.curso)}</title><style>body{font-family:system-ui,sans-serif;max-width:720px;margin:32px auto;line-height:1.55}h1{font-size:22px}h2{font-size:15px;margin:22px 0 4px;color:#5233A8}p{white-space:pre-wrap;margin:0}</style><h1>Mis apuntes · ${esc(d.curso)}</h1>${d.apuntes.map(a => `<h2>${esc(a.tema)} · ${esc(a.leccion)}</h2><p>${esc(a.texto)}</p>`).join('')}`);
+    w.document.close(); w.focus(); w.print();
+  }
+  return (
+    <div role="dialog" aria-label="Mis apuntes" onClick={onCerrar} style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(0,0,0,.45)', display: 'grid', placeItems: 'center', padding: 16 }}>
+      <div onClick={e => e.stopPropagation()} style={{ ...tarjeta, width: 'min(720px, 100%)', maxHeight: '88vh', overflowY: 'auto', padding: 20, display: 'grid', gap: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <b style={{ flex: 1, fontSize: 18 }}>📝 Mis apuntes del curso</b>
+          <button type="button" className="icon-btn" onClick={onCerrar} aria-label="Cerrar"><I.X /></button>
+        </div>
+        {!d ? <span style={{ color: 'var(--ink-3)' }}>Cargando…</span> : !d.apuntes.length ? (
+          <span style={{ color: 'var(--ink-3)' }}>Todavía no has tomado apuntes. En cada lección, abajo, tienes «Tomar apuntes de esta lección».</span>
+        ) : <>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button type="button" className="btn btn-sm btn-outline" onClick={bajar}><I.Download /> Descargar (.txt)</button>
+            <button type="button" className="btn btn-sm btn-ghost" onClick={imprimir}>🖨 Imprimir</button>
+          </div>
+          {d.apuntes.map(a => (
+            <div key={a.id} style={{ display: 'grid', gap: 4 }}>
+              <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--purple)' }}>{a.tema} · {a.leccion}</span>
+              <div style={{ padding: 12, borderRadius: 12, background: 'var(--bg-3)' }}><Texto texto={a.texto} /></div>
+            </div>
+          ))}
+        </>}
+      </div>
     </div>
   );
 }
@@ -551,7 +761,7 @@ function bajarIcs(l, curso) {
   a.download = `clase-${l.id}.ics`; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
-function ClaseDirecto({ l, curso, gestor, onVista }) {
+function ClaseDirecto({ l, curso, gestor, onVista, actualizar }) {
   const [ahora, setAhora] = useState(Date.now());
   useEffect(() => { const t = setInterval(() => setAhora(Date.now()), 20000); return () => clearInterval(t); }, []);
   const ini = new Date(l.directo.at).getTime(), fin = ini + l.directo.min * 60000;
@@ -579,8 +789,7 @@ function ClaseDirecto({ l, curso, gestor, onVista }) {
       {fase === 'despues' && (g ? (
         <>
           <span style={{ fontSize: 14, color: 'var(--ink-2)' }}>La clase ya ha terminado. Aquí tienes la grabación:</span>
-          {g.embed && <div style={{ aspectRatio: '16 / 9', borderRadius: 14, overflow: 'hidden', background: '#000' }}><iframe src={g.embed} title={`Grabación: ${l.titulo}`} style={{ width: '100%', height: '100%', border: 0 }} allow="encrypted-media; picture-in-picture; fullscreen" allowFullScreen /></div>}
-          {g.src && <video src={g.src} controls playsInline preload="metadata" controlsList="nodownload" style={{ width: '100%', maxHeight: '75vh', borderRadius: 14, background: '#000' }} />}
+          <VideoConMemoria l={l} video={g} gestor={gestor} actualizar={actualizar} />
         </>
       ) : <span style={{ fontSize: 14, color: 'var(--ink-2)' }}>La clase ya ha terminado. Cuando el profesor suba la grabación, estará aquí.</span>)}
     </div>
@@ -725,14 +934,45 @@ function Evaluable({ d, l, recargar }) {
   const [enviando, setEnviando] = useState(false);
   const [resultado, setResultado] = useState(null);
   const [error, setError] = useState('');
+  // Con tiempo límite: la marca de cuándo empezó (la firma el servidor) y lo que queda.
+  const [empezado, setEmpezado] = useState(null);
+  const [fin, setFin] = useState(null);
+  const [queda, setQueda] = useState(null);
   const agotado = d.quedan === 0;
   const contestadas = Object.keys(resp).length;
+  const minima = d.notaMinima ?? 5;
+  const respRef = useRef(resp); respRef.current = resp;
 
-  async function entregar() {
-    if (contestadas < d.preguntas.length && !window.confirm(`Te faltan ${d.preguntas.length - contestadas} por contestar. ¿Entregar igualmente?`)) return;
-    setEnviando(true); setError('');
+  async function empezar() {
+    setError('');
+    if (d.tiempoMin) {
+      try {
+        const r = await fetch(`/api/aula/lecciones/${l.id}/cuestionario?empezar=1`, { credentials: 'include', cache: 'no-store' });
+        const x = await r.json().catch(() => ({}));
+        if (!r.ok || !x.empezado) throw new Error(x.error || 'No se ha podido empezar.');
+        setEmpezado(x.empezado); setFin(Date.now() + d.tiempoMin * 60000);
+      } catch (e) { setError(e.message); return; }
+    }
+    setHaciendo(true);
+  }
+  useEffect(() => {
+    if (!haciendo || !fin) return undefined;
+    const paso = () => {
+      const q = Math.max(0, Math.round((fin - Date.now()) / 1000));
+      setQueda(q);
+      if (q <= 0) entregar(true);
+    };
+    paso();
+    const t = setInterval(paso, 1000);
+    return () => clearInterval(t);
+  }, [haciendo, fin]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function entregar(solo = false) {
+    if (enviando) return;
+    if (!solo && contestadas < d.preguntas.length && !window.confirm(`Te faltan ${d.preguntas.length - contestadas} por contestar. ¿Entregar igualmente?`)) return;
+    setEnviando(true); setError(''); setFin(null);
     try {
-      const r = await fetch(`/api/aula/lecciones/${l.id}/intentos`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ respuestas: resp }) });
+      const r = await fetch(`/api/aula/lecciones/${l.id}/intentos`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ respuestas: respRef.current, empezado }) });
       const x = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(x.error || 'No se ha podido entregar.');
       setResultado(x); setHaciendo(false); setResp({});
@@ -745,8 +985,8 @@ function Evaluable({ d, l, recargar }) {
       <div style={{ display: 'grid', gap: 14 }}>
         <div style={{ ...tarjeta, padding: 20, display: 'grid', gap: 6, justifyItems: 'center', textAlign: 'center' }}>
           <span style={{ fontSize: 13, color: 'var(--ink-3)', fontWeight: 700 }}>Tu nota</span>
-          <b style={{ fontSize: 40, color: resultado.nota >= 5 ? 'var(--teal)' : 'var(--pink)' }}>{notaTexto(resultado.nota)}</b>
-          <span>{resultado.aciertos} de {resultado.total} bien</span>
+          <b style={{ fontSize: 40, color: resultado.nota >= minima ? 'var(--teal)' : 'var(--pink)' }}>{notaTexto(resultado.nota)}</b>
+          <span>{resultado.aciertos} de {resultado.total} bien · {resultado.nota >= minima ? '¡Aprobado!' : `para aprobar hace falta un ${String(minima).replace('.', ',')}`}</span>
           {/* d ya viene al día (se recarga al entregar): quedan los de después de este. */}
           {(d.quedan == null || d.quedan > 0) && <button type="button" className="btn btn-outline btn-sm" onClick={() => setResultado(null)}>Volver a intentarlo</button>}
         </div>
@@ -759,10 +999,11 @@ function Evaluable({ d, l, recargar }) {
       <div style={{ ...tarjeta, padding: 20, display: 'grid', gap: 10 }}>
         <b style={{ fontSize: 17 }}>Cuestionario evaluable · {d.preguntas.length} preguntas</b>
         <span style={{ color: 'var(--ink-3)', fontSize: 14 }}>
-          Se contesta entero y se entrega: la nota es sobre 10. {d.intentos ? `Tienes ${d.intentos} ${d.intentos === 1 ? 'intento' : 'intentos'} (has usado ${d.usados}).` : 'Puedes repetirlo las veces que quieras; cuenta tu mejor nota.'}
+          Se contesta entero y se entrega: la nota es sobre 10 y se aprueba con un {String(minima).replace('.', ',')}.{d.tiempoMin ? ` Tienes ${d.tiempoMin} minutos desde que empiezas: al acabarse, se entrega solo.` : ''} {d.intentos ? `Tienes ${d.intentos} ${d.intentos === 1 ? 'intento' : 'intentos'} (has usado ${d.usados}).` : 'Puedes repetirlo las veces que quieras; cuenta tu mejor nota.'}
         </span>
         {d.mejor != null && <span style={{ fontWeight: 800 }}>Tu mejor nota: {notaTexto(d.mejor)}</span>}
-        {!agotado && <button type="button" className="btn btn-primary btn-sm" style={{ justifySelf: 'start' }} onClick={() => setHaciendo(true)}>{d.usados ? 'Hacerlo otra vez' : 'Empezar'}</button>}
+        {!agotado && <button type="button" className="btn btn-primary btn-sm" style={{ justifySelf: 'start' }} onClick={empezar}>{d.usados ? 'Hacerlo otra vez' : 'Empezar'}{d.tiempoMin ? ` (${d.tiempoMin} min)` : ''}</button>}
+        {error && <span style={{ color: 'var(--pink)', fontWeight: 700 }}>{error}</span>}
         {agotado && <span style={{ color: 'var(--ink-3)', fontSize: 14 }}>Ya has usado todos los intentos.</span>}
         {d.ultimo && (
           <details>
@@ -787,9 +1028,10 @@ function Evaluable({ d, l, recargar }) {
       {error && <span style={{ color: 'var(--pink)', fontWeight: 700 }}>{error}</span>}
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', position: 'sticky', bottom: 0, padding: '10px 0', background: 'var(--bg)' }}>
         <span style={{ fontSize: 14, color: 'var(--ink-3)' }}>{contestadas} de {d.preguntas.length} contestadas</span>
+        {queda != null && fin && <b role="timer" aria-label="Tiempo que queda" style={{ fontSize: 15, padding: '3px 10px', borderRadius: 999, color: queda <= 60 ? '#fff' : 'var(--ink)', background: queda <= 60 ? 'var(--pink)' : 'var(--bg-3)' }}>⏱ {minutos(queda)}</b>}
         <span style={{ flex: 1 }} />
-        <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setHaciendo(false); setResp({}); }}>Salir sin entregar</button>
-        <button type="button" className="btn btn-primary btn-sm" disabled={enviando} onClick={entregar}>{enviando ? 'Entregando…' : 'Entregar'}</button>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setHaciendo(false); setResp({}); setFin(null); }}>Salir sin entregar</button>
+        <button type="button" className="btn btn-primary btn-sm" disabled={enviando} onClick={() => entregar()}>{enviando ? 'Entregando…' : 'Entregar'}</button>
       </div>
     </div>
   );

@@ -54,6 +54,6 @@ export function generarDiplomaPdf(d, salida) {
         doc.font('Helvetica-Bold').fontSize(13).fillColor(TINTA).text(d.profesor, W - 350, pie + 16, { width: 260, align: 'right' });
     }
     doc.font('Helvetica').fontSize(8.5).fillColor(SUAVE)
-        .text(`Código del diploma: ${d.codigo} · ${d.empresa?.web || 'www.aimeducation.es'}`, 70, H - 52, { width: W - 140, align: 'center' });
+        .text(`Código del diploma: ${d.codigo} · compruébalo en ${String(d.empresa?.web || 'www.aimeducation.es').replace(/^https?:\/\//, '').replace(/\/$/, '')}/aula/diplomas`, 70, H - 52, { width: W - 140, align: 'center' });
     doc.end();
 }

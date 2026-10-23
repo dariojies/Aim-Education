@@ -418,7 +418,7 @@ function Temario({ c, recargar, showToast, espacio }) {
                   {l.tipo === 'video' && (l.videoUrl ? ' · por enlace' : l.archivo ? ` · subido (${mb(l.archivo.bytes)})` : '')}
                   {l.tipo === 'archivo' && l.archivo ? ` · ${l.archivo.nombre} (${mb(l.archivo.bytes)})` : ''}
                   {l.tipo === 'tarea' && ` · ${l.calificacion === 'nota' ? 'con nota' : 'apto / no apto'}`}
-                  {l.tipo === 'cuestionario' && ` · ${l.modo === 'evaluable' ? `evaluable${l.intentos ? `, ${l.intentos} ${l.intentos === 1 ? 'intento' : 'intentos'}` : ''}` : 'de práctica'} · ${l.preguntas} ${l.preguntas === 1 ? 'pregunta' : 'preguntas'}`}
+                  {l.tipo === 'cuestionario' && ` · ${l.modo === 'evaluable' ? `evaluable${l.intentos ? `, ${l.intentos} ${l.intentos === 1 ? 'intento' : 'intentos'}` : ''}` : 'de práctica'} · ${l.preguntas} ${l.preguntas === 1 ? 'pregunta' : 'preguntas'}${l.notaMinima != null && l.notaMinima !== 5 ? ` · se aprueba con un ${l.notaMinima}` : ''}${l.tiempoMin ? ` · ${l.tiempoMin} min` : ''}`}
                   {l.tipo === 'directo' && l.directoAt && ` · ${corta(l.directoAt)} (${l.directoMin || 60} min)${l.videoUrl || l.archivo ? ' · con grabación' : ''}`}
                   {l.tipo === 'tarea' && l.plazoAt && ` · plazo: ${corta(l.plazoAt)}`}
                   {l.abreAt && <b style={{ color: 'var(--purple)' }}> · 📅 se abre el {corta(l.abreAt)}</b>}
@@ -449,7 +449,8 @@ function EditorLeccion({ cursoId, temaId, l, espacio, meetCurso, onCerrar, onGua
     modo: l?.modo || 'practica', intentos: l?.intentos ?? '', gratis: !!l?.gratis,
     // Cuándo se abre, el plazo de una tarea y la clase en directo.
     abre: l?.abreAt ? 'fecha' : l?.trasAnterior ? 'anterior' : 'siempre', abreAt: aLocal(l?.abreAt), plazoAt: aLocal(l?.plazoAt),
-    directoAt: aLocal(l?.directoAt), directoMin: l?.directoMin || 60, enlace: l?.enlace || '' });
+    directoAt: aLocal(l?.directoAt), directoMin: l?.directoMin || 60, enlace: l?.enlace || '',
+    notaMinima: l?.notaMinima ?? 5, tiempoMin: l?.tiempoMin ?? '' });
   // Las preguntas de un cuestionario (#439): las que ya tiene, al editarlo.
   const [preguntas, setPreguntas] = useState(l?.tipo === 'cuestionario' ? null : []);
   useEffect(() => {
@@ -492,6 +493,7 @@ function EditorLeccion({ cursoId, temaId, l, espacio, meetCurso, onCerrar, onGua
       if (!preguntas?.length) { alert('Pon al menos una pregunta.'); return; }
       body.preguntas = preguntas.map(p => ({ ...p, imagen: p.imagen || null }));
       body.intentos = f.modo === 'evaluable' && f.intentos ? Number(f.intentos) : null;
+      body.tiempoMin = f.modo === 'evaluable' && f.tiempoMin ? Number(f.tiempoMin) : null;
     }
     setGuardando(true);
     try {
@@ -594,6 +596,19 @@ function EditorLeccion({ cursoId, temaId, l, espacio, meetCurso, onCerrar, onGua
                   <select value={f.intentos} onChange={e => cambiar('intentos', e.target.value)} style={inp}>
                     <option value="">Sin límite (cuenta la mejor)</option>
                     {[1, 2, 3, 5].map(n => <option key={n} value={n}>{n} {n === 1 ? 'intento' : 'intentos'}</option>)}
+                  </select>
+                </label>
+              )}
+              <label style={{ ...etiqueta, flex: 1, minWidth: 130 }}>Para aprobar
+                <select value={f.notaMinima} onChange={e => cambiar('notaMinima', Number(e.target.value))} style={inp}>
+                  {[3, 4, 5, 6, 7, 8, 9, 10].map(n => <option key={n} value={n}>Un {n}</option>)}
+                </select>
+              </label>
+              {f.modo === 'evaluable' && (
+                <label style={{ ...etiqueta, flex: 1, minWidth: 150 }}>Tiempo
+                  <select value={f.tiempoMin} onChange={e => cambiar('tiempoMin', e.target.value)} style={inp}>
+                    <option value="">Sin límite</option>
+                    {[5, 10, 15, 20, 30, 45, 60, 90].map(n => <option key={n} value={n}>{n} minutos</option>)}
                   </select>
                 </label>
               )}
