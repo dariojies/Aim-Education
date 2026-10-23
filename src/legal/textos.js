@@ -288,6 +288,9 @@ export const DOCS_LEGALES = [
         'Si en la cuenta hay hijos con clases o recibos pendientes, el club se pondrá en contacto contigo antes de completar la eliminación.',
       ]],
       ['p', 'Mientras no se haya completado, puedes anular la solicitud escribiendo a secretaría.'],
+      // Lo pide Meta para la app de mensajes (#482): quien solo nos escribió por redes.
+      ['h', 'Si solo nos has escrito por redes sociales'],
+      ['p', `Si nos has escrito por Facebook Messenger, Instagram o WhatsApp y quieres que borremos esa conversación y los datos que nos llegaron de ti (tu nombre en la red y tus mensajes), escríbenos a ${E.email} o mándanos un mensaje por la misma red pidiéndolo. Lo borraremos de nuestro panel en un plazo de 30 días. Lo que guarda la propia red social se borra desde tu cuenta en ella.`],
     ],
   },
 ];
