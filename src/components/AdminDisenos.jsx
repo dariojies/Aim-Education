@@ -247,6 +247,27 @@ function DisenosGraficos({ showToast, puedePublicar }) {
   );
 }
 
+// La copia del navegador de lo que aún no se ha guardado (por diseño). Se ofrece al abrirlo
+// si es distinta de lo guardado y no es más vieja (con 5 minutos de margen por los relojes).
+const claveRespaldo = (id) => `aim_design_respaldo_${id}`;
+function guardarRespaldo(id, cosa) { try { localStorage.setItem(claveRespaldo(id), JSON.stringify({ t: Date.now(), ...cosa })); } catch { /* sin sitio o sin almacenamiento */ } }
+function borrarRespaldo(id) { try { if (id) localStorage.removeItem(claveRespaldo(id)); } catch { /* sin almacenamiento */ } }
+function leerRespaldo(inicial) {
+  if (!inicial?.id) return null;
+  try {
+    const r = JSON.parse(localStorage.getItem(claveRespaldo(inicial.id)) || 'null');
+    const guardado = Date.parse(inicial.actualizado || 0) || 0;
+    if (r?.datos && r.t > guardado - 5 * 60_000 && (JSON.stringify(r.datos) !== JSON.stringify(inicial.datos) || (r.nombre && r.nombre !== inicial.nombre))) return r;
+    borrarRespaldo(inicial.id);
+  } catch { /* sin almacenamiento */ }
+  return null;
+}
+const fechaRespaldo = (t) => {
+  const d = new Date(t), hoy = new Date();
+  const hora = d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+  return d.toDateString() === hoy.toDateString() ? `hoy a las ${hora}` : `el ${d.toLocaleDateString('es-ES', { day: 'numeric', month: 'long' })} a las ${hora}`;
+};
+
 // El móvil (pantalla estrecha): el editor cambia de forma. Y si la pantalla es táctil.
 const ANCHO_MOVIL = '(max-width: 760px)';
 const esMovil = () => typeof window !== 'undefined' && !!window.matchMedia?.(ANCHO_MOVIL).matches;
@@ -415,6 +436,13 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
   const [hist, setHist] = useState({ atras: [], adelante: [] });
   const [sucio, setSucio] = useState(!inicial.id);
   const [guardando, setGuardando] = useState(false);
+  // Guardado automático: lo último guardado, el guardado en curso y los fallos seguidos
+  // (sin conexión: se reintenta cada vez más espaciado).
+  const guardadoRef = useRef({ datos: inicial.datos, nombre: inicial.nombre || 'Diseño sin nombre', tipo: inicial.tipo || 'libre' });
+  const enCurso = useRef(null), idRef = useRef(inicial.id), miniPendiente = useRef(false), ultimaMini = useRef(0), primerCambio = useRef(0);
+  const [fallos, setFallos] = useState(0);
+  // La copia del navegador (si la última vez algo no llegó a guardarse).
+  const [respaldo, setRespaldo] = useState(() => leerRespaldo(inicial));
   const [panel, setPanel] = useState(panelInicial || 'anadir');
   const [imagenes, setImagenes] = useState(new Map());
   const [version, setVersion] = useState(0);
@@ -454,6 +482,9 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
   const enviado = useRef(inicial.datos), hayOtros = useRef(false), temporizador = useRef(null), ultimoCursor = useRef({ t: 0, x: 0, y: 0 });
   const zonaRef = useRef(null), lienzoRef = useRef(null), textoRef = useRef(null), arrastre = useRef(null), edicion = useRef(null), tramo = useRef(null), anim = useRef(null);
   const docRef = useRef(doc); docRef.current = doc;
+  const nombreRef = useRef(nombre); nombreRef.current = nombre;
+  const tipoRef = useRef(tipo); tipoRef.current = tipo;
+  idRef.current = idRef.current || id;
   const paginaRef = useRef(pagina); paginaRef.current = pagina;
   const selRef = useRef(seleccion); selRef.current = seleccion;
   const diseno = useMemo(() => paginaDe(doc, pagina), [doc, pagina]);
@@ -1055,7 +1086,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
     } else if (m.tipo === 'cursor') {
       setCursores(c => ({ ...c, [m.de]: { x: m.x, y: m.y, pagina: m.pagina, sel: m.sel } }));
     } else if (m.tipo === 'guardado') {
-      setSucio(false); cargarRevision();
+      cargarRevision();
     }
   }
   function moverCursor(ev) {
@@ -1089,28 +1120,87 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
     if (hayOtros.current) postVivo({ tipo: 'cursor', x: Math.round(ultimoCursor.current.x), y: Math.round(ultimoCursor.current.y), pagina, sel: seleccion });
   }, [seleccion, pagina]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  yo.current = { hacerZoom, zoomA, cortarArrastre, escala, leerCopia, pegarElementos, anadirImagen, anadirTexto, ventana, alVivo, mandarCambios };
+  yo.current = { guardar, porGuardar, hacerZoom, zoomA, cortarArrastre, escala, leerCopia, pegarElementos, anadirImagen, anadirTexto, ventana, alVivo, mandarCambios };
 
   // ── Guardar y exportar ──
-  async function guardar() {
-    if (guardando) return;
-    setGuardando(true);
-    try {
-      const mini = await miniatura(doc, ejemplo).catch(() => null);
-      const body = { nombre, tipo, datos: doc, miniatura: mini };
-      if (id) await api(`/api/admin/disenos/${id}`, { method: 'PUT', body });
-      else { const r = await api('/api/admin/disenos', { method: 'POST', body }); setId(r.id); }
-      setSucio(false); showToast?.('Diseño guardado.');
-      cargarRevision();
-      if (hayOtros.current) postVivo({ tipo: 'guardado' });
-    } catch (e) { alert(e.message); } finally { setGuardando(false); }
+  // ¿Hay algo distinto de lo último guardado? (Un diseño nuevo, solo cuando se ha tocado.)
+  function porGuardar() { return docRef.current !== guardadoRef.current.datos || nombreRef.current !== guardadoRef.current.nombre || tipoRef.current !== guardadoRef.current.tipo; }
+  // Guardar: a mano (Guardar, Ctrl+S) o solo (auto: sin aviso, y la miniatura como mucho
+  // una vez por minuto). Si ya se está guardando, espera y guarda lo último.
+  async function guardar(opc = {}) {
+    const { auto = false, conMini = !auto } = opc?.nativeEvent ? {} : opc;
+    while (enCurso.current) await enCurso.current.catch(() => {});
+    if (auto && !porGuardar() && !(conMini && miniPendiente.current)) return true;
+    const trabajo = (async () => {
+      setGuardando(true);
+      const datos = docRef.current, n = nombreRef.current, t = tipoRef.current;
+      try {
+        const hacerMini = conMini || Date.now() - ultimaMini.current > 60_000;
+        const mini = hacerMini ? await miniatura(datos, ejemplo).catch(() => null) : null;
+        const body = { nombre: n, tipo: t, datos, miniatura: mini };
+        if (idRef.current) await api(`/api/admin/disenos/${idRef.current}`, { method: 'PUT', body });
+        else { const r = await api('/api/admin/disenos', { method: 'POST', body }); idRef.current = r.id; setId(r.id); }
+        if (mini) { ultimaMini.current = Date.now(); miniPendiente.current = false; } else miniPendiente.current = true;
+        guardadoRef.current = { datos, nombre: n, tipo: t };
+        setSucio(porGuardar()); setFallos(0);
+        borrarRespaldo(idRef.current);
+        if (!auto) showToast?.('Diseño guardado.');
+        cargarRevision();
+        if (hayOtros.current) postVivo({ tipo: 'guardado' });
+        return true;
+      } catch (e) {
+        if (auto) setFallos(f => f + 1); else alert(e.message);
+        return false;
+      } finally { setGuardando(false); }
+    })();
+    enCurso.current = trabajo;
+    try { return await trabajo; } finally { if (enCurso.current === trabajo) enCurso.current = null; }
   }
+  // ── Guardado automático: 2,5 s después del último cambio (como mucho cada 20 s si no
+  // se para), al dejar la pestaña o la aplicación, y al salir del editor. Mientras tanto,
+  // una copia en el navegador por si se va la conexión o se cierra todo de golpe. ──
+  const pendiente = doc !== guardadoRef.current.datos || nombre !== guardadoRef.current.nombre || tipo !== guardadoRef.current.tipo;
+  useEffect(() => {
+    if (!pendiente) { primerCambio.current = 0; return undefined; }
+    if (!primerCambio.current) primerCambio.current = Date.now();
+    const espera = fallos ? Math.min(60_000, 5_000 * fallos) : Math.max(0, Math.min(2_500, primerCambio.current + 20_000 - Date.now()));
+    let t = null;
+    const intentar = () => {
+      if (arrastre.current) { t = setTimeout(intentar, 800); return; }   // a mitad de un arrastre, al soltar
+      yo.current.guardar({ auto: true });
+    };
+    t = setTimeout(intentar, espera);
+    return () => clearTimeout(t);
+  }, [doc, nombre, tipo, pendiente, fallos]);
+  useEffect(() => {
+    const idd = idRef.current;
+    if (!idd || !pendiente) return undefined;
+    const t = setTimeout(() => guardarRespaldo(idd, { nombre, tipo, datos: doc }), 700);
+    return () => clearTimeout(t);
+  }, [doc, nombre, tipo, pendiente]);
+  useEffect(() => {
+    const antes = (ev) => { if (yo.current.porGuardar() || enCurso.current) { ev.preventDefault(); ev.returnValue = ''; } };
+    const oculta = () => { if (document.visibilityState === 'hidden' && yo.current.porGuardar()) yo.current.guardar({ auto: true }); };
+    const enLinea = () => { if (yo.current.porGuardar()) yo.current.guardar({ auto: true }); };
+    window.addEventListener('beforeunload', antes); document.addEventListener('visibilitychange', oculta); window.addEventListener('online', enLinea);
+    return () => {
+      window.removeEventListener('beforeunload', antes); document.removeEventListener('visibilitychange', oculta); window.removeEventListener('online', enLinea);
+      // Si se sale del editor por otro sitio (la campanita, el menú), lo pendiente se guarda igual.
+      if (yo.current.porGuardar()) yo.current.guardar({ auto: true });
+    };
+  }, []);
   async function exportar(formato, escalaExp = 1, sinFondo = false) {
     setVerExportar(false);
     try { await exportarDiseno(doc, formato, nombre, { variables: ejemplo, escala: escalaExp, sinFondo }); }
     catch (e) { alert(`No se ha podido exportar: ${e.message}`); }
   }
-  function cerrar() { if (sucio && !window.confirm('Hay cambios sin guardar. ¿Salir sin guardarlos?')) return; onCerrar(); }
+  async function cerrar() {
+    if (porGuardar() || (idRef.current && miniPendiente.current)) {
+      const ok = await guardar({ auto: true, conMini: true });
+      if (!ok && !window.confirm('No se ha podido guardar (¿sin conexión?). ¿Salir sin los últimos cambios? Quedan guardados en este navegador.')) return;
+    }
+    onCerrar();
+  }
   function cambiarTamano(t, ajustar) {
     aplicarDoc(d => (ajustar ? adaptarDiseno(d, t.ancho, t.alto, ejemplo) : { ...d, ancho: t.ancho, alto: t.alto }));
     setVerTamano(false);
@@ -1261,7 +1351,8 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
           )}
         </div>}
         {movil && <button type="button" style={{ ...botonBarra, ...(verMas ? { borderColor: 'var(--purple)', color: 'var(--purple)' } : {}) }} onClick={() => setVerMas(v => !v)} aria-label="Más opciones" aria-expanded={verMas}>⋯</button>}
-        <button type="button" className="btn btn-sm btn-primary" disabled={guardando} onClick={guardar}>{guardando ? 'Guardando…' : sucio ? 'Guardar' : '✓ Guardado'}</button>
+        <button type="button" className="btn btn-sm btn-primary" disabled={guardando} onClick={guardar} title={fallos ? 'No se ha podido guardar (¿sin conexión?): se reintenta solo. Los cambios están a salvo en este navegador.' : 'Se guarda solo unos segundos después de cada cambio (Ctrl+S, ya)'}
+          style={fallos ? { background: 'var(--orange)', borderColor: 'var(--orange)' } : undefined}>{guardando ? 'Guardando…' : fallos ? '⚠ Sin guardar' : sucio ? 'Guardar' : '✓ Guardado'}</button>
       </div>
 
       <div style={{ position: 'relative', display: 'grid', minHeight: 0, ...(movil ? { gridTemplateColumns: 'minmax(0, 1fr)', gridTemplateRows: `minmax(0, 1fr) ${ALTO_BARRA_MOVIL}px` } : { gridTemplateColumns: `76px ${panelAbierto ? '300px' : '0px'} minmax(0, 1fr)` }) }}>
@@ -1513,6 +1604,13 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
         )}
       </div>
 
+      {respaldo && (
+        <div role="alert" style={{ position: 'fixed', top: 64, left: '50%', transform: 'translateX(-50%)', zIndex: 85, width: 'min(560px, calc(100vw - 24px))', boxSizing: 'border-box', background: 'var(--bg-2)', border: '1px solid var(--orange)', borderRadius: 12, boxShadow: 'var(--shadow)', padding: '10px 12px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ flex: '1 1 240px', fontSize: 13 }}>Hay cambios de este diseño que no llegaron a guardarse ({fechaRespaldo(respaldo.t)}). Están en este navegador.</span>
+          <button type="button" className="btn btn-sm btn-ghost" onClick={() => { borrarRespaldo(idRef.current); setRespaldo(null); }}>Descartarlos</button>
+          <button type="button" className="btn btn-sm btn-primary" onClick={() => { const r = respaldo; setRespaldo(null); aplicarDoc(() => r.datos); setNombre(r.nombre || nombre); setTipo(r.tipo || tipo); setSeleccion([]); setPagina(0); setSucio(true); }}>Recuperarlos</button>
+        </div>
+      )}
       {verTamano && (
         <Ventana titulo="Cambiar el tamaño del lienzo" onCerrar={() => setVerTamano(false)}>
           <CambiarTamano actual={diseno} onElegir={cambiarTamano} />
@@ -1532,6 +1630,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
       {ventana === 'ayuda' && (
         <Ventana titulo="Cómo se usa" onCerrar={() => setVentana(null)} ancho={560}>
           <div style={{ fontSize: 13.5, color: 'var(--ink-2)', display: 'grid', gap: 10 }}>
+              <span>Se guarda solo, unos segundos después de cada cambio (y al salir). Si se va la conexión, los cambios se quedan en este navegador hasta que vuelva.</span>
               <span>Pulsa algo del lienzo para cambiarlo. Arrástralo para moverlo, tira de los cuadraditos para el tamaño y del círculo de arriba para girarlo.</span>
               <span>Varios a la vez: con Mayús + clic o arrastrando un recuadro desde un hueco. Doble clic en un texto para escribir y en una foto para recortarla. Las fotos del panel (o del ordenador) se pueden soltar encima de un marco.</span>
               {tactil && <span>Con el dedo: toca algo para elegirlo y arrástralo para moverlo; toca dos veces un texto para escribir o una foto para recortarla; mantén pulsado para más opciones. Pellizca para acercar o alejar, y arrastra por un hueco para moverte por el diseño.</span>}
