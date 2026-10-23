@@ -872,6 +872,69 @@ export const CORREOS_SISTEMA = {
             PEQ('Solo es un momento. Si no os apetece, no pasa nada.'),
         ]),
     },
+    aula_leccion_nueva: {
+        grupo: 'familias', nombre: 'Aula virtual: lección nueva', cuando: 'El día que se abre una lección con fecha, a quien hace el curso (y a su familia, si es menor). Una vez por lección.',
+        asunto: 'Ya está abierta «{leccion}»',
+        variables: {
+            alumno: { que: 'Nombre y apellidos del alumno', ejemplo: 'Lucía García' }, curso: { que: 'El curso', ejemplo: 'Inglés para viajar' },
+            leccion: { que: 'La lección', ejemplo: 'Tema 3: en el aeropuerto' }, enlace: { que: 'Enlace a la lección', ejemplo: 'https://www.aimeducation.es/aula/3/curso' },
+        },
+        obligatorio: ['enlace'],
+        diseno: () => d([
+            T('Hola,'),
+            T('Ya está abierta una lección nueva del curso **«{curso}»** de **{alumno}**: **«{leccion}»**.'),
+            BTN([{ texto: 'Verla', url: '{enlace}', fondo: '', color: '#ffffff' }]),
+        ]),
+    },
+    aula_tarea_plazo: {
+        grupo: 'familias', nombre: 'Aula virtual: el plazo de una tarea acaba', cuando: 'Menos de un día antes de que acabe el plazo de una tarea, a quien aún no la ha entregado.',
+        asunto: 'El plazo de «{tarea}» acaba {cuando}',
+        variables: {
+            alumno: { que: 'Nombre y apellidos del alumno', ejemplo: 'Lucía García' }, curso: { que: 'El curso', ejemplo: 'Inglés para viajar' },
+            tarea: { que: 'La tarea', ejemplo: 'Escribe una postal' }, cuando: { que: 'Cuándo acaba el plazo', ejemplo: 'mañana a las 23:59' },
+            enlace: { que: 'Enlace a la tarea', ejemplo: 'https://www.aimeducation.es/aula/3/curso' },
+        },
+        obligatorio: ['enlace'],
+        diseno: () => d([
+            T('Hola,'),
+            T('A **{alumno}** le queda por entregar la tarea **«{tarea}»** del curso **«{curso}»**. El plazo acaba **{cuando}**.'),
+            BTN([{ texto: 'Entregarla', url: '{enlace}', fondo: '', color: '#ffffff' }]),
+            PEQ('Después también se puede entregar, pero sale como «fuera de plazo».'),
+        ]),
+    },
+    aula_directo: {
+        grupo: 'familias', nombre: 'Aula virtual: clase en directo', cuando: 'Antes de cada clase en directo: el día antes y una hora antes, a quien hace el curso (y a su familia, si es menor).',
+        asunto: 'Clase en directo {cuando}: «{clase}»',
+        variables: {
+            alumno: { que: 'Nombre y apellidos del alumno', ejemplo: 'Lucía García' }, curso: { que: 'El curso', ejemplo: 'Inglés para viajar' },
+            clase: { que: 'La clase', ejemplo: 'Conversación: en el hotel' }, cuando: { que: 'Cuándo es', ejemplo: 'mañana a las 18:00' },
+            meet: { que: 'Enlace de Google Meet', ejemplo: 'https://meet.google.com/abc-defg-hij' }, enlace: { que: 'Enlace a la clase en el curso', ejemplo: 'https://www.aimeducation.es/aula/3/curso' },
+        },
+        obligatorio: ['enlace'],
+        diseno: () => d([
+            T('Hola,'),
+            T('La clase en directo **«{clase}»** del curso **«{curso}»** de **{alumno}** es **{cuando}**.'),
+            BTN([{ texto: 'Entrar a la clase', url: '{meet}', fondo: '', color: '#ffffff' }, { texto: 'Ver en el curso', url: '{enlace}', fondo: '#eeeeee', color: '#333333' }]),
+            PEQ('Es por Google Meet: desde el ordenador se entra con el navegador y desde el móvil, con la app de Meet.'),
+        ]),
+    },
+    aula_inactivo: {
+        grupo: 'familias', nombre: 'Aula virtual: ¿seguimos con el curso?', cuando: 'A quien lleva unos días sin entrar en un curso que no ha terminado (una vez cada vez que lo deja). El profesor también puede mandarlo.',
+        asunto: '¿Seguimos con «{curso}»?',
+        variables: {
+            alumno: { que: 'Nombre y apellidos del alumno', ejemplo: 'Lucía García' }, curso: { que: 'El curso', ejemplo: 'Inglés para viajar' },
+            dias: { que: 'Días sin entrar', ejemplo: '12' }, quedan: { que: 'Lecciones que le quedan', ejemplo: '5' },
+            hace: { que: '«: hace 12 días que no entra», «y aún no ha entrado» o nada (si entró hace poco)', ejemplo: ': hace 12 días que no entra' },
+            enlace: { que: 'Enlace al curso', ejemplo: 'https://www.aimeducation.es/aula/3/curso' },
+        },
+        obligatorio: ['enlace'],
+        diseno: () => d([
+            T('Hola,'),
+            T('**{alumno}** tiene a medias el curso **«{curso}»**{hace}. Le quedan **{quedan} lecciones**: ¡con un rato cada semana se termina enseguida!'),
+            BTN([{ texto: 'Seguir con el curso', url: '{enlace}', fondo: '', color: '#ffffff' }]),
+            PEQ('Si tenéis cualquier duda del curso, se le puede preguntar al profesor desde la propia lección, en «Dudas».'),
+        ]),
+    },
     ticket_resuelto: {
         grupo: 'familias', nombre: 'Soporte: tu consulta está resuelta', cuando: 'Cuando se resuelve o se cierra un ticket, a quien lo abrió (familia o personal), si no es quien lo cierra.',
         asunto: 'Resuelto: {asunto}',

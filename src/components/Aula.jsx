@@ -20,10 +20,19 @@ export const TIPO_LECCION = {
   archivo: { nombre: 'Archivo', icono: '📎' },
   tarea: { nombre: 'Tarea', icono: '✏️' },
   cuestionario: { nombre: 'Cuestionario', icono: '❓' },
+  directo: { nombre: 'Clase en directo', icono: '📡' },
 };
 export const mb = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(b >= 10 * 1048576 ? 0 : 1).replace('.', ',')} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
 const euros = (n) => `${Number(n).toFixed(2).replace('.', ',')} €`;
 const fmtHora = (d) => (d ? new Date(d).toLocaleString('es-ES', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }) : '');
+// «el lunes 3 de noviembre a las 18:00»
+export const fechaLarga = (d) => (d ? `el ${new Date(d).toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' }).replace(',', '')} a las ${new Date(d).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}` : '');
+// «2 días y 3 h», «45 min»
+const queda = (ms) => {
+  const m = Math.max(0, Math.round(ms / 60000)), d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mi = m % 60;
+  return d ? `${d} ${d === 1 ? 'día' : 'días'}${h ? ` y ${h} h` : ''}` : h ? `${h} h${mi ? ` y ${mi} min` : ''}` : `${mi} min`;
+};
+const textoCerrada = (x) => (x.cerrada?.hasta ? `Se abre ${fechaLarga(x.cerrada.hasta)}` : x.cerrada?.tras ? `Se abre al terminar «${x.cerrada.tras}»` : '');
 
 // El reproductor de un enlace de YouTube o Vimeo (igual que en el servidor).
 export function incrustarVideo(url) {
@@ -73,6 +82,7 @@ function Progreso({ pct, ancho = '100%' }) {
 // abrirlas; un cuestionario, al sacar un 5; una tarea, cuando el profesor la aprueba.
 function estadoLeccion(x) {
   if (x.bloqueada) return { icono: '🔒', texto: 'Del curso completo', color: 'var(--ink-3)' };
+  if (x.cerrada && !x.hecha) return { icono: '🔒', texto: textoCerrada(x), color: 'var(--ink-3)' };
   if (x.hecha) return { icono: '✓', texto: x.tipo === 'tarea' || x.tipo === 'cuestionario' ? 'Aprobada' : 'Vista', color: 'var(--teal)' };
   if (x.tipo === 'tarea' && x.entrega) {
     if (!x.entrega.corregida_at) return { icono: '⏳', texto: 'Entregada: falta que la corrija el profesor', color: 'var(--orange)' };
@@ -293,6 +303,8 @@ function FichaCurso({ id }) {
                   <span key={l.id} style={{ display: 'flex', gap: 10, fontSize: 14, color: 'var(--ink-2)', alignItems: 'center' }}>
                     <span style={{ width: 20, textAlign: 'center', color: l.hecha ? 'var(--teal)' : undefined }}>{l.hecha ? '✓' : TIPO_LECCION[l.tipo].icono}</span>{l.titulo}
                     {l.gratis && <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--teal)', background: 'color-mix(in oklab, var(--teal) 12%, var(--bg-2))', padding: '1px 8px', borderRadius: 999 }}>Gratis</span>}
+                    {l.tipo === 'directo' && l.directoAt && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>· {new Date(l.directoAt).toLocaleString('es-ES', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>}
+                    {l.tipo !== 'directo' && l.abreAt && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>· se abre el {new Date(l.abreAt).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })}</span>}
                   </span>
                 ))}
               </div>
@@ -330,7 +342,7 @@ function AulaAprender({ id }) {
     if (!todas.length || actual) return;
     const pedida = Number(new URLSearchParams(path.includes('?') ? path.slice(path.indexOf('?')) : '').get('leccion'));
     // En la parte gratis, se empieza por una que se pueda ver.
-    const abiertas = todas.filter(l => !l.bloqueada);
+    const abiertas = todas.filter(l => !l.bloqueada && !l.cerrada);
     setActual((todas.find(l => l.id === pedida) || abiertas.find(l => !l.hecha) || abiertas[0] || todas[0]).id);
   }, [todas, actual, path]);
   const l = todas.find(x => x.id === actual);
@@ -350,12 +362,13 @@ function AulaAprender({ id }) {
 
   // Las de leer, ver o descargar cuentan como terminadas al abrirlas (#455).
   useEffect(() => {
-    if (!c || c.gestor || !l || l.bloqueada || l.hecha || !['texto', 'video', 'archivo'].includes(l.tipo)) return;
+    if (!c || c.gestor || !l || l.bloqueada || l.cerrada || l.hecha || !['texto', 'video', 'archivo'].includes(l.tipo)) return;
     marcar(l, true);
   }, [l?.id, c?.gestor]); // eslint-disable-line react-hooks/exhaustive-deps
   async function marcar(leccion, hecha) {
     setC(x => ({ ...x, temas: x.temas.map(t => ({ ...t, lecciones: t.lecciones.map(y => (y.id === leccion.id ? { ...y, hecha } : y)) })) }));
     await fetch(`/api/aula/lecciones/${leccion.id}/hecha`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hecha }) }).catch(() => {});
+    if (todas.some(x => x.cerrada?.tras)) cargar();
   }
   function ir(n) {
     const sig = todas[n];
@@ -387,7 +400,9 @@ function AulaAprender({ id }) {
               style={{ font: 'inherit', textAlign: 'left', cursor: 'pointer', display: 'flex', gap: 8, alignItems: 'center', padding: '8px 10px', borderRadius: 10, border: 0,
                 background: x.id === actual ? 'color-mix(in oklab, var(--purple) 12%, var(--bg-2))' : 'transparent', color: 'var(--ink)', fontWeight: x.id === actual ? 800 : 500, fontSize: 14 }}>
               <span title={estadoLeccion(x)?.texto} style={{ width: 20, flex: 'none', textAlign: 'center', fontWeight: 800, color: estadoLeccion(x)?.color || 'inherit' }}>{estadoLeccion(x)?.icono || TIPO_LECCION[x.tipo].icono}</span>
-              <span style={{ flex: 1, color: x.bloqueada ? 'var(--ink-3)' : undefined }}>{x.titulo}</span>
+              <span style={{ flex: 1, color: x.bloqueada || x.cerrada ? 'var(--ink-3)' : undefined }}>{x.titulo}
+                {x.tipo === 'directo' && x.directo?.at && <span style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--ink-3)' }}>{new Date(x.directo.at).toLocaleString('es-ES', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>}
+              </span>
             </button>
           ))}
         </div>
@@ -432,13 +447,25 @@ function AulaAprender({ id }) {
               </div>
             </div>
           )}
-          {l && !l.bloqueada && (
+          {l && l.cerrada && !l.bloqueada && (
+            <div style={{ ...tarjeta, padding: 28, display: 'grid', gap: 12, justifyItems: 'start' }}>
+              <span style={{ fontSize: 13, color: 'var(--ink-3)', fontWeight: 700 }}>{l.tema} · {TIPO_LECCION[l.tipo].nombre}</span>
+              <h1 style={{ margin: 0, fontSize: 'clamp(22px, 4vw, 30px)' }}>🔒 {l.titulo}</h1>
+              <p style={{ margin: 0, color: 'var(--ink-2)', fontSize: 16 }}>{textoCerrada(l)}.{l.cerrada.hasta ? ' Te avisaremos cuando esté.' : ''}</p>
+              {l.tipo === 'directo' && l.directo?.at && <p style={{ margin: 0, color: 'var(--ink-2)' }}>📡 La clase en directo es {fechaLarga(l.directo.at)}.</p>}
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button type="button" className="btn btn-sm btn-outline" disabled={i <= 0} onClick={() => ir(i - 1)}>← Anterior</button>
+                <button type="button" className="btn btn-sm btn-outline" disabled={i >= todas.length - 1} onClick={() => ir(i + 1)}>Siguiente →</button>
+              </div>
+            </div>
+          )}
+          {l && !l.bloqueada && !l.cerrada && (
             <>
               <div style={{ display: 'grid', gap: 4 }}>
                 <span style={{ fontSize: 13, color: 'var(--ink-3)', fontWeight: 700 }}>{l.tema} · {TIPO_LECCION[l.tipo].nombre}</span>
                 <h1 style={{ margin: 0, fontSize: 'clamp(24px, 4vw, 34px)', lineHeight: 1.15 }}>{l.titulo}</h1>
               </div>
-              <Leccion key={l.id} l={l} gestor={c.gestor} previa={c.previa} onEntregada={cargar} />
+              <Leccion key={l.id} l={l} gestor={c.gestor} previa={c.previa} curso={c.titulo} onEntregada={cargar} onVista={() => { if (!l.hecha && !c.gestor) marcar(l, true); }} />
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', borderTop: '1px solid var(--line)', paddingTop: 16 }}>
                 <button type="button" className="btn btn-sm btn-outline" disabled={i <= 0} onClick={() => ir(i - 1)}>← Anterior</button>
                 <div style={{ flex: 1 }} />
@@ -455,16 +482,24 @@ function AulaAprender({ id }) {
               )}
             </>
           )}
-          {!c.previa && <DudasCurso cursoId={id} leccion={l && !l.bloqueada ? l : null} gestor={c.gestor} abrir={dudaPedida} />}
+          {!c.previa && <DudasCurso cursoId={id} leccion={l && !l.bloqueada && !l.cerrada ? l : null} gestor={c.gestor} abrir={dudaPedida} />}
         </article>
       </div>
     </div>
   );
 }
 
-function Leccion({ l, gestor, previa, onEntregada }) {
+function Leccion({ l, gestor, previa, curso, onEntregada, onVista }) {
+  const vencida = l.plazoAt && new Date(l.plazoAt) < new Date();
   return (
     <div style={{ display: 'grid', gap: 16 }}>
+      {l.tipo === 'directo' && <ClaseDirecto l={l} curso={curso} gestor={gestor} onVista={onVista} />}
+      {l.tipo === 'tarea' && l.plazoAt && (
+        <div style={{ padding: '10px 14px', borderRadius: 12, fontSize: 14, fontWeight: 700,
+          background: `color-mix(in oklab, ${vencida ? 'var(--pink)' : 'var(--orange)'} 12%, var(--bg-2))` }}>
+          {vencida ? `⏰ El plazo acabó ${fechaLarga(l.plazoAt)}. ${l.entrega ? '' : 'Aún puedes entregarla: saldrá como «fuera de plazo».'}` : `⏰ Entrega hasta ${fechaLarga(l.plazoAt)}.`}
+        </div>
+      )}
       {l.tipo === 'video' && l.video?.embed && (
         <div style={{ aspectRatio: '16 / 9', borderRadius: 16, overflow: 'hidden', background: '#000' }}>
           <iframe src={l.video.embed} title={l.titulo} style={{ width: '100%', height: '100%', border: 0 }} allow="encrypted-media; picture-in-picture; fullscreen" allowFullScreen />
@@ -488,6 +523,66 @@ function Leccion({ l, gestor, previa, onEntregada }) {
         ? <p style={{ margin: 0, fontSize: 14, color: 'var(--ink-3)' }}>Aquí el alumno escribe su respuesta o adjunta un archivo. Las entregas se corrigen desde el panel, en «Aula virtual».</p>
         : previa ? <p style={{ margin: 0, fontSize: 14, color: 'var(--ink-3)' }}>Para entregar la tarea y que te la corrijan, consigue el curso completo.</p>
         : <Entrega l={l} onEntregada={onEntregada} />)}
+    </div>
+  );
+}
+
+// ═══════════════════════ Clases en directo ═══════════════════════
+// Antes: cuándo es, cuánto falta y apuntarla en el calendario. Desde 15 minutos
+// antes hasta que acaba: el botón para entrar al Meet. Después: la grabación, si
+// la hay. Cuenta como vista al entrar o al abrirla una vez terminada.
+const ANTES_DE_ENTRAR = 15 * 60000;
+function enlaceCalendario(l, curso) {
+  const f = (d) => new Date(d).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const fin = new Date(new Date(l.directo.at).getTime() + l.directo.min * 60000);
+  const detalles = `Clase en directo de «${curso}» (aula virtual de Aim Education).${l.directo.enlace ? `\nPara entrar: ${l.directo.enlace}` : ''}\nTambién desde el curso: ${window.location.origin}/aula`;
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(`${l.titulo} · ${curso}`)}&dates=${f(l.directo.at)}/${f(fin)}&details=${encodeURIComponent(detalles)}${l.directo.enlace ? `&location=${encodeURIComponent(l.directo.enlace)}` : ''}`;
+}
+function bajarIcs(l, curso) {
+  const f = (d) => new Date(d).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const esc = (t) => String(t).replace(/[\\,;]/g, m => `\\${m}`).replace(/\n/g, '\\n');
+  const fin = new Date(new Date(l.directo.at).getTime() + l.directo.min * 60000);
+  const lineas = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Aim Education//Aula virtual//ES', 'BEGIN:VEVENT', `UID:aula-directo-${l.id}@aimeducation.es`, `DTSTAMP:${f(new Date())}`,
+    `DTSTART:${f(l.directo.at)}`, `DTEND:${f(fin)}`, `SUMMARY:${esc(`${l.titulo} · ${curso}`)}`, l.directo.enlace ? `LOCATION:${esc(l.directo.enlace)}` : null,
+    `DESCRIPTION:${esc(`Clase en directo del aula virtual.${l.directo.enlace ? ` Para entrar: ${l.directo.enlace}` : ''}`)}`,
+    'BEGIN:VALARM', 'TRIGGER:-PT30M', 'ACTION:DISPLAY', 'DESCRIPTION:Clase en directo', 'END:VALARM', 'END:VEVENT', 'END:VCALENDAR'].filter(Boolean);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([lineas.join('\r\n')], { type: 'text/calendar' }));
+  a.download = `clase-${l.id}.ics`; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+function ClaseDirecto({ l, curso, gestor, onVista }) {
+  const [ahora, setAhora] = useState(Date.now());
+  useEffect(() => { const t = setInterval(() => setAhora(Date.now()), 20000); return () => clearInterval(t); }, []);
+  const ini = new Date(l.directo.at).getTime(), fin = ini + l.directo.min * 60000;
+  const fase = ahora < ini - ANTES_DE_ENTRAR ? 'antes' : ahora < fin ? 'ahora' : 'despues';
+  // Terminada, con solo abrirla ya cuenta.
+  useEffect(() => { if (fase === 'despues') onVista?.(); }, [fase]); // eslint-disable-line react-hooks/exhaustive-deps
+  const g = l.directo.grabacion;
+  return (
+    <div style={{ ...tarjeta, padding: 22, display: 'grid', gap: 12 }}>
+      {fase === 'ahora' && <span style={{ justifySelf: 'start', fontSize: 12, fontWeight: 900, color: '#fff', background: 'var(--pink)', padding: '3px 10px', borderRadius: 999 }}>{ahora < ini ? `EMPIEZA EN ${queda(ini - ahora).toUpperCase()}` : '● EN DIRECTO AHORA'}</span>}
+      <b style={{ fontSize: 20 }}>📡 Clase en directo {fechaLarga(l.directo.at)}</b>
+      <span style={{ color: 'var(--ink-3)', fontSize: 14 }}>Dura unos {l.directo.min} minutos.{fase === 'antes' ? ` Faltan ${queda(ini - ahora)}.` : ''}</span>
+      {(fase === 'ahora' || gestor) && (l.directo.enlace
+        ? <a className="btn btn-primary" style={{ justifySelf: 'start' }} href={l.directo.enlace} target="_blank" rel="noopener noreferrer" onClick={() => onVista?.()}>🎥 Entrar a la clase (Google Meet)</a>
+        : <span style={{ color: 'var(--pink)', fontWeight: 700 }}>Falta el enlace de la clase: avisa al profesor desde «Dudas».</span>)}
+      {fase === 'antes' && (
+        <>
+          <span style={{ fontSize: 14, color: 'var(--ink-2)' }}>El botón para entrar se activa 15 minutos antes. Te avisaremos el día antes y una hora antes.</span>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <a className="btn btn-sm btn-outline" href={enlaceCalendario(l, curso)} target="_blank" rel="noopener noreferrer">📅 Añadir a Google Calendar</a>
+            <button type="button" className="btn btn-sm btn-ghost" onClick={() => bajarIcs(l, curso)}>Otro calendario (.ics)</button>
+          </div>
+        </>
+      )}
+      {fase === 'despues' && (g ? (
+        <>
+          <span style={{ fontSize: 14, color: 'var(--ink-2)' }}>La clase ya ha terminado. Aquí tienes la grabación:</span>
+          {g.embed && <div style={{ aspectRatio: '16 / 9', borderRadius: 14, overflow: 'hidden', background: '#000' }}><iframe src={g.embed} title={`Grabación: ${l.titulo}`} style={{ width: '100%', height: '100%', border: 0 }} allow="encrypted-media; picture-in-picture; fullscreen" allowFullScreen /></div>}
+          {g.src && <video src={g.src} controls playsInline preload="metadata" controlsList="nodownload" style={{ width: '100%', maxHeight: '75vh', borderRadius: 14, background: '#000' }} />}
+        </>
+      ) : <span style={{ fontSize: 14, color: 'var(--ink-2)' }}>La clase ya ha terminado. Cuando el profesor suba la grabación, estará aquí.</span>)}
     </div>
   );
 }
@@ -788,7 +883,7 @@ export function MisCursos() {
   if (!d) return <p style={{ color: 'var(--ink-3)' }}>Cargando…</p>;
   return (
     <div style={{ display: 'grid', gap: 16 }}>
-      {d.cursos.length === 0 && (
+      {d.cursos.length === 0 && !d.familia?.length && (
         <div className="panel" style={{ textAlign: 'center', padding: 28, display: 'grid', gap: 10, justifyItems: 'center' }}>
           <b style={{ fontSize: 17 }}>Aún no estás en ningún curso</b>
           <span style={{ color: 'var(--ink-3)', fontSize: 14 }}>{d.cursosPublicados ? 'En el aula virtual tienes cursos online, gratis y de pago, para hacer a tu ritmo.' : 'Pronto habrá cursos online para hacer a tu ritmo.'}</span>
@@ -823,6 +918,29 @@ export function MisCursos() {
         </div>
       )}
       {d.cursos.length > 0 && <button type="button" className="btn btn-ghost btn-sm" style={{ justifySelf: 'start' }} onClick={() => go('/aula')}>Ver todos los cursos del aula →</button>}
+      {d.familia?.length > 0 && (
+        <div style={{ display: 'grid', gap: 12, marginTop: 8 }}>
+          <h3 style={{ margin: 0, fontSize: 17 }}>Los cursos de tus hijos</h3>
+          <div style={{ display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))' }}>
+            {d.familia.map(c => {
+              const dias = c.ultimoAcceso ? Math.floor((Date.now() - new Date(c.ultimoAcceso).getTime()) / 86400000) : null;
+              return (
+                <div key={`${c.nombre}-${c.id}`} className="panel" style={{ padding: 16, display: 'grid', gap: 8, alignContent: 'start' }}>
+                  <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--purple)' }}>{c.nombre}</span>
+                  <b style={{ fontSize: 16 }}>{c.titulo}</b>
+                  <Progreso pct={c.progreso} />
+                  <span style={{ fontSize: 13, color: dias != null && dias > 7 && c.progreso < 100 ? 'var(--orange)' : 'var(--ink-3)' }}>
+                    {c.progreso === 100 ? '🎉 Curso terminado' : dias == null ? 'Aún no ha entrado' : `Entró ${dias <= 0 ? 'hoy' : dias === 1 ? 'ayer' : `hace ${dias} días`}`}
+                  </span>
+                  {c.proximaClase && <span style={{ fontSize: 13 }}>📡 Próxima clase en directo: {fechaLarga(c.proximaClase)}</span>}
+                  {c.tareas > 0 && c.progreso < 100 && <span style={{ fontSize: 13 }}>✏️ {c.tareas} {c.tareas === 1 ? 'tarea por entregar' : 'tareas por entregar'}</span>}
+                  <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Lo hace con su cuenta. Los avisos del curso os llegan también a vosotros.</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

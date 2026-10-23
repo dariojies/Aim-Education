@@ -24,7 +24,7 @@ import { crearReportes, pendienteAhora, SQL_MOVIMIENTOS } from './reportes.js';
 import { enviarZipFotos, nombreArchivo as nombreEnZip, crearZip, cabeceraAdjunto } from './zip.js';
 import { crearPublicaciones, crearTablasPublicaciones } from './publicaciones.js';
 import { crearConexionMeta, cargarConexionMeta, tokenPagina, conexionMeta } from './meta-conexion.js';
-import { crearAula, crearTablasAula, entregasPorCorregir, tareasCorregidas, dudasPorResponder, dudasContestadas } from './aula.js';
+import { crearAula, crearTablasAula, entregasPorCorregir, tareasCorregidas, dudasPorResponder, dudasContestadas, avisosAulaDe, avisosAulaPendientes, marcarAvisoAula, soltarAvisoAula } from './aula.js';
 import { crearTienda, crearTablasTienda, pedidosPorAtender, pedidosEnMarcha } from './tienda.js';
 import { limpiarHtml, htmlParaFuera, textoDeHtml } from './noticias-html.js';
 import { crearSeo } from './seo.js';
@@ -5247,7 +5247,7 @@ app.use(crearReportes({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireP
 // El aula virtual (#433). La sesión opcional y el pago online se declaran más
 // abajo: se pasan envueltos para leerlos al usarlos.
 app.use(crearAula({ pool, authenticateSession, requireSeccion, permisos,
-    sesionOpcional: (req) => sesionOpcional(req), pagosOnlineAbiertos: () => pagosOnlineAbiertos() }).router);
+    sesionOpcional: (req) => sesionOpcional(req), pagosOnlineAbiertos: () => pagosOnlineAbiertos() , avisar: (x) => (mailTransporter ? mandarAvisoAula(x) : Promise.resolve(false)) }).router);
 // La tienda online (#432).
 const tiendaOnline = crearTienda({ pool, authenticateSession, requireSeccion,
     sesionOpcional: (req) => sesionOpcional(req), pagosOnlineAbiertos: () => pagosOnlineAbiertos() });
@@ -11267,6 +11267,12 @@ const AJUSTES_SISTEMA = {
         dias: { nombre: 'Días sin moverse para avisar', unidad: 'días', min: 2, max: 60, def: 7 },
     },
     brickslab_valorar: { hora: { nombre: 'A partir de qué hora sale (hasta las 21 h)', unidad: 'h', min: 8, max: 20, def: 17 } },
+    aula_leccion_nueva: { hora: { nombre: 'A partir de qué hora sale (hasta las 21 h)', unidad: 'h', min: 7, max: 20, def: 9 } },
+    aula_tarea_plazo: { hora: { nombre: 'A partir de qué hora sale (hasta las 21 h)', unidad: 'h', min: 7, max: 20, def: 9 } },
+    aula_inactivo: {
+        hora: { nombre: 'A partir de qué hora sale (hasta las 21 h)', unidad: 'h', min: 7, max: 20, def: 17 },
+        dias: { nombre: 'Días sin entrar para avisar', unidad: 'días', min: 3, max: 60, def: 10 },
+    },
     tickets_resumen_semanal: {
         dia: { nombre: 'Qué día de la semana (1 = lunes)', unidad: 'día', min: 1, max: 7, def: 1 },
         hora: { nombre: 'A partir de qué hora sale', unidad: 'h', min: 0, max: 22, def: 9 },
@@ -13416,6 +13422,24 @@ async function avisosFamilia(me) {
                 texto: `Te han corregido «${e.titulo}»`,
                 detalle: `${e.curso} · ${e.nota != null ? `${String(Number(e.nota)).replace('.', ',')} / 10` : e.apto ? 'Apto' : 'No apto'}`,
             });
+        }
+
+        // El aula virtual: lecciones que se abren, plazos y clases en directo, suyas y
+        // de sus hijos (a los padres, con el nombre delante).
+        {
+            const hijos = (await pool.query(`SELECT persona_id FROM aim_familias WHERE familiar_id = $1 AND LOWER(tipo) IN ('madre','padre','tutor','tutora','tutor/a')`, [me]).catch(() => ({ rows: [] }))).rows.map(x => x.persona_id);
+            const hora = (d) => new Date(d).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Madrid' });
+            const dia = (d) => new Date(d).toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'Europe/Madrid' }).replace(',', '');
+            for (const a of await avisosAulaDe(pool, [me, ...hijos]).catch(() => [])) {
+                const de = String(a.user_id) === String(me) ? '' : `${a.nombre}: `;
+                const enDirecto = a.tipo === 'directo' && new Date(a.directo_at) <= new Date();
+                const [texto, fecha] = a.tipo === 'directo'
+                    ? [enDirecto ? `${de}clase en directo ahora: «${a.titulo}»` : `${de}clase en directo el ${dia(a.directo_at)} a las ${hora(a.directo_at)}`, a.directo_at]
+                    : a.tipo === 'tarea' && a.plazo_at && new Date(a.plazo_at) > new Date() && new Date(a.plazo_at) < new Date(Date.now() + 48 * 3600000)
+                        ? [`${de}entrega «${a.titulo}» antes del ${dia(a.plazo_at)} a las ${hora(a.plazo_at)}`, a.plazo_at]
+                        : [`${de}ya está abierta «${a.titulo}»`, a.abre_at];
+                avisos.push({ tipo: 'avisos', destino: `/aula/${a.curso_id}/curso?leccion=${a.id}`, clave: `aula:${a.tipo === 'directo' ? 'directo' : 'leccion'}:${a.id}:${a.user_id}`, marca: fecha, fecha, texto, detalle: a.curso });
+            }
         }
 
         // Dudas del aula virtual contestadas (#461).
@@ -21353,6 +21377,66 @@ async function recordatoriosValoracion() {
     });
 }
 app.use('/api/me/brickslab', authenticateSession, brickslab.familia);
+
+// ── Aula virtual: avisos por correo ──────────────────────────────────────────
+// Lección nueva, plazo de una tarea, clase en directo (el día antes y una hora
+// antes) y quien deja el curso unos días. Al alumno y, si es menor de edad o no
+// tiene correo, a sus padres. Los de la clase, cuando tocan; los demás, desde la
+// hora puesta en Automatismos hasta las 21 h. Con el aviso, al móvil (#218).
+async function correosAvisoAula(userId) {
+    const x = (await pool.query(
+        `SELECT u.email, (u.birthday IS NOT NULL AND u.birthday > CURRENT_DATE - INTERVAL '18 years') AS menor,
+                COALESCE((SELECT array_agg(p.email) FROM aim_familias f JOIN users p ON p.user_id = f.familiar_id
+                          WHERE f.persona_id = u.user_id AND LOWER(f.tipo) IN ('madre','padre','tutor','tutora','tutor/a') AND COALESCE(p.email, '') <> ''), '{}') AS padres
+         FROM users u WHERE u.user_id = $1`, [userId])).rows[0];
+    if (!x) return [];
+    const lista = [x.email, ...(x.menor || !x.email ? x.padres : [])].map(e => String(e || '').trim().toLowerCase()).filter(e => e && !esCorreoInterno(e));
+    return [...new Set(lista)];
+}
+const PLANTILLA_AVISO_AULA = { abre: 'aula_leccion_nueva', plazo: 'aula_tarea_plazo', directo1d: 'aula_directo', directo1h: 'aula_directo', inactivo: 'aula_inactivo' };
+function datosAvisoAula(x) {
+    const enlace = `${URL_PUBLICA_WEB}/aula/${x.curso_id}/curso${x.leccion_id ? `?leccion=${x.leccion_id}` : ''}`;
+    const hora = (d) => new Date(d).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Madrid' });
+    const diaDe = (d) => new Date(d).toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' });
+    const cuando = (d) => {
+        const hoy = diaDe(new Date()), manana = diaDe(new Date(Date.now() + 86400000));
+        return diaDe(d) === hoy ? `hoy a las ${hora(d)}` : diaDe(d) === manana ? `mañana a las ${hora(d)}`
+            : `el ${new Date(d).toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'Europe/Madrid' }).replace(',', '')} a las ${hora(d)}`;
+    };
+    const base = { alumno: x.alumno, curso: x.curso, enlace };
+    if (x.aviso === 'abre') return { ...base, leccion: x.titulo };
+    if (x.aviso === 'plazo') return { ...base, tarea: x.titulo, cuando: cuando(x.plazo_at) };
+    if (x.aviso === 'inactivo') return { ...base, dias: String(x.dias), quedan: String(x.quedan), hace: x.nunca ? ' y aún no ha entrado' : x.dias >= 3 ? `: hace ${x.dias} días que no entra` : '' };
+    return { ...base, clase: x.titulo, cuando: x.aviso === 'directo1h' ? `dentro de un rato, a las ${hora(x.directo_at)}` : cuando(x.directo_at), meet: x.enlace || x.meet_url || enlace };
+}
+// Manda un aviso del aula (ya marcado). true si ha salido algún correo.
+async function mandarAvisoAula(x) {
+    const correos = await correosAvisoAula(x.user_id);
+    if (!correos.length) return false;
+    const c = await correoSistema(PLANTILLA_AVISO_AULA[x.aviso], datosAvisoAula(x));
+    await mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: correos.join(','), ...c });
+    return true;
+}
+async function recordatoriosAula() {
+    if (!mailTransporter) return;
+    const est = await estadoCorreosSistema(), h = horaMadridAhora();
+    const pendientes = await avisosAulaPendientes(pool, { diasSinEntrar: await ajusteSistema('aula_inactivo', 'dias') });
+    for (const x of pendientes) {
+        const plantilla = PLANTILLA_AVISO_AULA[x.aviso];
+        if (!plantilla || est[plantilla]?.apagado) continue;
+        if (!x.aviso.startsWith('directo') && (h < await ajusteSistema(plantilla, 'hora') || h >= 21)) continue;
+        if (!(await marcarAvisoAula(pool, x.user_id, x.clave))) continue;
+        try {
+            // Si no quiere avisos de sus actividades (#170), por correo no (en la campanita, sí).
+            const act = (await pool.query(`SELECT ${sqlUltimoConsentimiento('$1::uuid', 'actividades')} AS a`, [x.user_id])).rows[0]?.a;
+            if (act !== false) await mandarAvisoAula(x);
+            avisosPush.avisarFamilias([x.user_id]);
+        } catch (e) {
+            await soltarAvisoAula(pool, x.user_id, x.clave).catch(() => {});
+            console.error('[aula avisos]', x.clave, e.message);
+        }
+    }
+}
 app.use('/api/admin/brickslab', authenticateSession, requireSeccion('brickslab'), brickslab.admin);
 
 // ── Incidencias (#383) ───────────────────────────────────────────────────────
@@ -22895,6 +22979,7 @@ const servidor = app.listen(port, () => {
     setInterval(tareasRegistroJornada, 60 * 60 * 1000);
     // Brickslab (#87): el «¿qué te ha parecido?» tras devolver algo, cada 30 min.
     setTimeout(() => recordatoriosValoracion().catch(e => console.error('[brickslab valorar]', e.message)), 3 * 60 * 1000);
+    setInterval(function avisosAulaVirtual() { recordatoriosAula().catch(e => console.error('[aula avisos]', e.message)); }, 15 * 60 * 1000);
     setInterval(() => recordatoriosValoracion().catch(e => console.error('[brickslab valorar]', e.message)), 30 * 60 * 1000);
     // Avisos al móvil (#218): repaso cada 10 min por si algo cambió sin pasar por
     // aquí (cierres que se acercan, cambios desde otras apps…).

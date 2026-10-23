@@ -19,6 +19,10 @@ const tarjeta = { background: 'var(--bg-2)', border: '1px solid var(--line)', bo
 const fmt = (d) => (d ? new Date(d).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' }) : '');
 const fmtHora = (d) => (d ? new Date(d).toLocaleString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '');
 const euros = (n) => `${Number(n).toFixed(2).replace('.', ',')} €`;
+// Fechas para <input type="datetime-local"> (la hora de aquí) y de vuelta.
+const aLocal = (d) => { if (!d) return ''; const x = new Date(d); x.setMinutes(x.getMinutes() - x.getTimezoneOffset()); return x.toISOString().slice(0, 16); };
+const deLocal = (v) => (v ? new Date(v).toISOString() : null);
+const corta = (d) => new Date(d).toLocaleString('es-ES', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
 async function api(url, { method = 'GET', body, raw, tipo } = {}) {
   const r = await fetch(url, {
@@ -256,7 +260,7 @@ function EditorCurso({ id, showToast, espacio, onCerrar }) {
 function DatosCurso({ c, recargar, showToast, onBorrado }) {
   const [f, setF] = useState({ titulo: c.titulo, resumen: c.resumen || '', descripcion: c.descripcion || '', publicado: c.publicado,
     profesorId: c.profesorId || '', precio: c.precio ? String(c.precio).replace('.', ',') : '', ivaPct: c.ivaPct ?? 21,
-    diplomaDisenoId: c.diplomaDisenoId ? String(c.diplomaDisenoId) : '' });
+    diplomaDisenoId: c.diplomaDisenoId ? String(c.diplomaDisenoId) : '', meetUrl: c.meetUrl || '' });
   const [profes, setProfes] = useState([]);
   // Los diplomas diseñados en «Diseños» (para elegir el de este curso).
   const [diplomas, setDiplomas] = useState(null);
@@ -324,6 +328,10 @@ function DatosCurso({ c, recargar, showToast, onBorrado }) {
           {c.total ? `Precio: ${euros(c.total)}.` : 'Curso gratis.'} El precio lo pone secretaría o la dirección.
         </p>
       )}
+      <label style={etiqueta}>Enlace de Google Meet de siempre (para las clases en directo)
+        <input value={f.meetUrl} onChange={e => cambiar('meetUrl', e.target.value)} style={inp} placeholder="https://meet.google.com/abc-defg-hij" />
+        <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}>Si las clases son siempre en la misma sala de Meet, ponla aquí y no hará falta en cada clase. En Google Calendar, «Añadir videoconferencia de Google Meet» te da el enlace.</span>
+      </label>
       <label style={etiqueta}>Diploma al terminar el curso
         <select value={f.diplomaDisenoId} onChange={e => cambiar('diplomaDisenoId', e.target.value)} style={inp}>
           <option value="">El del aula por defecto{diplomas?.porDefecto ? ` (${diplomas.diplomas.find(d => d.id === diplomas.porDefecto)?.nombre || 'diseñado'})` : ' (el de siempre)'}</option>
@@ -411,6 +419,10 @@ function Temario({ c, recargar, showToast, espacio }) {
                   {l.tipo === 'archivo' && l.archivo ? ` · ${l.archivo.nombre} (${mb(l.archivo.bytes)})` : ''}
                   {l.tipo === 'tarea' && ` · ${l.calificacion === 'nota' ? 'con nota' : 'apto / no apto'}`}
                   {l.tipo === 'cuestionario' && ` · ${l.modo === 'evaluable' ? `evaluable${l.intentos ? `, ${l.intentos} ${l.intentos === 1 ? 'intento' : 'intentos'}` : ''}` : 'de práctica'} · ${l.preguntas} ${l.preguntas === 1 ? 'pregunta' : 'preguntas'}`}
+                  {l.tipo === 'directo' && l.directoAt && ` · ${corta(l.directoAt)} (${l.directoMin || 60} min)${l.videoUrl || l.archivo ? ' · con grabación' : ''}`}
+                  {l.tipo === 'tarea' && l.plazoAt && ` · plazo: ${corta(l.plazoAt)}`}
+                  {l.abreAt && <b style={{ color: 'var(--purple)' }}> · 📅 se abre el {corta(l.abreAt)}</b>}
+                  {l.trasAnterior && <b style={{ color: 'var(--purple)' }}> · 🔗 al terminar la anterior</b>}
                   {l.gratis && <b style={{ color: 'var(--teal)' }}> · 🔓 gratis</b>}
                   {l.porCorregir > 0 && <b style={{ color: 'var(--pink)' }}> · {l.porCorregir} por corregir</b>}
                 </div>
@@ -425,16 +437,19 @@ function Temario({ c, recargar, showToast, espacio }) {
         </div>
       ))}
       <button type="button" className="btn btn-sm btn-ghost" style={{ justifySelf: 'start' }} onClick={nuevoTema}><I.Plus /> Añadir tema</button>
-      {leccion && <EditorLeccion cursoId={c.id} temaId={leccion.temaId} l={leccion.l} espacio={espacio}
+      {leccion && <EditorLeccion cursoId={c.id} temaId={leccion.temaId} l={leccion.l} espacio={espacio} meetCurso={c.meetUrl}
         onCerrar={() => setLeccion(null)} onGuardado={() => { setLeccion(null); showToast?.('Lección guardada.'); recargar(); }} />}
     </div>
   );
 }
 
-function EditorLeccion({ cursoId, temaId, l, espacio, onCerrar, onGuardado }) {
+function EditorLeccion({ cursoId, temaId, l, espacio, meetCurso, onCerrar, onGuardado }) {
   const [f, setF] = useState({ tipo: l?.tipo || 'texto', titulo: l?.titulo || '', texto: l?.texto || '', videoUrl: l?.videoUrl || '',
     calificacion: l?.calificacion || 'apto', archivoId: l?.archivo?.id || null, archivo: l?.archivo || null,
-    modo: l?.modo || 'practica', intentos: l?.intentos ?? '', gratis: !!l?.gratis });
+    modo: l?.modo || 'practica', intentos: l?.intentos ?? '', gratis: !!l?.gratis,
+    // Cuándo se abre, el plazo de una tarea y la clase en directo.
+    abre: l?.abreAt ? 'fecha' : l?.trasAnterior ? 'anterior' : 'siempre', abreAt: aLocal(l?.abreAt), plazoAt: aLocal(l?.plazoAt),
+    directoAt: aLocal(l?.directoAt), directoMin: l?.directoMin || 60, enlace: l?.enlace || '' });
   // Las preguntas de un cuestionario (#439): las que ya tiene, al editarlo.
   const [preguntas, setPreguntas] = useState(l?.tipo === 'cuestionario' ? null : []);
   useEffect(() => {
@@ -445,8 +460,8 @@ function EditorLeccion({ cursoId, temaId, l, espacio, onCerrar, onGuardado }) {
   const [subida, setSubida] = useState(null);      // { nombre, pct }
   const [guardando, setGuardando] = useState(false);
   const cambiar = (k, v) => setF(x => ({ ...x, [k]: v }));
-  const embed = f.tipo === 'video' && modoVideo === 'enlace' && f.videoUrl ? incrustarVideo(f.videoUrl) : null;
-  const esVideo = f.tipo === 'video';
+  const esVideo = f.tipo === 'video' || f.tipo === 'directo';
+  const embed = esVideo && modoVideo === 'enlace' && f.videoUrl ? incrustarVideo(f.videoUrl) : null;
 
   async function subir(file) {
     if (!file) return;
@@ -466,8 +481,13 @@ function EditorLeccion({ cursoId, temaId, l, espacio, onCerrar, onGuardado }) {
     if (subida) return;
     // Por enlace no lleva archivo; el texto, nunca.
     const porEnlace = esVideo && modoVideo === 'enlace';
-    const body = { ...f, videoUrl: porEnlace ? f.videoUrl : '', archivoId: porEnlace || f.tipo === 'texto' || f.tipo === 'cuestionario' ? null : f.archivoId };
-    if (porEnlace && !embed) { alert('Pega el enlace de un vídeo de YouTube o de Vimeo.'); return; }
+    const body = { ...f, videoUrl: porEnlace ? f.videoUrl : '', archivoId: porEnlace || f.tipo === 'texto' || f.tipo === 'cuestionario' ? null : f.archivoId,
+      abreAt: f.abre === 'fecha' ? deLocal(f.abreAt) : null, trasAnterior: f.abre === 'anterior',
+      plazoAt: f.tipo === 'tarea' ? deLocal(f.plazoAt) : null, directoAt: f.tipo === 'directo' ? deLocal(f.directoAt) : null, directoMin: Number(f.directoMin) || 60 };
+    // La clase en directo puede ir aún sin grabación.
+    if (porEnlace && !embed && (f.tipo === 'video' || f.videoUrl)) { alert('Pega el enlace de un vídeo de YouTube o de Vimeo.'); return; }
+    if (f.abre === 'fecha' && !f.abreAt) { alert('Elige el día y la hora en que se abre.'); return; }
+    if (f.tipo === 'directo' && !f.directoAt) { alert('Pon el día y la hora de la clase.'); return; }
     if (f.tipo === 'cuestionario') {
       if (!preguntas?.length) { alert('Pon al menos una pregunta.'); return; }
       body.preguntas = preguntas.map(p => ({ ...p, imagen: p.imagen || null }));
@@ -497,6 +517,25 @@ function EditorLeccion({ cursoId, temaId, l, espacio, onCerrar, onGuardado }) {
         )}
         <label style={etiqueta}>Título<input required autoFocus value={f.titulo} onChange={e => cambiar('titulo', e.target.value)} style={inp} /></label>
 
+        {f.tipo === 'directo' && (
+          <div style={{ display: 'grid', gap: 10, padding: 12, borderRadius: 12, background: 'color-mix(in oklab, var(--purple) 7%, var(--bg-3))' }}>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <label style={{ ...etiqueta, flex: 2, minWidth: 220 }}>Día y hora de la clase
+                <input type="datetime-local" required value={f.directoAt} onChange={e => cambiar('directoAt', e.target.value)} style={inp} />
+              </label>
+              <label style={{ ...etiqueta, flex: 1, minWidth: 140 }}>Dura
+                <select value={f.directoMin} onChange={e => cambiar('directoMin', Number(e.target.value))} style={inp}>
+                  {[30, 45, 60, 90, 120, 180].map(m => <option key={m} value={m}>{m < 60 ? `${m} min` : `${m / 60} h`.replace('.5', ' y media')}</option>)}
+                </select>
+              </label>
+            </div>
+            <label style={etiqueta}>Enlace de Google Meet{meetCurso ? ' (vacío: el de siempre del curso)' : ''}
+              <input value={f.enlace} onChange={e => cambiar('enlace', e.target.value)} style={inp} placeholder={meetCurso || 'https://meet.google.com/abc-defg-hij'} />
+              <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}>Los alumnos ven el botón para entrar desde 15 minutos antes, y les llega un aviso el día antes y una hora antes. En Google Calendar, «Añadir videoconferencia de Google Meet» te da el enlace.</span>
+            </label>
+            <b style={{ fontSize: 13 }}>Grabación (opcional, cuando acabe la clase)</b>
+          </div>
+        )}
         {esVideo && (
           <div style={{ display: 'grid', gap: 8 }}>
             <div style={{ display: 'flex', gap: 6 }}>
@@ -564,6 +603,23 @@ function EditorLeccion({ cursoId, temaId, l, espacio, onCerrar, onGuardado }) {
           </>
         )}
 
+        {f.tipo === 'tarea' && (
+          <label style={{ ...etiqueta, maxWidth: 320 }}>Plazo de entrega (opcional)
+            <input type="datetime-local" value={f.plazoAt} onChange={e => cambiar('plazoAt', e.target.value)} style={inp} />
+            <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}>Se avisa el día antes a quien no la ha entregado. Después se puede entregar igual, pero sale «fuera de plazo».</span>
+          </label>
+        )}
+        <div style={{ display: 'grid', gap: 6 }}>
+          <span style={etiqueta}>Cuándo se abre</span>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {[['siempre', 'Desde el principio'], ['fecha', '📅 En una fecha'], ['anterior', '🔗 Al terminar la anterior']].map(([k, t]) => (
+              <button key={k} type="button" className={`btn btn-sm ${f.abre === k ? 'btn-primary' : 'btn-outline'}`} onClick={() => cambiar('abre', k)}>{t}</button>
+            ))}
+          </div>
+          {f.abre === 'fecha' && <input type="datetime-local" aria-label="Se abre el" value={f.abreAt} onChange={e => cambiar('abreAt', e.target.value)} style={{ ...inp, maxWidth: 260 }} />}
+          <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{f.abre === 'fecha' ? 'Hasta ese día sale con candado y la fecha; ese día les llega un aviso.' : f.abre === 'anterior' ? 'Sale con candado hasta que terminen la lección de antes (en el orden del temario).' : 'Se puede hacer en cuanto entran al curso.'}</span>
+        </div>
+
         <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', fontSize: 13, padding: '10px 12px', borderRadius: 10, background: f.gratis ? 'color-mix(in oklab, var(--teal) 10%, var(--bg-2))' : 'var(--bg-3)', cursor: 'pointer' }}>
           <input type="checkbox" checked={f.gratis} onChange={e => cambiar('gratis', e.target.checked)} style={{ marginTop: 2 }} />
           <span><b>🔓 Gratis (vista previa)</b><br /><span style={{ color: 'var(--ink-3)' }}>En un curso de pago, esta lección la puede ver cualquiera con cuenta sin pagar; las demás salen con candado y el botón de comprar.</span></span>
@@ -609,6 +665,11 @@ function Alumnos({ cursoId, showToast }) {
   const [buscar, setBuscar] = useState(false);
   const cargar = useCallback(() => { api(`/api/admin/aula/cursos/${cursoId}/alumnos`).then(setD).catch(e => alert(e.message)); }, [cursoId]);
   useEffect(() => { cargar(); }, [cargar]);
+  async function recordar(a) {
+    if (!window.confirm(`¿Mandar a ${a.nombre} un correo para que siga con el curso? (Si es menor, también a su familia.)`)) return;
+    try { await api(`/api/admin/aula/inscripciones/${a.id}/recordatorio`, { method: 'POST' }); showToast?.('Recordatorio enviado.'); cargar(); }
+    catch (err) { alert(err.message); }
+  }
   async function estado(a, nuevo) {
     if (nuevo === 'baja' && !window.confirm(`¿Quitarle el acceso a ${a.nombre}?`)) return;
     try { await api(`/api/admin/aula/inscripciones/${a.id}`, { method: 'PUT', body: { estado: nuevo } }); showToast?.(nuevo === 'baja' ? 'Acceso quitado.' : 'Acceso dado.'); cargar(); }
@@ -616,6 +677,8 @@ function Alumnos({ cursoId, showToast }) {
   }
   if (!d) return <p style={{ color: 'var(--ink-3)' }}>Cargando…</p>;
   const ESTADO = { dentro: ['Dentro', 'var(--teal)'], por_pagar: ['Falta pagar', 'var(--orange)'], baja: ['Sin acceso', 'var(--ink-3)'] };
+  const atras = d.alumnos.filter(a => a.atras);
+  const hace = (f) => { if (!f) return 'nunca'; const dd = Math.floor((Date.now() - new Date(f).getTime()) / 86400000); return dd <= 0 ? 'hoy' : dd === 1 ? 'ayer' : `hace ${dd} días`; };
   return (
     <div style={{ display: 'grid', gap: 12, maxWidth: 900 }}>
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -624,21 +687,34 @@ function Alumnos({ cursoId, showToast }) {
         </span>
         {d.completa && <button type="button" className="btn btn-sm btn-primary" onClick={() => setBuscar(true)}><I.Plus /> Dar acceso a alguien</button>}
       </div>
+      {atras.length > 0 && (
+        <div style={{ padding: '10px 14px', borderRadius: 12, fontSize: 13, background: 'color-mix(in oklab, var(--orange) 11%, var(--bg-2))' }}>
+          <b>⚠ {atras.length === 1 ? 'Se está quedando atrás' : `${atras.length} se están quedando atrás`}:</b> {atras.map(a => a.nombre).join(', ')}. Llevan una semana sin entrar o tienen tareas vencidas sin entregar: un recordatorio suele bastar.
+        </div>
+      )}
       {d.alumnos.length === 0 ? <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Nadie apuntado todavía.</p> : (
         <div className="data-table">
-          <div className="data-table-head" style={{ gridTemplateColumns: '1.6fr 110px 1fr 1fr 130px' }}>
-            <span>Alumno</span><span>Estado</span><span>Progreso</span><span>Última actividad</span><span></span>
+          <div className="data-table-head" style={{ gridTemplateColumns: '1.5fr 100px 1fr 1fr 1.1fr 150px' }}>
+            <span>Alumno</span><span>Estado</span><span>Progreso</span><span>Entró</span><span>Pendiente</span><span></span>
           </div>
           {d.alumnos.map(a => (
-            <div key={a.id} className="data-table-row" style={{ gridTemplateColumns: '1.6fr 110px 1fr 1fr 130px', alignItems: 'center', opacity: a.estado === 'baja' ? 0.6 : 1 }}>
+            <div key={a.id} className="data-table-row" style={{ gridTemplateColumns: '1.5fr 100px 1fr 1fr 1.1fr 150px', alignItems: 'center', opacity: a.estado === 'baja' ? 0.6 : 1,
+              background: a.atras ? 'color-mix(in oklab, var(--orange) 6%, transparent)' : undefined }}>
               <div><div className="pri">{a.nombre}</div><div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{a.email || ''}{a.origen === 'secretaria' ? ' · acceso dado en el club' : ''} · desde {fmt(a.desde)}</div></div>
               <span><span style={pastilla(ESTADO[a.estado][1])}>{ESTADO[a.estado][0]}</span></span>
               <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ flex: 1, height: 6, borderRadius: 99, background: 'var(--bg-3)', overflow: 'hidden', maxWidth: 120 }}><span style={{ display: 'block', width: `${a.progreso}%`, height: '100%', background: 'var(--teal)' }} /></span>
                 <span style={{ fontSize: 12, fontWeight: 800 }}>{a.progreso} %</span>
               </span>
-              <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{a.ultima ? fmtHora(a.ultima) : '—'}</span>
-              <span style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <span style={{ fontSize: 12, color: a.atras ? 'var(--orange)' : 'var(--ink-3)', fontWeight: a.atras ? 800 : 400 }} title={a.ultima ? `Última lección terminada: ${fmtHora(a.ultima)}` : undefined}>{hace(a.ultimoAcceso)}</span>
+              <span style={{ fontSize: 12, color: 'var(--ink-2)' }}>
+                {a.vencidas > 0 && <b style={{ color: 'var(--pink)' }}>{a.vencidas} {a.vencidas === 1 ? 'tarea vencida' : 'tareas vencidas'}</b>}
+                {a.vencidas > 0 && a.media != null && ' · '}
+                {a.media != null && <span>media {String(a.media).replace('.', ',')}</span>}
+                {!a.vencidas && a.media == null && <span style={{ color: 'var(--ink-3)' }}>—</span>}
+              </span>
+              <span style={{ display: 'flex', justifyContent: 'flex-end', gap: 4, flexWrap: 'wrap' }}>
+                {a.estado === 'dentro' && a.progreso < 100 && <button type="button" className="btn btn-sm btn-outline" style={{ fontSize: 11 }} onClick={() => recordar(a)} title="Le llega un correo para que siga con el curso (si es menor, también a su familia)">✉ Recordarle</button>}
                 {d.completa && (a.estado === 'baja' || a.estado === 'por_pagar'
                   ? <button type="button" className="btn btn-sm btn-outline" style={{ fontSize: 11 }} onClick={() => estado(a, 'activa')}>{a.estado === 'por_pagar' ? 'Dar acceso' : 'Volver a dar'}</button>
                   : <button type="button" className="btn btn-sm btn-ghost" style={{ fontSize: 11 }} onClick={() => estado(a, 'baja')}>Quitar acceso</button>)}
@@ -827,12 +903,31 @@ function EditorPreguntas({ preguntas, setPreguntas, cursoId }) {
 // Las notas de los cuestionarios del curso, por alumno.
 function Resultados({ cursoId }) {
   const [lista, setLista] = useState(null);
-  useEffect(() => { api(`/api/admin/aula/cursos/${cursoId}/resultados`).then(setLista).catch(() => setLista([])); }, [cursoId]);
+  const [dificiles, setDificiles] = useState([]);
+  useEffect(() => {
+    api(`/api/admin/aula/cursos/${cursoId}/resultados`).then(setLista).catch(() => setLista([]));
+    api(`/api/admin/aula/cursos/${cursoId}/preguntas-dificiles`).then(setDificiles).catch(() => setDificiles([]));
+  }, [cursoId]);
   if (!lista?.length) return null;
   const nota = (n) => String(Math.round(Number(n) * 100) / 100).replace('.', ',');
   return (
     <div style={{ display: 'grid', gap: 10, maxWidth: 900, marginTop: 18 }}>
       <h3 style={{ margin: 0, fontSize: 16 }}>Cuestionarios</h3>
+      {dificiles.length > 0 && (
+        <div style={{ ...tarjeta, display: 'grid', gap: 8 }}>
+          <b style={{ fontSize: 14 }}>Las preguntas que más se fallan (a la primera)</b>
+          <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Puede que convenga explicarlas otra vez, o que la pregunta se entienda mal.</span>
+          {dificiles.map((q, i) => (
+            <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 120px', gap: 10, alignItems: 'center', fontSize: 13 }}>
+              <span><b>{q.enunciado}</b><span style={{ color: 'var(--ink-3)' }}> · {q.leccion}</span></span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ flex: 1, height: 6, borderRadius: 99, background: 'var(--bg-3)', overflow: 'hidden' }}><span style={{ display: 'block', width: `${q.pct}%`, height: '100%', background: 'var(--pink)' }} /></span>
+                <b style={{ fontSize: 12 }} title={`${q.fallos} de ${q.veces}`}>{q.pct} %</b>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="data-table">
         <div className="data-table-head" style={{ gridTemplateColumns: '1.4fr 1.2fr 90px 90px 90px 1fr' }}>
           <span>Cuestionario</span><span>Alumno</span><span>Intentos</span><span>Mejor</span><span>Última</span><span>Cuándo</span>
@@ -874,7 +969,7 @@ function Entregas({ cursoId, showToast, pendientesDeEntrada = true, onCambio }) 
             style={{ font: 'inherit', color: 'inherit', background: 'none', border: 0, padding: 0, cursor: 'pointer', textAlign: 'left', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             <div style={{ flex: 1, minWidth: 200 }}>
               <b style={{ fontSize: 14 }}>{e.alumno}</b> <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>· {e.leccion}{cursoId ? '' : ` · ${e.curso}`}</span>
-              <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>Entregada el {fmtHora(e.entregada_at)}</div>
+              <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>Entregada el {fmtHora(e.entregada_at)}{e.fuera_de_plazo && <b style={{ color: 'var(--orange)' }}> · fuera de plazo</b>}</div>
             </div>
             {e.corregida_at
               ? <span style={pastilla(e.apto ? 'var(--teal)' : 'var(--orange)')}>{e.nota != null ? `${String(Number(e.nota)).replace('.', ',')} / 10` : e.apto ? 'Apto' : 'No apto'}</span>
