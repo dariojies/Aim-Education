@@ -2332,9 +2332,38 @@ function EditorDegradado({ paradas, angulo = 135, radial = false, onCambio, tram
     </div>
   );
 }
-const Num = ({ etiqueta, valor, onCambio, min, max, paso = 1 }) => (
-  <label style={etq}>{etiqueta}<input type="number" value={Math.round((valor ?? 0) * 100) / 100} min={min} max={max} step={paso} onChange={e => { const n = Number(e.target.value); if (Number.isFinite(n)) onCambio(n); }} style={inp} /></label>
-);
+// Una casilla de número. Lo escrito se queda en la casilla y se aplica cuando ya es
+// un número dentro de su rango (#480: al borrar para escribir «30», la casilla vacía
+// contaba como 0, el mínimo lo subía a 5 y no se podía). Al salir, si se ha quedado
+// vacía o fuera de rango, se ajusta al límite o vuelve a lo que había.
+function Num({ etiqueta, valor, onCambio, min, max, paso = 1 }) {
+  const redondo = (v) => Math.round((v ?? 0) * 100) / 100;
+  const [texto, setTexto] = useState(String(redondo(valor)));
+  const escribiendo = useRef(false), actual = useRef(valor);
+  actual.current = valor;
+  const vale = (n) => Number.isFinite(n) && (min == null || n >= min) && (max == null || n <= max);
+  // Mientras se escribe, solo si el valor cambia por otro lado (al arrastrar el objeto).
+  useEffect(() => {
+    if (!escribiendo.current || (texto.trim() !== '' && vale(Number(texto)) && Number(texto) !== redondo(valor))) setTexto(String(redondo(valor)));
+  }, [valor]); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <label style={etq}>{etiqueta}
+      <input type="number" value={texto} min={min} max={max} step={paso} style={inp}
+        onFocus={() => { escribiendo.current = true; }}
+        onChange={e => { const t = e.target.value; setTexto(t); const n = Number(t); if (t.trim() !== '' && vale(n)) onCambio(n); }}
+        onBlur={() => {
+          escribiendo.current = false;
+          const n = Number(texto);
+          if (texto.trim() === '' || !Number.isFinite(n)) { setTexto(String(redondo(valor))); return; }
+          const ajustado = Math.min(max ?? Infinity, Math.max(min ?? -Infinity, n));
+          if (ajustado !== redondo(valor)) onCambio(ajustado);
+          setTexto(String(redondo(ajustado)));
+          // Y lo que haya quedado de verdad (por si el editor lo ajusta a su manera).
+          setTimeout(() => setTexto(String(redondo(actual.current))), 0);
+        }} />
+    </label>
+  );
+}
 
 function PanelFondo({ fondo, cambiar, subir, tramos }) {
   return (
@@ -2658,7 +2687,7 @@ function Propiedades({ clips, e, tipo, esDireccion, cambiar, textoRef, subir, ac
       <div style={fila}>
         <Num etiqueta="X" valor={e.x} onCambio={(v) => cambiar({ x: v })} />
         <Num etiqueta="Y" valor={e.y} onCambio={(v) => cambiar({ y: v })} />
-        <Num etiqueta={CUADRADOS_EDITOR.includes(e.tipo) ? 'Lado' : 'Ancho'} valor={e.w} onCambio={(v) => cambiar(CUADRADOS_EDITOR.includes(e.tipo) ? { w: Math.max(20, v), h: Math.max(20, v) } : { w: Math.max(5, v) })} min={5} />
+        <Num etiqueta={CUADRADOS_EDITOR.includes(e.tipo) ? 'Lado' : 'Ancho'} valor={e.w} onCambio={(v) => cambiar(CUADRADOS_EDITOR.includes(e.tipo) ? { w: Math.max(20, v), h: Math.max(20, v) } : { w: Math.max(5, v) })} min={CUADRADOS_EDITOR.includes(e.tipo) ? 20 : 5} />
         {e.tipo !== 'texto' && e.tipo !== 'linea' && !CUADRADOS_EDITOR.includes(e.tipo) && <Num etiqueta="Alto" valor={e.h} onCambio={(v) => cambiar({ h: Math.max(5, v) })} min={5} />}
         <Num etiqueta="Giro (grados)" valor={e.rot || 0} onCambio={(v) => cambiar({ rot: ((v % 360) + 360) % 360 })} min={0} max={360} />
       </div>
