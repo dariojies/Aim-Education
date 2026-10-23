@@ -296,9 +296,22 @@ export function crearSeo({ pool, urlBase, archivoIndex }) {
              FROM aim_tienda_productos p WHERE p.id = $1 AND p.publicado`, [req.params.id])).rows[0];
         if (!p) return noExiste('Este producto');
         const descripcion = corto(p.descripcion || `${p.nombre}, en la tienda de Aim Education.`);
+        // El precio (con IVA) y si queda, de sus tallas o colores a la venta. Google
+        // pide la oferta en un producto (Search Console: «Debe especificarse "offers"…»):
+        // un precio, una oferta; varios, de cuánto a cuánto. Sin nada a la venta, no
+        // se dice que es un producto.
+        const vs = (await pool.query(
+            `SELECT ROUND(pr.precio * (1 + COALESCE(pr.iva_pct, 0) / 100.0), 2) AS precio, a.stock
+             FROM aim_tienda_variantes v JOIN aim_precios pr ON pr.concepto = v.concepto AND pr.activo AND pr.precio > 0
+             LEFT JOIN aim_almacen a ON a.concepto = v.concepto WHERE v.producto_id = $1`, [p.id]).catch(() => ({ rows: [] }))).rows;
+        const precios = vs.map(v => Number(v.precio));
+        const disponibilidad = `https://schema.org/${vs.some(v => v.stock == null || Number(v.stock) > 0) ? 'InStock' : 'OutOfStock'}`;
+        const oferta = !precios.length ? null : new Set(precios).size === 1
+            ? { '@type': 'Offer', url: absoluta(`/tienda/${p.id}`), price: precios[0].toFixed(2), priceCurrency: 'EUR', availability: disponibilidad, itemCondition: 'https://schema.org/NewCondition', seller: { '@type': 'Organization', name: NEGOCIO.nombre } }
+            : { '@type': 'AggregateOffer', url: absoluta(`/tienda/${p.id}`), lowPrice: Math.min(...precios).toFixed(2), highPrice: Math.max(...precios).toFixed(2), offerCount: precios.length, priceCurrency: 'EUR', availability: disponibilidad };
         return {
             titulo: p.nombre, descripcion, imagen: p.foto ? `/api/tienda/fotos/${p.foto}` : null,
-            jsonld: [{ '@context': 'https://schema.org', '@type': 'Product', name: p.nombre, description: descripcion, ...(p.foto ? { image: [absoluta(`/api/tienda/fotos/${p.foto}`)] } : {}), brand: { '@type': 'Organization', name: NEGOCIO.nombre } },
+            jsonld: [...(oferta ? [{ '@context': 'https://schema.org', '@type': 'Product', name: p.nombre, description: descripcion, ...(p.foto ? { image: [absoluta(`/api/tienda/fotos/${p.foto}`)] } : {}), brand: { '@type': 'Organization', name: NEGOCIO.nombre }, offers: oferta }] : []),
                 migas([['/', 'Inicio'], ['/tienda', 'Tienda'], [`/tienda/${p.id}`, p.nombre]])],
             contenido: previo({ h1: p.nombre, cuerpo: p.descripcion ? `<p>${esc(p.descripcion).replace(/\n/g, '<br>')}</p>` : '' }),
         };
