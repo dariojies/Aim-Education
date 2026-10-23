@@ -125,10 +125,8 @@ export async function crearTablasPublicaciones(client) {
 export function problemaPublicacion({ texto, redes, tipo, medios }) {
     const imgs = medios.filter(m => m.mime.startsWith('image/')), vids = medios.filter(m => m.mime.startsWith('video/'));
     if (!redes.length) return 'Elige al menos una red.';
-    if (tipo === 'story') {
-        if (redes.includes('facebook')) return 'Las historias solo se pueden publicar en Instagram.';
-        if (medios.length !== 1) return 'Una historia lleva una sola foto o un solo vídeo.';
-    }
+    // Las historias, también en la página de Facebook (#470): una foto o un vídeo.
+    if (tipo === 'story' && medios.length !== 1) return 'Una historia lleva una sola foto o un solo vídeo.';
     if (tipo === 'reel' && (vids.length !== 1 || imgs.length)) return 'Un reel lleva un solo vídeo.';
     if (redes.includes('instagram')) {
         if (!medios.length) return 'Instagram necesita al menos una foto o un vídeo.';
@@ -208,8 +206,25 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
     // ── Publicar ──
     const urlMedio = (m) => `${BASE_MEDIOS()}/publico/medios/${m.token}.${m.mime.startsWith('video/') ? 'mp4' : 'jpg'}`;
 
+    // Una historia en la página de Facebook (#470). La foto se sube sin publicar y se
+    // publica como historia; el vídeo, en tres pasos (empezar, que Meta lo coja de
+    // nuestra dirección, terminar). Las historias no tienen enlace propio.
+    async function historiaFacebook(page, m) {
+        if (m.mime.startsWith('video/')) {
+            const ini = await graph(`/${page}/video_stories`, { method: 'POST', body: { upload_phase: 'start' } });
+            const r = await fetchImpl(ini.upload_url, { method: 'POST', headers: { Authorization: `OAuth ${TOKEN()}`, file_url: urlMedio(m) }, signal: AbortSignal.timeout(120_000) });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || d.success === false) throw new Error(d.error?.message || d.debug_info?.message || `Facebook no ha cogido el vídeo (${r.status}).`);
+            const fin = await graph(`/${page}/video_stories`, { method: 'POST', body: { video_id: ini.video_id, upload_phase: 'finish' } });
+            return { id: fin.post_id || ini.video_id, url: `https://www.facebook.com/${page}` };
+        }
+        const foto = await graph(`/${page}/photos`, { method: 'POST', body: { url: urlMedio(m), published: false } });
+        const r = await graph(`/${page}/photo_stories`, { method: 'POST', body: { photo_id: foto.id } });
+        return { id: r.post_id || foto.id, url: `https://www.facebook.com/${page}` };
+    }
     async function publicarFacebook(p, medios, cuenta) {
         const page = cuenta.facebook.id;
+        if (p.tipo === 'story') return historiaFacebook(page, medios[0]);
         const imgs = medios.filter(m => m.mime.startsWith('image/')), vids = medios.filter(m => m.mime.startsWith('video/'));
         let id;
         if (vids.length) {
@@ -685,5 +700,5 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
         try { res.set('Cache-Control', 'no-store'); res.json(await estadisticas(req.query.forzar === '1')); } catch (err) { fallo(res, err); }
     });
 
-    return { router, publicarPendientes, fotoSeguidores, cuentaMeta, olvidarCuenta: () => { cuentaCache = null; } };
+    return { router, publicarPendientes, publicarUna, fotoSeguidores, cuentaMeta, olvidarCuenta: () => { cuentaCache = null; } };
 }

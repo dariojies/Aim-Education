@@ -359,7 +359,7 @@ function Editor({ inicial, cuenta, onCerrar, showToast }) {
                 <button key={t} type="button" disabled={soloVer} className={`filter-pill ${tipo === t ? 'is-active' : ''}`} onClick={() => setTipo(t)}>{l}</button>
               ))}
             </div>
-            {tipo === 'story' && <span style={suave}>Las historias solo salen en Instagram, con una foto o un vídeo (mejor en vertical, 9:16) y sin texto.</span>}
+            {tipo === 'story' && <span style={suave}>Una historia (en Instagram, en Facebook o en las dos) lleva una foto o un vídeo, mejor en vertical (9:16), y sin texto.</span>}
             {tipo === 'reel' && <span style={suave}>Un reel es un vídeo vertical (9:16), MP4 o MOV, de 3 segundos a 15 minutos.</span>}
             {tipo !== 'story' && (
               <div style={{ display: 'grid', gap: 4 }}>
