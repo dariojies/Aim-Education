@@ -181,7 +181,9 @@ function degradado(ctx, x0, y0, w, h, c1, c2, angulo = 135) {
   const a = (angulo - 90) * Math.PI / 180, cx = x0 + w / 2, cy = y0 + h / 2;
   const L = Math.abs(w * Math.cos(a)) / 2 + Math.abs(h * Math.sin(a)) / 2;
   const g = ctx.createLinearGradient(cx - Math.cos(a) * L, cy - Math.sin(a) * L, cx + Math.cos(a) * L, cy + Math.sin(a) * L);
-  g.addColorStop(0, c1 || '#5233A8'); g.addColorStop(1, c2 || '#21B668');
+  // Un color que no vale (un código a medio escribir, #474) no rompe el dibujo: el de siempre.
+  try { g.addColorStop(0, c1 || '#5233A8'); } catch { g.addColorStop(0, '#5233A8'); }
+  try { g.addColorStop(1, c2 || '#21B668'); } catch { g.addColorStop(1, '#21B668'); }
   return g;
 }
 // enc (recorte): { zoom, x, y }: la foto llena la caja, con su zoom y el punto
@@ -501,9 +503,11 @@ export function pintarDiseno(ctx, diseno, { imagenes = new Map(), variables = nu
     ctx.globalAlpha = 1;
   }
   for (const e of diseno.elementos || []) {
-    if (e.oculto || oculto(e.id)) continue;
+    if (!e || e.oculto || oculto(e.id)) continue;
     const an = estadoAnim(e, tiempo, W, H);
     ctx.save();
+    // Si algo de un elemento no se puede pintar, se salta ese y se pintan los demás.
+    try {
     ctx.globalAlpha = (e.opacidad ?? 1) * (an?.alfa ?? 1);
     if (ctx.globalAlpha <= 0.001) { ctx.restore(); continue; }
     ctx.translate(e.x + e.w / 2 + (an?.dx || 0), e.y + e.h / 2 + (an?.dy || 0));
@@ -585,6 +589,7 @@ export function pintarDiseno(ctx, diseno, { imagenes = new Map(), variables = nu
       pintarTexto(ctx, e, rellenar(e.texto, variables), x, y, an?.letras ?? null, variables);
       if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
     }
+    } catch (err) { console.warn('[diseño] no se ha podido pintar un elemento', e.id, err?.message); }
     ctx.restore();
   }
   ctx.restore();

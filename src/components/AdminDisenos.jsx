@@ -173,7 +173,7 @@ function DisenosGraficos({ showToast, puedePublicar }) {
     </button>
   );
 
-  if (abierto) return <Editor inicial={abierto} panelInicial={panelInicial} showToast={showToast} puedePublicar={puedePublicar} esDireccion={!!datos?.puedoAprobar} onCerrar={() => { setAbierto(null); setPanelInicial(null); cargar(); }} />;
+  if (abierto) return <SinPantallaEnBlanco onCerrar={() => { setAbierto(null); setPanelInicial(null); cargar(); }}><Editor inicial={abierto} panelInicial={panelInicial} showToast={showToast} puedePublicar={puedePublicar} esDireccion={!!datos?.puedoAprobar} onCerrar={() => { setAbierto(null); setPanelInicial(null); cargar(); }} /></SinPantallaEnBlanco>;
   return (
     <div style={{ display: 'grid', gap: 14 }}>
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -269,6 +269,27 @@ const fechaRespaldo = (t) => {
   const hora = d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
   return d.toDateString() === hoy.toDateString() ? `hoy a las ${hora}` : `el ${d.toLocaleDateString('es-ES', { day: 'numeric', month: 'long' })} a las ${hora}`;
 };
+
+// Si algo falla dentro del editor (#474), un aviso con la salida en vez de la
+// pantalla en blanco. Lo guardado no se pierde.
+class SinPantallaEnBlanco extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error) { console.error('[Aim Design]', error); }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div role="alert" style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'var(--bg)', display: 'grid', placeItems: 'center', padding: 24 }}>
+        <div style={{ maxWidth: 520, display: 'grid', gap: 12, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 24 }}>
+          <b style={{ fontSize: 18 }}>Este diseño no se ha podido abrir</b>
+          <span style={{ fontSize: 14, color: 'var(--ink-2)' }}>Algo de él no se puede mostrar. Lo guardado no se ha perdido. Abre un ticket en Soporte diciendo qué diseño era y lo arreglamos.</span>
+          <code style={{ fontSize: 12, color: 'var(--ink-3)', overflowWrap: 'anywhere' }}>{String(this.state.error?.message || this.state.error)}</code>
+          <button type="button" className="btn btn-primary btn-sm" style={{ justifySelf: 'start' }} onClick={() => { this.setState({ error: null }); this.props.onCerrar?.(); }}>← Volver a Aim Design</button>
+        </div>
+      </div>
+    );
+  }
+}
 
 // El móvil (pantalla estrecha): el editor cambia de forma. Y si la pantalla es táctil.
 const ANCHO_MOVIL = '(max-width: 760px)';
@@ -1875,7 +1896,8 @@ function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirM
   useEffect(() => { api('/api/admin/correo/imagenes').then(d => setSubidas(Array.isArray(d) ? d : d.imagenes || [])).catch(() => setSubidas([])); }, []);
   const bloque = { font: 'inherit', cursor: 'pointer', padding: '10px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', textAlign: 'left' };
   const cuadro = { ...bloque, display: 'grid', placeItems: 'center', padding: 6, height: 44, textAlign: 'center' };
-  const svg = (html) => <span style={{ width: 26, height: 26, display: 'block' }} dangerouslySetInnerHTML={{ __html: html.replace('<svg ', '<svg width="100%" height="100%" ') }} />;
+  // El dibujo no recoge el ratón: en Safari, un clic justo encima del SVG no llegaba al botón.
+  const svg = (html) => <span style={{ width: 26, height: 26, display: 'block', pointerEvents: 'none' }} dangerouslySetInnerHTML={{ __html: html.replace('<svg ', '<svg width="100%" height="100%" ') }} />;
   const verTodo = (k, t) => !mas[k] && <button type="button" className="btn btn-sm btn-ghost" style={{ fontSize: 12, justifySelf: 'start' }} onClick={() => setMas(m => ({ ...m, [k]: true }))}>{t}</button>;
   return (
     <div style={{ display: 'grid', gap: 8 }}>
@@ -2012,14 +2034,31 @@ function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirM
   );
 }
 
+// Un color que se puede usar: #RGB, #RRGGBB, #RRGGBBAA o un nombre que entienda el navegador.
+const colorValido = (v) => /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(v) || (!/^#/.test(v) && typeof CSS !== 'undefined' && !!CSS.supports?.('color', v));
+// La casilla de color del navegador solo entiende #RRGGBB: #abc pasa a #aabbcc; lo demás, el blanco.
+const paraCasilla = (v) => {
+  const t = String(v || '').trim();
+  if (/^#[0-9a-f]{3}$/i.test(t)) return '#' + [...t.slice(1)].map(c => c + c).join('');
+  return /^#[0-9a-f]{6}/i.test(t) ? t.slice(0, 7) : '#ffffff';
+};
 function Color({ etiqueta, valor, onCambio, permiteNada = false }) {
   const kit = useContext(KitMarca);
   const nada = !valor || valor === 'transparent';
+  // Lo que se escribe en la casilla: se aplica cuando ya es un color (#474: un
+  // código a medio borrar dejaba el diseño sin poder abrirse).
+  const [texto, setTexto] = useState(nada ? '' : valor);
+  useEffect(() => { setTexto(nada ? '' : valor); }, [valor]); // eslint-disable-line react-hooks/exhaustive-deps
+  const malo = !!texto.trim() && !colorValido(texto.trim());
   return (
     <div style={etq}><span>{etiqueta}</span>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-        <input type="color" aria-label={etiqueta} value={nada ? '#ffffff' : valor} onChange={e => onCambio(e.target.value)} style={{ width: 38, height: 32, padding: 0, border: '1px solid var(--line)', borderRadius: 8, background: 'none' }} />
-        <input aria-label={`${etiqueta} (código)`} value={nada ? '' : valor} placeholder={permiteNada ? 'Sin color' : '#000000'} onChange={e => onCambio(e.target.value || (permiteNada ? 'transparent' : '#000000'))} style={{ ...inp, fontFamily: 'monospace' }} />
+        <input type="color" aria-label={etiqueta} value={nada ? '#ffffff' : paraCasilla(valor)} onChange={e => onCambio(e.target.value)} style={{ width: 38, height: 32, padding: 0, border: '1px solid var(--line)', borderRadius: 8, background: 'none' }} />
+        <input aria-label={`${etiqueta} (código)`} value={texto} placeholder={permiteNada ? 'Sin color' : '#000000'} aria-invalid={malo}
+          title={malo ? 'Ese código aún no es un color: termínalo (#RRGGBB)' : undefined}
+          onChange={e => { const v = e.target.value, t = v.trim(); setTexto(v); if (!t) { if (permiteNada) onCambio('transparent'); } else if (colorValido(t)) onCambio(t); }}
+          onBlur={() => { if (malo || !texto.trim()) setTexto(nada ? '' : valor); }}
+          style={{ ...inp, fontFamily: 'monospace', ...(malo ? { borderColor: 'var(--pink)', color: 'var(--pink)' } : {}) }} />
         {permiteNada && <button type="button" className="btn btn-sm btn-ghost" onClick={() => onCambio('transparent')} title="Sin color">∅</button>}
       </div>
       {/* Los colores de la marca, a un toque. */}
@@ -2298,7 +2337,7 @@ function Propiedades({ e, tipo, esDireccion, cambiar, textoRef, subir, acciones,
           {MARCOS.map(m => (
             <button key={m} type="button" title={FIGURAS.find(f => f.id === m)?.nombre} onClick={() => cambiar({ marco: m, ...(m !== 'rect' && !e.encuadre ? { ajuste: 'cubrir' } : {}) })}
               style={{ height: 34, borderRadius: 8, cursor: 'pointer', padding: 4, display: 'grid', placeItems: 'center', border: `2px solid ${(e.marco || 'rect') === m ? 'var(--purple)' : 'var(--line)'}`, background: 'var(--bg-3)', color: '#9C91C7' }}>
-              <span style={{ width: 20, height: 20, display: 'block' }} dangerouslySetInnerHTML={{ __html: svgFigura(m).replace('<svg ', '<svg width="100%" height="100%" ') }} />
+              <span style={{ width: 20, height: 20, display: 'block', pointerEvents: 'none' }} dangerouslySetInnerHTML={{ __html: svgFigura(m).replace('<svg ', '<svg width="100%" height="100%" ') }} />
             </button>
           ))}
         </div>
