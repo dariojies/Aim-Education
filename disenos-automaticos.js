@@ -101,6 +101,51 @@ async function guardarImagen(pool, publicacionId, img) {
         [publicacionId, img.mime, img.buf, mini, img.buf.length, img.ancho, img.alto, crypto.randomBytes(24).toString('hex')]);
 }
 
+async function crearHistoria(pool, d, cfg, f) {
+    const version = new Date(d.updated_at).toISOString();
+    const marca = { uso: 'festivo', fecha: f.fecha, diseno: d.id, version, variables: f.variables };
+    const img = await pintarEnServidor(d.datos, { variables: f.variables });
+    const p = await pool.query(
+        `INSERT INTO aim_social_publicaciones (texto, redes, tipo, estado, programada_at, resultado, creado_por)
+         VALUES ('', '{instagram}', 'story', 'programada', $1, jsonb_build_object('auto', $2::jsonb), $3) RETURNING id`,
+        [medianocheMadrid(f.fecha), JSON.stringify(marca), cfg.festivo?.por || null]);
+    await guardarImagen(pool, p.rows[0].id, img);
+    // Apuntada: si alguien la quita en Publicaciones, no se vuelve a crear.
+    const actual = await configAutomaticos(pool);
+    if (actual.festivo) {
+        actual.festivo.hechas = [...new Set([...(actual.festivo.hechas || []), f.fecha])].sort();
+        await guardarConfig(pool, actual);
+    }
+    console.log(`[diseños] historia del festivo ${f.fecha} (${f.nombre}) programada (#${p.rows[0].id})`);
+    return p.rows[0].id;
+}
+
+// Las historias que se programarán solas entre dos días y aún no lo están (para
+// el calendario de Publicaciones, #479): [{ fecha, nombre, variables, disenoId, programadaAt }].
+export async function historiasPrevistas(pool, desde, hasta) {
+    const cfg = await configAutomaticos(pool);
+    const d = await disenoDe(pool, 'festivo', cfg);
+    if (!d) return [];
+    const hoy = hoyMadrid();
+    const ya = new Set((await pool.query(`SELECT resultado->'auto'->>'fecha' AS f FROM aim_social_publicaciones WHERE resultado->'auto'->>'uso' = 'festivo'`)).rows.map(x => x.f));
+    const hechas = new Set(cfg.festivo?.hechas || []);
+    return (await festivosProximos(pool, desde > hoy ? desde : hoy, hasta))
+        .filter(f => !ya.has(f.fecha) && !hechas.has(f.fecha))
+        .map(f => ({ fecha: f.fecha, nombre: f.nombre, variables: f.variables, disenoId: d.id, programadaAt: medianocheMadrid(f.fecha).toISOString() }));
+}
+// «Programarla ya» (#479): la historia de ese festivo, creada ahora para poder
+// verla y cambiarla. Devuelve el id de la publicación.
+export async function programarHistoriaYa(pool, fecha) {
+    const cfg = await configAutomaticos(pool);
+    const d = await disenoDe(pool, 'festivo', cfg);
+    if (!d) throw Object.assign(new Error('No hay plantilla para las historias de los festivos.'), { status: 409 });
+    const ya = (await pool.query(`SELECT id FROM aim_social_publicaciones WHERE resultado->'auto'->>'uso' = 'festivo' AND resultado->'auto'->>'fecha' = $1`, [fecha])).rows[0];
+    if (ya) return ya.id;
+    const f = (await festivosProximos(pool, fecha, fecha))[0];
+    if (!f) throw Object.assign(new Error('Ese día ya no es festivo.'), { status: 404 });
+    return crearHistoria(pool, d, cfg, f);
+}
+
 // Deja programadas las historias de los festivos de la semana que viene (y la de
 // hoy, si aún no estaba). Si la plantilla o el festivo cambian, se vuelve a pintar
 // mientras siga programada. Si alguien la borra en Publicaciones, no se repite.
@@ -123,7 +168,8 @@ export async function programarHistoriasFestivos(pool) {
         const festivos = await festivosProximos(pool, hoy, sumarDia(hoy, DIAS_ANTES));
         const hechas = new Set(cfg.festivo?.hechas || []);
         // Lo programado de un festivo que ya no está en el calendario (o ya pasó), fuera.
-        const siguen = new Set(festivos.map(f => f.fecha));
+        // Las que se programaron antes de tiempo (#479, «Programarla ya») se quedan.
+        const siguen = new Set((await festivosProximos(pool, hoy, sumarDia(hoy, 366))).map(f => f.fecha));
         const sobran = pendientes.filter(p => !siguen.has(p.auto?.fecha));
         if (sobran.length) await pool.query(`DELETE FROM aim_social_publicaciones WHERE id = ANY($1::int[])`, [sobran.map(p => p.id)]);
         const version = new Date(d.updated_at).toISOString();
@@ -141,21 +187,12 @@ export async function programarHistoriasFestivos(pool) {
                 continue;
             }
             if (hechas.has(f.fecha)) continue;   // se hizo y alguien la quitó en Publicaciones
-            const img = await pintarEnServidor(d.datos, { variables: f.variables });
-            const p = await pool.query(
-                `INSERT INTO aim_social_publicaciones (texto, redes, tipo, estado, programada_at, resultado, creado_por)
-                 VALUES ('', '{instagram}', 'story', 'programada', $1, jsonb_build_object('auto', $2::jsonb), $3) RETURNING id`,
-                [medianocheMadrid(f.fecha), JSON.stringify(marca), cfg.festivo?.por || null]);
-            await guardarImagen(pool, p.rows[0].id, img);
-            hechas.add(f.fecha);
-            console.log(`[diseños] historia del festivo ${f.fecha} (${f.nombre}) programada (#${p.rows[0].id})`);
+            await crearHistoria(pool, d, cfg, f);
         }
         // Se recuerdan las de los últimos 60 días (para no repetir las que se quitaron).
-        const limite = sumarDia(hoy, -60), lista = [...hechas].filter(x => x >= limite).sort();
-        if (lista.join() !== (cfg.festivo?.hechas || []).join()) {
-            const actual = await configAutomaticos(pool);
-            if (actual.festivo) { actual.festivo.hechas = lista; await guardarConfig(pool, actual); }
-        }
+        const actual = await configAutomaticos(pool);
+        const limite = sumarDia(hoy, -60), lista = (actual.festivo?.hechas || []).filter(x => x >= limite).sort();
+        if (actual.festivo && lista.join() !== (actual.festivo.hechas || []).join()) { actual.festivo.hechas = lista; await guardarConfig(pool, actual); }
     } catch (e) {
         console.error('[diseños] historias de los festivos:', e.message);
     } finally { programando = false; }
@@ -170,7 +207,15 @@ export async function felicitacionCumple(pool, variables) {
 }
 
 // Cómo saldrá (para «Ver cómo sale» en Aim Design), con un diseño cualquiera.
-export async function pruebaAutomatico(pool, uso, datos) {
-    const variables = uso === 'festivo' ? await ejemploFestivo(pool) : { nombre: 'Lucía', edad: '9' };
+export async function pruebaAutomatico(pool, uso, datos, fecha = null) {
+    const delDia = uso === 'festivo' && fecha ? (await festivosProximos(pool, fecha, fecha))[0]?.variables : null;
+    const variables = delDia || (uso === 'festivo' ? await ejemploFestivo(pool) : { nombre: 'Lucía', edad: '9' });
     return pintarEnServidor(datos, { variables });
+}
+// La imagen de la historia prevista de un festivo (para el calendario, #479).
+export async function imagenPrevista(pool, fecha) {
+    const d = await disenoDe(pool, 'festivo', await configAutomaticos(pool));
+    if (!d) return null;
+    const img = await pruebaAutomatico(pool, 'festivo', d.datos, fecha);
+    return { ...img, buf: await sharp(img.buf).resize({ width: 360, withoutEnlargement: true }).jpeg({ quality: 78 }).toBuffer(), mime: 'image/jpeg' };
 }

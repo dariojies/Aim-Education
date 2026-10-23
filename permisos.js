@@ -260,6 +260,8 @@ export const AVISOS = [
     { id: 'disenos_menciones', grupo: 'Club', texto: 'Le mencionan (@) en un comentario de Aim Design', quien: (p) => p.secciones.grafico },
     // Los correos que no llegan (#430), para arreglar la dirección.
     { id: 'correos_rebotan', grupo: 'Correo', texto: 'Correos que rebotan (no les llega nada)', quien: (p) => p.secciones.comunicaciones },
+    // Las efemérides de Publicaciones (#479): una semana antes, si ese día no hay nada programado.
+    { id: 'efemerides_sin_publicar', grupo: 'Club', texto: 'Efemérides sin nada programado en redes (una semana antes)', quien: (p) => p.secciones.comunicaciones },
     // La vigilancia de los servicios: si algo se cae, al Equipo IT y los superadmin.
     { id: 'servicios_caidos', grupo: 'Sistema', texto: 'Servicios de la web con problemas', quien: (p) => p.editarEquipoIT },
     { id: 'contactos', grupo: 'Familias', texto: 'Consultas de la web sin atender', quien: (p) => p.secciones.contactos },

@@ -22,7 +22,7 @@ import { crearCambios, APPS_CAMBIOS } from './cambios.js';
 import { crearEvaluacion, crearTablasEvaluacion, sembrarCategoriasIngles } from './evaluacion.js';
 import { crearReportes, pendienteAhora, SQL_MOVIMIENTOS } from './reportes.js';
 import { enviarZipFotos, nombreArchivo as nombreEnZip, crearZip, cabeceraAdjunto } from './zip.js';
-import { crearPublicaciones, crearTablasPublicaciones } from './publicaciones.js';
+import { crearPublicaciones, crearTablasPublicaciones, efemeridesSinPublicar } from './publicaciones.js';
 import { crearConexionMeta, cargarConexionMeta, tokenPagina, conexionMeta } from './meta-conexion.js';
 import { crearAula, crearTablasAula, entregasPorCorregir, tareasCorregidas, dudasPorResponder, dudasContestadas, avisosAulaDe, avisosAulaPendientes, marcarAvisoAula, soltarAvisoAula, anunciosAulaDe } from './aula.js';
 import { crearTienda, crearTablasTienda, pedidosPorAtender, pedidosEnMarcha } from './tienda.js';
@@ -17239,6 +17239,17 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         }
         // Correos que rebotan (#430): de campañas o de cualquier correo de info@.
         // Se enciende con cada rebote nuevo.
+        // Efemérides sin publicación (#479): una semana antes, si ese día no hay nada programado.
+        if (recibe('efemerides_sin_publicar')) {
+            fuente('Publicaciones', ['efemerides_sin_publicar'], async () => {
+                const lista = await avisoCompartido('efemerides', () => efemeridesSinPublicar(pool));
+                const largo = (iso) => new Date(iso + 'T12:00:00Z').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' }).replace(',', '');
+                return lista.map(e => ({
+                    tipo: 'redes', clave: `efemeride_${e.fecha}`, marca: e.fecha, fecha: e.fecha, prioridad: 3, destino: `/admin/publicaciones?dia=${e.fecha}`,
+                    texto: `«${e.nombre}» es el ${largo(e.fecha)} y no hay nada programado`, detalle: 'una publicación para ese día en redes',
+                }));
+            });
+        }
         if (recibe('correos_rebotan')) {
             fuente('Correos que rebotan', ['correos_rebotan'], async () => {
                 const x = (await avisoCompartido('rebotes', () => pool.query(

@@ -19,6 +19,7 @@
 import express from 'express';
 import crypto from 'crypto';
 import { tokenPagina } from './meta-conexion.js';
+import { historiasPrevistas, programarHistoriaYa, imagenPrevista } from './disenos-automaticos.js';
 
 const REDES = ['facebook', 'instagram'];
 const TIPOS = ['post', 'reel', 'story'];
@@ -26,6 +27,65 @@ const MAX_IMAGEN = 8 * 1024 * 1024;
 const MAX_VIDEO = 100 * 1024 * 1024;
 const MAX_MEDIOS = 10;
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
+
+// ── Efemérides (#479) ──
+// Los días señalados (Día de la Paz, de Andalucía…) en que conviene publicar algo.
+// Salen en el calendario y, una semana antes, la campanita avisa si ese día aún no
+// hay nada programado. Se guardan en aim_ajustes («efemerides»); hasta que se
+// cambien, valen las de abajo. Cada una: { nombre, dia }, con dia «MM-DD» (cada
+// año), «AAAA-MM-DD» (un día concreto) o «N-dom-MM» (el N.º domingo de un mes,
+// como el Día de la Madre).
+const CLAVE_EFEMERIDES = 'efemerides';
+export const EFEMERIDES_DE_FABRICA = [
+    ['01-01', 'Año Nuevo'], ['01-06', 'Día de Reyes'], ['01-24', 'Día Internacional de la Educación'], ['01-30', 'Día Escolar de la No Violencia y la Paz'],
+    ['02-14', 'San Valentín'], ['02-28', 'Día de Andalucía'], ['03-08', 'Día Internacional de la Mujer'], ['03-19', 'Día del Padre'],
+    ['04-02', 'Día Internacional del Libro Infantil'], ['04-06', 'Día Internacional del Deporte'], ['04-11', 'Día del Taekwon-Do (ITF)'], ['04-23', 'Día del Libro'],
+    ['04-29', 'Día Internacional de la Danza'], ['1-dom-05', 'Día de la Madre'], ['05-15', 'Día Internacional de las Familias'], ['06-05', 'Día Mundial del Medio Ambiente'],
+    ['06-21', 'Día de la Música'], ['10-31', 'Halloween'], ['11-20', 'Día Universal del Niño'], ['11-27', 'Día del Maestro'],
+    ['12-06', 'Día de la Constitución'], ['12-24', 'Nochebuena'], ['12-25', 'Navidad'], ['12-31', 'Nochevieja'],
+].map(([dia, nombre]) => ({ dia, nombre }));
+const valeDia = (d) => /^(\d{2}-\d{2}|\d{4}-\d{2}-\d{2}|[1-5]-dom-\d{2})$/.test(String(d || ''));
+export async function efemeridesGuardadas(pool) {
+    const v = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = $1`, [CLAVE_EFEMERIDES])).rows[0]?.valor;
+    return Array.isArray(v) ? v : EFEMERIDES_DE_FABRICA;
+}
+// Los días de cada efeméride entre dos fechas: [{ fecha, nombre }].
+export function efemeridesEntre(lista, desde, hasta) {
+    const out = [];
+    for (let y = Number(desde.slice(0, 4)); y <= Number(hasta.slice(0, 4)); y++) {
+        for (const e of lista) {
+            let fecha = null;
+            if (/^\d{4}-\d{2}-\d{2}$/.test(e.dia)) fecha = e.dia.startsWith(`${y}-`) ? e.dia : null;
+            else if (/^\d{2}-\d{2}$/.test(e.dia)) fecha = `${y}-${e.dia}`;
+            else {
+                const [n, , mes] = e.dia.split('-');
+                const d = new Date(Date.UTC(y, Number(mes) - 1, 1));
+                d.setUTCDate(1 + ((7 - d.getUTCDay()) % 7) + (Number(n) - 1) * 7);
+                if (d.getUTCMonth() === Number(mes) - 1) fecha = d.toISOString().slice(0, 10);
+            }
+            if (fecha && fecha >= desde && fecha <= hasta) out.push({ fecha, nombre: e.nombre });
+        }
+    }
+    return out.sort((a, b) => a.fecha.localeCompare(b.fecha));
+}
+const hoyMadrid = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Madrid' });
+const sumarDia = (iso, n) => { const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+// Los días con algo programado o publicado (en España).
+async function diasConPublicacion(pool, desde, hasta) {
+    const r = await pool.query(
+        `SELECT DISTINCT ((COALESCE(publicada_at, programada_at)) AT TIME ZONE 'Europe/Madrid')::date::text AS d FROM aim_social_publicaciones
+         WHERE estado IN ('programada', 'publicando', 'publicada', 'parcial') AND COALESCE(publicada_at, programada_at) IS NOT NULL
+           AND (COALESCE(publicada_at, programada_at) AT TIME ZONE 'Europe/Madrid')::date BETWEEN $1::date AND $2::date`, [desde, hasta]);
+    return new Set(r.rows.map(x => x.d));
+}
+// Para la campanita: las efemérides de los próximos 7 días sin nada programado ese día.
+export async function efemeridesSinPublicar(pool, dias = 7) {
+    const hoy = hoyMadrid(), hasta = sumarDia(hoy, dias);
+    const proximas = efemeridesEntre(await efemeridesGuardadas(pool), hoy, hasta);
+    if (!proximas.length) return [];
+    const con = await diasConPublicacion(pool, hoy, hasta);
+    return proximas.filter(e => !con.has(e.fecha));
+}
 
 export async function crearTablasPublicaciones(client) {
     await client.query(`
@@ -374,6 +434,46 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
         id: p.id, texto: p.texto, redes: p.redes, tipo: p.tipo, estado: p.estado,
         programadaAt: p.programada_at, publicadaAt: p.publicada_at, resultado: p.resultado || {},
         autor: p.autor || null, actualizada: p.updated_at, medios: medios || [],
+        // La programó sola la web (la historia de un festivo, #471): si se cambia, deja de serlo.
+        auto: p.resultado?.auto?.uso || null,
+    });
+
+    // ── Lo previsto y las efemérides (#479) ──
+    const FECHA_OK = /^\d{4}-\d{2}-\d{2}$/;
+    router.get('/api/admin/publicaciones/previstas/:fecha/imagen', ...ver, async (req, res) => {
+        try {
+            if (!FECHA_OK.test(req.params.fecha)) corta(400, 'Fecha no válida.');
+            const img = await imagenPrevista(pool, req.params.fecha);
+            if (!img) return res.status(404).end();
+            res.set('Content-Type', img.mime).set('Cache-Control', 'private, max-age=300').send(img.buf);
+        } catch (err) { fallo(res, err); }
+    });
+    // «Programarla ya»: la historia de ese festivo se crea ahora, para verla y cambiarla.
+    router.post('/api/admin/publicaciones/previstas/:fecha', ...ver, async (req, res) => {
+        try {
+            if (!FECHA_OK.test(req.params.fecha)) corta(400, 'Fecha no válida.');
+            const id = await programarHistoriaYa(pool, req.params.fecha).catch(e => corta(e.status || 500, e.message));
+            const p = await leer(id);
+            res.status(201).json({ success: true, publicacion: salida(p, (await mediosDe([id])).get(id)) });
+        } catch (err) { fallo(res, err); }
+    });
+    router.get('/api/admin/publicaciones/efemerides', ...ver, async (req, res) => {
+        try {
+            res.set('Cache-Control', 'no-store');
+            res.json({ efemerides: await efemeridesGuardadas(pool), deFabrica: EFEMERIDES_DE_FABRICA });
+        } catch (err) { fallo(res, err); }
+    });
+    router.put('/api/admin/publicaciones/efemerides', ...ver, async (req, res) => {
+        try {
+            const lista = (Array.isArray(req.body?.efemerides) ? req.body.efemerides : []).slice(0, 200)
+                .map(e => ({ dia: String(e?.dia || '').trim(), nombre: String(e?.nombre || '').trim().slice(0, 100) }))
+                .filter(e => e.nombre && valeDia(e.dia));
+            await pool.query(
+                `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ($1, $2::jsonb, NOW(), $3)
+                 ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+                [CLAVE_EFEMERIDES, JSON.stringify(lista), req.userSession.userId]);
+            res.json({ success: true, efemerides: lista });
+        } catch (err) { fallo(res, err); }
     });
 
     router.get('/api/admin/publicaciones/cuenta', ...ver, async (req, res) => {
@@ -391,8 +491,18 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
                    AND ($2::date IS NULL OR COALESCE(p.publicada_at, p.programada_at, p.created_at) < $2::date + 1)
                  ORDER BY COALESCE(p.programada_at, p.publicada_at, p.created_at) DESC LIMIT 500`, [desde, hasta]);
             const medios = await mediosDe(r.rows.map(p => p.id));
+            // #479: las historias de los festivos que se programarán solas (aún no lo
+            // están) y las efemérides, con si ese día ya hay algo.
+            const hoy = hoyMadrid(), hasta2 = sumarDia(hoy, 183), desde2 = sumarDia(hoy, -60);
+            const previstas = await historiasPrevistas(pool, hoy, hasta2).catch(() => []);
+            const efem = efemeridesEntre(await efemeridesGuardadas(pool), desde2, sumarDia(hoy, 365));
+            const con = await diasConPublicacion(pool, desde2, sumarDia(hoy, 365));
             res.set('Cache-Control', 'no-store');
-            res.json({ publicaciones: r.rows.map(p => salida(p, medios.get(p.id))) });
+            res.json({
+                publicaciones: r.rows.map(p => salida(p, medios.get(p.id))),
+                previstas: previstas.map(x => ({ fecha: x.fecha, nombre: x.nombre, programadaAt: x.programadaAt, imagen: `/api/admin/publicaciones/previstas/${x.fecha}/imagen` })),
+                efemerides: efem.map(e => ({ ...e, cubierta: con.has(e.fecha) })),
+            });
         } catch (err) { fallo(res, err); }
     });
 

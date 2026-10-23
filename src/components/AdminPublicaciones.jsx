@@ -130,10 +130,29 @@ export default function AdminPublicaciones({ showToast }) {
   const [vista, setVista] = useState('calendario');
   const [lista, setLista] = useState(null);
   const [editando, setEditando] = useState(null);   // publicación (o {} para una nueva)
+  // #479: lo que se programará solo (las historias de los festivos) y las efemérides.
+  const [extra, setExtra] = useState({ previstas: [], efemerides: [] });
+  const [verEfemerides, setVerEfemerides] = useState(false);
   const cargar = useCallback(async () => {
-    try { setLista((await api('/api/admin/publicaciones')).publicaciones || []); } catch (e) { showToast?.(e.message); setLista([]); }
+    try {
+      const d = await api('/api/admin/publicaciones');
+      setLista(d.publicaciones || []); setExtra({ previstas: d.previstas || [], efemerides: d.efemerides || [] });
+    } catch (e) { showToast?.(e.message); setLista([]); }
   }, [showToast]);
+  // «Programarla ya»: la historia prevista se crea ahora y se abre para verla o cambiarla.
+  async function programarYa(p) {
+    if (!window.confirm(`La historia de «${p.nombre}» se programará sola una semana antes. ¿Programarla ya, para verla y cambiarla si hace falta?`)) return;
+    try { const d = await api(`/api/admin/publicaciones/previstas/${p.fecha}`, { method: 'POST' }); await cargar(); setEditando(d.publicacion); }
+    catch (e) { alert(e.message); }
+  }
   useEffect(() => { cargar(); api('/api/admin/publicaciones/cuenta').then(setCuenta).catch(() => setCuenta({ conectado: false, motivo: 'No se ha podido comprobar la conexión con Meta.' })); }, [cargar]);
+  // /admin/publicaciones?dia=AAAA-MM-DD (el aviso de una efeméride, #479): una nueva para ese día.
+  useEffect(() => {
+    const dia = new URLSearchParams(window.location.search).get('dia');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dia || '')) return;
+    window.history.replaceState(null, '', window.location.pathname);
+    setVista('calendario'); setEditando({ dia });
+  }, []);
   // /admin/publicaciones?abrir=<id> (lo usa Aim Design al crear un borrador): se abre al cargar.
   const abrirAlCargar = useRef(new URLSearchParams(window.location.search).get('abrir'));
   useEffect(() => {
@@ -156,9 +175,12 @@ export default function AdminPublicaciones({ showToast }) {
           <button key={v} className={`filter-pill ${vista === v ? 'is-active' : ''}`} onClick={() => setVista(v)} style={{ borderRadius: 8, padding: '8px 16px' }}>{l}</button>
         ))}
         <div style={{ flex: 1 }} />
+        <button className="btn btn-outline" onClick={() => setVerEfemerides(true)} title="Los días señalados que salen en el calendario">🎉 Efemérides</button>
         <button className="btn btn-primary" onClick={() => setEditando({})}><I.Plus width={15} height={15} /> Nueva publicación</button>
       </div>
-      {vista === 'calendario' && <Calendario lista={lista} onAbrir={setEditando} onNueva={(dia) => setEditando({ dia })} onMovida={cargar} showToast={showToast} />}
+      {vista === 'calendario' && <Calendario lista={lista} previstas={extra.previstas} efemerides={extra.efemerides} onPrevista={programarYa}
+        onAbrir={setEditando} onNueva={(dia) => setEditando({ dia })} onMovida={cargar} showToast={showToast} />}
+      {verEfemerides && <Efemerides onCerrar={(cambio) => { setVerEfemerides(false); if (cambio) cargar(); }} showToast={showToast} />}
       {vista === 'lista' && <Lista lista={lista} onAbrir={setEditando} onCambio={cargar} showToast={showToast} />}
       {vista === 'estadisticas' && <Estadisticas />}
       {editando && (
@@ -298,6 +320,11 @@ function Editor({ inicial, cuenta, onCerrar, showToast }) {
           <div style={{ flex: 1 }} />
           <button type="button" className="btn btn-sm btn-ghost" onClick={cerrar} aria-label="Cerrar"><I.X /></button>
         </div>
+        {inicial.auto === 'festivo' && !soloVer && (
+          <div style={{ padding: '10px 12px', borderRadius: 10, fontSize: 13, background: 'color-mix(in oklab, var(--purple) 8%, var(--bg-2))' }}>
+            ⚙ La ha programado sola la web: es la historia del festivo, hecha con la plantilla de Aim Design. Si la cambias aquí (o la mueves), pasa a ser tuya y ya no se actualiza sola si cambia la plantilla. Si la borras, ese festivo no tendrá historia.
+          </div>
+        )}
 
         {/* Lo que pasó al publicar. */}
         {Object.keys(res).some(k => RED[k]) && (
@@ -464,7 +491,7 @@ function VistaPrevia({ redes, tipo, texto, medios, cuenta }) {
 }
 
 // ── Calendario ──────────────────────────────────────────────────────────────
-function Calendario({ lista, onAbrir, onNueva, onMovida, showToast }) {
+function Calendario({ lista, previstas = [], efemerides = [], onPrevista, onAbrir, onNueva, onMovida, showToast }) {
   const [mes, setMes] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
   const [arrastrando, setArrastrando] = useState(null);
   const hoy = diaDe(new Date());
@@ -481,6 +508,10 @@ function Calendario({ lista, onAbrir, onNueva, onMovida, showToast }) {
   }
   for (const v of porDia.values()) v.sort((a, b) => new Date(a.publicadaAt || a.programadaAt) - new Date(b.publicadaAt || b.programadaAt));
   const borradores = (lista || []).filter(p => p.estado === 'borrador');
+  const efemDe = new Map(), prevDe = new Map();
+  for (const e of efemerides) { if (!efemDe.has(e.fecha)) efemDe.set(e.fecha, []); efemDe.get(e.fecha).push(e); }
+  for (const p of previstas) { if (!prevDe.has(p.fecha)) prevDe.set(p.fecha, []); prevDe.get(p.fecha).push(p); }
+  const enSemana = (k) => k >= hoy && (new Date(`${k}T12:00:00`) - new Date(`${hoy}T12:00:00`)) / 864e5 <= 7;
   const isoLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
   // Arrastrar una programada a otro día: misma hora, otro día.
@@ -516,6 +547,28 @@ function Calendario({ lista, onAbrir, onNueva, onMovida, showToast }) {
                   onDoubleClick={() => k >= hoy && onNueva(k)}
                   style={{ minHeight: 104, background: deMes ? 'var(--bg-2)' : 'var(--bg)', border: `1px solid ${k === hoy ? 'var(--purple)' : 'var(--line)'}`, borderRadius: 10, padding: 6, display: 'grid', alignContent: 'start', gap: 4, opacity: deMes ? 1 : 0.55 }}>
                   <span style={{ fontSize: 12, fontWeight: 800, color: k === hoy ? 'var(--purple)' : 'var(--ink-2)' }}>{d.getDate()}</span>
+                  {(efemDe.get(k) || []).map(e => {
+                    const falta = !e.cubierta && !pubs.length && k >= hoy, urge = falta && enSemana(k);
+                    return (
+                      <button key={e.nombre} type="button" onClick={() => k >= hoy && onNueva(k)} disabled={k < hoy}
+                        title={e.cubierta || pubs.length ? `${e.nombre}: ya hay algo programado ese día` : k >= hoy ? `${e.nombre}: aún no hay nada programado. Toca para preparar una publicación.` : e.nombre}
+                        style={{ fontFamily: 'inherit', fontSize: 10.5, fontWeight: 800, textAlign: 'left', padding: '2px 5px', borderRadius: 6, cursor: k >= hoy ? 'pointer' : 'default', minWidth: 0,
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', border: `1px ${falta ? 'dashed' : 'solid'} ${urge ? 'var(--orange)' : 'color-mix(in oklab, var(--pink) 50%, transparent)'}`,
+                          background: urge ? 'color-mix(in oklab, var(--orange) 14%, var(--bg-2))' : 'color-mix(in oklab, var(--pink) 10%, var(--bg-2))', color: urge ? 'var(--orange)' : 'var(--pink)' }}>
+                        🎉 {e.nombre}
+                      </button>
+                    );
+                  })}
+                  {(prevDe.get(k) || []).map(p => (
+                    <button key={`prev-${p.fecha}`} type="button" onClick={() => onPrevista?.(p)}
+                      title={`Historia del festivo «${p.nombre}»: se programará sola una semana antes, con la plantilla de Aim Design. Toca para verla ya o cambiarla.`}
+                      style={{ display: 'flex', gap: 4, alignItems: 'center', textAlign: 'left', fontFamily: 'inherit', fontSize: 11, padding: '3px 5px', borderRadius: 7, cursor: 'pointer',
+                        border: '1px dashed color-mix(in oklab, var(--purple) 55%, transparent)', background: 'transparent', color: 'var(--ink-2)', minWidth: 0 }}>
+                      <img src={p.imagen} alt="" loading="lazy" style={{ width: 20, height: 20, borderRadius: 4, objectFit: 'cover', flex: 'none', opacity: 0.8 }} />
+                      <b style={{ flex: 'none' }}>00:00</b><Marca red="instagram" tam={13} />
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Prevista: historia de {p.nombre}</span>
+                    </button>
+                  ))}
                   {pubs.map(p => (
                     <button key={p.id} type="button" draggable={p.estado === 'programada'} onDragStart={() => setArrastrando(p)} onDragEnd={() => setArrastrando(null)} onClick={() => onAbrir(p)}
                       title={p.texto}
@@ -524,7 +577,7 @@ function Calendario({ lista, onAbrir, onNueva, onMovida, showToast }) {
                       {p.medios?.[0] && <img src={miniUrl(p.medios[0])} alt="" style={{ width: 20, height: 20, borderRadius: 4, objectFit: 'cover', flex: 'none' }} />}
                       <b style={{ flex: 'none' }}>{fmtHora(p.publicadaAt || p.programadaAt)}</b>
                       {p.redes.map(r => <Marca key={r} red={r} tam={13} />)}
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.texto || TIPO[p.tipo]}</span>
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.auto === 'festivo' ? '⚙ Historia del festivo (automática)' : p.texto || TIPO[p.tipo]}</span>
                     </button>
                   ))}
                 </div>
@@ -545,7 +598,73 @@ function Calendario({ lista, onAbrir, onNueva, onMovida, showToast }) {
           </div>
         </div>
       )}
-      <span style={suave}>Doble clic en un día para preparar una publicación para ese día.</span>
+      <span style={suave}>Doble clic en un día para preparar una publicación para ese día. 🎉 son las efemérides (en naranja si es esta semana y aún no hay nada); con borde de puntos, lo que se programará solo.</span>
+    </div>
+  );
+}
+
+// ── Efemérides (#479) ───────────────────────────────────────────────────────
+// Los días señalados que salen en el calendario. Cada año el mismo día (dd/mm) o
+// un día concreto; la campanita avisa una semana antes si no hay nada programado.
+const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+const ORDINAL = ['', 'primer', 'segundo', 'tercer', 'cuarto', 'quinto'];
+const textoDia = (dia) => {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dia)) return new Date(`${dia}T12:00:00`).toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' });
+  if (/^\d{2}-\d{2}$/.test(dia)) return `${Number(dia.slice(3))} de ${MESES[Number(dia.slice(0, 2)) - 1]}, cada año`;
+  const [n, , mes] = dia.split('-');
+  return `${ORDINAL[Number(n)]} domingo de ${MESES[Number(mes) - 1]}, cada año`;
+};
+const claveOrden = (dia) => (/^\d{4}/.test(dia) ? dia.slice(5) : /^\d-dom/.test(dia) ? `${dia.slice(-2)}-0${dia[0]}` : dia);
+function Efemerides({ onCerrar, showToast }) {
+  const [lista, setLista] = useState(null);
+  const [deFabrica, setDeFabrica] = useState([]);
+  const [nombre, setNombre] = useState('');
+  const [cada, setCada] = useState(true);
+  const [dia, setDia] = useState('');
+  useEffect(() => { api('/api/admin/publicaciones/efemerides').then(d => { setLista(d.efemerides); setDeFabrica(d.deFabrica); }).catch(e => { alert(e.message); onCerrar(false); }); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  async function guardar(nueva, aviso) {
+    try { const d = await api('/api/admin/publicaciones/efemerides', { method: 'PUT', body: { efemerides: nueva } }); setLista(d.efemerides); if (aviso) showToast?.(aviso); }
+    catch (e) { alert(e.message); }
+  }
+  function anadir(e) {
+    e.preventDefault();
+    if (!nombre.trim() || !dia || !lista) return;
+    guardar([...lista, { nombre: nombre.trim(), dia: cada ? dia.slice(5) : dia }], 'Efeméride añadida.');
+    setNombre(''); setDia('');
+  }
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 60, display: 'grid', placeItems: 'center', padding: 12 }} onClick={() => onCerrar(true)}>
+      <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg)', borderRadius: 18, width: 'min(640px, 100%)', maxHeight: '90vh', overflowY: 'auto', padding: 18, display: 'grid', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center' }}>
+          <h3 style={{ margin: 0, flex: 1, fontSize: 18 }}>🎉 Efemérides</h3>
+          <button type="button" className="btn btn-sm btn-ghost" onClick={() => onCerrar(true)} aria-label="Cerrar"><I.X /></button>
+        </div>
+        <span style={suave}>Salen marcadas en el calendario y, una semana antes, la campanita avisa si ese día no hay nada programado. No tienen que ver con las historias de los festivos (esas salen solas).</span>
+        <form onSubmit={anadir} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'end' }}>
+          <label style={{ display: 'grid', gap: 3, fontSize: 12, fontWeight: 700, flex: '2 1 180px' }}>Nombre
+            <input value={nombre} onChange={e => setNombre(e.target.value)} placeholder="Día de la Paz" style={{ fontFamily: 'inherit', fontSize: 13, padding: '7px 9px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)' }} />
+          </label>
+          <label style={{ display: 'grid', gap: 3, fontSize: 12, fontWeight: 700 }}>Día
+            <input type="date" value={dia} onChange={e => setDia(e.target.value)} style={{ fontFamily: 'inherit', fontSize: 13, padding: '6px 8px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)' }} />
+          </label>
+          <label style={{ display: 'flex', gap: 5, alignItems: 'center', fontSize: 12.5 }}><input type="checkbox" checked={cada} onChange={e => setCada(e.target.checked)} /> Cada año</label>
+          <button type="submit" className="btn btn-sm btn-primary" disabled={!nombre.trim() || !dia || !lista}>Añadir</button>
+        </form>
+        {lista === null ? <p style={suave}>Cargando…</p> : (
+          <div style={{ display: 'grid', gap: 4 }}>
+            {[...lista].sort((a, b) => claveOrden(a.dia).localeCompare(claveOrden(b.dia))).map(e => (
+              <div key={`${e.dia}|${e.nombre}`} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '6px 10px', borderRadius: 8, background: 'var(--bg-2)', border: '1px solid var(--line)', fontSize: 13 }}>
+                <b style={{ flex: 1 }}>{e.nombre}</b>
+                <span style={suave}>{textoDia(e.dia)}</span>
+                <button type="button" className="icon-btn danger" aria-label={`Quitar ${e.nombre}`} title="Quitar" onClick={() => guardar(lista.filter(x => x !== e))}>✕</button>
+              </div>
+            ))}
+            {!lista.length && <p style={suave}>No hay ninguna.</p>}
+          </div>
+        )}
+        <button type="button" className="btn btn-sm btn-ghost" style={{ justifySelf: 'start' }}
+          onClick={() => window.confirm('¿Volver a la lista de partida? Se quitan las que hayas añadido.') && guardar(deFabrica, 'Lista de partida recuperada.')}>Volver a la lista de partida</button>
+      </div>
     </div>
   );
 }
