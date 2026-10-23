@@ -247,6 +247,20 @@ function DisenosGraficos({ showToast, puedePublicar }) {
   );
 }
 
+// El móvil (pantalla estrecha): el editor cambia de forma. Y si la pantalla es táctil.
+const ANCHO_MOVIL = '(max-width: 760px)';
+const esMovil = () => typeof window !== 'undefined' && !!window.matchMedia?.(ANCHO_MOVIL).matches;
+function useMovil() {
+  const [m, setM] = useState(esMovil);
+  useEffect(() => {
+    const q = window.matchMedia?.(ANCHO_MOVIL); if (!q) return undefined;
+    const f = () => setM(q.matches);
+    q.addEventListener('change', f); return () => q.removeEventListener('change', f);
+  }, []);
+  return m;
+}
+const ALTO_BARRA_MOVIL = 62;
+
 function Ventana({ titulo, children, onCerrar, ancho = 720 }) {
   useEffect(() => { const f = (e) => { if (e.key === 'Escape') onCerrar(); }; window.addEventListener('keydown', f); return () => window.removeEventListener('keydown', f); }, [onCerrar]);
   return (
@@ -422,7 +436,13 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
   const [procesando, setProcesando] = useState(null); // un aviso mientras se hace algo largo (quitar el fondo)
   // La pantalla, como en Canva: una barra de iconos a la izquierda que abre y cierra su
   // panel, y las propiedades flotando sobre el lienzo solo cuando hay algo elegido.
-  const [panelAbierto, setPanelAbierto] = useState(true);
+  // En el móvil, la barra de iconos va abajo y el panel y las propiedades suben como hojas.
+  const movil = useMovil();
+  const tactil = useMemo(() => typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches, []);
+  const [panelAbierto, setPanelAbierto] = useState(() => !esMovil());
+  const [verMas, setVerMas] = useState(false);        // en el móvil: lo demás de la barra de arriba
+  const [hojaPequena, setHojaPequena] = useState(false); // en el móvil: las propiedades, encogidas
+  const toques = useRef(new Set()), ultimoToque = useRef(null), dobleHecho = useRef(0);
   const [menu, setMenu] = useState(null);             // el menú del botón derecho: { x, y, id? }
   const [ayudas, setAyudas] = useState(() => { try { return JSON.parse(localStorage.getItem('aim_design_ayudas')) || {}; } catch { return {}; } });
   const { go } = useRouter();
@@ -461,7 +481,8 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
     const ro = new ResizeObserver(([x]) => setZona({ w: x.contentRect.width, h: x.contentRect.height }));
     ro.observe(el); return () => ro.disconnect();
   }, []);
-  const ajustada = Math.max(0.05, Math.min((zona.w - 48) / diseno.ancho, (zona.h - 110) / diseno.alto));
+  const hoja = !movil ? null : panelAbierto ? '50dvh' : seleccion.length ? (hojaPequena ? '44px' : '42dvh') : null;
+  const ajustada = Math.max(0.05, Math.min((zona.w - (movil ? 24 : 48)) / diseno.ancho, (zona.h - (hoja ? 24 : movil ? 84 : 110)) / diseno.alto));
   const escala = zoom ? Math.max(0.05, Math.min(6, zoom)) : ajustada;
   // La cuadrícula y los márgenes de seguridad (5 mm en papel; si no, el 5 % del lado corto).
   const enPapel = TAMANOS.some(t => t.pdf && t.ancho === diseno.ancho && t.alto === diseno.alto);
@@ -478,6 +499,49 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
     if (r && p) anclaZoom.current = { px: (p.x - r.left) / escala, py: (p.y - r.top) / escala, cx: p.x, cy: p.y };
     setZoom(sig);
   }
+  // Pellizcar: un zoom sin pasos, con el punto de entre los dedos quieto (y siguiéndolos).
+  function zoomA(z, ancla) {
+    const n = Math.max(0.05, Math.min(6, z));
+    if (Math.abs(n - escala) < 0.002) {
+      const sc = scrollRef.current, r = lienzoRef.current?.getBoundingClientRect();
+      if (sc && r) { sc.scrollLeft += r.left + ancla.px * escala - ancla.cx; sc.scrollTop += r.top + ancla.py * escala - ancla.cy; }
+      return;
+    }
+    anclaZoom.current = ancla;
+    setZoom(n);
+  }
+  // Si llega un segundo dedo, lo que se estaba arrastrando se queda donde está.
+  function cortarArrastre() {
+    const a = arrastre.current; arrastre.current = null;
+    setRecuadro(null); setGuias([]);
+    if (a?.movido && a.previo) { setHist(h => ({ atras: [...h.atras.slice(-99), a.previo], adelante: [] })); setSucio(true); }
+  }
+  useEffect(() => {
+    const z = zonaRef.current; if (!z) return undefined;
+    let p = null;
+    const medir = (t) => ({ d: Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY) || 1, x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 });
+    const inicio = (ev) => {
+      if (ev.touches.length !== 2) return;
+      yo.current.cortarArrastre();
+      const m = medir(ev.touches), r = lienzoRef.current?.getBoundingClientRect(), e = yo.current.escala;
+      if (r) p = { d0: m.d, z0: e, px: (m.x - r.left) / e, py: (m.y - r.top) / e };
+    };
+    const mover = (ev) => {
+      if (!p || ev.touches.length !== 2) return;
+      ev.preventDefault();
+      const m = medir(ev.touches);
+      yo.current.zoomA(p.z0 * m.d / p.d0, { px: p.px, py: p.py, cx: m.x, cy: m.y });
+    };
+    const fin = (ev) => { if (ev.touches.length < 2) p = null; };
+    z.addEventListener('touchstart', inicio, { passive: true });
+    z.addEventListener('touchmove', mover, { passive: false });
+    z.addEventListener('touchend', fin); z.addEventListener('touchcancel', fin);
+    return () => { z.removeEventListener('touchstart', inicio); z.removeEventListener('touchmove', mover); z.removeEventListener('touchend', fin); z.removeEventListener('touchcancel', fin); };
+  }, []);
+  // En el móvil, al elegir algo se cierra el panel de añadir (y salen sus propiedades).
+  useEffect(() => {
+    if (movil && seleccion.length && ['anadir', 'estilos', 'fondo'].includes(panel)) setPanelAbierto(false);
+  }, [seleccion]); // eslint-disable-line react-hooks/exhaustive-deps
   useLayoutEffect(() => {
     const a = anclaZoom.current; anclaZoom.current = null;
     const sc = scrollRef.current;
@@ -784,15 +848,31 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
     setSel(idEl); setRecortando(idEl);
   }
 
+  // Doble clic (o tocar dos veces): escribir un texto, recortar una foto, entrar en un grupo.
+  function dobleClic(e, ev) {
+    if (e.tipo === 'texto') editarTexto(e.id, { x: ev.clientX, y: ev.clientY });
+    else if (e.tipo === 'imagen' && e.url) recortar(e.id);
+    else if (e.grupo) setSel(e.id);
+  }
+
   // ── Arrastrar, cambiar de tamaño, girar, encuadrar y elegir con un recuadro ──
   function empezar(ev, idEl, modo, hx = 0, hy = 0) {
     ev.stopPropagation();
     setMenu(null);
     if (ev.button > 0) return;
     ev.preventDefault();
+    if (ev.pointerType === 'touch' && toques.current.size > 1) return;   // dos dedos: es un pellizco
     if (edicion.current) document.activeElement?.blur?.();
     const v = vista(), el = v.elementos.find(e => e.id === idEl);
     if (!el) return;
+    if (ev.pointerType === 'touch' && modo === 'mover') {
+      const t = ultimoToque.current;
+      ultimoToque.current = { id: idEl, t: ev.timeStamp };
+      if (t && t.id === idEl && ev.timeStamp - t.t < 350 && selRef.current.includes(idEl)) {
+        ultimoToque.current = null; dobleHecho.current = ev.timeStamp;
+        dobleClic(el, ev); return;
+      }
+    }
     if (recortando && recortando !== idEl) setRecortando(null);
     let m = modo;
     if (m === 'mover' && recortando === idEl) m = 'encuadre';
@@ -827,8 +907,9 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
     const mover = (ev) => {
       const a = arrastre.current; if (!a) return;
       const dxp = ev.clientX - a.x0, dyp = ev.clientY - a.y0;
-      if (!a.movido && Math.abs(dxp) + Math.abs(dyp) < 3) return;
+      if (!a.movido && Math.abs(dxp) + Math.abs(dyp) < (ev.pointerType === 'touch' ? 6 : 3)) return;
       a.movido = true;
+      if (a.modo === 'toque') return;
       if (a.modo === 'recuadro') { setRecuadro({ x: Math.min(a.x0, ev.clientX), y: Math.min(a.y0, ev.clientY), w: Math.abs(dxp), h: Math.abs(dyp) }); return; }
       const dx = dxp / escala, dy = dyp / escala;
       const e0 = a.el0, rad = (e0.rot || 0) * Math.PI / 180;
@@ -882,6 +963,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
       tramoTerminar();
       const a = arrastre.current; arrastre.current = null; setGuias([]);
       if (!a) return;
+      if (a.modo === 'toque') { if (!a.movido) setSeleccion([]); return; }
       if (a.modo === 'recuadro') {
         setRecuadro(null);
         if (!a.movido) { if (!a.shift) setSeleccion([]); return; }
@@ -896,8 +978,19 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
       }
       if (a.movido) { setHist(h => ({ atras: [...h.atras.slice(-99), a.previo], adelante: [] })); setSucio(true); }
     };
-    window.addEventListener('pointermove', mover); window.addEventListener('pointerup', soltarPuntero);
-    return () => { window.removeEventListener('pointermove', mover); window.removeEventListener('pointerup', soltarPuntero); };
+    // El navegador se queda el dedo (para mover la vista): lo de elegir, nada; lo demás, se termina.
+    const cancelar = (ev) => {
+      const a = arrastre.current;
+      if (a?.modo === 'toque' || a?.modo === 'recuadro') { arrastre.current = null; setRecuadro(null); return; }
+      soltarPuntero(ev);
+    };
+    const quitarToque = (ev) => { toques.current.delete(ev.pointerId); };
+    window.addEventListener('pointermove', mover); window.addEventListener('pointerup', soltarPuntero); window.addEventListener('pointercancel', cancelar);
+    window.addEventListener('pointerup', quitarToque, true); window.addEventListener('pointercancel', quitarToque, true);
+    return () => {
+      window.removeEventListener('pointermove', mover); window.removeEventListener('pointerup', soltarPuntero); window.removeEventListener('pointercancel', cancelar);
+      window.removeEventListener('pointerup', quitarToque, true); window.removeEventListener('pointercancel', quitarToque, true);
+    };
   }, [escala, ejemplo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Teclado ──
@@ -996,7 +1089,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
     if (hayOtros.current) postVivo({ tipo: 'cursor', x: Math.round(ultimoCursor.current.x), y: Math.round(ultimoCursor.current.y), pagina, sel: seleccion });
   }, [seleccion, pagina]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  yo.current = { hacerZoom, leerCopia, pegarElementos, anadirImagen, anadirTexto, ventana, alVivo, mandarCambios };
+  yo.current = { hacerZoom, zoomA, cortarArrastre, escala, leerCopia, pegarElementos, anadirImagen, anadirTexto, ventana, alVivo, mandarCambios };
 
   // ── Guardar y exportar ──
   async function guardar() {
@@ -1067,6 +1160,14 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
   }
 
   const marco = { position: 'absolute', left: 0, top: 0, width: diseno.ancho * escala, height: diseno.alto * escala };
+  // En el móvil: lo que no cabe en la barra de arriba sale en una segunda fila (con «⋯»),
+  // y los menús de Exportar y Usar suben desde abajo.
+  const masBarra = movil ? { order: 2 } : {};
+  const verExtra = !movil || verMas;
+  const menuBarra = movil
+    ? { position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 95, borderRadius: '16px 16px 0 0', maxHeight: '75dvh', overflowY: 'auto', padding: '10px 8px calc(10px + env(safe-area-inset-bottom))' }
+    : { position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 5, borderRadius: 12, padding: 6 };
+  const asa = tactil || movil ? 18 : 12;
   const botonBarra = { font: 'inherit', fontSize: 13, fontWeight: 700, padding: '7px 11px', borderRadius: 9, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)', cursor: 'pointer', display: 'inline-flex', gap: 6, alignItems: 'center' };
   const pendientes = (revision?.comentarios || []).filter(c => c.tipo === 'comentario' && !c.resuelto).length;
   const animada = tieneAnimacion(diseno);
@@ -1086,14 +1187,17 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
     <KitMarca.Provider value={kitConFuentes}>
     <div style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'var(--bg)', display: 'grid', gridTemplateRows: 'auto 1fr' }}>
       {/* Barra de arriba */}
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '10px 14px', borderBottom: '1px solid var(--line)', background: 'var(--bg-2)' }}>
-        <button type="button" style={botonBarra} onClick={cerrar}>← Aim Design</button>
-        <input value={nombre} onChange={e => { setNombre(e.target.value); setSucio(true); }} aria-label="Nombre del diseño" style={{ ...inp, width: 230, fontWeight: 700, fontSize: 14 }} />
-        <select value={tipo} onChange={e => { setTipo(e.target.value); setSucio(true); }} aria-label="Tipo" style={{ ...inp, width: 'auto' }}>
+      <div style={{ display: 'flex', gap: movil ? 6 : 8, alignItems: 'center', flexWrap: 'wrap', padding: movil ? '8px 10px' : '10px 14px', borderBottom: '1px solid var(--line)', background: 'var(--bg-2)' }}>
+        <button type="button" style={botonBarra} onClick={cerrar} aria-label="Volver a Aim Design">{movil ? '←' : '← Aim Design'}</button>
+        <input value={nombre} onChange={e => { setNombre(e.target.value); setSucio(true); }} aria-label="Nombre del diseño" style={{ ...inp, width: movil ? 'auto' : 230, flex: movil ? '1 1 80px' : undefined, minWidth: 0, fontWeight: 700, fontSize: 14 }} />
+        {movil && verMas && <span style={{ flexBasis: '100%', height: 0, order: 1 }} />}
+        {verExtra && <>
+        <select value={tipo} onChange={e => { setTipo(e.target.value); setSucio(true); }} aria-label="Tipo" style={{ ...inp, width: 'auto', ...masBarra }}>
           <option value="libre">Diseño</option><option value="diploma">Diploma del aula</option>
         </select>
-        <button type="button" style={botonBarra} onClick={() => setVerTamano(true)} title="Cambiar el tamaño del lienzo">{tamanoTexto(diseno)}</button>
-        {revision && revision.estado !== 'sin_pedir' && <EstadoRevision estado={revision.estado} onClick={() => setPanel('revision')} />}
+        <button type="button" style={{ ...botonBarra, ...masBarra }} onClick={() => setVerTamano(true)} title="Cambiar el tamaño del lienzo">{tamanoTexto(diseno)}</button>
+        </>}
+        {revision && revision.estado !== 'sin_pedir' && verExtra && <span style={masBarra}><EstadoRevision estado={revision.estado} onClick={() => { setPanel('revision'); setPanelAbierto(true); }} /></span>}
         {vivos.length > 0 && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 6 }} title={`También aquí: ${vivos.map(v => v.nombre).join(', ')}`}>
             <div style={{ display: 'flex' }}>
@@ -1103,22 +1207,23 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
                 </span>
               ))}
             </div>
-            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-2)' }}>{vivos.length === 1 ? `${vivos[0].nombre.split(' ')[0]} también está aquí` : `${vivos.length} personas más aquí`}</span>
+            {!movil && <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-2)' }}>{vivos.length === 1 ? `${vivos[0].nombre.split(' ')[0]} también está aquí` : `${vivos.length} personas más aquí`}</span>}
           </div>
         )}
-        {doc.esPlantilla && (
-          <label style={{ fontSize: 12, fontWeight: 800, color: 'var(--purple)', display: 'inline-flex', gap: 6, alignItems: 'center' }} title="Sale en «Nuevo diseño» para todo el equipo">
+        {doc.esPlantilla && verExtra && (
+          <label style={{ fontSize: 12, fontWeight: 800, color: 'var(--purple)', display: 'inline-flex', gap: 6, alignItems: 'center', ...masBarra }} title="Sale en «Nuevo diseño» para todo el equipo">
             <input type="checkbox" checked onChange={() => { if (window.confirm('¿Deja de ser una plantilla del equipo? (El diseño se queda.)')) aplicarDoc(d => { const { esPlantilla, ...resto } = d; return resto; }); }} /> ★ Plantilla del equipo
           </label>
         )}
-        <div style={{ flex: 1 }} />
-        <button type="button" style={botonBarra} onClick={() => setVentana('presentar')} title="A pantalla completa, página a página (también para la pantalla de recepción)">▶ Presentar</button>
-        <button type="button" style={botonBarra} onClick={deshacer} disabled={!hist.atras.length} title="Deshacer (Ctrl+Z)">↶</button>
-        <button type="button" style={botonBarra} onClick={rehacer} disabled={!hist.adelante.length} title="Rehacer (Ctrl+Y)">↷</button>
-        <div style={{ position: 'relative' }}>
+        {!movil && <div style={{ flex: 1 }} />}
+        {verExtra && <button type="button" style={{ ...botonBarra, ...masBarra }} onClick={() => setVentana('presentar')} title="A pantalla completa, página a página (también para la pantalla de recepción)">▶ Presentar</button>}
+        <button type="button" style={botonBarra} onClick={deshacer} disabled={!hist.atras.length} title="Deshacer (Ctrl+Z)" aria-label="Deshacer">↶</button>
+        <button type="button" style={botonBarra} onClick={rehacer} disabled={!hist.adelante.length} title="Rehacer (Ctrl+Y)" aria-label="Rehacer">↷</button>
+        {movil && (verExportar || verUsar) && <div onClick={() => { setVerExportar(false); setVerUsar(false); }} style={{ position: 'fixed', inset: 0, zIndex: 94, background: 'rgba(0,0,0,.35)' }} />}
+        {verExtra && <div style={{ position: 'relative', ...masBarra }}>
           <button type="button" style={botonBarra} onClick={() => { setVerExportar(v => !v); setVerUsar(false); }}><I.Download width={14} height={14} /> Exportar</button>
           {verExportar && (
-            <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 5, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, boxShadow: 'var(--shadow)', padding: 6, display: 'grid', minWidth: 240 }}>
+            <div style={{ ...menuBarra, background: 'var(--bg-2)', border: '1px solid var(--line)', boxShadow: 'var(--shadow)', display: 'grid', minWidth: 240 }}>
               {[['png', 1, 'PNG', paginas > 1 ? `Un archivo por página (${paginas})` : 'Con la mejor calidad'], ['png', 2, 'PNG al doble', `${diseno.ancho * 2} × ${diseno.alto * 2} px`],
                 ['png', 1, 'PNG sin fondo', 'Transparente: para logos, pegatinas y montajes', true],
                 ['jpg', 1, 'JPG', 'Pesa menos (redes, WhatsApp)'], ['pdf', 1, 'PDF', paginas > 1 ? `Las ${paginas} páginas, para ver o imprimir en casa` : 'Para ver o imprimir en casa']].map(([f, k, t, d, sinFondo]) => (
@@ -1134,11 +1239,11 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
               {tipo === 'diploma' && <span style={{ fontSize: 11, color: 'var(--ink-3)', padding: '4px 10px' }}>Sale con los datos de ejemplo; a cada alumno, con los suyos.</span>}
             </div>
           )}
-        </div>
-        <div style={{ position: 'relative' }}>
+        </div>}
+        {verExtra && <div style={{ position: 'relative', ...masBarra }}>
           <button type="button" style={botonBarra} onClick={() => { setVerUsar(v => !v); setVerExportar(false); }}>✦ Usar ▾</button>
           {verUsar && (
-            <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 5, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, boxShadow: 'var(--shadow)', padding: 6, display: 'grid', minWidth: 270 }}>
+            <div style={{ ...menuBarra, background: 'var(--bg-2)', border: '1px solid var(--line)', boxShadow: 'var(--shadow)', display: 'grid', minWidth: 270 }}>
               {[
                 puedePublicar && ['redes', 'Publicar en redes', permisoRedes.ok ? (paginas > 1 ? `Un carrusel con las ${paginas} páginas, en Publicaciones` : 'Un borrador en Publicaciones, listo para Facebook e Instagram') : '🔒 Necesita la aprobación de la dirección'],
                 ['tamanos', 'En otros tamaños', 'El mismo diseño como post, historia, A4…'],
@@ -1154,38 +1259,43 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
               ))}
             </div>
           )}
-        </div>
+        </div>}
+        {movil && <button type="button" style={{ ...botonBarra, ...(verMas ? { borderColor: 'var(--purple)', color: 'var(--purple)' } : {}) }} onClick={() => setVerMas(v => !v)} aria-label="Más opciones" aria-expanded={verMas}>⋯</button>}
         <button type="button" className="btn btn-sm btn-primary" disabled={guardando} onClick={guardar}>{guardando ? 'Guardando…' : sucio ? 'Guardar' : '✓ Guardado'}</button>
       </div>
 
-      <div style={{ position: 'relative', display: 'grid', minHeight: 0, gridTemplateColumns: `76px ${panelAbierto ? '300px' : '0px'} minmax(0, 1fr)` }}>
+      <div style={{ position: 'relative', display: 'grid', minHeight: 0, ...(movil ? { gridTemplateColumns: 'minmax(0, 1fr)', gridTemplateRows: `minmax(0, 1fr) ${ALTO_BARRA_MOVIL}px` } : { gridTemplateColumns: `76px ${panelAbierto ? '300px' : '0px'} minmax(0, 1fr)` }) }}>
         {(
-          <nav aria-label="Paneles" style={{ background: 'var(--bg-2)', borderRight: '1px solid var(--line)', display: 'grid', alignContent: 'start', gap: 2, padding: '10px 6px', overflowY: 'auto' }}>
+          <nav aria-label="Paneles" style={movil
+            ? { gridRow: 2, gridColumn: 1, background: 'var(--bg-2)', borderTop: '1px solid var(--line)', display: 'flex', gap: 2, padding: '4px 6px', overflowX: 'auto', zIndex: 26 }
+            : { background: 'var(--bg-2)', borderRight: '1px solid var(--line)', display: 'grid', alignContent: 'start', gap: 2, padding: '10px 6px', overflowY: 'auto' }}>
             {PANELES_EDITOR.map(([k, t, icono]) => {
               const activo = panel === k && panelAbierto;
               return (
                 <button key={k} type="button" aria-pressed={activo} title={activo ? `Cerrar «${t}»` : t}
                   onClick={() => { if (activo) setPanelAbierto(false); else { setPanel(k); setPanelAbierto(true); } }}
-                  style={{ position: 'relative', font: 'inherit', display: 'grid', placeItems: 'center', gap: 4, padding: '9px 2px', borderRadius: 10, border: 0, cursor: 'pointer', fontSize: 10.5, fontWeight: 700,
+                  style={{ position: 'relative', font: 'inherit', display: 'grid', placeItems: 'center', gap: movil ? 2 : 4, padding: movil ? '5px 4px' : '9px 2px', flex: movil ? '1 0 50px' : undefined, borderRadius: 10, border: 0, cursor: 'pointer', fontSize: 10.5, fontWeight: 700,
                     background: activo ? 'color-mix(in oklab, var(--purple) 14%, var(--bg-2))' : 'none', color: activo ? 'var(--purple)' : 'var(--ink-2)' }}>
                   {icono}<span>{t}</span>
                   {k === 'revision' && pendientes > 0 && <span style={{ position: 'absolute', top: 4, right: 10, minWidth: 16, height: 16, borderRadius: 99, background: 'var(--orange)', color: '#fff', fontSize: 10, display: 'grid', placeItems: 'center' }}>{pendientes}</span>}
                 </button>
               );
             })}
-            <span style={{ height: 1, background: 'var(--line)', margin: '6px 8px' }} />
+            {!movil && <span style={{ height: 1, background: 'var(--line)', margin: '6px 8px' }} />}
             <button type="button" title="Cómo se usa (atajos)" onClick={() => setVentana('ayuda')}
-              style={{ font: 'inherit', display: 'grid', placeItems: 'center', gap: 4, padding: '9px 2px', borderRadius: 10, border: 0, cursor: 'pointer', fontSize: 10.5, fontWeight: 700, background: 'none', color: 'var(--ink-2)' }}>
+              style={{ font: 'inherit', display: 'grid', placeItems: 'center', gap: movil ? 2 : 4, padding: movil ? '5px 4px' : '9px 2px', flex: movil ? '1 0 50px' : undefined, borderRadius: 10, border: 0, cursor: 'pointer', fontSize: 10.5, fontWeight: 700, background: 'none', color: 'var(--ink-2)' }}>
               {icono(<><circle cx="12" cy="12" r="9" /><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6" /><path d="M12 17h.01" /></>)}<span>Ayuda</span>
             </button>
           </nav>
         )}
         {/* Izquierda: añadir, estilos, fondo, capas, animar y revisión */}
-        <aside style={{ borderRight: panelAbierto ? '1px solid var(--line)' : 0, background: 'var(--bg-2)', overflowY: 'auto', padding: panelAbierto ? 12 : 0, display: 'grid', gap: 10, alignContent: 'start', minWidth: 0 }}>
+        <aside style={movil
+          ? { display: panelAbierto ? 'grid' : 'none', position: 'absolute', left: 0, right: 0, bottom: ALTO_BARRA_MOVIL, height: '50dvh', boxSizing: 'border-box', zIndex: 25, background: 'var(--bg-2)', borderTop: '1px solid var(--line)', borderRadius: '16px 16px 0 0', boxShadow: '0 -12px 40px -12px rgba(0,0,0,.35)', overflowY: 'auto', padding: 12, gap: 10, alignContent: 'start' }
+          : { borderRight: panelAbierto ? '1px solid var(--line)' : 0, background: 'var(--bg-2)', overflowY: 'auto', padding: panelAbierto ? 12 : 0, display: 'grid', gap: 10, alignContent: 'start', minWidth: 0 }}>
           {panelAbierto && (
             <div style={{ display: 'flex', alignItems: 'center' }}>
               <b style={{ flex: 1, fontSize: 15 }}>{PANELES_EDITOR.find(x => x[0] === panel)?.[1]}</b>
-              <button type="button" className="icon-btn" onClick={() => setPanelAbierto(false)} title="Cerrar el panel (más sitio para el diseño)" aria-label="Cerrar el panel">«</button>
+              <button type="button" className="icon-btn" onClick={() => setPanelAbierto(false)} title="Cerrar el panel (más sitio para el diseño)" aria-label="Cerrar el panel">{movil ? <I.X /> : '«'}</button>
             </div>
           )}
           {panelAbierto && <>
@@ -1234,6 +1344,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
 
         {/* Centro: el lienzo y las páginas */}
         <div ref={zonaRef}
+          onPointerDownCapture={(ev) => { if (ev.pointerType === 'touch') toques.current.add(ev.pointerId); }}
           onPointerDown={(ev) => {
             if (edicion.current) document.activeElement?.blur?.();
             setMenu(null);
@@ -1242,6 +1353,8 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
             const sc = scrollRef.current;
             if (sc && ev.target === sc && (ev.nativeEvent.offsetX > sc.clientWidth || ev.nativeEvent.offsetY > sc.clientHeight)) return;
             setRecortando(null);
+            // Con el dedo, un hueco mueve la vista (y tocarlo sin más deja de elegir).
+            if (ev.pointerType === 'touch') { arrastre.current = toques.current.size > 1 ? null : { modo: 'toque', x0: ev.clientX, y0: ev.clientY, movido: false }; return; }
             arrastre.current = { modo: 'recuadro', x0: ev.clientX, y0: ev.clientY, shift: ev.shiftKey, movido: false };
           }}
           onContextMenu={(ev) => { ev.preventDefault(); if (tiempo == null) setMenu({ x: ev.clientX, y: ev.clientY }); }}
@@ -1249,11 +1362,11 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
           onDragOver={(ev) => { if ([...ev.dataTransfer.types].some(t => t === TIPO_ARRASTRE || t === 'Files')) { ev.preventDefault(); setSoltando(true); } }}
           onDragLeave={(ev) => { if (ev.currentTarget === ev.target) setSoltando(false); }}
           onDrop={soltar}
-          style={{ position: 'relative', overflow: 'hidden', display: 'grid', gridTemplateRows: 'minmax(0, 1fr) auto', justifyItems: 'center',
+          style={{ position: 'relative', overflow: 'hidden', display: 'grid', gridTemplateRows: 'minmax(0, 1fr) auto', justifyItems: 'center', ...(movil ? { gridRow: 1, gridColumn: 1, paddingBottom: hoja || 0, boxSizing: 'border-box' } : {}),
             background: 'repeating-conic-gradient(color-mix(in oklab, var(--ink) 4%, var(--bg)) 0% 25%, var(--bg) 0% 50%) 50% / 24px 24px',
             outline: soltando ? '3px dashed #7C5CFF' : 'none', outlineOffset: -6 }}>
-          <div ref={scrollRef} style={{ overflow: 'auto', width: '100%', height: '100%', minHeight: 0 }}>
-          <div style={{ display: 'grid', placeItems: 'center', minWidth: '100%', minHeight: '100%', width: 'max-content', height: 'max-content', padding: 40, boxSizing: 'border-box' }}>
+          <div ref={scrollRef} style={{ overflow: 'auto', width: '100%', height: '100%', minHeight: 0, touchAction: 'pan-x pan-y' }}>
+          <div style={{ display: 'grid', placeItems: 'center', minWidth: '100%', minHeight: '100%', width: 'max-content', height: 'max-content', padding: movil ? 12 : 40, boxSizing: 'border-box' }}>
           <div style={{ position: 'relative', width: diseno.ancho * escala, height: diseno.alto * escala, boxShadow: '0 10px 40px -10px rgba(0,0,0,.35)' }}>
             {fantasma && <div style={{ position: 'absolute', left: fantasma.x * escala, top: fantasma.y * escala, width: fantasma.w * escala, height: fantasma.h * escala, background: `center / 100% 100% no-repeat url(${fantasma.url})`, opacity: 0.35, pointerEvents: 'none' }} />}
             <canvas ref={lienzoRef} style={{ ...marco, width: diseno.ancho * escala, height: diseno.alto * escala, display: 'block' }} />
@@ -1265,24 +1378,20 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
                     if (!selRef.current.includes(e.id)) setSeleccion(conGrupo(vista().elementos, [e.id]));
                     setMenu({ x: ev.clientX, y: ev.clientY, id: e.id });
                   }}
-                  onDoubleClick={(ev) => {
-                    if (e.tipo === 'texto') editarTexto(e.id, { x: ev.clientX, y: ev.clientY });
-                    else if (e.tipo === 'imagen' && e.url) recortar(e.id);
-                    else if (e.grupo) setSel(e.id);
-                  }}
+                  onDoubleClick={(ev) => { if (performance.now() - dobleHecho.current > 600) dobleClic(e, ev); }}
                   title={e.id === sel && !e.bloqueado && !editando ? (e.tipo === 'texto' ? 'Doble clic para escribir' : e.tipo === 'imagen' && e.url ? 'Doble clic para recortar' : e.tipo === 'imagen' ? 'Suelta aquí una foto' : undefined) : undefined}
                   style={{ position: 'absolute', left: e.x * escala, top: e.y * escala, width: e.w * escala, height: e.h * escala, transform: `rotate(${e.rot || 0}deg)`,
                     cursor: e.bloqueado ? 'default' : recortando === e.id ? 'grab' : e.tipo === 'texto' && e.id === sel ? 'text' : 'move',
-                    outline: seleccion.includes(e.id) && editando?.id !== e.id ? `2px ${recortando === e.id ? 'dashed' : 'solid'} #7C5CFF` : 'none', outlineOffset: 1, touchAction: 'none' }}>
+                    outline: seleccion.includes(e.id) && editando?.id !== e.id ? `2px ${recortando === e.id ? 'dashed' : 'solid'} #7C5CFF` : 'none', outlineOffset: 1, touchAction: 'none', WebkitTouchCallout: 'none', userSelect: 'none' }}>
                   {e.id === sel && !e.bloqueado && editando?.id !== e.id && recortando !== e.id && (
                     <>
                       {[[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0]].filter(([hx, hy]) => (e.tipo === 'linea' ? hy === 0 : CUADRADOS_EDITOR.includes(e.tipo) ? hx && hy : true)).map(([hx, hy]) => (
                         <span key={`${hx}${hy}`} onPointerDown={(ev) => empezar(ev, e.id, 'tamano', hx, hy)}
-                          style={{ position: 'absolute', width: 12, height: 12, borderRadius: 3, background: '#fff', border: '2px solid #7C5CFF', left: `calc(${(hx + 1) * 50}% - 6px)`, top: `calc(${(hy + 1) * 50}% - 6px)`,
+                          style={{ position: 'absolute', width: asa, height: asa, borderRadius: asa > 12 ? 99 : 3, boxSizing: 'border-box', background: '#fff', border: '2px solid #7C5CFF', left: `calc(${(hx + 1) * 50}% - ${asa / 2}px)`, top: `calc(${(hy + 1) * 50}% - ${asa / 2}px)`,
                             cursor: hx && hy ? (hx === hy ? 'nwse-resize' : 'nesw-resize') : hx ? 'ew-resize' : 'ns-resize', touchAction: 'none' }} />
                       ))}
                       <span onPointerDown={(ev) => empezar(ev, e.id, 'girar')} title="Girar (Mayús: de 15 en 15)"
-                        style={{ position: 'absolute', left: 'calc(50% - 9px)', top: -34, width: 18, height: 18, borderRadius: 99, background: '#fff', border: '2px solid #7C5CFF', cursor: 'grab', display: 'grid', placeItems: 'center', fontSize: 11, touchAction: 'none' }}>⟳</span>
+                        style={{ position: 'absolute', left: `calc(50% - ${asa > 12 ? 13 : 9}px)`, top: asa > 12 ? -44 : -34, width: asa > 12 ? 26 : 18, height: asa > 12 ? 26 : 18, boxSizing: 'border-box', borderRadius: 99, background: '#fff', border: '2px solid #7C5CFF', cursor: 'grab', display: 'grid', placeItems: 'center', fontSize: 11, touchAction: 'none' }}>⟳</span>
                     </>
                   )}
                 </div>
@@ -1317,7 +1426,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
           </div>
           </div>
           {/* Las páginas, el zoom y las ayudas */}
-          <div onPointerDown={ev => ev.stopPropagation()} style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '8px 10px', margin: '0 0 12px', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, boxShadow: 'var(--shadow)', flexWrap: 'wrap', justifyContent: 'center', maxWidth: '95%' }}>
+          <div onPointerDown={ev => ev.stopPropagation()} style={{ display: hoja && !recortada ? 'none' : 'flex', gap: movil ? 2 : 6, alignItems: 'center', padding: movil ? '4px 6px' : '8px 10px', margin: movil ? '0 0 8px' : '0 0 12px', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 12, boxShadow: 'var(--shadow)', flexWrap: 'wrap', justifyContent: 'center', maxWidth: '95%' }}>
             {recortada ? <>
               <span style={{ fontSize: 12.5, fontWeight: 700 }}>✂ Arrastra la foto para encuadrarla · Zoom</span>
               <input type="range" min="1" max="4" step="0.05" value={recortada.encuadre?.zoom || 1} aria-label="Zoom de la foto"
@@ -1341,9 +1450,11 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
             <button type="button" className="btn btn-sm btn-ghost" onClick={() => hacerZoom(-1)} title="Alejar (Ctrl -)" aria-label="Alejar">−</button>
             <button type="button" className="btn btn-sm btn-ghost" onClick={() => hacerZoom(0)} title="Que quepa entero (Ctrl 0)" style={{ minWidth: 56, fontVariantNumeric: 'tabular-nums' }}>{Math.round(escala * 100)} %</button>
             <button type="button" className="btn btn-sm btn-ghost" onClick={() => hacerZoom(1)} title="Acercar (Ctrl +, o Ctrl + rueda)" aria-label="Acercar">＋</button>
+            {!movil && <>
             <span style={{ width: 1, height: 22, background: 'var(--line)' }} />
             <button type="button" className={`btn btn-sm ${ayudas.cuadricula ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setAyudas(a => ({ ...a, cuadricula: !a.cuadricula }))} title="Cuadrícula (lo que se mueve se pega a ella)">▦</button>
             <button type="button" className={`btn btn-sm ${ayudas.margenes ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setAyudas(a => ({ ...a, margenes: !a.margenes }))} title={`Márgenes de seguridad (${enPapel ? '5 mm' : 'el 5 %'})`}>⬚</button>
+            </>}
             </>}
           </div>
           {menu && (
@@ -1373,13 +1484,23 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
         </div>
 
         {/* Derecha: lo que se puede cambiar */}
-        {elegidos.length > 0 && (
-        <aside onPointerDown={ev => ev.stopPropagation()}
-          style={{ position: 'absolute', right: 14, top: 14, bottom: 14, width: 300, zIndex: 20, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, boxShadow: '0 12px 40px -12px rgba(0,0,0,.35)', overflowY: 'auto', padding: 12, display: 'grid', gap: 10, alignContent: 'start' }}>
+        {elegidos.length > 0 && !(movil && panelAbierto) && (
+        <aside onPointerDown={ev => ev.stopPropagation()} aria-label="Propiedades"
+          style={movil
+            ? { position: 'absolute', left: 0, right: 0, bottom: ALTO_BARRA_MOVIL, height: hojaPequena ? 44 : '42dvh', boxSizing: 'border-box', zIndex: 27, background: 'var(--bg-2)', borderTop: '1px solid var(--line)', borderRadius: '16px 16px 0 0', boxShadow: '0 -12px 40px -12px rgba(0,0,0,.35)', overflowY: 'auto', padding: hojaPequena ? '6px 12px' : 12, display: 'grid', gap: 10, alignContent: 'start' }
+            : { position: 'absolute', right: 14, top: 14, bottom: 14, width: 300, zIndex: 20, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, boxShadow: '0 12px 40px -12px rgba(0,0,0,.35)', overflowY: 'auto', padding: 12, display: 'grid', gap: 10, alignContent: 'start' }}>
+          {movil ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: hojaPequena ? 0 : -6 }}>
+              <button type="button" className="icon-btn" onClick={() => setHojaPequena(v => !v)} aria-label={hojaPequena ? 'Ver las propiedades' : 'Encoger las propiedades'} aria-expanded={!hojaPequena}>{hojaPequena ? '▴' : '▾'}</button>
+              <b style={{ flex: 1, minWidth: 0, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{elegidos.length > 1 ? `${elegidos.length} elegidos` : etiquetaElemento(elegido)}</b>
+              <button type="button" className="icon-btn" onClick={() => setSeleccion([])} title="Cerrar (deja de elegir)" aria-label="Cerrar las propiedades"><I.X /></button>
+            </div>
+          ) : (
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: -6 }}>
             <button type="button" className="icon-btn" onClick={() => setSeleccion([])} title="Cerrar (deja de elegir)" aria-label="Cerrar las propiedades"><I.X /></button>
           </div>
-          {elegidos.length > 1 ? (
+          )}
+          {movil && hojaPequena ? null : elegidos.length > 1 ? (
             <PanelVarios elegidos={elegidos} voltear={voltear} agrupar={agrupar} desagrupar={desagrupar} alinear={alinearVarios} repartir={repartir}
               duplicar={duplicarSel} borrar={borrarSel} capa={capa} bloquear={(b) => cambiarVarios(seleccion, e => ({ ...e, bloqueado: b }))} />
           ) : (
@@ -1413,6 +1534,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
           <div style={{ fontSize: 13.5, color: 'var(--ink-2)', display: 'grid', gap: 10 }}>
               <span>Pulsa algo del lienzo para cambiarlo. Arrástralo para moverlo, tira de los cuadraditos para el tamaño y del círculo de arriba para girarlo.</span>
               <span>Varios a la vez: con Mayús + clic o arrastrando un recuadro desde un hueco. Doble clic en un texto para escribir y en una foto para recortarla. Las fotos del panel (o del ordenador) se pueden soltar encima de un marco.</span>
+              {tactil && <span>Con el dedo: toca algo para elegirlo y arrástralo para moverlo; toca dos veces un texto para escribir o una foto para recortarla; mantén pulsado para más opciones. Pellizca para acercar o alejar, y arrastra por un hueco para moverte por el diseño.</span>}
               <span>Atajos: Ctrl+C / Ctrl+X / Ctrl+V copian, cortan y pegan (también imágenes y textos del ordenador), Supr borra, Ctrl+D duplica, Ctrl+G agrupa (con Mayús, desagrupa), Ctrl+A elige todo, Ctrl+Z deshace, las flechas mueven (con Mayús, de 10 en 10), Ctrl+S guarda. Zoom: Ctrl + rueda, Ctrl + y Ctrl −. Con el botón derecho, más opciones.</span>
               {tipo === 'diploma' && <span style={{ color: 'var(--purple)' }}>Es un diploma: los huecos ({'{alumno}'}, {'{curso}'}…) se ven con datos de ejemplo y a cada alumno le salen los suyos.</span>}
           </div>
@@ -2426,6 +2548,13 @@ const DE_EJEMPLO = /^(Un título|Un subtítulo|Escribe aquí tu texto|Título de
 function TextoEnLienzo({ e, escala, punto, onCambio, onLista, onFin }) {
   const ref = useRef(null), barra = useRef(null);
   const kit = useContext(KitMarca);
+  // La barra de formato, que no se salga de la pantalla (en el móvil, sobre todo).
+  const [corre, setCorre] = useState(0);
+  useLayoutEffect(() => {
+    const r = barra.current?.getBoundingClientRect(); if (!r) return;
+    const izq = r.left - corre, der = izq + r.width, ancho = window.innerWidth;
+    setCorre(der > ancho - 8 ? Math.max(8 - izq, ancho - 8 - der) : izq < 8 ? 8 - izq : 0);
+  }, [e.x, e.y, escala]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const d = ref.current; if (!d) return;
     d.innerHTML = htmlDeTrozos(e);
@@ -2451,7 +2580,7 @@ function TextoEnLienzo({ e, escala, punto, onCambio, onLista, onFin }) {
   return (
     <>
       <div ref={barra} onPointerDown={ev => ev.stopPropagation()} role="toolbar" aria-label="Formato del texto"
-        style={{ position: 'absolute', left: e.x * k, top: Math.max(-46, e.y * k - 46), zIndex: 6, display: 'flex', gap: 2, alignItems: 'center', padding: 4, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, boxShadow: 'var(--shadow)', whiteSpace: 'nowrap' }}>
+        style={{ position: 'absolute', left: e.x * k + corre, top: Math.max(-46, e.y * k - 46), zIndex: 6, display: 'flex', gap: 2, alignItems: 'center', padding: 4, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, boxShadow: 'var(--shadow)', whiteSpace: 'nowrap', maxWidth: 'calc(100vw - 16px)', overflowX: 'auto', boxSizing: 'border-box' }}>
         {boton('N', 'Negrita (Ctrl+B)', () => orden('bold'), false, { fontWeight: 900 })}
         {boton('K', 'Cursiva (Ctrl+I)', () => orden('italic'), false, { fontStyle: 'italic' })}
         {boton('S', 'Subrayado (Ctrl+U)', () => orden('underline'), false, { textDecoration: 'underline' })}
