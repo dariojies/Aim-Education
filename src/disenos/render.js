@@ -207,13 +207,50 @@ function conFiltros(img, f) {
 }
 
 // ── Pintar ───────────────────────────────────────────────────────────────────
-function degradado(ctx, x0, y0, w, h, c1, c2, angulo = 135) {
-  const a = (angulo - 90) * Math.PI / 180, cx = x0 + w / 2, cy = y0 + h / 2;
-  const L = Math.abs(w * Math.cos(a)) / 2 + Math.abs(h * Math.sin(a)) / 2;
-  const g = ctx.createLinearGradient(cx - Math.cos(a) * L, cy - Math.sin(a) * L, cx + Math.cos(a) * L, cy + Math.sin(a) * L);
+// ── Degradados (#476) ──
+// De 2 a 5 colores, cada uno con su sitio (pos, de 0 a 100) y su opacidad (de 0 a
+// 100: un color a 0 es transparente). Lineal, con su ángulo, o radial (del centro
+// hacia fuera). Los de antes llevan dos colores sueltos (color y color2, relleno y
+// relleno2): se leen como dos colores, uno en cada punta.
+export const MAX_COLORES_DEGRADADO = 5;
+const entre = (v, a, b) => Math.max(a, Math.min(b, v));
+export function paradasDe(c1, c2, paradas) {
+  const l = Array.isArray(paradas) ? paradas.filter(p => p && p.color) : [];
+  if (l.length >= 2) {
+    return l.slice(0, MAX_COLORES_DEGRADADO)
+      .map(p => ({ color: p.color, pos: entre(Number(p.pos) || 0, 0, 100), opacidad: entre(p.opacidad == null ? 100 : Number(p.opacidad) || 0, 0, 100) }))
+      .sort((a, b) => a.pos - b.pos);
+  }
+  return [{ color: c1 || '#5233A8', pos: 0, opacidad: 100 }, { color: c2 || '#21B668', pos: 100, opacidad: 100 }];
+}
+// Un color con su opacidad, como lo entiende el lienzo (y el CSS).
+export function colorConOpacidad(c, opacidad = 100) {
+  const t = String(c || '').trim(), o = entre(opacidad, 0, 100) / 100;
+  if (t === 'transparent') return 'rgba(0,0,0,0)';
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(t);
+  if (!m) return o >= 1 ? t : `color-mix(in srgb, ${t} ${Math.round(o * 100)}%, transparent)`;
+  const h = m[1].length === 3 ? [...m[1]].map(x => x + x).join('') : m[1];
+  const a = (h.length === 8 ? parseInt(h.slice(6), 16) / 255 : 1) * o;
+  return `rgba(${parseInt(h.slice(0, 2), 16)},${parseInt(h.slice(2, 4), 16)},${parseInt(h.slice(4, 6), 16)},${Math.round(a * 1000) / 1000})`;
+}
+// El degradado en CSS (para las muestras del editor).
+export function degradadoCss(paradas, angulo = 135, radial = false) {
+  const l = paradas.map(p => `${colorConOpacidad(p.color, p.opacidad)} ${p.pos}%`).join(', ');
+  return radial ? `radial-gradient(circle, ${l})` : `linear-gradient(${angulo}deg, ${l})`;
+}
+function degradado(ctx, x0, y0, w, h, paradas, angulo = 135, radial = false) {
+  const cx = x0 + w / 2, cy = y0 + h / 2;
+  let g;
+  if (radial) g = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(1, Math.hypot(w, h) / 2));
+  else {
+    const a = ((angulo ?? 135) - 90) * Math.PI / 180;
+    const L = Math.abs(w * Math.cos(a)) / 2 + Math.abs(h * Math.sin(a)) / 2;
+    g = ctx.createLinearGradient(cx - Math.cos(a) * L, cy - Math.sin(a) * L, cx + Math.cos(a) * L, cy + Math.sin(a) * L);
+  }
   // Un color que no vale (un código a medio escribir, #474) no rompe el dibujo: el de siempre.
-  try { g.addColorStop(0, c1 || '#5233A8'); } catch { g.addColorStop(0, '#5233A8'); }
-  try { g.addColorStop(1, c2 || '#21B668'); } catch { g.addColorStop(1, '#21B668'); }
+  for (const p of paradas) {
+    try { g.addColorStop(p.pos / 100, colorConOpacidad(p.color, p.opacidad)); } catch { try { g.addColorStop(p.pos / 100, '#5233A8'); } catch { /* nada */ } }
+  }
   return g;
 }
 // enc (recorte): { zoom, x, y }: la foto llena la caja, con su zoom y el punto
@@ -524,7 +561,7 @@ export function pintarDiseno(ctx, diseno, { imagenes = new Map(), variables = nu
   ctx.save();
   ctx.clearRect(0, 0, W, H);
   const f = sinFondo ? { tipo: 'nada' } : diseno.fondo || { tipo: 'color', color: '#ffffff' };
-  if (f.tipo === 'nada') { /* transparente */ } else if (f.tipo === 'degradado') ctx.fillStyle = degradado(ctx, 0, 0, W, H, f.color, f.color2, f.angulo);
+  if (f.tipo === 'nada') { /* transparente */ } else if (f.tipo === 'degradado') ctx.fillStyle = degradado(ctx, 0, 0, W, H, paradasDe(f.color, f.color2, f.paradas), f.angulo, f.radial);
   else ctx.fillStyle = f.color || '#ffffff';
   if (f.tipo !== 'nada') ctx.fillRect(0, 0, W, H);
   if (f.tipo === 'imagen') {
@@ -561,7 +598,8 @@ export function pintarDiseno(ctx, diseno, { imagenes = new Map(), variables = nu
       }
     } else if (e.tipo === 'rect' || e.tipo === 'elipse' || e.tipo === 'forma') {
       caminoFigura(ctx, e.tipo === 'forma' ? e.figura : e.tipo, x, y, e.w, e.h, e.radio);
-      if (e.relleno && e.relleno !== 'transparent') { ctx.fillStyle = e.relleno2 ? degradado(ctx, x, y, e.w, e.h, e.relleno, e.relleno2, e.angulo) : e.relleno; ctx.fill(); }
+      if (e.relleno2) { ctx.fillStyle = degradado(ctx, x, y, e.w, e.h, paradasDe(e.relleno, e.relleno2, e.paradas), e.angulo, e.radial); ctx.fill(); }
+      else if (e.relleno && e.relleno !== 'transparent') { ctx.fillStyle = e.relleno; ctx.fill(); }
       quitarSombra(ctx);
       if (e.borde && e.grosor) { ctx.strokeStyle = e.borde; ctx.lineWidth = e.grosor; ctx.lineJoin = 'round'; ctx.stroke(); }
     } else if (e.tipo === 'linea') {

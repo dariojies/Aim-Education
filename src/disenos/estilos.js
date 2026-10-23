@@ -49,7 +49,7 @@ export function coloresDe(d) {
   const peso = new Map(), suma = (c, p) => { const h = hex(c); if (h) peso.set(h, (peso.get(h) || 0) + p); };
   for (let i = 0; i < numPaginas(d); i++) {
     const v = paginaDe(d, i);
-    if (v.fondo?.tipo !== 'imagen') { suma(v.fondo?.color, d.ancho * d.alto); suma(v.fondo?.color2, d.ancho * d.alto * 0.5); }
+    if (v.fondo?.tipo !== 'imagen') { suma(v.fondo?.color, d.ancho * d.alto); suma(v.fondo?.color2, d.ancho * d.alto * 0.5); (v.fondo?.paradas || []).slice(1, -1).forEach(p => suma(p.color, d.ancho * d.alto * 0.3)); }
     for (const e of v.elementos) {
       if (e.tipo === 'qr' || e.tipo === 'imagen') continue;
       const area = e.w * e.h;
@@ -57,7 +57,7 @@ export function coloresDe(d) {
       else if (e.tipo === 'tabla') { suma(e.fondoCabecera || '#5233A8', area * 0.2); suma(e.fondoFilas, area * 0.5); suma(e.fondoRayas, area * 0.3); suma(e.color, area * 0.1); }
       else if (e.tipo === 'grafico') (e.colores?.length ? e.colores : COLORES_GRAFICO).forEach(x => suma(x, area / 6));
       else if (e.tipo === 'linea' || e.tipo === 'icono') suma(e.color, area * 0.3);
-      else { suma(e.relleno, area); suma(e.relleno2, area * 0.5); if (e.grosor) suma(e.borde, (e.w + e.h) * e.grosor); }
+      else { suma(e.relleno, area); suma(e.relleno2, area * 0.5); (e.paradas || []).slice(1, -1).forEach(p => suma(p.color, area * 0.3)); if (e.grosor) suma(e.borde, (e.w + e.h) * e.grosor); }
     }
   }
   return [...peso.entries()].sort((a, b) => b[1] - a[1]).map(([c]) => c);
@@ -75,13 +75,16 @@ export function aplicarEstilo(d, { paleta = null, letras = null, giro = 0, respe
   let r = d;
   for (let i = 0; i < numPaginas(d); i++) {
     const v = paginaDe(r, i);
-    const fondo = fondoFijo || v.fondo?.tipo === 'imagen' || !paleta ? v.fondo : { ...v.fondo, color: nuevo(v.fondo?.color), ...(v.fondo?.color2 ? { color2: nuevo(v.fondo.color2) } : {}) };
+    // Los colores de un degradado de varios (#476), cada uno con el suyo nuevo.
+    const conParadas = (x) => (Array.isArray(x?.paradas) ? { paradas: x.paradas.map(p => ({ ...p, color: nuevo(p.color) })) } : {});
+    const fondo = fondoFijo || v.fondo?.tipo === 'imagen' || !paleta ? v.fondo : { ...v.fondo, color: nuevo(v.fondo?.color), ...(v.fondo?.color2 ? { color2: nuevo(v.fondo.color2) } : {}), ...conParadas(v.fondo) };
     const colorFondo = fondo?.tipo === 'imagen' ? '#808080' : fondo?.color || '#FFFFFF';
     const elementos = v.elementos.map(e => {
       if (e.tipo === 'qr' || respetar?.(e)) return e;
       let n = { ...e };
       if (paleta) {
         for (const k of ['color', 'relleno', 'relleno2', 'borde', 'contorno', 'resalte', 'fondoCabecera', 'fondoFilas', 'fondoRayas']) if (n[k]) n[k] = nuevo(n[k]);
+        Object.assign(n, conParadas(n));
         if (n.tipo === 'tabla') {
           // Que la cabecera se distinga de las filas, las rayas sean suaves y todo se lea.
           const p = paleta.map(hex).filter(Boolean), filas = n.fondoFilas && n.fondoFilas !== 'transparent' ? n.fondoFilas : colorFondo;

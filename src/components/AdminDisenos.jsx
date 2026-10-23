@@ -6,6 +6,7 @@ import {
   TAMANOS, FUENTES_DISENO, VARIABLES_DIPLOMA, EJEMPLO_DIPLOMA, VARIABLES_AUTO, EJEMPLO_AUTO, nuevoId, pintarDiseno, cargarImagenes, cargarImagen, cargarFuentes, cargarFuentePropia,
   pedirFuentes, miniatura, exportarDiseno, exportarLote, exportarImprenta, medidasImprenta, SANGRADO_MM, lienzoDe, ajustarTexto, adaptarDiseno,
   paginaDe, conPagina, numPaginas, todasLasPaginas, ANIMACIONES, tieneAnimacion, duracionAnimacion,
+  paradasDe, degradadoCss, MAX_COLORES_DEGRADADO,
 } from '../disenos/render.js';
 import { FIGURAS, MARCOS, ICONOS, ICONOS_ACTIVIDAD, svgFigura } from '../disenos/formas.js';
 import { formatoVideo, grabarVideo, exportarGif, exportarVideo } from '../disenos/animacion.js';
@@ -1632,7 +1633,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
           )}
           {panel === 'estilos' && <PanelEstilos doc={doc} aplicarDoc={aplicarDoc} showToast={showToast} respetar={esDireccion ? null : fijo} fondoFijo={marcaFija} />}
           {panel === 'fondo' && marcaFija && <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>🔒 La dirección ha dejado fijo el fondo de esta plantilla.</span>}
-          {panel === 'fondo' && !marcaFija && <PanelFondo fondo={diseno.fondo || {}} cambiar={(f) => aplicar(d => ({ ...d, fondo: { ...d.fondo, ...f } }))} subir={subir} />}
+          {panel === 'fondo' && !marcaFija && <PanelFondo fondo={diseno.fondo || {}} cambiar={(f) => aplicar(d => ({ ...d, fondo: { ...d.fondo, ...f } }), { historia: !tramo.current })} subir={subir} tramos={tramos} />}
           {panel === 'capas' && (
             <div style={{ display: 'grid', gap: 4 }}>
               {!diseno.elementos.length && <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>Aún no hay nada en esta página.</span>}
@@ -2188,11 +2189,87 @@ function Color({ etiqueta, valor, onCambio, permiteNada = false }) {
     </div>
   );
 }
+// ── Degradados de varios colores (#476) ──
+// La barra enseña el degradado (sobre cuadros, para ver lo transparente) con una
+// marca por color: se arrastra para moverla, un toque la elige y un toque en la
+// barra añade otro color ahí (hasta 5). Debajo, el color, el sitio y la opacidad
+// de la elegida. paradas: [{ color, pos, opacidad }], ya ordenadas (paradasDe).
+const CUADROS = 'repeating-conic-gradient(#d9d9d9 0% 25%, #ffffff 0% 50%) 50% / 12px 12px';
+const hexDe = (c) => (/^#([0-9a-f]{3}|[0-9a-f]{6})([0-9a-f]{2})?$/i.test(String(c || '').trim()) ? paraCasilla(String(c).trim()) : null);
+// El color que hay en un punto de la barra (para el que se añade ahí).
+function colorEn(paradas, pos) {
+  const d = paradas.findIndex(p => p.pos >= pos);
+  if (d <= 0) { const x = paradas[d < 0 ? paradas.length - 1 : 0]; return { color: x.color, opacidad: x.opacidad }; }
+  const a = paradas[d - 1], b = paradas[d], t = b.pos === a.pos ? 0 : (pos - a.pos) / (b.pos - a.pos);
+  const ha = hexDe(a.color), hb = hexDe(b.color);
+  const color = ha && hb ? `#${[1, 3, 5].map(i => Math.round(parseInt(ha.slice(i, i + 2), 16) * (1 - t) + parseInt(hb.slice(i, i + 2), 16) * t).toString(16).padStart(2, '0')).join('')}`.toUpperCase() : a.color;
+  return { color, opacidad: Math.round(a.opacidad + (b.opacidad - a.opacidad) * t) };
+}
+function EditorDegradado({ paradas, angulo = 135, radial = false, onCambio, tramos }) {
+  const [elegida, setElegida] = useState(0);
+  const barra = useRef(null);
+  const i = Math.min(elegida, paradas.length - 1), p = paradas[i];
+  // Cambia una y deja elegida la misma (aunque al moverla cambie de sitio en la lista).
+  const conCambio = (lista, k, c) => {
+    const mod = { ...lista[k], ...c }, n = lista.map((x, j) => (j === k ? mod : x)).sort((a, b) => a.pos - b.pos);
+    return [n, n.indexOf(mod)];
+  };
+  const cambiarElegida = (c) => { const [n, k] = conCambio(paradas, i, c); onCambio({ paradas: n }); setElegida(k); };
+  const posDe = (ev) => { const r = barra.current.getBoundingClientRect(); return Math.round(Math.max(0, Math.min(100, ((ev.clientX - r.left) / r.width) * 100))); };
+  function arrastrar(ev, k) {
+    ev.preventDefault(); ev.stopPropagation();
+    setElegida(k); tramos?.empezar?.();
+    let lista = paradas, idx = k;
+    const mover = (e2) => { [lista, idx] = conCambio(lista, idx, { pos: posDe(e2) }); onCambio({ paradas: lista }); setElegida(idx); };
+    const soltar = () => { window.removeEventListener('pointermove', mover); window.removeEventListener('pointerup', soltar); tramos?.terminar?.(); };
+    window.addEventListener('pointermove', mover); window.addEventListener('pointerup', soltar);
+  }
+  function anadirEn(pos) {
+    if (paradas.length >= MAX_COLORES_DEGRADADO) return;
+    const nueva = { ...colorEn(paradas, pos), pos };
+    const n = [...paradas, nueva].sort((a, b) => a.pos - b.pos);
+    onCambio({ paradas: n }); setElegida(n.indexOf(nueva));
+  }
+  // El hueco más grande, para «+ Añadir color».
+  const hueco = () => { let m = 50, g = -1; for (let k = 1; k < paradas.length; k++) if (paradas[k].pos - paradas[k - 1].pos > g) { g = paradas[k].pos - paradas[k - 1].pos; m = Math.round((paradas[k].pos + paradas[k - 1].pos) / 2); } return m; };
+  const quitar = () => { if (paradas.length <= 2) return; onCambio({ paradas: paradas.filter((_, k) => k !== i) }); setElegida(Math.max(0, i - 1)); };
+  const solo = (x) => degradadoCss([{ ...x, pos: 0 }, { ...x, pos: 100 }], 90);
+  return (
+    <div style={{ display: 'grid', gap: 8, padding: 10, border: '1px solid var(--line)', borderRadius: 10, background: 'var(--bg-3)' }}>
+      <div style={{ display: 'flex', gap: 4 }}>
+        {[[false, 'Lineal'], [true, 'Radial']].map(([r, t]) => <button key={t} type="button" className={`btn btn-sm ${!!radial === r ? 'btn-primary' : 'btn-outline'}`} style={{ flex: 1 }} onClick={() => onCambio({ radial: r })}>{t}</button>)}
+      </div>
+      <div ref={barra} role="group" aria-label="Colores del degradado" title="Arrastra las marcas para moverlas; toca la barra para añadir un color"
+        onPointerDown={(ev) => { if (ev.target === barra.current) anadirEn(posDe(ev)); }}
+        style={{ position: 'relative', height: 26, borderRadius: 8, border: '1px solid var(--line)', background: `${degradadoCss(paradas, 90)}, ${CUADROS}`, cursor: paradas.length < MAX_COLORES_DEGRADADO ? 'copy' : 'default', touchAction: 'none', margin: '4px 8px' }}>
+        {paradas.map((x, k) => (
+          <button key={k} type="button" aria-label={`Color ${k + 1} del degradado (${x.pos} %)`} aria-pressed={k === i} onPointerDown={(ev) => arrastrar(ev, k)}
+            style={{ position: 'absolute', left: `${x.pos}%`, top: -5, width: 16, height: 34, transform: 'translateX(-50%)', borderRadius: 6, padding: 0, cursor: 'grab', touchAction: 'none',
+              background: `${solo(x)}, ${CUADROS}`, border: k === i ? '3px solid var(--purple)' : '2px solid #fff', boxShadow: '0 1px 4px rgba(0,0,0,.45)' }} />
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <button type="button" className="btn btn-sm btn-outline" disabled={paradas.length >= MAX_COLORES_DEGRADADO} onClick={() => anadirEn(hueco())}>+ Añadir color</button>
+        <button type="button" className="btn btn-sm btn-ghost" title="El último color, el mismo que el primero pero transparente"
+          onClick={() => { const n = paradas.map((x, k) => (k === paradas.length - 1 ? { ...x, color: paradas[0].color, opacidad: 0 } : x)); onCambio({ paradas: n }); setElegida(n.length - 1); }}>A transparente</button>
+        <button type="button" className="btn btn-sm btn-ghost" title="Le da la vuelta" onClick={() => { onCambio({ paradas: paradas.map(x => ({ ...x, pos: 100 - x.pos })).sort((a, b) => a.pos - b.pos) }); setElegida(paradas.length - 1 - i); }}>⇄ Invertir</button>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <b style={{ fontSize: 12.5, flex: 1 }}>Color {i + 1} de {paradas.length}</b>
+        {paradas.length > 2 && <button type="button" className="btn btn-sm btn-ghost" style={{ color: 'var(--orange)' }} onClick={quitar}>Quitar este color</button>}
+      </div>
+      <Color etiqueta={`Color ${i + 1}`} valor={p.color} onCambio={(v) => cambiarElegida(v === 'transparent' ? { opacidad: 0 } : { color: v })} />
+      <Rango etiqueta="Dónde está" valor={p.pos} min={0} max={100} onCambio={(v) => cambiarElegida({ pos: v })} tramos={tramos} sufijo=" %" />
+      <Rango etiqueta="Opacidad (0: transparente)" valor={p.opacidad} min={0} max={100} onCambio={(v) => cambiarElegida({ opacidad: v })} tramos={tramos} sufijo=" %" />
+      {!radial && <Num etiqueta="Ángulo (grados)" valor={angulo ?? 135} onCambio={(v) => onCambio({ angulo: v })} min={0} max={360} />}
+    </div>
+  );
+}
 const Num = ({ etiqueta, valor, onCambio, min, max, paso = 1 }) => (
   <label style={etq}>{etiqueta}<input type="number" value={Math.round((valor ?? 0) * 100) / 100} min={min} max={max} step={paso} onChange={e => { const n = Number(e.target.value); if (Number.isFinite(n)) onCambio(n); }} style={inp} /></label>
 );
 
-function PanelFondo({ fondo, cambiar, subir }) {
+function PanelFondo({ fondo, cambiar, subir, tramos }) {
   return (
     <div style={{ display: 'grid', gap: 10 }}>
       <div style={{ display: 'flex', gap: 4 }}>
@@ -2200,18 +2277,18 @@ function PanelFondo({ fondo, cambiar, subir }) {
           <button key={k} type="button" className={`btn btn-sm ${(fondo.tipo || 'color') === k ? 'btn-primary' : 'btn-outline'}`} style={{ flex: 1 }} onClick={() => cambiar({ tipo: k })}>{t}</button>
         ))}
       </div>
-      <Color etiqueta={fondo.tipo === 'degradado' ? 'Color de inicio' : 'Color'} valor={fondo.color || '#ffffff'} onCambio={(v) => cambiar({ color: v })} />
-      {fondo.tipo === 'degradado' && <>
-        <Color etiqueta="Color final" valor={fondo.color2 || '#21B668'} onCambio={(v) => cambiar({ color2: v })} />
-        <Num etiqueta="Ángulo (grados)" valor={fondo.angulo ?? 135} onCambio={(v) => cambiar({ angulo: v })} min={0} max={360} />
-      </>}
+      {fondo.tipo !== 'degradado' && <Color etiqueta="Color" valor={fondo.color || '#ffffff'} onCambio={(v) => cambiar({ color: v })} />}
+      {fondo.tipo === 'degradado' && (
+        <EditorDegradado paradas={paradasDe(fondo.color || '#ffffff', fondo.color2 || '#21B668', fondo.paradas)} angulo={fondo.angulo} radial={!!fondo.radial} tramos={tramos}
+          onCambio={(c) => cambiar({ ...c, ...(c.paradas ? { color: c.paradas[0].color, color2: c.paradas[c.paradas.length - 1].color } : {}) })} />
+      )}
       {fondo.tipo === 'imagen' && <>
         <BotonSubir texto={fondo.url ? 'Cambiar la imagen de fondo' : 'Subir la imagen de fondo'} onArchivo={(f) => subir(f, (r) => cambiar({ url: r.url }))} />
         <label style={etq}>Opacidad<input type="range" min="0.05" max="1" step="0.05" value={fondo.opacidad ?? 1} onChange={e => cambiar({ opacidad: Number(e.target.value) })} /></label>
       </>}
       <div style={seccionT}>Fondos de la marca</div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 }}>
-        <button type="button" title="Degradado del club" onClick={() => cambiar({ tipo: 'degradado', color: '#5233A8', color2: '#FF5FA2', angulo: 135 })} style={{ height: 44, borderRadius: 8, border: '1px solid var(--line)', cursor: 'pointer', background: 'linear-gradient(135deg, #5233A8, #FF5FA2)' }} />
+        <button type="button" title="Degradado del club" onClick={() => cambiar({ tipo: 'degradado', color: '#5233A8', color2: '#FF5FA2', angulo: 135, paradas: null, radial: false })} style={{ height: 44, borderRadius: 8, border: '1px solid var(--line)', cursor: 'pointer', background: 'linear-gradient(135deg, #5233A8, #FF5FA2)' }} />
         {['/src/brand/Aim_PatternH.png', '/src/brand/Aim_PatternV.png'].map((u, i) => (
           <button key={u} type="button" title={`Trama de la marca ${i + 1}`} onClick={() => cambiar({ tipo: 'imagen', url: u, opacidad: 1 })} style={{ height: 44, borderRadius: 8, border: '1px solid var(--line)', cursor: 'pointer', background: `center / cover url(${u})` }} />
         ))}
@@ -2481,9 +2558,13 @@ function Propiedades({ e, tipo, esDireccion, cambiar, textoRef, subir, acciones,
             </select>
           </label>
         )}
-        <Color etiqueta="Relleno" valor={e.relleno} onCambio={(v) => cambiar({ relleno: v })} permiteNada />
-        <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12.5 }}><input type="checkbox" checked={!!e.relleno2} onChange={x => cambiar({ relleno2: x.target.checked ? '#00BBF4' : null })} /> Degradado</label>
-        {e.relleno2 && <div style={fila}><Color etiqueta="Hasta" valor={e.relleno2} onCambio={(v) => cambiar({ relleno2: v })} /><Num etiqueta="Ángulo" valor={e.angulo ?? 135} onCambio={(v) => cambiar({ angulo: v })} min={0} max={360} /></div>}
+        {!e.relleno2 && <Color etiqueta="Relleno" valor={e.relleno} onCambio={(v) => cambiar({ relleno: v })} permiteNada />}
+        <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12.5 }}><input type="checkbox" checked={!!e.relleno2}
+          onChange={x => cambiar(x.target.checked ? { relleno: e.relleno && e.relleno !== 'transparent' ? e.relleno : '#5233A8', relleno2: '#00BBF4', paradas: null } : { relleno2: null, paradas: null })} /> Degradado</label>
+        {e.relleno2 && (
+          <EditorDegradado paradas={paradasDe(e.relleno && e.relleno !== 'transparent' ? e.relleno : '#5233A8', e.relleno2, e.paradas)} angulo={e.angulo} radial={!!e.radial} tramos={tramos}
+            onCambio={(c) => cambiar({ ...c, ...(c.paradas ? { relleno: c.paradas[0].color, relleno2: c.paradas[c.paradas.length - 1].color } : {}) })} />
+        )}
         <div style={fila}>
           <Color etiqueta="Borde" valor={e.borde || '#1A1A1A'} onCambio={(v) => cambiar({ borde: v })} />
           <Num etiqueta="Grosor del borde" valor={e.grosor || 0} onCambio={(v) => cambiar({ grosor: Math.max(0, v) })} min={0} />
