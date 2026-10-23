@@ -31,7 +31,7 @@ import { crearSeo } from './seo.js';
 import { crearIndexNow } from './indexnow.js';
 import { crearAgrupaciones, crearTablasAgrupaciones } from './agrupaciones.js';
 import { crearSustituciones, crearTablasSustituciones, SQL_SUSTITUYE } from './sustituciones.js';
-import { crearDisenos, crearTablasDisenos, disenosPorAprobar, revisionDeMisDisenos } from './disenos.js';
+import { crearDisenos, crearTablasDisenos, disenosPorAprobar, revisionDeMisDisenos, mencionesDe } from './disenos.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
@@ -5221,6 +5221,22 @@ setInterval(function seguidoresRedes() { publicacionesRedes.fotoSeguidores(); },
 app.use(crearEvaluacion({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireSeccion, permisos, grupoSuyo }).router);
 // Diseños: carteles, posts y diplomas (el «Canva» del club).
 app.use(crearDisenos({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireSeccion }).router);
+// Para mencionar (@) en los comentarios de Aim Design: el personal que ve Aim Design.
+app.get('/api/admin/disenos-equipo', authenticateSession, requireSeccion('grafico'), async (req, res) => {
+    try {
+        const r = await pool.query(
+            `SELECT u.user_id, u.name, u.surname, u.role, u.dev_role, ar.rango FROM users u LEFT JOIN aim_rangos ar ON ar.user_id = u.user_id
+             WHERE u.club_id = $1 OR ar.rango IS NOT NULL OR u.dev_role = 'superadmin'`, [AIM_CLUB_ID]);
+        const equipo = r.rows
+            .map(u => ({ u, rol: rolEfectivo(u.role, u.dev_role, u.rango) }))
+            .filter(({ rol }) => rol && permisosEfectivos(rol).secciones.grafico)
+            .map(({ u }) => ({ id: u.user_id, nombre: `${u.name || ''} ${u.surname || ''}`.trim() }))
+            .filter(x => x.nombre)
+            .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+        res.set('Cache-Control', 'no-store');
+        res.json({ equipo });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
 // Sustitutos de un profe ausente (#445).
 app.use(crearSustituciones({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireAdmin, requireRol, rolEfectivo }).router);
 // Agrupaciones dentro de una clase (#441).
@@ -17139,7 +17155,7 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
             fuente('Aim Design', ['disenos_por_aprobar'], async () => {
                 const x = await disenosPorAprobar(pool);
                 return x.n ? [{
-                    tipo: 'design', clave: 'disenos_por_aprobar', n: x.n, marca: x.ultima, fecha: x.ultima, destino: x.n === 1 ? `/admin/aim-design?abrir=${x.id}` : '/admin/aim-design?revision=1',
+                    tipo: 'design', clave: 'disenos_por_aprobar', n: x.n, marca: x.ultima, fecha: x.ultima, destino: x.n === 1 ? `/admin/aim-design?abrir=${x.id}&panel=revision` : '/admin/aim-design?revision=1',
                     texto: `${x.n} ${plural(x.n, 'diseño espera', 'diseños esperan')} tu aprobación`, detalle: 'antes de publicarlos en redes',
                 }] : [];
             });
@@ -17148,8 +17164,17 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
             fuente('Aim Design', ['disenos_revision'], async () => {
                 const x = await revisionDeMisDisenos(pool, yo);
                 return x.n ? [{
-                    tipo: 'design', clave: 'disenos_revision', n: x.n, marca: x.ultima, fecha: x.ultima, prioridad: 3, destino: x.n === 1 ? `/admin/aim-design?abrir=${x.id}` : '/admin/aim-design',
+                    tipo: 'design', clave: 'disenos_revision', n: x.n, marca: x.ultima, fecha: x.ultima, prioridad: 3, destino: x.n === 1 ? `/admin/aim-design?abrir=${x.id}&panel=revision` : '/admin/aim-design',
                     texto: x.n === 1 ? 'Novedades en la revisión de un diseño tuyo' : `Novedades en la revisión de ${x.n} diseños tuyos`, detalle: 'comentarios o la respuesta de la dirección',
+                }] : [];
+            });
+        }
+        if (recibe('disenos_menciones')) {
+            fuente('Aim Design', ['disenos_menciones'], async () => {
+                const x = await mencionesDe(pool, yo);
+                return x.n ? [{
+                    tipo: 'design', clave: 'disenos_menciones', n: x.n, marca: x.ultima, fecha: x.ultima, destino: `/admin/aim-design?abrir=${x.id}&panel=revision`,
+                    texto: x.n === 1 ? 'Te mencionan en un comentario de Aim Design' : `Te mencionan en ${x.n} comentarios de Aim Design`, detalle: 'en la revisión del diseño',
                 }] : [];
             });
         }
@@ -22813,7 +22838,7 @@ app.get('/', (req, res) => {
 //  · una página de la web sin versión para Google (el área de familias, el
 //    curso por dentro…): la web, sin indexar;
 //  · cualquier otra cosa: 404 y sin indexar (la web enseña su portada igual).
-const PAGINAS_WEB = /^\/(dashboard|auth|actividades|campamento|calendario|legal|contacto|brickslab|biblioteca|conocenos|noticias|blog|tienda|aula)(\/|$)/;
+const PAGINAS_WEB = /^\/(dashboard|auth|actividades|campamento|calendario|legal|contacto|brickslab|biblioteca|conocenos|noticias|blog|tienda|aula|d)(\/|$)/;
 app.get('*', (req, res) => {
     if (/\.[a-z0-9]{1,8}$/i.test(req.path)) return res.status(404).type('text/plain').send('No existe.');
     res.set('X-Robots-Tag', 'noindex');

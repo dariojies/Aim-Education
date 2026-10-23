@@ -11,6 +11,8 @@ import AuthScreen from './components/AuthScreen';
 // (ticket #298). La web pública carga así bastante menos.
 const StudentDashboard = lazy(() => import('./components/StudentDashboard'));
 const AdminApp = lazy(() => import('./components/AdminApp'));
+// Un diseño de Aim Design para ver con un enlace (/d/<clave>).
+const VerDiseno = lazy(() => import('./components/VerDiseno'));
 import PublicCalendar from './components/PublicCalendar';
 import PublicLegal from './components/PublicLegal';
 import PublicContacto from './components/PublicContacto';
@@ -204,6 +206,8 @@ export default function App() {
   } else if (seg[0] === 'tienda') {
     // La tienda online (#432): el catálogo, cada producto y el carrito.
     screen = <TiendaPublica seg={seg} />;
+  } else if (seg[0] === 'd' && seg[1]) {
+    screen = <VerDiseno token={seg[1]} />;
   } else if (seg[0] === 'aula') {
     // El aula virtual (#433): el catálogo, cada curso y el curso por dentro.
     screen = <AulaPublica seg={seg} />;

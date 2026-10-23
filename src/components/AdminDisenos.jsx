@@ -12,6 +12,7 @@ import { formatoVideo, grabarVideo, exportarGif, exportarVideo } from '../diseno
 import { diferencias, aplicarOps } from '../disenos/vivo.js';
 import { COLORES_GRAFICO, CLASES_GRAFICO } from '../disenos/tablas.js';
 import { quitarFondo } from '../disenos/fondo.js';
+import Presentacion from '../disenos/Presentacion.jsx';
 import { htmlDeTrozos, trozosDeHtml, sinEstiloEnTrozos } from '../disenos/textoRico.js';
 import { PALETAS_LISTAS, PARES_LETRAS, aplicarEstilo, coloresDe, contraste } from '../disenos/estilos.js';
 import { PLANTILLAS } from '../disenos/plantillas.js';
@@ -110,6 +111,7 @@ export default function AimDesign({ showToast, pestana: inicial, conCorreos = tr
 function DisenosGraficos({ showToast, puedePublicar }) {
   const [datos, setDatos] = useState(null);
   const [abierto, setAbierto] = useState(null);       // { id, nombre, tipo, datos }
+  const [panelInicial, setPanelInicial] = useState(null);
   const [nuevo, setNuevo] = useState(false);
   const [buscar, setBuscar] = useState('');
   // '' todas · '__sin' sin carpeta · '__plantillas' · '__aprobar' (esperan a la dirección) · o el nombre de una carpeta
@@ -126,6 +128,7 @@ function DisenosGraficos({ showToast, puedePublicar }) {
   useEffect(() => {
     const q = new URLSearchParams(window.location.search), a = Number(q.get('abrir'));
     if (q.get('revision')) setCarpeta('__aprobar');
+    if (q.get('panel')) setPanelInicial(q.get('panel'));
     if (a) abrir(a);
     if (a || q.get('revision')) window.history.replaceState(null, '', window.location.pathname);
   }, []);
@@ -167,7 +170,7 @@ function DisenosGraficos({ showToast, puedePublicar }) {
     </button>
   );
 
-  if (abierto) return <Editor inicial={abierto} showToast={showToast} puedePublicar={puedePublicar} onCerrar={() => { setAbierto(null); cargar(); }} />;
+  if (abierto) return <Editor inicial={abierto} panelInicial={panelInicial} showToast={showToast} puedePublicar={puedePublicar} onCerrar={() => { setAbierto(null); setPanelInicial(null); cargar(); }} />;
   return (
     <div style={{ display: 'grid', gap: 14 }}>
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -357,7 +360,7 @@ const arrastrable = (url, ancho, alto) => ({
   onDragStart: (ev) => { ev.dataTransfer.setData(TIPO_ARRASTRE, JSON.stringify({ url, ancho, alto })); ev.dataTransfer.effectAllowed = 'copy'; },
 });
 
-function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
+function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
   const [id, setId] = useState(inicial.id);
   const [nombre, setNombre] = useState(inicial.nombre || 'Diseño sin nombre');
   const [tipo, setTipo] = useState(inicial.tipo || 'libre');
@@ -367,7 +370,7 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
   const [hist, setHist] = useState({ atras: [], adelante: [] });
   const [sucio, setSucio] = useState(!inicial.id);
   const [guardando, setGuardando] = useState(false);
-  const [panel, setPanel] = useState('anadir');
+  const [panel, setPanel] = useState(panelInicial || 'anadir');
   const [imagenes, setImagenes] = useState(new Map());
   const [version, setVersion] = useState(0);
   const [guias, setGuias] = useState([]);
@@ -1074,6 +1077,7 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
           </label>
         )}
         <div style={{ flex: 1 }} />
+        <button type="button" style={botonBarra} onClick={() => setVentana('presentar')} title="A pantalla completa, página a página (también para la pantalla de recepción)">▶ Presentar</button>
         <button type="button" style={botonBarra} onClick={deshacer} disabled={!hist.atras.length} title="Deshacer (Ctrl+Z)">↶</button>
         <button type="button" style={botonBarra} onClick={rehacer} disabled={!hist.adelante.length} title="Rehacer (Ctrl+Y)">↷</button>
         <div style={{ position: 'relative' }}>
@@ -1105,6 +1109,7 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
                 ['tamanos', 'En otros tamaños', 'El mismo diseño como post, historia, A4…'],
                 tipo === 'diploma' && ['lote', 'Diplomas en lote', 'Un PDF con uno para cada alumno de una clase o un examen'],
                 ['biblioteca', 'Para correos y noticias', 'Se guarda en las imágenes de la web'],
+                ['enlace', 'Enlace para ver', 'Para quien no entra al panel: lo ve y lo descarga, sin poder cambiarlo'],
                 ['plantilla', 'Guardar como plantilla del equipo', 'Para que todos empiecen desde aquí'],
               ].filter(Boolean).map(([k, t, d]) => (
                 <button key={k} type="button" onClick={() => (k === 'plantilla' ? comoPlantilla() : usar(k))} style={{ font: 'inherit', textAlign: 'left', padding: '8px 10px', border: 0, borderRadius: 8, background: 'none', color: 'var(--ink)', cursor: 'pointer', display: 'grid' }}>
@@ -1364,6 +1369,8 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
       {ventana === 'biblioteca' && <ParaCorreosYNoticias diseno={diseno} nombre={nombre} ejemplo={ejemplo} onCerrar={() => setVentana(null)} />}
       {ventana === 'imprenta' && <ParaImprenta doc={doc} nombre={nombre} ejemplo={ejemplo} onCerrar={() => setVentana(null)} />}
       {ventana === 'animacion' && <ExportarAnimacion diseno={diseno} nombre={nombre} onCerrar={() => setVentana(null)} />}
+      {ventana === 'presentar' && <Presentacion doc={doc} inicio={pagina} variables={ejemplo} onCerrar={() => setVentana(null)} />}
+      {ventana === 'enlace' && <EnlaceParaVer id={id} inicial={doc.enlace} sucio={sucio} guardar={guardar} onCerrar={() => setVentana(null)} />}
       {ventana === 'ayuda' && (
         <Ventana titulo="Cómo se usa" onCerrar={() => setVentana(null)} ancho={560}>
           <div style={{ fontSize: 13.5, color: 'var(--ink-2)', display: 'grid', gap: 10 }}>
@@ -2209,8 +2216,49 @@ function EstadoRevision({ estado, onClick, pequeno }) {
 }
 const fechaHora = (v) => new Date(v).toLocaleString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Madrid' });
 const PASO_REVISION = { pedir: '⏳ pidió la aprobación', aprobado: '✓ lo aprobó', cambios: '✎ pidió cambios' };
+// Las menciones van en el texto como @[Nombre](id): se ven como «@Nombre».
+const MENCION = /@\[([^\]]+)\]\(([0-9a-f-]{36})\)/g;
+const conMenciones = (t) => String(t).split(MENCION).map((x, i) => (i % 3 === 1 ? <b key={i} style={{ color: 'var(--purple)' }}>@{x}</b> : i % 3 === 2 ? null : x));
+// La caja de comentar: al escribir @ salen los del equipo para mencionarlos (les llega a la campanita).
+function CajaComentario({ valor, onCambio, menciones, setMenciones }) {
+  const [equipo, setEquipo] = useState(null);
+  const [busca, setBusca] = useState(null);   // lo escrito tras la @, o null
+  const ref = useRef(null);
+  useEffect(() => { api('/api/admin/disenos-equipo').then(d => setEquipo(d.equipo || [])).catch(() => setEquipo([])); }, []);
+  const sinTildes = (x) => String(x).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+  const opciones = busca == null || !equipo ? [] : equipo.filter(p => sinTildes(p.nombre).includes(sinTildes(busca))).slice(0, 6);
+  function cambiar(v) {
+    onCambio(v);
+    const t = ref.current, antes = v.slice(0, t?.selectionStart ?? v.length), m = antes.match(/(?:^|\s)@([\p{L} ]{0,20})$/u);
+    setBusca(m ? m[1] : null);
+  }
+  function elegir(p) {
+    const t = ref.current, pos = t?.selectionStart ?? valor.length, antes = valor.slice(0, pos), despues = valor.slice(pos);
+    const i = antes.lastIndexOf('@');
+    onCambio(`${antes.slice(0, i)}@${p.nombre} ${despues}`);
+    setMenciones(m => [...m.filter(x => x.id !== p.id), p]); setBusca(null);
+    setTimeout(() => t?.focus(), 0);
+  }
+  return (
+    <div style={{ position: 'relative' }}>
+      <textarea ref={ref} rows={3} value={valor} onChange={e => cambiar(e.target.value)} placeholder="Escribe un comentario para el equipo… (con @ mencionas a alguien)"
+        onKeyDown={e => { if (opciones.length && (e.key === 'Enter' || e.key === 'Tab')) { e.preventDefault(); elegir(opciones[0]); } else if (e.key === 'Escape' && busca != null) { e.stopPropagation(); setBusca(null); } }}
+        style={{ ...inp, resize: 'vertical' }} />
+      {opciones.length > 0 && (
+        <div role="listbox" style={{ position: 'absolute', left: 0, right: 0, top: '100%', zIndex: 5, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, boxShadow: 'var(--shadow)', padding: 4, display: 'grid' }}>
+          {opciones.map(p => (
+            <button key={p.id} type="button" role="option" onMouseDown={e => { e.preventDefault(); elegir(p); }}
+              style={{ font: 'inherit', fontSize: 13, textAlign: 'left', padding: '6px 8px', border: 0, borderRadius: 7, background: 'none', cursor: 'pointer', color: 'var(--ink)' }}>@{p.nombre}</button>
+          ))}
+        </div>
+      )}
+      {menciones.length > 0 && <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Le llegará a: {menciones.filter(m => valor.includes(`@${m.nombre}`)).map(m => m.nombre).join(', ') || 'nadie'}</span>}
+    </div>
+  );
+}
 function PanelRevision({ id, revision, setRevision, sucio, guardar, pedir, elegido, pagina, onIr, onVolver }) {
   const [texto, setTexto] = useState('');
+  const [menciones, setMenciones] = useState([]);
   const [sobre, setSobre] = useState(true);
   const [decision, setDecision] = useState('');
   const [versiones, setVersiones] = useState(null);
@@ -2225,7 +2273,10 @@ function PanelRevision({ id, revision, setRevision, sucio, guardar, pedir, elegi
   const llamar = async (url, method = 'POST', body) => { try { setRevision(await api(url, { method, body })); return true; } catch (e) { alert(e.message); return false; } };
   async function comentar() {
     if (!texto.trim()) return;
-    if (await llamar(`/api/admin/disenos/${id}/comentarios`, 'POST', { texto, elementoId: sobre && elegido ? elegido.id : null, pagina })) setTexto('');
+    // «@Nombre» de los elegidos de la lista pasa a @[Nombre](id) (así se les avisa).
+    let t = texto;
+    for (const m of menciones) t = t.split(`@${m.nombre}`).join(`@[${m.nombre}](${m.id})`);
+    if (await llamar(`/api/admin/disenos/${id}/comentarios`, 'POST', { texto: t, elementoId: sobre && elegido ? elegido.id : null, pagina })) { setTexto(''); setMenciones([]); }
   }
   async function decidir(accion) {
     if (accion === 'cambios' && !decision.trim()) { alert('Escribe qué hay que cambiar.'); return; }
@@ -2262,7 +2313,7 @@ function PanelRevision({ id, revision, setRevision, sucio, guardar, pedir, elegi
       ) : (
         <div key={c.id} style={{ background: 'var(--bg-3)', border: '1px solid var(--line)', borderRadius: 10, padding: '8px 10px', display: 'grid', gap: 4, opacity: c.resuelto ? 0.55 : 1 }}>
           <div style={{ display: 'flex', gap: 6, fontSize: 12 }}><b style={{ flex: 1 }}>{c.autor}</b><span style={{ color: 'var(--ink-3)' }}>{fechaHora(c.fecha)}</span></div>
-          <div style={{ fontSize: 13, whiteSpace: 'pre-wrap', textDecoration: c.resuelto ? 'line-through' : 'none' }}>{c.texto}</div>
+          <div style={{ fontSize: 13, whiteSpace: 'pre-wrap', textDecoration: c.resuelto ? 'line-through' : 'none' }}>{conMenciones(c.texto)}</div>
           <div style={{ display: 'flex', gap: 10, fontSize: 12 }}>
             {(c.elementoId || c.pagina != null) && <button type="button" className="link-btn" style={{ border: 0, background: 'none', padding: 0, color: 'var(--purple)', cursor: 'pointer', font: 'inherit' }} onClick={() => onIr(c)}>{c.elementoId ? 'Ver dónde' : `Página ${c.pagina + 1}`}</button>}
             <button type="button" style={{ border: 0, background: 'none', padding: 0, color: 'var(--ink-2)', cursor: 'pointer', font: 'inherit' }} onClick={() => llamar(`/api/admin/disenos/${id}/comentarios/${c.id}`, 'PATCH', { resuelto: !c.resuelto })}>{c.resuelto ? 'Reabrir' : '✓ Resuelto'}</button>
@@ -2270,7 +2321,7 @@ function PanelRevision({ id, revision, setRevision, sucio, guardar, pedir, elegi
           </div>
         </div>
       )))}
-      <textarea rows={3} value={texto} onChange={e => setTexto(e.target.value)} placeholder="Escribe un comentario para el equipo…" style={{ ...inp, resize: 'vertical' }} />
+      <CajaComentario valor={texto} onCambio={setTexto} menciones={menciones} setMenciones={setMenciones} />
       {elegido && <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}><input type="checkbox" checked={sobre} onChange={e => setSobre(e.target.checked)} /> Sobre lo elegido ({etiquetaElemento(elegido)})</label>}
       <button type="button" className="btn btn-sm btn-outline" disabled={!texto.trim()} onClick={comentar}>Comentar</button>
 
@@ -2495,6 +2546,42 @@ function FotosDeBanco({ onCerrar, onElegir }) {
           <button type="button" className="btn btn-sm btn-ghost" disabled={pagina >= Math.min(10, res.paginas)} onClick={() => buscar(pagina + 1)}>Más ›</button>
         </div>
       </>)}
+    </Ventana>
+  );
+}
+
+// Enlace para ver: /d/<clave>. Quien lo tiene ve lo guardado y lo descarga; no entra al panel.
+function EnlaceParaVer({ id, inicial, sucio, guardar, onCerrar }) {
+  const [clave, setClave] = useState(inicial || null);
+  const [copiado, setCopiado] = useState(false);
+  const [ocupado, setOcupado] = useState(false);
+  const url = clave ? `${window.location.origin}/d/${clave}` : '';
+  async function crear() {
+    setOcupado(true);
+    try { if (!id || sucio) await guardar(); setClave((await api(`/api/admin/disenos/${id}/enlace`, { method: 'POST' })).enlace); }
+    catch (e) { alert(e.message); } finally { setOcupado(false); }
+  }
+  async function quitar() {
+    if (!window.confirm('¿Quitar el enlace? Quien lo tenga ya no podrá verlo.')) return;
+    try { await api(`/api/admin/disenos/${id}/enlace`, { method: 'DELETE' }); setClave(null); } catch (e) { alert(e.message); }
+  }
+  return (
+    <Ventana titulo="Enlace para ver" onCerrar={onCerrar} ancho={560}>
+      <p style={{ margin: 0, fontSize: 13.5, color: 'var(--ink-2)' }}>Para enseñárselo a quien no entra al panel (una familia, la imprenta, un patrocinador): con el enlace lo ve, lo presenta y lo descarga, pero no puede cambiarlo. Ve lo último que se ha guardado. No sale en los buscadores.</p>
+      {!id && <span style={{ fontSize: 12.5, color: '#B45309' }}>Primero hay que guardarlo.</span>}
+      {clave ? <>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <input readOnly value={url} aria-label="Enlace para ver" onFocus={e => e.target.select()} style={{ ...inp, fontFamily: 'monospace', fontSize: 12 }} />
+          <button type="button" className="btn btn-sm btn-outline" onClick={() => navigator.clipboard?.writeText(url).then(() => setCopiado(true)).catch(() => {})}>{copiado ? '✓ Copiado' : 'Copiar'}</button>
+        </div>
+        {sucio && <span style={{ fontSize: 12.5, color: '#B45309' }}>Hay cambios sin guardar: con el enlace se ve lo de antes. Guarda para que se vean.</span>}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between' }}>
+          <button type="button" className="btn btn-sm btn-ghost" style={{ color: 'var(--orange)' }} onClick={quitar}>Quitar el enlace</button>
+          <a className="btn btn-sm btn-primary" href={url} target="_blank" rel="noreferrer">Abrirlo</a>
+        </div>
+      </> : (
+        <button type="button" className="btn btn-sm btn-primary" disabled={ocupado} onClick={crear}>{ocupado ? 'Creando…' : 'Crear el enlace'}</button>
+      )}
     </Ventana>
   );
 }

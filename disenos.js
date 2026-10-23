@@ -125,6 +125,15 @@ export async function disenosPorAprobar(pool) {
          FROM aim_disenos d CROSS JOIN LATERAL (SELECT ${SQL_DECISION('d')} AS x) y WHERE y.x->>'tipo' = 'pedir' AND NOT d.datos ? 'papelera'`);
     return r.rows[0];
 }
+// …a quien mencionan en un comentario (@[Nombre](id), último mes)…
+export async function mencionesDe(pool, userId) {
+    const r = await pool.query(
+        `SELECT COUNT(*)::int n, MAX(c.created_at) AS ultima, MAX(c.diseno_id) AS id
+         FROM aim_disenos_comentarios c JOIN aim_disenos d ON d.id = c.diseno_id AND NOT d.datos ? 'papelera'
+         WHERE c.tipo = 'comentario' AND c.texto LIKE '%](' || $1::text || ')%' AND c.autor_id::text IS DISTINCT FROM $1::text
+           AND c.created_at > NOW() - INTERVAL '30 days'`, [userId]);
+    return r.rows[0];
+}
 // …y a quien los hizo: comentarios o respuestas de otros en los suyos (último mes).
 export async function revisionDeMisDisenos(pool, userId) {
     const r = await pool.query(
@@ -263,6 +272,48 @@ export function crearDisenos({ pool, clubId, authenticateSession, requireSeccion
             if (para) enviar(para.res, { tipo: 'estado', de, doc: req.body.doc, nombre: req.body.nombre, tipoDiseno: req.body.tipoDiseno, sucio: !!req.body.sucio });
         } else if (t === 'guardado') aLosDemas(sala, de, { tipo: 'guardado', de, nombre: c.nombre });
         res.json({ success: true });
+    });
+
+    // ── Enlace para ver (sin entrar y sin cambiar nada): /d/<clave> ──
+    router.post('/api/admin/disenos/:id/enlace', ...gestion, async (req, res) => {
+        try {
+            const clave = crypto.randomBytes(12).toString('hex');
+            const r = await pool.query(
+                `UPDATE aim_disenos SET datos = CASE WHEN datos ? 'enlace' THEN datos ELSE jsonb_set(datos, '{enlace}', to_jsonb($2::text)) END
+                 WHERE id = $1 RETURNING datos->>'enlace' AS enlace`, [Number(req.params.id) || 0, clave]);
+            if (!r.rowCount) corta(404, 'Ese diseño ya no existe.');
+            res.json({ success: true, enlace: r.rows[0].enlace });
+        } catch (err) { fallo(res, err); }
+    });
+    router.delete('/api/admin/disenos/:id/enlace', ...gestion, async (req, res) => {
+        try {
+            await pool.query(`UPDATE aim_disenos SET datos = datos - 'enlace' WHERE id = $1`, [Number(req.params.id) || 0]);
+            res.json({ success: true });
+        } catch (err) { fallo(res, err); }
+    });
+    const disenoDeEnlace = async (clave) => {
+        if (!/^[0-9a-f]{24}$/.test(String(clave || ''))) return null;
+        return (await pool.query(`SELECT id, nombre, tipo, datos FROM aim_disenos WHERE datos->>'enlace' = $1 AND NOT datos ? 'papelera'`, [clave])).rows[0] || null;
+    };
+    router.get('/api/publico/disenos/:clave', async (req, res) => {
+        try {
+            res.set({ 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex' });
+            const d = await disenoDeEnlace(req.params.clave);
+            if (!d) return res.status(404).json({ error: 'Este enlace ya no funciona.' });
+            const { carpeta, enlace, papelera, esPlantilla, ...datos } = d.datos; // eslint-disable-line no-unused-vars
+            // Las fotos de la galería, por su propia dirección (con el permiso mirado otra vez).
+            const json = JSON.stringify(datos).replace(/\/api\/admin\/disenos\/foto-club\/(\d+)\/grande/g, `/api/publico/disenos/${req.params.clave}/foto/$1`);
+            res.json({ nombre: d.nombre, tipo: d.tipo, datos: JSON.parse(json) });
+        } catch (err) { fallo(res, err); }
+    });
+    router.get('/api/publico/disenos/:clave/foto/:fid', async (req, res) => {
+        try {
+            const d = await disenoDeEnlace(req.params.clave), fid = Number(req.params.fid) || 0;
+            if (!d || !JSON.stringify(d.datos).includes(`/foto-club/${fid}/`)) return res.status(404).end();
+            const f = (await pool.query(`SELECT f.datos AS img, f.mime FROM aim_galeria_fotos f WHERE f.id = $1 AND ${SQL_FOTO_CON_PERMISO('f')}`, [fid])).rows[0];
+            if (!f?.img) return res.status(404).end();
+            res.set({ 'Content-Type': f.mime || 'image/jpeg', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, max-age=600', 'X-Robots-Tag': 'noindex' }).send(f.img);
+        } catch (err) { fallo(res, err); }
     });
 
     // ── Una imagen hecha en el editor (una foto sin fondo, por ejemplo) ──
