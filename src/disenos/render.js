@@ -92,7 +92,18 @@ export const todasLasPaginas = (d) => Array.from({ length: numPaginas(d) }, (_, 
 const todosLosElementos = (d) => [...(d?.elementos || []), ...(d?.paginas || []).flatMap(p => p.elementos || [])];
 
 // ── Cargar lo que hace falta antes de pintar ────────────────────────────────
-let fuentesPedidas = false;
+// La hoja de las letras de Google: una sola vez, y todos esperan a la misma.
+let hoja = null;
+function hojaFuentes() {
+  if (!hoja) {
+    hoja = new Promise(r => {
+      const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = URL_FUENTES;
+      l.onload = r; l.onerror = r; setTimeout(r, 4000);
+      document.head.appendChild(l);
+    });
+  }
+  return hoja;
+}
 const fuentesPropias = new Map();
 // Una letra subida por el club (TTF, OTF, WOFF): se carga una vez por nombre.
 export function cargarFuentePropia(nombre, url) {
@@ -104,20 +115,15 @@ export function cargarFuentePropia(nombre, url) {
 }
 export async function cargarFuentes(diseno) {
   if (typeof document === 'undefined') return;
-  const textos = todosLosElementos(diseno).filter(e => e.tipo === 'texto');
-  if (!fuentesPedidas && textos.some(e => FUENTES_DISENO.find(x => x.id === (e.fuente || 'Montserrat'))?.google)) {
-    fuentesPedidas = true;
-    const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = URL_FUENTES; document.head.appendChild(l);
-    await new Promise(r => { l.onload = r; l.onerror = r; setTimeout(r, 4000); });
-  }
-  await Promise.all(textos.map(e => (e.fuenteUrl ? cargarFuentePropia(e.fuente, e.fuenteUrl)
-    : document.fonts?.load?.(`${e.cursiva ? 'italic ' : ''}${e.negrita ? 700 : 400} 40px "${e.fuente || 'Montserrat'}"`).catch(() => null))));
+  // Los textos y lo demás que lleva letra (tablas y gráficos).
+  const conLetra = todosLosElementos(diseno).filter(e => e.tipo === 'texto' || e.tipo === 'tabla' || e.tipo === 'grafico');
+  if (conLetra.some(e => FUENTES_DISENO.find(x => x.id === (e.fuente || 'Montserrat'))?.google)) await hojaFuentes();
+  await Promise.all(conLetra.flatMap(e => (e.fuenteUrl ? [cargarFuentePropia(e.fuente, e.fuenteUrl)]
+    : [400, 700].map(peso => document.fonts?.load?.(`${e.cursiva ? 'italic ' : ''}${peso} 40px "${e.fuente || 'Montserrat'}"`).catch(() => null)))));
 }
 // Pide las fuentes de Google ya (para el editor: que se vean al elegirlas).
 export function pedirFuentes() {
-  if (fuentesPedidas || typeof document === 'undefined') return;
-  fuentesPedidas = true;
-  const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = URL_FUENTES; document.head.appendChild(l);
+  if (typeof document !== 'undefined') hojaFuentes();
 }
 
 const cacheImg = new Map();

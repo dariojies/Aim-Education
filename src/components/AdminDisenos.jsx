@@ -258,9 +258,34 @@ function Ventana({ titulo, children, onCerrar, ancho = 720 }) {
   );
 }
 
+// La plantilla en pequeño (se pinta una vez y se guarda).
+const cacheMinis = new Map();
+function MiniPlantilla({ p }) {
+  const [src, setSrc] = useState(cacheMinis.get(p.id) || null);
+  useEffect(() => {
+    if (src) return undefined;
+    let vivo = true;
+    const datos = p.crear();
+    lienzoDe(datos, { variables: p.tipo === 'diploma' ? EJEMPLO_DIPLOMA : null, ancho: 260 }).then(cv => { const u = cv.toDataURL('image/jpeg', 0.8); cacheMinis.set(p.id, u); if (vivo) setSrc(u); }).catch(() => {});
+    return () => { vivo = false; };
+  }, [p, src]);
+  return (
+    <span style={{ display: 'grid', placeItems: 'center', aspectRatio: '4 / 3', background: 'var(--bg-2)', borderRadius: 8, overflow: 'hidden' }}>
+      {src ? <img src={src} alt="" style={{ maxWidth: '88%', maxHeight: '88%', boxShadow: '0 2px 8px rgba(0,0,0,.18)' }} /> : null}
+    </span>
+  );
+}
 function NuevoDiseno({ equipo = [], onCerrar, onCrear }) {
   const [ancho, setAncho] = useState(1080);
   const [alto, setAlto] = useState(1080);
+  // Las de temporada de este mes y el que viene, primero.
+  const mes = new Date().getMonth() + 1, siguiente = (mes % 12) + 1;
+  const ahora = PLANTILLAS.filter(p => p.temporada?.some(m => m === mes || m === siguiente));
+  const grupos = [
+    ['Para estas fechas', ahora],
+    ['Para todo el año', PLANTILLAS.filter(p => !p.temporada)],
+    ['De otras épocas del año', PLANTILLAS.filter(p => p.temporada && !ahora.includes(p))],
+  ];
   const blanco = (t) => onCrear({ id: null, nombre: t.nombre, tipo: 'libre', datos: { ancho: t.ancho, alto: t.alto, fondo: { tipo: 'color', color: '#ffffff' }, elementos: [] } });
   // Una plantilla del equipo: se trabaja sobre una copia (la plantilla no se toca).
   async function deEquipo(p) {
@@ -286,16 +311,21 @@ function NuevoDiseno({ equipo = [], onCerrar, onCrear }) {
           ))}
         </div>
       </>}
-      <div style={seccionT}>Empezar con una plantilla</div>
-      <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))' }}>
-        {PLANTILLAS.map(p => (
-          <button key={p.id} type="button" onClick={() => onCrear({ id: null, nombre: p.nombre, tipo: p.tipo, datos: p.crear() })}
-            style={{ font: 'inherit', cursor: 'pointer', padding: 12, borderRadius: 12, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', display: 'grid', gap: 4, textAlign: 'left' }}>
-            <b style={{ fontSize: 13 }}>{p.nombre}</b>
-            <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>{TAMANOS.find(t => t.id === p.tamano)?.nombre}{p.tipo === 'diploma' ? ' · con nombre y curso' : ''}</span>
-          </button>
-        ))}
-      </div>
+      {grupos.map(([titulo, lista]) => lista.length > 0 && (
+        <React.Fragment key={titulo}>
+          <div style={seccionT}>{titulo}</div>
+          <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))' }}>
+            {lista.map(p => (
+              <button key={p.id} type="button" onClick={() => onCrear({ id: null, nombre: p.nombre, tipo: p.tipo, datos: p.crear() })}
+                style={{ font: 'inherit', cursor: 'pointer', padding: 8, borderRadius: 12, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', display: 'grid', gap: 6, textAlign: 'left' }}>
+                <MiniPlantilla p={p} />
+                <b style={{ fontSize: 12.5 }}>{p.nombre}</b>
+                <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>{TAMANOS.find(t => t.id === p.tamano)?.nombre}{p.tipo === 'diploma' ? ' · con nombre y curso' : ''}</span>
+              </button>
+            ))}
+          </div>
+        </React.Fragment>
+      ))}
       <div style={seccionT}>O en blanco, del tamaño que necesites</div>
       <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))' }}>
         {TAMANOS.map(t => (
