@@ -15,6 +15,7 @@ import { quitarFondo } from '../disenos/fondo.js';
 import Presentacion from '../disenos/Presentacion.jsx';
 import { IDIOMAS, traducirDiseno } from '../disenos/traducir.js';
 import { alternativas, encaja } from '../disenos/iconosEs.js';
+import { buscarTexto, reemplazarTexto } from '../disenos/buscar.js';
 import { htmlDeTrozos, trozosDeHtml, sinEstiloEnTrozos } from '../disenos/textoRico.js';
 import { PALETAS_LISTAS, PARES_LETRAS, aplicarEstilo, coloresDe, contraste } from '../disenos/estilos.js';
 import { PLANTILLAS } from '../disenos/plantillas.js';
@@ -675,6 +676,17 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
     else anadirIcono(`m:${n}`, d);
   }
   const anadirMarco = (figura) => { const w = Math.round(base * 0.42); anadir({ tipo: 'imagen', url: null, marco: figura, ajuste: 'cubrir', w, h: figura === 'arco' ? Math.round(w * 1.25) : w, radio: figura === 'rect' ? Math.round(base * 0.03) : 0 }); };
+  // Buscar y cambiar en todas las páginas (lo fijo del todo, no; su contenido, sí).
+  const intocable = (e) => fijo(e) && !soloContenido(e);
+  function cambiarTextos(q, por, mayus) {
+    let r = null;
+    aplicarDoc(d => { r = reemplazarTexto(d, q, por, { mayus, saltar: intocable, ajustar: (e) => ajustarTexto(e, ejemplo) }); return r.cambios ? r.doc : d; });
+    const veces = (n) => `${n} ${n === 1 ? 'vez' : 'veces'}`;
+    showToast?.([r.cambios ? `Cambiado ${veces(r.cambios)}.` : 'No se ha cambiado nada.',
+      r.sinCambiar ? `${veces(r.sinCambiar)} no, porque mezcla estilos dentro (cámbialo a mano).` : '',
+      r.fijas ? `${veces(r.fijas)} en partes fijas de la dirección, sin tocar.` : ''].filter(Boolean).join(' '));
+    return r;
+  }
   // La dirección: fijar la estructura de una vez. Logos y adornos, fijos del todo; textos,
   // fotos, tablas y gráficos, solo su contenido; y el fondo, el tamaño y los colores.
   function cadaElemento(fn) {
@@ -1091,6 +1103,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
       const ctrl = ev.ctrlKey || ev.metaKey, k = ev.key.toLowerCase();
       if (ctrl && k === 's') { ev.preventDefault(); guardar(); return; }
       if (ctrl && (k === '+' || k === '=' || k === '-' || k === '0')) { ev.preventDefault(); hacerZoom(k === '0' ? 0 : k === '-' ? -1 : 1); return; }
+      if (ctrl && (k === 'f' || k === 'h') && !ventana && !ev.target?.isContentEditable) { ev.preventDefault(); setVentana('buscar'); return; }
       if (enCampo || ventana) return;
       if (menu && ev.key === 'Escape') { setMenu(null); return; }
       if (recortando && (ev.key === 'Enter' || ev.key === 'Escape')) { ev.preventDefault(); setRecortando(null); return; }
@@ -1369,6 +1382,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
         {verExtra && <button type="button" style={{ ...botonBarra, ...masBarra }} onClick={() => setVentana('presentar')} title="A pantalla completa, página a página (también para la pantalla de recepción)">▶ Presentar</button>}
         <button type="button" style={botonBarra} onClick={deshacer} disabled={!hist.atras.length} title="Deshacer (Ctrl+Z)" aria-label="Deshacer">↶</button>
         <button type="button" style={botonBarra} onClick={rehacer} disabled={!hist.adelante.length} title="Rehacer (Ctrl+Y)" aria-label="Rehacer">↷</button>
+        {verExtra && <button type="button" style={{ ...botonBarra, ...masBarra }} onClick={() => setVentana('buscar')} title="Buscar y cambiar texto en todas las páginas (Ctrl+F)" aria-label="Buscar y cambiar">🔍{movil ? ' Buscar y cambiar' : ''}</button>}
         {movil && (verExportar || verUsar) && <div onClick={() => { setVerExportar(false); setVerUsar(false); }} style={{ position: 'fixed', inset: 0, zIndex: 94, background: 'rgba(0,0,0,.35)' }} />}
         {verExtra && <div style={{ position: 'relative', ...masBarra }}>
           <button type="button" style={botonBarra} onClick={() => { setVerExportar(v => !v); setVerUsar(false); }}><I.Download width={14} height={14} /> Exportar</button>
@@ -1721,12 +1735,15 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
               <span>Pulsa algo del lienzo para cambiarlo. Arrástralo para moverlo, tira de los cuadraditos para el tamaño y del círculo de arriba para girarlo.</span>
               <span>Varios a la vez: con Mayús + clic o arrastrando un recuadro desde un hueco. Doble clic en un texto para escribir y en una foto para recortarla. Las fotos del panel (o del ordenador) se pueden soltar encima de un marco.</span>
               {tactil && <span>Con el dedo: toca algo para elegirlo y arrástralo para moverlo; toca dos veces un texto para escribir o una foto para recortarla; mantén pulsado para más opciones. Pellizca para acercar o alejar, y arrastra por un hueco para moverte por el diseño.</span>}
+              <span>Para cambiar una fecha o un horario en todas las páginas a la vez: 🔍 Buscar y cambiar (Ctrl+F).</span>
               <span>Atajos: Ctrl+C / Ctrl+X / Ctrl+V copian, cortan y pegan (también imágenes y textos del ordenador), Supr borra, Ctrl+D duplica, Ctrl+G agrupa (con Mayús, desagrupa), Ctrl+A elige todo, Ctrl+Z deshace, las flechas mueven (con Mayús, de 10 en 10), Ctrl+S guarda. Zoom: Ctrl + rueda, Ctrl + y Ctrl −. Con el botón derecho, más opciones.</span>
               <span>Lo que tiene 🔒 lo ha dejado fijo la dirección (para que todo salga con la imagen del club): según el caso, no se toca o solo se cambia el texto o la foto.</span>
               {tipo === 'diploma' && <span style={{ color: 'var(--purple)' }}>Es un diploma: los huecos ({'{alumno}'}, {'{curso}'}…) se ven con datos de ejemplo y a cada alumno le salen los suyos.</span>}
           </div>
         </Ventana>
       )}
+      {ventana === 'buscar' && <BuscarCambiar doc={doc} fijo={intocable} onCambiar={cambiarTextos} onCerrar={() => setVentana(null)}
+        onIr={(h) => { setVentana(null); irPagina(h.pagina); setTimeout(() => setSel(h.id), 0); }} />}
       {ventana === 'iconos' && <BibliotecaIconos onCerrar={() => setVentana(null)} onElegir={elegirIcono} />}
       {ventana === 'banco' && <FotosDeBanco onCerrar={() => setVentana(null)} onElegir={(f) => { setVentana(null); anadirImagen(f.url, f.ancho, f.alto); }} />}
       {ventana === 'fotos' && <FotosDelClub onCerrar={() => { fotoPara.current = null; setVentana(null); }} onElegir={(f) => {
@@ -3015,6 +3032,54 @@ function FotosDeBanco({ onCerrar, onElegir }) {
           <button type="button" className="btn btn-sm btn-ghost" disabled={pagina >= Math.min(10, res.paginas)} onClick={() => buscar(pagina + 1)}>Más ›</button>
         </div>
       </>)}
+    </Ventana>
+  );
+}
+
+// Buscar y cambiar: dónde sale (para ir) y cambiarlo todo de una vez.
+function BuscarCambiar({ doc, fijo, onIr, onCambiar, onCerrar }) {
+  const [q, setQ] = useState('');
+  const [por, setPor] = useState('');
+  const [mayus, setMayus] = useState(false);
+  const halladas = useMemo(() => buscarTexto(doc, q, { mayus, fijo }), [doc, q, mayus, fijo]);
+  const libres = halladas.filter(h => !h.fijo).length;
+  return (
+    <Ventana titulo="Buscar y cambiar" onCerrar={onCerrar} ancho={600}>
+      <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
+        <label style={etq}>Buscar
+          <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="Por ejemplo, una fecha: 14 de junio" style={inp} />
+        </label>
+        <label style={etq}>Cambiar por
+          <input value={por} onChange={e => setPor(e.target.value)} placeholder="(vacío: lo borra)" style={inp}
+            onKeyDown={e => { if (e.key === 'Enter' && libres) onCambiar(q, por, mayus); }} />
+        </label>
+      </div>
+      <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12.5 }}>
+        <input type="checkbox" checked={mayus} onChange={e => setMayus(e.target.checked)} /> Distinguir mayúsculas
+      </label>
+      {q && (
+        <div style={{ display: 'grid', gap: 4 }}>
+          <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>
+            {halladas.length ? `Sale ${halladas.length} ${halladas.length === 1 ? 'vez' : 'veces'}${halladas.length > libres ? ` (${halladas.length - libres} en partes fijas, que no se cambian)` : ''}. Pulsa una para ir.` : 'No sale en ningún texto, tabla ni gráfico.'}
+          </span>
+          <div style={{ display: 'grid', gap: 4, maxHeight: 260, overflowY: 'auto' }}>
+            {halladas.slice(0, 60).map((h, i) => (
+              <button key={i} type="button" onClick={() => onIr(h)}
+                style={{ font: 'inherit', fontSize: 13, textAlign: 'left', padding: '6px 9px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', cursor: 'pointer', display: 'flex', gap: 8 }}>
+                <span style={{ color: 'var(--ink-3)', fontSize: 11.5, whiteSpace: 'nowrap', paddingTop: 1 }}>Pág. {h.pagina + 1}{h.tipo !== 'texto' ? ` · ${h.donde}` : ''}</span>
+                <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {h.antes.replace(/\n/g, ' ')}<mark style={{ background: '#FFE58A', color: '#1A1A1A', borderRadius: 3 }}>{h.hallado}</mark>{h.despues.replace(/\n/g, ' ')}
+                </span>
+                {h.fijo && <span title="Lo ha dejado fijo la dirección">🔒</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <button type="button" className="btn btn-sm btn-ghost" onClick={onCerrar}>Cerrar</button>
+        <button type="button" className="btn btn-sm btn-primary" disabled={!libres} onClick={() => onCambiar(q, por, mayus)}>{libres ? `Cambiar ${libres === 1 ? 'la' : `las ${libres}`}` : 'Cambiar'}</button>
+      </div>
     </Ventana>
   );
 }
