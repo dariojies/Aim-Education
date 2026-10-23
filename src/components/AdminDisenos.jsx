@@ -14,6 +14,7 @@ import { COLORES_GRAFICO, CLASES_GRAFICO } from '../disenos/tablas.js';
 import { quitarFondo } from '../disenos/fondo.js';
 import Presentacion from '../disenos/Presentacion.jsx';
 import { IDIOMAS, traducirDiseno } from '../disenos/traducir.js';
+import { alternativas, encaja } from '../disenos/iconosEs.js';
 import { htmlDeTrozos, trozosDeHtml, sinEstiloEnTrozos } from '../disenos/textoRico.js';
 import { PALETAS_LISTAS, PARES_LETRAS, aplicarEstilo, coloresDe, contraste } from '../disenos/estilos.js';
 import { PLANTILLAS } from '../disenos/plantillas.js';
@@ -384,7 +385,7 @@ function NuevoDiseno({ equipo = [], onCerrar, onCrear }) {
 const NOMBRE_TIPO = { texto: 'Texto', imagen: 'Imagen', rect: 'Rectángulo', elipse: 'Círculo', forma: 'Forma', icono: 'Icono', linea: 'Línea', qr: 'Código QR', tabla: 'Tabla', grafico: 'Gráfico' };
 const etiquetaElemento = (e) => (e.tipo === 'texto' ? `«${String(e.texto || '').split('\n')[0].slice(0, 26)}»`
   : e.tipo === 'forma' ? FIGURAS.find(f => f.id === e.figura)?.nombre || 'Forma'
-    : e.tipo === 'icono' ? `Icono: ${ICONOS.find(i => i.id === e.icono)?.nombre || ''}`
+    : e.tipo === 'icono' ? `Icono: ${ICONOS.find(i => i.id === e.icono)?.nombre || String(e.icono || '').replace(/^m:/, '').replace(/_/g, ' ')}`
       : e.tipo === 'imagen' && !e.url ? 'Marco para una foto' : NOMBRE_TIPO[e.tipo] || e.tipo);
 // La caja que ocupan varios elementos (sin contar su giro).
 const cajaDe = (els) => {
@@ -656,7 +657,15 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
       : { tipo: 'forma', figura: t, w: Math.round(base * (['flecha', 'flecha2', 'cinta', 'chevron'].includes(t) ? 0.4 : 0.3)), h: Math.round(base * (['flecha', 'flecha2', 'cinta'].includes(t) ? 0.2 : 0.3)),
         relleno: { estrella: '#FFD526', corazon: '#FF5FA2', sello: '#F99B35', destello: '#FFD526', bocadillo: '#FFFFFF', bocadillo2: '#FFFFFF', nube: '#FFFFFF' }[t] || '#5233A8',
         borde: '#1A1A1A', grosor: ['bocadillo', 'bocadillo2', 'nube'].includes(t) ? Math.max(2, Math.round(base * 0.004)) : 0 });
-  const anadirIcono = (icono) => { const lado = Math.round(base * 0.16); anadir({ tipo: 'icono', icono, w: lado, h: lado, color: '#5233A8' }); };
+  const anadirIcono = (icono, camino) => { const lado = Math.round(base * 0.16); anadir({ tipo: 'icono', icono, ...(camino ? { camino } : {}), w: lado, h: lado, color: '#5233A8' }); };
+  // La biblioteca de iconos: para añadir uno o, con un icono elegido, para cambiarlo.
+  const iconosPara = useRef(null);
+  function verIconos(cambiarId = null) { iconosPara.current = cambiarId; setVentana('iconos'); }
+  function elegirIcono(n, d) {
+    setVentana(null);
+    if (iconosPara.current) cambiarEl(iconosPara.current, { icono: `m:${n}`, camino: d });
+    else anadirIcono(`m:${n}`, d);
+  }
   const anadirMarco = (figura) => { const w = Math.round(base * 0.42); anadir({ tipo: 'imagen', url: null, marco: figura, ajuste: 'cubrir', w, h: figura === 'arco' ? Math.round(w * 1.25) : w, radio: figura === 'rect' ? Math.round(base * 0.03) : 0 }); };
   // Un collage: marcos vacíos que llenan la página (con separación o sin ella), por debajo
   // de lo que ya hay. Las fotos que se eligen después van llenando sus huecos, por orden.
@@ -1407,7 +1416,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
           )}
           {panelAbierto && <>
           {panel === 'anadir' && (
-            <PanelAnadir tipo={tipo} kit={kit} anadirTexto={anadirTexto} anadirForma={anadirForma} anadirIcono={anadirIcono} anadirMarco={anadirMarco} anadirImagen={anadirImagen} anadirCollage={anadirCollage} anadirQr={anadirQr} anadirTabla={anadirTabla} anadirGrafico={anadirGrafico}
+            <PanelAnadir tipo={tipo} kit={kit} anadirTexto={anadirTexto} anadirForma={anadirForma} anadirIcono={anadirIcono} anadirMarco={anadirMarco} anadirImagen={anadirImagen} anadirCollage={anadirCollage} verIconos={() => verIconos()} anadirQr={anadirQr} anadirTabla={anadirTabla} anadirGrafico={anadirGrafico}
               anadirBloque={anadirBloque} verFotos={() => setVentana('fotos')} verBanco={() => setVentana('banco')} subir={subir} />
           )}
           {panel === 'estilos' && <PanelEstilos doc={doc} aplicarDoc={aplicarDoc} showToast={showToast} />}
@@ -1613,7 +1622,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
           ) : (
             <Propiedades e={elegido} tipo={tipo} cambiar={(c) => cambiarEl(elegido.id, c)} textoRef={textoRef} subir={subir} tramos={tramos} voltear={voltear}
               onEscribir={() => editarTexto(elegido.id)} onRecortar={() => (recortando ? setRecortando(null) : recortar(elegido.id))} recortando={recortando === elegido.id} onQuitarFondo={quitarFondoSel}
-              verFotos={() => setVentana('fotos')} onFuentesCambiadas={setFuentesClub}
+              verFotos={() => setVentana('fotos')} verIconos={verIconos} onFuentesCambiadas={setFuentesClub}
               acciones={{ duplicar: duplicarSel, borrar: borrarSel, capa, alinear }} />
           )}
         </aside>
@@ -1655,6 +1664,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
           </div>
         </Ventana>
       )}
+      {ventana === 'iconos' && <BibliotecaIconos onCerrar={() => setVentana(null)} onElegir={elegirIcono} />}
       {ventana === 'banco' && <FotosDeBanco onCerrar={() => setVentana(null)} onElegir={(f) => { setVentana(null); anadirImagen(f.url, f.ancho, f.alto); }} />}
       {ventana === 'fotos' && <FotosDelClub onCerrar={() => setVentana(null)} onElegir={(f) => { setVentana(null); anadirImagen(`/api/admin/disenos/foto-club/${f.id}/grande`, f.ancho, f.alto); }} />}
     </div>
@@ -1718,7 +1728,7 @@ function BotonSubir({ texto, onArchivo, className = 'btn btn-sm btn-outline' }) 
   );
 }
 
-function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirMarco, anadirImagen, anadirCollage, anadirQr, anadirTabla, anadirGrafico, anadirBloque, verFotos, verBanco, subir }) {
+function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirMarco, anadirImagen, anadirCollage, verIconos, anadirQr, anadirTabla, anadirGrafico, anadirBloque, verFotos, verBanco, subir }) {
   const [subidas, setSubidas] = useState(null);
   const [qr, setQr] = useState('');
   const [mas, setMas] = useState({});
@@ -1779,6 +1789,7 @@ function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirM
         ))}
       </div>
       {verTodo('iconos', `Ver todos los iconos (${ICONOS.length})`)}
+      <button type="button" style={{ ...bloque, fontSize: 13, fontWeight: 700, display: 'flex', gap: 8, alignItems: 'center' }} onClick={verIconos}>🔍 Buscar entre más de 2.000 iconos</button>
 
       <div style={seccionT}>Actividades del club</div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 5 }}>
@@ -2042,7 +2053,7 @@ function FiltrosFoto({ e, cambiar, tramos }) {
   );
 }
 
-function Propiedades({ e, tipo, cambiar, textoRef, subir, acciones, onEscribir, onRecortar, recortando, verFotos, onFuentesCambiadas, tramos, voltear, onQuitarFondo }) {
+function Propiedades({ e, tipo, cambiar, textoRef, subir, acciones, onEscribir, onRecortar, recortando, verFotos, verIconos, onFuentesCambiadas, tramos, voltear, onQuitarFondo }) {
   const fila = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, alignItems: 'start' };
   const alinearBtn = (k, t, titulo) => <button key={k} type="button" className="btn btn-sm btn-ghost" title={titulo} onClick={() => acciones.alinear(k)} style={{ padding: '4px 6px' }}>{t}</button>;
   const nombre = e.tipo === 'forma' ? FIGURAS.find(f => f.id === e.figura)?.nombre || 'Forma' : e.tipo === 'imagen' && !e.url ? 'Marco para una foto' : NOMBRE_TIPO[e.tipo];
@@ -2112,12 +2123,13 @@ function Propiedades({ e, tipo, cambiar, textoRef, subir, acciones, onEscribir, 
         <Color etiqueta="Color" valor={e.color || '#1A1A1A'} onCambio={(v) => cambiar({ color: v })} />
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 4 }}>
           {ICONOS.map(i => (
-            <button key={i.id} type="button" title={i.nombre} aria-label={i.nombre} onClick={() => cambiar({ icono: i.id })}
+            <button key={i.id} type="button" title={i.nombre} aria-label={i.nombre} onClick={() => cambiar({ icono: i.id, camino: null })}
               style={{ height: 34, borderRadius: 8, cursor: 'pointer', display: 'grid', placeItems: 'center', border: `1px solid ${e.icono === i.id ? 'var(--purple)' : 'var(--line)'}`, background: 'var(--bg-3)', color: 'var(--ink)' }}>
               <svg viewBox="0 0 24 24" width="18" height="18"><path d={i.d} fill="currentColor" /></svg>
             </button>
           ))}
         </div>
+        <button type="button" className="btn btn-sm btn-ghost" style={{ justifySelf: 'start' }} onClick={() => verIconos?.(e.id)}>🔍 Cambiarlo por otro (más de 2.000)</button>
       </>}
 
       {e.tipo === 'imagen' && <>
@@ -2893,6 +2905,42 @@ function FotosDeBanco({ onCerrar, onElegir }) {
           <button type="button" className="btn btn-sm btn-ghost" disabled={pagina >= Math.min(10, res.paginas)} onClick={() => buscar(pagina + 1)}>Más ›</button>
         </div>
       </>)}
+    </Ventana>
+  );
+}
+
+// La biblioteca de iconos de Material (más de 2.000, Apache 2.0): se carga al abrirla y se
+// busca en castellano (o en inglés).
+let iconosMaterial = null;
+const cargarIconosMaterial = () => (iconosMaterial ||= import('../disenos/iconosMaterial.json').then(m => (m.default || m).iconos));
+const POR_TANDA = 240;
+function BibliotecaIconos({ onCerrar, onElegir }) {
+  const [todos, setTodos] = useState(null);
+  const [q, setQ] = useState('');
+  const [cuantos, setCuantos] = useState(POR_TANDA);
+  useEffect(() => { cargarIconosMaterial().then(setTodos).catch(() => { iconosMaterial = null; setTodos([]); }); }, []);
+  const lista = useMemo(() => {
+    if (!todos) return [];
+    const palabras = q.trim().split(/\s+/).filter(Boolean).map(alternativas);
+    return palabras.length ? todos.filter(i => encaja(i, palabras)) : todos;
+  }, [todos, q]);
+  useEffect(() => { setCuantos(POR_TANDA); }, [q]);
+  return (
+    <Ventana titulo="Iconos" onCerrar={onCerrar} ancho={780}>
+      <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="Busca: trofeo, calendario, música, karate, piscina…" aria-label="Buscar iconos" style={inp} />
+      {!todos ? <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>Cargando los iconos…</span> : <>
+        <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{lista.length ? `${lista.length.toLocaleString('es-ES')} iconos${q.trim() ? '' : ' (los más usados, primero)'}` : 'Ninguno con eso: prueba con otra palabra (también vale en inglés).'}</span>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(50px, 1fr))', gap: 6 }}>
+          {lista.slice(0, cuantos).map(([n, d]) => (
+            <button key={n} type="button" title={n.replace(/_/g, ' ')} aria-label={`Icono ${n.replace(/_/g, ' ')}`} onClick={() => onElegir(n, d)}
+              style={{ height: 50, borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', color: '#5233A8', cursor: 'pointer', display: 'grid', placeItems: 'center' }}>
+              <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">{d.split('|').map((x, i) => <path key={i} d={x} fill="currentColor" />)}</svg>
+            </button>
+          ))}
+        </div>
+        {lista.length > cuantos && <button type="button" className="btn btn-sm btn-ghost" style={{ justifySelf: 'center' }} onClick={() => setCuantos(x => x + POR_TANDA)}>Ver más ({(lista.length - cuantos).toLocaleString('es-ES')})</button>}
+        <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Iconos de Material (Google), con licencia Apache 2.0: se pueden usar en todo, también en lo que se publica.</span>
+      </>}
     </Ventana>
   );
 }

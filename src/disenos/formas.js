@@ -140,9 +140,15 @@ export const ICONOS = [
   { id: 'flecha', nombre: 'Flecha', d: 'M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z' },
 ];
 const cachePath = new Map();
-export function pathIcono(id) {
-  if (!cachePath.has(id)) { const i = ICONOS.find(x => x.id === id); cachePath.set(id, i && typeof Path2D !== 'undefined' ? new Path2D(i.d) : null); }
-  return cachePath.get(id);
+// Los caminos de un icono: los de aquí, por su id; los de la biblioteca de Material, con el
+// suyo (en partes separadas por «|»: cada una se rellena aparte, como en su SVG).
+export function pathIcono(id, camino) {
+  const clave = camino || id;
+  if (!cachePath.has(clave)) {
+    const d = camino || ICONOS.find(x => x.id === id)?.d;
+    cachePath.set(clave, d && typeof Path2D !== 'undefined' ? d.split('|').map(x => new Path2D(x)) : null);
+  }
+  return cachePath.get(clave);
 }
 
 // Los iconos de cada actividad (las submarcas del club) y los logos de cada una.

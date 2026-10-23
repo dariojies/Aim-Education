@@ -524,8 +524,8 @@ export function pintarDiseno(ctx, diseno, { imagenes = new Map(), variables = nu
       if (e.discontinua) ctx.setLineDash([e.grosor * 3, e.grosor * 2.5]);
       ctx.stroke();
     } else if (e.tipo === 'icono') {
-      const p = pathIcono(e.icono), lado = Math.min(e.w, e.h);
-      if (p) { ctx.translate(-lado / 2, -lado / 2); ctx.scale(lado / 24, lado / 24); ctx.fillStyle = e.color || '#1A1A1A'; ctx.fill(p); }
+      const ps = pathIcono(e.icono, e.camino), lado = Math.min(e.w, e.h);
+      if (ps) { ctx.translate(-lado / 2, -lado / 2); ctx.scale(lado / 24, lado / 24); ctx.fillStyle = e.color || '#1A1A1A'; ps.forEach(p => ctx.fill(p)); }
     } else if (e.tipo === 'qr') {
       const lado = Math.min(e.w, e.h), conFondo = e.fondo && e.fondo !== 'transparent';
       if (conFondo) { caminoFigura(ctx, 'rect', -lado / 2, -lado / 2, lado, lado, e.radio); ctx.fillStyle = e.fondo; ctx.fill(); }
