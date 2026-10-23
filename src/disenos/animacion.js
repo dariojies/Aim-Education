@@ -10,16 +10,26 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { GIFEncoder, quantize, applyPalette } from 'gifenc';
 import { cargarFuentes, cargarImagenes, pintarDiseno, duracionAnimacion, nombreArchivo, descargar } from './render.js';
+import { cargarVideos, sincronizarVideos, pararVideos } from './videos.js';
 
-async function preparar(diseno, ancho) {
+// conVideos: los vídeos de la página se cargan y se dejan en su primer fotograma
+// (en el GIF no: sale su portada).
+async function preparar(diseno, ancho, conVideos = false) {
   await cargarFuentes(diseno);
   const imagenes = await cargarImagenes(diseno);
+  const videos = conVideos ? await cargarVideos(diseno) : null;
+  if (videos?.size) {
+    const quietos = [];
+    sincronizarVideos(videos, diseno, 0, false, null);
+    for (const v of videos.values()) if (v.seeking) quietos.push(new Promise(ok => { v.addEventListener('seeked', ok, { once: true }); setTimeout(ok, 5000); }));
+    await Promise.all(quietos);
+  }
   const k = ancho / diseno.ancho;
   const c = document.createElement('canvas');
   c.width = Math.round(diseno.ancho * k); c.height = Math.round(diseno.alto * k);
-  const ctx = c.getContext('2d', { willReadFrequently: true });
-  const pintar = (t) => { ctx.setTransform(k, 0, 0, k, 0, 0); pintarDiseno(ctx, diseno, { imagenes, tiempo: t }); };
-  return { c, ctx, pintar };
+  const ctx = c.getContext('2d', { willReadFrequently: !conVideos });
+  const pintar = (t) => { ctx.setTransform(k, 0, 0, k, 0, 0); pintarDiseno(ctx, diseno, { imagenes, videos, tiempo: t }); };
+  return { c, ctx, pintar, videos };
 }
 
 export async function exportarGif(diseno, nombre, { ancho = 540, fps = 12, onProgreso } = {}) {
@@ -55,7 +65,7 @@ export async function grabarVideo(diseno, { ancho = 1080, fps = 30, onProgreso }
   if (!f) throw new Error('Este navegador no sabe hacer vídeos. Prueba con Chrome o con el GIF.');
   const dur = duracionAnimacion(diseno);
   // Los vídeos, con medidas pares (lo piden los códecs).
-  const { c, pintar } = await preparar(diseno, Math.min(ancho, diseno.ancho) - (Math.min(ancho, diseno.ancho) % 2));
+  const { c, pintar, videos } = await preparar(diseno, Math.min(ancho, diseno.ancho) - (Math.min(ancho, diseno.ancho) % 2), true);
   if (c.height % 2) c.height -= 1;
   pintar(0);
   const flujo = c.captureStream(fps);
@@ -86,6 +96,7 @@ export async function grabarVideo(diseno, { ancho = 1080, fps = 30, onProgreso }
   await new Promise(ok => {
     const paso = () => {
       const t = (performance.now() - t0) / 1000;
+      sincronizarVideos(videos, diseno, Math.min(t, dur), t < dur);
       pintar(Math.min(t, dur));
       onProgreso?.(Math.min(t, dur), dur);
       if (t < dur + 0.25) requestAnimationFrame(paso); else ok();
@@ -93,6 +104,7 @@ export async function grabarVideo(diseno, { ancho = 1080, fps = 30, onProgreso }
     requestAnimationFrame(paso);
   });
   rec.stop(); flujo.getTracks().forEach(t => t.stop());
+  pararVideos(videos);
   if (sonido) { try { sonido.fuente.stop(); } catch { /* ya parada */ } sonido.ac.close().catch(() => {}); }
   await fin;
   return { blob: new Blob(trozos, { type: f.mime }), mime: f.mime, ext: f.ext, ancho: c.width, alto: c.height };

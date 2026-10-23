@@ -6,8 +6,9 @@ import {
   TAMANOS, FUENTES_DISENO, VARIABLES_DIPLOMA, EJEMPLO_DIPLOMA, VARIABLES_AUTO, EJEMPLO_AUTO, nuevoId, pintarDiseno, cargarImagenes, cargarImagen, cargarFuentes, cargarFuentePropia,
   pedirFuentes, miniatura, exportarDiseno, exportarLote, exportarImprenta, medidasImprenta, SANGRADO_MM, lienzoDe, ajustarTexto, adaptarDiseno,
   paginaDe, conPagina, numPaginas, todasLasPaginas, ANIMACIONES, tieneAnimacion, duracionAnimacion,
-  paradasDe, degradadoCss, MAX_COLORES_DEGRADADO,
+  paradasDe, degradadoCss, MAX_COLORES_DEGRADADO, tramoVideo, TRANSICION, DURACION_MAX_PAGINA,
 } from '../disenos/render.js';
+import { subirVideo, cargarVideos, sincronizarVideos, pararVideos, clipsDe, enCadena, encadenar } from '../disenos/videos.js';
 import { FIGURAS, MARCOS, ICONOS, ICONOS_ACTIVIDAD, svgFigura } from '../disenos/formas.js';
 import { formatoVideo, grabarVideo, exportarGif, exportarVideo } from '../disenos/animacion.js';
 import { diferencias, aplicarOps } from '../disenos/vivo.js';
@@ -435,7 +436,7 @@ function NuevoDiseno({ equipo = [], onCerrar, onCrear }) {
 }
 
 // ═══════════════════════ El editor ═══════════════════════
-const NOMBRE_TIPO = { trazo: 'Dibujo', texto: 'Texto', imagen: 'Imagen', rect: 'Rectángulo', elipse: 'Círculo', forma: 'Forma', icono: 'Icono', linea: 'Línea', qr: 'Código QR', tabla: 'Tabla', grafico: 'Gráfico' };
+const NOMBRE_TIPO = { trazo: 'Dibujo', texto: 'Texto', imagen: 'Imagen', video: 'Vídeo', rect: 'Rectángulo', elipse: 'Círculo', forma: 'Forma', icono: 'Icono', linea: 'Línea', qr: 'Código QR', tabla: 'Tabla', grafico: 'Gráfico' };
 const etiquetaElemento = (e) => (e.tipo === 'texto' ? `«${String(e.texto || '').split('\n')[0].slice(0, 26)}»`
   : e.tipo === 'forma' ? FIGURAS.find(f => f.id === e.figura)?.nombre || 'Forma'
     : e.tipo === 'icono' ? `Icono: ${ICONOS.find(i => i.id === e.icono)?.nombre || String(e.icono || '').replace(/^m:/, '').replace(/_/g, ' ')}`
@@ -727,6 +728,12 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
   // Imágenes y fuentes: al cargarse, se vuelve a pintar.
   const urls = useMemo(() => [diseno.fondo?.tipo === 'imagen' ? diseno.fondo.url : null, ...diseno.elementos.filter(e => e.tipo === 'imagen').map(e => e.url)].filter(Boolean).join('|'), [diseno]);
   useEffect(() => { cargarImagenes(diseno).then(m => { setImagenes(m); }); }, [urls]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Los vídeos de la página: quietos, cada uno en su primer fotograma; viendo la
+  // animación, reproduciéndose a su tiempo (ver videos.js).
+  const [videos, setVideos] = useState(new Map());
+  const urlsVideo = useMemo(() => diseno.elementos.filter(e => e.tipo === 'video').map(e => e.url).join('|'), [diseno]);
+  useEffect(() => { if (urlsVideo) cargarVideos(diseno).then(setVideos); else setVideos(new Map()); }, [urlsVideo]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => pararVideos(videos), [videos]);
   const fuentes = useMemo(() => diseno.elementos.filter(e => e.tipo === 'texto').map(e => `${e.fuente}|${e.negrita}|${e.cursiva}|${e.fuenteUrl || ''}`).join(','), [diseno]);
   useEffect(() => { cargarFuentes(diseno).then(() => setVersion(v => v + 1)); }, [fuentes]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -739,8 +746,9 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
     const ctx = c.getContext('2d');
     ctx.setTransform(escala * dpr, 0, 0, escala * dpr, 0, 0);
     // El texto que se está escribiendo no se pinta: se ve el de la caja de escribir.
-    pintarDiseno(ctx, diseno, { imagenes, variables: ejemplo, ocultar: editando?.id, tiempo, editor: tiempo == null });
-  }, [diseno, escala, imagenes, version, ejemplo, editando, tiempo]);
+    sincronizarVideos(videos, diseno, tiempo, tiempo != null, () => setVersion(v => v + 1));
+    pintarDiseno(ctx, diseno, { imagenes, videos, variables: ejemplo, ocultar: editando?.id, tiempo, editor: tiempo == null });
+  }, [diseno, escala, imagenes, videos, version, ejemplo, editando, tiempo]);
 
   // ── Cambios con deshacer ──
   // aplicar: cambia la página que se ve; aplicarDoc: el diseño entero (páginas, tamaño).
@@ -877,6 +885,48 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
     const k = Math.min(1, (diseno.ancho * 0.5) / ancho, (diseno.alto * 0.5) / alto), w = Math.round(ancho * k), h = Math.round(alto * k);
     anadir({ tipo: 'imagen', url, w, h, ajuste: 'contener', radio: 0, ...(punto ? { x: Math.round(punto.x - w / 2), y: Math.round(punto.y - h / 2) } : {}) });
   };
+  // Un vídeo: el primero, debajo de todo (así los textos y el logo quedan encima) y
+  // entero en la página; los siguientes, detrás del último clip (mismo sitio y
+  // tamaño), con un fundido: así se unen clips.
+  function anadirVideo(info, punto = null) {
+    const v = vista(), clips = clipsDe(v), ultimo = clips[clips.length - 1];
+    const base = { tipo: 'video', url: info.url, poster: info.poster, duracionVideo: Math.round(info.duracion * 100) / 100, desde: 0, hasta: Math.round(info.duracion * 100) / 100, rot: 0, opacidad: 1 };
+    let e;
+    if (ultimo) {
+      const t = tramoVideo(ultimo);
+      e = { ...base, x: ultimo.x, y: ultimo.y, w: ultimo.w, h: ultimo.h, ajuste: ultimo.ajuste || 'cubrir', marco: ultimo.marco, radio: ultimo.radio || 0, transicion: 'fundido', empieza: Math.max(0, Math.round((t.empieza + t.dura - TRANSICION) * 100) / 100) };
+    } else {
+      const k = Math.min(diseno.ancho / (info.ancho || 1), diseno.alto / (info.alto || 1)), w = Math.round((info.ancho || diseno.ancho) * k), h = Math.round((info.alto || diseno.alto) * k);
+      e = { ...base, w, h, x: punto ? Math.round(punto.x - w / 2) : Math.round((diseno.ancho - w) / 2), y: punto ? Math.round(punto.y - h / 2) : Math.round((diseno.alto - h) / 2), ajuste: 'cubrir', radio: 0, transicion: 'corte', empieza: 0 };
+    }
+    e.id = nuevoId();
+    aplicar(d => {
+      const els = [...d.elementos], i = ultimo ? els.findIndex(x => x.id === ultimo.id) + 1 : 0;
+      els.splice(i, 0, e);
+      return { ...d, elementos: els };
+    });
+    setSel(e.id); setRecortando(null);
+    if (ultimo) showToast?.('Va detrás del clip anterior, con un fundido. Lo cambias en el panel de la derecha.');
+  }
+  const [subiendoVideo, setSubiendoVideo] = useState(null);
+  async function subirYAnadirVideo(file, punto = null) {
+    if (!file) return;
+    setSubiendoVideo(0);
+    try { anadirVideo(await subirVideo(file, setSubiendoVideo), punto); }
+    catch (e) { alert(e.message); }
+    finally { setSubiendoVideo(null); }
+  }
+  // Cambia un clip; si los de la página iban seguidos, siguen seguidos (al recortar
+  // uno, los de detrás se mueven).
+  function cambiarClip(idEl, cambios) {
+    aplicar(d => {
+      const antes = clipsDe(d), seguidos = enCadena(antes) && !('empieza' in cambios);
+      const els = d.elementos.map(e => (e.id === idEl ? { ...e, ...cambios } : e));
+      return { ...d, elementos: seguidos ? encadenar(els, antes.map(e => e.id)) : els };
+    }, { historia: !tramo.current });
+  }
+  // Los clips en este orden, uno detrás de otro.
+  const ponerSeguidos = (ids) => aplicar(d => ({ ...d, elementos: encadenar(d.elementos, ids) }));
   const anadirQr = (texto) => { const lado = Math.round(base * 0.28); anadir({ tipo: 'qr', texto, w: lado, h: lado, color: '#1A1A1A', fondo: '#FFFFFF', radio: 0 }); };
   const anadirTabla = (celdas) => anadir({ tipo: 'tabla', celdas: celdas || [['Día', 'Hora', 'Clase'], ['Lunes', '17:30', 'Infantil'], ['Miércoles', '18:30', 'Adultos']],
     cabecera: true, rayas: true, fuente: 'Montserrat', tamano: Math.round(base * 0.03), color: '#1A1A1A', fondoCabecera: '#5233A8', colorCabecera: '#FFFFFF', fondoFilas: '#FFFFFF', fondoRayas: '#F3F0FA',
@@ -907,6 +957,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
     if (dato) { try { img = JSON.parse(dato); } catch { img = null; } }
     else if (ev.dataTransfer.files?.[0]) {
       const f = ev.dataTransfer.files[0];
+      if (/^video\//.test(f.type)) { subirYAnadirVideo(f, p); return; }
       if (!/^image\//.test(f.type)) return;
       try { img = await subirImagen(f); } catch (e) { alert(e.message); return; }
     }
@@ -1449,7 +1500,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
     if (tiempo != null) { cancelAnimationFrame(anim.current); pararMusica(); setTiempo(null); return; }
     if (edicion.current) document.activeElement?.blur?.();
     setSeleccion([]); setRecortando(null);
-    const dur = duracionAnimacion(docRef.current), t0 = performance.now(), m = docRef.current.animacion?.musica;
+    const dur = duracionAnimacion(vista()), t0 = performance.now(), m = docRef.current.animacion?.musica;
     if (m?.url) { const a = new Audio(m.url); a.currentTime = m.desde || 0; a.volume = m.volumen ?? 0.8; a.play().catch(() => {}); sonando.current = a; }
     const paso = () => {
       const t = (performance.now() - t0) / 1000;
@@ -1628,7 +1679,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
           )}
           {panelAbierto && <>
           {panel === 'anadir' && (
-            <PanelAnadir tipo={tipo} kit={kit} anadirTexto={anadirTexto} anadirForma={anadirForma} anadirIcono={anadirIcono} anadirMarco={anadirMarco} anadirImagen={anadirImagen} anadirCollage={anadirCollage} verIconos={() => verIconos()} dibujar={empezarADibujar} anadirQr={anadirQr} anadirTabla={anadirTabla} anadirGrafico={anadirGrafico}
+            <PanelAnadir subirVideo={subirYAnadirVideo} subiendoVideo={subiendoVideo} tipo={tipo} kit={kit} anadirTexto={anadirTexto} anadirForma={anadirForma} anadirIcono={anadirIcono} anadirMarco={anadirMarco} anadirImagen={anadirImagen} anadirCollage={anadirCollage} verIconos={() => verIconos()} dibujar={empezarADibujar} anadirQr={anadirQr} anadirTabla={anadirTabla} anadirGrafico={anadirGrafico}
               anadirBloque={anadirBloque} verFotos={() => setVentana('fotos')} verBanco={() => setVentana('banco')} subir={subir} usoAuto={usoAuto} />
           )}
           {panel === 'estilos' && <PanelEstilos doc={doc} aplicarDoc={aplicarDoc} showToast={showToast} respetar={esDireccion ? null : fijo} fondoFijo={marcaFija} />}
@@ -1879,7 +1930,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
               onRecortar={() => (recortando ? setRecortando(null) : recortar(elegido.id))} recortando={recortando === elegido.id}
               verFotos={() => { fotoPara.current = elegido.id; setVentana('fotos'); }} />
           ) : (
-            <Propiedades e={elegido} tipo={tipo} esDireccion={esDireccion} cambiar={(c) => cambiarEl(elegido.id, c)} textoRef={textoRef} subir={subir} tramos={tramos} voltear={voltear}
+            <Propiedades clips={{ lista: clipsDe(diseno), cambiar: cambiarClip, seguidos: ponerSeguidos, elegir: setSel }} e={elegido} tipo={tipo} esDireccion={esDireccion} cambiar={(c) => cambiarEl(elegido.id, c)} textoRef={textoRef} subir={subir} tramos={tramos} voltear={voltear}
               onEscribir={() => editarTexto(elegido.id)} onRecortar={() => (recortando ? setRecortando(null) : recortar(elegido.id))} recortando={recortando === elegido.id} onQuitarFondo={quitarFondoSel}
               verFotos={() => setVentana('fotos')} verIconos={verIconos} onFuentesCambiadas={setFuentesClub}
               acciones={{ duplicar: duplicarSel, borrar: borrarSel, capa, alinear }} />
@@ -1997,7 +2048,7 @@ function BotonSubir({ texto, onArchivo, className = 'btn btn-sm btn-outline' }) 
   );
 }
 
-function PanelAnadir({ usoAuto, tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirMarco, anadirImagen, anadirCollage, verIconos, dibujar, anadirQr, anadirTabla, anadirGrafico, anadirBloque, verFotos, verBanco, subir }) {
+function PanelAnadir({ subirVideo, subiendoVideo, usoAuto, tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirMarco, anadirImagen, anadirCollage, verIconos, dibujar, anadirQr, anadirTabla, anadirGrafico, anadirBloque, verFotos, verBanco, subir }) {
   const [subidas, setSubidas] = useState(null);
   const [qr, setQr] = useState('');
   const [mas, setMas] = useState({});
@@ -2030,6 +2081,16 @@ function PanelAnadir({ usoAuto, tipo, kit, anadirTexto, anadirForma, anadirIcono
             {VARIABLES_AUTO[usoAuto].map(v => <button key={v.id} type="button" className="btn btn-sm btn-outline" title={v.nombre} onClick={() => anadirTexto(v.id === 'dia' || v.id === 'nombre' ? 'titulo' : 'subtitulo', `{${v.id}}`)}>{`{${v.id}}`}</button>)}
           </div>
         </>
+      )}
+
+      <div style={seccionT}>Vídeo</div>
+      {subiendoVideo != null ? (
+        <div style={{ display: 'grid', gap: 4, fontSize: 12.5 }}>Subiendo el vídeo… {Math.round(subiendoVideo * 100)} %<progress value={subiendoVideo} max={1} style={{ width: '100%' }} /></div>
+      ) : (
+        <label style={{ ...bloque, fontSize: 13, fontWeight: 700, display: 'flex', gap: 8, alignItems: 'center' }} title="MP4, WebM o MOV, de hasta 100 MB. Si ya hay un vídeo en la página, va detrás (se unen como clips).">
+          🎬 Subir un vídeo
+          <input type="file" accept="video/mp4,video/webm,video/quicktime,video/*" style={{ display: 'none' }} onChange={ev => { const f = ev.target.files?.[0]; ev.target.value = ''; subirVideo(f); }} />
+        </label>
       )}
 
       <div style={seccionT}>Dibujar</div>
@@ -2428,7 +2489,7 @@ function FiltrosFoto({ e, cambiar, tramos }) {
   );
 }
 
-function Propiedades({ e, tipo, esDireccion, cambiar, textoRef, subir, acciones, onEscribir, onRecortar, recortando, verFotos, verIconos, onFuentesCambiadas, tramos, voltear, onQuitarFondo }) {
+function Propiedades({ clips, e, tipo, esDireccion, cambiar, textoRef, subir, acciones, onEscribir, onRecortar, recortando, verFotos, verIconos, onFuentesCambiadas, tramos, voltear, onQuitarFondo }) {
   const fila = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, alignItems: 'start' };
   const alinearBtn = (k, t, titulo) => <button key={k} type="button" className="btn btn-sm btn-ghost" title={titulo} onClick={() => acciones.alinear(k)} style={{ padding: '4px 6px' }}>{t}</button>;
   const nombre = e.tipo === 'forma' ? FIGURAS.find(f => f.id === e.figura)?.nombre || 'Forma' : e.tipo === 'imagen' && !e.url ? 'Marco para una foto' : NOMBRE_TIPO[e.tipo];
@@ -2507,6 +2568,7 @@ function Propiedades({ e, tipo, esDireccion, cambiar, textoRef, subir, acciones,
         <button type="button" className="btn btn-sm btn-ghost" style={{ justifySelf: 'start' }} onClick={() => verIconos?.(e.id)}>🔍 Cambiarlo por otro (más de 2.000)</button>
       </>}
 
+      {e.tipo === 'video' && clips && <PropiedadesVideo e={e} clips={clips} tramos={tramos} />}
       {e.tipo === 'imagen' && <>
         {!e.url ? (
           <div style={{ display: 'grid', gap: 6, fontSize: 12.5, color: 'var(--ink-2)' }}>
@@ -2901,8 +2963,63 @@ function PanelVarios({ elegidos, voltear, agrupar, desagrupar, alinear, repartir
 }
 
 // Animar: lo que entra y cuándo (historias y reels).
+// ── Un vídeo (la tele de recepción) ──
+// Su recorte (del segundo «desde» al «hasta»), cuándo entra en la página y cómo
+// (corte, fundido, deslizando), cómo se ve en su caja, y los clips de la página
+// en orden: se suben o se bajan y quedan uno detrás de otro.
+const reloj = (s) => { const m = Math.floor(s / 60), r = s - m * 60; return `${m}:${r < 10 ? '0' : ''}${r.toFixed(1)}`; };
+function PropiedadesVideo({ e, clips, tramos }) {
+  const fila = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, alignItems: 'start' };
+  const t = tramoVideo(e), largo = Math.max(0.2, e.duracionVideo || t.hasta);
+  const cambiar = (c) => clips.cambiar(e.id, c);
+  const lista = clips.lista, k = lista.findIndex(x => x.id === e.id);
+  const mover = (d) => { const ids = lista.map(x => x.id), j = k + d; if (j < 0 || j >= ids.length) return; [ids[k], ids[j]] = [ids[j], ids[k]]; clips.seguidos(ids); };
+  const total = Math.max(0, ...lista.map(x => { const v = tramoVideo(x); return v.empieza + v.dura; }));
+  return (
+    <>
+      <div style={seccionT}>Recorte del vídeo</div>
+      <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Se usa del {reloj(t.desde)} al {reloj(t.hasta)}: {t.dura.toFixed(1)} s de {largo.toFixed(1)} s. Sin sonido (la tele va en silencio).</span>
+      <Rango etiqueta="Desde (segundo)" valor={t.desde} min={0} max={Math.max(0, largo - 0.2)} paso={0.1} onCambio={(v) => cambiar({ desde: v, hasta: Math.max(v + 0.2, t.hasta) })} tramos={tramos} />
+      <Rango etiqueta="Hasta (segundo)" valor={t.hasta} min={0.2} max={largo} paso={0.1} onCambio={(v) => cambiar({ hasta: v, desde: Math.min(t.desde, v - 0.2) })} tramos={tramos} />
+      <div style={seccionT}>En la página</div>
+      <div style={fila}>
+        <Num etiqueta="Entra en el segundo" valor={t.empieza} onCambio={(v) => cambiar({ empieza: Math.max(0, Math.min(DURACION_MAX_PAGINA, v)) })} min={0} paso={0.1} />
+        <label style={etq}>Cómo entra
+          <select value={e.transicion || 'corte'} onChange={x => cambiar({ transicion: x.target.value })} style={inp}>
+            <option value="corte">De golpe</option><option value="fundido">Fundido</option><option value="deslizar">Deslizando</option>
+          </select>
+        </label>
+      </div>
+      <label style={etq}>Cómo se ve en su caja
+        <select value={e.ajuste || 'cubrir'} onChange={x => cambiar({ ajuste: x.target.value })} style={inp}>
+          <option value="cubrir">Llenando la caja (recorta)</option><option value="contener">Entero</option><option value="estirar">Estirado</option>
+        </select>
+      </label>
+      <Num etiqueta="Esquinas redondeadas" valor={e.radio || 0} onCambio={(v) => cambiar({ radio: Math.max(0, v) })} min={0} />
+      {lista.length > 0 && <>
+        <div style={seccionT}>Clips de esta página ({lista.length})</div>
+        <div style={{ display: 'grid', gap: 4 }}>
+          {lista.map((x, i) => { const v = tramoVideo(x); return (
+            <div key={x.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 6px', borderRadius: 8, border: `1.5px solid ${x.id === e.id ? 'var(--purple)' : 'var(--line)'}`, background: 'var(--bg-3)', fontSize: 12 }}>
+              {x.poster && <img src={x.poster} alt="" style={{ width: 34, height: 24, objectFit: 'cover', borderRadius: 4 }} />}
+              <button type="button" onClick={() => clips.elegir(x.id)} style={{ font: 'inherit', flex: 1, textAlign: 'left', background: 'none', border: 0, cursor: 'pointer', padding: 0, color: 'var(--ink)' }}>
+                {i + 1}. {reloj(v.empieza)} → {reloj(v.empieza + v.dura)}
+              </button>
+              {x.id === e.id && <>
+                <button type="button" className="icon-btn" disabled={i === 0} onClick={() => mover(-1)} aria-label="Antes" title="Que vaya antes">↑</button>
+                <button type="button" className="icon-btn" disabled={i === lista.length - 1} onClick={() => mover(1)} aria-label="Después" title="Que vaya después">↓</button>
+              </>}
+            </div>
+          ); })}
+        </div>
+        <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>En total, {total.toFixed(1)} s. Para unir otro clip, súbelo desde «Añadir → Vídeo»: va detrás del último.</span>
+        {lista.length > 1 && !enCadena(lista) && <button type="button" className="btn btn-sm btn-outline" onClick={() => clips.seguidos(lista.map(x => x.id))}>Ponerlos uno detrás de otro</button>}
+      </>}
+    </>
+  );
+}
 function PanelAnimar({ doc, diseno, elegido, tiempo, onVer, tramos, cambiarEl, aplicar, aplicarDoc, onExportar }) {
-  const dur = duracionAnimacion(doc);
+  const dur = duracionAnimacion(diseno), conVideos = diseno.elementos.some(e => e.tipo === 'video');
   function todo(tipoA) {
     aplicar(d => {
       let i = 0;
@@ -2910,7 +3027,7 @@ function PanelAnimar({ doc, diseno, elegido, tiempo, onVer, tramos, cambiarEl, a
         const { anim, ...resto } = e; // eslint-disable-line no-unused-vars
         if (!tipoA) return resto;
         // Lo que ocupa todo el fondo no se anima.
-        if (e.w >= d.ancho * 0.95 && e.h >= d.alto * 0.95) return resto;
+        if ((e.w >= d.ancho * 0.95 && e.h >= d.alto * 0.95) || e.tipo === 'video') return resto;
         const a = { tipo: tipoA, retraso: Math.round(i * 0.3 * 100) / 100, duracion: 0.8 };
         i += 1;
         return { ...resto, anim: a };
@@ -2923,11 +3040,11 @@ function PanelAnimar({ doc, diseno, elegido, tiempo, onVer, tramos, cambiarEl, a
       <p style={{ margin: 0, fontSize: 12.5, color: 'var(--ink-2)' }}>Para historias y reels: cada cosa entra a su tiempo. Se exporta en GIF o vídeo, y se puede publicar en redes como vídeo.</p>
       <button type="button" className="btn btn-sm btn-primary" onClick={onVer}>{tiempo != null ? '■ Parar' : '▶ Ver la animación'}</button>
       {tiempo != null && <progress value={tiempo} max={dur} style={{ width: '100%' }} />}
-      <label style={etq}>Duración del vídeo
+      {conVideos ? <span style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>Esta página dura lo que sus vídeos: {Math.round(dur * 10) / 10} s.</span> : <label style={etq}>Duración del vídeo
         <select value={dur} onChange={x => aplicarDoc(d => ({ ...d, animacion: { ...(d.animacion || {}), duracion: Number(x.target.value) } }))} style={inp}>
           {[3, 5, 8, 10, 15].map(s => <option key={s} value={s}>{s} segundos</option>)}
         </select>
-      </label>
+      </label>}
       <div style={seccionT}>Animar toda la página</div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
         {[['aparecer', 'Aparecer uno a uno'], ['subir', 'Subir uno a uno'], ['zoom', 'Crecer uno a uno'], ['izquierda', 'Entrar de lado'], ['rebote', 'Rebotar uno a uno'], [null, 'Quitar las animaciones']].map(([k, t]) => (

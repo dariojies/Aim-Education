@@ -33,6 +33,7 @@ import { crearAgrupaciones, crearTablasAgrupaciones } from './agrupaciones.js';
 import { crearSustituciones, crearTablasSustituciones, SQL_SUSTITUYE } from './sustituciones.js';
 import { crearDisenos, crearTablasDisenos, disenosPorAprobar, revisionDeMisDisenos, mencionesDe } from './disenos.js';
 import { configurarDisenosServidor } from './disenos-servidor.js';
+import { crearMedios, crearTablasMedios, limpiarMedios } from './medios.js';
 import { programarHistoriasFestivos, felicitacionCumple } from './disenos-automaticos.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
@@ -2342,6 +2343,8 @@ async function initDb() {
         await crearTablasAula(client);
         // Diseños (el «Canva» del club) y el diploma de cada curso. Ver disenos.js.
         await crearTablasDisenos(client);
+        // Los vídeos de Aim Design y lo preparado para la tele (medios.js), en trozos.
+        await crearTablasMedios(client);
         // La tienda online (#432): productos, fotos, variantes, pedidos y líneas.
         await crearTablasTienda(client);
     } finally {
@@ -5223,6 +5226,8 @@ setInterval(function seguidoresRedes() { publicacionesRedes.fotoSeguidores(); },
 app.use(crearEvaluacion({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireSeccion, permisos, grupoSuyo }).router);
 // Diseños: carteles, posts y diplomas (el «Canva» del club).
 app.use(crearDisenos({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireSeccion }).router);
+// Sus vídeos (y lo de la tele): se suben por trozos y se sirven en /m/<clave>.
+app.use(crearMedios({ pool, authenticateSession, requireSeccion }));
 // Para mencionar (@) en los comentarios de Aim Design: el personal que ve Aim Design.
 app.get('/api/admin/disenos-equipo', authenticateSession, requireSeccion('grafico'), async (req, res) => {
     try {
@@ -23010,6 +23015,9 @@ const servidor = app.listen(port, () => {
     setInterval(ejecutarAutomatismos, 15 * 60 * 1000);
     // Aim Design (#471): las historias de los festivos, programadas en Publicaciones.
     setTimeout(function historiasDeFestivos() { programarHistoriasFestivos(pool); }, 2 * 60 * 1000);
+    // Los vídeos de Aim Design que ya no usa nadie, una vez al día.
+    setTimeout(function limpiarVideos() { limpiarMedios(pool); }, 5 * 60 * 1000);
+    setInterval(function limpiarVideos() { limpiarMedios(pool); }, 24 * 3600 * 1000);
     setInterval(function historiasDeFestivos() { programarHistoriasFestivos(pool); }, 10 * 60 * 1000);
     // Soporte: aviso diario de tickets vencidos o parados y resumen semanal.
     setTimeout(avisosSoportePeriodicos, 90 * 1000);

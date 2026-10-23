@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { numPaginas, paginaDe, pintarDiseno, cargarFuentes, cargarImagenes, tieneAnimacion, duracionAnimacion } from './render.js';
+import { cargarVideos, sincronizarVideos, pararVideos } from './videos.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Presentar un diseño a pantalla completa: una página tras otra (con sus
@@ -41,29 +42,36 @@ export default function Presentacion({ doc, inicio = 0, variables = null, onCerr
   });
   // Pintar la página (con su animación, si la tiene).
   useEffect(() => {
-    let vivo = true, raf = null;
+    let vivo = true, raf = null, parar = () => {};
     (async () => {
       const v = paginaDe(doc, i);
       await cargarFuentes(v);
       const imagenes = await cargarImagenes(v);
+      const videos = await cargarVideos(v);
       if (!vivo || !lienzo.current) return;
+      parar = () => pararVideos(videos);
       const k = Math.min(tam.w / v.ancho, tam.h / v.alto), dpr = Math.min(2, window.devicePixelRatio || 1);
       const c = lienzo.current;
       c.width = Math.round(v.ancho * k * dpr); c.height = Math.round(v.alto * k * dpr);
       c.style.width = `${v.ancho * k}px`; c.style.height = `${v.alto * k}px`;
       const ctx = c.getContext('2d');
-      const pinta = (t) => { ctx.setTransform(k * dpr, 0, 0, k * dpr, 0, 0); pintarDiseno(ctx, v, { imagenes, variables, tiempo: t }); };
+      const pinta = (t) => { ctx.setTransform(k * dpr, 0, 0, k * dpr, 0, 0); pintarDiseno(ctx, v, { imagenes, videos, variables, tiempo: t }); };
       if (!tieneAnimacion(v)) { pinta(null); return; }
-      const dur = duracionAnimacion(doc), t0 = performance.now();
-      const paso = () => { if (!vivo) return; const t = (performance.now() - t0) / 1000; pinta(Math.min(t, dur + 30)); raf = requestAnimationFrame(paso); };
+      const dur = duracionAnimacion(v), t0 = performance.now();
+      const paso = () => {
+        if (!vivo) return;
+        const t = (performance.now() - t0) / 1000;
+        sincronizarVideos(videos, v, Math.min(t, dur), t < dur);
+        pinta(Math.min(t, dur + 30)); raf = requestAnimationFrame(paso);
+      };
       paso();
     })();
-    return () => { vivo = false; cancelAnimationFrame(raf); };
+    return () => { vivo = false; cancelAnimationFrame(raf); parar(); };
   }, [doc, i, tam, variables]);
   // Pasar solas.
   useEffect(() => {
     if (!solas) return undefined;
-    const espera = Math.max(segundos, tieneAnimacion(paginaDe(doc, i)) ? duracionAnimacion(doc) + 1 : 0);
+    const espera = Math.max(segundos, tieneAnimacion(paginaDe(doc, i)) ? duracionAnimacion(paginaDe(doc, i)) + 1 : 0);
     const t = setTimeout(() => setI(x => (x + 1) % n), espera * 1000);
     return () => clearTimeout(t);
   }, [solas, i, segundos, doc, n]);

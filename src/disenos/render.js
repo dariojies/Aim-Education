@@ -165,7 +165,8 @@ export function cargarImagen(url) {
   return cacheImg.get(url);
 }
 export async function cargarImagenes(diseno) {
-  const urls = [diseno?.fondo?.tipo === 'imagen' ? diseno.fondo.url : null, ...(diseno?.elementos || []).filter(e => e.tipo === 'imagen').map(e => e.url)].filter(Boolean);
+  const urls = [diseno?.fondo?.tipo === 'imagen' ? diseno.fondo.url : null, ...(diseno?.elementos || []).filter(e => e.tipo === 'imagen').map(e => e.url),
+    ...(diseno?.elementos || []).filter(e => e.tipo === 'video').map(e => e.poster)].filter(Boolean);
   const pares = await Promise.all(urls.map(async u => [u, await cargarImagen(u)]));
   return new Map(pares);
 }
@@ -257,7 +258,7 @@ function degradado(ctx, x0, y0, w, h, paradas, angulo = 135, radial = false) {
 // de la foto (x, y de 0 a 1) que queda en el centro, sin dejar huecos.
 function dibujarImagen(ctx, img, x, y, w, h, ajuste = 'cubrir', enc = null) {
   if (!img) return;
-  const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
+  const iw = img.naturalWidth || img.videoWidth || img.width, ih = img.naturalHeight || img.videoHeight || img.height;
   if (!iw || !ih) return;
   if (enc) {
     const k = Math.max(w / iw, h / ih) * Math.max(1, enc.zoom || 1), dw = iw * k, dh = ih * k;
@@ -455,8 +456,36 @@ export const ANIMACIONES = [
   { id: 'zoom', nombre: 'Crecer' }, { id: 'rebote', nombre: 'Rebotar' }, { id: 'girar', nombre: 'Girar' },
   { id: 'escribir', nombre: 'Máquina de escribir (textos)' }, { id: 'latido', nombre: 'Latir (sin parar)' }, { id: 'flotar', nombre: 'Flotar (sin parar)' },
 ];
-export const tieneAnimacion = (d) => (d?.elementos || []).some(e => e.anim?.tipo);
-export const duracionAnimacion = (d) => Math.max(2, Math.min(15, d?.animacion?.duracion || 5));
+export const tieneAnimacion = (d) => (d?.elementos || []).some(e => e.anim?.tipo || e.tipo === 'video');
+
+// ── Vídeos (la tele de recepción) ──
+// Un vídeo es como una foto (marco, encuadre, esquinas, sombra) que se mueve: de
+// su archivo se usa del segundo «desde» al «hasta», y en la página sale en el
+// segundo «empieza». Varios vídeos uno detrás de otro son clips unidos; el que
+// entra puede hacerlo con corte, fundido o deslizando (TRANSICION segundos, encima
+// del anterior). La página dura lo que su línea de tiempo (como mucho 3 minutos).
+export const DURACION_MAX_PAGINA = 180;
+export const TRANSICION = 0.6;
+export function tramoVideo(e) {
+  const largo = Math.max(0.2, Number(e.duracionVideo) || 5);
+  const desde = Math.max(0, Math.min(largo - 0.2, Number(e.desde) || 0));
+  const hasta = Math.max(desde + 0.2, Math.min(largo, e.hasta == null ? largo : Number(e.hasta)));
+  return { desde, hasta, dura: hasta - desde, empieza: Math.max(0, Number(e.empieza) || 0) };
+}
+export const finVideos = (d) => Math.max(0, ...(d?.elementos || []).filter(e => e?.tipo === 'video' && !e.oculto).map(e => { const t = tramoVideo(e); return t.empieza + t.dura; }));
+// Cómo se ve un vídeo en el segundo t: null si no se ve (aún no ha empezado o ya acabó).
+function estadoVideo(e, t, W) {
+  if (t == null) return {};
+  const v = tramoVideo(e), p = t - v.empieza;
+  if (p < 0 || p >= v.dura) return null;
+  if (!e.transicion || e.transicion === 'corte' || p >= TRANSICION) return {};
+  const q = 1 - (1 - p / TRANSICION) ** 3;
+  return e.transicion === 'deslizar' ? { dx: (1 - q) * W } : { alfa: q };
+}
+export const duracionAnimacion = (d) => {
+  const anim = Math.max(2, Math.min(15, d?.animacion?.duracion || 5)), videos = finVideos(d);
+  return videos ? Math.min(DURACION_MAX_PAGINA, Math.max(videos, d?.animacion?.duracion ? anim : 0)) : anim;
+};
 function estadoAnim(e, t, W, H) {
   const a = e.anim;
   if (!a?.tipo || t == null) return null;
@@ -555,7 +584,9 @@ function pintarTexto(ctx, e, texto, x, y, letras, variables) {
 // (id o lista de ids que no se pintan: el texto que se escribe), tiempo (para
 // las animaciones, en segundos), editor (pinta los marcos vacíos) y sinFondo
 // (para un PNG transparente).
-export function pintarDiseno(ctx, diseno, { imagenes = new Map(), variables = null, ocultar = null, tiempo = null, editor = false, sinFondo = false } = {}) {
+// videos: los <video> ya cargados (url → elemento; ver videos.js). Sin ellos, de un
+// vídeo se pinta su portada.
+export function pintarDiseno(ctx, diseno, { imagenes = new Map(), videos = null, variables = null, ocultar = null, tiempo = null, editor = false, sinFondo = false } = {}) {
   const { ancho: W, alto: H } = diseno;
   const oculto = (idEl) => (Array.isArray(ocultar) ? ocultar.includes(idEl) : idEl === ocultar);
   ctx.save();
@@ -571,7 +602,12 @@ export function pintarDiseno(ctx, diseno, { imagenes = new Map(), variables = nu
   }
   for (const e of diseno.elementos || []) {
     if (!e || e.oculto || oculto(e.id)) continue;
-    const an = estadoAnim(e, tiempo, W, H);
+    let an = estadoAnim(e, tiempo, W, H);
+    if (e.tipo === 'video') {
+      const ev = estadoVideo(e, tiempo, W);
+      if (!ev) continue;
+      if (ev.alfa != null || ev.dx) an = { ...(an || {}), alfa: (an?.alfa ?? 1) * (ev.alfa ?? 1), dx: (an?.dx || 0) + (ev.dx || 0) };
+    }
     ctx.save();
     // Si algo de un elemento no se puede pintar, se salta ese y se pintan los demás.
     try {
@@ -629,8 +665,10 @@ export function pintarDiseno(ctx, diseno, { imagenes = new Map(), variables = nu
           }
         }
       }
-    } else if (e.tipo === 'imagen') {
-      const img = conFiltros(imagenes.get(e.url), e.filtros);
+    } else if (e.tipo === 'imagen' || e.tipo === 'video') {
+      // De un vídeo, el fotograma de ahora si está listo; si no, su portada.
+      const vid = e.tipo === 'video' ? videos?.get(e.url) : null;
+      const img = e.tipo === 'video' ? (vid && vid.readyState >= 2 ? vid : imagenes.get(e.poster) || null) : conFiltros(imagenes.get(e.url), e.filtros);
       const marco = e.marco && e.marco !== 'rect' ? e.marco : 'rect';
       // La sombra va con la forma del marco (si la foto se recorta, la sombra no se ve).
       if (e.sombra && img) { caminoFigura(ctx, marco, x, y, e.w, e.h, e.radio); ctx.fillStyle = '#ffffff'; ctx.fill(); }
@@ -694,7 +732,7 @@ function adaptarElementos(elementos, d, ancho, alto, variables) {
       n.w = n.h = Math.round(Math.min(e.w, e.h) * k);
     } else {
       n.w = Math.round(todoAncho ? e.w * sx : e.w * k); n.h = Math.round(todoAlto ? e.h * sy : e.h * k);
-      if (e.tipo === 'imagen' && todoAncho && todoAlto && !e.encuadre) n.ajuste = 'cubrir';
+      if ((e.tipo === 'imagen' || e.tipo === 'video') && todoAncho && todoAlto && !e.encuadre) n.ajuste = 'cubrir';
     }
     n.x = Math.round(eje(e.x, e.w, d.ancho, n.w, ancho, sx));
     n.y = Math.round(eje(e.y, e.h, d.alto, n.h, alto, sy));
