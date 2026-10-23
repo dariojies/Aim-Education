@@ -13,6 +13,7 @@ import { MisPedidos } from './Tienda.jsx';
 import { fmtFecha } from '../fechas.js';
 import { esApp, compartirArchivo, abrirFuera, desactivarAvisos } from '../app-movil.js';
 import { TarjetaAvisos, AjustesAvisos } from './AvisosMovil.jsx';
+import Chats from './Chats.jsx';
 
 function EmptyState({ icon, text, accion, onAccion }) {
   return (
@@ -1716,7 +1717,7 @@ function DashSettings() {
 
 // Cada sección del área con su dirección (/dashboard/pagos…): así el botón
 // atrás del navegador y del móvil vuelve a la anterior.
-const RUTA_SECCION = { overview: '', pedidos: 'pedidos', cursos: 'cursos', classes: 'clases', camp: 'campamento', attendance: 'asistencia', fotos: 'fotos', brickslab: 'brickslab', payments: 'pagos', wallet: 'cartera', profile: 'perfil', settings: 'ajustes', support: 'soporte', mas: 'mas' };
+const RUTA_SECCION = { overview: '', mensajes: 'mensajes', pedidos: 'pedidos', cursos: 'cursos', classes: 'clases', camp: 'campamento', attendance: 'asistencia', fotos: 'fotos', brickslab: 'brickslab', payments: 'pagos', wallet: 'cartera', profile: 'perfil', settings: 'ajustes', support: 'soporte', mas: 'mas' };
 // Abajo, en la app: lo de cada día. El resto, en «Más».
 const PESTANAS_APP = [
   { id: 'overview', label: 'Inicio', icon: <I.Dashboard /> },
@@ -1751,6 +1752,17 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
   const [view, setView] = useState(subroute);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   useEffect(() => { setView(subroute); }, [subroute]);
+  // «Mensajes» sale cuando el Equipo IT le ha escrito alguna vez, con lo que
+  // tenga sin leer.
+  const [mensajes, setMensajes] = useState(null);
+  useEffect(() => {
+    let vivo = true;
+    const mirar = () => fetch('/api/chats/resumen?ambito=familia', { credentials: 'include', cache: 'no-store' })
+      .then(r => (r.ok ? r.json() : null)).then(d => { if (vivo && d) setMensajes(d); }).catch(() => {});
+    mirar();
+    const t = setInterval(() => { if (!document.hidden) mirar(); }, 30000);
+    return () => { vivo = false; clearInterval(t); };
+  }, [view]);
 
   const initials = `${user?.firstName?.[0] || ""}${user?.lastName?.[0] || ""}`.toUpperCase() || "?";
   const familyLabel = user?.lastName ? `Familia ${user.lastName}` : (user?.firstName || "Mi familia");
@@ -1768,6 +1780,8 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
     { id: "cursos", label: "Mis cursos", icon: <I.Birrete /> },
     // Lo comprado en la tienda (#432).
     { id: "pedidos", label: "Mis pedidos", icon: <I.Package /> },
+    // Lo que le escribe el Equipo IT, si le ha escrito.
+    ...(mensajes?.tiene || view === 'mensajes' ? [{ id: "mensajes", label: mensajes?.sinLeer ? `Mensajes (${mensajes.sinLeer})` : "Mensajes", icon: <I.Chat /> }] : []),
     { id: "payments", label: "Pagos y recibos", icon: <I.Wallet /> },
     // Aún vacía: en la app no se enseña.
     ...(esApp ? [] : [{ id: "wallet", label: "Mi cartera", icon: <I.CreditCard /> }]),
@@ -1865,7 +1879,7 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
               </div>
             </div>
             <div style={{display: "flex", gap: 12, alignItems: "center"}}>
-              <Campanita url="/api/me/notificaciones" onIr={(destino) => (String(destino).startsWith('/dashboard') ? go(destino) : navTo(destino))}
+              <Campanita url="/api/me/notificaciones" onIr={(destino) => (String(destino).startsWith('/') ? go(destino) : navTo(destino))}
                 vacio="No tienes nada pendiente ahora mismo." />
               <div className="avatar">{initials}</div>
             </div>
@@ -1885,6 +1899,7 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
           {view === "brickslab" && <BrickslabFamilia />}
           {view === "cursos" && <MisCursos />}
           {view === "pedidos" && <MisPedidos />}
+          {view === "mensajes" && <Chats ambito="familia" />}
           {view === "mas" && (
             <MasApp user={user} go={go} onIr={navTo} onSalir={handleLogout}
               items={navItems.concat(settingsItems).filter(it => !PESTANAS_APP.some(p => p.id === it.id))} />

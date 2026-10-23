@@ -121,6 +121,13 @@ export default function AdminAgenda({ showToast, user, puedePasarLista = false }
     const [editando, setEditando] = useState(null); // tarea nueva o existente
     const [guardando, setGuardando] = useState(false);
     const [movil, setMovil] = useState(false); // «Sincronizar con mi móvil» (#390)
+    // A quién se le pueden poner tareas (la dirección y el Equipo IT): el personal.
+    const [personal, setPersonal] = useState([]);
+    useEffect(() => {
+        if (!datos?.puedeAsignar || personal.length) return;
+        fetch('/api/chats/personas', { credentials: 'include', cache: 'no-store' })
+            .then(r => (r.ok ? r.json() : null)).then(d => setPersonal(d?.personas || [])).catch(() => {});
+    }, [datos?.puedeAsignar]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const cargar = useCallback(async () => {
         setCargando(true);
@@ -159,6 +166,7 @@ export default function AdminAgenda({ showToast, user, puedePasarLista = false }
             });
             const d = await r.json();
             if (!r.ok) return alert(d.error || 'No se ha podido guardar.');
+            if (nueva && editando.para) showToast?.(`Tarea puesta a ${personal.find(p => p.id === editando.para)?.nombre || 'esa persona'}: le llega el aviso.`);
             setEditando(null);
             await cargar();
         } catch { alert('Error de conexión.'); }
@@ -177,6 +185,7 @@ export default function AdminAgenda({ showToast, user, puedePasarLista = false }
         if (!window.confirm(`¿Quitar "${t.titulo}"?`)) return;
         const r = await fetch(`/api/me/tareas/${t.id}`, { method: 'DELETE', credentials: 'include' });
         if (r.ok) { await cargar(); showToast?.('Tarea quitada.'); }
+        else showToast?.((await r.json().catch(() => ({}))).error || 'No se ha podido quitar.');
     }
 
     // Reprogramar una tarea vencida al día que se está viendo (ticket #225): así
@@ -225,6 +234,8 @@ export default function AdminAgenda({ showToast, user, puedePasarLista = false }
     const conHora = (datos?.tareas || []).filter(t => t.hora);
     const sinHora = (datos?.tareas || []).filter(t => !t.hora);
     const vencidas = datos?.vencidas || [];
+    // Las que ha puesto a otros (sin hacer y las hechas de la última semana).
+    const puestas = datos?.puestas || [];
 
     // El día se pinta entre las horas del horario de trabajo de cada uno
     // (ticket #217), no de 8 a 22 fijo. Por defecto 8:00–00:00.
@@ -417,6 +428,27 @@ export default function AdminAgenda({ showToast, user, puedePasarLista = false }
                     </div>
                 )}
 
+                {/* Las tareas que ha puesto a otros: cómo van. */}
+                {(puestas.length > 0 || datos?.puedeAsignar) && (
+                    <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 16, padding: 18, display: 'grid', gap: 10 }} data-puestas>
+                        <div>
+                            <h3 style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 800 }}>Tareas que has puesto</h3>
+                            <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--ink-3)' }}>
+                                A otros del equipo, sin ticket. Te avisamos cuando las hacen.
+                            </p>
+                        </div>
+                        {puestas.map(t => (
+                            <TareaFila key={t.id} t={t} onMarcar={async (x) => { await marcar(x); await cargar(); }} onEditar={setEditando} onBorrar={borrar} onIrTicket={(id) => go(`/admin/soporte/${id}`)} />
+                        ))}
+                        {!puestas.length && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Ninguna ahora mismo.</p>}
+                        {datos?.puedeAsignar && (
+                            <button className="btn btn-sm btn-outline" onClick={() => setEditando({ titulo: '', hora: '', horaFin: '', notas: '', fecha: dia, recurrencia: '', para: '' , elegirPara: true })}>
+                                <I.Plus /> Poner una tarea a alguien
+                            </button>
+                        )}
+                    </div>
+                )}
+
                 {/* Tareas que quedaron fuera del horario: se enseñan aquí para que
                     no se pierda ninguna. Se pueden editar (cambiarles la hora) o quitar. */}
                 {fueraDeHorario.length > 0 && (
@@ -445,9 +477,27 @@ export default function AdminAgenda({ showToast, user, puedePasarLista = false }
                         <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>
                             {editando.id ? 'Cambiar la tarea' : 'Nueva tarea'}
                         </h3>
+                        {/* Para quién: la dirección y el Equipo IT pueden ponérsela a cualquiera del personal. */}
+                        {!editando.id && datos?.puedeAsignar && (
+                            <div className="field">
+                                <label>Para quién</label>
+                                <select value={editando.para || ''} autoFocus={!!editando.elegirPara} required={!!editando.elegirPara}
+                                    onChange={e => setEditando({ ...editando, para: e.target.value })}
+                                    style={{ fontFamily: 'inherit', fontSize: 14, padding: '9px 10px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' }}>
+                                    <option value="">{editando.elegirPara ? 'Elige a quién…' : 'Para mí'}</option>
+                                    {personal.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+                                </select>
+                                {editando.para && <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Le sale en su Mi día y le llega el aviso. Cuando la haga, te avisamos.</span>}
+                            </div>
+                        )}
+                        {editando.id && (editando.asignadaPor || editando.para) && (
+                            <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
+                                {editando.asignadaPor ? `Te la ha puesto ${editando.asignadaPor.nombre}.` : `Es de ${editando.para.nombre}: la has puesto tú.`}
+                            </p>
+                        )}
                         <div className="field">
                             <label>Qué hay que hacer</label>
-                            <input autoFocus value={editando.titulo || ''} required
+                            <input autoFocus={!editando.elegirPara} value={editando.titulo || ''} required
                                 onChange={e => setEditando({ ...editando, titulo: e.target.value })} />
                         </div>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
@@ -483,7 +533,7 @@ export default function AdminAgenda({ showToast, user, puedePasarLista = false }
                                     onChange={e => setEditando({ ...editando, horaFin: e.target.value })} />
                             </div>
                         </div>
-                        <div className="field">
+                        {!(editando.para && typeof editando.para === 'object') && <div className="field">
                             <label>Ticket de soporte</label>
                             <ElegirTicket
                                 valor={editando.ticketId || null}
@@ -492,10 +542,10 @@ export default function AdminAgenda({ showToast, user, puedePasarLista = false }
                                     // Si la tarea no tiene nombre todavía, se le pone el del ticket.
                                     titulo: e.titulo?.trim() ? e.titulo : (id ? `Ticket #${id}` : ''),
                                 }))}
-                                coger={editando.cogerTicket !== false}
+                                coger={editando.cogerTicket !== false && !editando.para}
                                 onCoger={(v) => setEditando(e => ({ ...e, cogerTicket: v }))}
                                 yo={user?.id} />
-                        </div>
+                        </div>}
 
                         <div className="field">
                             <label>Notas</label>
@@ -537,6 +587,12 @@ function TareaFila({ t, onMarcar, onEditar, onBorrar, onIrTicket }) {
                         {[t.hora && `${t.hora}${t.horaFin ? `–${t.horaFin}` : ''}`, t.notas].filter(Boolean).join(' · ')}
                     </div>
                 )}
+                {/* Puesta entre el personal: quién se la puso, o para quién es. */}
+                {(t.asignadaPor || t.para) && (
+                    <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--orange)' }}>
+                        {t.asignadaPor ? `Te la ha puesto ${t.asignadaPor.nombre}` : `Para ${t.para.nombre} · ${vistaFecha(t.fecha)}${t.hecha ? ' · hecha ✓' : ''}`}
+                    </div>
+                )}
                 {t.recurrencia && (
                     <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--purple)' }} title="Se repite: al marcarla hecha aparece la siguiente">
                         🔁 {nombreRecurrencia(t.recurrencia)}
@@ -556,7 +612,8 @@ function TareaFila({ t, onMarcar, onEditar, onBorrar, onIrTicket }) {
                 )}
             </div>
             <button className="icon-btn" style={{ width: 26, height: 26 }} onClick={() => onEditar(t)} aria-label="Cambiar"><I.Edit /></button>
-            <button className="icon-btn danger" style={{ width: 26, height: 26 }} onClick={() => onBorrar(t)} aria-label="Quitar"><I.Trash /></button>
+            {/* La que le pusieron la quita quien la puso. */}
+            {!t.asignadaPor && <button className="icon-btn danger" style={{ width: 26, height: 26 }} onClick={() => onBorrar(t)} aria-label="Quitar"><I.Trash /></button>}
         </div>
     );
 }

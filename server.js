@@ -35,6 +35,7 @@ import { crearDisenos, crearTablasDisenos, disenosPorAprobar, revisionDeMisDisen
 import { configurarDisenosServidor } from './disenos-servidor.js';
 import { crearMedios, crearTablasMedios, limpiarMedios } from './medios.js';
 import { crearPantallas, crearTablasPantallas, prepararEstaticas, limpiarMediosPantalla } from './pantallas.js';
+import { crearChats, crearTablasChats, avisosChats } from './chats.js';
 import { programarHistoriasFestivos, felicitacionCumple } from './disenos-automaticos.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
@@ -837,6 +838,10 @@ async function initDb() {
         // Tareas que se repiten (ticket #237). Al marcar hecha una recurrente se
         // crea sola la del siguiente día/semana/mes. NULL = tarea de un solo día.
         await client.query(`ALTER TABLE aim_tareas ADD COLUMN IF NOT EXISTS recurrencia VARCHAR(20)`);
+        // Tareas que pone la dirección o el Equipo IT a otro, sin ticket: quién la
+        // puso (NULL, la suya) y cuándo se hizo, para avisarle.
+        await client.query(`ALTER TABLE aim_tareas ADD COLUMN IF NOT EXISTS asignada_por UUID REFERENCES users(user_id) ON DELETE SET NULL`);
+        await client.query(`ALTER TABLE aim_tareas ADD COLUMN IF NOT EXISTS hecha_at TIMESTAMPTZ`);
 
         // Las imágenes del mosaico de la portada. Van en su propia tabla y no
         // dentro del JSON de ajustes para que /api/landing siga siendo ligero:
@@ -2350,6 +2355,8 @@ async function initDb() {
         await crearTablasPantallas(client);
         // La tienda online (#432): productos, fotos, variantes, pedidos y líneas.
         await crearTablasTienda(client);
+        // Mensajes: el chat interno (Equipo IT con cualquiera, privados y grupos del personal).
+        await crearTablasChats(client);
     } finally {
         client.release();
     }
@@ -4861,9 +4868,13 @@ app.get('/api/me/agenda', authenticateSession, requireAdmin, async (req, res) =>
             `SELECT id, to_char(inicio, 'HH24:MI') AS inicio, to_char(fin, 'HH24:MI') AS fin, nota
              FROM aim_it_planificacion WHERE user_id = $1 AND fecha = $2::date ORDER BY inicio`, [yo, fecha]
         );
-        const SEL_TAREA = `t.*, s.subject AS ticket_asunto, s.status AS ticket_estado, s.priority AS ticket_prioridad
+        const SEL_TAREA = `t.*, s.subject AS ticket_asunto, s.status AS ticket_estado, s.priority AS ticket_prioridad,
+                    COALESCE(NULLIF(TRIM(CONCAT(ap.name, ' ', COALESCE(ap.surname, ''))), ''), ap.email) AS asignada_por_nombre,
+                    COALESCE(NULLIF(TRIM(CONCAT(pa.name, ' ', COALESCE(pa.surname, ''))), ''), pa.email) AS para_nombre
              FROM aim_tareas t
-             LEFT JOIN tickets_registrosoporte s ON s.id = t.ticket_id`;
+             LEFT JOIN tickets_registrosoporte s ON s.id = t.ticket_id
+             LEFT JOIN users ap ON ap.user_id = t.asignada_por
+             LEFT JOIN users pa ON pa.user_id = t.user_id`;
         const tareas = await pool.query(
             `SELECT ${SEL_TAREA}
              WHERE t.user_id = $1 AND t.fecha = $2::date
@@ -4877,9 +4888,19 @@ app.get('/api/me/agenda', authenticateSession, requireAdmin, async (req, res) =>
              WHERE t.user_id = $1 AND t.hecha = false AND t.fecha < $2::date
              ORDER BY t.fecha DESC, (t.hora IS NULL), t.hora LIMIT 200`, [yo, fecha]
         );
+        // Las que ha puesto a otros: sin hacer, y las hechas de la última semana.
+        const puestas = await pool.query(
+            `SELECT ${SEL_TAREA}
+             WHERE t.asignada_por = $1 AND t.user_id <> $1 AND (NOT t.hecha OR t.hecha_at > NOW() - INTERVAL '7 days')
+             ORDER BY t.hecha, t.fecha, (t.hora IS NULL), t.hora LIMIT 200`, [yo]
+        );
         const mapTarea = (t) => ({
             id: t.id, titulo: t.titulo, fecha: t.fecha, hora: t.hora, horaFin: t.hora_fin,
             notas: t.notas, hecha: t.hecha, recurrencia: t.recurrencia || null,
+            // Puesta por otro: se hace y se mueve, pero la quita quien la puso.
+            asignadaPor: t.asignada_por && String(t.user_id) === String(yo) && String(t.asignada_por) !== String(yo) ? { id: t.asignada_por, nombre: t.asignada_por_nombre } : null,
+            para: String(t.user_id) !== String(yo) ? { id: t.user_id, nombre: t.para_nombre } : null,
+            hechaAt: t.hecha_at || null,
             ticketId: t.ticket_id,
             ticket: t.ticket_id ? {
                 id: t.ticket_id, asunto: t.ticket_asunto,
@@ -4906,6 +4927,8 @@ app.get('/api/me/agenda', authenticateSession, requireAdmin, async (req, res) =>
             it: it.rows.map(x => ({ id: `it-${x.id}`, hora: x.inicio, horaFin: x.fin, nota: x.nota || null })),
             tareas: tareas.rows.map(mapTarea),
             vencidas: vencidas.rows.map(mapTarea),
+            puestas: puestas.rows.map(mapTarea),
+            puedeAsignar: !!permisos(req).asignarTareas,
         });
     } catch (err) {
         console.error('Error cargando la agenda:', err);
@@ -4970,18 +4993,32 @@ app.post('/api/me/tareas', authenticateSession, requireAdmin, async (req, res) =
     // No se puede programar una tarea en un día que ya pasó (ticket #236).
     if (await fechaEnPasado(fecha)) return res.status(400).json({ error: 'Ese día ya ha pasado: pon la tarea para hoy o más adelante.' });
     const recurrencia = RECURRENCIAS.includes(req.body.recurrencia) ? req.body.recurrencia : null;
+    const yo = req.userSession.userId;
+    // Para otro del personal (la dirección y el Equipo IT): va a su día.
+    const para = req.body.para && String(req.body.para) !== String(yo) ? String(req.body.para) : null;
     try {
-        const jornada = await jornadaDe(req.userSession.userId);
-        if (!dentroDeJornada(hora, jornada)) {
-            return res.status(400).json({ error: `Esa hora queda fuera de tu horario de trabajo (${horaBonita(jornada.horaInicio)}–${horaBonita(jornada.horaFin)}). Cámbialo en tu día si quieres ampliarlo.` });
+        if (para) {
+            if (!permisos(req).asignarTareas) return res.status(403).json({ error: 'Las tareas a otros las ponen la dirección y el Equipo IT.' });
+            if (!/^[0-9a-f-]{36}$/i.test(para) || !(await pool.query(
+                `SELECT 1 FROM users u WHERE u.user_id = $1 AND u.club_id = $2 AND ${SQL_ES_PERSONAL('u')}`, [para, AIM_CLUB_ID])).rowCount) {
+                return res.status(400).json({ error: 'Las tareas se ponen al personal del club.' });
+            }
         }
-        const ticket = await ticketEnlazable(req, req.body.ticketId, req.body.cogerTicket);
+        const jornada = await jornadaDe(para || yo);
+        if (!dentroDeJornada(hora, jornada)) {
+            return res.status(400).json({ error: para
+                ? `Esa hora queda fuera de su horario de trabajo (${horaBonita(jornada.horaInicio)}–${horaBonita(jornada.horaFin)}). Ponla sin hora o a otra hora.`
+                : `Esa hora queda fuera de tu horario de trabajo (${horaBonita(jornada.horaInicio)}–${horaBonita(jornada.horaFin)}). Cámbialo en tu día si quieres ampliarlo.` });
+        }
+        // El ticket, sin quedárselo nadie: a otro no se le asigna desde aquí.
+        const ticket = await ticketEnlazable(req, req.body.ticketId, para ? false : req.body.cogerTicket);
         const r = await pool.query(
-            `INSERT INTO aim_tareas (user_id, fecha, hora, hora_fin, titulo, notas, ticket_id, recurrencia)
-             VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8) RETURNING id`,
-            [req.userSession.userId, fecha, hora || null, horaFin || null,
-             titulo.trim().slice(0, 200), notas?.trim() || null, ticket, recurrencia]
+            `INSERT INTO aim_tareas (user_id, fecha, hora, hora_fin, titulo, notas, ticket_id, recurrencia, asignada_por)
+             VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+            [para || yo, fecha, hora || null, horaFin || null,
+             titulo.trim().slice(0, 200), notas?.trim() || null, ticket, recurrencia, para ? yo : null]
         );
+        if (para) avisosPush.avisarFamilias([para]);
         res.status(201).json({ id: r.rows[0].id });
     } catch (err) {
         if (err && err.httP) return res.status(err.httP).json({ error: err.msg });
@@ -4990,12 +5027,20 @@ app.post('/api/me/tareas', authenticateSession, requireAdmin, async (req, res) =
 });
 
 // Todas las consultas llevan el user_id: una tarea de otro ni se lee ni se toca.
+// Una tarea puesta a otro la puede cambiar también quien la puso.
 app.patch('/api/me/tareas/:id', authenticateSession, requireAdmin, async (req, res) => {
     const { titulo, hora, horaFin, notas, hecha, fecha } = req.body;
     if (!HORA_OK(hora) || !HORA_OK(horaFin)) return res.status(400).json({ error: 'La hora no es válida.' });
+    const yo = req.userSession.userId;
+    let tarea;
+    try {
+        tarea = (await pool.query(`SELECT user_id, asignada_por FROM aim_tareas WHERE id = $1 AND (user_id = $2 OR asignada_por = $2)`,
+            [Number(req.params.id) || 0, yo])).rows[0];
+    } catch (err) { return res.status(500).json({ error: err.message }); }
+    if (!tarea) return res.status(404).json({ error: 'Esa tarea no es tuya.' });
     if (hora !== undefined && hora) {
         try {
-            const jornada = await jornadaDe(req.userSession.userId);
+            const jornada = await jornadaDe(tarea.user_id);
             if (!dentroDeJornada(hora, jornada)) {
                 return res.status(400).json({ error: `Esa hora queda fuera de tu horario de trabajo (${horaBonita(jornada.horaInicio)}–${horaBonita(jornada.horaFin)}).` });
             }
@@ -5007,7 +5052,7 @@ app.patch('/api/me/tareas/:id', authenticateSession, requireAdmin, async (req, r
     if (hora !== undefined) set('hora', hora || null);
     if (horaFin !== undefined) set('hora_fin', horaFin || null);
     if (notas !== undefined) set('notas', notas?.trim() || null);
-    if (hecha !== undefined) set('hecha', !!hecha);
+    if (hecha !== undefined) { set('hecha', !!hecha); campos.push(hecha ? 'hecha_at = COALESCE(hecha_at, NOW())' : 'hecha_at = NULL'); }
     if (req.body.recurrencia !== undefined) set('recurrencia', RECURRENCIAS.includes(req.body.recurrencia) ? req.body.recurrencia : null);
     if (fecha !== undefined) {
         if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha))) return res.status(400).json({ error: 'Día no válido.' });
@@ -5022,17 +5067,19 @@ app.patch('/api/me/tareas/:id', authenticateSession, requireAdmin, async (req, r
         return res.status(500).json({ error: err.message });
     }
     if (!campos.length) return res.status(400).json({ error: 'Nada que cambiar.' });
-    vals.push(req.params.id, req.userSession.userId);
+    vals.push(req.params.id, yo);
     try {
         const r = await pool.query(
             `UPDATE aim_tareas SET ${campos.join(', ')}
-             WHERE id = $${vals.length - 1} AND user_id = $${vals.length} RETURNING id`, vals
+             WHERE id = $${vals.length - 1} AND (user_id = $${vals.length} OR asignada_por = $${vals.length}) RETURNING id`, vals
         );
         if (!r.rowCount) return res.status(404).json({ error: 'Esa tarea no es tuya.' });
         // Al terminar una tarea recurrente se crea sola la del siguiente periodo
         // (ticket #237), salvo que ya exista. Toda la aritmética de fechas la hace
         // Postgres para no liarla con zonas horarias.
-        if (hecha === true) await crearSiguienteRecurrente(req.params.id, req.userSession.userId);
+        if (hecha === true) await crearSiguienteRecurrente(req.params.id, tarea.user_id);
+        // Hecha la que le pusieron: a quien la puso le llega el aviso.
+        if (hecha === true && tarea.asignada_por && String(tarea.asignada_por) !== String(tarea.user_id)) avisosPush.avisarFamilias([tarea.asignada_por]);
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -5045,8 +5092,8 @@ const INTERVALO_RECURRENCIA = `(CASE t.recurrencia
 async function crearSiguienteRecurrente(tareaId, userId) {
     try {
         await pool.query(
-            `INSERT INTO aim_tareas (user_id, fecha, hora, hora_fin, titulo, notas, recurrencia)
-             SELECT t.user_id, (t.fecha + ${INTERVALO_RECURRENCIA})::date, t.hora, t.hora_fin, t.titulo, t.notas, t.recurrencia
+            `INSERT INTO aim_tareas (user_id, fecha, hora, hora_fin, titulo, notas, recurrencia, asignada_por)
+             SELECT t.user_id, (t.fecha + ${INTERVALO_RECURRENCIA})::date, t.hora, t.hora_fin, t.titulo, t.notas, t.recurrencia, t.asignada_por
              FROM aim_tareas t
              WHERE t.id = $1 AND t.user_id = $2 AND t.recurrencia IS NOT NULL
                AND NOT EXISTS (
@@ -5060,14 +5107,40 @@ async function crearSiguienteRecurrente(tareaId, userId) {
 
 app.delete('/api/me/tareas/:id', authenticateSession, requireAdmin, async (req, res) => {
     try {
-        const r = await pool.query(
-            `DELETE FROM aim_tareas WHERE id = $1 AND user_id = $2 RETURNING id`,
-            [req.params.id, req.userSession.userId]
-        );
-        if (!r.rowCount) return res.status(404).json({ error: 'Esa tarea no es tuya.' });
+        const yo = req.userSession.userId;
+        const t = (await pool.query(
+            `SELECT t.user_id, t.asignada_por, COALESCE(NULLIF(TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))), ''), u.email) AS por
+             FROM aim_tareas t LEFT JOIN users u ON u.user_id = t.asignada_por
+             WHERE t.id = $1 AND (t.user_id = $2 OR t.asignada_por = $2)`, [Number(req.params.id) || 0, yo])).rows[0];
+        if (!t) return res.status(404).json({ error: 'Esa tarea no es tuya.' });
+        // La que le pusieron la quita quien la puso (él la hace o la mueve).
+        if (String(t.user_id) === String(yo) && t.asignada_por && String(t.asignada_por) !== String(yo)) {
+            return res.status(403).json({ error: `Te la ha puesto ${t.por || 'otra persona'}: márcala hecha o pídele que la quite.` });
+        }
+        await pool.query(`DELETE FROM aim_tareas WHERE id = $1`, [req.params.id]);
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
+
+// Los avisos de las tareas puestas entre el personal: a quien se la ponen (sin
+// hacer, de las dos últimas semanas) y a quien la puso, cuando está hecha (de la
+// última semana). Salen en la campanita del panel y llegan al móvil.
+async function avisosTareas(userId) {
+    const r = await pool.query(
+        `SELECT t.id, t.titulo, t.fecha::text AS fecha, t.hora, t.created_at, t.hecha_at, t.user_id,
+                COALESCE(NULLIF(TRIM(CONCAT(p.name, ' ', COALESCE(p.surname, ''))), ''), p.email) AS por,
+                COALESCE(NULLIF(TRIM(CONCAT(q.name, ' ', COALESCE(q.surname, ''))), ''), q.email) AS quien
+         FROM aim_tareas t LEFT JOIN users p ON p.user_id = t.asignada_por LEFT JOIN users q ON q.user_id = t.user_id
+         WHERE t.asignada_por IS NOT NULL AND t.asignada_por <> t.user_id
+           AND ((t.user_id = $1 AND NOT t.hecha AND t.created_at > NOW() - INTERVAL '14 days')
+             OR (t.asignada_por = $1 AND t.hecha AND t.hecha_at > NOW() - INTERVAL '7 days'))
+         ORDER BY COALESCE(t.hecha_at, t.created_at) DESC LIMIT 10`, [userId]);
+    return r.rows.map(t => (String(t.user_id) === String(userId)
+        ? { tipo: 'tareas', clave: `tarea:${t.id}`, n: 1, marca: t.created_at, fecha: t.created_at, destino: `/admin/mi-dia?fecha=${t.fecha}`, soloSinLeer: true,
+            texto: `${t.por || 'Alguien'} te ha puesto una tarea: «${t.titulo}»`, detalle: `Para el ${fechaAviso(t.fecha)}${t.hora ? ` a las ${t.hora}` : ''}` }
+        : { tipo: 'tareas', clave: `tarea-hecha:${t.id}`, n: 1, marca: t.hecha_at, fecha: t.hecha_at, destino: '/admin/mi-dia', soloSinLeer: true,
+            texto: `${t.quien || 'Alguien'} ha hecho «${t.titulo}»`, detalle: 'La tarea que le pusiste' }));
+}
 
 // Solo se puede enlazar un ticket que esa persona pueda ver: los suyos si es
 // instructor, cualquiera si lleva el soporte. Si se pide 'cogerlo' y no tiene
@@ -5236,6 +5309,8 @@ app.use(crearDisenos({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireSe
 app.use(crearMedios({ pool, authenticateSession, requireSeccion }));
 // La tele de recepción: el carrusel (Aim Design → Pantallas) y la página /tele/<clave>.
 app.use(crearPantallas({ pool, authenticateSession, requireSeccion }));
+// Mensajes: el chat interno. Lo nuevo llega al móvil de quien tiene que leerlo.
+app.use(crearChats({ pool, clubId: AIM_CLUB_ID, authenticateSession, avisar: (ids) => avisosPush.avisarFamilias(ids) }).router);
 // Para mencionar (@) en los comentarios de Aim Design: el personal que ve Aim Design.
 app.get('/api/admin/disenos-equipo', authenticateSession, requireSeccion('grafico'), async (req, res) => {
     try {
@@ -13346,7 +13421,7 @@ app.post('/api/admin/fiscales/:id/:accion', authenticateSession, requireAdmin, a
 // resumen de todo, que para eso está el panel.
 // La campanita del área de familias, y lo mismo es lo que llega al móvil (#218):
 // cada aviso lleva además su grupo, título, texto y adónde lleva (url).
-const GRUPO_DE_TIPO = { pagos: 'pagos', clases: 'clases', soporte: 'soporte', galeria: 'fotos', brickslab: 'brickslab' };
+const GRUPO_DE_TIPO = { pagos: 'pagos', clases: 'clases', soporte: 'soporte', galeria: 'fotos', brickslab: 'brickslab', mensajes: 'mensajes', tareas: 'mensajes' };
 const URL_DE_DESTINO = { payments: '/dashboard/pagos', classes: '/dashboard/clases', support: '/dashboard/soporte', fotos: '/dashboard/fotos', brickslab: '/dashboard/brickslab', overview: '/dashboard' };
 const fechaAviso = (iso) => new Date(String(iso).slice(0, 10) + 'T12:00:00Z').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' });
 async function avisosFamilia(me) {
@@ -13537,13 +13612,17 @@ async function avisosFamilia(me) {
         // 7) Brickslab: lo entregado y la votación abierta (#218).
         avisos.push(...await brickslab.avisosDe(fam).catch(() => []));
 
+        // 8) Mensajes del chat sin leer y, al personal, las tareas que le ponen.
+        avisos.push(...await avisosChats(pool, me));
+        avisos.push(...await avisosTareas(me).catch(() => []));
+
         await conVistos(me, avisos);
         const lista = avisos.filter(a => !(a.soloSinLeer && !a.nuevo));
         for (const a of lista) {
             a.grupo = a.sinPush ? null : (GRUPO_DE_TIPO[a.tipo] || null);
             a.titulo = a.texto;
             a.cuerpo = a.detalle || '';
-            a.url = URL_DE_DESTINO[a.destino] || (String(a.destino || '').startsWith('/dashboard') ? a.destino : '/dashboard');
+            a.url = URL_DE_DESTINO[a.destino] || (/^\/(dashboard|admin)/.test(String(a.destino || '')) ? a.destino : '/dashboard');
             // Al tocar el aviso en el móvil, la web lo da por visto (#415).
             a.url += `${a.url.includes('?') ? '&' : '?'}aviso=${encodeURIComponent(a.clave)}&n=${a.n}`;
             delete a.soloSinLeer; delete a.sinPush;
@@ -16774,6 +16853,12 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         // tickets (los abrió o los lleva) y, con soporte completo, también de
         // los que no lleva nadie. Uno por ticket, directo a ese ticket; si hay
         // muchos, los cinco últimos y el resto resumido.
+        // Mensajes del chat interno sin leer, uno por conversación.
+        if (recibe('chat_mensajes')) fuente('Mensajes', [], () => avisosChats(pool, yo));
+        // Tareas que le ponen en Mi día y las que ha puesto él y ya están hechas.
+        if (recibe('tareas_asignadas') || recibe('tareas_hechas')) {
+            fuente('Tareas', [], async () => (await avisosTareas(yo)).filter(a => recibe(a.clave.startsWith('tarea-hecha:') ? 'tareas_hechas' : 'tareas_asignadas')));
+        }
         if (recibe('tickets_mensajes')) {
             fuente('Mensajes de soporte', ['tickets_mensajes_resto'], async () => {
                 const filas = (await pool.query(

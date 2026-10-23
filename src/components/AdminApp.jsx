@@ -48,6 +48,7 @@ import AdminAlmacen from './AdminAlmacen.jsx';
 import AdminContactos from './AdminContactos.jsx';
 import AdminCandidatos from './AdminCandidatos.jsx';
 import AdminIncidencias from './AdminIncidencias.jsx';
+import Chats from './Chats.jsx';
 import AdminBrickslab from './AdminBrickslab.jsx';
 import AdminGaleria from './Galeria.jsx';
 import { IconoActividad } from './IconoActividad.jsx';
@@ -110,6 +111,7 @@ function sectionLabel(id, pestana) {
     contactos: "Consultas web",
     candidatos: "Candidatos",
     incidencias: "Incidencias",
+    mensajes: "Mensajes",
     brickslab: "Brickslab y Biblioteca",
     grafico: "Aim Design",
     galeria: "Fotos",
@@ -6863,6 +6865,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "support", label: "Tickets", icon: <I.Bell /> },
         // Lo que pasa y hay que dejar registrado (#383).
         { id: "incidencias", label: "Incidencias", icon: <I.Alerta /> },
+        // El chat interno: privados, grupos y, el Equipo IT, con cualquiera de la web.
+        { id: "mensajes", label: "Mensajes", icon: <I.Chat /> },
       ]
     },
     {
@@ -7086,6 +7090,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("contactos") && <AdminContactos showToast={showToast} onAbrirFicha={abrirFicha} />}
           {ver("candidatos") && <AdminCandidatos showToast={showToast} />}
           {ver("incidencias") && <AdminIncidencias showToast={showToast} enlace={enlace} />}
+          {ver("mensajes") && <Chats ambito="equipo" showToast={showToast} />}
           {ver("brickslab") && <AdminBrickslab showToast={showToast} enlace={enlace} />}
           {ver("galeria") && <AdminGaleria showToast={showToast} />}
           {ver("bandeja") && <AdminBandeja showToast={showToast} onAbrirFicha={abrirFicha} />}

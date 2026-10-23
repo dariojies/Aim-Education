@@ -10,6 +10,7 @@ export const RUTAS_ADMIN = {
   fichaje: ['fichaje'],
   support: ['soporte', 'tickets'],
   incidencias: ['incidencias'],
+  mensajes: ['mensajes'],
   classes: ['clases'],
   speaking: ['clases-individuales', 'speaking'],
   faltas: ['faltas'],

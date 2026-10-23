@@ -67,6 +67,8 @@ const COLOR = {
   brickslab: '#E3A008',
   correo: 'var(--purple)',
   redes: '#1FA855',
+  mensajes: 'var(--teal)',
+  tareas: 'var(--orange)',
   // Los de la zona de familias.
   pagos: 'var(--orange)',
   soporte: 'var(--purple)',
@@ -94,6 +96,8 @@ const TITULO = {
   design: 'Aim Design',
   correo: 'Correo',
   redes: 'Redes sociales',
+  mensajes: 'Mensajes',
+  tareas: 'Mi día',
   pagos: 'Pagos',
   soporte: 'Soporte',
   avisos: 'Del club',

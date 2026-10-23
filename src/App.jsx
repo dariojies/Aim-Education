@@ -218,7 +218,7 @@ export default function App() {
     if (!userChecked) return null;
     // A entrar, y luego de vuelta aquí (un aviso del móvil, la vuelta del banco…).
     if (!user) { go(`/auth?volver=${encodeURIComponent(path)}`, { replace: true }); return null; }
-    const dashSub = { pedidos: 'pedidos', cursos: 'cursos', campamento: 'camp', pagos: 'payments', clases: 'classes', asistencia: 'attendance', soporte: 'support', fotos: 'fotos', brickslab: 'brickslab', biblioteca: 'brickslab', perfil: 'profile', ajustes: 'settings', cartera: 'wallet', mas: 'mas' }[seg[1]] || 'overview';
+    const dashSub = { mensajes: 'mensajes', pedidos: 'pedidos', cursos: 'cursos', campamento: 'camp', pagos: 'payments', clases: 'classes', asistencia: 'attendance', soporte: 'support', fotos: 'fotos', brickslab: 'brickslab', biblioteca: 'brickslab', perfil: 'profile', ajustes: 'settings', cartera: 'wallet', mas: 'mas' }[seg[1]] || 'overview';
     screen = <StudentDashboard user={user} onLogout={handleLogout} subroute={dashSub} />;
   } else if (pathname.startsWith('/admin')) {
     if (!userChecked) return null;

@@ -136,6 +136,9 @@ export function permisosDe(rol) {
             // Incidencias (#383): las registra cualquiera del personal (en su
             // apartado o desde la lista de clase); cada uno ve las suyas.
             incidencias: true,
+            // Mensajes: el chat interno (privados y grupos del personal; el Equipo
+            // IT, además, con cualquiera de la web). Lo tiene todo el personal.
+            mensajes: true,
             // Faltas seguidas de los alumnos, para llamar a las familias: secretaría
             // y dirección.
             faltas: mandaAlMenos(rol, 'secretaria'),
@@ -190,6 +193,9 @@ export function permisosDe(rol) {
         editarCambios: rol === 'equipo_it' || rol === 'superadmin',
         // Dar o quitar rangos del club (dueño del club y por encima).
         cambiarRangos: jefe,
+        // Poner tareas en «Mi día» de cualquiera del personal, sin ticket: la
+        // dirección y el Equipo IT.
+        asignarTareas: jefe,
         // Incidencias (#383): secretaría y dirección las ven todas; solo la
         // dirección las gestiona (responsable, fecha límite, resolverlas). El
         // resto ve las que ha escrito y las que tiene que resolver.
@@ -276,6 +282,9 @@ export const AVISOS = [
     // #401: al personal implicado, al registrarla (o al añadirle después) y al
     // resolverla (también a quien la registró). Sin el apartado no podría abrirla.
     { id: 'incidencias_implicado', grupo: 'Club', texto: 'Incidencias en las que está implicado, y cuándo se resuelven', quien: (p) => p.secciones.incidencias },
+    { id: 'chat_mensajes', grupo: 'Mensajes', texto: 'Mensajes nuevos del chat interno (privados, grupos y del Equipo IT)', quien: todos },
+    { id: 'tareas_asignadas', grupo: 'Mi día', texto: 'Tareas que le ponen en Mi día', quien: todos },
+    { id: 'tareas_hechas', grupo: 'Mi día', texto: 'Las tareas que ha puesto a otros, cuando se hacen', quien: (p) => p.asignarTareas },
     { id: 'resumen_horas', grupo: 'Fichaje', texto: 'Su resumen de horas del mes, por confirmar', quien: todos },
     { id: 'correcciones_por_aprobar', grupo: 'Fichaje', texto: 'Correcciones de su fichaje que le proponen', quien: todos },
     { id: 'correcciones_por_validar', grupo: 'Fichaje', texto: 'Correcciones de fichaje que piden los trabajadores', quien: secretariaOMas },
