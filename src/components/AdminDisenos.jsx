@@ -9,6 +9,7 @@ import {
 } from '../disenos/render.js';
 import { FIGURAS, MARCOS, ICONOS, ICONOS_ACTIVIDAD, svgFigura } from '../disenos/formas.js';
 import { formatoVideo, grabarVideo, exportarGif, exportarVideo } from '../disenos/animacion.js';
+import { diferencias, aplicarOps } from '../disenos/vivo.js';
 import { PLANTILLAS } from '../disenos/plantillas.js';
 import { Plantillas as PlantillasCorreo, Marca as MarcaCorreo } from './AdminDisenoCorreos.jsx';
 
@@ -36,6 +37,10 @@ import { Plantillas as PlantillasCorreo, Marca as MarcaCorreo } from './AdminDis
 // animaciones (GIF y vídeo); PDF de imprenta; letras propias; carpetas y
 // buscador; y la revisión en equipo: comentarios, aprobación de la dirección
 // (sin ella no se publica en redes) y versiones para volver atrás.
+//
+// Varias personas a la vez en el mismo diseño: se ven sus cursores y lo que
+// tienen elegido, y los cambios de cada uno les llegan a los demás al momento
+// (ver disenos/vivo.js y la sala en disenos.js).
 // ─────────────────────────────────────────────────────────────────────────────
 
 const inp = { fontFamily: 'inherit', fontSize: 13, padding: '7px 9px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', width: '100%', boxSizing: 'border-box' };
@@ -380,6 +385,11 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
   const [ayudas, setAyudas] = useState(() => { try { return JSON.parse(localStorage.getItem('aim_design_ayudas')) || {}; } catch { return {}; } });
   const { go } = useRouter();
   const scrollRef = useRef(null), anclaZoom = useRef(null), copiaRef = useRef(null), yo = useRef({});
+  // En vivo: quién más está en el diseño, sus cursores y lo último que les he mandado.
+  const [vivos, setVivos] = useState([]);
+  const [cursores, setCursores] = useState({});
+  const cliente = useMemo(() => `c${Math.random().toString(36).slice(2, 12)}${Date.now().toString(36)}`, []);
+  const enviado = useRef(inicial.datos), hayOtros = useRef(false), temporizador = useRef(null), ultimoCursor = useRef({ t: 0, x: 0, y: 0 });
   const zonaRef = useRef(null), lienzoRef = useRef(null), textoRef = useRef(null), arrastre = useRef(null), edicion = useRef(null), tramo = useRef(null), anim = useRef(null);
   const docRef = useRef(doc); docRef.current = doc;
   const paginaRef = useRef(pagina); paginaRef.current = pagina;
@@ -860,7 +870,70 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
     window.addEventListener('keydown', f); return () => window.removeEventListener('keydown', f);
   });
 
-  yo.current = { hacerZoom, leerCopia, pegarElementos, anadirImagen, anadirTexto, ventana };
+  // ── En vivo ──
+  const postVivo = (cuerpo) => (id ? fetch(`/api/admin/disenos/${id}/vivo`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cliente, ...cuerpo }) }).catch(() => {}) : null);
+  function mandarCambios() {
+    clearTimeout(temporizador.current); temporizador.current = null;
+    const ops = diferencias(enviado.current, docRef.current);
+    enviado.current = docRef.current;
+    if (ops.length && hayOtros.current) postVivo({ tipo: 'cambios', ops });
+  }
+  function alVivo(m) {
+    if (m.tipo === 'hola') {
+      const otros = m.participantes.filter(x => x.cliente !== cliente);
+      setVivos(otros); hayOtros.current = otros.length > 0; enviado.current = docRef.current;
+    } else if (m.tipo === 'entra') {
+      setVivos(v => [...v.filter(x => x.cliente !== m.cliente), m]); hayOtros.current = true;
+      showToast?.(`${m.nombre} también está en este diseño: veréis al momento lo que cambia el otro.`);
+      // Le paso cómo está ahora (con lo que aún no he guardado).
+      if (m.responde === cliente) { mandarCambios(); postVivo({ tipo: 'estado', para: m.cliente, doc: docRef.current, nombre, tipoDiseno: tipo, sucio }); }
+    } else if (m.tipo === 'sale') {
+      setVivos(v => { const r = v.filter(x => x.cliente !== m.cliente); hayOtros.current = r.length > 0; return r; });
+      setCursores(c => { const r = { ...c }; delete r[m.cliente]; return r; });
+    } else if (m.tipo === 'estado') {
+      docRef.current = m.doc; enviado.current = m.doc; setDoc(m.doc);
+      if (m.nombre) setNombre(m.nombre);
+      if (m.tipoDiseno) setTipo(m.tipoDiseno);
+      setSucio(!!m.sucio); setHist({ atras: [], adelante: [] }); setSeleccion([]);
+    } else if (m.tipo === 'cambios') {
+      // Primero lo mío pendiente; luego lo suyo (también en los pasos de deshacer).
+      mandarCambios();
+      const n = aplicarOps(docRef.current, m.ops);
+      docRef.current = n; enviado.current = n; setDoc(n); setSucio(true);
+      setHist(h => ({ atras: h.atras.map(x => aplicarOps(x, m.ops, { sinReemplazo: true })), adelante: h.adelante.map(x => aplicarOps(x, m.ops, { sinReemplazo: true })) }));
+    } else if (m.tipo === 'cursor') {
+      setCursores(c => ({ ...c, [m.de]: { x: m.x, y: m.y, pagina: m.pagina, sel: m.sel } }));
+    } else if (m.tipo === 'guardado') {
+      setSucio(false); cargarRevision();
+    }
+  }
+  function moverCursor(ev) {
+    if (!hayOtros.current || !lienzoRef.current) return;
+    const r = lienzoRef.current.getBoundingClientRect(), u = ultimoCursor.current;
+    u.x = (ev.clientX - r.left) / escala; u.y = (ev.clientY - r.top) / escala;
+    const ahora = performance.now();
+    if (ahora - u.t < 80) return;
+    u.t = ahora;
+    postVivo({ tipo: 'cursor', x: Math.round(u.x), y: Math.round(u.y), pagina: paginaRef.current, sel: selRef.current });
+  }
+  useEffect(() => {
+    if (!id || typeof EventSource === 'undefined') return undefined;
+    const es = new EventSource(`/api/admin/disenos/${id}/vivo?cliente=${cliente}`);
+    es.onmessage = (ev) => { let m; try { m = JSON.parse(ev.data); } catch { return; } yo.current.alVivo(m); };
+    return () => { es.close(); clearTimeout(temporizador.current); };
+  }, [id, cliente]);
+  // Lo que cambio, a los demás (como mucho cada 90 ms).
+  useEffect(() => {
+    if (!id) return;
+    if (!hayOtros.current) { enviado.current = doc; return; }
+    if (!temporizador.current) temporizador.current = setTimeout(() => yo.current.mandarCambios(), 90);
+  }, [doc, id]);
+  // Lo que tengo elegido (y en qué página estoy), también.
+  useEffect(() => {
+    if (hayOtros.current) postVivo({ tipo: 'cursor', x: Math.round(ultimoCursor.current.x), y: Math.round(ultimoCursor.current.y), pagina, sel: seleccion });
+  }, [seleccion, pagina]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  yo.current = { hacerZoom, leerCopia, pegarElementos, anadirImagen, anadirTexto, ventana, alVivo, mandarCambios };
 
   // ── Guardar y exportar ──
   async function guardar() {
@@ -873,6 +946,7 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
       else { const r = await api('/api/admin/disenos', { method: 'POST', body }); setId(r.id); }
       setSucio(false); showToast?.('Diseño guardado.');
       cargarRevision();
+      if (hayOtros.current) postVivo({ tipo: 'guardado' });
     } catch (e) { alert(e.message); } finally { setGuardando(false); }
   }
   async function exportar(formato, escalaExp = 1, sinFondo = false) {
@@ -953,6 +1027,18 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
         </select>
         <button type="button" style={botonBarra} onClick={() => setVerTamano(true)} title="Cambiar el tamaño del lienzo">{tamanoTexto(diseno)}</button>
         {revision && revision.estado !== 'sin_pedir' && <EstadoRevision estado={revision.estado} onClick={() => setPanel('revision')} />}
+        {vivos.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 6 }} title={`También aquí: ${vivos.map(v => v.nombre).join(', ')}`}>
+            <div style={{ display: 'flex' }}>
+              {vivos.map((v, i) => (
+                <span key={v.cliente} aria-label={`${v.nombre} está en este diseño`} style={{ width: 28, height: 28, borderRadius: 99, background: v.color, color: '#fff', display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 800, border: '2px solid var(--bg-2)', marginLeft: i ? -8 : 0 }}>
+                  {v.nombre.split(/\s+/).slice(0, 2).map(x => x[0]).join('').toUpperCase()}
+                </span>
+              ))}
+            </div>
+            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-2)' }}>{vivos.length === 1 ? `${vivos[0].nombre.split(' ')[0]} también está aquí` : `${vivos.length} personas más aquí`}</span>
+          </div>
+        )}
         {doc.esPlantilla && (
           <label style={{ fontSize: 12, fontWeight: 800, color: 'var(--purple)', display: 'inline-flex', gap: 6, alignItems: 'center' }} title="Sale en «Nuevo diseño» para todo el equipo">
             <input type="checkbox" checked onChange={() => { if (window.confirm('¿Deja de ser una plantilla del equipo? (El diseño se queda.)')) aplicarDoc(d => { const { esPlantilla, ...resto } = d; return resto; }); }} /> ★ Plantilla del equipo
@@ -1064,6 +1150,7 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
             arrastre.current = { modo: 'recuadro', x0: ev.clientX, y0: ev.clientY, shift: ev.shiftKey, movido: false };
           }}
           onContextMenu={(ev) => { ev.preventDefault(); if (tiempo == null) setMenu({ x: ev.clientX, y: ev.clientY }); }}
+          onPointerMove={moverCursor}
           onDragOver={(ev) => { if ([...ev.dataTransfer.types].some(t => t === TIPO_ARRASTRE || t === 'Files')) { ev.preventDefault(); setSoltando(true); } }}
           onDragLeave={(ev) => { if (ev.currentTarget === ev.target) setSoltando(false); }}
           onDrop={soltar}
@@ -1108,6 +1195,21 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
               {ayudas.cuadricula && tiempo == null && <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', backgroundSize: `${pasoRejilla * escala}px ${pasoRejilla * escala}px`,
                 backgroundImage: 'linear-gradient(to right, rgba(124,92,255,.22) 1px, transparent 1px), linear-gradient(to bottom, rgba(124,92,255,.22) 1px, transparent 1px)' }} />}
               {ayudas.margenes && tiempo == null && <div title="Margen de seguridad: lo importante, por dentro" style={{ position: 'absolute', pointerEvents: 'none', left: margenSeguro * escala, top: margenSeguro * escala, right: margenSeguro * escala, bottom: margenSeguro * escala, border: '1.5px dashed #FF5FA2' }} />}
+              {tiempo == null && Object.entries(cursores).map(([cid, c]) => {
+                const v = vivos.find(x => x.cliente === cid);
+                if (!v || c.pagina !== pagina) return null;
+                return (
+                  <React.Fragment key={cid}>
+                    {diseno.elementos.filter(e => c.sel?.includes(e.id)).map(e => (
+                      <div key={e.id} style={{ position: 'absolute', pointerEvents: 'none', left: e.x * escala - 3, top: e.y * escala - 3, width: e.w * escala + 6, height: e.h * escala + 6, transform: `rotate(${e.rot || 0}deg)`, outline: `2px solid ${v.color}`, borderRadius: 3 }} />
+                    ))}
+                    <div style={{ position: 'absolute', left: c.x * escala, top: c.y * escala, pointerEvents: 'none', zIndex: 6, display: 'flex', alignItems: 'flex-start', transition: 'left .09s linear, top .09s linear' }}>
+                      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M1 1l6 15 2-6 6-2z" fill={v.color} stroke="#fff" strokeWidth="1.2" /></svg>
+                      <span style={{ background: v.color, color: '#fff', fontSize: 11, fontWeight: 700, padding: '2px 6px', borderRadius: 6, marginTop: 12, whiteSpace: 'nowrap' }}>{v.nombre.split(' ')[0]}</span>
+                    </div>
+                  </React.Fragment>
+                );
+              })}
               {cajaVarios && tiempo == null && <div style={{ position: 'absolute', pointerEvents: 'none', left: cajaVarios.x * escala - 4, top: cajaVarios.y * escala - 4, width: cajaVarios.w * escala + 8, height: cajaVarios.h * escala + 8, border: '1.5px dashed #7C5CFF', borderRadius: 4 }} />}
               {guias.map((g, i) => <div key={i} style={{ position: 'absolute', pointerEvents: 'none', background: '#FF5FA2', ...(g.v != null ? { left: g.v * escala, top: 0, width: 1, height: '100%' } : { top: g.h * escala, left: 0, height: 1, width: '100%' }) }} />)}
               {editando && (() => {

@@ -32,6 +32,13 @@
 //  · la papelera (datos.papelera, con la fecha): lo borrado se recupera durante
 //    30 días y luego se borra de verdad. Carpeta, papelera y el enlace para ver
 //    los lleva el servidor: al guardar desde el editor no se pierden.
+//
+// Editar a varias manos (en vivo): quien abre un diseño se conecta a su «sala»
+// (/api/admin/disenos/:id/vivo, eventos del servidor) y manda aquí sus cambios,
+// su cursor y lo que tiene elegido; el servidor se lo pasa a los demás. Cada
+// navegador lleva el diseño entero y aplica lo de los otros elemento a
+// elemento. Las salas viven en la memoria de este proceso: vale con un solo
+// dyno web (el plan Basic no admite más); con varios haría falta Redis.
 // ─────────────────────────────────────────────────────────────────────────────
 import express from 'express';
 import crypto from 'crypto';
@@ -196,6 +203,55 @@ export function crearDisenos({ pool, clubId, authenticateSession, requireSeccion
             res.json({ disenos: r.rows.map(resumen), diplomaPorDefecto: await diplomaPorDefecto(), puedoAprobar: esDireccion(req), papelera });
         } catch (err) { fallo(res, err); }
     });
+    // ── En vivo: varias personas en el mismo diseño ──
+    const salas = new Map();   // id → { clientes: Map(cliente → { res, userId, nombre, color, desde }) }
+    const COLORES_VIVO = ['#E8590C', '#1C7ED6', '#2B8A3E', '#C2255C', '#7048E8', '#0B7285', '#E67700', '#5F3DC4'];
+    const enviar = (res, datos) => { try { res.write(`data: ${JSON.stringify(datos)}\n\n`); } catch { /* cerrada */ } };
+    const quienes = (sala) => [...sala.clientes].map(([cliente, c]) => ({ cliente, userId: c.userId, nombre: c.nombre, color: c.color }));
+    const aLosDemas = (sala, de, datos) => { for (const [cliente, c] of sala.clientes) if (cliente !== de) enviar(c.res, datos); };
+    router.get('/api/admin/disenos/:id/vivo', ...gestion, async (req, res) => {
+        const id = Number(req.params.id) || 0, cliente = String(req.query.cliente || '').slice(0, 40);
+        if (!id || !/^[\w-]{8,40}$/.test(cliente)) return res.status(400).end();
+        let nombre = 'Alguien';
+        try {
+            const u = (await pool.query(`SELECT TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS n FROM users WHERE user_id = $1`, [req.userSession.userId])).rows[0];
+            if (u?.n) nombre = u.n;
+        } catch { /* sin nombre */ }
+        res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+        res.flushHeaders?.();
+        if (!salas.has(id)) salas.set(id, { clientes: new Map() });
+        const sala = salas.get(id);
+        const usados = new Set([...sala.clientes.values()].map(c => c.color));
+        const color = COLORES_VIVO.find(c => !usados.has(c)) || COLORES_VIVO[sala.clientes.size % COLORES_VIVO.length];
+        // Quien lleva más rato le pasa el diseño como está ahora al que llega.
+        const veterano = [...sala.clientes.entries()].sort((a, b) => a[1].desde - b[1].desde)[0]?.[0] || null;
+        sala.clientes.set(cliente, { res, userId: req.userSession.userId, nombre, color, desde: Date.now() });
+        enviar(res, { tipo: 'hola', yo: cliente, color, participantes: quienes(sala) });
+        aLosDemas(sala, cliente, { tipo: 'entra', cliente, nombre, color, userId: req.userSession.userId, responde: veterano });
+        // Latido: el router de Heroku corta a los 55 s sin nada.
+        const latido = setInterval(() => { try { res.write(': latido\n\n'); } catch { /* cerrada */ } }, 20_000);
+        req.on('close', () => {
+            clearInterval(latido);
+            sala.clientes.delete(cliente);
+            aLosDemas(sala, cliente, { tipo: 'sale', cliente });
+            if (!sala.clientes.size) salas.delete(id);
+        });
+    });
+    router.post('/api/admin/disenos/:id/vivo', ...gestion, (req, res) => {
+        const sala = salas.get(Number(req.params.id) || 0), de = String(req.body?.cliente || '');
+        const c = sala?.clientes.get(de);
+        if (!c || c.userId !== req.userSession.userId) return res.status(409).json({ error: 'No estás conectado a este diseño.' });
+        const t = req.body?.tipo;
+        if (t === 'cambios' && Array.isArray(req.body.ops)) aLosDemas(sala, de, { tipo: 'cambios', de, ops: req.body.ops });
+        else if (t === 'cursor') aLosDemas(sala, de, { tipo: 'cursor', de, x: Number(req.body.x) || 0, y: Number(req.body.y) || 0, pagina: Number(req.body.pagina) || 0, sel: Array.isArray(req.body.sel) ? req.body.sel.slice(0, 50) : [] });
+        else if (t === 'estado' && req.body.doc) {
+            // El diseño entero, para quien acaba de llegar.
+            const para = sala.clientes.get(String(req.body.para || ''));
+            if (para) enviar(para.res, { tipo: 'estado', de, doc: req.body.doc, nombre: req.body.nombre, tipoDiseno: req.body.tipoDiseno, sucio: !!req.body.sucio });
+        } else if (t === 'guardado') aLosDemas(sala, de, { tipo: 'guardado', de, nombre: c.nombre });
+        res.json({ success: true });
+    });
+
     // ── Letras propias: se suben aquí y salen en todos los diseños ──
     const leerFuentes = async () => (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'disenos_fuentes'`)).rows[0]?.valor?.fuentes || [];
     const guardarFuentes = (lista, userId) => pool.query(
