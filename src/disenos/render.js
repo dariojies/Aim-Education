@@ -233,6 +233,86 @@ function geometriaCurva(ctx, e, texto) {
 }
 const curvo = (e) => e.tipo === 'texto' && Math.abs(e.curva || 0) >= 1;
 
+// ── Texto con partes de otro estilo y listas (ver textoRico.js) ──
+// Cada palabra lleva su estilo; se reparten en líneas midiendo cada una con su
+// letra. Las listas llevan su viñeta o su número y la sangría.
+export const esRico = (e) => e.tipo === 'texto' && ((Array.isArray(e.trozos) && e.trozos.length > 0) || !!e.lista || !!e.subrayado || !!e.tachado);
+const estiloDe = (e, t) => ({ negrita: t.negrita ?? !!e.negrita, cursiva: t.cursiva ?? !!e.cursiva, color: t.color || e.color || '#1A1A1A', subrayado: t.subrayado ?? !!e.subrayado, tachado: t.tachado ?? !!e.tachado });
+const fuenteDe = (e, s) => `${s.cursiva ? 'italic ' : ''}${s.negrita ? 700 : 400} ${e.tamano || 48}px "${e.fuente || 'Montserrat'}", Montserrat, Arial, sans-serif`;
+const trozosDe = (e, variables) => (Array.isArray(e.trozos) && e.trozos.length ? e.trozos : [{ t: e.texto || '' }]).map(x => ({ ...x, t: rellenar(x.t, variables) }));
+export function lineasRicas(ctx, e, trozos) {
+  if ('letterSpacing' in ctx) ctx.letterSpacing = `${e.espaciado || 0}px`;
+  const parrafos = [[]];
+  for (const tr of trozos) {
+    const s = estiloDe(e, tr), t = e.mayusculas ? String(tr.t).toUpperCase() : String(tr.t);
+    t.split('\n').forEach((parte, i) => { if (i) parrafos.push([]); if (parte) parrafos[parrafos.length - 1].push({ t: parte, s }); });
+  }
+  const T = e.tamano || 48, lineas = [];
+  parrafos.forEach((p, n) => {
+    let marca = null, sangria = 0;
+    if (e.lista) {
+      marca = e.lista === 'numeros' ? `${n + 1}.` : '•';
+      ctx.font = fuenteDe(e, estiloDe(e, {}));
+      sangria = Math.max(ctx.measureText('00.').width, ctx.measureText(marca).width) + T * 0.4;
+    }
+    const libre = Math.max(10, e.w - sangria), piezas = [];
+    for (const q of p) for (const w of q.t.split(/(\s+)/)) if (w) piezas.push({ t: w, s: q.s });
+    let linea = { segs: [], ancho: 0, marca, sangria };
+    const cerrar = (l) => { while (l.segs.length && !l.segs[l.segs.length - 1].t.trim()) l.ancho -= l.segs.pop().w; lineas.push(l); };
+    for (const pz of piezas) {
+      ctx.font = fuenteDe(e, pz.s);
+      const w = ctx.measureText(pz.t).width, espacio = !pz.t.trim();
+      if (espacio && !linea.segs.length) continue;
+      if (!espacio && linea.segs.length && linea.ancho + w > libre) { cerrar(linea); linea = { segs: [], ancho: 0, marca: null, sangria }; }
+      linea.segs.push({ t: pz.t, s: pz.s, w }); linea.ancho += w;
+    }
+    cerrar(linea);
+  });
+  return lineas;
+}
+function pintarRico(ctx, e, trozos, x, y, letras, contorno) {
+  const lineas = lineasRicas(ctx, e, trozos), T = e.tamano || 48, lh = T * (e.interlineado || 1.25);
+  const y0 = (e.vertical === 'arriba' ? y : y + (e.h - lineas.length * lh) / 2) + (lh - T) / 2;
+  const filas = lineas.map((l, i) => {
+    const libre = e.w - l.sangria;
+    return { l, x0: x + l.sangria + (e.alinear === 'centro' ? (libre - l.ancho) / 2 : e.alinear === 'derecha' ? libre - l.ancho : 0), y: y0 + i * lh };
+  });
+  ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+  if (e.resalte && e.resalte !== 'transparent') {
+    const m = e.resalteMargen ?? T * 0.3;
+    for (const f of filas) {
+      if (!f.l.ancho) continue;
+      ctx.save(); ctx.fillStyle = e.resalte;
+      caminoFigura(ctx, 'rect', f.x0 - m, f.y - m * 0.45, f.l.ancho + m * 2, T + m * 0.9, e.resalteRadio ?? m * 0.6); ctx.fill();
+      ctx.restore();
+    }
+    if (e.sombra) quitarSombra(ctx);
+  }
+  // Máquina de escribir: cuántas letras se ven.
+  let quedan = letras == null ? Infinity : Math.floor(lineas.reduce((s, l) => s + l.segs.reduce((a, g) => a + g.t.length, 0), 0) * letras);
+  const cada = (pinta) => {
+    let q = quedan;
+    for (const f of filas) {
+      let cx = f.x0;
+      for (const g of f.l.segs) {
+        if (q <= 0) return;
+        const t = g.t.slice(0, Math.max(0, q)); q -= g.t.length;
+        pinta(g, t, cx, f.y); cx += g.w;
+      }
+    }
+  };
+  if (contorno) { cada((g, t, cx, cy) => { ctx.font = fuenteDe(e, g.s); ctx.strokeText(t, cx, cy); }); if (e.sombra) quitarSombra(ctx); }
+  // Las viñetas o los números.
+  for (const f of filas) if (f.l.marca && quedan > 0) { ctx.font = fuenteDe(e, estiloDe(e, {})); ctx.fillStyle = e.color || '#1A1A1A'; ctx.fillText(f.l.marca, x, f.y); }
+  cada((g, t, cx, cy) => {
+    ctx.font = fuenteDe(e, g.s); ctx.fillStyle = g.s.color; ctx.fillText(t, cx, cy);
+    const w = t === g.t ? g.w : ctx.measureText(t).width, grueso = Math.max(1, T * 0.06);
+    if (g.s.subrayado && t.trim()) ctx.fillRect(cx, cy + T * 0.95, w, grueso);
+    if (g.s.tachado && t.trim()) ctx.fillRect(cx, cy + T * 0.52, w, grueso);
+  });
+  quedan = 0;
+}
+
 // La caja de un texto se ajusta a lo que ocupa (con los huecos rellenos).
 let medidor = null;
 const elMedidor = () => (medidor = medidor || document.createElement('canvas').getContext('2d'));
@@ -245,6 +325,7 @@ export function ajustarTexto(e, variables) {
     // Crece o mengua desde su centro.
     return { ...e, x: Math.round(e.x + (e.w - w) / 2), w, h };
   }
+  if (esRico(e)) return { ...e, h: Math.max(10, Math.ceil(lineasRicas(elMedidor(), e, trozosDe(e, variables)).length * (e.tamano || 48) * (e.interlineado || 1.25))) };
   return { ...e, h: Math.max(10, Math.ceil(altoTexto(elMedidor(), e, rellenar(e.texto, variables)))) };
 }
 
@@ -337,10 +418,11 @@ function ponerSombra(ctx, e) {
 }
 const quitarSombra = (ctx) => { ctx.shadowColor = 'transparent'; };
 
-function pintarTexto(ctx, e, texto, x, y, letras) {
+function pintarTexto(ctx, e, texto, x, y, letras, variables) {
   ctx.fillStyle = e.color || '#1A1A1A';
   const contorno = e.contorno && e.contornoGrosor > 0;
   if (contorno) { ctx.strokeStyle = e.contorno; ctx.lineWidth = e.contornoGrosor * 2; ctx.lineJoin = 'round'; ctx.miterLimit = 2; }
+  if (esRico(e) && !curvo(e)) { pintarRico(ctx, e, trozosDe(e, variables), x, y, letras, contorno); return; }
   if (curvo(e)) {
     const g = geometriaCurva(ctx, e, texto);
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -482,7 +564,7 @@ export function pintarDiseno(ctx, diseno, { imagenes = new Map(), variables = nu
       quitarSombra(ctx);
       pintarGrafico(ctx, e, x, y);
     } else if (e.tipo === 'texto') {
-      pintarTexto(ctx, e, rellenar(e.texto, variables), x, y, an?.letras ?? null);
+      pintarTexto(ctx, e, rellenar(e.texto, variables), x, y, an?.letras ?? null, variables);
       if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
     }
     ctx.restore();

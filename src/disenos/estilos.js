@@ -92,6 +92,7 @@ export function aplicarEstilo(d, { paleta = null, letras = null, giro = 0 } = {}
           if (n.rayas) n.fondoRayas = mezcla(filas, n.fondoCabecera, 0.12);
         }
         if (n.tipo === 'grafico') n.colores = (n.colores?.length ? n.colores : COLORES_GRAFICO).map(nuevo);
+        if (n.tipo === 'texto' && n.trozos) n.trozos = n.trozos.map(t => (t.color ? { ...t, color: nuevo(t.color) } : t));
         // Que el texto se lea: sobre su fondo (lo que tenga detrás o el de la página).
         if ((n.tipo === 'texto' || n.tipo === 'icono') && n.color) {
           const detras = n.resalte && n.resalte !== 'transparent' ? n.resalte : colorFondo;

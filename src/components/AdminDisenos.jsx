@@ -4,7 +4,7 @@ import { subirImagen } from './EditorDiseno.jsx';
 import { useRouter } from '../App.jsx';
 import {
   TAMANOS, FUENTES_DISENO, VARIABLES_DIPLOMA, EJEMPLO_DIPLOMA, nuevoId, pintarDiseno, cargarImagenes, cargarImagen, cargarFuentes, cargarFuentePropia,
-  pedirFuentes, miniatura, exportarDiseno, exportarLote, exportarImprenta, medidasImprenta, SANGRADO_MM, lienzoDe, ajustarTexto, adaptarDiseno, posicionEnTexto,
+  pedirFuentes, miniatura, exportarDiseno, exportarLote, exportarImprenta, medidasImprenta, SANGRADO_MM, lienzoDe, ajustarTexto, adaptarDiseno,
   paginaDe, conPagina, numPaginas, todasLasPaginas, ANIMACIONES, tieneAnimacion, duracionAnimacion,
 } from '../disenos/render.js';
 import { FIGURAS, MARCOS, ICONOS, ICONOS_ACTIVIDAD, svgFigura } from '../disenos/formas.js';
@@ -12,6 +12,7 @@ import { formatoVideo, grabarVideo, exportarGif, exportarVideo } from '../diseno
 import { diferencias, aplicarOps } from '../disenos/vivo.js';
 import { COLORES_GRAFICO, CLASES_GRAFICO } from '../disenos/tablas.js';
 import { quitarFondo } from '../disenos/fondo.js';
+import { htmlDeTrozos, trozosDeHtml, sinEstiloEnTrozos } from '../disenos/textoRico.js';
 import { PALETAS_LISTAS, PARES_LETRAS, aplicarEstilo, coloresDe, contraste } from '../disenos/estilos.js';
 import { PLANTILLAS } from '../disenos/plantillas.js';
 import { Plantillas as PlantillasCorreo, Marca as MarcaCorreo } from './AdminDisenoCorreos.jsx';
@@ -734,16 +735,8 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
   function editarTexto(idEl, punto) {
     const el = vista().elementos.find(e => e.id === idEl);
     if (!el || el.tipo !== 'texto' || el.bloqueado) return;
-    let cursor = String(el.texto || '').length;
-    if (punto && lienzoRef.current) {
-      // El punto del clic, en la caja del texto (sin su giro).
-      const r = lienzoRef.current.getBoundingClientRect();
-      const cx = r.left + (el.x + el.w / 2) * escala, cy = r.top + (el.y + el.h / 2) * escala;
-      const a = -(el.rot || 0) * Math.PI / 180, vx = punto.x - cx, vy = punto.y - cy;
-      cursor = posicionEnTexto(el, (vx * Math.cos(a) - vy * Math.sin(a)) / escala + el.w / 2, (vx * Math.sin(a) + vy * Math.cos(a)) / escala + el.h / 2);
-    }
     edicion.current = { id: idEl, previo: docRef.current };
-    setSel(idEl); setEditando({ id: idEl, cursor });
+    setSel(idEl); setEditando({ id: idEl, punto: punto || null });
   }
   function terminarTexto() {
     const ed = edicion.current; edicion.current = null; setEditando(null);
@@ -1275,7 +1268,8 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
               {guias.map((g, i) => <div key={i} style={{ position: 'absolute', pointerEvents: 'none', background: '#FF5FA2', ...(g.v != null ? { left: g.v * escala, top: 0, width: 1, height: '100%' } : { top: g.h * escala, left: 0, height: 1, width: '100%' }) }} />)}
               {editando && (() => {
                 const el = diseno.elementos.find(x => x.id === editando.id);
-                return el ? <TextoEnLienzo key={el.id} e={el} escala={escala} cursor={editando.cursor} onCambio={(texto) => cambiarEl(el.id, { texto }, { historia: false })} onFin={terminarTexto} /> : null;
+                return el ? <TextoEnLienzo key={el.id} e={el} escala={escala} punto={editando.punto} onCambio={(t) => cambiarEl(el.id, t, { historia: false })}
+                  onLista={(lista) => cambiarEl(el.id, { lista }, { historia: false })} onFin={terminarTexto} /> : null;
               })()}
             </div>
           </div>
@@ -1752,8 +1746,9 @@ function Propiedades({ e, tipo, cambiar, textoRef, subir, acciones, onEscribir, 
 
       {e.tipo === 'texto' && <>
         <label style={etq}>Texto
-          <textarea ref={textoRef} rows={3} value={e.texto} onChange={x => cambiar({ texto: x.target.value })} style={{ ...inp, resize: 'vertical', fontSize: 14 }} />
+          <textarea ref={textoRef} rows={3} value={e.texto} onChange={x => cambiar({ texto: x.target.value, trozos: undefined })} style={{ ...inp, resize: 'vertical', fontSize: 14 }} />
         </label>
+        {e.trozos && <span style={{ fontSize: 11.5, color: '#B45309' }}>Tiene partes con otro estilo: si lo cambias aquí, se pierden. Mejor, doble clic en el texto y escribe en el lienzo.</span>}
         {!e.bloqueado && <button type="button" className="btn btn-sm btn-ghost" style={{ justifySelf: 'start', fontSize: 12 }} onClick={onEscribir} title="También con doble clic en el texto, o Intro">✎ Escribir en el lienzo</button>}
         {tipo === 'diploma' && (
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
@@ -1763,16 +1758,24 @@ function Propiedades({ e, tipo, cambiar, textoRef, subir, acciones, onEscribir, 
         <ElegirFuente e={e} cambiar={cambiar} onFuentesCambiadas={onFuentesCambiadas} />
         <div style={fila}>
           <Num etiqueta="Tamaño" valor={e.tamano || 48} onCambio={(v) => cambiar({ tamano: Math.max(4, v) })} min={4} max={1000} />
-          <Color etiqueta="Color" valor={e.color || '#1A1A1A'} onCambio={(v) => cambiar({ color: v })} />
+          <Color etiqueta="Color" valor={e.color || '#1A1A1A'} onCambio={(v) => cambiar({ color: v, trozos: sinEstiloEnTrozos(e.trozos, 'color') })} />
         </div>
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-          <button type="button" className={`btn btn-sm ${e.negrita ? 'btn-primary' : 'btn-outline'}`} onClick={() => cambiar({ negrita: !e.negrita })} style={{ fontWeight: 900 }}>N</button>
-          <button type="button" className={`btn btn-sm ${e.cursiva ? 'btn-primary' : 'btn-outline'}`} onClick={() => cambiar({ cursiva: !e.cursiva })} style={{ fontStyle: 'italic' }}>K</button>
+          <button type="button" className={`btn btn-sm ${e.negrita ? 'btn-primary' : 'btn-outline'}`} onClick={() => cambiar({ negrita: !e.negrita, trozos: sinEstiloEnTrozos(e.trozos, 'negrita') })} style={{ fontWeight: 900 }} title="Negrita (todo el texto)">N</button>
+          <button type="button" className={`btn btn-sm ${e.cursiva ? 'btn-primary' : 'btn-outline'}`} onClick={() => cambiar({ cursiva: !e.cursiva, trozos: sinEstiloEnTrozos(e.trozos, 'cursiva') })} style={{ fontStyle: 'italic' }} title="Cursiva (todo el texto)">K</button>
+          <button type="button" className={`btn btn-sm ${e.subrayado ? 'btn-primary' : 'btn-outline'}`} onClick={() => cambiar({ subrayado: !e.subrayado, trozos: sinEstiloEnTrozos(e.trozos, 'subrayado') })} style={{ textDecoration: 'underline' }} title="Subrayado (todo el texto)">S</button>
+          <button type="button" className={`btn btn-sm ${e.tachado ? 'btn-primary' : 'btn-outline'}`} onClick={() => cambiar({ tachado: !e.tachado, trozos: sinEstiloEnTrozos(e.trozos, 'tachado') })} style={{ textDecoration: 'line-through' }} title="Tachado (todo el texto)">T</button>
           <button type="button" className={`btn btn-sm ${e.mayusculas ? 'btn-primary' : 'btn-outline'}`} onClick={() => cambiar({ mayusculas: !e.mayusculas })} title="Mayúsculas">AA</button>
           {[['izquierda', '⇤'], ['centro', '↔'], ['derecha', '⇥']].map(([k, t]) => (
             <button key={k} type="button" className={`btn btn-sm ${(e.alinear || 'izquierda') === k ? 'btn-primary' : 'btn-outline'}`} onClick={() => cambiar({ alinear: k })} title={`Alinear a la ${k}`}>{t}</button>
           ))}
         </div>
+        <div style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 12.5, fontWeight: 700, color: 'var(--ink-2)' }}>
+          Lista
+          <button type="button" className={`btn btn-sm ${e.lista === 'puntos' ? 'btn-primary' : 'btn-outline'}`} onClick={() => cambiar({ lista: e.lista === 'puntos' ? undefined : 'puntos' })}>• Viñetas</button>
+          <button type="button" className={`btn btn-sm ${e.lista === 'numeros' ? 'btn-primary' : 'btn-outline'}`} onClick={() => cambiar({ lista: e.lista === 'numeros' ? undefined : 'numeros' })}>1. Números</button>
+        </div>
+        <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Para poner en negrita o de otro color solo una parte: doble clic en el texto, elige esa parte y usa la barra de encima.</span>
         <div style={fila}>
           <Num etiqueta="Interlineado" valor={e.interlineado || 1.25} onCambio={(v) => cambiar({ interlineado: Math.max(0.6, v) })} min={0.6} max={3} paso={0.05} />
           <Num etiqueta="Espaciado" valor={e.espaciado || 0} onCambio={(v) => cambiar({ espaciado: v })} min={-10} max={60} />
@@ -2289,33 +2292,77 @@ function PanelRevision({ id, revision, setRevision, sucio, guardar, pedir, elegi
 }
 
 // ═══════════════════════ Escribir en el lienzo ═══════════════════════
-// La caja donde se escribe un texto en el propio lienzo: encima de él, con su
+// El cuadro donde se escribe un texto en el propio lienzo: encima de él, con su
 // misma letra, tamaño, color y giro (el del lienzo se esconde mientras tanto).
-// Esc, Ctrl+Intro o pulsar fuera, y listo.
+// Encima, una barra para dar formato a lo que se elige (negrita, cursiva,
+// subrayado, tachado, color) y para hacer listas. Esc, Ctrl+Intro o pulsar
+// fuera, y listo. Ctrl+B / Ctrl+I / Ctrl+U también funcionan.
 const DE_EJEMPLO = /^(Un título|Un subtítulo|Escribe aquí tu texto|Título del post|Nombre|Tu mensaje\naquí)$/;
-function TextoEnLienzo({ e, escala, cursor, onCambio, onFin }) {
-  const ref = useRef(null);
+function TextoEnLienzo({ e, escala, punto, onCambio, onLista, onFin }) {
+  const ref = useRef(null), barra = useRef(null);
+  const kit = useContext(KitMarca);
   useEffect(() => {
-    const t = ref.current; if (!t) return;
-    t.focus({ preventScroll: true });
-    // Lo de ejemplo se selecciona entero (se escribe encima); si no, el cursor va donde el clic.
-    if (DE_EJEMPLO.test(e.texto || '')) t.select();
-    else t.setSelectionRange(cursor, cursor);
+    const d = ref.current; if (!d) return;
+    d.innerHTML = htmlDeTrozos(e);
+    d.focus({ preventScroll: true });
+    try { document.execCommand('styleWithCSS', false, true); } catch { /* sin él, etiquetas */ }
+    // Lo de ejemplo se elige entero (se escribe encima); si no, el cursor va donde el doble clic.
+    const sel = window.getSelection();
+    let puesto = false;
+    if (punto && !DE_EJEMPLO.test(e.texto || '')) {
+      let r = document.caretRangeFromPoint?.(punto.x, punto.y) || null;
+      if (!r && document.caretPositionFromPoint) { const p = document.caretPositionFromPoint(punto.x, punto.y); if (p) { r = document.createRange(); r.setStart(p.offsetNode, p.offset); } }
+      if (r && d.contains(r.startContainer)) { r.collapse(true); sel.removeAllRanges(); sel.addRange(r); puesto = true; }
+    }
+    if (!puesto) { const r = document.createRange(); r.selectNodeContents(d); if (!DE_EJEMPLO.test(e.texto || '')) r.collapse(false); sel.removeAllRanges(); sel.addRange(r); }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const avisar = () => { if (ref.current) onCambio(trozosDeHtml(ref.current, e)); };
+  const orden = (cmd, valor) => { ref.current?.focus(); document.execCommand(cmd, false, valor); avisar(); };
   const k = escala, tam = (e.tamano || 48) * k;
+  const boton = (t, titulo, accion, activo = false, estilo = {}) => (
+    <button type="button" title={titulo} aria-label={titulo} onMouseDown={ev => { ev.preventDefault(); accion(); }}
+      style={{ font: 'inherit', fontSize: 13, minWidth: 28, height: 28, borderRadius: 7, border: 0, cursor: 'pointer', background: activo ? 'color-mix(in oklab, var(--purple) 16%, var(--bg-2))' : 'none', color: 'var(--ink)', ...estilo }}>{t}</button>
+  );
   return (
-    <textarea ref={ref} value={e.texto || ''} aria-label="Escribir el texto" spellCheck
-      onChange={x => onCambio(x.target.value)} onBlur={onFin} onPointerDown={x => x.stopPropagation()} onDoubleClick={x => x.stopPropagation()}
-      onKeyDown={x => { if (x.key === 'Escape' || (x.key === 'Enter' && (x.ctrlKey || x.metaKey))) { x.preventDefault(); x.currentTarget.blur(); } }}
-      style={{
-        position: 'absolute', left: e.x * k, top: e.y * k, width: e.w * k, height: e.h * k, transform: `rotate(${e.rot || 0}deg)`, zIndex: 3,
-        margin: 0, padding: 0, border: 0, outline: '2px dashed #7C5CFF', outlineOffset: 3, background: 'transparent', resize: 'none', overflow: 'hidden',
-        font: `${e.cursiva ? 'italic ' : ''}${e.negrita ? 700 : 400} ${tam}px "${e.fuente || 'Montserrat'}", Montserrat, Arial, sans-serif`,
-        lineHeight: `${tam * (e.interlineado || 1.25)}px`, letterSpacing: `${(e.espaciado || 0) * k}px`, color: e.color || '#1A1A1A', opacity: e.opacidad ?? 1,
-        textAlign: e.alinear === 'centro' ? 'center' : e.alinear === 'derecha' ? 'right' : 'left', textTransform: e.mayusculas ? 'uppercase' : 'none',
-        whiteSpace: 'pre-wrap', overflowWrap: 'normal', wordBreak: 'normal', caretColor: '#7C5CFF',
-        textShadow: e.sombra ? `0 ${8 * k}px ${24 * k}px rgba(0,0,0,.28)` : 'none',
-      }} />
+    <>
+      <div ref={barra} onPointerDown={ev => ev.stopPropagation()} role="toolbar" aria-label="Formato del texto"
+        style={{ position: 'absolute', left: e.x * k, top: Math.max(-46, e.y * k - 46), zIndex: 6, display: 'flex', gap: 2, alignItems: 'center', padding: 4, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 10, boxShadow: 'var(--shadow)', whiteSpace: 'nowrap' }}>
+        {boton('N', 'Negrita (Ctrl+B)', () => orden('bold'), false, { fontWeight: 900 })}
+        {boton('K', 'Cursiva (Ctrl+I)', () => orden('italic'), false, { fontStyle: 'italic' })}
+        {boton('S', 'Subrayado (Ctrl+U)', () => orden('underline'), false, { textDecoration: 'underline' })}
+        {boton('T', 'Tachado', () => orden('strikeThrough'), false, { textDecoration: 'line-through' })}
+        <span style={{ width: 1, height: 20, background: 'var(--line)', margin: '0 3px' }} />
+        {[...coloresMarca(kit).slice(0, 8)].map(col => (
+          <button key={col} type="button" title={`Color ${col}`} aria-label={`Color ${col}`} onMouseDown={ev => { ev.preventDefault(); orden('foreColor', col); }}
+            style={{ width: 18, height: 18, borderRadius: 5, padding: 0, border: '1px solid var(--line)', background: col, cursor: 'pointer', margin: '0 1px' }} />
+        ))}
+        <span style={{ width: 1, height: 20, background: 'var(--line)', margin: '0 3px' }} />
+        {boton('•≡', 'Lista con viñetas', () => onLista(e.lista === 'puntos' ? undefined : 'puntos'), e.lista === 'puntos')}
+        {boton('1.', 'Lista numerada', () => onLista(e.lista === 'numeros' ? undefined : 'numeros'), e.lista === 'numeros')}
+        {boton('⌫', 'Quitar el formato de lo elegido', () => orden('removeFormat'))}
+      </div>
+      <div ref={ref} contentEditable suppressContentEditableWarning role="textbox" aria-multiline="true" aria-label="Escribir el texto" spellCheck
+        onInput={avisar}
+        onBlur={(ev) => { if (barra.current?.contains(ev.relatedTarget)) return; avisar(); onFin(); }}
+        onPointerDown={x => x.stopPropagation()} onDoubleClick={x => x.stopPropagation()}
+        onKeyDown={x => {
+          const ctrl = x.ctrlKey || x.metaKey, tecla = x.key.toLowerCase();
+          if (x.key === 'Escape' || (x.key === 'Enter' && ctrl)) { x.preventDefault(); x.currentTarget.blur(); }
+          else if (x.key === 'Enter') { x.preventDefault(); document.execCommand('insertLineBreak'); avisar(); }
+          else if (ctrl && ['b', 'i', 'u'].includes(tecla)) { x.preventDefault(); orden({ b: 'bold', i: 'italic', u: 'underline' }[tecla]); }
+        }}
+        onPaste={x => { x.preventDefault(); document.execCommand('insertText', false, x.clipboardData.getData('text/plain')); avisar(); }}
+        style={{
+          position: 'absolute', left: e.x * k, top: e.y * k, width: e.w * k, minHeight: e.h * k, transform: `rotate(${e.rot || 0}deg)`, transformOrigin: `${e.w * k / 2}px ${e.h * k / 2}px`, zIndex: 3,
+          margin: 0, padding: 0, paddingLeft: e.lista ? tam * 1.6 : 0, boxSizing: 'border-box', border: 0, outline: '2px dashed #7C5CFF', outlineOffset: 3, background: 'transparent', overflow: 'hidden',
+          font: `${e.cursiva ? 'italic ' : ''}${e.negrita ? 700 : 400} ${tam}px "${e.fuente || 'Montserrat'}", Montserrat, Arial, sans-serif`,
+          textDecoration: [e.subrayado && 'underline', e.tachado && 'line-through'].filter(Boolean).join(' ') || 'none',
+          lineHeight: `${tam * (e.interlineado || 1.25)}px`, letterSpacing: `${(e.espaciado || 0) * k}px`, color: e.color || '#1A1A1A', opacity: e.opacidad ?? 1,
+          textAlign: e.alinear === 'centro' ? 'center' : e.alinear === 'derecha' ? 'right' : 'left', textTransform: e.mayusculas ? 'uppercase' : 'none',
+          whiteSpace: 'pre-wrap', overflowWrap: 'normal', wordBreak: 'normal', caretColor: '#7C5CFF',
+          textShadow: e.sombra ? `0 ${8 * k}px ${24 * k}px rgba(0,0,0,.28)` : 'none',
+        }} />
+    </>
   );
 }
 
