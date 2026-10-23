@@ -434,6 +434,78 @@ function encaje(pos, tam, lineas, umbral) {
   }
   return mejor;
 }
+// Las distancias, como en Canva (#471): al mover algo se ve a cuánto queda lo que tiene
+// justo a cada lado, y se pega donde la distancia es la misma que hay entre otros dos (o
+// la misma a los dos lados), para repartir cosas a la misma distancia.
+const solapan = (a0, a1, b0, b1) => Math.min(a1, b1) - Math.max(a0, b0) > 0;
+function vecinos(c, cajas) {
+  const v = {};
+  for (const b of cajas) {
+    if (solapan(c.y, c.y + c.h, b.y, b.y + b.h)) {
+      if (b.x + b.w <= c.x + 0.5 && (!v.izq || b.x + b.w > v.izq.x + v.izq.w)) v.izq = b;
+      if (b.x >= c.x + c.w - 0.5 && (!v.der || b.x < v.der.x)) v.der = b;
+    }
+    if (solapan(c.x, c.x + c.w, b.x, b.x + b.w)) {
+      if (b.y + b.h <= c.y + 0.5 && (!v.arr || b.y + b.h > v.arr.y + v.arr.h)) v.arr = b;
+      if (b.y >= c.y + c.h - 0.5 && (!v.aba || b.y < v.aba.y)) v.aba = b;
+    }
+  }
+  return v;
+}
+// Los huecos que ya hay entre lo que no se mueve: cada caja con la de su derecha y la de debajo.
+function huecosDe(cajas) {
+  const h = [], v = [];
+  for (const a of cajas) {
+    const n = vecinos(a, cajas.filter(b => b !== a));
+    if (n.der && n.der.x - (a.x + a.w) >= 1) h.push({ g: n.der.x - (a.x + a.w), a, b: n.der });
+    if (n.aba && n.aba.y - (a.y + a.h) >= 1) v.push({ g: n.aba.y - (a.y + a.h), a, b: n.aba });
+  }
+  return { h, v };
+}
+// Cuánto mover (en un eje) para que el hueco con un vecino sea igual a otro que ya hay, o
+// igual a los dos lados. null si no hay ninguno cerca.
+function mismaDistancia(c, cajas, huecos, eje, umbral) {
+  const [p, t] = eje === 'h' ? ['x', 'w'] : ['y', 'h'];
+  const v = vecinos(c, cajas), A = eje === 'h' ? v.izq : v.arr, Z = eje === 'h' ? v.der : v.aba;
+  const sitios = [];
+  if (A && Z) sitios.push((A[p] + A[t] + Z[p] - c[t]) / 2);
+  for (const { g } of huecos) { if (A) sitios.push(A[p] + A[t] + g); if (Z) sitios.push(Z[p] - g - c[t]); }
+  let mejor = null;
+  for (const s of sitios) if (Math.abs(s - c[p]) < umbral && (mejor == null || Math.abs(s - c[p]) < Math.abs(mejor))) mejor = s - c[p];
+  return mejor;
+}
+// La cota entre dos cajas (a antes que b en el eje), a la mitad de lo que comparten.
+function cota(a, b, eje, igual) {
+  if (eje === 'h') { const y0 = Math.max(a.y, b.y), y1 = Math.min(a.y + a.h, b.y + b.h); return { cota: { eje, x: a.x + a.w, y: (y0 + y1) / 2, l: b.x - (a.x + a.w), igual } }; }
+  const x0 = Math.max(a.x, b.x), x1 = Math.min(a.x + a.w, b.x + b.w);
+  return { cota: { eje, x: (x0 + x1) / 2, y: a.y + a.h, l: b.y - (a.y + a.h), igual } };
+}
+// Las cotas de lo que se mueve con sus vecinos; si una es igual a otro hueco, también ese.
+function cotasDe(c, cajas, huecos) {
+  const v = vecinos(c, cajas), out = [];
+  const lados = [['h', v.izq, c], ['h', c, v.der], ['v', v.arr, c], ['v', c, v.aba]].filter(([, a, b]) => a && b);
+  for (const [eje, a, b] of lados) {
+    const l = eje === 'h' ? b.x - (a.x + a.w) : b.y - (a.y + a.h);
+    if (l < 1) continue;
+    const otro = lados.find(([e2, a2, b2]) => e2 === eje && (a2 !== a || b2 !== b) && Math.abs((eje === 'h' ? b2.x - (a2.x + a2.w) : b2.y - (a2.y + a2.h)) - l) < 0.75);
+    const igualA = huecos[eje].filter(x => Math.abs(x.g - l) < 0.75).slice(0, 3);
+    out.push(cota(a, b, eje, !!otro || igualA.length > 0));
+    for (const x of igualA) out.push(cota(x.a, x.b, eje, true));
+  }
+  return out;
+}
+// La cota en el lienzo: la línea con sus topes y la medida en píxeles del diseño.
+function Cota({ c, escala }) {
+  const col = c.igual ? '#FF5FA2' : '#7C5CE0', h = c.eje === 'h', L = c.l * escala;
+  const tope = h ? { width: 1, height: 9, top: -4 } : { height: 1, width: 9, left: -4 };
+  return (
+    <div style={{ position: 'absolute', pointerEvents: 'none', left: c.x * escala, top: c.y * escala, width: h ? L : 1, height: h ? 1 : L, background: col, zIndex: 3 }}>
+      <span style={{ position: 'absolute', background: col, ...tope, ...(h ? { left: 0 } : { top: 0 }) }} />
+      <span style={{ position: 'absolute', background: col, ...tope, ...(h ? { right: 0 } : { bottom: 0 }) }} />
+      <span style={{ position: 'absolute', left: h ? '50%' : 6, top: h ? -22 : '50%', transform: h ? 'translateX(-50%)' : 'translateY(-50%)', background: c.igual ? col : '#fff', color: c.igual ? '#fff' : col, border: `1px solid ${col}`, borderRadius: 6, padding: '0 5px', fontSize: 11, fontWeight: 700, lineHeight: '17px', whiteSpace: 'nowrap' }}>{Math.round(c.l)}</span>
+    </div>
+  );
+}
 // Los elementos de la página p, cambiados con fn.
 const cambiarElementos = (d, p, fn) => { const v = paginaDe(d, p); return conPagina(d, p, { ...v, elementos: v.elementos.map(fn) }); };
 // El diseño rehecho desde la lista de sus páginas ({ fondo, elementos }).
@@ -1037,7 +1109,8 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
       const { ancho: W, alto: H } = v, extraV = [], extraH = [];
       if (ayudas.cuadricula) { for (let p = pasoRejilla; p < W; p += pasoRejilla) extraV.push(p); for (let p = pasoRejilla; p < H; p += pasoRejilla) extraH.push(p); }
       if (ayudas.margenes) { extraV.push(margenSeguro, W - margenSeguro); extraH.push(margenSeguro, H - margenSeguro); }
-      arrastre.current = { ...a, otros: mueven.map(e => ({ ...e })), caja: cajaDe(mueven),
+      const cajas = quietos.filter(e => e.w > 0 && e.h > 0).map(e => cajaDe([e]));
+      arrastre.current = { ...a, otros: mueven.map(e => ({ ...e })), caja: cajaDe(mueven), cajas, huecos: huecosDe(cajas),
         lineasV: [...quietos.flatMap(e => [e.x, e.x + e.w / 2, e.x + e.w]), ...extraV], lineasH: [...quietos.flatMap(e => [e.y, e.y + e.h / 2, e.y + e.h]), ...extraH] };
       return;
     }
@@ -1069,8 +1142,12 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
         const ex = encaje(x, bb.w, [0, W / 2, W, ...a.lineasV], umbral), ey = encaje(y, bb.h, [0, H / 2, H, ...a.lineasH], umbral);
         if (ex) { x += ex.d; gs.push({ v: ex.l }); }
         if (ey) { y += ey.d; gs.push({ h: ey.l }); }
-        setGuias(gs);
+        // Si no se ha pegado a una línea, a la misma distancia que otros (ver mismaDistancia).
+        if (!ex) x += mismaDistancia({ x, y, w: bb.w, h: bb.h }, a.cajas, a.huecos.h, 'h', umbral) || 0;
+        if (!ey) y += mismaDistancia({ x, y, w: bb.w, h: bb.h }, a.cajas, a.huecos.v, 'v', umbral) || 0;
         const ddx = Math.round(x - bb.x), ddy = Math.round(y - bb.y);
+        gs.push(...cotasDe({ x: bb.x + ddx, y: bb.y + ddy, w: bb.w, h: bb.h }, a.cajas, a.huecos));
+        setGuias(gs);
         const pos = new Map(a.otros.map(o => [o.id, { x: o.x + ddx, y: o.y + ddy }]));
         setDoc(d => { const n = cambiarElementos(d, a.pagina, e => (pos.has(e.id) ? { ...e, ...pos.get(e.id) } : e)); docRef.current = n; return n; });
         return;
@@ -1658,7 +1735,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
                 );
               })}
               {cajaVarios && tiempo == null && <div style={{ position: 'absolute', pointerEvents: 'none', left: cajaVarios.x * escala - 4, top: cajaVarios.y * escala - 4, width: cajaVarios.w * escala + 8, height: cajaVarios.h * escala + 8, border: '1.5px dashed #7C5CFF', borderRadius: 4 }} />}
-              {guias.map((g, i) => <div key={i} style={{ position: 'absolute', pointerEvents: 'none', background: '#FF5FA2', ...(g.v != null ? { left: g.v * escala, top: 0, width: 1, height: '100%' } : { top: g.h * escala, left: 0, height: 1, width: '100%' }) }} />)}
+              {guias.map((g, i) => g.cota ? <Cota key={i} c={g.cota} escala={escala} /> : <div key={i} style={{ position: 'absolute', pointerEvents: 'none', background: '#FF5FA2', ...(g.v != null ? { left: g.v * escala, top: 0, width: 1, height: '100%' } : { top: g.h * escala, left: 0, height: 1, width: '100%' }) }} />)}
               {trazo && lapiz && (
                 <svg viewBox={`0 0 ${diseno.ancho} ${diseno.alto}`} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }} aria-hidden="true">
                   <polyline points={trazo.map(q => q.join(',')).join(' ')} fill="none" stroke={lapiz.color} strokeWidth={lapiz.grosor} strokeLinecap="round" strokeLinejoin="round" />
