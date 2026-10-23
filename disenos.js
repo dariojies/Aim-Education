@@ -419,6 +419,37 @@ export function crearDisenos({ pool, clubId, authenticateSession, requireSeccion
         } catch (err) { fallo(res, err); }
     });
 
+    // ── Traducir (MyMemory: gratis y sin cuenta; si el navegador trae su propio
+    // traductor, el editor usa ese y no llega aquí). Frases sueltas, con caché. ──
+    const IDIOMAS = ['en', 'fr', 'de', 'it', 'pt'];
+    const cacheTraducir = new Map();
+    async function traducirUna(texto, a) {
+        const clave = `${a}|${texto}`;
+        if (cacheTraducir.has(clave)) return cacheTraducir.get(clave);
+        const ctrl = new AbortController(), t = setTimeout(() => ctrl.abort(), 15_000);
+        try {
+            const r = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(texto)}&langpair=es|${a}`, { signal: ctrl.signal });
+            const d = await r.json();
+            if (d.quotaFinished) corta(429, 'Por hoy se ha llegado al límite del traductor gratuito: prueba mañana (o desde Chrome, que trae el suyo).');
+            const sale = String(d.responseData?.translatedText || '').trim();
+            if (!sale || d.responseStatus !== 200) return texto;
+            if (cacheTraducir.size > 3000) cacheTraducir.clear();
+            cacheTraducir.set(clave, sale);
+            return sale;
+        } finally { clearTimeout(t); }
+    }
+    router.post('/api/admin/disenos/traducir', ...gestion, async (req, res) => {
+        try {
+            const a = String(req.body?.a || '');
+            if (!IDIOMAS.includes(a)) corta(400, 'Ese idioma no está.');
+            const textos = (Array.isArray(req.body?.textos) ? req.body.textos : []).map(x => String(x ?? '').slice(0, 480)).slice(0, 300);
+            const salida = [];
+            // De tres en tres (sin agobiar al servicio).
+            for (let i = 0; i < textos.length; i += 3) salida.push(...await Promise.all(textos.slice(i, i + 3).map(x => (x.trim() ? traducirUna(x, a) : x))));
+            res.json({ traducciones: salida });
+        } catch (err) { fallo(res, err.name === 'AbortError' ? Object.assign(new Error('El traductor tarda demasiado: prueba otra vez.'), { status: 504 }) : err); }
+    });
+
     // ── Música para los vídeos (va con el diseño; el archivo, a aim_web_documentos) ──
     const FORMATO_AUDIO = (b) => {
         const cab = b.subarray(0, 4).toString('latin1');

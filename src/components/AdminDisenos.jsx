@@ -13,6 +13,7 @@ import { diferencias, aplicarOps } from '../disenos/vivo.js';
 import { COLORES_GRAFICO, CLASES_GRAFICO } from '../disenos/tablas.js';
 import { quitarFondo } from '../disenos/fondo.js';
 import Presentacion from '../disenos/Presentacion.jsx';
+import { IDIOMAS, traducirDiseno } from '../disenos/traducir.js';
 import { htmlDeTrozos, trozosDeHtml, sinEstiloEnTrozos } from '../disenos/textoRico.js';
 import { PALETAS_LISTAS, PARES_LETRAS, aplicarEstilo, coloresDe, contraste } from '../disenos/estilos.js';
 import { PLANTILLAS } from '../disenos/plantillas.js';
@@ -1144,6 +1145,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
                 tipo === 'diploma' && ['lote', 'Diplomas en lote', 'Un PDF con uno para cada alumno de una clase o un examen'],
                 ['biblioteca', 'Para correos y noticias', 'Se guarda en las imágenes de la web'],
                 ['enlace', 'Enlace para ver', 'Para quien no entra al panel: lo ve y lo descarga, sin poder cambiarlo'],
+                ['traducir', 'Traducir', 'Una copia en inglés (u otro idioma), para las clases de inglés'],
                 ['plantilla', 'Guardar como plantilla del equipo', 'Para que todos empiecen desde aquí'],
               ].filter(Boolean).map(([k, t, d]) => (
                 <button key={k} type="button" onClick={() => (k === 'plantilla' ? comoPlantilla() : usar(k))} style={{ font: 'inherit', textAlign: 'left', padding: '8px 10px', border: 0, borderRadius: 8, background: 'none', color: 'var(--ink)', cursor: 'pointer', display: 'grid' }}>
@@ -1404,6 +1406,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
       {ventana === 'imprenta' && <ParaImprenta doc={doc} nombre={nombre} ejemplo={ejemplo} onCerrar={() => setVentana(null)} />}
       {ventana === 'animacion' && <ExportarAnimacion diseno={diseno} nombre={nombre} onCerrar={() => setVentana(null)} />}
       {ventana === 'presentar' && <Presentacion doc={doc} inicio={pagina} variables={ejemplo} onCerrar={() => setVentana(null)} />}
+      {ventana === 'traducir' && <Traducir doc={doc} nombre={nombre} tipo={tipo} ejemplo={ejemplo} sucio={sucio} onCerrar={() => setVentana(null)} />}
       {ventana === 'enlace' && <EnlaceParaVer id={id} inicial={doc.enlace} sucio={sucio} guardar={guardar} onCerrar={() => setVentana(null)} />}
       {ventana === 'ayuda' && (
         <Ventana titulo="Cómo se usa" onCerrar={() => setVentana(null)} ancho={560}>
@@ -2617,6 +2620,44 @@ function FotosDeBanco({ onCerrar, onElegir }) {
           <button type="button" className="btn btn-sm btn-ghost" disabled={pagina >= Math.min(10, res.paginas)} onClick={() => buscar(pagina + 1)}>Más ›</button>
         </div>
       </>)}
+    </Ventana>
+  );
+}
+
+// Traducir: una copia del diseño en otro idioma (este no se toca).
+function Traducir({ doc, nombre, tipo, ejemplo, sucio, onCerrar }) {
+  const [a, setA] = useState('en');
+  const [prog, setProg] = useState(null);
+  const [hecho, setHecho] = useState(null);
+  async function crear() {
+    setProg('Traduciendo…');
+    try {
+      const datos = await traducirDiseno(doc, a, { variables: ejemplo, onProgreso: (h, t) => setProg(`Traduciendo… ${h} de ${t}`) });
+      const { carpeta, enlace, esPlantilla, ...limpio } = datos; // eslint-disable-line no-unused-vars
+      const idioma = IDIOMAS.find(x => x[0] === a)[1].toLowerCase();
+      const r = await api('/api/admin/disenos', { method: 'POST', body: { nombre: `${nombre} (${idioma})`.slice(0, 150), tipo, datos: { ...limpio, ...(carpeta ? { carpeta } : {}) }, miniatura: await miniatura(limpio, ejemplo).catch(() => null) } });
+      setHecho(r.id);
+    } catch (e) { alert(e.message); } finally { setProg(null); }
+  }
+  return (
+    <Ventana titulo="Traducir el diseño" onCerrar={prog ? () => {} : onCerrar} ancho={520}>
+      {hecho ? <>
+        <p style={{ margin: 0, fontSize: 14 }}>Hecha la copia traducida. Repásala antes de usarla: una traducción automática puede equivocarse con los nombres y las frases hechas, y los textos pueden ocupar más o menos.</p>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button type="button" className="btn btn-sm btn-ghost" onClick={onCerrar}>Seguir aquí</button>
+          <button type="button" className="btn btn-sm btn-primary" onClick={() => { if (!sucio || window.confirm('Hay cambios sin guardar en este diseño. ¿Abrir la copia sin guardarlos?')) window.location.assign(`/admin/aim-design?abrir=${hecho}`); }}>Abrir la copia</button>
+        </div>
+      </> : <>
+        <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-2)' }}>Se crea una copia con los textos, las tablas y los gráficos traducidos; este diseño no cambia. Los huecos de los diplomas ({'{alumno}'}…) se quedan como están. Es gratis: con Chrome se traduce en el propio ordenador.</p>
+        <label style={etq}>A qué idioma
+          <select value={a} onChange={e => setA(e.target.value)} style={inp}>{IDIOMAS.map(([k, t]) => <option key={k} value={k}>{t}</option>)}</select>
+        </label>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
+          {prog && <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>{prog}</span>}
+          <button type="button" className="btn btn-sm btn-ghost" disabled={!!prog} onClick={onCerrar}>Cancelar</button>
+          <button type="button" className="btn btn-sm btn-primary" disabled={!!prog} onClick={crear}>Crear la copia traducida</button>
+        </div>
+      </>}
     </Ventana>
   );
 }
