@@ -34,6 +34,7 @@ import { crearSustituciones, crearTablasSustituciones, SQL_SUSTITUYE } from './s
 import { crearDisenos, crearTablasDisenos, disenosPorAprobar, revisionDeMisDisenos, mencionesDe } from './disenos.js';
 import { configurarDisenosServidor } from './disenos-servidor.js';
 import { crearMedios, crearTablasMedios, limpiarMedios } from './medios.js';
+import { crearPantallas, crearTablasPantallas, prepararEstaticas, limpiarMediosPantalla } from './pantallas.js';
 import { programarHistoriasFestivos, felicitacionCumple } from './disenos-automaticos.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
@@ -2345,6 +2346,8 @@ async function initDb() {
         await crearTablasDisenos(client);
         // Los vídeos de Aim Design y lo preparado para la tele (medios.js), en trozos.
         await crearTablasMedios(client);
+        // La tele de recepción: sus pantallas y lo que pasa en cada una (pantallas.js).
+        await crearTablasPantallas(client);
         // La tienda online (#432): productos, fotos, variantes, pedidos y líneas.
         await crearTablasTienda(client);
     } finally {
@@ -2790,7 +2793,10 @@ app.use((req, res, next) => {
     const host = String(req.headers.host || '').toLowerCase().split(':')[0];
     const proto = String(req.headers['x-forwarded-proto'] || req.protocol).split(',')[0];
     const delDominio = host === 'aimeducation.es' || host.endsWith('.aimeducation.es');
-    if (delDominio && (host !== HOST_PRINCIPAL || proto === 'http')) {
+    // La tele de recepción (y sus vídeos) también por http: su navegador es de 2016 y
+    // puede no aceptar el certificado de ahora.
+    const tele = req.path.startsWith('/tele/') || req.path.startsWith('/m/');
+    if (delDominio && (host !== HOST_PRINCIPAL || (proto === 'http' && !tele))) {
         return res.redirect(301, `https://${HOST_PRINCIPAL}${req.originalUrl}`);
     }
     next();
@@ -5228,6 +5234,8 @@ app.use(crearEvaluacion({ pool, clubId: AIM_CLUB_ID, authenticateSession, requir
 app.use(crearDisenos({ pool, clubId: AIM_CLUB_ID, authenticateSession, requireSeccion }).router);
 // Sus vídeos (y lo de la tele): se suben por trozos y se sirven en /m/<clave>.
 app.use(crearMedios({ pool, authenticateSession, requireSeccion }));
+// La tele de recepción: el carrusel (Aim Design → Pantallas) y la página /tele/<clave>.
+app.use(crearPantallas({ pool, authenticateSession, requireSeccion }));
 // Para mencionar (@) en los comentarios de Aim Design: el personal que ve Aim Design.
 app.get('/api/admin/disenos-equipo', authenticateSession, requireSeccion('grafico'), async (req, res) => {
     try {
@@ -23017,7 +23025,10 @@ const servidor = app.listen(port, () => {
     setTimeout(function historiasDeFestivos() { programarHistoriasFestivos(pool); }, 2 * 60 * 1000);
     // Los vídeos de Aim Design que ya no usa nadie, una vez al día.
     setTimeout(function limpiarVideos() { limpiarMedios(pool); }, 5 * 60 * 1000);
-    setInterval(function limpiarVideos() { limpiarMedios(pool); }, 24 * 3600 * 1000);
+    setInterval(function limpiarVideos() { limpiarMedios(pool); limpiarMediosPantalla(pool); }, 24 * 3600 * 1000);
+    // La tele: lo que no lleva vídeo se pinta solo cuando cambia el diseño.
+    setTimeout(function prepararTele() { prepararEstaticas(pool); }, 3 * 60 * 1000);
+    setInterval(function prepararTele() { prepararEstaticas(pool); }, 5 * 60 * 1000);
     setInterval(function historiasDeFestivos() { programarHistoriasFestivos(pool); }, 10 * 60 * 1000);
     // Soporte: aviso diario de tickets vencidos o parados y resumen semanal.
     setTimeout(avisosSoportePeriodicos, 90 * 1000);

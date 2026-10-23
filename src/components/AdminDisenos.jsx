@@ -15,6 +15,7 @@ import { diferencias, aplicarOps } from '../disenos/vivo.js';
 import { COLORES_GRAFICO, CLASES_GRAFICO } from '../disenos/tablas.js';
 import { quitarFondo } from '../disenos/fondo.js';
 import Presentacion from '../disenos/Presentacion.jsx';
+import PantallasTele from './PantallasTele.jsx';
 import { IDIOMAS, traducirDiseno } from '../disenos/traducir.js';
 import { alternativas, encaja } from '../disenos/iconosEs.js';
 import { buscarTexto, reemplazarTexto } from '../disenos/buscar.js';
@@ -116,6 +117,7 @@ export default function AimDesign({ showToast, pestana: inicial, conCorreos = tr
 function DisenosGraficos({ showToast, puedePublicar }) {
   const [datos, setDatos] = useState(null);
   const [abierto, setAbierto] = useState(null);       // { id, nombre, tipo, datos }
+  const [verPantallas, setVerPantallas] = useState(false);   // la tele de recepción (PantallasTele.jsx)
   const [panelInicial, setPanelInicial] = useState(null);
   const [nuevo, setNuevo] = useState(false);
   const [buscar, setBuscar] = useState('');
@@ -198,8 +200,11 @@ function DisenosGraficos({ showToast, puedePublicar }) {
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
         <p style={{ margin: 0, color: 'var(--ink-2)', fontSize: 14, flex: '1 1 300px' }}>Carteles, posts, carruseles, historias animadas y diplomas, como en Canva. Se exportan a PNG, JPG, PDF (también de imprenta), GIF o vídeo; los diplomas los usa el aula virtual.</p>
         <input type="search" value={buscar} onChange={e => setBuscar(e.target.value)} placeholder="Buscar un diseño…" aria-label="Buscar un diseño" style={{ ...inp, width: 220 }} />
-        <button type="button" className="btn btn-primary btn-sm" onClick={() => setNuevo(true)}><I.Plus /> Nuevo diseño</button>
+        <button type="button" className={`btn btn-sm ${verPantallas ? 'btn-primary' : 'btn-outline'}`} onClick={() => setVerPantallas(v => !v)} title="El carrusel de la tele de recepción">📺 {verPantallas ? '← Los diseños' : 'Pantallas de la tele'}</button>
+        {!verPantallas && <button type="button" className="btn btn-primary btn-sm" onClick={() => setNuevo(true)}><I.Plus /> Nuevo diseño</button>}
       </div>
+      {verPantallas && <PantallasTele disenos={datos?.disenos || []} abrirDiseno={(id) => { setVerPantallas(false); abrir(id); }} showToast={showToast} />}
+      {!verPantallas && <>
       {datos && !enPapelera && (todos.length > 0 || datos.papelera > 0) && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
           {pastilla('', 'Todos', todos.length)}
@@ -275,6 +280,7 @@ function DisenosGraficos({ showToast, puedePublicar }) {
           ))}
         </div>
       )}
+      </>}
       {nuevo && <NuevoDiseno equipo={todos.filter(d => d.plantilla)} onCerrar={() => setNuevo(false)}
         onCrear={(d) => { setNuevo(false); setAbierto(carpeta && !carpeta.startsWith('__') ? { ...d, datos: { ...d.datos, carpeta } } : d); }} />}
     </div>

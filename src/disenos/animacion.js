@@ -59,7 +59,8 @@ export function formatoVideo(conAudio = false) {
 }
 
 // Graba el vídeo y devuelve { blob, mime, ext, ancho, alto }.
-export async function grabarVideo(diseno, { ancho = 1080, fps = 30, onProgreso } = {}) {
+// bitrate: bits por segundo (la tele lo baja en los largos, para que no pasen de 100 MB).
+export async function grabarVideo(diseno, { ancho = 1080, fps = 30, onProgreso, bitrate = 8_000_000 } = {}) {
   const musica = diseno.animacion?.musica;
   const f = formatoVideo(!!musica?.url);
   if (!f) throw new Error('Este navegador no sabe hacer vídeos. Prueba con Chrome o con el GIF.');
@@ -81,7 +82,7 @@ export async function grabarVideo(diseno, { ancho = 1080, fps = 30, onProgreso }
     destino.stream.getAudioTracks().forEach(t => flujo.addTrack(t));
     sonido = { ac, fuente, vol };
   }
-  const rec = new MediaRecorder(flujo, { mimeType: f.tipo, videoBitsPerSecond: 8_000_000 });
+  const rec = new MediaRecorder(flujo, { mimeType: f.tipo, videoBitsPerSecond: bitrate });
   const trozos = [];
   rec.ondataavailable = (ev) => { if (ev.data?.size) trozos.push(ev.data); };
   const fin = new Promise(ok => { rec.onstop = ok; });
