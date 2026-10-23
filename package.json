@@ -28,6 +28,7 @@
     "lucide-react": "^0.563.0",
     "mailparser": "^3.9.31",
     "nodemailer": "^8.0.10",
+    "onnxruntime-web": "^1.22.0",
     "pdfkit": "^0.19.1",
     "pg": "^8.20.0",
     "qrcode": "^1.5.4",

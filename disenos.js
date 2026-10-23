@@ -39,10 +39,19 @@
 // navegador lleva el diseño entero y aplica lo de los otros elemento a
 // elemento. Las salas viven en la memoria de este proceso: vale con un solo
 // dyno web (el plan Basic no admite más); con varios haría falta Redis.
+//
+// Fotos de banco: las de Openverse (api.openverse.org, gratis y sin cuenta),
+// solo las de dominio público (CC0 y «public domain»: no hay que citar a
+// nadie). Al usar una, se trae a las imágenes de la web (/ci/…): así el
+// diseño no depende de un servidor de fuera y se puede exportar.
+//
+// El kit de la marca (aim_ajustes «disenos_kit»): las paletas del club y la
+// pareja de letras (títulos y texto) para los «Estilos» del editor.
 // ─────────────────────────────────────────────────────────────────────────────
 import express from 'express';
 import crypto from 'crypto';
 import { limpiarMarca, MARCA_POR_DEFECTO } from './correo-diseno.js';
+import sharp from 'sharp';
 
 export async function crearTablasDisenos(client) {
     await client.query(`
@@ -250,6 +259,109 @@ export function crearDisenos({ pool, clubId, authenticateSession, requireSeccion
             if (para) enviar(para.res, { tipo: 'estado', de, doc: req.body.doc, nombre: req.body.nombre, tipoDiseno: req.body.tipoDiseno, sucio: !!req.body.sucio });
         } else if (t === 'guardado') aLosDemas(sala, de, { tipo: 'guardado', de, nombre: c.nombre });
         res.json({ success: true });
+    });
+
+    // ── Una imagen hecha en el editor (una foto sin fondo, por ejemplo) ──
+    const guardarImagenDiseno = async (datos, mime, nombre, ancho, alto, userId) => {
+        const id = crypto.randomBytes(12).toString('hex');
+        await pool.query(
+            `INSERT INTO aim_correo_imagenes (id, mime, datos, nombre, ancho, alto, bytes, subido_por) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            [id, mime, datos, String(nombre || '').slice(0, 200) || null, ancho || null, alto || null, datos.length, userId]);
+        return `/ci/${id}`;
+    };
+    router.post('/api/admin/disenos/imagen', ...gestion, async (req, res) => {
+        try {
+            const m = String(req.body?.datos || '').match(/^data:(image\/(?:png|jpeg));base64,([A-Za-z0-9+/=]+)$/);
+            if (!m) corta(400, 'La imagen no ha llegado bien.');
+            const datos = Buffer.from(m[2], 'base64');
+            if (datos.length > 5.5 * 1024 * 1024) corta(413, 'La imagen pesa demasiado (máximo 5 MB).');
+            const meta = await sharp(datos).metadata().catch(() => null);
+            if (!meta?.width) corta(400, 'Ese archivo no es una imagen válida.');
+            res.status(201).json({ success: true, url: await guardarImagenDiseno(datos, m[1], req.body?.nombre, meta.width, meta.height, req.userSession.userId), ancho: meta.width, alto: meta.height });
+        } catch (err) { fallo(res, err); }
+    });
+
+    // ── Fotos de banco (Openverse, solo dominio público) ──
+    const OPENVERSE = 'https://api.openverse.org/v1/images/';
+    const cacheBanco = new Map();
+    // Lo que trae la búsqueda de cada foto (su dirección y licencia): pedir su ficha a Openverse tarda mucho.
+    const fotosVistas = new Map();
+    const pedirOpenverse = async (url) => {
+        const ctrl = new AbortController(), t = setTimeout(() => ctrl.abort(), 25_000);
+        try {
+            const r = await fetch(url, { signal: ctrl.signal, headers: { 'User-Agent': 'AimEducation-AimDesign/1.0 (https://www.aimeducation.es)' } });
+            if (!r.ok) corta(502, r.status === 429 ? 'El banco de fotos está saturado: prueba en un rato.' : 'El banco de fotos no contesta ahora.');
+            return r.json();
+        } finally { clearTimeout(t); }
+    };
+    router.get('/api/admin/disenos/banco', ...gestion, async (req, res) => {
+        try {
+            const q = String(req.query.q || '').trim().slice(0, 80), pagina = Math.max(1, Math.min(10, Number(req.query.pagina) || 1));
+            if (q.length < 2) corta(400, 'Escribe qué buscas.');
+            const clave = `${q.toLowerCase()}|${pagina}`;
+            let r = cacheBanco.get(clave);
+            if (!r || r.t < Date.now() - 15 * 60_000) {
+                const d = await pedirOpenverse(`${OPENVERSE}?q=${encodeURIComponent(q)}&license=cc0,pdm&page_size=20&page=${pagina}&mature=false`);
+                if (fotosVistas.size > 3000) fotosVistas.clear();
+                for (const x of d.results || []) fotosVistas.set(x.id, { url: x.url, license: x.license, title: x.title, source: x.source || x.provider });
+                r = { t: Date.now(), total: d.result_count || 0, paginas: d.page_count || 1, fotos: (d.results || []).map(x => ({
+                    id: x.id, titulo: x.title || '', autor: x.creator || '', fuente: x.source || x.provider || '', licencia: x.license,
+                    ancho: x.width || null, alto: x.height || null, mini: `${OPENVERSE}${x.id}/thumb/`,
+                })) };
+                if (cacheBanco.size > 200) cacheBanco.clear();
+                cacheBanco.set(clave, r);
+            }
+            res.set('Cache-Control', 'no-store');
+            res.json(r);
+        } catch (err) { fallo(res, err); }
+    });
+    router.post('/api/admin/disenos/banco/:id', ...gestion, async (req, res) => {
+        try {
+            if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) corta(400, 'Esa foto no vale.');
+            const f = fotosVistas.get(req.params.id) || await pedirOpenverse(`${OPENVERSE}${req.params.id}/`);
+            if (!['cc0', 'pdm'].includes(f.license)) corta(400, 'Esa foto no es de dominio público.');
+            if (!/^https:\/\//.test(f.url || '')) corta(400, 'Esa foto no se puede traer.');
+            const ctrl = new AbortController(), t = setTimeout(() => ctrl.abort(), 25_000);
+            let datos;
+            try {
+                const r = await fetch(f.url, { signal: ctrl.signal, redirect: 'follow', headers: { 'User-Agent': 'AimEducation-AimDesign/1.0' } });
+                if (!r.ok || !/^image\//.test(r.headers.get('content-type') || '')) corta(502, 'No se ha podido traer esa foto (prueba con otra).');
+                if (Number(r.headers.get('content-length')) > 25 * 1024 * 1024) corta(413, 'Esa foto es demasiado grande.');
+                datos = Buffer.from(await r.arrayBuffer());
+            } finally { clearTimeout(t); }
+            // A 2000 px como mucho; con transparencia, PNG; si no, JPG.
+            const img = sharp(datos, { failOn: 'none' }).rotate().resize({ width: 2000, height: 2000, fit: 'inside', withoutEnlargement: true });
+            const meta = await img.metadata();
+            const png = meta.hasAlpha;
+            const { data: salida, info } = await (png ? img.png({ compressionLevel: 9 }) : img.flatten({ background: '#ffffff' }).jpeg({ quality: 86, mozjpeg: true })).toBuffer({ resolveWithObject: true });
+            const url = await guardarImagenDiseno(salida, png ? 'image/png' : 'image/jpeg', `Banco · ${String(f.title || 'foto').slice(0, 120)} (${f.license === 'cc0' ? 'CC0' : 'dominio público'}, ${f.source || ''})`, info.width, info.height, req.userSession.userId);
+            res.status(201).json({ success: true, url, ancho: info.width, alto: info.height });
+        } catch (err) { fallo(res, err.name === 'AbortError' ? Object.assign(new Error('El banco de fotos tarda demasiado: prueba con otra.'), { status: 504 }) : err); }
+    });
+
+    // ── El kit de la marca: paletas y letras para los «Estilos» ──
+    const limpiarKit = (k = {}) => {
+        const col = (c) => (/^#[0-9a-f]{6}$/i.test(String(c || '')) ? String(c).toUpperCase() : null);
+        const txt = (v, n) => String(v || '').trim().slice(0, n);
+        const paletas = (Array.isArray(k.paletas) ? k.paletas : []).slice(0, 12)
+            .map(p => ({ nombre: txt(p?.nombre, 40) || 'Paleta', colores: (Array.isArray(p?.colores) ? p.colores : []).map(col).filter(Boolean).slice(0, 8) }))
+            .filter(p => p.colores.length >= 2);
+        const letra = (f) => (f && txt(f.fuente, 60) ? { fuente: txt(f.fuente, 60), ...(f.url && /^\/doc\/\d+\//.test(f.url) ? { url: txt(f.url, 200) } : {}) } : null);
+        return { paletas, titulos: letra(k.titulos), texto: letra(k.texto) };
+    };
+    const leerKit = async () => limpiarKit((await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'disenos_kit'`)).rows[0]?.valor || {});
+    router.get('/api/admin/disenos/kit', ...gestion, async (req, res) => {
+        try { res.set('Cache-Control', 'no-store'); res.json(await leerKit()); } catch (err) { fallo(res, err); }
+    });
+    router.put('/api/admin/disenos/kit', ...gestion, async (req, res) => {
+        try {
+            const kit = limpiarKit(req.body || {});
+            await pool.query(
+                `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('disenos_kit', $1::jsonb, NOW(), $2)
+                 ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+                [JSON.stringify(kit), req.userSession.userId]);
+            res.json(kit);
+        } catch (err) { fallo(res, err); }
     });
 
     // ── Letras propias: se suben aquí y salen en todos los diseños ──

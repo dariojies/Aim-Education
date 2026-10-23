@@ -10,6 +10,8 @@ import {
 import { FIGURAS, MARCOS, ICONOS, ICONOS_ACTIVIDAD, svgFigura } from '../disenos/formas.js';
 import { formatoVideo, grabarVideo, exportarGif, exportarVideo } from '../disenos/animacion.js';
 import { diferencias, aplicarOps } from '../disenos/vivo.js';
+import { quitarFondo } from '../disenos/fondo.js';
+import { PALETAS_LISTAS, PARES_LETRAS, aplicarEstilo, coloresDe, contraste } from '../disenos/estilos.js';
 import { PLANTILLAS } from '../disenos/plantillas.js';
 import { Plantillas as PlantillasCorreo, Marca as MarcaCorreo } from './AdminDisenoCorreos.jsx';
 
@@ -381,6 +383,7 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
   const [revision, setRevision] = useState(null);
   const [soltando, setSoltando] = useState(false);
   const [zoom, setZoom] = useState(null);             // null: que quepa entero
+  const [procesando, setProcesando] = useState(null); // un aviso mientras se hace algo largo (quitar el fondo)
   const [menu, setMenu] = useState(null);             // el menú del botón derecho: { x, y, id? }
   const [ayudas, setAyudas] = useState(() => { try { return JSON.parse(localStorage.getItem('aim_design_ayudas')) || {}; } catch { return {}; } });
   const { go } = useRouter();
@@ -608,6 +611,24 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
     window.addEventListener('paste', f);
     return () => window.removeEventListener('paste', f);
   }, []);
+  // Quitar el fondo de una foto (en el navegador). La de antes se guarda para recuperarla.
+  async function quitarFondoSel() {
+    const el = elegido;
+    if (!el || el.tipo !== 'imagen' || !el.url) return;
+    if (el.url.startsWith('/api/admin/disenos/foto-club/')) {
+      alert('A las fotos de la galería no se les quita el fondo: la foto recortada saldría de la galería y dejaría de depender del permiso de fotos. Usa una foto subida.');
+      return;
+    }
+    setProcesando('Quitando el fondo… (la primera vez tarda un poco más)');
+    try {
+      const img = await cargarImagen(el.url);
+      if (!img) throw new Error('no se ha podido abrir la foto');
+      const c = await quitarFondo(img);
+      const r = await api('/api/admin/disenos/imagen', { method: 'POST', body: { datos: c.toDataURL('image/png'), nombre: 'Foto sin fondo' } });
+      cambiarEl(el.id, { url: r.url, conFondo: el.conFondo || el.url, encuadre: null, ajuste: el.ajuste || 'contener' });
+      showToast?.('Fondo quitado. Si no ha quedado bien: «Recuperar el fondo».');
+    } catch (e) { alert(`No se ha podido quitar el fondo: ${e.message}`); } finally { setProcesando(null); }
+  }
   // Voltear: uno, en su sitio; varios, como un bloque (también se cambian de lado).
   function voltear(eje) {
     if (!elegidos.length) return;
@@ -1092,14 +1113,15 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
         {/* Izquierda: añadir, fondo, capas, animar y revisión */}
         <aside style={{ borderRight: '1px solid var(--line)', background: 'var(--bg-2)', overflowY: 'auto', padding: 12, display: 'grid', gap: 10, alignContent: 'start' }}>
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-            {[['anadir', 'Añadir'], ['fondo', 'Fondo'], ['capas', 'Capas'], ['animar', 'Animar'], ['revision', `Revisión${pendientes ? ` (${pendientes})` : ''}`]].map(([k, t]) => (
+            {[['anadir', 'Añadir'], ['estilos', 'Estilos'], ['fondo', 'Fondo'], ['capas', 'Capas'], ['animar', 'Animar'], ['revision', `Revisión${pendientes ? ` (${pendientes})` : ''}`]].map(([k, t]) => (
               <button key={k} type="button" onClick={() => setPanel(k)} className={`btn btn-sm ${panel === k ? 'btn-primary' : 'btn-ghost'}`} style={{ flex: '1 1 28%', padding: '6px 4px', fontSize: 12.5 }}>{t}</button>
             ))}
           </div>
           {panel === 'anadir' && (
             <PanelAnadir tipo={tipo} kit={kit} anadirTexto={anadirTexto} anadirForma={anadirForma} anadirIcono={anadirIcono} anadirMarco={anadirMarco} anadirImagen={anadirImagen} anadirQr={anadirQr}
-              anadirBloque={anadirBloque} verFotos={() => setVentana('fotos')} subir={subir} />
+              anadirBloque={anadirBloque} verFotos={() => setVentana('fotos')} verBanco={() => setVentana('banco')} subir={subir} />
           )}
+          {panel === 'estilos' && <PanelEstilos doc={doc} aplicarDoc={aplicarDoc} showToast={showToast} />}
           {panel === 'fondo' && <PanelFondo fondo={diseno.fondo || {}} cambiar={(f) => aplicar(d => ({ ...d, fondo: { ...d.fondo, ...f } }))} subir={subir} />}
           {panel === 'capas' && (
             <div style={{ display: 'grid', gap: 4 }}>
@@ -1256,6 +1278,7 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
               ['Duplicar', 'Ctrl+D', duplicarSel], null,
               elegido?.tipo === 'texto' && !elegido.bloqueado && ['Escribir', 'Intro', () => editarTexto(elegido.id)],
               elegido?.tipo === 'imagen' && elegido.url && !elegido.bloqueado && ['Recortar', 'doble clic', () => recortar(elegido.id)],
+              elegido?.tipo === 'imagen' && elegido.url && !elegido.bloqueado && ['Quitar el fondo', '', quitarFondoSel],
               ['Voltear en horizontal', '', () => voltear('h')], ['Voltear en vertical', '', () => voltear('v')],
               elegidos.length > 1 && (elegidos.every(e => e.grupo && e.grupo === elegidos[0].grupo) ? ['Desagrupar', 'Ctrl+Mayús+G', desagrupar] : ['Agrupar', 'Ctrl+G', agrupar]),
               ['Al frente', '', () => capa('frente')], ['Al fondo', '', () => capa('fondo')],
@@ -1271,6 +1294,7 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
               zoom && ['Que quepa entero', 'Ctrl+0', () => hacerZoom(0)],
             ]} />
           )}
+          {procesando && <div role="status" style={{ position: 'fixed', left: '50%', top: 80, transform: 'translateX(-50%)', zIndex: 96, background: 'var(--ink)', color: 'var(--bg)', borderRadius: 999, padding: '9px 18px', fontSize: 13.5, fontWeight: 700, boxShadow: 'var(--shadow)' }}>⏳ {procesando}</div>}
           {recuadro && <div style={{ position: 'fixed', left: recuadro.x, top: recuadro.y, width: recuadro.w, height: recuadro.h, border: '1px solid #7C5CFF', background: 'rgba(124,92,255,.1)', pointerEvents: 'none', zIndex: 4 }} />}
         </div>
 
@@ -1289,7 +1313,7 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
             </div>
           ) : (
             <Propiedades e={elegido} tipo={tipo} cambiar={(c) => cambiarEl(elegido.id, c)} textoRef={textoRef} subir={subir} tramos={tramos} voltear={voltear}
-              onEscribir={() => editarTexto(elegido.id)} onRecortar={() => (recortando ? setRecortando(null) : recortar(elegido.id))} recortando={recortando === elegido.id}
+              onEscribir={() => editarTexto(elegido.id)} onRecortar={() => (recortando ? setRecortando(null) : recortar(elegido.id))} recortando={recortando === elegido.id} onQuitarFondo={quitarFondoSel}
               verFotos={() => setVentana('fotos')} onFuentesCambiadas={setFuentesClub}
               acciones={{ duplicar: duplicarSel, borrar: borrarSel, capa, alinear }} />
           )}
@@ -1309,6 +1333,7 @@ function Editor({ inicial, showToast, onCerrar, puedePublicar }) {
       {ventana === 'biblioteca' && <ParaCorreosYNoticias diseno={diseno} nombre={nombre} ejemplo={ejemplo} onCerrar={() => setVentana(null)} />}
       {ventana === 'imprenta' && <ParaImprenta doc={doc} nombre={nombre} ejemplo={ejemplo} onCerrar={() => setVentana(null)} />}
       {ventana === 'animacion' && <ExportarAnimacion diseno={diseno} nombre={nombre} onCerrar={() => setVentana(null)} />}
+      {ventana === 'banco' && <FotosDeBanco onCerrar={() => setVentana(null)} onElegir={(f) => { setVentana(null); anadirImagen(f.url, f.ancho, f.alto); }} />}
       {ventana === 'fotos' && <FotosDelClub onCerrar={() => setVentana(null)} onElegir={(f) => { setVentana(null); anadirImagen(`/api/admin/disenos/foto-club/${f.id}/grande`, f.ancho, f.alto); }} />}
     </div>
     </KitMarca.Provider>
@@ -1345,7 +1370,7 @@ function BotonSubir({ texto, onArchivo, className = 'btn btn-sm btn-outline' }) 
   );
 }
 
-function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirMarco, anadirImagen, anadirQr, anadirBloque, verFotos, subir }) {
+function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirMarco, anadirImagen, anadirQr, anadirBloque, verFotos, verBanco, subir }) {
   const [subidas, setSubidas] = useState(null);
   const [qr, setQr] = useState('');
   const [mas, setMas] = useState({});
@@ -1430,6 +1455,7 @@ function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirM
       <div style={seccionT}>Imágenes</div>
       <BotonSubir texto="⬆ Subir una imagen" onArchivo={(f) => subir(f, (r) => anadirImagen(r.url, r.ancho, r.alto))} />
       <button type="button" className="btn btn-sm btn-outline" onClick={verFotos} title="Las de la galería en las que todos los que salen tienen permiso de fotos">📷 Fotos del club</button>
+      <button type="button" className="btn btn-sm btn-outline" onClick={verBanco} title="Fotos de dominio público: gratis y sin citar a nadie">🔎 Fotos de banco (gratis)</button>
       <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>La marca</span>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
         {[...(kit?.logo && !LOGOS_MARCA.some(([u]) => u === kit.logo) ? [[kit.logo, 'Logo de los correos']] : []), ...LOGOS_MARCA].map(([u, t, oscuro]) => (
@@ -1638,7 +1664,7 @@ function FiltrosFoto({ e, cambiar, tramos }) {
   );
 }
 
-function Propiedades({ e, tipo, cambiar, textoRef, subir, acciones, onEscribir, onRecortar, recortando, verFotos, onFuentesCambiadas, tramos, voltear }) {
+function Propiedades({ e, tipo, cambiar, textoRef, subir, acciones, onEscribir, onRecortar, recortando, verFotos, onFuentesCambiadas, tramos, voltear, onQuitarFondo }) {
   const fila = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, alignItems: 'start' };
   const alinearBtn = (k, t, titulo) => <button key={k} type="button" className="btn btn-sm btn-ghost" title={titulo} onClick={() => acciones.alinear(k)} style={{ padding: '4px 6px' }}>{t}</button>;
   const nombre = e.tipo === 'forma' ? FIGURAS.find(f => f.id === e.figura)?.nombre || 'Forma' : e.tipo === 'imagen' && !e.url ? 'Marco para una foto' : NOMBRE_TIPO[e.tipo];
@@ -1716,6 +1742,10 @@ function Propiedades({ e, tipo, cambiar, textoRef, subir, acciones, onEscribir, 
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             <button type="button" className={`btn btn-sm ${recortando ? 'btn-primary' : 'btn-outline'}`} onClick={onRecortar}>{recortando ? '✓ Terminar de recortar' : '✂ Recortar'}</button>
             {e.encuadre && !recortando && <button type="button" className="btn btn-sm btn-ghost" onClick={() => cambiar({ encuadre: null })}>Quitar el recorte</button>}
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <button type="button" className="btn btn-sm btn-outline" onClick={onQuitarFondo} title="Deja solo lo que destaca (una persona, un objeto). Se hace en el navegador, gratis.">✨ Quitar el fondo</button>
+            {e.conFondo && <button type="button" className="btn btn-sm btn-ghost" onClick={() => cambiar({ url: e.conFondo, conFondo: undefined })}>↩ Recuperar el fondo</button>}
           </div>
           {recortando && <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Arrastra la foto dentro de su caja y usa el zoom de abajo. Cambia la caja de tamaño para recortarla más.</span>}
         </>}
@@ -1823,6 +1853,82 @@ function MenuContextual({ x, y, opciones, onCerrar }) {
           <span style={{ flex: 1 }}>{o[0]}</span>{o[1] && <span style={{ color: 'var(--ink-3)', fontSize: 11.5 }}>{o[1]}</span>}
         </button>
       ) : <div key={`r${i}`} style={{ height: 1, background: 'var(--line)', margin: '4px 6px' }} />))}
+    </div>
+  );
+}
+
+// Estilos: los colores y las letras de todo el diseño, de una vez. Combinaciones
+// listas, «Mezclar» (otro reparto de la misma paleta) y el kit de la marca.
+function PanelEstilos({ doc, aplicarDoc, showToast }) {
+  const marca = useContext(KitMarca);
+  const [kit, setKit] = useState(null);
+  const [ultima, setUltima] = useState(null);
+  const [giro, setGiro] = useState(0);
+  useEffect(() => { api('/api/admin/disenos/kit').then(setKit).catch(() => setKit({ paletas: [] })); }, []);
+  const delClub = kit?.paletas || [];
+  const paletas = [...delClub.map(p => ({ ...p, club: true })), ...PALETAS_LISTAS];
+  const pares = [...(kit?.titulos && kit?.texto ? [{ nombre: 'La del club', titulos: kit.titulos, texto: kit.texto }] : []), ...PARES_LETRAS];
+  const combinaciones = paletas.slice(0, 8).map((p, i) => ({ paleta: p, letras: pares[i % pares.length] }));
+  const propias = marca?.fuentes || [];
+  const todasLetras = [...FUENTES_DISENO.map(f => ({ fuente: f.id, nombre: f.nombre })), ...propias.map(f => ({ fuente: f.nombre, nombre: `${f.nombre} (del club)`, url: f.url }))];
+  function aplicar(paleta, letras, g = 0) {
+    aplicarDoc(d => aplicarEstilo(d, { paleta: paleta?.colores || null, letras, giro: g }));
+    if (paleta) setUltima(paleta);
+    setGiro(g);
+  }
+  async function guardarKit(k) { try { setKit(await api('/api/admin/disenos/kit', { method: 'PUT', body: k })); showToast?.('Guardado en el kit de la marca.'); } catch (e) { alert(e.message); } }
+  function paletaDeAqui() {
+    const colores = coloresDe(doc).slice(0, 6);
+    if (colores.length < 2) { alert('Este diseño tiene menos de dos colores.'); return; }
+    const nombre = window.prompt('Nombre de la paleta (la verá todo el equipo):', 'Paleta del club');
+    if (nombre?.trim()) guardarKit({ ...kit, paletas: [...delClub, { nombre: nombre.trim(), colores }] });
+  }
+  const muestras = (colores, tam = 16) => <span style={{ display: 'flex', gap: 2 }}>{colores.slice(0, 6).map(c => <span key={c} style={{ width: tam, height: tam, borderRadius: 4, background: c, border: '1px solid var(--line)' }} />)}</span>;
+  const letraDe = (cual) => kit?.[cual]?.fuente || '';
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      <p style={{ margin: 0, fontSize: 12.5, color: 'var(--ink-2)' }}>Cambia de una vez los colores y las letras de todo el diseño (todas las páginas). Ctrl+Z lo deshace.</p>
+      <div style={seccionT}>Combinaciones</div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+        {combinaciones.map(({ paleta, letras }) => (
+          <button key={`${paleta.nombre}${letras.nombre}`} type="button" onClick={() => aplicar(paleta, letras)} title={`${paleta.nombre} · letra ${letras.nombre}`}
+            style={{ font: 'inherit', cursor: 'pointer', padding: 8, borderRadius: 10, border: '1px solid var(--line)', background: paleta.colores[0], color: [...paleta.colores.slice(1), '#1A1A1A', '#FFFFFF'].reduce((m, c) => (contraste(c, paleta.colores[0]) > contraste(m, paleta.colores[0]) + 1.5 ? c : m)), display: 'grid', gap: 6, textAlign: 'left' }}>
+            <span style={{ fontFamily: `"${letras.titulos.fuente}"`, fontSize: 20, fontWeight: 700, lineHeight: 1 }}>Aa</span>
+            {muestras(paleta.colores, 12)}
+          </button>
+        ))}
+      </div>
+      <button type="button" className="btn btn-sm btn-outline" disabled={!ultima} onClick={() => aplicar(ultima, null, giro + 1)} title="Los mismos colores, repartidos de otra manera">🔀 Mezclar los colores</button>
+      <div style={seccionT}>Paletas</div>
+      <div style={{ display: 'grid', gap: 4 }}>
+        {paletas.map((p, i) => (
+          <div key={`${p.nombre}${i}`} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button type="button" onClick={() => aplicar(p, null)} style={{ font: 'inherit', fontSize: 12.5, flex: 1, display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', cursor: 'pointer' }}>
+              <span>{p.club ? '★ ' : ''}{p.nombre}</span>{muestras(p.colores)}
+            </button>
+            {p.club && <button type="button" className="icon-btn" aria-label={`Quitar la paleta ${p.nombre}`} onClick={() => { if (window.confirm(`¿Quitar la paleta «${p.nombre}» del kit?`)) guardarKit({ ...kit, paletas: delClub.filter(x => x !== delClub[i]) }); }}><I.X /></button>}
+          </div>
+        ))}
+      </div>
+      <button type="button" className="btn btn-sm btn-ghost" style={{ justifySelf: 'start', fontSize: 12, whiteSpace: 'normal', textAlign: 'left' }} onClick={paletaDeAqui}>＋ Guardar los colores de este diseño como paleta del club</button>
+      <div style={seccionT}>Letras</div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+        {pares.map(par => (
+          <button key={par.nombre} type="button" onClick={() => aplicar(null, par)} style={{ font: 'inherit', cursor: 'pointer', padding: '6px 8px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', textAlign: 'left', display: 'grid' }}>
+            <span style={{ fontFamily: `"${par.titulos.fuente}"`, fontSize: 15, fontWeight: 700 }}>{par.nombre}</span>
+            <span style={{ fontFamily: `"${par.texto.fuente}"`, fontSize: 11, color: 'var(--ink-3)' }}>{par.titulos.fuente} + {par.texto.fuente}</span>
+          </button>
+        ))}
+      </div>
+      <div style={seccionT}>Letras de la marca</div>
+      {['titulos', 'texto'].map(cual => (
+        <label key={cual} style={etq}>{cual === 'titulos' ? 'Para los títulos' : 'Para el texto'}
+          <select value={letraDe(cual)} onChange={x => { const l = todasLetras.find(f => f.fuente === x.target.value); guardarKit({ ...kit, [cual]: l ? { fuente: l.fuente, ...(l.url ? { url: l.url } : {}) } : null }); }} style={inp}>
+            <option value="">Sin elegir</option>
+            {todasLetras.map(f => <option key={f.fuente} value={f.fuente} style={{ fontFamily: `"${f.fuente}"` }}>{f.nombre}</option>)}
+          </select>
+        </label>
+      ))}
     </div>
   );
 }
@@ -2122,6 +2228,52 @@ function FotosDelClub({ onCerrar, onElegir }) {
           </div>
         )}
       </>}
+    </Ventana>
+  );
+}
+
+// Fotos de banco: Openverse, solo las de dominio público (se usan sin citar a nadie).
+function FotosDeBanco({ onCerrar, onElegir }) {
+  const [q, setQ] = useState('');
+  const [res, setRes] = useState(null);
+  const [pagina, setPagina] = useState(1);
+  const [trayendo, setTrayendo] = useState(null);
+  async function buscar(p = 1) {
+    if (q.trim().length < 2) return;
+    setRes({ cargando: true });
+    try { setRes(await api(`/api/admin/disenos/banco?q=${encodeURIComponent(q.trim())}&pagina=${p}`)); setPagina(p); }
+    catch (e) { setRes({ error: e.message }); }
+  }
+  async function usar(f) {
+    setTrayendo(f.id);
+    try { onElegir(await api(`/api/admin/disenos/banco/${f.id}`, { method: 'POST' })); }
+    catch (e) { alert(e.message); } finally { setTrayendo(null); }
+  }
+  return (
+    <Ventana titulo="Fotos de banco" onCerrar={trayendo ? () => {} : onCerrar} ancho={920}>
+      <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-2)' }}>Fotos de <b>dominio público</b> (de Openverse): se pueden usar en lo que sea, también en redes y carteles, sin citar a nadie. Se encuentran más buscando en inglés: «karate», «summer camp», «ballet», «robot»…</p>
+      <form style={{ display: 'flex', gap: 6 }} onSubmit={(ev) => { ev.preventDefault(); buscar(1); }}>
+        <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="¿Qué buscas?" aria-label="Buscar fotos" style={inp} />
+        <button type="submit" className="btn btn-sm btn-primary" disabled={q.trim().length < 2}>Buscar</button>
+      </form>
+      {res?.cargando && <span style={{ color: 'var(--ink-3)' }}>Buscando…</span>}
+      {res?.error && <span style={{ color: 'var(--orange)' }}>{res.error}</span>}
+      {res?.fotos && (!res.fotos.length ? <span style={{ color: 'var(--ink-3)' }}>Nada. Prueba con otra palabra (mejor en inglés).</span> : <>
+        <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))' }}>
+          {res.fotos.map(f => (
+            <button key={f.id} type="button" disabled={!!trayendo} onClick={() => usar(f)} title={`${f.titulo}${f.autor ? ` · ${f.autor}` : ''}`} aria-label={`Usar «${f.titulo}»`}
+              style={{ border: '1px solid var(--line)', borderRadius: 10, padding: 0, aspectRatio: '1', cursor: 'pointer', overflow: 'hidden', background: 'var(--bg-3)', position: 'relative', opacity: trayendo && trayendo !== f.id ? 0.5 : 1 }}>
+              <img src={f.mini} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+              {trayendo === f.id && <span style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', background: 'rgba(0,0,0,.45)', color: '#fff', fontWeight: 800, fontSize: 12 }}>Trayéndola…</span>}
+            </button>
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'center', fontSize: 13 }}>
+          <button type="button" className="btn btn-sm btn-ghost" disabled={pagina <= 1} onClick={() => buscar(pagina - 1)}>‹ Antes</button>
+          <span>Página {pagina} de {Math.min(10, res.paginas)}</span>
+          <button type="button" className="btn btn-sm btn-ghost" disabled={pagina >= Math.min(10, res.paginas)} onClick={() => buscar(pagina + 1)}>Más ›</button>
+        </div>
+      </>)}
     </Ventana>
   );
 }
