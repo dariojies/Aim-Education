@@ -658,10 +658,26 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
         borde: '#1A1A1A', grosor: ['bocadillo', 'bocadillo2', 'nube'].includes(t) ? Math.max(2, Math.round(base * 0.004)) : 0 });
   const anadirIcono = (icono) => { const lado = Math.round(base * 0.16); anadir({ tipo: 'icono', icono, w: lado, h: lado, color: '#5233A8' }); };
   const anadirMarco = (figura) => { const w = Math.round(base * 0.42); anadir({ tipo: 'imagen', url: null, marco: figura, ajuste: 'cubrir', w, h: figura === 'arco' ? Math.round(w * 1.25) : w, radio: figura === 'rect' ? Math.round(base * 0.03) : 0 }); };
-  // Una imagen: si lo elegido es un marco vacío, va dentro; si no, se añade (en el punto, si se ha soltado ahí).
+  // Un collage: marcos vacíos que llenan la página (con separación o sin ella), por debajo
+  // de lo que ya hay. Las fotos que se eligen después van llenando sus huecos, por orden.
+  function anadirCollage(huecos, separado) {
+    const { ancho: W, alto: H } = diseno, g = separado ? Math.round(base * 0.02) : 0;
+    const nuevos = huecos.map(([fx, fy, fw, fh]) => {
+      const x = Math.round(g + fx * (W - g)), y = Math.round(g + fy * (H - g));
+      return { id: nuevoId(), tipo: 'imagen', url: null, marco: 'rect', ajuste: 'cubrir', hueco: true, rot: 0, opacidad: 1,
+        radio: separado ? Math.round(base * 0.012) : 0, x, y, w: Math.round(fw * (W - g)) - g, h: Math.round(fh * (H - g)) - g };
+    });
+    aplicar(d => ({ ...d, elementos: [...nuevos, ...d.elementos] }));
+    setSeleccion([]); setRecortando(null);
+    showToast?.('Collage listo: elige fotos (del club, del banco o del ordenador) y van llenando los huecos. También se pueden soltar encima.');
+  }
+  // Una imagen: si lo elegido es un marco vacío, va dentro; si no, al primer hueco vacío de
+  // un collage; si no, se añade (en el punto, si se ha soltado ahí).
   const anadirImagen = async (url, ancho, alto, punto = null) => {
     const v = vista(), marco = selRef.current.length === 1 ? v.elementos.find(e => e.id === selRef.current[0] && e.tipo === 'imagen' && !e.url) : null;
     if (marco && !punto) { cambiarEl(marco.id, { url, encuadre: null, ajuste: 'cubrir' }); return; }
+    const hueco = !punto && v.elementos.find(e => e.tipo === 'imagen' && e.hueco && !e.url && !e.oculto);
+    if (hueco) { cambiarEl(hueco.id, { url, encuadre: null, ajuste: 'cubrir' }); return; }
     if (!ancho || !alto) { const i = await cargarImagen(url); ancho = i?.naturalWidth || 600; alto = i?.naturalHeight || 600; }
     const k = Math.min(1, (diseno.ancho * 0.5) / ancho, (diseno.alto * 0.5) / alto), w = Math.round(ancho * k), h = Math.round(alto * k);
     anadir({ tipo: 'imagen', url, w, h, ajuste: 'contener', radio: 0, ...(punto ? { x: Math.round(punto.x - w / 2), y: Math.round(punto.y - h / 2) } : {}) });
@@ -1391,7 +1407,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
           )}
           {panelAbierto && <>
           {panel === 'anadir' && (
-            <PanelAnadir tipo={tipo} kit={kit} anadirTexto={anadirTexto} anadirForma={anadirForma} anadirIcono={anadirIcono} anadirMarco={anadirMarco} anadirImagen={anadirImagen} anadirQr={anadirQr} anadirTabla={anadirTabla} anadirGrafico={anadirGrafico}
+            <PanelAnadir tipo={tipo} kit={kit} anadirTexto={anadirTexto} anadirForma={anadirForma} anadirIcono={anadirIcono} anadirMarco={anadirMarco} anadirImagen={anadirImagen} anadirCollage={anadirCollage} anadirQr={anadirQr} anadirTabla={anadirTabla} anadirGrafico={anadirGrafico}
               anadirBloque={anadirBloque} verFotos={() => setVentana('fotos')} verBanco={() => setVentana('banco')} subir={subir} />
           )}
           {panel === 'estilos' && <PanelEstilos doc={doc} aplicarDoc={aplicarDoc} showToast={showToast} />}
@@ -1646,6 +1662,23 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar }) {
   );
 }
 const CUADRADOS_EDITOR = ['qr', 'icono'];
+// Collages de fotos: cada hueco, [x, y, ancho, alto] en partes de la página.
+const COLLAGES = [
+  ['2 en columnas', [[0, 0, 0.5, 1], [0.5, 0, 0.5, 1]]],
+  ['2 en filas', [[0, 0, 1, 0.5], [0, 0.5, 1, 0.5]]],
+  ['3 en columnas', [[0, 0, 1 / 3, 1], [1 / 3, 0, 1 / 3, 1], [2 / 3, 0, 1 / 3, 1]]],
+  ['1 grande y 2', [[0, 0, 0.6, 1], [0.6, 0, 0.4, 0.5], [0.6, 0.5, 0.4, 0.5]]],
+  ['1 arriba y 2', [[0, 0, 1, 0.6], [0, 0.6, 0.5, 0.4], [0.5, 0.6, 0.5, 0.4]]],
+  ['4 iguales', [[0, 0, 0.5, 0.5], [0.5, 0, 0.5, 0.5], [0, 0.5, 0.5, 0.5], [0.5, 0.5, 0.5, 0.5]]],
+  ['1 arriba y 3', [[0, 0, 1, 0.62], [0, 0.62, 1 / 3, 0.38], [1 / 3, 0.62, 1 / 3, 0.38], [2 / 3, 0.62, 1 / 3, 0.38]]],
+  ['6 iguales', [0, 1, 2].flatMap(f => [0, 1].map(col => [col / 2, f / 3, 0.5, 1 / 3]))],
+  ['9 iguales', [0, 1, 2].flatMap(f => [0, 1, 2].map(col => [col / 3, f / 3, 1 / 3, 1 / 3]))],
+];
+const miniCollage = (huecos) => (
+  <svg viewBox="0 0 30 30" width="28" height="28" aria-hidden="true">
+    {huecos.map(([x, y, w, h], i) => <rect key={i} x={1 + x * 28 + 0.8} y={1 + y * 28 + 0.8} width={w * 28 - 1.6} height={h * 28 - 1.6} rx="1.5" fill="#B9AEDF" />)}
+  </svg>
+);
 const icono = (d) => <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{d}</svg>;
 const PANELES_EDITOR = [
   ['anadir', 'Añadir', icono(<><rect x="3" y="3" width="18" height="18" rx="4" /><path d="M12 8v8M8 12h8" /></>)],
@@ -1685,10 +1718,11 @@ function BotonSubir({ texto, onArchivo, className = 'btn btn-sm btn-outline' }) 
   );
 }
 
-function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirMarco, anadirImagen, anadirQr, anadirTabla, anadirGrafico, anadirBloque, verFotos, verBanco, subir }) {
+function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirMarco, anadirImagen, anadirCollage, anadirQr, anadirTabla, anadirGrafico, anadirBloque, verFotos, verBanco, subir }) {
   const [subidas, setSubidas] = useState(null);
   const [qr, setQr] = useState('');
   const [mas, setMas] = useState({});
+  const [separado, setSeparado] = useState(true);
   useEffect(() => { api('/api/admin/correo/imagenes').then(d => setSubidas(Array.isArray(d) ? d : d.imagenes || [])).catch(() => setSubidas([])); }, []);
   const bloque = { font: 'inherit', cursor: 'pointer', padding: '10px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', textAlign: 'left' };
   const cuadro = { ...bloque, display: 'grid', placeItems: 'center', padding: 6, height: 44, textAlign: 'center' };
@@ -1771,6 +1805,17 @@ function PanelAnadir({ tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirM
         ))}
       </div>
       <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Suelta encima una foto (del panel o del ordenador) y se recorta con su forma.</span>
+
+      <div style={seccionT}>Collages de fotos</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 5 }}>
+        {COLLAGES.map(([t, huecos]) => (
+          <button key={t} type="button" style={{ ...cuadro, height: 46 }} title={`Collage: ${t}`} aria-label={`Collage: ${t}`} onClick={() => anadirCollage(huecos, separado)}>{miniCollage(huecos)}</button>
+        ))}
+      </div>
+      <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12.5 }}>
+        <input type="checkbox" checked={separado} onChange={e => setSeparado(e.target.checked)} /> Con separación entre las fotos
+      </label>
+      <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Ocupa la página por debajo de lo que haya. Luego, cada foto que elijas va al primer hueco libre.</span>
 
       <div style={seccionT}>Código QR</div>
       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
