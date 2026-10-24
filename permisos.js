@@ -182,6 +182,11 @@ export function permisosDe(rol) {
         pedirEventos: daClase(rol),
         // En soporte ve sus tickets, como cualquiera desde su perfil.
         soporteCompleto: !instructor,
+        // Los tickets de Aim Soluciones Digitales (la empresa que vende la web a
+        // otras academias, y KidsNGrow): llevan datos de otros clientes, así que
+        // solo el Equipo IT y los superadmin (los socios). Ni siquiera la dirección
+        // ni secretaría de Aim, aunque tengan el soporte completo.
+        soporteEmpresa: rol === 'equipo_it' || rol === 'superadmin',
         // Ver los fichajes de TODO el personal, corregir olvidos y exportar para la
         // Inspección es cosa de secretaría/dirección; un instructor solo ve el suyo.
         fichajesGestion: mandaAlMenos(rol, 'secretaria'),

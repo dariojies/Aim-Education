@@ -5154,7 +5154,7 @@ async function ticketEnlazable(req, ticketId, coger) {
     const suyos = !permisos(req).soporteCompleto;
     const r = await pool.query(
         `SELECT id, assigned_to, asignados_extra FROM tickets_registrosoporte
-         WHERE id = $1 ${suyos ? 'AND (user_id = $2 OR assigned_to = $2 OR $2 = ANY(asignados_extra))' : ''}`,
+         WHERE id = $1 ${suyos ? 'AND (user_id = $2 OR assigned_to = $2 OR $2 = ANY(asignados_extra))' : ''} ${sinEmpresaSi(req, 'tickets_registrosoporte')}`,
         suyos ? [id, yo] : [id]
     );
     if (!r.rowCount) throw { httP: 404, msg: 'Ese ticket no existe o no es tuyo.' };
@@ -15457,6 +15457,19 @@ const ETAPAS_TICKET = { en_curso: 'En curso', esperando: 'Esperando respuesta', 
 const CATEGORIAS_TICKET = { error: 'Error', mejora: 'Mejora', familia: 'Petición de familia', interna: 'Tarea interna', facturacion: 'Facturación' };
 const ESTADOS_TICKET = { open: 'Abierto', resolved: 'Resuelto', closed: 'Cerrado' };
 const PRIORIDADES_TICKET = { low: 'Baja', medium: 'Media', high: 'Alta' };
+// Los tickets de Aim Soluciones Digitales: las academias que compran la web y
+// KidsNGrow. Van en su propio apartado de Soporte y solo los ve quien tiene
+// soporteEmpresa (permisos.js). Un ticket es de la empresa si lleva alguna de
+// estas etiquetas.
+const APPS_EMPRESA = ['Aim Soluciones Digitales', 'KidsNGrow'];
+const SQL_TICKET_EMPRESA = (a) => `(COALESCE(${a}.app_label, '{}') && ARRAY['Aim Soluciones Digitales', 'KidsNGrow']::text[])`;
+// El trozo de WHERE que deja fuera los de la empresa a quien no puede verlos.
+const sinEmpresaSi = (req, a = 's') => (permisos(req).soporteEmpresa ? '' : `AND NOT ${SQL_TICKET_EMPRESA(a)}`);
+const esTicketEmpresa = (labels) => (labels || []).some(l => APPS_EMPRESA.includes(l));
+async function ticketDeEmpresa(id) {
+    const r = await pool.query(`SELECT app_label FROM tickets_registrosoporte WHERE id = $1`, [id]);
+    return esTicketEmpresa(r.rows[0]?.app_label);
+}
 // Adjuntos: imágenes, PDF, Office, texto y zip; hasta 4 MB (en base64 ocupa más).
 const ADJUNTO_TICKET_RE = /^data:(image\/(png|jpe?g|gif|webp)|application\/pdf|application\/msword|application\/vnd\.ms-excel|application\/vnd\.openxmlformats-officedocument\.(wordprocessingml\.document|spreadsheetml\.sheet|presentationml\.presentation)|text\/plain|text\/csv|application\/zip|application\/x-zip-compressed);base64,/;
 const MAX_ADJUNTO_TICKET = 5_600_000;
@@ -15626,6 +15639,7 @@ app.post('/api/support', authenticateSession, async (req, res) => {
     const enc = staff ? encargadosDe(b) : { principal: null, extra: [] };
     const dueDate = staff && /^\d{4}-\d{2}-\d{2}$/.test(b.dueDate || '') ? b.dueDate : null;
     const appLabel = staff && Array.isArray(b.appLabel) && b.appLabel.length ? b.appLabel : ['Aim Education'];
+    if (esTicketEmpresa(appLabel) && !permisos(req).soporteEmpresa) return res.status(403).json({ error: 'Los tickets de Aim Soluciones Digitales los lleva el Equipo IT.' });
     const recurrencia = staff && RECURRENCIAS.includes(b.recurrencia) ? b.recurrencia : null;
     const categoria = staff ? (CATEGORIAS_TICKET[b.categoria] ? b.categoria : null) : 'familia';
     try {
@@ -15783,7 +15797,7 @@ app.get('/api/support', authenticateSession, async (req, res) => {
             LEFT JOIN users u ON s.user_id = u.user_id
             LEFT JOIN users assignee ON s.assigned_to = assignee.user_id
             LEFT JOIN kng_tickets kt ON kt.ticket_id = s.id
-            ${soloMios ? 'WHERE s.user_id = $1 OR s.assigned_to = $1 OR $1 = ANY(s.asignados_extra)' : ''}
+            WHERE TRUE ${soloMios ? 'AND (s.user_id = $1 OR s.assigned_to = $1 OR $1 = ANY(s.asignados_extra))' : ''} ${sinEmpresaSi(req)}
             ORDER BY s.created_at DESC
         `, [req.userSession.userId]);
         // Aim-Tul solo cambia assigned_to: si pone de principal a quien ya
@@ -15793,7 +15807,7 @@ app.get('/api/support', authenticateSession, async (req, res) => {
             t.asignados = t.asignados.filter(a => !vistos.has(a.id) && vistos.add(a.id));
         }
         res.set('Cache-Control', 'no-store');
-        res.json({ success: true, tickets: result.rows, soloMios, diasParado: await diasParadoTicket() });
+        res.json({ success: true, tickets: result.rows, soloMios, diasParado: await diasParadoTicket(), empresa: !!permisos(req).soporteEmpresa });
     } catch (err) {
         console.error('[SUPPORT] Fetch error:', err);
         res.status(500).json({ error: 'Error al obtener tickets.' });
@@ -15803,6 +15817,7 @@ app.get('/api/support', authenticateSession, async (req, res) => {
 // Si puede tocar ese ticket: con soporte completo, todos; si no, los suyos.
 async function puedeTocarTicket(req, id) {
     if (!req.userSession.isSuperAdmin && !req.userSession.canAccessAdmin) return false;
+    if (!permisos(req).soporteEmpresa && await ticketDeEmpresa(id)) return false;
     if (permisos(req).soporteCompleto) return true;
     const mio = await pool.query(
         `SELECT 1 FROM tickets_registrosoporte WHERE id = $1 AND (user_id = $2 OR assigned_to = $2 OR $2 = ANY(asignados_extra))`,
@@ -15871,7 +15886,7 @@ async function resolverEsperaDeploy() {
 async function resolverTicketsEnEspera(etiqueta, fecha) {
     const resueltos = [];
     const r = await pool.query(
-        `SELECT s.id, s.subject, s.categoria, h.user_id AS quien
+        `SELECT s.id, s.subject, s.categoria, s.app_label, h.user_id AS quien
          FROM tickets_registrosoporte s
          LEFT JOIN LATERAL (SELECT h.user_id, h.created_at FROM aim_ticket_historial h
                             WHERE h.ticket_id = s.id AND h.campo = 'estado' AND h.despues = $1
@@ -15886,7 +15901,7 @@ async function resolverTicketsEnEspera(etiqueta, fecha) {
             await client.query('BEGIN');
             const hecho = await aplicarCambiosTicket(client, t.id, { status: 'resolved' }, null);
             await client.query('COMMIT');
-            resueltos.push({ id: t.id, asunto: t.subject, categoria: t.categoria });
+            resueltos.push({ id: t.id, asunto: t.subject, categoria: t.categoria, empresa: esTicketEmpresa(t.app_label) });
             // El aviso sale como de quien lo dejó esperando al deploy.
             const u = t.quien ? (await pool.query(`SELECT name, surname FROM users WHERE user_id = $1`, [t.quien])).rows[0] : null;
             const req = { userSession: { userId: t.quien, firstName: u?.name || 'Aim Education', lastName: u?.surname || '' } };
@@ -15956,6 +15971,9 @@ app.put('/api/support/:id', authenticateSession, async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) return res.status(400).json({ error: 'Ticket no válido.' });
     if (!(await puedeTocarTicket(req, id))) return res.status(403).json({ error: 'Ese ticket no es tuyo.' });
+    if (req.body?.appLabel !== undefined && esTicketEmpresa([].concat(req.body.appLabel)) && !permisos(req).soporteEmpresa) {
+        return res.status(403).json({ error: 'Los tickets de Aim Soluciones Digitales los lleva el Equipo IT.' });
+    }
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
@@ -16018,15 +16036,17 @@ app.get('/api/support/buscar', authenticateSession, async (req, res) => {
         const r = await pool.query(
             `SELECT DISTINCT m.ticket_id FROM tickets_mensajes m JOIN tickets_registrosoporte s ON s.id = m.ticket_id
              WHERE m.cuerpo ILIKE '%' || $1 || '%'
-               ${soloMios ? 'AND (s.user_id = $2 OR s.assigned_to = $2 OR $2 = ANY(s.asignados_extra))' : ''}
+               ${soloMios ? 'AND (s.user_id = $2 OR s.assigned_to = $2 OR $2 = ANY(s.asignados_extra))' : ''} ${sinEmpresaSi(req)}
              LIMIT 300`, soloMios ? [q.replace(/[%_\\]/g, '\\$&'), req.userSession.userId] : [q.replace(/[%_\\]/g, '\\$&')]);
         res.json({ ids: r.rows.map(x => x.ticket_id) });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // Resumen de cómo va el soporte en los últimos días (también va por correo cada semana).
-async function resumenSoporte(dias = 7) {
+async function resumenSoporte(dias = 7, espacio = null) {
     const parado = await diasParadoTicket();
+    // Para cada consulta: solo los de ese espacio (sin espacio, todos).
+    const de = (a) => (espacio === 'empresa' ? `AND ${SQL_TICKET_EMPRESA(a)}` : espacio === 'aim' ? `AND NOT ${SQL_TICKET_EMPRESA(a)}` : '');
     const [n, porPersona, porCategoria, parados] = await Promise.all([
         pool.query(
             `SELECT COUNT(*) FILTER (WHERE created_at > NOW() - $1 * INTERVAL '1 day')::int AS entraron,
@@ -16039,8 +16059,8 @@ async function resumenSoporte(dias = 7) {
                         FILTER (WHERE resolved_at > NOW() - $1 * INTERVAL '1 day') AS horas_resolver,
                     (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (pr - t.created_at)) / 3600)
                        FROM (SELECT t2.created_at, (SELECT MIN(m.created_at) FROM tickets_mensajes m WHERE m.ticket_id = t2.id AND m.autor_id IS DISTINCT FROM t2.user_id) AS pr
-                             FROM tickets_registrosoporte t2 WHERE t2.created_at > NOW() - $1 * INTERVAL '1 day') t WHERE pr IS NOT NULL) AS horas_responder
-             FROM tickets_registrosoporte`, [dias, parado]),
+                             FROM tickets_registrosoporte t2 WHERE t2.created_at > NOW() - $1 * INTERVAL '1 day' ${de('t2')}) t WHERE pr IS NOT NULL) AS horas_responder
+             FROM tickets_registrosoporte WHERE TRUE ${de('tickets_registrosoporte')}`, [dias, parado]),
         pool.query(
             `SELECT e.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre,
                     COUNT(*) FILTER (WHERE s.status = 'open')::int AS abiertos,
@@ -16049,15 +16069,15 @@ async function resumenSoporte(dias = 7) {
              FROM tickets_registrosoporte s
              CROSS JOIN LATERAL unnest(array_prepend(s.assigned_to, COALESCE(s.asignados_extra, '{}'))) AS e(user_id)
              JOIN users u ON u.user_id = e.user_id
-             WHERE s.status = 'open' OR s.resolved_at > NOW() - $1 * INTERVAL '1 day'
+             WHERE (s.status = 'open' OR s.resolved_at > NOW() - $1 * INTERVAL '1 day') ${de('s')}
              GROUP BY 1, 2 ORDER BY abiertos DESC, resueltos DESC`, [dias]),
         pool.query(
             `SELECT COALESCE(categoria, 'sin') AS categoria, COUNT(*)::int AS n FROM tickets_registrosoporte
-             WHERE created_at > NOW() - $1 * INTERVAL '1 day' GROUP BY 1 ORDER BY 2 DESC`, [dias]),
+             WHERE created_at > NOW() - $1 * INTERVAL '1 day' ${de('tickets_registrosoporte')} GROUP BY 1 ORDER BY 2 DESC`, [dias]),
         pool.query(
             `SELECT id, subject, COALESCE(updated_at, created_at) AS ultimo,
                     EXTRACT(DAY FROM NOW() - COALESCE(updated_at, created_at))::int AS dias
-             FROM tickets_registrosoporte WHERE status = 'open' AND COALESCE(updated_at, created_at) < NOW() - $1 * INTERVAL '1 day'
+             FROM tickets_registrosoporte WHERE status = 'open' AND COALESCE(updated_at, created_at) < NOW() - $1 * INTERVAL '1 day' ${de('tickets_registrosoporte')}
              ORDER BY COALESCE(updated_at, created_at) LIMIT 15`, [parado]),
     ]);
     const x = n.rows[0];
@@ -16075,7 +16095,8 @@ app.get('/api/support/resumen', authenticateSession, async (req, res) => {
     if (!req.userSession.canAccessAdmin || !permisos(req).soporteCompleto) return res.status(403).json({ error: 'Sin permisos.' });
     try {
         res.set('Cache-Control', 'no-store');
-        res.json(await resumenSoporte([7, 30, 90].includes(Number(req.query.dias)) ? Number(req.query.dias) : 7));
+        const espacio = req.query.espacio === 'empresa' && permisos(req).soporteEmpresa ? 'empresa' : 'aim';
+        res.json(await resumenSoporte([7, 30, 90].includes(Number(req.query.dias)) ? Number(req.query.dias) : 7, espacio));
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -16086,6 +16107,9 @@ async function accesoTicket(req, ticketId, canal) {
     const t = await pool.query('SELECT id, user_id FROM tickets_registrosoporte WHERE id = $1', [ticketId]);
     if (!t.rowCount) return { error: 'Ticket no encontrado.', code: 404 };
     const esStaff = req.userSession.isSuperAdmin || req.userSession.canAccessAdmin;
+    if (esStaff && !permisos(req).soporteEmpresa && String(t.rows[0].user_id) !== String(req.userSession.userId) && await ticketDeEmpresa(ticketId)) {
+        return { error: 'Sin permisos.', code: 403 };
+    }
     if (esStaff) return { ticket: t.rows[0], esStaff: true };
     if (String(t.rows[0].user_id) !== String(req.userSession.userId)) {
         return { error: 'Sin permisos.', code: 403 };
@@ -16825,7 +16849,10 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
 
         // Soporte: los contadores de tickets.
         if (recibe('tickets_sin_asignar') || recibe('tickets_mios')) {
-            fuente('Soporte', ['tickets_sin_asignar', 'tickets_mios', 'tickets_vencidos', 'tickets_parados'], async () => {
+          // Los de Aim Education y, aparte, los de Aim Soluciones Digitales (a quien los ve).
+          for (const emp of permisosYo.soporteEmpresa ? [false, true] : [false]) {
+            const CLAVES = ['tickets_sin_asignar', 'tickets_mios', 'tickets_vencidos', 'tickets_parados'];
+            fuente(emp ? 'Soporte de la empresa' : 'Soporte', emp ? CLAVES.map(k => `${k}_empresa`) : CLAVES, async () => {
                 const dias = await diasParadoTicket();
                 const t = (await pool.query(
                     `SELECT COUNT(*) FILTER (WHERE assigned_to IS NULL AND cardinality(asignados_extra) = 0)::int AS sin_asignar,
@@ -16836,7 +16863,8 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                                                AND due_date::date < (NOW() AT TIME ZONE 'Europe/Madrid')::date)::int AS vencidos,
                             COUNT(*) FILTER (WHERE (assigned_to = $1 OR $1 = ANY(asignados_extra)) AND etapa IS DISTINCT FROM 'espera_deploy'
                                                AND COALESCE(updated_at, created_at) < NOW() - $2 * INTERVAL '1 day')::int AS parados
-                     FROM tickets_registrosoporte WHERE status = 'open' AND etapa IS DISTINCT FROM 'pausa'`, [yo, dias])).rows[0];
+                     FROM tickets_registrosoporte WHERE status = 'open' AND etapa IS DISTINCT FROM 'pausa'
+                       AND ${emp ? '' : 'NOT '}${SQL_TICKET_EMPRESA('tickets_registrosoporte')}`, [yo, dias])).rows[0];
                 const l = [];
                 // Cada aviso lleva a lo suyo (#360): la lista filtrada, no Soporte a secas.
                 if (t.sin_asignar && recibe('tickets_sin_asignar')) l.push({ tipo: 'tickets', clave: 'tickets_sin_asignar', n: t.sin_asignar, prioridad: t.urgentes ? 1 : 2, texto: `${t.sin_asignar} ${plural(t.sin_asignar, 'ticket', 'tickets')} sin asignar`, detalle: t.urgentes ? `${t.urgentes} de prioridad alta` : null, destino: '/admin/soporte?filtro=sin_asignar' });
@@ -16845,8 +16873,11 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                     if (t.mios) l.push({ tipo: 'tickets', clave: 'tickets_mios', n: t.mios, texto: `${t.mios} ${plural(t.mios, 'ticket asignado', 'tickets asignados')} a ti`, destino: '/admin/soporte?filtro=mios' });
                     if (t.parados) l.push({ tipo: 'tickets', clave: 'tickets_parados', n: t.parados, texto: `${t.parados} ${plural(t.parados, 'ticket tuyo', 'tickets tuyos')} sin moverse`, detalle: `más de ${dias} días sin cambios ni mensajes`, destino: '/admin/soporte?filtro=parados' });
                 }
-                return l;
+                return emp
+                    ? l.map(a => ({ ...a, clave: `${a.clave}_empresa`, texto: `${a.texto} · Aim Soluciones Digitales`, destino: `${a.destino}&espacio=empresa` }))
+                    : l;
             });
+          }
         }
         // Mensajes sin leer: los de otros desde la última vez que abrió esa
         // conversación (lo de hace más de 7 días ya no cuenta). Solo de sus
@@ -16870,7 +16901,7 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                              ORDER BY m2.created_at DESC LIMIT 1) AS quien
                      FROM tickets_mensajes m JOIN tickets_registrosoporte t ON t.id = m.ticket_id
                      LEFT JOIN aim_avisos_vistos v ON v.user_id::text = $1 AND v.clave = 'ticket:' || t.id
-                     WHERE m.created_at > COALESCE(v.visto_at, NOW() - INTERVAL '7 days')
+                     WHERE m.created_at > COALESCE(v.visto_at, NOW() - INTERVAL '7 days') ${permisosYo.soporteEmpresa ? '' : `AND NOT ${SQL_TICKET_EMPRESA('t')}`}
                        AND COALESCE(m.autor_id::text, '') <> $1 AND t.status = 'open'
                        AND (t.user_id::text = $1 OR t.assigned_to::text = $1 OR $1 = ANY(t.asignados_extra::text[])
                             OR ($2::boolean AND t.assigned_to IS NULL AND cardinality(COALESCE(t.asignados_extra, '{}')) = 0))

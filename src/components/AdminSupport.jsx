@@ -21,7 +21,12 @@ import { imprimirHtml } from '../imprimir.js';
 
 // Las apps del grupo más 'General/A Futuro', para lo que no es de ninguna.
 // KidsNGrow (#199): los tickets que abren las guarderías desde esa app.
-const APPS = ['Aim Education', 'Learning Dungeon', 'Aim Training', 'Aim Brickslab', 'Aim Artemis', 'Aim Eventos', 'KidsNGrow', 'General/A Futuro'];
+const APPS = ['Aim Education', 'Learning Dungeon', 'Aim Training', 'Aim Brickslab', 'Aim Artemis', 'Aim Eventos', 'KidsNGrow', 'Aim Soluciones Digitales', 'General/A Futuro'];
+// Los de Aim Soluciones Digitales (las academias que compran la web, y
+// KidsNGrow) van en su propio apartado y solo los ve el Equipo IT (y los
+// superadmin): el servidor ni se los manda a los demás.
+const APPS_EMPRESA = ['Aim Soluciones Digitales', 'KidsNGrow'];
+const esEmpresa = (t) => (t.app_label || []).some(a => APPS_EMPRESA.includes(a));
 
 const PRIORITY_COLOR = { high: 'var(--orange)', medium: '#FFD526', low: 'var(--teal)' };
 const PRIORITY_LABEL = { high: 'Alta', medium: 'Media', low: 'Baja' };
@@ -533,14 +538,14 @@ function Historial({ ticketId, recarga }) {
 }
 
 // ── Resumen de cómo va el soporte ───────────────────────────────────────────
-function ResumenSoporte({ onAbrir }) {
+function ResumenSoporte({ onAbrir, espacio = 'aim' }) {
   const [dias, setDias] = useState(7);
   const [d, setD] = useState(null);
   useEffect(() => {
     setD(null);
-    fetch(`/api/support/resumen?dias=${dias}`, { credentials: 'include', cache: 'no-store' })
+    fetch(`/api/support/resumen?dias=${dias}&espacio=${espacio}`, { credentials: 'include', cache: 'no-store' })
       .then(r => (r.ok ? r.json() : null)).then(setD).catch(() => setD(false));
-  }, [dias]);
+  }, [dias, espacio]);
   const horas = (v) => (v == null ? '—' : v < 48 ? `${v} h` : `${Math.round(v / 24)} días`);
   const tarjeta = { background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: '14px 16px' };
   return (
@@ -734,7 +739,11 @@ function leerPrefs(user) {
 
 export function AdminSupport({ user, ticketId = null, enlace = null }) {
   const prefs = useMemo(() => leerPrefs(user), [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [tickets, setTickets] = useState([]);
+  // Todos los que manda el servidor; «tickets» son los del apartado que se mira.
+  const [todos, setTickets] = useState([]);
+  const [puedeEmpresa, setPuedeEmpresa] = useState(false);
+  const [espacio, setEspacio] = useState(() => { try { return new URLSearchParams(window.location.search).get('espacio') === 'empresa' ? 'empresa' : 'aim'; } catch { return 'aim'; } });
+  const tickets = useMemo(() => (puedeEmpresa ? todos.filter(t => esEmpresa(t) === (espacio === 'empresa')) : todos), [todos, puedeEmpresa, espacio]);
   const [superadmins, setSuperadmins] = useState([]);
   const [loading, setLoading] = useState(true);
   const [soloMios, setSoloMios] = useState(false);
@@ -801,7 +810,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
     return fetch('/api/support', { credentials: 'include', cache: 'no-store' })
       .then(r => (r.ok ? r.json() : { tickets: [] }))
       .then(d => {
-        setTickets(d.tickets || []); setSoloMios(!!d.soloMios); if (d.diasParado) setDiasParado(d.diasParado);
+        setTickets(d.tickets || []); setSoloMios(!!d.soloMios); setPuedeEmpresa(!!d.empresa); if (d.diasParado) setDiasParado(d.diasParado);
         setLoading(false);
         return d.tickets || [];
       })
@@ -849,15 +858,19 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
     if (!ticketId) { abiertoPorEnlace.current = null; return; }
     if (abiertoPorEnlace.current === ticketId || loading) return;
     abiertoPorEnlace.current = ticketId;
-    const t = tickets.find(x => x.id === ticketId);
+    const t = todos.find(x => x.id === ticketId);
     if (t) openTicket(t);
     else avisar(`El ticket #${ticketId} no existe o no es tuyo.`);
     go?.('/admin/soporte', { replace: true });
-  }, [ticketId, tickets, loading]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ticketId, todos, loading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Desde un aviso de la campanita: la lista ya filtrada.
   useEffect(() => {
-    const f = ['soporte', 'tickets'].includes(enlace?.seg?.[1]) ? enlace.params?.filtro : null;
+    const enSoporte = ['soporte', 'tickets'].includes(enlace?.seg?.[1]);
+    // ?espacio=empresa: los de Aim Soluciones Digitales (avisos de la campanita).
+    if (enSoporte && enlace.params?.espacio === 'empresa') cambiarEspacio('empresa');
+    else if (enSoporte && enlace.params?.filtro) cambiarEspacio('aim');
+    const f = enSoporte ? enlace.params?.filtro : null;
     if (!f) return;
     setSelected(null); setActiveTab('list'); setFEstado('activos'); setBusqueda(''); setFRapido(''); setFQuien('todos');
     if (f === 'mios') setFQuien('mios');
@@ -872,7 +885,16 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
     setTimeout(() => setAviso(''), 2800);
   }
 
+  // Cambiar de apartado: Aim Education o Aim Soluciones Digitales.
+  function cambiarEspacio(id) {
+    if (id === espacio) return;
+    setEspacio(id); setSelected(null); setFApp('todas');
+    setNuevasApps([id === 'empresa' ? 'Aim Soluciones Digitales' : 'Aim Education']);
+  }
+
   function openTicket(t) {
+    // Un ticket del otro apartado (desde un enlace o un aviso): se pasa a ese.
+    if (puedeEmpresa && esEmpresa(t) !== (espacio === 'empresa')) { setEspacio(esEmpresa(t) ? 'empresa' : 'aim'); setFApp('todas'); }
     setSelected(t);
     setEdit({
       priority: t.priority || 'low', categoria: t.categoria || '',
@@ -881,7 +903,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
     });
     setUpdateMsg(''); setChatCanal(null); setVerHistorial(false); setVinculando('');
   }
-  const abrirPorId = (id) => { const t = tickets.find(x => x.id === id); if (t) openTicket(t); };
+  const abrirPorId = (id) => { const t = todos.find(x => x.id === id); if (t) openTicket(t); };
 
   // Guarda SOLO lo que se manda: cambiar el estado ya no guarda lo que se esté
   // tocando a medias en la gestión interna, ni cierra la ventana.
@@ -982,7 +1004,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
         // Los demás adjuntos, al chat del equipo del ticket.
         if (archivosAlta.length > 1) await subirAdjuntosExtra(d.ticketId, 'equipo', archivosAlta.slice(1));
         setSubject(''); setDescription(''); setArchivosAlta([]);
-        setNuevaPrioridad('low'); setNuevaCategoria(''); setNuevosAsignados([]); setNuevaFecha(''); setNuevasApps(['Aim Education']); setNuevaRecurrencia('');
+        setNuevaPrioridad('low'); setNuevaCategoria(''); setNuevosAsignados([]); setNuevaFecha(''); setNuevasApps([espacio === 'empresa' ? 'Aim Soluciones Digitales' : 'Aim Education']); setNuevaRecurrencia('');
         await fetchTickets(true);
         setActiveTab('list');
         avisar(`Ticket #${d.ticketId} creado.`);
@@ -1250,8 +1272,14 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
   useEffect(() => () => { terminar(); if (arrastre.current) cancelAnimationFrame(arrastre.current.raf); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const abrirDesdeTablero = (t) => { if (!recienArrastrado.current) openTicket(t); };
 
-  const vinculoId = selected ? (tickets.find(t => t.id === selected.id)?.vinculo_id ?? selected.vinculo_id) : null;
-  const hermanos = vinculoId ? tickets.filter(t => t.vinculo_id === vinculoId && t.id !== selected.id) : [];
+  const vinculoId = selected ? (todos.find(t => t.id === selected.id)?.vinculo_id ?? selected.vinculo_id) : null;
+  const hermanos = vinculoId ? todos.filter(t => t.vinculo_id === vinculoId && t.id !== selected.id) : [];
+  // Las apps que se pueden poner a un ticket (las de la empresa, solo quien las lleva)
+  // y las del filtro, las del apartado que se mira.
+  const appsPoner = puedeEmpresa ? APPS : APPS.filter(a => !APPS_EMPRESA.includes(a));
+  const appsFiltro = puedeEmpresa && espacio === 'empresa' ? APPS_EMPRESA : APPS.filter(a => !APPS_EMPRESA.includes(a));
+  // Un filtro de app guardado que no es de este apartado no dejaría ver nada.
+  useEffect(() => { if (fApp !== 'todas' && !appsFiltro.includes(fApp)) setFApp('todas'); }, [espacio, puedeEmpresa]); // eslint-disable-line react-hooks/exhaustive-deps
   const estSel = selected ? estadoDe(selected) : null;
 
   return (
@@ -1259,6 +1287,25 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
       {aviso && (
         <div role="status" style={{position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", zIndex: 3000, background: "var(--ink)", color: "var(--bg-2)", padding: "10px 18px", borderRadius: 999, fontSize: 13, fontWeight: 700, boxShadow: "var(--shadow)", maxWidth: "calc(100vw - 32px)"}}>
           {aviso}
+        </div>
+      )}
+
+      {/* Los dos apartados: el soporte de Aim Education y el de la empresa. */}
+      {puedeEmpresa && (
+        <div role="tablist" aria-label="Apartado de soporte" style={{display: "flex", gap: 4, padding: 4, marginBottom: 14, borderRadius: 999, background: "var(--bg-3)", border: "1px solid var(--line)", width: "fit-content", maxWidth: "100%", flexWrap: "wrap"}}>
+          {[['aim', 'Aim Education'], ['empresa', 'Aim Soluciones Digitales']].map(([id, label]) => {
+            const n = todos.filter(t => t.status === 'open' && esEmpresa(t) === (id === 'empresa')).length;
+            const sinLeer = todos.filter(t => t.status === 'open' && t.sin_leer > 0 && esEmpresa(t) === (id === 'empresa')).length;
+            const activo = espacio === id;
+            return (
+              <button key={id} type="button" role="tab" aria-selected={activo} data-espacio={id} onClick={() => cambiarEspacio(id)}
+                style={{fontFamily: "inherit", fontSize: 13, fontWeight: 800, border: 0, borderRadius: 999, padding: "8px 14px", cursor: "pointer",
+                  background: activo ? "var(--ink)" : "transparent", color: activo ? "var(--bg-2)" : "var(--ink-2)"}}>
+                {label} <span style={{opacity: .7, fontWeight: 700}}>· {n}</span>
+                {sinLeer > 0 && <span style={{marginLeft: 6, display: "inline-block", minWidth: 8, height: 8, borderRadius: 4, background: "var(--orange)"}} title={`${sinLeer} con mensajes sin leer`} />}
+              </button>
+            );
+          })}
         </div>
       )}
 
@@ -1275,11 +1322,11 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
         <button className={`btn btn-sm ${activeTab === 'create' ? 'btn-primary' : 'btn-gradient'}`} onClick={() => setActiveTab('create')}><I.Plus width={14} height={14} /> Nuevo ticket</button>
       </div>
 
-      {activeTab === 'resumen' && <ResumenSoporte onAbrir={(id) => { setActiveTab('list'); abrirPorId(id); }} />}
+      {activeTab === 'resumen' && <ResumenSoporte espacio={puedeEmpresa ? espacio : 'aim'} onAbrir={(id) => { setActiveTab('list'); abrirPorId(id); }} />}
 
       {activeTab === 'create' && (
         <div className="panel" style={{maxWidth: 680}}>
-          <h2>Nuevo ticket</h2>
+          <h2>Nuevo ticket{puedeEmpresa && espacio === 'empresa' ? ' · Aim Soluciones Digitales' : ''}</h2>
           <p className="sub">Un error, una mejora o una tarea interna. Puedes pegar una captura con Ctrl+V en cualquier sitio del formulario.</p>
           <form onSubmit={submitTicket} onPaste={pegarEnAlta}>
             <div className="field" style={{marginTop: 16}}>
@@ -1340,7 +1387,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
               <div>
                 <p style={cabecillaCss}>Aplicaciones</p>
                 <div style={{display: "flex", gap: 8, flexWrap: "wrap"}}>
-                  {APPS.map(app => {
+                  {appsPoner.map(app => {
                     const sel = nuevasApps.includes(app);
                     return <button key={app} type="button" onClick={() => setNuevasApps(prev => (sel ? prev.filter(l => l !== app) : [...prev, app]))} style={pillCss(sel)}>{app}</button>;
                   })}
@@ -1436,7 +1483,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
             </select>
             <select value={fApp} onChange={e => setFApp(e.target.value)} style={selectCss} aria-label="Aplicación">
               <option value="todas">Todas las apps</option>
-              {APPS.map(a => <option key={a} value={a}>{a}</option>)}
+              {appsFiltro.map(a => <option key={a} value={a}>{a}</option>)}
             </select>
             <select value={orden} onChange={e => setOrden(e.target.value)} style={selectCss} aria-label="Ordenar">
               <option value="entrega">Por fecha límite</option>
@@ -1727,7 +1774,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
                 <div>
                   <p style={cabecillaCss}>Aplicaciones</p>
                   <div style={{display: "flex", gap: 6, flexWrap: "wrap"}}>
-                    {APPS.map(app => {
+                    {appsPoner.map(app => {
                       const sel = edit.apps.includes(app);
                       return <button key={app} type="button" onClick={() => setEdit(x => ({ ...x, apps: sel ? x.apps.filter(l => l !== app) : [...x.apps, app] }))} style={pillCss(sel)}>{app}</button>;
                     })}

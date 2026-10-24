@@ -93,7 +93,7 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
 
     // Los tickets que ha resuelto el deploy: [{ id, asunto, categoria }].
     async function anotarTickets(deployId, tickets) {
-        const lista = (tickets || []).map(t => ({ id: Number(t.id), asunto: limpio(t.asunto, 200), categoria: t.categoria || null }))
+        const lista = (tickets || []).map(t => ({ id: Number(t.id), asunto: limpio(t.asunto, 200), categoria: t.categoria || null, ...(t.empresa ? { empresa: true } : {}) }))
             .filter(t => Number.isInteger(t.id));
         await pool.query(
             `UPDATE aim_ajustes SET valor = jsonb_set(valor, '{tickets}', $2::jsonb) WHERE clave = $1`,
@@ -173,7 +173,9 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
                     id: x.clave.slice(PREFIJO.length),
                     app: x.valor.app || null,
                     repo: repoDe(x.valor.app),
-                    tickets: x.valor.tickets || [],
+                    // Los de Aim Soluciones Digitales (y los de KidsNGrow de antes,
+                    // que no llevan la marca) solo para quien lleva ese soporte.
+                    tickets: (x.valor.tickets || []).filter(t => permisos(req).soporteEmpresa || !(t.empresa || x.valor.app === 'KidsNGrow')),
                     commits: x.valor.commits || [],
                     editadoPor: x.editor || null,
                     actualizado: x.actualizado_at,
