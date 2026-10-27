@@ -5,6 +5,7 @@
 export const RUTAS_ADMIN = {
   overview: ['', 'resumen'],
   agenda: ['mi-dia', 'agenda'],
+  espacio: ['mi-espacio'],
   // También /admin/clases/lista[/<grupo>] (los enlaces de Mi día y el Resumen).
   pasarlista: ['pasar-lista'],
   fichaje: ['fichaje'],

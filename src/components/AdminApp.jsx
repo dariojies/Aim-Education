@@ -50,6 +50,7 @@ import AdminCandidatos from './AdminCandidatos.jsx';
 import AdminIncidencias from './AdminIncidencias.jsx';
 import Chats from './Chats.jsx';
 import AdminListas from './AdminListas.jsx';
+import AdminEspacio from './AdminEspacio.jsx';
 import AdminBrickslab from './AdminBrickslab.jsx';
 import AdminGaleria from './Galeria.jsx';
 import { IconoActividad } from './IconoActividad.jsx';
@@ -114,6 +115,7 @@ function sectionLabel(id, pestana) {
     incidencias: "Incidencias",
     mensajes: "Mensajes",
     listas: "Contactos",
+    espacio: "Mi espacio",
     brickslab: "Brickslab y Biblioteca",
     grafico: "Aim Design",
     galeria: "Fotos",
@@ -6860,6 +6862,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
       heading: "Inicio", items: [
         { id: "overview", label: "Resumen", icon: <I.Dashboard /> },
         { id: "agenda", label: "Mi día", icon: <I.Check width={18} height={18} /> },
+        // Sus nóminas, contratos, certificado y ficha (#497).
+        { id: "espacio", label: "Mi espacio", icon: <I.Maletin /> },
         // Pasar lista de las clases del día, directamente (sin entrar en Clases).
         // Es la única: /admin/clases/lista también lleva aquí.
         { id: "pasarlista", label: "Pasar lista", icon: <I.Lista /> },
@@ -7097,6 +7101,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("incidencias") && <AdminIncidencias showToast={showToast} enlace={enlace} />}
           {ver("mensajes") && <Chats ambito="equipo" showToast={showToast} />}
           {ver("listas") && <AdminListas showToast={showToast} />}
+          {ver("espacio") && <AdminEspacio showToast={showToast} />}
           {ver("brickslab") && <AdminBrickslab showToast={showToast} enlace={enlace} />}
           {ver("galeria") && <AdminGaleria showToast={showToast} />}
           {ver("bandeja") && <AdminBandeja showToast={showToast} onAbrirFicha={abrirFicha} />}

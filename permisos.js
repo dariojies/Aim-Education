@@ -88,6 +88,8 @@ export function permisosDe(rol) {
             overview: true,
             // La agenda es de cada uno: la tiene todo el que entra al panel.
             agenda: true,
+            // Mi espacio (#497): sus nóminas, contratos, certificado y ficha. Todo el personal.
+            espacio: true,
             students: !trabajador,
             familias: !instructor,
             billing: !instructor,
@@ -221,6 +223,9 @@ export function permisosDe(rol) {
         // Poner un correo del dominio (@aimeducation.es) en una ficha: da entrada a
         // ese buzón (#449), así que solo la dirección.
         correoDelDominio: jefe,
+        // Mi espacio (#497): subir nóminas y contratos al personal y ver sus
+        // certificados y fichas. Secretaría y la dirección.
+        gestionarPersonal: mandaAlMenos(rol, 'secretaria'),
         // La firma de los correos y su aviso legal (#501): la dirección y el Equipo IT.
         // Cada uno pone su cargo y su teléfono.
         editarFirmaCorreo: jefe,
@@ -296,6 +301,8 @@ export const AVISOS = [
     { id: 'chat_mensajes', grupo: 'Mensajes', texto: 'Mensajes nuevos del chat interno (privados, grupos y del Equipo IT)', quien: todos },
     { id: 'tareas_asignadas', grupo: 'Mi día', texto: 'Tareas que le ponen en Mi día', quien: todos },
     { id: 'tareas_hechas', grupo: 'Mi día', texto: 'Las tareas que ha puesto a otros, cuando se hacen', quien: (p) => p.asignarTareas },
+    { id: 'documentos_personal', grupo: 'Mi espacio', texto: 'Nóminas, contratos y documentos nuevos en su espacio', quien: todos },
+    { id: 'certificados_faltan', grupo: 'Mi espacio', texto: 'Personal sin el certificado de delitos sexuales subido', quien: (p) => p.gestionarPersonal },
     { id: 'resumen_horas', grupo: 'Fichaje', texto: 'Su resumen de horas del mes, por confirmar', quien: todos },
     { id: 'correcciones_por_aprobar', grupo: 'Fichaje', texto: 'Correcciones de su fichaje que le proponen', quien: todos },
     { id: 'correcciones_por_validar', grupo: 'Fichaje', texto: 'Correcciones de fichaje que piden los trabajadores', quien: secretariaOMas },

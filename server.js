@@ -37,6 +37,7 @@ import { crearMedios, crearTablasMedios, limpiarMedios } from './medios.js';
 import { crearPantallas, crearTablasPantallas, prepararEstaticas, prepararCierres, limpiarMediosPantalla } from './pantallas.js';
 import { crearChats, crearTablasChats, avisosChats } from './chats.js';
 import { crearListas, crearTablasListas, listasComoSegmentos, resolverLista, correosDeLista } from './listas.js';
+import { crearPersonal, crearTablasPersonal, avisosEspacio } from './personal.js';
 import { programarHistoriasFestivos, felicitacionCumple } from './disenos-automaticos.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
@@ -2362,6 +2363,8 @@ async function initDb() {
         await crearTablasChats(client);
         // Las listas hechas a mano (#499): AMPAs, colegios, asociaciones… (listas.js).
         await crearTablasListas(client);
+        // Mi espacio (#497): nóminas, contratos, certificados y la ficha de cada trabajador.
+        await crearTablasPersonal(client);
     } finally {
         client.release();
     }
@@ -5318,6 +5321,8 @@ app.use(crearPantallas({ pool, authenticateSession, requireSeccion }));
 app.use(crearChats({ pool, clubId: AIM_CLUB_ID, authenticateSession, avisar: (ids) => avisosPush.avisarFamilias(ids) }).router);
 // Las listas hechas a mano y sus personas (Personas → Contactos, #499).
 app.use(crearListas({ pool, authenticateSession, requireSeccion, correosCon }));
+// Mi espacio (#497): lo de cada trabajador y, para secretaría y la dirección, el de todos.
+app.use(crearPersonal({ pool, authenticateSession, requireAdmin, permisos, clubId: AIM_CLUB_ID, sqlEsPersonal: (u) => SQL_ES_PERSONAL(u), avisar: (ids) => avisosPush.avisarFamilias(ids) }));
 // Para mencionar (@) en los comentarios de Aim Design: el personal que ve Aim Design.
 app.get('/api/admin/disenos-equipo', authenticateSession, requireSeccion('grafico'), async (req, res) => {
     try {
@@ -13479,7 +13484,7 @@ app.post('/api/admin/fiscales/:id/:accion', authenticateSession, requireAdmin, a
 // resumen de todo, que para eso está el panel.
 // La campanita del área de familias, y lo mismo es lo que llega al móvil (#218):
 // cada aviso lleva además su grupo, título, texto y adónde lleva (url).
-const GRUPO_DE_TIPO = { pagos: 'pagos', clases: 'clases', soporte: 'soporte', galeria: 'fotos', brickslab: 'brickslab', mensajes: 'mensajes', tareas: 'mensajes' };
+const GRUPO_DE_TIPO = { pagos: 'pagos', clases: 'clases', soporte: 'soporte', galeria: 'fotos', brickslab: 'brickslab', mensajes: 'mensajes', tareas: 'mensajes', personal: 'mensajes' };
 const URL_DE_DESTINO = { payments: '/dashboard/pagos', classes: '/dashboard/clases', support: '/dashboard/soporte', fotos: '/dashboard/fotos', brickslab: '/dashboard/brickslab', overview: '/dashboard' };
 const fechaAviso = (iso) => new Date(String(iso).slice(0, 10) + 'T12:00:00Z').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' });
 async function avisosFamilia(me) {
@@ -13673,6 +13678,7 @@ async function avisosFamilia(me) {
         // 8) Mensajes del chat sin leer y, al personal, las tareas que le ponen.
         avisos.push(...await avisosChats(pool, me));
         avisos.push(...await avisosTareas(me).catch(() => []));
+        avisos.push(...await avisosEspacio(pool, me, { sqlEsPersonal: (u) => SQL_ES_PERSONAL(u), clubId: AIM_CLUB_ID }).catch(() => []));
 
         await conVistos(me, avisos);
         const lista = avisos.filter(a => !(a.soloSinLeer && !a.nuevo));
@@ -16959,6 +16965,11 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         // muchos, los cinco últimos y el resto resumido.
         // Mensajes del chat interno sin leer, uno por conversación.
         if (recibe('chat_mensajes')) fuente('Mensajes', [], () => avisosChats(pool, yo));
+        // Mi espacio (#497): sus documentos nuevos y, a quien lleva el personal, quién no ha subido el certificado.
+        if (recibe('documentos_personal') || recibe('certificados_faltan')) {
+            fuente('Mi espacio', ['personal_sin_certificado'], async () => (await avisosEspacio(pool, yo, { gestiona: recibe('certificados_faltan') && !!permisosYo.gestionarPersonal, sqlEsPersonal: (u) => SQL_ES_PERSONAL(u), clubId: AIM_CLUB_ID }))
+                .filter(a => (a.clave === 'personal_sin_certificado' ? true : recibe('documentos_personal'))));
+        }
         // Tareas que le ponen en Mi día y las que ha puesto él y ya están hechas.
         if (recibe('tareas_asignadas') || recibe('tareas_hechas')) {
             fuente('Tareas', [], async () => (await avisosTareas(yo)).filter(a => recibe(a.clave.startsWith('tarea-hecha:') ? 'tareas_hechas' : 'tareas_asignadas')));

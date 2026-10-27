@@ -68,6 +68,7 @@ const COLOR = {
   correo: 'var(--purple)',
   redes: '#1FA855',
   mensajes: 'var(--teal)',
+  personal: 'var(--purple)',
   tareas: 'var(--orange)',
   // Los de la zona de familias.
   pagos: 'var(--orange)',
@@ -97,6 +98,7 @@ const TITULO = {
   correo: 'Correo',
   redes: 'Redes sociales',
   mensajes: 'Mensajes',
+  personal: 'Mi espacio',
   tareas: 'Mi día',
   pagos: 'Pagos',
   soporte: 'Soporte',
