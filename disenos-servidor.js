@@ -104,3 +104,58 @@ export async function pintarEnServidor(datos, { variables = null, formato = 'jpe
     const buf = formato === 'png' ? await c.encode('png') : await c.encode('jpeg', calidad);
     return { buf, mime: formato === 'png' ? 'image/png' : 'image/jpeg', ancho: c.width, alto: c.height };
 }
+
+// ¿La primera página se mueve (animaciones)? Entonces la historia va en vídeo.
+export async function seMueve(datos) {
+    const r = await render();
+    return r.tieneAnimacion(r.paginaDe(datos, 0));
+}
+
+// Graba en MP4 la animación de la primera página (#494): fotograma a fotograma,
+// con el mismo pintado del editor, y ffmpeg los junta (H.264 con una pista de
+// sonido en silencio, que Instagram la pide a veces). Los vídeos que lleve
+// el diseño dentro no se pueden pintar aquí: con alguno, devuelve null.
+// Devuelve { buf, mime, ancho, alto, duracion }.
+export async function grabarEnServidor(datos, { variables = null, fps = 30 } = {}) {
+    const r = await render();
+    const d = r.paginaDe(datos, 0);
+    if ((d.elementos || []).some(e => e?.tipo === 'video' && !e.oculto)) return null;
+    const { createCanvas } = await canvas();
+    const { default: ffmpeg } = await import('@ffmpeg-installer/ffmpeg');
+    const { spawn } = await import('child_process');
+    const fs = await import('fs/promises');
+    const os = await import('os');
+    const path = await import('path');
+    await r.cargarFuentes(d);
+    const imagenes = await r.cargarImagenes(d);
+    // H.264 en 4:2:0 pide medidas pares.
+    const W = Math.round(d.ancho / 2) * 2, H = Math.round(d.alto / 2) * 2;
+    const c = createCanvas(W, H), ctx = c.getContext('2d');
+    // Una historia de Instagram dura al menos 3 segundos: se queda quieta al final.
+    const dur = Math.max(3, r.duracionAnimacion(d)), n = Math.round(dur * fps);
+    const salida = path.join(os.tmpdir(), `historia-${process.pid}-${Date.now()}.mp4`);
+    const p = spawn(ffmpeg.path, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${W}x${H}`, '-r', String(fps), '-i', '-',
+        '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100', '-shortest',
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '64k', '-movflags', '+faststart', salida], { stdio: ['pipe', 'ignore', 'pipe'] });
+    let error = '';
+    p.stderr.on('data', x => { error += x; });
+    const fin = new Promise((ok, mal) => { p.on('error', mal); p.on('close', code => (code === 0 ? ok() : mal(new Error(`ffmpeg: ${error.trim().slice(0, 300) || `salió con ${code}`}`)))); });
+    fin.catch(() => {});
+    try {
+        for (let i = 0; i < n; i++) {
+            ctx.setTransform(W / d.ancho, 0, 0, H / d.alto, 0, 0);
+            r.pintarDiseno(ctx, d, { imagenes, variables, tiempo: i / fps });
+            const px = ctx.getImageData(0, 0, W, H).data;
+            if (!p.stdin.write(Buffer.from(px.buffer, px.byteOffset, px.byteLength))) await new Promise(ok => p.stdin.once('drain', ok));
+            // Que la web siga atendiendo mientras tanto.
+            if (i % 3 === 2) await new Promise(ok => setImmediate(ok));
+        }
+        p.stdin.end();
+        await fin;
+        const buf = await fs.readFile(salida);
+        return { buf, mime: 'video/mp4', ancho: W, alto: H, duracion: dur };
+    } finally {
+        if (p.exitCode === null) p.kill('SIGKILL');
+        await fs.unlink(salida).catch(() => {});
+    }
+}

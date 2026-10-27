@@ -1,19 +1,26 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Diseños que salen solos (#471). La dirección elige en Aim Design qué diseño
 // es la plantilla de cada uso (así la confirma) y la web hace el resto:
-// - festivo: la historia de Instagram del día de cada festivo (los de Fichaje →
+// - festivo: la historia de Instagram y Facebook del día de cada festivo (los de Fichaje →
 //   Vacaciones y festivos de tipo nacional, autonómico o local; las vacaciones
 //   y los cierres del centro, no). Se deja programada en Publicaciones para las
 //   00:00 de ese día, así dura las 24 horas, con {dia}, {festivo} y {vuelta}.
 //   Se ve (y se puede quitar) en el calendario de Publicaciones desde una semana
-//   antes; si se cambia la plantilla o el festivo, se vuelve a pintar.
+//   antes; si se cambia la plantilla o el festivo, se vuelve a pintar. Si la
+//   plantilla tiene animaciones, va en vídeo con ellas (#494).
 // - cumple: la felicitación de cumpleaños, con {nombre} y {edad}, que va como
 //   imagen dentro del correo del automatismo «Felicitación de cumpleaños».
 // Lo elegido va en aim_ajustes («disenos_automaticos»); no hay tablas nuevas.
 // ─────────────────────────────────────────────────────────────────────────────
 import crypto from 'crypto';
 import sharp from 'sharp';
-import { pintarEnServidor } from './disenos-servidor.js';
+import { pintarEnServidor, grabarEnServidor, seMueve } from './disenos-servidor.js';
+
+// Dónde sale la historia del festivo (#494: también en Facebook, que antes no
+// tenía historias). Si cambia cómo se hace, GENERACION sube y las programadas
+// se vuelven a hacer.
+const REDES_HISTORIA = ['instagram', 'facebook'];
+const GENERACION = 2;
 
 export const CLAVE_AUTOMATICOS = 'disenos_automaticos';
 export const USOS_AUTOMATICOS = {
@@ -92,8 +99,22 @@ export async function ejemploFestivo(pool) {
         || { dia: 'Lunes 8 de diciembre', festivo: 'Día de la Inmaculada Concepción', vuelta: 'el martes 9 de diciembre' };
 }
 
+// Lo que se publica: con animaciones, el vídeo (y su último fotograma de
+// miniatura); si no, o si no se puede grabar, la imagen.
+async function medioHistoria(d, variables) {
+    const img = await pintarEnServidor(d.datos, { variables });
+    if (await seMueve(d.datos)) {
+        try {
+            const v = await grabarEnServidor(d.datos, { variables });
+            if (v) return { ...v, portada: img.buf };
+            console.warn(`[diseños] la plantilla #${d.id} lleva vídeos dentro: la historia sale en imagen`);
+        } catch (e) { console.error(`[diseños] no se ha podido grabar la historia en vídeo (#${d.id}):`, e.message); }
+    }
+    return img;
+}
+
 async function guardarImagen(pool, publicacionId, img) {
-    const mini = await sharp(img.buf).resize({ width: 360, withoutEnlargement: true }).jpeg({ quality: 78 }).toBuffer();
+    const mini = await sharp(img.portada || img.buf).resize({ width: 360, withoutEnlargement: true }).jpeg({ quality: 78 }).toBuffer();
     await pool.query(`DELETE FROM aim_social_medios WHERE publicacion_id = $1`, [publicacionId]);
     await pool.query(
         `INSERT INTO aim_social_medios (publicacion_id, orden, mime, datos, miniatura, bytes, ancho, alto, token)
@@ -103,12 +124,12 @@ async function guardarImagen(pool, publicacionId, img) {
 
 async function crearHistoria(pool, d, cfg, f) {
     const version = new Date(d.updated_at).toISOString();
-    const marca = { uso: 'festivo', fecha: f.fecha, diseno: d.id, version, variables: f.variables };
-    const img = await pintarEnServidor(d.datos, { variables: f.variables });
+    const img = await medioHistoria(d, f.variables);
+    const marca = { uso: 'festivo', fecha: f.fecha, diseno: d.id, version, variables: f.variables, gen: GENERACION, formato: img.mime.startsWith('video/') ? 'video' : 'imagen' };
     const p = await pool.query(
         `INSERT INTO aim_social_publicaciones (texto, redes, tipo, estado, programada_at, resultado, creado_por)
-         VALUES ('', '{instagram}', 'story', 'programada', $1, jsonb_build_object('auto', $2::jsonb), $3) RETURNING id`,
-        [medianocheMadrid(f.fecha), JSON.stringify(marca), cfg.festivo?.por || null]);
+         VALUES ('', $4::text[], 'story', 'programada', $1, jsonb_build_object('auto', $2::jsonb), $3) RETURNING id`,
+        [medianocheMadrid(f.fecha), JSON.stringify(marca), cfg.festivo?.por || null, REDES_HISTORIA]);
     await guardarImagen(pool, p.rows[0].id, img);
     // Apuntada: si alguien la quita en Publicaciones, no se vuelve a crear.
     const actual = await configAutomaticos(pool);
@@ -174,15 +195,16 @@ export async function programarHistoriasFestivos(pool) {
         if (sobran.length) await pool.query(`DELETE FROM aim_social_publicaciones WHERE id = ANY($1::int[])`, [sobran.map(p => p.id)]);
         const version = new Date(d.updated_at).toISOString();
         for (const f of festivos) {
-            const marca = { uso: 'festivo', fecha: f.fecha, diseno: d.id, version, variables: f.variables };
             const ya = auto.find(p => p.auto?.fecha === f.fecha);
             if (ya) {
-                // Programada y con otra plantilla, otra versión u otro nombre: se vuelve a pintar.
-                const igual = ya.auto.diseno === d.id && ya.auto.version === version && mismo(ya.auto.variables, f.variables);
+                // Programada y con otra plantilla, otra versión, otro nombre o hecha
+                // de otra forma (antes de #494): se vuelve a hacer.
+                const igual = ya.auto.diseno === d.id && ya.auto.version === version && mismo(ya.auto.variables, f.variables) && ya.auto.gen === GENERACION;
                 if (ya.estado !== 'programada' || igual) continue;
-                const img = await pintarEnServidor(d.datos, { variables: f.variables });
+                const img = await medioHistoria(d, f.variables);
+                const marca = { uso: 'festivo', fecha: f.fecha, diseno: d.id, version, variables: f.variables, gen: GENERACION, formato: img.mime.startsWith('video/') ? 'video' : 'imagen' };
                 await guardarImagen(pool, ya.id, img);
-                await pool.query(`UPDATE aim_social_publicaciones SET resultado = jsonb_build_object('auto', $2::jsonb), updated_at = NOW() WHERE id = $1`, [ya.id, JSON.stringify(marca)]);
+                await pool.query(`UPDATE aim_social_publicaciones SET resultado = jsonb_build_object('auto', $2::jsonb), redes = $3::text[], updated_at = NOW() WHERE id = $1`, [ya.id, JSON.stringify(marca), REDES_HISTORIA]);
                 console.log(`[diseños] historia del festivo ${f.fecha} vuelta a pintar (#${ya.id})`);
                 continue;
             }
