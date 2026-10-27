@@ -361,7 +361,7 @@ function vistaIT({ d, ir, irRuta }) {
   for (const b of d.semana.bloques) { const u = dias.find(x => x[0] === b.fecha); if (u) u[1].push(b); else dias.push([b.fecha, [b]]); }
   return {
     cifras: [
-      <Cifra key="1" etiqueta="Tickets abiertos" valor={t.abiertos} detalle={`${t.resueltos_semana} resueltos esta semana`} onClick={() => ir('support')} />,
+      <Cifra key="1" etiqueta="Tickets abiertos" valor={t.abiertos} detalle={[`${t.resueltos_semana} resueltos esta semana`, t.en_pausa ? `${t.en_pausa} en pausa` : null, t.abiertos_empresa ? `+${t.abiertos_empresa} de Aim Soluciones Digitales` : null].filter(Boolean).join(' · ')} onClick={() => ir('support')} />,
       <Cifra key="2" etiqueta="Asignados a ti" valor={t.mios} detalle={`${t.urgentes} de prioridad alta en total`} onClick={() => ir('support')} />,
       <Cifra key="3" etiqueta="Sin asignar" valor={t.sin_asignar} tono={t.sin_asignar ? 'aviso' : 'bien'} detalle={t.sin_asignar ? 'hay que repartirlos' : 'todos tienen dueño'} onClick={() => ir('support')} />,
       <Cifra key="4" etiqueta="Vencidos" valor={t.vencidos} tono={t.vencidos ? 'aviso' : 'bien'} detalle={t.vencidos ? 'se pasó su fecha' : 'ninguno'} onClick={() => ir('support')} />,

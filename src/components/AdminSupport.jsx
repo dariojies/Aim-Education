@@ -560,14 +560,19 @@ function ResumenSoporte({ onAbrir, espacio = 'aim' }) {
         <>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 10 }}>
             {[
-              ['Entraron', d.entraron, 'var(--purple)'], ['Resueltos', d.resueltos, 'var(--teal)'],
-              ['Abiertos ahora', d.abiertos, '#ccac00'], ['Sin asignar', d.sinAsignar, 'var(--orange)'],
-              ['Vencidos', d.vencidos, '#E5484D'], [`Parados (+${d.diasParado} días)`, d.parados, 'var(--orange)'],
-              ['1ª respuesta (mediana)', horas(d.horasResponder), 'var(--ink)'], ['Resolver (mediana)', horas(d.horasResolver), 'var(--ink)'],
-            ].map(([k, v, c]) => (
+              // Cada número con lo que cuenta (#490), para que cuadre con el tablero.
+              ['Entraron', d.entraron, 'var(--purple)', `abiertos en ${d.dias} días`],
+              ['Resueltos', d.resueltos, 'var(--teal)', `resueltos o cerrados en ${d.dias} días`],
+              ['Abiertos ahora', d.abiertos, '#ccac00', [d.enPausa ? `${d.enPausa} en pausa` : null, d.esperaDeploy ? `${d.esperaDeploy} esperando deploy` : null].filter(Boolean).join(' · ') || 'todos los sin resolver'],
+              ['Sin asignar', d.sinAsignar, 'var(--orange)', 'sin contar los de pausa'],
+              ['Vencidos', d.vencidos, '#E5484D', 'su fecha límite ya pasó (sin pausa)'],
+              [`Parados (+${d.diasParado} días)`, d.parados, 'var(--orange)', 'sin moverse; no cuentan pausa ni deploy'],
+              ['1ª respuesta (mediana)', horas(d.horasResponder), 'var(--ink)', null], ['Resolver (mediana)', horas(d.horasResolver), 'var(--ink)', null],
+            ].map(([k, v, c, nota]) => (
               <div key={k} style={tarjeta}>
                 <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--ink-3)' }}>{k}</div>
                 <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 26, color: c }}>{v}</div>
+                {nota && <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{nota}</div>}
               </div>
             ))}
           </div>
@@ -584,7 +589,15 @@ function ResumenSoporte({ onAbrir, espacio = 'aim' }) {
                     <span style={{ color: 'var(--teal)', fontWeight: 700 }}>{p.resueltos} resueltos</span>
                   </div>
                 ))}
+                {(d.sinEncargado?.abiertos > 0 || d.sinEncargado?.resueltos > 0) && (
+                  <div style={{ display: 'flex', gap: 8, fontSize: 13, padding: '6px 0', borderTop: '1px solid var(--line-2)', color: 'var(--ink-3)' }}>
+                    <span style={{ flex: 1, fontWeight: 700 }}>Sin encargado</span>
+                    <span>{d.sinEncargado.abiertos} abiertos</span>
+                    <span style={{ fontWeight: 700 }}>{d.sinEncargado.resueltos} resueltos</span>
+                  </div>
+                )}
               </div>
+              <p style={{ fontSize: 11, color: 'var(--ink-3)', margin: '8px 0 0' }}>Un ticket con varios encargados cuenta para cada uno, así que la suma puede pasar del total.</p>
             </div>
             <div style={tarjeta}>
               <b style={{ fontSize: 14 }}>Qué ha entrado</b>

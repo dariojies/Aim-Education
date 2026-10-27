@@ -16052,10 +16052,17 @@ async function resumenSoporte(dias = 7, espacio = null) {
     const [n, porPersona, porCategoria, parados] = await Promise.all([
         pool.query(
             `SELECT COUNT(*) FILTER (WHERE created_at > NOW() - $1 * INTERVAL '1 day')::int AS entraron,
-                    COUNT(*) FILTER (WHERE resolved_at > NOW() - $1 * INTERVAL '1 day')::int AS resueltos,
+                    COUNT(*) FILTER (WHERE status IN ('resolved', 'closed') AND resolved_at > NOW() - $1 * INTERVAL '1 day')::int AS resueltos,
                     COUNT(*) FILTER (WHERE status = 'open')::int AS abiertos,
-                    COUNT(*) FILTER (WHERE status = 'open' AND assigned_to IS NULL AND cardinality(COALESCE(asignados_extra, '{}')) = 0)::int AS sin_asignar,
-                    COUNT(*) FILTER (WHERE status = 'open' AND due_date IS NOT NULL AND due_date::date < (NOW() AT TIME ZONE 'Europe/Madrid')::date)::int AS vencidos,
+                    -- Lo que está en pausa no cuenta como sin asignar ni vencido (#490), como en el tablero.
+                    COUNT(*) FILTER (WHERE status = 'open' AND etapa IS DISTINCT FROM 'pausa' AND assigned_to IS NULL AND cardinality(COALESCE(asignados_extra, '{}')) = 0)::int AS sin_asignar,
+                    COUNT(*) FILTER (WHERE status = 'open' AND etapa IS DISTINCT FROM 'pausa' AND due_date IS NOT NULL AND due_date::date < (NOW() AT TIME ZONE 'Europe/Madrid')::date)::int AS vencidos,
+                    -- Los abiertos por columna del tablero, para que se vea de dónde sale el total.
+                    COUNT(*) FILTER (WHERE status = 'open' AND etapa = 'pausa')::int AS en_pausa,
+                    COUNT(*) FILTER (WHERE status = 'open' AND etapa = 'espera_deploy')::int AS espera_deploy,
+                    -- Resueltos sin nadie encargado (no salen en «Por persona»).
+                    COUNT(*) FILTER (WHERE status IN ('resolved', 'closed') AND resolved_at > NOW() - $1 * INTERVAL '1 day' AND assigned_to IS NULL AND cardinality(COALESCE(asignados_extra, '{}')) = 0)::int AS resueltos_sin_encargado,
+                    COUNT(*) FILTER (WHERE status = 'open' AND assigned_to IS NULL AND cardinality(COALESCE(asignados_extra, '{}')) = 0)::int AS abiertos_sin_encargado,
                     COUNT(*) FILTER (WHERE status = 'open' AND COALESCE(etapa, '') NOT IN ('espera_deploy', 'pausa') AND COALESCE(updated_at, created_at) < NOW() - $2 * INTERVAL '1 day')::int AS parados,
                     percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (resolved_at - created_at)) / 3600)
                         FILTER (WHERE resolved_at > NOW() - $1 * INTERVAL '1 day') AS horas_resolver,
@@ -16066,8 +16073,8 @@ async function resumenSoporte(dias = 7, espacio = null) {
         pool.query(
             `SELECT e.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre,
                     COUNT(*) FILTER (WHERE s.status = 'open')::int AS abiertos,
-                    COUNT(*) FILTER (WHERE s.status = 'open' AND s.due_date IS NOT NULL AND s.due_date::date < (NOW() AT TIME ZONE 'Europe/Madrid')::date)::int AS vencidos,
-                    COUNT(*) FILTER (WHERE s.resolved_at > NOW() - $1 * INTERVAL '1 day')::int AS resueltos
+                    COUNT(*) FILTER (WHERE s.status = 'open' AND s.etapa IS DISTINCT FROM 'pausa' AND s.due_date IS NOT NULL AND s.due_date::date < (NOW() AT TIME ZONE 'Europe/Madrid')::date)::int AS vencidos,
+                    COUNT(*) FILTER (WHERE s.status IN ('resolved', 'closed') AND s.resolved_at > NOW() - $1 * INTERVAL '1 day')::int AS resueltos
              FROM tickets_registrosoporte s
              CROSS JOIN LATERAL unnest(array_prepend(s.assigned_to, COALESCE(s.asignados_extra, '{}'))) AS e(user_id)
              JOIN users u ON u.user_id = e.user_id
@@ -16079,7 +16086,8 @@ async function resumenSoporte(dias = 7, espacio = null) {
         pool.query(
             `SELECT id, subject, COALESCE(updated_at, created_at) AS ultimo,
                     EXTRACT(DAY FROM NOW() - COALESCE(updated_at, created_at))::int AS dias
-             FROM tickets_registrosoporte WHERE status = 'open' AND COALESCE(updated_at, created_at) < NOW() - $1 * INTERVAL '1 day' ${de('tickets_registrosoporte')}
+             FROM tickets_registrosoporte WHERE status = 'open' AND COALESCE(etapa, '') NOT IN ('espera_deploy', 'pausa')
+               AND COALESCE(updated_at, created_at) < NOW() - $1 * INTERVAL '1 day' ${de('tickets_registrosoporte')}
              ORDER BY COALESCE(updated_at, created_at) LIMIT 15`, [parado]),
     ]);
     const x = n.rows[0];
@@ -16087,7 +16095,8 @@ async function resumenSoporte(dias = 7, espacio = null) {
     return {
         dias, diasParado: parado,
         entraron: x.entraron, resueltos: x.resueltos, abiertos: x.abiertos, sinAsignar: x.sin_asignar,
-        vencidos: x.vencidos, parados: x.parados, horasResolver: h(x.horas_resolver), horasResponder: h(x.horas_responder),
+        vencidos: x.vencidos, parados: x.parados, enPausa: x.en_pausa, esperaDeploy: x.espera_deploy,
+        sinEncargado: { abiertos: x.abiertos_sin_encargado, resueltos: x.resueltos_sin_encargado }, horasResolver: h(x.horas_resolver), horasResponder: h(x.horas_responder),
         porPersona: porPersona.rows.map(p => ({ id: p.user_id, nombre: p.nombre, abiertos: p.abiertos, vencidos: p.vencidos, resueltos: p.resueltos })),
         porCategoria: porCategoria.rows.map(c => ({ categoria: c.categoria, nombre: CATEGORIAS_TICKET[c.categoria] || 'Sin categoría', n: c.n })),
         listaParados: parados.rows.map(p => ({ id: p.id, asunto: p.subject, dias: p.dias })),
@@ -16475,7 +16484,7 @@ async function resumenMiDia(yo) {
                     FROM aim_tareas WHERE user_id = $1`, [yo]),
         pool.query(`SELECT id, titulo, hora FROM aim_tareas WHERE user_id = $1 AND fecha = ${HOY_SQL} AND NOT hecha
                     ORDER BY hora NULLS LAST, id LIMIT 5`, [yo]),
-        pool.query(`SELECT COUNT(*)::int n FROM tickets_registrosoporte WHERE status = 'open' AND (assigned_to = $1 OR $1 = ANY(asignados_extra))`, [yo]),
+        pool.query(`SELECT COUNT(*)::int n FROM tickets_registrosoporte WHERE status = 'open' AND etapa IS DISTINCT FROM 'pausa' AND (assigned_to = $1 OR $1 = ANY(asignados_extra))`, [yo]),
         pool.query(`SELECT tipo, desde::text, hasta::text, estado FROM aim_ausencias
                     WHERE user_id = $1 AND hasta >= ${HOY_SQL} AND estado IN ('pendiente', 'aprobada') ORDER BY desde LIMIT 3`, [yo]),
     ]);
@@ -16657,23 +16666,29 @@ async function resumenDireccion() {
     };
 }
 
-async function resumenIT(yo) {
+// Los números de tickets van con las mismas reglas que Soporte y la campanita
+// (#490): solo los de Aim Education (los de la empresa, aparte); «vencido» es
+// que la fecha límite ya pasó (no la de hoy); lo que está en pausa no cuenta
+// como sin asignar, tuyo, vencido ni urgente.
+async function resumenIT(yo, conEmpresa = false) {
     const lunes = new Date(hoyMadrid() + 'T12:00:00');
     lunes.setDate(lunes.getDate() - ((lunes.getDay() + 6) % 7));
     const lunesIso = lunes.toLocaleDateString('en-CA');
     const [cuentas, mios, sinAsignar, plan, imap, imapErr, vf, tpv, rebotes, cola] = await Promise.all([
-        pool.query(`SELECT COUNT(*)::int abiertos,
-                           COUNT(*) FILTER (WHERE assigned_to = $1 OR $1 = ANY(asignados_extra))::int mios,
-                           COUNT(*) FILTER (WHERE assigned_to IS NULL AND cardinality(asignados_extra) = 0)::int sin_asignar,
-                           COUNT(*) FILTER (WHERE due_date < now())::int vencidos,
-                           COUNT(*) FILTER (WHERE priority = 'high')::int urgentes,
-                           (SELECT COUNT(*) FROM tickets_registrosoporte WHERE resolved_at > now() - INTERVAL '7 days')::int resueltos_semana
-                    FROM tickets_registrosoporte WHERE status = 'open'`, [yo]),
-        pool.query(`SELECT id, subject, priority, due_date, created_at FROM tickets_registrosoporte
-                    WHERE status = 'open' AND (assigned_to = $1 OR $1 = ANY(asignados_extra))
+        pool.query(`SELECT COUNT(*) FILTER (WHERE NOT ${SQL_TICKET_EMPRESA('t')})::int abiertos,
+                           COUNT(*) FILTER (WHERE ${SQL_TICKET_EMPRESA('t')})::int abiertos_empresa,
+                           COUNT(*) FILTER (WHERE NOT ${SQL_TICKET_EMPRESA('t')} AND etapa = 'pausa')::int en_pausa,
+                           COUNT(*) FILTER (WHERE NOT ${SQL_TICKET_EMPRESA('t')} AND etapa IS DISTINCT FROM 'pausa' AND (assigned_to = $1 OR $1 = ANY(asignados_extra)))::int mios,
+                           COUNT(*) FILTER (WHERE NOT ${SQL_TICKET_EMPRESA('t')} AND etapa IS DISTINCT FROM 'pausa' AND assigned_to IS NULL AND cardinality(asignados_extra) = 0)::int sin_asignar,
+                           COUNT(*) FILTER (WHERE NOT ${SQL_TICKET_EMPRESA('t')} AND etapa IS DISTINCT FROM 'pausa' AND due_date::date < (NOW() AT TIME ZONE 'Europe/Madrid')::date)::int vencidos,
+                           COUNT(*) FILTER (WHERE NOT ${SQL_TICKET_EMPRESA('t')} AND etapa IS DISTINCT FROM 'pausa' AND priority = 'high')::int urgentes,
+                           (SELECT COUNT(*) FROM tickets_registrosoporte r WHERE r.status IN ('resolved', 'closed') AND r.resolved_at > now() - INTERVAL '7 days' AND NOT ${SQL_TICKET_EMPRESA('r')})::int resueltos_semana
+                    FROM tickets_registrosoporte t WHERE status = 'open'`, [yo]),
+        pool.query(`SELECT id, subject, priority, due_date, created_at FROM tickets_registrosoporte t
+                    WHERE status = 'open' AND etapa IS DISTINCT FROM 'pausa' AND NOT ${SQL_TICKET_EMPRESA('t')} AND (assigned_to = $1 OR $1 = ANY(asignados_extra))
                     ORDER BY (priority = 'high') DESC, due_date NULLS LAST, created_at LIMIT 8`, [yo]),
-        pool.query(`SELECT id, subject, priority, created_at FROM tickets_registrosoporte
-                    WHERE status = 'open' AND assigned_to IS NULL AND cardinality(asignados_extra) = 0
+        pool.query(`SELECT id, subject, priority, created_at FROM tickets_registrosoporte t
+                    WHERE status = 'open' AND etapa IS DISTINCT FROM 'pausa' AND NOT ${SQL_TICKET_EMPRESA('t')} AND assigned_to IS NULL AND cardinality(asignados_extra) = 0
                     ORDER BY (priority = 'high') DESC, created_at LIMIT 5`),
         pool.query(`SELECT p.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre, p.fecha::text, to_char(p.inicio, 'HH24:MI') inicio, to_char(p.fin, 'HH24:MI') fin, p.nota
                     FROM aim_it_planificacion p JOIN users u ON u.user_id = p.user_id
@@ -16691,7 +16706,7 @@ async function resumenIT(yo) {
     const mapT = (t) => ({ id: t.id, asunto: t.subject, prioridad: t.priority, vence: t.due_date, fecha: t.created_at });
     const mem = process.memoryUsage();
     return {
-        tickets: { ...cuentas.rows[0], miosLista: mios.rows.map(mapT), sinAsignarLista: sinAsignar.rows.map(mapT) },
+        tickets: { ...cuentas.rows[0], abiertos_empresa: conEmpresa ? cuentas.rows[0].abiertos_empresa : 0, miosLista: mios.rows.map(mapT), sinAsignarLista: sinAsignar.rows.map(mapT) },
         semana: { lunes: lunesIso, bloques: plan.rows.map(b => ({ id: b.user_id, nombre: b.nombre, fecha: b.fecha, inicio: b.inicio, fin: b.fin, nota: b.nota, mio: String(b.user_id) === String(yo) })) },
         sistema: {
             correo: !!mailTransporter,
@@ -16757,7 +16772,7 @@ app.get('/api/admin/resumen', authenticateSession, requireAdmin, async (req, res
         const datos = vista === 'instructor' ? await resumenInstructor(quien)
             : vista === 'secretaria' ? await resumenSecretaria()
                 : vista === 'direccion' ? await resumenDireccion()
-                    : vista === 'it' ? await resumenIT(ses.userId)
+                    : vista === 'it' ? await resumenIT(ses.userId, !!permisos(req).soporteEmpresa)
                         : {};
         res.set('Cache-Control', 'no-store');
         res.json({
