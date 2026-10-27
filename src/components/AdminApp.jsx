@@ -49,6 +49,7 @@ import AdminContactos from './AdminContactos.jsx';
 import AdminCandidatos from './AdminCandidatos.jsx';
 import AdminIncidencias from './AdminIncidencias.jsx';
 import Chats from './Chats.jsx';
+import AdminListas from './AdminListas.jsx';
 import AdminBrickslab from './AdminBrickslab.jsx';
 import AdminGaleria from './Galeria.jsx';
 import { IconoActividad } from './IconoActividad.jsx';
@@ -112,6 +113,7 @@ function sectionLabel(id, pestana) {
     candidatos: "Candidatos",
     incidencias: "Incidencias",
     mensajes: "Mensajes",
+    listas: "Contactos",
     brickslab: "Brickslab y Biblioteca",
     grafico: "Aim Design",
     galeria: "Fotos",
@@ -6891,6 +6893,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "familias", label: "Familias", icon: <I.Heart /> },
         // Todo el personal del club, no solo los instructores.
         { id: "instructors", label: "Personal", icon: <I.Whistle /> },
+        // La gente de las listas hechas a mano: AMPAs, colegios, asociaciones… (#499).
+        { id: "listas", label: "Contactos", icon: <I.Phone /> },
       ]
     },
     {
@@ -7092,6 +7096,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("candidatos") && <AdminCandidatos showToast={showToast} />}
           {ver("incidencias") && <AdminIncidencias showToast={showToast} enlace={enlace} />}
           {ver("mensajes") && <Chats ambito="equipo" showToast={showToast} />}
+          {ver("listas") && <AdminListas showToast={showToast} />}
           {ver("brickslab") && <AdminBrickslab showToast={showToast} enlace={enlace} />}
           {ver("galeria") && <AdminGaleria showToast={showToast} />}
           {ver("bandeja") && <AdminBandeja showToast={showToast} onAbrirFicha={abrirFicha} />}

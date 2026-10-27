@@ -14,6 +14,7 @@ const lista = (xs) => (xs.length <= 1 ? xs.join('') : `${xs.slice(0, -1).join(',
 // años, con recibos sin pagar. Se escribe a sus padres o tutores.»
 export function describirSegmento(f = {}, clases = []) {
   if (f.estado === 'contactos') return 'Personas que nos han escrito por la web (no son alumnos). Solo reciben publicidad, y solo si la aceptaron.';
+  if (f.estado === 'lista') return 'Lista hecha a mano: las personas que se han apuntado en ella (salen en Personas → Contactos).';
   const quien = { activos: 'Alumnos actuales', baja: 'Antiguos alumnos', todos: 'Alumnos actuales y antiguos' }[f.estado || 'activos'];
   const partes = [];
   if (f.clases?.length) {

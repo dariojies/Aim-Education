@@ -36,6 +36,7 @@ import { configurarDisenosServidor } from './disenos-servidor.js';
 import { crearMedios, crearTablasMedios, limpiarMedios } from './medios.js';
 import { crearPantallas, crearTablasPantallas, prepararEstaticas, prepararCierres, limpiarMediosPantalla } from './pantallas.js';
 import { crearChats, crearTablasChats, avisosChats } from './chats.js';
+import { crearListas, crearTablasListas, listasComoSegmentos, resolverLista, correosDeLista } from './listas.js';
 import { programarHistoriasFestivos, felicitacionCumple } from './disenos-automaticos.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
@@ -2359,6 +2360,8 @@ async function initDb() {
         await crearTablasTienda(client);
         // Mensajes: el chat interno (Equipo IT con cualquiera, privados y grupos del personal).
         await crearTablasChats(client);
+        // Las listas hechas a mano (#499): AMPAs, colegios, asociaciones… (listas.js).
+        await crearTablasListas(client);
     } finally {
         client.release();
     }
@@ -5313,6 +5316,8 @@ app.use(crearMedios({ pool, authenticateSession, requireSeccion }));
 app.use(crearPantallas({ pool, authenticateSession, requireSeccion }));
 // Mensajes: el chat interno. Lo nuevo llega al móvil de quien tiene que leerlo.
 app.use(crearChats({ pool, clubId: AIM_CLUB_ID, authenticateSession, avisar: (ids) => avisosPush.avisarFamilias(ids) }).router);
+// Las listas hechas a mano y sus personas (Personas → Contactos, #499).
+app.use(crearListas({ pool, authenticateSession, requireSeccion, correosCon }));
 // Para mencionar (@) en los comentarios de Aim Design: el personal que ve Aim Design.
 app.get('/api/admin/disenos-equipo', authenticateSession, requireSeccion('grafico'), async (req, res) => {
     try {
@@ -12277,6 +12282,8 @@ function sqlSegmento(f, vals) {
 // Las personas del segmento con sus destinatarios, ya filtrados por permisos.
 async function resolverSegmento(f) {
     if (f?.estado === 'contactos') return resolverContactos(f);
+    // Una lista hecha a mano (#499).
+    if (f?.estado === 'lista') return resolverLista(pool, f, { tiposCorreo: TIPOS_CORREO, rebotesDe });
     const vals = [AIM_CLUB_ID];
     const where = sqlSegmento(f || {}, vals);
     const r = await pool.query(
@@ -12411,12 +12418,14 @@ app.get('/api/admin/segmentos', authenticateSession, requireSeccion('comunicacio
     try {
         const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'segmentos_crm'`);
         res.set('Cache-Control', 'no-store');
-        res.json({ segmentos: Array.isArray(r.rows[0]?.valor) ? r.rows[0].valor : [] });
+        // Los de filtros y, detrás, las listas hechas a mano (#499).
+        res.json({ segmentos: [...(Array.isArray(r.rows[0]?.valor) ? r.rows[0].valor : []), ...await listasComoSegmentos(pool)] });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.put('/api/admin/segmentos', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
-    const lista = Array.isArray(req.body?.segmentos) ? req.body.segmentos.slice(0, 60) : null;
+    // Las listas hechas a mano no se guardan aquí: van en sus tablas (#499).
+    const lista = Array.isArray(req.body?.segmentos) ? req.body.segmentos.filter(s => !s?.manual && s?.filtros?.estado !== 'lista').slice(0, 60) : null;
     if (!lista) return res.status(400).json({ error: 'Faltan los segmentos.' });
     const limpios = [];
     for (const s of lista) {
@@ -12429,7 +12438,7 @@ app.put('/api/admin/segmentos', authenticateSession, requireSeccion('comunicacio
             `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('segmentos_crm', $1::jsonb, NOW(), $2)
              ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
             [JSON.stringify(limpios), req.userSession.userId]);
-        res.json({ success: true, segmentos: limpios });
+        res.json({ success: true, segmentos: [...limpios, ...await listasComoSegmentos(pool)] });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -12439,10 +12448,15 @@ app.put('/api/admin/segmentos', authenticateSession, requireSeccion('comunicacio
 // cuántos la visitan (los que aceptaron las cookies de análisis).
 async function segmentosGuardados() {
     const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'segmentos_crm'`);
-    return Array.isArray(r.rows[0]?.valor) ? r.rows[0].valor : [];
+    return [...(Array.isArray(r.rows[0]?.valor) ? r.rows[0].valor : []), ...await listasComoSegmentos(pool)];
 }
 // Los miembros de un segmento: ids de las fichas (con su familia) y correos.
 async function miembrosDeSegmento(f) {
+    if (f?.estado === 'lista') {
+        const emails = await correosDeLista(pool, f.lista);
+        const u = emails.length ? await pool.query(`SELECT user_id FROM users WHERE LOWER(email) = ANY($1::text[])`, [emails]) : { rows: [] };
+        return { total: emails.length, alumnos: [], ids: u.rows.map(x => x.user_id), emails };
+    }
     if (f?.estado === 'contactos') {
         const r = await pool.query(`SELECT DISTINCT LOWER(email) AS email FROM aim_contactos WHERE email IS NOT NULL`);
         const emails = r.rows.map(x => x.email);

@@ -120,6 +120,9 @@ export function permisosDe(rol) {
             // Las consultas del formulario de contacto de la web (ticket #295):
             // las atienden secretaría y dirección.
             contactos: mandaAlMenos(rol, 'secretaria'),
+            // Personas → Contactos (#499): la gente de las listas hechas a mano
+            // (AMPAs, colegios, asociaciones…). Como Comunicación.
+            listas: mandaAlMenos(rol, 'secretaria'),
             // Los currículums de «Trabaja con nosotros» (#368): secretaría y dirección.
             candidatos: mandaAlMenos(rol, 'secretaria'),
             // La galería de fotos (#364): el club entero; los profes, solo de sus

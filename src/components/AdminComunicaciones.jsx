@@ -79,6 +79,11 @@ function Segmentos({ showToast, onAbrirFicha, onUsarEnCampana }) {
   }
 
   if (analizando) return <AnalisisSegmento id={analizando} onVolver={() => setAnalizando(null)} />;
+  // Una lista hecha a mano (#499): sus personas, no filtros.
+  if (editando?.manual) {
+    return <EditorLista listaId={editando.filtros.lista} showToast={showToast} onVolver={() => { setEditando(null); cargar(); }}
+      onUsarEnCampana={onUsarEnCampana ? () => onUsarEnCampana(editando.nombre) : null} />;
+  }
   if (editando) {
     return <EditorSegmento inicial={editando} opciones={opciones} guardados={guardados || []} guardarLista={guardarLista}
       onAbrirFicha={onAbrirFicha} onUsarEnCampana={onUsarEnCampana} onVolver={() => setEditando(null)} />;
@@ -90,11 +95,21 @@ function Segmentos({ showToast, onAbrirFicha, onUsarEnCampana }) {
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <h2 style={{ margin: 0 }}><I.Users /> Segmentos</h2>
           <div style={{ flex: 1 }} />
+          <button type="button" className="btn btn-sm btn-outline" title="Una lista de personas que no son alumnos (AMPAs, colegios, asociaciones…)"
+            onClick={async () => {
+              const nombre = window.prompt('Nombre del segmento a mano (por ejemplo «AMPAs de colegios»):');
+              if (!nombre?.trim()) return;
+              const r = await fetch('/api/admin/listas', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nombre: nombre.trim() }) });
+              const d = await r.json().catch(() => ({}));
+              if (!r.ok) { alert(d.error || 'No se ha podido crear.'); return; }
+              setEditando({ id: `lista-${d.id}`, nombre: nombre.trim(), manual: true, filtros: { estado: 'lista', lista: d.id } });
+            }}><I.Plus /> Nuevo segmento a mano</button>
           <button type="button" className="btn btn-sm btn-primary" onClick={() => setEditando({ id: '', nombre: '', filtros: VACIO })}><I.Plus /> Crear segmento</button>
         </div>
         <p className="sub" style={{ marginBottom: 0 }}>
           Un segmento es un grupo de alumnos al que escribir, por ejemplo «Padres de Ballet de 6 a 10 años».
-          Lo creas aquí una vez y luego lo eliges al preparar una campaña.
+          Lo creas aquí una vez y luego lo eliges al preparar una campaña. Los «a mano» son listas de personas que no son alumnos
+          (AMPAs, colegios, asociaciones…): se apuntan una a una o pegando una lista, y salen en Personas → Contactos.
         </p>
       </div>
 
@@ -108,16 +123,99 @@ function Segmentos({ showToast, onAbrirFicha, onUsarEnCampana }) {
         <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))' }}>
           {guardados.map(s => (
             <div key={s.id} className="panel" style={{ margin: 0, display: 'grid', gap: 6, alignContent: 'start' }}>
-              <span style={{ fontWeight: 800, fontSize: 16, color: 'var(--ink)' }}>{s.nombre}</span>
+              <span style={{ fontWeight: 800, fontSize: 16, color: 'var(--ink)' }}>{s.nombre}{s.manual && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 800, color: 'var(--purple)', background: 'color-mix(in oklab, var(--purple) 12%, transparent)', padding: '2px 8px', borderRadius: 999, verticalAlign: 'middle' }}>a mano · {s.personas}</span>}</span>
               <span style={{ fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.45 }}>{describirSegmento({ ...VACIO, ...s.filtros }, opciones.clases)}</span>
               <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
-                <button type="button" className="btn btn-sm btn-outline" onClick={() => setEditando({ id: s.id, nombre: s.nombre, filtros: { ...VACIO, ...s.filtros } })}>Abrir</button>
+                <button type="button" className="btn btn-sm btn-outline" onClick={() => setEditando(s.manual ? s : { id: s.id, nombre: s.nombre, filtros: { ...VACIO, ...s.filtros } })}>Abrir</button>
                 <button type="button" className="btn btn-sm btn-outline" onClick={() => setAnalizando(s.id)}><I.Chart width={14} height={14} /> Análisis</button>
               </div>
             </div>
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Un segmento a mano: la lista y sus personas (#499) ───────────────────────
+const campoL = { fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', minWidth: 0, width: '100%', boxSizing: 'border-box' };
+async function apiL(url, opts = {}) {
+  const r = await fetch(url, { credentials: 'include', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, ...opts, body: opts.body ? JSON.stringify(opts.body) : undefined });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || 'No se ha podido.');
+  return d;
+}
+function EditorLista({ listaId, onVolver, onUsarEnCampana, showToast }) {
+  const [lista, setLista] = useState(null);
+  const [personas, setPersonas] = useState(null);
+  const [nueva, setNueva] = useState({ nombre: '', entidad: '', cargo: '', email: '', telefono: '' });
+  const [pegar, setPegar] = useState(null);
+  const cargar = useCallback(async () => {
+    const [l, p] = await Promise.all([apiL('/api/admin/listas'), apiL(`/api/admin/listas/personas?lista=${listaId}`)]);
+    setLista(l.listas.find(x => x.id === listaId) || null); setPersonas(p.personas);
+  }, [listaId]);
+  useEffect(() => { cargar().catch(e => alert(e.message)); }, [cargar]);
+  async function anadir(e) {
+    e.preventDefault();
+    try { await apiL('/api/admin/listas/personas', { method: 'POST', body: { ...nueva, listas: [listaId] } }); setNueva({ nombre: '', entidad: '', cargo: '', email: '', telefono: '' }); await cargar(); }
+    catch (err) { alert(err.message); }
+  }
+  async function quitar(p) {
+    try { await apiL(`/api/admin/listas/personas/${p.id}`, { method: 'PATCH', body: { ...p, listas: p.listas.filter(x => x !== listaId) } }); await cargar(); }
+    catch (err) { alert(err.message); }
+  }
+  async function pegarTodo() {
+    try {
+      const d = await apiL(`/api/admin/listas/${listaId}/pegar`, { method: 'POST', body: { texto: pegar } });
+      showToast?.(`${d.nuevas} nuevas${d.ya ? ` y ${d.ya} que ya estaban` : ''} en la lista.`);
+      if (d.malas.length) alert(`Estas no se han podido apuntar:\n${d.malas.join('\n')}`);
+      setPegar(null); await cargar();
+    } catch (err) { alert(err.message); }
+  }
+  if (!lista) return <p style={{ color: 'var(--ink-3)' }}>Cargando…</p>;
+  return (
+    <div style={{ display: 'grid', gap: 14 }} data-editor-lista>
+      <div className="panel" style={{ display: 'grid', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button type="button" className="btn btn-sm btn-outline" onClick={onVolver}>← Tus segmentos</button>
+          <input defaultValue={lista.nombre} aria-label="Nombre de la lista" style={{ ...campoL, fontWeight: 800, fontSize: 16, flex: '1 1 220px', width: 'auto' }}
+            onBlur={e => e.target.value.trim() && e.target.value.trim() !== lista.nombre && apiL(`/api/admin/listas/${listaId}`, { method: 'PATCH', body: { nombre: e.target.value } }).then(cargar).catch(err => alert(err.message))} />
+          {onUsarEnCampana && <button type="button" className="btn btn-sm btn-primary" disabled={!personas?.length} onClick={onUsarEnCampana}>Usar en una campaña</button>}
+          <button type="button" className="btn btn-sm btn-ghost" style={{ color: 'var(--pink)' }}
+            onClick={() => window.confirm(`¿Borrar la lista «${lista.nombre}»? Sus personas siguen en Personas → Contactos.`) && apiL(`/api/admin/listas/${listaId}`, { method: 'DELETE' }).then(onVolver).catch(err => alert(err.message))}>Borrar la lista</button>
+        </div>
+        <p className="sub" style={{ margin: 0 }}>Segmento hecho a mano: escribe a estas personas desde una campaña. No son alumnos: no reciben nada si su correo rebota y, la publicidad, si se dieron de baja.</p>
+      </div>
+      <form className="panel" onSubmit={anadir} style={{ display: 'grid', gap: 8 }}>
+        <b style={{ fontSize: 14 }}>Añadir una persona</b>
+        <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' }}>
+          {[['nombre', 'Nombre'], ['entidad', 'Entidad (colegio, AMPA…)'], ['cargo', 'Cargo'], ['email', 'Correo'], ['telefono', 'Teléfono']].map(([k, t]) => (
+            <input key={k} placeholder={t} aria-label={t} value={nueva[k]} onChange={e => setNueva(n => ({ ...n, [k]: e.target.value }))} style={campoL} type={k === 'email' ? 'email' : 'text'} />
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button type="submit" className="btn btn-sm btn-primary">Añadir</button>
+          <button type="button" className="btn btn-sm btn-outline" onClick={() => setPegar('')}>Pegar muchas de golpe</button>
+        </div>
+        {pegar !== null && (
+          <div style={{ display: 'grid', gap: 6 }}>
+            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Una por línea: «Nombre; Entidad; Cargo; Correo; Teléfono» (también separadas por comas o copiadas de Excel). Con el correo basta. Si alguien ya está, no se repite.</span>
+            <textarea rows={6} value={pegar} onChange={e => setPegar(e.target.value)} style={{ ...campoL, resize: 'vertical' }} placeholder={'Ana López; AMPA CEIP San Isidro; Presidenta; ampa.sanisidro@gmail.com; 600 000 000'} />
+            <div style={{ display: 'flex', gap: 8 }}><button type="button" className="btn btn-sm btn-primary" disabled={!pegar.trim()} onClick={pegarTodo}>Apuntarlas</button><button type="button" className="btn btn-sm btn-outline" onClick={() => setPegar(null)}>Cancelar</button></div>
+          </div>
+        )}
+      </form>
+      <div className="panel" style={{ display: 'grid', gap: 6 }}>
+        <b style={{ fontSize: 14 }}>En la lista ({personas?.length || 0})</b>
+        {!personas?.length && <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>Aún no hay nadie.</span>}
+        {personas?.map(p => (
+          <div key={p.id} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '6px 0', borderTop: '1px solid var(--line)', fontSize: 13, flexWrap: 'wrap' }}>
+            <span style={{ flex: '1 1 200px', minWidth: 0 }}><b>{p.nombre || p.entidad || p.email}</b>{p.nombre && p.entidad ? ` · ${p.entidad}` : ''}{p.cargo ? ` · ${p.cargo}` : ''}</span>
+            <span style={{ color: 'var(--ink-3)' }}>{p.email || 'sin correo'}{p.telefono ? ` · ${p.telefono}` : ''}</span>
+            <button type="button" className="btn btn-sm btn-ghost" onClick={() => quitar(p)}>Quitar de la lista</button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

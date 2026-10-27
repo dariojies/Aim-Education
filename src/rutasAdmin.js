@@ -11,6 +11,7 @@ export const RUTAS_ADMIN = {
   support: ['soporte', 'tickets'],
   incidencias: ['incidencias'],
   mensajes: ['mensajes'],
+  listas: ['contactos', 'listas'],
   classes: ['clases'],
   speaking: ['clases-individuales', 'speaking'],
   faltas: ['faltas'],
