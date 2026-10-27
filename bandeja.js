@@ -724,11 +724,13 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
     // Comprueba lo que se va a enviar. Devuelve el error o los datos limpios.
     function revisarEnvio(b) {
         const lista = (v) => String(v || '').split(/[,;]/).map(x => x.trim()).filter(Boolean);
-        const para = lista(b.para), cc = lista(b.cc);
+        // CCO (#500): copia oculta; nadie ve a quién más le llega.
+        const para = lista(b.para), cc = lista(b.cc), cco = lista(b.cco);
         const valido = (e) => /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(e.replace(/^.*<(.+)>$/, '$1'));
         if (!para.length) return { error: 'Falta a quién va.' };
-        if ([...para, ...cc].some(e => !valido(e))) return { error: 'Hay alguna dirección que no parece un correo.' };
-        if (para.length + cc.length > 20) return { error: 'Como mucho 20 destinatarios.' };
+        if ([...para, ...cc, ...cco].some(e => !valido(e))) return { error: 'Hay alguna dirección que no parece un correo.' };
+        if (para.length + cc.length > 20) return { error: 'Como mucho 20 destinatarios en «Para» y «CC».' };
+        if (cco.length > 50) return { error: 'Como mucho 50 direcciones en «CCO». Para más, mejor una campaña.' };
         const asunto = String(b.asunto || '').trim().slice(0, 250);
         if (!asunto) return { error: 'Falta el asunto.' };
         const adjuntos = (Array.isArray(b.adjuntos) ? b.adjuntos : []).slice(0, 10)
@@ -736,7 +738,7 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
             .map(x => ({ nombre: String(x.nombre || 'adjunto').slice(0, 150), datos: String(x.datos) }));
         const pesan = adjuntos.reduce((t, x) => t + x.datos.length * 0.75, 0);
         if (pesan > 20 * 1024 * 1024) return { error: 'Los adjuntos pesan demasiado (Gmail admite 25 MB en total).' };
-        return { para, cc, asunto, texto: String(b.texto || '').slice(0, 50000), modo: b.modo || null, origen: b.origen?.uid ? { uid: b.origen.uid, vista: b.origen.vista } : null, adjuntos };
+        return { para, cc, cco, asunto, texto: String(b.texto || '').slice(0, 50000), modo: b.modo || null, origen: b.origen?.uid ? { uid: b.origen.uid, vista: b.origen.vista } : null, adjuntos };
     }
 
     // Envía de verdad. Sale por el Gmail de ese buzón: queda en sus «Enviados» y
@@ -777,7 +779,7 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
             auth: buzon.oauth ? { type: 'OAuth2', ...(await auth(buzon)) } : { user: buzon.email, pass: buzon.pass } });
         await envio.sendMail({
             from: nombre ? `${nombre} <${buzon.email}>` : buzon.email,
-            to: e.para.join(', '), cc: e.cc.length ? e.cc.join(', ') : undefined,
+            to: e.para.join(', '), cc: e.cc.length ? e.cc.join(', ') : undefined, bcc: e.cco?.length ? e.cco.join(', ') : undefined,
             subject: e.asunto, text, html, ...correo,
         });
     }
@@ -800,10 +802,10 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
             if (Number.isNaN(cuando.getTime()) || cuando.getTime() < Date.now() + 30_000) return res.status(400).json({ error: 'Pon una fecha y hora que no haya pasado.' });
             try {
                 const r = await pool.query(
-                    `INSERT INTO aim_correos_programados (buzon_email, general, user_id, autor, para, cc, asunto, texto, modo, origen, adjuntos, enviar_at)
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12) RETURNING id, enviar_at`,
+                    `INSERT INTO aim_correos_programados (buzon_email, general, user_id, autor, para, cc, asunto, texto, modo, origen, adjuntos, enviar_at, cco)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12,$13) RETURNING id, enviar_at`,
                     [buzon.email, !!buzon.general, req.userSession.userId, autor, e.para.join(', '), e.cc.join(', '), e.asunto, e.texto, e.modo,
-                     e.origen ? JSON.stringify(e.origen) : null, JSON.stringify(e.adjuntos), cuando.toISOString()]);
+                     e.origen ? JSON.stringify(e.origen) : null, JSON.stringify(e.adjuntos), cuando.toISOString(), e.cco.join(', ') || null]);
                 return res.json({ success: true, programado: r.rows[0] });
             } catch (err) { return res.status(500).json({ error: err.message }); }
         }
@@ -821,13 +823,13 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
         const buzon = resolver(req, res); if (!buzon) return;
         try {
             const r = await pool.query(
-                `SELECT id, para, cc, asunto, texto, enviar_at, estado, error, enviado_at, autor, user_id,
+                `SELECT id, para, cc, cco, asunto, texto, enviar_at, estado, error, enviado_at, autor, user_id,
                         jsonb_array_length(COALESCE(adjuntos, '[]'::jsonb))::int AS adjuntos
                  FROM aim_correos_programados
                  WHERE buzon_email = $1 AND (general OR user_id = $2) AND (estado = 'pendiente' OR enviado_at > NOW() - INTERVAL '7 days' OR estado = 'error')
                  ORDER BY (estado = 'pendiente') DESC, enviar_at`, [buzon.email, req.userSession.userId]);
             res.set('Cache-Control', 'no-store');
-            res.json({ programados: r.rows.map(x => ({ id: x.id, para: x.para, cc: x.cc, asunto: x.asunto, texto: x.texto, cuando: x.enviar_at, estado: x.estado, error: x.error, enviado: x.enviado_at, autor: x.autor, mio: String(x.user_id) === String(req.userSession.userId), adjuntos: x.adjuntos })) });
+            res.json({ programados: r.rows.map(x => ({ id: x.id, para: x.para, cc: x.cc, cco: x.cco, asunto: x.asunto, texto: x.texto, cuando: x.enviar_at, estado: x.estado, error: x.error, enviado: x.enviado_at, autor: x.autor, mio: String(x.user_id) === String(req.userSession.userId), adjuntos: x.adjuntos })) });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
     router.delete('/:buzon/programados/:id(\\d+)', async (req, res) => {
@@ -865,6 +867,7 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
                     try {
                         await enviarDesde(buzon, {
                             para: String(x.para).split(/,\s*/).filter(Boolean), cc: String(x.cc || '').split(/,\s*/).filter(Boolean),
+                            cco: String(x.cco || '').split(/,\s*/).filter(Boolean),
                             asunto: x.asunto, texto: x.texto || '', modo: x.modo, origen: x.origen, adjuntos: x.adjuntos || [],
                         }, x.autor);
                     } catch (e) { estado = 'error'; error = errorEnvio(e); }

@@ -78,7 +78,7 @@ function Redactar({ inicial, buzon, buzones, onBuzon, onCerrar, onEnviado, showT
   async function enviar() {
     setEnviando(true);
     try {
-      const d = await api(`/api/admin/bandeja/${buzon}/enviar`, { method: 'POST', body: { para: c.para, cc: c.cc, asunto: c.asunto, texto: c.texto, modo: c.modo, origen: c.origen, adjuntos: c.adjuntos || [], programadoAt: programar ? new Date(cuando).toISOString() : null } });
+      const d = await api(`/api/admin/bandeja/${buzon}/enviar`, { method: 'POST', body: { para: c.para, cc: c.cc, cco: c.cco, asunto: c.asunto, texto: c.texto, modo: c.modo, origen: c.origen, adjuntos: c.adjuntos || [], programadoAt: programar ? new Date(cuando).toISOString() : null } });
       showToast?.(d.programado ? `Programado: saldrá el ${new Date(d.programado.enviar_at).toLocaleString('es-ES', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}.` : 'Correo enviado.');
       onEnviado?.();
     } catch (e) { alert(e.message); }
@@ -101,6 +101,11 @@ function Redactar({ inicial, buzon, buzones, onBuzon, onCerrar, onEnviado, showT
         </div>
         <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 700 }}>Para<input style={campo} value={c.para} onChange={e => set('para', e.target.value)} placeholder="correo@ejemplo.com, otro@ejemplo.com" autoFocus={!c.para} /></label>
         <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 700 }}>CC (opcional)<input style={campo} value={c.cc} onChange={e => set('cc', e.target.value)} /></label>
+        {/* Copia oculta (#500): les llega, pero nadie ve que se les ha mandado. */}
+        <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 700 }}>
+          <span>CCO (opcional) <span style={{ fontWeight: 500, color: 'var(--ink-3)' }}>· copia oculta: nadie más ve estas direcciones</span></span>
+          <input style={campo} value={c.cco || ''} onChange={e => set('cco', e.target.value)} />
+        </label>
         <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 700 }}>Asunto<input style={campo} value={c.asunto} onChange={e => set('asunto', e.target.value)} /></label>
         <textarea style={{ ...campo, minHeight: 200, resize: 'vertical', lineHeight: 1.5 }} value={c.texto} onChange={e => set('texto', e.target.value)} autoFocus={!!c.para} placeholder="Escribe aquí…" />
         {c.origen && <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>{c.modo === 'reenviar' ? 'Debajo va el correo original con sus adjuntos.' : 'Debajo va citado el correo al que respondes.'}</p>}
@@ -193,7 +198,7 @@ function Programados({ buzon, showToast }) {
         <div key={x.id} className="payment-row" style={{ gridTemplateColumns: 'minmax(0,1fr) auto auto' }}>
           <div style={{ minWidth: 0 }}>
             <div className="name" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{x.asunto}</div>
-            <div className="date" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Para: {x.para}{x.adjuntos ? ` · 📎 ${x.adjuntos}` : ''}{!x.mio && x.autor ? ` · lo programó ${x.autor}` : ''}{x.error ? ` · ${x.error}` : ''}</div>
+            <div className="date" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Para: {x.para}{x.cco ? ` · CCO: ${x.cco}` : ''}{x.adjuntos ? ` · 📎 ${x.adjuntos}` : ''}{!x.mio && x.autor ? ` · lo programó ${x.autor}` : ''}{x.error ? ` · ${x.error}` : ''}</div>
           </div>
           <span className={`status-pill ${(estado[x.estado] || estado.pendiente)[0]}`}>{(estado[x.estado] || estado.pendiente)[1]} {x.estado === 'enviado' ? fechaLarga(x.enviado) : x.estado === 'pendiente' ? fechaLarga(x.cuando) : ''}</span>
           {x.estado === 'pendiente' ? <button type="button" className="btn btn-sm btn-outline" onClick={() => cancelar(x)}>Cancelar</button> : <span />}

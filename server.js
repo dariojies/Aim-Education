@@ -786,6 +786,8 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_correos_programados_pendientes ON aim_correos_programados (enviar_at) WHERE estado = 'pendiente'`);
+        // La copia oculta (CCO, #500) de un correo programado.
+        await client.query(`ALTER TABLE aim_correos_programados ADD COLUMN IF NOT EXISTS cco TEXT`);
 
         // Las tareas de cada uno. Son privadas: solo las ve y las toca quien las
         // escribe, y por eso no hay ningún endpoint de administración sobre
