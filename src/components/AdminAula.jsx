@@ -700,7 +700,7 @@ function EditorLeccion({ cursoId, temaId, l, espacio, meetCurso, onCerrar, onGua
           {f.tipo === 'texto' ? 'Contenido' : f.tipo === 'tarea' ? 'Enunciado: qué tienen que hacer y entregar' : f.tipo === 'cuestionario' ? 'Instrucciones (opcional)' : 'Texto que acompaña (opcional)'}
           <textarea rows={f.tipo === 'texto' ? 12 : f.tipo === 'cuestionario' ? 2 : 6} value={f.texto} onChange={e => cambiar('texto', e.target.value)} style={{ ...inp, resize: 'vertical' }}
             required={f.tipo === 'texto' || f.tipo === 'tarea'} />
-          <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}>Los saltos de línea se respetan y los enlaces (https://…) se pueden pulsar.</span>
+          <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}>Los saltos de línea se respetan y los enlaces (https://…) se pueden pulsar. Un enlace de YouTube solo en su línea se ve como el vídeo.</span>
         </label>
 
         {f.tipo === 'tarea' && (

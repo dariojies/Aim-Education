@@ -4,7 +4,7 @@
 // El editor de la pantalla escribe HTML; aquí se limpia antes de guardarlo,
 // porque luego se publica en la web: solo pasan las etiquetas del editor
 // (párrafos, títulos H2-H4, negrita, cursiva, subrayado, listas, citas,
-// enlaces, botones, imágenes con pie y separadores), la alineación del texto y
+// enlaces, botones, imágenes con pie, vídeos de YouTube y separadores), la alineación del texto y
 // las direcciones http(s), mailto, tel o de la propia web. Nada de scripts,
 // estilos sueltos ni atributos raros.
 //
@@ -19,10 +19,10 @@ const BASE = {
     allowedAttributes: {
         a: ['href', 'class', 'target', 'rel'],
         img: ['src', 'alt', 'loading'],
-        figure: ['class', 'style'],
+        figure: ['class', 'style', 'data-youtube'],
         ...Object.fromEntries(CON_ALINEAR.filter(t => t !== 'figure').map(t => [t, ['style']])),
     },
-    allowedClasses: { a: ['boton', 'boton-borde'], figure: ['img-pequena', 'img-mediana', 'img-grande'] },
+    allowedClasses: { a: ['boton', 'boton-borde'], figure: ['img-pequena', 'img-mediana', 'img-grande', 'video-youtube'] },
     allowedStyles: Object.fromEntries(CON_ALINEAR.map(t => [t, { 'text-align': ALINEAR }])),
     allowedSchemes: ['http', 'https', 'mailto', 'tel'],
     allowedSchemesByTag: { img: ['http', 'https'] },
@@ -46,6 +46,10 @@ export function limpiarHtml(html) {
                 return { tagName: 'a', attribs: a };
             },
             img: (tag, at) => ({ tagName: 'img', attribs: { src: at.src || '', alt: at.alt || '', loading: 'lazy' } }),
+            // Un vídeo de YouTube (#502): solo con un identificador de vídeo que valga.
+            figure: (tag, at) => (/\bvideo-youtube\b/.test(at.class || '')
+                ? { tagName: 'figure', attribs: /^[\w-]{6,20}$/.test(at['data-youtube'] || '') ? { class: 'video-youtube', 'data-youtube': at['data-youtube'] } : {} }
+                : { tagName: 'figure', attribs: { ...(at.class ? { class: at.class } : {}), ...(at.style ? { style: at.style } : {}) } }),
         },
         // Una imagen sin dirección no sirve; un enlace vacío, tampoco.
         exclusiveFilter: (f) => (f.tag === 'img' && !f.attribs.src) || (f.tag === 'a' && !f.text.trim() && !f.mediaChildren?.length),

@@ -6,6 +6,7 @@ import { imagenSubible } from '../imagenes.js';
 import { DudasCurso } from './AulaDudas.jsx';
 import { Valoracion } from './AulaValoracion.jsx';
 import { crearApiScorm } from '../aula/scormApi.js';
+import { VideoYoutube, idYoutube } from './VideoYoutube.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Aula virtual (ticket #433), la parte de quien hace los cursos:
@@ -54,14 +55,32 @@ export function incrustarVideo(url) {
 }
 
 // Un texto con sus saltos de línea y sus enlaces pulsables. Sin HTML: lo que
-// se escribe es lo que se ve.
+// se escribe es lo que se ve. Un enlace de YouTube solo en su línea se ve como
+// el vídeo (#502).
+const LINEA_YOUTUBE = /^[ \t]*(https?:\/\/(?:www\.|m\.)?(?:youtube\.com|youtu\.be)\/[^\s<>"]+)[ \t]*$/m;
+function TextoConEnlaces({ texto }) {
+  return String(texto).split(/(https?:\/\/[^\s<>"]+)/g).map((t, i) => (i % 2
+    ? <a key={i} href={t} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--purple)', fontWeight: 600 }}>{t}</a>
+    : <React.Fragment key={i}>{t}</React.Fragment>));
+}
 export function Texto({ texto }) {
   if (!texto) return null;
+  const partes = [];
+  let resto = String(texto);
+  for (let m = resto.match(LINEA_YOUTUBE); m; m = resto.match(LINEA_YOUTUBE)) {
+    const id = idYoutube(m[1]);
+    const antes = resto.slice(0, m.index).replace(/\n$/, '');
+    if (!id) { partes.push({ texto: resto.slice(0, m.index + m[0].length) }); resto = resto.slice(m.index + m[0].length); continue; }
+    if (antes) partes.push({ texto: antes });
+    partes.push({ id });
+    resto = resto.slice(m.index + m[0].length).replace(/^\n/, '');
+  }
+  if (resto) partes.push({ texto: resto });
   return (
     <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6, overflowWrap: 'anywhere' }}>
-      {String(texto).split(/(https?:\/\/[^\s<>"]+)/g).map((t, i) => (i % 2
-        ? <a key={i} href={t} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--purple)', fontWeight: 600 }}>{t}</a>
-        : <React.Fragment key={i}>{t}</React.Fragment>))}
+      {partes.map((p, i) => (p.id
+        ? <div key={i} style={{ margin: '10px 0', whiteSpace: 'normal' }}><VideoYoutube id={p.id} /></div>
+        : <TextoConEnlaces key={i} texto={p.texto} />))}
     </div>
   );
 }

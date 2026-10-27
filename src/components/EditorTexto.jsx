@@ -1,4 +1,5 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
+import { idYoutube, htmlVideoYoutube } from './VideoYoutube.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Editor de texto enriquecido de las noticias y el blog (ticket #438): se
@@ -6,7 +7,7 @@ import React, { useRef, useState, useEffect, useCallback } from 'react';
 // Títulos (H2-H4: el H1 es el título de la noticia), negrita, cursiva,
 // subrayado, alineación (también justificado), listas, citas, enlaces,
 // imágenes con pie, botones (a otra web, a un apartado de la web o a un
-// documento subido) y separadores.
+// documento subido), vídeos de YouTube (#502) y separadores.
 //
 // Escribe HTML; el servidor lo limpia antes de guardarlo (noticias-html.js), así
 // que aquí no hace falta ser estricto, solo no dejar pasar basura al pegar: lo
@@ -105,10 +106,14 @@ export default function EditorTexto({ valor, onChange, subirImagen, placeholder 
   const [estado, setEstado] = useState({});
   const [ventana, setVentana] = useState(null);   // { tipo: 'enlace' | 'boton' | 'imagen', ... }
   const [imagen, setImagen] = useState(null);     // la imagen elegida dentro del texto
+  const [video, setVideo] = useState(null);       // el vídeo de YouTube elegido
+  // Los vídeos van como un bloque que no se escribe por dentro (se quitan enteros).
+  const bloquearVideos = () => ref.current?.querySelectorAll('figure.video-youtube').forEach(f => { f.contentEditable = 'false'; });
 
   // El contenido inicial, una sola vez: después manda lo que se escribe.
   useEffect(() => {
     if (ref.current) ref.current.innerHTML = valor || '';
+    bloquearVideos();
     try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch { /* navegador viejo */ }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -149,7 +154,7 @@ export default function EditorTexto({ valor, onChange, subirImagen, placeholder 
     try { document.execCommand('styleWithCSS', false, false); } catch { /* */ }
     avisar(); leerEstado();
   };
-  const meter = (html) => { volverRango(); document.execCommand('insertHTML', false, html); avisar(); };
+  const meter = (html) => { volverRango(); document.execCommand('insertHTML', false, html); bloquearVideos(); avisar(); };
 
   // Lo pegado entra como texto, en párrafos: así no se cuela el formato de Word o de otra web.
   const pegar = (e) => {
@@ -164,7 +169,11 @@ export default function EditorTexto({ valor, onChange, subirImagen, placeholder 
   const pulsar = (e) => {
     const img = e.target.closest?.('img');
     setImagen(img && ref.current.contains(img) ? img : null);
+    const fig = e.target.closest?.('figure.video-youtube');
+    if (fig) e.preventDefault();
+    setVideo(fig && ref.current.contains(fig) ? fig : null);
   };
+  const quitarVideo = () => { video?.remove(); setVideo(null); avisar(); };
   const tamano = (clase) => {
     const fig = imagen?.closest('figure');
     if (!fig) return;
@@ -178,6 +187,7 @@ export default function EditorTexto({ valor, onChange, subirImagen, placeholder 
     if (tipo === 'enlace') setVentana({ tipo, texto: sel, destino: { tipo: 'web', url: '' } });
     if (tipo === 'boton') setVentana({ tipo, texto: sel || '', destino: { tipo: 'web', url: '' }, estilo: 'boton', alinear: 'center' });
     if (tipo === 'imagen') setVentana({ tipo, url: '', alt: '', pie: '', tamano: 'img-grande', subiendo: false });
+    if (tipo === 'youtube') setVentana({ tipo, url: '' });
   }
   function aceptar() {
     const v = ventana;
@@ -187,6 +197,22 @@ export default function EditorTexto({ valor, onChange, subirImagen, placeholder 
       const texto = v.texto.trim() || v.destino.nombre || url;
       if (v.tipo === 'enlace') meter(`<a href="${esc(url)}">${esc(texto)}</a>`);
       else meter(`<p style="text-align:${v.alinear}"><a class="${v.estilo}" href="${esc(url)}">${esc(texto)}</a></p><p><br></p>`);
+    }
+    if (v.tipo === 'youtube') {
+      const id = idYoutube(v.url);
+      if (!id) { alert('Pega el enlace de un vídeo de YouTube (por ejemplo https://www.youtube.com/watch?v=… o https://youtu.be/…).'); return; }
+      // Como bloque propio, debajo del párrafo del cursor: dentro de un párrafo,
+      // el navegador se queda solo con el enlace.
+      volverRango();
+      let nodo = window.getSelection()?.rangeCount ? window.getSelection().getRangeAt(0).startContainer : null;
+      while (nodo && nodo.parentNode !== ref.current) nodo = nodo.parentNode;
+      const tmp = document.createElement('div');
+      tmp.innerHTML = `${htmlVideoYoutube(id)}<p><br></p>`;
+      const [fig, despues] = [...tmp.children];
+      if (nodo) nodo.after(fig, despues); else ref.current.append(fig, despues);
+      const r = document.createRange(); r.setStart(despues, 0); r.collapse(true);
+      const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+      bloquearVideos(); avisar();
     }
     if (v.tipo === 'imagen') {
       if (!v.url) { alert('Sube la imagen.'); return; }
@@ -220,6 +246,7 @@ export default function EditorTexto({ valor, onChange, subirImagen, placeholder 
         <Boton titulo="Quitar enlace" onClick={() => hacer('unlink')}>✕ Enlace</Boton>
         <Boton titulo="Botón (a otra web, a un apartado o a un documento)" onClick={() => abrir('boton')}>▭ Botón</Boton>
         {subirImagen && <Boton titulo="Imagen" onClick={() => abrir('imagen')}>🖼️ Imagen</Boton>}
+        <Boton titulo="Vídeo de YouTube" onClick={() => abrir('youtube')}>▶ YouTube</Boton>
         <Boton titulo="Separador" onClick={() => hacer('insertHorizontalRule')}>―</Boton>
         <Separa />
         <Boton titulo="Quitar formato" onClick={() => { hacer('removeFormat'); hacer('formatBlock', 'P'); }}>⌫ Formato</Boton>
@@ -233,6 +260,13 @@ export default function EditorTexto({ valor, onChange, subirImagen, placeholder 
             <button key={c} type="button" className={`btn btn-sm ${imagen.closest('figure')?.className === c ? 'btn-primary' : 'btn-outline'}`} onClick={() => tamano(c)}>{t}</button>
           ))}
           <button type="button" className="btn btn-sm btn-ghost" style={{ color: 'var(--pink)' }} onClick={quitarImagen}>Quitar</button>
+        </div>
+      )}
+      {video && (
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', padding: '6px 10px', background: 'color-mix(in oklab, var(--purple) 8%, var(--bg-2))', borderBottom: '1px solid var(--line)', fontSize: 13 }}>
+          <b>Vídeo de YouTube</b>
+          <a href={`https://www.youtube.com/watch?v=${video.dataset.youtube}`} target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-outline">Verlo en YouTube</a>
+          <button type="button" className="btn btn-sm btn-ghost" style={{ color: 'var(--pink)' }} onClick={quitarVideo}>Quitar</button>
         </div>
       )}
       <div ref={ref} className="post-content editor-texto" contentEditable suppressContentEditableWarning role="textbox" aria-multiline="true" aria-label="Texto de la noticia"
@@ -271,6 +305,19 @@ export default function EditorTexto({ valor, onChange, subirImagen, placeholder 
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
             <button type="button" className="btn btn-sm btn-outline" onClick={() => setVentana(null)}>Cancelar</button>
             <button type="button" className="btn btn-sm btn-primary" onClick={aceptar}>Poner el botón</button>
+          </div>
+        </Ventana>
+      )}
+      {ventana?.tipo === 'youtube' && (
+        <Ventana titulo="Vídeo de YouTube" onCerrar={() => setVentana(null)}>
+          <label style={etiqueta}>Enlace del vídeo<input autoFocus value={ventana.url} onChange={e => setVentana(v => ({ ...v, url: e.target.value }))} style={inp} placeholder="https://www.youtube.com/watch?v=…" /></label>
+          {idYoutube(ventana.url)
+            ? <img src={`https://i.ytimg.com/vi/${idYoutube(ventana.url)}/hqdefault.jpg`} alt="" style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 10, justifySelf: 'center' }} />
+            : ventana.url.trim() && <span style={{ fontSize: 12, color: 'var(--pink)' }}>Ese enlace no es de un vídeo de YouTube.</span>}
+          <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>En la web se ve el reproductor; quien no haya aceptado las cookies de YouTube verá antes un botón para aceptarlas. En el correo y el RSS sale un enlace al vídeo.</p>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button type="button" className="btn btn-sm btn-outline" onClick={() => setVentana(null)}>Cancelar</button>
+            <button type="button" className="btn btn-sm btn-primary" disabled={!idYoutube(ventana.url)} onClick={aceptar}>Poner el vídeo</button>
           </div>
         </Ventana>
       )}

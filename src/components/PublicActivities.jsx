@@ -5,6 +5,7 @@ import { TarjetaActividad } from './PublicActivity.jsx';
 import { useClasesPublicas, fichasWeb } from './clasesPublicas.js';
 import { useRouter } from '../App.jsx';
 import { aMedida } from '../imagenes.js';
+import { HtmlConVideos } from './VideoYoutube.jsx';
 
 const CAT_COLOR = { taekwondo: '#21B668', ballet: '#FF99D3', ingles: '#00BBF4', robotica: '#FFD526', baile: '#AF99FF', pintura: '#5233A8', funcional: '#FF4F15', pilates: '#BFD300', camaleon: '#25D8BA', competicion: '#21B668', club: '#5233A8', general: '#5233A8', shelfie: '#FF99D3' };
 const catColor = c => CAT_COLOR[c] || '#5233A8';
@@ -305,10 +306,8 @@ export function PublicNewsDetail({ slug, blog = false }) {
                 {post.title}
               </h1>
 
-              <div
-                className="post-content"
-                dangerouslySetInnerHTML={{ __html: post.formato === 'html' ? post.content : renderMd(post.content) }}
-              />
+              {/* Con sus vídeos de YouTube como reproductores (#502). */}
+              <HtmlConVideos className="post-content" html={post.formato === 'html' ? post.content : renderMd(post.content)} />
 
               <div style={{marginTop: 48, paddingTop: 24, borderTop: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12}}>
                 <span style={{fontSize: 13, color: "var(--ink-3)"}}>{(post.view_count || 0) + 1} visita{(post.view_count || 0) + 1 !== 1 ? 's' : ''}</span>
