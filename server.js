@@ -11435,10 +11435,10 @@ app.get('/ci/:id', async (req, res) => {
     } catch { res.status(500).end(); }
 });
 
-const mapImagen = (x) => ({ id: x.id, url: `/ci/${x.id}`, nombre: x.nombre, ancho: x.ancho, alto: x.alto, bytes: x.bytes, fecha: x.created_at });
+const mapImagen = (x) => ({ id: x.id, url: `/ci/${x.id}`, nombre: x.nombre, ancho: x.ancho, alto: x.alto, bytes: x.bytes, fecha: x.created_at, mime: x.mime });
 app.get('/api/admin/correo/imagenes', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
     try {
-        const r = await pool.query(`SELECT id, nombre, ancho, alto, bytes, created_at FROM aim_correo_imagenes ORDER BY created_at DESC LIMIT 300`);
+        const r = await pool.query(`SELECT id, nombre, ancho, alto, bytes, created_at, mime FROM aim_correo_imagenes ORDER BY created_at DESC LIMIT 300`);
         res.set('Cache-Control', 'no-store');
         res.json({ imagenes: r.rows.map(mapImagen) });
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -11452,7 +11452,7 @@ app.post('/api/admin/correo/imagenes', authenticateSession, requireSeccion('comu
         const id = crypto.randomBytes(12).toString('hex');
         const r = await pool.query(
             `INSERT INTO aim_correo_imagenes (id, mime, datos, nombre, ancho, alto, bytes, subido_por)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, nombre, ancho, alto, bytes, created_at`,
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, nombre, ancho, alto, bytes, created_at, mime`,
             [id, m[1], datos, String(req.body?.nombre || '').slice(0, 200) || null,
              Number.isFinite(Number(req.body?.ancho)) ? Math.round(Number(req.body.ancho)) : null,
              Number.isFinite(Number(req.body?.alto)) ? Math.round(Number(req.body.alto)) : null,
@@ -11460,8 +11460,50 @@ app.post('/api/admin/correo/imagenes', authenticateSession, requireSeccion('comu
         res.status(201).json(mapImagen(r.rows[0]));
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
+// Dónde se usa cada imagen subida (#495), para poder borrar las que sobran sin
+// romper nada. Se busca «/ci/<id>» en las columnas de texto de las tablas de la
+// web que lo llevan (se descubren cada 6 horas: un diseño, una noticia, un correo…).
+const DONDE_IMAGEN = { aim_disenos: 'un diseño', aim_disenos_versiones: 'una versión antigua de un diseño', aim_education_posts: 'una noticia o el blog', aim_ajustes: 'los ajustes de la web', aim_campana_correos: 'una campaña de correo' };
+let columnasImagen = { t: 0, lista: [] };
+async function columnasConImagenes() {
+    if (Date.now() - columnasImagen.t < 6 * 3600e3) return columnasImagen.lista;
+    const cols = (await pool.query(
+        `SELECT table_name AS t, column_name AS c FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name LIKE 'aim\_%' AND table_name <> 'aim_correo_imagenes'
+           AND data_type IN ('text', 'jsonb', 'json', 'character varying')`)).rows;
+    const lista = [];
+    for (const x of cols) {
+        const r = await pool.query(`SELECT 1 FROM ${x.t} WHERE ${x.c}::text LIKE '%/ci/%' LIMIT 1`).catch(() => ({ rowCount: 0 }));
+        if (r.rowCount || DONDE_IMAGEN[x.t]) lista.push(x);
+    }
+    columnasImagen = { t: Date.now(), lista };
+    return lista;
+}
+// { id: ['un diseño', …] } con lo que usa cada imagen.
+async function usoDeImagenes() {
+    const uso = {};
+    for (const x of await columnasConImagenes()) {
+        const r = await pool.query(
+            `SELECT DISTINCT m[1] AS id FROM ${x.t}, regexp_matches(${x.c}::text, '/ci/([0-9a-f]{24})', 'g') AS m WHERE ${x.c}::text LIKE '%/ci/%'`).catch(() => ({ rows: [] }));
+        const donde = DONDE_IMAGEN[x.t] || x.t.replace(/^aim_/, '').replace(/_/g, ' ');
+        for (const { id } of r.rows) { uso[id] = uso[id] || []; if (!uso[id].includes(donde)) uso[id].push(donde); }
+    }
+    return uso;
+}
+const soloVersiones = (l) => l.every(d => d === DONDE_IMAGEN.aim_disenos_versiones);
+app.get('/api/admin/correo/imagenes-uso', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try {
+        const r = await pool.query(`SELECT id, nombre, ancho, alto, bytes, created_at, mime FROM aim_correo_imagenes ORDER BY created_at DESC`);
+        const uso = await usoDeImagenes();
+        res.set('Cache-Control', 'no-store');
+        res.json({ imagenes: r.rows.map(x => ({ ...mapImagen(x), uso: uso[x.id] || [] })) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
 app.delete('/api/admin/correo/imagenes/:id', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
     try {
+        // Si algo la usa (salvo versiones antiguas de un diseño), no se borra: se rompería.
+        const uso = (await usoDeImagenes())[req.params.id] || [];
+        if (uso.length && !soloVersiones(uso)) return res.status(409).json({ error: `Esa imagen se usa en ${uso.join(', ')}: quítala de ahí antes de borrarla.`, uso });
         await pool.query(`DELETE FROM aim_correo_imagenes WHERE id = $1`, [req.params.id]);
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }

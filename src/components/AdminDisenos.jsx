@@ -7,7 +7,15 @@ import {
   pedirFuentes, miniatura, exportarDiseno, exportarLote, exportarImprenta, medidasImprenta, SANGRADO_MM, lienzoDe, ajustarTexto, adaptarDiseno,
   paginaDe, conPagina, numPaginas, todasLasPaginas, ANIMACIONES, tieneAnimacion, duracionAnimacion,
   paradasDe, degradadoCss, MAX_COLORES_DEGRADADO, tramoVideo, TRANSICION, DURACION_MAX_PAGINA,
+  esSvg, urlSvg, urlDe,
 } from '../disenos/render.js';
+import svgBallet from '../assets/actividades/ballet.svg';
+import svgFuncional from '../assets/actividades/funcional.svg';
+import svgIngles from '../assets/actividades/ingles.svg';
+import svgPilates from '../assets/actividades/pilates.svg';
+import svgPintura from '../assets/actividades/pintura.svg';
+import svgRobotica from '../assets/actividades/robotica.svg';
+import svgTkd from '../assets/actividades/tkd.svg';
 import { subirVideo, cargarVideos, sincronizarVideos, pararVideos, clipsDe, enCadena, encadenar } from '../disenos/videos.js';
 import { FIGURAS, MARCOS, ICONOS, ICONOS_ACTIVIDAD, svgFigura } from '../disenos/formas.js';
 import { formatoVideo, grabarVideo, exportarGif, exportarVideo } from '../disenos/animacion.js';
@@ -60,8 +68,28 @@ const seccionT = { fontSize: 11, fontWeight: 800, textTransform: 'uppercase', le
 const tamanoTexto = (d) => TAMANOS.find(t => t.ancho === d.ancho && t.alto === d.alto)?.nombre || `${d.ancho} × ${d.alto} px`;
 // La marca (colores y logo de «Marca de los correos»), para todos los paneles del editor.
 const PALETA_CLUB = ['#5233A8', '#FF5FA2', '#F99B35', '#FFD526', '#21B668', '#00BBF4', '#1A1A1A', '#FFFFFF', '#F6F4EF'];
+// Los colores de cada actividad (#495), los mismos de la web (style.css, --c-…).
+const COLORES_ACTIVIDADES = [['Taekwon-Do', '#21B668'], ['Ballet', '#FF99D3'], ['Inglés', '#00BBF4'], ['Robótica', '#FFD526'], ['Funcional', '#FF4F15'],
+  ['Pintura', '#5233A8'], ['Kickboxing', '#E53935'], ['Pilates', '#BFD300'], ['Baile', '#AF99FF'], ['Gimnasia', '#25D8BA'], ['Ajedrez', '#475569'], ['Campamento', '#F99B35']];
+// Los logos de las actividades (los de la web), para ponerlos y cambiarles el color.
+const LOGOS_ACTIVIDADES = [['Taekwon-Do', svgTkd, '#21B668'], ['Ballet', svgBallet, '#FF99D3'], ['Inglés', svgIngles, '#00BBF4'], ['Robótica', svgRobotica, '#FFD526'],
+  ['Funcional', svgFuncional, '#FF4F15'], ['Pintura', svgPintura, '#5233A8'], ['Pilates', svgPilates, '#BFD300']];
+// Un SVG del ordenador, limpio (sin scripts ni nada que cargue de fuera), como imagen del diseño.
+async function leerSvg(fuente) {
+  const texto = typeof fuente === 'string' ? fuente : await fuente.text();
+  if (texto.length > 600_000) throw new Error('Ese SVG es demasiado grande (máximo 600 KB).');
+  if (!/<svg[\s>]/i.test(texto)) throw new Error('Ese archivo no es un SVG.');
+  const limpio = texto.replace(/<\?xml[^>]*>/gi, '').replace(/<!DOCTYPE[^>]*>/gi, '').replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, '')
+    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*')/gi, '').replace(/(href\s*=\s*)("|')(?!#|data:)[^"']*\2/gi, '$1$2#$2').trim();
+  const caja = limpio.match(/viewBox\s*=\s*["']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)/i);
+  const ancho = Number(caja?.[1]) || Number((limpio.match(/<svg[^>]*\swidth\s*=\s*["']([\d.]+)/i) || [])[1]) || 600;
+  const alto = Number(caja?.[2]) || Number((limpio.match(/<svg[^>]*\sheight\s*=\s*["']([\d.]+)/i) || [])[1]) || 600;
+  const conTam = /<svg[^>]*\swidth=/i.test(limpio) ? limpio : limpio.replace(/<svg\b/i, `<svg width="${ancho}" height="${alto}"`);
+  return { url: urlSvg(/xmlns=/.test(conTam) ? conTam : conTam.replace(/<svg\b/i, '<svg xmlns="http://www.w3.org/2000/svg"')), ancho, alto };
+}
 const KitMarca = createContext(null);
 const coloresMarca = (kit) => (kit?.colores?.length ? kit.colores : PALETA_CLUB);
+const nombreColor = (c) => COLORES_ACTIVIDADES.find(([, x]) => x === String(c).toUpperCase())?.[0];
 const LOGOS_MARCA = [
   ['/src/brand/Aim_Horizontal.png', 'Logo'], ['/src/brand/Aim_White.png', 'Logo blanco', true], ['/src/brand/Aim_Black.png', 'Logo negro'],
   ['/src/brand/Aim_Gradient.png', 'Logo en degradado'], ['/src/brand/Aim_Vertical.png', 'Logo vertical'],
@@ -744,7 +772,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
   }, []);
 
   // Imágenes y fuentes: al cargarse, se vuelve a pintar.
-  const urls = useMemo(() => [diseno.fondo?.tipo === 'imagen' ? diseno.fondo.url : null, ...diseno.elementos.filter(e => e.tipo === 'imagen').map(e => e.url)].filter(Boolean).join('|'), [diseno]);
+  const urls = useMemo(() => [diseno.fondo?.tipo === 'imagen' ? diseno.fondo.url : null, ...diseno.elementos.filter(e => e.tipo === 'imagen').map(e => urlDe(e))].filter(Boolean).join('|'), [diseno]);
   useEffect(() => { cargarImagenes(diseno).then(m => { setImagenes(m); }); }, [urls]); // eslint-disable-line react-hooks/exhaustive-deps
   // Los vídeos de la página: quietos, cada uno en su primer fotograma; viendo la
   // animación, reproduciéndose a su tiempo (ver videos.js).
@@ -903,6 +931,11 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
     const k = Math.min(1, (diseno.ancho * 0.5) / ancho, (diseno.alto * 0.5) / alto), w = Math.round(ancho * k), h = Math.round(alto * k);
     anadir({ tipo: 'imagen', url, w, h, ajuste: 'contener', radio: 0, ...(punto ? { x: Math.round(punto.x - w / 2), y: Math.round(punto.y - h / 2) } : {}) });
   };
+  // Un SVG con su color (los logos de las actividades, #495).
+  const anadirSvg = (url, ancho, alto, color) => {
+    const k = Math.min((diseno.ancho * 0.3) / ancho, (diseno.alto * 0.3) / alto), w = Math.round(ancho * k), h = Math.round(alto * k);
+    anadir({ tipo: 'imagen', url, w, h, ajuste: 'contener', radio: 0, ...(color ? { svgColor: color } : {}) });
+  };
   // Un vídeo: el primero, debajo de todo (así los textos y el logo quedan encima) y
   // entero en la página; los siguientes, detrás del último clip (mismo sitio y
   // tamaño), con un fundido: así se unen clips.
@@ -927,6 +960,28 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
     if (ultimo) showToast?.('Va detrás del clip anterior, con un fundido. Lo cambias en el panel de la derecha.');
   }
   const [subiendoVideo, setSubiendoVideo] = useState(null);
+  // Un GIF animado (#495): el servidor lo pasa a vídeo y va en bucle (se repite
+  // toda la página), del tamaño de la imagen. Uno quieto entra como imagen.
+  // fuente: { file } (subido ahora) o { ci, url } (de «Ya subidas»).
+  async function anadirGif(fuente, punto = null) {
+    setSubiendoVideo(0);
+    try {
+      const r = await fetch(`/api/admin/disenos/gif?${fuente.ci ? `ci=${encodeURIComponent(fuente.ci)}` : `nombre=${encodeURIComponent(fuente.file.name)}`}`,
+        { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'image/gif' }, body: fuente.file || undefined });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || 'No se ha podido pasar el GIF a vídeo.');
+      if (d.quieto) {
+        const im = fuente.file ? await subirImagen(fuente.file) : { url: fuente.url };
+        await anadirImagen(im.url, im.ancho, im.alto, punto);
+        return;
+      }
+      const k = Math.min(1, (diseno.ancho * 0.5) / d.ancho, (diseno.alto * 0.5) / d.alto), w = Math.round(d.ancho * k), h = Math.round(d.alto * k);
+      anadir({ tipo: 'video', bucle: true, url: d.url, poster: d.poster, duracionVideo: d.duracion, desde: 0, hasta: d.duracion, empieza: 0, transicion: 'corte',
+        w, h, ajuste: 'contener', radio: 0, ...(punto ? { x: Math.round(punto.x - w / 2), y: Math.round(punto.y - h / 2) } : {}) });
+      showToast?.('El GIF va como vídeo en bucle: se mueve al reproducir y al exportar en vídeo.');
+    } catch (e) { alert(e.message); }
+    finally { setSubiendoVideo(null); }
+  }
   async function subirYAnadirVideo(file, punto = null) {
     if (!file) return;
     setSubiendoVideo(0);
@@ -976,6 +1031,8 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
     else if (ev.dataTransfer.files?.[0]) {
       const f = ev.dataTransfer.files[0];
       if (/^video\//.test(f.type)) { subirYAnadirVideo(f, p); return; }
+      if (f.type === 'image/gif') { anadirGif({ file: f }, p); return; }
+      if (f.type === 'image/svg+xml' || /\.svg$/i.test(f.name)) { try { const s = await leerSvg(f); anadirImagen(s.url, s.ancho, s.alto, p); } catch (e) { alert(e.message); } return; }
       if (!/^image\//.test(f.type)) return;
       try { img = await subirImagen(f); } catch (e) { alert(e.message); return; }
     }
@@ -1024,6 +1081,8 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
       const dt = ev.clipboardData; if (!dt) return;
       const archivo = [...dt.files].find(x => /^image\//.test(x.type)), texto = dt.getData('text/plain') || '', copia = yo.current.leerCopia();
       ev.preventDefault();
+      if (archivo?.type === 'image/gif') { yo.current.anadirGif({ file: archivo }); return; }
+      if (archivo?.type === 'image/svg+xml') { try { const s = await leerSvg(archivo); yo.current.anadirImagen(s.url, s.ancho, s.alto); } catch (e) { alert(e.message); } return; }
       if (archivo) { try { const r = await subirImagen(archivo); yo.current.anadirImagen(r.url, r.ancho, r.alto); } catch (e) { alert(e.message); } return; }
       if (copia && (!texto.trim() || texto.startsWith('aim-design:'))) { yo.current.pegarElementos(copia); return; }
       if (texto.trim() && !texto.startsWith('aim-design:')) yo.current.anadirTexto('texto', texto.trim().slice(0, 2000));
@@ -1228,7 +1287,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
     }
     if (el.bloqueado || (fijo(el) && !(m === 'encuadre' && soloContenido(el)))) return;
     if (m === 'encuadre') {
-      const i = imagenes.get(el.url); if (!i) return;
+      const i = imagenes.get(urlDe(el)); if (!i) return;
       a.img = { w: i.naturalWidth || i.width, h: i.naturalHeight || i.height };
     }
     arrastre.current = a;
@@ -1441,7 +1500,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
     if (hayOtros.current) postVivo({ tipo: 'cursor', x: Math.round(ultimoCursor.current.x), y: Math.round(ultimoCursor.current.y), pagina, sel: seleccion });
   }, [seleccion, pagina]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  yo.current = { terminarTrazo, lapiz, guardar, porGuardar, hacerZoom, zoomA, cortarArrastre, escala, leerCopia, pegarElementos, anadirImagen, anadirTexto, ventana, alVivo, mandarCambios };
+  yo.current = { terminarTrazo, lapiz, guardar, porGuardar, hacerZoom, zoomA, cortarArrastre, escala, leerCopia, pegarElementos, anadirImagen, anadirGif, anadirTexto, ventana, alVivo, mandarCambios };
 
   // ── Guardar y exportar ──
   // ¿Hay algo distinto de lo último guardado? (Un diseño nuevo, solo cuando se ha tocado.)
@@ -1591,7 +1650,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
   const recortada = recortando ? diseno.elementos.find(e => e.id === recortando) : null;
   const fantasma = (() => {
     // Al recortar (sin giro), la foto entera se ve tenue alrededor de su caja.
-    const e = recortada, i = e && imagenes.get(e.url);
+    const e = recortada, i = e && imagenes.get(urlDe(e));
     if (!i || e.rot) return null;
     const iw = i.naturalWidth || i.width, ih = i.naturalHeight || i.height, enc = e.encuadre || { zoom: 1, x: 0.5, y: 0.5 };
     const k = Math.max(e.w / iw, e.h / ih) * Math.max(1, enc.zoom || 1), dw = iw * k, dh = ih * k;
@@ -1718,7 +1777,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
           )}
           {panelAbierto && <>
           {panel === 'anadir' && (
-            <PanelAnadir subirVideo={subirYAnadirVideo} subiendoVideo={subiendoVideo} tipo={tipo} kit={kit} anadirTexto={anadirTexto} anadirForma={anadirForma} anadirIcono={anadirIcono} anadirMarco={anadirMarco} anadirImagen={anadirImagen} anadirCollage={anadirCollage} verIconos={() => verIconos()} dibujar={empezarADibujar} anadirQr={anadirQr} anadirTabla={anadirTabla} anadirGrafico={anadirGrafico}
+            <PanelAnadir subirVideo={subirYAnadirVideo} subiendoVideo={subiendoVideo} tipo={tipo} kit={kit} anadirTexto={anadirTexto} anadirForma={anadirForma} anadirIcono={anadirIcono} anadirMarco={anadirMarco} anadirImagen={anadirImagen} anadirGif={anadirGif} anadirSvg={anadirSvg} anadirCollage={anadirCollage} verIconos={() => verIconos()} dibujar={empezarADibujar} anadirQr={anadirQr} anadirTabla={anadirTabla} anadirGrafico={anadirGrafico}
               anadirBloque={anadirBloque} verFotos={() => setVentana('fotos')} verBanco={() => setVentana('banco')} subir={subir} usoAuto={usoAuto} />
           )}
           {panel === 'estilos' && <PanelEstilos doc={doc} aplicarDoc={aplicarDoc} showToast={showToast} respetar={esDireccion ? null : fijo} fondoFijo={marcaFija} />}
@@ -2087,14 +2146,15 @@ function BotonSubir({ texto, onArchivo, className = 'btn btn-sm btn-outline' }) 
   return (
     <label className={className} style={{ position: 'relative', cursor: 'pointer', justifyContent: 'center' }}>
       {subiendo ? 'Subiendo…' : texto}
-      <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" disabled={subiendo} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }}
+      <input type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml,.svg" disabled={subiendo} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }}
         onChange={async (e) => { const f = e.target.files?.[0]; e.target.value = ''; if (!f) return; setSubiendo(true); try { await onArchivo(f); } finally { setSubiendo(false); } }} />
     </label>
   );
 }
 
-function PanelAnadir({ subirVideo, subiendoVideo, usoAuto, tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirMarco, anadirImagen, anadirCollage, verIconos, dibujar, anadirQr, anadirTabla, anadirGrafico, anadirBloque, verFotos, verBanco, subir }) {
+function PanelAnadir({ subirVideo, subiendoVideo, usoAuto, tipo, kit, anadirTexto, anadirForma, anadirIcono, anadirMarco, anadirImagen, anadirGif, anadirSvg, anadirCollage, verIconos, dibujar, anadirQr, anadirTabla, anadirGrafico, anadirBloque, verFotos, verBanco, subir }) {
   const [subidas, setSubidas] = useState(null);
+  const [gestionar, setGestionar] = useState(false);
   const [qr, setQr] = useState('');
   const [mas, setMas] = useState({});
   const [separado, setSeparado] = useState(true);
@@ -2230,7 +2290,19 @@ function PanelAnadir({ subirVideo, subiendoVideo, usoAuto, tipo, kit, anadirText
       <DatosDelClub anadirBloque={anadirBloque} anadirTabla={anadirTabla} kit={kit} />
 
       <div style={seccionT}>Imágenes</div>
-      <BotonSubir texto="⬆ Subir una imagen" onArchivo={(f) => subir(f, (r) => anadirImagen(r.url, r.ancho, r.alto))} />
+      <BotonSubir texto="⬆ Subir una imagen" onArchivo={(f) => (f.type === 'image/gif' ? anadirGif({ file: f })
+        : f.type === 'image/svg+xml' || /\.svg$/i.test(f.name) ? leerSvg(f).then(s => anadirImagen(s.url, s.ancho, s.alto)).catch(e => alert(e.message))
+          : subir(f, (r) => anadirImagen(r.url, r.ancho, r.alto)))} />
+      {/* Los logos de las actividades (#495): entran en su color y se cambia en «Color del dibujo». */}
+      <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Logos de las actividades</span>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6 }} data-logos-actividades>
+        {LOGOS_ACTIVIDADES.map(([n, u, c]) => (
+          <button key={n} type="button" title={n} aria-label={`Logo de ${n}`} style={{ ...bloque, display: 'grid', placeItems: 'center', height: 54, padding: 6, background: c }}
+            onClick={async () => { try { const s = await leerSvg(await (await fetch(u)).text()); anadirSvg(s.url, s.ancho, s.alto, c); } catch (e) { alert(e.message); } }}>
+            <img src={u} alt="" style={{ maxWidth: '100%', maxHeight: 40 }} draggable={false} />
+          </button>
+        ))}
+      </div>
       <button type="button" className="btn btn-sm btn-outline" onClick={verFotos} title="Las de la galería en las que todos los que salen tienen permiso de fotos">📷 Fotos del club</button>
       <button type="button" className="btn btn-sm btn-outline" onClick={verBanco} title="Fotos de dominio público: gratis y sin citar a nadie">🔎 Fotos de banco (gratis)</button>
       <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>La marca</span>
@@ -2244,16 +2316,84 @@ function PanelAnadir({ subirVideo, subiendoVideo, usoAuto, tipo, kit, anadirText
       </div>
       {subidas?.length > 0 && (
         <>
-          <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Ya subidas (arrástralas o pulsa)</span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: 'var(--ink-3)' }}>
+            Ya subidas (arrástralas o pulsa)
+            <button type="button" onClick={() => setGestionar(true)} style={{ marginLeft: 'auto', border: 0, background: 'none', color: 'var(--purple)', fontWeight: 700, fontSize: 11.5, cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>Gestionar</button>
+          </span>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
             {subidas.slice(0, mas.subidas ? 120 : 30).map(x => (
-              <button key={x.id} type="button" onClick={() => anadirImagen(x.url, x.ancho, x.alto)} title={x.nombre || ''} {...arrastrable(x.url, x.ancho, x.alto)}
+              <button key={x.id} type="button" onClick={() => (x.mime === 'image/gif' ? anadirGif({ ci: x.id, url: x.url }) : anadirImagen(x.url, x.ancho, x.alto))} title={x.nombre || ''} {...arrastrable(x.url, x.ancho, x.alto)}
                 style={{ border: '1px solid var(--line)', borderRadius: 8, padding: 0, aspectRatio: '1', background: `center / cover no-repeat url(${x.url}?w=320), var(--bg-3)`, cursor: 'pointer' }} />
             ))}
           </div>
           {subidas.length > 30 && verTodo('subidas', `Ver más (${subidas.length})`)}
         </>
       )}
+      {gestionar && <GestionImagenes onCerrar={(borradas) => { setGestionar(false); if (borradas?.length) setSubidas(l => (l || []).filter(x => !borradas.includes(x.id))); }} />}
+    </div>
+  );
+}
+
+// Las imágenes subidas (#495): cuánto ocupan, dónde se usan y borrar las que
+// sobran. Las que usa un diseño, una noticia o un correo no se dejan borrar (se
+// romperían); las que solo salen en versiones antiguas de un diseño, sí.
+function GestionImagenes({ onCerrar }) {
+  const [lista, setLista] = useState(null);
+  const [elegidas, setElegidas] = useState(new Set());
+  const [filtro, setFiltro] = useState('sobran');
+  const [borrando, setBorrando] = useState(false);
+  const borradas = useRef([]);
+  useEffect(() => { api('/api/admin/correo/imagenes-uso').then(d => setLista(d.imagenes || [])).catch(e => { alert(e.message); onCerrar(); }); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const libre = (x) => !x.uso.length || x.uso.every(u => /versión antigua/.test(u));
+  const vistas = (lista || []).filter(x => filtro === 'todas' || libre(x));
+  const mb = (b) => `${(b / 1048576).toFixed(b < 1048576 ? 2 : 1).replace('.', ',')} MB`;
+  const total = (lista || []).reduce((s, x) => s + (x.bytes || 0), 0);
+  const peso = (lista || []).filter(x => elegidas.has(x.id)).reduce((s, x) => s + (x.bytes || 0), 0);
+  async function borrar() {
+    if (!window.confirm(`¿Borrar ${elegidas.size} imagen${elegidas.size !== 1 ? 'es' : ''} (${mb(peso)})? No se puede deshacer.`)) return;
+    setBorrando(true);
+    const fallos = [];
+    for (const id of elegidas) {
+      try { await api(`/api/admin/correo/imagenes/${id}`, { method: 'DELETE' }); borradas.current.push(id); }
+      catch (e) { fallos.push(e.message); }
+    }
+    setLista(l => l.filter(x => !borradas.current.includes(x.id))); setElegidas(new Set()); setBorrando(false);
+    if (fallos.length) alert(fallos.join('\n'));
+  }
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', zIndex: 3000, display: 'grid', placeItems: 'center', padding: 16 }} onClick={e => e.target === e.currentTarget && onCerrar(borradas.current)}>
+      <div style={{ background: 'var(--bg-2)', borderRadius: 16, width: 'min(860px, 100%)', maxHeight: '92vh', display: 'grid', gridTemplateRows: 'auto auto 1fr auto', gap: 10, padding: 18 }} data-gestion-imagenes>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <h2 style={{ margin: 0, fontSize: 17, flex: 1 }}>Imágenes subidas</h2>
+          <button type="button" className="icon-btn" onClick={() => onCerrar(borradas.current)} aria-label="Cerrar">✕</button>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 13 }}>
+          {[['sobran', 'Las que no se usan'], ['todas', 'Todas']].map(([k, t]) => <button key={k} type="button" className={`filter-pill ${filtro === k ? 'is-active' : ''}`} onClick={() => setFiltro(k)}>{t}</button>)}
+          <span style={{ color: 'var(--ink-3)', marginLeft: 'auto' }}>{lista ? `${lista.length} imágenes · ${mb(total)} en total · ${lista.filter(libre).length} sin usar` : 'Mirando dónde se usa cada una…'}</span>
+        </div>
+        <div style={{ overflow: 'auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 8, alignContent: 'start', minHeight: 200 }}>
+          {vistas.map(x => {
+            const puede = libre(x), sel = elegidas.has(x.id);
+            return (
+              <button key={x.id} type="button" disabled={!puede} data-imagen={x.id}
+                onClick={() => setElegidas(s => { const n = new Set(s); if (n.has(x.id)) n.delete(x.id); else n.add(x.id); return n; })}
+                title={puede ? (x.uso.length ? 'Solo sale en versiones antiguas de un diseño' : 'No se usa en ningún sitio') : `Se usa en ${x.uso.join(', ')}`}
+                style={{ display: 'grid', gap: 4, padding: 6, borderRadius: 10, border: `2px solid ${sel ? 'var(--pink)' : 'var(--line)'}`, background: 'var(--bg-3)', cursor: puede ? 'pointer' : 'default', fontFamily: 'inherit', textAlign: 'left', opacity: puede ? 1 : 0.7 }}>
+                <span style={{ aspectRatio: '1', borderRadius: 6, background: `center / contain no-repeat url(${x.url}?w=320), #fff` }} />
+                <span style={{ fontSize: 11, color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{x.nombre || 'Sin nombre'}</span>
+                <span style={{ fontSize: 10.5, color: puede ? 'var(--ink-3)' : 'var(--orange)' }}>{mb(x.bytes || 0)} · {puede ? (x.uso.length ? 'versión antigua' : 'sin usar') : `en ${x.uso[0]}`}</span>
+              </button>
+            );
+          })}
+          {lista && !vistas.length && <p style={{ gridColumn: '1 / -1', color: 'var(--ink-3)', fontSize: 13 }}>{filtro === 'sobran' ? 'Todas se usan en algún sitio.' : 'No hay imágenes subidas.'}</p>}
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+          {vistas.some(libre) && <button type="button" className="btn btn-sm btn-outline" style={{ marginRight: 'auto' }} onClick={() => setElegidas(new Set(vistas.filter(libre).map(x => x.id)))}>Elegir todas las que no se usan</button>}
+          <button type="button" className="btn btn-sm btn-primary" disabled={!elegidas.size || borrando} onClick={borrar} style={{ background: 'var(--pink)' }}>
+            {borrando ? 'Borrando…' : `Borrar ${elegidas.size || ''} ${elegidas.size ? `(${mb(peso)})` : ''}`}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2285,11 +2425,17 @@ function Color({ etiqueta, valor, onCambio, permiteNada = false }) {
           style={{ ...inp, fontFamily: 'monospace', ...(malo ? { borderColor: 'var(--pink)', color: 'var(--pink)' } : {}) }} />
         {permiteNada && <button type="button" className="btn btn-sm btn-ghost" onClick={() => onCambio('transparent')} title="Sin color">∅</button>}
       </div>
-      {/* Los colores de la marca, a un toque. */}
+      {/* Los colores de la marca y, debajo, los de cada actividad (#495), a un toque. */}
       <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
         {coloresMarca(kit).map(c => (
-          <button key={c} type="button" title={c} aria-label={`${etiqueta}: ${c}`} onClick={() => onCambio(c)}
+          <button key={c} type="button" title={nombreColor(c) ? `${nombreColor(c)} · ${c}` : c} aria-label={`${etiqueta}: ${c}`} onClick={() => onCambio(c)}
             style={{ width: 17, height: 17, borderRadius: 5, padding: 0, cursor: 'pointer', background: c, border: String(valor).toUpperCase() === c ? '2px solid var(--ink)' : '1px solid var(--line)' }} />
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }} data-colores-actividades>
+        {COLORES_ACTIVIDADES.filter(([, c]) => !coloresMarca(kit).includes(c)).map(([n, c]) => (
+          <button key={c} type="button" title={`${n} · ${c}`} aria-label={`${etiqueta}: ${n}`} onClick={() => onCambio(c)}
+            style={{ width: 17, height: 17, borderRadius: '50%', padding: 0, cursor: 'pointer', background: c, border: String(valor).toUpperCase() === c ? '2px solid var(--ink)' : '1px solid var(--line)' }} />
         ))}
       </div>
     </div>
@@ -2683,7 +2829,16 @@ function Propiedades({ clips, e, tipo, esDireccion, cambiar, textoRef, subir, ac
           <Color etiqueta="Borde" valor={e.borde || '#FFFFFF'} onCambio={(v) => cambiar({ borde: v })} />
           <Num etiqueta="Grosor del borde" valor={e.grosor || 0} onCambio={(v) => cambiar({ grosor: Math.max(0, v) })} min={0} />
         </div>
-        {e.url && <FiltrosFoto e={e} cambiar={cambiar} tramos={tramos} />}
+        {esSvg(e.url) && <>
+          <div style={seccionT}>Color del dibujo</div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} data-color-svg>
+            {[['Original', null], ['Blanco', '#FFFFFF'], ['Negro', '#1A1A1A'], ['Gris', '#8A8A8A']].map(([n, c]) => (
+              <button key={n} type="button" className={`btn btn-sm ${(e.svgColor || null) === c ? 'btn-primary' : 'btn-outline'}`} onClick={() => cambiar({ svgColor: c || undefined })}>{n}</button>
+            ))}
+          </div>
+          <Color etiqueta="Otro color" valor={e.svgColor || '#5233A8'} onCambio={(v) => cambiar({ svgColor: v })} />
+        </>}
+        {e.url && !esSvg(e.url) && <FiltrosFoto e={e} cambiar={cambiar} tramos={tramos} />}
       </>}
 
       {(e.tipo === 'rect' || e.tipo === 'elipse' || e.tipo === 'forma') && <>
@@ -3051,6 +3206,11 @@ function PropiedadesVideo({ e, clips, tramos }) {
   const total = Math.max(0, ...lista.map(x => { const v = tramoVideo(x); return v.empieza + v.dura; }));
   return (
     <>
+      {/* En bucle (#495, los GIF): se repite toda la página y no va en la fila de clips. */}
+      <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+        <input type="checkbox" checked={!!e.bucle} onChange={x => cambiar({ bucle: x.target.checked || undefined, empieza: x.target.checked ? 0 : t.empieza })} style={{ accentColor: 'var(--purple)' }} />
+        En bucle (se repite toda la página, como un GIF)
+      </label>
       <div style={seccionT}>Recorte del vídeo</div>
       <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Se usa del {reloj(t.desde)} al {reloj(t.hasta)}: {t.dura.toFixed(1)} s de {largo.toFixed(1)} s. Sin sonido (la tele va en silencio).</span>
       <Rango etiqueta="Desde (segundo)" valor={t.desde} min={0} max={Math.max(0, largo - 0.2)} paso={0.1} onCambio={(v) => cambiar({ desde: v, hasta: Math.max(v + 0.2, t.hasta) })} tramos={tramos} />
@@ -3070,7 +3230,7 @@ function PropiedadesVideo({ e, clips, tramos }) {
         </select>
       </label>
       <Num etiqueta="Esquinas redondeadas" valor={e.radio || 0} onCambio={(v) => cambiar({ radio: Math.max(0, v) })} min={0} />
-      {lista.length > 0 && <>
+      {lista.length > 0 && !e.bucle && <>
         <div style={seccionT}>Clips de esta página ({lista.length})</div>
         <div style={{ display: 'grid', gap: 4 }}>
           {lista.map((x, i) => { const v = tramoVideo(x); return (

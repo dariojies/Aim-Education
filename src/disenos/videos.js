@@ -91,8 +91,11 @@ export function sincronizarVideos(videos, pagina, t, reproduciendo, avisar = nul
     const v = videos.get(e.url); if (!v || usados.has(v)) continue;
     usados.add(v);
     const tv = tramoVideo(e), local = t == null ? 0 : t - tv.empieza;
-    const objetivo = tv.desde + Math.max(0, Math.min(tv.dura - 0.05, local));
-    if (reproduciendo && t != null && local >= 0 && local < tv.dura) {
+    // En bucle (#495): vuelve a empezar cada vez que acaba su tramo.
+    const enTramo = e.bucle ? ((local % tv.dura) + tv.dura) % tv.dura : local;
+    const objetivo = tv.desde + Math.max(0, Math.min(tv.dura - 0.05, enTramo));
+    v.loop = !!e.bucle && tv.desde < 0.05 && Math.abs(tv.hasta - (Number(e.duracionVideo) || tv.hasta)) < 0.05;
+    if (reproduciendo && t != null && local >= 0 && (local < tv.dura || e.bucle)) {
       if (Math.abs(v.currentTime - objetivo) > 0.35) v.currentTime = objetivo;
       if (v.paused) v.play().catch(() => {});
     } else {
@@ -111,7 +114,7 @@ export function pararVideos(videos) { for (const v of videos?.values?.() || []) 
 // acabe el anterior (pasa por encima de él).
 const finDe = (e) => { const t = tramoVideo(e); return t.empieza + t.dura; };
 const entraDe = (e) => (e.transicion && e.transicion !== 'corte' ? TRANSICION : 0);
-export const clipsDe = (pagina) => (pagina?.elementos || []).filter(e => e?.tipo === 'video' && !e.oculto).sort((a, b) => tramoVideo(a).empieza - tramoVideo(b).empieza);
+export const clipsDe = (pagina) => (pagina?.elementos || []).filter(e => e?.tipo === 'video' && !e.oculto && !e.bucle).sort((a, b) => tramoVideo(a).empieza - tramoVideo(b).empieza);
 // ¿Van seguidos (cada uno donde acaba el anterior)?
 export function enCadena(clips) {
   return clips.length > 1 && clips.every((e, k) => !k || Math.abs(tramoVideo(e).empieza - Math.max(0, finDe(clips[k - 1]) - entraDe(e))) < 0.15);

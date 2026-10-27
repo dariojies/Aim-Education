@@ -164,8 +164,39 @@ export function cargarImagen(url) {
   }
   return cacheImg.get(url);
 }
+// ── Dibujos SVG con color (#495) ──
+// Un SVG va dentro del diseño como imagen (data:image/svg+xml) y, con svgColor,
+// se pinta todo de ese color (los rellenos, los trazos y los degradados que no
+// sean «none»): así un logo sale blanco, negro, gris o del color que se quiera.
+export const esSvg = (u) => /^data:image\/svg\+xml/i.test(String(u || ''));
+const aBase64 = (s) => (typeof Buffer !== 'undefined' ? Buffer.from(s, 'utf8').toString('base64') : btoa(unescape(encodeURIComponent(s))));
+const deBase64 = (s) => (typeof Buffer !== 'undefined' ? Buffer.from(s, 'base64').toString('utf8') : decodeURIComponent(escape(atob(s))));
+export function textoSvg(url) {
+  const u = String(url || ''), coma = u.indexOf(',');
+  if (!esSvg(u) || coma < 0) return '';
+  return /;base64,/i.test(u.slice(0, coma + 1)) ? deBase64(u.slice(coma + 1)) : decodeURIComponent(u.slice(coma + 1));
+}
+export const urlSvg = (texto) => `data:image/svg+xml;base64,${aBase64(texto)}`;
+const cacheColor = new Map();
+export function svgConColor(url, color) {
+  const clave = `${color}|${url}`;
+  if (!cacheColor.has(clave)) {
+    if (cacheColor.size > 200) cacheColor.clear();
+    let t = textoSvg(url);
+    const pon = (m, prop, sep, valor) => (/^\s*(none|transparent)\s*$/i.test(valor) ? m : `${prop}${sep}${color}`);
+    t = t.replace(/(fill|stroke|stop-color)(\s*:\s*)([^;}"']+)/gi, (m, p, s, v) => pon(m, p, s, v))
+      .replace(/\b(fill|stroke|stop-color)(=)"([^"]*)"/gi, (m, p, s, v) => (/^\s*(none|transparent)\s*$/i.test(v) ? m : `${p}="${color}"`));
+    // Lo que no dice de qué color es sale negro: con el relleno en el <svg>, también cambia.
+    t = t.replace(/<svg\b/i, `<svg fill="${color}"`);
+    cacheColor.set(clave, urlSvg(t));
+  }
+  return cacheColor.get(clave);
+}
+// La dirección con la que se pinta una imagen (la del SVG ya con su color).
+export const urlDe = (e) => (e?.svgColor && esSvg(e.url) ? svgConColor(e.url, e.svgColor) : e?.url);
+
 export async function cargarImagenes(diseno) {
-  const urls = [diseno?.fondo?.tipo === 'imagen' ? diseno.fondo.url : null, ...(diseno?.elementos || []).filter(e => e.tipo === 'imagen').map(e => e.url),
+  const urls = [diseno?.fondo?.tipo === 'imagen' ? diseno.fondo.url : null, ...(diseno?.elementos || []).filter(e => e.tipo === 'imagen').map(e => urlDe(e)),
     ...(diseno?.elementos || []).filter(e => e.tipo === 'video').map(e => e.poster)].filter(Boolean);
   const pares = await Promise.all(urls.map(async u => [u, await cargarImagen(u)]));
   return new Map(pares);
@@ -472,12 +503,13 @@ export function tramoVideo(e) {
   const hasta = Math.max(desde + 0.2, Math.min(largo, e.hasta == null ? largo : Number(e.hasta)));
   return { desde, hasta, dura: hasta - desde, empieza: Math.max(0, Number(e.empieza) || 0) };
 }
-export const finVideos = (d) => Math.max(0, ...(d?.elementos || []).filter(e => e?.tipo === 'video' && !e.oculto).map(e => { const t = tramoVideo(e); return t.empieza + t.dura; }));
+// Los que van en bucle (un GIF, #495) se repiten toda la página: no la alargan.
+export const finVideos = (d) => Math.max(0, ...(d?.elementos || []).filter(e => e?.tipo === 'video' && !e.oculto && !e.bucle).map(e => { const t = tramoVideo(e); return t.empieza + t.dura; }));
 // Cómo se ve un vídeo en el segundo t: null si no se ve (aún no ha empezado o ya acabó).
 function estadoVideo(e, t, W) {
   if (t == null) return {};
   const v = tramoVideo(e), p = t - v.empieza;
-  if (p < 0 || p >= v.dura) return null;
+  if (p < 0 || (p >= v.dura && !e.bucle)) return null;
   if (!e.transicion || e.transicion === 'corte' || p >= TRANSICION) return {};
   const q = 1 - (1 - p / TRANSICION) ** 3;
   return e.transicion === 'deslizar' ? { dx: (1 - q) * W } : { alfa: q };
@@ -668,7 +700,7 @@ export function pintarDiseno(ctx, diseno, { imagenes = new Map(), videos = null,
     } else if (e.tipo === 'imagen' || e.tipo === 'video') {
       // De un vídeo, el fotograma de ahora si está listo; si no, su portada.
       const vid = e.tipo === 'video' ? videos?.get(e.url) : null;
-      const img = e.tipo === 'video' ? (vid && vid.readyState >= 2 ? vid : imagenes.get(e.poster) || null) : conFiltros(imagenes.get(e.url), e.filtros);
+      const img = e.tipo === 'video' ? (vid && vid.readyState >= 2 ? vid : imagenes.get(e.poster) || null) : conFiltros(imagenes.get(urlDe(e)), e.filtros);
       const marco = e.marco && e.marco !== 'rect' ? e.marco : 'rect';
       // La sombra va con la forma del marco (si la foto se recorta, la sombra no se ve).
       if (e.sombra && img) { caminoFigura(ctx, marco, x, y, e.w, e.h, e.radio); ctx.fillStyle = '#ffffff'; ctx.fill(); }

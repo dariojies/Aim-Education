@@ -8,9 +8,12 @@
 // en el enlace para ver, en la tele y cuando el servidor pinta su portada.
 // Como mucho 100 MB por vídeo y 3 GB entre todos. Los vídeos que ya no usa ningún
 // diseño (ni sus versiones) se borran solos a los dos días.
+// Los GIF (#495) se pasan aquí a vídeo (con ffmpeg), para que se muevan en bucle
+// dentro del diseño: MP4 si son opacos; con transparencia, WebM con canal alfa.
 // ─────────────────────────────────────────────────────────────────────────────
 import express from 'express';
 import crypto from 'crypto';
+import sharp from 'sharp';
 
 export const TROZO = 4 * 1024 * 1024;
 export const MAX_VIDEO = 100 * 1024 * 1024;
@@ -87,6 +90,42 @@ export async function terminarMedio(pool, id) {
     return { ...x, url: urlMedio(x), poster: urlPoster(x) };
 }
 
+// Un GIF animado, a vídeo. Devuelve { buf, mime, poster, duracion, ancho, alto }.
+export async function gifAVideo(gif) {
+    const meta = await sharp(gif, { animated: true }).metadata();
+    const ancho = meta.width, alto = meta.pageHeight || meta.height, paginas = meta.pages || 1;
+    if (paginas < 2) return null;   // un GIF quieto se queda como imagen
+    const pausas = (meta.delay || []).map(d => (Number(d) > 10 ? Number(d) : 100));
+    const duracion = Math.max(0.2, pausas.reduce((s, d) => s + d, 0) / 1000 || paginas / 10);
+    // ¿Tiene partes transparentes? (mirando como mucho 40 millones de píxeles)
+    let alfa = false;
+    if (meta.hasAlpha && ancho * alto * paginas <= 40_000_000) {
+        const { data } = await sharp(gif, { animated: true }).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+        for (let i = 3; i < data.length; i += 4) if (data[i] < 250) { alfa = true; break; }
+    }
+    const { default: ffmpeg } = await import('@ffmpeg-installer/ffmpeg');
+    const { execFile } = await import('child_process');
+    const fs = await import('fs/promises'), os = await import('os'), path = await import('path');
+    const base = path.join(os.tmpdir(), `gif-${process.pid}-${crypto.randomBytes(6).toString('hex')}`);
+    const entrada = `${base}.gif`, salida = `${base}.${alfa ? 'webm' : 'mp4'}`;
+    await fs.writeFile(entrada, gif);
+    const pares = 'scale=trunc(iw/2)*2:trunc(ih/2)*2';
+    const args = alfa
+        ? ['-hide_banner', '-loglevel', 'error', '-y', '-i', entrada, '-vf', pares, '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p', '-b:v', '0', '-crf', '30', '-auto-alt-ref', '0', '-an', salida]
+        : ['-hide_banner', '-loglevel', 'error', '-y', '-i', entrada, '-vf', pares, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-an', salida];
+    try {
+        await new Promise((ok, mal) => execFile(ffmpeg.path, args, { timeout: 120_000, maxBuffer: 4 * 1024 * 1024 }, (e, so, se) => (e ? mal(new Error(`No se ha podido pasar el GIF a vídeo: ${String(se || e.message).trim().slice(0, 200)}`)) : ok())));
+        const buf = await fs.readFile(salida);
+        // La portada: el primer fotograma (en PNG si tiene transparencia).
+        const primero = sharp(gif, { pages: 1 });
+        const poster = alfa ? await primero.png().toBuffer() : await primero.flatten({ background: '#ffffff' }).jpeg({ quality: 85 }).toBuffer();
+        return { buf, mime: alfa ? 'video/webm' : 'video/mp4', poster, duracion: Math.round(duracion * 100) / 100, ancho: Math.round(ancho / 2) * 2, alto: Math.round(alto / 2) * 2 };
+    } finally {
+        await fs.unlink(entrada).catch(() => {});
+        await fs.unlink(salida).catch(() => {});
+    }
+}
+
 export function crearMedios({ pool, authenticateSession, requireSeccion }) {
     const router = express.Router();
     const gestion = [authenticateSession, requireSeccion('grafico')];
@@ -115,6 +154,25 @@ export function crearMedios({ pool, authenticateSession, requireSeccion }) {
     router.post('/api/admin/disenos/videos/:id/fin', ...gestion, async (req, res) => {
         try { res.json(await terminarMedio(pool, idDe(req.params.id))); } catch (err) { fallo(res, err); }
     });
+    // Un GIF (subido ahora o uno de «Ya subidas», ?ci=<id>) a vídeo en bucle (#495).
+    router.post('/api/admin/disenos/gif', ...gestion, express.raw({ type: () => true, limit: '25mb' }), async (req, res) => {
+        try {
+            let gif = Buffer.isBuffer(req.body) && req.body.length ? req.body : null, nombre = String(req.query.nombre || 'animación.gif').slice(0, 200);
+            if (!gif && req.query.ci) {
+                const r = (await pool.query(`SELECT mime, datos, nombre FROM aim_correo_imagenes WHERE id = $1`, [String(req.query.ci).slice(0, 40)])).rows[0];
+                if (!r) corta(404, 'Esa imagen ya no está.');
+                gif = r.datos; nombre = r.nombre || nombre;
+            }
+            if (!gif || gif.subarray(0, 3).toString('latin1') !== 'GIF') corta(400, 'Eso no es un GIF.');
+            const v = await gifAVideo(gif);
+            if (!v) return res.json({ quieto: true });
+            const m = await nuevoMedio(pool, { uso: 'video', nombre, mime: v.mime, bytes: v.buf.length, duracion: v.duracion, ancho: v.ancho, alto: v.alto, userId: req.userSession.userId });
+            for (let n = 0; n * TROZO < v.buf.length; n++) await guardarTrozo(pool, m.id, n, v.buf.subarray(n * TROZO, Math.min(v.buf.length, (n + 1) * TROZO)));
+            await pool.query(`UPDATE aim_medios SET poster = $2 WHERE id = $1`, [m.id, v.poster]);
+            const fin = await terminarMedio(pool, m.id);
+            res.status(201).json({ url: fin.url, poster: fin.poster, duracion: v.duracion, ancho: v.ancho, alto: v.alto, transparente: v.mime === 'video/webm' });
+        } catch (err) { fallo(res, err); }
+    });
     // Cuánto se lleva gastado (para avisar antes de llegar al tope).
     router.get('/api/admin/disenos/videos/espacio', ...gestion, async (req, res) => {
         try {
@@ -133,7 +191,7 @@ export function crearMedios({ pool, authenticateSession, requireSeccion }) {
             res.set('Cache-Control', 'public, max-age=31536000, immutable');
             if (req.query.portada) {
                 if (!m.poster) return res.status(404).end();
-                return res.type('image/jpeg').send(m.poster);
+                return res.type(m.poster[0] === 0x89 ? 'image/png' : 'image/jpeg').send(m.poster);
             }
             const total = Number(m.bytes);
             let a = 0, b = total - 1;
