@@ -74,7 +74,7 @@ export const VARIABLES_AUTO = {
   festivo: [
     { id: 'dia', nombre: 'El día del festivo', ejemplo: 'Lunes 8 de diciembre' },
     { id: 'festivo', nombre: 'Qué festivo es', ejemplo: 'Día de la Inmaculada Concepción' },
-    { id: 'vuelta', nombre: 'Cuándo se vuelve', ejemplo: 'el martes' },
+    { id: 'vuelta', nombre: 'Cuándo se vuelve', ejemplo: 'el martes 9 de diciembre' },
   ],
   cumple: [
     { id: 'nombre', nombre: 'Nombre del alumno', ejemplo: 'Lucía' },

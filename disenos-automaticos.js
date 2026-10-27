@@ -71,13 +71,13 @@ async function disenoDe(pool, uso, cfg) {
 }
 
 // ── Festivos ──
-// Los huecos de un festivo: { dia: «Lunes 8 de diciembre», festivo, vuelta: «el martes» }.
+// Los huecos de un festivo: { dia: «Lunes 8 de diciembre», festivo, vuelta: «el martes 9 de diciembre» }
+// (la vuelta, con el día y el mes igual que el cierre, #492).
 // Se vuelve el siguiente día que no esté cerrado (por lo que sea) ni sea domingo.
 export function variablesFestivo(f, cerrados) {
     let vuelta = sumarDia(f.fecha, 1);
     while (cerrados.has(vuelta) || new Date(vuelta + 'T12:00:00Z').getUTCDay() === 0) vuelta = sumarDia(vuelta, 1);
-    const dias = Math.round((new Date(vuelta + 'T12:00:00Z') - new Date(f.fecha + 'T12:00:00Z')) / 86_400_000);
-    return { dia: mayuscula(largo(f.fecha)), festivo: f.nombre || 'Festivo', vuelta: dias <= 6 ? `el ${semana(vuelta)}` : `el ${largo(vuelta)}` };
+    return { dia: mayuscula(largo(f.fecha)), festivo: f.nombre || 'Festivo', vuelta: `el ${largo(vuelta)}` };
 }
 async function festivosProximos(pool, desde, hasta) {
     const r = await pool.query(
@@ -89,7 +89,7 @@ async function festivosProximos(pool, desde, hasta) {
 export async function ejemploFestivo(pool) {
     const hoy = hoyMadrid();
     return (await festivosProximos(pool, hoy, sumarDia(hoy, 366)))[0]?.variables
-        || { dia: 'Lunes 8 de diciembre', festivo: 'Día de la Inmaculada Concepción', vuelta: 'el martes' };
+        || { dia: 'Lunes 8 de diciembre', festivo: 'Día de la Inmaculada Concepción', vuelta: 'el martes 9 de diciembre' };
 }
 
 async function guardarImagen(pool, publicacionId, img) {
