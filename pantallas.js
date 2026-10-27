@@ -20,6 +20,7 @@ import { paginaDe, numPaginas, tieneAnimacion, duracionAnimacion } from './src/d
 import { pintarEnServidor } from './disenos-servidor.js';
 import { nuevoMedio, guardarTrozo, terminarMedio, urlMedio, TROZO } from './medios.js';
 import { paginaTele } from './tele-pagina.js';
+import { festivosParaTele, medioFestivo } from './disenos-automaticos.js';
 
 export async function crearTablasPantallas(client) {
     await client.query(`
@@ -79,6 +80,51 @@ async function ponerMedio(pool, itemId, medioId, huella) {
     await pool.query(`UPDATE aim_pantallas SET updated_at = NOW() WHERE id = (SELECT pantalla_id FROM aim_pantalla_items WHERE id = $1)`, [itemId]);
 }
 
+// ── Los cierres en la tele (#493) ──
+// La historia del festivo (la plantilla de Aim Design → automáticas) de cada
+// cierre que viene, con sus datos, sale la primera del carrusel desde «dias»
+// antes hasta el mismo día. El servidor la prepara sola (en vídeo si se mueve)
+// y la apunta en aim_ajustes («tele_cierres»), con lo preparado de cada fecha.
+const CLAVE_CIERRES = 'tele_cierres';
+const DIAS_CIERRES = [7, 14, 21];
+async function ajustesCierres(pool) {
+    const v = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = $1`, [CLAVE_CIERRES])).rows[0]?.valor || {};
+    return { activo: v.activo !== false, dias: DIAS_CIERRES.includes(v.dias) ? v.dias : 14, preparados: v.preparados || {} };
+}
+const guardarCierres = (pool, v) => pool.query(
+    `INSERT INTO aim_ajustes (clave, valor) VALUES ($1, $2::jsonb) ON CONFLICT (clave) DO UPDATE SET valor = $2::jsonb`, [CLAVE_CIERRES, JSON.stringify(v)]);
+const sumarDias = (iso, n) => { const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+const huellaCierre = (d, variables) => crypto.createHash('md5').update(JSON.stringify([d.id, new Date(d.updated_at).toISOString(), variables])).digest('hex');
+
+let preparandoCierres = false;
+export async function prepararCierres(pool) {
+    if (preparandoCierres) return;
+    preparandoCierres = true;
+    try {
+        const a = await ajustesCierres(pool);
+        const hoy = hoyMadrid();
+        const { d, festivos } = a.activo ? await festivosParaTele(pool, hoy, sumarDias(hoy, a.dias)) : { d: null, festivos: [] };
+        const preparados = {};
+        for (const f of festivos) {
+            const h = huellaCierre(d, f.variables), ya = a.preparados[f.fecha];
+            if (ya?.huella === h) { preparados[f.fecha] = ya; continue; }
+            const m = await medioFestivo(d, f.variables);
+            const medio = await guardarArchivo(pool, m.buf, { mime: m.mime, ancho: m.ancho, alto: m.alto, duracion: m.duracion, uso: 'cierre' });
+            preparados[f.fecha] = { medio: medio.id, huella: h, nombre: f.nombre };
+            if (ya?.medio) await pool.query(`DELETE FROM aim_medios WHERE id = $1 AND uso = 'cierre'`, [ya.medio]);
+            console.log(`[pantallas] cierre del ${f.fecha} preparado para la tele (${m.mime})`);
+        }
+        // Lo de fechas que ya pasaron (o que dejaron de ser cierre), fuera.
+        const sobran = Object.entries(a.preparados).filter(([fecha]) => !preparados[fecha]).map(([, v]) => v.medio).filter(Boolean);
+        if (sobran.length) await pool.query(`DELETE FROM aim_medios WHERE id = ANY($1::int[]) AND uso = 'cierre'`, [sobran]);
+        if (JSON.stringify(preparados) !== JSON.stringify(a.preparados)) {
+            const actual = await ajustesCierres(pool);
+            await guardarCierres(pool, { activo: actual.activo, dias: actual.dias, preparados });
+        }
+    } catch (e) { console.error('[pantallas] cierres:', e.message); }
+    finally { preparandoCierres = false; }
+}
+
 // Las entradas sin vídeo que hay que (volver a) pintar: el servidor las hace solas.
 let preparando = false;
 export async function prepararEstaticas(pool) {
@@ -135,8 +181,21 @@ export function crearPantallas({ pool, authenticateSession, requireSeccion }) {
             const pantallas = await Promise.all(r.rows.map(pantallaCompleta));
             // Si hay algo sin vídeo por (volver a) pintar, se pone a ello ya.
             if (pantallas.some(p => p.items.some(i => !i.video && i.existe && i.estado !== 'lista'))) prepararEstaticas(pool).catch(() => {});
+            // Los cierres que van a salir (#493) y si están listos.
+            const a = await ajustesCierres(pool), hoy = hoyMadrid();
+            const { d, festivos } = await festivosParaTele(pool, hoy, sumarDias(hoy, a.dias));
+            if (a.activo && festivos.some(f => !a.preparados[f.fecha])) prepararCierres(pool).catch(() => {});
             res.set('Cache-Control', 'no-store');
-            res.json({ pantallas });
+            res.json({ pantallas, cierres: { activo: a.activo, dias: a.dias, plantilla: d ? { id: d.id } : null,
+                proximos: festivos.map(f => ({ fecha: f.fecha, nombre: f.nombre, listo: a.activo && a.preparados[f.fecha]?.huella === huellaCierre(d, f.variables) })) } });
+        } catch (err) { fallo(res, err); }
+    });
+    router.patch('/api/admin/pantallas-cierres', ...gestion, express.json(), async (req, res) => {
+        try {
+            const a = await ajustesCierres(pool), b = req.body || {};
+            await guardarCierres(pool, { activo: b.activo !== undefined ? !!b.activo : a.activo, dias: DIAS_CIERRES.includes(Number(b.dias)) ? Number(b.dias) : a.dias, preparados: a.preparados });
+            prepararCierres(pool).catch(() => {});
+            res.json({ success: true });
         } catch (err) { fallo(res, err); }
     });
     router.post('/api/admin/pantallas', ...gestion, express.json(), async (req, res) => {
@@ -282,6 +341,17 @@ export function crearPantallas({ pool, authenticateSession, requireSeccion }) {
                 id: x.id, tipo: String(x.mime).startsWith('video/') ? 'video' : 'imagen', url: urlMedio(x),
                 segundos: String(x.mime).startsWith('video/') ? Math.round((x.duracion || 10) * 10) / 10 : x.segundos || p.segundos,
             }));
+            // Los cierres que vienen (#493), los primeros: desde «dias» antes hasta ese día.
+            const a = await ajustesCierres(pool);
+            if (a.activo) {
+                const fechas = Object.keys(a.preparados).filter(f => f >= hoy && f <= sumarDias(hoy, a.dias)).sort();
+                const ms = fechas.length ? (await pool.query(`SELECT id, token, mime, duracion FROM aim_medios WHERE id = ANY($1::int[]) AND completo`, [fechas.map(f => a.preparados[f].medio)])).rows : [];
+                const cierres = fechas.map(f => ms.find(m => m.id === a.preparados[f].medio)).filter(Boolean).map((m, i) => ({
+                    id: `cierre-${fechas[i]}`, tipo: String(m.mime).startsWith('video/') ? 'video' : 'imagen', url: urlMedio(m),
+                    segundos: String(m.mime).startsWith('video/') ? Math.round((m.duracion || 10) * 10) / 10 : p.segundos,
+                }));
+                items.unshift(...cierres);
+            }
             const ajustes = { girar: p.girar, transicion: p.transicion };
             const version = crypto.createHash('md5').update(JSON.stringify([items, ajustes])).digest('hex').slice(0, 16);
             res.set('Cache-Control', 'no-store');

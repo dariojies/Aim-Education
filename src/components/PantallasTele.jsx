@@ -81,6 +81,31 @@ export default function PantallasTele({ disenos = [], abrirDiseno, showToast }) 
         El carrusel de la tele de recepción: los diseños que elijas pasan en bucle, a pantalla completa. Para la tele de pie, haz los diseños en tamaño «Historia» (1080 × 1920).
         Los que no llevan vídeo se preparan solos; los que llevan vídeo o animación, con «Preparar los vídeos» (con Chrome o Edge).
       </p>
+      {/* Los cierres (#493): la historia del festivo sale sola en la tele los días antes. */}
+      {datos.cierres && datos.pantallas.length > 0 && (
+        <div style={tarjeta} data-cierres>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontWeight: 800, cursor: 'pointer' }}>
+              <input type="checkbox" checked={datos.cierres.activo} onChange={e => hacer(() => api('/api/admin/pantallas-cierres', { method: 'PATCH', body: { activo: e.target.checked } }))} style={{ accentColor: 'var(--teal)' }} />
+              Avisar de los días de cierre
+            </label>
+            <select value={datos.cierres.dias} disabled={!datos.cierres.activo} onChange={e => hacer(() => api('/api/admin/pantallas-cierres', { method: 'PATCH', body: { dias: Number(e.target.value) } }))} style={{ ...inp, width: 'auto' }} aria-label="Desde cuántos días antes">
+              {[7, 14, 21].map(n => <option key={n} value={n}>desde {n === 7 ? 'una semana' : n === 14 ? 'dos semanas' : 'tres semanas'} antes</option>)}
+            </select>
+          </div>
+          <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-2)' }}>
+            La historia de los festivos (la plantilla que tengas en «Que salga solo… → Historia de los festivos»), con el día y la vuelta ya puestos, sale la primera del carrusel hasta el mismo día del cierre. Se prepara sola; si la plantilla tiene animaciones, en vídeo.
+          </p>
+          {!datos.cierres.plantilla && <p style={{ margin: 0, fontSize: 13, color: 'var(--pink)' }}>No hay plantilla para la historia de los festivos: elígela en Aim Design (en el diseño, «Que salga solo…»).</p>}
+          {datos.cierres.plantilla && datos.cierres.activo && (
+            <div style={{ fontSize: 13, display: 'grid', gap: 3 }}>
+              {datos.cierres.proximos.length
+                ? datos.cierres.proximos.map(c => <span key={c.fecha}>{c.listo ? '✅' : '⏳'} {new Date(c.fecha + 'T12:00:00').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' })} · {c.nombre}{c.listo ? ' · en la tele' : ' · preparándose…'}</span>)
+                : <span style={{ color: 'var(--ink-3)' }}>Ningún cierre en esos días.</span>}
+            </div>
+          )}
+        </div>
+      )}
       {!datos.pantallas.length && (
         <div style={{ ...tarjeta, justifyItems: 'start' }}>
           <b>Aún no hay ninguna pantalla.</b>

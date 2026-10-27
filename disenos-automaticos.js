@@ -234,6 +234,16 @@ export async function pruebaAutomatico(pool, uso, datos, fecha = null) {
     const variables = delDia || (uso === 'festivo' ? await ejemploFestivo(pool) : { nombre: 'Lucía', edad: '9' });
     return pintarEnServidor(datos, { variables });
 }
+// Para la tele de recepción (#493): la plantilla del festivo y los festivos
+// entre dos días, con sus huecos rellenos, y lo que se pone en la tele de cada
+// uno (vídeo si se mueve, si no imagen).
+export async function festivosParaTele(pool, desde, hasta) {
+    const d = await disenoDe(pool, 'festivo', await configAutomaticos(pool));
+    if (!d) return { d: null, festivos: [] };
+    return { d, festivos: await festivosProximos(pool, desde, hasta) };
+}
+export const medioFestivo = (d, variables) => medioHistoria(d, variables);
+
 // La imagen de la historia prevista de un festivo (para el calendario, #479).
 export async function imagenPrevista(pool, fecha) {
     const d = await disenoDe(pool, 'festivo', await configAutomaticos(pool));

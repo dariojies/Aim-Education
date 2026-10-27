@@ -34,7 +34,7 @@ import { crearSustituciones, crearTablasSustituciones, SQL_SUSTITUYE } from './s
 import { crearDisenos, crearTablasDisenos, disenosPorAprobar, revisionDeMisDisenos, mencionesDe } from './disenos.js';
 import { configurarDisenosServidor } from './disenos-servidor.js';
 import { crearMedios, crearTablasMedios, limpiarMedios } from './medios.js';
-import { crearPantallas, crearTablasPantallas, prepararEstaticas, limpiarMediosPantalla } from './pantallas.js';
+import { crearPantallas, crearTablasPantallas, prepararEstaticas, prepararCierres, limpiarMediosPantalla } from './pantallas.js';
 import { crearChats, crearTablasChats, avisosChats } from './chats.js';
 import { programarHistoriasFestivos, felicitacionCumple } from './disenos-automaticos.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
@@ -23176,8 +23176,8 @@ const servidor = app.listen(port, () => {
     setTimeout(function limpiarVideos() { limpiarMedios(pool); }, 5 * 60 * 1000);
     setInterval(function limpiarVideos() { limpiarMedios(pool); limpiarMediosPantalla(pool); }, 24 * 3600 * 1000);
     // La tele: lo que no lleva vídeo se pinta solo cuando cambia el diseño.
-    setTimeout(function prepararTele() { prepararEstaticas(pool); }, 3 * 60 * 1000);
-    setInterval(function prepararTele() { prepararEstaticas(pool); }, 5 * 60 * 1000);
+    setTimeout(function prepararTele() { prepararEstaticas(pool).then(() => prepararCierres(pool)); }, 3 * 60 * 1000);
+    setInterval(function prepararTele() { prepararEstaticas(pool).then(() => prepararCierres(pool)); }, 5 * 60 * 1000);
     setInterval(function historiasDeFestivos() { programarHistoriasFestivos(pool); }, 10 * 60 * 1000);
     // Soporte: aviso diario de tickets vencidos o parados y resumen semanal.
     setTimeout(avisosSoportePeriodicos, 90 * 1000);
