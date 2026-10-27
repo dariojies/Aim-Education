@@ -104,6 +104,8 @@ export async function crearTablasPublicaciones(client) {
             updated_at TIMESTAMPTZ DEFAULT NOW()
         )`);
     await client.query(`CREATE INDEX IF NOT EXISTS ix_social_pub_estado ON aim_social_publicaciones (estado, programada_at)`);
+    // De qué noticia salió (#491): para no repetirla y para quitarla si la noticia se despublica.
+    await client.query(`ALTER TABLE aim_social_publicaciones ADD COLUMN IF NOT EXISTS noticia TEXT`);
     await client.query(`
         CREATE TABLE IF NOT EXISTS aim_social_medios (
             id SERIAL PRIMARY KEY,

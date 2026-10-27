@@ -80,6 +80,20 @@ export const VARIABLES_AUTO = {
     { id: 'nombre', nombre: 'Nombre del alumno', ejemplo: 'Lucía' },
     { id: 'edad', nombre: 'Años que cumple', ejemplo: '9' },
   ],
+  // Las noticias en redes (#491): la foto de portada va en el marco vacío.
+  noticia: [
+    { id: 'titulo', nombre: 'El título de la noticia', ejemplo: 'Cinco medallas en el Campeonato de Andalucía' },
+    { id: 'resumen', nombre: 'Un resumen corto', ejemplo: 'Nuestros alumnos de Taekwon-Do volvieron de Sevilla con cinco medallas.' },
+    { id: 'categoria', nombre: 'La categoría', ejemplo: 'Taekwon-Do' },
+  ],
+  // Las historias diarias de las actividades (#491): la foto va en el marco vacío.
+  actividad: [
+    { id: 'actividad', nombre: 'La actividad', ejemplo: 'Ballet' },
+    { id: 'clase', nombre: 'La clase', ejemplo: 'Pre-Primary' },
+    { id: 'plazas', nombre: 'Cómo van las plazas', ejemplo: '¡Últimas 2 plazas!' },
+    { id: 'horario', nombre: 'El horario', ejemplo: 'Lunes y miércoles de 16:30 a 17:30' },
+    { id: 'edades', nombre: 'Las edades', ejemplo: 'De 5 a 6 años' },
+  ],
 };
 export const EJEMPLO_AUTO = Object.fromEntries(Object.entries(VARIABLES_AUTO).map(([k, l]) => [k, Object.fromEntries(l.map(v => [v.id, v.ejemplo]))]));
 export const rellenar = (texto, variables) => (variables

@@ -12,7 +12,7 @@ import { renderMd } from './PublicActivities.jsx';
 import { useEnVivo } from '../envivo.js';
 import { ListaClases, colorOcupacion } from './AdminTulClases.jsx';
 import Reportes from './Reportes.jsx';
-import { MediosPanel, EnviarAMedios } from './MediosComunicacion.jsx';
+import { MediosPanel, EnviarAMedios, PublicarEnRedes } from './MediosComunicacion.jsx';
 import { FiltroPeriodo, InformeBeneficios, InformeDesglosePersonas } from './InformesGastos.jsx';
 import { AimLogo, ACTIVITIES, ACT_BY_ID, CampDayPicker, campFmtLong, campDayParts, nombreMedioPago, CoronaCumple, COLOR_CUMPLE, coincideBusqueda } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
@@ -6792,9 +6792,12 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         // A los medios (#428): cuántos correos salieron, o por qué no.
         const medios = !m ? '' : m.error ? ` Medios: ${m.error}` : m.yaEnviada ? ' Ya se había mandado a los medios.'
           : ` Mandada a ${m.enviados} medio${m.enviados !== 1 ? 's' : ''}${m.fallos?.length ? ` (${m.fallos.length} no salieron: ${m.fallos.map(f => f.email).join(', ')})` : ''}.`;
+        // En redes (#491): cuándo sale.
+        const rr = guardada.redes;
+        const redes = !rr ? '' : rr.error ? ` Redes: ${rr.error}` : ` En redes (${rr.redes.map(x => (x === 'instagram' ? 'Instagram' : 'Facebook')).join(' y ')}) el ${new Date(rr.programadaAt).toLocaleString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}.`;
         showToast((editingItem.status === 'scheduled'
           ? `Noticia programada: se publicará el ${new Date(publishAt).toLocaleString('es-ES', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}.`
-          : isEdit ? "Noticia modificada." : "Noticia publicada con éxito.") + medios);
+          : isEdit ? "Noticia modificada." : "Noticia publicada con éxito.") + medios + redes);
         setRefreshTrigger(p => p + 1);
         setActiveModal(null);
       } else {
@@ -7574,6 +7577,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
               </div>
             </div>
             <EnviarAMedios item={editingItem} onCambio={v => setEditingItem({ ...editingItem, enviarMedios: v })} />
+            <PublicarEnRedes item={editingItem} onCambio={v => setEditingItem({ ...editingItem, publicarRedes: v })} />
 
             <div className="field">
               <label>Imagen de portada</label>

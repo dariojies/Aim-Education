@@ -38,7 +38,8 @@ import { crearPantallas, crearTablasPantallas, prepararEstaticas, prepararCierre
 import { crearChats, crearTablasChats, avisosChats } from './chats.js';
 import { crearListas, crearTablasListas, listasComoSegmentos, resolverLista, correosDeLista } from './listas.js';
 import { crearPersonal, crearTablasPersonal, avisosEspacio } from './personal.js';
-import { programarHistoriasFestivos, felicitacionCumple } from './disenos-automaticos.js';
+import { redesDeNoticia, configRedesAuto, guardarRedesAuto, programarHistoriasActividades, prepararHistoriaActividad } from './redes-auto.js';
+import { programarHistoriasFestivos, felicitacionCumple, automaticosElegidos } from './disenos-automaticos.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
 import { generarReciboPdf } from './recibo-pdf.js';
@@ -15072,7 +15073,11 @@ app.get('/api/admin/posts', authenticateSession, async (req, res) => {
         // Si ya se mandó a los medios de comunicación (#428), cuándo.
         const medios = new Map((await pool.query(`SELECT clave, valor FROM aim_ajustes WHERE clave LIKE 'medios-post:%'`)).rows
             .map(x => [x.clave.slice('medios-post:'.length), x.valor]));
-        res.json(result.rows.map(p => ({ ...p, medios: medios.get(p.id) || null })));
+        // Y si va a redes o ya fue (#491): la última publicación de cada una.
+        const redes = new Map((await pool.query(
+            `SELECT DISTINCT ON (noticia) noticia, id, estado, programada_at, publicada_at FROM aim_social_publicaciones WHERE noticia IS NOT NULL ORDER BY noticia, id DESC`)).rows
+            .map(x => [x.noticia, { id: x.id, estado: x.estado, programadaAt: x.programada_at, publicadaAt: x.publicada_at }]));
+        res.json(result.rows.map(p => ({ ...p, medios: medios.get(p.id) || null, redes: redes.get(p.id) || null })));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -15112,7 +15117,8 @@ app.post('/api/admin/posts', authenticateSession, async (req, res) => {
         const result = await pool.query('SELECT * FROM aim_education_posts WHERE id = $1', [id]);
         if (result.rows[0]?.status === 'published') avisarBuscadoresPosts([result.rows[0]]).catch(() => {});
         const medios = req.body.enviarMedios ? await enviarAMedios(result.rows[0], req) : null;
-        res.status(201).json({ ...result.rows[0], ...(medios ? { medios } : {}) });
+        const redes = req.body.publicarRedes ? await redesDeNoticia(pool, result.rows[0], true, { urlPublica: URL_PUBLICA_WEB, userId: req.userSession.userId }).catch(e => ({ error: e.message })) : null;
+        res.status(201).json({ ...result.rows[0], ...(medios ? { medios } : {}), ...(redes ? { redes } : {}) });
     } catch (err) {
         if (err.code === '23505') return res.status(409).json({ error: 'Ya existe una entrada con ese slug. Usa un título diferente o edita el slug.' });
         res.status(500).json({ error: err.message });
@@ -15149,15 +15155,57 @@ app.put('/api/admin/posts/:id', authenticateSession, async (req, res) => {
         const result = await pool.query('SELECT * FROM aim_education_posts WHERE id = $1', [req.params.id]);
         if (result.rows[0]?.status === 'published') avisarBuscadoresPosts([result.rows[0]]).catch(() => {});
         const medios = req.body.enviarMedios ? await enviarAMedios(result.rows[0], req) : null;
-        res.json({ ...result.rows[0], ...(medios ? { medios } : {}) });
+        // En redes (#491): lo que diga la casilla (si viene); si se despublica, se quita lo pendiente.
+        const redes = req.body.publicarRedes !== undefined || !['published', 'scheduled'].includes(result.rows[0].status)
+            ? await redesDeNoticia(pool, result.rows[0], !!req.body.publicarRedes, { urlPublica: URL_PUBLICA_WEB, userId: req.userSession.userId }).catch(e => ({ error: e.message })) : null;
+        res.json({ ...result.rows[0], ...(medios ? { medios } : {}), ...(redes ? { redes } : {}) });
     } catch (err) {
         if (err.code === '23505') return res.status(409).json({ error: 'Ya existe una entrada con ese slug.' });
         res.status(500).json({ error: err.message });
     }
 });
 
+// ── Publicaciones automáticas (#491, redes-auto.js) ──
+app.get('/api/admin/redes-automaticas', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try {
+        const cfg = await configRedesAuto(pool);
+        const auto = await automaticosElegidos(pool);
+        const actividades = (await pool.query(`SELECT DISTINCT a.name FROM tul_activities a JOIN tul_groups g ON g.activity_id = a.activity_id WHERE a.club_id = $1 ORDER BY 1`, [AIM_CLUB_ID])).rows.map(x => x.name);
+        res.set('Cache-Control', 'no-store');
+        res.json({ hashtags: cfg.hashtags, historias: cfg.historias, registro: cfg.registro, plantillas: { noticia: auto.noticia || null, actividad: auto.actividad || null }, actividades });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.put('/api/admin/redes-automaticas', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try {
+        const cfg = await configRedesAuto(pool), b = req.body || {};
+        if (b.hashtags !== undefined) cfg.hashtags = String(b.hashtags || '').split(/\s+/).filter(h => /^#[\p{L}\p{N}_]+$/u.test(h)).slice(0, 20).join(' ');
+        if (b.historias) {
+            const h = b.historias;
+            if (h.activo !== undefined) cfg.historias.activo = !!h.activo;
+            if (Array.isArray(h.horas)) cfg.historias.horas = [...new Set(h.horas.filter(x => /^([01]\d|2[0-3]):[0-5]\d$/.test(x)))].sort().slice(0, 4);
+            if (Array.isArray(h.excluir)) cfg.historias.excluir = h.excluir.map(String).slice(0, 50);
+        }
+        await guardarRedesAuto(pool, cfg, req.userSession.userId);
+        programarHistoriasActividades(pool, { clubId: AIM_CLUB_ID }).catch(() => {});
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+// Cómo saldría ahora una historia de actividad (sin guardar nada).
+app.get('/api/admin/redes-automaticas/prueba', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
+    try {
+        const p = await prepararHistoriaActividad(pool, { clubId: AIM_CLUB_ID });
+        if (p.error) return res.json({ error: p.error });
+        const img = p.medio.portada || p.medio.buf;
+        const mini = await sharp(img).resize({ width: 540, withoutEnlargement: true }).jpeg({ quality: 82 }).toBuffer();
+        res.set('Cache-Control', 'no-store');
+        res.json({ actividad: p.actividad, clase: p.clase, variables: p.variables, video: p.medio.mime?.startsWith('video/'), imagen: `data:image/jpeg;base64,${mini.toString('base64')}` });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.delete('/api/admin/posts/:id', authenticateSession, async (req, res) => {
     try {
+        // Lo que tenía pendiente en redes (#491), fuera.
+        await pool.query(`DELETE FROM aim_social_publicaciones WHERE noticia = $1 AND estado IN ('programada', 'borrador')`, [req.params.id]);
         await pool.query('DELETE FROM aim_education_posts WHERE id = $1', [req.params.id]);
         res.json({ success: true });
     } catch (err) {
@@ -23246,6 +23294,8 @@ const servidor = app.listen(port, () => {
     setTimeout(function prepararTele() { prepararEstaticas(pool).then(() => prepararCierres(pool)); }, 3 * 60 * 1000);
     setInterval(function prepararTele() { prepararEstaticas(pool).then(() => prepararCierres(pool)); }, 5 * 60 * 1000);
     setInterval(function historiasDeFestivos() { programarHistoriasFestivos(pool); }, 10 * 60 * 1000);
+    // Las historias diarias de las actividades (#491), si están encendidas.
+    setInterval(function historiasDeActividades() { programarHistoriasActividades(pool, { clubId: AIM_CLUB_ID }); }, 10 * 60 * 1000);
     // Soporte: aviso diario de tickets vencidos o parados y resumen semanal.
     setTimeout(avisosSoportePeriodicos, 90 * 1000);
     setInterval(avisosSoportePeriodicos, 15 * 60 * 1000);

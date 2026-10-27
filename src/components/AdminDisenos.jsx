@@ -182,18 +182,20 @@ function DisenosGraficos({ showToast, puedePublicar }) {
     catch (e) { alert(e.message); }
   }
   // Lo que sale solo (#471): elegir un diseño es confirmarlo (solo la dirección).
-  const USOS_AUTO = { festivo: 'Historia de los festivos', cumple: 'Felicitación de cumpleaños' };
+  const USOS_AUTO = { festivo: 'Historia de los festivos', cumple: 'Felicitación de cumpleaños', noticia: 'Publicación de las noticias', actividad: 'Historias diarias de las actividades' };
   async function elegirAuto(d, uso) {
     const quitar = datos.automaticos?.[uso] === d.id;
     if (!quitar) {
       const aviso = uso === 'festivo'
-        ? `¿Confirmar «${d.nombre}» como la historia de los festivos?\n\nCada festivo (los nacionales, autonómicos y locales de Fichaje → Vacaciones y festivos) se publicará solo como historia de Instagram a las 00:00 de ese día, rellenando {dia}, {festivo} y {vuelta}. Se verá programada en Publicaciones desde una semana antes (y ahí se puede quitar).${d.ancho === 1080 && d.alto === 1920 ? '' : '\n\nOjo: este diseño no tiene el tamaño de una historia (1080 × 1920) e Instagram la enseñará con bordes. Mejor una copia en «Usar → En otros tamaños → Historia».'}`
+        ? `¿Confirmar «${d.nombre}» como la historia de los festivos?\n\nCada festivo (los nacionales, autonómicos y locales de Fichaje → Vacaciones y festivos) se publicará solo como historia de Instagram y Facebook a las 00:00 de ese día, rellenando {dia}, {festivo} y {vuelta}. Se verá programada en Publicaciones desde una semana antes (y ahí se puede quitar).${d.ancho === 1080 && d.alto === 1920 ? '' : '\n\nOjo: este diseño no tiene el tamaño de una historia (1080 × 1920) e Instagram la enseñará con bordes. Mejor una copia en «Usar → En otros tamaños → Historia».'}`
+        : uso === 'noticia' ? `¿Confirmar «${d.nombre}» como la publicación de las noticias en redes?\n\nAl publicar una noticia con «Publicar también en redes sociales», se hará con este diseño: la foto de portada en el primer marco vacío y {titulo}, {resumen} y {categoria} rellenos.`
+        : uso === 'actividad' ? `¿Confirmar «${d.nombre}» como las historias diarias de las actividades?\n\nCada día, a las horas que se elijan en Publicaciones → Automáticas (si están encendidas), saldrá una historia de la actividad que más alumnos necesita, con una foto autorizada en el marco vacío y {actividad}, {clase}, {plazas}, {horario} y {edades} rellenos.${d.ancho === 1080 && d.alto === 1920 ? '' : '\n\nOjo: este diseño no tiene el tamaño de una historia (1080 × 1920).'}`
         : `¿Confirmar «${d.nombre}» como la felicitación de cumpleaños?\n\nIrá como imagen en el correo de cumpleaños de cada alumno, rellenando {nombre} y {edad}.${datos.cumpleEncendido ? '' : '\n\nOjo: el automatismo «Felicitación de cumpleaños» está apagado (Comunicación → Automatismos). Hasta que se encienda, no sale.'}`;
       if (!window.confirm(aviso)) return;
     }
     try {
       await api('/api/admin/disenos-automatico', { method: 'PUT', body: { uso, id: quitar ? null : d.id } });
-      showToast?.(quitar ? `Ya no hay ${USOS_AUTO[uso].toLowerCase()}.` : uso === 'festivo' ? 'Confirmada: las historias de los festivos salen con este diseño.' : 'Confirmada: las felicitaciones de cumpleaños llevan este diseño.');
+      showToast?.(quitar ? `Ya no hay ${USOS_AUTO[uso].toLowerCase()}.` : `Confirmada: ${USOS_AUTO[uso].toLowerCase()} con este diseño.`);
       cargar();
     } catch (e) { alert(e.message); }
   }
@@ -2180,7 +2182,12 @@ function PanelAnadir({ subirVideo, subiendoVideo, usoAuto, tipo, kit, anadirText
       )}
       {usoAuto && VARIABLES_AUTO[usoAuto] && (
         <>
-          <div style={seccionT}>{usoAuto === 'festivo' ? 'Huecos de la historia del festivo' : 'Huecos de la felicitación'}</div>
+          <div style={seccionT}>{{ festivo: 'Huecos de la historia del festivo', cumple: 'Huecos de la felicitación', noticia: 'Huecos de la publicación de las noticias', actividad: 'Huecos de las historias de las actividades' }[usoAuto] || 'Huecos'}</div>
+          {(usoAuto === 'noticia' || usoAuto === 'actividad') && (
+            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+              {usoAuto === 'noticia' ? 'La foto de portada de la noticia' : 'Una foto de la galería con permiso de la clase o la actividad'} va en el primer «marco para foto» vacío (Añadir → Marco). Si no hay marco, va de fondo.
+            </span>
+          )}
           <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Se rellenan solos al publicarla o enviarla. Aquí se ven con un ejemplo.</span>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {VARIABLES_AUTO[usoAuto].map(v => <button key={v.id} type="button" className="btn btn-sm btn-outline" title={v.nombre} onClick={() => anadirTexto(v.id === 'dia' || v.id === 'nombre' ? 'titulo' : 'subtitulo', `{${v.id}}`)}>{`{${v.id}}`}</button>)}

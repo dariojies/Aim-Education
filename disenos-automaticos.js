@@ -26,6 +26,9 @@ export const CLAVE_AUTOMATICOS = 'disenos_automaticos';
 export const USOS_AUTOMATICOS = {
     festivo: { nombre: 'Historia de los festivos' },
     cumple: { nombre: 'Felicitación de cumpleaños' },
+    // #491 (redes-auto.js): la imagen de las noticias en redes y las historias diarias.
+    noticia: { nombre: 'Publicación de las noticias' },
+    actividad: { nombre: 'Historias diarias de las actividades' },
 };
 const TIPOS_FESTIVO = ['nacional', 'autonomico', 'local'];
 const DIAS_ANTES = 7;
@@ -231,7 +234,8 @@ export async function felicitacionCumple(pool, variables) {
 // Cómo saldrá (para «Ver cómo sale» en Aim Design), con un diseño cualquiera.
 export async function pruebaAutomatico(pool, uso, datos, fecha = null) {
     const delDia = uso === 'festivo' && fecha ? (await festivosProximos(pool, fecha, fecha))[0]?.variables : null;
-    const variables = delDia || (uso === 'festivo' ? await ejemploFestivo(pool) : { nombre: 'Lucía', edad: '9' });
+    const { EJEMPLO_AUTO } = await import('./src/disenos/render.js');
+    const variables = delDia || (uso === 'festivo' ? await ejemploFestivo(pool) : EJEMPLO_AUTO[uso] || { nombre: 'Lucía', edad: '9' });
     return pintarEnServidor(datos, { variables });
 }
 // Para la tele de recepción (#493): la plantilla del festivo y los festivos

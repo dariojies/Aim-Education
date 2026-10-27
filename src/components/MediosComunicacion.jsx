@@ -72,6 +72,29 @@ export function MediosPanel({ onCerrar, onCambio }) {
   );
 }
 
+// En redes (#491): la casilla del editor de noticias. Se programa en
+// Publicaciones al guardar (10 minutos después, o a su hora si está programada).
+export function PublicarEnRedes({ item, onCambio }) {
+  if (!['published', 'scheduled'].includes(item.status)) return null;
+  const r = item.redes;
+  if (r && ['publicada', 'parcial', 'publicando'].includes(r.estado)) {
+    return <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-2)' }}><b style={{ color: 'var(--teal)' }}>Ya está en redes</b>{r.publicadaAt ? ` desde el ${fmtFecha(r.publicadaAt)}` : ''} (Comunicación → Publicaciones).</p>;
+  }
+  const marcada = item.publicarRedes ?? (r?.estado === 'programada');
+  return (
+    <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', fontSize: 13, cursor: 'pointer', color: 'var(--ink)' }} data-publicar-redes>
+      <input type="checkbox" checked={!!marcada} onChange={e => onCambio(e.target.checked)} style={{ marginTop: 3 }} />
+      <span>
+        <b>Publicar también en redes sociales</b> (Instagram y Facebook)
+        <span style={{ display: 'block', fontSize: 12, color: 'var(--ink-3)' }}>
+          {r?.estado === 'programada' ? `Programada para el ${new Date(r.programadaAt).toLocaleString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}: al guardar se rehace con lo que cambies. ` : ''}
+          Con la foto de portada en la plantilla de las noticias y el texto hecho solo (título, resumen, enlace y hashtags). Se programa {item.status === 'scheduled' ? 'para la hora de la noticia' : 'para 10 minutos después'} y se puede ver o cambiar en Publicaciones.
+        </span>
+      </span>
+    </label>
+  );
+}
+
 // La casilla del editor de noticias. «item» es la noticia que se edita.
 export function EnviarAMedios({ item, onCambio }) {
   const [n, setN] = useState(null);

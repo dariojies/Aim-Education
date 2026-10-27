@@ -133,6 +133,7 @@ export default function AdminPublicaciones({ showToast }) {
   // #479: lo que se programará solo (las historias de los festivos) y las efemérides.
   const [extra, setExtra] = useState({ previstas: [], efemerides: [] });
   const [verEfemerides, setVerEfemerides] = useState(false);
+  const [verAuto, setVerAuto] = useState(false);
   const cargar = useCallback(async () => {
     try {
       const d = await api('/api/admin/publicaciones');
@@ -175,12 +176,14 @@ export default function AdminPublicaciones({ showToast }) {
           <button key={v} className={`filter-pill ${vista === v ? 'is-active' : ''}`} onClick={() => setVista(v)} style={{ borderRadius: 8, padding: '8px 16px' }}>{l}</button>
         ))}
         <div style={{ flex: 1 }} />
+        <button className="btn btn-outline" onClick={() => setVerAuto(true)} title="Las noticias en redes y las historias diarias de las actividades">⚙ Automáticas</button>
         <button className="btn btn-outline" onClick={() => setVerEfemerides(true)} title="Los días señalados que salen en el calendario">🎉 Efemérides</button>
         <button className="btn btn-primary" onClick={() => setEditando({})}><I.Plus width={15} height={15} /> Nueva publicación</button>
       </div>
       {vista === 'calendario' && <Calendario lista={lista} previstas={extra.previstas} efemerides={extra.efemerides} onPrevista={programarYa}
         onAbrir={setEditando} onNueva={(dia) => setEditando({ dia })} onMovida={cargar} showToast={showToast} />}
       {verEfemerides && <Efemerides onCerrar={(cambio) => { setVerEfemerides(false); if (cambio) cargar(); }} showToast={showToast} />}
+      {verAuto && <Automaticas onCerrar={() => { setVerAuto(false); cargar(); }} showToast={showToast} />}
       {vista === 'lista' && <Lista lista={lista} onAbrir={setEditando} onCambio={cargar} showToast={showToast} />}
       {vista === 'estadisticas' && <Estadisticas />}
       {editando && (
@@ -599,6 +602,99 @@ function Calendario({ lista, previstas = [], efemerides = [], onPrevista, onAbri
         </div>
       )}
       <span style={suave}>Doble clic en un día para preparar una publicación para ese día. 🎉 son las efemérides (en naranja si es esta semana y aún no hay nada); con borde de puntos, lo que se programará solo.</span>
+    </div>
+  );
+}
+
+// ── Automáticas (#491) ──────────────────────────────────────────────────────
+// Las noticias en redes (la casilla del editor de noticias) y las historias
+// diarias de las actividades: si van, a qué horas, qué actividades no, los
+// hashtags fijos y cómo saldría una ahora.
+const campoA = { fontFamily: 'inherit', fontSize: 13, padding: '7px 9px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-2)', color: 'var(--ink)' };
+function Automaticas({ onCerrar, showToast }) {
+  const [d, setD] = useState(null);
+  const [prueba, setPrueba] = useState(null);
+  const cargar = () => api('/api/admin/redes-automaticas').then(setD).catch(e => { alert(e.message); onCerrar(); });
+  useEffect(() => { cargar(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  async function guardar(cambio, aviso) {
+    try { await api('/api/admin/redes-automaticas', { method: 'PUT', body: cambio }); await cargar(); if (aviso) showToast?.(aviso); } catch (e) { alert(e.message); }
+  }
+  const historias = d?.historias;
+  const ponerHistorias = (c) => guardar({ historias: { ...historias, ...c } });
+  async function verPrueba() {
+    setPrueba({ cargando: true });
+    try { setPrueba(await api('/api/admin/redes-automaticas/prueba')); } catch (e) { setPrueba({ error: e.message }); }
+  }
+  if (!d) return null;
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 60, display: 'grid', placeItems: 'center', padding: 12 }} onClick={onCerrar}>
+      <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg)', borderRadius: 18, width: 'min(760px, 100%)', maxHeight: '90vh', overflowY: 'auto', padding: 18, display: 'grid', gap: 14 }} data-automaticas>
+        <div style={{ display: 'flex', alignItems: 'center' }}>
+          <h3 style={{ margin: 0, flex: 1, fontSize: 18 }}>⚙ Publicaciones automáticas</h3>
+          <button type="button" className="btn btn-sm btn-ghost" onClick={onCerrar} aria-label="Cerrar"><I.X /></button>
+        </div>
+
+        <section style={{ display: 'grid', gap: 8 }}>
+          <b>Las noticias en redes</b>
+          <span style={suave}>Al publicar una noticia con «Publicar también en redes sociales» (en el editor de la noticia), se programa aquí para 10 minutos después (o para su hora, si está programada): en Instagram y Facebook, con la foto de portada en la plantilla y el texto hecho solo (título, resumen, enlace y hashtags). Se puede ver y cambiar antes de que salga.</span>
+          <span style={{ fontSize: 13 }}>{d.plantillas.noticia ? '✅ Con la plantilla elegida en Aim Design.' : '⚠ Sin plantilla: sale la foto de portada tal cual. Para elegirla: Aim Design → en el diseño, «Que salga solo… → Publicación de las noticias».'}</span>
+          <label style={{ display: 'grid', gap: 3, fontSize: 12, fontWeight: 700 }}>Hashtags que van siempre (además de los del tema de la noticia)
+            <input defaultValue={d.hashtags} onBlur={e => e.target.value !== d.hashtags && guardar({ hashtags: e.target.value }, 'Hashtags guardados.')} style={campoA} placeholder="#AIMEducation #Algeciras" />
+          </label>
+        </section>
+
+        <section style={{ display: 'grid', gap: 8 }}>
+          <b>Las historias diarias de las actividades</b>
+          <span style={suave}>Cada día, a las horas de abajo, una historia (Instagram y Facebook) de la actividad que más alumnos necesita: las clases con más plazas libres salen más; las llenas, casi nunca; y no se repite la de ayer. La foto es de la galería y solo una con permiso: con alguien etiquetado y todos sus etiquetados con permiso de fotos en redes, de un álbum de esa clase o actividad (o con su nombre en el título del álbum, como «Clase Taekwondo 1»), sin repetir las de los últimos 60 días. Una actividad sin fotos así se salta.</span>
+          <span style={{ fontSize: 13 }}>{d.plantillas.actividad ? '✅ Con la plantilla elegida en Aim Design.' : '⚠ Falta la plantilla: Aim Design → en el diseño, «Que salga solo… → Historias diarias de las actividades».'}</span>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontWeight: 700, fontSize: 14 }}>
+            <input type="checkbox" checked={!!historias.activo} disabled={!d.plantillas.actividad && !historias.activo} onChange={e => ponerHistorias({ activo: e.target.checked })} /> Publicarlas cada día
+          </label>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'end', flexWrap: 'wrap' }}>
+            {historias.horas.map((h, i) => (
+              <label key={i} style={{ display: 'grid', gap: 3, fontSize: 12, fontWeight: 700 }}>{i === 0 ? 'Primera' : i === 1 ? 'Segunda' : `${i + 1}.ª`}
+                <span style={{ display: 'flex', gap: 4 }}>
+                  <input type="time" defaultValue={h} onBlur={e => e.target.value && e.target.value !== h && ponerHistorias({ horas: historias.horas.map((x, j) => (j === i ? e.target.value : x)) })} style={campoA} />
+                  {historias.horas.length > 1 && <button type="button" className="btn btn-sm btn-ghost" onClick={() => ponerHistorias({ horas: historias.horas.filter((_, j) => j !== i) })} aria-label="Quitar esta hora">✕</button>}
+                </span>
+              </label>
+            ))}
+            {historias.horas.length < 4 && <button type="button" className="btn btn-sm btn-outline" onClick={() => ponerHistorias({ horas: [...historias.horas, '13:00'] })}>＋ Otra hora</button>}
+          </div>
+          <div style={{ display: 'grid', gap: 4 }}>
+            <span style={{ fontSize: 12, fontWeight: 700 }}>Actividades que no salen</span>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {d.actividades.map(a => {
+                const fuera = historias.excluir.includes(a);
+                return <button key={a} type="button" className={`filter-pill ${fuera ? 'is-active' : ''}`} onClick={() => ponerHistorias({ excluir: fuera ? historias.excluir.filter(x => x !== a) : [...historias.excluir, a] })}>{fuera ? '✕ ' : ''}{a}</button>;
+              })}
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <button type="button" className="btn btn-sm btn-outline" disabled={!d.plantillas.actividad || prueba?.cargando} onClick={verPrueba}>{prueba?.cargando ? 'Preparándola…' : 'Ver cómo saldría ahora'}</button>
+            {prueba?.error && <span style={{ fontSize: 13, color: 'var(--pink)' }}>{prueba.error}</span>}
+            {prueba?.imagen && (
+              <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }} data-prueba-historia>
+                <img src={prueba.imagen} alt="Cómo saldría la historia" style={{ width: 160, borderRadius: 10, border: '1px solid var(--line)' }} />
+                <span style={{ fontSize: 12.5, color: 'var(--ink-2)', display: 'grid', gap: 3 }}>
+                  <b>{prueba.actividad} · {prueba.clase}</b>
+                  <span>{prueba.variables.plazas}</span><span>{prueba.variables.horario}</span><span>{prueba.variables.edades}</span>
+                  {prueba.video && <span>Sale en vídeo (la plantilla se mueve).</span>}
+                  <span style={suave}>Es un ejemplo: no se guarda ni se publica. Cada vez puede salir otra.</span>
+                </span>
+              </div>
+            )}
+          </div>
+          {d.registro.length > 0 && (
+            <details>
+              <summary style={{ cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>Lo último que ha pasado</summary>
+              <div style={{ display: 'grid', gap: 3, marginTop: 6, fontSize: 12.5, color: 'var(--ink-2)' }}>
+                {d.registro.map((r, i) => <span key={i}>{new Date(r.at).toLocaleString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} · {r.texto}</span>)}
+              </div>
+            </details>
+          )}
+        </section>
+      </div>
     </div>
   );
 }
