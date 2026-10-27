@@ -14,6 +14,7 @@
 import express from 'express';
 import crypto from 'crypto';
 import sharp from 'sharp';
+import { FFMPEG_LIGERO, deUnoEnUno } from './disenos-servidor.js';
 
 export const TROZO = 4 * 1024 * 1024;
 export const MAX_VIDEO = 100 * 1024 * 1024;
@@ -111,10 +112,10 @@ export async function gifAVideo(gif) {
     await fs.writeFile(entrada, gif);
     const pares = 'scale=trunc(iw/2)*2:trunc(ih/2)*2';
     const args = alfa
-        ? ['-hide_banner', '-loglevel', 'error', '-y', '-i', entrada, '-vf', pares, '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p', '-b:v', '0', '-crf', '30', '-auto-alt-ref', '0', '-an', salida]
-        : ['-hide_banner', '-loglevel', 'error', '-y', '-i', entrada, '-vf', pares, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-an', salida];
+        ? ['-hide_banner', '-loglevel', 'error', '-y', '-threads', '1', '-i', entrada, '-vf', pares, '-c:v', 'libvpx-vp9', '-threads', '1', '-row-mt', '0', '-lag-in-frames', '0', '-pix_fmt', 'yuva420p', '-b:v', '0', '-crf', '30', '-auto-alt-ref', '0', '-an', salida]
+        : ['-hide_banner', '-loglevel', 'error', '-y', '-i', entrada, '-vf', pares, '-c:v', 'libx264', ...FFMPEG_LIGERO, '-crf', '22', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-an', salida];
     try {
-        await new Promise((ok, mal) => execFile(ffmpeg.path, args, { timeout: 120_000, maxBuffer: 4 * 1024 * 1024 }, (e, so, se) => (e ? mal(new Error(`No se ha podido pasar el GIF a vídeo: ${String(se || e.message).trim().slice(0, 200)}`)) : ok())));
+        await deUnoEnUno(() => new Promise((ok, mal) => execFile(ffmpeg.path, args, { timeout: 120_000, maxBuffer: 4 * 1024 * 1024 }, (e, so, se) => (e ? mal(new Error(`No se ha podido pasar el GIF a vídeo: ${String(se || e.message).trim().slice(0, 200)}`)) : ok()))));
         const buf = await fs.readFile(salida);
         // La portada: el primer fotograma (en PNG si tiene transparencia).
         const primero = sharp(gif, { pages: 1 });

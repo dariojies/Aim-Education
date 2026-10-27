@@ -116,7 +116,20 @@ export async function seMueve(datos) {
 // sonido en silencio, que Instagram la pide a veces). Los vídeos que lleve
 // el diseño dentro no se pueden pintar aquí: con alguno, devuelve null.
 // Devuelve { buf, mime, ancho, alto, duracion }.
-export async function grabarEnServidor(datos, { variables = null, fps = 30 } = {}) {
+// ffmpeg, con poca memoria (Heroku mata el dyno si se pasa): un hilo, sin
+// fotogramas de más por delante. Por defecto usa todos los núcleos y se iba a
+// unos 600 MB con una historia de 1080 × 1920.
+export const FFMPEG_LIGERO = ['-threads', '1', '-preset', 'ultrafast', '-x264-params', 'rc-lookahead=0:ref=1:bframes=0:threads=1'];
+// Y de uno en uno: dos grabaciones a la vez no caben.
+let cola = Promise.resolve();
+export function deUnoEnUno(fn) {
+    const r = cola.then(fn, fn);
+    cola = r.catch(() => {});
+    return r;
+}
+
+export function grabarEnServidor(datos, opciones = {}) { return deUnoEnUno(() => grabar(datos, opciones)); }
+async function grabar(datos, { variables = null, fps = 30 } = {}) {
     const r = await render();
     const d = r.paginaDe(datos, 0);
     if ((d.elementos || []).some(e => e?.tipo === 'video' && !e.oculto)) return null;
@@ -136,7 +149,7 @@ export async function grabarEnServidor(datos, { variables = null, fps = 30 } = {
     const salida = path.join(os.tmpdir(), `historia-${process.pid}-${Date.now()}.mp4`);
     const p = spawn(ffmpeg.path, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${W}x${H}`, '-r', String(fps), '-i', '-',
         '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100', '-shortest',
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '64k', '-movflags', '+faststart', salida], { stdio: ['pipe', 'ignore', 'pipe'] });
+        '-c:v', 'libx264', ...FFMPEG_LIGERO, '-crf', '22', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '64k', '-movflags', '+faststart', salida], { stdio: ['pipe', 'ignore', 'pipe'] });
     let error = '';
     p.stderr.on('data', x => { error += x; });
     const fin = new Promise((ok, mal) => { p.on('error', mal); p.on('close', code => (code === 0 ? ok() : mal(new Error(`ffmpeg: ${error.trim().slice(0, 300) || `salió con ${code}`}`)))); });
