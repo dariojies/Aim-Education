@@ -5282,7 +5282,7 @@ async function fichaDeCorreo(email) {
          WHERE LOWER(u.email) = LOWER($1) LIMIT 1`, [email]);
     return r.rows[0] ? { id: r.rows[0].user_id, nombre: r.rows[0].nombre } : null;
 }
-const bandeja = crearRouterBandeja({ pool, permisos, companeros: companerosCorreo, fichaDe: fichaDeCorreo });
+const bandeja = crearRouterBandeja({ pool, permisos, companeros: companerosCorreo, fichaDe: fichaDeCorreo, urlPublica: URL_PUBLICA_WEB });
 
 // «Mi día» en el calendario del móvil (#390): el enlace privado de cada uno y el
 // .ics que leen Google, Samsung o el iPhone. Ver calendario-movil.js.

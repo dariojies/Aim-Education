@@ -218,6 +218,9 @@ export function permisosDe(rol) {
         // Poner un correo del dominio (@aimeducation.es) en una ficha: da entrada a
         // ese buzón (#449), así que solo la dirección.
         correoDelDominio: jefe,
+        // La firma de los correos y su aviso legal (#501): la dirección y el Equipo IT.
+        // Cada uno pone su cargo y su teléfono.
+        editarFirmaCorreo: jefe,
     };
 }
 

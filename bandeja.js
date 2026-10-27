@@ -358,7 +358,36 @@ const conAdjuntos = (bs) => {
     return hay;
 };
 
-export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
+// ── La firma de los correos escritos a mano (#501) ──
+// Una plantilla para todos con huecos ({nombre}, {cargo}, {telefono}, {correo}),
+// el aviso legal del pie y el logo; cada uno pone su cargo y su teléfono. Va en
+// aim_ajustes («correo_firma»). Una línea con un hueco que queda vacío no sale.
+export const CLAVE_FIRMA = 'correo_firma';
+const FIRMA_DE_FABRICA = { plantilla: '{nombre}\n{cargo} · AIM Education\n{telefono}\nwww.aimeducation.es', avisoLegal: '', logo: true, personas: {} };
+const CARGO_DE_RANGO = { trabajador: 'Personal del centro', instructor: 'Profesor/a', it_junior: 'Equipo IT', secretaria: 'Secretaría', club_owner: 'Dirección', equipo_it: 'Equipo IT', superadmin: 'Dirección' };
+const escF = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+export function lineasFirma(plantilla, f) {
+    return String(plantilla || '').split('\n').map(l => {
+        let vacio = false;
+        const t = l.replace(/\{(nombre|cargo|telefono|correo)\}/g, (m, k) => { const v = String(f?.[k] || '').trim(); if (!v) vacio = true; return v; });
+        return vacio || !t.trim() ? null : t.trim();
+    }).filter(Boolean);
+}
+function firmaHtml(cfg, f, urlBase) {
+    const l = lineasFirma(cfg.plantilla, f);
+    if (!l.length && !cfg.avisoLegal) return '';
+    let h = '<div style="margin-top:18px;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.45;color:#374151">';
+    if (l.length) h += `<div>--</div>${l.map((x, i) => (i === 0 ? `<div style="font-weight:bold;color:#111827">${escF(x)}</div>` : `<div>${escF(x).replace(/(https?:\/\/[^\s<]+|www\.[^\s<]+)/g, u => `<a href="${u.startsWith('http') ? u : `https://${u}`}" style="color:#5233A8">${u}</a>`)}</div>`)).join('')}`;
+    if (cfg.logo && urlBase) h += `<div style="margin-top:8px"><img src="${urlBase}/src/brand/Aim_Horizontal.png" alt="AIM Education" height="36" style="height:36px;width:auto"></div>`;
+    if (cfg.avisoLegal) h += `<div style="margin-top:14px;padding-top:8px;border-top:1px solid #e5e7eb;font-size:11px;line-height:1.4;color:#6b7280">${escF(cfg.avisoLegal).replace(/\n/g, '<br>')}</div>`;
+    return `${h}</div>`;
+}
+const firmaTexto = (cfg, f) => {
+    const l = lineasFirma(cfg.plantilla, f);
+    return `${l.length ? `\n\n--\n${l.join('\n')}` : ''}${cfg.avisoLegal ? `\n\n${cfg.avisoLegal}` : ''}`;
+};
+
+export function crearRouterBandeja({ pool, permisos, companeros, fichaDe, urlPublica = '' }) {
     const router = express.Router();
     // Las listas recordadas (#477): «correo|vista|página|búsqueda|quién» → { v, t }.
     const listas = new Map();
@@ -721,6 +750,61 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
         } catch (e) { if (e.http) return res.status(e.http).json({ error: e.message }); error(res, e); }
     });
 
+    // La firma: lo de todos y, de cada uno, su cargo y su teléfono.
+    async function firmaConfig() {
+        const v = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = $1`, [CLAVE_FIRMA])).rows[0]?.valor || {};
+        return { ...FIRMA_DE_FABRICA, ...v, personas: v.personas || {} };
+    }
+    const guardarFirma = (v, userId) => pool.query(
+        `INSERT INTO aim_ajustes (clave, valor, actualizado_por) VALUES ($1, $2::jsonb, $3)
+         ON CONFLICT (clave) DO UPDATE SET valor = $2::jsonb, actualizado_at = NOW(), actualizado_por = $3`, [CLAVE_FIRMA, JSON.stringify(v), userId || null]);
+    // Los huecos de la firma de una persona.
+    async function firmanteDe(userId, cfg = null) {
+        if (!userId) return null;
+        const u = (await pool.query(
+            `SELECT u.name, u.surname, u.email, COALESCE((SELECT r.rango FROM aim_rangos r WHERE r.user_id = u.user_id), u.role) AS rango, u.dev_role
+             FROM users u WHERE u.user_id = $1`, [userId])).rows[0];
+        if (!u) return null;
+        const c = cfg || await firmaConfig(), p = c.personas[String(userId)] || {};
+        return {
+            nombre: [u.name, u.surname].filter(Boolean).join(' ').trim(),
+            cargo: p.cargo != null ? p.cargo : (CARGO_DE_RANGO[u.dev_role === 'superadmin' && !u.rango ? 'superadmin' : u.rango] || ''),
+            telefono: p.telefono || '', correo: u.email || '',
+        };
+    }
+    router.get('/firma', async (req, res) => {
+        try {
+            const cfg = await firmaConfig(), f = await firmanteDe(req.userSession.userId, cfg);
+            const p = cfg.personas[String(req.userSession.userId)] || {};
+            res.set('Cache-Control', 'no-store');
+            res.json({ plantilla: cfg.plantilla, avisoLegal: cfg.avisoLegal, logo: !!cfg.logo, mia: { cargo: f?.cargo || '', telefono: p.telefono || '', cargoPropio: p.cargo != null },
+                datos: f, lineas: lineasFirma(cfg.plantilla, f), puedeEditar: !!permisos(req).editarFirmaCorreo, logoUrl: '/src/brand/Aim_Horizontal.png' });
+        } catch (e) { res.status(500).json({ error: e.message }); }
+    });
+    // Lo de todos (la dirección y el Equipo IT): la plantilla, el aviso legal y el logo.
+    router.put('/firma', express.json(), async (req, res) => {
+        if (!permisos(req).editarFirmaCorreo) return res.status(403).json({ error: 'La firma de todos la cambian la dirección y el Equipo IT.' });
+        try {
+            const cfg = await firmaConfig(), b = req.body || {};
+            if (b.plantilla !== undefined) cfg.plantilla = String(b.plantilla || '').replace(/\r/g, '').slice(0, 1000);
+            if (b.avisoLegal !== undefined) cfg.avisoLegal = String(b.avisoLegal || '').replace(/\r/g, '').trim().slice(0, 4000);
+            if (b.logo !== undefined) cfg.logo = !!b.logo;
+            await guardarFirma(cfg, req.userSession.userId);
+            res.json({ success: true });
+        } catch (e) { res.status(500).json({ error: e.message }); }
+    });
+    // Lo de cada uno: su cargo y su teléfono.
+    router.put('/firma/mia', express.json(), async (req, res) => {
+        try {
+            const cfg = await firmaConfig(), b = req.body || {};
+            cfg.personas[String(req.userSession.userId)] = {
+                cargo: String(b.cargo ?? '').trim().slice(0, 120), telefono: String(b.telefono ?? '').trim().slice(0, 40),
+            };
+            await guardarFirma(cfg, req.userSession.userId);
+            res.json({ success: true });
+        } catch (e) { res.status(500).json({ error: e.message }); }
+    });
+
     // Comprueba lo que se va a enviar. Devuelve el error o los datos limpios.
     function revisarEnvio(b) {
         const lista = (v) => String(v || '').split(/[,;]/).map(x => x.trim()).filter(Boolean);
@@ -738,17 +822,23 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
             .map(x => ({ nombre: String(x.nombre || 'adjunto').slice(0, 150), datos: String(x.datos) }));
         const pesan = adjuntos.reduce((t, x) => t + x.datos.length * 0.75, 0);
         if (pesan > 20 * 1024 * 1024) return { error: 'Los adjuntos pesan demasiado (Gmail admite 25 MB en total).' };
-        return { para, cc, cco, asunto, texto: String(b.texto || '').slice(0, 50000), modo: b.modo || null, origen: b.origen?.uid ? { uid: b.origen.uid, vista: b.origen.vista } : null, adjuntos };
+        return { para, cc, cco, asunto, texto: String(b.texto || '').slice(0, 50000), modo: b.modo || null, origen: b.origen?.uid ? { uid: b.origen.uid, vista: b.origen.vista } : null, adjuntos, sinFirma: b.firma === false };
     }
 
     // Envía de verdad. Sale por el Gmail de ese buzón: queda en sus «Enviados» y
     // las respuestas vuelven a él. Lo usan «Enviar» y los programados.
-    async function enviarDesde(buzon, e, autor) {
+    async function enviarDesde(buzon, e, autor, firmante = null) {
         let original = null;
         if (e.origen?.uid) original = await leerUno(buzon, carpetaDeVista(e.origen.vista), e.origen.uid).catch(() => null);
         const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         let html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5">${esc(e.texto).replace(/\n/g, '<br>')}</div>`;
         let text = e.texto;
+        // La firma de quien lo escribe (#501), antes de la cita del original.
+        if (firmante) {
+            const cfg = await firmaConfig();
+            html += firmaHtml(cfg, firmante, urlPublica);
+            text += firmaTexto(cfg, firmante);
+        }
         const correo = { attachments: [] };
         if (original) {
             const p = original.p;
@@ -805,12 +895,12 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
                     `INSERT INTO aim_correos_programados (buzon_email, general, user_id, autor, para, cc, asunto, texto, modo, origen, adjuntos, enviar_at, cco)
                      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12,$13) RETURNING id, enviar_at`,
                     [buzon.email, !!buzon.general, req.userSession.userId, autor, e.para.join(', '), e.cc.join(', '), e.asunto, e.texto, e.modo,
-                     e.origen ? JSON.stringify(e.origen) : null, JSON.stringify(e.adjuntos), cuando.toISOString(), e.cco.join(', ') || null]);
+                     e.origen || e.sinFirma ? JSON.stringify({ ...(e.origen || {}), ...(e.sinFirma ? { sinFirma: true } : {}) }) : null, JSON.stringify(e.adjuntos), cuando.toISOString(), e.cco.join(', ') || null]);
                 return res.json({ success: true, programado: r.rows[0] });
             } catch (err) { return res.status(500).json({ error: err.message }); }
         }
         try {
-            await enviarDesde(buzon, e, autor);
+            await enviarDesde(buzon, e, autor, e.sinFirma ? null : await firmanteDe(req.userSession.userId));
             res.json({ success: true });
         } catch (err) {
             const m = errorEnvio(err);
@@ -869,7 +959,7 @@ export function crearRouterBandeja({ pool, permisos, companeros, fichaDe }) {
                             para: String(x.para).split(/,\s*/).filter(Boolean), cc: String(x.cc || '').split(/,\s*/).filter(Boolean),
                             cco: String(x.cco || '').split(/,\s*/).filter(Boolean),
                             asunto: x.asunto, texto: x.texto || '', modo: x.modo, origen: x.origen, adjuntos: x.adjuntos || [],
-                        }, x.autor);
+                        }, x.autor, x.origen?.sinFirma ? null : await firmanteDe(x.user_id));
                     } catch (e) { estado = 'error'; error = errorEnvio(e); }
                 }
                 await pool.query(

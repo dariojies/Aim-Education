@@ -74,11 +74,15 @@ function Redactar({ inicial, buzon, buzones, onBuzon, onCerrar, onEnviado, showT
   const [cuando, setCuando] = useState(() => { const d = new Date(Date.now() + 3600e3); d.setMinutes(0, 0, 0); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); });
   const input = useRef(null);
   const set = (k, v) => setC(x => ({ ...x, [k]: v }));
+  // La firma (#501): sale sola debajo; se puede quitar en este correo.
+  const [firma, setFirma] = useState(null);
+  const [conFirma, setConFirma] = useState(true);
+  useEffect(() => { api('/api/admin/bandeja/firma').then(setFirma).catch(() => setFirma(null)); }, []);
   const leer = (f) => new Promise((ok, mal) => { const r = new FileReader(); r.onload = () => ok({ nombre: f.name, datos: r.result, bytes: f.size }); r.onerror = mal; r.readAsDataURL(f); });
   async function enviar() {
     setEnviando(true);
     try {
-      const d = await api(`/api/admin/bandeja/${buzon}/enviar`, { method: 'POST', body: { para: c.para, cc: c.cc, cco: c.cco, asunto: c.asunto, texto: c.texto, modo: c.modo, origen: c.origen, adjuntos: c.adjuntos || [], programadoAt: programar ? new Date(cuando).toISOString() : null } });
+      const d = await api(`/api/admin/bandeja/${buzon}/enviar`, { method: 'POST', body: { para: c.para, cc: c.cc, cco: c.cco, asunto: c.asunto, texto: c.texto, modo: c.modo, origen: c.origen, adjuntos: c.adjuntos || [], firma: conFirma, programadoAt: programar ? new Date(cuando).toISOString() : null } });
       showToast?.(d.programado ? `Programado: saldrá el ${new Date(d.programado.enviar_at).toLocaleString('es-ES', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}.` : 'Correo enviado.');
       onEnviado?.();
     } catch (e) { alert(e.message); }
@@ -108,6 +112,19 @@ function Redactar({ inicial, buzon, buzones, onBuzon, onCerrar, onEnviado, showT
         </label>
         <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 700 }}>Asunto<input style={campo} value={c.asunto} onChange={e => set('asunto', e.target.value)} /></label>
         <textarea style={{ ...campo, minHeight: 200, resize: 'vertical', lineHeight: 1.5 }} value={c.texto} onChange={e => set('texto', e.target.value)} autoFocus={!!c.para} placeholder="Escribe aquí…" />
+        {firma && (firma.lineas.length > 0 || firma.avisoLegal) && (
+          <div style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-3)' }} data-firma>
+            <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontWeight: 700, color: 'var(--ink-2)' }}>
+              <input type="checkbox" checked={conFirma} onChange={e => setConFirma(e.target.checked)} /> Con mi firma
+            </label>
+            {conFirma && (
+              <div style={{ padding: '8px 10px', borderRadius: 8, background: 'var(--bg-3)', whiteSpace: 'pre-line', lineHeight: 1.4 }}>
+                {firma.lineas.map((l, i) => <div key={i} style={i === 0 ? { fontWeight: 700, color: 'var(--ink-2)' } : undefined}>{l}</div>)}
+                {firma.avisoLegal && <div style={{ marginTop: 6, fontSize: 10.5 }}>{firma.avisoLegal.length > 180 ? `${firma.avisoLegal.slice(0, 180)}…` : firma.avisoLegal}</div>}
+              </div>
+            )}
+          </div>
+        )}
         {c.origen && <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>{c.modo === 'reenviar' ? 'Debajo va el correo original con sus adjuntos.' : 'Debajo va citado el correo al que respondes.'}</p>}
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
           {(c.adjuntos || []).map((a, i) => (
@@ -126,6 +143,75 @@ function Redactar({ inicial, buzon, buzones, onBuzon, onCerrar, onEnviado, showT
           </label>
           <button type="button" className="btn btn-sm btn-outline" onClick={onCerrar}>Cancelar</button>
           <button type="button" className="btn btn-sm btn-primary" disabled={enviando || !c.para.trim() || !c.asunto.trim() || (programar && !cuando)} onClick={enviar}>{enviando ? 'Enviando…' : programar ? 'Programar' : 'Enviar'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// La firma de los correos (#501): cada uno, su cargo y su teléfono; la dirección
+// y el Equipo IT, además, la plantilla de todos, el logo y el aviso legal del pie.
+const rellenarFirma = (plantilla, f) => String(plantilla || '').split('\n').map(l => {
+  let vacio = false;
+  const t = l.replace(/\{(nombre|cargo|telefono|correo)\}/g, (m, k) => { const v = String(f?.[k] || '').trim(); if (!v) vacio = true; return v; });
+  return vacio || !t.trim() ? null : t.trim();
+}).filter(Boolean);
+function FirmaCorreo({ onCerrar, showToast }) {
+  const [d, setD] = useState(null);
+  const [mia, setMia] = useState({ cargo: '', telefono: '' });
+  const [todos, setTodos] = useState({ plantilla: '', avisoLegal: '', logo: true });
+  const [guardando, setGuardando] = useState(false);
+  useEffect(() => {
+    api('/api/admin/bandeja/firma').then(x => { setD(x); setMia({ cargo: x.mia.cargo, telefono: x.mia.telefono }); setTodos({ plantilla: x.plantilla, avisoLegal: x.avisoLegal, logo: x.logo }); })
+      .catch(e => { alert(e.message); onCerrar(); });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!d) return null;
+  const lineas = rellenarFirma(todos.plantilla, { ...d.datos, cargo: mia.cargo, telefono: mia.telefono });
+  async function guardar() {
+    setGuardando(true);
+    try {
+      await api('/api/admin/bandeja/firma/mia', { method: 'PUT', body: mia });
+      if (d.puedeEditar) await api('/api/admin/bandeja/firma', { method: 'PUT', body: todos });
+      showToast?.('Firma guardada.'); onCerrar();
+    } catch (e) { alert(e.message); } finally { setGuardando(false); }
+  }
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', zIndex: 2000, display: 'grid', placeItems: 'center', padding: 16 }} onClick={e => e.target === e.currentTarget && onCerrar()}>
+      <div style={{ background: 'var(--bg-2)', borderRadius: 16, width: 'min(640px, 100%)', maxHeight: '92vh', overflow: 'auto', padding: 18, display: 'grid', gap: 12 }} data-firma-ajustes>
+        <h2 style={{ margin: 0, fontSize: 17 }}>Firma de los correos</h2>
+        <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Sale sola debajo de los correos que escribes en «Correo» (se puede quitar en cada uno), con tu nombre, aunque salga desde el buzón general.</p>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 700 }}>Tu cargo<input style={campo} value={mia.cargo} onChange={e => setMia(m => ({ ...m, cargo: e.target.value }))} placeholder="Secretaría" /></label>
+          <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 700 }}>Tu teléfono (opcional)<input style={campo} value={mia.telefono} onChange={e => setMia(m => ({ ...m, telefono: e.target.value }))} placeholder="956 00 00 00" /></label>
+        </div>
+        {d.puedeEditar && (
+          <>
+            <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 700 }}>
+              <span>La firma de todos <span style={{ fontWeight: 500, color: 'var(--ink-3)' }}>· huecos: {'{nombre}'} {'{cargo}'} {'{telefono}'} {'{correo}'} (una línea con un hueco vacío no sale)</span></span>
+              <textarea style={{ ...campo, minHeight: 90, resize: 'vertical', lineHeight: 1.4 }} value={todos.plantilla} onChange={e => setTodos(t => ({ ...t, plantilla: e.target.value }))} />
+            </label>
+            <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 13, fontWeight: 700 }}>
+              <input type="checkbox" checked={todos.logo} onChange={e => setTodos(t => ({ ...t, logo: e.target.checked }))} /> Con el logo de AIM Education
+            </label>
+            <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 700 }}>
+              <span>Aviso legal <span style={{ fontWeight: 500, color: 'var(--ink-3)' }}>· va al pie de todos, en letra pequeña</span></span>
+              <textarea style={{ ...campo, minHeight: 120, resize: 'vertical', lineHeight: 1.4 }} value={todos.avisoLegal} onChange={e => setTodos(t => ({ ...t, avisoLegal: e.target.value }))}
+                placeholder="Este mensaje y sus adjuntos son confidenciales… De acuerdo con el RGPD, sus datos son tratados por AIM Education para… Puede ejercer sus derechos en…" />
+            </label>
+          </>
+        )}
+        <div style={{ display: 'grid', gap: 6 }}>
+          <b style={{ fontSize: 12 }}>Así sale</b>
+          <div style={{ background: '#fff', color: '#374151', borderRadius: 10, padding: 14, fontFamily: 'Arial, Helvetica, sans-serif', fontSize: 13, lineHeight: 1.45, border: '1px solid var(--line)' }}>
+            {lineas.length > 0 && <div>--</div>}
+            {lineas.map((l, i) => <div key={i} style={i === 0 ? { fontWeight: 700, color: '#111827' } : undefined}>{l}</div>)}
+            {todos.logo && <img src={d.logoUrl} alt="AIM Education" style={{ height: 36, marginTop: 8, display: 'block' }} />}
+            {todos.avisoLegal && <div style={{ marginTop: 14, paddingTop: 8, borderTop: '1px solid #e5e7eb', fontSize: 11, color: '#6b7280', whiteSpace: 'pre-line' }}>{todos.avisoLegal}</div>}
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button type="button" className="btn btn-sm btn-outline" onClick={onCerrar}>Cancelar</button>
+          <button type="button" className="btn btn-sm btn-primary" disabled={guardando} onClick={guardar}>{guardando ? 'Guardando…' : 'Guardar'}</button>
         </div>
       </div>
     </div>
@@ -243,6 +329,7 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
   const [imagenes, setImagenes] = useState(false);
   const [redactar, setRedactar] = useState(null);
   const [verReglas, setVerReglas] = useState(false);
+  const [verFirma, setVerFirma] = useState(false);
   // Al asignar: «y todos los de este remitente» (#339).
   const [siempre, setSiempre] = useState(false);
 
@@ -339,6 +426,7 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
         </form>
         <button type="button" className="btn btn-sm btn-outline" onClick={() => cargar(true)} title="Actualizar">↻</button>
         {buzon === 'general' && <button type="button" className="btn btn-sm btn-outline" onClick={() => setVerReglas(true)} title="Correos de un remitente que van siempre a la misma persona">Reglas</button>}
+        <button type="button" className="btn btn-sm btn-outline" onClick={() => setVerFirma(true)} title="Tu firma y el aviso legal de los correos">Firma</button>
         <button type="button" className="btn btn-sm btn-primary" onClick={() => escribir('nuevo')}><I.Plus width={14} height={14} /> Escribir</button>
       </div>
       {!info.tengoBuzon && buzon === 'general' && (
@@ -465,6 +553,7 @@ export default function AdminBandeja({ showToast, onAbrirFicha }) {
 
       )}
       {verReglas && <Reglas companeros={companeros} showToast={showToast} onCerrar={() => { setVerReglas(false); cargar(); }} />}
+      {verFirma && <FirmaCorreo showToast={showToast} onCerrar={() => setVerFirma(false)} />}
       {redactar && <Redactar inicial={redactar} buzon={buzon} showToast={showToast} onCerrar={() => setRedactar(null)} onEnviado={() => { setRedactar(null); if (vista === 'enviados') cargar(); }} />}
       <style>{ESTILO_BANDEJA}</style>
     </div>
