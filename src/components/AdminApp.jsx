@@ -6906,6 +6906,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "bandeja", label: "Correo", icon: <I.Mail /> },
         { id: "redes", label: "Redes sociales", icon: <I.Share /> },
         { id: "contactos", label: "Consultas web", icon: <I.Globe width={18} height={18} /> },
+        // Las noticias y el blog de la web, junto a lo que se publica en redes (#498).
+        { id: "news", label: "Noticias", icon: <I.Newspaper /> },
         // Publicar y programar en Facebook e Instagram, con sus estadísticas (#410).
         { id: "comunicaciones", pestana: "publicaciones", label: "Publicaciones", icon: <I.Calendar width={18} height={18} /> },
         { id: "comunicaciones", pestana: "campanas", label: "Campañas", icon: <I.Enviar /> },
@@ -6932,7 +6934,6 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
       heading: "Web", items: [
         { id: "portada", label: "Portada", icon: <I.Portada /> },
         { id: "ctas", label: "Avisos y CTA", icon: <I.Bulb /> },
-        { id: "news", label: "Noticias", icon: <I.Newspaper /> },
       ]
     },
     {
