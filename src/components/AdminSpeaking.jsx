@@ -363,6 +363,8 @@ export default function AdminSpeaking({ showToast }) {
   // Por defecto se busca entre los alumnos de la actividad; con esto, en todo el club.
   const [todoClub, setTodoClub] = useState(false);
   const [nuevos, setNuevos] = useState([]); // { id, name, franjas: {1,2,3}, noPuede, nota }
+  // Cuántos caben en cada franja de 20 min (#513): llena, se bloquea.
+  const [maxPorFranja, setMaxPorFranja] = useState(2);
   const [guardando, setGuardando] = useState(false);
   // Editor de «cuándo no puede» (#363) abierto: id del alumno.
   const [editNoPuede, setEditNoPuede] = useState(null);
@@ -380,7 +382,7 @@ export default function AdminSpeaking({ showToast }) {
   // Las clases individuales del horario, de todas las actividades.
   const cargarClases = useCallback(() => fetch('/api/admin/speaking/clases', { credentials: 'include', cache: 'no-store' })
     .then(r => r.ok ? r.json() : { clases: [] })
-    .then(d => setClases(d.clases || []))
+    .then(d => { setClases(d.clases || []); if (d.maxPorFranja) setMaxPorFranja(d.maxPorFranja); })
     .catch(() => setClases([])), []);
   useEffect(() => { cargarClases(); }, [cargarClases]);
 
@@ -419,6 +421,19 @@ export default function AdminSpeaking({ showToast }) {
   // La sesión (horas) que cae en el día elegido → franjas con horas reales.
   const sesionDia = clase && fecha ? clase.sesiones.find(s => s.days.includes(aimtulDia(fecha))) : null;
   const franjas = franjasDe(sesionDia?.startTime, sesionDia?.endTime);
+  // Los que ya están en cada franja de ese día (#513), sin los que han dicho que
+  // no ni los que se están volviendo a apuntar ahora; y con los de ahora.
+  const yaEn = useMemo(() => {
+    const o = { 1: 0, 2: 0, 3: 0 };
+    for (const s of sesiones) {
+      if (s.groupId !== claseId || String(s.fecha).slice(0, 10) !== fecha || s.confirmado === false || nuevos.some(n => n.id === s.studentId)) continue;
+      for (const f of s.franjas || []) o[f] = (o[f] || 0) + 1;
+    }
+    return o;
+  }, [sesiones, claseId, fecha, nuevos]);
+  const enFranja = (f) => yaEn[f] + nuevos.filter(n => n.franjas[f]).length;
+  const llena = (f) => enFranja(f) >= maxPorFranja;
+  const pasada = [1, 2, 3].some(f => enFranja(f) > maxPorFranja);
 
   // Buscar alumnos: los de la actividad (aunque no se escriba nada) o, con
   // «todo el club», cualquiera (escribiendo al menos 2 letras).
@@ -441,12 +456,13 @@ export default function AdminSpeaking({ showToast }) {
   const añadir = async (s) => {
     setQ(''); setSug([]);
     if (nuevos.some(n => n.id === s.id)) return;
-    setNuevos(x => [...x, { id: s.id, name: s.name, franjas: { 1: true, 2: true, 3: true }, noPuede: [], nota: '' }]);
+    const caben = [1, 2, 3].filter(f => !llena(f));
+    setNuevos(x => [...x, { id: s.id, name: s.name, franjas: Object.fromEntries([1, 2, 3].map(f => [f, caben.includes(f)])), noPuede: [], nota: '' }]);
     const d = await fetch(`/api/admin/speaking/disponibilidad/${s.id}`, { credentials: 'include', cache: 'no-store' })
       .then(r => (r.ok ? r.json() : null)).catch(() => null);
     if (!d) return;
     const ch = fecha ? choques(d.noPuede, fecha, franjas) : { franjas: [] };
-    const libres = [1, 2, 3].filter(f => !ch.franjas.includes(f));
+    const libres = [1, 2, 3].filter(f => !ch.franjas.includes(f) && caben.includes(f));
     setNuevos(x => x.map(n => (n.id === s.id ? {
       ...n, noPuede: d.noPuede || [], nota: d.nota || '',
       franjas: libres.length ? Object.fromEntries([1, 2, 3].map(f => [f, libres.includes(f)])) : n.franjas,
@@ -466,7 +482,7 @@ export default function AdminSpeaking({ showToast }) {
       cargar();
     } catch { alert('Error de conexión.'); } finally { setGuardandoNP(false); }
   }
-  const toggleFranja = (id, f) => setNuevos(x => x.map(n => n.id === id ? { ...n, franjas: { ...n.franjas, [f]: !n.franjas[f] } } : n));
+  const toggleFranja = (id, f) => setNuevos(x => x.map(n => (n.id === id && (n.franjas[f] || !llena(f)) ? { ...n, franjas: { ...n.franjas, [f]: !n.franjas[f] } } : n)));
   // Mejora de selección de franjas (ticket #241): fijar una franja concreta, la
   // hora entera o ninguna para un alumno o de golpe para todos los añadidos.
   const setFranjasDe = (id, sel) => setNuevos(x => x.map(n => n.id === id ? { ...n, franjas: { ...sel } } : n));
@@ -584,6 +600,22 @@ export default function AdminSpeaking({ showToast }) {
             </select>
             {sesionDia && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{sesionDia.startTime}–{sesionDia.endTime}{sesionDia.aula ? ` · ${sesionDia.aula}` : ''}</span>}
           </div>
+          {/* Cómo va cada franja ese día (#513): caben {maxPorFranja} en cada una. */}
+          {fecha && sesionDia && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12 }} data-ocupacion-franjas>
+              <span style={etiqueta}>Huecos</span>
+              {franjas.map(f => {
+                const n = enFranja(f.n), lleno = n >= maxPorFranja;
+                return (
+                  <span key={f.n} data-franja={f.n} data-llena={lleno ? '1' : '0'} style={{ padding: '3px 10px', borderRadius: 999, fontWeight: 700, border: '1px solid var(--line)',
+                    background: n > maxPorFranja ? 'color-mix(in oklab, var(--pink) 18%, transparent)' : lleno ? 'color-mix(in oklab, var(--orange) 14%, transparent)' : 'var(--bg-3)',
+                    color: n > maxPorFranja ? 'var(--pink)' : lleno ? 'var(--orange)' : 'var(--ink-2)' }}>
+                    {f.label} · {n}/{maxPorFranja}{lleno ? (n > maxPorFranja ? ' · se pasa' : ' · completa') : ''}
+                  </span>
+                );
+              })}
+            </div>
+          )}
 
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
             <div style={{ position: 'relative', flex: '1 1 280px', maxWidth: 420 }}>
@@ -624,7 +656,8 @@ export default function AdminSpeaking({ showToast }) {
                   <span style={{ fontWeight: 700 }}>Para todos:</span>
                   <button type="button" className="filter-pill" style={{ fontSize: 11 }} onClick={() => setFranjasTodos(TODAS)}>Hora entera</button>
                   {franjas.map(f => (
-                    <button key={f.n} type="button" className="filter-pill" style={{ fontSize: 11 }}
+                    <button key={f.n} type="button" className="filter-pill" style={{ fontSize: 11 }} disabled={yaEn[f.n] + nuevos.length > maxPorFranja}
+                      title={yaEn[f.n] + nuevos.length > maxPorFranja ? `En esta franja no caben ${nuevos.length} más` : undefined}
                       onClick={() => setFranjasTodos({ ...NINGUNA, [f.n]: true })}>Solo {f.label}</button>
                   ))}
                 </div>
@@ -650,15 +683,15 @@ export default function AdminSpeaking({ showToast }) {
                     </button>
                   </span>
                   <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <button type="button" onClick={() => setFranjasDe(n.id, nFranjas(n.franjas) === 3 ? NINGUNA : TODAS)}
+                    <button type="button" onClick={() => setFranjasDe(n.id, nFranjas(n.franjas) === 3 ? NINGUNA : Object.fromEntries([1, 2, 3].map(f => [f, n.franjas[f] || !llena(f)])))}
                       className={`filter-pill ${nFranjas(n.franjas) === 3 ? 'is-active' : ''}`} style={{ fontSize: 11 }}
                       title="La hora entera (las tres franjas)">Hora entera</button>
                     <span style={{ color: 'var(--line)' }}>|</span>
                     {franjas.map(f => {
-                      const noPuede = ch.franjas.includes(f.n);
+                      const noPuede = ch.franjas.includes(f.n), bloqueada = !n.franjas[f.n] && llena(f.n);
                       return (
-                        <button key={f.n} type="button" onClick={() => toggleFranja(n.id, f.n)}
-                          title={noPuede ? 'A esta hora no puede' : undefined}
+                        <button key={f.n} type="button" onClick={() => toggleFranja(n.id, f.n)} disabled={bloqueada}
+                          title={bloqueada ? `Completa: ya hay ${maxPorFranja} alumnos` : noPuede ? 'A esta hora no puede' : undefined}
                           className={`filter-pill ${n.franjas[f.n] ? 'is-active' : ''}`}
                           style={{ fontSize: 11, ...(noPuede ? { textDecoration: 'line-through', borderColor: 'var(--orange)', color: n.franjas[f.n] ? undefined : 'var(--orange)' } : {}) }}>{f.label}</button>
                       );
@@ -676,7 +709,8 @@ export default function AdminSpeaking({ showToast }) {
                 );
               })}
               <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                <button className="btn btn-sm btn-primary" onClick={guardar} disabled={guardando || !fecha}>
+                {pasada && <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--pink)', alignSelf: 'center', marginRight: 10 }}>Alguna franja se pasa de {maxPorFranja} alumnos: quita a alguien.</span>}
+                <button className="btn btn-sm btn-primary" onClick={guardar} disabled={guardando || !fecha || pasada}>
                   {guardando ? 'Guardando...' : `Apuntar y avisar a los padres (${nuevos.length})`}
                 </button>
               </div>

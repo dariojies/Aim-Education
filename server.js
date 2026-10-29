@@ -17610,6 +17610,30 @@ function franjasDeHoras(inicio, fin) {
     const paso = (b - a) / 3;
     return FRANJAS_SPEAKING.map(n => ({ n, desde: hhmmSpk(Math.round(a + paso * (n - 1))), hasta: hhmmSpk(Math.round(a + paso * n)) }));
 }
+// Cuántos alumnos caben en cada franja de 20 min (#513): con los que hay, se
+// bloquea. No cuentan los que han dicho que no pueden (su hueco queda libre, o
+// para su reserva).
+const MAX_POR_FRANJA = 2;
+async function ocupacionSpeaking(db, groupId, fecha, { sinAlumnos = [] } = {}) {
+    const r = await db.query(
+        `SELECT f::int AS n, COUNT(*)::int AS c FROM aim_speaking s CROSS JOIN LATERAL unnest(s.franjas) AS f
+         WHERE s.group_id = $1::uuid AND s.fecha = $2::date AND s.confirmado IS DISTINCT FROM false
+           AND NOT (s.student_id = ANY($3::uuid[]))
+         GROUP BY f`, [groupId, fecha, sinAlumnos]);
+    const o = { 1: 0, 2: 0, 3: 0 };
+    for (const x of r.rows) o[x.n] = x.c;
+    return o;
+}
+// Las franjas que se pasarían de MAX_POR_FRANJA al añadir estas (una lista de
+// franjas por alumno). Devuelve el texto para avisar, o null si caben.
+function franjasQueNoCaben(ocup, porAlumno, inicio, fin) {
+    const suma = { ...ocup };
+    for (const fr of porAlumno) for (const f of fr) suma[f] = (suma[f] || 0) + 1;
+    const llenas = franjasDeHoras(inicio, fin).filter(f => suma[f.n] > MAX_POR_FRANJA);
+    if (!llenas.length) return null;
+    const txt = llenas.map(f => `${f.desde ? `${f.desde}–${f.hasta}` : f.label} (${ocup[f.n]} ya apuntado${ocup[f.n] !== 1 ? 's' : ''})`).join(', ');
+    return `En cada franja de 20 minutos caben ${MAX_POR_FRANJA} alumnos y ${llenas.length === 1 ? 'esta se pasaría' : 'estas se pasarían'}: ${txt}.`;
+}
 const franjasTexto = (inicio, fin, sub) => franjasDeHoras(inicio, fin)
     .filter(f => (sub || FRANJAS_SPEAKING).includes(f.n))
     .map(f => f.desde ? `${f.desde}–${f.hasta}` : f.label).join(', ');
@@ -17752,6 +17776,8 @@ async function llamarReserva(citaId) {
             `SELECT 1 FROM aim_speaking_reservas r JOIN aim_speaking s ON s.id = r.llamado_cita_id
              WHERE r.speaking_id = $1 AND s.confirmado IS DISTINCT FROM false LIMIT 1`, [raiz])).rowCount;
         if (cubierto) { await client.query('ROLLBACK'); return null; }
+        // Si mientras tanto se ha apuntado a otro en su franja y ya no cabe (#513), no se llama.
+        if (c.group_id && franjasQueNoCaben(await ocupacionSpeaking(client, c.group_id, c.fecha), [c.franjas || []], c.hora_inicio, c.hora_fin)) { await client.query('ROLLBACK'); return null; }
         const pendientes = (await client.query(
             `SELECT * FROM aim_speaking_reservas WHERE speaking_id = $1 AND llamado_at IS NULL ORDER BY orden, id`, [raiz])).rows;
         for (const r of pendientes) {
@@ -17958,6 +17984,7 @@ app.get('/api/admin/speaking/clases', authenticateSession, requireIndividuales, 
              ORDER BY a.name, g.name`, [AIM_CLUB_ID]);
         res.set('Cache-Control', 'no-store');
         res.json({
+            maxPorFranja: MAX_POR_FRANJA,
             clases: r.rows.map(g => ({
                 groupId: g.group_id, name: g.name, activityId: g.activity_id, actividad: g.actividad,
                 sesiones: sesionesDeGrupo(g.sessions),
@@ -18008,7 +18035,9 @@ app.post('/api/admin/speaking', authenticateSession, requireIndividuales, async 
     if (!ses) return res.status(400).json({ error: 'Ese día no toca esa clase (mira sus días en el horario).' });
     const lista = (Array.isArray(alumnos) ? alumnos : []).filter(a => a && UUID_RE.test(String(a.studentId || '')) && normalizaFranjas(a.franjas).length);
     if (!lista.length) return res.status(400).json({ error: 'Añade al menos un alumno con alguna franja marcada.' });
+    const client = await pool.connect();
     try {
+        await client.query('BEGIN');
         // ¿Alguno tiene ya otra clase individual ese día?
         const otras = await pool.query(
             `SELECT TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno, g.name AS clase, a.name AS actividad
@@ -18018,17 +18047,25 @@ app.post('/api/admin/speaking', authenticateSession, requireIndividuales, async 
              WHERE s.fecha = $1::date AND s.student_id = ANY($2::uuid[]) AND s.group_id IS DISTINCT FROM $3::uuid
              ORDER BY alumno`, [fecha, lista.map(a => a.studentId), groupId]);
         if (otras.rowCount) {
+            await client.query('ROLLBACK');
             const quien = otras.rows.map(x => `${x.alumno} (${nombreClaseIndividual(x.actividad)}${x.clase ? ` · ${x.clase}` : ''})`).join(', ');
             return res.status(409).json({
                 error: `${otras.rowCount === 1 ? 'Este alumno ya tiene' : 'Estos alumnos ya tienen'} otra clase individual ese día: ${quien}. Solo se puede tener una al día: quítasela antes o elige otro día. No se ha apuntado a nadie.`,
             });
         }
+        // Que quepan (#513): los que ya hay en cada franja (menos estos, que se
+        // vuelven a apuntar con lo nuevo) y los que se apuntan ahora. Uno detrás
+        // de otro por sesión, para que dos a la vez no la llenen de más.
+        await client.query(`SELECT pg_advisory_xact_lock(513, hashtext($1))`, [`${groupId}|${fecha}`]);
+        const ocup = await ocupacionSpeaking(client, groupId, fecha, { sinAlumnos: lista.map(a => a.studentId) });
+        const noCaben = franjasQueNoCaben(ocup, lista.map(a => normalizaFranjas(a.franjas)), ses.startTime, ses.endTime);
+        if (noCaben) { await client.query('ROLLBACK'); return res.status(409).json({ error: `${noCaben} No se ha apuntado a nadie.`, ocupacion: ocup }); }
         const ids = [];
         for (const a of lista) {
             const token = crypto.randomBytes(20).toString('hex');
             // El WHERE del ON CONFLICT es la red por si otra persona le cita en
             // otra clase a la vez: entonces no se toca y se avisa.
-            const ins = await pool.query(
+            const ins = await client.query(
                 `INSERT INTO aim_speaking (fecha, student_id, franjas, token, created_by, group_id, hora_inicio, hora_fin)
                  VALUES ($1::date, $2, $3::smallint[], $4, $5, $6::uuid, $7, $8)
                  ON CONFLICT (fecha, student_id) DO UPDATE SET franjas = EXCLUDED.franjas,
@@ -18040,6 +18077,7 @@ app.post('/api/admin/speaking', authenticateSession, requireIndividuales, async 
                 [fecha, a.studentId, normalizaFranjas(a.franjas), token, req.userSession.userId, groupId, ses.startTime, ses.endTime]);
             if (ins.rowCount) ids.push(ins.rows[0].id);
         }
+        await client.query('COMMIT');
         // Los correos a los padres van en segundo plano (no bloquean la respuesta).
         if (ids.length) enviarCorreosSpeaking(ids).catch(e => console.error('[speaking mail]', e.message));
         // Y al móvil de las familias (#218).
@@ -18049,7 +18087,10 @@ app.post('/api/admin/speaking', authenticateSession, requireIndividuales, async 
             success: true, creados: ids.length, correo: !!mailTransporter,
             ...(saltados ? { aviso: `${saltados} no se ${saltados === 1 ? 'ha' : 'han'} apuntado: ya ${saltados === 1 ? 'tenía' : 'tenían'} otra clase individual ese día.` } : {}),
         });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
 });
 
 // Clases individuales desde hoy (o desde una fecha), con el estado de cada alumno
@@ -18390,6 +18431,16 @@ app.patch('/api/admin/speaking/:id', authenticateSession, requireIndividuales, a
     if (!campos.length) return res.status(400).json({ error: 'Nada que cambiar.' });
     vals.push(req.params.id);
     try {
+        // Que quepa en sus franjas (#513), si cambian o si vuelve a contar.
+        if (req.body.franjas !== undefined || (req.body.confirmado !== undefined && req.body.confirmado !== false)) {
+            const s = (await pool.query(`SELECT group_id, fecha::text AS fecha, student_id, franjas, confirmado, hora_inicio, hora_fin FROM aim_speaking WHERE id = $1`, [Number(req.params.id) || 0])).rows[0];
+            const quedaraEn = req.body.confirmado !== undefined ? req.body.confirmado !== false : s?.confirmado !== false;
+            if (s?.group_id && quedaraEn) {
+                const fr = req.body.franjas !== undefined ? normalizaFranjas(req.body.franjas) : (s.franjas || []);
+                const noCaben = franjasQueNoCaben(await ocupacionSpeaking(pool, s.group_id, s.fecha, { sinAlumnos: [s.student_id] }), [fr], s.hora_inicio, s.hora_fin);
+                if (noCaben) return res.status(409).json({ error: noCaben });
+            }
+        }
         if (req.body.confirmado === true) {
             const p = await pool.query(
                 `SELECT confirmado, ${sqlLimiteSpeaking()} AS limite, ${sqlLimiteSpeaking()} >= ${SQL_HOY_MADRID} AS abierto
