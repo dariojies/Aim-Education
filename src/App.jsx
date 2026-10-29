@@ -218,8 +218,9 @@ export default function App() {
     if (!userChecked) return null;
     // A entrar, y luego de vuelta aquí (un aviso del móvil, la vuelta del banco…).
     if (!user) { go(`/auth?volver=${encodeURIComponent(path)}`, { replace: true }); return null; }
-    const dashSub = { mensajes: 'mensajes', pedidos: 'pedidos', cursos: 'cursos', campamento: 'camp', pagos: 'payments', clases: 'classes', asistencia: 'attendance', soporte: 'support', fotos: 'fotos', brickslab: 'brickslab', biblioteca: 'brickslab', perfil: 'profile', ajustes: 'settings', cartera: 'wallet', mas: 'mas' }[seg[1]] || 'overview';
-    screen = <StudentDashboard user={user} onLogout={handleLogout} subroute={dashSub} />;
+    const dashSub = { noticias: 'noticias', mensajes: 'mensajes', pedidos: 'pedidos', cursos: 'cursos', campamento: 'camp', pagos: 'payments', clases: 'classes', asistencia: 'attendance', soporte: 'support', fotos: 'fotos', brickslab: 'brickslab', biblioteca: 'brickslab', perfil: 'profile', ajustes: 'settings', cartera: 'wallet', mas: 'mas' }[seg[1]] || 'overview';
+    // /dashboard/noticias/<slug> abre esa noticia (#511).
+    screen = <StudentDashboard user={user} onLogout={handleLogout} subroute={dashSub} noticia={seg[1] === 'noticias' ? seg[2] || null : null} />;
   } else if (pathname.startsWith('/admin')) {
     if (!userChecked) return null;
     if (!user || !user.canAccessAdmin) { go('/auth'); return null; }

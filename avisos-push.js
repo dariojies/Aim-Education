@@ -13,7 +13,7 @@ import crypto from 'crypto';
 import http2 from 'http2';
 import { WebSocketServer } from 'ws';
 
-export const GRUPOS_AVISO = ['pagos', 'clases', 'soporte', 'brickslab', 'fotos', 'mensajes'];
+export const GRUPOS_AVISO = ['pagos', 'clases', 'soporte', 'brickslab', 'fotos', 'mensajes', 'noticias'];
 // Los de sus actividades se respetan si ha dicho que no a esas comunicaciones
 // (#170); pagos y soporte son del servicio y llegan siempre.
 const GRUPOS_ACTIVIDADES = new Set(['clases', 'brickslab', 'fotos']);

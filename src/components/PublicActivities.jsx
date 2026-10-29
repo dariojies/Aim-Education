@@ -8,10 +8,10 @@ import { aMedida } from '../imagenes.js';
 import { HtmlConVideos } from './VideoYoutube.jsx';
 
 const CAT_COLOR = { taekwondo: '#21B668', ballet: '#FF99D3', ingles: '#00BBF4', robotica: '#FFD526', baile: '#AF99FF', pintura: '#5233A8', funcional: '#FF4F15', pilates: '#BFD300', camaleon: '#25D8BA', competicion: '#21B668', club: '#5233A8', general: '#5233A8', shelfie: '#FF99D3' };
-const catColor = c => CAT_COLOR[c] || '#5233A8';
-const MONTH_ABBR = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+export const catColor = c => CAT_COLOR[c] || '#5233A8';
+export const MONTH_ABBR = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 
-function NewsCard({ cat, color = '#5233A8', img, ph, title, date, body, href }) {
+export function NewsCard({ cat, color = '#5233A8', img, ph, title, date, body, href }) {
   const inner = (
     <div className="news-card" style={{ height: "100%" }}>
       <div className="img" style={img ? { aspectRatio: 'auto', background: 'var(--bg-3)' } : { background: `linear-gradient(135deg, ${color}, color-mix(in oklab, ${color} 55%, #000))` }}>

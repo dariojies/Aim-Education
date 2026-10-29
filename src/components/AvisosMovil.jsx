@@ -15,6 +15,7 @@ const GRUPOS = [
   ['brickslab', 'Brickslab', 'Sets entregados y votaciones.'],
   ['fotos', 'Fotos', 'Álbumes nuevos donde sale alguien de la familia.'],
   ['mensajes', 'Mensajes', 'Lo que te escriben por el chat del club (y, si trabajas en él, las tareas que te ponen).'],
+  ['noticias', 'Noticias', 'Cuando el club publica una noticia.'],
 ];
 const CLAVE_CERRADA = 'aim_avisos_tarjeta_cerrada';
 

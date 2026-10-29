@@ -4249,8 +4249,9 @@ function fechaFutura(v) {
 // Publicar lo programado (#338): las noticias cuya hora ha llegado.
 async function publicarProgramado() {
     const r = await pool.query(`UPDATE aim_education_posts SET status = 'published', updated_at = NOW() WHERE status = 'scheduled' AND published_at <= NOW() RETURNING slug, tipo`).catch(() => ({ rows: [] }));
-    // A los buscadores, en cuanto sale (#425).
+    // A los buscadores, en cuanto sale (#425); y a las familias, si es noticia (#511).
     if (r.rows.length) avisarBuscadoresPosts(r.rows).catch(() => {});
+    if (r.rows.some(p => p.tipo !== 'blog')) avisosPush.avisarTodos();
 }
 setInterval(() => { publicarProgramado().catch(() => {}); }, 60_000);
 
@@ -13493,8 +13494,9 @@ app.post('/api/admin/fiscales/:id/:accion', authenticateSession, requireAdmin, a
 // resumen de todo, que para eso está el panel.
 // La campanita del área de familias, y lo mismo es lo que llega al móvil (#218):
 // cada aviso lleva además su grupo, título, texto y adónde lleva (url).
-const GRUPO_DE_TIPO = { pagos: 'pagos', clases: 'clases', soporte: 'soporte', galeria: 'fotos', brickslab: 'brickslab', mensajes: 'mensajes', tareas: 'mensajes', personal: 'mensajes' };
+const GRUPO_DE_TIPO = { pagos: 'pagos', clases: 'clases', soporte: 'soporte', galeria: 'fotos', brickslab: 'brickslab', mensajes: 'mensajes', tareas: 'mensajes', personal: 'mensajes', noticia: 'noticias' };
 const URL_DE_DESTINO = { payments: '/dashboard/pagos', classes: '/dashboard/clases', support: '/dashboard/soporte', fotos: '/dashboard/fotos', brickslab: '/dashboard/brickslab', overview: '/dashboard' };
+const DIAS_AVISO_NOTICIA = Number(process.env.DIAS_AVISO_NOTICIA) || 7;   // cuánto dura el aviso de una noticia nueva
 const fechaAviso = (iso) => new Date(String(iso).slice(0, 10) + 'T12:00:00Z').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' });
 async function avisosFamilia(me) {
     {
@@ -13688,6 +13690,19 @@ async function avisosFamilia(me) {
         avisos.push(...await avisosChats(pool, me));
         avisos.push(...await avisosTareas(me).catch(() => []));
         avisos.push(...await avisosEspacio(pool, me, { sqlEsPersonal: (u) => SQL_ES_PERSONAL(u), clubId: AIM_CLUB_ID }).catch(() => []));
+
+        // 9) Las noticias de la última semana que aún no ha leído (#511): al
+        // abrirla en su área (o tocar el aviso) se da por vista.
+        const noticias = await pool.query(
+            `SELECT id, title, slug, excerpt, published_at FROM aim_education_posts
+             WHERE status = 'published' AND tipo = 'noticia' AND published_at > NOW() - $1 * INTERVAL '1 day' AND published_at <= NOW()
+             ORDER BY published_at DESC LIMIT 3`, [DIAS_AVISO_NOTICIA]).catch(() => ({ rows: [] }));
+        for (const p of noticias.rows) {
+            avisos.push({
+                tipo: 'noticia', destino: `/dashboard/noticias/${p.slug}`, clave: `noticia:${p.id}`, n: 1, marca: p.published_at, fecha: p.published_at, prioridad: 3, soloSinLeer: true,
+                texto: `Nueva noticia: ${p.title}`, detalle: String(p.excerpt || '').replace(/\s+/g, ' ').trim().slice(0, 140),
+            });
+        }
 
         await conVistos(me, avisos);
         const lista = avisos.filter(a => !(a.soloSinLeer && !a.nuevo));
@@ -15124,6 +15139,7 @@ app.post('/api/admin/posts', authenticateSession, async (req, res) => {
 
         const result = await pool.query('SELECT * FROM aim_education_posts WHERE id = $1', [id]);
         if (result.rows[0]?.status === 'published') avisarBuscadoresPosts([result.rows[0]]).catch(() => {});
+        if (result.rows[0]?.status === 'published' && result.rows[0].tipo === 'noticia') avisosPush.avisarTodos();
         const medios = req.body.enviarMedios ? await enviarAMedios(result.rows[0], req) : null;
         const redes = req.body.publicarRedes ? await redesDeNoticia(pool, result.rows[0], true, { urlPublica: URL_PUBLICA_WEB, userId: req.userSession.userId }).catch(e => ({ error: e.message })) : null;
         res.status(201).json({ ...result.rows[0], ...(medios ? { medios } : {}), ...(redes ? { redes } : {}) });
@@ -15162,6 +15178,7 @@ app.put('/api/admin/posts/:id', authenticateSession, async (req, res) => {
 
         const result = await pool.query('SELECT * FROM aim_education_posts WHERE id = $1', [req.params.id]);
         if (result.rows[0]?.status === 'published') avisarBuscadoresPosts([result.rows[0]]).catch(() => {});
+        if (!wasPublished && willPublish && result.rows[0]?.tipo === 'noticia') avisosPush.avisarTodos();
         const medios = req.body.enviarMedios ? await enviarAMedios(result.rows[0], req) : null;
         // En redes (#491): lo que diga la casilla (si viene); si se despublica, se quita lo pendiente.
         const redes = req.body.publicarRedes !== undefined || !['published', 'scheduled'].includes(result.rows[0].status)

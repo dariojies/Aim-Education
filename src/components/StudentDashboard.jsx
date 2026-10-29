@@ -14,6 +14,7 @@ import { fmtFecha } from '../fechas.js';
 import { esApp, compartirArchivo, abrirFuera, desactivarAvisos } from '../app-movil.js';
 import { TarjetaAvisos, AjustesAvisos } from './AvisosMovil.jsx';
 import Chats from './Chats.jsx';
+import NoticiasFamilia from './NoticiasFamilia.jsx';
 
 function EmptyState({ icon, text, accion, onAccion }) {
   return (
@@ -436,7 +437,10 @@ function DashOverview({ go, setView }) {
 
       <div style={{display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 22}}>
         <div className="panel">
-          <h2><I.Bell /> Avisos recientes</h2>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+            <h2><I.Bell /> Avisos recientes</h2>
+            {posts.length > 0 && <button type="button" className="btn btn-sm btn-ghost" onClick={() => go('/dashboard/noticias')}>Ver todas las noticias →</button>}
+          </div>
           <p className="sub">Comunicaciones del club.</p>
           {loading ? (
             <EmptyState text="Cargando avisos..." />
@@ -454,6 +458,8 @@ function DashOverview({ go, setView }) {
                   </div>
                   <h4 style={{margin: "0 0 4px", fontSize: 14, fontWeight: 700, color: "var(--ink)"}}>{n.title}</h4>
                   {n.excerpt && <p style={{margin: 0, fontSize: 13, color: "var(--ink-2)", lineHeight: 1.45}}>{n.excerpt}</p>}
+                  {/* Entera, sin salir del área (#511). */}
+                  <button type="button" className="btn btn-sm btn-outline" style={{ marginTop: 8 }} data-leer-noticia={n.slug} onClick={() => go(`/dashboard/noticias/${n.slug}`)}>Leer la noticia</button>
                 </div>
               </div>
             );
@@ -1717,7 +1723,7 @@ function DashSettings() {
 
 // Cada sección del área con su dirección (/dashboard/pagos…): así el botón
 // atrás del navegador y del móvil vuelve a la anterior.
-const RUTA_SECCION = { overview: '', mensajes: 'mensajes', pedidos: 'pedidos', cursos: 'cursos', classes: 'clases', camp: 'campamento', attendance: 'asistencia', fotos: 'fotos', brickslab: 'brickslab', payments: 'pagos', wallet: 'cartera', profile: 'perfil', settings: 'ajustes', support: 'soporte', mas: 'mas' };
+const RUTA_SECCION = { overview: '', noticias: 'noticias', mensajes: 'mensajes', pedidos: 'pedidos', cursos: 'cursos', classes: 'clases', camp: 'campamento', attendance: 'asistencia', fotos: 'fotos', brickslab: 'brickslab', payments: 'pagos', wallet: 'cartera', profile: 'perfil', settings: 'ajustes', support: 'soporte', mas: 'mas' };
 // Abajo, en la app: lo de cada día. El resto, en «Más».
 const PESTANAS_APP = [
   { id: 'overview', label: 'Inicio', icon: <I.Dashboard /> },
@@ -1747,7 +1753,7 @@ function MasApp({ items, onIr, onSalir, user, go }) {
   );
 }
 
-export default function StudentDashboard({ user, onLogout, subroute = "overview" }) {
+export default function StudentDashboard({ user, onLogout, subroute = "overview", noticia = null }) {
   const { go } = useRouter();
   const [view, setView] = useState(subroute);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -1769,6 +1775,8 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
 
   const navItems = [
     { id: "overview", label: "Resumen", icon: <I.Dashboard /> },
+    // Todas las noticias del club, para leerlas enteras aquí (#511).
+    { id: "noticias", label: "Noticias", icon: <I.Bell /> },
     { id: "classes", label: "Mis clases", icon: <I.Calendar /> },
     { id: "camp", label: "Campamento", icon: <I.Sun /> },
     { id: "attendance", label: "Asistencia", icon: <I.Check /> },
@@ -1887,6 +1895,7 @@ export default function StudentDashboard({ user, onLogout, subroute = "overview"
 
           {view === "overview" && esApp && <TarjetaAvisos />}
           {view === "overview" && <DashOverview go={go} setView={navTo} />}
+          {view === "noticias" && <NoticiasFamilia slug={noticia} />}
           {view === "classes" && <DashClasses />}
           {view === "camp" && <DashCamp />}
           {view === "attendance" && <DashAttendance />}
