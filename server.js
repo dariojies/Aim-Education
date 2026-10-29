@@ -13870,6 +13870,33 @@ app.get('/api/me/recibos', authenticateSession, async (req, res) => {
     }
 });
 
+// Lo que lleva ahorrado la familia (#514): en vez de cuánto ha pagado, cuánto
+// se ha quitado con los descuentos. Cuenta lo cobrado en sus facturas que siguen
+// en pie (descuento de su ficha y el de pagar varias mensualidades juntas) y lo
+// que no ha pagado por tener el 100% de descuento. Con IVA, como lo que paga.
+app.get('/api/me/ahorro', authenticateSession, async (req, res) => {
+    try {
+        const fam = await familiaIds(req.userSession.userId);
+        const r = await pool.query(
+            `SELECT c.precio, c.iva_pct, c.descuento_pct, COALESCE(c.descuento_mens_pct, 0) AS descuento_mens_pct, c.estado
+             FROM aim_cargos c
+             LEFT JOIN aim_recibos rc ON rc.id = c.recibo_id
+             WHERE (c.estado = 'cobrado' AND rc.estado IS DISTINCT FROM 'anulado'
+                    AND (rc.pagador_id = ANY($1::uuid[]) OR c.cliente_id = ANY($1::uuid[])))
+                OR (c.estado = 'exento' AND c.anulado_motivo = 'Descuento del 100%' AND c.cliente_id = ANY($1::uuid[]))`, [fam]);
+        let total = 0, cargos = 0;
+        for (const c of r.rows) {
+            const lleno = brutoMilesimas({ precio: c.precio, ivaPct: c.iva_pct });
+            const pagado = c.estado === 'exento' ? 0
+                : brutoMilesimas({ precio: c.precio, descuentoPct: c.descuento_pct, descuentoMensPct: c.descuento_mens_pct, ivaPct: c.iva_pct });
+            const a = r2Server(lleno - pagado);
+            if (a > 0) { total += a; cargos++; }
+        }
+        res.set('Cache-Control', 'no-store');
+        res.json({ total: r2Server(total), cargos });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── Familias (parentescos por persona, igual que la tabla familias antigua) ──
 // Las familias del club, tal y como las trata la aplicación: por círculos.
 //

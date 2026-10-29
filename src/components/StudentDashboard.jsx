@@ -331,6 +331,7 @@ function DashOverview({ go, setView }) {
   const [posts, setPosts] = useState([]);
   const [recibos, setRecibos] = useState([]);
   const [pendiente, setPendiente] = useState(0);
+  const [ahorro, setAhorro] = useState(null);   // lo ahorrado con descuentos (#514)
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -340,13 +341,15 @@ function DashOverview({ go, setView }) {
       fetch('/api/posts?limit=3').then(r => r.ok ? r.json() : []),
       fetch('/api/me/recibos', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
       fetch('/api/me/cargos', { credentials: 'include', cache: 'no-store' }).then(r => r.ok ? r.json() : null),
-    ]).then(([g, at, p, rc, cg]) => {
+      fetch('/api/me/ahorro', { credentials: 'include', cache: 'no-store' }).then(r => r.ok ? r.json() : null),
+    ]).then(([g, at, p, rc, cg, ah]) => {
       setGroups(g.groups || []);
       setSlots(g.slots || []);
       setAttendance(Array.isArray(at) ? at : []);
       setPosts(Array.isArray(p) ? p : []);
       setRecibos(Array.isArray(rc) ? rc : []);
       setPendiente(Number(cg?.total || 0));
+      setAhorro(ah);
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
@@ -361,7 +364,6 @@ function DashOverview({ go, setView }) {
 
   // Solo cuentan los recibos que siguen en pie: un recibo anulado no es dinero pagado.
   const recibosValidos = recibos.filter(r => r.estado !== 'anulado');
-  const totalPagado = recibosValidos.reduce((s, r) => s + Number(r.total ?? r.importe ?? 0), 0);
 
   const weekClasses = [...slots].sort((a, b) => (a.d - b.d) || (a.s - b.s)).slice(0, 6);
   const attWithRecords = attendance.filter(a => a.total > 0);
@@ -480,9 +482,10 @@ function DashOverview({ go, setView }) {
               position: "relative",
               overflow: "hidden",
             }}>
-              <div style={{fontSize: 12, opacity: .8, textTransform: "uppercase", letterSpacing: ".1em", fontWeight: 700}}>Total pagado</div>
-              <div style={{fontFamily: "var(--font-display)", fontSize: 42, fontWeight: 800, letterSpacing: "-.025em", marginTop: 6}}>{totalPagado.toLocaleString("es-ES", {minimumFractionDigits: 2})}€</div>
-              <div style={{fontSize: 12, marginTop: 8, opacity: .9}}>{recibosValidos.length} recibo{recibosValidos.length !== 1 ? "s" : ""}</div>
+              {/* Lo ahorrado con los descuentos, no lo pagado (#514). */}
+              <div style={{fontSize: 12, opacity: .8, textTransform: "uppercase", letterSpacing: ".1em", fontWeight: 700}}>Llevas ahorrado</div>
+              <div style={{fontFamily: "var(--font-display)", fontSize: 42, fontWeight: 800, letterSpacing: "-.025em", marginTop: 6}} data-ahorrado>{Number(ahorro?.total || 0).toLocaleString("es-ES", {minimumFractionDigits: 2, maximumFractionDigits: 2})}€</div>
+              <div style={{fontSize: 12, marginTop: 8, opacity: .9}}>{textoAhorro(ahorro)}</div>
               <button className="btn" style={{background: "var(--ink)", color: "white", marginTop: 14}} onClick={() => setView("payments")}>
                 Ver recibos <I.Arrow />
               </button>
@@ -731,6 +734,10 @@ const mesRec = (iso) => {
   return `${MESES_REC[Number(m) - 1]} ${y}`;
 };
 const eurRec = (n) => `${Number(n || 0).toFixed(2)} €`;
+// Debajo de lo ahorrado (#514): de dónde sale, o cómo empezar a ahorrar.
+const textoAhorro = (a) => (Number(a?.total) > 0
+  ? 'Con los descuentos de tus recibos'
+  : 'Pagando juntas varias mensualidades del mismo mes tienes descuento');
 
 // ── Vuelta del banco ─────────────────────────────────────────────────────────
 // Al volver de la pasarela no se puede soltar a la familia en la portada sin
@@ -1068,15 +1075,21 @@ function DashPayments() {
       .then(r => r.ok ? r.json() : [])
       .then(d => { setRecibos(Array.isArray(d) ? d : []); setLoading(false); })
       .catch(() => setLoading(false));
+    fetch('/api/me/ahorro', { credentials: 'include', cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null).then(d => d && setAhorro(d)).catch(() => {});
   }, []);
 
   const validos = recibos.filter(r => r.estado !== 'anulado');
-  const totalPagado = validos.reduce((s, r) => s + (r.importe || 0), 0);
+  const [ahorro, setAhorro] = useState(null);
 
   const recargar = useCallback(() => {
     fetch('/api/me/recibos', { credentials: 'include', cache: 'no-store' })
       .then(r => r.ok ? r.json() : [])
       .then(d => setRecibos(Array.isArray(d) ? d : []))
+      .catch(() => {});
+    fetch('/api/me/ahorro', { credentials: 'include', cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => d && setAhorro(d))
       .catch(() => {});
   }, []);
   // Un cobro en secretaría también genera recibo: aparece aquí sin recargar.
@@ -1089,9 +1102,9 @@ function DashPayments() {
       {validos.length > 0 && (
         <div className="dash-cards" style={{ gridTemplateColumns: 'repeat(2, 1fr)' }}>
           <div className="stat-card">
-            <div className="l">Total pagado</div>
-            <div className="v">{eurRec(totalPagado)}</div>
-            <div style={{ marginTop: 8, fontSize: 13, color: 'var(--ink-2)' }}>{validos.length} recibo{validos.length !== 1 ? 's' : ''}</div>
+            <div className="l">Llevas ahorrado</div>
+            <div className="v" data-ahorrado>{eurRec(ahorro?.total)}</div>
+            <div style={{ marginTop: 8, fontSize: 13, color: 'var(--ink-2)' }}>{textoAhorro(ahorro)}</div>
           </div>
           <div className="stat-card">
             <div className="l">Último pago</div>
