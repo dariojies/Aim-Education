@@ -279,6 +279,23 @@ export function colorConOpacidad(c, opacidad = 100) {
   const a = (h.length === 8 ? parseInt(h.slice(6), 16) / 255 : 1) * o;
   return `rgba(${parseInt(h.slice(0, 2), 16)},${parseInt(h.slice(2, 4), 16)},${parseInt(h.slice(4, 6), 16)},${Math.round(a * 1000) / 1000})`;
 }
+// El color que hay en un punto (0 a 100) de un degradado: { color, opacidad }.
+const hexLargo = (c) => { const m = /^#([0-9a-f]{3}|[0-9a-f]{6})([0-9a-f]{2})?$/i.exec(String(c || '').trim()); return m ? `#${m[1].length === 3 ? [...m[1]].map(x => x + x).join('') : m[1]}`.toUpperCase() : null; };
+export function colorEn(paradas, pos) {
+  const d = paradas.findIndex(p => p.pos >= pos);
+  if (d <= 0) { const x = paradas[d < 0 ? paradas.length - 1 : 0]; return { color: x.color, opacidad: x.opacidad }; }
+  const a = paradas[d - 1], b = paradas[d], t = b.pos === a.pos ? 0 : (pos - a.pos) / (b.pos - a.pos);
+  const ha = hexLargo(a.color), hb = hexLargo(b.color);
+  const color = ha && hb ? `#${[1, 3, 5].map(i => Math.round(parseInt(ha.slice(i, i + 2), 16) * (1 - t) + parseInt(hb.slice(i, i + 2), 16) * t).toString(16).padStart(2, '0')).join('')}`.toUpperCase() : a.color;
+  return { color, opacidad: Math.round(a.opacidad + (b.opacidad - a.opacidad) * t) };
+}
+// Texto con degradado (#508): color y color2 (o sus paradas), de punta a punta de
+// su caja; por defecto de izquierda a derecha. Las partes con su propio color, con el suyo.
+export const textoConDegradado = (e) => e.tipo === 'texto' && !!e.color2;
+export const paradasTexto = (e) => paradasDe(e.color || '#5233A8', e.color2, e.paradas);
+function rellenoTexto(ctx, e, x, y) {
+  return textoConDegradado(e) ? degradado(ctx, x, y, e.w, e.h, paradasTexto(e), e.angulo ?? 90, e.radial) : (e.color || '#1A1A1A');
+}
 // El degradado en CSS (para las muestras del editor).
 export function degradadoCss(paradas, angulo = 135, radial = false) {
   const l = paradas.map(p => `${colorConOpacidad(p.color, p.opacidad)} ${p.pos}%`).join(', ');
@@ -358,7 +375,7 @@ const curvo = (e) => e.tipo === 'texto' && Math.abs(e.curva || 0) >= 1;
 // Cada palabra lleva su estilo; se reparten en líneas midiendo cada una con su
 // letra. Las listas llevan su viñeta o su número y la sangría.
 export const esRico = (e) => e.tipo === 'texto' && ((Array.isArray(e.trozos) && e.trozos.length > 0) || !!e.lista || !!e.subrayado || !!e.tachado);
-const estiloDe = (e, t) => ({ negrita: t.negrita ?? !!e.negrita, cursiva: t.cursiva ?? !!e.cursiva, color: t.color || e.color || '#1A1A1A', subrayado: t.subrayado ?? !!e.subrayado, tachado: t.tachado ?? !!e.tachado });
+const estiloDe = (e, t) => ({ negrita: t.negrita ?? !!e.negrita, cursiva: t.cursiva ?? !!e.cursiva, color: t.color || e.color || '#1A1A1A', propio: !!t.color, subrayado: t.subrayado ?? !!e.subrayado, tachado: t.tachado ?? !!e.tachado });
 const fuenteDe = (e, s) => `${s.cursiva ? 'italic ' : ''}${s.negrita ? 700 : 400} ${e.tamano || 48}px "${e.fuente || 'Montserrat'}", Montserrat, Arial, sans-serif`;
 const trozosDe = (e, variables) => (Array.isArray(e.trozos) && e.trozos.length ? e.trozos : [{ t: e.texto || '' }]).map(x => ({ ...x, t: rellenar(x.t, variables) }));
 export function lineasRicas(ctx, e, trozos) {
@@ -394,6 +411,7 @@ export function lineasRicas(ctx, e, trozos) {
 function pintarRico(ctx, e, trozos, x, y, letras, contorno) {
   const lineas = lineasRicas(ctx, e, trozos), T = e.tamano || 48, lh = T * (e.interlineado || 1.25);
   const y0 = (e.vertical === 'arriba' ? y : y + (e.h - lineas.length * lh) / 2) + (lh - T) / 2;
+  const relleno = rellenoTexto(ctx, e, x, y);
   const filas = lineas.map((l, i) => {
     const libre = e.w - l.sangria;
     return { l, x0: x + l.sangria + (e.alinear === 'centro' ? (libre - l.ancho) / 2 : e.alinear === 'derecha' ? libre - l.ancho : 0), y: y0 + i * lh };
@@ -424,9 +442,9 @@ function pintarRico(ctx, e, trozos, x, y, letras, contorno) {
   };
   if (contorno) { cada((g, t, cx, cy) => { ctx.font = fuenteDe(e, g.s); ctx.strokeText(t, cx, cy); }); if (e.sombra) quitarSombra(ctx); }
   // Las viñetas o los números.
-  for (const f of filas) if (f.l.marca && quedan > 0) { ctx.font = fuenteDe(e, estiloDe(e, {})); ctx.fillStyle = e.color || '#1A1A1A'; ctx.fillText(f.l.marca, x, f.y); }
+  for (const f of filas) if (f.l.marca && quedan > 0) { ctx.font = fuenteDe(e, estiloDe(e, {})); ctx.fillStyle = relleno; ctx.fillText(f.l.marca, x, f.y); }
   cada((g, t, cx, cy) => {
-    ctx.font = fuenteDe(e, g.s); ctx.fillStyle = g.s.color; ctx.fillText(t, cx, cy);
+    ctx.font = fuenteDe(e, g.s); ctx.fillStyle = g.s.propio ? g.s.color : relleno; ctx.fillText(t, cx, cy);
     const w = t === g.t ? g.w : ctx.measureText(t).width, grueso = Math.max(1, T * 0.06);
     if (g.s.subrayado && t.trim()) ctx.fillRect(cx, cy + T * 0.95, w, grueso);
     if (g.s.tachado && t.trim()) ctx.fillRect(cx, cy + T * 0.52, w, grueso);
@@ -569,7 +587,7 @@ function ponerSombra(ctx, e) {
 const quitarSombra = (ctx) => { ctx.shadowColor = 'transparent'; };
 
 function pintarTexto(ctx, e, texto, x, y, letras, variables) {
-  ctx.fillStyle = e.color || '#1A1A1A';
+  ctx.fillStyle = rellenoTexto(ctx, e, x, y);
   const contorno = e.contorno && e.contornoGrosor > 0;
   if (contorno) { ctx.strokeStyle = e.contorno; ctx.lineWidth = e.contornoGrosor * 2; ctx.lineJoin = 'round'; ctx.miterLimit = 2; }
   if (esRico(e) && !curvo(e)) { pintarRico(ctx, e, trozosDe(e, variables), x, y, letras, contorno); return; }
@@ -590,9 +608,14 @@ function pintarTexto(ctx, e, texto, x, y, letras, variables) {
         ctx.restore();
       }
     };
-    // Primero el contorno (con la sombra) y encima las letras.
+    // Primero el contorno (con la sombra) y encima las letras. Con degradado,
+    // cada letra con el color de su sitio en la curva.
     if (contorno) { cadaLetra(l => ctx.strokeText(l, 0, 0)); if (e.sombra) quitarSombra(ctx); }
-    cadaLetra(l => ctx.fillText(l, 0, 0));
+    if (textoConDegradado(e)) {
+      const ps = paradasTexto(e), total = Math.max(1, g.letras.length - 1);
+      let i = 0;
+      cadaLetra(l => { const c = colorEn(ps, (100 * i++) / total); ctx.fillStyle = colorConOpacidad(c.color, c.opacidad); ctx.fillText(l, 0, 0); });
+    } else cadaLetra(l => ctx.fillText(l, 0, 0));
     return;
   }
   let lineas = lineasTexto(ctx, e, texto);

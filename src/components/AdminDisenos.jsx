@@ -6,7 +6,7 @@ import {
   TAMANOS, FUENTES_DISENO, VARIABLES_DIPLOMA, EJEMPLO_DIPLOMA, VARIABLES_AUTO, EJEMPLO_AUTO, nuevoId, pintarDiseno, cargarImagenes, cargarImagen, cargarFuentes, cargarFuentePropia,
   pedirFuentes, miniatura, exportarDiseno, exportarLote, exportarImprenta, medidasImprenta, SANGRADO_MM, lienzoDe, ajustarTexto, adaptarDiseno,
   paginaDe, conPagina, numPaginas, todasLasPaginas, ANIMACIONES, tieneAnimacion, duracionAnimacion,
-  paradasDe, degradadoCss, MAX_COLORES_DEGRADADO, tramoVideo, TRANSICION, DURACION_MAX_PAGINA,
+  paradasDe, degradadoCss, MAX_COLORES_DEGRADADO, colorEn, paradasTexto, tramoVideo, TRANSICION, DURACION_MAX_PAGINA,
   esSvg, urlSvg, urlDe,
 } from '../disenos/render.js';
 import svgBallet from '../assets/actividades/ballet.svg';
@@ -2454,16 +2454,6 @@ function Color({ etiqueta, valor, onCambio, permiteNada = false }) {
 // barra añade otro color ahí (hasta 5). Debajo, el color, el sitio y la opacidad
 // de la elegida. paradas: [{ color, pos, opacidad }], ya ordenadas (paradasDe).
 const CUADROS = 'repeating-conic-gradient(#d9d9d9 0% 25%, #ffffff 0% 50%) 50% / 12px 12px';
-const hexDe = (c) => (/^#([0-9a-f]{3}|[0-9a-f]{6})([0-9a-f]{2})?$/i.test(String(c || '').trim()) ? paraCasilla(String(c).trim()) : null);
-// El color que hay en un punto de la barra (para el que se añade ahí).
-function colorEn(paradas, pos) {
-  const d = paradas.findIndex(p => p.pos >= pos);
-  if (d <= 0) { const x = paradas[d < 0 ? paradas.length - 1 : 0]; return { color: x.color, opacidad: x.opacidad }; }
-  const a = paradas[d - 1], b = paradas[d], t = b.pos === a.pos ? 0 : (pos - a.pos) / (b.pos - a.pos);
-  const ha = hexDe(a.color), hb = hexDe(b.color);
-  const color = ha && hb ? `#${[1, 3, 5].map(i => Math.round(parseInt(ha.slice(i, i + 2), 16) * (1 - t) + parseInt(hb.slice(i, i + 2), 16) * t).toString(16).padStart(2, '0')).join('')}`.toUpperCase() : a.color;
-  return { color, opacidad: Math.round(a.opacidad + (b.opacidad - a.opacidad) * t) };
-}
 function EditorDegradado({ paradas, angulo = 135, radial = false, onCambio, tramos }) {
   const [elegida, setElegida] = useState(0);
   const barra = useRef(null);
@@ -2742,8 +2732,17 @@ function Propiedades({ clips, e, tipo, esDireccion, cambiar, textoRef, subir, ac
         <ElegirFuente e={e} cambiar={cambiar} onFuentesCambiadas={onFuentesCambiadas} />
         <div style={fila}>
           <Num etiqueta="Tamaño" valor={e.tamano || 48} onCambio={(v) => cambiar({ tamano: Math.max(4, v) })} min={4} max={1000} />
-          <Color etiqueta="Color" valor={e.color || '#1A1A1A'} onCambio={(v) => cambiar({ color: v, trozos: sinEstiloEnTrozos(e.trozos, 'color') })} />
+          {!e.color2 && <Color etiqueta="Color" valor={e.color || '#1A1A1A'} onCambio={(v) => cambiar({ color: v, trozos: sinEstiloEnTrozos(e.trozos, 'color') })} />}
         </div>
+        {/* Letras en degradado (#508), como el de las formas: de 2 a 5 colores. */}
+        <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12.5 }} data-texto-degradado><input type="checkbox" checked={!!e.color2}
+          onChange={x => cambiar(x.target.checked
+            ? { color: e.color && !/^#(1A1A1A|000000|000)$/i.test(e.color) ? e.color : '#7B3FC4', color2: '#21B668', paradas: null, angulo: 90, radial: false, trozos: sinEstiloEnTrozos(e.trozos, 'color') }
+            : { color2: null, paradas: null, angulo: undefined, radial: undefined })} /> Degradado</label>
+        {e.color2 && (
+          <EditorDegradado paradas={paradasTexto(e)} angulo={e.angulo ?? 90} radial={!!e.radial} tramos={tramos}
+            onCambio={(c) => cambiar({ ...c, ...(c.paradas ? { color: c.paradas[0].color, color2: c.paradas[c.paradas.length - 1].color } : {}) })} />
+        )}
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           <button type="button" className={`btn btn-sm ${e.negrita ? 'btn-primary' : 'btn-outline'}`} onClick={() => cambiar({ negrita: !e.negrita, trozos: sinEstiloEnTrozos(e.trozos, 'negrita') })} style={{ fontWeight: 900 }} title="Negrita (todo el texto)">N</button>
           <button type="button" className={`btn btn-sm ${e.cursiva ? 'btn-primary' : 'btn-outline'}`} onClick={() => cambiar({ cursiva: !e.cursiva, trozos: sinEstiloEnTrozos(e.trozos, 'cursiva') })} style={{ fontStyle: 'italic' }} title="Cursiva (todo el texto)">K</button>
@@ -3558,9 +3557,11 @@ function TextoEnLienzo({ e, escala, punto, onCambio, onLista, onFin, sinFormato 
           font: `${e.cursiva ? 'italic ' : ''}${e.negrita ? 700 : 400} ${tam}px "${e.fuente || 'Montserrat'}", Montserrat, Arial, sans-serif`,
           textDecoration: [e.subrayado && 'underline', e.tachado && 'line-through'].filter(Boolean).join(' ') || 'none',
           lineHeight: `${tam * (e.interlineado || 1.25)}px`, letterSpacing: `${(e.espaciado || 0) * k}px`, color: e.color || '#1A1A1A', opacity: e.opacidad ?? 1,
+          // Con degradado (#508), las letras dejan ver el degradado de detrás.
+          ...(e.color2 ? { backgroundImage: degradadoCss(paradasTexto(e), e.angulo ?? 90, !!e.radial), WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent' } : {}),
           textAlign: e.alinear === 'centro' ? 'center' : e.alinear === 'derecha' ? 'right' : 'left', textTransform: e.mayusculas ? 'uppercase' : 'none',
           whiteSpace: 'pre-wrap', overflowWrap: 'normal', wordBreak: 'normal', caretColor: '#7C5CFF',
-          textShadow: e.sombra ? `0 ${8 * k}px ${24 * k}px rgba(0,0,0,.28)` : 'none',
+          textShadow: e.sombra && !e.color2 ? `0 ${8 * k}px ${24 * k}px rgba(0,0,0,.28)` : 'none',
         }} />
     </>
   );

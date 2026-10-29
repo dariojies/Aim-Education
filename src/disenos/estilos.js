@@ -83,7 +83,7 @@ export function aplicarEstilo(d, { paleta = null, letras = null, giro = 0, respe
       if (e.tipo === 'qr' || respetar?.(e)) return e;
       let n = { ...e };
       if (paleta) {
-        for (const k of ['color', 'relleno', 'relleno2', 'borde', 'contorno', 'resalte', 'fondoCabecera', 'fondoFilas', 'fondoRayas']) if (n[k]) n[k] = nuevo(n[k]);
+        for (const k of ['color', 'color2', 'relleno', 'relleno2', 'borde', 'contorno', 'resalte', 'fondoCabecera', 'fondoFilas', 'fondoRayas']) if (n[k]) n[k] = nuevo(n[k]);
         Object.assign(n, conParadas(n));
         if (n.tipo === 'tabla') {
           // Que la cabecera se distinga de las filas, las rayas sean suaves y todo se lea.
