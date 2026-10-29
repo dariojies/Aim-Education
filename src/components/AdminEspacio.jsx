@@ -4,7 +4,9 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 // Mi espacio (#497): lo de cada trabajador. Sus nóminas y contratos para
 // descargar, su certificado de delitos de naturaleza sexual (lo sube él) y su
 // ficha. Secretaría y la dirección tienen además «Del personal»: el estado de
-// cada uno y, al abrirlo, subirle documentos y ver su certificado y su ficha.
+// cada uno y, al abrirlo, subirle documentos (también el certificado, #507) y
+// ver su certificado y su ficha. El certificado vale por curso: desde el 1 de
+// septiembre hay que subir uno nuevo.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const campo = { fontFamily: 'inherit', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', minWidth: 0, width: '100%', boxSizing: 'border-box' };
@@ -21,6 +23,10 @@ const mesLargo = (p) => { const [a, m] = String(p || '').split('-').map(Number);
 const fecha = (f) => (f ? new Date(f).toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' }) : '');
 const kb = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1).replace('.', ',')} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
 const NOMBRE_RANGO = { trabajador: 'Trabajador', instructor: 'Instructor', it_junior: 'IT Junior', secretaria: 'Secretaría', club_owner: 'Dirección', equipo_it: 'Equipo IT', superadmin: 'Dirección' };
+// Cada tipo, como se titula su grupo (#509). El orden lo da el servidor.
+const GRUPO_TIPO = { contrato: 'Contratos', modificacion: 'Modificaciones de contrato', nomina: 'Nóminas', modelo145: 'Modelo 145', certificado: 'Certificados de delitos sexuales', otro: 'Otros documentos' };
+const ORDEN_TIPOS = Object.keys(GRUPO_TIPO);
+const vigente = (doc, desde) => !!doc && !!desde && new Date(doc.fecha) >= new Date(`${desde}T00:00:00`);
 const mesAnterior = () => { const d = new Date(); d.setMonth(d.getMonth() - 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
 
 export default function AdminEspacio({ showToast }) {
@@ -44,11 +50,12 @@ export default function AdminEspacio({ showToast }) {
 
 // Los documentos de alguien, por tipo (las nóminas, del mes más reciente al más antiguo).
 function Documentos({ documentos, tipos, borrar = null, propio = false }) {
-  const grupos = ['nomina', 'contrato', 'otro', 'certificado'].map(t => [t, documentos.filter(x => x.tipo === t)]).filter(([, l]) => l.length);
+  const orden = Object.keys(tipos || {}).length ? Object.keys(tipos) : ORDEN_TIPOS;
+  const grupos = orden.map(t => [t, documentos.filter(x => x.tipo === t)]).filter(([, l]) => l.length);
   if (!grupos.length) return <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>Aún no hay documentos.</span>;
   return grupos.map(([t, l]) => (
     <div key={t} style={{ display: 'grid', gap: 4 }}>
-      <b style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--ink-3)' }}>{t === 'nomina' ? 'Nóminas' : t === 'contrato' ? 'Contratos' : t === 'certificado' ? 'Certificados' : 'Otros'}</b>
+      <b style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--ink-3)' }}>{GRUPO_TIPO[t] || tipos?.[t] || t}</b>
       {l.map(x => (
         <div key={x.id} data-doc={x.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '7px 10px', borderRadius: 10, background: 'var(--bg-3)', fontSize: 13, flexWrap: 'wrap' }}>
           <span style={{ flex: '1 1 200px', minWidth: 0 }}>
@@ -102,6 +109,7 @@ function LoMio({ d, cargar, showToast }) {
   const [subiendo, setSubiendo] = useState(false);
   const archivo = useRef(null);
   const certificado = d.documentos.filter(x => x.tipo === 'certificado')[0];
+  const alDia = vigente(certificado, d.cursoDesde);
   async function subirCertificado(f) {
     if (!f) return;
     setSubiendo(true);
@@ -119,20 +127,22 @@ function LoMio({ d, cargar, showToast }) {
     <div style={{ display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fit, minmax(min(420px, 100%), 1fr))', alignItems: 'start' }} data-mi-espacio>
       <div style={{ display: 'grid', gap: 14 }}>
         <div style={tarjeta}>
-          <h3 style={{ margin: 0, fontSize: 16 }}>Mis nóminas y contratos</h3>
+          <h3 style={{ margin: 0, fontSize: 16 }}>Mis documentos</h3>
           <Documentos documentos={d.documentos.filter(x => x.tipo !== 'certificado')} tipos={d.tipos} propio />
-          <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Los sube secretaría; te avisamos cuando hay uno nuevo.</span>
+          <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Los sube secretaría; cuando hay uno nuevo te llega un aviso y un correo.</span>
         </div>
-        <div style={{ ...tarjeta, borderColor: certificado ? 'var(--line)' : 'color-mix(in oklab, var(--orange) 50%, var(--line))' }} data-certificado>
+        <div style={{ ...tarjeta, borderColor: alDia ? 'var(--line)' : 'color-mix(in oklab, var(--orange) 50%, var(--line))' }} data-certificado>
           <h3 style={{ margin: 0, fontSize: 16 }}>Certificado de delitos de naturaleza sexual</h3>
           <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-2)' }}>
-            Es obligatorio para trabajar con menores. Se pide gratis en la sede electrónica del Ministerio de Justicia (con certificado digital o Cl@ve) y se sube aquí en PDF.
+            Es obligatorio para trabajar con menores y se renueva cada curso, en septiembre. Se pide gratis en la sede electrónica del Ministerio de Justicia (con certificado digital o Cl@ve) y se sube aquí en PDF.
           </p>
-          {certificado
-            ? <span style={{ fontSize: 13 }}>✅ Subido el {fecha(certificado.fecha)} · <a href={certificado.url} target="_blank" rel="noreferrer">verlo</a></span>
-            : <span style={{ fontSize: 13, color: 'var(--orange)', fontWeight: 700 }}>Aún no lo has subido.</span>}
+          {alDia
+            ? <span style={{ fontSize: 13 }}>✅ Subido el {fecha(certificado.fecha)}: vale para el curso {d.curso} · <a href={certificado.url} target="_blank" rel="noreferrer">verlo</a></span>
+            : certificado
+              ? <span style={{ fontSize: 13, color: 'var(--orange)', fontWeight: 700 }}>El que tienes es del {fecha(certificado.fecha)}: toca renovarlo para el curso {d.curso}.</span>
+              : <span style={{ fontSize: 13, color: 'var(--orange)', fontWeight: 700 }}>Aún no lo has subido.</span>}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button type="button" className="btn btn-sm btn-primary" disabled={subiendo} onClick={() => archivo.current?.click()}>{subiendo ? 'Subiendo…' : certificado ? 'Subir uno más reciente' : 'Subir el certificado'}</button>
+            <button type="button" className="btn btn-sm btn-primary" disabled={subiendo} onClick={() => archivo.current?.click()}>{subiendo ? 'Subiendo…' : alDia ? 'Subir uno más reciente' : certificado ? 'Subir el de este curso' : 'Subir el certificado'}</button>
             <a className="btn btn-sm btn-outline" href="https://sede.mjusticia.gob.es/" target="_blank" rel="noopener noreferrer">Pedirlo en la sede del Ministerio</a>
           </div>
           <input ref={archivo} type="file" accept="application/pdf,image/jpeg,image/png" hidden onChange={e => { subirCertificado(e.target.files?.[0]); e.target.value = ''; }} />
@@ -160,7 +170,7 @@ function DelPersonal({ showToast }) {
         <button key={p.id} type="button" data-trabajador={p.id} onClick={() => setAbierto(p.id)}
           style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) repeat(3, minmax(0, 1.2fr))', gap: 10, width: '100%', textAlign: 'left', padding: '10px 14px', border: 0, borderBottom: '1px solid var(--line)', background: 'transparent', cursor: 'pointer', fontFamily: 'inherit', color: 'var(--ink)', alignItems: 'center', fontSize: 13 }}>
           <span><b>{p.nombre}</b><br /><span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{NOMBRE_RANGO[p.rango] || p.rango}</span></span>
-          <span style={{ color: p.certificado ? 'var(--teal)' : 'var(--orange)', fontWeight: 700 }}>{p.certificado ? `✓ Certificado (${new Date(p.certificado).toLocaleDateString('es-ES')})` : 'Sin certificado'}</span>
+          <span style={{ color: p.certificadoVigente ? 'var(--teal)' : 'var(--orange)', fontWeight: 700 }}>{p.certificadoVigente ? `✓ Certificado (${new Date(p.certificado).toLocaleDateString('es-ES')})` : p.certificado ? `Certificado por renovar (es del ${new Date(p.certificado).toLocaleDateString('es-ES')})` : 'Sin certificado'}</span>
           <span style={{ color: p.ficha === p.de ? 'var(--teal)' : 'var(--ink-2)' }}>Ficha {p.ficha === p.de ? 'completa' : `${p.ficha}/${p.de}`}</span>
           <span style={{ color: 'var(--ink-3)' }}>{p.ultimaNomina ? `Última nómina: ${mesLargo(p.ultimaNomina)}` : 'Sin nóminas'}{p.contratos ? ` · ${p.contratos} contrato${p.contratos !== 1 ? 's' : ''}` : ''}</span>
         </button>
@@ -210,15 +220,17 @@ function Trabajador({ id, onVolver, showToast }) {
           <h3 style={{ margin: 0, fontSize: 16 }}>Subirle un documento</h3>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'end' }}>
             <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 700 }}>Qué es
-              <select value={tipo} onChange={e => setTipo(e.target.value)} style={{ ...campo, width: 'auto' }}>
-                <option value="nomina">Nómina</option><option value="contrato">Contrato</option><option value="otro">Otro documento</option>
+              <select value={tipo} onChange={e => setTipo(e.target.value)} style={{ ...campo, width: 'auto' }} data-tipo-documento>
+                {Object.entries(d.tipos || {}).map(([k, n]) => <option key={k} value={k}>{n}</option>)}
               </select>
             </label>
             {tipo === 'nomina' && <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 700 }}>De qué mes<input type="month" value={periodo} onChange={e => setPeriodo(e.target.value)} style={{ ...campo, width: 'auto' }} /></label>}
             <button type="button" className="btn btn-sm btn-primary" disabled={subiendo || (tipo === 'nomina' && !periodo)} onClick={() => archivo.current?.click()}>{subiendo ? 'Subiendo…' : 'Elegir el PDF'}</button>
             <input ref={archivo} type="file" accept="application/pdf,image/jpeg,image/png" multiple hidden onChange={e => { subir(e.target.files); e.target.value = ''; }} />
           </div>
-          <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Le llega un aviso (en la campanita y en el móvil) y lo descarga desde su espacio.</span>
+          <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{tipo === 'certificado'
+            ? 'Su certificado, si te lo ha dado en papel o por correo: queda como entregado para este curso (no le avisa).'
+            : 'Le llega un aviso (en la campanita y en el móvil) y un correo, y lo descarga desde su espacio.'}</span>
           <Documentos documentos={d.documentos} tipos={d.tipos} borrar={borrar} />
         </div>
         <div style={tarjeta}>

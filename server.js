@@ -37,7 +37,7 @@ import { crearMedios, crearTablasMedios, limpiarMedios } from './medios.js';
 import { crearPantallas, crearTablasPantallas, prepararEstaticas, prepararCierres, limpiarMediosPantalla } from './pantallas.js';
 import { crearChats, crearTablasChats, avisosChats } from './chats.js';
 import { crearListas, crearTablasListas, listasComoSegmentos, resolverLista, correosDeLista } from './listas.js';
-import { crearPersonal, crearTablasPersonal, avisosEspacio } from './personal.js';
+import { crearPersonal, crearTablasPersonal, avisosEspacio, recordarCertificados } from './personal.js';
 import { redesDeNoticia, configRedesAuto, guardarRedesAuto, programarHistoriasActividades, prepararHistoriaActividad } from './redes-auto.js';
 import { programarHistoriasFestivos, felicitacionCumple, automaticosElegidos } from './disenos-automaticos.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
@@ -5323,7 +5323,14 @@ app.use(crearChats({ pool, clubId: AIM_CLUB_ID, authenticateSession, avisar: (id
 // Las listas hechas a mano y sus personas (Personas → Contactos, #499).
 app.use(crearListas({ pool, authenticateSession, requireSeccion, correosCon }));
 // Mi espacio (#497): lo de cada trabajador y, para secretaría y la dirección, el de todos.
-app.use(crearPersonal({ pool, authenticateSession, requireAdmin, permisos, clubId: AIM_CLUB_ID, sqlEsPersonal: (u) => SQL_ES_PERSONAL(u), avisar: (ids) => avisosPush.avisarFamilias(ids) }));
+// Al subirle algo, le llega también un correo (#510).
+app.use(crearPersonal({ pool, authenticateSession, requireAdmin, permisos, clubId: AIM_CLUB_ID, sqlEsPersonal: (u) => SQL_ES_PERSONAL(u), avisar: (ids) => avisosPush.avisarFamilias(ids),
+    correo: async (userId, que) => {
+        const [p] = await correosDePersonas([userId]);
+        if (!p || !mailTransporter) return;
+        const c = await correoSistema('personal_documento', { nombre: p.name || '', que, enlace: `${URL_PUBLICA_WEB}/admin/mi-espacio` });
+        await mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: p.email, ...c });
+    } }));
 // Para mencionar (@) en los comentarios de Aim Design: el personal que ve Aim Design.
 app.get('/api/admin/disenos-equipo', authenticateSession, requireSeccion('grafico'), async (req, res) => {
     try {
@@ -11365,6 +11372,7 @@ const AJUSTES_SISTEMA = {
     speaking_manana: { hora: { nombre: 'A partir de qué hora sale', unidad: 'h', min: 0, max: 22, def: 9 } },
     fichaje_entrada: { margen: { nombre: 'Minutos de cortesía tras su hora de entrada', unidad: 'min', min: 0, max: 120, def: 0 } },
     fichaje_salida: { margen: { nombre: 'Minutos de cortesía tras su hora de salida', unidad: 'min', min: 0, max: 180, def: 0 } },
+    personal_certificado: { hora: { nombre: 'A partir de qué hora sale (el 1 de septiembre o el primer día después)', unidad: 'h', min: 7, max: 20, def: 9 } },
     tickets_vencidos: {
         hora: { nombre: 'A partir de qué hora sale', unidad: 'h', min: 0, max: 22, def: 9 },
         dias: { nombre: 'Días sin moverse para avisar', unidad: 'días', min: 2, max: 60, def: 7 },
@@ -16434,6 +16442,20 @@ async function avisosSoportePeriodicos() {
                 }
                 await guardar('soporte_avisos_diarios', { fecha: hoy, personas: porPersona.size });
             }
+        }
+
+        // Mi espacio (#507): en septiembre, renovar el certificado de delitos sexuales.
+        if (!est.personal_certificado?.apagado && hora >= await ajusteSistema('personal_certificado', 'hora')) {
+            await recordarCertificados({
+                pool, clubId: AIM_CLUB_ID, sqlEsPersonal: (u) => SQL_ES_PERSONAL(u), hoy: new Date(`${hoy}T12:00:00`),
+                avisar: (ids) => avisosPush.avisarFamilias(ids),
+                enviar: async (persona, { curso }) => {
+                    const [p] = await correosDePersonas([persona.user_id]);
+                    if (!p) return;
+                    const c = await correoSistema('personal_certificado', { nombre: p.name || '', curso, enlace: `${URL_PUBLICA_WEB}/admin/mi-espacio` });
+                    await mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: p.email, ...c });
+                },
+            });
         }
 
         const diaSemana = ((new Date(hoy + 'T12:00:00Z').getUTCDay() + 6) % 7) + 1; // 1 = lunes

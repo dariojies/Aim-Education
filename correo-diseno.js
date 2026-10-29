@@ -1005,6 +1005,34 @@ export const CORREOS_SISTEMA = {
             PEQ('Por privacidad, la resolución no va en el correo: la tienes en la web, en Incidencias.'),
         ]),
     },
+    // Mi espacio (#510, #507). Por privacidad, el documento no va en el correo.
+    personal_documento: {
+        grupo: 'personal', nombre: 'Mi espacio: tienes un documento nuevo', cuando: 'Cuando secretaría o la dirección le suben una nómina, un contrato u otro documento a su espacio. Si le suben varios seguidos, va un solo correo, al minuto del último.',
+        asunto: 'Ya tienes {que} en Mi espacio',
+        variables: { nombre: { que: 'Su nombre', ejemplo: 'Marta' }, que: { que: 'Lo que se le ha subido', ejemplo: 'tu nómina de octubre de 2026' }, enlace: { que: 'Enlace a Mi espacio', ejemplo: 'https://www.aimeducation.es/admin/mi-espacio' } },
+        automaticos: {},
+        obligatorio: [],
+        diseno: () => d([
+            T('Hola {nombre},'),
+            T('Te hemos subido **{que}** a tu espacio en la web de AIM Education.'),
+            BTN([{ texto: 'Verlo en Mi espacio', url: '{enlace}', fondo: '', color: '#ffffff' }]),
+            PEQ('Por privacidad, el documento no va en el correo: se descarga desde la web, entrando con tu cuenta.'),
+        ]),
+    },
+    personal_certificado: {
+        grupo: 'personal', nombre: 'Mi espacio: renovar el certificado de delitos sexuales', cuando: 'Una vez al año, en septiembre, a quien del equipo aún no ha subido el certificado del curso que empieza.',
+        asunto: 'Renueva tu certificado de delitos sexuales para el curso {curso}',
+        variables: { nombre: { que: 'Su nombre', ejemplo: 'Marta' }, curso: { que: 'El curso', ejemplo: '2026-2027' }, enlace: { que: 'Enlace a Mi espacio', ejemplo: 'https://www.aimeducation.es/admin/mi-espacio' } },
+        automaticos: {},
+        obligatorio: [],
+        diseno: () => d([
+            T('Hola {nombre},'),
+            T('Empieza el curso **{curso}** y toca renovar el **certificado de delitos de naturaleza sexual**. Es obligatorio para trabajar con menores.'),
+            T('Se pide gratis en la sede electrónica del Ministerio de Justicia (con certificado digital o Cl@ve) y se sube en PDF en tu espacio de la web:'),
+            BTN([{ texto: 'Subirlo en Mi espacio', url: '{enlace}', fondo: '', color: '#ffffff' }, { texto: 'Pedirlo en el Ministerio', url: 'https://sede.mjusticia.gob.es/', fondo: '', color: '#ffffff' }]),
+            PEQ('Si ya se lo has dado a secretaría, no hace falta que hagas nada: lo suben ellos.'),
+        ]),
+    },
     tickets_resumen_semanal: {
         grupo: 'club', nombre: 'Soporte: resumen semanal', cuando: 'Una vez por semana, al Equipo IT: cuántos tickets han entrado y salido, cuánto se tarda y qué se ha quedado atascado.',
         asunto: 'Resumen semanal de soporte',
