@@ -12564,10 +12564,13 @@ const INTERVALO_CAMPANAS_MS = 4000;
 const urlClic = (token, destino) => `${URL_PUBLICA_WEB}/c/${token}?u=${encodeURIComponent(destino)}`;
 const urlBaja = (token) => `${URL_PUBLICA_WEB}/baja/${token}`;
 const urlApertura = (token) => `${URL_PUBLICA_WEB}/o/${token}.gif`;
-const pieBaja = (tipo, token) => tipo === 'servicio' ? '' : `${tipo === 'comercial'
+// El pie lleva siempre el enlace a sus preferencias (#515), también en los avisos
+// de servicio: ahí puede ver y cambiar qué correos le llegan sin iniciar sesión.
+const pieBaja = (tipo, token) => `${tipo === 'comercial'
     ? 'Recibes este correo porque aceptaste las comunicaciones comerciales del club.'
-    : 'Recibes este correo por las actividades en las que está apuntado tu familia.'} Si no quieres recibir más, <a href="${urlBaja(token)}" style="color:#9a958d">date de baja aquí</a>.`;
-const pieBajaTexto = (tipo, token) => tipo === 'servicio' ? '' : `Si no quieres recibir más correos como este: ${urlBaja(token)}`;
+    : tipo === 'servicio' ? 'Recibes este correo porque es un aviso del club sobre tus clases o tus pagos.'
+    : 'Recibes este correo por las actividades en las que está apuntado tu familia.'} <a href="${urlBaja(token)}" style="color:#9a958d">Elige qué correos recibes o date de baja aquí</a>.`;
+const pieBajaTexto = (tipo, token) => `Para elegir qué correos recibes o darte de baja: ${urlBaja(token)}`;
 
 // Estado de una campaña, sacado de sus correos.
 function estadoCampana(correos) {
@@ -12795,7 +12798,7 @@ app.post('/api/admin/campanas/correos/:cid(\\d+)/prueba', authenticateSession, r
         const asunto = rellenarPlantilla(k.asunto, vars);
         const c = await correoCrm({
             cuerpo: rellenarPlantilla(k.cuerpo, vars), diseno: k.diseno, vars, asunto,
-            pie: pieBaja(k.tipo, '0'.repeat(32)), pieTexto: pieBajaTexto(k.tipo, '0'.repeat(32)),
+            pie: pieBaja(k.tipo, TOKEN_PRUEBA), pieTexto: pieBajaTexto(k.tipo, TOKEN_PRUEBA),
         });
         await mailTransporter.sendMail({
             from: `AIM Education <${process.env.EMAIL_USER}>`, replyTo: process.env.EMAIL_USER, to: yo,
@@ -12982,7 +12985,8 @@ async function enviarSiguienteDeCampana() {
                 from: `AIM Education <${process.env.EMAIL_USER}>`, replyTo: process.env.EMAIL_USER, to: e.email,
                 subject: asunto, text: c.text, html: c.html,
                 headers: {
-                    ...(e.tipo === 'servicio' ? {} : { 'List-Unsubscribe': `<${urlBaja(e.token)}>` }),
+                    // Baja de un clic (Gmail y otros la piden): un POST sin más a la misma dirección.
+                    ...(e.tipo === 'servicio' ? {} : { 'List-Unsubscribe': `<${urlBaja(e.token)}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' }),
                     // Para reconocer el envío si vuelve rebotado.
                     'X-AIM-Envio': e.token,
                 },
@@ -13054,39 +13058,121 @@ app.get('/c/:token', async (req, res) => {
     } catch { res.redirect(302, URL_PUBLICA_WEB); }
 });
 
-// Baja desde el correo. Primero se pregunta (algunos programas de correo abren
-// los enlaces solos y darían de baja sin querer); al confirmar, cambia el permiso
-// en su ficha: comerciales de quien lo recibe (o de su correo, si es un contacto
-// de la web), o las de actividades de su alumno.
+// Preferencias desde el correo (#515): el enlace del pie de cada correo de
+// campaña abre, sin iniciar sesión, lo mismo que «Permisos y comunicaciones» del
+// perfil: por cada persona de la familia, las comunicaciones de sus actividades y
+// las comerciales. Lo que se cambia se anota como consentimiento, igual que desde
+// el perfil. Nada se cambia al abrir la página (algunos programas de correo abren
+// los enlaces solos): solo al pulsar un botón.
+const TOKEN_PRUEBA = '0'.repeat(32);   // el de los correos de prueba: enseña la página sin guardar
+const COMS_PREFERENCIAS = [
+    ['actividades', 'Comunicaciones de sus actividades', 'Avisos e información de las actividades en las que está apuntado/a (clases individuales, exámenes…).'],
+    ['comunicaciones', 'Comunicaciones comerciales', 'Novedades, eventos y ofertas de otras actividades del club.'],
+];
+// El envío del token y, para él, a quién se le pueden cambiar las comunicaciones:
+// quien lo recibe y las personas a su cargo (como en el perfil) y el alumno por
+// el que le llegó; o, si es un contacto de la web sin ficha, solo su correo.
+async function preferenciasDeEnvio(token) {
+    const r = await pool.query(
+        `SELECT e.id, e.email, e.persona_id, e.destinatario_id, e.baja_at, k.tipo FROM aim_campana_envios e JOIN aim_campana_correos k ON k.id = e.correo_id WHERE e.token = $1`, [token]);
+    const e = r.rows[0];
+    if (!e) return null;
+    let personas = [];
+    if (e.destinatario_id || e.persona_id) {
+        const ids = e.destinatario_id ? await personasAMiCargo(e.destinatario_id) : [];
+        if (e.persona_id && !ids.includes(e.persona_id)) ids.push(e.persona_id);
+        const p = await pool.query(
+            `SELECT u.user_id, u.name, u.surname,
+                    ${sqlUltimoConsentimiento('u.user_id', 'actividades')} AS actividades,
+                    ${sqlUltimoConsentimiento('u.user_id', 'comunicaciones')} AS comunicaciones
+             FROM users u WHERE u.user_id = ANY($1::uuid[])
+             ORDER BY (u.user_id = $2) DESC, u.name`, [ids, e.destinatario_id]);
+        personas = p.rows.map(x => ({
+            id: x.user_id, nombre: `${x.name || ''} ${x.surname || ''}`.trim(), yo: x.user_id === e.destinatario_id,
+            // Lo que vale al enviar: las de actividades salen salvo que diga que no;
+            // las comerciales, solo si dijo que sí.
+            actividades: x.actividades !== false, comunicaciones: x.comunicaciones === true,
+                    }));
+    } else {
+        const v = await aceptaComercial(pool, null, e.email);
+        personas = [{ id: null, nombre: e.email, yo: true, soloComerciales: true, comunicaciones: v }];
+    }
+    return { ...e, personas };
+}
+function paginaPreferencias(token, d, { aviso = '', prueba = false } = {}) {
+    const casilla = (name, marcada) => `<input type="checkbox" name="${name}" value="1"${marcada ? ' checked' : ''} style="width:22px;height:22px;accent-color:#5233A8;flex-shrink:0;margin:2px 0 0">`;
+    const tarjetas = d.personas.map((p, i) => `
+        <div style="border:1px solid #e7e3dc;border-radius:14px;padding:14px 16px;margin-top:12px;text-align:left" data-persona="${i}">
+          <div style="font-weight:800;font-size:15px;margin-bottom:6px">${escHtml(p.nombre)}${p.yo && !p.soloComerciales ? ' (tú)' : ''}</div>
+          ${COMS_PREFERENCIAS.filter(([t]) => !p.soloComerciales || t === 'comunicaciones').map(([t, titulo, ayuda]) => `
+            <label style="display:flex;gap:12px;align-items:flex-start;padding:8px 0;cursor:pointer">
+              ${casilla(`${t}_${i}`, p[t])}
+              <span><b style="font-size:14px">${titulo}</b><br><span style="font-size:12px;color:#777">${ayuda}</span></span>
+            </label>`).join('')}
+        </div>`).join('');
+    const boton = (accion, texto, principal) => `<button type="submit" name="accion" value="${accion}"${prueba ? ' disabled' : ''} style="background:${principal ? '#5233A8' : '#fff'};color:${principal ? '#fff' : '#5233A8'};border:${principal ? '0' : '1.5px solid #5233A8'};border-radius:10px;padding:12px 18px;font-weight:700;font-size:15px;cursor:${prueba ? 'not-allowed' : 'pointer'};margin:6px 4px 0">${texto}</button>`;
+    return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+      <meta name="robots" content="noindex"><title>Tus comunicaciones · AIM Education</title></head>
+      <body style="font-family:system-ui,sans-serif;background:#f6f5f2;margin:0;padding:32px 16px;color:#1a1a1a">
+        <div style="max-width:520px;margin:0 auto;background:#fff;border-radius:16px;padding:26px;box-shadow:0 6px 24px rgba(0,0,0,.08);text-align:center" data-preferencias>
+          <h1 style="font-size:21px;margin:0 0 8px">Qué correos quieres recibir</h1>
+          <p style="font-size:14px;color:#555;line-height:1.5;margin:0">Correos del club a <b>${escHtml(d.email)}</b>. Marca lo que quieres seguir recibiendo y guarda.</p>
+          ${prueba ? `<p style="font-size:13px;font-weight:700;color:#b85c00;background:#fff4e5;border-radius:10px;padding:10px;margin:14px 0 0">Esto es un correo de prueba: así verá esta página quien reciba la campaña. Aquí no se guarda nada.</p>` : ''}
+          ${aviso ? `<p style="font-size:14px;font-weight:700;color:#0f7b5f;background:#e6f6f1;border-radius:10px;padding:10px;margin:14px 0 0" data-aviso>${aviso}</p>` : ''}
+          <form method="post">
+            ${tarjetas}
+            <div style="margin-top:16px">${boton('guardar', 'Guardar', true)}${boton('todo', 'No quiero recibir ninguno', false)}</div>
+          </form>
+          <p style="font-size:12px;color:#888;line-height:1.5;margin:18px 0 0">Los avisos necesarios sobre tus clases y tus pagos (recibos, cambios de horario…) te seguirán llegando. También puedes cambiar esto desde tu perfil en la web.</p>
+          <p style="font-size:12px;color:#999;margin:12px 0 0">AIM Education · Algeciras</p>
+        </div>
+      </body></html>`;
+}
+const DEMO_PREFERENCIAS = { email: 'correo@ejemplo.com', personas: [
+    { nombre: 'Madre o padre', yo: true, actividades: true, comunicaciones: true },
+    { nombre: 'Alumno de ejemplo', actividades: true, comunicaciones: false },
+] };
 app.get('/baja/:token', async (req, res) => {
-    res.set('Content-Type', 'text/html; charset=utf-8');
+    res.set({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     try {
-        const r = await pool.query(
-            `SELECT e.email, e.baja_at, k.tipo FROM aim_campana_envios e JOIN aim_campana_correos k ON k.id = e.correo_id WHERE e.token = $1`, [req.params.token]);
-        const e = r.rows[0];
-        if (!e || e.tipo === 'servicio') return res.status(404).send(paginaCorreo('Enlace no válido', 'Este enlace de baja no es correcto o ha caducado. Si quieres dejar de recibir correos, cámbialo en tu perfil de la web o escríbenos.'));
-        if (e.baja_at) return res.send(paginaCorreo('Ya estás dado de baja', `No volverás a recibir estas comunicaciones en <b>${escHtml(e.email)}</b>. Puedes cambiarlo cuando quieras desde tu perfil en la web.`));
-        const que = e.tipo === 'comercial' ? 'las comunicaciones comerciales (novedades, eventos y ofertas)' : 'las comunicaciones de sus actividades';
-        res.send(paginaCorreo('¿Darte de baja?', `Dejarás de recibir ${que} del club en <b>${escHtml(e.email)}</b>.`,
-            `<form method="post" style="margin-top:18px"><button type="submit" style="background:#5233A8;color:#fff;border:0;border-radius:10px;padding:12px 20px;font-weight:700;font-size:15px;cursor:pointer">Sí, darme de baja</button></form>`));
+        if (req.params.token === TOKEN_PRUEBA) return res.send(paginaPreferencias(TOKEN_PRUEBA, DEMO_PREFERENCIAS, { prueba: true }));
+        const d = /^[0-9a-f]{32}$/.test(req.params.token) ? await preferenciasDeEnvio(req.params.token) : null;
+        if (!d) return res.status(404).send(paginaCorreo('Enlace no válido', 'Este enlace no es correcto o ha caducado. Si quieres dejar de recibir correos, cámbialo en tu perfil de la web o escríbenos.'));
+        res.send(paginaPreferencias(req.params.token, d));
     } catch { res.status(500).send(paginaCorreo('Algo ha fallado', 'Vuelve a intentarlo en un rato.')); }
 });
+// Guardar. Sin «accion» es la baja de un clic que piden Gmail y otros con la
+// cabecera List-Unsubscribe-Post: se quita solo el tipo de ese correo.
 app.post('/baja/:token', async (req, res) => {
-    res.set('Content-Type', 'text/html; charset=utf-8');
+    res.set({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     try {
-        const r = await pool.query(
-            `SELECT e.id, e.email, e.persona_id, e.destinatario_id, e.baja_at, k.tipo FROM aim_campana_envios e JOIN aim_campana_correos k ON k.id = e.correo_id WHERE e.token = $1`, [req.params.token]);
-        const e = r.rows[0];
-        if (!e || e.tipo === 'servicio') return res.status(404).send(paginaCorreo('Enlace no válido', 'Este enlace de baja no es correcto.'));
-        if (!e.baja_at) {
-            if (e.tipo === 'comercial') {
-                await anotarConsentimiento(pool, req, { userId: e.destinatario_id || null, email: e.email, tipo: 'comunicaciones', otorgado: false, origen: 'baja desde correo' });
-            } else if (e.persona_id) {
-                await anotarConsentimiento(pool, req, { userId: e.persona_id, email: e.email, tipo: 'actividades', otorgado: false, origen: 'baja desde correo' });
+        const d = /^[0-9a-f]{32}$/.test(req.params.token) ? await preferenciasDeEnvio(req.params.token) : null;
+        if (!d) return res.status(404).send(paginaCorreo('Enlace no válido', 'Este enlace no es correcto.'));
+        const accion = String(req.body?.accion || '');
+        // Lo que toca el correo de este enlace: las comerciales de quien lo recibe
+        // o las de actividades del alumno por el que le llegó.
+        const deEsteCorreo = (p, t) => (d.tipo === 'comercial' && t === 'comunicaciones' && (p.yo || p.soloComerciales))
+            || (d.tipo === 'actividades' && t === 'actividades' && p.id === d.persona_id);
+        const quiere = (p, i, t) => accion === 'todo' ? false
+            : accion === 'guardar' ? req.body?.[`${t}_${i}`] === '1'
+            : deEsteCorreo(p, t) ? false : p[t];   // un clic: fuera solo lo de este correo
+        let cambios = 0, quitado = false;
+        for (const [i, p] of d.personas.entries()) {
+            for (const [t] of COMS_PREFERENCIAS) {
+                if (p.soloComerciales && t !== 'comunicaciones') continue;
+                const v = quiere(p, i, t);
+                if (!v && deEsteCorreo(p, t)) quitado = true;   // cuenta como baja de la campaña
+                if (v === p[t]) continue;
+                await anotarConsentimiento(pool, req, { userId: p.id, email: d.email, tipo: t, otorgado: v, origen: accion ? 'preferencias desde correo' : 'baja desde correo' });
+                cambios++;
             }
-            await pool.query(`UPDATE aim_campana_envios SET baja_at = NOW() WHERE id = $1`, [e.id]);
         }
-        res.send(paginaCorreo('Hecho: te has dado de baja', `No volverás a recibir estas comunicaciones en <b>${escHtml(e.email)}</b>. Si cambias de idea, puedes volver a activarlas desde tu perfil en la web.`));
+        if (quitado && !d.baja_at) await pool.query(`UPDATE aim_campana_envios SET baja_at = NOW() WHERE id = $1`, [d.id]);
+        if (!accion) return res.send(paginaCorreo('Hecho: te has dado de baja', `No volverás a recibir estas comunicaciones en <b>${escHtml(d.email)}</b>. Si cambias de idea, puedes volver a activarlas desde tu perfil en la web.`));
+        const nuevo = await preferenciasDeEnvio(req.params.token);
+        res.send(paginaPreferencias(req.params.token, nuevo, {
+            aviso: accion === 'todo' ? 'Hecho: ya no te llegará ninguno de estos correos.' : cambios ? 'Guardado. Se aplica desde ya.' : 'No había nada que cambiar.',
+        }));
     } catch { res.status(500).send(paginaCorreo('Algo ha fallado', 'Vuelve a intentarlo en un rato.')); }
 });
 
