@@ -12099,6 +12099,8 @@ async function candidatosAutomatismo(id, cfg) {
         const rachas = await rachasDeFaltas({ minimo: cfg.ajustes?.faltas || FALTAS_PARA_LLAMAR });
         const limite = String(desde).slice(0, 10);
         return rachas
+            // Si la familia ya avisó de que iba a faltar (#525), no se le escribe.
+            .filter(f => !f.avisoFalta)
             .filter(f => String(new Date(f.ultimaFalta).toISOString()).slice(0, 10) >= limite)
             .map(f => ({
                 personaId: f.studentId,
@@ -17045,7 +17047,7 @@ async function resumenInstructor(yo) {
         grupos: grupos.length,
         alumnos: alumnos.rows[0].n,
         faltas: faltas.filter(f => mios.has(String(f.groupId))).slice(0, 10)
-            .map(f => ({ id: f.studentId, alumno: f.alumno, clase: f.clase, racha: f.racha })),
+            .map(f => ({ id: f.studentId, alumno: f.alumno, clase: f.clase, racha: f.racha, avisoHasta: f.avisoFalta?.hasta || null })),
         cumples, speaking, eventos,
         eventosPedidos: pedidos.rows,
     };
@@ -17651,10 +17653,11 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         // Faltas seguidas: a partir de FALTAS_PARA_LLAMAR, hay que llamar a la
         // familia. Un aviso por alumno y clase; vuelve a encenderse si sigue
         // faltando (sube el número) o si empieza otra racha (la clave lleva el día
-        // en que empezó). Las que secretaría ya ha llamado (#402, #414) no salen.
+        // en que empezó). Las que secretaría ya ha llamado (#402, #414) no salen,
+        // ni las de quien avisó de que iba a faltar (#525).
         if (recibe('faltas')) {
             fuente('Faltas', ['faltas:resto'], async () => {
-                const faltas = (await avisoCompartido('faltas', () => rachasDeFaltas({ minimo: FALTAS_PARA_LLAMAR }))).filter(f => !f.contactado);
+                const faltas = (await avisoCompartido('faltas', () => rachasDeFaltas({ minimo: FALTAS_PARA_LLAMAR }))).filter(f => f.llamar);
                 const l = faltas.slice(0, 10).map(f => ({
                     tipo: 'faltas', destino: '/admin/faltas', n: f.racha, fecha: f.ultimaFalta,
                     clave: `faltas:${f.studentId}:${f.groupId}:${new Date(f.desde).toISOString().slice(0, 10)}`,
@@ -18551,6 +18554,13 @@ app.get('/api/admin/speaking/historial', authenticateSession, requireIndividuale
 // está enfermo y vuelve en una semana, no hay que llamar a la quinta falta).
 // Llamada con 4 → vuelve a avisar con 8, luego con 12… Una racha nueva (otro
 // «desde») no se ve afectada por las llamadas de las anteriores.
+//
+// Si la familia avisa de que el alumno va a faltar una temporada (#525), se
+// apunta con sus fechas: otra fila en aim_comunicaciones (tipo 'aviso_falta',
+// plantilla 'aviso:faltas:{desde}:{hasta}', en todas sus clases). Mientras la
+// última falta de una racha caiga dentro de esas fechas, no sale el correo de
+// «Faltas seguidas» ni hay que llamar. Si pasado el «hasta» sigue sin venir,
+// vuelve a contar como siempre.
 const llamadaDeFaltas = (groupId, desde, racha) => `llamada:faltas:${groupId}:${desde}:${racha}`;
 async function rachasDeFaltas({ minimo = 1, studentId = null } = {}) {
     const r = await pool.query(
@@ -18578,6 +18588,7 @@ async function rachasDeFaltas({ minimo = 1, studentId = null } = {}) {
              GROUP BY 1, 2
          )
          SELECT r.*, c.ultima_vez, g.name AS clase, ac.name AS actividad,
+                av.id AS aviso_id, av.desde AS aviso_desde, av.hasta AS aviso_hasta, av.cuerpo AS aviso_nota,
                 ll.id AS llamada_id, ll.cuerpo AS llamada_nota, ll.created_at AS llamada_at, ll.quien AS llamada_quien, ll.racha AS llamada_racha,
                 TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno, u.phone, u.birthday,
                 (SELECT COUNT(*)::int FROM tul_attendance x WHERE x.student_id = r.student_id AND x.group_id = r.group_id
@@ -18609,6 +18620,15 @@ async function rachasDeFaltas({ minimo = 1, studentId = null } = {}) {
              ORDER BY split_part(lc.plantilla, ':', 5)::int DESC, lc.created_at DESC
              LIMIT 1
          ) ll ON true
+         LEFT JOIN LATERAL (
+             SELECT av.id, av.cuerpo, split_part(av.plantilla, ':', 3) AS desde, split_part(av.plantilla, ':', 4) AS hasta
+             FROM aim_comunicaciones av
+             WHERE av.persona_id = r.student_id AND av.tipo = 'aviso_falta'
+               AND split_part(av.plantilla, ':', 3) <= r.ultima_falta::date::text
+               AND split_part(av.plantilla, ':', 4) >= r.ultima_falta::date::text
+             ORDER BY split_part(av.plantilla, ':', 4) DESC
+             LIMIT 1
+         ) av ON true
          WHERE r.racha >= $2
          ORDER BY r.racha DESC, r.ultima_falta DESC, alumno`, [AIM_CLUB_ID, Math.max(1, minimo), studentId]);
     return r.rows.map(x => ({
@@ -18622,7 +18642,8 @@ async function rachasDeFaltas({ minimo = 1, studentId = null } = {}) {
             avisaDeNuevo: x.llamada_racha + FALTAS_PARA_LLAMAR,
         } : null,
         contactado: !!x.llamada_id && x.racha < x.llamada_racha + FALTAS_PARA_LLAMAR,
-    })).map(f => ({ ...f, llamar: f.racha >= FALTAS_PARA_LLAMAR && !f.contactado }));
+        avisoFalta: x.aviso_id ? { id: x.aviso_id, desde: x.aviso_desde, hasta: x.aviso_hasta, nota: x.aviso_nota || '' } : null,
+    })).map(f => ({ ...f, llamar: f.racha >= FALTAS_PARA_LLAMAR && !f.contactado && !f.avisoFalta }));
 }
 
 app.get('/api/admin/faltas', authenticateSession, requireSeccion('faltas'), async (req, res) => {
@@ -18675,6 +18696,62 @@ app.delete('/api/admin/faltas/llamada/:id', authenticateSession, requireSeccion(
         const r = await pool.query(
             `DELETE FROM aim_comunicaciones WHERE id = $1 AND tipo = 'llamada' AND plantilla LIKE 'llamada:faltas:%' RETURNING id`, [id]);
         if (!r.rowCount) return res.status(404).json({ error: 'Esa llamada ya no está apuntada.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// «Ha avisado de que va a faltar» (#525): del día «desde» (hoy, si no se dice)
+// al «hasta», en todas sus clases. Sale en su ficha y en la lista de faltas.
+app.get('/api/admin/faltas/avisos/:studentId', authenticateSession, requireSeccion('faltas'), async (req, res) => {
+    const studentId = String(req.params.studentId || '');
+    if (!UUID_RE.test(studentId)) return res.status(400).json({ error: 'Falta el alumno.' });
+    try {
+        const [av, cl] = await Promise.all([
+            pool.query(
+                `SELECT c.id, c.cuerpo, c.created_at, split_part(c.plantilla, ':', 3) AS desde, split_part(c.plantilla, ':', 4) AS hasta,
+                        NULLIF(TRIM(CONCAT(e.name, ' ', COALESCE(e.surname, ''))), '') AS quien
+                 FROM aim_comunicaciones c LEFT JOIN users e ON e.user_id = c.enviado_por
+                 WHERE c.persona_id = $1 AND c.tipo = 'aviso_falta' AND split_part(c.plantilla, ':', 4) >= ${SQL_HOY_MADRID}::text
+                 ORDER BY 4, c.id`, [studentId]),
+            pool.query(`SELECT EXISTS (SELECT 1 FROM tul_group_students WHERE student_id = $1) AS si`, [studentId]),
+        ]);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            hoy: hoyMadrid(), tieneClases: cl.rows[0].si,
+            avisos: av.rows.map(x => ({ id: x.id, desde: x.desde, hasta: x.hasta, nota: x.cuerpo || '', quien: x.quien, at: x.created_at })),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.post('/api/admin/faltas/aviso', authenticateSession, requireSeccion('faltas'), async (req, res) => {
+    const studentId = String(req.body?.studentId || '');
+    const hoy = hoyMadrid();
+    const desde = String(req.body?.desde || hoy);
+    const hasta = String(req.body?.hasta || '');
+    const nota = String(req.body?.nota || '').trim().slice(0, 1000);
+    if (!UUID_RE.test(studentId)) return res.status(400).json({ error: 'Falta el alumno.' });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(desde) || !/^\d{4}-\d{2}-\d{2}$/.test(hasta)) return res.status(400).json({ error: 'Pon hasta qué día va a faltar.' });
+    if (hasta < desde) return res.status(400).json({ error: 'El «hasta» no puede ser antes del «desde».' });
+    if (hasta < hoy) return res.status(400).json({ error: 'Esas fechas ya han pasado.' });
+    const dia = (f, n) => new Date(Date.parse(`${f}T12:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+    if (desde < dia(hoy, -60)) return res.status(400).json({ error: 'El «desde» puede ser como mucho de hace dos meses.' });
+    if (hasta > dia(desde, 366)) return res.status(400).json({ error: 'Como mucho, un año seguido.' });
+    try {
+        const u = await pool.query(`SELECT 1 FROM users WHERE user_id = $1 AND club_id = $2`, [studentId, AIM_CLUB_ID]);
+        if (!u.rowCount) return res.status(404).json({ error: 'Esa persona no es del club.' });
+        const r = await pool.query(
+            `INSERT INTO aim_comunicaciones (persona_id, destinatarios, asunto, cuerpo, plantilla, tipo, estado, enviado_por)
+             VALUES ($1, '{}', $2, $3, $4, 'aviso_falta', 'hecha', $5) RETURNING id`,
+            [studentId, desde === hasta ? `Avisó de que va a faltar el ${fechaCorta(desde)}` : `Avisó de que va a faltar del ${fechaCorta(desde)} al ${fechaCorta(hasta)}`,
+                nota, `aviso:faltas:${desde}:${hasta}`, req.userSession.userId]);
+        res.json({ success: true, id: r.rows[0].id });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.delete('/api/admin/faltas/aviso/:id', authenticateSession, requireSeccion('faltas'), async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Ese aviso no existe.' });
+    try {
+        const r = await pool.query(`DELETE FROM aim_comunicaciones WHERE id = $1 AND tipo = 'aviso_falta' RETURNING id`, [id]);
+        if (!r.rowCount) return res.status(404).json({ error: 'Ese aviso ya no está apuntado.' });
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });

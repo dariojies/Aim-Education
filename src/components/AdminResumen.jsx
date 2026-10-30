@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { I } from './Icons.jsx';
 import { ACT_BY_ID } from './Shared.jsx';
+import { fmtFecha } from '../fechas.js';
 import { marcarAvisosVistos, ordenarAvisos } from './Campanita.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -259,7 +260,9 @@ function vistaInstructor({ d, clases, ir, irRuta, como }) {
       [<ClasesHoy key="c" clases={clases} ir={ir} irRuta={como ? null : irRuta} titulo={`${su} clases de hoy`} />],
       [<Bloque key="f" vacia={!d.faltas.length} titulo="Alumnos que faltan seguido" sub="3 o más clases seguidas sin venir">
         <Lista items={d.faltas} max={6} vacio="Nadie. ¡Bien!" render={f => (
-          <Fila key={`${f.id}-${f.clase}`} centro={<><b>{f.alumno}</b><span style={suave}> · {f.clase}</span></>} der={<Estado tipo="aviso">{f.racha} seguidas</Estado>} />
+          <Fila key={`${f.id}-${f.clase}`} centro={<><b>{f.alumno}</b><span style={suave}> · {f.clase}</span></>} der={f.avisoHasta
+            ? <Estado tipo="info">{f.racha} · avisó, hasta el {fmtFecha(f.avisoHasta)}</Estado>
+            : <Estado tipo="aviso">{f.racha} seguidas</Estado>} />
         )} />
       </Bloque>],
       [

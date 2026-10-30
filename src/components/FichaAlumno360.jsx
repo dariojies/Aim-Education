@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { I } from './Icons.jsx';
+import AvisosFaltaFicha from './AvisosFalta.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Ficha 360º del alumno (ticket #222): dentro de la ficha de Alumnos, todo lo
@@ -184,6 +185,8 @@ export default function FichaAlumno360({ studentId }) {
         extra={<select value={periodoAsis} onChange={e => setPeriodoAsis(e.target.value)} style={{ ...selCss, padding: '6px 10px', fontSize: 13 }}>
           {PERIODOS_ASIS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
         </select>}>
+        {/* Si la familia avisa de que va a faltar unos días (#525). */}
+        <AvisosFaltaFicha studentId={studentId} />
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
           {['present', 'late', 'absent'].map(k => {
             const [lbl, col] = ASIS_LABEL[k];

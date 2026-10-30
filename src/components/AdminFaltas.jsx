@@ -3,6 +3,7 @@ import { I } from './Icons.jsx';
 import { useEnVivo } from '../envivo.js';
 import { fmtFecha } from '../fechas.js';
 import { FALTAS_PARA_LLAMAR } from '../../permisos.js';
+import { FormAvisoFalta, AvisoApuntado } from './AvisosFalta.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Faltas seguidas: para que secretaría vea qué alumnos llevan varias clases sin
@@ -12,7 +13,9 @@ import { FALTAS_PARA_LLAMAR } from '../../permisos.js';
 // FALTAS_PARA_LLAMAR seguidas hay que llamar, y a secretaría le llega el aviso
 // en la campanita. Cuando llama, lo apunta con «Ya he llamado» (#402): el aviso
 // se apaga hasta que falte otras FALTAS_PARA_LLAMAR veces seguidas (#414), y la
-// llamada queda en su ficha.
+// llamada queda en su ficha. Si la familia ha avisado de que va a faltar unos
+// días (#525), se apunta con sus fechas y mientras tanto ni se llama ni sale el
+// correo automático de faltas.
 // Y el resumen de un mes: cuántas faltas tiene cada alumno (sumando sus clases)
 // y quién no ha venido ningún día.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -61,7 +64,7 @@ function FaltasSeguidas({ onAbrirFicha }) {
       .filter(f => !t || sinTildes(`${f.alumno} ${f.clase}`).includes(t))
       .sort((a, b) => cuenta(b) - cuenta(a) || String(b.ultimaFalta).localeCompare(String(a.ultimaFalta)));
   }, [datos, modo, minimo, q]);
-  const nLlamar = (datos?.filas || []).filter(f => f.racha >= paraLlamar && !f.contactado).length;
+  const nLlamar = (datos?.filas || []).filter(f => f.llamar).length;
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
@@ -72,6 +75,8 @@ function FaltasSeguidas({ onAbrirFicha }) {
           hasta la última vez que vino. Una clase sin lista pasada no cuenta. A partir de {paraLlamar} faltas
           seguidas hay que llamar a la familia (te llega el aviso a la campanita). Cuando llames, pulsa
           «Ya he llamado»: el aviso se quita hasta que falte otras {paraLlamar} veces seguidas, y la llamada queda en su ficha.
+          Si la familia avisa de que no vendrá unos días, pulsa «Avisó de que va a faltar» (o apúntalo en su ficha):
+          hasta esa fecha no le llega el correo automático de faltas ni hay que llamar.
         </p>
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginTop: 12 }}>
           <div style={{ display: 'inline-flex', border: '1px solid var(--line)', borderRadius: 999, overflow: 'hidden', background: 'var(--bg-2)' }}>
@@ -113,11 +118,12 @@ function FaltasSeguidas({ onAbrirFicha }) {
           </div>
           {filas.map(f => {
             const n = cuenta(f);
-            const llamar = f.racha >= paraLlamar && !f.contactado;
+            const llamar = f.llamar;
             const llamado = f.racha >= paraLlamar && f.contactado;
+            const avisado = !!f.avisoFalta;
             return (
               <div key={`${f.studentId}:${f.groupId}`} className="data-table-row"
-                style={{ gridTemplateColumns: COLUMNAS, alignItems: 'center', background: llamar ? 'color-mix(in oklab, var(--danger, #dc2626) 6%, transparent)' : undefined, opacity: llamado ? 0.7 : undefined }}>
+                style={{ gridTemplateColumns: COLUMNAS, alignItems: 'center', background: llamar ? 'color-mix(in oklab, var(--danger, #dc2626) 6%, transparent)' : undefined, opacity: llamado || avisado ? 0.7 : undefined }}>
                 <div className="pri" style={{ minWidth: 0 }}>
                   <button type="button" onClick={() => onAbrirFicha?.({ id: f.studentId })} title="Abrir su ficha"
                     style={{ background: 'none', border: 0, padding: 0, fontFamily: 'inherit', fontWeight: 800, fontSize: 14, color: 'var(--ink)', cursor: 'pointer', textAlign: 'left' }}>
@@ -130,8 +136,9 @@ function FaltasSeguidas({ onAbrirFicha }) {
                   <span style={{ display: 'block', fontSize: 11, color: 'var(--ink-3)' }}>{f.actividad}</span>
                 </span>
                 <span>
-                  <b style={{ fontSize: 20, color: llamar ? 'var(--danger, #dc2626)' : llamado ? 'var(--ink-2)' : n >= 2 ? 'var(--orange)' : 'var(--ink)' }}>{n}</b>
+                  <b style={{ fontSize: 20, color: llamar ? 'var(--danger, #dc2626)' : llamado || avisado ? 'var(--ink-2)' : n >= 2 ? 'var(--orange)' : 'var(--ink)' }}>{n}</b>
                   {llamar && <span style={{ display: 'block', fontSize: 10, fontWeight: 800, color: 'var(--danger, #dc2626)', textTransform: 'uppercase' }}>Llamar</span>}
+                  {avisado && !llamado && <span style={{ display: 'block', fontSize: 10, fontWeight: 800, color: 'var(--blue, #1e6fd9)', textTransform: 'uppercase' }}>Avisó</span>}
                   {llamado && <span style={{ display: 'block', fontSize: 10, fontWeight: 800, color: 'var(--teal)', textTransform: 'uppercase' }}>Llamado</span>}
                   {modo === 'mes' && f.racha > f.rachaMes && <span style={{ display: 'block', fontSize: 10, color: 'var(--ink-3)' }}>{f.racha} entre meses</span>}
                 </span>
@@ -149,7 +156,12 @@ function FaltasSeguidas({ onAbrirFicha }) {
                   <span style={{ fontSize: 12, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {f.contactos || (f.telefono ? `${f.alumno} · ${f.telefono}` : 'sin contacto')}
                   </span>
-                  {f.racha >= paraLlamar && <Llamada f={f} onCambio={cargar} />}
+                  {avisado
+                    ? <AvisoApuntado aviso={f.avisoFalta} onQuitado={cargar} compacto />
+                    : <>
+                        {f.racha >= paraLlamar && <Llamada f={f} onCambio={cargar} />}
+                        <AvisarFalta f={f} onCambio={cargar} />
+                      </>}
                 </div>
               </div>
             );
@@ -157,6 +169,21 @@ function FaltasSeguidas({ onAbrirFicha }) {
         </div>
       )}
     </div>
+  );
+}
+
+// «Avisó de que va a faltar» (#525): abre el formulario con sus fechas. Aquí
+// la familia suele avisar de las faltas que ya lleva, así que empieza el día en
+// que empezó a faltar (como mucho, de hace dos meses), no hoy.
+const haceDosMeses = () => new Date(Date.now() - 59 * 86400000).toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' });
+function AvisarFalta({ f, onCambio }) {
+  const [abierto, setAbierto] = useState(false);
+  const inicio = new Date(f.desde).toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' });
+  if (abierto) return <FormAvisoFalta studentId={f.studentId} desdeInicial={inicio < haceDosMeses() ? haceDosMeses() : inicio} onHecho={async () => { setAbierto(false); await onCambio(); }} onCancelar={() => setAbierto(false)} />;
+  return (
+    <button type="button" className="btn btn-sm btn-ghost" data-aviso-abrir style={{ justifySelf: 'start', padding: '2px 8px', fontSize: 11 }} onClick={() => setAbierto(true)}>
+      Avisó de que va a faltar
+    </button>
   );
 }
 
