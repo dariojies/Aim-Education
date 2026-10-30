@@ -589,11 +589,13 @@ function Cota({ c, escala }) {
 // Los elementos de la página p, cambiados con fn.
 const cambiarElementos = (d, p, fn) => { const v = paginaDe(d, p); return conPagina(d, p, { ...v, elementos: v.elementos.map(fn) }); };
 // El diseño rehecho desde la lista de sus páginas ({ fondo, elementos }).
+// Con la actividad de cada página (#516), que viaja con ella al moverla o borrarla.
 const desdePaginas = (d, lista) => {
-  const { paginas, ...resto } = d; // eslint-disable-line no-unused-vars
-  return { ...resto, fondo: lista[0].fondo, elementos: lista[0].elementos, ...(lista.length > 1 ? { paginas: lista.slice(1) } : {}) };
+  const { paginas, actividad, ...resto } = d; // eslint-disable-line no-unused-vars
+  const sinVacia = ({ actividad: a, ...p }) => (a ? { ...p, actividad: a } : p);
+  return { ...resto, ...sinVacia(lista[0]), ...(lista.length > 1 ? { paginas: lista.slice(1).map(sinVacia) } : {}) };
 };
-const paginasDe = (d) => todasLasPaginas(d).map(v => ({ fondo: v.fondo, elementos: v.elementos }));
+const paginasDe = (d) => todasLasPaginas(d).map(v => ({ fondo: v.fondo, elementos: v.elementos, actividad: v.actividad }));
 // Lo que se arrastra desde el panel (una imagen) hasta el lienzo o un marco.
 const TIPO_ARRASTRE = 'application/x-aim-design';
 const arrastrable = (url, ancho, alto) => ({
@@ -668,6 +670,13 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
   const diseno = useMemo(() => paginaDe(doc, pagina), [doc, pagina]);
   const vista = () => paginaDe(docRef.current, paginaRef.current);
   const ejemplo = tipo === 'diploma' ? EJEMPLO_DIPLOMA : usoAuto ? EJEMPLO_AUTO[usoAuto] : null;
+  // En la plantilla de las historias de las actividades (#516), cada página
+  // puede ser de una: la lista sale de las clases del club.
+  const [actividadesClub, setActividadesClub] = useState([]);
+  useEffect(() => {
+    if (usoAuto !== 'actividad') return;
+    api('/api/admin/disenos/lote').then(r => setActividadesClub([...new Set((r.grupos || []).map(g => g.actividad).filter(Boolean))])).catch(() => {});
+  }, [usoAuto]);
   const sel = seleccion.length === 1 ? seleccion[0] : null;
   const setSel = useCallback((x) => setSeleccion(x ? [x] : []), []);
   const elegido = sel ? diseno.elementos.find(e => e.id === sel) || null : null;
@@ -1189,8 +1198,14 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
   function duplicarPagina() {
     if (paginas >= 20) { alert('Como mucho 20 páginas.'); return; }
     const p = paginaRef.current;
+    // La copia no es de ninguna actividad (#516): se le pone la suya después.
     aplicarDoc(d => { const l = paginasDe(d); l.splice(p + 1, 0, { fondo: l[p].fondo, elementos: l[p].elementos.map(e => ({ ...e, id: nuevoId() })) }); return desdePaginas(d, l); });
     irPagina(p + 1);
+  }
+  // De qué actividad es esta página (#516), en la plantilla de sus historias.
+  function actividadDePagina(a) {
+    const p = paginaRef.current;
+    aplicarDoc(d => { const l = paginasDe(d); l[p] = { ...l[p], actividad: a || undefined }; return desdePaginas(d, l); });
   }
   function borrarPagina() {
     if (paginas > 1 && diseno.elementos.some(fijo)) { showToast?.('Esta página tiene partes que ha dejado fijas la dirección: no se puede borrar.'); return; }
@@ -1959,9 +1974,21 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
             </> : <>
             {Array.from({ length: paginas }, (_, i) => (
               <button key={i} type="button" onClick={() => irPagina(i)} aria-label={`Página ${i + 1}`} aria-current={i === pagina}
+                title={usoAuto === 'actividad' ? (paginaDe(doc, i).actividad || 'Para las actividades sin página propia') : undefined}
                 style={{ minWidth: 30, height: 30, borderRadius: 8, cursor: 'pointer', font: 'inherit', fontSize: 13, fontWeight: 800, border: `2px solid ${i === pagina ? '#7C5CFF' : 'var(--line)'}`, background: i === pagina ? 'color-mix(in oklab, #7C5CFF 12%, var(--bg-2))' : 'var(--bg-3)', color: 'var(--ink)' }}>{i + 1}</button>
             ))}
             <button type="button" className="btn btn-sm btn-ghost" onClick={nuevaPagina} title="Añadir una página (carrusel, folleto de dos caras…)">＋ Página</button>
+            {usoAuto === 'actividad' && actividadesClub.length > 0 && (
+              <select value={paginaDe(doc, pagina).actividad || ''} onChange={e => actividadDePagina(e.target.value)} data-actividad-pagina
+                aria-label="De qué actividad es esta página" title="La historia de cada actividad sale con su página; las que no tienen, con la página «Las demás actividades»"
+                style={{ height: 30, borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', font: 'inherit', fontSize: 12.5, fontWeight: 700, maxWidth: movil ? 130 : 200 }}>
+                <option value="">Las demás actividades</option>
+                {[...new Set([...actividadesClub, ...(paginaDe(doc, pagina).actividad ? [paginaDe(doc, pagina).actividad] : [])])].map(a => {
+                  const otra = todasLasPaginas(doc).findIndex((v, j) => j !== pagina && v.actividad === a);
+                  return <option key={a} value={a} disabled={otra >= 0}>{a}{otra >= 0 ? ` (página ${otra + 1})` : ''}</option>;
+                })}
+              </select>
+            )}
             {paginas > 1 && <>
               <span style={{ width: 1, height: 22, background: 'var(--line)' }} />
               <button type="button" className="btn btn-sm btn-ghost" disabled={pagina === 0} onClick={() => moverPagina(-1)} title="Moverla antes">◀</button>
@@ -2189,6 +2216,11 @@ function PanelAnadir({ subirVideo, subiendoVideo, usoAuto, tipo, kit, anadirText
             </span>
           )}
           <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Se rellenan solos al publicarla o enviarla. Aquí se ven con un ejemplo.</span>
+          {usoAuto === 'actividad' && (
+            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+              Cada actividad puede tener su propia página (su logo, sus colores…): añade una página y, abajo, junto a los números de página, elige de qué actividad es. Las que no tienen página salen con la de «Las demás actividades».
+            </span>
+          )}
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {VARIABLES_AUTO[usoAuto].map(v => <button key={v.id} type="button" className="btn btn-sm btn-outline" title={v.nombre} onClick={() => anadirTexto(v.id === 'dia' || v.id === 'nombre' ? 'titulo' : 'subtitulo', `{${v.id}}`)}>{`{${v.id}}`}</button>)}
           </div>

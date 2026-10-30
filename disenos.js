@@ -901,7 +901,11 @@ export function crearDisenos({ pool, clubId, authenticateSession, requireSeccion
             if (!USOS_AUTOMATICOS[uso]) corta(400, 'Ese uso no existe.');
             const d = (await pool.query(`SELECT datos FROM aim_disenos WHERE id = $1`, [Number(req.params.id) || 0])).rows[0];
             if (!d) corta(404, 'Ese diseño ya no existe.');
-            const img = await pruebaAutomatico(pool, uso, d.datos);
+            // Las historias de las actividades (#516): con la página de la que se pida.
+            const { paginaParaActividad, EJEMPLO_AUTO } = await import('./src/disenos/render.js');
+            const act = uso === 'actividad' ? String(req.query.actividad || '') : '';
+            const img = await pruebaAutomatico(pool, uso, uso === 'actividad' ? paginaParaActividad(d.datos, act) : d.datos,
+                null, act ? { ...EJEMPLO_AUTO.actividad, actividad: act } : null);
             res.set('Content-Type', img.mime).set('Cache-Control', 'no-store').send(img.buf);
         } catch (err) { fallo(res, err); }
     });

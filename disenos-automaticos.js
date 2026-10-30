@@ -232,10 +232,10 @@ export async function felicitacionCumple(pool, variables) {
 }
 
 // Cómo saldrá (para «Ver cómo sale» en Aim Design), con un diseño cualquiera.
-export async function pruebaAutomatico(pool, uso, datos, fecha = null) {
+export async function pruebaAutomatico(pool, uso, datos, fecha = null, propias = null) {
     const delDia = uso === 'festivo' && fecha ? (await festivosProximos(pool, fecha, fecha))[0]?.variables : null;
     const { EJEMPLO_AUTO } = await import('./src/disenos/render.js');
-    const variables = delDia || (uso === 'festivo' ? await ejemploFestivo(pool) : EJEMPLO_AUTO[uso] || { nombre: 'Lucía', edad: '9' });
+    const variables = propias || delDia || (uso === 'festivo' ? await ejemploFestivo(pool) : EJEMPLO_AUTO[uso] || { nombre: 'Lucía', edad: '9' });
     return pintarEnServidor(datos, { variables });
 }
 // Para la tele de recepción (#493): la plantilla del festivo y los festivos

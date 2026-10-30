@@ -614,6 +614,7 @@ const campoA = { fontFamily: 'inherit', fontSize: 13, padding: '7px 9px', border
 function Automaticas({ onCerrar, showToast }) {
   const [d, setD] = useState(null);
   const [prueba, setPrueba] = useState(null);
+  const [actPrueba, setActPrueba] = useState('');   // probar una actividad concreta (#516)
   const cargar = () => api('/api/admin/redes-automaticas').then(setD).catch(e => { alert(e.message); onCerrar(); });
   useEffect(() => { cargar(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   async function guardar(cambio, aviso) {
@@ -623,7 +624,7 @@ function Automaticas({ onCerrar, showToast }) {
   const ponerHistorias = (c) => guardar({ historias: { ...historias, ...c } });
   async function verPrueba() {
     setPrueba({ cargando: true });
-    try { setPrueba(await api('/api/admin/redes-automaticas/prueba')); } catch (e) { setPrueba({ error: e.message }); }
+    try { setPrueba(await api(`/api/admin/redes-automaticas/prueba${actPrueba ? `?actividad=${encodeURIComponent(actPrueba)}` : ''}`)); } catch (e) { setPrueba({ error: e.message }); }
   }
   if (!d) return null;
   return (
@@ -671,6 +672,10 @@ function Automaticas({ onCerrar, showToast }) {
             </div>
           </div>
           <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <select value={actPrueba} onChange={e => setActPrueba(e.target.value)} aria-label="De qué actividad verla" style={campoA} data-actividad-prueba>
+              <option value="">Una cualquiera (como saldría)</option>
+              {d.actividades.map(a => <option key={a} value={a}>{a}</option>)}
+            </select>
             <button type="button" className="btn btn-sm btn-outline" disabled={!d.plantillas.actividad || prueba?.cargando} onClick={verPrueba}>{prueba?.cargando ? 'Preparándola…' : 'Ver cómo saldría ahora'}</button>
             {prueba?.error && <span style={{ fontSize: 13, color: 'var(--pink)' }}>{prueba.error}</span>}
             {prueba?.imagen && (
@@ -680,7 +685,7 @@ function Automaticas({ onCerrar, showToast }) {
                   <b>{prueba.actividad} · {prueba.clase}</b>
                   <span>{prueba.variables.plazas}</span><span>{prueba.variables.horario}</span><span>{prueba.variables.edades}</span>
                   {prueba.video && <span>Sale en vídeo (la plantilla se mueve).</span>}
-                  <span style={suave}>Es un ejemplo: no se guarda ni se publica. Cada vez puede salir otra.</span>
+                  <span style={suave}>Es un ejemplo: no se guarda ni se publica. Cada vez puede salir otra. Si la actividad tiene su página en la plantilla, sale con ella.</span>
                 </span>
               </div>
             )}

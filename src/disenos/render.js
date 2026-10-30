@@ -106,16 +106,34 @@ export const nuevoId = () => `e${Date.now().toString(36)}${(id++).toString(36)}`
 // ── Páginas ─────────────────────────────────────────────────────────────────
 export const numPaginas = (d) => 1 + (Array.isArray(d?.paginas) ? d.paginas.length : 0);
 // La página i, como un diseño de una página (la 0 es el propio diseño).
+// Cada página puede ser de una actividad (#516): `actividad`, en el propio
+// diseño la de la página 0 y en cada una de `paginas` la suya.
 export function paginaDe(d, i) {
   if (!i) return d;
   const p = d.paginas?.[i - 1];
-  return p ? { ...d, fondo: p.fondo, elementos: p.elementos || [] } : d;
+  return p ? { ...d, fondo: p.fondo, elementos: p.elementos || [], actividad: p.actividad } : d;
 }
 // Devuelve el diseño con la página i cambiada por v (lo que devuelve paginaDe, retocado).
+// La actividad de cada página no se toca aquí (va aparte, en la barra de páginas).
 export function conPagina(d, i, v) {
   if (!i) return v;
-  const { fondo, elementos, paginas, ...resto } = v; // eslint-disable-line no-unused-vars
-  return { ...d, ...resto, paginas: (d.paginas || []).map((p, j) => (j === i - 1 ? { ...p, fondo, elementos } : p)) };
+  const { fondo, elementos, paginas, actividad, ...resto } = v; // eslint-disable-line no-unused-vars
+  return { ...d, ...resto, actividad: d.actividad, paginas: (d.paginas || []).map((p, j) => (j === i - 1 ? { ...p, fondo, elementos } : p)) };
+}
+// La plantilla de las historias de las actividades (#516): la página de esa
+// actividad o, si no tiene, la primera que no es de ninguna (y si todas son de
+// otra, la primera). Devuelve un diseño de una sola página.
+const nombreActividad = (a) => String(a || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+export function indicePaginaActividad(d, actividad) {
+  const lista = [d, ...(d?.paginas || [])];
+  const suya = actividad ? lista.findIndex(p => p.actividad && nombreActividad(p.actividad) === nombreActividad(actividad)) : -1;
+  if (suya >= 0) return suya;
+  const general = lista.findIndex(p => !p.actividad);
+  return general >= 0 ? general : 0;
+}
+export function paginaParaActividad(d, actividad) {
+  const { paginas, ...una } = paginaDe(d, indicePaginaActividad(d, actividad)); // eslint-disable-line no-unused-vars
+  return una;
 }
 export const todasLasPaginas = (d) => Array.from({ length: numPaginas(d) }, (_, i) => paginaDe(d, i));
 const todosLosElementos = (d) => [...(d?.elementos || []), ...(d?.paginas || []).flatMap(p => p.elementos || [])];

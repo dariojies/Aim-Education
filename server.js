@@ -15331,7 +15331,7 @@ app.put('/api/admin/redes-automaticas', authenticateSession, requireSeccion('com
 // Cómo saldría ahora una historia de actividad (sin guardar nada).
 app.get('/api/admin/redes-automaticas/prueba', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
     try {
-        const p = await prepararHistoriaActividad(pool, { clubId: AIM_CLUB_ID });
+        const p = await prepararHistoriaActividad(pool, { clubId: AIM_CLUB_ID, solo: req.query.actividad ? String(req.query.actividad) : null });
         if (p.error) return res.json({ error: p.error });
         const img = p.medio.portada || p.medio.buf;
         const mini = await sharp(img).resize({ width: 540, withoutEnlargement: true }).jpeg({ quality: 82 }).toBuffer();

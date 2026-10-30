@@ -247,26 +247,29 @@ async function fotoAutorizada(pool, { clase, actividad, clubId, usadas }) {
 }
 // La historia de un momento: qué actividad, qué clase, qué foto y cómo sale.
 // Sin guardar nada (lo usa también «Ver cómo saldría hoy»).
-export async function prepararHistoriaActividad(pool, { clubId, hoyYa = [] }) {
+// solo: para probar una actividad concreta (#516), sin mirar las que no salen ni las de ayer.
+export async function prepararHistoriaActividad(pool, { clubId, hoyYa = [], solo = null }) {
     const cfg = await configRedesAuto(pool);
+    const { paginaParaActividad } = await import('./src/disenos/render.js');
     const d = await plantilla(pool, 'actividad');
     if (!d) return { error: 'No hay plantilla: en Aim Design, en el diseño, «Que salga solo… → Historias diarias de las actividades».' };
     const auto = (await pool.query(
         `SELECT resultado->'auto' AS a, programada_at FROM aim_social_publicaciones WHERE resultado->'auto'->>'uso' = 'actividad' AND programada_at > NOW() - INTERVAL '60 days'`)).rows;
     const usadas = auto.map(x => Number(x.a?.foto)).filter(Boolean);
-    const recientes = auto.filter(x => new Date(x.programada_at) > new Date(Date.now() - 2.5 * 86400e3)).map(x => x.a?.actividad).filter(Boolean);
-    const clases = await clasesConPlazas(pool, clubId);
-    const excluir = [...(cfg.historias.excluir || [])];
+    const recientes = solo ? [] : auto.filter(x => new Date(x.programada_at) > new Date(Date.now() - 2.5 * 86400e3)).map(x => x.a?.actividad).filter(Boolean);
+    const clases = (await clasesConPlazas(pool, clubId)).filter(c => !solo || c.actividad === solo);
+    const excluir = solo ? [] : [...(cfg.historias.excluir || [])];
     // Si una actividad no tiene ninguna foto con permiso, se prueba con otra (hasta acabarlas).
     for (let i = 0; i < 60; i++) {
         const e = elegirActividad(clases, { excluir, recientes, hoyYa });
-        if (!e) return { error: 'No hay ninguna actividad con fotos autorizadas para publicar.' };
+        if (!e) return { error: solo ? `${solo} no tiene ninguna foto autorizada para publicar (de un álbum suyo, con todos los etiquetados con permiso de fotos en redes).` : 'No hay ninguna actividad con fotos autorizadas para publicar.' };
         const foto = await fotoAutorizada(pool, { clase: e.clase, actividad: e.actividad, clubId, usadas });
         if (!foto) { excluir.push(e.actividad); continue; }
         const datosFoto = (await pool.query(`SELECT datos, mime FROM aim_galeria_fotos WHERE id = $1`, [foto.id])).rows[0];
         const url = `data:${datosFoto.mime || 'image/jpeg'};base64,${datosFoto.datos.toString('base64')}`;
         const variables = { actividad: e.actividad, clase: e.clase.name, plazas: textoPlazas(e.clase.libres), horario: horarioLegible(e.clase.time), edades: edades(e.clase.min_age, e.clase.max_age) };
-        const medio = await medioDe(d, { url }, variables);
+        // Con la página de su actividad, si la plantilla tiene una (#516).
+        const medio = await medioDe({ ...d, datos: paginaParaActividad(d.datos, e.actividad) }, { url }, variables);
         return { actividad: e.actividad, clase: e.clase.name, grupo: e.clase.group_id, foto: foto.id, variables, medio, disenoId: d.id };
     }
     return { error: 'Ninguna actividad tiene fotos autorizadas sin usar (con todos los etiquetados con permiso de fotos en redes).' };
