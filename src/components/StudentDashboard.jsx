@@ -486,6 +486,7 @@ function DashOverview({ go, setView }) {
               <div style={{fontSize: 12, opacity: .8, textTransform: "uppercase", letterSpacing: ".1em", fontWeight: 700}}>Llevas ahorrado</div>
               <div style={{fontFamily: "var(--font-display)", fontSize: 42, fontWeight: 800, letterSpacing: "-.025em", marginTop: 6}} data-ahorrado>{Number(ahorro?.total || 0).toLocaleString("es-ES", {minimumFractionDigits: 2, maximumFractionDigits: 2})}€</div>
               <div style={{fontSize: 12, marginTop: 8, opacity: .9}}>{textoAhorro(ahorro)}</div>
+              <div style={{fontSize: 12, marginTop: 4, opacity: .9, lineHeight: 1.4}} data-descuento-varias>{DESCUENTO_VARIAS}</div>
               <button className="btn" style={{background: "var(--ink)", color: "white", marginTop: 14}} onClick={() => setView("payments")}>
                 Ver recibos <I.Arrow />
               </button>
@@ -736,8 +737,11 @@ const mesRec = (iso) => {
 const eurRec = (n) => `${Number(n || 0).toFixed(2)} €`;
 // Debajo de lo ahorrado (#514): de dónde sale, o cómo empezar a ahorrar.
 const textoAhorro = (a) => (Number(a?.total) > 0
-  ? 'Con los descuentos de tus recibos'
-  : 'Pagando juntas varias mensualidades del mismo mes tienes descuento');
+  ? 'Con los descuentos de tus recibos.'
+  : 'Todavía no has tenido descuentos.');
+// Cómo se ahorra (lo pidió Darío en #514): el descuento por varias actividades,
+// con los mismos tramos que aplica el cobro (tramoPorMensualidades en billing.js).
+const DESCUENTO_VARIAS = 'Con varias actividades contratadas, las mensualidades tienen descuento: un 5 % con 2, un 8 % con 3 y un 10 % con 4 o más.';
 
 // ── Vuelta del banco ─────────────────────────────────────────────────────────
 // Al volver de la pasarela no se puede soltar a la familia en la portada sin
@@ -1105,6 +1109,7 @@ function DashPayments() {
             <div className="l">Llevas ahorrado</div>
             <div className="v" data-ahorrado>{eurRec(ahorro?.total)}</div>
             <div style={{ marginTop: 8, fontSize: 13, color: 'var(--ink-2)' }}>{textoAhorro(ahorro)}</div>
+            <div style={{ marginTop: 4, fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.4 }} data-descuento-varias>{DESCUENTO_VARIAS}</div>
           </div>
           <div className="stat-card">
             <div className="l">Último pago</div>
