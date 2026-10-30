@@ -372,6 +372,7 @@ function useMovil() {
   return m;
 }
 const ALTO_BARRA_MOVIL = 62;
+const ANCHO_PANEL = 300;   // el panel de la derecha (propiedades de lo elegido)
 
 function Ventana({ titulo, children, onCerrar, ancho = 720 }) {
   useEffect(() => { const f = (e) => { if (e.key === 'Escape') onCerrar(); }; window.addEventListener('keydown', f); return () => window.removeEventListener('keydown', f); }, [onCerrar]);
@@ -628,7 +629,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
   const [recuadro, setRecuadro] = useState(null);     // el recuadro de elegir arrastrando
   const [verExportar, setVerExportar] = useState(false);
   const [verTamano, setVerTamano] = useState(false);
-  const [zona, setZona] = useState({ w: 800, h: 600 });
+  const [zona, setZona] = useState({ w: 800, h: 600, total: 800 });
   const [editando, setEditando] = useState(null);     // { id, cursor }: el texto que se escribe en el lienzo
   const [recortando, setRecortando] = useState(null); // la foto que se encuadra dentro de su caja
   const [tiempo, setTiempo] = useState(null);         // la animación, mientras se ve
@@ -704,10 +705,18 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
   // El tamaño del hueco central, para que el lienzo quepa entero (con la barra de páginas debajo).
   useEffect(() => {
     const el = zonaRef.current; if (!el) return undefined;
-    const ro = new ResizeObserver(([x]) => setZona({ w: x.contentRect.width, h: x.contentRect.height }));
+    // total: el ancho entero, con el hueco del panel de la derecha (#517) incluido.
+    const ro = new ResizeObserver(([x]) => setZona({ w: x.contentRect.width, h: x.contentRect.height, total: x.borderBoxSize?.[0]?.inlineSize ?? x.contentRect.width }));
     ro.observe(el); return () => ro.disconnect();
   }, []);
   const hoja = !movil ? null : panelAbierto ? '50dvh' : seleccion.length ? (hojaPequena ? '44px' : '42dvh') : null;
+  // El panel de la derecha (lo elegido) no tapa el diseño (#517): si, centrado
+  // en todo el ancho, quedaría debajo del panel, se le deja su hueco y el diseño
+  // se aparta a la izquierda (y se encoge si no cabe). Se mira con el ancho
+  // entero para que dejar el hueco no cambie la cuenta (no da saltos).
+  const HUECO_PANEL = ANCHO_PANEL + 28;
+  const escalaLlena = zoom ? Math.max(0.05, Math.min(6, zoom)) : Math.max(0.05, Math.min((zona.total - 48) / diseno.ancho, (zona.h - 110) / diseno.alto));
+  const reservaPanel = !movil && elegidos.length > 0 && (zona.total + diseno.ancho * escalaLlena) / 2 + 40 > zona.total - HUECO_PANEL ? HUECO_PANEL : 0;
   const ajustada = Math.max(0.05, Math.min((zona.w - (movil ? 24 : 48)) / diseno.ancho, (zona.h - (hoja ? 24 : movil ? 84 : 110)) / diseno.alto));
   const escala = zoom ? Math.max(0.05, Math.min(6, zoom)) : ajustada;
   // La cuadrícula y los márgenes de seguridad (5 mm en papel; si no, el 5 % del lado corto).
@@ -1876,7 +1885,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
           onDragOver={(ev) => { if ([...ev.dataTransfer.types].some(t => t === TIPO_ARRASTRE || t === 'Files')) { ev.preventDefault(); setSoltando(true); } }}
           onDragLeave={(ev) => { if (ev.currentTarget === ev.target) setSoltando(false); }}
           onDrop={soltar}
-          style={{ position: 'relative', overflow: 'hidden', display: 'grid', gridTemplateRows: 'minmax(0, 1fr) auto', justifyItems: 'center', ...(movil ? { gridRow: 1, gridColumn: 1, paddingBottom: hoja || 0, boxSizing: 'border-box' } : {}),
+          style={{ position: 'relative', overflow: 'hidden', display: 'grid', gridTemplateRows: 'minmax(0, 1fr) auto', justifyItems: 'center', ...(movil ? { gridRow: 1, gridColumn: 1, paddingBottom: hoja || 0, boxSizing: 'border-box' } : { paddingRight: reservaPanel, boxSizing: 'border-box' }),
             background: 'repeating-conic-gradient(color-mix(in oklab, var(--ink) 4%, var(--bg)) 0% 25%, var(--bg) 0% 50%) 50% / 24px 24px',
             outline: soltando ? '3px dashed #7C5CFF' : 'none', outlineOffset: -6 }}>
           <div ref={scrollRef} style={{ overflow: 'auto', width: '100%', height: '100%', minHeight: 0, touchAction: lapiz ? 'none' : 'pan-x pan-y', cursor: lapiz ? 'crosshair' : undefined }}>
@@ -2043,7 +2052,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
         <aside onPointerDown={ev => ev.stopPropagation()} aria-label="Propiedades"
           style={movil
             ? { position: 'absolute', left: 0, right: 0, bottom: ALTO_BARRA_MOVIL, height: hojaPequena ? 44 : '42dvh', boxSizing: 'border-box', zIndex: 27, background: 'var(--bg-2)', borderTop: '1px solid var(--line)', borderRadius: '16px 16px 0 0', boxShadow: '0 -12px 40px -12px rgba(0,0,0,.35)', overflowY: 'auto', padding: hojaPequena ? '6px 12px' : 12, display: 'grid', gap: 10, alignContent: 'start' }
-            : { position: 'absolute', right: 14, top: 14, bottom: 14, width: 300, zIndex: 20, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, boxShadow: '0 12px 40px -12px rgba(0,0,0,.35)', overflowY: 'auto', padding: 12, display: 'grid', gap: 10, alignContent: 'start' }}>
+            : { position: 'absolute', right: 14, top: 14, bottom: 14, width: ANCHO_PANEL, zIndex: 20, background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, boxShadow: '0 12px 40px -12px rgba(0,0,0,.35)', overflowY: 'auto', padding: 12, display: 'grid', gap: 10, alignContent: 'start' }}>
           {movil ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: hojaPequena ? 0 : -6 }}>
               <button type="button" className="icon-btn" onClick={() => setHojaPequena(v => !v)} aria-label={hojaPequena ? 'Ver las propiedades' : 'Encoger las propiedades'} aria-expanded={!hojaPequena}>{hojaPequena ? '▴' : '▾'}</button>
