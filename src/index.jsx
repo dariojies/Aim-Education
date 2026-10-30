@@ -3,9 +3,12 @@ import { createRoot } from 'react-dom/client';
 import App from './App';
 import './style.css';
 import { iniciarApp } from './app-movil';
+import { vigilarErrores, ProteccionErrores } from './errores-web';
 
 // Dentro de la app del móvil (#218): atrás, enlaces, descargas…
 iniciarApp();
+// Los errores del navegador, al Soporte (errores-web.jsx).
+vigilarErrores();
 
 // Si estando dentro una petición dice «no autenticado», la sesión ha caducado
 // (#366): se avisa a la App para que lo diga y lleve a entrar, en vez de que cada
@@ -24,4 +27,4 @@ window.fetch = async (...args) => {
   return r;
 };
 
-createRoot(document.getElementById('root')).render(<App />);
+createRoot(document.getElementById('root')).render(<ProteccionErrores><App /></ProteccionErrores>);

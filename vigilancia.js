@@ -10,6 +10,10 @@
 //  · y, cada pocos minutos, se comprueba de verdad cada servicio (base de datos,
 //    web, correo, Gmail, Meta, pagos…) y se guarda su historial de 24 h.
 //
+// Además avisa de cada error a quien escuche (alError): errores.js los convierte
+// en tickets. Lo que se apunta en el registro durante una petición va con ella:
+// si la petición acaba en error, es su detalle; si no, se avisa suelto.
+//
 // Las comprobaciones las define el servidor (necesitan sus piezas); aquí se
 // lanzan, se cronometran y se guardan. Nunca se enseña una clave.
 //
@@ -18,6 +22,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import express from 'express';
 import { monitorEventLoopDelay } from 'perf_hooks';
+import { AsyncLocalStorage } from 'async_hooks';
 
 const TAREAS = new Map();      // nombre → { nombre, cadaMs, veces, fallos, ultima, ultimaOk, duracionMs, error, errorAt, desde }
 const REGISTRO = [];           // { t, nivel, etiqueta, texto, veces }
@@ -26,6 +31,17 @@ const FALLOS_HTTP = [];        // las últimas peticiones con 5xx
 const MAX_REGISTRO = 300;
 const retardo = monitorEventLoopDelay({ resolution: 20 });
 retardo.enable();
+
+// Quien quiere enterarse de los errores ({ tipo: 'peticion' | 'tarea' | 'registro', … }).
+const OYENTES = [];
+export const alError = (fn) => { OYENTES.push(fn); };
+function avisar(e) {
+    if (contexto.getStore()?.silencio) return;
+    for (const fn of OYENTES) { try { fn(e); } catch { /* que avisar nunca rompa nada */ } }
+}
+// La petición en curso (lo que se apunta en el registro mientras dura) o
+// { silencio: true } para lo que no debe avisar (los propios avisos de errores).
+export const contexto = new AsyncLocalStorage();
 
 // El nombre de una tarea: el de su función o, si es anónima, la primera función
 // a la que llama («() => { cerrarFichajesAbiertos()… }» → cerrarFichajesAbiertos).
@@ -54,7 +70,10 @@ function nombreDe(fn) {
         const t = TAREAS.get(nombre) || { nombre, cadaMs: ms, veces: 0, fallos: 0, ultima: null, ultimaOk: null, duracionMs: null, error: null, errorAt: null, desde: Date.now() };
         t.cadaMs = ms;
         TAREAS.set(nombre, t);
-        const falla = (e, ini) => { t.fallos++; t.error = String(e?.message || e).slice(0, 300); t.errorAt = Date.now(); t.duracionMs = Date.now() - ini; };
+        const falla = (e, ini) => {
+            t.fallos++; t.error = String(e?.message || e).slice(0, 300); t.errorAt = Date.now(); t.duracionMs = Date.now() - ini;
+            avisar({ tipo: 'tarea', nombre, mensaje: t.error, pila: String(e?.stack || '').split('\n').slice(0, 6).join('\n') });
+        };
         const envuelta = function (...a) {
             const ini = Date.now();
             t.ultima = ini; t.veces++;
@@ -78,6 +97,11 @@ function apuntar(nivel, args) {
     const texto = args.map(x => (x instanceof Error ? String(x.stack || x.message).split('\n').slice(0, 2).join(' · ')
         : typeof x === 'string' ? x : (() => { try { return JSON.stringify(x); } catch { return String(x); } })())).join(' ').replace(/\s+/g, ' ').slice(0, 600);
     const etiqueta = /^\[([^\]]{1,40})\]/.exec(texto)?.[1] || null;
+    if (nivel === 'error') {
+        const ctx = contexto.getStore();
+        if (ctx?.errores && !ctx.fin) { if (ctx.errores.length < 5) ctx.errores.push(texto); }
+        else avisar({ tipo: 'registro', etiqueta, mensaje: texto });
+    }
     const ultimo = REGISTRO[REGISTRO.length - 1];
     // El mismo mensaje seguido se cuenta en vez de repetirse.
     if (ultimo && ultimo.texto === texto && ultimo.nivel === nivel && Date.now() - ultimo.t < 10 * 60_000) { ultimo.veces++; ultimo.t = Date.now(); return; }
@@ -91,7 +115,15 @@ export function medirPeticiones(req, res, next) {
     const ruta = req.originalUrl || '';
     if (!/^\/(api|webhooks|publico)\//.test(ruta)) return next();
     const ini = process.hrtime.bigint();
+    const ctx = { errores: [], fin: false };
+    // El mensaje de error que contesta (res.status(500).json({ error })).
+    const json = res.json;
+    res.json = function (cuerpo) {
+        if (res.statusCode >= 500 && cuerpo && typeof cuerpo.error === 'string') ctx.mensaje = cuerpo.error.slice(0, 500);
+        return json.call(this, cuerpo);
+    };
     res.on('finish', () => {
+        ctx.fin = true;
         const ms = Number(process.hrtime.bigint() - ini) / 1e6;
         const min = Math.floor(Date.now() / 60_000);
         const b = PETICIONES.get(min) || { n: 0, e4: 0, e5: 0, lentas: 0, ms: 0 };
@@ -103,9 +135,17 @@ export function medirPeticiones(req, res, next) {
         if (res.statusCode >= 500) {
             FALLOS_HTTP.push({ t: Date.now(), metodo: req.method, ruta: rutaLimpia(ruta), estado: res.statusCode, ms: Math.round(ms) });
             if (FALLOS_HTTP.length > 50) FALLOS_HTTP.shift();
+            const s = req.userSession;
+            contexto.run({}, () => avisar({
+                tipo: 'peticion', metodo: req.method, ruta: rutaLimpia(ruta), estado: res.statusCode,
+                mensaje: ctx.mensaje || null, registro: ctx.errores,
+                quien: s?.userId ? { id: s.userId, nombre: `${s.firstName || ''} ${s.lastName || ''}`.trim(), rol: s.nombreRol || (s.canAccessAdmin ? 'Personal' : 'Familia') } : null,
+            }));
+        } else {
+            contexto.run({}, () => { for (const texto of ctx.errores) avisar({ tipo: 'registro', etiqueta: /^\[([^\]]{1,40})\]/.exec(texto)?.[1] || null, mensaje: texto }); });
         }
     });
-    next();
+    contexto.run(ctx, next);
 }
 
 // El resumen de peticiones: por horas (24) y la última hora.

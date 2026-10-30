@@ -7095,7 +7095,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
 
           {ver("agenda") && <AdminAgenda showToast={showToast} user={user} puedePasarLista={!!permisos.secciones?.classes} />}
           {ver("fichaje") && <Fichaje showToast={showToast} permisos={permisos} enlace={enlace} />}
-          {ver("equipo_it") && <EquipoIT showToast={showToast} />}
+          {ver("equipo_it") && <EquipoIT showToast={showToast} nombreSeccion={sectionLabel} />}
           {ver("cambios") && <AdminCambios showToast={showToast} />}
           {ver("evaluacion") && <AdminEvaluacion showToast={showToast} />}
           {ver("aula") && <AdminAula showToast={showToast} />}

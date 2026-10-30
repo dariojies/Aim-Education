@@ -139,6 +139,12 @@ export default function App() {
   // Las páginas vistas, si se ha aceptado el análisis (#341). También la que
   // se está viendo justo al aceptarlo.
   useEffect(() => { registrarVisita(pathname); }, [pathname]);
+  // El uso del panel y del área de familias (sin decir quién: uso.js).
+  const conSesion = !!user;
+  useEffect(() => {
+    if (!conSesion || !/^\/(admin|dashboard)(\/|$)/.test(pathname)) return;
+    fetch('/api/uso', { method: 'POST', credentials: 'include', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ r: pathname, app: esApp }) }).catch(() => {});
+  }, [pathname, conSesion]);
   useEffect(() => {
     const f = (e) => { if (e.detail?.analitica) registrarVisita(window.location.pathname); };
     window.addEventListener('aim-cookies-cambio', f);

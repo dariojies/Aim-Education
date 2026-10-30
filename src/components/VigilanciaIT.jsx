@@ -36,6 +36,7 @@ const TAREA = {
   enviarRegistrosVerifactu: 'Mandar facturas a VERI*FACTU', recordatoriosValoracion: 'Pedir valoraciones de Brickslab', publicarProgramado: 'Publicar noticias programadas',
   reglasCorreoGeneral: 'Reglas del correo general', correosProgramadosBandeja: 'Enviar correos programados', 'Date.now': 'Limpiar sesiones caducadas',
   'ws.terminate': 'Latido de los móviles conectados', 'vistoEn.clear': 'Último contacto de los móviles',
+  erroresATickets: 'Errores a tickets de Soporte', guardarUsoDeLaWeb: 'Guardar el uso de la web',
 };
 
 async function api(url, opts = {}) {

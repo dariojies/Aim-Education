@@ -1,5 +1,7 @@
 // La vigilancia del Equipo IT va la primera: así ve todas las tareas automáticas.
 import { medirPeticiones, crearVigilancia, retardoBucle } from './vigilancia.js';
+import { crearErroresATickets, errorDelNavegador } from './errores.js';
+import { crearUso } from './uso.js';
 import express from 'express';
 import path from 'path';
 import tls from 'tls';
@@ -1937,6 +1939,21 @@ async function initDb() {
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_web_visitas_visitante ON aim_web_visitas (visitante, created_at DESC)`);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_web_visitas_fecha ON aim_web_visitas (created_at)`);
+        // El uso del panel y del área de familias (uso.js): por día, sección y
+        // tipo de persona. «quien» es una huella con la sal del día: cuenta
+        // personas distintas, pero no dice quién (la sal se cambia cada día).
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS aim_uso_diario (
+                dia DATE NOT NULL,
+                zona VARCHAR(20) NOT NULL,
+                seccion VARCHAR(60) NOT NULL,
+                canal VARCHAR(10) NOT NULL,
+                quien CHAR(20) NOT NULL,
+                rol VARCHAR(30) NOT NULL,
+                veces INT NOT NULL DEFAULT 0,
+                PRIMARY KEY (dia, zona, seccion, canal, quien)
+            )
+        `);
         // Avisos y llamadas a la acción de la web (#341): una barra arriba, una
         // ventana o un botón flotante, en las páginas y fechas que se elijan, con
         // sus vistas y clics.
@@ -16071,7 +16088,7 @@ app.get('/api/support', authenticateSession, async (req, res) => {
                    s.due_date, s.assigned_to, s.asignados_extra, s.app_label, s.dev_response, s.email_sent, s.recurrencia,
                    s.created_at, s.updated_at, s.resolved_at, s.vinculo_id,
                    (s.adjunto IS NOT NULL) AS tiene_adjunto, s.adjunto_nombre, s.adjunto_mime,
-                   COALESCE(u.name, kt.usuario_nombre, 'Admin') as name,
+                   COALESCE(u.name, kt.usuario_nombre, CASE WHEN s.user_id IS NULL AND s.description LIKE '%Código del error: %' THEN 'La web (aviso automático)' END, 'Admin') as name,
                    COALESCE(u.surname, '') as surname,
                    COALESCE(u.email, kt.usuario_email, '') as email,
                    ${SQL_ES_PERSONAL('u')} AS creador_personal,
@@ -21007,6 +21024,55 @@ const vigilancia = crearVigilancia({
     comprobaciones: COMPROBACIONES, interruptores: interruptoresWeb, servidor: servidorWeb,
 });
 app.use(vigilancia.router);
+
+// ── Los errores, a tickets ───────────────────────────────────────────────────
+// Lo que falla en la web abre solo un ticket de «Error» en Soporte y avisa al
+// Equipo IT, como un ticket nuevo (errores.js dice qué, cuándo y el freno).
+const erroresATickets = crearErroresATickets({
+    pool, anotarHistorial,
+    activo: () => /^web/.test(process.env.DYNO || '') || process.env.ERRORES_A_TICKETS === '1',
+    version: () => process.env.HEROKU_RELEASE_VERSION || null,
+    avisar: async (numero, asunto, descripcion) => {
+        if (!mailTransporter) return;
+        const para = await destinatariosTicket({ creador: null, encargados: [] });
+        if (!para.length) return;
+        const c = await correoSistema('aviso_ticket', { numero, asunto, autor: 'La web (aviso automático)', email: '' }, {
+            automaticos: { descripcion: `<div style="white-space:pre-wrap">${escHtml(descripcion)}</div>` },
+            automaticosTexto: { descripcion: `Descripción:\n${descripcion}` },
+        });
+        await mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: para.join(', '), ...c });
+        await pool.query('UPDATE tickets_registrosoporte SET email_sent = true WHERE id = $1', [numero]);
+    },
+});
+// Los errores del navegador (la pantalla rota, un fallo del código de la web).
+// Sin cuenta también (la web pública), con freno por IP.
+const erroresPorIp = new Map();
+app.post('/api/errores-navegador', async (req, res) => {
+    res.status(204).end();
+    const ip = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim();
+    const ahora = Date.now();
+    const recientes = (erroresPorIp.get(ip) || []).filter(t => ahora - t < 60_000);
+    if (recientes.length >= 10) return;
+    erroresPorIp.set(ip, [...recientes, ahora]);
+    if (erroresPorIp.size > 5000) erroresPorIp.clear();
+    const s = await sesionOpcional(req);
+    const quien = s?.userId ? { id: s.userId, nombre: `${s.firstName || ''} ${s.lastName || ''}`.trim(), rol: s.nombreRol || (s.canAccessAdmin ? 'Personal' : 'Familia') } : null;
+    const e = errorDelNavegador(req.body, quien);
+    if (e) erroresATickets.anotar(e);
+});
+
+// ── El uso de la web ─────────────────────────────────────────────────────────
+// Qué secciones del panel y del área de familias se abren (uso.js). Lo ve quien
+// entra a Equipo IT, en «Uso de la web».
+const usoWeb = crearUso({ pool, hoy: hoyMadrid });
+app.post('/api/uso', authenticateSession, (req, res) => {
+    usoWeb.apuntar(req.userSession, String(req.body?.r || '').slice(0, 300), req.body?.app === true);
+    res.status(204).end();
+});
+app.get('/api/admin/uso', authenticateSession, requireSeccion('equipo_it'), async (req, res) => {
+    try { res.set('Cache-Control', 'no-store'); res.json(await usoWeb.resumen(req.query.dias)); }
+    catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 // ── Equipo IT: planificación semanal ────────────────────────────────────────
 // Cada semana el Equipo IT se planifica qué días y a qué horas trabaja. Lo editan

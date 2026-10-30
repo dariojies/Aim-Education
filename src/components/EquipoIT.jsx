@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { I } from './Icons.jsx';
 import VigilanciaIT from './VigilanciaIT.jsx';
+import UsoWeb from './UsoWeb.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Equipo IT: la vigilancia de los servicios (solo el Equipo IT y los superadmin)
-// y la planificación semanal. Cada semana el equipo se organiza qué días y a qué
+// Equipo IT: la vigilancia de los servicios (solo el Equipo IT y los superadmin),
+// el uso de la web (quien entra aquí) y la planificación semanal. Cada semana el equipo se organiza qué días y a qué
 // horas trabaja cada uno. Lo editan el propio Equipo IT y los superadmin;
 // secretaría y dirección lo ven, pero no lo tocan (el servidor lo comprueba).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -31,23 +32,27 @@ async function enviar(url, body, method = 'POST') {
 
 const inp = { fontFamily: 'inherit', fontSize: 13, padding: '7px 9px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', minWidth: 0 };
 
-export default function EquipoIT({ showToast }) {
+export default function EquipoIT({ showToast, nombreSeccion }) {
   // La vigilancia solo la abre quien puede (el servidor contesta 403 al resto).
   const [puedeVigilar, setPuedeVigilar] = useState(null);
-  const [pestana, setPestana] = useState('vigilancia');
+  const [pestana, setPestana] = useState(null);
   useEffect(() => {
     fetch('/api/admin/vigilancia', { credentials: 'include', cache: 'no-store' }).then(r => setPuedeVigilar(r.ok)).catch(() => setPuedeVigilar(false));
   }, []);
   if (puedeVigilar === null) return <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>;
-  if (!puedeVigilar) return <Planificacion showToast={showToast} />;
+  const pestanas = [...(puedeVigilar ? [['vigilancia', 'Vigilancia']] : []), ['uso', 'Uso de la web'], ['planificacion', 'Planificación']];
+  // Quien no vigila entra, como antes, a la planificación.
+  const actual = pestana || (puedeVigilar ? 'vigilancia' : 'planificacion');
   return (
     <div style={{ display: 'grid', gap: 14 }}>
-      <div style={{ display: 'flex', gap: 6 }}>
-        {[['vigilancia', 'Vigilancia'], ['planificacion', 'Planificación']].map(([v, l]) => (
-          <button key={v} className={`filter-pill ${pestana === v ? 'is-active' : ''}`} onClick={() => setPestana(v)} style={{ borderRadius: 8, padding: '8px 16px' }}>{l}</button>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {pestanas.map(([v, l]) => (
+          <button key={v} className={`filter-pill ${actual === v ? 'is-active' : ''}`} onClick={() => setPestana(v)} style={{ borderRadius: 8, padding: '8px 16px' }}>{l}</button>
         ))}
       </div>
-      {pestana === 'vigilancia' ? <VigilanciaIT><EstadoServidor /></VigilanciaIT> : <Planificacion showToast={showToast} />}
+      {actual === 'vigilancia' ? <VigilanciaIT><EstadoServidor /></VigilanciaIT>
+        : actual === 'uso' ? <UsoWeb nombreSeccion={nombreSeccion} />
+        : <Planificacion showToast={showToast} />}
     </div>
   );
 }
