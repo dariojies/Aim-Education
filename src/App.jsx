@@ -1,10 +1,7 @@
 import React, { useState, useEffect, useCallback, createContext, useContext, lazy, Suspense } from 'react';
 import PublicLanding from './components/PublicLanding';
 import { PublicActivities, PublicNews, PublicNewsDetail } from './components/PublicActivities';
-import AulaPublica from './components/Aula.jsx';
-import TiendaPublica from './components/Tienda.jsx';
 import PublicActivity from './components/PublicActivity';
-import PublicCamp from './components/PublicCamp';
 import AuthScreen from './components/AuthScreen';
 // El panel de administración y el área de familias son lo más pesado de la web
 // y la mayoría de visitas no los abre: se descargan aparte, al entrar en ellos
@@ -13,11 +10,17 @@ const StudentDashboard = lazy(() => import('./components/StudentDashboard'));
 const AdminApp = lazy(() => import('./components/AdminApp'));
 // Un diseño de Aim Design para ver con un enlace (/d/<clave>).
 const VerDiseno = lazy(() => import('./components/VerDiseno'));
-import PublicCalendar from './components/PublicCalendar';
-import PublicLegal from './components/PublicLegal';
-import PublicContacto from './components/PublicContacto';
-import BrickslabPublico from './components/Brickslab.jsx';
-import PublicConocenos from './components/PublicConocenos';
+// Lo mismo con las páginas públicas que se abren poco al llegar (el aula, la
+// tienda, el calendario…): así la portada y las actividades, que es por donde
+// entra casi todo el mundo desde el móvil, descargan menos.
+const AulaPublica = lazy(() => import('./components/Aula.jsx'));
+const TiendaPublica = lazy(() => import('./components/Tienda.jsx'));
+const PublicCamp = lazy(() => import('./components/PublicCamp'));
+const PublicCalendar = lazy(() => import('./components/PublicCalendar'));
+const PublicLegal = lazy(() => import('./components/PublicLegal'));
+const PublicContacto = lazy(() => import('./components/PublicContacto'));
+const BrickslabPublico = lazy(() => import('./components/Brickslab.jsx'));
+const PublicConocenos = lazy(() => import('./components/PublicConocenos'));
 import { CookieBanner, registrarVisita } from './components/Cookies';
 import AvisosWeb from './components/AvisosWeb';
 import { esApp, desactivarAvisos, revisarAvisosTrasEntrar } from './app-movil';

@@ -137,7 +137,13 @@ export function cursoActual(hoy = new Date()) {
 }
 
 export const PLAZAS = {
-  libres: { texto: 'Plazas libres', color: 'var(--teal)' },
+  libres: { texto: 'Hay plazas disponibles', color: 'var(--teal)' },
   pocas: { texto: 'Últimas plazas', color: '#B7791F' },
   completo: { texto: 'Completo · lista de espera', color: '#E5484D' },
 };
+// Con más de 5 plazas libres no se dice cuántas; con 5 o menos, el número, en
+// amarillo. Lo usan la web pública y las reservas con bono del área de familias.
+export const PLAZAS_POCAS = 5;
+export const textoQuedan = (n) => `Queda${n === 1 ? '' : 'n'} ${n} plaza${n === 1 ? '' : 's'}`;
+// Una etiqueta amarilla viva, con el texto oscuro para que se lea.
+export const estiloQuedan = { color: '#3D2E00', background: '#FACC15', fontWeight: 800, padding: '2px 9px', borderRadius: 999 };

@@ -33,6 +33,7 @@ const E = EMPRESA_LEGAL;
 
 // Cada documento es una lista de bloques: ['h', título] · ['p', párrafo] ·
 // ['ul', [elementos]] · ['ol', [elementos]] · ['tabla', [cabecera, ...filas]].
+// El título de cada uno también está en indice.js (los enlaces del pie).
 export const DOCS_LEGALES = [
   {
     id: 'aviso-legal',

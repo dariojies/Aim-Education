@@ -6837,6 +6837,15 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
   // Qué puede ver y tocar esta persona. Llega calculado del servidor; si la
   // sesión es de antes de los roles, se recalcula aquí con lo mismo.
   const permisos = user?.permisos || permisosDe(user?.rol || null);
+  // Lo que la dirección ha quitado del menú para todos (Equipo IT → Uso de la
+  // web). Solo el menú: la sección se sigue abriendo con su dirección.
+  const [menuOculto, setMenuOculto] = useState(() => user?.menuOculto || []);
+  useEffect(() => { setMenuOculto(user?.menuOculto || []); }, [user?.menuOculto]);
+  useEffect(() => {
+    const f = (e) => setMenuOculto(e.detail || []);
+    window.addEventListener('aim-menu-oculto', f);
+    return () => window.removeEventListener('aim-menu-oculto', f);
+  }, []);
   // Una sección solo se pinta si además de estar abierta se puede ver: escribir
   // la ruta a mano no debe colar.
   // Apartados del menú que usan el permiso de otra sección: «Pasar lista» es de
@@ -6970,7 +6979,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
   const sections = gruposMenu
     // Cada rol ve solo sus secciones. Un grupo que se queda sin ninguna no
     // pinta su título suelto en el menú.
-    .map(g => ({ ...g, items: g.items.filter(i => permisos.secciones[seccionDe(i.id)]) }))
+    .map(g => ({ ...g, items: g.items.filter(i => permisos.secciones[seccionDe(i.id)] && !menuOculto.includes(i.pestana ? `${i.id}/${i.pestana}` : i.id)) }))
     .filter(g => g.items.length > 0);
 
   // Menú en acordeón: solo se ve abierto un grupo, el de la sección en la que

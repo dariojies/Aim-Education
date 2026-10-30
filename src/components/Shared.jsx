@@ -3,7 +3,7 @@ import { I } from './Icons.jsx';
 import { useRouter } from '../App.jsx';
 import { fmtFechaLarga } from '../fechas.js';
 import { abrirConfiguracionCookies } from './Cookies.jsx';
-import { DOCS_LEGALES } from '../legal/textos.js';
+import { INDICE_LEGAL } from '../legal/indice.js';
 import { IconoActividad } from './IconoActividad.jsx';
 import { ACTIVITIES } from '../actividadesWeb.js';
 
@@ -280,7 +280,7 @@ function AimFooter() {
           <div>
             <h2>Legal</h2>
             <ul>
-              {DOCS_LEGALES.map(d => (
+              {INDICE_LEGAL.map(d => (
                 <li key={d.id}><a onClick={(e) => { e.preventDefault(); go(`/legal/${d.id}`); }} href={`/legal/${d.id}`}>{d.titulo}</a></li>
               ))}
               <li><button type="button" className="enlace-pie" onClick={abrirConfiguracionCookies}>Configurar cookies</button></li>

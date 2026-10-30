@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { RUTAS_ADMIN } from '../rutasAdmin.js';
+import { RUTAS_ADMIN, PESTANAS_CRM } from '../rutasAdmin.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // El uso de la web (uso.js): qué secciones del panel y del área de familias se
 // abren, cuántas veces y cuántas personas al día, y las páginas más vistas de
 // la web pública. Para decidir qué mejorar primero y ver lo que no usa nadie.
-// No dice quién: solo cuenta.
+// No dice quién: solo cuenta. Lo que no se usa, la dirección lo puede quitar
+// del menú para todos (y volver a ponerlo): solo el menú, el enlace sigue valiendo.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const caja = { background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: 14, display: 'grid', gap: 10 };
@@ -66,12 +67,42 @@ export default function UsoWeb({ nombreSeccion = (id) => id }) {
       .then(j => { if (vivo) setD(j); }).catch(e => { if (vivo) setError(e.message); });
     return () => { vivo = false; };
   }, [dias]);
+  // Lo quitado del menú (y si esta persona puede quitar o poner).
+  const [menu, setMenu] = useState({ ocultas: [], puedeEditar: false });
+  const [cambiando, setCambiando] = useState(null);
+  useEffect(() => {
+    fetch('/api/admin/menu-oculto', { credentials: 'include', cache: 'no-store' })
+      .then(r => (r.ok ? r.json() : null)).then(j => { if (j) setMenu(j); }).catch(() => {});
+  }, []);
+  async function cambiarMenu(seccion, quitar) {
+    setCambiando(seccion);
+    try {
+      const ocultas = quitar ? [...menu.ocultas, seccion] : menu.ocultas.filter(s => s !== seccion);
+      const r = await fetch('/api/admin/menu-oculto', { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ocultas }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || 'No se ha podido guardar.');
+      setMenu(m => ({ ...m, ocultas: j.ocultas }));
+      window.dispatchEvent(new CustomEvent('aim-menu-oculto', { detail: j.ocultas }));
+    } catch (e) { alert(e.message); } finally { setCambiando(null); }
+  }
 
   if (error) return <p style={{ color: 'var(--orange)', fontSize: 14 }}>{error}</p>;
   if (!d) return <p style={suave}>Cargando el uso de la web…</p>;
   const nombreAdmin = (s) => (s.startsWith('comunicaciones/') ? `Comunicación · ${nombreSeccion('comunicaciones', s.split('/')[1])}` : nombreSeccion(s));
-  const usadas = new Set(d.admin.map(f => f.seccion.split('/')[0]));
-  const sinUso = Object.keys(RUTAS_ADMIN).filter(s => !usadas.has(s)).map(s => nombreSeccion(s)).sort((a, b) => a.localeCompare(b));
+  // Lo que se puede quitar del menú: cada sección y cada pestaña de Comunicación
+  // (que en el menú son entradas sueltas). El Resumen y Equipo IT, no.
+  const usadas = new Set(d.admin.map(f => f.seccion));
+  const ocultas = new Set(menu.ocultas);
+  const entradas = [...Object.keys(RUTAS_ADMIN).filter(s => !['overview', 'equipo_it', 'comunicaciones'].includes(s)), ...PESTANAS_CRM.map(t => `comunicaciones/${t}`)];
+  const porNombre = (a, b) => nombreAdmin(a).localeCompare(nombreAdmin(b));
+  const sinUso = entradas.filter(s => !usadas.has(s) && !ocultas.has(s)).sort(porNombre);
+  const quitadas = menu.ocultas.filter(s => entradas.includes(s)).sort(porNombre);
+  const boton = (s, quitar) => (
+    <button type="button" className="btn btn-sm btn-outline" disabled={cambiando === s} onClick={() => cambiarMenu(s, quitar)}
+      data-menu-quitar={quitar ? s : undefined} data-menu-poner={quitar ? undefined : s} style={{ padding: '3px 10px', fontSize: 12 }}>
+      {cambiando === s ? 'Guardando…' : quitar ? 'Quitar del menú' : 'Volver a ponerla'}
+    </button>
+  );
   const p = (z, c) => { const n = d.personas[z]?.[c] || 0; return `${String(n).replace('.', ',')} ${n === 1 ? 'persona' : 'personas'}`; };
   const pocos = d.medidos < d.dias;
 
@@ -96,10 +127,34 @@ export default function UsoWeb({ nombreSeccion = (id) => id }) {
         </div>
         <Lista filas={d.admin} nombre={nombreAdmin} />
         {sinUso.length > 0 && (
-          <div data-uso-sin-uso style={{ borderTop: '1px solid var(--line)', paddingTop: 10, display: 'grid', gap: 4 }}>
+          <div data-uso-sin-uso style={{ borderTop: '1px solid var(--line)', paddingTop: 10, display: 'grid', gap: 6 }}>
             <b style={{ fontSize: 13 }}>Sin abrir en estos días ({sinUso.length})</b>
-            <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>{sinUso.join(' · ')}</span>
-            <span style={suave}>Puede que no se usen, o que solo se usen de vez en cuando (el campamento, los títulos…).</span>
+            <span style={suave}>
+              Puede que no se usen, o que solo se usen de vez en cuando (el campamento, los títulos…).
+              {menu.puedeEditar && ' Si una no hace falta, quítala del menú: deja de salir para todos, pero su enlace sigue funcionando y se puede volver a poner.'}
+            </span>
+            {menu.puedeEditar ? (
+              <div style={{ display: 'grid', gap: 4 }}>
+                {sinUso.map(s => (
+                  <div key={s} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 13 }}>
+                    <span style={{ flex: '1 1 160px', color: 'var(--ink-2)' }}>{nombreAdmin(s)}</span>{boton(s, true)}
+                  </div>
+                ))}
+              </div>
+            ) : <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>{sinUso.map(nombreAdmin).join(' · ')}</span>}
+          </div>
+        )}
+        {quitadas.length > 0 && (
+          <div data-menu-quitadas style={{ borderTop: '1px solid var(--line)', paddingTop: 10, display: 'grid', gap: 6 }}>
+            <b style={{ fontSize: 13 }}>Quitadas del menú ({quitadas.length})</b>
+            <span style={suave}>No salen en el menú de nadie, pero se pueden abrir con su enlace.</span>
+            <div style={{ display: 'grid', gap: 4 }}>
+              {quitadas.map(s => (
+                <div key={s} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 13 }}>
+                  <span style={{ flex: '1 1 160px', color: 'var(--ink-2)' }}>{nombreAdmin(s)}</span>{menu.puedeEditar && boton(s, false)}
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>

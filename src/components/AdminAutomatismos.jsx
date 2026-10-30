@@ -20,6 +20,7 @@ const VARS = {
   cumple: ['{nombre}', '{alumno}', '{edad}'],
   cerrado: ['{nombre}', '{alumno}', '{dias}', '{motivo}', '{vuelta}'],
   noticias: ['{nombre}', '{alumno}', '{mes}', '{noticias}'],
+  entrar: ['{nombre}', '{correo}', '{enlace}', '{dias_enlace}'],
 };
 // Los mismos datos, con su ejemplo, para el diseñador.
 const VARS_DISENO = {
@@ -36,6 +37,12 @@ const VARS_DISENO = {
     nombre: VARIABLES_CRM.nombre, alumno: VARIABLES_CRM.alumno,
     mes: { que: 'El mes del resumen', ejemplo: 'septiembre' },
     noticias: { que: 'Las noticias del mes, con su enlace', ejemplo: '• ¡Subcampeones en la WRO 2026!\n  https://www.aimeducation.es/noticias/subcampeones-en-la-wro-2026' },
+  },
+  entrar: {
+    nombre: { que: 'Su nombre', ejemplo: 'Laura' },
+    correo: { que: 'El correo con el que entra', ejemplo: 'laura@ejemplo.com' },
+    enlace: { que: 'Su enlace para poner la contraseña', ejemplo: 'https://www.aimeducation.es/auth?mode=restablecer&token=…' },
+    dias_enlace: { que: 'Días que vale el enlace', ejemplo: '15' },
   },
 };
 const campo = { fontFamily: 'inherit', fontSize: 14, padding: '9px 11px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', width: '100%' };

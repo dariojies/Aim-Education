@@ -2,6 +2,7 @@
 import { medirPeticiones, crearVigilancia, retardoBucle } from './vigilancia.js';
 import { crearErroresATickets, errorDelNavegador } from './errores.js';
 import { crearUso } from './uso.js';
+import { RUTAS_ADMIN, PESTANAS_CRM } from './src/rutasAdmin.js';
 import express from 'express';
 import path from 'path';
 import tls from 'tls';
@@ -3346,7 +3347,7 @@ app.post('/api/register', async (req, res) => {
     }
 });
 
-app.get('/api/me', authenticateSession, (req, res) => {
+app.get('/api/me', authenticateSession, async (req, res) => {
     const s = req.userSession;
     res.json({
         id: s.userId,
@@ -3359,6 +3360,7 @@ app.get('/api/me', authenticateSession, (req, res) => {
         rol: s.rol || null,
         nombreRol: s.nombreRol || null,
         permisos: s.rol ? permisosEfectivos(s.rol) : (s.permisos || null),
+        ...(s.canAccessAdmin ? { menuOculto: await menuOculto() } : {}),
     });
 });
 
@@ -3940,6 +3942,7 @@ app.get('/api/classes', async (req, res) => {
 // vez con todas sus sesiones. Antes la web montaba las páginas desde el horario,
 // un hueco por día y sesión, y el mismo grupo salía repetido tantas veces como
 // días tenía. Aquí no va cuántos alumnos hay: a la web solo le importa si queda sitio.
+const PLAZAS_POCAS = 5;
 app.get('/api/publico/clases', async (req, res) => {
     try {
         const r = await pool.query(`
@@ -3968,10 +3971,13 @@ app.get('/api/publico/clases', async (req, res) => {
                     monitores: nombresDocentes(x),
                 }))
                 .filter(x => x.dias.length && x.inicio);
+            // Con más de 5 libres no se dice cuántas («Hay plazas disponibles»);
+            // con 5 o menos, sí: el número solo va entonces.
             const libres = f.max_students != null ? f.max_students - f.alumnos : null;
             porActividad.get(f.activity_id).grupos.push({
                 id: f.group_id, nombre: f.name, minAge: f.min_age, maxAge: f.max_age, sesiones,
-                plazas: libres == null ? 'libres' : libres <= 0 ? 'completo' : libres < 3 ? 'pocas' : 'libres',
+                plazas: libres == null ? 'libres' : libres <= 0 ? 'completo' : libres <= PLAZAS_POCAS ? 'pocas' : 'libres',
+                ...(libres != null && libres > 0 && libres <= PLAZAS_POCAS ? { libres } : {}),
             });
         }
         res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=60');
@@ -5253,6 +5259,38 @@ async function cargarAjustesPermisos() {
 }
 const permisosEfectivos = (rol) => aplicarAjustesPermisos(permisosDe(rol), rol, AJUSTES_PERMISOS);
 
+// Las secciones que la dirección ha quitado del menú del panel para todos
+// (desde Equipo IT → Uso de la web). Solo el menú: la dirección de la página
+// sigue valiendo, así que ningún enlace se rompe. aim_ajustes «menu_oculto»:
+// la sección («billing») o la pestaña de Comunicación («comunicaciones/rebotes»).
+let MENU_OCULTO = { lista: [], leido: 0 };
+const NO_SE_OCULTAN = ['overview', 'equipo_it'];
+async function menuOculto() {
+    if (Date.now() - MENU_OCULTO.leido < 60_000) return MENU_OCULTO.lista;
+    const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'menu_oculto'`).catch(() => null);
+    if (r) MENU_OCULTO = { lista: Array.isArray(r.rows[0]?.valor) ? r.rows[0].valor : [], leido: Date.now() };
+    return MENU_OCULTO.lista;
+}
+app.get('/api/admin/menu-oculto', authenticateSession, requireSeccion('equipo_it'), async (req, res) => {
+    MENU_OCULTO.leido = 0;
+    try { res.set('Cache-Control', 'no-store'); res.json({ ocultas: await menuOculto(), puedeEditar: mandaAlMenos(req.userSession?.rol, 'club_owner') }); }
+    catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.put('/api/admin/menu-oculto', authenticateSession, requireSeccion('equipo_it'), async (req, res) => {
+    if (!mandaAlMenos(req.userSession?.rol, 'club_owner')) return res.status(403).json({ error: 'Solo la dirección puede quitar secciones del menú.' });
+    const validas = new Set([...Object.keys(RUTAS_ADMIN), ...PESTANAS_CRM.map(p => `comunicaciones/${p}`)]);
+    const lista = [...new Set((Array.isArray(req.body?.ocultas) ? req.body.ocultas : []).map(String))]
+        .filter(s => validas.has(s) && !NO_SE_OCULTAN.includes(s));
+    try {
+        await pool.query(
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('menu_oculto', $1::jsonb, NOW(), $2)
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+            [JSON.stringify(lista), req.userSession.userId]);
+        MENU_OCULTO = { lista, leido: Date.now() };
+        res.json({ success: true, ocultas: lista });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 function permisos(req) {
     return permisosEfectivos(req.userSession?.rol || null);
 }
@@ -6246,23 +6284,41 @@ app.get('/api/landing', async (req, res) => {
 // La imagen de un hueco del mosaico. Es pública porque sale en la portada, y se
 // cachea fuerte: la dirección lleva la fecha de la última subida, así que al
 // cambiarla cambia la url y el navegador se la vuelve a pedir sola.
+// Un cuadro del mosaico no pasa de 1200 px de ancho (el doble de lo que ocupa
+// en un ordenador): la foto tal cual la subieron puede pesar casi 2 MB. Con ?w=
+// el navegador pide la medida que le hace falta (en el móvil, mucho menos).
+// La que ya está hecha se sirve de memoria, sin traer la original de la base, y
+// al arrancar se preparan todas (cada deploy y el reinicio diario de Heroku).
+const ANCHOS_MOSAICO = [480, 800, 1200];
+const anchoMosaico = (w) => ANCHOS_MOSAICO.find(a => a >= Number(w)) || 1200;
 app.get('/api/landing/mosaico/:id/imagen', async (req, res) => {
     try {
+        const webp = /image\/webp/.test(req.headers.accept || '');
+        const clave = `mosaico-${req.params.id}-${req.query.v || ''}`, ancho = anchoMosaico(req.query.w);
+        const enviar = (buf, mime) => {
+            res.set('Vary', 'Accept');
+            res.set('Content-Type', mime);
+            res.set('Cache-Control', 'public, max-age=31536000, immutable');
+            res.send(buf);
+        };
+        const hecha = imagenEnCache(clave, ancho, webp);
+        if (hecha) return enviar(hecha.buf, hecha.mime);
         const r = await pool.query(`SELECT mime, datos FROM aim_portada_imagenes WHERE id = $1`, [req.params.id]);
         if (!r.rowCount) return res.status(404).end();
         let { mime, datos } = r.rows[0];
-        // Un cuadro del mosaico no pasa de 1200 px de ancho (el doble de lo que
-        // ocupa): la foto tal cual la subieron puede pesar casi 2 MB.
         if (mime !== 'image/gif') {
-            res.set('Vary', 'Accept');
-            try { ({ buf: datos, mime } = await imagenAMedida(`mosaico-${req.params.id}-${req.query.v || ''}`, datos, mime, 1200, /image\/webp/.test(req.headers.accept || ''))); }
+            try { ({ buf: datos, mime } = await imagenAMedida(clave, datos, mime, ancho, webp)); }
             catch (e) { console.error('[mosaico] no se ha podido ajustar', req.params.id, e.message); }
         }
-        res.set('Content-Type', mime);
-        res.set('Cache-Control', 'public, max-age=31536000, immutable');
-        res.send(datos);
+        enviar(datos, mime);
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
+async function prepararMosaico() {
+    const r = await pool.query(`SELECT id, mime, datos, EXTRACT(EPOCH FROM actualizado_at)::bigint AS v FROM aim_portada_imagenes WHERE mime <> 'image/gif'`);
+    for (const x of r.rows) {
+        for (const ancho of ANCHOS_MOSAICO) await imagenAMedida(`mosaico-${x.id}-${x.v}`, x.datos, x.mime, ancho, true).catch(() => {});
+    }
+}
 
 app.post('/api/admin/landing/mosaico/:id/imagen', authenticateSession, requireAdmin, async (req, res) => {
     if (!/^[\w-]{1,40}$/.test(req.params.id)) return res.status(400).json({ error: 'Bloque no válido.' });
@@ -11439,6 +11495,13 @@ let bytesCacheCi = 0;
 const TOPE_CACHE_CI = 40 * 1024 * 1024;
 sharp.cache(false);
 sharp.concurrency(1);
+// La ya hecha, si está (sin tener que traer la original).
+function imagenEnCache(id, ancho, webp) {
+    const clave = `${id}:${ancho}:${webp ? 'w' : 'o'}`;
+    const ya = cacheCi.get(clave);
+    if (ya) { cacheCi.delete(clave); cacheCi.set(clave, ya); }
+    return ya || null;
+}
 async function imagenAMedida(id, datos, mime, ancho, webp) {
     const clave = `${id}:${ancho}:${webp ? 'w' : 'o'}`;
     const ya = cacheCi.get(clave);
@@ -11993,6 +12056,20 @@ const AUTOMATISMOS = {
         cuerpo: 'Hola,\n\nEstas son las noticias que publicamos en {mes}:\n\n{noticias}\n\nUn saludo,\nAIM Education',
         porFamilia: true,
     },
+    // A quien tiene ficha y nunca ha entrado en la web: cada «dias» días hasta
+    // que entre. Va a la propia persona (no a su familia) y lleva su enlace para
+    // poner la contraseña, porque muchas fichas las crea secretaría y no la saben.
+    entrar: {
+        nombre: 'Recordatorio para entrar en la web',
+        descripcion: (a) => `A quien tiene ficha en el club y nunca ha entrado en la web: un correo cada ${a.dias} días, entre las ${a.hora}:00 y las 20:00, hasta que entre. Solo a adultos y tutores que tienen clase en el club o hijos con clase (los hijos entran con la cuenta de su familia). Sin los correos inventados ni los que rebotan. Lleva un enlace personal, válido ${a.dias} días, para poner su contraseña. Al encenderlo sale a todos los que lo cumplen, poco a poco: 15 cada cuarto de hora como mucho.`,
+        ajustes: {
+            dias: { nombre: 'Cada cuántos días', unidad: 'días', min: 7, max: 60, def: 15 },
+            hora: { nombre: 'A partir de qué hora sale', unidad: 'h', min: 8, max: 19, def: 10 },
+        },
+        asunto: 'Tienes tu ficha en AIM Education: entra para estar al día',
+        cuerpo: 'Hola {nombre},\n\nEn AIM Education tienes una ficha con tus datos y los de tu familia. Entra en la web para estar al día de las últimas novedades: horarios, avisos del club, recibos y fotos.\n\nEntra en www.aimeducation.es con tu correo ({correo}). Si no sabes tu contraseña, o todavía no tienes, ponla desde este enlace (vale {dias_enlace} días):\n{enlace}\n\nUn saludo,\nAIM Education',
+        aLaPersona: true, tipo: 'servicio', porTanda: 15,
+    },
 };
 async function configAutomatismos() {
     const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'automatismos_crm'`);
@@ -12087,8 +12164,44 @@ async function candidatosAutomatismo(id, cfg) {
             [AIM_CLUB_ID]);
         return al.rows.map(x => ({ personaId: x.student_id, marca, extra }));
     }
+    if (id === 'entrar') {
+        const h = horaAutomatismos();
+        if (h < (cfg.ajustes?.hora ?? 10) || h >= 20) return [];
+        const dias = cfg.ajustes?.dias ?? 15;
+        const bajas = Object.keys(await bajasDeCuenta().catch(() => ({})));
+        // Del club, sin rango de personal, sin haber entrado nunca, sin tutor (los
+        // hijos entran con la cuenta de la familia), con clase o con un hijo con
+        // clase, con un correo de verdad (ni el interno ni uno inventado del club),
+        // sin haber pedido darse de baja y sin recordatorio en los últimos «dias».
+        const r = await pool.query(
+            `SELECT u.user_id FROM users u
+             WHERE u.club_id = $1 AND COALESCE(u.role, 'student') = 'student'
+               AND NOT EXISTS (SELECT 1 FROM aim_rangos rg WHERE rg.user_id = u.user_id)
+               AND NOT EXISTS (SELECT 1 FROM aim_accesos ac WHERE ac.user_id = u.user_id)
+               AND NOT EXISTS (SELECT 1 FROM aim_familias f WHERE f.persona_id = u.user_id)
+               AND (EXISTS (SELECT 1 FROM tul_group_students s WHERE s.student_id = u.user_id)
+                    OR EXISTS (SELECT 1 FROM aim_familias f JOIN tul_group_students s ON s.student_id = f.persona_id WHERE f.familiar_id = u.user_id))
+               AND COALESCE(u.email, '') <> '' AND LOWER(u.email) NOT LIKE $2 AND LOWER(u.email) NOT LIKE '%@aimeducation.es'
+               AND u.user_id <> ALL($3::uuid[])
+               AND NOT EXISTS (SELECT 1 FROM aim_comunicaciones c WHERE c.persona_id = u.user_id AND c.plantilla LIKE 'auto:entrar:%'
+                               AND c.created_at > NOW() - make_interval(days => $4::int))
+             ORDER BY u.created_at, u.user_id`,
+            [AIM_CLUB_ID, `%@${DOMINIO_SIN_CORREO}`, bajas, dias]);
+        return r.rows.map(x => ({ personaId: x.user_id, marca: `auto:entrar:${hoyAutomatismos()}`, extra: {} }));
+    }
     return [];
 }
+// Los que van a la propia persona (el recordatorio para entrar): a su correo.
+async function destinoPersona(personaId) {
+    const u = (await pool.query(`SELECT name, surname, email FROM users WHERE user_id = $1`, [personaId])).rows[0];
+    if (!u) return { fuera: 'ya no existe' };
+    const completo = `${u.name || ''} ${u.surname || ''}`.trim();
+    const ctx = { alumno: { completo }, variables: { nombre: u.name || '', alumno: completo, correo: u.email || '' } };
+    if (!u.email || esCorreoInterno(u.email)) return { ctx, fuera: 'sin correo' };
+    if ((await rebotesDe([u.email])).size) return { ctx, fuera: 'su correo rebota' };
+    return { ctx, para: [{ email: u.email, nombre: completo, relacion: 'Titular' }] };
+}
+const destinoDe = (id, personaId) => (AUTOMATISMOS[id].aLaPersona ? destinoPersona(personaId) : destinoAutomatismo(personaId));
 // El día y la hora que miran los automatismos. PRUEBA_HOY_AUTOMATISMOS solo
 // existe para probarlos en local sin esperar al día (en Heroku no está).
 const hoyAutomatismos = () => (/^\d{4}-\d{2}-\d{2}$/.test(process.env.PRUEBA_HOY_AUTOMATISMOS || '') ? process.env.PRUEBA_HOY_AUTOMATISMOS : hoyMadrid());
@@ -12120,7 +12233,14 @@ async function destinoAutomatismo(personaId) {
 
 // Lo que saldría ahora (sin enviar nada): para «Quién lo recibiría ahora».
 async function pendientesAutomatismo(id, cfg) {
-    const cands = await candidatosAutomatismo(id, cfg);
+    let cands = await candidatosAutomatismo(id, cfg);
+    // Solo para probar en local con datos de prueba (en Heroku no existe): los
+    // automatismos solo miran a quien tiene un correo así (p. ej. «zz.%@example.test»).
+    if (process.env.PRUEBA_AUTOMATISMOS_CORREOS && cands.length) {
+        const ok = new Set((await pool.query(`SELECT user_id FROM users WHERE user_id = ANY($1::uuid[]) AND LOWER(email) LIKE $2`,
+            [cands.map(c => c.personaId), process.env.PRUEBA_AUTOMATISMOS_CORREOS])).rows.map(x => String(x.user_id)));
+        cands = cands.filter(c => ok.has(String(c.personaId)));
+    }
     if (!cands.length) return [];
     const ya = new Set((await pool.query(
         `SELECT persona_id || '|' || plantilla AS k FROM aim_comunicaciones WHERE plantilla = ANY($1::text[])`,
@@ -12136,11 +12256,11 @@ async function ejecutarAutomatismos() {
         const cfg = await configAutomatismos();
         for (const [id, c] of Object.entries(cfg)) {
             if (!c.activo) continue;
-            const lista = (await pendientesAutomatismo(id, c)).slice(0, 25);
+            const lista = (await pendientesAutomatismo(id, c)).slice(0, AUTOMATISMOS[id].porTanda || 25);
             const porFamilia = AUTOMATISMOS[id].porFamilia;
             const ya = porFamilia && lista.length ? await yaRecibieron(lista[0].marca) : null;
             for (const cand of lista) {
-                const d = await destinoAutomatismo(cand.personaId);
+                const d = await destinoDe(id, cand.personaId);
                 // Una vez por familia: a quien ya le llegó por un hermano, no.
                 if (ya && !d.fuera) {
                     d.para = d.para.filter(x => !ya.has(x.email.toLowerCase()));
@@ -12161,9 +12281,19 @@ async function ejecutarAutomatismos() {
                     imagen = await felicitacionCumple(pool, { nombre: d.ctx.variables.nombre, edad: cand.extra.edad })
                         .catch(e => { console.error('[automatismos] felicitación de cumpleaños:', e.message); return null; });
                 }
+                // El recordatorio para entrar lleva su enlace para poner la contraseña,
+                // como el «Enviar acceso» de la ficha, válido tantos días como el ciclo.
+                if (id === 'entrar') {
+                    const dias = c.ajustes?.dias ?? 15;
+                    const token = crypto.randomBytes(32).toString('base64url');
+                    await pool.query(
+                        `INSERT INTO aim_password_resets (user_id, token_hash, expires_at, ip) VALUES ($1, $2, NOW() + make_interval(days => $3::int), NULL)`,
+                        [cand.personaId, huellaEnlace(token), dias]);
+                    cand.extra = { ...cand.extra, enlace: `${URL_PUBLICA_WEB}/auth?mode=restablecer&token=${encodeURIComponent(token)}`, dias_enlace: String(dias) };
+                }
                 const env = await enviarYApuntar({
                     personaId: cand.personaId, a: d.para.map(x => x.email), asunto: c.asunto, cuerpo: c.cuerpo, diseno: c.diseno,
-                    tipo: 'actividades', variables: { ...d.ctx.variables, ...cand.extra }, plantilla: cand.marca, imagen,
+                    tipo: AUTOMATISMOS[id].tipo || 'actividades', variables: { ...d.ctx.variables, ...cand.extra }, plantilla: cand.marca, imagen,
                 });
                 if (ya && env.estado === 'enviado') d.para.forEach(x => ya.add(x.email.toLowerCase()));
             }
@@ -12256,7 +12386,7 @@ app.get('/api/admin/automatismos/:id/vista', authenticateSession, requireSeccion
         const destinos = new Array(revisar.length);
         let sig = 0;
         await Promise.all(Array.from({ length: Math.min(4, revisar.length) }, async () => {
-            while (sig < revisar.length) { const i = sig++; destinos[i] = await destinoAutomatismo(revisar[i].personaId); }
+            while (sig < revisar.length) { const i = sig++; destinos[i] = await destinoDe(id, revisar[i].personaId); }
         }));
         for (let i = 0; i < revisar.length; i++) {
             const cand = revisar[i], d = destinos[i];
@@ -13289,7 +13419,10 @@ async function rebotesDe(emails, cliente = pool) {
 }
 
 // Lee los avisos de rebote nuevos del buzón del club. Solo mira mensajes de
-// «mailer-daemon», sin marcarlos ni moverlos, y recuerda hasta dónde leyó.
+// «mailer-daemon» y recuerda hasta dónde leyó. Una vez apuntados, los saca de
+// la bandeja de entrada a la etiqueta «Rebotes» de Gmail, para que no llenen el
+// correo (siguen en Gmail, y lo que dicen, en Comunicación → «Correos que rebotan»).
+const CARPETA_REBOTES = 'Rebotes';
 let rebotesEnCurso = false;
 async function revisarRebotes() {
     if (rebotesEnCurso || !process.env.EMAIL_USER || !process.env.EMAIL_PASS) return;
@@ -13302,7 +13435,7 @@ async function revisarRebotes() {
             auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
         });
         await imap.connect();
-        const lock = await imap.getMailboxLock('INBOX', { readOnly: true });
+        const lock = await imap.getMailboxLock('INBOX');
         try {
             const marca = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'rebotes_imap'`)).rows[0]?.valor || {};
             const validez = String(imap.mailbox.uidValidity);
@@ -13323,6 +13456,19 @@ async function revisarRebotes() {
                     await apuntarRebote(pool, { ...reb, envioId: env?.id || null });
                     if (env && reb.definitivo) await pool.query(`UPDATE aim_campana_envios SET estado = 'rebotado', error = $2 WHERE id = $1`, [env.id, clasificarRebote(reb.status).motivo]);
                 }
+            }
+            // Los ya leídos (también los de antes), fuera de la bandeja de entrada.
+            // Solo hasta el último apuntado: uno que llegue mientras tanto, la próxima vez.
+            // Si no se pueden mover, se apunta igual hasta dónde se leyó.
+            if (ultimo) {
+                try {
+                    const leidos = ((await imap.search({ from: 'mailer-daemon' }, { uid: true })) || []).filter(u => u <= ultimo);
+                    if (leidos.length) {
+                        await imap.mailboxCreate(CARPETA_REBOTES).catch(() => {});
+                        await imap.messageMove(leidos, CARPETA_REBOTES, { uid: true });
+                        console.log(`[rebotes] ${leidos.length} aviso(s) de rebote a la etiqueta «${CARPETA_REBOTES}»`);
+                    }
+                } catch (e) { console.warn('[rebotes] no se han podido mover a «Rebotes»:', e.message); }
             }
             await pool.query(
                 `INSERT INTO aim_ajustes (clave, valor, actualizado_at) VALUES ('rebotes_imap', $1::jsonb, NOW())
@@ -23570,6 +23716,8 @@ const servidor = app.listen(port, () => {
     configurarDisenosServidor({ urlBase: `http://127.0.0.1:${port}` });
     // Los permisos cambiados en «Rangos y permisos» (#333).
     cargarAjustesPermisos().catch(e => console.error('[permisos]', e.message));
+    // Las fotos del mosaico de la portada, ya a medida (que la primera visita no espere).
+    setTimeout(() => { prepararMosaico().catch(e => console.error('[mosaico] preparar:', e.message)); }, 20_000);
     // El formato de numeración vive en la base: se carga al arrancar.
     cargarFormatoNumeracion();
     // Y el día de corte del alta (ticket #289).

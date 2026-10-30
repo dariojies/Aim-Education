@@ -249,7 +249,13 @@ function BrandTile({ hueco, go }) {
       title={hueco.titulo || (a ? `Ver ${a.name}` : 'Ver más')}>
 
       {conImagen && (
-        <img className={`tile-foto ${aSangre ? '' : 'dentro'}`} src={aMedida(hueco.imagenUrl, 800)} alt={hueco.titulo || ''} />
+        // El navegador elige la medida: el cuadro ocupa su parte del mosaico (4
+        // columnas), que en el móvil es toda la pantalla y en el ordenador, la mitad.
+        <img className={`tile-foto ${aSangre ? '' : 'dentro'}`} src={aMedida(hueco.imagenUrl, 800)} alt={hueco.titulo || ''} decoding="async"
+          {...(/\/api\/landing\/mosaico\//.test(hueco.imagenUrl) ? {
+            srcSet: [480, 800, 1200].map(w => `${hueco.imagenUrl}&w=${w} ${w}w`).join(', '),
+            sizes: `(max-width: 860px) ${Math.min(4, hueco.ancho || 1) * 25}vw, ${Math.min(4, hueco.ancho || 1) * 12}vw`,
+          } : {})} />
       )}
       {conPatron && <div className="tile-foto tile-patron" />}
 

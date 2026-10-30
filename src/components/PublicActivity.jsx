@@ -4,7 +4,7 @@ import { AimHeader, AimFooter, ActIcono } from './Shared.jsx';
 import { useRouter } from '../App.jsx';
 import {
   useClasesPublicas, fichasWeb, horarioGrupo, monitoresGrupo, edadGrupo, edadesActividad,
-  ordenarGrupos, cursoActual, PLAZAS,
+  ordenarGrupos, cursoActual, PLAZAS, textoQuedan, estiloQuedan,
 } from './clasesPublicas.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -71,7 +71,9 @@ function Grupo({ g, act, conActividad }) {
         </div>
       </div>
       <div style={{ display: 'grid', gap: 8, justifyItems: 'end', alignContent: 'center' }}>
-        <span style={{ fontSize: 12, fontWeight: 800, color: plazas.color, whiteSpace: 'nowrap' }}>{plazas.texto}</span>
+        {g.plazas === 'pocas' && g.libres
+          ? <span data-plazas="pocas" style={{ fontSize: 12, whiteSpace: 'nowrap', ...estiloQuedan }}>{textoQuedan(g.libres)}</span>
+          : <span data-plazas={g.plazas} style={{ fontSize: 12, fontWeight: 800, color: plazas.color, whiteSpace: 'nowrap' }}>{plazas.texto}</span>}
         {g.plazas === 'completo'
           ? <button className="btn btn-sm btn-outline" onClick={() => go(`/contacto?sobre=${sobre}`)}>Pedir plaza</button>
           : <button className="btn btn-sm" style={{ background: 'var(--act)', color: 'white' }} onClick={() => go('/auth?mode=register')}>Reservar</button>}
