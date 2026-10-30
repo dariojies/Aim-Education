@@ -11862,6 +11862,7 @@ app.post('/api/admin/comunicaciones/:personaId/enviar', authenticateSession, req
         const env = await enviarYApuntar({
             personaId: req.params.personaId, a, asunto, cuerpo, tipo: t, variables: ctx.variables,
             plantilla, enviadoPor: req.userSession.userId, diseno,
+            quienes: validos.filter(d => a.includes(d.email)).map(d => ({ email: d.email, personaId: d.personaId })),
         });
         if (env.estado === 'error') return res.status(502).json({ error: `No se ha podido enviar: ${env.error}`, id: env.id });
         res.json({ success: true, id: env.id, enviadoA: a, omitidos: quitados.map(d => d.nombre) });
@@ -11873,7 +11874,9 @@ app.post('/api/admin/comunicaciones/:personaId/enviar', authenticateSession, req
 // su marca (auto:…), que sirve para no mandarlo dos veces.
 // imagen ({ buf, mime }): una imagen que va dentro del correo, arriba (la felicitación
 // de cumpleaños hecha en Aim Design, #471).
-async function enviarYApuntar({ personaId, a, asunto, cuerpo, tipo, variables, plantilla = null, enviadoPor = null, diseno = null, imagen = null }) {
+// Los comerciales (#518) salen uno por destinatario: cada uno con su enlace
+// para elegir qué correos recibe sin iniciar sesión (quienes: { email, personaId }).
+async function enviarYApuntar({ personaId, a, asunto, cuerpo, tipo, variables, plantilla = null, enviadoPor = null, diseno = null, imagen = null, quienes = [] }) {
     const asuntoFinal = rellenarPlantilla(String(asunto).trim(), variables).slice(0, 200);
     // Con diseño, en el historial queda su versión en texto.
     const d = diseno ? limpiarDiseno(diseno) : null;
@@ -11886,16 +11889,30 @@ async function enviarYApuntar({ personaId, a, asunto, cuerpo, tipo, variables, p
         const base = d || disenoDesdeTexto(cuerpoFinal);
         conImagen = { ...base, bloques: [{ ...nuevoBloque('imagen'), src: 'cid:aim-imagen', alt: asuntoFinal, ancho: 100 }, ...(base.bloques || [])] };
     }
-    try {
-        const c = await correoCrm({ cuerpo: cuerpoFinal, diseno: conImagen, vars: variables, asunto: asuntoFinal, comercial: tipo === 'comercial' });
-        const pixel = `<img src="${URL_PUBLICA_WEB}/o/${token}.gif" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0">`;
+    const pixel = `<img src="${URL_PUBLICA_WEB}/o/${token}.gif" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0">`;
+    const mandar = async (para, extra = {}, cabeceras = {}) => {
+        const c = await correoCrm({ cuerpo: cuerpoFinal, diseno: conImagen, vars: variables, asunto: asuntoFinal, comercial: tipo === 'comercial', ...extra });
         const html = /<\/body>/i.test(c.html) ? c.html.replace(/<\/body>/i, `${pixel}</body>`) : `${c.html}${pixel}`;
         await mailTransporter.sendMail({
             from: `AIM Education <${process.env.EMAIL_USER}>`, replyTo: process.env.EMAIL_USER,
-            to: a.join(','), subject: asuntoFinal, text: c.text, html,
+            to: para, subject: asuntoFinal, text: c.text, html, headers: cabeceras,
             ...(imagen ? { attachments: [{ filename: imagen.mime === 'image/png' ? 'felicitacion.png' : 'felicitacion.jpg', content: imagen.buf, contentType: imagen.mime, cid: 'aim-imagen' }] } : {}),
         });
-    } catch (e) { estado = 'error'; error = String(e.message || e).slice(0, 500); }
+    };
+    if (tipo === 'comercial') {
+        const fallos = [];
+        for (const email of a) {
+            try {
+                const quien = quienes.find(q => q.email?.toLowerCase() === email.toLowerCase());
+                const tk = await tokenPreferencias({ personaId, destinatarioId: quien?.personaId || null, email });
+                await mandar(email, { pie: pieBaja('comercial', tk), pieTexto: pieBajaTexto('comercial', tk) },
+                    { 'List-Unsubscribe': `<${urlBaja(tk)}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' });
+            } catch (e) { fallos.push(`${email}: ${String(e.message || e)}`); }
+        }
+        if (fallos.length) { error = fallos.join(' · ').slice(0, 500); if (fallos.length === a.length) estado = 'error'; }
+    } else {
+        try { await mandar(a.join(',')); } catch (e) { estado = 'error'; error = String(e.message || e).slice(0, 500); }
+    }
     const ins = await pool.query(
         `INSERT INTO aim_comunicaciones (persona_id, destinatarios, asunto, cuerpo, plantilla, tipo, estado, error, enviado_por, token)
          VALUES ($1, $2::text[], $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
@@ -13072,10 +13089,42 @@ const COMS_PREFERENCIAS = [
 // El envío del token y, para él, a quién se le pueden cambiar las comunicaciones:
 // quien lo recibe y las personas a su cargo (como en el perfil) y el alumno por
 // el que le llegó; o, si es un contacto de la web sin ficha, solo su correo.
+// Los correos comerciales de la ficha (#518) no tienen fila por destinatario:
+// su enlace va firmado (alumno, quien lo recibe y su correo) con un secreto que
+// se crea solo la primera vez y se guarda en aim_ajustes. Si se cambiara el
+// secreto, los enlaces de los correos ya enviados dejarían de valer.
+let secretoPref = null;
+async function secretoPreferencias() {
+    if (secretoPref) return secretoPref;
+    await pool.query(
+        `INSERT INTO aim_ajustes (clave, valor, actualizado_at) VALUES ('secreto_preferencias', $1::jsonb, NOW()) ON CONFLICT (clave) DO NOTHING`,
+        [JSON.stringify({ s: crypto.randomBytes(32).toString('hex') })]);
+    secretoPref = (await pool.query(`SELECT valor->>'s' AS s FROM aim_ajustes WHERE clave = 'secreto_preferencias'`)).rows[0].s;
+    return secretoPref;
+}
+const firmaPreferencias = (s, datos) => crypto.createHmac('sha256', s).update(datos).digest('base64url').slice(0, 24);
+async function tokenPreferencias({ personaId, destinatarioId, email }) {
+    const datos = Buffer.from(JSON.stringify([personaId || null, destinatarioId || null, String(email || '').toLowerCase()])).toString('base64url');
+    return `f${datos}.${firmaPreferencias(await secretoPreferencias(), datos)}`;
+}
+const RE_TOKEN_FIRMADO = /^f([A-Za-z0-9_-]{10,800})\.([A-Za-z0-9_-]{24})$/;
+const tokenDePreferencias = (t) => /^[0-9a-f]{32}$/.test(t) || RE_TOKEN_FIRMADO.test(t);
+async function envioDeToken(token) {
+    const m = RE_TOKEN_FIRMADO.exec(token);
+    if (m) {
+        const buena = Buffer.from(firmaPreferencias(await secretoPreferencias(), m[1]));
+        if (!crypto.timingSafeEqual(buena, Buffer.from(m[2]))) return null;
+        try {
+            const [personaId, destinatarioId, email] = JSON.parse(Buffer.from(m[1], 'base64url').toString('utf8'));
+            if (!email) return null;
+            return { id: null, email, persona_id: personaId, destinatario_id: destinatarioId, baja_at: null, tipo: 'comercial', deFicha: true };
+        } catch { return null; }
+    }
+    return (await pool.query(
+        `SELECT e.id, e.email, e.persona_id, e.destinatario_id, e.baja_at, k.tipo FROM aim_campana_envios e JOIN aim_campana_correos k ON k.id = e.correo_id WHERE e.token = $1`, [token])).rows[0] || null;
+}
 async function preferenciasDeEnvio(token) {
-    const r = await pool.query(
-        `SELECT e.id, e.email, e.persona_id, e.destinatario_id, e.baja_at, k.tipo FROM aim_campana_envios e JOIN aim_campana_correos k ON k.id = e.correo_id WHERE e.token = $1`, [token]);
-    const e = r.rows[0];
+    const e = await envioDeToken(token);
     if (!e) return null;
     let personas = [];
     if (e.destinatario_id || e.persona_id) {
@@ -13136,7 +13185,7 @@ app.get('/baja/:token', async (req, res) => {
     res.set({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     try {
         if (req.params.token === TOKEN_PRUEBA) return res.send(paginaPreferencias(TOKEN_PRUEBA, DEMO_PREFERENCIAS, { prueba: true }));
-        const d = /^[0-9a-f]{32}$/.test(req.params.token) ? await preferenciasDeEnvio(req.params.token) : null;
+        const d = tokenDePreferencias(req.params.token) ? await preferenciasDeEnvio(req.params.token) : null;
         if (!d) return res.status(404).send(paginaCorreo('Enlace no válido', 'Este enlace no es correcto o ha caducado. Si quieres dejar de recibir correos, cámbialo en tu perfil de la web o escríbenos.'));
         res.send(paginaPreferencias(req.params.token, d));
     } catch { res.status(500).send(paginaCorreo('Algo ha fallado', 'Vuelve a intentarlo en un rato.')); }
@@ -13146,7 +13195,7 @@ app.get('/baja/:token', async (req, res) => {
 app.post('/baja/:token', async (req, res) => {
     res.set({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     try {
-        const d = /^[0-9a-f]{32}$/.test(req.params.token) ? await preferenciasDeEnvio(req.params.token) : null;
+        const d = tokenDePreferencias(req.params.token) ? await preferenciasDeEnvio(req.params.token) : null;
         if (!d) return res.status(404).send(paginaCorreo('Enlace no válido', 'Este enlace no es correcto.'));
         const accion = String(req.body?.accion || '');
         // Lo que toca el correo de este enlace: las comerciales de quien lo recibe
@@ -13167,7 +13216,7 @@ app.post('/baja/:token', async (req, res) => {
                 cambios++;
             }
         }
-        if (quitado && !d.baja_at) await pool.query(`UPDATE aim_campana_envios SET baja_at = NOW() WHERE id = $1`, [d.id]);
+        if (quitado && !d.baja_at && d.id) await pool.query(`UPDATE aim_campana_envios SET baja_at = NOW() WHERE id = $1`, [d.id]);
         if (!accion) return res.send(paginaCorreo('Hecho: te has dado de baja', `No volverás a recibir estas comunicaciones en <b>${escHtml(d.email)}</b>. Si cambias de idea, puedes volver a activarlas desde tu perfil en la web.`));
         const nuevo = await preferenciasDeEnvio(req.params.token);
         res.send(paginaPreferencias(req.params.token, nuevo, {
