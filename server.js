@@ -51,7 +51,7 @@ import { generarResumenAnualPdf } from './resumen-anual-pdf.js';
 import { generarInformeJornadaPdf, generarResumenMensualPdf } from './fichaje-pdf.js';
 import { generarPendientesPdf } from './pendientes-pdf.js';
 import * as verifactu from './verifactu.js';
-import { plazasConBono, reservarPlazaBono, cancelarReservaBono, ventanaReservas, hoyMadridISO } from './bonos-clases.js';
+import { plazasConBono, reservarPlazaBono, cancelarReservaBono, anularReservasPorCierre, ventanaReservas, hoyMadridISO } from './bonos-clases.js';
 import { CLAVE_INDIVIDUALES, sqlEsIndividual, sqlGruposIndividuales, gruposIndividuales, olvidarGruposIndividuales } from './clases-individuales.js';
 import { filtroNombreSQL } from './buscar.js';
 import { VERSION_LEGAL } from './src/legal/textos.js';
@@ -13998,6 +13998,26 @@ async function avisosFamilia(me) {
             }
         }
 
+        // 6b) Reservas con bono anuladas porque el centro cierra ese día (#530):
+        // la clase ha vuelto al bono. Hasta que pasa el día.
+        const anuladas = await pool.query(
+            `SELECT r.id, r.student_id, r.fecha::text AS fecha, r.cancelada_at, g.name AS clase, c.nombre AS cierre,
+                    u.name AS alumno
+             FROM aim_bono_reservas r
+             JOIN aim_calendario_laboral c ON c.fecha = r.fecha
+             JOIN users u ON u.user_id = r.student_id
+             LEFT JOIN tul_groups g ON g.group_id = r.group_id
+             WHERE r.student_id = ANY($1::uuid[]) AND r.estado = 'cancelada' AND r.devuelta
+               AND r.fecha >= ${SQL_HOY_MADRID} AND r.cancelada_at > NOW() - INTERVAL '30 days'
+             ORDER BY r.fecha LIMIT 5`, [fam]).catch(() => ({ rows: [] }));
+        for (const x of anuladas.rows) {
+            avisos.push({
+                tipo: 'clases', destino: 'classes', clave: `bono-cierre:${x.id}`, marca: x.cancelada_at, fecha: x.cancelada_at, alumnoId: x.student_id,
+                texto: `Anulada la reserva de ${x.alumno}${x.clase ? ` en ${x.clase}` : ''} del ${fechaAviso(x.fecha)}`,
+                detalle: `El centro cierra (${x.cierre}): se ha devuelto la clase al bono`,
+            });
+        }
+
         // 7) Brickslab: lo entregado y la votación abierta (#218).
         avisos.push(...await brickslab.avisosDe(fam).catch(() => []));
 
@@ -20895,16 +20915,21 @@ app.post('/api/admin/fichajes/festivos', authenticateSession, requireAdmin, requ
              ON CONFLICT (fecha) DO UPDATE SET nombre = EXCLUDED.nombre, tipo = EXCLUDED.tipo, resta_vacaciones = EXCLUDED.resta_vacaciones`,
             [desde, hasta, nombre, tipo, resta, req.userSession.userId]);
         const sustituidos = antes.rows.filter(x => x.nombre !== nombre || x.tipo !== tipo || x.resta_vacaciones !== resta);
+        // Ese día no hay clase (#530): las reservas con bono se anulan y la clase
+        // vuelve al bono. A la familia le sale el aviso (ver avisosFamilia).
+        const anuladas = await anularReservasPorCierre(client, { desde, hasta, actorId: req.userSession.userId });
         await auditarFichaje(client, {
             evento: 'festivo', actorId: req.userSession.userId, ip: ipDe(req),
             datos: desde === hasta
-                ? { fecha: desde, nombre, tipo, restaVacaciones: resta, antes: antes.rows[0] || null }
-                : { desde, hasta, dias: diasEntreISO(desde, hasta), nombre, tipo, restaVacaciones: resta, antes: antes.rows },
+                ? { fecha: desde, nombre, tipo, restaVacaciones: resta, antes: antes.rows[0] || null, reservasAnuladas: anuladas.map(x => x.id) }
+                : { desde, hasta, dias: diasEntreISO(desde, hasta), nombre, tipo, restaVacaciones: resta, antes: antes.rows, reservasAnuladas: anuladas.map(x => x.id) },
         });
         await client.query('COMMIT');
+        if (anuladas.length) avisosPush.avisarFamilias(anuladas.map(x => x.studentId));
         res.status(201).json({
             success: true, dias: diasEntreISO(desde, hasta),
             sustituidos: sustituidos.map(x => ({ ...x, tipoNombre: TIPOS_FESTIVO[x.tipo] || x.tipo })),
+            reservasAnuladas: anuladas.map(({ alumno, clase, fecha }) => ({ alumno, clase, fecha })),
         });
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});

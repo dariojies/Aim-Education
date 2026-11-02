@@ -211,6 +211,32 @@ export async function reservarPlazaBono(pool, { clubId, studentId, groupId, fech
     } finally { client.release(); }
 }
 
+// Al marcar días de cierre del centro (#530): las reservas con bono de esos días
+// (de hoy en adelante) se anulan y la clase vuelve al bono. Va dentro de la
+// transacción de quien marca el cierre (`client`). Devuelve lo anulado.
+export async function anularReservasPorCierre(client, { desde, hasta, actorId }) {
+    const hoy = hoyMadridISO();
+    const ini = desde > hoy ? desde : hoy;
+    if (hasta < ini) return [];
+    const r = await client.query(
+        `SELECT r.id, r.bono_id, r.student_id, r.fecha::text AS fecha, g.name AS clase,
+                TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno
+         FROM aim_bono_reservas r
+         JOIN users u ON u.user_id = r.student_id
+         LEFT JOIN tul_groups g ON g.group_id = r.group_id
+         WHERE r.estado = 'reservada' AND r.fecha BETWEEN $1::date AND $2::date
+         ORDER BY r.fecha, alumno
+         FOR UPDATE OF r`, [ini, hasta]);
+    for (const x of r.rows) {
+        await client.query(
+            `UPDATE aim_bono_reservas SET estado = 'cancelada', cancelada_at = NOW(), cancelada_por = $2, devuelta = true WHERE id = $1`,
+            [x.id, actorId || null]);
+        const del = await client.query(`DELETE FROM aim_bono_usos WHERE reserva_id = $1 RETURNING bono_id`, [x.id]);
+        if (del.rowCount) await client.query(`UPDATE aim_bonos SET clases_usadas = GREATEST(0, clases_usadas - 1) WHERE id = $1`, [x.bono_id]);
+    }
+    return r.rows.map(x => ({ id: x.id, studentId: x.student_id, alumno: x.alumno, clase: x.clase, fecha: x.fecha }));
+}
+
 // Cancela una reserva y devuelve la clase al bono. La familia solo puede hasta el
 // día anterior a la clase; el club, cuando haga falta. `soloDe` limita a unos
 // alumnos (la familia solo cancela las suyas).

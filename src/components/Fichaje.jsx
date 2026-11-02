@@ -1005,6 +1005,12 @@ function VacacionesYFestivos({ showToast, puedeGestionar }) {
         alert(`Guardado. Dentro del periodo había ${d.sustituidos.length} día${d.sustituidos.length === 1 ? '' : 's'} ya marcado${d.sustituidos.length === 1 ? '' : 's'}, que ahora cuenta${d.sustituidos.length === 1 ? '' : 'n'} como «${nombre}»:\n\n`
           + d.sustituidos.map(x => `· ${fmtDiaCorto(x.fecha)}: ${x.nombre} (${x.tipoNombre})`).join('\n'));
       }
+      // Las reservas con bono de esos días se anulan y la clase vuelve al bono (#530).
+      if (d.reservasAnuladas?.length) {
+        const n = d.reservasAnuladas.length;
+        alert(`${n === 1 ? 'Había 1 reserva' : `Había ${n} reservas`} con bono esos días: ${n === 1 ? 'se ha anulado' : 'se han anulado'} y la clase ha vuelto al bono. A la familia le sale el aviso.\n\n`
+          + d.reservasAnuladas.map(x => `· ${fmtDiaCorto(x.fecha)}: ${x.alumno}${x.clase ? ` (${x.clase})` : ''}`).join('\n'));
+      }
       showToast?.(d.dias > 1 ? `Periodo guardado (${d.dias} días).` : 'Día guardado.');
       setNuevoFestivo({ desde: '', hasta: '', nombre: '', tipo, restaVacaciones });
       cargar();
