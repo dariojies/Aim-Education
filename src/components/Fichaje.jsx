@@ -1175,21 +1175,32 @@ function CierreAutomatico({ showToast }) {
   );
 }
 
+const hhmmMenos = (h, min) => { const [a, b] = h.split(':').map(Number); const t = Math.max(0, a * 60 + b - min); return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`; };
+
 // Importar los horarios de las clases: para cada profe, sus clases asignadas
 // se convierten en la plantilla de su horario laboral (se puede editar después).
 function ModalImportarHorarios({ onClose, onDone }) {
   const [profes, setProfes] = useState(null);
   const [error, setError] = useState(null);
   const [importando, setImportando] = useState(false);
+  // Minutos antes de cada tramo (#563): null hasta saber los guardados.
+  const [antes, setAntes] = useState(null);
+  const [maxAntes, setMaxAntes] = useState(60);
+  const antesOk = antes !== null && antes !== '' && Number.isInteger(Number(antes)) && Number(antes) >= 0 && Number(antes) <= maxAntes;
   useEffect(() => {
-    fetch('/api/admin/fichajes/horarios/desde-clases', { credentials: 'include', cache: 'no-store' })
-      .then(async r => { const d = await r.json(); if (!r.ok) throw new Error(d.error); setProfes(d.profes || []); })
-      .catch(e => setError(e.message || 'No se pudo cargar.'));
-  }, []);
+    if (antes !== null && !antesOk) return;
+    let vale = true;
+    const t = setTimeout(() => {
+      fetch(`/api/admin/fichajes/horarios/desde-clases${antes !== null ? `?antes=${Number(antes)}` : ''}`, { credentials: 'include', cache: 'no-store' })
+        .then(async r => { const d = await r.json(); if (!r.ok) throw new Error(d.error); if (!vale) return; setProfes(d.profes || []); setError(null); if (antes === null) setAntes(d.antes ?? 0); if (d.maxAntes) setMaxAntes(d.maxAntes); })
+        .catch(e => vale && setError(e.message || 'No se pudo cargar.'));
+    }, antes === null ? 0 : 350);
+    return () => { vale = false; clearTimeout(t); };
+  }, [antes]); // eslint-disable-line react-hooks/exhaustive-deps
   async function importar() {
     setImportando(true);
     try {
-      const d = await enviar('/api/admin/fichajes/horarios/desde-clases', {});
+      const d = await enviar('/api/admin/fichajes/horarios/desde-clases', { antes: Number(antes) });
       onDone?.(`Horarios importados: ${d.cambiados} profe${d.cambiados !== 1 ? 's' : ''} actualizado${d.cambiados !== 1 ? 's' : ''}.`);
     } catch (err) { alert(err.message); } finally { setImportando(false); }
   }
@@ -1207,6 +1218,22 @@ function ModalImportarHorarios({ onClose, onDone }) {
           A cada profe se le pone como horario laboral el de las clases que tiene asignadas (si entre dos clases hay 30 min o menos, cuentan como un mismo bloque).
           Sustituye el horario que tuviera; después se puede editar en «Horario». Es solo el horario previsto: el registro de jornada sigue siendo lo que cada uno ficha.
         </p>
+        <label data-min-antes style={{ display: 'grid', gap: 3, fontSize: 13, fontWeight: 700 }}>
+          <span style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            Entrar
+            <input type="number" min={0} max={maxAntes} step={5} value={antes ?? ''} disabled={antes === null}
+              onChange={e => setAntes(e.target.value === '' ? '' : Number(e.target.value))}
+              style={{ width: 70, padding: '5px 8px', borderRadius: 8, border: `1px solid ${antes === null || antesOk ? 'var(--line)' : 'var(--orange)'}`, background: 'var(--bg)', color: 'var(--ink)', font: 'inherit' }} />
+            minutos antes de cada tramo
+          </span>
+          <span style={{ fontSize: 12, fontWeight: 400, color: antes === null || antesOk ? 'var(--ink-3)' : 'var(--orange)' }}>
+            {antesOk && Number(antes) === 0
+              ? 'Con 0, la entrada es a la hora en que empieza la primera clase de cada tramo. Se recuerda para la próxima vez.'
+              : antes === null || antesOk
+              ? <>Con {antesOk ? Number(antes) : 10} min, si la primera clase de la tarde es a las 16:30, la entrada es a las {antesOk ? hhmmMenos('16:30', Number(antes)) : '16:20'}. Se recuerda para la próxima vez.</>
+              : `Pon entre 0 y ${maxAntes} minutos.`}
+          </span>
+        </label>
         {!profes && !error && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Calculando...</p>}
         {error && <p style={{ margin: 0, fontSize: 13, color: 'var(--orange)' }}>{error}</p>}
         {profes && profes.length === 0 && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Ningún trabajador tiene clases asignadas en el horario.</p>}
@@ -1225,7 +1252,7 @@ function ModalImportarHorarios({ onClose, onDone }) {
         ))}
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <button className="btn btn-outline" onClick={onClose}>Cancelar</button>
-          <button className="btn btn-primary" onClick={importar} disabled={importando || !cambian.length}>
+          <button className="btn btn-primary" onClick={importar} disabled={importando || !cambian.length || !antesOk}>
             {importando ? 'Importando...' : cambian.length ? `Importar (${cambian.length})` : 'Nada que cambiar'}
           </button>
         </div>

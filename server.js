@@ -23219,8 +23219,18 @@ app.post('/api/fichaje/ausencias/:id/cancelar', authenticateSession, requireAdmi
 const esDocenteSesion = (s, uid) => String(s?.instructorId || '') === String(uid)
     || (Array.isArray(s?.instructors) ? s.instructors : []).some(d => String(d?.id || '') === String(uid));
 const NOMBRE_DIA_SEMANA = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
+// Minutos antes de la primera clase de cada tramo a los que se pone la entrada
+// (#563): con 10, una clase a las 16:30 da entrada a las 16:20. Se recuerda en
+// aim_ajustes para la próxima vez que se importe.
+const CLAVE_MIN_ANTES_HORARIO = 'fichaje_horario_antes';
+const MAX_MIN_ANTES_HORARIO = 60;
+const minAntesValido = (v) => { const n = Number(v); return Number.isInteger(n) && n >= 0 && n <= MAX_MIN_ANTES_HORARIO ? n : null; };
+async function minutosAntesHorario() {
+    const v = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = $1`, [CLAVE_MIN_ANTES_HORARIO]).catch(() => ({ rows: [] }))).rows[0]?.valor;
+    return minAntesValido(v) ?? 0;
+}
 
-async function horariosDesdeClases() {
+async function horariosDesdeClases(minAntes = 0) {
     const staff = await pool.query(
         `SELECT user_id, TRIM(CONCAT(name, ' ', COALESCE(surname, ''))) AS nombre FROM users
          WHERE club_id = $1 AND (LOWER(COALESCE(${sqlRango('users')},'')) = ANY($2) OR LOWER(COALESCE(dev_role,'')) = ANY($2))
@@ -23259,6 +23269,15 @@ async function horariosDesdeClases() {
                 for (let i = 1; i < unidos.length - 1; i++) if (unidos[i + 1].ini - unidos[i].fin < unidos[k + 1].ini - unidos[k].fin) k = i;
                 unidos.splice(k, 2, { ini: unidos[k].ini, fin: unidos[k + 1].fin });
             }
+            // Entrar unos minutos antes de cada tramo (#563). Si así la tarde
+            // empieza antes de que acabe la mañana, son un solo tramo.
+            if (minAntes) {
+                for (const u of unidos) u.ini = Math.max(0, u.ini - minAntes);
+                if (unidos.length === 2 && unidos[1].ini <= unidos[0].fin) {
+                    unidos.splice(0, 2, { ini: unidos[0].ini, fin: Math.max(unidos[0].fin, unidos[1].fin) });
+                    avisos.push(`El ${NOMBRE_DIA_SEMANA[dia]}, con los ${minAntes} min antes, sus dos tramos se juntan en uno.`);
+                }
+            }
             unidos.forEach((u, i) => dias.push({ dia, tramo: i + 1, entrada: hhmm(u.ini), salida: hhmm(u.fin) }));
         });
         const antes = actuales.rows.filter(x => String(x.user_id) === String(w.user_id))
@@ -23271,8 +23290,11 @@ async function horariosDesdeClases() {
 
 app.get('/api/admin/fichajes/horarios/desde-clases', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
     try {
+        // ?antes=N para ver cómo quedaría con otros minutos; si no, los guardados.
+        const antes = req.query.antes !== undefined ? minAntesValido(req.query.antes) : await minutosAntesHorario();
+        if (antes == null) return res.status(400).json({ error: `Pon entre 0 y ${MAX_MIN_ANTES_HORARIO} minutos.` });
         res.set('Cache-Control', 'no-store');
-        res.json({ profes: await horariosDesdeClases() });
+        res.json({ profes: await horariosDesdeClases(antes), antes, maxAntes: MAX_MIN_ANTES_HORARIO });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -23281,10 +23303,19 @@ app.get('/api/admin/fichajes/horarios/desde-clases', authenticateSession, requir
 app.post('/api/admin/fichajes/horarios/desde-clases', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
     // Opcional: solo a unas personas (por defecto, a todos los profes con clases).
     const soloIds = Array.isArray(req.body?.userIds) ? req.body.userIds.map(String) : null;
+    // Los minutos antes de cada tramo (#563): los que se manden se guardan.
+    const antes = req.body?.antes !== undefined ? minAntesValido(req.body.antes) : await minutosAntesHorario();
+    if (antes == null) return res.status(400).json({ error: `Pon entre 0 y ${MAX_MIN_ANTES_HORARIO} minutos.` });
     const client = await pool.connect();
     try {
-        const profes = (await horariosDesdeClases()).filter(p => !soloIds || soloIds.includes(String(p.userId)));
+        const profes = (await horariosDesdeClases(antes)).filter(p => !soloIds || soloIds.includes(String(p.userId)));
         await client.query('BEGIN');
+        if (req.body?.antes !== undefined) {
+            await client.query(
+                `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ($1, $2::jsonb, NOW(), $3)
+                 ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+                [CLAVE_MIN_ANTES_HORARIO, JSON.stringify(antes), req.userSession.userId]);
+        }
         let cambiados = 0;
         for (const p of profes) {
             if (p.igual) continue;
@@ -23296,7 +23327,7 @@ app.post('/api/admin/fichajes/horarios/desde-clases', authenticateSession, requi
             }
             await auditarFichaje(client, {
                 evento: 'horario', trabajadorId: p.userId, actorId: req.userSession.userId, ip: ipDe(req),
-                datos: { antes: p.antes, despues: p.dias, origen: 'importado de las clases' },
+                datos: { antes: p.antes, despues: p.dias, origen: antes ? `importado de las clases (entrada ${antes} min antes)` : 'importado de las clases' },
             });
             cambiados++;
         }
