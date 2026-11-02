@@ -149,13 +149,13 @@ function ParaAtender({ avisos, irRuta, como }) {
 }
 
 // ── Piezas de las vistas ────────────────────────────────────────────────────
-function ClasesHoy({ clases, ir, irRuta, titulo = 'Clases de hoy', max = 6 }) {
+function ClasesHoy({ clases, ir, irRuta, titulo = 'Clases de hoy', max = 6, cerrado = null }) {
   if (clases === null) return <Bloque titulo={titulo}><p style={suave}>Cargando…</p></Bloque>;
   const orden = [...clases].sort((a, b) => String(a.hora || a.horario || '').localeCompare(String(b.hora || b.horario || '')));
   const sin = clases.filter(c => !c.marcados && !c.pasada).length;
   return (
     <Bloque vacia={!clases.length} titulo={titulo} sub={clases.length ? (sin ? `${plural(sin, 'lista', 'listas')} sin pasar de ${clases.length}` : 'Todas las listas pasadas') : null} accion="Pasar lista" onAccion={() => (irRuta ? irRuta('/admin/clases/lista') : ir('classes'))}>
-      <Lista items={orden} max={max} vacio="Hoy no hay clases." onMas={() => (irRuta ? irRuta('/admin/clases/lista') : ir('classes'))} render={c => (
+      <Lista items={orden} max={max} vacio={cerrado ? `Hoy el centro está cerrado (${cerrado}): no hay clases.` : 'Hoy no hay clases.'} onMas={() => (irRuta ? irRuta('/admin/clases/lista') : ir('classes'))} render={c => (
         <Fila key={c.id} onClick={irRuta ? () => irRuta(`/admin/clases/lista/${c.id}`) : undefined} izq={c.hora || (c.horario || '').split(/[–-]/)[0] || '—'}
           centro={<><b>{c.name}</b><span style={suave}> · {c.studentCount} al.{c.instructor ? ` · ${c.instructor.split(' ')[0]}` : ''}</span></>}
           der={c.marcados || c.pasada ? <Estado tipo="ok">Pasada</Estado> : <Estado tipo="info">Sin pasar</Estado>} />
@@ -246,18 +246,18 @@ function GraficoMeses({ meses }) {
 }
 
 // ── Cada vista: sus cuatro cifras y sus tres columnas ───────────────────────
-function vistaInstructor({ d, clases, ir, irRuta, como }) {
+function vistaInstructor({ d, clases, cerradoHoy, ir, irRuta, como }) {
   const sin = clases ? clases.filter(c => !c.marcados && !c.pasada).length : null;
   const su = como ? 'Sus' : 'Tus';
   return {
     cifras: [
-      <Cifra key="1" etiqueta="Clases hoy" valor={clases ? clases.length : '…'} detalle={clases && clases.length ? (sin ? `${plural(sin, 'lista', 'listas')} por pasar` : 'listas al día') : null} tono={sin ? 'aviso' : 'bien'} onClick={() => ir('classes')} />,
+      <Cifra key="1" etiqueta="Clases hoy" valor={clases ? clases.length : '…'} detalle={cerradoHoy ? 'hoy está cerrado' : clases && clases.length ? (sin ? `${plural(sin, 'lista', 'listas')} por pasar` : 'listas al día') : null} tono={sin ? 'aviso' : 'bien'} onClick={() => ir('classes')} />,
       <Cifra key="2" etiqueta="Alumnos" valor={d.alumnos} detalle={plural(d.grupos, 'grupo', 'grupos')} />,
       <Cifra key="3" etiqueta="Faltan seguido" valor={d.faltas.length} detalle={d.faltas.length ? '3 o más clases' : 'nadie'} tono={d.faltas.length ? 'aviso' : 'bien'} />,
       <Cifra key="4" etiqueta="Cumpleaños" valor={d.cumples.filter(c => c.enDias === 0).length} detalle={`hoy · ${d.cumples.length} esta semana`} />,
     ],
     columnas: [
-      [<ClasesHoy key="c" clases={clases} ir={ir} irRuta={como ? null : irRuta} titulo={`${su} clases de hoy`} />],
+      [<ClasesHoy key="c" clases={clases} ir={ir} irRuta={como ? null : irRuta} titulo={`${su} clases de hoy`} cerrado={cerradoHoy} />],
       [<Bloque key="f" vacia={!d.faltas.length} titulo="Alumnos que faltan seguido" sub="3 o más clases seguidas sin venir">
         <Lista items={d.faltas} max={6} vacio="Nadie. ¡Bien!" render={f => (
           <Fila key={`${f.id}-${f.clase}`} centro={<><b>{f.alumno}</b><span style={suave}> · {f.clase}</span></>} der={f.avisoHasta
@@ -274,19 +274,19 @@ function vistaInstructor({ d, clases, ir, irRuta, como }) {
   };
 }
 
-function vistaSecretaria({ d, clases, ir, irRuta }) {
+function vistaSecretaria({ d, clases, cerradoHoy, ir, irRuta }) {
   const sin = clases ? clases.filter(c => !c.marcados && !c.pasada).length : null;
   return {
     cifras: [
       <Cifra key="1" etiqueta="Cobrado hoy" valor={eur(d.cobradoHoy.total)} detalle={plural(d.cobradoHoy.pagos ?? d.cobradoHoy.recibos, 'cobro', 'cobros')} onClick={() => ir('billing')} />,
       <Cifra key="2" etiqueta="Por cobrar" valor={eur(d.porCobrar.total)} detalle={plural(d.porCobrar.alumnos ?? d.porCobrar.familias, 'alumno', 'alumnos')} tono={d.porCobrar.total > 0 ? 'aviso' : 'bien'} onClick={() => ir('billing')} />,
-      <Cifra key="3" etiqueta="Clases hoy" valor={clases ? clases.length : '…'} detalle={clases && clases.length ? (sin ? `${plural(sin, 'lista', 'listas')} sin pasar` : 'listas al día') : null} tono={sin ? 'aviso' : 'bien'} onClick={() => ir('classes')} />,
+      <Cifra key="3" etiqueta="Clases hoy" valor={clases ? clases.length : '…'} detalle={cerradoHoy ? 'hoy está cerrado' : clases && clases.length ? (sin ? `${plural(sin, 'lista', 'listas')} sin pasar` : 'listas al día') : null} tono={sin ? 'aviso' : 'bien'} onClick={() => ir('classes')} />,
       d.campamentoHoy > 0
         ? <Cifra key="4" etiqueta="Campamento hoy" valor={d.campamentoHoy} detalle="niños" onClick={() => ir('camp')} />
         : <Cifra key="4" etiqueta="Trabajando ahora" valor={d.personal.length} detalle="del equipo" onClick={() => ir('fichaje')} />,
     ],
     columnas: [
-      [<ClasesHoy key="c" clases={clases} ir={ir} irRuta={irRuta} />],
+      [<ClasesHoy key="c" clases={clases} ir={ir} irRuta={irRuta} cerrado={cerradoHoy} />],
       [
         <Bloque key="caja" titulo="La caja de hoy" accion={d.cajaCerrada ? 'Ver' : 'Cerrar la caja'} onAccion={() => ir('billing')}>
           {d.cobradoHoy.porMedio.length === 0 ? <p style={{ ...suave, margin: '4px 0' }}>Todavía no se ha cobrado nada hoy.</p>
@@ -455,6 +455,7 @@ export default function AdminResumen({ permisos, ir, irRuta, refreshTrigger }) {
   const [error, setError] = useState(null);
   const [avisos, setAvisos] = useState(null);
   const [clases, setClases] = useState(null);
+  const [cerradoHoy, setCerradoHoy] = useState(null);   // hoy el centro está cerrado (#530)
 
   const cargar = useCallback(() => {
     setError(null);
@@ -479,7 +480,7 @@ export default function AdminResumen({ permisos, ir, irRuta, refreshTrigger }) {
     if (!conClases) return;
     setClases(null);
     fetch(`/api/admin/tul/attendance/dia/${d.hoy}${idComo ? `?instructor=${idComo}` : ''}`, { credentials: 'include', cache: 'no-store' })
-      .then(r => (r.ok ? r.json() : { clases: [] })).then(x => setClases(x.clases || [])).catch(() => setClases([]));
+      .then(r => (r.ok ? r.json() : { clases: [] })).then(x => { setClases(x.clases || []); setCerradoHoy(x.cerrado || null); }).catch(() => setClases([]));
   }, [conClases, d?.hoy, d?.vista, idComo, refreshTrigger]);
 
   const elegirVista = (v) => { setVista(v); setComo(''); };
@@ -496,7 +497,7 @@ export default function AdminResumen({ permisos, ir, irRuta, refreshTrigger }) {
   // arriba (los mensajes nuevos de un ticket, sí).
   const pendientes = avisos && (esIT ? avisos.filter(a => !(a.tipo === 'tickets' && !String(a.clave || '').startsWith('ticket:'))) : avisos);
   const hacer = { instructor: vistaInstructor, secretaria: vistaSecretaria, direccion: vistaDireccion, it: vistaIT, trabajador: vistaTrabajador }[d.vista];
-  const v = hacer ? hacer({ d: d.datos, mi: d.mi, clases, ir, irRuta, como: d.como }) : null;
+  const v = hacer ? hacer({ d: d.datos, mi: d.mi, clases, cerradoHoy, ir, irRuta, como: d.como }) : null;
 
   // Iconos de las cuatro cifras de cada vista (el color va por posición, como antes).
   const ICONOS = {

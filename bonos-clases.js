@@ -105,10 +105,13 @@ export async function plazasConBono(pool, { clubId, desde, hasta, studentId = nu
                  SELECT 1 FROM aim_bonos b WHERE b.cliente_id = $3 AND b.clases_usadas < b.clases_total
                    AND ${sqlBonoValeEn('b', sqlModoBono(), 'a.name')}))
          ORDER BY a.name, g.name`, [clubId, groupId, studentId]);
+    // Los días de cierre del centro (#530) no hay clase: no se reservan.
+    const cerrados = new Set((await pool.query(
+        `SELECT fecha::text AS f FROM aim_calendario_laboral WHERE fecha BETWEEN $1::date AND $2::date`, [desde, hasta]).catch(() => ({ rows: [] }))).rows.map(x => x.f));
     const pares = [];
     for (const x of g.rows) {
         for (let f = desde; f <= hasta; f = sumarDias(f, 1)) {
-            if (f < hoy) continue;
+            if (f < hoy || cerrados.has(f)) continue;
             const ses = sesionesDelDia(x.sessions, f);
             if (!ses.length) continue;
             const hora = ses[0]?.startTime || '';
@@ -164,6 +167,8 @@ export async function reservarPlazaBono(pool, { clubId, studentId, groupId, fech
         const plazas = await plazasConBono(client, { clubId, desde: fecha, hasta: fecha, studentId, groupId });
         const p = plazas[0];
         if (!p) {
+            const cierre = (await client.query(`SELECT nombre FROM aim_calendario_laboral WHERE fecha = $1::date`, [fecha])).rows[0];
+            if (cierre) throw { httP: 400, msg: `Ese día el centro está cerrado (${cierre.nombre}): no hay clase.` };
             const info = await client.query(
                 `SELECT ${sqlModoBono()} AS modo, g.max_students FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
                  LEFT JOIN aim_clase_bonos cb ON cb.group_id = g.group_id WHERE g.group_id = $1 AND a.club_id = $2`, [groupId, clubId]);

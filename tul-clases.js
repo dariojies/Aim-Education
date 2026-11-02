@@ -1039,11 +1039,18 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
         return lista.map(n => `${hhmm(Math.round(a + paso * (n - 1)))}–${hhmm(Math.round(a + paso * n))}`).join(', ');
     };
 
-    // Qué clases tocan un día concreto, según los días de sus sesiones.
+    // Qué clases tocan un día concreto, según los días de sus sesiones. Un día de
+    // cierre del centro (Fichaje → Vacaciones y festivos, #530) no hay ninguna:
+    // ni se pide pasar lista ni salen como «sin pasar».
     router.get('/attendance/dia/:fecha', async (req, res) => {
         const { fecha } = req.params;
         if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) return res.status(400).json({ error: 'Fecha no válida.' });
         try {
+            const cierre = (await pool.query(`SELECT nombre FROM aim_calendario_laboral WHERE fecha = $1::date`, [fecha]).catch(() => ({ rows: [] }))).rows[0];
+            if (cierre) {
+                res.set('Cache-Control', 'no-store');
+                return res.json({ fecha, clases: [], cerrado: cierre.nombre, todas: !soloSuyos(req) && !req.query.instructor });
+            }
             // getDay() da 0=domingo; en aim-tul las sesiones usan 0=lunes.
             const js = new Date(fecha + 'T12:00:00').getDay();
             const diaSemana = (js + 6) % 7;

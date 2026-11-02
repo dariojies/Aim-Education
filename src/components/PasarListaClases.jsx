@@ -45,6 +45,7 @@ export default function PasarListaClases({ showToast, abrir = null }) {
   const [clases, setClases] = useState([]);
   // Quien ve las clases de todo el club puede quedarse con las suyas (#407).
   const [todas, setTodas] = useState(false);
+  const [cerrado, setCerrado] = useState(null);   // ese día el centro está cerrado (#530)
   const [vista, setVista] = useState(() => { try { return localStorage.getItem('pasarLista.vista') || 'mias'; } catch { return 'mias'; } });
   const elegirVista = (v) => { setVista(v); try { localStorage.setItem('pasarLista.vista', v); } catch { /* sin almacenamiento */ } };
   const [clase, setClase] = useState(null);
@@ -68,7 +69,7 @@ export default function PasarListaClases({ showToast, abrir = null }) {
     setCargando(true);
     try {
       const r = await fetch(`/api/admin/tul/attendance/dia/${f}`, { credentials: 'include' });
-      if (r.ok) { const d = await r.json(); setClases(d.clases || []); setTodas(!!d.todas); }
+      if (r.ok) { const d = await r.json(); setClases(d.clases || []); setTodas(!!d.todas); setCerrado(d.cerrado || null); }
     } catch { /* noop */ }
     finally { setCargando(false); }
   }, []);
@@ -253,7 +254,7 @@ export default function PasarListaClases({ showToast, abrir = null }) {
           {cargando && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando...</p>}
           {!cargando && !clases.length && (
             <div style={{ padding: 28, textAlign: 'center', background: 'var(--bg-2)', border: '1px dashed var(--line)', borderRadius: 14, color: 'var(--ink-3)', fontSize: 14 }}>
-              Ese día no hay clases en el horario.
+              {cerrado ? <>Ese día el centro está cerrado (<b>{cerrado}</b>): no hay clases ni lista que pasar.</> : 'Ese día no hay clases en el horario.'}
             </div>
           )}
           {todas && clases.some(c => c.mia) && (
