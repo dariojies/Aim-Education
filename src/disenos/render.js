@@ -90,7 +90,7 @@ export const VARIABLES_AUTO = {
   actividad: [
     { id: 'actividad', nombre: 'La actividad', ejemplo: 'Ballet' },
     { id: 'clase', nombre: 'La clase', ejemplo: 'Pre-Primary' },
-    { id: 'plazas', nombre: 'Cómo van las plazas', ejemplo: '¡Últimas 2 plazas!' },
+    { id: 'plazas', nombre: 'Cómo van las plazas', ejemplo: '¡Quedan 2 plazas!' },
     { id: 'horario', nombre: 'El horario', ejemplo: 'Lunes y miércoles de 16:30 a 17:30' },
     { id: 'edades', nombre: 'Las edades', ejemplo: 'De 5 a 6 años' },
   ],

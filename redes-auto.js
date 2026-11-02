@@ -187,7 +187,29 @@ export function horarioLegible(t) {
     return s.charAt(0).toUpperCase() + s.slice(1);
 }
 const edades = (a, b) => (a && b ? `De ${a} a ${b} años` : a ? `Desde ${a} años` : b ? `Hasta ${b} años` : 'Para todas las edades');
-const textoPlazas = (libres) => (libres == null ? 'Plazas libres' : libres <= 0 ? 'Apúntate a la lista de espera' : libres <= 3 ? `¡Últimas ${libres === 1 ? 'plaza' : `${libres} plazas`}!` : `Quedan ${libres} plazas`);
+// Las plazas, como en la web (#527): con más de «pocas» libres no se dice
+// cuántas; con «pocas» o menos, sí. «pocas» se elige en Publicaciones →
+// Publicaciones automáticas (aim_ajustes «plazas_pocas»; 5 si no se toca) y vale
+// también para la web y las reservas con bono.
+export const CLAVE_PLAZAS_POCAS = 'plazas_pocas';
+export const PLAZAS_POCAS_DEF = 5;
+let cachePocas = null;
+export async function plazasPocas(pool) {
+    if (cachePocas && cachePocas.hasta > Date.now()) return cachePocas.n;
+    const v = Number((await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = $1`, [CLAVE_PLAZAS_POCAS])).rows[0]?.valor);
+    const n = Number.isInteger(v) && v >= 1 && v <= 50 ? v : PLAZAS_POCAS_DEF;
+    cachePocas = { n, hasta: Date.now() + 60_000 };
+    return n;
+}
+export async function guardarPlazasPocas(pool, n, userId = null) {
+    await pool.query(
+        `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ($1, $2::jsonb, NOW(), $3)
+         ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
+        [CLAVE_PLAZAS_POCAS, JSON.stringify(n), userId]);
+    cachePocas = null;
+}
+export const textoPlazas = (libres, pocas = PLAZAS_POCAS_DEF) => (libres == null || libres > pocas ? 'Hay plazas disponibles'
+    : libres <= 0 ? 'Apúntate a la lista de espera' : libres === 1 ? '¡Queda 1 plaza!' : `¡Quedan ${libres} plazas!`);
 
 // Las clases de cada actividad con sus plazas libres.
 async function clasesConPlazas(pool, clubId) {
@@ -267,7 +289,7 @@ export async function prepararHistoriaActividad(pool, { clubId, hoyYa = [], solo
         if (!foto) { excluir.push(e.actividad); continue; }
         const datosFoto = (await pool.query(`SELECT datos, mime FROM aim_galeria_fotos WHERE id = $1`, [foto.id])).rows[0];
         const url = `data:${datosFoto.mime || 'image/jpeg'};base64,${datosFoto.datos.toString('base64')}`;
-        const variables = { actividad: e.actividad, clase: e.clase.name, plazas: textoPlazas(e.clase.libres), horario: horarioLegible(e.clase.time), edades: edades(e.clase.min_age, e.clase.max_age) };
+        const variables = { actividad: e.actividad, clase: e.clase.name, plazas: textoPlazas(e.clase.libres, await plazasPocas(pool)), horario: horarioLegible(e.clase.time), edades: edades(e.clase.min_age, e.clase.max_age) };
         // Con la página de su actividad, si la plantilla tiene una (#516).
         const medio = await medioDe({ ...d, datos: paginaParaActividad(d.datos, e.actividad) }, { url }, variables);
         return { actividad: e.actividad, clase: e.clase.name, grupo: e.clase.group_id, foto: foto.id, variables, medio, disenoId: d.id };

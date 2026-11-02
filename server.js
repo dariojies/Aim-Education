@@ -41,7 +41,7 @@ import { crearPantallas, crearTablasPantallas, prepararEstaticas, prepararCierre
 import { crearChats, crearTablasChats, avisosChats } from './chats.js';
 import { crearListas, crearTablasListas, listasComoSegmentos, resolverLista, correosDeLista } from './listas.js';
 import { crearPersonal, crearTablasPersonal, avisosEspacio, recordarCertificados } from './personal.js';
-import { redesDeNoticia, configRedesAuto, guardarRedesAuto, programarHistoriasActividades, prepararHistoriaActividad } from './redes-auto.js';
+import { redesDeNoticia, configRedesAuto, guardarRedesAuto, programarHistoriasActividades, prepararHistoriaActividad, plazasPocas, guardarPlazasPocas } from './redes-auto.js';
 import { programarHistoriasFestivos, felicitacionCumple, automaticosElegidos } from './disenos-automaticos.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
@@ -3942,9 +3942,9 @@ app.get('/api/classes', async (req, res) => {
 // vez con todas sus sesiones. Antes la web montaba las páginas desde el horario,
 // un hueco por día y sesión, y el mismo grupo salía repetido tantas veces como
 // días tenía. Aquí no va cuántos alumnos hay: a la web solo le importa si queda sitio.
-const PLAZAS_POCAS = 5;
 app.get('/api/publico/clases', async (req, res) => {
     try {
+        const pocas = await plazasPocas(pool);
         const r = await pool.query(`
             SELECT a.activity_id, a.name AS actividad, a.activity_type, a.icon,
                    g.group_id, g.name, g.sessions, g.max_students, g.min_age, g.max_age,
@@ -3971,13 +3971,14 @@ app.get('/api/publico/clases', async (req, res) => {
                     monitores: nombresDocentes(x),
                 }))
                 .filter(x => x.dias.length && x.inicio);
-            // Con más de 5 libres no se dice cuántas («Hay plazas disponibles»);
-            // con 5 o menos, sí: el número solo va entonces.
+            // Con más de «pocas» libres (5, si no se cambia en Publicaciones
+            // automáticas, #527) no se dice cuántas («Hay plazas disponibles»);
+            // con esas o menos, sí: el número solo va entonces.
             const libres = f.max_students != null ? f.max_students - f.alumnos : null;
             porActividad.get(f.activity_id).grupos.push({
                 id: f.group_id, nombre: f.name, minAge: f.min_age, maxAge: f.max_age, sesiones,
-                plazas: libres == null ? 'libres' : libres <= 0 ? 'completo' : libres <= PLAZAS_POCAS ? 'pocas' : 'libres',
-                ...(libres != null && libres > 0 && libres <= PLAZAS_POCAS ? { libres } : {}),
+                plazas: libres == null ? 'libres' : libres <= 0 ? 'completo' : libres <= pocas ? 'pocas' : 'libres',
+                ...(libres != null && libres > 0 && libres <= pocas ? { libres } : {}),
             });
         }
         res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=60');
@@ -15524,7 +15525,7 @@ app.get('/api/admin/redes-automaticas', authenticateSession, requireSeccion('com
         const auto = await automaticosElegidos(pool);
         const actividades = (await pool.query(`SELECT DISTINCT a.name FROM tul_activities a JOIN tul_groups g ON g.activity_id = a.activity_id WHERE a.club_id = $1 ORDER BY 1`, [AIM_CLUB_ID])).rows.map(x => x.name);
         res.set('Cache-Control', 'no-store');
-        res.json({ hashtags: cfg.hashtags, historias: cfg.historias, registro: cfg.registro, plantillas: { noticia: auto.noticia || null, actividad: auto.actividad || null }, actividades });
+        res.json({ hashtags: cfg.hashtags, historias: cfg.historias, registro: cfg.registro, plantillas: { noticia: auto.noticia || null, actividad: auto.actividad || null }, actividades, plazasPocas: await plazasPocas(pool) });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 app.put('/api/admin/redes-automaticas', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
@@ -15536,6 +15537,12 @@ app.put('/api/admin/redes-automaticas', authenticateSession, requireSeccion('com
             if (h.activo !== undefined) cfg.historias.activo = !!h.activo;
             if (Array.isArray(h.horas)) cfg.historias.horas = [...new Set(h.horas.filter(x => /^([01]\d|2[0-3]):[0-5]\d$/.test(x)))].sort().slice(0, 4);
             if (Array.isArray(h.excluir)) cfg.historias.excluir = h.excluir.map(String).slice(0, 50);
+        }
+        // A partir de cuántas plazas libres se dice el número (#527): web e historias.
+        if (b.plazasPocas !== undefined) {
+            const n = Number(b.plazasPocas);
+            if (!Number.isInteger(n) || n < 1 || n > 50) return res.status(400).json({ error: 'Pon un número de plazas entre 1 y 50.' });
+            await guardarPlazasPocas(pool, n, req.userSession.userId);
         }
         await guardarRedesAuto(pool, cfg, req.userSession.userId);
         programarHistoriasActividades(pool, { clubId: AIM_CLUB_ID }).catch(() => {});
@@ -19050,7 +19057,7 @@ app.get('/api/me/bonos', authenticateSession, async (req, res) => {
             }
         }
         res.set('Cache-Control', 'no-store');
-        res.json({ ventana, alumnos: [...alumnos.values()] });
+        res.json({ ventana, alumnos: [...alumnos.values()], plazasPocas: await plazasPocas(pool) });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

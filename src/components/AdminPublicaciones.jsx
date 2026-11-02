@@ -662,6 +662,17 @@ function Automaticas({ onCerrar, showToast }) {
             ))}
             {historias.horas.length < 4 && <button type="button" className="btn btn-sm btn-outline" onClick={() => ponerHistorias({ horas: [...historias.horas, '13:00'] })}>＋ Otra hora</button>}
           </div>
+          {/* #527: a partir de cuántas plazas libres se dice el número (aquí y en la web). */}
+          <label style={{ display: 'grid', gap: 3, fontSize: 12, fontWeight: 700 }} data-plazas-pocas>
+            Decir cuántas plazas quedan cuando queden
+            <span style={{ display: 'flex', gap: 6, alignItems: 'center', fontWeight: 400 }}>
+              <input type="number" min={1} max={50} defaultValue={d.plazasPocas} key={d.plazasPocas}
+                onBlur={e => { const n = Number(e.target.value); if (n !== d.plazasPocas) guardar({ plazasPocas: n }, 'Guardado: en las historias y en la web.'); }}
+                style={{ ...campoA, width: 70 }} />
+              o menos
+            </span>
+            <span style={{ ...suave, fontWeight: 400 }}>Con más libres pone «Hay plazas disponibles», sin número; con esas o menos, «¡Quedan 3 plazas!». Vale para las historias y para la web (las páginas de las actividades y las reservas con bono).</span>
+          </label>
           <div style={{ display: 'grid', gap: 4 }}>
             <span style={{ fontSize: 12, fontWeight: 700 }}>Actividades que no salen</span>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>

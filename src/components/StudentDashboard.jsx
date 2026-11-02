@@ -262,8 +262,8 @@ function BonosFamilia() {
                           <div style={{fontSize: 13, textTransform: "capitalize"}}>{fmtDia(p.fecha)} · {p.hora}{p.horaFin ? `–${p.horaFin}` : ''}</div>
                         </div>
                         <div style={{display: "flex", alignItems: "center", gap: 8}}>
-                          {/* Más de 5 libres: sin número; 5 o menos: el número, en amarillo (como en la web). */}
-                          {p.libres > 0 && p.libres <= PLAZAS_POCAS
+                          {/* Más de 5 libres (o las que diga el club, #527): sin número; esas o menos: el número, en amarillo (como en la web). */}
+                          {p.libres > 0 && p.libres <= (d?.plazasPocas ?? PLAZAS_POCAS)
                             ? <span data-plazas="pocas" style={{fontSize: 12, whiteSpace: "nowrap", ...estiloQuedan}}>{textoQuedan(p.libres)}</span>
                             : <span data-plazas={p.libres ? 'libres' : 'completo'} style={{fontSize: 12, fontWeight: 700, color: p.libres ? "var(--teal)" : "var(--orange)"}}>{p.libres ? 'Hay plazas disponibles' : 'Completa'}</span>}
                           <div style={{flex: 1}} />
