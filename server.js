@@ -13421,11 +13421,17 @@ async function rebotesDe(emails, cliente = pool) {
     return new Set(r.rows.map(x => x.e));
 }
 
-// Lee los avisos de rebote nuevos del buzón del club. Solo mira mensajes de
-// «mailer-daemon» y recuerda hasta dónde leyó. Una vez apuntados, los saca de
-// la bandeja de entrada a la etiqueta «Rebotes» de Gmail, para que no llenen el
+// Lee los avisos de rebote nuevos del buzón del club y recuerda hasta dónde leyó.
+// Mira los de «mailer-daemon» (Gmail y casi todos) y, desde #528, también los de
+// Outlook/Hotmail y Exchange, que vienen de «postmaster» o con asunto
+// «Undeliverable» / «No se puede entregar». Una vez apuntados, los saca de la
+// bandeja de entrada a la etiqueta «Rebotes» de Gmail, para que no llenen el
 // correo (siguen en Gmail, y lo que dicen, en Comunicación → «Correos que rebotan»).
+// De los que no son de mailer-daemon solo se mueven los que de verdad traían un
+// rebote: un correo cualquiera con esas palabras se queda donde está.
 const CARPETA_REBOTES = 'Rebotes';
+const AVISOS_OTROS = [{ from: 'postmaster' }, { subject: 'Undeliverable' }, { subject: 'No se puede entregar' }, { subject: 'Non remis' }, { subject: 'Unzustellbar' }];
+const AVISOS_REBOTE = { or: [{ from: 'mailer-daemon' }, ...AVISOS_OTROS] };
 let rebotesEnCurso = false;
 async function revisarRebotes() {
     if (rebotesEnCurso || !process.env.EMAIL_USER || !process.env.EMAIL_PASS) return;
@@ -13444,15 +13450,23 @@ async function revisarRebotes() {
             const validez = String(imap.mailbox.uidValidity);
             const desde = marca.uidValidity === validez ? Number(marca.ultimoUid) || 0 : 0;
             // La primera vez, solo lo de los últimos 30 días.
-            const criterio = desde ? { uid: `${desde + 1}:*`, from: 'mailer-daemon' } : { since: new Date(Date.now() - 30 * 86400_000), from: 'mailer-daemon' };
-            const uids = (await imap.search(criterio, { uid: true })) || [];
+            const hace30 = new Date(Date.now() - 30 * 86400_000);
+            const criterio = desde ? { uid: `${desde + 1}:*`, ...AVISOS_REBOTE } : { since: hace30, ...AVISOS_REBOTE };
+            const uids = new Set((await imap.search(criterio, { uid: true })) || []);
+            // Una sola vez (#528): los de Outlook de los últimos 30 días que antes no se miraban.
+            const otrosAntes = desde && marca.outlook !== true
+                ? new Set(((await imap.search({ since: hace30, or: AVISOS_OTROS }, { uid: true })) || []).filter(u => u <= desde)) : new Set();
+            for (const u of otrosAntes) uids.add(u);
             let ultimo = desde;
-            for (const uid of uids) {
-                if (uid <= desde) continue;
+            const conRebote = [];
+            for (const uid of [...uids].sort((a, b) => a - b)) {
+                if (uid <= desde && !otrosAntes.has(uid)) continue;
                 const m = await imap.fetchOne(String(uid), { source: true }, { uid: true });
                 ultimo = Math.max(ultimo, uid);
                 if (!m?.source) continue;
-                for (const reb of leerAvisoRebote(m.source.toString('utf8'))) {
+                const rebotes = leerAvisoRebote(m.source.toString('utf8'));
+                if (rebotes.length) conRebote.push(uid);
+                for (const reb of rebotes) {
                     const env = reb.token
                         ? (await pool.query(`SELECT id FROM aim_campana_envios WHERE token = $1`, [reb.token])).rows[0]
                         : (await pool.query(`SELECT id FROM aim_campana_envios WHERE LOWER(email) = LOWER($1) AND enviado_at > NOW() - INTERVAL '30 days' ORDER BY enviado_at DESC LIMIT 1`, [reb.email])).rows[0];
@@ -13463,9 +13477,9 @@ async function revisarRebotes() {
             // Los ya leídos (también los de antes), fuera de la bandeja de entrada.
             // Solo hasta el último apuntado: uno que llegue mientras tanto, la próxima vez.
             // Si no se pueden mover, se apunta igual hasta dónde se leyó.
-            if (ultimo) {
+            if (ultimo || conRebote.length) {
                 try {
-                    const leidos = ((await imap.search({ from: 'mailer-daemon' }, { uid: true })) || []).filter(u => u <= ultimo);
+                    const leidos = [...new Set([...((await imap.search({ from: 'mailer-daemon' }, { uid: true })) || []).filter(u => u <= ultimo), ...conRebote])];
                     if (leidos.length) {
                         await imap.mailboxCreate(CARPETA_REBOTES).catch(() => {});
                         await imap.messageMove(leidos, CARPETA_REBOTES, { uid: true });
@@ -13476,7 +13490,7 @@ async function revisarRebotes() {
             await pool.query(
                 `INSERT INTO aim_ajustes (clave, valor, actualizado_at) VALUES ('rebotes_imap', $1::jsonb, NOW())
                  ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW()`,
-                [JSON.stringify({ uidValidity: validez, ultimoUid: ultimo, revisadoAt: new Date().toISOString() })]);
+                [JSON.stringify({ uidValidity: validez, ultimoUid: ultimo, outlook: true, revisadoAt: new Date().toISOString() })]);
         } finally { lock.release(); }
     } catch (err) {
         // Sin IMAP activado o con la contraseña cambiada: se apunta para verlo en el panel.
