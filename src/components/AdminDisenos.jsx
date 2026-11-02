@@ -77,7 +77,7 @@ const LOGOS_ACTIVIDADES = [['Taekwon-Do', svgTkd, '#21B668'], ['Ballet', svgBall
 // Un SVG del ordenador, limpio (sin scripts ni nada que cargue de fuera), como imagen del diseño.
 async function leerSvg(fuente) {
   const texto = typeof fuente === 'string' ? fuente : await fuente.text();
-  if (texto.length > 600_000) throw new Error('Ese SVG es demasiado grande (máximo 600 KB).');
+  if (texto.length > 200_000) throw new Error('Ese SVG es demasiado grande (máximo 200 KB).');
   if (!/<svg[\s>]/i.test(texto)) throw new Error('Ese archivo no es un SVG.');
   const limpio = texto.replace(/<\?xml[^>]*>/gi, '').replace(/<!DOCTYPE[^>]*>/gi, '').replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, '')
     .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*')/gi, '').replace(/(href\s*=\s*)("|')(?!#|data:)[^"']*\2/gi, '$1$2#$2').trim();

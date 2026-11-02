@@ -185,6 +185,16 @@ const fallo = (res, err) => {
 };
 const MAX_DATOS = 600_000;       // el JSON de un diseño (sin imágenes dentro: van por URL)
 const MAX_MINIATURA = 250_000;
+// Los dibujos SVG (#495: los logos de las actividades y los que se suben) sí van
+// dentro del diseño, para poder cambiarles el color. Solo SVG, no muy grandes y
+// limpios: sin scripts, sin eventos y sin nada que cargue de fuera (#526).
+const MAX_SVG = 300_000;
+function svgDentroValido(url) {
+    const m = /^data:image\/svg\+xml;base64,([A-Za-z0-9+/=]+)$/.exec(url);
+    if (!m || m[1].length > MAX_SVG) return false;
+    const t = Buffer.from(m[1], 'base64').toString('utf8');
+    return /<svg[\s>]/i.test(t) && !/<script|<foreignObject|\son\w+\s*=|(?:href|src)\s*=\s*["']\s*(?!#|data:)[^"'\s]/i.test(t);
+}
 export const CLAVE_DIPLOMA = 'diploma_diseno';
 
 // Los colores del club (los del arcoíris del logo y los neutros).
@@ -221,7 +231,9 @@ function limpiar(body) {
     if (d.carpeta !== undefined && d.carpeta !== null) d.carpeta = String(d.carpeta).trim().slice(0, 60) || undefined;
     const json = JSON.stringify(d);
     if (json.length > MAX_DATOS) corta(400, 'El diseño es demasiado grande. ¿Hay alguna imagen pegada dentro? Súbela.');
-    if (/"url"\s*:\s*"data:/.test(json)) corta(400, 'Las imágenes se suben, no se pegan dentro del diseño.');
+    for (const [, url] of json.matchAll(/"url"\s*:\s*"(data:[^"]*)"/g)) {
+        if (!svgDentroValido(url)) corta(400, /^data:image\/svg/i.test(url) ? 'Ese dibujo SVG es demasiado grande o trae cosas que no se pueden guardar.' : 'Las imágenes se suben, no se pegan dentro del diseño.');
+    }
     const mini = typeof body?.miniatura === 'string' && body.miniatura.startsWith('data:image/') && body.miniatura.length <= MAX_MINIATURA ? body.miniatura : null;
     return { nombre, tipo, ancho, alto, json, mini };
 }
