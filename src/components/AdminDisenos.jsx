@@ -495,6 +495,24 @@ function escalarElemento(o, k, ax, ay) {
   for (const p of PROPIAS_ESCALA) if (o[p]) n[p] = Math.round(o[p] * k * 10) / 10;
   return n;
 }
+// El centro de lo que se ve de varios elementos, contando su giro: con él como
+// eje, girar 90° y luego -90° los deja donde estaban (#597).
+function centroVisible(els) {
+  let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+  for (const e of els) {
+    const r = (e.rot || 0) * Math.PI / 180, cx = e.x + e.w / 2, cy = e.y + e.h / 2;
+    const hw = (Math.abs(e.w * Math.cos(r)) + Math.abs(e.h * Math.sin(r))) / 2, hh = (Math.abs(e.w * Math.sin(r)) + Math.abs(e.h * Math.cos(r))) / 2;
+    x1 = Math.min(x1, cx - hw); x2 = Math.max(x2, cx + hw); y1 = Math.min(y1, cy - hh); y2 = Math.max(y2, cy + hh);
+  }
+  return { x: (x1 + x2) / 2, y: (y1 + y2) / 2 };
+}
+// Un elemento girado g grados alrededor del punto (cx, cy): su centro da la
+// vuelta a ese punto y él gira lo mismo. Para girar varios a la vez (#597).
+function girarElemento(o, g, cx, cy) {
+  const r = g * Math.PI / 180, ox = o.x + o.w / 2 - cx, oy = o.y + o.h / 2 - cy;
+  const nx = cx + ox * Math.cos(r) - oy * Math.sin(r), ny = cy + ox * Math.sin(r) + oy * Math.cos(r);
+  return { ...o, x: Math.round(nx - o.w / 2), y: Math.round(ny - o.h / 2), rot: ((Math.round((o.rot || 0) + g) % 360) + 360) % 360 };
+}
 // Elegir uno de un grupo elige el grupo entero.
 const conGrupo = (elementos, ids) => {
   const g = new Set(elementos.filter(e => ids.includes(e.id) && e.grupo).map(e => e.grupo));
@@ -626,6 +644,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
   const [imagenes, setImagenes] = useState(new Map());
   const [version, setVersion] = useState(0);
   const [guias, setGuias] = useState([]);
+  const [giroVarios, setGiroVarios] = useState(null);   // grados mientras se giran varios (#597)
   const [recuadro, setRecuadro] = useState(null);     // el recuadro de elegir arrastrando
   const [verExportar, setVerExportar] = useState(false);
   const [verTamano, setVerTamano] = useState(false);
@@ -1137,6 +1156,14 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
       : { ...e, espejoV: !e.espejoV, rot: e.rot ? (360 - e.rot) % 360 : 0, ...(varios ? { y: Math.round(c.y + c.h - (e.y - c.y) - e.h) } : {}) }));
   }
 
+  // Girar varios como un bloque, alrededor del centro de su caja (#597).
+  function girarBloque(g) {
+    const els = elegidos.filter(e => !e.bloqueado && !fijo(e));
+    if (!els.length) return;
+    const { x: cx, y: cy } = centroVisible(els), ids = els.map(e => e.id);
+    cambiarVarios(ids, e => girarElemento(e, g, cx, cy));
+  }
+
   // ── Lo elegido (uno o varios) ──
   function borrarSel() {
     if (!seleccion.length) return;
@@ -1270,6 +1297,19 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
     if (els.length < 2) return;
     arrastre.current = { modo: 'escalar', x0: ev.clientX, y0: ev.clientY, hx, hy, caja: cajaDe(els), otros: els.map(e => ({ ...e })), movido: false, previo: docRef.current, pagina: paginaRef.current };
   }
+  // Varios elegidos: el círculo de encima de su caja los gira a todos juntos (#597).
+  function empezarGiroVarios(ev) {
+    ev.stopPropagation();
+    setMenu(null);
+    if (ev.button > 0) return;
+    ev.preventDefault();
+    const v = vista(), els = v.elementos.filter(e => selRef.current.includes(e.id) && !e.bloqueado && !fijo(e));
+    if (els.length < 2) return;
+    const r = lienzoRef.current.getBoundingClientRect(), centro = centroVisible(els);
+    const pcx = r.left + centro.x * escala, pcy = r.top + centro.y * escala;
+    arrastre.current = { modo: 'girarVarios', x0: ev.clientX, y0: ev.clientY, centro, pcx, pcy, ang0: Math.atan2(ev.clientY - pcy, ev.clientX - pcx) * 180 / Math.PI,
+      otros: els.map(e => ({ ...e })), movido: false, previo: docRef.current, pagina: paginaRef.current };
+  }
   function empezar(ev, idEl, modo, hx = 0, hy = 0) {
     ev.stopPropagation();
     setMenu(null);
@@ -1342,6 +1382,18 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
         setDoc(d => { const n = cambiarElementos(d, a.pagina, e => (nuevos.has(e.id) ? ajustarTexto(nuevos.get(e.id), ejemplo) : e)); docRef.current = n; return n; });
         return;
       }
+      if (a.modo === 'girarVarios') {
+        // Lo que ha girado el ratón alrededor del centro; Mayús: de 15 en 15; si no, se pega a 0/90/180/270.
+        let g = Math.atan2(ev.clientY - a.pcy, ev.clientX - a.pcx) * 180 / Math.PI - a.ang0;
+        g = ((g % 360) + 540) % 360 - 180;
+        if (ev.shiftKey) g = Math.round(g / 15) * 15;
+        else { g = Math.round(g); for (const s of [0, 90, 180, -90, -180]) if (Math.abs(g - s) < 4) g = s; }
+        a.giro = g;
+        const nuevos = new Map(a.otros.map(o => [o.id, girarElemento(o, g, a.centro.x, a.centro.y)]));
+        setDoc(d => { const n = cambiarElementos(d, a.pagina, e => (nuevos.has(e.id) ? ajustarTexto(nuevos.get(e.id), ejemplo) : e)); docRef.current = n; return n; });
+        setGiroVarios(g);
+        return;
+      }
       const e0 = a.el0, rad = (e0.rot || 0) * Math.PI / 180;
       if (a.modo === 'mover') {
         const bb = a.caja, { ancho: W, alto: H } = paginaDe(docRef.current, a.pagina), umbral = 8 / escala, gs = [];
@@ -1395,7 +1447,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
     };
     const soltarPuntero = (ev) => {
       tramoTerminar();
-      const a = arrastre.current; arrastre.current = null; setGuias([]);
+      const a = arrastre.current; arrastre.current = null; setGuias([]); setGiroVarios(null);
       if (!a) return;
       if (a.modo === 'dibujo') { yo.current.terminarTrazo(a.pts); return; }
       if (a.modo === 'toque') { if (!a.movido) setSeleccion([]); return; }
@@ -1948,6 +2000,17 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
                     left: cajaVarios.x * escala - 4 + (hx > 0 ? cajaVarios.w * escala + 8 : 0) - asa / 2, top: cajaVarios.y * escala - 4 + (hy > 0 ? cajaVarios.h * escala + 8 : 0) - asa / 2,
                     cursor: hx === hy ? 'nwse-resize' : 'nesw-resize' }} />
               ))}
+              {/* Girar todos juntos (#597): el círculo de encima de la caja, como el de uno solo. */}
+              {cajaVarios && tiempo == null && !lapiz && elegidos.filter(e => !e.bloqueado && !fijo(e)).length > 1 && (() => {
+                const d = asa > 12 ? 26 : 18, cx = (cajaVarios.x + cajaVarios.w / 2) * escala, top = cajaVarios.y * escala - 4 - (asa > 12 ? 44 : 34);
+                return (
+                  <>
+                    <span onPointerDown={empezarGiroVarios} data-girar-varios title="Girar todo lo elegido (Mayús: de 15 en 15)" aria-label="Girar lo elegido"
+                      style={{ position: 'absolute', left: cx - d / 2, top, width: d, height: d, boxSizing: 'border-box', borderRadius: 99, background: '#fff', border: '2px solid #7C5CFF', cursor: 'grab', display: 'grid', placeItems: 'center', fontSize: 11, zIndex: 6, touchAction: 'none' }}>⟳</span>
+                    {giroVarios != null && <span style={{ position: 'absolute', left: cx + d / 2 + 6, top: top + d / 2 - 11, background: '#7C5CFF', color: '#fff', fontSize: 11.5, fontWeight: 700, padding: '3px 7px', borderRadius: 6, pointerEvents: 'none', zIndex: 6, whiteSpace: 'nowrap' }}>{giroVarios > 0 ? '+' : ''}{giroVarios}°</span>}
+                  </>
+                );
+              })()}
               {guias.map((g, i) => g.cota ? <Cota key={i} c={g.cota} escala={escala} /> : <div key={i} style={{ position: 'absolute', pointerEvents: 'none', background: '#FF5FA2', ...(g.v != null ? { left: g.v * escala, top: 0, width: 1, height: '100%' } : { top: g.h * escala, left: 0, height: 1, width: '100%' }) }} />)}
               {trazo && lapiz && (
                 <svg viewBox={`0 0 ${diseno.ancho} ${diseno.alto}`} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }} aria-hidden="true">
@@ -2065,7 +2128,7 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
           </div>
           )}
           {movil && hojaPequena ? null : elegidos.length > 1 ? (
-            <PanelVarios elegidos={elegidos} voltear={voltear} agrupar={agrupar} desagrupar={desagrupar} alinear={alinearVarios} repartir={repartir}
+            <PanelVarios elegidos={elegidos} voltear={voltear} girar={girarBloque} agrupar={agrupar} desagrupar={desagrupar} alinear={alinearVarios} repartir={repartir}
               duplicar={duplicarSel} borrar={borrarSel} capa={capa} bloquear={(b) => cambiarVarios(seleccion, e => ({ ...e, bloqueado: b }))} />
           ) : fijo(elegido) ? (
             <PropiedadesFijas e={elegido} cambiar={(c) => cambiarEl(elegido.id, c)} subir={subir} onEscribir={() => editarTexto(elegido.id)}
@@ -3196,7 +3259,7 @@ function EditorGrafico({ e, cambiar, soloContenido = false }) {
 }
 
 // Varias cosas elegidas: agrupar, alinear entre ellas y repartir el espacio.
-function PanelVarios({ elegidos, voltear, agrupar, desagrupar, alinear, repartir, duplicar, borrar, capa, bloquear }) {
+function PanelVarios({ elegidos, voltear, girar, agrupar, desagrupar, alinear, repartir, duplicar, borrar, capa, bloquear }) {
   const agrupados = elegidos.every(e => e.grupo && e.grupo === elegidos[0].grupo);
   const alinearBtn = (k, t, titulo) => <button key={k} type="button" className="btn btn-sm btn-outline" title={titulo} onClick={() => alinear(k)} style={{ padding: '4px 8px' }}>{t}</button>;
   return (
@@ -3226,6 +3289,13 @@ function PanelVarios({ elegidos, voltear, agrupar, desagrupar, alinear, repartir
         <button type="button" className="btn btn-sm btn-outline" onClick={() => voltear('h')}>⇋ En horizontal</button>
         <button type="button" className="btn btn-sm btn-outline" onClick={() => voltear('v')}>⇵ En vertical</button>
       </div>
+      <div style={seccionT}>Girar el bloque</div>
+      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }} data-girar-bloque>
+        <button type="button" className="btn btn-sm btn-outline" onClick={() => girar(-90)} title="90° a la izquierda">↺ 90°</button>
+        <button type="button" className="btn btn-sm btn-outline" onClick={() => girar(90)} title="90° a la derecha">↻ 90°</button>
+        <button type="button" className="btn btn-sm btn-outline" onClick={() => girar(180)} title="Darle la vuelta">180°</button>
+      </div>
+      <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>O tira del círculo de encima de la caja para girarlos a mano.</span>
       <div style={seccionT}>Capa</div>
       <div style={{ display: 'flex', gap: 4 }}>
         <button type="button" className="btn btn-sm btn-outline" onClick={() => capa('frente')}>Al frente</button>
