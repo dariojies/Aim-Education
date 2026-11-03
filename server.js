@@ -5376,7 +5376,9 @@ app.use(crearMedios({ pool, authenticateSession, requireSeccion }));
 // La tele de recepción: el carrusel (Aim Design → Pantallas) y la página /tele/<clave>.
 app.use(crearPantallas({ pool, authenticateSession, requireSeccion }));
 // Mensajes: el chat interno. Lo nuevo llega al móvil de quien tiene que leerlo.
-app.use(crearChats({ pool, clubId: AIM_CLUB_ID, authenticateSession, avisar: (ids) => avisosPush.avisarFamilias(ids) }).router);
+// Mensajes: lo nuevo llega al momento por /ws/chats, con la sesión de la web.
+const chatsInternos = crearChats({ pool, clubId: AIM_CLUB_ID, authenticateSession, avisar: (ids) => avisosPush.avisarFamilias(ids), sesionDeToken, leerCookies: parseCookies });
+app.use(chatsInternos.router);
 // Las listas hechas a mano y sus personas (Personas → Contactos, #499).
 app.use(crearListas({ pool, authenticateSession, requireSeccion, correosCon }));
 // Mi espacio (#497): lo de cada trabajador y, para secretaría y la dirección, el de todos.
@@ -23965,11 +23967,12 @@ function repasoAvisosMovil() {
 // el servidor no las corte antes que el router de Heroku.
 servidor.keepAliveTimeout = 95_000;
 servidor.headersTimeout = 96_000;
-avisosPush.enganchar(servidor);
+avisosPush.enganchar(servidor, { '/ws/chats': chatsInternos.upgrade });
 // Al apagar (cada deploy y el reinicio diario de Heroku): se avisa a los móviles
 // para que vuelvan a conectar enseguida, y se sale.
 process.on('SIGTERM', () => {
     avisosPush.cerrarTodo();
+    chatsInternos.cerrarTodo();
     servidor.close();
     setTimeout(() => process.exit(0), 3000);
 });

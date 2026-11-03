@@ -274,7 +274,8 @@ export function crearAvisosPush({ pool, familiaIds, avisosFamilia, sinActividade
   const conectado = (id) => sockets.get(id)?.readyState === 1;
 
   // ── Conexión de Android ──
-  function enganchar(server) {
+  // otras: más conexiones directas por otras rutas ({ '/ws/chats': fn(req, socket, head) }).
+  function enganchar(server, otras = {}) {
     wss = new WebSocketServer({ noServer: true, maxPayload: 4096, perMessageDeflate: false });
     server.on('upgrade', (req, socket, head) => {
       // Node ya no escucha los errores de este socket: sin esto, un corte de la
@@ -283,7 +284,10 @@ export function crearAvisosPush({ pool, familiaIds, avisosFamilia, sinActividade
       socket.on('error', alError);
       let ruta = '';
       try { ruta = new URL(req.url, 'http://x').pathname; } catch { /* mala */ }
-      if (ruta !== RUTA_WS) { socket.destroy(); return; }
+      if (ruta !== RUTA_WS) {
+        if (typeof otras[ruta] === 'function') { socket.removeListener('error', alError); socket.on('error', () => socket.destroy()); return otras[ruta](req, socket, head); }
+        socket.destroy(); return;
+      }
       const rechazar = (codigo, texto) => {
         if (!socket.destroyed) socket.end(`HTTP/1.1 ${codigo} ${texto}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
         setTimeout(() => socket.destroy(), 1000).unref?.();
