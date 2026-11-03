@@ -17509,6 +17509,27 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                 return cj.n ? [{ tipo: 'caja', clave: 'caja_sin_cerrar', n: cj.n, texto: `${cj.n} ${plural(cj.n, 'día', 'días')} con cobros y sin arqueo`, detalle: cj.desde ? `el más antiguo, del ${cj.desde}` : null, destino: '/admin/facturacion?pestana=arqueo' }] : [];
             });
         }
+        // Facturas sin el DNI del cliente (#600), las del trimestre y las del
+        // anterior (el que se manda a la gestoría): lo mismo que avisa Reportes →
+        // Libro registro. Se van al ponerle el DNI.
+        if (recibe('facturas_sin_dni')) {
+            fuente('Facturas sin DNI', ['facturas_sin_dni'], async () => {
+                const f = (await avisoCompartido('facturas_sin_dni', () => pool.query(
+                    `WITH d AS (SELECT date_trunc('quarter', (now() AT TIME ZONE 'Europe/Madrid')::date) - INTERVAL '3 months' AS desde)
+                     SELECT COUNT(*)::int n,
+                            COUNT(*) FILTER (WHERE NULLIF(TRIM(u.dni), '') IS NOT NULL)::int con_ficha,
+                            COUNT(*) FILTER (WHERE fr.fecha_expedicion < date_trunc('quarter', (now() AT TIME ZONE 'Europe/Madrid')::date))::int anterior,
+                            MAX(fr.fecha_expedicion)::text AS ultima
+                     FROM aim_factura_registro fr JOIN aim_recibos rc ON rc.id = fr.recibo_id LEFT JOIN users u ON u.user_id = rc.pagador_id, d
+                     WHERE fr.fecha_expedicion >= d.desde AND COALESCE(fr.nif_receptor, '') = ''`))).rows[0];
+                if (!f.n) return [];
+                const detalle = [
+                    f.anterior ? `${f.anterior} del trimestre pasado` : null,
+                    f.con_ficha ? `${f.con_ficha} ya ${plural(f.con_ficha, 'tiene', 'tienen')} el DNI en su ficha: se pone con un botón` : 'hay que rellenar el DNI en su ficha',
+                ].filter(Boolean).join(' · ');
+                return [{ tipo: 'cobros', clave: 'facturas_sin_dni', n: f.n, texto: `${f.n} ${plural(f.n, 'factura', 'facturas')} sin el DNI del cliente`, detalle, destino: '/admin/reportes?pestana=hacienda' }];
+            });
+        }
         // Sin ficha no se les puede cobrar: es un aviso de facturación.
         if (recibe('campamento_sin_ficha')) {
             fuente('Campamento', ['campamento_sin_ficha'], async () => {

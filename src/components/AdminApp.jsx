@@ -7211,7 +7211,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("portada") && <AjustesPortada showToast={showToast} />}
           {ver("ctas") && <AdminCtas showToast={showToast} />}
           {ver("settings") && <AdminSettings />}
-          {ver("reportes") && <Reportes user={user} permisos={permisos} showToast={showToast} />}
+          {ver("reportes") && <Reportes user={user} permisos={permisos} showToast={showToast} enlace={enlace} />}
           {ver("titulos") && <AdminExamenes showToast={showToast} />}
           {ver("almacen") && <AdminAlmacen showToast={showToast} />}
           {ver("tienda") && <AdminTienda showToast={showToast} />}

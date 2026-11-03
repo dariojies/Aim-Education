@@ -35,16 +35,21 @@ const SERIE = { MAT: 'Venta de material y productos', IVA: 'Actividades deportiv
 const leer = (k, def) => { try { return localStorage.getItem(k) || def; } catch { return def; } };
 const guardar = (k, v) => { try { localStorage.setItem(k, v); } catch { /* sin almacenamiento */ } };
 
-export default function Reportes({ user, permisos = {}, showToast }) {
+export default function Reportes({ user, permisos = {}, showToast, enlace = null }) {
   // Sin las cifras generales (instructores): solo sus clases, sin dinero.
   if (permisos.reportesGenerales === false) return <AdminReportes user={user} permisos={permisos} />;
-  return <ReportesDireccion user={user} permisos={permisos} showToast={showToast} />;
+  return <ReportesDireccion user={user} permisos={permisos} showToast={showToast} enlace={enlace} />;
 }
 
-function ReportesDireccion({ user, permisos, showToast }) {
+function ReportesDireccion({ user, permisos, showToast, enlace }) {
   const [mes, setMes] = useState(mesActual);
   const [pestana, setPestanaE] = useState(() => { const p = leer('reportes.pestana', 'resumen'); return PESTANAS.some(([k]) => k === p) ? p : 'resumen'; });
   const setPestana = (p) => { setPestanaE(p); guardar('reportes.pestana', p); };
+  // ?pestana=hacienda desde un aviso (#600: facturas sin DNI).
+  useEffect(() => {
+    const p = enlace?.seg?.[1] === 'reportes' ? enlace.params?.pestana : null;
+    if (p && PESTANAS.some(([k]) => k === p)) setPestana(p);
+  }, [enlace?.ruta]); // eslint-disable-line react-hooks/exhaustive-deps
   const [datos, setDatos] = useState({});   // «pestaña|mes» → respuesta
   const [error, setError] = useState(null);
   const enCurso = mes === mesActual();

@@ -251,6 +251,8 @@ export const AVISOS = [
     { id: 'cobros_pendientes', grupo: 'Dinero', texto: 'Cargos pendientes de cobrar', quien: (p) => p.secciones.billing },
     { id: 'caja_sin_cerrar', grupo: 'Dinero', texto: 'Días con cobros y sin arqueo de caja', quien: (p) => p.secciones.billing },
     { id: 'datos_fiscales', grupo: 'Dinero', texto: 'Cambios de datos fiscales por autorizar', quien: (p) => p.secciones.billing },
+    // #600: lo mismo que avisa el libro registro, para arreglarlo antes de mandárselo a la gestoría.
+    { id: 'facturas_sin_dni', grupo: 'Dinero', texto: 'Facturas emitidas sin el DNI del cliente', quien: (p) => p.secciones.billing },
     { id: 'campamento_sin_ficha', grupo: 'Clases', texto: 'Niños del campamento sin ficha', quien: (p) => p.campCompleto },
     { id: 'eventos_propuestos', grupo: 'Clases', texto: 'Eventos propuestos sin decidir', quien: (p) => p.editarEventos },
     { id: 'eventos_respondidos', grupo: 'Clases', texto: 'Respuesta a un evento que ha propuesto', quien: (p) => !p.editarEventos },
