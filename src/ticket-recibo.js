@@ -156,9 +156,57 @@ export function htmlTicketRecibo(t) {
 </body></html>`;
 }
 
+// Un ticket largo, en varias hojas. El controlador de la XP-58IIH tiene un largo
+// máximo de página: lo que pasa de ahí no sale (el recibo AIMSP26-00166, de
+// 297 mm, se cortaba en febrero). Así que si no cabe en una hoja de como mucho
+// LARGO_MAX_HOJA_MM, se parte en varias, siempre entre una línea y la siguiente
+// (nunca a mitad de una), cada una del largo justo de lo suyo: en el rollo salen
+// seguidas. Mete cada trozo en un <section class="hoja"> y devuelve sus largos en mm.
+export const LARGO_MAX_HOJA_MM = 150;
+const PX_POR_MM = 96 / 25.4;
+const RELLENO_HOJA_MM = 6;   // 2 mm arriba y 4 mm abajo, como antes
+export function partirEnHojas(doc) {
+  const body = doc.body, win = doc.defaultView;
+  const piezas = [...body.children].filter(el => !['STYLE', 'SCRIPT'].includes(el.tagName));
+  const caja = (el) => {
+    const cs = win.getComputedStyle(el);
+    return { arriba: el.offsetTop - parseFloat(cs.marginTop || 0), abajo: el.offsetTop + el.offsetHeight + parseFloat(cs.marginBottom || 0) };
+  };
+  const tope = (LARGO_MAX_HOJA_MM - RELLENO_HOJA_MM - 2) * PX_POR_MM;
+  // Repartido a partes parecidas (no dos llenas y un «¡Gracias!» suelto).
+  const totalPx = piezas.length ? caja(piezas[piezas.length - 1]).abajo - caja(piezas[0]).arriba : 0;
+  const maxPx = Math.min(tope, totalPx / Math.max(1, Math.ceil(totalPx / tope)) + 12 * PX_POR_MM);
+  const grupos = [];
+  let g = null;
+  for (const el of piezas) {
+    const c = caja(el);
+    if (g && c.abajo - g.arriba > maxPx) { grupos.push(g); g = null; }
+    if (!g) g = { arriba: c.arriba, abajo: c.abajo, els: [] };
+    g.els.push(el); g.abajo = Math.max(g.abajo, c.abajo);
+  }
+  if (g) grupos.push(g);
+  return grupos.map((gr, i) => {
+    const s = doc.createElement('section');
+    s.className = `hoja hoja${i}`;
+    body.insertBefore(s, gr.els[0]);
+    for (const el of gr.els) s.appendChild(el);
+    return Math.ceil((gr.abajo - gr.arriba) / PX_POR_MM) + RELLENO_HOJA_MM + 1;
+  });
+}
+// El CSS de esas hojas: cada una, una página de su largo (páginas con nombre).
+export function cssHojas(largos) {
+  const max = Math.max(...largos);
+  return `@page { size: ${ANCHO_PAPEL_MM}mm ${max}mm; margin: 0; }
+    body { padding: 0 1mm !important; }
+    .hoja { padding: 2mm 0 4mm; }
+    .hoja:not(:last-child) { break-after: page; }
+    ${largos.map((mm, i) => `@page h${i} { size: ${ANCHO_PAPEL_MM}mm ${mm}mm; margin: 0; } .hoja${i} { page: h${i}; }`).join('\n    ')}`;
+}
+
 // Abre el ticket y lo manda a imprimir. Antes de imprimir se ajusta el largo de
 // la página a lo que ocupa el ticket, para que salga de una pieza y sin papel de
-// más (en un rollo continuo, la página es lo que el papel avanza).
+// más (en un rollo continuo, la página es lo que el papel avanza); si es muy
+// largo, en varias hojas seguidas (ver partirEnHojas).
 export function imprimirTicketRecibo(t) {
   const w = window.open('', '_blank', 'width=320,height=720');
   if (!w) { alert('El navegador ha bloqueado la ventana del ticket. Permite las ventanas emergentes de esta página e inténtalo otra vez.'); return; }
@@ -166,9 +214,8 @@ export function imprimirTicketRecibo(t) {
   w.document.write(htmlTicketRecibo(t));
   w.document.close();
   const imprimir = () => {
-    const altoMm = Math.ceil(w.document.body.scrollHeight * 25.4 / 96) + 6;
     const st = w.document.createElement('style');
-    st.textContent = `@page { size: ${ANCHO_PAPEL_MM}mm ${altoMm}mm; margin: 0; }`;
+    st.textContent = cssHojas(partirEnHojas(w.document));
     w.document.head.appendChild(st);
     w.focus();
     w.onafterprint = () => w.close();
