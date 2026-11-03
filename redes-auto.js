@@ -9,13 +9,15 @@
 //    plantilla, la foto tal cual); el texto, con reglas: el título, un resumen,
 //    el enlace y los hashtags (los fijos del club y los del tema). Sin foto, solo
 //    a Facebook (Instagram la pide).
-// 2. Las historias diarias: dos al día (a las horas que se elijan) de las
-//    actividades que más alumnos necesitan. Se elige la actividad por las plazas
-//    libres de sus clases (las llenas, casi nunca; las que se usaron ayer o
-//    anteayer, menos) y una foto de la galería con permiso: solo fotos con alguien
+// 2. Las historias diarias, a las horas que se elijan, de una CLASE cada una.
+//    Van por vueltas (#599): en cada vuelta salen todas las clases antes de que
+//    se repita ninguna, y el tercio con más plazas libres sale dos veces (no
+//    más). Primero la actividad que lleva más tiempo sin salir. La foto es de la
+//    galería y con permiso: solo fotos con alguien
 //    etiquetado y con TODOS sus etiquetados con permiso de fotos en redes, de un
 //    álbum de esa clase o actividad (o con ella en el título); sin repetir las de
-//    los últimos 60 días. Una actividad sin fotos así se salta.
+//    los últimos 60 días (si ya se han usado todas, se repite alguna). Una clase
+//    sin ninguna foto así no puede salir: se dice en Publicaciones.
 // Todo queda en Publicaciones (calendario, resultado y errores) y se puede quitar.
 // La configuración va en aim_ajustes («redes_automaticas»).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -219,28 +221,25 @@ async function clasesConPlazas(pool, clubId) {
          FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id WHERE a.club_id = $1`, [clubId])).rows
         .map(g => ({ ...g, libres: g.max_students ? g.max_students - g.ocupadas : null }));
 }
-// Al azar, pero con más peso a lo que más falta: las plazas libres de la actividad.
-function elegirActividad(clases, { excluir = [], recientes = [], hoyYa = [] }, azar = Math.random) {
-    const porAct = new Map();
-    for (const c of clases) {
-        if (excluir.includes(c.actividad) || hoyYa.includes(c.actividad)) continue;
-        const l = porAct.get(c.actividad) || [];
-        l.push(c); porAct.set(c.actividad, l);
-    }
-    const pesos = [...porAct.entries()].map(([act, cs]) => {
-        const libres = cs.reduce((s, c) => s + (c.libres == null ? 3 : Math.max(0, c.libres)), 0);
-        // Las llenas, casi nunca; las de ayer y anteayer, menos.
-        let p = libres > 0 ? 1 + libres : 0.15;
-        if (recientes.includes(act)) p *= 0.3;
-        return { act, cs, p };
-    }).filter(x => x.p > 0);
-    const total = pesos.reduce((s, x) => s + x.p, 0);
-    if (!total) return null;
-    let r = azar() * total;
-    const elegida = pesos.find(x => (r -= x.p) <= 0) || pesos[pesos.length - 1];
-    // La clase de esa actividad que más alumnos necesita (entre las que tienen sitio).
-    const clase = [...elegida.cs].sort((a, b) => (b.libres ?? 3) - (a.libres ?? 3))[0];
-    return { actividad: elegida.act, clase };
+// ── Qué clase sale (#599) ──
+// Cuántas veces sale cada clase en una vuelta: el tercio de las que tienen sitio
+// con más plazas libres (con los empates), 2; las demás, 1.
+export function vecesPorVuelta(clases) {
+    const conSitio = clases.filter(c => c.libres != null && c.libres > 0).sort((a, b) => b.libres - a.libres);
+    const corte = conSitio.length ? conSitio[Math.max(1, Math.ceil(conSitio.length / 3)) - 1].libres : Infinity;
+    return new Map(clases.map(c => [String(c.group_id), c.libres != null && c.libres > 0 && c.libres >= corte ? 2 : 1]));
+}
+// Las clases que aún tienen que salir en esta vuelta, en orden: primero las que
+// no han salido ninguna vez; luego, la actividad que lleva más tiempo sin salir;
+// dentro de ella, la clase con más plazas libres (y si no, al azar).
+export function clasesPendientes(clases, { veces, salidas, ultimaDeActividad }, azar = Math.random) {
+    const n = (c) => salidas.get(String(c.group_id)) || 0;
+    const r = new Map(clases.map(c => [String(c.group_id), azar()]));
+    return clases.filter(c => n(c) < (veces.get(String(c.group_id)) || 1)).sort((a, b) =>
+        n(a) - n(b)
+        || (ultimaDeActividad.get(a.actividad) || 0) - (ultimaDeActividad.get(b.actividad) || 0)
+        || (b.libres ?? -1) - (a.libres ?? -1)
+        || r.get(String(a.group_id)) - r.get(String(b.group_id)));
 }
 // Una foto con permiso: alguien etiquetado y todos sus etiquetados con permiso
 // de fotos en redes. De qué actividad es lo dice el álbum (no los etiquetados:
@@ -249,9 +248,28 @@ function elegirActividad(clases, { excluir = [], recientes = [], hoyYa = [] }, a
 // repetir las usadas hace poco.
 const sinTildes = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 const claveActividad = (a) => sinTildes(a).replace(/-/g, '').split(/\s+/)[0] || '';
+const PERMISO_FOTO = `EXISTS (SELECT 1 FROM aim_galeria_etiquetas e WHERE e.foto_id = f.id)
+        AND NOT EXISTS (SELECT 1 FROM aim_galeria_etiquetas e JOIN users u ON u.user_id = e.user_id WHERE e.foto_id = f.id AND NOT COALESCE(u.media_consent, false))`;
+// ¿Tiene la clase alguna foto con permiso (por las mismas reglas que fotoAutorizada)?
+async function albumesConPermiso(pool) {
+    return (await pool.query(
+        `SELECT al.group_id, al.actividad, al.titulo FROM aim_galeria_albumes al
+         WHERE EXISTS (SELECT 1 FROM aim_galeria_fotos f WHERE f.album_id = al.id AND ${PERMISO_FOTO})`)).rows;
+}
+function tieneFotos(c, albumes, actividadDeGrupo) {
+    const clave = claveActividad(c.actividad);
+    return albumes.some(al => (al.group_id && String(al.group_id) === String(c.group_id))
+        || al.actividad === c.actividad
+        || (al.group_id && actividadDeGrupo.get(String(al.group_id)) === c.actividad)
+        || (clave.length >= 4 && !al.group_id && !al.actividad && sinTildes(al.titulo).replace(/-/g, '').includes(clave)));
+}
 async function fotoAutorizada(pool, { clase, actividad, clubId, usadas }) {
-    const permiso = `EXISTS (SELECT 1 FROM aim_galeria_etiquetas e WHERE e.foto_id = f.id)
-        AND NOT EXISTS (SELECT 1 FROM aim_galeria_etiquetas e JOIN users u ON u.user_id = e.user_id WHERE e.foto_id = f.id AND NOT COALESCE(u.media_consent, false))
+    const conUsadas = await fotoAutorizadaSin(pool, { clase, actividad, clubId, usadas });
+    // Si ya se han usado todas las suyas en los últimos 60 días, se repite una.
+    return conUsadas || (usadas.length ? fotoAutorizadaSin(pool, { clase, actividad, clubId, usadas: [] }) : null);
+}
+async function fotoAutorizadaSin(pool, { clase, actividad, clubId, usadas }) {
+    const permiso = `${PERMISO_FOTO}
         AND NOT (f.id = ANY($1::int[]))`;
     const clave = claveActividad(actividad);
     const intentos = [
@@ -270,31 +288,75 @@ async function fotoAutorizada(pool, { clase, actividad, clubId, usadas }) {
 // La historia de un momento: qué actividad, qué clase, qué foto y cómo sale.
 // Sin guardar nada (lo usa también «Ver cómo saldría hoy»).
 // solo: para probar una actividad concreta (#516), sin mirar las que no salen ni las de ayer.
-export async function prepararHistoriaActividad(pool, { clubId, hoyYa = [], solo = null }) {
+// Cómo va la vuelta (#599): las clases que pueden salir (no excluidas y con
+// fotos), cuántas veces le toca a cada una, cuántas ha salido desde que empezó la
+// vuelta y cuándo salió por última vez cada actividad. Si ya han salido todas lo
+// que les tocaba, empieza otra (nueva: la fecha, para guardarla al programar).
+export async function estadoVuelta(pool, { clubId, cfg = null, solo = null }) {
+    cfg = cfg || await configRedesAuto(pool);
+    const todas = await clasesConPlazas(pool, clubId);
+    const actividadDeGrupo = new Map(todas.map(c => [String(c.group_id), c.actividad]));
+    const albumes = await albumesConPermiso(pool);
+    const excluir = solo ? [] : (cfg.historias.excluir || []);
+    const deVerdad = todas.filter(c => !excluir.includes(c.actividad));
+    const conFotos = deVerdad.filter(c => tieneFotos(c, albumes, actividadDeGrupo));
+    const sinFotos = deVerdad.filter(c => !conFotos.includes(c));
+    const hist = (await pool.query(
+        `SELECT resultado->'auto' AS a, created_at, programada_at FROM aim_social_publicaciones
+         WHERE resultado->'auto'->>'uso' = 'actividad' AND estado <> 'error' ORDER BY programada_at`)).rows;
+    const ultimaDeActividad = new Map();
+    for (const h of hist) if (h.a?.actividad) ultimaDeActividad.set(h.a.actividad, new Date(h.programada_at).getTime());
+    const veces = vecesPorVuelta(conFotos);   // el tercio, entre las que pueden salir
+    let desde = cfg.historias.vuelta?.desde || null, nueva = null;
+    const contar = (d) => {
+        const m = new Map();
+        for (const h of hist) if (h.a?.grupo && (!d || new Date(h.created_at) >= new Date(d))) m.set(String(h.a.grupo), (m.get(String(h.a.grupo)) || 0) + 1);
+        return m;
+    };
+    let salidas = contar(desde);
+    if (!solo && conFotos.length && !clasesPendientes(conFotos, { veces, salidas, ultimaDeActividad }).length) {
+        nueva = new Date().toISOString(); desde = nueva; salidas = new Map();
+    }
+    return { conFotos, sinFotos, veces, salidas, ultimaDeActividad, desde, nueva, hist };
+}
+// Para Publicaciones: cómo va la vuelta y qué clases no pueden salir.
+export async function resumenVuelta(pool, { clubId }) {
+    const v = await estadoVuelta(pool, { clubId });
+    const toca = (c) => v.veces.get(String(c.group_id)) || 1;
+    const sinFotosPorAct = new Map();
+    for (const c of v.sinFotos) sinFotosPorAct.set(c.actividad, (sinFotosPorAct.get(c.actividad) || 0) + 1);
+    return {
+        desde: v.desde, clases: v.conFotos.length, dobles: v.conFotos.filter(c => toca(c) === 2).length,
+        historias: v.conFotos.reduce((s, c) => s + toca(c), 0),
+        hechas: v.nueva ? 0 : v.conFotos.reduce((s, c) => s + Math.min(toca(c), v.salidas.get(String(c.group_id)) || 0), 0),
+        sinFotos: [...sinFotosPorAct.entries()].map(([actividad, clases]) => ({ actividad, clases })).sort((a, b) => a.actividad.localeCompare(b.actividad, 'es')),
+    };
+}
+export async function prepararHistoriaActividad(pool, { clubId, solo = null }) {
     const cfg = await configRedesAuto(pool);
     const { paginaParaActividad } = await import('./src/disenos/render.js');
     const d = await plantilla(pool, 'actividad');
     if (!d) return { error: 'No hay plantilla: en Aim Design, en el diseño, «Que salga solo… → Historias diarias de las actividades».' };
-    const auto = (await pool.query(
-        `SELECT resultado->'auto' AS a, programada_at FROM aim_social_publicaciones WHERE resultado->'auto'->>'uso' = 'actividad' AND programada_at > NOW() - INTERVAL '60 days'`)).rows;
-    const usadas = auto.map(x => Number(x.a?.foto)).filter(Boolean);
-    const recientes = solo ? [] : auto.filter(x => new Date(x.programada_at) > new Date(Date.now() - 2.5 * 86400e3)).map(x => x.a?.actividad).filter(Boolean);
-    const clases = (await clasesConPlazas(pool, clubId)).filter(c => !solo || c.actividad === solo);
-    const excluir = solo ? [] : [...(cfg.historias.excluir || [])];
-    // Si una actividad no tiene ninguna foto con permiso, se prueba con otra (hasta acabarlas).
-    for (let i = 0; i < 60; i++) {
-        const e = elegirActividad(clases, { excluir, recientes, hoyYa });
-        if (!e) return { error: solo ? `${solo} no tiene ninguna foto autorizada para publicar (de un álbum suyo, con todos los etiquetados con permiso de fotos en redes).` : 'No hay ninguna actividad con fotos autorizadas para publicar.' };
+    const v = await estadoVuelta(pool, { clubId, cfg, solo });
+    const usadas = v.hist.filter(x => new Date(x.programada_at) > new Date(Date.now() - 60 * 86400e3)).map(x => Number(x.a?.foto)).filter(Boolean);
+    const clases = v.conFotos.filter(c => !solo || c.actividad === solo);
+    if (!clases.length) {
+        return { error: solo ? `${solo} no tiene ninguna foto autorizada para publicar (de un álbum suyo, con todos los etiquetados con permiso de fotos en redes).` : 'No hay ninguna clase con fotos autorizadas para publicar.' };
+    }
+    // Probando una actividad, cualquiera de sus clases (la que tocaría antes).
+    const orden = solo ? clasesPendientes(clases, { veces: new Map(), salidas: new Map(), ultimaDeActividad: new Map() }) : clasesPendientes(clases, v);
+    for (const clase of orden.slice(0, 20)) {
+        const e = { actividad: clase.actividad, clase };
         const foto = await fotoAutorizada(pool, { clase: e.clase, actividad: e.actividad, clubId, usadas });
-        if (!foto) { excluir.push(e.actividad); continue; }
+        if (!foto) continue;
         const datosFoto = (await pool.query(`SELECT datos, mime FROM aim_galeria_fotos WHERE id = $1`, [foto.id])).rows[0];
         const url = `data:${datosFoto.mime || 'image/jpeg'};base64,${datosFoto.datos.toString('base64')}`;
         const variables = { actividad: e.actividad, clase: e.clase.name, plazas: textoPlazas(e.clase.libres, await plazasPocas(pool)), horario: horarioLegible(e.clase.time), edades: edades(e.clase.min_age, e.clase.max_age) };
         // Con la página de su actividad, si la plantilla tiene una (#516).
         const medio = await medioDe({ ...d, datos: paginaParaActividad(d.datos, e.actividad) }, { url }, variables);
-        return { actividad: e.actividad, clase: e.clase.name, grupo: e.clase.group_id, foto: foto.id, variables, medio, disenoId: d.id };
+        return { actividad: e.actividad, clase: e.clase.name, grupo: e.clase.group_id, foto: foto.id, variables, medio, disenoId: d.id, vueltaNueva: v.nueva };
     }
-    return { error: 'Ninguna actividad tiene fotos autorizadas sin usar (con todos los etiquetados con permiso de fotos en redes).' };
+    return { error: 'No se ha encontrado ninguna foto autorizada para las clases que tocan.' };
 }
 // Deja programadas las de hoy (las horas que aún no han pasado). Si se quita
 // una en Publicaciones, no vuelve.
@@ -313,9 +375,11 @@ export async function programarHistoriasActividades(pool, { clubId }) {
         for (const h of horas) {
             const clave = `${hoy}|${h}`;
             if (h <= ahora || hechas.has(clave) || deHoy.some(a => a?.hora === h)) continue;
-            const p = await prepararHistoriaActividad(pool, { clubId, hoyYa: deHoy.map(a => a?.actividad).filter(Boolean) });
+            const p = await prepararHistoriaActividad(pool, { clubId });
             const actual = await configRedesAuto(pool);
             actual.hechas = [...new Set([...(actual.hechas || []).filter(x => x >= sumarDias(hoy, -7)), clave])];
+            // Empieza otra vuelta: desde ahora se cuentan de cero (#599).
+            if (!p.error && p.vueltaNueva) actual.historias = { ...actual.historias, vuelta: { desde: p.vueltaNueva } };
             await guardarRedesAuto(pool, actual);
             if (p.error) { await apuntar(pool, `${hoy} a las ${h}: no sale la historia. ${p.error}`); continue; }
             const auto = { uso: 'actividad', fecha: hoy, hora: h, actividad: p.actividad, clase: p.clase, grupo: p.grupo, foto: p.foto, diseno: p.disenoId };
@@ -324,7 +388,7 @@ export async function programarHistoriasActividades(pool, { clubId }) {
                 [REDES, instanteMadrid(hoy, h), JSON.stringify(auto)])).rows[0].id;
             await guardarMedio(pool, id, p.medio);
             deHoy.push(auto);
-            await apuntar(pool, `${hoy} a las ${h}: historia de ${p.actividad} (${p.clase}) programada (#${id}).`);
+            await apuntar(pool, `${hoy} a las ${h}: historia de ${p.actividad} (${p.clase}) programada (#${id}).${p.vueltaNueva ? ' Empieza otra vuelta: ya habían salido todas las clases.' : ''}`);
         }
     } catch (e) { console.error('[redes auto] historias:', e.message); }
     finally { programando = false; }

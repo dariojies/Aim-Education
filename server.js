@@ -41,7 +41,7 @@ import { crearPantallas, crearTablasPantallas, prepararEstaticas, prepararCierre
 import { crearChats, crearTablasChats, avisosChats } from './chats.js';
 import { crearListas, crearTablasListas, listasComoSegmentos, resolverLista, correosDeLista } from './listas.js';
 import { crearPersonal, crearTablasPersonal, avisosEspacio, recordarCertificados } from './personal.js';
-import { redesDeNoticia, configRedesAuto, guardarRedesAuto, programarHistoriasActividades, prepararHistoriaActividad, plazasPocas, guardarPlazasPocas } from './redes-auto.js';
+import { redesDeNoticia, configRedesAuto, guardarRedesAuto, programarHistoriasActividades, prepararHistoriaActividad, plazasPocas, guardarPlazasPocas, resumenVuelta } from './redes-auto.js';
 import { programarHistoriasFestivos, felicitacionCumple, automaticosElegidos } from './disenos-automaticos.js';
 import { crearRedes, crearTablasRedes, firmaValida, CANALES as CANALES_REDES, canalesActivos as canalesActivosRedes } from './redes.js';
 import * as redsys from './redsys.js';
@@ -15559,7 +15559,8 @@ app.get('/api/admin/redes-automaticas', authenticateSession, requireSeccion('com
         const auto = await automaticosElegidos(pool);
         const actividades = (await pool.query(`SELECT DISTINCT a.name FROM tul_activities a JOIN tul_groups g ON g.activity_id = a.activity_id WHERE a.club_id = $1 ORDER BY 1`, [AIM_CLUB_ID])).rows.map(x => x.name);
         res.set('Cache-Control', 'no-store');
-        res.json({ hashtags: cfg.hashtags, historias: cfg.historias, registro: cfg.registro, plantillas: { noticia: auto.noticia || null, actividad: auto.actividad || null }, actividades, plazasPocas: await plazasPocas(pool) });
+        const vuelta = await resumenVuelta(pool, { clubId: AIM_CLUB_ID }).catch(() => null);
+        res.json({ hashtags: cfg.hashtags, historias: cfg.historias, registro: cfg.registro, plantillas: { noticia: auto.noticia || null, actividad: auto.actividad || null }, actividades, plazasPocas: await plazasPocas(pool), vuelta });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 app.put('/api/admin/redes-automaticas', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {

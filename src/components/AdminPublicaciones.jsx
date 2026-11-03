@@ -646,7 +646,15 @@ function Automaticas({ onCerrar, showToast }) {
 
         <section style={{ display: 'grid', gap: 8 }}>
           <b>Las historias diarias de las actividades</b>
-          <span style={suave}>Cada día, a las horas de abajo, una historia (Instagram y Facebook) de la actividad que más alumnos necesita: las clases con más plazas libres salen más; las llenas, casi nunca; y no se repite la de ayer. La foto es de la galería y solo una con permiso: con alguien etiquetado y todos sus etiquetados con permiso de fotos en redes, de un álbum de esa clase o actividad (o con su nombre en el título del álbum, como «Clase Taekwondo 1»), sin repetir las de los últimos 60 días. Una actividad sin fotos así se salta.</span>
+          <span style={suave}>Cada día, a las horas de abajo, una historia (Instagram y Facebook) de una clase. Van por vueltas: en cada vuelta salen todas las clases antes de que se repita ninguna, y el tercio de clases con más plazas libres sale dos veces. Se van turnando las actividades: primero la que lleva más tiempo sin salir. La foto es de la galería y solo una con permiso: con alguien etiquetado y todos sus etiquetados con permiso de fotos en redes, de un álbum de esa clase o actividad (o con su nombre en el título del álbum, como «Clase Taekwondo 1»), sin repetir las de los últimos 60 días. Una clase sin fotos así no puede salir.</span>
+          {d.vuelta && (
+            <div data-vuelta style={{ fontSize: 13, display: 'grid', gap: 3, background: 'var(--bg-3)', borderRadius: 10, padding: '8px 12px' }}>
+              <span><b>Esta vuelta:</b> {d.vuelta.hechas} de {d.vuelta.historias} historias ({d.vuelta.clases} clase{d.vuelta.clases === 1 ? '' : 's'}{d.vuelta.dobles ? `; ${d.vuelta.dobles === 1 ? 'la que más plazas libres tiene sale' : `las ${d.vuelta.dobles} con más plazas libres salen`} dos veces` : ''}).</span>
+              {d.vuelta.sinFotos.length > 0 && (
+                <span style={{ color: '#b45309' }}>⚠ No salen por no tener fotos con permiso: {d.vuelta.sinFotos.map(x => `${x.actividad} (${x.clases} clase${x.clases === 1 ? '' : 's'})`).join(', ')}. Para que salgan, sube fotos a un álbum suyo en la galería, con los alumnos etiquetados y con permiso.</span>
+              )}
+            </div>
+          )}
           <span style={{ fontSize: 13 }}>{d.plantillas.actividad ? '✅ Con la plantilla elegida en Aim Design.' : '⚠ Falta la plantilla: Aim Design → en el diseño, «Que salga solo… → Historias diarias de las actividades».'}</span>
           <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontWeight: 700, fontSize: 14 }}>
             <input type="checkbox" checked={!!historias.activo} disabled={!d.plantillas.actividad && !historias.activo} onChange={e => ponerHistorias({ activo: e.target.checked })} /> Publicarlas cada día
@@ -696,7 +704,7 @@ function Automaticas({ onCerrar, showToast }) {
                   <b>{prueba.actividad} · {prueba.clase}</b>
                   <span>{prueba.variables.plazas}</span><span>{prueba.variables.horario}</span><span>{prueba.variables.edades}</span>
                   {prueba.video && <span>Sale en vídeo (la plantilla se mueve).</span>}
-                  <span style={suave}>Es un ejemplo: no se guarda ni se publica. Cada vez puede salir otra. Si la actividad tiene su página en la plantilla, sale con ella.</span>
+                  <span style={suave}>Es un ejemplo: no se guarda ni se publica. Sin elegir actividad, es la clase que toca ahora en la vuelta. Si la actividad tiene su página en la plantilla, sale con ella.</span>
                 </span>
               </div>
             )}
