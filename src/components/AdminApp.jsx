@@ -2999,32 +2999,15 @@ function AdminEvents({ showToast, permisos = {} }) {
   }
 
   const fmt = (d) => fmtFechaCorta(d);
-
-  return (
-    <>
-      <SolicitudesEventos permisos={permisos} showToast={showToast} refrescar={refrescarSol}
-        recargarEventos={load}
-        onEditar={(sol) => setEditing({
-          title: sol.title || '', description: sol.description || '',
-          date: String(sol.date || '').slice(0, 10), endDate: String(sol.endDate || '').slice(0, 10),
-          time: sol.time || '', endTime: sol.endTime || '', venue: sol.venue || '',
-          price: sol.price || '', activity: sol.activity || 'general', posterUrl: sol.posterUrl || '',
-          precio: sol.precio ?? '', precioSocio: sol.precioSocio ?? '',
-          docenteId: sol.docenteId || null, comentarioPrivado: sol.comentarioPrivado || '',
-          _solicitudId: sol.id,
-        })} />
-
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 18 }}>
-        {permisos.editarEventos !== false
-          ? <button className="btn btn-primary" onClick={() => setEditing({ ...blank })}><I.Plus /> Nuevo evento</button>
-          : <button className="btn btn-primary" onClick={() => setEditing({ ...blank, _solicitud: true })}><I.Plus /> Proponer un evento</button>}
-      </div>
-
-      {loading && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando eventos...</p>}
-      {!loading && events.length === 0 && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>No hay eventos creados. Crea el primero con "Nuevo evento".</p>}
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 20 }}>
-        {events.map(ev => {
+  // Los que ya han terminado van aparte, al final (#598): su último día (o el
+  // único) es anterior a hoy. Los próximos, del más cercano al más lejano; los
+  // pasados, del más reciente al más antiguo.
+  const hoyEv = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Madrid' });
+  const finDe = (ev) => String(ev.endDate || ev.date || '').slice(0, 10);
+  const proximos = events.filter(ev => finDe(ev) >= hoyEv);
+  const pasados = events.filter(ev => finDe(ev) < hoyEv).sort((a, b) => finDe(b).localeCompare(finDe(a)));
+  const rejillaEventos = { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 20 };
+  const tarjetaEvento = (ev) => {
           const a = ACT_BY_ID[ev.activity];
           const color = a?.color || 'var(--ink)';
           return (
@@ -3056,8 +3039,47 @@ function AdminEvents({ showToast, permisos = {} }) {
               </div>
             </div>
           );
-        })}
+  };
+
+  return (
+    <>
+      <SolicitudesEventos permisos={permisos} showToast={showToast} refrescar={refrescarSol}
+        recargarEventos={load}
+        onEditar={(sol) => setEditing({
+          title: sol.title || '', description: sol.description || '',
+          date: String(sol.date || '').slice(0, 10), endDate: String(sol.endDate || '').slice(0, 10),
+          time: sol.time || '', endTime: sol.endTime || '', venue: sol.venue || '',
+          price: sol.price || '', activity: sol.activity || 'general', posterUrl: sol.posterUrl || '',
+          precio: sol.precio ?? '', precioSocio: sol.precioSocio ?? '',
+          docenteId: sol.docenteId || null, comentarioPrivado: sol.comentarioPrivado || '',
+          _solicitudId: sol.id,
+        })} />
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 18 }}>
+        {permisos.editarEventos !== false
+          ? <button className="btn btn-primary" onClick={() => setEditing({ ...blank })}><I.Plus /> Nuevo evento</button>
+          : <button className="btn btn-primary" onClick={() => setEditing({ ...blank, _solicitud: true })}><I.Plus /> Proponer un evento</button>}
       </div>
+
+      {loading && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>Cargando eventos...</p>}
+      {!loading && events.length === 0 && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>No hay eventos creados. Crea el primero con "Nuevo evento".</p>}
+
+      {!loading && events.length > 0 && proximos.length === 0 && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>No hay eventos próximos. Los que ya han pasado están abajo.</p>}
+      <div style={rejillaEventos} data-eventos-proximos>
+        {proximos.map(tarjetaEvento)}
+      </div>
+
+      {/* Los eventos que ya han pasado, aparte y al final (#598). */}
+      {pasados.length > 0 && (
+        <details data-eventos-pasados style={{ marginTop: 32, borderTop: '1px solid var(--line)', paddingTop: 18 }}>
+          <summary style={{ cursor: 'pointer', fontSize: 15, fontWeight: 800, color: 'var(--ink-2)', marginBottom: 16 }}>
+            Eventos pasados ({pasados.length})
+          </summary>
+          <div style={rejillaEventos}>
+            {pasados.map(tarjetaEvento)}
+          </div>
+        </details>
+      )}
 
       {/* ── Modal Gestionar Evento ── */}
       {managingEvent && (
