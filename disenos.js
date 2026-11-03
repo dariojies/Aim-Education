@@ -607,6 +607,57 @@ export function crearDisenos({ pool, clubId, authenticateSession, requireSeccion
         } catch (err) { fallo(res, err); }
     });
 
+    // ── Las fotos de los eventos (#596): la de cada evento (su cartel) ──
+    // Ya se enseñan en la web, así que no hace falta mirar permisos. La mayoría
+    // están guardadas dentro del evento (data:): al usarla en un diseño se copia
+    // a las imágenes de la web (/ci/…), una sola vez por foto.
+    const fotoDeEvento = (url) => {
+        const m = String(url || '').match(/^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=]+)$/);
+        return m ? { mime: m[1], datos: Buffer.from(m[2], 'base64') } : null;
+    };
+    const esUuid = (v) => /^[0-9a-f-]{36}$/i.test(String(v || ''));
+    router.get('/api/admin/disenos/fotos-eventos', ...gestion, async (req, res) => {
+        try {
+            const hoy = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Madrid' });
+            const r = await pool.query(
+                `SELECT id, title, event_date::text AS fecha, end_date::text AS fin FROM aim_eventos
+                 WHERE COALESCE(poster_url, '') <> '' ORDER BY event_date DESC LIMIT 80`);
+            res.set('Cache-Control', 'no-store');
+            res.json({ eventos: r.rows.map(e => ({ id: e.id, titulo: e.title, fecha: e.fecha, fin: e.fin, pasado: (e.fin || e.fecha) < hoy })) });
+        } catch (err) { fallo(res, err); }
+    });
+    router.get('/api/admin/disenos/foto-evento/:id/mini', ...gestion, async (req, res) => {
+        try {
+            if (!esUuid(req.params.id)) return res.status(404).end();
+            const u = (await pool.query(`SELECT poster_url FROM aim_eventos WHERE id = $1`, [req.params.id])).rows[0]?.poster_url;
+            if (!u) return res.status(404).end();
+            const f = fotoDeEvento(u);
+            if (!f) return /^(\/|https?:\/\/)/.test(u) ? res.redirect(u) : res.status(404).end();
+            const mini = await sharp(f.datos).rotate().resize({ width: 320, height: 320, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 78 }).toBuffer();
+            res.set({ 'Content-Type': 'image/jpeg', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, max-age=600' }).send(mini);
+        } catch (err) { fallo(res, err); }
+    });
+    router.post('/api/admin/disenos/foto-evento/:id', ...gestion, async (req, res) => {
+        try {
+            if (!esUuid(req.params.id)) corta(404, 'Ese evento no existe.');
+            const e = (await pool.query(`SELECT title, poster_url FROM aim_eventos WHERE id = $1`, [req.params.id])).rows[0];
+            if (!e?.poster_url) corta(404, 'Ese evento ya no tiene foto.');
+            const f = fotoDeEvento(e.poster_url);
+            if (!f) {
+                // Ya es una dirección (de la web o de fuera): se usa tal cual.
+                if (!/^(\/|https?:\/\/)/.test(e.poster_url)) corta(400, 'La foto de ese evento no se puede usar.');
+                return res.json({ url: e.poster_url, ancho: null, alto: null });
+            }
+            const meta = await sharp(f.datos).metadata().catch(() => null);
+            if (!meta?.width) corta(400, 'La foto de ese evento no es una imagen válida.');
+            const huella = crypto.createHash('sha1').update(f.datos).digest('hex').slice(0, 12);
+            const nombre = `Foto del evento «${String(e.title || '').slice(0, 120)}» · ${huella}`;
+            const ya = (await pool.query(`SELECT id FROM aim_correo_imagenes WHERE nombre = $1 AND bytes = $2 LIMIT 1`, [nombre, f.datos.length])).rows[0];
+            const url = ya ? `/ci/${ya.id}` : await guardarImagenDiseno(f.datos, f.mime, nombre, meta.width, meta.height, req.userSession.userId);
+            res.json({ url, ancho: meta.width, alto: meta.height });
+        } catch (err) { fallo(res, err); }
+    });
+
     // ── Diplomas en lote: de una clase o de una convocatoria de examen ──
     router.get('/api/admin/disenos/lote', ...gestion, async (req, res) => {
         try {

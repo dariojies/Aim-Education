@@ -2190,6 +2190,10 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
         setVentana(null);
         const url = `/api/admin/disenos/foto-club/${f.id}/grande`;
         if (fotoPara.current) { cambiarEl(fotoPara.current, { url, encuadre: null }); fotoPara.current = null; } else anadirImagen(url, f.ancho, f.alto);
+      }} onElegirUrl={(url, ancho, alto) => {
+        // La foto de un evento (#596): igual que una de la galería.
+        setVentana(null);
+        if (fotoPara.current) { cambiarEl(fotoPara.current, { url, encuadre: null }); fotoPara.current = null; } else anadirImagen(url, ancho, alto);
       }} />}
     </div>
     </KitMarca.Provider>
@@ -3737,12 +3741,17 @@ function DatosDelClub({ anadirBloque, anadirTabla, kit }) {
 // Fotos de la galería: solo las que se pueden usar (todos los que salen tienen
 // permiso de fotos). Quedan enlazadas a la galería: si alguien retira su
 // permiso, su foto deja de salir en los diseños.
-function FotosDelClub({ onCerrar, onElegir }) {
+function FotosDelClub({ onCerrar, onElegir, onElegirUrl }) {
   const [d, setD] = useState(null);
+  // De dónde: la galería o las fotos de los eventos (#596).
+  const [de, setDe] = useState('galeria');
   const cargar = (album) => api(`/api/admin/disenos/fotos-club${album ? `?album=${album}` : ''}`).then(setD).catch(e => setD({ error: e.message }));
   useEffect(() => { cargar(); }, []);
+  const pestana = (k, t) => <button type="button" className={`filter-pill ${de === k ? 'is-active' : ''}`} onClick={() => setDe(k)}>{t}</button>;
   return (
     <Ventana titulo="Fotos del club" onCerrar={onCerrar} ancho={860}>
+      <div style={{ display: 'flex', gap: 6 }} data-fotos-de>{pestana('galeria', 'De la galería')}{pestana('eventos', 'De los eventos')}</div>
+      {de === 'eventos' ? <FotosDeEventos onElegir={onElegirUrl} /> : <>
       <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-2)' }}>
         Solo salen las fotos de la galería en las que <b>todos los que salen tienen permiso de fotos</b>. Las que no tienen a nadie etiquetado tampoco salen: etiquétalas en «Fotos» y aparecerán aquí.
       </p>
@@ -3761,7 +3770,46 @@ function FotosDelClub({ onCerrar, onElegir }) {
           </div>
         )}
       </>}
+      </>}
     </Ventana>
+  );
+}
+// Las fotos de los eventos (#596): la de cada evento, la que sale en la web.
+function FotosDeEventos({ onElegir }) {
+  const [d, setD] = useState(null);
+  const [cogiendo, setCogiendo] = useState(null);
+  useEffect(() => { api('/api/admin/disenos/fotos-eventos').then(setD).catch(e => setD({ error: e.message })); }, []);
+  async function usar(ev) {
+    setCogiendo(ev.id);
+    try { const r = await api(`/api/admin/disenos/foto-evento/${ev.id}`, { method: 'POST', body: {} }); onElegir(r.url, r.ancho, r.alto); }
+    catch (e) { alert(e.message); } finally { setCogiendo(null); }
+  }
+  if (!d) return <span style={{ color: 'var(--ink-3)' }}>Cargando…</span>;
+  if (d.error) return <span style={{ color: 'var(--orange)' }}>{d.error}</span>;
+  if (!d.eventos.length) return <span style={{ color: 'var(--ink-3)' }}>Ningún evento tiene foto todavía. Se pone en «Eventos», al crear o editar uno.</span>;
+  const grupo = (titulo, lista) => lista.length > 0 && (
+    <div style={{ display: 'grid', gap: 8 }}>
+      <b style={{ fontSize: 13 }}>{titulo}</b>
+      <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))' }}>
+        {lista.map(ev => (
+          <button key={ev.id} type="button" onClick={() => usar(ev)} disabled={!!cogiendo} aria-label={`Usar la foto de ${ev.titulo}`} data-foto-evento
+            style={{ border: '1px solid var(--line)', borderRadius: 10, padding: 0, cursor: cogiendo ? 'wait' : 'pointer', background: 'var(--bg-3)', overflow: 'hidden', display: 'grid', textAlign: 'left', opacity: cogiendo && cogiendo !== ev.id ? 0.5 : 1 }}>
+            <span style={{ aspectRatio: '1', background: `center / cover no-repeat url(/api/admin/disenos/foto-evento/${ev.id}/mini), var(--bg-3)` }} />
+            <span style={{ padding: '6px 8px', fontSize: 12, display: 'grid', gap: 1 }}>
+              <b style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cogiendo === ev.id ? 'Poniéndola…' : ev.titulo}</b>
+              <span style={{ color: 'var(--ink-3)' }}>{fechaCorta(ev.fecha)}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+  return (
+    <>
+      <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-2)' }}>La foto de cada evento, la misma que sale en la web. Pulsa una para ponerla en el diseño.</p>
+      {grupo('Próximos', [...d.eventos.filter(e => !e.pasado)].reverse())}
+      {grupo('Ya pasados', d.eventos.filter(e => e.pasado))}
+    </>
   );
 }
 
