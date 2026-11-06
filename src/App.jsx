@@ -3,24 +3,56 @@ import PublicLanding from './components/PublicLanding';
 import { PublicActivities, PublicNews, PublicNewsDetail } from './components/PublicActivities';
 import PublicActivity from './components/PublicActivity';
 import AuthScreen from './components/AuthScreen';
+// Una parte de la web que se descarga aparte, al entrar en ella. Si no llega
+// bien (#601: en el iPhone a veces llega «nada» y React rompía la pantalla con
+// «l._result.default»; o es una pestaña de antes de un deploy y esa parte ya no
+// existe), se vuelve a pedir y, si sigue sin llegar, se recarga la página una
+// sola vez (para no entrar en bucle); si ni así, se dice qué pasa.
+const CLAVE_RECARGA = 'aim-recarga-trozo';
+function perezoso(cargar) {
+  return lazy(async () => {
+    let fallo = null;
+    for (let i = 0; i < 3; i++) {
+      try {
+        const m = await cargar();
+        if (m && m.default) { try { sessionStorage.removeItem(CLAVE_RECARGA); } catch { /* sin almacenamiento */ } return m; }
+        fallo = new Error('Ha llegado vacía');
+      } catch (e) { fallo = e; }
+      await new Promise(r => setTimeout(r, 400 * (i + 1)));
+    }
+    let yaRecargada = false;
+    try { yaRecargada = sessionStorage.getItem(CLAVE_RECARGA) === '1'; sessionStorage.setItem(CLAVE_RECARGA, '1'); } catch { yaRecargada = true; }
+    if (!yaRecargada) { window.location.reload(); return new Promise(() => {}); }
+    throw new Error(`No se ha podido cargar esta parte de la web (${fallo?.message || 'sin respuesta'}). Recarga la página; si sigue, cierra la pestaña y vuelve a entrar.`);
+  });
+}
+// Si Vite no consigue una pieza que necesita la página (un deploy nuevo), recargar una vez.
+if (typeof window !== 'undefined') {
+  window.addEventListener('vite:preloadError', (ev) => {
+    try { if (sessionStorage.getItem(CLAVE_RECARGA) === '1') return; sessionStorage.setItem(CLAVE_RECARGA, '1'); } catch { return; }
+    ev.preventDefault?.();
+    window.location.reload();
+  });
+}
+
 // El panel de administración y el área de familias son lo más pesado de la web
 // y la mayoría de visitas no los abre: se descargan aparte, al entrar en ellos
 // (ticket #298). La web pública carga así bastante menos.
-const StudentDashboard = lazy(() => import('./components/StudentDashboard'));
-const AdminApp = lazy(() => import('./components/AdminApp'));
+const StudentDashboard = perezoso(() => import('./components/StudentDashboard'));
+const AdminApp = perezoso(() => import('./components/AdminApp'));
 // Un diseño de Aim Design para ver con un enlace (/d/<clave>).
-const VerDiseno = lazy(() => import('./components/VerDiseno'));
+const VerDiseno = perezoso(() => import('./components/VerDiseno'));
 // Lo mismo con las páginas públicas que se abren poco al llegar (el aula, la
 // tienda, el calendario…): así la portada y las actividades, que es por donde
 // entra casi todo el mundo desde el móvil, descargan menos.
-const AulaPublica = lazy(() => import('./components/Aula.jsx'));
-const TiendaPublica = lazy(() => import('./components/Tienda.jsx'));
-const PublicCamp = lazy(() => import('./components/PublicCamp'));
-const PublicCalendar = lazy(() => import('./components/PublicCalendar'));
-const PublicLegal = lazy(() => import('./components/PublicLegal'));
-const PublicContacto = lazy(() => import('./components/PublicContacto'));
-const BrickslabPublico = lazy(() => import('./components/Brickslab.jsx'));
-const PublicConocenos = lazy(() => import('./components/PublicConocenos'));
+const AulaPublica = perezoso(() => import('./components/Aula.jsx'));
+const TiendaPublica = perezoso(() => import('./components/Tienda.jsx'));
+const PublicCamp = perezoso(() => import('./components/PublicCamp'));
+const PublicCalendar = perezoso(() => import('./components/PublicCalendar'));
+const PublicLegal = perezoso(() => import('./components/PublicLegal'));
+const PublicContacto = perezoso(() => import('./components/PublicContacto'));
+const BrickslabPublico = perezoso(() => import('./components/Brickslab.jsx'));
+const PublicConocenos = perezoso(() => import('./components/PublicConocenos'));
 import { CookieBanner, registrarVisita } from './components/Cookies';
 import AvisosWeb from './components/AvisosWeb';
 import { esApp, desactivarAvisos, revisarAvisosTrasEntrar } from './app-movil';

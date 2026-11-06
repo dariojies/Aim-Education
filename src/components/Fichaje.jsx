@@ -1376,8 +1376,11 @@ function ModalIntegridad({ onClose }) {
 
 // ── Gestión del personal (secretaría / dirección) ────────────────────────────
 function GestionFichajes({ showToast }) {
-  const inicioMes = () => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1).toLocaleDateString('en-CA'); };
-  const [desde, setDesde] = useState(inicioMes());
+  const inicioMes = (atras = 0) => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth() - atras, 1).toLocaleDateString('en-CA'); };
+  const finMes = (atras = 0) => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth() - atras + 1, 0).toLocaleDateString('en-CA'); };
+  // Las dos primeras semanas del mes se ve también el anterior (#634): es cuando
+  // se corrigen las jornadas que se quedaron mal (nada se cierra al acabar el mes).
+  const [desde, setDesde] = useState(() => inicioMes(new Date().getDate() <= 15 ? 1 : 0));
   const [hasta, setHasta] = useState(hoyISO());
   const [data, setData] = useState(null);
   const [sols, setSols] = useState([]);
@@ -1538,6 +1541,12 @@ function GestionFichajes({ showToast }) {
         <input type="date" value={desde} onChange={e => setDesde(e.target.value)} style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontFamily: 'inherit' }} />
         <label style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-2)' }}>Hasta</label>
         <input type="date" value={hasta} onChange={e => setHasta(e.target.value)} style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', fontFamily: 'inherit' }} />
+        {/* Atajos (#634): el registro de cualquier mes se puede corregir, también los pasados. */}
+        <span style={{ display: 'flex', gap: 4 }} data-periodo-fichajes>
+          {[['Este mes', inicioMes(0), hoyISO()], ['Mes pasado', inicioMes(1), finMes(1)]].map(([t, d, h]) => (
+            <button key={t} type="button" className={`filter-pill ${desde === d && hasta === h ? 'is-active' : ''}`} onClick={() => { setDesde(d); setHasta(h); }}>{t}</button>
+          ))}
+        </span>
         <div style={{ flex: 1 }} />
         <button className="btn btn-sm btn-outline" onClick={() => setImportar(true)} title="Pone a cada profe el horario de sus clases como plantilla">Importar horarios de las clases</button>
         <button className="btn btn-sm btn-outline" onClick={() => setIntegridad(true)}>Comprobar integridad</button>
