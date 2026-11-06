@@ -6,6 +6,7 @@ import { COLOR_CUMPLE } from './Shared.jsx';
 import { FormIncidencia } from './AdminIncidencias.jsx';
 import { useAgrupaciones, SelectorAgrupacion, GestorAgrupaciones, repartir, TituloSubgrupo } from './Agrupaciones.jsx';
 import { imprimirHtml } from '../imprimir.js';
+import { LoDeHoy } from './AulaClase.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pasar lista de las clases del día.
@@ -371,6 +372,8 @@ export default function PasarListaClases({ showToast, abrir = null }) {
           {/* Mascota de la clase (ticket #244): se gestiona aquí mismo, sin cambiar
               de pantalla — asignar peluche, sortear a quién le toca, prestar y
               marcar devolución. */}
+          {/* «Lo de hoy» (aulas de clase): una línea de lo trabajado, que sale en el aula de la clase. */}
+          <LoDeHoy groupId={clase.id} fecha={fecha} showToast={showToast} />
           <MascotaPasarLista groupId={clase.id} alumnos={alumnos} showToast={showToast} />
 
           {meta.speaking && (

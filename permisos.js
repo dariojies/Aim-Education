@@ -135,6 +135,9 @@ export function permisosDe(rol) {
             // El aula virtual (#433): los profes, los cursos de los que son
             // profesores (crearlos, su temario y corregir); el resto, todos.
             aula: !trabajador,
+            // Las aulas de clase (tipo Classroom, una por clase): los profes, las
+            // suyas (y las que sustituyen); secretaría y dirección, todas.
+            aulasClase: !trabajador,
             // Brickslab y Biblioteca (#291): préstamos, catálogo, permisos y
             // votaciones. Lo llevan secretaría y dirección.
             brickslab: mandaAlMenos(rol, 'secretaria'),
@@ -272,6 +275,8 @@ export const AVISOS = [
     { id: 'speaking_rechazados', grupo: 'Clases individuales', texto: 'Alumnos que no vendrán a una clase individual (se va al verlo)', quien: (p, rol) => p.secciones.speaking && daClase(rol),
       nota: () => 'solo de sus clases' },
     { id: 'fotos', grupo: 'Familias', texto: 'Solicitudes del permiso de fotos', quien: (p) => p.editarAlumnos },
+    { id: 'aulaclase', grupo: 'Clases', texto: 'Aulas de clase: entregas por corregir y comentarios de las familias', quien: (p) => p.secciones.aulasClase,
+      nota: (p) => (p.soloSusGrupos ? 'solo de sus clases' : null) },
     // Las entregas del aula virtual (#433): los profes, de sus cursos.
     { id: 'aula_por_corregir', grupo: 'Clases', texto: 'Tareas del aula virtual por corregir', quien: (p) => p.secciones.aula,
       nota: (p) => (p.aulaCompleta ? null : 'solo de sus cursos') },

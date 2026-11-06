@@ -15,6 +15,7 @@ import { esApp, compartirArchivo, abrirFuera, desactivarAvisos } from '../app-mo
 import { TarjetaAvisos, AjustesAvisos } from './AvisosMovil.jsx';
 import Chats from './Chats.jsx';
 import NoticiasFamilia from './NoticiasFamilia.jsx';
+import { AulaDeClase } from './AulaClase.jsx';
 import { PLAZAS_POCAS, textoQuedan, estiloQuedan } from './clasesPublicas.js';
 
 function EmptyState({ icon, text, accion, onAccion }) {
@@ -528,6 +529,15 @@ function DashClasses() {
   const [espera, setEspera] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedSlot, setSelectedSlot] = useState(null);
+  // El aula de una clase (?aula=<clase>, también desde un aviso).
+  const [aula, setAula] = useState(() => { try { return new URLSearchParams(window.location.search).get('aula') || null; } catch { return null; } });
+  useEffect(() => {
+    try {
+      const u = new URL(window.location.href);
+      if (aula) u.searchParams.set('aula', aula); else u.searchParams.delete('aula');
+      window.history.replaceState(window.history.state, '', u.pathname + u.search);
+    } catch { /* nada */ }
+  }, [aula]);
 
   useEffect(() => {
     fetch('/api/me/groups', { credentials: 'include' })
@@ -567,6 +577,7 @@ function DashClasses() {
 
   const HOURS = Array.from({length: 14}, (_, i) => 9 + i);
 
+  if (aula) return <AulaDeClase grupoId={aula} ambito="familia" onVolver={() => setAula(null)} />;
   if (loading) {
     return <div className="panel"><h2><I.Calendar /> Mis clases</h2><EmptyState text="Cargando tus clases..." /></div>;
   }
@@ -604,6 +615,10 @@ function DashClasses() {
                   </div>
                 )}
                 {g.level && <span style={{display: "inline-block", fontSize: 11, fontWeight: 700, background: "color-mix(in oklab, var(--purple) 12%, var(--bg-2))", color: "var(--purple)", padding: "2px 8px", borderRadius: 6}}>Nivel: {g.level}</span>}
+                {/* El aula de la clase: avisos, materiales, tareas y lo de cada día. */}
+                <button type="button" className="btn btn-sm btn-outline" style={{marginTop: 10, width: "100%", justifyContent: "center"}} onClick={() => setAula(g.id)} data-abrir-aula={g.id}>
+                  🎒 Aula de la clase
+                </button>
               </div>
             );
           })}

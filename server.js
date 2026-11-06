@@ -38,7 +38,8 @@ import { crearDisenos, crearTablasDisenos, disenosPorAprobar, revisionDeMisDisen
 import { configurarDisenosServidor } from './disenos-servidor.js';
 import { crearMedios, crearTablasMedios, limpiarMedios } from './medios.js';
 import { crearPantallas, crearTablasPantallas, prepararEstaticas, prepararCierres, limpiarMediosPantalla } from './pantallas.js';
-import { crearChats, crearTablasChats, avisosChats } from './chats.js';
+import { crearChats, crearTablasChats, avisosChats, achicarFoto } from './chats.js';
+import { crearAulasClase, crearTablasAulasClase, avisosAulaClaseFamilia, avisosAulaClasePersonal } from './aulas-clase.js';
 import { crearListas, crearTablasListas, listasComoSegmentos, resolverLista, correosDeLista } from './listas.js';
 import { crearPersonal, crearTablasPersonal, avisosEspacio, recordarCertificados } from './personal.js';
 import { redesDeNoticia, configRedesAuto, guardarRedesAuto, programarHistoriasActividades, prepararHistoriaActividad, plazasPocas, guardarPlazasPocas, resumenVuelta } from './redes-auto.js';
@@ -2380,6 +2381,8 @@ async function initDb() {
         await crearTablasTienda(client);
         // Mensajes: el chat interno (Equipo IT con cualquiera, privados y grupos del personal).
         await crearTablasChats(client);
+        // Aulas de clase (tipo Classroom, una por clase): ver aulas-clase.js.
+        await crearTablasAulasClase(client);
         // Las listas hechas a mano (#499): AMPAs, colegios, asociaciones… (listas.js).
         await crearTablasListas(client);
         // Mi espacio (#497): nóminas, contratos, certificados y la ficha de cada trabajador.
@@ -5377,6 +5380,9 @@ app.use(crearMedios({ pool, authenticateSession, requireSeccion }));
 app.use(crearPantallas({ pool, authenticateSession, requireSeccion }));
 // Mensajes: el chat interno. Lo nuevo llega al móvil de quien tiene que leerlo.
 // Mensajes: lo nuevo llega al momento por /ws/chats, con la sesión de la web.
+// Aulas de clase: una por clase, con su tablón, tareas y notas (aulas-clase.js).
+app.use(crearAulasClase({ pool, clubId: AIM_CLUB_ID, authenticateSession, permisos, familiaIds, gruposDe,
+    avisarFamilias: (ids) => avisosPush.avisarFamilias(ids), achicarFoto }).router);
 const chatsInternos = crearChats({ pool, clubId: AIM_CLUB_ID, authenticateSession, avisar: (ids) => avisosPush.avisarFamilias(ids), sesionDeToken, leerCookies: parseCookies });
 app.use(chatsInternos.router);
 // Las listas hechas a mano y sus personas (Personas → Contactos, #499).
@@ -14020,6 +14026,10 @@ async function avisosFamilia(me) {
             });
         }
 
+        // Las aulas de clase: lo nuevo de las clases de los suyos, las tareas
+        // corregidas y lo que le escribe el profe en privado.
+        avisos.push(...await avisosAulaClaseFamilia(pool, fam).catch(() => []));
+
         // 7) Brickslab: lo entregado y la votación abierta (#218).
         avisos.push(...await brickslab.avisosDe(fam).catch(() => []));
 
@@ -17542,6 +17552,11 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         }
         // Clases con gente esperando en las que ya hay hueco (a un instructor,
         // solo las suyas).
+        // Aulas de clase: entregas por corregir y comentarios de las familias, de sus clases.
+        if (recibe('aulaclase')) {
+            fuente('Aulas de clase', ['aulaclase_entregas', 'aulaclase_comentarios'], async () =>
+                avisosAulaClasePersonal(pool, { grupos: permisosYo.soloSusGrupos ? await gruposDe(req.userSession.userId) : null }));
+        }
         if (recibe('lista_espera')) {
             fuente('Lista de espera', ['lista_espera'], async () => {
                 const n = (await pool.query(

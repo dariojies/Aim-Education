@@ -21,6 +21,7 @@ export const RUTAS_ADMIN = {
   galeria: ['fotos', 'galeria'],
   evaluacion: ['evaluacion'],
   aula: ['aula', 'aula-virtual'],
+  aulasClase: ['aulas-clase'],
   titulos: ['titulos'],
   reportes: ['reportes'],
   students: ['alumnos'],

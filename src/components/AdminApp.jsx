@@ -5,6 +5,7 @@ import EquipoIT from './EquipoIT.jsx';
 import AdminCambios from './AdminCambios.jsx';
 import AdminEvaluacion from './AdminEvaluacion.jsx';
 import AdminAula from './AdminAula.jsx';
+import AulasClase from './AulaClase.jsx';
 import AdminTienda from './AdminTienda.jsx';
 import EditorTexto from './EditorTexto.jsx';
 import AsistenteSeo from './AsistenteSeo.jsx';
@@ -121,6 +122,7 @@ function sectionLabel(id, pestana) {
     galeria: "Fotos",
     evaluacion: "Evaluación",
     aula: "Aula virtual",
+    aulasClase: "Aulas de clase",
     tienda: "Tienda online",
     settings: "Ajustes",
     objetos: "Objetos perdidos",
@@ -6921,6 +6923,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "galeria", label: "Fotos", icon: <I.Camara /> },
         // Evaluación de los alumnos (#411): sesiones, notas y currículo.
         { id: "evaluacion", label: "Evaluación", icon: <I.Birrete /> },
+        // Un «Classroom» por clase: tablón, tareas y lo trabajado durante el curso.
+        { id: "aulasClase", label: "Aulas de clase", icon: <I.Birrete /> },
         // Los cursos online (#433): temario, alumnos y tareas por corregir.
         { id: "aula", label: "Aula virtual", icon: <I.Monitor /> },
       ]
@@ -7130,6 +7134,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("cambios") && <AdminCambios showToast={showToast} />}
           {ver("evaluacion") && <AdminEvaluacion showToast={showToast} />}
           {ver("aula") && <AdminAula showToast={showToast} />}
+          {ver("aulasClase") && <AulasClase showToast={showToast} enlace={enlace} />}
           {ver("contactos") && <AdminContactos showToast={showToast} onAbrirFicha={abrirFicha} />}
           {ver("candidatos") && <AdminCandidatos showToast={showToast} />}
           {ver("incidencias") && <AdminIncidencias showToast={showToast} enlace={enlace} />}
