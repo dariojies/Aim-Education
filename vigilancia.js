@@ -62,13 +62,18 @@ function nombreDe(fn) {
     if (globalThis.__vigilanciaInstalada) return;
     globalThis.__vigilanciaInstalada = true;
     const original = globalThis.setInterval;
+    const quitarOriginal = globalThis.clearInterval;
+    const deHandle = new WeakMap();   // el intervalo → su tarea, para saber cuándo se para
     globalThis.setInterval = function (fn, ms, ...resto) {
         if (typeof fn !== 'function' || !(Number(ms) >= 30_000)) return original(fn, ms, ...resto);
-        // Solo las nuestras: las de las librerías (node_modules) no se apuntan.
-        if (/node_modules/.test(String(new Error().stack || '').split('\n')[2] || '')) return original(fn, ms, ...resto);
+        // Solo las nuestras: ni las de las librerías (node_modules) ni las de
+        // dentro de Node (node:…; p. ej. el ping de una conexión HTTP/2,
+        // «onHttp2SendPing», que se para al cerrarla y salía como atrasada).
+        if (/node_modules|\(node:|at node:|\(internal\//.test(String(new Error().stack || '').split('\n')[2] || '')) return original(fn, ms, ...resto);
         const nombre = nombreDe(fn);
-        const t = TAREAS.get(nombre) || { nombre, cadaMs: ms, veces: 0, fallos: 0, ultima: null, ultimaOk: null, duracionMs: null, error: null, errorAt: null, desde: Date.now() };
+        const t = TAREAS.get(nombre) || { nombre, cadaMs: ms, veces: 0, fallos: 0, ultima: null, ultimaOk: null, duracionMs: null, error: null, errorAt: null, desde: Date.now(), activas: 0 };
         t.cadaMs = ms;
+        t.activas = (t.activas || 0) + 1;
         TAREAS.set(nombre, t);
         const falla = (e, ini) => {
             t.fallos++; t.error = String(e?.message || e).slice(0, 300); t.errorAt = Date.now(); t.duracionMs = Date.now() - ini;
@@ -85,7 +90,20 @@ function nombreDe(fn) {
         };
         // Mismo nombre que la original (lo usa, por ejemplo, el arnés de pruebas).
         Object.defineProperty(envuelta, 'name', { value: fn.name });
-        return original(envuelta, ms, ...resto);
+        const h = original(envuelta, ms, ...resto);
+        if (h && typeof h === 'object') deHandle.set(h, t);
+        return h;
+    };
+    // Una tarea que se para a propósito (clearInterval) deja de vigilarse: si no,
+    // a los diez minutos salía como «atrasada» sin estarlo.
+    globalThis.clearInterval = function (h) {
+        const t = h && typeof h === 'object' ? deHandle.get(h) : null;
+        if (t) {
+            deHandle.delete(h);
+            t.activas = Math.max(0, (t.activas || 1) - 1);
+            if (!t.activas && TAREAS.get(t.nombre) === t) TAREAS.delete(t.nombre);
+        }
+        return quitarOriginal(h);
     };
     for (const nivel of ['error', 'warn']) {
         const o = console[nivel].bind(console);
@@ -170,6 +188,8 @@ function resumenPeticiones() {
 
 // Cuánto se atasca el servidor (el p99 del retardo del bucle de eventos, en ms).
 export const retardoBucle = () => Math.round(retardo.percentile(99) / 1e6);
+// Las tareas que se vigilan (para las pruebas).
+export const tareasVigiladas = () => [...TAREAS.values()].map(t => t.nombre);
 
 // El estado de una tarea automática: atrasada si lleva más de dos vueltas sin
 // hacerse; con error si la última vez falló.
