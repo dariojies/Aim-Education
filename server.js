@@ -12045,7 +12045,7 @@ const AUTOMATISMOS = {
     // le repite).
     cerrado: {
         nombre: 'Aviso de día cerrado',
-        descripcion: (a) => `${a.dias} ${a.dias === 1 ? 'día' : 'días'} antes de un festivo, unas vacaciones o un cierre del centro (los que se marcan en Fichaje → Vacaciones y festivos), a partir de las ${a.hora}:00. Si se marca a última hora (para hoy o mañana), sale en cuanto se guarda y a todas las familias de una vez. A las familias de los alumnos que tienen clase, una vez por familia.`,
+        descripcion: (a) => `${a.dias} ${a.dias === 1 ? 'día' : 'días'} antes de un festivo, unas vacaciones o un cierre del centro (los que se marcan en Fichaje → Vacaciones y festivos), a partir de las ${a.hora}:00. Si se marca a última hora (para hoy o mañana), empieza a salir en cuanto se guarda y llega a todas las familias en unos 15 minutos. A las familias de los alumnos que tienen clase, una vez por familia.`,
         ajustes: {
             dias: { nombre: 'Cuántos días antes avisa', unidad: 'días', min: 1, max: 30, def: AVISO_CIERRE_DIAS },
             hora: { nombre: 'A partir de qué hora sale', unidad: 'h', min: 0, max: 22, def: 9 },
@@ -12263,7 +12263,10 @@ async function pendientesAutomatismo(id, cfg) {
     return cands.filter(c => !ya.has(`${c.personaId}|${c.marca}`));
 }
 
-// Cuántos como mucho en una pasada cuando es urgente (de sobra para todo el club).
+// Lo urgente (un cierre de hoy o mañana) no va de 25 en 25 cada cuarto de hora:
+// sale todo en la misma pasada, pero al ritmo de las campañas (uno cada 4 s,
+// unos 15 minutos para todo el club). Todo sale por el Gmail del club, con su
+// cupo de unos 2.000 al día, y cientos de golpe parecerían spam.
 const TANDA_URGENTE = 600;
 let automatismosEnCurso = false, otraPasadaAutomatismos = false;
 async function ejecutarAutomatismos() {
@@ -12276,9 +12279,9 @@ async function ejecutarAutomatismos() {
         const cfg = await configAutomatismos();
         for (const [id, c] of Object.entries(cfg)) {
             if (!c.activo) continue;
-            // Lo urgente (un cierre de hoy o mañana) sale todo en la misma pasada.
             const pend = await pendientesAutomatismo(id, c);
-            const lista = pend.slice(0, pend[0]?.urgente ? TANDA_URGENTE : AUTOMATISMOS[id].porTanda || 25);
+            const urgente = !!pend[0]?.urgente;
+            const lista = pend.slice(0, urgente ? TANDA_URGENTE : AUTOMATISMOS[id].porTanda || 25);
             const porFamilia = AUTOMATISMOS[id].porFamilia;
             const ya = porFamilia && lista.length ? await yaRecibieron(lista[0].marca) : null;
             for (const cand of lista) {
@@ -12318,6 +12321,7 @@ async function ejecutarAutomatismos() {
                     tipo: AUTOMATISMOS[id].tipo || 'actividades', variables: { ...d.ctx.variables, ...cand.extra }, plantilla: cand.marca, imagen,
                 });
                 if (ya && env.estado === 'enviado') d.para.forEach(x => ya.add(x.email.toLowerCase()));
+                if (urgente) await new Promise(r => setTimeout(r, INTERVALO_CAMPANAS_MS));
             }
             if (lista.length) console.log(`[automatismos] ${id}: ${lista.length} revisado(s)`);
         }
