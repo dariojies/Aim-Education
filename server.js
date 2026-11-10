@@ -12045,7 +12045,7 @@ const AUTOMATISMOS = {
     // le repite).
     cerrado: {
         nombre: 'Aviso de día cerrado',
-        descripcion: (a) => `${a.dias} ${a.dias === 1 ? 'día' : 'días'} antes de un festivo, unas vacaciones o un cierre del centro (los que se marcan en Fichaje → Vacaciones y festivos), a partir de las ${a.hora}:00. A las familias de los alumnos que tienen clase, una vez por familia.`,
+        descripcion: (a) => `${a.dias} ${a.dias === 1 ? 'día' : 'días'} antes de un festivo, unas vacaciones o un cierre del centro (los que se marcan en Fichaje → Vacaciones y festivos), a partir de las ${a.hora}:00. Si se marca a última hora (para hoy o mañana), sale en cuanto se guarda y a todas las familias de una vez. A las familias de los alumnos que tienen clase, una vez por familia.`,
         ajustes: {
             dias: { nombre: 'Cuántos días antes avisa', unidad: 'días', min: 1, max: 30, def: AVISO_CIERRE_DIAS },
             hora: { nombre: 'A partir de qué hora sale', unidad: 'h', min: 0, max: 22, def: 9 },
@@ -12132,17 +12132,21 @@ async function candidatosAutomatismo(id, cfg) {
         const hoy = hoyAutomatismos();
         if (horaAutomatismos() < (cfg.ajustes?.hora ?? 9)) return [];
         const diasAviso = cfg.ajustes?.dias ?? AVISO_CIERRE_DIAS;
-        let marca, extra;
+        let marca, extra, urgente = false;
         if (id === 'cerrado') {
             // El próximo periodo de cierre que empiece dentro del plazo de aviso y
-            // después de encenderlo.
+            // después de encenderlo. También el que empieza hoy: un cierre que se
+            // marca el mismo día por la mañana (a quien ya se le avisó días antes
+            // no se le repite, la marca es la misma).
             const r = await pool.query(
                 `SELECT fecha::text AS fecha, nombre, tipo, resta_vacaciones FROM aim_calendario_laboral
                  WHERE fecha BETWEEN $1::date - INTERVAL '${MAX_DIAS_CIERRE} days' AND $1::date + ${Number(diasAviso)} + ${MAX_DIAS_CIERRE}
                  ORDER BY fecha`, [hoy]);
-            const p = periodosDeCierre(r.rows).find(x => x.desde > hoy && x.desde <= sumarDiaISO(hoy, diasAviso)
+            const p = periodosDeCierre(r.rows).find(x => x.desde >= hoy && x.desde <= sumarDiaISO(hoy, diasAviso)
                 && x.desde > String(desde).slice(0, 10));
             if (!p) return [];
+            // Hoy o mañana: no da tiempo a ir de 25 en 25 cada cuarto de hora.
+            urgente = p.desde <= sumarDiaISO(hoy, 1);
             // El día que se vuelve: el siguiente que no esté cerrado ni sea domingo.
             const cerrados = new Set(r.rows.map(x => x.fecha));
             let vuelta = sumarDiaISO(p.hasta, 1);
@@ -12173,7 +12177,7 @@ async function candidatosAutomatismo(id, cfg) {
              WHERE a.club_id = $1 AND COALESCE(u.role, 'student') NOT IN ('instructor', 'club_owner', 'superadmin')
                AND NOT EXISTS (SELECT 1 FROM aim_rangos rg WHERE rg.user_id = u.user_id AND rg.rango IN ('trabajador', 'secretaria', 'equipo_it', 'it_junior'))`,
             [AIM_CLUB_ID]);
-        return al.rows.map(x => ({ personaId: x.student_id, marca, extra }));
+        return al.rows.map(x => ({ personaId: x.student_id, marca, extra, urgente }));
     }
     if (id === 'entrar') {
         const h = horaAutomatismos();
@@ -12259,15 +12263,22 @@ async function pendientesAutomatismo(id, cfg) {
     return cands.filter(c => !ya.has(`${c.personaId}|${c.marca}`));
 }
 
-let automatismosEnCurso = false;
+// Cuántos como mucho en una pasada cuando es urgente (de sobra para todo el club).
+const TANDA_URGENTE = 600;
+let automatismosEnCurso = false, otraPasadaAutomatismos = false;
 async function ejecutarAutomatismos() {
-    if (automatismosEnCurso || !mailTransporter) return;
+    if (!mailTransporter) return;
+    // Si ya hay una pasada, se repite al acabar (un cierre recién marcado no espera al cuarto de hora).
+    if (automatismosEnCurso) { otraPasadaAutomatismos = true; return; }
     automatismosEnCurso = true;
+    otraPasadaAutomatismos = false;
     try {
         const cfg = await configAutomatismos();
         for (const [id, c] of Object.entries(cfg)) {
             if (!c.activo) continue;
-            const lista = (await pendientesAutomatismo(id, c)).slice(0, AUTOMATISMOS[id].porTanda || 25);
+            // Lo urgente (un cierre de hoy o mañana) sale todo en la misma pasada.
+            const pend = await pendientesAutomatismo(id, c);
+            const lista = pend.slice(0, pend[0]?.urgente ? TANDA_URGENTE : AUTOMATISMOS[id].porTanda || 25);
             const porFamilia = AUTOMATISMOS[id].porFamilia;
             const ya = porFamilia && lista.length ? await yaRecibieron(lista[0].marca) : null;
             for (const cand of lista) {
@@ -12311,7 +12322,10 @@ async function ejecutarAutomatismos() {
             if (lista.length) console.log(`[automatismos] ${id}: ${lista.length} revisado(s)`);
         }
     } catch (e) { console.error('[automatismos]', e.message); }
-    finally { automatismosEnCurso = false; }
+    finally {
+        automatismosEnCurso = false;
+        if (otraPasadaAutomatismos) setImmediate(ejecutarAutomatismos);
+    }
 }
 
 app.get('/api/admin/automatismos', authenticateSession, requireSeccion('comunicaciones'), async (req, res) => {
@@ -20965,6 +20979,7 @@ app.post('/api/admin/fichajes/festivos', authenticateSession, requireAdmin, requ
         });
         await client.query('COMMIT');
         if (anuladas.length) avisosPush.avisarFamilias(anuladas.map(x => x.studentId));
+        avisarCambioDeCierres();
         res.status(201).json({
             success: true, dias: diasEntreISO(desde, hasta),
             sustituidos: sustituidos.map(x => ({ ...x, tipoNombre: TIPOS_FESTIVO[x.tipo] || x.tipo })),
@@ -20975,6 +20990,19 @@ app.post('/api/admin/fichajes/festivos', authenticateSession, requireAdmin, requ
         res.status(500).json({ error: err.message });
     } finally { client.release(); }
 });
+
+// Al marcar o quitar un cierre, lo que avisa de él se pone al día ya, sin esperar
+// a su repaso (que un cierre de mañana marcado por la noche no llegue tarde): el
+// correo a las familias, la historia en redes, la tele de recepción y el aviso al
+// móvil (la campanita de la web lo lee al momento).
+function avisarCambioDeCierres() {
+    setImmediate(() => {
+        ejecutarAutomatismos();
+        programarHistoriasFestivos(pool).catch(() => {});
+        prepararCierres(pool).catch(() => {});
+        avisosPush.avisarTodos();
+    });
+}
 
 // Quitar un periodo entero de golpe (desde-hasta), el mismo que se marcó.
 app.delete('/api/admin/fichajes/festivos', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
@@ -20992,6 +21020,7 @@ app.delete('/api/admin/fichajes/festivos', authenticateSession, requireAdmin, re
             datos: { desde, hasta, quitados: del.rows },
         });
         await client.query('COMMIT');
+        avisarCambioDeCierres();
         res.json({ success: true, dias: del.rowCount });
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});

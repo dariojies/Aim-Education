@@ -2,9 +2,12 @@
 // Diseños que salen solos (#471). La dirección elige en Aim Design qué diseño
 // es la plantilla de cada uso (así la confirma) y la web hace el resto:
 // - festivo: la historia de Instagram y Facebook del día de cada festivo (los de Fichaje →
-//   Vacaciones y festivos de tipo nacional, autonómico o local; las vacaciones
-//   y los cierres del centro, no). Se deja programada en Publicaciones para las
-//   00:00 de ese día, así dura las 24 horas, con {dia}, {festivo} y {vuelta}.
+//   Vacaciones y festivos de tipo nacional, autonómico o local) y de cada día de
+//   cierre del centro (una nevada, una avería…); las vacaciones del centro, no,
+//   para no publicar una cada día de la Navidad o del verano. Se deja programada
+//   en Publicaciones para las 00:00 de ese día, así dura las 24 horas, con {dia},
+//   {festivo} (el nombre que se le puso) y {vuelta}. Si se marca el mismo día o la
+//   víspera, se hace en cuanto se guarda.
 //   Se ve (y se puede quitar) en el calendario de Publicaciones desde una semana
 //   antes; si se cambia la plantilla o el festivo, se vuelve a pintar. Si la
 //   plantilla tiene animaciones, va en vídeo con ellas (#494).
@@ -24,13 +27,14 @@ const GENERACION = 2;
 
 export const CLAVE_AUTOMATICOS = 'disenos_automaticos';
 export const USOS_AUTOMATICOS = {
-    festivo: { nombre: 'Historia de los festivos' },
+    festivo: { nombre: 'Historia de los festivos y cierres' },
     cumple: { nombre: 'Felicitación de cumpleaños' },
     // #491 (redes-auto.js): la imagen de las noticias en redes y las historias diarias.
     noticia: { nombre: 'Publicación de las noticias' },
     actividad: { nombre: 'Historias diarias de las actividades' },
 };
-const TIPOS_FESTIVO = ['nacional', 'autonomico', 'local'];
+// Los cierres del centro también (los avisos de cierres que se echan encima).
+const TIPOS_FESTIVO = ['nacional', 'autonomico', 'local', 'cierre'];
 const DIAS_ANTES = 7;
 
 // PRUEBA_HOY_AUTOMATISMOS (como en los automatismos): solo para probarlo en local.

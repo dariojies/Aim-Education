@@ -94,7 +94,7 @@ export default function PantallasTele({ disenos = [], abrirDiseno, showToast }) 
             </select>
           </div>
           <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-2)' }}>
-            La historia de los festivos (la plantilla que tengas en «Que salga solo… → Historia de los festivos»), con el día y la vuelta ya puestos, sale la primera del carrusel hasta el mismo día del cierre. Se prepara sola; si la plantilla tiene animaciones, en vídeo.
+            La historia de los festivos (la plantilla que tengas en «Que salga solo… → Historia de los festivos y cierres»), con el día y la vuelta ya puestos, sale la primera del carrusel hasta el mismo día del cierre. Se prepara sola; si la plantilla tiene animaciones, en vídeo.
           </p>
           {!datos.cierres.plantilla && <p style={{ margin: 0, fontSize: 13, color: 'var(--pink)' }}>No hay plantilla para la historia de los festivos: elígela en Aim Design (en el diseño, «Que salga solo…»).</p>}
           {datos.cierres.plantilla && datos.cierres.activo && (
