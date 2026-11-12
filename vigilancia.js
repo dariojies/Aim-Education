@@ -31,6 +31,11 @@ const FALLOS_HTTP = [];        // las últimas peticiones con 5xx
 const MAX_REGISTRO = 300;
 const retardo = monitorEventLoopDelay({ resolution: 20 });
 retardo.enable();
+// La memoria más alta desde que arrancó (#637), mirada cada 30 s: el dyno tiene
+// WEB_MEMORY MB (512) y si se pasa tira de disco y va lento.
+const MEMORIA = { pico: 0, picoAt: null };
+const medirMemoria = () => { const r = process.memoryUsage().rss; if (r > MEMORIA.pico) { MEMORIA.pico = r; MEMORIA.picoAt = new Date().toISOString(); } };
+setInterval(medirMemoria, 30_000).unref?.();
 
 // Quien quiere enterarse de los errores ({ tipo: 'peticion' | 'tarea' | 'registro', … }).
 const OYENTES = [];
@@ -273,6 +278,12 @@ export function crearVigilancia({ authenticateSession, requireSeccion, requirePe
                 ...(await servidor()),
                 arrancado: new Date(Date.now() - process.uptime() * 1000).toISOString(),
                 memoriaMb: Math.round(process.memoryUsage().rss / 1048576),
+                // En qué se va (#637): la de JavaScript, la de fuera (imágenes, búferes…) y el pico.
+                memoria: (() => {
+                    medirMemoria();
+                    const m = process.memoryUsage(), mb = (x) => Math.round(x / 1048576);
+                    return { jsMb: mb(m.heapUsed), fueraMb: mb(m.external + m.arrayBuffers), picoMb: mb(MEMORIA.pico), picoAt: MEMORIA.picoAt, cuotaMb: Number(process.env.WEB_MEMORY) || 512 };
+                })(),
                 retardoMs: Math.round(retardo.percentile(99) / 1e6),
                 node: process.version,
                 dyno: process.env.DYNO || null,

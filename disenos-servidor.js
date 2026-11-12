@@ -21,10 +21,22 @@ const bajar = async (url) => {
 };
 
 // ── Imágenes ──
+// Ya abiertas (descomprimidas: una foto de móvil de 4000 × 3000 ocupa ~48 MB así).
+// Pocas y no para siempre (#637): el servidor tiene 512 MB y con 60 fotos
+// guardadas la memoria iba subiendo a lo largo del día hasta el tope. Si nadie
+// pinta nada en 10 minutos, se sueltan todas.
 const imagenes = new Map();
+const MAX_IMAGENES = 15;
+let soltarImagenes = null;
 function cargarImagen(url) {
-    if (!imagenes.has(url)) {
-        if (imagenes.size > 60) imagenes.clear();
+    clearTimeout(soltarImagenes);
+    soltarImagenes = setTimeout(() => imagenes.clear(), 10 * 60_000);
+    soltarImagenes.unref?.();
+    if (imagenes.has(url)) {
+        // La más reciente, al final (se quitan primero las que hace más que no se usan).
+        const ya = imagenes.get(url); imagenes.delete(url); imagenes.set(url, ya);
+    } else {
+        while (imagenes.size >= MAX_IMAGENES) imagenes.delete(imagenes.keys().next().value);
         imagenes.set(url, (async () => {
             try {
                 const u = String(url);

@@ -102,7 +102,11 @@ export default function VigilanciaIT({ children }) {
           ))}
         </div>
         <span style={{ ...suave, fontSize: 11 }}>
-          {s.version ? `Versión ${s.version}` : 'Sin versión de Heroku'}{s.commit ? ` · ${String(s.commit).slice(0, 7)}` : ''} · arrancado {hace(s.arrancado)} · {s.memoriaMb} MB · atasco {s.retardoMs} ms · Node {s.node}{s.dyno ? ` · ${s.dyno}` : ''} · se actualiza sola cada minuto
+          {s.version ? `Versión ${s.version}` : 'Sin versión de Heroku'}{s.commit ? ` · ${String(s.commit).slice(0, 7)}` : ''} · arrancado {hace(s.arrancado)} · {s.memoria
+            ? <span title={`JavaScript ${s.memoria.jsMb} MB · imágenes y búferes ${s.memoria.fueraMb} MB. El servidor tiene ${s.memoria.cuotaMb} MB: si se pasa, va lento.`}
+                style={s.memoria.picoMb > s.memoria.cuotaMb * 0.9 ? { color: 'var(--pink)', fontWeight: 700 } : undefined}>
+                memoria {s.memoriaMb} de {s.memoria.cuotaMb} MB (pico {s.memoria.picoMb} MB{s.memoria.picoAt ? `, ${hace(s.memoria.picoAt)}` : ''})</span>
+            : `${s.memoriaMb} MB`} · atasco {s.retardoMs} ms · Node {s.node}{s.dyno ? ` · ${s.dyno}` : ''} · se actualiza sola cada minuto
         </span>
       </div>
 
