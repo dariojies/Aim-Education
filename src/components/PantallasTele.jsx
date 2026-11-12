@@ -94,7 +94,7 @@ export default function PantallasTele({ disenos = [], abrirDiseno, showToast }) 
             </select>
           </div>
           <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-2)' }}>
-            La historia de los festivos (la plantilla que tengas en «Que salga solo… → Historia de los festivos y cierres»), con el día y la vuelta ya puestos, sale la primera del carrusel hasta el mismo día del cierre. Se prepara sola; si la plantilla tiene animaciones, en vídeo.
+            La historia de los festivos (la plantilla que tengas en «Que salga solo… → Historia de los festivos y cierres»), con el día y la vuelta ya puestos, sale la primera del carrusel hasta el mismo día del cierre. Se prepara sola; si la plantilla tiene animaciones, en vídeo. En cada pantalla se puede quitar con su casilla «Avisos de cierre automáticos».
           </p>
           {!datos.cierres.plantilla && <p style={{ margin: 0, fontSize: 13, color: 'var(--pink)' }}>No hay plantilla para la historia de los festivos: elígela en Aim Design (en el diseño, «Que salga solo…»).</p>}
           {datos.cierres.plantilla && datos.cierres.activo && (
@@ -158,6 +158,16 @@ export default function PantallasTele({ disenos = [], abrirDiseno, showToast }) 
                   <option value={0}>No (la tele ya está en vertical)</option><option value={90}>90° a la derecha</option><option value={270}>90° a la izquierda</option><option value={180}>Boca abajo</option>
                 </select>
               </label>
+              {/* #642: cada pantalla elige si le salen los avisos de cierre automáticos. */}
+              {datos.cierres?.activo && (
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer', alignSelf: 'center', paddingTop: 14 }}
+                  title="La historia de los festivos y cierres que se pone sola al principio del carrusel">
+                  <input type="checkbox" checked={p.cierres !== false} style={{ accentColor: 'var(--teal)' }}
+                    onChange={e => hacer(() => api(`/api/admin/pantallas/${p.id}`, { method: 'PATCH', body: { cierres: e.target.checked } }),
+                      e.target.checked ? 'En esta pantalla saldrán los avisos de cierre.' : 'En esta pantalla ya no salen los avisos de cierre.')} />
+                  Avisos de cierre automáticos
+                </label>
+              )}
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
               <button type="button" className="btn btn-sm btn-primary" onClick={() => setEligiendo(p)}>＋ Añadir diseños</button>

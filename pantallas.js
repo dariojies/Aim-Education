@@ -85,14 +85,21 @@ async function ponerMedio(pool, itemId, medioId, huella) {
 // cierre que viene, con sus datos, sale la primera del carrusel desde «dias»
 // antes hasta el mismo día. El servidor la prepara sola (en vídeo si se mueve)
 // y la apunta en aim_ajustes («tele_cierres»), con lo preparado de cada fecha.
+// Cada pantalla puede no querer los cierres (#642): sus ids van en «sinCierres».
 const CLAVE_CIERRES = 'tele_cierres';
 const DIAS_CIERRES = [7, 14, 21];
 async function ajustesCierres(pool) {
     const v = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = $1`, [CLAVE_CIERRES])).rows[0]?.valor || {};
-    return { activo: v.activo !== false, dias: DIAS_CIERRES.includes(v.dias) ? v.dias : 14, preparados: v.preparados || {} };
+    return { activo: v.activo !== false, dias: DIAS_CIERRES.includes(v.dias) ? v.dias : 14, preparados: v.preparados || {},
+        sinCierres: Array.isArray(v.sinCierres) ? v.sinCierres.map(Number).filter(Number.isInteger) : [] };
 }
-const guardarCierres = (pool, v) => pool.query(
-    `INSERT INTO aim_ajustes (clave, valor) VALUES ($1, $2::jsonb) ON CONFLICT (clave) DO UPDATE SET valor = $2::jsonb`, [CLAVE_CIERRES, JSON.stringify(v)]);
+// Cambia lo que se diga y deja lo demás como estaba (que preparar los vídeos no
+// se lleve por delante lo elegido en cada pantalla).
+const guardarCierres = async (pool, cambios) => {
+    const v = { ...(await ajustesCierres(pool)), ...cambios };
+    return pool.query(
+        `INSERT INTO aim_ajustes (clave, valor) VALUES ($1, $2::jsonb) ON CONFLICT (clave) DO UPDATE SET valor = $2::jsonb`, [CLAVE_CIERRES, JSON.stringify(v)]);
+};
 const sumarDias = (iso, n) => { const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 const huellaCierre = (d, variables) => crypto.createHash('md5').update(JSON.stringify([d.id, new Date(d.updated_at).toISOString(), variables])).digest('hex');
 
@@ -118,8 +125,7 @@ export async function prepararCierres(pool) {
         const sobran = Object.entries(a.preparados).filter(([fecha]) => !preparados[fecha]).map(([, v]) => v.medio).filter(Boolean);
         if (sobran.length) await pool.query(`DELETE FROM aim_medios WHERE id = ANY($1::int[]) AND uso = 'cierre'`, [sobran]);
         if (JSON.stringify(preparados) !== JSON.stringify(a.preparados)) {
-            const actual = await ajustesCierres(pool);
-            await guardarCierres(pool, { activo: actual.activo, dias: actual.dias, preparados });
+            await guardarCierres(pool, { preparados });
         }
     } catch (e) { console.error('[pantallas] cierres:', e.message); }
     finally { preparandoCierres = false; }
@@ -186,14 +192,14 @@ export function crearPantallas({ pool, authenticateSession, requireSeccion }) {
             const { d, festivos } = await festivosParaTele(pool, hoy, sumarDias(hoy, a.dias));
             if (a.activo && festivos.some(f => !a.preparados[f.fecha])) prepararCierres(pool).catch(() => {});
             res.set('Cache-Control', 'no-store');
-            res.json({ pantallas, cierres: { activo: a.activo, dias: a.dias, plantilla: d ? { id: d.id } : null,
+            res.json({ pantallas: pantallas.map(p => ({ ...p, cierres: !a.sinCierres.includes(p.id) })), cierres: { activo: a.activo, dias: a.dias, plantilla: d ? { id: d.id } : null,
                 proximos: festivos.map(f => ({ fecha: f.fecha, nombre: f.nombre, listo: a.activo && a.preparados[f.fecha]?.huella === huellaCierre(d, f.variables) })) } });
         } catch (err) { fallo(res, err); }
     });
     router.patch('/api/admin/pantallas-cierres', ...gestion, express.json(), async (req, res) => {
         try {
             const a = await ajustesCierres(pool), b = req.body || {};
-            await guardarCierres(pool, { activo: b.activo !== undefined ? !!b.activo : a.activo, dias: DIAS_CIERRES.includes(Number(b.dias)) ? Number(b.dias) : a.dias, preparados: a.preparados });
+            await guardarCierres(pool, { activo: b.activo !== undefined ? !!b.activo : a.activo, dias: DIAS_CIERRES.includes(Number(b.dias)) ? Number(b.dias) : a.dias });
             prepararCierres(pool).catch(() => {});
             res.json({ success: true });
         } catch (err) { fallo(res, err); }
@@ -216,6 +222,12 @@ export function crearPantallas({ pool, authenticateSession, requireSeccion }) {
             const girar = b.girar !== undefined ? ([0, 90, 180, 270].includes(Number(b.girar)) ? Number(b.girar) : 0) : p.girar;
             const transicion = b.transicion !== undefined ? (['fundido', 'corte'].includes(b.transicion) ? b.transicion : 'fundido') : p.transicion;
             await pool.query(`UPDATE aim_pantallas SET nombre = $2, segundos = $3, girar = $4, transicion = $5, updated_at = NOW() WHERE id = $1`, [id, nombre, segundos, girar, transicion]);
+            // Si en esta pantalla salen los avisos de cierre (#642).
+            if (b.cierres !== undefined) {
+                const a = await ajustesCierres(pool), sin = new Set(a.sinCierres);
+                if (b.cierres) sin.delete(id); else sin.add(id);
+                await guardarCierres(pool, { sinCierres: [...sin] });
+            }
             res.json({ success: true });
         } catch (err) { fallo(res, err); }
     });
@@ -343,7 +355,7 @@ export function crearPantallas({ pool, authenticateSession, requireSeccion }) {
             }));
             // Los cierres que vienen (#493), los primeros: desde «dias» antes hasta ese día.
             const a = await ajustesCierres(pool);
-            if (a.activo) {
+            if (a.activo && !a.sinCierres.includes(p.id)) {
                 const fechas = Object.keys(a.preparados).filter(f => f >= hoy && f <= sumarDias(hoy, a.dias)).sort();
                 const ms = fechas.length ? (await pool.query(`SELECT id, token, mime, duracion FROM aim_medios WHERE id = ANY($1::int[]) AND completo`, [fechas.map(f => a.preparados[f].medio)])).rows : [];
                 const cierres = fechas.map(f => ms.find(m => m.id === a.preparados[f].medio)).filter(Boolean).map((m, i) => ({
