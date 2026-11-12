@@ -8,6 +8,7 @@ import path from 'path';
 import tls from 'tls';
 import { fileURLToPath } from 'url';
 import { readFile } from 'fs/promises';
+import { readFileSync } from 'fs';
 import pg from 'pg';
 import dotenv from 'dotenv';
 import cors from 'cors';
@@ -23903,7 +23904,7 @@ if (process.env.NODE_ENV !== 'production') {
     // /admin lo gestiona la SPA principal (interfaz nueva). Debe ir ANTES del
     // express.static para que no sirva el index del antiguo dist/admin/ por indexado.
     app.get('/admin*', (req, res) => {
-        res.sendFile(path.join(__dirname, 'dist/index.html'));
+        res.sendFile(path.join(__dirname, 'dist/index.html'), { headers: { 'Cache-Control': 'no-cache' } });
     });
 
     // Los archivos de /assets llevan una huella en el nombre (main-DZJIYPzA.js):
@@ -23919,6 +23920,19 @@ if (process.env.NODE_ENV !== 'production') {
         },
     }));
 }
+
+// La versión de la web que sirve el servidor (#635): el nombre de su archivo
+// principal (main-XXXX.js), que cambia con cada deploy. Una pestaña abierta
+// desde antes de una actualización lo compara con el suyo y, si no es el mismo,
+// al cambiar de página carga la web nueva en vez de seguir días con la vieja
+// (con fallos ya arreglados, como «l._result.default» del #601).
+const VERSION_WEB = (() => {
+    try { return /assets\/(main-[\w-]+)\.js/.exec(readFileSync(path.join(__dirname, 'dist/index.html'), 'utf8'))?.[1] || null; } catch { return null; }
+})();
+app.get('/api/version-web', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json({ version: process.env.NODE_ENV === 'production' ? VERSION_WEB : null });
+});
 
 app.get('/', (req, res) => {
     if (process.env.NODE_ENV === 'production') {

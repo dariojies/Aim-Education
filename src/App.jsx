@@ -35,6 +35,26 @@ if (typeof window !== 'undefined') {
   });
 }
 
+// ¿Hay una versión nueva de la web? (#635) Esta pestaña sabe la suya por el nombre
+// de su archivo principal (main-XXXX.js) y el servidor dice la que sirve. Si no
+// coinciden (un deploy desde que se abrió), al cambiar de página se carga la web
+// entera en vez de seguir con la vieja: así no vuelven fallos ya arreglados en
+// pestañas que se quedan días abiertas. Se mira al volver a la pestaña y cada 15 min.
+const MI_VERSION = (/(main-[\w-]+)\.js/.exec(import.meta.url) || [])[1] || null;
+let webDesfasada = false;
+async function mirarVersionWeb() {
+  if (!MI_VERSION || webDesfasada) return;
+  try {
+    const r = await fetch('/api/version-web', { cache: 'no-store' });
+    const { version } = r.ok ? await r.json() : {};
+    if (version && version !== MI_VERSION) webDesfasada = true;
+  } catch { /* sin conexión: ya se mirará */ }
+}
+if (typeof window !== 'undefined' && MI_VERSION) {
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') mirarVersionWeb(); });
+  setInterval(mirarVersionWeb, 15 * 60_000);
+}
+
 // El panel de administración y el área de familias son lo más pesado de la web
 // y la mayoría de visitas no los abre: se descargan aparte, al entrar en ellos
 // (ticket #298). La web pública carga así bastante menos.
@@ -113,6 +133,8 @@ export default function App() {
   // { replace: true } cambia la dirección sin dejar un paso más en el historial
   // (p. ej. quitar el número del ticket de /admin/soporte/180 una vez abierto).
   const go = useCallback((to, { replace = false } = {}) => {
+    // Con una versión nueva de la web (#635), la página nueva se carga entera.
+    if (webDesfasada && !replace) { window.location.assign(to); return; }
     if (replace) window.history.replaceState(null, '', to);
     else window.history.pushState(null, '', to);
     setPath(to);
