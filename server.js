@@ -12028,8 +12028,11 @@ const AUTOMATISMOS = {
     },
     faltas: {
         nombre: 'Faltas seguidas',
-        descripcion: (a) => `Cuando un alumno lleva ${a.faltas} clases seguidas sin venir a una de sus clases (la lista de secretaría sigue avisando a partir de ${FALTAS_PARA_LLAMAR}).`,
-        ajustes: { faltas: { nombre: 'Cuántas faltas seguidas', unidad: 'faltas', min: 2, max: 15, def: FALTAS_PARA_LLAMAR } },
+        descripcion: (a) => `Cuando un alumno lleva ${a.faltas} clases seguidas sin venir a una de sus clases, a la mañana siguiente de la última falta, a partir de las ${a.hora}:00 (así da tiempo a que el profe corrija la lista si vino). La lista de secretaría sigue avisando a partir de ${FALTAS_PARA_LLAMAR}.`,
+        ajustes: {
+            faltas: { nombre: 'Cuántas faltas seguidas', unidad: 'faltas', min: 2, max: 15, def: FALTAS_PARA_LLAMAR },
+            hora: { nombre: 'A partir de qué hora sale', unidad: 'h', min: 0, max: 22, def: 9 },
+        },
         asunto: '{nombre} lleva unos días sin venir a {clase}',
         cuerpo: 'Hola,\n\nHemos notado que {nombre} lleva {faltas} clases seguidas sin venir a {clase}. ¿Va todo bien?\n\nSi necesitáis cambiar de horario o hay cualquier cosa en la que podamos ayudar, contadnos.\n\nUn saludo,\nAIM Education',
     },
@@ -12105,7 +12108,10 @@ async function candidatosAutomatismo(id, cfg) {
         return r.rows.map(x => ({ personaId: x.persona_id, marca: 'auto:bienvenida', extra: {} }));
     }
     if (id === 'faltas') {
-        const rachas = await rachasDeFaltas({ minimo: cfg.ajustes?.faltas || FALTAS_PARA_LLAMAR });
+        // Con las listas de hasta ayer y por la mañana (#636): la de hoy puede
+        // tener faltas automáticas que el profe aún no ha cambiado.
+        if (horaAutomatismos() < (cfg.ajustes?.hora ?? 9)) return [];
+        const rachas = await rachasDeFaltas({ minimo: cfg.ajustes?.faltas || FALTAS_PARA_LLAMAR, hastaAyer: true });
         const limite = String(desde).slice(0, 10);
         return rachas
             // Si la familia ya avisó de que iba a faltar (#525), no se le escribe.
@@ -18660,7 +18666,11 @@ app.get('/api/admin/speaking/historial', authenticateSession, requireIndividuale
 // «Faltas seguidas» ni hay que llamar. Si pasado el «hasta» sigue sin venir,
 // vuelve a contar como siempre.
 const llamadaDeFaltas = (groupId, desde, racha) => `llamada:faltas:${groupId}:${desde}:${racha}`;
-async function rachasDeFaltas({ minimo = 1, studentId = null } = {}) {
+// hastaAyer (#636): sin las listas de hoy. Al abrir la lista con la clase ya
+// empezada, a todos se les pone «Faltó» automático hasta que el profe marca quién
+// ha venido, y con eso el correo de «Faltas seguidas» salía a quien sí estaba en
+// clase. El correo cuenta solo días ya cerrados (sale a la mañana siguiente).
+async function rachasDeFaltas({ minimo = 1, studentId = null, hastaAyer = false } = {}) {
     const r = await pool.query(
         `WITH marcas AS (
              SELECT at.student_id, at.group_id, at.date, at.status,
@@ -18669,7 +18679,7 @@ async function rachasDeFaltas({ minimo = 1, studentId = null } = {}) {
              JOIN tul_group_students gs ON gs.group_id = at.group_id AND gs.student_id = at.student_id
              JOIN tul_groups g ON g.group_id = at.group_id
              JOIN tul_activities ac ON ac.activity_id = g.activity_id AND ac.club_id = $1
-             WHERE at.date <= ${SQL_HOY_MADRID} AND ($3::uuid IS NULL OR at.student_id = $3::uuid)
+             WHERE at.date ${hastaAyer ? '<' : '<='} ${SQL_HOY_MADRID} AND ($3::uuid IS NULL OR at.student_id = $3::uuid)
          ),
          corte AS (
              SELECT student_id, group_id,
