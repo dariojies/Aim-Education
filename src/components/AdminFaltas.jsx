@@ -68,6 +68,7 @@ function FaltasSeguidas({ onAbrirFicha }) {
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
+      <AvisosProfes onAbrirFicha={onAbrirFicha} onCambio={cargar} />
       <div className="panel">
         <h2><I.Calendar /> Faltas seguidas</h2>
         <p className="sub">
@@ -167,6 +168,120 @@ function FaltasSeguidas({ onAbrirFicha }) {
             );
           })}
         </div>
+      )}
+    </div>
+  );
+}
+
+// ── Avisos de los profes (#638) ─────────────────────────────────────────────
+// Lo que un profe cuenta desde Pasar lista para que secretaría hable con la
+// familia. Se atiende con «Ya he hablado con la familia» (y una nota) o, si la
+// familia confirma que va a faltar, apuntándolo como «Avisó de que va a faltar»,
+// que es lo que frena el correo de faltas. Los atendidos se ven unos días más.
+const MOTIVO_PROFE = {
+  falta: ['Va a faltar', 'var(--blue, #1e6fd9)'], enfermo: ['Está enfermo', 'var(--orange)'],
+  lesion: ['Se ha lesionado', 'var(--danger, #dc2626)'], otro: ['Otra cosa', 'var(--ink-2)'],
+};
+const fmtCuando = (f) => new Date(f).toLocaleString('es-ES', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+async function atenderAvisoProfe(id, nota) {
+  const r = await fetch(`/api/admin/faltas/aviso-profe/${id}/atendido`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ nota }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || 'No se ha podido guardar.');
+}
+
+function AvisosProfes({ onAbrirFicha, onCambio }) {
+  const [avisos, setAvisos] = useState(null);
+  const [verAtendidos, setVerAtendidos] = useState(false);
+  const cargar = useCallback(async () => {
+    try {
+      const r = await fetch('/api/admin/faltas/avisos-profes', { credentials: 'include', cache: 'no-store' });
+      if (r.ok) setAvisos((await r.json()).avisos || []);
+    } catch { /* noop */ }
+  }, []);
+  useEffect(() => { cargar(); }, [cargar]);
+  useEnVivo(cargar, { cada: 60000 });
+  if (!avisos?.length) return null;
+  const pendientes = avisos.filter(a => !a.atendido), atendidos = avisos.filter(a => a.atendido);
+  const vistos = verAtendidos ? avisos : pendientes;
+  return (
+    <div className="panel" data-avisos-profes>
+      <h2>📣 Avisos de los profes</h2>
+      <p className="sub">
+        Lo que los profes cuentan desde Pasar lista. Habla con la familia y pulsa «Ya he hablado con la familia».
+        Si la familia confirma que va a faltar, apúntalo con «Avisó de que va a faltar»: así no le llega el correo de faltas.
+      </p>
+      {!pendientes.length && <p style={{ margin: '10px 0 0', fontSize: 13, color: 'var(--ink-3)' }}>No hay ninguno sin atender.</p>}
+      <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>
+        {vistos.map(a => <AvisoProfe key={a.id} a={a} onAbrirFicha={onAbrirFicha} onCambio={async () => { await cargar(); await onCambio?.(); }} />)}
+      </div>
+      {atendidos.length > 0 && (
+        <button type="button" className="btn btn-sm btn-ghost" style={{ marginTop: 8 }} onClick={() => setVerAtendidos(v => !v)}>
+          {verAtendidos ? 'Ocultar los atendidos' : `Ver los atendidos estos días (${atendidos.length})`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function AvisoProfe({ a, onAbrirFicha, onCambio }) {
+  const [modo, setModo] = useState(null); // null | 'hablado' | 'falta'
+  const [nota, setNota] = useState('');
+  const [enviando, setEnviando] = useState(false);
+  const [etq, color] = MOTIVO_PROFE[a.motivo] || MOTIVO_PROFE.otro;
+  const dias = a.desde ? (a.desde === a.hasta || !a.hasta ? `el ${fmtFecha(a.desde)}` : `del ${fmtFecha(a.desde)} al ${fmtFecha(a.hasta)}`) : null;
+  async function hablado() {
+    setEnviando(true);
+    try { await atenderAvisoProfe(a.id, nota.trim()); setModo(null); await onCambio(); }
+    catch (e) { alert(e.message); }
+    finally { setEnviando(false); }
+  }
+  const hoy = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' });
+  const desdeFalta = a.desde ? (a.desde < haceDosMeses() ? haceDosMeses() : a.desde) : hoy;
+  return (
+    <div data-aviso-profe={a.id} style={{ border: `1px solid ${a.atendido ? 'var(--line)' : `color-mix(in oklab, ${color} 40%, var(--line))`}`, borderLeft: `4px solid ${a.atendido ? 'var(--line)' : color}`, borderRadius: 12, padding: '10px 12px', display: 'grid', gap: 6, background: 'var(--bg-2)', opacity: a.atendido ? 0.75 : 1 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button type="button" onClick={() => onAbrirFicha?.({ id: a.studentId })} title="Abrir su ficha"
+          style={{ background: 'none', border: 0, padding: 0, fontFamily: 'inherit', fontWeight: 800, fontSize: 14, color: 'var(--ink)', cursor: 'pointer', textAlign: 'left' }}>
+          {a.alumno}
+        </button>
+        <span style={{ fontSize: 11, fontWeight: 800, color, background: `color-mix(in oklab, ${color} 12%, var(--bg-2))`, padding: '2px 8px', borderRadius: 6 }}>{etq}</span>
+        {dias && <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-2)' }}>{dias}</span>}
+        {a.atendido && <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--teal)' }}>✓ Atendido</span>}
+      </div>
+      <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+        {a.profe || 'Un profe'}{a.clase ? ` · ${a.clase}` : ''} · {fmtCuando(a.at)}
+      </span>
+      {a.nota && <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, color: 'var(--ink)', background: 'var(--bg-3)', borderRadius: 8, padding: '8px 10px' }}>{a.nota}</div>}
+      {!a.atendido && (
+        <>
+          <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{a.contactos || (a.telefono ? `${a.alumno} · ${a.telefono}` : 'sin contacto')}</span>
+          {modo === null && (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <button type="button" className="btn btn-sm btn-outline" onClick={() => setModo('hablado')}><I.Phone width={14} height={14} /> Ya he hablado con la familia</button>
+              {a.motivo !== 'otro' && <button type="button" className="btn btn-sm btn-ghost" data-aviso-abrir onClick={() => setModo('falta')}>Avisó de que va a faltar</button>}
+            </div>
+          )}
+          {modo === 'hablado' && (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <input autoFocus value={nota} maxLength={1000} placeholder="Nota (opcional): qué te han dicho…" onChange={e => setNota(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && !enviando) hablado(); if (e.key === 'Escape') setModo(null); }}
+                style={{ flex: '1 1 200px', minWidth: 0, padding: '6px 10px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', fontFamily: 'inherit', fontSize: 12 }} />
+              <button type="button" className="btn btn-sm btn-primary" disabled={enviando} onClick={hablado}>{enviando ? 'Guardando…' : 'Guardar'}</button>
+              <button type="button" className="btn btn-sm btn-ghost" disabled={enviando} onClick={() => setModo(null)}>Cancelar</button>
+            </div>
+          )}
+          {modo === 'falta' && (
+            <FormAvisoFalta studentId={a.studentId} desdeInicial={desdeFalta} hastaInicial={a.hasta && a.hasta >= hoy ? a.hasta : ''}
+              notaInicial={a.nota ? `Lo avisó ${a.profe || 'el profe'}: ${a.nota}`.slice(0, 1000) : ''}
+              onCancelar={() => setModo(null)}
+              onHecho={async () => {
+                try { await atenderAvisoProfe(a.id, 'apuntado como «Avisó de que va a faltar».'); } catch { /* ya atendido */ }
+                setModo(null); await onCambio();
+              }} />
+          )}
+        </>
       )}
     </div>
   );

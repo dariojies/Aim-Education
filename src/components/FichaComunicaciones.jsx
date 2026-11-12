@@ -75,10 +75,10 @@ function EditorPlantillas({ plantillas, onGuardar, onCerrar }) {
 // ── El historial, todo junto ─────────────────────────────────────────────────
 const FILTROS_HISTORIA = [['todo', 'Todo'], ['correo', 'Correos'], ['llamada', 'Llamadas'], ['campana', 'Campañas'], ['web', 'Web'], ['permiso', 'Permisos']];
 const ETIQUETA = {
-  correo: ['Correo', 'var(--purple)'], buzon: ['Correo', 'var(--purple)'], llamada: ['Llamada', 'var(--teal)'], aviso_falta: ['Avisó', 'var(--blue, #1e6fd9)'], campana: ['Campaña', 'var(--blue, #1e6fd9)'],
+  correo: ['Correo', 'var(--purple)'], buzon: ['Correo', 'var(--purple)'], llamada: ['Llamada', 'var(--teal)'], aviso_falta: ['Avisó', 'var(--blue, #1e6fd9)'], aviso_profe: ['Profe', 'var(--orange)'], campana: ['Campaña', 'var(--blue, #1e6fd9)'],
   web: ['Web', 'var(--teal)'], visita: ['Visita', 'var(--teal)'], red: ['Redes', '#1FA855'], permiso: ['Permiso', 'var(--ink-2)'], rebote: ['Rebote', 'var(--orange)'],
 };
-const enFiltro = (f, t) => f === 'todo' || f === t || (f === 'llamada' && t === 'aviso_falta') || (f === 'correo' && (t === 'buzon' || t === 'rebote' || t === 'red')) || (f === 'web' && t === 'visita');
+const enFiltro = (f, t) => f === 'todo' || f === t || (f === 'llamada' && (t === 'aviso_falta' || t === 'aviso_profe')) || (f === 'correo' && (t === 'buzon' || t === 'rebote' || t === 'red')) || (f === 'web' && t === 'visita');
 function estadoDe(x) {
   if (x.tipo === 'correo') {
     // Si lo abrieron (#421): los enviados desde que se mira (los de antes, solo «enviado»).
@@ -96,6 +96,7 @@ function estadoDe(x) {
   }
   if (x.tipo === 'llamada') return ['✓ hecha', 'var(--teal)'];
   if (x.tipo === 'aviso_falta') return ['', 'var(--ink-3)'];
+  if (x.tipo === 'aviso_profe') return [x.estado === 'pendiente' ? 'sin atender' : '✓ atendido', x.estado === 'pendiente' ? 'var(--orange)' : 'var(--teal)'];
   if (x.tipo === 'web') return [x.estado === 'atendido' ? '✓ atendida' : 'sin atender', x.estado === 'atendido' ? 'var(--teal)' : 'var(--orange)'];
   if (x.tipo === 'permiso') return [x.otorgado ? '✓ sí' : '✗ no', x.otorgado ? 'var(--teal)' : 'var(--orange)'];
   if (x.tipo === 'rebote') return [x.resuelto ? '✓ arreglado' : 'sin arreglar', x.resuelto ? 'var(--teal)' : 'var(--orange)'];
@@ -112,9 +113,10 @@ function Historial({ comunicaciones, eventos, buzon }) {
     const enviados = [
       // Las llamadas a la familia por faltas (#402) van en la misma tabla que los
       // correos, con tipo 'llamada' y sin destinatarios; los avisos de que va a
-      // faltar (#525), igual, con tipo 'aviso_falta'.
-      ...comunicaciones.map(c => (c.tipo === 'llamada' || c.tipo === 'aviso_falta'
-        ? { ...c, id: `m${c.id}`, tipo: c.tipo, titulo: c.asunto, de: c.quien ? `${c.tipo === 'llamada' ? 'La' : 'Lo'} apuntó ${c.quien}` : null }
+      // faltar (#525), igual, con tipo 'aviso_falta'; y lo que avisa un profe
+      // desde Pasar lista (#638), con tipo 'aviso_profe'.
+      ...comunicaciones.map(c => (c.tipo === 'llamada' || c.tipo === 'aviso_falta' || c.tipo === 'aviso_profe'
+        ? { ...c, id: `m${c.id}`, tipo: c.tipo, titulo: c.asunto, de: c.quien ? (c.tipo === 'aviso_profe' ? `Lo avisó ${c.quien}` : `${c.tipo === 'llamada' ? 'La' : 'Lo'} apuntó ${c.quien}`) : null }
         : { ...c, id: `m${c.id}`, tipo: 'correo', tipoCorreo: c.tipo, titulo: c.asunto, de: `Para ${c.destinatarios.join(', ')}` })),
       ...eventos,
     ];
@@ -146,7 +148,7 @@ function Historial({ comunicaciones, eventos, buzon }) {
       {vistos.map(x => {
         const [etq, colEtq] = ETIQUETA[x.tipo] || ['', 'var(--ink-3)'];
         const [est, colEst] = estadoDe(x);
-        const abre = x.tipo === 'correo' || x.tipo === 'campana' || x.tipo === 'web' || ((x.tipo === 'llamada' || x.tipo === 'aviso_falta') && !!x.cuerpo);
+        const abre = x.tipo === 'correo' || x.tipo === 'campana' || x.tipo === 'web' || ((x.tipo === 'llamada' || x.tipo === 'aviso_falta' || x.tipo === 'aviso_profe') && !!x.cuerpo);
         return (
           <div key={x.id} style={{ border: '1px solid var(--line)', borderRadius: 10, background: 'var(--bg-2)', overflow: 'hidden' }}>
             <button type="button" disabled={!abre} onClick={() => setAbiertoId(a => (a === x.id ? null : x.id))}
@@ -170,7 +172,7 @@ function Historial({ comunicaciones, eventos, buzon }) {
                 <div style={{ whiteSpace: 'pre-wrap', background: 'var(--bg-3)', borderRadius: 8, padding: 10, fontSize: 13, color: 'var(--ink)' }}>{x.cuerpo}</div>
               </div>
             )}
-            {abiertoId === x.id && (x.tipo === 'llamada' || x.tipo === 'aviso_falta') && (
+            {abiertoId === x.id && (x.tipo === 'llamada' || x.tipo === 'aviso_falta' || x.tipo === 'aviso_profe') && (
               <div style={{ padding: '0 12px 12px', display: 'grid', gap: 6, fontSize: 12, color: 'var(--ink-2)' }}>
                 <div style={{ whiteSpace: 'pre-wrap', background: 'var(--bg-3)', borderRadius: 8, padding: 10, fontSize: 13, color: 'var(--ink)' }}>{x.cuerpo}</div>
               </div>

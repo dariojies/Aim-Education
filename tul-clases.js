@@ -160,6 +160,10 @@ async function aplicarCinturonTKD(db, studentId, levelOrder, levelName) {
         [studentId, levelOrder]);
 }
 
+// #638: lo que un profe puede contar de un alumno a secretaría.
+export const MOTIVOS_AVISO = { falta: 'Va a faltar', enfermo: 'Está enfermo', lesion: 'Se ha lesionado', otro: 'Otra cosa' };
+const UUID_AVISO = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSuyo, generarCargosDeMatricula, generarCargoInscripcion, debeInscripcion }) {
     const router = express.Router();
 
@@ -1335,6 +1339,44 @@ export function crearRouterTulClases({ pool, clubId, permisos, gruposDe, grupoSu
         if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha || '')) return res.status(400).json({ error: 'Fecha no válida.' });
         try {
             res.json({ success: true, faltas: await rellenarFaltas(req.params.groupId, fecha) });
+        } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // «Avisar a secretaría» (#638): el profe cuenta algo de un alumno de su clase
+    // (que va a faltar, que está enfermo, que se ha lesionado…) para que secretaría
+    // hable con la familia. Va a aim_comunicaciones (tipo 'aviso_profe', pendiente
+    // hasta que secretaría lo atiende): sale en su campanita, en Faltas y en la
+    // ficha. No es un aviso de la familia, así que no frena el correo de faltas.
+    router.post('/groups/:groupId/aviso-secretaria', async (req, res) => {
+        const { groupId } = req.params;
+        if (!UUID_AVISO.test(groupId)) return res.status(400).json({ error: 'Esa clase no existe.' });
+        if (await ajeno(req, res, groupId)) return;
+        const b = req.body || {};
+        const studentId = String(b.studentId || '');
+        const motivo = MOTIVOS_AVISO[b.motivo] ? b.motivo : null;
+        const desde = b.desde ? String(b.desde) : '';
+        const hasta = b.hasta ? String(b.hasta) : desde;
+        const nota = String(b.nota || '').trim().slice(0, 1000);
+        if (!UUID_AVISO.test(studentId)) return res.status(400).json({ error: 'Elige el alumno.' });
+        if (!motivo) return res.status(400).json({ error: 'Elige qué pasa.' });
+        if ((desde && !/^\d{4}-\d{2}-\d{2}$/.test(desde)) || (hasta && !/^\d{4}-\d{2}-\d{2}$/.test(hasta))) return res.status(400).json({ error: 'Esas fechas no valen.' });
+        if (desde && hasta < desde) return res.status(400).json({ error: 'El «hasta» no puede ser antes del «desde».' });
+        if (motivo === 'otro' && !nota) return res.status(400).json({ error: 'Cuenta en la nota qué pasa.' });
+        try {
+            const g = (await pool.query(
+                `SELECT g.name, a.name AS actividad FROM tul_groups g JOIN tul_activities a ON a.activity_id = g.activity_id
+                 WHERE g.group_id = $1 AND a.club_id = $2`, [groupId, clubId])).rows[0];
+            if (!g) return res.status(404).json({ error: 'Esa clase no es de este club.' });
+            const u = await pool.query(`SELECT 1 FROM users WHERE user_id = $1 AND club_id = $2`, [studentId, clubId]);
+            if (!u.rowCount) return res.status(404).json({ error: 'Ese alumno no es del club.' });
+            const corta = (f) => new Date(`${f}T12:00:00Z`).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+            const cuando = !desde ? '' : desde === hasta ? ` (el ${corta(desde)})` : ` (del ${corta(desde)} al ${corta(hasta)})`;
+            const r = await pool.query(
+                `INSERT INTO aim_comunicaciones (persona_id, destinatarios, asunto, cuerpo, plantilla, tipo, estado, enviado_por)
+                 VALUES ($1, '{}', $2, $3, $4, 'aviso_profe', 'pendiente', $5) RETURNING id`,
+                [studentId, `Aviso del profe de ${g.name}${motivo === 'otro' ? '' : `: ${MOTIVOS_AVISO[motivo].toLowerCase()}`}${cuando}`, nota,
+                    `aviso:profe:${motivo}:${desde}:${hasta}:${groupId}`, req.userSession.userId]);
+            res.json({ success: true, id: r.rows[0].id });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
 

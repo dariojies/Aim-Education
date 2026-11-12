@@ -23,11 +23,11 @@ async function pedir(url, opciones) {
 export const quitarAvisoFalta = (id) => pedir(`/api/admin/faltas/aviso/${id}`, { method: 'DELETE' });
 
 // El formulario: desde (hoy, o lo que se diga), hasta y una nota.
-export function FormAvisoFalta({ studentId, desdeInicial, onHecho, onCancelar }) {
+export function FormAvisoFalta({ studentId, desdeInicial, hastaInicial, notaInicial, onHecho, onCancelar }) {
   const hoy = hoyMadrid();
   const [desde, setDesde] = useState(desdeInicial || hoy);
-  const [hasta, setHasta] = useState('');
-  const [nota, setNota] = useState('');
+  const [hasta, setHasta] = useState(hastaInicial || '');
+  const [nota, setNota] = useState(notaInicial || '');
   const [enviando, setEnviando] = useState(false);
   async function guardar() {
     if (!hasta) { alert('Pon hasta qué día va a faltar.'); return; }

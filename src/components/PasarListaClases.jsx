@@ -65,6 +65,8 @@ export default function PasarListaClases({ showToast, abrir = null }) {
   // Agrupaciones de la clase abierta (#441): cuál se mira y la ventana para hacerlas.
   const ag = useAgrupaciones(clase?.id);
   const [gestorAgr, setGestorAgr] = useState(false);
+  // «Avisar a secretaría» (#638): el formulario abierto.
+  const [avisoSecre, setAvisoSecre] = useState(false);
 
   const cargarClases = useCallback(async (f) => {
     setCargando(true);
@@ -323,7 +325,12 @@ export default function PasarListaClases({ showToast, abrir = null }) {
             )}
             <button className="btn btn-sm btn-outline" onClick={imprimir} disabled={!alumnos.length}><I.Print /> Imprimir{ag.actual ? ' por subgrupos' : ''}</button>
             <button className="btn btn-sm btn-outline" onClick={() => setIncidencia(true)} title="Dejar registrado algo que ha pasado en esta clase">⚠️ Incidencia</button>
+            <button className="btn btn-sm btn-outline" onClick={() => setAvisoSecre(true)} disabled={!alumnos.length}
+              title="Contar a secretaría que un alumno va a faltar, está enfermo o se ha lesionado, para que hable con la familia">📣 Avisar a secretaría</button>
           </div>
+          {avisoSecre && (
+            <FormAvisoSecretaria clase={clase} fecha={fecha} alumnos={alumnos} showToast={showToast} onCerrar={() => setAvisoSecre(false)} />
+          )}
           {/* Agrupaciones (#441): ver a los alumnos repartidos en sus subgrupos. */}
           {!meta.speaking && <SelectorAgrupacion ag={ag} onGestionar={() => setGestorAgr(true)} />}
           {gestorAgr && (
@@ -415,6 +422,78 @@ export default function PasarListaClases({ showToast, abrir = null }) {
 
 // Un alumno en la lista del día, con sus marcas: cumpleaños, viene con bono (o
 // tiene la plaza reservada), de baja hasta fin de mes o clase individual confirmada.
+// «Avisar a secretaría» (#638): el profe cuenta algo de un alumno (que va a
+// faltar, que está enfermo, que se ha lesionado…) y a secretaría le sale en la
+// campanita y en Faltas, para que hable con la familia. No es el aviso de la
+// familia: el correo de faltas sigue saliendo hasta que secretaría lo confirme.
+const MOTIVOS_AVISO = [['falta', 'Va a faltar'], ['enfermo', 'Está enfermo'], ['lesion', 'Se ha lesionado'], ['otro', 'Otra cosa']];
+function FormAvisoSecretaria({ clase, fecha, alumnos, showToast, onCerrar }) {
+  const [quien, setQuien] = useState('');
+  const [motivo, setMotivo] = useState('');
+  const [desde, setDesde] = useState('');
+  const [hasta, setHasta] = useState('');
+  const [nota, setNota] = useState('');
+  const [enviando, setEnviando] = useState(false);
+  const campo = { fontFamily: 'inherit', fontSize: 14, padding: '9px 11px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)', width: '100%', boxSizing: 'border-box' };
+  const ordenados = [...alumnos].sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+  async function enviar() {
+    if (!quien) { alert('Elige el alumno.'); return; }
+    if (!motivo) { alert('Elige qué pasa.'); return; }
+    if (motivo === 'otro' && !nota.trim()) { alert('Cuenta en la nota qué pasa.'); return; }
+    if (desde && hasta && hasta < desde) { alert('El «hasta» no puede ser antes del «desde».'); return; }
+    setEnviando(true);
+    try {
+      const r = await fetch(`/api/admin/tul/groups/${clase.id}/aviso-secretaria`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ studentId: quien, motivo, desde: desde || null, hasta: hasta || desde || null, nota: nota.trim(), fecha }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(d.error || 'No se ha podido avisar.'); return; }
+      showToast?.(`Avisado: secretaría hablará con la familia de ${alumnos.find(a => a.id === quien)?.nombre || 'este alumno'}.`);
+      onCerrar();
+    } catch { alert('No hay conexión con el servidor.'); }
+    finally { setEnviando(false); }
+  }
+  return (
+    <div role="dialog" aria-label="Avisar a secretaría" onClick={e => { if (e.target === e.currentTarget && !enviando) onCerrar(); }}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16, overflowY: 'auto' }}>
+      <div style={{ background: 'var(--bg-2)', borderRadius: 16, padding: 18, width: 'min(440px, 100%)', boxSizing: 'border-box', display: 'grid', gap: 12, boxShadow: 'var(--shadow-lg, 0 10px 40px rgba(0,0,0,.3))' }}>
+        <div>
+          <b style={{ fontSize: 16 }}>📣 Avisar a secretaría</b>
+          <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{clase.activityName ? `${clase.activityName} · ` : ''}{clase.name}</div>
+        </div>
+        <select value={quien} onChange={e => setQuien(e.target.value)} style={campo} aria-label="Alumno">
+          <option value="">¿De qué alumno?</option>
+          {ordenados.map(x => <option key={x.id} value={x.id}>{x.nombre}</option>)}
+        </select>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {MOTIVOS_AVISO.map(([v, l]) => (
+            <button key={v} type="button" className={`filter-pill ${motivo === v ? 'is-active' : ''}`} onClick={() => setMotivo(v)}>{l}</button>
+          ))}
+        </div>
+        <div style={{ display: 'grid', gap: 4 }}>
+          <span style={{ fontSize: 12, color: 'var(--ink-2)' }}>¿Qué días? (si lo sabes)</span>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 13, color: 'var(--ink-2)' }}>
+            <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>Desde
+              <input type="date" name="desde" value={desde} onChange={e => setDesde(e.target.value)} style={{ ...campo, width: 'auto' }} />
+            </label>
+            <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>hasta
+              <input type="date" name="hasta" value={hasta} min={desde || undefined} onChange={e => setHasta(e.target.value)} style={{ ...campo, width: 'auto' }} />
+            </label>
+          </div>
+        </div>
+        <textarea rows={3} value={nota} maxLength={1000} onChange={e => setNota(e.target.value)}
+          placeholder="Lo que sepas: «me ha dicho que se va de viaje dos semanas», «se ha torcido el tobillo en clase»…" style={campo} />
+        <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Le sale a secretaría en la campanita y en Faltas, para que hable con la familia. No es un aviso de la familia: el correo de faltas sigue saliendo hasta que secretaría lo confirme.</span>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button type="button" className="btn btn-sm btn-outline" disabled={enviando} onClick={onCerrar}>Cancelar</button>
+          <button type="button" className="btn btn-sm btn-primary" disabled={enviando} onClick={enviar}>{enviando ? 'Avisando…' : 'Avisar'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TarjetaAlumno({ a, onMarcar, onQuitarReserva }) {
   return (
     <div style={{ background: 'var(--bg-2)', border: `1px solid ${a.reservaId ? 'color-mix(in oklab, var(--purple) 35%, var(--line))' : 'var(--line)'}`, borderRadius: 12, padding: '10px 12px', display: 'grid', gap: 8 }}>

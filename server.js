@@ -17772,6 +17772,22 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                 return l;
             });
         }
+        // Lo que un profe ha avisado de un alumno desde Pasar lista (#638), hasta
+        // que secretaría lo atiende. Uno por aviso.
+        if (recibe('avisos_profes')) {
+            fuente('Avisos de los profes', ['avisos_profes:resto'], async () => {
+                const avisos = await avisoCompartido('avisos_profes', () => avisosDeProfes({ soloPendientes: true }));
+                const QUE = { falta: 'va a faltar', enfermo: 'está enfermo', lesion: 'se ha lesionado' };
+                const l = avisos.slice(0, 10).map(a => ({
+                    tipo: 'faltas', destino: '/admin/faltas', fecha: a.at, clave: `aviso_profe:${a.id}`,
+                    prioridad: a.motivo === 'lesion' || a.motivo === 'enfermo' ? 1 : 2,
+                    texto: QUE[a.motivo] ? `${a.alumno} ${QUE[a.motivo]}` : `Aviso sobre ${a.alumno}`,
+                    detalle: [`${a.profe || 'Un profe'}${a.clase ? ` (${a.clase})` : ''}`, a.nota ? a.nota.slice(0, 90) : 'habla con la familia'].join(' · '),
+                }));
+                if (avisos.length > 10) l.push({ tipo: 'faltas', destino: '/admin/faltas', n: avisos.length, clave: 'avisos_profes:resto', texto: `Y ${avisos.length - 10} ${plural(avisos.length - 10, 'aviso', 'avisos')} más de los profes` });
+                return l;
+            });
+        }
         // Correos de info@ asignados a esta persona y sin hacer (#317).
         if (recibe('correos_asignados')) {
             fuente('Correo', ['correos_asignados'], async () => {
@@ -18861,6 +18877,58 @@ app.delete('/api/admin/faltas/aviso/:id', authenticateSession, requireSeccion('f
     try {
         const r = await pool.query(`DELETE FROM aim_comunicaciones WHERE id = $1 AND tipo = 'aviso_falta' RETURNING id`, [id]);
         if (!r.rowCount) return res.status(404).json({ error: 'Ese aviso ya no está apuntado.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Avisos de los profes (#638): lo que cuentan desde Pasar lista («va a faltar»,
+// «está enfermo»…) para que secretaría hable con la familia. Pendientes hasta
+// que alguien los atiende; los atendidos se ven unos días más. Al atenderlo, su
+// nota se añade al aviso, que queda así en la ficha del alumno.
+async function avisosDeProfes({ dias = 14, soloPendientes = false } = {}) {
+    const r = await pool.query(
+        `SELECT c.id, c.persona_id, c.cuerpo, c.plantilla, c.estado, c.created_at, c.abierto_at,
+                TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS alumno, u.phone,
+                NULLIF(TRIM(CONCAT(e.name, ' ', COALESCE(e.surname, ''))), '') AS profe,
+                g.name AS clase, ac.name AS actividad,
+                (SELECT string_agg(DISTINCT NULLIF(TRIM(CONCAT(fu.name, ' ', COALESCE(fu.surname, ''),
+                          CASE WHEN fu.phone IS NOT NULL AND fu.phone <> '' THEN ' · ' || fu.phone ELSE '' END)), ''), '   ')
+                 FROM aim_familias f JOIN users fu ON fu.user_id = f.familiar_id WHERE f.persona_id = c.persona_id) AS contactos
+         FROM aim_comunicaciones c
+         JOIN users u ON u.user_id = c.persona_id
+         LEFT JOIN users e ON e.user_id = c.enviado_por
+         LEFT JOIN tul_groups g ON g.group_id::text = split_part(c.plantilla, ':', 6)
+         LEFT JOIN tul_activities ac ON ac.activity_id = g.activity_id
+         WHERE c.tipo = 'aviso_profe' AND u.club_id = $1
+           AND (c.estado = 'pendiente' OR (NOT $3 AND c.abierto_at > NOW() - $2 * INTERVAL '1 day'))
+         ORDER BY (c.estado = 'pendiente') DESC, c.created_at DESC LIMIT 200`, [AIM_CLUB_ID, dias, soloPendientes]);
+    return r.rows.map(x => {
+        const [, , motivo, desde, hasta, groupId] = String(x.plantilla || '').split(':');
+        return {
+            id: x.id, studentId: x.persona_id, alumno: x.alumno, telefono: x.phone || null, contactos: x.contactos || null,
+            motivo, desde: desde || null, hasta: hasta || null, groupId: groupId || null, clase: x.clase || null, actividad: x.actividad || null,
+            nota: x.cuerpo || '', profe: x.profe, at: x.created_at, atendido: x.estado === 'pendiente' ? null : x.abierto_at,
+        };
+    });
+}
+app.get('/api/admin/faltas/avisos-profes', authenticateSession, requireSeccion('faltas'), async (req, res) => {
+    try {
+        res.set('Cache-Control', 'no-store');
+        res.json({ avisos: await avisosDeProfes() });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.post('/api/admin/faltas/aviso-profe/:id/atendido', authenticateSession, requireSeccion('faltas'), async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Ese aviso no existe.' });
+    const nota = String(req.body?.nota || '').trim().slice(0, 1000);
+    const quien = `${req.userSession.firstName || ''} ${req.userSession.lastName || ''}`.trim() || 'secretaría';
+    try {
+        const r = await pool.query(
+            `UPDATE aim_comunicaciones SET estado = 'atendido', abierto_at = NOW(),
+                    cuerpo = CONCAT_WS(E'\\n\\n', NULLIF(cuerpo, ''), $2::text)
+             WHERE id = $1 AND tipo = 'aviso_profe' AND estado = 'pendiente' RETURNING id`,
+            [id, `Atendido por ${quien} el ${fechaCorta(hoyMadrid())}${nota ? `: ${nota}` : '.'}`]);
+        if (!r.rowCount) return res.status(404).json({ error: 'Ese aviso ya estaba atendido.' });
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });

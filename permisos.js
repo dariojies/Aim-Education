@@ -262,6 +262,8 @@ export const AVISOS = [
     { id: 'lista_espera', grupo: 'Clases', texto: 'Clases con plaza libre y gente esperando', quien: (p, rol) => rol !== 'trabajador',
       nota: (p) => (p.soloSusGrupos ? 'solo de sus clases' : null) },
     { id: 'faltas', grupo: 'Clases', texto: `Alumnos con ${FALTAS_PARA_LLAMAR} o más faltas seguidas`, quien: (p) => p.secciones.faltas },
+    // #638: lo que avisa un profe desde Pasar lista, para hablar con la familia.
+    { id: 'avisos_profes', grupo: 'Clases', texto: 'Avisos de los profes sobre un alumno (va a faltar, está enfermo…)', quien: (p) => p.secciones.faltas },
     // Clases individuales (#388, antes «Speaking»): los ids no cambian, para no
     // perder lo que la dirección haya ajustado. Solo a quien ve el apartado: sin
     // él, el aviso llevaría a una página que no le abre.
