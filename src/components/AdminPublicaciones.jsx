@@ -494,6 +494,9 @@ function VistaPrevia({ redes, tipo, texto, medios, cuenta }) {
 }
 
 // ── Calendario ──────────────────────────────────────────────────────────────
+// #640: el color dice el tipo (las historias en rosa; publicaciones y reels, que van al muro, en azul).
+const COLOR_TIPO = { post: 'var(--blue)', story: '#FF5FA2' };
+const colorTipo = (tipo) => (tipo === 'story' ? COLOR_TIPO.story : COLOR_TIPO.post);
 function Calendario({ lista, previstas = [], efemerides = [], onPrevista, onAbrir, onNueva, onMovida, showToast }) {
   const [mes, setMes] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
   const [arrastrando, setArrastrando] = useState(null);
@@ -539,6 +542,20 @@ function Calendario({ lista, previstas = [], efemerides = [], onPrevista, onAbri
         <button className="btn btn-sm btn-outline" onClick={() => { const d = new Date(); setMes(new Date(d.getFullYear(), d.getMonth(), 1)); }}>Hoy</button>
         <span style={{ ...suave, marginLeft: 'auto' }}>Arrastra una programada a otro día para moverla.</span>
       </div>
+      {/* #640: de un vistazo, qué es historia y qué va al muro; el estado queda en el puntito. */}
+      <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', fontSize: 12 }}>
+        {[['post', 'Publicaciones en el muro'], ['story', 'Historias']].map(([t, n]) => (
+          <span key={t} style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontWeight: 800 }}>
+            <span style={{ width: 12, height: 14, borderRadius: 3, borderLeft: `4px solid ${COLOR_TIPO[t]}`, background: `color-mix(in oklab, ${COLOR_TIPO[t]} 18%, var(--bg-2))` }} />{n}
+          </span>
+        ))}
+        <span style={suave}>
+          El punto de cada una es su estado:{' '}
+          {['programada', 'publicada', 'error'].map((e, i) => (
+            <span key={e} style={{ whiteSpace: 'nowrap' }}>{i ? ' · ' : ''}<span style={{ color: ESTADO[e].c }}>●</span> {ESTADO[e].t.toLowerCase()}</span>
+          ))}
+        </span>
+      </div>
       {lista === null ? <p style={suave}>Cargando…</p> : (
         <div style={{ overflowX: 'auto' }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(110px, 1fr))', gap: 4, minWidth: 780 }}>
@@ -566,23 +583,27 @@ function Calendario({ lista, previstas = [], efemerides = [], onPrevista, onAbri
                     <button key={`prev-${p.fecha}`} type="button" onClick={() => onPrevista?.(p)}
                       title={`Historia del festivo «${p.nombre}»: se programará sola una semana antes, con la plantilla de Aim Design. Toca para verla ya o cambiarla.`}
                       style={{ display: 'flex', gap: 4, alignItems: 'center', textAlign: 'left', fontFamily: 'inherit', fontSize: 11, padding: '3px 5px', borderRadius: 7, cursor: 'pointer',
-                        border: '1px dashed color-mix(in oklab, var(--purple) 55%, transparent)', background: 'transparent', color: 'var(--ink-2)', minWidth: 0 }}>
+                        border: `1px dashed color-mix(in oklab, ${COLOR_TIPO.story} 70%, transparent)`, borderLeft: `4px solid color-mix(in oklab, ${COLOR_TIPO.story} 60%, transparent)`, background: 'transparent', color: 'var(--ink-2)', minWidth: 0 }}>
                       <img src={p.imagen} alt="" loading="lazy" style={{ width: 20, height: 20, borderRadius: 4, objectFit: 'cover', flex: 'none', opacity: 0.8 }} />
                       <b style={{ flex: 'none' }}>00:00</b><Marca red="instagram" tam={13} />
                       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Prevista: historia de {p.nombre}</span>
                     </button>
                   ))}
-                  {pubs.map(p => (
+                  {pubs.map(p => {
+                    const color = colorTipo(p.tipo);
+                    return (
                     <button key={p.id} type="button" draggable={p.estado === 'programada'} onDragStart={() => setArrastrando(p)} onDragEnd={() => setArrastrando(null)} onClick={() => onAbrir(p)}
-                      title={p.texto}
+                      title={`${p.tipo === 'story' ? 'Historia' : 'Publicación en el muro'} · ${ESTADO[p.estado]?.t || p.estado}${p.texto ? `\n${p.texto}` : ''}`}
                       style={{ display: 'flex', gap: 4, alignItems: 'center', textAlign: 'left', fontFamily: 'inherit', fontSize: 11, padding: '3px 5px', borderRadius: 7, cursor: 'pointer',
-                        border: `1px solid color-mix(in oklab, ${ESTADO[p.estado]?.c} 45%, transparent)`, background: `color-mix(in oklab, ${ESTADO[p.estado]?.c} 10%, var(--bg-2))`, color: 'var(--ink)', minWidth: 0 }}>
+                        border: `1px solid color-mix(in oklab, ${color} 45%, transparent)`, borderLeft: `4px solid ${color}`, background: `color-mix(in oklab, ${color} 10%, var(--bg-2))`, color: 'var(--ink)', minWidth: 0 }}>
+                      <span aria-label={ESTADO[p.estado]?.t} style={{ width: 7, height: 7, borderRadius: '50%', background: ESTADO[p.estado]?.c, flex: 'none' }} />
                       {p.medios?.[0] && <img src={miniUrl(p.medios[0])} alt="" style={{ width: 20, height: 20, borderRadius: 4, objectFit: 'cover', flex: 'none' }} />}
                       <b style={{ flex: 'none' }}>{fmtHora(p.publicadaAt || p.programadaAt)}</b>
                       {p.redes.map(r => <Marca key={r} red={r} tam={13} />)}
                       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.auto === 'festivo' ? '⚙ Historia del festivo (automática)' : p.texto || TIPO[p.tipo]}</span>
                     </button>
-                  ))}
+                    );
+                  })}
                 </div>
               );
             })}
