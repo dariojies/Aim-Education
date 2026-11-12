@@ -1351,8 +1351,8 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
         lineasV: [...quietos.flatMap(e => [e.x, e.x + e.w / 2, e.x + e.w]), ...extraV], lineasH: [...quietos.flatMap(e => [e.y, e.y + e.h / 2, e.y + e.h]), ...extraH] };
       return;
     }
-    if (el.bloqueado || (fijo(el) && !(m === 'encuadre' && soloContenido(el)))) return;
-    if (m === 'encuadre') {
+    if (el.bloqueado || (fijo(el) && !((m === 'encuadre' || m === 'recorte') && soloContenido(el)))) return;
+    if (m === 'encuadre' || m === 'recorte') {
       const i = imagenes.get(urlDe(el)); if (!i) return;
       a.img = { w: i.naturalWidth || i.width, h: i.naturalHeight || i.height };
     }
@@ -1418,6 +1418,11 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
         const lx = dx * Math.cos(rad) + dy * Math.sin(rad), ly = -dx * Math.sin(rad) + dy * Math.cos(rad);
         const lim = (v, m) => Math.max(m, Math.min(1 - m, v));
         c = { encuadre: { ...enc, x: lim((enc.x ?? 0.5) - lx / dw, e0.w / 2 / dw), y: lim((enc.y ?? 0.5) - ly / dh, e0.h / 2 / dh) } };
+      } else if (a.modo === 'recorte') {
+        // Recortar por un borde o una esquina (#639): la foto se queda donde está
+        // (mismo tamaño y sitio en la página) y la caja se mueve sobre ella, sin
+        // salirse de la foto. Todo en los ejes de la caja (por si está girada).
+        c = recorteDesdeAsa(e0, a.img, a.hx, a.hy, dx * Math.cos(rad) + dy * Math.sin(rad), -dx * Math.sin(rad) + dy * Math.cos(rad));
       } else if (a.modo === 'tamano') {
         const lx = dx * Math.cos(rad) + dy * Math.sin(rad), ly = -dx * Math.sin(rad) + dy * Math.cos(rad);
         let nw = a.hx ? Math.max(10, e0.w + a.hx * lx) : e0.w, nh = a.hy ? Math.max(10, e0.h + a.hy * ly) : e0.h;
@@ -1733,7 +1738,11 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
     const iw = i.naturalWidth || i.width, ih = i.naturalHeight || i.height, enc = e.encuadre || { zoom: 1, x: 0.5, y: 0.5 };
     const k = Math.max(e.w / iw, e.h / ih) * Math.max(1, enc.zoom || 1), dw = iw * k, dh = ih * k;
     const dx = Math.min(e.x, Math.max(e.x + e.w - dw, e.x + e.w / 2 - (enc.x ?? 0.5) * dw)), dy = Math.min(e.y, Math.max(e.y + e.h - dh, e.y + e.h / 2 - (enc.y ?? 0.5) * dh));
-    return { url: e.url, x: dx, y: dy, w: dw, h: dh };
+    // Por encima del lienzo (#639), para que también se vea lo que se recorta dentro
+    // de la página, con un hueco donde está la caja (ahí se ve la foto tal cual).
+    const bx = (e.x - dx) * escala, by = (e.y - dy) * escala, bw = e.w * escala, bh = e.h * escala;
+    const hueco = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${bx}px ${by}px, ${bx + bw}px ${by}px, ${bx + bw}px ${by + bh}px, ${bx}px ${by + bh}px, ${bx}px ${by}px)`;
+    return { url: e.url, x: dx, y: dy, w: dw, h: dh, hueco };
   })();
 
   return (
@@ -1943,8 +1952,8 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
           <div ref={scrollRef} style={{ overflow: 'auto', width: '100%', height: '100%', minHeight: 0, touchAction: lapiz ? 'none' : 'pan-x pan-y', cursor: lapiz ? 'crosshair' : undefined }}>
           <div style={{ display: 'grid', placeItems: 'center', minWidth: '100%', minHeight: '100%', width: 'max-content', height: 'max-content', padding: movil ? 12 : 40, boxSizing: 'border-box' }}>
           <div style={{ position: 'relative', width: diseno.ancho * escala, height: diseno.alto * escala, boxShadow: '0 10px 40px -10px rgba(0,0,0,.35)' }}>
-            {fantasma && <div style={{ position: 'absolute', left: fantasma.x * escala, top: fantasma.y * escala, width: fantasma.w * escala, height: fantasma.h * escala, background: `center / 100% 100% no-repeat url(${fantasma.url})`, opacity: 0.35, pointerEvents: 'none' }} />}
             <canvas ref={lienzoRef} style={{ ...marco, width: diseno.ancho * escala, height: diseno.alto * escala, display: 'block' }} />
+            {fantasma && <div style={{ position: 'absolute', left: fantasma.x * escala, top: fantasma.y * escala, width: fantasma.w * escala, height: fantasma.h * escala, background: `center / 100% 100% no-repeat url(${fantasma.url})`, opacity: 0.35, pointerEvents: 'none', clipPath: fantasma.hueco, WebkitClipPath: fantasma.hueco }} />}
             <div style={marco}>
               {tiempo == null && diseno.elementos.map(e => (e.oculto ? null : (
                 <div key={e.id} onPointerDown={(ev) => empezar(ev, e.id, 'mover')}
@@ -1961,6 +1970,16 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
                   {seleccion.includes(e.id) && e.candado && (esDireccion || fijo(e)) && editando?.id !== e.id && (
                     <span title={esDireccion ? 'Fijo para el resto del equipo' : 'Lo ha dejado fijo la dirección'} aria-label="Fijo"
                       style={{ position: 'absolute', right: -12, top: -12, width: 22, height: 22, borderRadius: 99, background: '#fff', border: '2px solid #7C5CFF', display: 'grid', placeItems: 'center', fontSize: 11, pointerEvents: 'none' }}>🔒</span>
+                  )}
+                  {/* Al recortar (#639), las asas recortan: la foto se queda quieta y la caja se encoge sobre ella. */}
+                  {recortando === e.id && e.id === sel && (
+                    [[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0]].map(([hx, hy]) => (
+                      <span key={`r${hx}${hy}`} onPointerDown={(ev) => empezar(ev, e.id, 'recorte', hx, hy)} aria-label="Recortar por aquí"
+                        style={{ position: 'absolute', boxSizing: 'border-box', background: '#7C5CFF', border: '2px solid #fff', borderRadius: 3, touchAction: 'none',
+                          width: hx && hy ? asa + 4 : hx ? Math.max(6, asa / 2) : asa * 2, height: hx && hy ? asa + 4 : hy ? Math.max(6, asa / 2) : asa * 2,
+                          left: `calc(${(hx + 1) * 50}% - ${(hx && hy ? asa + 4 : hx ? Math.max(6, asa / 2) : asa * 2) / 2}px)`, top: `calc(${(hy + 1) * 50}% - ${(hx && hy ? asa + 4 : hy ? Math.max(6, asa / 2) : asa * 2) / 2}px)`,
+                          cursor: hx && hy ? (hx === hy ? 'nwse-resize' : 'nesw-resize') : hx ? 'ew-resize' : 'ns-resize' }} />
+                    ))
                   )}
                   {e.id === sel && !e.bloqueado && !fijo(e) && editando?.id !== e.id && recortando !== e.id && (
                     <>
@@ -2038,8 +2057,8 @@ function Editor({ inicial, panelInicial, showToast, onCerrar, puedePublicar, esD
               <input type="range" min="1" max={Math.max(20, Math.round(base * 0.05))} value={lapiz.grosor} aria-label="Grosor del lápiz" onChange={x => setLapiz(l => ({ ...l, grosor: Number(x.target.value) }))} style={{ width: movil ? 80 : 110 }} />
               <button type="button" className="btn btn-sm btn-primary" onClick={() => { setLapiz(null); setTrazo(null); }}>Hecho</button>
             </> : recortada ? <>
-              <span style={{ fontSize: 12.5, fontWeight: 700 }}>✂ Arrastra la foto para encuadrarla · Zoom</span>
-              <input type="range" min="1" max="4" step="0.05" value={recortada.encuadre?.zoom || 1} aria-label="Zoom de la foto"
+              <span style={{ fontSize: 12.5, fontWeight: 700 }}>✂ Tira de los bordes para recortar · arrastra la foto para encuadrarla · Zoom</span>
+              <input type="range" min="1" max={Math.max(4, Math.ceil(recortada.encuadre?.zoom || 1))} step="0.05" value={recortada.encuadre?.zoom || 1} aria-label="Zoom de la foto"
                 onPointerDown={tramos.empezar} onPointerUp={tramos.terminar}
                 onChange={x => cambiarEl(recortada.id, { encuadre: { ...(recortada.encuadre || { x: 0.5, y: 0.5 }), zoom: Number(x.target.value) } })} />
               <button type="button" className="btn btn-sm btn-primary" onClick={() => setRecortando(null)}>Hecho</button>
@@ -2814,6 +2833,32 @@ function FiltrosFoto({ e, cambiar, tramos }) {
   );
 }
 
+// Recortar una foto tirando de un asa (#639). e0: la foto al empezar; img: su
+// tamaño real; hx, hy: el asa (-1, 0, 1); lx, ly: lo arrastrado, en los ejes de
+// la caja. La foto se ve igual que antes (mismo tamaño y sitio), solo cambia la
+// caja, que no puede salirse de la foto ni bajar de 20 px. Devuelve los cambios.
+function recorteDesdeAsa(e0, img, hx, hy, lx, ly) {
+  const iw = img.w, ih = img.h, enc = e0.encuadre || { zoom: 1, x: 0.5, y: 0.5 };
+  // Dónde está la foto, en los ejes de la caja (0, 0 = su esquina), como la pinta render.js.
+  const k = Math.max(e0.w / iw, e0.h / ih) * Math.max(1, enc.zoom || 1), dw = iw * k, dh = ih * k;
+  const fx = Math.min(0, Math.max(e0.w - dw, e0.w / 2 - (enc.x ?? 0.5) * dw));
+  const fy = Math.min(0, Math.max(e0.h - dh, e0.h / 2 - (enc.y ?? 0.5) * dh));
+  const MIN = 20;
+  let izq = 0, der = e0.w, arr = 0, aba = e0.h;
+  if (hx < 0) izq = Math.min(der - MIN, Math.max(fx, lx));
+  if (hx > 0) der = Math.max(izq + MIN, Math.min(fx + dw, e0.w + lx));
+  if (hy < 0) arr = Math.min(aba - MIN, Math.max(fy, ly));
+  if (hy > 0) aba = Math.max(arr + MIN, Math.min(fy + dh, e0.h + ly));
+  const w = der - izq, h = aba - arr;
+  // El zoom que deja la foto del mismo tamaño con la caja nueva, y su punto del centro.
+  const zoom = Math.max(1, k / Math.max(w / iw, h / ih));
+  const encuadre = { zoom: Math.round(zoom * 10000) / 10000, x: ((izq + der) / 2 - fx) / dw, y: ((arr + aba) / 2 - fy) / dh };
+  // La caja nueva en la página: su centro se mueve lo mismo que en sus ejes, girado.
+  const rad = (e0.rot || 0) * Math.PI / 180, sx = (izq + der) / 2 - e0.w / 2, sy = (arr + aba) / 2 - e0.h / 2;
+  const cx = e0.x + e0.w / 2 + sx * Math.cos(rad) - sy * Math.sin(rad), cy = e0.y + e0.h / 2 + sx * Math.sin(rad) + sy * Math.cos(rad);
+  return { w: Math.round(w), h: Math.round(h), x: Math.round(cx - w / 2), y: Math.round(cy - h / 2), encuadre };
+}
+
 function Propiedades({ clips, e, tipo, esDireccion, cambiar, textoRef, subir, acciones, onEscribir, onRecortar, recortando, verFotos, verIconos, onFuentesCambiadas, tramos, voltear, onQuitarFondo }) {
   const fila = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, alignItems: 'start' };
   const alinearBtn = (k, t, titulo) => <button key={k} type="button" className="btn btn-sm btn-ghost" title={titulo} onClick={() => acciones.alinear(k)} style={{ padding: '4px 6px' }}>{t}</button>;
@@ -2920,7 +2965,7 @@ function Propiedades({ clips, e, tipo, esDireccion, cambiar, textoRef, subir, ac
             <button type="button" className="btn btn-sm btn-outline" onClick={onQuitarFondo} title="Deja solo lo que destaca (una persona, un objeto). Se hace en el navegador, gratis.">✨ Quitar el fondo</button>
             {e.conFondo && <button type="button" className="btn btn-sm btn-ghost" onClick={() => cambiar({ url: e.conFondo, conFondo: undefined })}>↩ Recuperar el fondo</button>}
           </div>
-          {recortando && <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Arrastra la foto dentro de su caja y usa el zoom de abajo. Cambia la caja de tamaño para recortarla más.</span>}
+          {recortando && <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Tira de los bordes o las esquinas moradas para recortar; arrastra la foto para encuadrarla y usa el zoom de abajo para acercarla.</span>}
         </>}
         <div style={seccionT}>Marco</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 4 }}>
