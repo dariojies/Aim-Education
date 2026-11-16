@@ -9,6 +9,12 @@
 //   se descarga en cada vuelta y, si se va internet, sigue con lo que tiene.
 // - Pasa de uno a otro con fundido (o de golpe): las imágenes, sus segundos; los
 //   vídeos, hasta que acaban. Siempre sin sonido.
+// - Horario: lo que tiene días u horas solo sale cuando toca. Lo decide la tele
+//   en cada paso, con la hora de Madrid que le da el servidor (si su reloj va mal
+//   o está en otra zona, da igual). Lo de fuera de horario sigue guardado, para
+//   no bajarlo otra vez. El día de la semana es el del momento (de 22:00 a 02:00
+//   un viernes sale el viernes por la noche, y el sábado de madrugada si el
+//   sábado también está marcado).
 // - girar: si la tele está de pie pero su menú no lo sabe, se gira aquí.
 // - Cada 6 horas se recarga sola (para que una tele que no se apaga no se canse).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -90,10 +96,30 @@ export function paginaTele(clave) {
     })();
   }
 
+  // ── El horario ──
+  // Cuánto va el reloj de Madrid por delante del de la tele (en ms).
+  function desvioDe(c) {
+    var m = /^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})/.exec((c && c.madrid) || '');
+    return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) - Date.now() : null;
+  }
+  var desvio = null;
+  function minutos(hora) { var p = String(hora || '').split(':'); return (+p[0]) * 60 + (+p[1] || 0); }
+  function tocaAhora(it) {
+    var h = it.horario;
+    if (!h) return true;
+    // Sin la hora del servidor (nunca ha conectado), con el reloj de la tele.
+    var t = desvio === null ? new Date() : new Date(Date.now() + desvio);
+    var dia = desvio === null ? t.getDay() : t.getUTCDay(), min = desvio === null ? t.getHours() * 60 + t.getMinutes() : t.getUTCHours() * 60 + t.getUTCMinutes();
+    dia = dia === 0 ? 7 : dia;
+    if (h.dias && h.dias.length && h.dias.indexOf(dia) === -1) return false;
+    var de = h.horaDesde ? minutos(h.horaDesde) : 0, a = h.horaHasta ? minutos(h.horaHasta) : 1440;
+    return de < a ? (min >= de && min < a) : (min >= de || min < a);
+  }
+
   // ── Pasar ──
   function mostrar() {
     clearTimeout(temporizador);
-    var listos = function () { return actual ? actual.items.filter(function (it) { return urls[it.url]; }) : []; };
+    var listos = function () { return actual ? actual.items.filter(function (it) { return urls[it.url] && tocaAhora(it); }) : []; };
     var lista = listos();
     // Lo nuevo entra al acabar la vuelta (o ya, si no había nada).
     if (pendiente && (indice === -1 || indice + 1 >= lista.length)) { actual = pendiente; pendiente = null; indice = -1; aplicarAjustes(); lista = listos(); }
@@ -145,18 +171,21 @@ export function paginaTele(clave) {
     pedir(API + '?t=' + Date.now(), 'json', function (c) {
       if (typeof c === 'string') { try { c = JSON.parse(c); } catch (e) { return; } }
       if (!c || !c.items) return;
+      var d = desvioDe(c);
+      if (d !== null) { desvio = d; try { localStorage.setItem('aim-tele-desvio-' + CLAVE, String(d)); } catch (e) {} }
       try { localStorage.setItem('aim-tele-' + CLAVE, JSON.stringify(c)); } catch (e) {}
       if (actual && c.version === actual.version) return;
       tener(c.items, function () {
         limpiar(c.items);
         if (!actual || primera) { actual = c; indice = -1; aplicarAjustes(); mostrar(); }
-        else pendiente = c;
+        else { pendiente = c; if (nada.style.display !== 'none') mostrar(); }   // si no se ve nada, ya
       });
     }, function () {});
   }
 
   abrirDb(function () {
-    // Sin internet al encender: lo último que se vio.
+    // Sin internet al encender: lo último que se vio (y lo que se desviaba el reloj).
+    try { var dg = localStorage.getItem('aim-tele-desvio-' + CLAVE); if (dg !== null && !isNaN(+dg)) desvio = +dg; } catch (e) {}
     try { var guardado = JSON.parse(localStorage.getItem('aim-tele-' + CLAVE) || 'null'); if (guardado && guardado.items) { actual = guardado; aplicarAjustes(); tener(guardado.items, mostrar); } } catch (e) {}
     comprobar(!actual);
     setInterval(function () { comprobar(false); }, 60000);

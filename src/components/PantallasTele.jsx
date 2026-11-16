@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { grabarVideo, formatoVideo } from '../disenos/animacion.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -27,12 +27,147 @@ const ESTADOS = {
   vieja: ['⚠ El diseño ha cambiado', 'var(--orange)'],
   sin_preparar: ['⏳ Sin preparar', 'var(--orange)'],
   sin_pagina: ['✕ Esa página ya no existe', 'var(--pink)'],
+  sin_archivo: ['✕ Falta el vídeo: vuelve a subirlo', 'var(--pink)'],
 };
+
+// ── El horario de cada entrada: días de la semana, horas y fechas ──
+const DIAS = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];   // 1 = lunes … 7 = domingo
+const NOMBRES_DIA = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
+const PLURAL_DIA = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábados', 'domingos'];
+const diaCorto = (f) => new Date(`${f}T12:00:00`).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+const hoyISO = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Madrid' });
+const conY = (l) => (l.length > 1 ? `${l.slice(0, -1).join(', ')} y ${l[l.length - 1]}` : l[0] || '');
+function textoDias(d) {
+  const k = d.join(',');
+  if (k === '1,2,3,4,5') return 'De lunes a viernes';
+  if (k === '6,7') return 'Sábado y domingo';
+  if (k === '1,2,3,4,5,6') return 'De lunes a sábado';
+  if (d.length === 1) return `Los ${PLURAL_DIA[d[0] - 1]}`;
+  const t = conY(d.map(n => NOMBRES_DIA[n - 1]));
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+export function resumenHorario(it) {
+  const partes = [];
+  if (it.dias?.length) partes.push(textoDias(it.dias));
+  if (it.horaDesde || it.horaHasta) {
+    if (!partes.length) partes.push('Todos los días');
+    partes.push(it.horaDesde && it.horaHasta ? `de ${it.horaDesde} a ${it.horaHasta}` : it.horaDesde ? `desde las ${it.horaDesde}` : `hasta las ${it.horaHasta}`);
+  }
+  if (it.desde || it.hasta) partes.push(it.desde && it.hasta ? `del ${diaCorto(it.desde)} al ${diaCorto(it.hasta)}` : it.desde ? `desde el ${diaCorto(it.desde)}` : `hasta el ${diaCorto(it.hasta)}`);
+  return partes.length ? partes.join(' · ') : 'Siempre';
+}
+
+// «¿Cuándo sale?»: se abre debajo de la entrada y se guarda todo junto.
+function PanelHorario({ it, onGuardar, onCerrar }) {
+  const [dias, setDias] = useState(it.dias?.length ? it.dias : [1, 2, 3, 4, 5, 6, 7]);
+  const [horaDesde, setHoraDesde] = useState(it.horaDesde || '');
+  const [horaHasta, setHoraHasta] = useState(it.horaHasta || '');
+  const [desde, setDesde] = useState(it.desde || '');
+  const [hasta, setHasta] = useState(it.hasta || '');
+  const [guardando, setGuardando] = useState(false);
+  const cambiarDia = (n) => setDias(d => (d.includes(n) ? d.filter(x => x !== n) : [...d, n].sort()));
+  async function guardar(cambios) {
+    if (!cambios.dias.length) { alert('Elige al menos un día (o quita el horario con «Que salga siempre»).'); return; }
+    if (cambios.horaDesde && cambios.horaHasta && cambios.horaDesde === cambios.horaHasta) { alert('La hora de empezar y la de acabar son la misma.'); return; }
+    if (cambios.desde && cambios.hasta && cambios.hasta < cambios.desde) { alert('El último día no puede ser antes del primero.'); return; }
+    setGuardando(true);
+    try { await onGuardar({ ...cambios, dias: cambios.dias.length === 7 ? null : cambios.dias }); onCerrar(); }
+    catch { /* ya se ha avisado; el panel sigue abierto */ }
+    finally { setGuardando(false); }
+  }
+  const nocturno = horaDesde && horaHasta && horaHasta < horaDesde;
+  return (
+    <div data-horario={it.id} style={{ marginLeft: 32, padding: 12, borderRadius: 10, border: '1px solid color-mix(in oklab, var(--purple) 40%, var(--line))', background: 'var(--bg-2)', display: 'grid', gap: 10, fontSize: 12.5 }}>
+      <b>¿Cuándo sale «{it.nombre}»?</b>
+      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'end' }}>
+        <div style={{ display: 'grid', gap: 3, fontWeight: 700, color: 'var(--ink-2)' }}>Días
+          <div style={{ display: 'flex', gap: 2 }}>
+            {DIAS.map((d, i) => {
+              const on = dias.includes(i + 1);
+              return <button key={d} type="button" aria-pressed={on} aria-label={NOMBRES_DIA[i]} title={NOMBRES_DIA[i]} onClick={() => cambiarDia(i + 1)}
+                style={{ width: 26, height: 28, borderRadius: 6, border: `1px solid ${on ? 'var(--purple)' : 'var(--line)'}`, background: on ? 'var(--purple)' : 'var(--bg-3)', color: on ? '#fff' : 'var(--ink-3)', fontSize: 11.5, fontWeight: 800, padding: 0, fontFamily: 'inherit', cursor: 'pointer' }}>{d}</button>;
+            })}
+          </div>
+        </div>
+        <div style={{ display: 'grid', gap: 3, fontWeight: 700, color: 'var(--ink-2)' }}>Horas (vacío: todo el día)
+          <div style={{ display: 'flex', gap: 4, alignItems: 'center', fontWeight: 400 }}>
+            de <input type="time" name="horaDesde" value={horaDesde} onChange={e => setHoraDesde(e.target.value)} style={{ ...inp, width: 104 }} />
+            a <input type="time" name="horaHasta" value={horaHasta} onChange={e => setHoraHasta(e.target.value)} style={{ ...inp, width: 104 }} />
+          </div>
+        </div>
+        <label style={{ display: 'grid', gap: 3, fontWeight: 700, color: 'var(--ink-2)' }}>Desde el día
+          <input type="date" name="desde" value={desde} onChange={e => setDesde(e.target.value)} style={inp} />
+        </label>
+        <label style={{ display: 'grid', gap: 3, fontWeight: 700, color: 'var(--ink-2)' }}>Hasta el día
+          <input type="date" name="hasta" value={hasta} min={desde || undefined} onChange={e => setHasta(e.target.value)} style={inp} />
+        </label>
+      </div>
+      {nocturno && <span style={{ color: 'var(--ink-3)' }}>Pasa de medianoche: sale de {horaDesde} hasta las {horaHasta} del día siguiente.</span>}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button type="button" className="btn btn-sm btn-primary" disabled={guardando} onClick={() => guardar({ dias, horaDesde: horaDesde || null, horaHasta: horaHasta || null, desde: desde || null, hasta: hasta || null })}>{guardando ? 'Guardando…' : 'Guardar'}</button>
+        <button type="button" className="btn btn-sm btn-outline" disabled={guardando} onClick={onCerrar}>Cancelar</button>
+        <button type="button" className="btn btn-sm btn-ghost" disabled={guardando} onClick={() => guardar({ dias: [1, 2, 3, 4, 5, 6, 7], horaDesde: null, horaHasta: null, desde: null, hasta: null })}>Que salga siempre</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Subir un vídeo ya hecho (CapCut y parecidos) ──
+const MAX_VIDEO = 100 * 1024 * 1024;
+const CONSEJO_CAPCUT = 'En CapCut, al exportar: resolución 1080p, 30 fps, códec H.264 y formato MP4 (si sigue ocupando mucho, baja la «Velocidad de bits»).';
+// El códec del vídeo, mirando la caja «moov» del MP4: 'h264', 'hevc', 'av1', 'vp9' o null.
+async function codecMp4(file) {
+  let pos = 0;
+  for (let vueltas = 0; pos + 8 <= file.size && vueltas < 200; vueltas++) {
+    const v = new DataView(await file.slice(pos, pos + 16).arrayBuffer());
+    let tam = v.getUint32(0);
+    const tipo = String.fromCharCode(v.getUint8(4), v.getUint8(5), v.getUint8(6), v.getUint8(7));
+    if (tam === 1 && v.byteLength >= 16) tam = Number(v.getBigUint64(8));
+    else if (tam === 0) tam = file.size - pos;
+    if (tipo === 'moov') {
+      const t = new TextDecoder('latin1').decode(await file.slice(pos, pos + Math.min(tam, 30 * 1024 * 1024)).arrayBuffer());
+      return t.includes('hvc1') || t.includes('hev1') ? 'hevc' : t.includes('avc1') || t.includes('avc3') ? 'h264' : t.includes('av01') ? 'av1' : t.includes('vp09') ? 'vp9' : null;
+    }
+    if (tam < 8) break;
+    pos += tam;
+  }
+  return null;
+}
+// Lo que dura, su tamaño y una portada (un fotograma del principio).
+function leerVideo(file) {
+  return new Promise((ok, mal) => {
+    const url = URL.createObjectURL(file), v = document.createElement('video');
+    let hecho = false;
+    const fin = (r, e) => { if (hecho) return; hecho = true; clearTimeout(t); URL.revokeObjectURL(url); e ? mal(e) : ok(r); };
+    const t = setTimeout(() => fin(null, new Error(`No se ha podido leer el vídeo. ${CONSEJO_CAPCUT}`)), 30000);
+    v.muted = true; v.preload = 'auto'; v.playsInline = true;
+    v.onerror = () => fin(null, new Error(`Este navegador no puede leer el vídeo: puede que no sea un MP4 normal. ${CONSEJO_CAPCUT}`));
+    v.onloadedmetadata = () => {
+      const datos = { duracion: v.duration, ancho: v.videoWidth, alto: v.videoHeight, portada: null };
+      if (!Number.isFinite(datos.duracion) || datos.duracion <= 0) return fin(null, new Error('No se ha podido saber cuánto dura el vídeo.'));
+      if (!datos.ancho) return fin(datos);   // no se ve aquí (códec raro): sin portada
+      v.onseeked = () => {
+        try {
+          const c = document.createElement('canvas'), k = Math.min(1, 540 / datos.ancho);
+          c.width = Math.round(datos.ancho * k); c.height = Math.round(datos.alto * k);
+          c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+          c.toBlob(b => fin({ ...datos, portada: b }), 'image/jpeg', 0.85);
+        } catch { fin(datos); }
+      };
+      v.currentTime = Math.min(1, datos.duracion / 3);
+    };
+    v.src = url;
+  });
+}
 
 export default function PantallasTele({ disenos = [], abrirDiseno, showToast }) {
   const [datos, setDatos] = useState(null);
   const [eligiendo, setEligiendo] = useState(null);     // la pantalla a la que se añade
   const [grabando, setGrabando] = useState(null);       // { n, de, seg, dur, nombre }
+  const [subiendo, setSubiendo] = useState(null);       // { pantalla, nombre, progreso }
+  const [horario, setHorario] = useState(null);         // la entrada con «¿Cuándo sale?» abierto
+  const elegirVideo = useRef(null);
+  const subirA = useRef(null);
   const cargar = useCallback(() => api('/api/admin/pantallas').then(setDatos).catch(e => setDatos({ error: e.message })), []);
   useEffect(() => { cargar(); }, [cargar]);
   // Lo que prepara el servidor tarda un poco: se mira de vez en cuando.
@@ -44,7 +179,7 @@ export default function PantallasTele({ disenos = [], abrirDiseno, showToast }) 
   const hacer = async (f, aviso) => { try { await f(); if (aviso) showToast?.(aviso); cargar(); } catch (e) { alert(e.message); } };
 
   async function prepararVideos(p) {
-    const lista = p.items.filter(i => i.video && i.estado !== 'lista' && i.estado !== 'sin_pagina');
+    const lista = p.items.filter(i => i.video && !i.subido && i.estado !== 'lista' && i.estado !== 'sin_pagina');
     if (!formatoVideo()) { alert('Este navegador no sabe grabar vídeo. Prepáralos con Chrome o Edge.'); return; }
     if (!formatoVideo()?.tipo.startsWith('video/mp4') && !window.confirm('Este navegador graba en WebM y la tele puede no leerlo. Mejor con Chrome o Edge al día. ¿Seguir igualmente?')) return;
     try {
@@ -66,6 +201,30 @@ export default function PantallasTele({ disenos = [], abrirDiseno, showToast }) 
     } catch (e) { alert(e.message); }
     finally { setGrabando(null); cargar(); }
   }
+  // Un MP4 hecho fuera (CapCut…): se mira, se sube en trozos con su portada y
+  // entra al final del carrusel.
+  async function subirVideo(p, file) {
+    if (!file) return;
+    if (!(file.type === 'video/mp4' || /\.mp4$/i.test(file.name))) { alert(`Para la tele, el vídeo tiene que ir en MP4. ${CONSEJO_CAPCUT}`); return; }
+    if (file.size > MAX_VIDEO) { alert(`Este vídeo ocupa ${Math.round(file.size / 1048576)} MB y el máximo son 100 MB. ${CONSEJO_CAPCUT} También puedes recortarlo.`); return; }
+    setSubiendo({ pantalla: p.id, nombre: file.name, progreso: 0 });
+    try {
+      const codec = await codecMp4(file).catch(() => null);
+      if (codec && codec !== 'h264' && !window.confirm(`Este vídeo va en ${codec === 'hevc' ? 'H.265 (HEVC)' : codec.toUpperCase()} y puede que la tele no lo ponga. ${CONSEJO_CAPCUT}\n\n¿Subirlo igualmente?`)) return;
+      const v = await leerVideo(file);
+      if (v.ancho && v.ancho > v.alto && !window.confirm('Este vídeo es apaisado: en la tele de pie saldrá con bandas negras arriba y abajo. ¿Subirlo igualmente?')) return;
+      const m = await api(`/api/admin/pantallas/${p.id}/videos`, { method: 'POST', body: { nombre: file.name, mime: 'video/mp4', bytes: file.size, duracion: v.duracion, ancho: v.ancho, alto: v.alto } });
+      const n = Math.ceil(file.size / m.trozo);
+      for (let i = 0; i < n; i++) {
+        await api(`/api/admin/pantallas/medios/${m.id}/trozos/${i}`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: file.slice(i * m.trozo, Math.min(file.size, (i + 1) * m.trozo)) });
+        setSubiendo(s => ({ ...s, progreso: (i + 1) / n }));
+      }
+      if (v.portada) await api(`/api/admin/pantallas/medios/${m.id}/portada`, { method: 'PUT', headers: { 'Content-Type': 'image/jpeg' }, body: v.portada }).catch(() => {});
+      await api(`/api/admin/pantallas/${p.id}/videos/${m.id}/fin`, { method: 'POST' });
+      showToast?.(`«${file.name}» subido: la tele lo pondrá en cuanto acabe la vuelta.`);
+    } catch (e) { alert(e.message); }
+    finally { setSubiendo(null); cargar(); }
+  }
   function mover(p, i, d) {
     const ids = p.items.map(x => x.id), j = i + d;
     if (j < 0 || j >= ids.length) return;
@@ -80,7 +239,10 @@ export default function PantallasTele({ disenos = [], abrirDiseno, showToast }) 
       <p style={{ margin: 0, fontSize: 14, color: 'var(--ink-2)' }}>
         El carrusel de la tele de recepción: los diseños que elijas pasan en bucle, a pantalla completa. Para la tele de pie, haz los diseños en tamaño «Historia» (1080 × 1920).
         Los que no llevan vídeo se preparan solos; los que llevan vídeo o animación, con «Preparar los vídeos» (con Chrome o Edge).
+        También puedes subir un vídeo ya hecho (de CapCut o parecidos, en MP4). Con «🕒» eliges qué días y a qué horas sale cada cosa.
       </p>
+      <input ref={elegirVideo} type="file" accept="video/mp4,.mp4" hidden data-subir-video
+        onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; const p = subirA.current; if (f && p) subirVideo(p, f); }} />
       {/* Los cierres (#493): la historia del festivo sale sola en la tele los días antes. */}
       {datos.cierres && datos.pantallas.length > 0 && (
         <div style={tarjeta} data-cierres>
@@ -114,7 +276,7 @@ export default function PantallasTele({ disenos = [], abrirDiseno, showToast }) 
       )}
       {datos.pantallas.map(p => {
         const url = `${window.location.origin}/tele/${p.clave}`;
-        const porPreparar = p.items.filter(i => i.video && i.estado !== 'lista' && i.estado !== 'sin_pagina');
+        const porPreparar = p.items.filter(i => i.video && !i.subido && i.estado !== 'lista' && i.estado !== 'sin_pagina');
         return (
           <div key={p.id} style={tarjeta}>
             <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -171,6 +333,14 @@ export default function PantallasTele({ disenos = [], abrirDiseno, showToast }) 
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
               <button type="button" className="btn btn-sm btn-primary" onClick={() => setEligiendo(p)}>＋ Añadir diseños</button>
+              <button type="button" className="btn btn-sm btn-outline" disabled={!!subiendo} title={CONSEJO_CAPCUT}
+                onClick={() => { subirA.current = p; elegirVideo.current?.click(); }}>📤 Subir un vídeo (MP4)</button>
+              {subiendo?.pantalla === p.id && (
+                <span style={{ fontSize: 13, display: 'grid', gap: 3, minWidth: 260 }} data-subiendo>
+                  {subiendo.progreso ? `Subiendo «${subiendo.nombre}»… No cierres esta pestaña.` : `Mirando «${subiendo.nombre}»…`}
+                  <progress value={subiendo.progreso || 0} max={1} style={{ width: '100%' }} />
+                </span>
+              )}
               {porPreparar.length > 0 && !grabando && <button type="button" className="btn btn-sm btn-outline" onClick={() => prepararVideos(p)}>🎬 Preparar los vídeos ({porPreparar.length})</button>}
               {grabando && (
                 <span style={{ fontSize: 13, display: 'grid', gap: 3, minWidth: 260 }}>
@@ -184,30 +354,39 @@ export default function PantallasTele({ disenos = [], abrirDiseno, showToast }) 
                 {p.items.map((it, i) => {
                   const [estado, color] = ESTADOS[it.estado] || ['', 'inherit'];
                   const tumbado = it.ancho > it.alto;
-                  return (
-                    <div key={it.id} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: 8, borderRadius: 10, border: '1px solid var(--line)', background: it.activo ? 'var(--bg-3)' : 'transparent', opacity: it.activo ? 1 : 0.6 }}>
+                  const conHorario = !!(it.dias || it.horaDesde || it.horaHasta || it.desde || it.hasta);
+                  const caducada = it.hasta && it.hasta < hoyISO();
+                  return (<React.Fragment key={it.id}>
+                    <div data-entrada={it.id} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: 8, borderRadius: 10, border: '1px solid var(--line)', background: it.activo ? 'var(--bg-3)' : 'transparent', opacity: it.activo ? 1 : 0.6 }}>
                       <span style={{ width: 22, textAlign: 'center', fontWeight: 800, color: 'var(--ink-3)' }}>{i + 1}</span>
-                      <button type="button" onClick={() => abrirDiseno?.(it.disenoId)} title="Abrir en Aim Design" style={{ border: 0, padding: 0, background: 'none', cursor: 'pointer' }}>
-                        {it.miniatura ? <img src={it.miniatura} alt="" style={{ width: 46, height: 60, objectFit: 'contain', background: '#000', borderRadius: 6 }} /> : <span style={{ display: 'inline-block', width: 46, height: 60, background: 'var(--bg-2)', borderRadius: 6 }} />}
+                      <button type="button" onClick={() => (it.subido ? it.url && window.open(it.url, '_blank', 'noopener') : abrirDiseno?.(it.disenoId))} title={it.subido ? 'Ver el vídeo' : 'Abrir en Aim Design'} style={{ border: 0, padding: 0, background: 'none', cursor: 'pointer' }}>
+                        {it.miniatura ? <img src={it.miniatura} alt="" style={{ width: 46, height: 60, objectFit: 'contain', background: '#000', borderRadius: 6 }} />
+                          : it.subido ? <span style={{ display: 'grid', placeItems: 'center', width: 46, height: 60, background: '#000', color: '#fff', borderRadius: 6, fontSize: 18 }}>▶</span>
+                          : <span style={{ display: 'inline-block', width: 46, height: 60, background: 'var(--bg-2)', borderRadius: 6 }} />}
                       </button>
                       <div style={{ flex: '1 1 180px', minWidth: 0, display: 'grid', gap: 2 }}>
-                        <b style={{ fontSize: 13.5 }}>{it.nombre}{it.paginas > 1 ? ` · página ${it.pagina + 1}` : ''}</b>
+                        <b style={{ fontSize: 13.5, overflowWrap: 'anywhere' }}>{it.nombre}{it.paginas > 1 ? ` · página ${it.pagina + 1}` : ''}</b>
                         <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
-                          {it.video ? `🎬 Vídeo · ${Math.round(it.duracion)} s` : '🖼 Imagen'}{tumbado ? ' · apaisado: en la tele de pie se verá con bandas' : ''}
+                          {it.subido
+                            ? `📤 Vídeo subido · ${Math.round(it.duracion || 0)} s${it.ancho ? ` · ${it.ancho} × ${it.alto}` : ''}${it.bytes ? ` · ${Math.max(1, Math.round(it.bytes / 1048576))} MB` : ''}`
+                            : it.video ? `🎬 Vídeo · ${Math.round(it.duracion)} s` : '🖼 Imagen'}{tumbado ? ' · apaisado: en la tele de pie se verá con bandas' : ''}
                         </span>
-                        <span style={{ fontSize: 12, fontWeight: 800, color }}>{estado}{it.video && it.estado !== 'lista' && it.estado !== 'sin_pagina' ? ' (pulsa «Preparar los vídeos»)' : ''}</span>
+                        <span style={{ fontSize: 12, fontWeight: 800, color }}>{estado}{it.video && !it.subido && it.estado !== 'lista' && it.estado !== 'sin_pagina' ? ' (pulsa «Preparar los vídeos»)' : ''}</span>
                       </div>
                       {!it.video && (
                         <label style={{ display: 'grid', gap: 2, fontSize: 11.5, fontWeight: 700, color: 'var(--ink-2)' }}>Segundos
                           <input type="number" min={3} max={120} placeholder={String(p.segundos)} defaultValue={it.segundos ?? ''} onBlur={e => hacer(() => api(`/api/admin/pantallas/items/${it.id}`, { method: 'PATCH', body: { segundos: e.target.value === '' ? null : Number(e.target.value) } }))} style={{ ...inp, width: 70 }} />
                         </label>
                       )}
-                      <label style={{ display: 'grid', gap: 2, fontSize: 11.5, fontWeight: 700, color: 'var(--ink-2)' }} title="Vacío: siempre">Desde
-                        <input type="date" defaultValue={it.desde || ''} onChange={e => hacer(() => api(`/api/admin/pantallas/items/${it.id}`, { method: 'PATCH', body: { desde: e.target.value || null } }))} style={inp} />
-                      </label>
-                      <label style={{ display: 'grid', gap: 2, fontSize: 11.5, fontWeight: 700, color: 'var(--ink-2)' }} title="Vacío: siempre">Hasta
-                        <input type="date" defaultValue={it.hasta || ''} onChange={e => hacer(() => api(`/api/admin/pantallas/items/${it.id}`, { method: 'PATCH', body: { hasta: e.target.value || null } }))} style={inp} />
-                      </label>
+                      {/* Cuándo sale: días, horas y fechas, en un resumen que abre su panel. */}
+                      <button type="button" data-horario-boton aria-expanded={horario === it.id} onClick={() => setHorario(h => (h === it.id ? null : it.id))}
+                        title={caducada ? 'Ya pasó su último día: no sale en la tele' : 'Elegir qué días y a qué horas sale'}
+                        style={{ font: 'inherit', fontSize: 12, fontWeight: 700, padding: '6px 10px', borderRadius: 8, cursor: 'pointer', maxWidth: 340, textAlign: 'left',
+                          border: `1px solid ${caducada ? 'var(--orange)' : conHorario ? 'var(--purple)' : 'var(--line)'}`,
+                          background: conHorario ? `color-mix(in oklab, ${caducada ? 'var(--orange)' : 'var(--purple)'} 10%, var(--bg-2))` : 'var(--bg-2)',
+                          color: caducada ? 'var(--orange)' : conHorario ? 'var(--purple)' : 'var(--ink-2)' }}>
+                        🕒 {resumenHorario(it)}{caducada ? ' (ya pasó)' : ''} ▾
+                      </button>
                       <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 12.5 }}>
                         <input type="checkbox" checked={it.activo} onChange={e => hacer(() => api(`/api/admin/pantallas/items/${it.id}`, { method: 'PATCH', body: { activo: e.target.checked } }))} /> Sale
                       </label>
@@ -217,7 +396,14 @@ export default function PantallasTele({ disenos = [], abrirDiseno, showToast }) 
                         <button type="button" className="icon-btn danger" onClick={() => window.confirm(`¿Quitar «${it.nombre}» del carrusel?`) && hacer(() => api(`/api/admin/pantallas/items/${it.id}`, { method: 'DELETE' }))} aria-label="Quitar del carrusel" title="Quitar del carrusel">✕</button>
                       </div>
                     </div>
-                  );
+                    {horario === it.id && (
+                      <PanelHorario it={it} onCerrar={() => setHorario(null)}
+                        onGuardar={async (cambios) => {
+                          try { await api(`/api/admin/pantallas/items/${it.id}`, { method: 'PATCH', body: cambios }); showToast?.('Horario guardado.'); cargar(); }
+                          catch (e) { alert(e.message); throw e; }
+                        }} />
+                    )}
+                  </React.Fragment>);
                 })}
               </div>
             )}

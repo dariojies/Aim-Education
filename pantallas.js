@@ -13,12 +13,18 @@
 // Cada preparación lleva la huella de la página que se usó: si el diseño cambia,
 // se sabe que hay que volver a prepararla (la tele sigue con la de antes).
 // Los archivos van en aim_medios (medios.js), con uso 'pantalla'.
+// Además se puede subir un vídeo ya hecho (de CapCut o parecidos, en MP4): es una
+// entrada sin diseño, con su archivo y el nombre que traía.
+// Cada entrada puede salir solo unos días de la semana y entre unas horas: la
+// tele recibe el carrusel entero con su horario y elige ella qué toca, con la
+// hora de Madrid que le da el servidor (así no se vuelven a bajar los vídeos cada
+// vez que entran en su horario, y sigue igual aunque se vaya internet).
 // ─────────────────────────────────────────────────────────────────────────────
 import express from 'express';
 import crypto from 'crypto';
 import { paginaDe, numPaginas, tieneAnimacion, duracionAnimacion } from './src/disenos/render.js';
 import { pintarEnServidor } from './disenos-servidor.js';
-import { nuevoMedio, guardarTrozo, terminarMedio, urlMedio, TROZO } from './medios.js';
+import { nuevoMedio, guardarTrozo, terminarMedio, urlMedio, urlPoster, TROZO } from './medios.js';
 import { paginaTele } from './tele-pagina.js';
 import { festivosParaTele, medioFestivo } from './disenos-automaticos.js';
 
@@ -52,6 +58,10 @@ export async function crearTablasPantallas(client) {
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )`);
     await client.query(`CREATE INDEX IF NOT EXISTS ix_pantalla_items ON aim_pantalla_items (pantalla_id, orden)`);
+    // Vídeos subidos (sin diseño) y el horario de cada entrada: días de la semana
+    // (1 = lunes … 7 = domingo; vacío, todos) y horas (vacías, todo el día).
+    await client.query(`ALTER TABLE aim_pantalla_items ALTER COLUMN diseno_id DROP NOT NULL`);
+    await client.query(`ALTER TABLE aim_pantalla_items ADD COLUMN IF NOT EXISTS dias SMALLINT[], ADD COLUMN IF NOT EXISTS hora_desde TIME, ADD COLUMN IF NOT EXISTS hora_hasta TIME`);
 }
 
 const corta = (status, error) => { const e = new Error(error); e.status = status; throw e; };
@@ -63,6 +73,12 @@ const fallo = (res, err) => {
 const hoyMadrid = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Madrid' });
 // La huella de una página: si cambia, lo preparado ya no vale.
 export const huellaPagina = (datos, pagina) => crypto.createHash('md5').update(JSON.stringify(paginaDe(datos, pagina) || {})).digest('hex');
+// El horario de una entrada, como lo ven la pantalla de gestión y la tele.
+const hhmm = (t) => (t ? String(t).slice(0, 5) : null);
+const horarioDe = (it) => ({ dias: Array.isArray(it.dias) && it.dias.length ? it.dias.map(Number) : null, horaDesde: hhmm(it.hora_desde), horaHasta: hhmm(it.hora_hasta) });
+const HORA_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+// La hora de Madrid ahora, «AAAA-MM-DDTHH:MM:SS»: la tele saca de aquí cuánto se desvía su reloj.
+const ahoraMadrid = () => new Date().toLocaleString('sv-SE', { timeZone: 'Europe/Madrid' }).replace(' ', 'T');
 // ¿Esa página necesita vídeo (lleva vídeos o animaciones)?
 const esVideo = (datos, pagina) => tieneAnimacion(paginaDe(datos, pagina));
 
@@ -160,19 +176,33 @@ export function crearPantallas({ pool, authenticateSession, requireSeccion }) {
     async function pantallaCompleta(p) {
         const r = await pool.query(
             `SELECT i.*, d.nombre AS diseno_nombre, d.miniatura, d.datos, d.ancho AS d_ancho, d.alto AS d_alto,
-                    m.token, m.mime, m.duracion AS m_duracion, m.completo
-             FROM aim_pantalla_items i JOIN aim_disenos d ON d.id = i.diseno_id LEFT JOIN aim_medios m ON m.id = i.medio_id
-             WHERE i.pantalla_id = $1 ORDER BY i.orden, i.id`, [p.id]);
+                    m.token, m.mime, m.duracion AS m_duracion, m.completo, m.nombre AS m_nombre, m.ancho AS m_ancho, m.alto AS m_alto,
+                    m.bytes AS m_bytes, (m.poster IS NOT NULL) AS m_portada
+             FROM aim_pantalla_items i LEFT JOIN aim_disenos d ON d.id = i.diseno_id LEFT JOIN aim_medios m ON m.id = i.medio_id
+             WHERE i.pantalla_id = $1 AND (i.diseno_id IS NULL OR d.id IS NOT NULL) ORDER BY i.orden, i.id`, [p.id]);
         return {
             id: p.id, nombre: p.nombre, clave: p.clave, segundos: p.segundos, girar: p.girar, transicion: p.transicion, vistoAt: p.visto_at,
             items: r.rows.map(it => {
+                const fechas = {
+                    desde: it.desde ? String(it.desde instanceof Date ? it.desde.toISOString() : it.desde).slice(0, 10) : null,
+                    hasta: it.hasta ? String(it.hasta instanceof Date ? it.hasta.toISOString() : it.hasta).slice(0, 10) : null,
+                };
+                // Un vídeo subido: sin diseño, con su archivo tal cual.
+                if (!it.diseno_id) {
+                    const listo = !!(it.token && it.completo);
+                    return {
+                        id: it.id, subido: true, nombre: it.m_nombre || 'Vídeo subido', segundos: null, activo: it.activo, ...fechas, ...horarioDe(it),
+                        video: true, duracion: it.m_duracion, ancho: it.m_ancho, alto: it.m_alto, bytes: Number(it.m_bytes) || null, existe: true,
+                        estado: listo ? 'lista' : 'sin_archivo',
+                        url: listo ? urlMedio({ token: it.token, mime: it.mime }) : null,
+                        miniatura: listo && it.m_portada ? urlPoster({ token: it.token }) : null,
+                    };
+                }
                 const existe = it.pagina < numPaginas(it.datos), video = existe && esVideo(it.datos, it.pagina);
                 const actual = existe ? huellaPagina(it.datos, it.pagina) : null;
                 return {
                     id: it.id, disenoId: it.diseno_id, nombre: it.diseno_nombre, pagina: it.pagina, paginas: numPaginas(it.datos), miniatura: it.miniatura,
-                    ancho: it.d_ancho, alto: it.d_alto, segundos: it.segundos, activo: it.activo,
-                    desde: it.desde ? String(it.desde instanceof Date ? it.desde.toISOString() : it.desde).slice(0, 10) : null,
-                    hasta: it.hasta ? String(it.hasta instanceof Date ? it.hasta.toISOString() : it.hasta).slice(0, 10) : null,
+                    ancho: it.d_ancho, alto: it.d_alto, segundos: it.segundos, activo: it.activo, ...fechas, ...horarioDe(it),
                     video, duracion: video ? duracionAnimacion(paginaDe(it.datos, it.pagina)) : null, existe,
                     // lista: preparada con la versión de ahora; vieja: hay una, pero el diseño ha cambiado.
                     estado: !existe ? 'sin_pagina' : it.token && it.completo ? (it.huella === actual ? 'lista' : 'vieja') : 'sin_preparar',
@@ -276,7 +306,24 @@ export function crearPantallas({ pool, authenticateSession, requireSeccion }) {
             const segundos = b.segundos !== undefined ? (b.segundos == null || b.segundos === '' ? null : Math.max(3, Math.min(120, Math.round(Number(b.segundos) || 10)))) : it.segundos;
             const activo = b.activo !== undefined ? !!b.activo : it.activo;
             const desde = b.desde !== undefined ? fecha(b.desde) : it.desde, hasta = b.hasta !== undefined ? fecha(b.hasta) : it.hasta;
-            await pool.query(`UPDATE aim_pantalla_items SET segundos = $2, activo = $3, desde = $4, hasta = $5 WHERE id = $1`, [iid, segundos, activo, desde, hasta]);
+            const iso = (f) => (f instanceof Date ? f.toISOString() : String(f)).slice(0, 10);
+            if (desde && hasta && iso(hasta) < iso(desde)) corta(400, 'El último día no puede ser antes del primero.');
+            // El horario: días de la semana (todos o ninguno = siempre) y horas.
+            let dias = it.dias;
+            if (b.dias !== undefined) {
+                const d = [...new Set((Array.isArray(b.dias) ? b.dias : []).map(Number).filter(n => Number.isInteger(n) && n >= 1 && n <= 7))].sort();
+                dias = d.length && d.length < 7 ? d : null;
+            }
+            const hora = (v, antes) => {
+                if (v === undefined) return antes;
+                if (v == null || v === '') return null;
+                if (!HORA_RE.test(String(v))) corta(400, 'Esa hora no vale.');
+                return String(v);
+            };
+            const horaDesde = hora(b.horaDesde, hhmm(it.hora_desde)), horaHasta = hora(b.horaHasta, hhmm(it.hora_hasta));
+            if (horaDesde && horaHasta && horaDesde === horaHasta) corta(400, 'La hora de empezar y la de acabar son la misma.');
+            await pool.query(`UPDATE aim_pantalla_items SET segundos = $2, activo = $3, desde = $4, hasta = $5, dias = $6, hora_desde = $7, hora_hasta = $8 WHERE id = $1`,
+                [iid, segundos, activo, desde, hasta, dias, horaDesde, horaHasta]);
             await pool.query(`UPDATE aim_pantallas SET updated_at = NOW() WHERE id = $1`, [it.pantalla_id]);
             res.json({ success: true });
         } catch (err) { fallo(res, err); }
@@ -325,6 +372,45 @@ export function crearPantallas({ pool, authenticateSession, requireSeccion }) {
             await guardarTrozo(pool, mid, Number(req.params.n), req.body); res.json({ success: true });
         } catch (err) { fallo(res, err); }
     });
+    // ── Subir un vídeo ya hecho (de CapCut o parecidos, en MP4) ──
+    // 1) Se crea el archivo (sin entrada todavía); 2) llegan sus trozos (con el
+    // mismo PUT de arriba) y su portada; 3) al terminar, entra al final del
+    // carrusel. Si se queda a medias no deja ninguna entrada colgando: el archivo
+    // se borra solo (limpiarMediosPantalla).
+    router.post('/api/admin/pantallas/:id/videos', ...gestion, express.json(), async (req, res) => {
+        try {
+            const id = idDe(req.params.id), b = req.body || {};
+            if (!(await pool.query(`SELECT 1 FROM aim_pantallas WHERE id = $1`, [id])).rowCount) corta(404, 'Esa pantalla ya no existe.');
+            if (String(b.mime || '').toLowerCase() !== 'video/mp4') corta(400, 'Para la tele, el vídeo tiene que ir en MP4.');
+            if (!(Number(b.duracion) > 0)) corta(400, 'No se ha podido saber cuánto dura el vídeo.');
+            const nombre = String(b.nombre || '').trim().slice(0, 200) || 'Vídeo subido';
+            const m = await nuevoMedio(pool, { uso: 'pantalla', nombre, mime: 'video/mp4', bytes: Number(b.bytes), duracion: b.duracion, ancho: b.ancho, alto: b.alto, userId: req.userSession.userId });
+            res.status(201).json({ id: m.id, trozo: TROZO });
+        } catch (err) { fallo(res, err); }
+    });
+    const portada = express.raw({ type: () => true, limit: '2mb' });
+    router.put('/api/admin/pantallas/medios/:mid/portada', ...gestion, portada, async (req, res) => {
+        try {
+            if (!Buffer.isBuffer(req.body) || !req.body.length) corta(400, 'No ha llegado la portada.');
+            const r = await pool.query(`UPDATE aim_medios SET poster = $2 WHERE id = $1 AND uso = 'pantalla'`, [idDe(req.params.mid), req.body]);
+            if (!r.rowCount) corta(404, 'Ese archivo ya no existe.');
+            res.json({ success: true });
+        } catch (err) { fallo(res, err); }
+    });
+    router.post('/api/admin/pantallas/:id/videos/:mid/fin', ...gestion, async (req, res) => {
+        try {
+            const id = idDe(req.params.id), mid = idDe(req.params.mid);
+            if (!(await pool.query(`SELECT 1 FROM aim_medios WHERE id = $1 AND uso = 'pantalla' AND mime = 'video/mp4'`, [mid])).rowCount) corta(404, 'Ese archivo ya no existe.');
+            if ((await pool.query(`SELECT 1 FROM aim_pantalla_items WHERE medio_id = $1`, [mid])).rowCount) corta(409, 'Ese vídeo ya está en el carrusel.');
+            if (!(await pool.query(`SELECT 1 FROM aim_pantallas WHERE id = $1`, [id])).rowCount) corta(404, 'Esa pantalla ya no existe.');
+            await terminarMedio(pool, mid);
+            const orden = Number((await pool.query(`SELECT COALESCE(MAX(orden), -1) + 1 AS o FROM aim_pantalla_items WHERE pantalla_id = $1`, [id])).rows[0].o);
+            const r = await pool.query(`INSERT INTO aim_pantalla_items (pantalla_id, orden, diseno_id, medio_id) VALUES ($1, $2, NULL, $3) RETURNING id`, [id, orden, mid]);
+            await pool.query(`UPDATE aim_pantallas SET updated_at = NOW() WHERE id = $1`, [id]);
+            res.status(201).json({ success: true, id: r.rows[0].id });
+        } catch (err) { fallo(res, err); }
+    });
+
     // 3) Terminado: queda puesto en la entrada, con la huella con que se grabó.
     router.post('/api/admin/pantallas/items/:iid/medio/:mid/fin', ...gestion, express.json(), async (req, res) => {
         try {
@@ -344,15 +430,21 @@ export function crearPantallas({ pool, authenticateSession, requireSeccion }) {
             pool.query(`UPDATE aim_pantallas SET visto_at = NOW() WHERE id = $1 AND (visto_at IS NULL OR visto_at < NOW() - INTERVAL '1 minute')`, [p.id]).catch(() => {});
             const hoy = hoyMadrid();
             const r = await pool.query(
-                `SELECT i.id, i.segundos, m.token, m.mime, m.duracion, m.ancho, m.alto
+                `SELECT i.id, i.segundos, i.dias, i.hora_desde, i.hora_hasta, m.token, m.mime, m.duracion, m.ancho, m.alto
                  FROM aim_pantalla_items i JOIN aim_medios m ON m.id = i.medio_id AND m.completo
-                 JOIN aim_disenos d ON d.id = i.diseno_id AND NOT d.datos ? 'papelera'
+                 LEFT JOIN aim_disenos d ON d.id = i.diseno_id
                  WHERE i.pantalla_id = $1 AND i.activo AND (i.desde IS NULL OR i.desde <= $2::date) AND (i.hasta IS NULL OR i.hasta >= $2::date)
+                   AND (i.diseno_id IS NULL OR (d.id IS NOT NULL AND NOT d.datos ? 'papelera'))
                  ORDER BY i.orden, i.id`, [p.id, hoy]);
-            const items = r.rows.map(x => ({
-                id: x.id, tipo: String(x.mime).startsWith('video/') ? 'video' : 'imagen', url: urlMedio(x),
-                segundos: String(x.mime).startsWith('video/') ? Math.round((x.duracion || 10) * 10) / 10 : x.segundos || p.segundos,
-            }));
+            const items = r.rows.map(x => {
+                const h = horarioDe(x);
+                return {
+                    id: x.id, tipo: String(x.mime).startsWith('video/') ? 'video' : 'imagen', url: urlMedio(x),
+                    segundos: String(x.mime).startsWith('video/') ? Math.round((x.duracion || 10) * 10) / 10 : x.segundos || p.segundos,
+                    // El horario, si tiene: la tele mira ella si toca ahora.
+                    ...(h.dias || h.horaDesde || h.horaHasta ? { horario: h } : {}),
+                };
+            });
             // Los cierres que vienen (#493), los primeros: desde «dias» antes hasta ese día.
             const a = await ajustesCierres(pool);
             if (a.activo && !a.sinCierres.includes(p.id)) {
@@ -367,7 +459,7 @@ export function crearPantallas({ pool, authenticateSession, requireSeccion }) {
             const ajustes = { girar: p.girar, transicion: p.transicion };
             const version = crypto.createHash('md5').update(JSON.stringify([items, ajustes])).digest('hex').slice(0, 16);
             res.set('Cache-Control', 'no-store');
-            res.json({ version, ...ajustes, items });
+            res.json({ version, ...ajustes, items, madrid: ahoraMadrid() });
         } catch (err) { fallo(res, err); }
     });
     router.get('/tele/:clave', (req, res) => {
