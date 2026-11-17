@@ -33,10 +33,27 @@ const esExterno = (href) => /^https?:\/\//i.test(href || '');
 // Las direcciones que valen; con otra (javascript:…), el enlace se queda sin dirección (no se pulsa).
 const hrefValido = (href) => /^(https?:\/\/|mailto:|tel:|\/(?!\/)|#)/i.test(String(href || '').trim());
 
-export function limpiarHtml(html) {
+// El texto de las lecciones del aula virtual (#644): lo mismo, más el color de
+// la letra (un color concreto, nada de estilos sueltos) y tablas sencillas.
+const COLOR = [/^#[0-9a-f]{3}([0-9a-f]{3})?$/i, /^rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\)$/i];
+const AULA = {
+    allowedTags: [...BASE.allowedTags, 'span', 'table', 'thead', 'tbody', 'tr', 'th', 'td'],
+    allowedAttributes: { ...BASE.allowedAttributes, span: ['style'] },
+    allowedStyles: { ...BASE.allowedStyles, span: { color: COLOR } },
+};
+export function limpiarHtmlAula(html) {
+    return limpiarHtml(html, AULA, {
+        // Lo que pone el navegador al dar color sin estilos: <font color="…">.
+        font: (tag, at) => ({ tagName: 'span', attribs: at.color ? { style: `color:${at.color}` } : {} }),
+    });
+}
+
+export function limpiarHtml(html, extra = {}, transformarMas = {}) {
     return sanitizeHtml(String(html || ''), {
         ...BASE,
+        ...extra,
         transformTags: {
+            ...transformarMas,
             b: 'strong', i: 'em', strike: 's', del: 's', h1: 'h2', h5: 'h4', h6: 'h4', div: 'p',
             a: (tag, at) => {
                 if (!hrefValido(at.href)) return { tagName: 'a', attribs: {} };
@@ -51,6 +68,7 @@ export function limpiarHtml(html) {
                 ? { tagName: 'figure', attribs: /^[\w-]{6,20}$/.test(at['data-youtube'] || '') ? { class: 'video-youtube', 'data-youtube': at['data-youtube'] } : {} }
                 : { tagName: 'figure', attribs: { ...(at.class ? { class: at.class } : {}), ...(at.style ? { style: at.style } : {}) } }),
         },
+        // Una imagen sin dirección no sirve; un enlace vacío, tampoco.
         // Una imagen sin dirección no sirve; un enlace vacío, tampoco.
         exclusiveFilter: (f) => (f.tag === 'img' && !f.attribs.src) || (f.tag === 'a' && !f.text.trim() && !f.mediaChildren?.length),
     }).trim();

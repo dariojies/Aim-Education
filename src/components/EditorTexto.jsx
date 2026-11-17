@@ -9,6 +9,9 @@ import { idYoutube, htmlVideoYoutube } from './VideoYoutube.jsx';
 // imágenes con pie, botones (a otra web, a un apartado de la web o a un
 // documento subido), vídeos de YouTube (#502) y separadores.
 //
+// En el aula virtual (#644) también lleva color de la letra (conColores) y
+// tablas (conTablas).
+//
 // Escribe HTML; el servidor lo limpia antes de guardarlo (noticias-html.js), así
 // que aquí no hace falta ser estricto, solo no dejar pasar basura al pegar: lo
 // pegado entra como texto.
@@ -49,6 +52,8 @@ function Boton({ titulo, onClick, activo, children, ancho }) {
     </button>
   );
 }
+// Los colores de la letra (#644): tonos medios, que se leen sobre blanco y en el modo oscuro.
+const COLORES = [['#7B5BD6', 'Morado'], ['#2F80ED', 'Azul'], ['#1FA463', 'Verde'], ['#E67E00', 'Naranja'], ['#E04848', 'Rojo'], ['#E0499A', 'Rosa'], ['#808088', 'Gris']];
 const Separa = () => <span style={{ width: 1, alignSelf: 'stretch', background: 'var(--line)', margin: '4px 2px' }} />;
 
 function Ventana({ titulo, onCerrar, children }) {
@@ -100,10 +105,21 @@ function Destino({ valor, cambiar, conDocumento = true }) {
   );
 }
 
-export default function EditorTexto({ valor, onChange, subirImagen, placeholder = 'Escribe aquí el texto…', alto = 320 }) {
+export default function EditorTexto({ valor, onChange, subirImagen, placeholder = 'Escribe aquí el texto…', alto = 320,
+  conColores = false, conTablas = false, conDocumentos = true, nombre = 'Texto de la noticia' }) {
   const ref = useRef(null);
   const rango = useRef(null);
   const [estado, setEstado] = useState({});
+  const [celda, setCelda] = useState(null);       // la celda de la tabla donde está el cursor
+  const [paleta, setPaleta] = useState(false);
+  const refPaleta = useRef(null);
+  // La paleta se cierra al pulsar en cualquier otro sitio.
+  useEffect(() => {
+    if (!paleta) return undefined;
+    const fuera = (e) => { if (!refPaleta.current?.contains(e.target)) setPaleta(false); };
+    document.addEventListener('mousedown', fuera);
+    return () => document.removeEventListener('mousedown', fuera);
+  }, [paleta]);
   const [ventana, setVentana] = useState(null);   // { tipo: 'enlace' | 'boton' | 'imagen', ... }
   const [imagen, setImagen] = useState(null);     // la imagen elegida dentro del texto
   const [video, setVideo] = useState(null);       // el vídeo de YouTube elegido
@@ -139,7 +155,12 @@ export default function EditorTexto({ valor, onChange, subirImagen, placeholder 
         der: document.queryCommandState('justifyRight'), just: document.queryCommandState('justifyFull'),
       });
     } catch { /* sin estado */ }
-  }, []);
+    if (conTablas) {
+      const n = window.getSelection()?.anchorNode;
+      const c = (n?.nodeType === 1 ? n : n?.parentElement)?.closest?.('td, th');
+      setCelda(c && ref.current?.contains(c) ? c : null);
+    }
+  }, [conTablas]);
   useEffect(() => {
     document.addEventListener('selectionchange', leerEstado);
     return () => document.removeEventListener('selectionchange', leerEstado);
@@ -147,14 +168,56 @@ export default function EditorTexto({ valor, onChange, subirImagen, placeholder 
 
   const hacer = (cmd, arg = null) => {
     volverRango();
-    // La alineación, con estilo (text-align); el resto, con etiquetas (<strong>…).
-    const conCss = cmd.startsWith('justify');
+    // La alineación y el color, con estilo (text-align, color); el resto, con etiquetas (<strong>…).
+    const conCss = cmd.startsWith('justify') || cmd === 'foreColor';
     try { document.execCommand('styleWithCSS', false, conCss); } catch { /* */ }
     document.execCommand(cmd, false, arg);
     try { document.execCommand('styleWithCSS', false, false); } catch { /* */ }
     avisar(); leerEstado();
   };
   const meter = (html) => { volverRango(); document.execCommand('insertHTML', false, html); bloquearVideos(); avisar(); };
+
+  // ── Color de la letra (#644) ──
+  const ponerColor = (c) => { setPaleta(false); hacer('foreColor', c); };
+  // Quitar el color de lo elegido (o del trozo donde está el cursor), sin tocar lo demás.
+  function quitarColor() {
+    setPaleta(false);
+    volverRango();
+    const s = window.getSelection();
+    if (!s?.rangeCount || !ref.current) return;
+    const r = s.getRangeAt(0);
+    const conColor = [...ref.current.querySelectorAll('span[style*="color"], font[color]')]
+      .filter(el => r.intersectsNode(el) || el.contains(r.startContainer));
+    for (const el of conColor) {
+      if (el.tagName === 'SPAN') el.style.removeProperty('color');
+      if (el.tagName === 'FONT' || !el.getAttribute('style')?.trim()) el.replaceWith(...el.childNodes);
+    }
+    avisar(); leerEstado();
+  }
+
+  // ── Tablas (#644) ──
+  function tablaNueva(v) {
+    const filas = Math.min(Math.max(Number(v.filas) || 2, 1), 30), cols = Math.min(Math.max(Number(v.columnas) || 2, 1), 8);
+    const fila = (t) => `<tr>${Array.from({ length: cols }, () => `<${t}><br></${t}>`).join('')}</tr>`;
+    meter(`<table>${v.cabecera ? `<thead>${fila('th')}</thead>` : ''}<tbody>${Array.from({ length: filas }, () => fila('td')).join('')}</tbody></table><p><br></p>`);
+  }
+  function enTabla(accion) {
+    const c = celda;
+    if (!c || !ref.current?.contains(c)) return;
+    const tr = c.closest('tr'), tabla = c.closest('table'), i = c.cellIndex;
+    const nueva = (t) => { const x = document.createElement(t); x.innerHTML = '<br>'; return x; };
+    if (accion === 'fila') {
+      const n = document.createElement('tr');
+      for (let k = 0; k < tr.cells.length; k++) n.appendChild(nueva('td'));
+      // Debajo de la cabecera, la primera del cuerpo.
+      if (tr.parentElement.tagName === 'THEAD') { let cuerpo = tabla.tBodies[0]; if (!cuerpo) { cuerpo = document.createElement('tbody'); tabla.appendChild(cuerpo); } cuerpo.prepend(n); } else tr.after(n);
+    }
+    if (accion === 'columna') for (const f of tabla.rows) f.insertBefore(nueva(f.parentElement.tagName === 'THEAD' ? 'th' : 'td'), f.cells[i + 1] || null);
+    if (accion === 'sinFila') { if (tabla.rows.length > 1) tr.remove(); else tabla.remove(); }
+    if (accion === 'sinColumna') { if (tr.cells.length > 1) for (const f of [...tabla.rows]) f.cells[i]?.remove(); else tabla.remove(); }
+    if (accion === 'quitar') tabla.remove();
+    setCelda(null); avisar();
+  }
 
   // Lo pegado entra como texto, en párrafos: así no se cuela el formato de Word o de otra web.
   const pegar = (e) => {
@@ -188,6 +251,7 @@ export default function EditorTexto({ valor, onChange, subirImagen, placeholder 
     if (tipo === 'boton') setVentana({ tipo, texto: sel || '', destino: { tipo: 'web', url: '' }, estilo: 'boton', alinear: 'center' });
     if (tipo === 'imagen') setVentana({ tipo, url: '', alt: '', pie: '', tamano: 'img-grande', subiendo: false });
     if (tipo === 'youtube') setVentana({ tipo, url: '' });
+    if (tipo === 'tabla') setVentana({ tipo, filas: 3, columnas: 3, cabecera: true });
   }
   function aceptar() {
     const v = ventana;
@@ -214,6 +278,7 @@ export default function EditorTexto({ valor, onChange, subirImagen, placeholder 
       const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
       bloquearVideos(); avisar();
     }
+    if (v.tipo === 'tabla') tablaNueva(v);
     if (v.tipo === 'imagen') {
       if (!v.url) { alert('Sube la imagen.'); return; }
       meter(`<figure class="${v.tamano}"><img src="${esc(v.url)}" alt="${esc(v.alt)}">${v.pie.trim() ? `<figcaption>${esc(v.pie.trim())}</figcaption>` : ''}</figure><p><br></p>`);
@@ -233,6 +298,24 @@ export default function EditorTexto({ valor, onChange, subirImagen, placeholder 
         <Boton titulo="Negrita (Ctrl+B)" activo={estado.b} onClick={() => hacer('bold')}><b>N</b></Boton>
         <Boton titulo="Cursiva (Ctrl+I)" activo={estado.i} onClick={() => hacer('italic')}><i>C</i></Boton>
         <Boton titulo="Subrayado (Ctrl+U)" activo={estado.u} onClick={() => hacer('underline')}><u>S</u></Boton>
+        {conColores && (
+          <span ref={refPaleta} style={{ position: 'relative', display: 'inline-flex' }}>
+            <Boton titulo="Color de la letra" activo={paleta} onClick={() => { guardarRango(); setPaleta(x => !x); }}>
+              <span style={{ fontWeight: 900, borderBottom: '3px solid #E04848', lineHeight: 1, paddingBottom: 1 }}>A</span> ▾
+            </Boton>
+            {paleta && (
+              <span role="menu" aria-label="Colores" style={{ position: 'absolute', top: 36, left: 0, zIndex: 5, display: 'grid', gridTemplateColumns: 'repeat(4, 30px)', gap: 6, padding: 8,
+                borderRadius: 12, border: '1px solid var(--line)', background: 'var(--bg-2)', boxShadow: '0 8px 24px rgba(0,0,0,.18)' }}>
+                {COLORES.map(([c, n]) => (
+                  <button key={c} type="button" role="menuitem" title={n} aria-label={n} onMouseDown={e => e.preventDefault()} onClick={() => ponerColor(c)}
+                    style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid var(--line)', background: c, cursor: 'pointer' }} />
+                ))}
+                <button type="button" role="menuitem" title="Sin color" aria-label="Sin color" onMouseDown={e => e.preventDefault()} onClick={quitarColor}
+                  style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink-2)', cursor: 'pointer', fontSize: 14 }}>⦸</button>
+              </span>
+            )}
+          </span>
+        )}
         <Separa />
         <Boton titulo="Alinear a la izquierda" activo={estado.izq} onClick={() => hacer('justifyLeft')}>⯇</Boton>
         <Boton titulo="Centrar" activo={estado.centro} onClick={() => hacer('justifyCenter')}>≡</Boton>
@@ -247,6 +330,7 @@ export default function EditorTexto({ valor, onChange, subirImagen, placeholder 
         <Boton titulo="Botón (a otra web, a un apartado o a un documento)" onClick={() => abrir('boton')}>▭ Botón</Boton>
         {subirImagen && <Boton titulo="Imagen" onClick={() => abrir('imagen')}>🖼️ Imagen</Boton>}
         <Boton titulo="Vídeo de YouTube" onClick={() => abrir('youtube')}>▶ YouTube</Boton>
+        {conTablas && <Boton titulo="Tabla" onClick={() => abrir('tabla')}>▦ Tabla</Boton>}
         <Boton titulo="Separador" onClick={() => hacer('insertHorizontalRule')}>―</Boton>
         <Separa />
         <Boton titulo="Quitar formato" onClick={() => { hacer('removeFormat'); hacer('formatBlock', 'P'); }}>⌫ Formato</Boton>
@@ -262,6 +346,16 @@ export default function EditorTexto({ valor, onChange, subirImagen, placeholder 
           <button type="button" className="btn btn-sm btn-ghost" style={{ color: 'var(--pink)' }} onClick={quitarImagen}>Quitar</button>
         </div>
       )}
+      {celda && (
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', padding: '6px 10px', background: 'color-mix(in oklab, var(--purple) 8%, var(--bg-2))', borderBottom: '1px solid var(--line)', fontSize: 13 }}>
+          <b>Tabla:</b>
+          <button type="button" className="btn btn-sm btn-outline" onMouseDown={e => e.preventDefault()} onClick={() => enTabla('fila')}>＋ Fila</button>
+          <button type="button" className="btn btn-sm btn-outline" onMouseDown={e => e.preventDefault()} onClick={() => enTabla('columna')}>＋ Columna</button>
+          <button type="button" className="btn btn-sm btn-ghost" onMouseDown={e => e.preventDefault()} onClick={() => enTabla('sinFila')}>− Fila</button>
+          <button type="button" className="btn btn-sm btn-ghost" onMouseDown={e => e.preventDefault()} onClick={() => enTabla('sinColumna')}>− Columna</button>
+          <button type="button" className="btn btn-sm btn-ghost" style={{ color: 'var(--pink)' }} onMouseDown={e => e.preventDefault()} onClick={() => enTabla('quitar')}>Quitar la tabla</button>
+        </div>
+      )}
       {video && (
         <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', padding: '6px 10px', background: 'color-mix(in oklab, var(--purple) 8%, var(--bg-2))', borderBottom: '1px solid var(--line)', fontSize: 13 }}>
           <b>Vídeo de YouTube</b>
@@ -269,14 +363,14 @@ export default function EditorTexto({ valor, onChange, subirImagen, placeholder 
           <button type="button" className="btn btn-sm btn-ghost" style={{ color: 'var(--pink)' }} onClick={quitarVideo}>Quitar</button>
         </div>
       )}
-      <div ref={ref} className="post-content editor-texto" contentEditable suppressContentEditableWarning role="textbox" aria-multiline="true" aria-label="Texto de la noticia"
+      <div ref={ref} className="post-content editor-texto" contentEditable suppressContentEditableWarning role="textbox" aria-multiline="true" aria-label={nombre}
         data-placeholder={placeholder} onInput={avisar} onKeyUp={leerEstado} onMouseUp={leerEstado} onBlur={() => { guardarRango(); avisar(); }} onPaste={pegar} onClick={pulsar}
         style={{ minHeight: alto, maxHeight: '60vh', overflowY: 'auto', padding: '14px 18px', outline: 'none', background: 'var(--bg-2)', color: 'var(--ink)' }} />
 
       {ventana?.tipo === 'enlace' && (
         <Ventana titulo="Enlace" onCerrar={() => setVentana(null)}>
           <label style={etiqueta}>Texto que se ve<input value={ventana.texto} onChange={e => setVentana(v => ({ ...v, texto: e.target.value }))} style={inp} placeholder="p. ej. el reglamento" /></label>
-          <Destino valor={ventana.destino} cambiar={d => setVentana(v => ({ ...v, destino: d }))} />
+          <Destino valor={ventana.destino} cambiar={d => setVentana(v => ({ ...v, destino: d }))} conDocumento={conDocumentos} />
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
             <button type="button" className="btn btn-sm btn-outline" onClick={() => setVentana(null)}>Cancelar</button>
             <button type="button" className="btn btn-sm btn-primary" onClick={aceptar}>Poner el enlace</button>
@@ -286,7 +380,7 @@ export default function EditorTexto({ valor, onChange, subirImagen, placeholder 
       {ventana?.tipo === 'boton' && (
         <Ventana titulo="Botón" onCerrar={() => setVentana(null)}>
           <label style={etiqueta}>Texto del botón<input autoFocus value={ventana.texto} onChange={e => setVentana(v => ({ ...v, texto: e.target.value }))} style={inp} placeholder="Descargar la inscripción" /></label>
-          <Destino valor={ventana.destino} cambiar={d => setVentana(v => ({ ...v, destino: d }))} />
+          <Destino valor={ventana.destino} cambiar={d => setVentana(v => ({ ...v, destino: d }))} conDocumento={conDocumentos} />
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             <label style={{ ...etiqueta, flex: 1, minWidth: 140 }}>Estilo
               <select value={ventana.estilo} onChange={e => setVentana(v => ({ ...v, estilo: e.target.value }))} style={inp}>
@@ -318,6 +412,22 @@ export default function EditorTexto({ valor, onChange, subirImagen, placeholder 
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
             <button type="button" className="btn btn-sm btn-outline" onClick={() => setVentana(null)}>Cancelar</button>
             <button type="button" className="btn btn-sm btn-primary" disabled={!idYoutube(ventana.url)} onClick={aceptar}>Poner el vídeo</button>
+          </div>
+        </Ventana>
+      )}
+      {ventana?.tipo === 'tabla' && (
+        <Ventana titulo="Tabla" onCerrar={() => setVentana(null)}>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <label style={{ ...etiqueta, flex: 1 }}>Filas<input type="number" min={1} max={30} value={ventana.filas} onChange={e => setVentana(v => ({ ...v, filas: e.target.value }))} style={inp} /></label>
+            <label style={{ ...etiqueta, flex: 1 }}>Columnas<input type="number" min={1} max={8} value={ventana.columnas} onChange={e => setVentana(v => ({ ...v, columnas: e.target.value }))} style={inp} /></label>
+          </div>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
+            <input type="checkbox" checked={ventana.cabecera} onChange={e => setVentana(v => ({ ...v, cabecera: e.target.checked }))} /> La primera fila es de títulos (en negrita)
+          </label>
+          <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Luego, con el cursor en una celda, puedes añadir o quitar filas y columnas.</p>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button type="button" className="btn btn-sm btn-outline" onClick={() => setVentana(null)}>Cancelar</button>
+            <button type="button" className="btn btn-sm btn-primary" onClick={aceptar}>Poner la tabla</button>
           </div>
         </Ventana>
       )}

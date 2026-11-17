@@ -5,6 +5,27 @@ import { incrustarVideo, TIPO_LECCION, Texto, mb } from './Aula.jsx';
 import { imagenSubible } from '../imagenes.js';
 import { DudasGestion } from './AulaDudas.jsx';
 import { ValoracionesCurso } from './AulaValoracion.jsx';
+import EditorTexto from './EditorTexto.jsx';
+import { idYoutube, htmlVideoYoutube } from './VideoYoutube.jsx';
+
+// El texto de antes de una lección (texto tal cual) al editor con formato
+// (#644): párrafos, saltos de línea, enlaces y, un enlace de YouTube solo en su
+// línea, el vídeo (como se veía).
+const escHtml = (x) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+export function textoAHtml(t) {
+  if (!t) return '';
+  const conEnlaces = (x) => escHtml(x).replace(/(https?:\/\/[^\s<>"]+)/g, '<a href="$1">$1</a>');
+  const bloques = [];
+  let parrafo = [];
+  const cerrar = () => { if (parrafo.length) bloques.push(`<p>${parrafo.map(conEnlaces).join('<br>')}</p>`); parrafo = []; };
+  for (const linea of String(t).replace(/\r/g, '').split('\n')) {
+    const id = /^\s*https?:\/\/\S+\s*$/.test(linea) ? idYoutube(linea.trim()) : null;
+    if (id) { cerrar(); bloques.push(htmlVideoYoutube(id)); } else if (!linea.trim()) cerrar(); else parrafo.push(linea);
+  }
+  cerrar();
+  return bloques.join('');
+}
+const sinEtiquetas = (h) => String(h || '').replace(/<figure[\s\S]*?<\/figure>/g, ' vídeo ').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').trim();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Aula virtual, la gestión (ticket #433): los cursos con su temario (temas y
@@ -447,39 +468,73 @@ function DatosCurso({ c, recargar, showToast, onBorrado }) {
 }
 
 // ── Temario ──
+// Lo de un tema en su orden (#644): lecciones y apartados en la misma lista. Cada
+// lección es del último apartado que tiene delante.
+const itemsDe = (t) => [...(t.apartados || []).map(a => ({ ...a, es: 'apartado' })), ...t.lecciones.map(l => ({ ...l, es: 'leccion' }))]
+  .sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0) || (a.es === b.es ? a.id - b.id : a.es === 'apartado' ? -1 : 1));
+
+function detalleLeccion(l) {
+  return (
+    <>
+      {TIPO_LECCION[l.tipo].nombre}
+      {l.tipo === 'video' && (l.videoUrl ? ' · por enlace' : l.archivo ? ` · subido (${mb(l.archivo.bytes)})` : '')}
+      {l.tipo === 'archivo' && l.archivo ? ` · ${l.archivo.nombre} (${mb(l.archivo.bytes)})` : ''}
+      {l.tipo === 'scorm' && l.scorm ? ` · SCORM ${l.scorm.version || ''}${l.scorm.actividades > 1 ? ` · ${l.scorm.actividades} actividades` : ''}` : ''}
+      {l.tipo === 'tarea' && ` · ${l.calificacion === 'nota' ? 'con nota' : 'apto / no apto'}`}
+      {l.tipo === 'cuestionario' && ` · ${l.modo === 'evaluable' ? `evaluable${l.intentos ? `, ${l.intentos} ${l.intentos === 1 ? 'intento' : 'intentos'}` : ''}` : 'de práctica'} · ${l.preguntas} ${l.preguntas === 1 ? 'pregunta' : 'preguntas'}${l.notaMinima != null && l.notaMinima !== 5 ? ` · se aprueba con un ${l.notaMinima}` : ''}${l.tiempoMin ? ` · ${l.tiempoMin} min` : ''}`}
+      {l.tipo === 'directo' && l.directoAt && ` · ${corta(l.directoAt)} (${l.directoMin || 60} min)${l.videoUrl || l.archivo ? ' · con grabación' : ''}`}
+      {l.tipo === 'tarea' && l.plazoAt && ` · plazo: ${corta(l.plazoAt)}`}
+      {l.abreAt && <b style={{ color: 'var(--purple)' }}> · 📅 se abre el {corta(l.abreAt)}</b>}
+      {l.trasAnterior && <b style={{ color: 'var(--purple)' }}> · 🔗 al terminar la anterior</b>}
+      {l.gratis && <b style={{ color: 'var(--teal)' }}> · 🔓 gratis</b>}
+      {l.porCorregir > 0 && <b style={{ color: 'var(--pink)' }}> · {l.porCorregir} por corregir</b>}
+    </>
+  );
+}
+// El botón de ocultar / mostrar a los alumnos (#644).
+function BotonOjo({ oculto, onClick, que }) {
+  const t = oculto ? `Mostrar ${que} a los alumnos` : `Ocultar ${que} a los alumnos`;
+  return <button type="button" className="icon-btn" onClick={onClick} aria-label={t} title={t} aria-pressed={oculto}>{oculto ? '🙈' : '👁'}</button>;
+}
+const oculta = { opacity: 0.55, border: '1px dashed var(--line)' };
+
 function Temario({ c, recargar, showToast, espacio }) {
   const [leccion, setLeccion] = useState(null);   // { temaId, l? }
-  const temas = c.temas;
+  const temas = c.temas.map(t => ({ ...t, items: itemsDe(t) }));
 
   // Se manda el orden completo: así subir, bajar y cambiar de tema son lo mismo.
   async function ordenar(nuevos) {
-    try { await api(`/api/admin/aula/cursos/${c.id}/orden`, { method: 'PUT', body: { temas: nuevos.map(t => ({ id: t.id, lecciones: t.lecciones.map(l => l.id) })) } }); recargar(); }
+    try { await api(`/api/admin/aula/cursos/${c.id}/orden`, { method: 'PUT', body: { temas: nuevos.map(t => ({ id: t.id, items: t.items.map(x => ({ tipo: x.es, id: x.id })) })) } }); recargar(); }
     catch (err) { alert(err.message); }
   }
   const mover = (lista, i, d) => { const x = [...lista]; const j = i + d; if (j < 0 || j >= x.length) return x; [x[i], x[j]] = [x[j], x[i]]; return x; };
   const moverTema = (i, d) => ordenar(mover(temas, i, d));
-  const moverLeccion = (ti, li, d) => {
-    const t = temas[ti];
-    if ((li + d < 0 && ti > 0) || (li + d >= t.lecciones.length && ti < temas.length - 1)) {
-      // Fuera de su tema: pasa al final del anterior o al principio del siguiente.
-      const otro = ti + (d < 0 ? -1 : 1);
-      return ordenar(temas.map((x, k) => k === ti ? { ...x, lecciones: x.lecciones.filter((_, n) => n !== li) }
-        : k === otro ? { ...x, lecciones: d < 0 ? [...x.lecciones, t.lecciones[li]] : [t.lecciones[li], ...x.lecciones] } : x));
-    }
-    return ordenar(temas.map((x, k) => (k === ti ? { ...x, lecciones: mover(x.lecciones, li, d) } : x)));
+  const moverItem = (ti, k, d) => {
+    const t = temas[ti], x = t.items[k];
+    if (k + d >= 0 && k + d < t.items.length) return ordenar(temas.map((y, n) => (n === ti ? { ...y, items: mover(y.items, k, d) } : y)));
+    // Fuera de su tema: una lección pasa al final del anterior o al principio del
+    // siguiente; un apartado se queda en el suyo.
+    const otro = ti + d;
+    if (x.es === 'apartado' || otro < 0 || otro >= temas.length) return null;
+    return ordenar(temas.map((y, n) => (n === ti ? { ...y, items: y.items.filter((_, m) => m !== k) }
+      : n === otro ? { ...y, items: d < 0 ? [...y.items, x] : [x, ...y.items] } : y)));
   };
+  const hacer = async (url, body, method = 'PUT') => { try { await api(url, { method, body }); recargar(); } catch (err) { alert(err.message); } };
   async function nuevoTema() {
     const titulo = window.prompt('Título del tema:', `Tema ${temas.length + 1}`);
-    if (!titulo?.trim()) return;
-    try { await api(`/api/admin/aula/cursos/${c.id}/temas`, { method: 'POST', body: { titulo } }); recargar(); } catch (err) { alert(err.message); }
+    if (titulo?.trim()) hacer(`/api/admin/aula/cursos/${c.id}/temas`, { titulo }, 'POST');
   }
-  async function renombrar(t, titulo) {
-    if (!titulo.trim() || titulo === t.titulo) return;
-    try { await api(`/api/admin/aula/temas/${t.id}`, { method: 'PUT', body: { titulo } }); recargar(); } catch (err) { alert(err.message); }
-  }
+  function renombrar(t, titulo) { if (titulo.trim() && titulo !== t.titulo) hacer(`/api/admin/aula/temas/${t.id}`, { titulo }); }
   async function borrarTema(t) {
-    if (!window.confirm(`¿Quitar el tema «${t.titulo}»?`)) return;
-    try { await api(`/api/admin/aula/temas/${t.id}`, { method: 'DELETE' }); recargar(); } catch (err) { alert(err.message); }
+    if (window.confirm(`¿Quitar el tema «${t.titulo}»?`)) hacer(`/api/admin/aula/temas/${t.id}`, undefined, 'DELETE');
+  }
+  function nuevoApartado(t) {
+    const titulo = window.prompt('Título del apartado (sale como subtítulo dentro del tema; las lecciones que pongas debajo son suyas):', '');
+    if (titulo?.trim()) hacer(`/api/admin/aula/temas/${t.id}/apartados`, { titulo }, 'POST');
+  }
+  function renombrarApartado(a, titulo) { if (titulo.trim() && titulo !== a.titulo) hacer(`/api/admin/aula/apartados/${a.id}`, { titulo }); }
+  function borrarApartado(a) {
+    if (window.confirm(`¿Quitar el apartado «${a.titulo}»? Sus lecciones se quedan en el tema.`)) hacer(`/api/admin/aula/apartados/${a.id}`, undefined, 'DELETE');
   }
   async function borrarLeccion(l) {
     if (!window.confirm(`¿Quitar la lección «${l.titulo}»?`)) return;
@@ -490,51 +545,78 @@ function Temario({ c, recargar, showToast, espacio }) {
     }
     showToast?.('Lección quitada.'); recargar();
   }
+  const ultimoTema = temas.length - 1;
 
   return (
     <div style={{ display: 'grid', gap: 12, maxWidth: 900 }}>
-      {temas.map((t, ti) => (
-        <div key={t.id} style={{ ...tarjeta, display: 'grid', gap: 10 }}>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--purple)' }}>{ti + 1}.</span>
-            <input key={`${t.id}:${t.titulo}`} defaultValue={t.titulo} aria-label="Título del tema" onBlur={e => renombrar(t, e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-              style={{ ...inp, flex: 1, fontWeight: 800, background: 'transparent', border: '1px solid transparent' }}
-              onFocus={e => { e.target.style.borderColor = 'var(--line)'; }} />
-            <button type="button" className="icon-btn" disabled={ti === 0} onClick={() => moverTema(ti, -1)} aria-label="Subir tema">↑</button>
-            <button type="button" className="icon-btn" disabled={ti === temas.length - 1} onClick={() => moverTema(ti, 1)} aria-label="Bajar tema">↓</button>
-            <button type="button" className="icon-btn danger" onClick={() => borrarTema(t)} aria-label="Quitar tema"><I.Trash /></button>
-          </div>
-          {t.lecciones.length === 0 && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Sin lecciones todavía.</p>}
-          {t.lecciones.map((l, li) => (
-            <div key={l.id} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 10px', borderRadius: 10, background: 'var(--bg-3)' }}>
-              <span title={TIPO_LECCION[l.tipo].nombre} style={{ fontSize: 18, width: 24, textAlign: 'center' }}>{TIPO_LECCION[l.tipo].icono}</span>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 700, fontSize: 14 }}>{l.titulo}</div>
-                <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
-                  {TIPO_LECCION[l.tipo].nombre}
-                  {l.tipo === 'video' && (l.videoUrl ? ' · por enlace' : l.archivo ? ` · subido (${mb(l.archivo.bytes)})` : '')}
-                  {l.tipo === 'archivo' && l.archivo ? ` · ${l.archivo.nombre} (${mb(l.archivo.bytes)})` : ''}
-                  {l.tipo === 'scorm' && l.scorm ? ` · SCORM ${l.scorm.version || ''}${l.scorm.actividades > 1 ? ` · ${l.scorm.actividades} actividades` : ''}` : ''}
-                  {l.tipo === 'tarea' && ` · ${l.calificacion === 'nota' ? 'con nota' : 'apto / no apto'}`}
-                  {l.tipo === 'cuestionario' && ` · ${l.modo === 'evaluable' ? `evaluable${l.intentos ? `, ${l.intentos} ${l.intentos === 1 ? 'intento' : 'intentos'}` : ''}` : 'de práctica'} · ${l.preguntas} ${l.preguntas === 1 ? 'pregunta' : 'preguntas'}${l.notaMinima != null && l.notaMinima !== 5 ? ` · se aprueba con un ${l.notaMinima}` : ''}${l.tiempoMin ? ` · ${l.tiempoMin} min` : ''}`}
-                  {l.tipo === 'directo' && l.directoAt && ` · ${corta(l.directoAt)} (${l.directoMin || 60} min)${l.videoUrl || l.archivo ? ' · con grabación' : ''}`}
-                  {l.tipo === 'tarea' && l.plazoAt && ` · plazo: ${corta(l.plazoAt)}`}
-                  {l.abreAt && <b style={{ color: 'var(--purple)' }}> · 📅 se abre el {corta(l.abreAt)}</b>}
-                  {l.trasAnterior && <b style={{ color: 'var(--purple)' }}> · 🔗 al terminar la anterior</b>}
-                  {l.gratis && <b style={{ color: 'var(--teal)' }}> · 🔓 gratis</b>}
-                  {l.porCorregir > 0 && <b style={{ color: 'var(--pink)' }}> · {l.porCorregir} por corregir</b>}
-                </div>
-              </div>
-              <button type="button" className="icon-btn" disabled={ti === 0 && li === 0} onClick={() => moverLeccion(ti, li, -1)} aria-label="Subir lección">↑</button>
-              <button type="button" className="icon-btn" disabled={ti === temas.length - 1 && li === t.lecciones.length - 1} onClick={() => moverLeccion(ti, li, 1)} aria-label="Bajar lección">↓</button>
-              <button type="button" className="icon-btn" onClick={() => setLeccion({ temaId: t.id, l })} aria-label="Editar lección"><I.Edit /></button>
-              <button type="button" className="icon-btn danger" onClick={() => borrarLeccion(l)} aria-label="Quitar lección"><I.Trash /></button>
+      <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>
+        👁 / 🙈: lo oculto no lo ven los alumnos (ni saben que existe) y no les cuenta para el avance ni el diploma. Los apartados son subtítulos dentro de un tema: las lecciones que van debajo son suyas.
+      </p>
+      {temas.map((t, ti) => {
+        let ap = null;
+        return (
+          <div key={t.id} style={{ ...tarjeta, display: 'grid', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--purple)' }}>{ti + 1}.</span>
+              <input key={`${t.id}:${t.titulo}`} defaultValue={t.titulo} aria-label="Título del tema" onBlur={e => renombrar(t, e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                style={{ ...inp, flex: 1, minWidth: 160, fontWeight: 800, background: 'transparent', border: '1px solid transparent', opacity: t.oculto ? 0.55 : 1 }}
+                onFocus={e => { e.target.style.borderColor = 'var(--line)'; }} />
+              {t.oculto && <b style={{ fontSize: 12, color: 'var(--ink-2)' }}>🙈 Oculto: los alumnos no ven este tema</b>}
+              <BotonOjo oculto={t.oculto} que="el tema" onClick={() => hacer(`/api/admin/aula/temas/${t.id}`, { oculto: !t.oculto })} />
+              <button type="button" className="icon-btn" disabled={ti === 0} onClick={() => moverTema(ti, -1)} aria-label="Subir tema">↑</button>
+              <button type="button" className="icon-btn" disabled={ti === ultimoTema} onClick={() => moverTema(ti, 1)} aria-label="Bajar tema">↓</button>
+              <button type="button" className="icon-btn danger" onClick={() => borrarTema(t)} aria-label="Quitar tema"><I.Trash /></button>
             </div>
-          ))}
-          <button type="button" className="btn btn-sm btn-outline" style={{ justifySelf: 'start' }} onClick={() => setLeccion({ temaId: t.id })}><I.Plus /> Añadir lección</button>
-        </div>
-      ))}
+            {t.items.length === 0 && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Sin lecciones todavía.</p>}
+            {t.items.map((x, k) => {
+              const arriba = k === 0 && (x.es === 'apartado' || ti === 0), abajo = k === t.items.length - 1 && (x.es === 'apartado' || ti === ultimoTema);
+              if (x.es === 'apartado') {
+                ap = x;
+                return (
+                  <div key={`a${x.id}`} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '6px 10px', borderRadius: 10, marginTop: k ? 6 : 0,
+                    border: '1.5px dashed color-mix(in oklab, var(--teal) 45%, var(--line))', ...(x.oculto ? { opacity: 0.55 } : {}) }}>
+                    <span style={{ fontSize: 16, width: 24, textAlign: 'center' }}>📂</span>
+                    <input key={`${x.id}:${x.titulo}`} defaultValue={x.titulo} aria-label="Título del apartado" onBlur={e => renombrarApartado(x, e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                      style={{ ...inp, flex: 1, minWidth: 0, fontWeight: 800, fontSize: 13.5, background: 'transparent', border: '1px solid transparent', padding: '4px 6px' }}
+                      onFocus={e => { e.target.style.borderColor = 'var(--line)'; }} />
+                    <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>{x.oculto ? '🙈 Apartado oculto' : 'Apartado'}</span>
+                    <BotonOjo oculto={x.oculto} que="el apartado (y sus lecciones)" onClick={() => hacer(`/api/admin/aula/apartados/${x.id}`, { oculto: !x.oculto })} />
+                    <button type="button" className="icon-btn" disabled={arriba} onClick={() => moverItem(ti, k, -1)} aria-label="Subir apartado">↑</button>
+                    <button type="button" className="icon-btn" disabled={abajo} onClick={() => moverItem(ti, k, 1)} aria-label="Bajar apartado">↓</button>
+                    <button type="button" className="icon-btn danger" onClick={() => borrarApartado(x)} aria-label="Quitar apartado"><I.Trash /></button>
+                  </div>
+                );
+              }
+              const l = x, porArriba = ap?.oculto || t.oculto;
+              return (
+                <div key={l.id} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 10px', borderRadius: 10, background: 'var(--bg-3)',
+                  border: '1px solid transparent', marginLeft: ap ? 22 : 0, ...(l.oculta || porArriba ? oculta : {}) }}>
+                  <span title={TIPO_LECCION[l.tipo].nombre} style={{ fontSize: 18, width: 24, textAlign: 'center' }}>{TIPO_LECCION[l.tipo].icono}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>{l.titulo}</div>
+                    <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                      {detalleLeccion(l)}
+                      {l.oculta ? <b style={{ color: 'var(--ink-2)' }}> · 🙈 Oculta: los alumnos no la ven</b>
+                        : ap?.oculto ? <b style={{ color: 'var(--ink-2)' }}> · 🙈 No la ven: su apartado está oculto</b> : null}
+                    </div>
+                  </div>
+                  <BotonOjo oculto={l.oculta} que="la lección" onClick={() => hacer(`/api/admin/aula/lecciones/${l.id}/oculta`, { oculta: !l.oculta })} />
+                  <button type="button" className="icon-btn" disabled={arriba} onClick={() => moverItem(ti, k, -1)} aria-label="Subir lección">↑</button>
+                  <button type="button" className="icon-btn" disabled={abajo} onClick={() => moverItem(ti, k, 1)} aria-label="Bajar lección">↓</button>
+                  <button type="button" className="icon-btn" onClick={() => setLeccion({ temaId: t.id, l })} aria-label="Editar lección"><I.Edit /></button>
+                  <button type="button" className="icon-btn danger" onClick={() => borrarLeccion(l)} aria-label="Quitar lección"><I.Trash /></button>
+                </div>
+              );
+            })}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button type="button" className="btn btn-sm btn-outline" onClick={() => setLeccion({ temaId: t.id })}><I.Plus /> Añadir lección</button>
+              <button type="button" className="btn btn-sm btn-ghost" onClick={() => nuevoApartado(t)}><I.Plus /> Añadir apartado</button>
+            </div>
+          </div>
+        );
+      })}
       <button type="button" className="btn btn-sm btn-ghost" style={{ justifySelf: 'start' }} onClick={nuevoTema}><I.Plus /> Añadir tema</button>
       {leccion && <EditorLeccion cursoId={c.id} temaId={leccion.temaId} l={leccion.l} espacio={espacio} meetCurso={c.meetUrl}
         onCerrar={() => setLeccion(null)} onGuardado={() => { setLeccion(null); showToast?.('Lección guardada.'); recargar(); }} />}
@@ -543,7 +625,7 @@ function Temario({ c, recargar, showToast, espacio }) {
 }
 
 function EditorLeccion({ cursoId, temaId, l, espacio, meetCurso, onCerrar, onGuardado }) {
-  const [f, setF] = useState({ tipo: l?.tipo || 'texto', titulo: l?.titulo || '', texto: l?.texto || '', videoUrl: l?.videoUrl || '',
+  const [f, setF] = useState({ tipo: l?.tipo || 'texto', titulo: l?.titulo || '', texto: l?.textoHtml ? l.texto : textoAHtml(l?.texto), videoUrl: l?.videoUrl || '',
     calificacion: l?.calificacion || 'apto', archivoId: l?.archivo?.id || null, archivo: l?.archivo || null,
     modo: l?.modo || 'practica', intentos: l?.intentos ?? '', gratis: !!l?.gratis,
     // Cuándo se abre, el plazo de una tarea y la clase en directo.
@@ -607,6 +689,7 @@ function EditorLeccion({ cursoId, temaId, l, espacio, meetCurso, onCerrar, onGua
     if (porEnlace && !embed && (f.tipo === 'video' || f.videoUrl)) { alert('Pega el enlace de un vídeo de YouTube o de Vimeo.'); return; }
     if (f.abre === 'fecha' && !f.abreAt) { alert('Elige el día y la hora en que se abre.'); return; }
     if (f.tipo === 'directo' && !f.directoAt) { alert('Pon el día y la hora de la clase.'); return; }
+    if ((f.tipo === 'texto' || f.tipo === 'tarea') && !sinEtiquetas(f.texto)) { alert(f.tipo === 'texto' ? 'Escribe el contenido de la lección.' : 'Escribe el enunciado de la tarea.'); return; }
     if (f.tipo === 'scorm' && scorm?.estado !== 'listo') { alert(scorm?.estado === 'error' ? `El paquete no vale: ${scorm.error}` : 'Sube el paquete SCORM y espera a que esté listo.'); return; }
     if (f.tipo === 'cuestionario') {
       if (!preguntas?.length) { alert('Pon al menos una pregunta.'); return; }
@@ -696,12 +779,14 @@ function EditorLeccion({ cursoId, temaId, l, espacio, meetCurso, onCerrar, onGua
           </div>
         )}
 
-        <label style={etiqueta}>
+        {/* El texto, con formato (#644): negrita, colores, subrayado, tablas, enlaces, vídeos… */}
+        <div style={etiqueta}>
           {f.tipo === 'texto' ? 'Contenido' : f.tipo === 'tarea' ? 'Enunciado: qué tienen que hacer y entregar' : f.tipo === 'cuestionario' ? 'Instrucciones (opcional)' : 'Texto que acompaña (opcional)'}
-          <textarea rows={f.tipo === 'texto' ? 12 : f.tipo === 'cuestionario' ? 2 : 6} value={f.texto} onChange={e => cambiar('texto', e.target.value)} style={{ ...inp, resize: 'vertical' }}
-            required={f.tipo === 'texto' || f.tipo === 'tarea'} />
-          <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}>Los saltos de línea se respetan y los enlaces (https://…) se pueden pulsar. Un enlace de YouTube solo en su línea se ve como el vídeo.</span>
-        </label>
+          <div style={{ fontWeight: 400, fontSize: 14 }}>
+            <EditorTexto valor={f.texto} onChange={v => cambiar('texto', v)} conColores conTablas conDocumentos={false} nombre="Texto de la lección"
+              alto={f.tipo === 'texto' ? 260 : f.tipo === 'cuestionario' ? 90 : 150} placeholder={f.tipo === 'texto' ? 'Escribe aquí la lección…' : 'Escribe aquí…'} />
+          </div>
+        </div>
 
         {f.tipo === 'tarea' && (
           <>

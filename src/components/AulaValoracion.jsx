@@ -3,8 +3,8 @@ import React, { useState, useEffect } from 'react';
 // ─────────────────────────────────────────────────────────────────────────────
 // La valoración del curso (#463). El alumno la rellena al terminar el curso y,
 // con ella, tiene su diploma (Valoracion). El personal ve el resumen en el
-// curso, pestaña «Valoraciones» (ValoracionesCurso): secretaría y la dirección
-// con el nombre de cada alumno; el profesor, sin nombres.
+// curso, pestaña «Valoraciones» (ValoracionesCurso). Son anónimas para todos
+// (#644): solo medias, repartos y los comentarios sin nombre.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const PREGUNTAS_VALORACION = [
@@ -46,6 +46,7 @@ export function Valoracion({ cursoId, onHecha }) {
       <div style={{ display: 'grid', gap: 4 }}>
         <b style={{ fontSize: 18 }}>🎉 ¡Has terminado el curso! Último paso: valóralo</b>
         <span style={{ fontSize: 14, color: 'var(--ink-2)' }}>Son dos minutos y nos ayudan a mejorar. Al enviarla, tienes tu diploma.</span>
+        <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>🔒 Es anónima: nadie, ni el profesor ni el club, ve quién ha puesto cada nota o cada comentario.</span>
       </div>
       {PREGUNTAS_VALORACION.map(([k, texto], i) => (
         <fieldset key={k} style={{ border: 0, padding: 0, margin: 0, display: 'grid', gap: 8 }}>
@@ -98,7 +99,7 @@ export function ValoracionesCurso({ cursoId }) {
   return (
     <div style={{ display: 'grid', gap: 16, maxWidth: 900 }}>
       <span style={{ fontSize: 14, color: 'var(--ink-2)' }}>
-        {d.total} {d.total === 1 ? 'alumno ha valorado' : 'alumnos han valorado'} el curso.{!d.conNombre && ' Son anónimas: no se ve quién ha puesto cada cosa.'}
+        {d.total} {d.total === 1 ? 'alumno ha valorado' : 'alumnos han valorado'} el curso. Son anónimas: no se ve quién ha puesto cada cosa.
       </span>
       <div style={{ ...tarjeta, padding: 16, display: 'grid', gap: 12 }}>
         {PREGUNTAS_VALORACION.map(([k, texto]) => {
@@ -131,32 +132,9 @@ export function ValoracionesCurso({ cursoId }) {
         {d.comentarios.map((c, i) => (
           <div key={i} style={{ padding: '10px 12px', borderRadius: 12, background: 'var(--bg-3)', display: 'grid', gap: 4 }}>
             <span style={{ fontSize: 14, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{c.texto}</span>
-            {c.alumno && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{c.alumno} · {new Date(c.fecha).toLocaleDateString('es-ES')}</span>}
           </div>
         ))}
       </div>
-      {d.respuestas && (
-        <div style={{ ...tarjeta, padding: 16, display: 'grid', gap: 8, overflowX: 'auto' }}>
-          <b style={{ fontSize: 15 }}>Cada alumno</b>
-          <table style={{ borderCollapse: 'collapse', fontSize: 13, minWidth: 620 }}>
-            <thead>
-              <tr style={{ textAlign: 'left', color: 'var(--ink-3)' }}>
-                <th style={{ padding: 6 }}>Alumno</th>{PREGUNTAS_VALORACION.map((_, i) => <th key={i} style={{ padding: 6, textAlign: 'center' }}>{i + 1}</th>)}<th style={{ padding: 6 }}>Recomendaría</th><th style={{ padding: 6 }}>Fecha</th>
-              </tr>
-            </thead>
-            <tbody>
-              {d.respuestas.map((x, i) => (
-                <tr key={i} style={{ borderTop: '1px solid var(--line)' }}>
-                  <td style={{ padding: 6, fontWeight: 700 }}>{x.alumno}</td>
-                  {PREGUNTAS_VALORACION.map(([k]) => <td key={k} style={{ padding: 6, textAlign: 'center', fontWeight: 800, color: COLOR_NOTA[x[k]] }}>{x[k]}</td>)}
-                  <td style={{ padding: 6 }}>{RECOMENDARIA.find(([k]) => k === x.recomendaria)?.[1]}</td>
-                  <td style={{ padding: 6, color: 'var(--ink-3)' }}>{new Date(x.fecha).toLocaleDateString('es-ES')}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
     </div>
   );
 }

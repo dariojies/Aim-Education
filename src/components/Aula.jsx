@@ -6,7 +6,7 @@ import { imagenSubible } from '../imagenes.js';
 import { DudasCurso } from './AulaDudas.jsx';
 import { Valoracion } from './AulaValoracion.jsx';
 import { crearApiScorm } from '../aula/scormApi.js';
-import { VideoYoutube, idYoutube } from './VideoYoutube.jsx';
+import { VideoYoutube, idYoutube, HtmlConVideos } from './VideoYoutube.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Aula virtual (ticket #433), la parte de quien hace los cursos:
@@ -177,6 +177,51 @@ export default function AulaPublica({ seg }) {
   );
 }
 
+// La nota del curso (#644): estrellas, la media y cuántas valoraciones (sale a
+// partir de 3; las valoraciones son anónimas).
+function Estrellas({ media, tam = 15 }) {
+  return (
+    <span aria-hidden="true" style={{ display: 'inline-flex', gap: 1, fontSize: tam, lineHeight: 1 }}>
+      {[1, 2, 3, 4, 5].map(i => (
+        <span key={i} style={{ position: 'relative', color: 'color-mix(in oklab, var(--ink-3) 40%, transparent)' }}>★
+          <span style={{ position: 'absolute', left: 0, top: 0, width: `${Math.max(0, Math.min(1, media - i + 1)) * 100}%`, overflow: 'hidden', color: '#F5A400' }}>★</span>
+        </span>
+      ))}
+    </span>
+  );
+}
+function NotaCurso({ v, grande = false }) {
+  if (!v) return null;
+  const media = String(v.media.toFixed(1)).replace('.', ',');
+  return (
+    <span role="img" aria-label={`Valorado con un ${media} de 5 por ${v.n} alumnos`} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: grande ? 15 : 13 }}>
+      <Estrellas media={v.media} tam={grande ? 20 : 15} /><b>{media}</b><span style={{ color: 'var(--ink-3)' }}>({v.n} valoraciones)</span>
+    </span>
+  );
+}
+// Las lecciones de un tema, por apartados (#644): las seguidas del mismo apartado juntas.
+function porApartados(lecciones) {
+  const grupos = [];
+  for (const l of lecciones) {
+    const ultimo = grupos[grupos.length - 1];
+    if (ultimo && (ultimo.apartado?.id ?? null) === (l.apartado?.id ?? null)) ultimo.lecciones.push(l);
+    else grupos.push({ apartado: l.apartado || null, lecciones: [l] });
+  }
+  return grupos;
+}
+// Un apartado: su título con una raya y sus lecciones debajo, un poco metidas.
+function Apartado({ titulo, children }) {
+  if (!titulo) return children;
+  return (
+    <div style={{ display: 'grid', gap: 2, marginTop: 4 }}>
+      <span style={{ fontSize: 12.5, fontWeight: 800, color: 'var(--ink-2)', padding: '4px 10px 2px', display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span aria-hidden="true" style={{ width: 4, height: 14, borderRadius: 2, background: 'var(--teal)', flex: 'none' }} />{titulo}
+      </span>
+      <div style={{ display: 'grid', gap: 2, marginLeft: 12, paddingLeft: 6, borderLeft: '2px solid color-mix(in oklab, var(--teal) 30%, transparent)' }}>{children}</div>
+    </div>
+  );
+}
+
 function Catalogo() {
   const { go } = useRouter();
   const [cursos, setCursos] = useState(null);
@@ -214,6 +259,7 @@ function Catalogo() {
                     {c.mio?.pendientePago && <span style={pastilla('var(--orange)')}>Falta pagar</span>}
                   </div>
                   <b style={{ fontSize: 18, lineHeight: 1.25 }}>{c.titulo}</b>
+                  <NotaCurso v={c.valoracion} />
                   {c.resumen && <span style={{ fontSize: 14, color: 'var(--ink-2)' }}>{c.resumen}</span>}
                   <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{c.lecciones} {c.lecciones === 1 ? 'lección' : 'lecciones'}{c.profesor ? ` · ${c.profesor}` : ''}</span>
                   {c.mio?.acceso && <Progreso pct={c.mio.progreso} />}
@@ -322,6 +368,7 @@ function FichaCurso({ id }) {
           <div style={{ display: 'grid', gap: 14 }}>
             <span className="eyebrow purple">Aula virtual</span>
             <h1 className="title-display" style={{ fontSize: 'clamp(30px, 5vw, 48px)' }}>{c.titulo}</h1>
+            <NotaCurso v={c.valoracion} grande />
             {c.resumen && <p className="section-lede" style={{ margin: 0 }}>{c.resumen}</p>}
             <span style={{ fontSize: 14, color: 'var(--ink-3)' }}>{lecciones} {lecciones === 1 ? 'lección' : 'lecciones'} en {c.temas.length} {c.temas.length === 1 ? 'tema' : 'temas'}{c.profesor ? ` · Profesor: ${c.profesor}` : ''}</span>
           </div>
@@ -372,14 +419,14 @@ function FichaCurso({ id }) {
             {c.temas.map((t, i) => (
               <div key={t.id} style={{ ...tarjeta, padding: 18, display: 'grid', gap: 8 }}>
                 <b style={{ fontSize: 16 }}>{i + 1}. {t.titulo}</b>
-                {t.lecciones.map(l => (
+                {porApartados(t.lecciones).map((g, gi) => <Apartado key={gi} titulo={g.apartado?.titulo}>{g.lecciones.map(l => (
                   <span key={l.id} style={{ display: 'flex', gap: 10, fontSize: 14, color: 'var(--ink-2)', alignItems: 'center' }}>
                     <span style={{ width: 20, textAlign: 'center', color: l.hecha ? 'var(--teal)' : undefined }}>{l.hecha ? '✓' : TIPO_LECCION[l.tipo].icono}</span>{l.titulo}
                     {l.gratis && <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--teal)', background: 'color-mix(in oklab, var(--teal) 12%, var(--bg-2))', padding: '1px 8px', borderRadius: 999 }}>Gratis</span>}
                     {l.tipo === 'directo' && l.directoAt && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>· {new Date(l.directoAt).toLocaleString('es-ES', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>}
                     {l.tipo !== 'directo' && l.abreAt && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>· se abre el {new Date(l.abreAt).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })}</span>}
                   </span>
-                ))}
+                ))}</Apartado>)}
               </div>
             ))}
           </div>
@@ -472,7 +519,7 @@ function AulaAprender({ id }) {
       {c.temas.map((t, ti) => (
         <div key={t.id} style={{ display: 'grid', gap: 4 }}>
           <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--purple)' }}>{ti + 1}. {t.titulo}</span>
-          {t.lecciones.map(x => (
+          {porApartados(t.lecciones).map((g, gi) => <Apartado key={gi} titulo={g.apartado?.titulo}>{g.lecciones.map(x => (
             <button key={x.id} type="button" onClick={() => ir(todas.findIndex(y => y.id === x.id))}
               style={{ font: 'inherit', textAlign: 'left', cursor: 'pointer', display: 'flex', gap: 8, alignItems: 'center', padding: '8px 10px', borderRadius: 10, border: 0,
                 background: x.id === actual ? 'color-mix(in oklab, var(--purple) 12%, var(--bg-2))' : 'transparent', color: 'var(--ink)', fontWeight: x.id === actual ? 800 : 500, fontSize: 14 }}>
@@ -481,7 +528,7 @@ function AulaAprender({ id }) {
                 {x.tipo === 'directo' && x.directo?.at && <span style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--ink-3)' }}>{new Date(x.directo.at).toLocaleString('es-ES', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>}
               </span>
             </button>
-          ))}
+          ))}</Apartado>)}
         </div>
       ))}
       {!todas.length && <span style={{ color: 'var(--ink-3)', fontSize: 14 }}>Este curso aún no tiene lecciones.</span>}
@@ -540,7 +587,7 @@ function AulaAprender({ id }) {
           {l && !l.bloqueada && !l.cerrada && (
             <>
               <div style={{ display: 'grid', gap: 4 }}>
-                <span style={{ fontSize: 13, color: 'var(--ink-3)', fontWeight: 700 }}>{l.tema} · {TIPO_LECCION[l.tipo].nombre}</span>
+                <span style={{ fontSize: 13, color: 'var(--ink-3)', fontWeight: 700 }}>{l.tema}{l.apartado ? ` · ${l.apartado.titulo}` : ''} · {TIPO_LECCION[l.tipo].nombre}</span>
                 <h1 style={{ margin: 0, fontSize: 'clamp(24px, 4vw, 34px)', lineHeight: 1.15 }}>{l.titulo}</h1>
               </div>
               <Leccion key={l.id} l={l} gestor={c.gestor} previa={c.previa} curso={c.titulo} onEntregada={cargar} onVista={() => { if (!l.hecha && !c.gestor) marcar(l, true); }} actualizar={actualizar} />
@@ -581,7 +628,7 @@ function Leccion({ l, gestor, previa, curso, onEntregada, onVista, actualizar })
       )}
       {l.tipo === 'video' && l.video && <VideoConMemoria l={l} video={l.video} gestor={gestor} actualizar={actualizar} />}
       {l.tipo === 'video' && !l.video && <p style={{ color: 'var(--ink-3)' }}>Este vídeo aún no está disponible.</p>}
-      {l.texto && <div style={{ ...tarjeta, padding: 20, fontSize: 16 }}><Texto texto={l.texto} /></div>}
+      {l.texto && <div style={{ ...tarjeta, padding: 20, fontSize: 16, overflowX: 'auto' }}>{l.textoHtml ? <HtmlConVideos className="post-content texto-leccion" html={l.texto} /> : <Texto texto={l.texto} />}</div>}
       {l.archivo && (
         <div style={{ ...tarjeta, padding: 16, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <span style={{ fontSize: 26 }}>📎</span>
