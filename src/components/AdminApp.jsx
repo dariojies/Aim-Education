@@ -2414,7 +2414,10 @@ Le llegará un correo a ${u.email} con un enlace para poner su contraseña (vale
     return coincideBusqueda(search, u.firstName, u.lastName, u.email);
   });
 
-  const cols = "2.4fr 2fr 1.2fr 2fr 130px";
+  // La última columna, a la medida de los botones: antes era de 130 px y
+  // los botones se salían, con desplazamiento lateral para verlos.
+  // Ancho fijo (no «auto») para que la cabecera, que va vacía, mida lo mismo.
+  const cols = "minmax(0, 2.2fr) minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1.8fr) 240px";
 
   return (
     <>
@@ -2466,18 +2469,18 @@ Le llegará un correo a ${u.email} con un enlace para poner su contraseña (vale
                 ) : <div className="sec">{etiquetaRol(u)}</div>}
               </div>
             </div>
-            <div className="sec">{u.email || <span style={{ color: "var(--ink-3)" }}>—</span>}</div>
+            <div className="sec" title={u.email || undefined} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.email || <span style={{ color: "var(--ink-3)" }}>—</span>}</div>
             <div>{u.phone || <span style={{ color: "var(--ink-3)" }}>—</span>}</div>
             <div style={{ fontSize: 12 }}>
               {clases[u.id]?.length
                 ? clases[u.id].map(c => `${c.actividad} · ${c.grupo}`).join(', ')
                 : <span style={{ color: "var(--ink-3)" }}>—</span>}
             </div>
-            <div className="row-actions">
+            <div className="row-actions" style={{ justifyContent: "flex-end", alignItems: "center" }}>
               <button className="btn btn-sm btn-outline" title="Le llega un correo para poner su contraseña y entrar a la web (fichar, pasar lista)"
                 onClick={() => enviarAcceso(u)}><I.Mail width={14} height={14} /> Enviar acceso</button>
               <button className="icon-btn" aria-label="Abrir ficha" title="Abrir su ficha" onClick={() => onEditUser(u)}><I.Edit /></button>
-              <button className="icon-btn" aria-label="Perfil en la web" title="Su perfil en «Conócenos» de la web" onClick={() => setPerfilDe(u)}><I.Globe /></button>
+              <button className="icon-btn" aria-label="Perfil en la web" title="Su perfil en «Conócenos» de la web" onClick={() => setPerfilDe(u)}><I.Globe width={16} height={16} /></button>
               <button className="icon-btn danger" aria-label="Sacar del personal"
                 title="Deja de ser del personal (sigue como alumno)" onClick={() => cambiarRol(u, 'student')}><I.Trash /></button>
             </div>
@@ -5292,7 +5295,7 @@ function AdminBilling({ showToast, enlace }) {
         const chip = (c) => (
           <span key={c.id} style={{ display: 'inline-flex', gap: 8, alignItems: 'center', background: 'color-mix(in oklab, var(--teal) 10%, var(--bg-3))', border: '1px solid var(--line-2)', borderRadius: 999, padding: '3px 6px 3px 12px', fontSize: 12, fontWeight: 700 }}>
             {c.descripcion} · {eur(c.precio)}{c.ivaPct > 0 ? ` +${c.ivaPct}%` : ''}
-            <button className="icon-btn danger" style={{ width: 20, height: 20 }} onClick={() => api(`/api/admin/billing/conceptos/${c.id}`, { method: 'DELETE' }, 'Quitado.')} aria-label="Quitar"><I.X /></button>
+            <button className="icon-btn danger" style={{ width: 20, height: 20, borderRadius: 999 }} onClick={() => api(`/api/admin/billing/conceptos/${c.id}`, { method: 'DELETE' }, 'Quitado.')} aria-label="Quitar"><I.X width={12} height={12} /></button>
           </span>
         );
         const acts = Object.keys(clasesPorActividad).sort((a, b) => a.localeCompare(b, 'es'));

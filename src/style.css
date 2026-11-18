@@ -3126,6 +3126,10 @@ html[data-theme="dark"] .dash-nav button.is-active {
   border-radius: 8px;
   display: grid;
   place-items: center;
+  /* Sin el relleno que pone el navegador: en los botones pequeños (20 px)
+     dejaba el icono descentrado y saliéndose. */
+  padding: 0;
+  flex-shrink: 0;
   background: var(--bg-3);
   border: 1px solid var(--line-2);
   color: var(--ink-2);
