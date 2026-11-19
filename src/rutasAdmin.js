@@ -13,6 +13,8 @@ export const RUTAS_ADMIN = {
   incidencias: ['incidencias'],
   mensajes: ['mensajes'],
   listas: ['contactos', 'listas'],
+  // La oferta educativa para colegios (#652).
+  colegios: ['colegios'],
   classes: ['clases'],
   speaking: ['clases-individuales', 'speaking'],
   faltas: ['faltas'],

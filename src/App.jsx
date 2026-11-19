@@ -63,6 +63,8 @@ const StudentDashboard = perezoso(() => import('./components/StudentDashboard'))
 const AdminApp = perezoso(() => import('./components/AdminApp'));
 // Un diseño de Aim Design para ver con un enlace (/d/<clave>).
 const VerDiseno = perezoso(() => import('./components/VerDiseno'));
+// La página de un colegio con su enlace (#652): pedir actividades.
+const ColegioPublico = perezoso(() => import('./components/ColegioPublico.jsx'));
 // Lo mismo con las páginas públicas que se abren poco al llegar (el aula, la
 // tienda, el calendario…): así la portada y las actividades, que es por donde
 // entra casi todo el mundo desde el móvil, descargan menos.
@@ -272,6 +274,8 @@ export default function App() {
     screen = <TiendaPublica seg={seg} />;
   } else if (seg[0] === 'd' && seg[1]) {
     screen = <VerDiseno token={seg[1]} />;
+  } else if (seg[0] === 'colegio' && seg[1]) {
+    screen = <ColegioPublico token={seg[1]} />;
   } else if (seg[0] === 'aula') {
     // El aula virtual (#433): el catálogo, cada curso y el curso por dentro.
     screen = <AulaPublica seg={seg} />;

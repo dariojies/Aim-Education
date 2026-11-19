@@ -43,6 +43,7 @@ import { crearPantallas, crearTablasPantallas, prepararEstaticas, prepararCierre
 import { crearChats, crearTablasChats, avisosChats, achicarFoto } from './chats.js';
 import { crearAulasClase, crearTablasAulasClase, avisosAulaClaseFamilia, avisosAulaClasePersonal } from './aulas-clase.js';
 import { crearListas, crearTablasListas, listasComoSegmentos, resolverLista, correosDeLista } from './listas.js';
+import { crearColegios, crearTablasColegios, colegiosPorContestar } from './colegios.js';
 import { crearPersonal, crearTablasPersonal, avisosEspacio, recordarCertificados } from './personal.js';
 import { redesDeNoticia, configRedesAuto, guardarRedesAuto, programarHistoriasActividades, prepararHistoriaActividad, plazasPocas, guardarPlazasPocas, resumenVuelta } from './redes-auto.js';
 import { programarHistoriasFestivos, felicitacionCumple, automaticosElegidos } from './disenos-automaticos.js';
@@ -2387,6 +2388,8 @@ async function initDb() {
         await crearTablasAulasClase(client);
         // Las listas hechas a mano (#499): AMPAs, colegios, asociaciones… (listas.js).
         await crearTablasListas(client);
+        // La oferta educativa para colegios (#652): colegios, oferta, horarios y citas (colegios.js).
+        await crearTablasColegios(client);
         // Mi espacio (#497): nóminas, contratos, certificados y la ficha de cada trabajador.
         await crearTablasPersonal(client);
     } finally {
@@ -5572,6 +5575,25 @@ const chatsInternos = crearChats({ pool, clubId: AIM_CLUB_ID, authenticateSessio
 app.use(chatsInternos.router);
 // Las listas hechas a mano y sus personas (Personas → Contactos, #499).
 app.use(crearListas({ pool, authenticateSession, requireSeccion, correosCon }));
+// Oferta educativa para colegios (#652): su página con enlace propio y Colegios en el panel.
+app.use(crearColegios({
+    pool, authenticateSession, requireSeccion, urlPublica: URL_PUBLICA_WEB,
+    mandar: async (clave, to, vars) => {
+        if (!mailTransporter || !to) return false;
+        await mailTransporter.sendMail({ from: process.env.EMAIL_USER, to, ...(await correoSistema(clave, vars)) });
+        return true;
+    },
+    // Lo que hace un colegio llega por correo a quienes van a los colegios (o a info@ si aún no hay nadie).
+    avisarClub: async (vars) => {
+        if (!mailTransporter) return;
+        const aj = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'colegios'`)).rows[0]?.valor || {};
+        const ids = Array.isArray(aj.personas) ? aj.personas : [];
+        const correos = ids.length ? (await pool.query(`SELECT email FROM users WHERE user_id = ANY($1::uuid[]) AND email IS NOT NULL`, [ids])).rows.map(r => r.email).filter(e => !esCorreoInterno(e)) : [];
+        const to = correos.length ? correos : [process.env.EMAIL_USER].filter(Boolean);
+        if (!to.length) return;
+        await mailTransporter.sendMail({ from: process.env.EMAIL_USER, to, ...(await correoSistema('colegio_aviso_club', vars)) });
+    },
+}));
 // Mi espacio (#497): lo de cada trabajador y, para secretaría y la dirección, el de todos.
 // Al subirle algo, le llega también un correo (#510).
 app.use(crearPersonal({ pool, authenticateSession, requireAdmin, permisos, clubId: AIM_CLUB_ID, sqlEsPersonal: (u) => SQL_ES_PERSONAL(u), avisar: (ids) => avisosPush.avisarFamilias(ids),
@@ -17786,6 +17808,13 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
 
         // Eventos que ha propuesto alguien y están esperando respuesta. A quien
         // los pidió también se le avisa cuando ya se los han contestado.
+        // Peticiones de los colegios sin contestar (#652).
+        if (recibe('colegios_pendientes')) {
+            fuente('Colegios', ['colegios_pendientes'], async () => {
+                const c = (await avisoCompartido('colegios', () => colegiosPorContestar(pool).then(r => ({ rows: [r] })))).rows[0];
+                return c.n ? [{ tipo: 'clases', clave: 'colegios_pendientes', n: c.n, marca: c.ultima, fecha: c.ultima, destino: '/admin/colegios', texto: `${c.n} ${plural(c.n, 'petición de colegio', 'peticiones de colegios')} sin contestar`, detalle: 'quieren que vayáis a hacer una actividad' }] : [];
+            });
+        }
         if (recibe('eventos_propuestos')) {
             fuente('Eventos', ['eventos_propuestos'], async () => {
                 const e = (await avisoCompartido('eventos', () => pool.query(
@@ -24201,7 +24230,7 @@ app.get('/', (req, res) => {
 //  · una página de la web sin versión para Google (el área de familias, el
 //    curso por dentro…): la web, sin indexar;
 //  · cualquier otra cosa: 404 y sin indexar (la web enseña su portada igual).
-const PAGINAS_WEB = /^\/(dashboard|auth|actividades|campamento|calendario|legal|contacto|brickslab|biblioteca|conocenos|noticias|blog|tienda|aula|d)(\/|$)/;
+const PAGINAS_WEB = /^\/(dashboard|auth|actividades|campamento|calendario|legal|contacto|brickslab|biblioteca|conocenos|noticias|blog|tienda|aula|d|colegio)(\/|$)/;
 app.get('*', (req, res) => {
     if (/\.[a-z0-9]{1,8}$/i.test(req.path)) return res.status(404).type('text/plain').send('No existe.');
     res.set('X-Robots-Tag', 'noindex');

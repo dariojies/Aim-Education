@@ -534,6 +534,7 @@ export const GRUPOS_SISTEMA = {
     familias: 'A las familias y alumnos',
     personal: 'Al personal del club',
     club: 'Avisos al propio club',
+    colegios: 'A los colegios (oferta educativa)',
 };
 
 export const CORREOS_SISTEMA = {
@@ -668,6 +669,82 @@ export const CORREOS_SISTEMA = {
             T('Hola,'),
             T('Te recordamos que **mañana** es la **clase individual de {actividad}** de **{alumno}** (**{cuando}**). ¡Os esperamos!\n\nSi al final no puede venir, avísanos:'),
             BTN([{ texto: 'No podrá', url: '{enlace_no}', fondo: '#eeeeee', color: '#333333' }]),
+        ]),
+    },
+    // Oferta educativa para colegios (#652).
+    colegio_enlace: {
+        grupo: 'colegios', nombre: 'El enlace del colegio', cuando: 'Al pulsar «Enviar el enlace» en Colegios: para que pidan actividades.',
+        asunto: 'Actividades de AIM Education para {colegio}',
+        variables: { colegio: { que: 'El colegio', ejemplo: 'CEIP Andalucía' }, contacto: { que: 'La persona de contacto', ejemplo: 'Ana' }, enlace: { que: 'Su página para pedir', ejemplo: 'https://www.aimeducation.es/colegio/x' } },
+        obligatorio: ['enlace'],
+        diseno: () => d([
+            T('Hola, {contacto}:'),
+            T('Os dejamos la página de **{colegio}** para pedirnos actividades de AIM Education. En ella veis lo que ofrecemos y los días y horas en los que podemos ir: elegís la actividad, el día y las horas, y os contestamos enseguida.'),
+            BTN([{ texto: 'Ver la oferta y pedir', url: '{enlace}', fondo: '', color: '#ffffff' }]),
+            PEQ('El enlace es solo para vuestro colegio: guardadlo para pedir más adelante. Si tenéis cualquier duda, contestad a este correo.'),
+        ]),
+    },
+    colegio_propuesta: {
+        grupo: 'colegios', nombre: 'Os proponemos una cita', cuando: 'Cuando el club propone (o cambia) una cita a un colegio.',
+        asunto: 'Os proponemos una cita · {actividad} · {dia}',
+        variables: { colegio: { que: 'El colegio', ejemplo: 'CEIP Andalucía' }, contacto: { que: 'La persona de contacto', ejemplo: 'Ana' }, actividad: { que: 'La actividad', ejemplo: 'Taller de robótica' }, dia: { que: 'El día', ejemplo: 'martes, 1 de diciembre de 2026' }, desde: { que: 'Hora de empezar', ejemplo: '10:00' }, hasta: { que: 'Hora de terminar', ejemplo: '11:30' }, mensaje: { que: 'Lo que escribe el club', ejemplo: 'Llevamos todo el material.' }, enlace: { que: 'Su página', ejemplo: 'https://www.aimeducation.es/colegio/x' } },
+        obligatorio: ['enlace'],
+        diseno: () => d([
+            T('Hola, {contacto}:'),
+            T('Para **{colegio}** os proponemos **{actividad}** el **{dia}**, de **{desde}** a **{hasta}**.'),
+            T('{mensaje}', { siHay: 'mensaje' }),
+            T('Si os viene bien, aceptadla. Si no, desde el mismo sitio podéis proponernos otro día:'),
+            BTN([{ texto: 'Aceptar o cambiar la cita', url: '{enlace}', fondo: '', color: '#ffffff' }]),
+        ]),
+    },
+    colegio_confirmada: {
+        grupo: 'colegios', nombre: 'Cita confirmada', cuando: 'Cuando el club acepta lo que pide un colegio, o el colegio acepta la propuesta del club.',
+        asunto: 'Cita confirmada · {actividad} · {dia}',
+        variables: { colegio: { que: 'El colegio', ejemplo: 'CEIP Andalucía' }, contacto: { que: 'La persona de contacto', ejemplo: 'Ana' }, actividad: { que: 'La actividad', ejemplo: 'Taller de robótica' }, dia: { que: 'El día', ejemplo: 'martes, 1 de diciembre de 2026' }, desde: { que: 'Hora de empezar', ejemplo: '10:00' }, hasta: { que: 'Hora de terminar', ejemplo: '11:30' }, mensaje: { que: 'Lo que escribe el club', ejemplo: 'Llevamos todo el material.' }, enlace: { que: 'Su página', ejemplo: 'https://www.aimeducation.es/colegio/x' } },
+        obligatorio: [],
+        diseno: () => d([
+            T('Hola, {contacto}:'),
+            T('Queda confirmado: **{actividad}** en **{colegio}** el **{dia}**, de **{desde}** a **{hasta}**. ¡Allí estaremos!'),
+            T('{mensaje}', { siHay: 'mensaje' }),
+            T('Si necesitáis cambiar algo, entrad en vuestra página:'),
+            BTN([{ texto: 'Ver nuestras citas', url: '{enlace}', fondo: '#eeeeee', color: '#333333' }]),
+        ]),
+    },
+    colegio_rechazada: {
+        grupo: 'colegios', nombre: 'Ese día no podemos', cuando: 'Cuando el club no puede ir el día que pide un colegio.',
+        asunto: 'Sobre vuestra petición de {actividad} · {dia}',
+        variables: { colegio: { que: 'El colegio', ejemplo: 'CEIP Andalucía' }, contacto: { que: 'La persona de contacto', ejemplo: 'Ana' }, actividad: { que: 'La actividad', ejemplo: 'Taller de robótica' }, dia: { que: 'El día pedido', ejemplo: 'martes, 1 de diciembre de 2026' }, desde: { que: 'Hora de empezar', ejemplo: '10:00' }, hasta: { que: 'Hora de terminar', ejemplo: '11:30' }, mensaje: { que: 'El motivo que escribe el club', ejemplo: 'Ese día tenemos exámenes en el club.' }, enlace: { que: 'Su página', ejemplo: 'https://www.aimeducation.es/colegio/x' } },
+        obligatorio: ['enlace'],
+        diseno: () => d([
+            T('Hola, {contacto}:'),
+            T('Lo sentimos: el **{dia}** de **{desde}** a **{hasta}** no podemos ir a **{colegio}** para **{actividad}**.'),
+            T('{mensaje}', { siHay: 'mensaje' }),
+            T('Elegid otro día en vuestra página y os contestamos enseguida:'),
+            BTN([{ texto: 'Elegir otro día', url: '{enlace}', fondo: '', color: '#ffffff' }]),
+        ]),
+    },
+    colegio_anulada: {
+        grupo: 'colegios', nombre: 'Cita anulada por el club', cuando: 'Cuando el club anula una cita con un colegio.',
+        asunto: 'Cita anulada · {actividad} · {dia}',
+        variables: { colegio: { que: 'El colegio', ejemplo: 'CEIP Andalucía' }, contacto: { que: 'La persona de contacto', ejemplo: 'Ana' }, actividad: { que: 'La actividad', ejemplo: 'Taller de robótica' }, dia: { que: 'El día', ejemplo: 'martes, 1 de diciembre de 2026' }, desde: { que: 'Hora de empezar', ejemplo: '10:00' }, hasta: { que: 'Hora de terminar', ejemplo: '11:30' }, mensaje: { que: 'El motivo que escribe el club', ejemplo: 'Se nos ha juntado con una competición.' }, enlace: { que: 'Su página', ejemplo: 'https://www.aimeducation.es/colegio/x' } },
+        obligatorio: [],
+        diseno: () => d([
+            T('Hola, {contacto}:'),
+            T('Lo sentimos: tenemos que anular **{actividad}** en **{colegio}** del **{dia}** ({desde} a {hasta}).'),
+            T('{mensaje}', { siHay: 'mensaje' }),
+            T('Si queréis, elegid otro día en vuestra página:'),
+            BTN([{ texto: 'Elegir otro día', url: '{enlace}', fondo: '', color: '#ffffff' }]),
+        ]),
+    },
+    colegio_aviso_club: {
+        grupo: 'club', nombre: 'Colegios: hay algo que contestar', cuando: 'Cuando un colegio pide una actividad, propone otro día, acepta o anula una cita. Llega a quienes van a los colegios.',
+        asunto: '{colegio} {que}',
+        variables: { colegio: { que: 'El colegio', ejemplo: 'CEIP Andalucía' }, que: { que: 'Lo que ha hecho', ejemplo: 'pide una actividad' }, actividad: { que: 'La actividad', ejemplo: 'Taller de robótica' }, dia: { que: 'El día', ejemplo: 'martes, 1 de diciembre de 2026' }, desde: { que: 'Hora de empezar', ejemplo: '10:00' }, hasta: { que: 'Hora de terminar', ejemplo: '11:30' }, mensaje: { que: 'Lo que escribe el colegio', ejemplo: 'Somos dos clases de 5.º.' }, enlace: { que: 'Colegios, en el panel', ejemplo: 'https://www.aimeducation.es/admin/colegios' } },
+        obligatorio: ['enlace'],
+        diseno: () => d([
+            T('**{colegio}** {que}: **{actividad}**, el **{dia}** de **{desde}** a **{hasta}**.'),
+            T('{mensaje}', { siHay: 'mensaje' }),
+            BTN([{ texto: 'Verlo en Colegios', url: '{enlace}', fondo: '', color: '#ffffff' }]),
         ]),
     },
     fichaje_entrada: {

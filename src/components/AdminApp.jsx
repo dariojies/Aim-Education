@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { I } from './Icons.jsx';
 import { permisosDe, NOMBRE_ROL, NOMBRE_RANGO, mandaAlMenos } from '../../permisos.js';
 import CuentasAlumnos, { PasswordProvisional } from './CuentasAlumnos.jsx';
+import AdminColegios from './AdminColegios.jsx';
 import EquipoIT from './EquipoIT.jsx';
 import AdminCambios from './AdminCambios.jsx';
 import AdminEvaluacion from './AdminEvaluacion.jsx';
@@ -117,6 +118,7 @@ function sectionLabel(id, pestana) {
     incidencias: "Incidencias",
     mensajes: "Mensajes",
     listas: "Contactos",
+    colegios: "Colegios",
     espacio: "Mi espacio",
     brickslab: "Brickslab y Biblioteca",
     grafico: "Aim Design",
@@ -6964,6 +6966,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         { id: "bandeja", label: "Correo", icon: <I.Mail /> },
         { id: "redes", label: "Redes sociales", icon: <I.Share /> },
         { id: "contactos", label: "Consultas web", icon: <I.Globe width={18} height={18} /> },
+        // La oferta educativa para colegios (#652): citas, horarios y su enlace.
+        { id: "colegios", label: "Colegios", icon: <I.MapPin /> },
         // Las noticias y el blog de la web, junto a lo que se publica en redes (#498).
         { id: "news", label: "Noticias", icon: <I.Newspaper /> },
         // Publicar y programar en Facebook e Instagram, con sus estadísticas (#410).
@@ -7152,6 +7156,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("incidencias") && <AdminIncidencias showToast={showToast} enlace={enlace} />}
           {ver("mensajes") && <Chats ambito="equipo" showToast={showToast} />}
           {ver("listas") && <AdminListas showToast={showToast} />}
+          {ver("colegios") && <AdminColegios showToast={showToast} />}
           {ver("espacio") && <AdminEspacio showToast={showToast} />}
           {ver("brickslab") && <AdminBrickslab showToast={showToast} enlace={enlace} />}
           {ver("galeria") && <AdminGaleria showToast={showToast} />}

@@ -125,6 +125,8 @@ export function permisosDe(rol) {
             // Personas → Contactos (#499): la gente de las listas hechas a mano
             // (AMPAs, colegios, asociaciones…). Como Comunicación.
             listas: mandaAlMenos(rol, 'secretaria'),
+            // La oferta educativa para colegios (#652): sus citas, horarios y oferta.
+            colegios: mandaAlMenos(rol, 'secretaria'),
             // Los currículums de «Trabaja con nosotros» (#368): secretaría y dirección.
             candidatos: mandaAlMenos(rol, 'secretaria'),
             // La galería de fotos (#364): el club entero; los profes, solo de sus
@@ -257,6 +259,7 @@ export const AVISOS = [
     // #600: lo mismo que avisa el libro registro, para arreglarlo antes de mandárselo a la gestoría.
     { id: 'facturas_sin_dni', grupo: 'Dinero', texto: 'Facturas emitidas sin el DNI del cliente', quien: (p) => p.secciones.billing },
     { id: 'campamento_sin_ficha', grupo: 'Clases', texto: 'Niños del campamento sin ficha', quien: (p) => p.campCompleto },
+    { id: 'colegios_pendientes', grupo: 'Clases', texto: 'Peticiones de colegios sin contestar', quien: (p) => p.secciones.colegios },
     { id: 'eventos_propuestos', grupo: 'Clases', texto: 'Eventos propuestos sin decidir', quien: (p) => p.editarEventos },
     { id: 'eventos_respondidos', grupo: 'Clases', texto: 'Respuesta a un evento que ha propuesto', quien: (p) => !p.editarEventos },
     { id: 'lista_espera', grupo: 'Clases', texto: 'Clases con plaza libre y gente esperando', quien: (p, rol) => rol !== 'trabajador',
