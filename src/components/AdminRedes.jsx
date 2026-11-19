@@ -3,6 +3,7 @@ import { I } from './Icons.jsx';
 import { ESTILO_BANDEJA } from './AdminBandeja.jsx';
 import ConexionMeta from './ConexionMeta.jsx';
 import ConexionYouTube from './ConexionYouTube.jsx';
+import ConexionLinkedIn from './ConexionLinkedIn.jsx';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Redes sociales (ticket #341): los mensajes privados de Messenger, Instagram y
@@ -191,6 +192,8 @@ export default function AdminRedes({ showToast, onAbrirFicha }) {
       <ConexionMeta onCambio={() => api('/estado').then(setEstado).catch(() => {})} />
       {/* YouTube (#651, fase 2): sus canales, para subir vídeos desde Publicaciones. */}
       <ConexionYouTube />
+      {/* LinkedIn (#651, fase 3): perfiles y páginas de empresa. */}
+      <ConexionLinkedIn />
       {!estado.webhook && (
         <span style={{ fontSize: 12, color: 'var(--orange)' }}>Falta el aviso de Meta para que lleguen los mensajes (META_VERIFY_TOKEN y META_APP_SECRET en Heroku).</span>
       )}

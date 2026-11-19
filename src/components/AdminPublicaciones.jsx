@@ -19,6 +19,7 @@ const RED = {
   facebook: { nombre: 'Facebook', color: '#1877F2', letra: 'f' },
   instagram: { nombre: 'Instagram', color: '#D6249F', letra: 'IG' },
   youtube: { nombre: 'YouTube', color: '#FF0000', letra: '▶' },
+  linkedin: { nombre: 'LinkedIn', color: '#0A66C2', letra: 'in' },
 };
 // Las redes con vista previa (YouTube no tiene).
 const CON_VISTA = ['facebook', 'instagram'];
@@ -138,6 +139,7 @@ export default function AdminPublicaciones({ showToast }) {
   const [cuenta, setCuenta] = useState(null);
   const [cuentas, setCuentas] = useState([]);   // todas las conectadas (#651)
   const [canales, setCanales] = useState([]);   // los canales de YouTube (#651, fase 2)
+  const [linkedins, setLinkedins] = useState([]); // perfiles y páginas de LinkedIn (#651, fase 3)
   const [vista, setVista] = useState('calendario');
   const [lista, setLista] = useState(null);
   const [editando, setEditando] = useState(null);   // publicación (o {} para una nueva)
@@ -160,9 +162,10 @@ export default function AdminPublicaciones({ showToast }) {
   const cargarCuentas = useCallback(() => {
     api('/api/admin/meta/cuentas').then(d => setCuentas(d.cuentas || [])).catch(() => setCuentas([]));
     api('/api/admin/youtube/cuentas').then(d => setCanales(d.canales || [])).catch(() => setCanales([]));
+    api('/api/admin/linkedin/cuentas').then(d => setLinkedins(d.cuentas || [])).catch(() => setLinkedins([]));
   }, []);
   // Para poner nombre a cualquier destino («youtube:7» también).
-  const todasCuentas = [...cuentas, ...canales.map(c => ({ id: c.id, nombre: c.nombre }))];
+  const todasCuentas = [...cuentas, ...canales.map(c => ({ id: c.id, nombre: c.nombre })), ...linkedins.map(c => ({ id: c.id, nombre: c.nombre }))];
   useEffect(() => { cargar(); cargarCuentas(); api('/api/admin/publicaciones/cuenta').then(setCuenta).catch(() => setCuenta({ conectado: false, motivo: 'No se ha podido comprobar la conexión con Meta.' })); }, [cargar, cargarCuentas]);
   // /admin/publicaciones?dia=AAAA-MM-DD (el aviso de una efeméride, #479): una nueva para ese día.
   useEffect(() => {
@@ -204,7 +207,7 @@ export default function AdminPublicaciones({ showToast }) {
       {vista === 'lista' && <Lista lista={lista} cuentas={todasCuentas} onAbrir={setEditando} onCambio={cargar} showToast={showToast} />}
       {vista === 'estadisticas' && <Estadisticas cuentas={cuentas} />}
       {editando && (
-        <Editor inicial={editando} cuenta={cuenta} cuentas={cuentas} canales={canales} showToast={showToast}
+        <Editor inicial={editando} cuenta={cuenta} cuentas={cuentas} canales={canales} linkedins={linkedins} showToast={showToast}
           onCerrar={(cambio) => { setEditando(null); if (cambio) cargar(); }} />
       )}
     </div>
@@ -247,7 +250,7 @@ function Conexion({ cuenta, cuentas = [], onRecargar }) {
 }
 
 // ── Editor ──────────────────────────────────────────────────────────────────
-function Editor({ inicial, cuenta, cuentas = [], canales = [], onCerrar, showToast }) {
+function Editor({ inicial, cuenta, cuentas = [], canales = [], linkedins = [], onCerrar, showToast }) {
   const nueva = !inicial.id;
   const soloVer = ['publicada', 'parcial', 'publicando'].includes(inicial.estado);
   const [id, setId] = useState(inicial.id || null);
@@ -256,8 +259,8 @@ function Editor({ inicial, cuenta, cuentas = [], canales = [], onCerrar, showToa
   // Con varias cuentas (#651): a cuáles va, como «instagram:3». Las de antes (sin
   // destinos) van a la principal.
   const principal = cuentas.find(c => c.principal) || cuentas[0] || null;
-  const multi = cuentas.length > 1 || canales.length > 0;
-  const todas = [...cuentas, ...canales.map(c => ({ id: c.id, nombre: c.nombre }))];
+  const multi = cuentas.length > 1 || canales.length > 0 || linkedins.length > 0;
+  const todas = [...cuentas, ...canales.map(c => ({ id: c.id, nombre: c.nombre })), ...linkedins.map(c => ({ id: c.id, nombre: c.nombre }))];
   const [destinos, setDestinos] = useState(() => (inicial.destinos?.length ? inicial.destinos
     : principal ? (inicial.redes?.length ? inicial.redes : ['facebook', ...(principal.conInstagram ? ['instagram'] : [])]).map(r => `${r}:${principal.id}`) : []));
   const redesEf = multi ? [...new Set(destinos.map(redDe))] : redes;
@@ -405,6 +408,22 @@ function Editor({ inicial, cuenta, cuentas = [], canales = [], onCerrar, showToa
                     </div>
                   );
                 })}
+                {linkedins.map(c => {
+                  const clave = `linkedin:${c.id}`, on = destinos.includes(clave);
+                  const caducada = c.caduca && new Date(c.caduca) < new Date();
+                  return (
+                    <div key={clave} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <b style={{ fontSize: 13, minWidth: 130 }}>{c.nombre}</b>
+                      <button type="button" disabled={soloVer || caducada} title={caducada ? 'El permiso de LinkedIn ha caducado: vuelve a conectarla en Redes sociales' : ''}
+                        onClick={() => setDestinos(ds => (on ? ds.filter(x => x !== clave) : [...ds, clave]))}
+                        style={{ display: 'inline-flex', gap: 6, alignItems: 'center', padding: '5px 10px', borderRadius: 10, cursor: caducada ? 'not-allowed' : 'pointer', fontFamily: 'inherit', fontWeight: 700, fontSize: 12.5,
+                          border: `1.5px solid ${on ? RED.linkedin.color : 'var(--line)'}`, background: on ? `color-mix(in oklab, ${RED.linkedin.color} 10%, var(--bg-2))` : 'var(--bg-2)', color: 'var(--ink)', opacity: on ? 1 : 0.55 }}>
+                        <Marca red="linkedin" tam={16} /> LinkedIn{c.tipo === 'empresa' ? ' (página)' : ''}
+                      </button>
+                      {caducada && <span style={{ fontSize: 12, color: 'var(--orange)' }}>caducada</span>}
+                    </div>
+                  );
+                })}
                 {destinos.some(d => redDe(d) === 'youtube') && <span style={suave}>En YouTube va un solo vídeo; la primera línea del texto es su título y el texto entero, la descripción.</span>}
               </div>
             )}
@@ -487,8 +506,8 @@ function Editor({ inicial, cuenta, cuentas = [], canales = [], onCerrar, showToa
             {soloVer && <div style={{ display: 'flex', justifyContent: 'flex-end' }}><button type="button" className="btn btn-sm btn-ghost" style={{ color: 'var(--orange)' }} onClick={borrar}><I.Trash width={14} height={14} /> Quitar de aquí</button></div>}
           </div>
 
-          {redesEf.includes('youtube') && !redesEf.some(r => CON_VISTA.includes(r))
-            ? <div style={{ ...caja, ...suave }}>YouTube no tiene vista previa aquí: se sube el vídeo con la primera línea del texto como título y el texto entero como descripción.</div>
+          {redesEf.length > 0 && !redesEf.some(r => CON_VISTA.includes(r))
+            ? <div style={{ ...caja, ...suave }}>{redesEf.includes('youtube') ? 'YouTube no tiene vista previa aquí: se sube el vídeo con la primera línea del texto como título y el texto entero como descripción. ' : ''}{redesEf.includes('linkedin') ? 'LinkedIn no tiene vista previa aquí: sale el texto con sus fotos o su vídeo, como en Facebook.' : ''}</div>
             : <VistaPrevia redes={redesEf.filter(r => CON_VISTA.includes(r))} tipo={tipo} texto={texto} medios={medios} cuenta={cuenta} />}
         </div>
       </div>

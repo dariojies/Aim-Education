@@ -45,6 +45,7 @@ import { crearAulasClase, crearTablasAulasClase, avisosAulaClaseFamilia, avisosA
 import { crearListas, crearTablasListas, listasComoSegmentos, resolverLista, correosDeLista } from './listas.js';
 import { crearColegios, crearTablasColegios, colegiosPorContestar } from './colegios.js';
 import { crearYouTube } from './youtube.js';
+import { crearLinkedIn } from './linkedin.js';
 import { crearPersonal, crearTablasPersonal, avisosEspacio, recordarCertificados } from './personal.js';
 import { redesDeNoticia, configRedesAuto, guardarRedesAuto, programarHistoriasActividades, prepararHistoriaActividad, plazasPocas, guardarPlazasPocas, resumenVuelta } from './redes-auto.js';
 import { programarHistoriasFestivos, felicitacionCumple, automaticosElegidos } from './disenos-automaticos.js';
@@ -5558,7 +5559,10 @@ app.use(cambios.router);
 // YouTube (#651, fase 2): sus canales y la subida de vídeos (youtube.js).
 const youtubeRedes = crearYouTube({ pool, authenticateSession, requireAdmin, urlPublica: URL_PUBLICA_WEB });
 app.use(youtubeRedes.router);
-const publicacionesRedes = crearPublicaciones({ pool, authenticateSession, requireSeccion, urlPublica: URL_PUBLICA_WEB, youtube: youtubeRedes });
+// LinkedIn (#651, fase 3): perfiles y páginas de empresa (linkedin.js).
+const linkedinRedes = crearLinkedIn({ pool, authenticateSession, requireAdmin, urlPublica: URL_PUBLICA_WEB });
+app.use(linkedinRedes.router);
+const publicacionesRedes = crearPublicaciones({ pool, authenticateSession, requireSeccion, urlPublica: URL_PUBLICA_WEB, youtube: youtubeRedes, linkedin: linkedinRedes });
 app.use(publicacionesRedes.router);
 // «Conectar con Facebook» (#468): el token de la página sin pasar por Heroku.
 app.use(crearConexionMeta({ pool, authenticateSession, requireAdmin, urlPublica: URL_PUBLICA_WEB, alCambiar: () => publicacionesRedes.olvidarCuenta() }).router);
@@ -21570,6 +21574,21 @@ const COMPROBACIONES = [
         return {
             estado: dias !== null && dias < 0 ? 'error' : c.faltan?.length || (dias !== null && dias <= 14) ? 'aviso' : 'ok',
             detalle: `${c.facebook.nombre}${c.instagram ? ` · @${c.instagram.usuario}` : ' · sin Instagram vinculado'}${faltan.length ? ` · faltan permisos: ${faltan.join(', ')}` : ''}${dias !== null && dias <= 14 ? ` · ${dias < 0 ? 'el acceso de Meta ha caducado' : `el acceso de Meta caduca el ${fechaCaduca}`}: vuelve a pulsar «Conectar con Facebook»` : ''} · último mensaje recibido: ${haceCuanto(ultimo)}`,
+        };
+    } },
+    // YouTube y LinkedIn (#651): lo conectado y, en LinkedIn, cuándo caduca (dura 60 días).
+    { id: 'youtube', grupo: 'Comunicación', nombre: 'YouTube', cadaMin: 360, fn: async () => {
+        const c = await youtubeRedes.canales();
+        return c.length ? { estado: 'ok', detalle: c.map(x => x.nombre).join(', ') } : { estado: 'apagado', detalle: 'Sin conectar: «Conectar con YouTube» en Redes sociales' };
+    } },
+    { id: 'linkedin', grupo: 'Comunicación', nombre: 'LinkedIn', cadaMin: 360, fn: async () => {
+        const c = await linkedinRedes.cuentas();
+        if (!c.length) return { estado: 'apagado', detalle: 'Sin conectar: botones de LinkedIn en Redes sociales' };
+        const dias = (x) => (x.caduca ? Math.floor((new Date(x.caduca) - Date.now()) / 86_400_000) : null);
+        const caducadas = c.filter(x => dias(x) !== null && dias(x) < 0), pronto = c.filter(x => dias(x) !== null && dias(x) >= 0 && dias(x) <= 10);
+        return {
+            estado: caducadas.length ? 'error' : pronto.length ? 'aviso' : 'ok',
+            detalle: c.map(x => `${x.nombre}${dias(x) === null ? '' : dias(x) < 0 ? ' (caducada: vuelve a conectarla)' : dias(x) <= 10 ? ` (caduca en ${dias(x)} días: vuelve a conectarla)` : ''}`).join(' · '),
         };
     } },
     { id: 'whatsapp', grupo: 'Comunicación', nombre: 'WhatsApp', cadaMin: 360, fn: async () =>

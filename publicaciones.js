@@ -23,7 +23,8 @@ import { historiasPrevistas, programarHistoriaYa, imagenPrevista } from './disen
 
 const REDES = ['facebook', 'instagram'];
 // YouTube (#651, fase 2): solo vídeos, con sus canales aparte (youtube.js).
-const REDES_TODAS = [...REDES, 'youtube'];
+// LinkedIn (#651, fase 3): perfiles y páginas de empresa (linkedin.js).
+const REDES_TODAS = [...REDES, 'youtube', 'linkedin'];
 const TIPOS = ['post', 'reel', 'story'];
 const MAX_IMAGEN = 8 * 1024 * 1024;
 const MAX_VIDEO = 100 * 1024 * 1024;
@@ -144,6 +145,12 @@ export function problemaPublicacion({ texto, redes, tipo, medios }) {
         if (!texto.trim() && !medios.length) return 'Escribe algo o añade una foto.';
         if (vids.length && medios.length > 1) return 'En Facebook un vídeo va solo, sin más fotos ni vídeos.';
     }
+    if (redes.includes('linkedin')) {
+        if (tipo === 'story') return 'LinkedIn no tiene historias: quita LinkedIn o cámbiala a publicación.';
+        if (!texto.trim() && !medios.length) return 'Para LinkedIn escribe algo o añade una foto.';
+        if (texto.length > 3000) return `En LinkedIn el texto puede tener 3.000 caracteres como mucho (lleva ${texto.length}).`;
+        if (vids.length && medios.length > 1) return 'En LinkedIn un vídeo va solo, sin más fotos ni vídeos.';
+    }
     if (redes.includes('youtube')) {
         if (tipo === 'story') return 'YouTube no tiene historias: quita YouTube o cámbiala a publicación o reel.';
         if (vids.length !== 1 || imgs.length) return 'A YouTube va un solo vídeo, sin fotos.';
@@ -153,7 +160,7 @@ export function problemaPublicacion({ texto, redes, tipo, medios }) {
     return null;
 }
 
-export function crearPublicaciones({ pool, authenticateSession, requireSeccion, urlPublica, youtube = null, fetch: fetchImpl = (...a) => globalThis.fetch(...a) }) {
+export function crearPublicaciones({ pool, authenticateSession, requireSeccion, urlPublica, youtube = null, linkedin = null, fetch: fetchImpl = (...a) => globalThis.fetch(...a) }) {
     const router = express.Router();
     const ver = [authenticateSession, requireSeccion('comunicaciones')];
     const GRAPH = () => (process.env.META_GRAPH_URL || 'https://graph.facebook.com/v21.0').replace(/\/+$/, '');
@@ -327,6 +334,16 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
         for (const d of destinos) {
             if (resultado[d.clave]?.ok) continue;     // al reintentar, lo que ya salió no se repite
             try {
+                if (d.red === 'linkedin') {
+                    if (!linkedin) throw new Error('LinkedIn no está preparado en el servidor.');
+                    const conDatos = [];
+                    for (const m of medios) conDatos.push({ mime: m.mime, datos: (await pool.query(`SELECT datos FROM aim_social_medios WHERE id = $1`, [m.id])).rows[0]?.datos });
+                    if (conDatos.some(m => !m.datos)) throw new Error('Alguna foto o vídeo ya no está guardado: súbelo otra vez.');
+                    const r = await linkedin.publicar(d.cuentaId, { texto: p.texto, medios: conDatos });
+                    const c = (await linkedin.cuentas()).find(x => x.id === d.cuentaId);
+                    resultado[d.clave] = { ok: true, ...r, cuenta: c?.nombre || null, at: new Date().toISOString() };
+                    continue;
+                }
                 if (d.red === 'youtube') {
                     if (!youtube) throw new Error('YouTube no está preparado en el servidor.');
                     const v = medios.find(m => m.mime.startsWith('video/'));
@@ -594,6 +611,7 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
             for (const d of pedidos) {
                 const [red, id] = d.split(':');
                 if (red === 'youtube') { if (youtube && await youtube.existe(id)) destinos.push(d); continue; }
+                if (red === 'linkedin') { if (linkedin && await linkedin.existe(id)) destinos.push(d); continue; }
                 const c = cuentaMetaPorId(id);
                 if (REDES.includes(red) && c && (red !== 'instagram' || c.instagram)) destinos.push(d);
             }
