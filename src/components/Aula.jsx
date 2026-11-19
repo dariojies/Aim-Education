@@ -396,6 +396,15 @@ function FichaCurso({ id }) {
                     ? <button type="button" className="btn btn-primary" disabled={haciendo} onClick={pagar}>{haciendo ? 'Yendo al banco…' : 'Pagar con tarjeta o Bizum'}</button>
                     : <span style={{ fontSize: 13, color: 'var(--ink-3)' }}>Puedes pagarlo en secretaría o desde «Pagos y recibos» de tu zona.</span>}
                 </>
+              ) : c.deHijos?.length ? (
+                // El curso es de su hijo: lo hace él con su cuenta, no el padre.
+                <div style={{ padding: '12px 14px', borderRadius: 12, fontSize: 14, lineHeight: 1.5, background: 'color-mix(in oklab, var(--purple) 10%, var(--bg-2))', border: '1px solid color-mix(in oklab, var(--purple) 30%, transparent)' }}>
+                  <b>Este curso es de {c.deHijos.length > 1 ? `${c.deHijos.slice(0, -1).join(', ')} y ${c.deHijos[c.deHijos.length - 1]}` : c.deHijos[0]}.</b> Tiene que entrar con su propia cuenta,
+                  para que lo que haga y el diploma queden a su nombre. Si no tiene contraseña, pídela en secretaría.
+                  <div style={{ marginTop: 6 }}>
+                    <a href="/dashboard/cursos" onClick={e => { e.preventDefault(); go('/dashboard/cursos'); }}>Ver cómo va →</a>
+                  </div>
+                </div>
               ) : (
                 <button type="button" className="btn btn-primary" disabled={haciendo} onClick={apuntarme}>
                   {haciendo ? 'Un momento…' : c.gratis ? 'Apuntarme gratis' : c.pagoOnline ? 'Apuntarme y pagar' : 'Apuntarme'}

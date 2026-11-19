@@ -456,11 +456,36 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
              FROM aim_aula_inscripciones i LEFT JOIN aim_cargos c ON c.id = i.cargo_id
              WHERE i.curso_id = $1 AND i.user_id = $2`, [cursoId, userId])).rows[0] || null;
     }
+    // Los hijos (de quien es padre, madre o tutor) que están en este curso. Un
+    // curso de su hijo lo hace el hijo con su cuenta: si el padre se apuntaba
+    // él, el avance y el diploma salían a su nombre.
+    async function hijosEnCurso(cursoId, userId) {
+        return (await pool.query(
+            `SELECT u.name AS nombre FROM aim_familias f
+             JOIN aim_aula_inscripciones i ON i.user_id = f.persona_id AND i.curso_id = $1 AND i.estado <> 'baja'
+             JOIN users u ON u.user_id = f.persona_id
+             WHERE f.familiar_id = $2 AND LOWER(f.tipo) IN ('madre','padre','tutor','tutora','tutor/a')
+             ORDER BY u.name`, [cursoId, userId])).rows.map(x => x.nombre || 'tu hijo');
+    }
+    // Apuntado él por la web a un curso de su hijo: ni diploma ni valoración a su nombre.
+    async function sinHijosEnCurso(cursoId, userId, ins) {
+        if (ins?.origen !== 'web') return;
+        const h = await hijosEnCurso(cursoId, userId);
+        if (h.length) corta(403, MENSAJE_HIJOS(h));
+    }
+    const nombresHijos = (h) => (h.length > 1 ? `${h.slice(0, -1).join(', ')} y ${h[h.length - 1]}` : h[0]);
+    const MENSAJE_HIJOS = (h) => `Este curso es de ${nombresHijos(h)}: tiene que entrar con su propia cuenta, para que lo que haga y el diploma queden a su nombre. Si no tiene contraseña, pídela en secretaría.`;
     // Para ver el contenido: apuntado con acceso, o quien gestiona ese curso.
     async function puedeVer(req, cursoId) {
         const c = await curso(cursoId);
         if (esGestor(req) && (completa(req) || String(c.profesor_id) === String(req.userSession.userId))) return { c, gestor: true, ins: null };
         const ins = await inscripcion(cursoId, req.userSession.userId);
+        // Apuntado por su cuenta desde la web a un curso en el que está su hijo:
+        // el curso es del hijo.
+        if (!ins || !ins.acceso || ins.origen === 'web') {
+            const hijos = await hijosEnCurso(cursoId, req.userSession.userId);
+            if (hijos.length) corta(403, MENSAJE_HIJOS(hijos));
+        }
         if (!ins || !ins.acceso) corta(403, ins?.estado === 'pendiente_pago' ? 'Falta pagar el curso para entrar.' : 'No estás apuntado a este curso.');
         if (ins.estado !== 'activa') {
             await pool.query(`UPDATE aim_aula_inscripciones SET estado = 'activa', activada_at = COALESCE(activada_at, NOW()) WHERE id = $1`, [ins.id]);
@@ -618,9 +643,10 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                                             WHERE l.curso_id = $1 AND ${SQL_VISIBLE()} ORDER BY l.orden, l.id`, [id])).rows;
             const apartados = await apartadosVisibles(id);
             const nota = (await pool.query(`SELECT ${SQL_NOTA_CURSO('x')} AS nota FROM aim_aula_cursos x WHERE x.id = $1`, [id])).rows[0]?.nota;
-            let mio = null, hechas = new Set();
+            let mio = null, hechas = new Set(), ins0Web = false;
             if (s?.userId) {
                 const ins = await inscripcion(id, s.userId);
+                ins0Web = ins?.origen === 'web';
                 if (ins && ins.estado !== 'baja') {
                     const pagable = ins.cargo_id && ins.cargo_estado === 'pendiente';
                     // Su avance (#455): lo terminado, el porcentaje y, al 100 %, el diploma.
@@ -645,6 +671,8 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
                 // Curso de pago con parte gratis: se puede ver eso sin pagar.
                 parteGratis: !!totalDe(c) && lecs.some(l => l.gratis),
                 sesion: !!s?.userId, mio, gestor: !!gestor, pagoOnline: pagosOnlineAbiertos(),
+                // Si está su hijo, el curso es del hijo: no se le ofrece apuntarse.
+                ...(s?.userId && !gestor && (!mio || ins0Web) ? await (async () => { const h = await hijosEnCurso(id, s.userId); return h.length ? { deHijos: h, mio: null } : {}; })() : {}),
             });
         } catch (err) { fallo(res, err); }
     });
@@ -659,6 +687,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             const me = req.userSession.userId;
             const ins = await inscripcion(id, me);
             if (!ins?.acceso) corta(403, 'No estás apuntado a este curso.');
+            await sinHijosEnCurso(id, me, ins);
             const x = (await pool.query(
                 `SELECT (SELECT COUNT(*)::int FROM aim_aula_lecciones l WHERE l.curso_id = $1 AND ${SQL_VISIBLE()}) AS lecciones, COUNT(*)::int AS hechas
                  FROM aim_aula_progreso pr JOIN aim_aula_lecciones l ON l.id = pr.leccion_id WHERE l.curso_id = $1 AND pr.user_id = $2 AND ${SQL_VISIBLE()}`, [id, me])).rows[0];
@@ -687,6 +716,7 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             const me = req.userSession.userId;
             const ins = await inscripcion(id, me);
             if (!ins?.acceso) corta(403, 'No estás apuntado a este curso.');
+            await sinHijosEnCurso(id, me, ins);
             const x = (await pool.query(
                 `SELECT (SELECT COUNT(*)::int FROM aim_aula_lecciones l WHERE l.curso_id = $1 AND ${SQL_VISIBLE()}) AS lecciones,
                         COUNT(*)::int AS hechas, MAX(pr.completada_at) AS terminado
@@ -730,6 +760,8 @@ export function crearAula({ pool, authenticateSession, requireSeccion, permisos,
             const me = req.userSession.userId;
             const c = await curso(id);
             if (!c.publicado) corta(404, 'Ese curso no existe.');
+            const hijos = await hijosEnCurso(id, me);
+            if (hijos.length) corta(409, MENSAJE_HIJOS(hijos));
             await client.query('BEGIN');
             await client.query(`SELECT pg_advisory_xact_lock(433, $1)`, [id]);
             const antes = (await client.query(
