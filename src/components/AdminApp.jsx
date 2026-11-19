@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { I } from './Icons.jsx';
-import { permisosDe, NOMBRE_ROL, NOMBRE_RANGO } from '../../permisos.js';
+import { permisosDe, NOMBRE_ROL, NOMBRE_RANGO, mandaAlMenos } from '../../permisos.js';
+import CuentasAlumnos, { PasswordProvisional } from './CuentasAlumnos.jsx';
 import EquipoIT from './EquipoIT.jsx';
 import AdminCambios from './AdminCambios.jsx';
 import AdminEvaluacion from './AdminEvaluacion.jsx';
@@ -350,7 +351,9 @@ function SolicitudesFotos({ showToast, onAbrir, puedeEditar }) {
   );
 }
 
-function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos, onNuevo }) {
+function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos, onNuevo, puedeCuentas }) {
+  // Las contraseñas provisionales y las cuentas de Google del curso (#643).
+  const [verCuentas, setVerCuentas] = useState(false);
   const [users, setUsers] = useState([]);
   const [rangos, setRangos] = useState({});
   const [loading, setLoading] = useState(true);
@@ -407,6 +410,7 @@ function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos, onNuev
 
   return (
     <>
+      {verCuentas && <CuentasAlumnos showToast={showToast} onCerrar={() => setVerCuentas(false)} />}
       <CambiosFiscales showToast={showToast} />
       <SolicitudesFotos key={refreshTrigger} showToast={showToast} onAbrir={onEditUser} puedeEditar={permisos?.editarAlumnos} />
       <div className="toolbar">
@@ -432,6 +436,9 @@ function AdminStudents({ refreshTrigger, onEditUser, showToast, permisos, onNuev
         </div>
         <div style={{ flex: 1 }} />
         <button className="btn btn-outline btn-sm" onClick={handleExportCSV}>Exportar CSV</button>
+        {puedeCuentas && (
+          <button className="btn btn-outline btn-sm" onClick={() => setVerCuentas(true)} title="Contraseñas provisionales y cuentas de Google de los alumnos de este curso">Cuentas de los alumnos</button>
+        )}
         {/* Dar de alta, solo quien puede editar fichas (un instructor las ve, no las toca). */}
         {onNuevo && permisos?.editarAlumnos !== false && (
           <button className="btn btn-primary btn-sm" onClick={onNuevo}><I.Plus /> Nuevo alumno</button>
@@ -6692,6 +6699,8 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
   // con cientos de personas es la diferencia entre esperar segundos o no.
   // Fusionar fichas repetidas (#347): { otra } o {} para buscarla.
   const [fusion, setFusion] = useState(null);
+  // La contraseña provisional de la ficha abierta (#643).
+  const [passwordDe, setPasswordDe] = useState(null);
   const [subiendoPortada, setSubiendoPortada] = useState(false); // #359
   const abrirFicha = async (u) => {
     setEditingItem(u);
@@ -7153,6 +7162,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
           {ver("rangos") && <AdminRangosPermisos grupos={gruposMenu} showToast={showToast} />}
           {ver("overview") && <AdminResumen permisos={permisos} refreshTrigger={refreshTrigger} ir={navTo} irRuta={(ruta) => go(ruta)} />}
           {ver("students") && <AdminStudents refreshTrigger={refreshTrigger} showToast={showToast} permisos={permisos}
+            puedeCuentas={mandaAlMenos(user?.rol, 'secretaria')}
             onNuevo={() => { setEditingItem({ firstName: '', lastName: '', email: '', isSuperAdmin: false }); setActiveModal('new-student'); }}
             onEditUser={abrirFicha} />}
           {ver("familias") && (
@@ -7527,6 +7537,11 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
               {activeModal === 'edit-student' && permisos.editarAlumnos && (
                 <button type="button" className="btn btn-outline btn-sm" title="Si esta persona tiene otra ficha repetida, júntalas en una" onClick={() => setFusion({})}>Fusionar con otra ficha</button>
               )}
+              {/* Una contraseña provisional (#643): al entrar con ella se le pide una suya. */}
+              {activeModal === 'edit-student' && editingItem?.id && mandaAlMenos(user?.rol, 'secretaria') && (
+                <button type="button" className="btn btn-outline btn-sm" title="Pones tú una contraseña (o la inventa la web) y al entrar con ella se le pide una suya"
+                  onClick={() => setPasswordDe(editingItem)}>Contraseña provisional</button>
+              )}
               {/* Que ponga o cambie su contraseña (#348): le llega un enlace por correo. */}
               {activeModal === 'edit-student' && permisos.editarAlumnos && (
                 <button type="button" className="btn btn-outline btn-sm" title="Le llega un correo con un enlace para poner su contraseña (vale 7 días)"
@@ -7551,6 +7566,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
         </div>
       )}
 
+      {passwordDe && <PasswordProvisional persona={passwordDe} showToast={showToast} onCerrar={() => setPasswordDe(null)} />}
       {fusion && editingItem?.id && (
         <FusionarFichas personaId={editingItem.id} otra={fusion.otra ? { id: fusion.otra.id, nombre: fusion.otra.nombre, email: fusion.otra.email } : null}
           onCerrar={() => setFusion(null)}

@@ -33,6 +33,7 @@ import { crearTienda, crearTablasTienda, pedidosPorAtender, pedidosEnMarcha } fr
 import { limpiarHtml, htmlParaFuera, textoDeHtml } from './noticias-html.js';
 import { crearSeo } from './seo.js';
 import { crearIndexNow } from './indexnow.js';
+import { estadoGoogle, cuentasDelDominio, prepararCuenta, passwordProvisional, csvGoogle } from './google-cuentas.js';
 import { crearAgrupaciones, crearTablasAgrupaciones } from './agrupaciones.js';
 import { crearSustituciones, crearTablasSustituciones, SQL_SUSTITUYE } from './sustituciones.js';
 import { crearDisenos, crearTablasDisenos, disenosPorAprobar, revisionDeMisDisenos, mencionesDe } from './disenos.js';
@@ -2521,7 +2522,7 @@ async function authenticateSession(req, res, next) {
 
 // Abre la sesión de alguien que ya ha demostrado quién es (con su contraseña o
 // con Google) y devuelve lo que la pantalla necesita saber de él.
-async function abrirSesion(res, user, { recordar = true } = {}) {
+async function abrirSesion(res, user, { recordar = true, conPassword = false } = {}) {
     const userRole = (user.role || '').toLowerCase();
     const devRole = (user.dev_role || '').toLowerCase();
     // Su rango propio de Aim Education, si lo tiene (trabajador, secretaría,
@@ -2536,6 +2537,9 @@ async function abrirSesion(res, user, { recordar = true } = {}) {
     const canAccessAdmin = !!rol;
     const isSuperAdmin = rol === 'superadmin';
     const duracion = recordar ? SESSION_RECORDAR_MS : SESSION_DURATION_MS;
+    // Con una contraseña provisional (la puso secretaría, #643), al entrar con
+    // ella se le pide una nueva antes de nada. Con Google no: no la usa.
+    const cambiarPassword = !!(conPassword && user.requires_password_change);
 
     const token = crypto.randomBytes(32).toString('hex');
     await guardarSesion(token, {
@@ -2551,6 +2555,7 @@ async function abrirSesion(res, user, { recordar = true } = {}) {
         nombreRol: NOMBRE_ROL[visible] || null,
         permisos: permisosEfectivos(rol),
         expiresAt: Date.now() + duracion,
+        ...(cambiarPassword ? { cambiarPassword: true } : {}),
     }, { recordar });
     // Su primer y su último acceso a la web (#421).
     pool.query(
@@ -2575,6 +2580,7 @@ async function abrirSesion(res, user, { recordar = true } = {}) {
         rol,
         nombreRol: NOMBRE_ROL[visible] || null,
         permisos: permisosEfectivos(rol),
+        ...(cambiarPassword ? { cambiarPassword: true } : {}),
     };
 }
 
@@ -2944,7 +2950,7 @@ app.post('/api/login', async (req, res) => {
         emailBlocks.delete(emailLower);
 
         // «Mantenerme conectado»: si no se marca, la sesión acaba al cerrar el navegador.
-        const datos = await abrirSesion(res, user, { recordar: req.body.recordar !== false });
+        const datos = await abrirSesion(res, user, { recordar: req.body.recordar !== false, conPassword: true });
         res.json({ success: true, user: datos });
     } catch (err) {
         console.error('Login Error:', err);
@@ -3062,6 +3068,174 @@ app.post('/api/admin/usuarios/:id/enviar-acceso', authenticateSession, requireAd
         console.error('[enviar acceso]', err.message);
         res.status(err.apagado ? 409 : 500).json({ error: err.apagado ? err.message : 'No se ha podido enviar el acceso.' });
     }
+});
+
+// ── Contraseñas provisionales y cuentas de Google de los alumnos (#643) ──
+// Secretaría pone una contraseña provisional (la escribe o la genera la web) y,
+// al entrar con ella, la web pide una nueva. Si su ficha tiene un correo del
+// dominio, la misma contraseña puede ir a su cuenta de Google (que se crea si
+// no existe). La contraseña no se guarda en claro: se enseña una vez.
+// ¿Puede quien está tocando poner la contraseña de esta persona? A un alumno,
+// secretaría o más; a alguien del personal, solo quien tenga más rango.
+function puedePonerPassword(rolActor, u) {
+    if (!mandaAlMenos(rolActor, 'secretaria')) return false;
+    const rolU = rolEfectivo(u.role, u.dev_role, u.rango);
+    if (!rolU) return true;
+    if (rolActor === 'superadmin') return true;
+    return mandaAlMenos(rolActor, rolU) && rolActor !== rolU;
+}
+const passwordValida = (p) => typeof p === 'string' && p.length >= 8 && p.length <= 200;
+async function ponerPasswordProvisional(userId, password) {
+    const hash = await bcrypt.hash(password, 12);
+    await pool.query(`UPDATE users SET password = $1, requires_password_change = true WHERE user_id = $2`, [hash, userId]);
+    // Los enlaces de «poner contraseña» que tuviera pedidos ya no valen, y fuera
+    // las sesiones abiertas: que entre con la nueva.
+    await pool.query(`UPDATE aim_password_resets SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL`, [userId]);
+    await cerrarSesionesDe(userId);
+}
+
+app.post('/api/admin/usuarios/:id/password-provisional', authenticateSession, requireAdmin, async (req, res) => {
+    const rol = req.userSession?.rol;
+    if (!mandaAlMenos(rol, 'secretaria')) return res.status(403).json({ error: 'Solo secretaría y dirección pueden poner contraseñas.' });
+    const password = req.body?.password ? String(req.body.password) : passwordProvisional();
+    if (!passwordValida(password)) return res.status(400).json({ error: 'La contraseña tiene que tener al menos 8 caracteres.' });
+    try {
+        const u = (await pool.query(
+            `SELECT u.user_id, u.name, u.surname, u.email, u.role, u.dev_role, ar.rango FROM users u LEFT JOIN aim_rangos ar ON ar.user_id = u.user_id WHERE u.user_id = $1`,
+            [req.params.id])).rows[0];
+        if (!u) return res.status(404).json({ error: 'Esa persona no existe.' });
+        if (!puedePonerPassword(rol, u)) return res.status(403).json({ error: 'No puedes cambiar la contraseña de alguien del personal con tu rango o uno mayor.' });
+        let google = null, errorGoogle = null;
+        // Primero Google: si falla, la de la web se pone igual y se dice.
+        if (req.body?.google && esDelDominio(u.email)) {
+            try { google = await prepararCuenta({ email: u.email, nombre: u.name, apellidos: u.surname, password, unidad: process.env.GOOGLE_UNIDAD_ALUMNOS || '/' }); }
+            catch (e) { errorGoogle = e.message; }
+        }
+        await ponerPasswordProvisional(u.user_id, password);
+        res.json({ success: true, password, usuario: correoVisible(u.email) || null, google, errorGoogle });
+    } catch (err) {
+        console.error('[contraseña provisional]', err.message);
+        res.status(500).json({ error: 'No se ha podido poner la contraseña.' });
+    }
+});
+
+// La contraseña nueva, al entrar con una provisional.
+app.post('/api/password/nueva', authenticateSession, async (req, res) => {
+    const password = String(req.body?.password || '');
+    if (!passwordValida(password)) return res.status(400).json({ error: 'La contraseña tiene que tener al menos 8 caracteres.' });
+    try {
+        const u = (await pool.query(`SELECT password, requires_password_change FROM users WHERE user_id = $1`, [req.userSession.userId])).rows[0];
+        if (!u?.requires_password_change) return res.status(409).json({ error: 'Ya tienes tu contraseña puesta.' });
+        if (await bcrypt.compare(password, u.password)) return res.status(400).json({ error: 'Tiene que ser distinta de la que te dieron.' });
+        await pool.query(`UPDATE users SET password = $1, requires_password_change = false WHERE user_id = $2`, [await bcrypt.hash(password, 12), req.userSession.userId]);
+        req.userSession.cambiarPassword = false;
+        // Las otras sesiones abiertas con la provisional, fuera; esta sigue.
+        const yo = huellaSesion(req.sessionToken);
+        for (const [t, ses] of sessions) if (ses.userId === req.userSession.userId && t !== req.sessionToken) sessions.delete(t);
+        await pool.query(`DELETE FROM aim_sesiones WHERE user_id = $1 AND huella <> $2`, [req.userSession.userId, yo]).catch(() => {});
+        await pool.query(`UPDATE aim_sesiones SET datos = datos - 'cambiarPassword' WHERE huella = $1`, [yo]).catch(() => {});
+        res.json({ success: true });
+    } catch (err) {
+        console.error('[contraseña nueva]', err.message);
+        res.status(500).json({ error: 'No se ha podido guardar. Inténtalo de nuevo.' });
+    }
+});
+
+// ¿Puede la web crear cuentas en Google? Para la ventana de la ficha.
+app.get('/api/admin/cuentas-alumnos/google', authenticateSession, requireAdmin, async (req, res) => {
+    if (!mandaAlMenos(req.userSession?.rol, 'secretaria')) return res.status(403).json({ error: 'Solo secretaría y dirección.' });
+    res.set('Cache-Control', 'no-store');
+    res.json(await estadoGoogle());
+});
+
+// Los alumnos de la temporada activa, con su correo del club y si tienen
+// cuenta de Google, para prepararlas en bloque.
+app.get('/api/admin/cuentas-alumnos', authenticateSession, requireAdmin, async (req, res) => {
+    if (!mandaAlMenos(req.userSession?.rol, 'secretaria')) return res.status(403).json({ error: 'Solo secretaría y dirección.' });
+    try {
+        const r = await pool.query(
+            `SELECT u.user_id, u.name, u.surname, u.email, u.birthday, u.requires_password_change,
+                    a.ultimo_at AS ultimo_acceso,
+                    string_agg(DISTINCT m.actividad, ', ') AS actividades
+             FROM aim_matriculas m
+             JOIN aim_temporadas t ON t.id = m.temporada_id AND t.activa
+             JOIN users u ON u.user_id = m.user_id
+             LEFT JOIN aim_accesos a ON a.user_id = u.user_id
+             WHERE (m.baja IS NULL OR m.baja >= CURRENT_DATE)
+             GROUP BY u.user_id, a.ultimo_at
+             ORDER BY u.name, u.surname`);
+        const google = await estadoGoogle();
+        let cuentas = null, errorCuentas = null;
+        if (google.ok) { try { cuentas = await cuentasDelDominio(); } catch (e) { errorCuentas = e.message; } }
+        const alumnos = [], sinCorreoClub = [];
+        for (const u of r.rows) {
+            const fila = { id: u.user_id, nombre: u.name || '', apellidos: u.surname || '', edad: edadDe(u.birthday), actividades: u.actividades || '' };
+            if (!esDelDominio(u.email)) { sinCorreoClub.push(fila); continue; }
+            const c = cuentas?.get(String(u.email).toLowerCase());
+            alumnos.push({
+                ...fila, email: String(u.email).toLowerCase(),
+                entroWeb: u.ultimo_acceso || null, provisionalPendiente: !!u.requires_password_change,
+                google: cuentas ? (c ? { existe: true, suspendida: c.suspendida, ultimoAcceso: c.ultimoAcceso } : { existe: false }) : null,
+            });
+        }
+        res.set('Cache-Control', 'no-store');
+        res.json({ dominio: dominioCorreo(), google: { ...google, errorCuentas }, alumnos, sinCorreoClub });
+    } catch (err) {
+        console.error('[cuentas alumnos]', err.message);
+        res.status(500).json({ error: 'No se han podido cargar los alumnos.' });
+    }
+});
+
+// Prepara las cuentas de unos cuantos alumnos (la pantalla los manda de 10 en
+// 10): una contraseña provisional para cada uno, en la web y, si se pide, en
+// Google. Devuelve las contraseñas para imprimir las cartas y el fichero CSV.
+app.post('/api/admin/cuentas-alumnos/preparar', authenticateSession, requireAdmin, async (req, res) => {
+    const rol = req.userSession?.rol;
+    if (!mandaAlMenos(rol, 'secretaria')) return res.status(403).json({ error: 'Solo secretaría y dirección.' });
+    const ids = Array.isArray(req.body?.ids) ? [...new Set(req.body.ids.map(String))].slice(0, 25) : [];
+    if (!ids.length) return res.status(400).json({ error: 'No hay alumnos elegidos.' });
+    const enGoogle = !!req.body?.google, enWeb = req.body?.web !== false;
+    try {
+        const r = await pool.query(
+            `SELECT u.user_id, u.name, u.surname, u.email, u.role, u.dev_role, ar.rango FROM users u LEFT JOIN aim_rangos ar ON ar.user_id = u.user_id
+             WHERE u.user_id::text = ANY($1::text[])`, [ids]);
+        const hechos = [];
+        for (const u of r.rows) {
+            const fila = { id: u.user_id, nombre: u.name || '', apellidos: u.surname || '', email: String(u.email || '').toLowerCase() };
+            if (!esDelDominio(u.email)) { hechos.push({ ...fila, error: 'No tiene correo del club.' }); continue; }
+            if (!puedePonerPassword(rol, u)) { hechos.push({ ...fila, error: 'Es del personal: su contraseña la cambia quien tenga más rango.' }); continue; }
+            const password = passwordProvisional();
+            let google = null, errorGoogle = null;
+            if (enGoogle) {
+                try { google = await prepararCuenta({ email: fila.email, nombre: fila.nombre, apellidos: fila.apellidos, password, unidad: process.env.GOOGLE_UNIDAD_ALUMNOS || '/' }); }
+                catch (e) {
+                    errorGoogle = e.message;
+                    // Sin permiso en Google no tiene sentido seguir con los demás.
+                    if (e.config) return res.status(409).json({ error: e.message, hechos });
+                }
+            }
+            if (enWeb) await ponerPasswordProvisional(u.user_id, password);
+            hechos.push({ ...fila, password, web: enWeb, google, errorGoogle });
+        }
+        res.json({ hechos });
+    } catch (err) {
+        console.error('[cuentas alumnos] preparar:', err.message);
+        res.status(500).json({ error: 'No se han podido preparar.' });
+    }
+});
+
+// El fichero para subir a mano a la consola de Google (si la web aún no puede
+// crearlas ella). Se manda lo que devolvió «preparar».
+app.post('/api/admin/cuentas-alumnos/csv', authenticateSession, requireAdmin, (req, res) => {
+    if (!mandaAlMenos(req.userSession?.rol, 'secretaria')) return res.status(403).json({ error: 'Solo secretaría y dirección.' });
+    const filas = (Array.isArray(req.body?.filas) ? req.body.filas : []).slice(0, 2000)
+        .filter(f => esDelDominio(f?.email) && passwordValida(f?.password))
+        .map(f => ({ nombre: String(f.nombre || '').slice(0, 60), apellidos: String(f.apellidos || '').slice(0, 60), email: String(f.email).toLowerCase(), password: String(f.password) }));
+    if (!filas.length) return res.status(400).json({ error: 'No hay nada que poner en el fichero.' });
+    res.set('Content-Type', 'text/csv; charset=utf-8');
+    res.set('Content-Disposition', 'attachment; filename="cuentas-google-alumnos.csv"');
+    res.set('Cache-Control', 'no-store');
+    res.send(csvGoogle(filas, process.env.GOOGLE_UNIDAD_ALUMNOS || '/'));
 });
 
 // ¿Sirve aún este enlace? Para avisar nada más abrirlo, y no después de escribir la contraseña.
@@ -3353,7 +3527,15 @@ app.post('/api/register', async (req, res) => {
 
 app.get('/api/me', authenticateSession, async (req, res) => {
     const s = req.userSession;
+    // ¿Sigue pendiente la contraseña nueva? (#643) Se mira en la base: la pudo
+    // cambiar desde otra pestaña o por «¿Olvidaste tu contraseña?».
+    let cambiarPassword = false;
+    if (s.cambiarPassword) {
+        cambiarPassword = !!(await pool.query(`SELECT requires_password_change FROM users WHERE user_id = $1`, [s.userId]).catch(() => null))?.rows[0]?.requires_password_change;
+        if (!cambiarPassword) s.cambiarPassword = false;
+    }
     res.json({
+        ...(cambiarPassword ? { cambiarPassword: true } : {}),
         id: s.userId,
         firstName: s.firstName,
         lastName: s.lastName,
@@ -3644,13 +3826,15 @@ app.post('/api/users', authenticateSession, requirePermiso('editarAlumnos'), asy
                 yaEstaba: enEsteClub, veniaDeOtroClub: enOtroClub,
             });
         }
+        // La contraseña de siempre de las fichas nuevas, la misma para todas:
+        // al entrar con ella se pide una propia (#643).
         const hash = await bcrypt.hash('aim123456', 12);
         const user_id = crypto.randomUUID();
         
         await pool.query(
             `INSERT INTO users (user_id, name, surname, email, password, belt, role,
-                                phone, birthday, dni, domicilio, cp, poblacion, club_id, dev_role, username)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+                                phone, birthday, dni, domicilio, cp, poblacion, club_id, dev_role, username, requires_password_change)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, true)`,
             [user_id, firstName.trim(), (lastName || '').trim(), emailLower, hash, belt || null, role,
              phone?.trim() || null, birthday || null,
              dni?.trim() || null, domicilio?.trim() || null, cp?.trim() || null, poblacion?.trim() || null,

@@ -3,6 +3,7 @@ import PublicLanding from './components/PublicLanding';
 import { PublicActivities, PublicNews, PublicNewsDetail } from './components/PublicActivities';
 import PublicActivity from './components/PublicActivity';
 import AuthScreen from './components/AuthScreen';
+import ContrasenaNueva from './components/ContrasenaNueva';
 // Una parte de la web que se descarga aparte, al entrar en ella. Si no llega
 // bien (#601: en el iPhone a veces llega «nada» y React rompía la pantalla con
 // «l._result.default»; o es una pestaña de antes de un deploy y esa parte ya no
@@ -312,6 +313,10 @@ export default function App() {
           (allí solo está la cookie de la sesión, que no pide consentimiento). */}
       {/* En la app tampoco: no hay vídeos de otros ni análisis. */}
       {!pathname.startsWith('/admin') && !esApp && <CookieBanner />}
+      {/* Con una contraseña provisional (#643), primero la suya. */}
+      {user?.cambiarPassword && !caducada && (pathname.startsWith('/dashboard') || pathname.startsWith('/admin')) && (
+        <ContrasenaNueva user={user} onHecho={() => setUser(u => (u ? { ...u, cambiarPassword: false } : u))} onSalir={handleLogout} />
+      )}
       {caducada && (
         <div role="dialog" aria-modal="true" aria-labelledby="sesion-caducada"
           style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 5000, display: 'grid', placeItems: 'center', padding: 16 }}>
