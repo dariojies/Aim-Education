@@ -120,6 +120,12 @@ async function prepararVideo(file) {
 const miniUrl = (m) => m.local || `/api/admin/publicaciones/medios/${m.id}/miniatura`;
 // Un vídeo sin miniatura (el iPad a veces no da el fotograma): un cuadro con ▶.
 const sinMiniatura = (m) => m.mime?.startsWith('video/') && m.archivo && !m.local;
+// «instagram:3» → la red y el nombre de la cuenta (si hay varias).
+const redDe = (clave) => String(clave).split(':')[0];
+const nombreCuenta = (clave, cuentas, r) => {
+  const id = Number(String(clave).split(':')[1]);
+  return r?.cuenta || (id ? cuentas.find(c => c.id === id)?.nombre : null) || null;
+};
 function Marca({ red, tam = 18 }) {
   const r = RED[red];
   return <span title={r.nombre} style={{ display: 'inline-grid', placeItems: 'center', width: tam, height: tam, borderRadius: 5, background: r.color, color: '#fff', fontSize: tam * 0.5, fontWeight: 900, flex: 'none' }}>{r.letra}</span>;
@@ -127,6 +133,7 @@ function Marca({ red, tam = 18 }) {
 
 export default function AdminPublicaciones({ showToast }) {
   const [cuenta, setCuenta] = useState(null);
+  const [cuentas, setCuentas] = useState([]);   // todas las conectadas (#651)
   const [vista, setVista] = useState('calendario');
   const [lista, setLista] = useState(null);
   const [editando, setEditando] = useState(null);   // publicación (o {} para una nueva)
@@ -146,7 +153,8 @@ export default function AdminPublicaciones({ showToast }) {
     try { const d = await api(`/api/admin/publicaciones/previstas/${p.fecha}`, { method: 'POST' }); await cargar(); setEditando(d.publicacion); }
     catch (e) { alert(e.message); }
   }
-  useEffect(() => { cargar(); api('/api/admin/publicaciones/cuenta').then(setCuenta).catch(() => setCuenta({ conectado: false, motivo: 'No se ha podido comprobar la conexión con Meta.' })); }, [cargar]);
+  const cargarCuentas = useCallback(() => api('/api/admin/meta/cuentas').then(d => setCuentas(d.cuentas || [])).catch(() => setCuentas([])), []);
+  useEffect(() => { cargar(); cargarCuentas(); api('/api/admin/publicaciones/cuenta').then(setCuenta).catch(() => setCuenta({ conectado: false, motivo: 'No se ha podido comprobar la conexión con Meta.' })); }, [cargar, cargarCuentas]);
   // /admin/publicaciones?dia=AAAA-MM-DD (el aviso de una efeméride, #479): una nueva para ese día.
   useEffect(() => {
     const dia = new URLSearchParams(window.location.search).get('dia');
@@ -170,7 +178,7 @@ export default function AdminPublicaciones({ showToast }) {
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
-      <Conexion cuenta={cuenta} onRecargar={() => api('/api/admin/publicaciones/cuenta?forzar=1').then(setCuenta).catch(() => {})} />
+      <Conexion cuenta={cuenta} cuentas={cuentas} onRecargar={() => { cargarCuentas(); api('/api/admin/publicaciones/cuenta?forzar=1').then(setCuenta).catch(() => {}); }} />
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         {[['calendario', 'Calendario'], ['lista', 'Lista'], ['estadisticas', 'Estadísticas']].map(([v, l]) => (
           <button key={v} className={`filter-pill ${vista === v ? 'is-active' : ''}`} onClick={() => setVista(v)} style={{ borderRadius: 8, padding: '8px 16px' }}>{l}</button>
@@ -184,17 +192,17 @@ export default function AdminPublicaciones({ showToast }) {
         onAbrir={setEditando} onNueva={(dia) => setEditando({ dia })} onMovida={cargar} showToast={showToast} />}
       {verEfemerides && <Efemerides onCerrar={(cambio) => { setVerEfemerides(false); if (cambio) cargar(); }} showToast={showToast} />}
       {verAuto && <Automaticas onCerrar={() => { setVerAuto(false); cargar(); }} showToast={showToast} />}
-      {vista === 'lista' && <Lista lista={lista} onAbrir={setEditando} onCambio={cargar} showToast={showToast} />}
-      {vista === 'estadisticas' && <Estadisticas />}
+      {vista === 'lista' && <Lista lista={lista} cuentas={cuentas} onAbrir={setEditando} onCambio={cargar} showToast={showToast} />}
+      {vista === 'estadisticas' && <Estadisticas cuentas={cuentas} />}
       {editando && (
-        <Editor inicial={editando} cuenta={cuenta} showToast={showToast}
+        <Editor inicial={editando} cuenta={cuenta} cuentas={cuentas} showToast={showToast}
           onCerrar={(cambio) => { setEditando(null); if (cambio) cargar(); }} />
       )}
     </div>
   );
 }
 
-function Conexion({ cuenta, onRecargar }) {
+function Conexion({ cuenta, cuentas = [], onRecargar }) {
   if (!cuenta) return <p style={suave}>Comprobando la conexión con Facebook e Instagram…</p>;
   if (!cuenta.conectado) {
     return (
@@ -215,6 +223,7 @@ function Conexion({ cuenta, onRecargar }) {
           <Marca red="instagram" tam={22} /> <b>@{cuenta.instagram.usuario}</b> <span style={suave}>{num(cuenta.instagram.seguidores)} seguidores</span>
         </a>
       ) : <span style={{ fontSize: 12, color: '#B45309' }}>La página no tiene una cuenta de Instagram profesional vinculada.</span>}
+      {cuentas.length > 1 && <span style={suave} title={cuentas.map(c => c.nombre).join(', ')}>(la principal) y {cuentas.length - 1} {cuentas.length === 2 ? 'cuenta más' : 'cuentas más'}: {cuentas.filter(c => !c.principal).map(c => c.nombre).join(', ')}</span>}
       <button className="btn btn-sm btn-ghost" onClick={onRecargar} title="Volver a comprobar">↻</button>
       {(faltan.length > 0 || faltanE.length > 0) && (
         <span style={{ fontSize: 12, color: '#B45309', flexBasis: '100%' }}>
@@ -229,12 +238,21 @@ function Conexion({ cuenta, onRecargar }) {
 }
 
 // ── Editor ──────────────────────────────────────────────────────────────────
-function Editor({ inicial, cuenta, onCerrar, showToast }) {
+function Editor({ inicial, cuenta, cuentas = [], onCerrar, showToast }) {
   const nueva = !inicial.id;
   const soloVer = ['publicada', 'parcial', 'publicando'].includes(inicial.estado);
   const [id, setId] = useState(inicial.id || null);
   const [texto, setTexto] = useState(inicial.texto || '');
   const [redes, setRedes] = useState(inicial.redes?.length ? inicial.redes : ['facebook', 'instagram']);
+  // Con varias cuentas (#651): a cuáles va, como «instagram:3». Las de antes (sin
+  // destinos) van a la principal.
+  const principal = cuentas.find(c => c.principal) || cuentas[0] || null;
+  const multi = cuentas.length > 1;
+  const [destinos, setDestinos] = useState(() => (inicial.destinos?.length ? inicial.destinos
+    : principal ? (inicial.redes?.length ? inicial.redes : ['facebook', ...(principal.conInstagram ? ['instagram'] : [])]).map(r => `${r}:${principal.id}`) : []));
+  const redesEf = multi ? [...new Set(destinos.map(redDe))] : redes;
+  const cuerpoRedes = () => (multi ? { redes: redesEf, destinos }
+    : inicial.destinos?.length && principal ? { redes, destinos: redes.map(r => `${r}:${principal.id}`) } : { redes });
   const [tipo, setTipo] = useState(inicial.tipo || 'post');
   const [medios, setMedios] = useState(inicial.medios || []);
   const [cuando, setCuando] = useState(inicial.programadaAt ? 'programar' : 'programar');
@@ -253,7 +271,7 @@ function Editor({ inicial, cuenta, onCerrar, showToast }) {
 
   const asegurarId = async () => {
     if (id) return id;
-    const d = await api('/api/admin/publicaciones', { method: 'POST', body: { texto, redes, tipo } });
+    const d = await api('/api/admin/publicaciones', { method: 'POST', body: { texto, ...cuerpoRedes(), tipo } });
     setId(d.id); tocado.current = true;
     return d.id;
   };
@@ -266,7 +284,7 @@ function Editor({ inicial, cuenta, onCerrar, showToast }) {
       for (const f of lista) {
         setSubiendo({ nombre: f.name, progreso: 0 });
         const esVideo = f.type.startsWith('video/') || /\.(mp4|mov)$/i.test(f.name);
-        const p = esVideo ? await prepararVideo(f) : await prepararFoto(f, redes.includes('instagram') && tipo !== 'story');
+        const p = esVideo ? await prepararVideo(f) : await prepararFoto(f, redesEf.includes('instagram') && tipo !== 'story');
         if (p.bandas) notas.push(`«${f.name}» llevaba unas proporciones que Instagram no admite: se le han puesto bandas blancas.`);
         const r = await subir(`/api/admin/publicaciones/${pid}/medios?ancho=${p.ancho || ''}&alto=${p.alto || ''}`, p.blob, (x) => setSubiendo({ nombre: f.name, progreso: x }));
         if (p.mini) await subir(`/api/admin/publicaciones/${pid}/medios/${r.id}/miniatura`, new Blob([p.mini], { type: 'image/jpeg' }));
@@ -290,7 +308,7 @@ function Editor({ inicial, cuenta, onCerrar, showToast }) {
     setGuardando(true);
     try {
       const pid = await asegurarId();
-      const d = await api(`/api/admin/publicaciones/${pid}`, { method: 'PUT', body: { texto, redes, tipo, accion, programadaAt: accion === 'programar' ? new Date(fecha).toISOString() : undefined } });
+      const d = await api(`/api/admin/publicaciones/${pid}`, { method: 'PUT', body: { texto, ...cuerpoRedes(), tipo, accion, programadaAt: accion === 'programar' ? new Date(fecha).toISOString() : undefined } });
       tocado.current = true;
       if (accion === 'publicar') {
         setEstado(d.publicacion);
@@ -330,12 +348,12 @@ function Editor({ inicial, cuenta, onCerrar, showToast }) {
         )}
 
         {/* Lo que pasó al publicar. */}
-        {Object.keys(res).some(k => RED[k]) && (
+        {Object.keys(res).some(k => RED[redDe(k)]) && (
           <div style={{ display: 'grid', gap: 6 }}>
-            {Object.entries(res).filter(([k]) => RED[k]).map(([k, r]) => (
+            {Object.entries(res).filter(([k]) => RED[redDe(k)]).map(([k, r]) => (
               <div key={k} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, flexWrap: 'wrap' }}>
-                <Marca red={k} /> {r.ok
-                  ? <>Publicada{r.url && <> · <a href={r.url} target="_blank" rel="noreferrer" style={{ color: 'var(--purple)', fontWeight: 700 }}>verla en {RED[k].nombre} ↗</a></>}</>
+                <Marca red={redDe(k)} /> {multi && nombreCuenta(k, cuentas, r) && <b>{nombreCuenta(k, cuentas, r)}:</b>} {r.ok
+                  ? <>Publicada{r.url && <> · <a href={r.url} target="_blank" rel="noreferrer" style={{ color: 'var(--purple)', fontWeight: 700 }}>verla en {RED[redDe(k)].nombre} ↗</a></>}</>
                   : <span style={{ color: 'var(--orange)' }}>No ha salido: {r.error}</span>}
               </div>
             ))}
@@ -346,8 +364,28 @@ function Editor({ inicial, cuenta, onCerrar, showToast }) {
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16, alignItems: 'start' }}>
           <div style={{ display: 'grid', gap: 12 }}>
+            {multi && (
+              <div style={{ display: 'grid', gap: 6 }}>
+                {cuentas.map(c => (
+                  <div key={c.id} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <b style={{ fontSize: 13, minWidth: 130 }}>{c.nombre}</b>
+                    {Object.keys(RED).map(r => {
+                      const clave = `${r}:${c.id}`, on = destinos.includes(clave), sinIg = r === 'instagram' && !c.conInstagram;
+                      return (
+                        <button key={r} type="button" disabled={soloVer || sinIg} title={sinIg ? 'Esta página no tiene Instagram vinculado' : ''}
+                          onClick={() => setDestinos(ds => (on ? ds.filter(x => x !== clave) : [...ds, clave]))}
+                          style={{ display: 'inline-flex', gap: 6, alignItems: 'center', padding: '5px 10px', borderRadius: 10, cursor: sinIg ? 'not-allowed' : 'pointer', fontFamily: 'inherit', fontWeight: 700, fontSize: 12.5,
+                            border: `1.5px solid ${on ? RED[r].color : 'var(--line)'}`, background: on ? `color-mix(in oklab, ${RED[r].color} 10%, var(--bg-2))` : 'var(--bg-2)', color: 'var(--ink)', opacity: on ? 1 : 0.55 }}>
+                          <Marca red={r} tam={16} /> {r === 'instagram' && c.instagram ? `@${c.instagram}` : RED[r].nombre}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {Object.keys(RED).map(r => {
+              {!multi && Object.keys(RED).map(r => {
                 const on = redes.includes(r);
                 return (
                   <button key={r} type="button" disabled={soloVer} onClick={() => setRedes(rs => (on ? rs.filter(x => x !== r) : [...rs, r]))}
@@ -357,7 +395,7 @@ function Editor({ inicial, cuenta, onCerrar, showToast }) {
                   </button>
                 );
               })}
-              <span style={{ width: 1, background: 'var(--line)', margin: '0 4px' }} />
+              {!multi && <span style={{ width: 1, background: 'var(--line)', margin: '0 4px' }} />}
               {Object.entries(TIPO).map(([t, l]) => (
                 <button key={t} type="button" disabled={soloVer} className={`filter-pill ${tipo === t ? 'is-active' : ''}`} onClick={() => setTipo(t)}>{l}</button>
               ))}
@@ -369,7 +407,7 @@ function Editor({ inicial, cuenta, onCerrar, showToast }) {
                 <textarea value={texto} disabled={soloVer} onChange={e => setTexto(e.target.value)} rows={7} placeholder="Escribe la publicación… Los #hashtags y los emojis van tal cual."
                   style={{ ...campo, width: '100%', resize: 'vertical', lineHeight: 1.5 }} />
                 <span style={{ ...suave, color: texto.length > 2200 || hashtags > 30 ? 'var(--orange)' : 'var(--ink-3)' }}>
-                  {texto.length.toLocaleString('es-ES')} caracteres{redes.includes('instagram') ? ' de 2.200 en Instagram' : ''} · {hashtags} hashtag{hashtags !== 1 ? 's' : ''}{redes.includes('instagram') ? ' de 30' : ''}
+                  {texto.length.toLocaleString('es-ES')} caracteres{redesEf.includes('instagram') ? ' de 2.200 en Instagram' : ''} · {hashtags} hashtag{hashtags !== 1 ? 's' : ''}{redes.includes('instagram') ? ' de 30' : ''}
                 </span>
               </div>
             )}
@@ -425,7 +463,7 @@ function Editor({ inicial, cuenta, onCerrar, showToast }) {
             {soloVer && <div style={{ display: 'flex', justifyContent: 'flex-end' }}><button type="button" className="btn btn-sm btn-ghost" style={{ color: 'var(--orange)' }} onClick={borrar}><I.Trash width={14} height={14} /> Quitar de aquí</button></div>}
           </div>
 
-          <VistaPrevia redes={redes} tipo={tipo} texto={texto} medios={medios} cuenta={cuenta} />
+          <VistaPrevia redes={redesEf} tipo={tipo} texto={texto} medios={medios} cuenta={cuenta} />
         </div>
       </div>
     </div>
@@ -811,7 +849,7 @@ function Efemerides({ onCerrar, showToast }) {
 }
 
 // ── Lista ───────────────────────────────────────────────────────────────────
-function Lista({ lista, onAbrir, onCambio, showToast }) {
+function Lista({ lista, cuentas = [], onAbrir, onCambio, showToast }) {
   const [filtro, setFiltro] = useState('todas');
   const filtros = [['todas', 'Todas'], ['programada', 'Programadas'], ['borrador', 'Borradores'], ['publicada', 'Publicadas'], ['error', 'Con error']];
   const visibles = (lista || []).filter(p => filtro === 'todas' || p.estado === filtro || (filtro === 'error' && p.estado === 'parcial') || (filtro === 'publicada' && p.estado === 'parcial'));
@@ -840,6 +878,7 @@ function Lista({ lista, onAbrir, onCambio, showToast }) {
               <div style={{ display: 'grid', gap: 6, minWidth: 0 }}>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12 }}>
                   {p.redes.map(r => <Marca key={r} red={r} />)}
+                  {cuentas.length > 1 && p.destinos?.length > 0 && <span style={{ fontWeight: 700 }}>{[...new Set(p.destinos.map(x => nombreCuenta(x, cuentas)).filter(Boolean))].join(' y ')}</span>}
                   <b style={{ color: ESTADO[p.estado]?.c }}>{ESTADO[p.estado]?.t}</b>
                   <span style={suave}>{TIPO[p.tipo]}{p.medios?.length > 1 ? ` · ${p.medios.length} fotos` : ''}</span>
                   <span style={suave}>{p.publicadaAt ? `· ${fmtFechaHora(p.publicadaAt)}` : p.programadaAt ? `· ${fmtFechaHora(p.programadaAt)}` : ''}</span>
@@ -847,9 +886,12 @@ function Lista({ lista, onAbrir, onCambio, showToast }) {
                 </div>
                 <span style={{ fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>{p.texto || <i style={suave}>Sin texto</i>}</span>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                  {Object.entries(p.resultado || {}).filter(([k]) => RED[k]).map(([k, r]) => (r.ok && r.url
-                    ? <a key={k} href={r.url} target="_blank" rel="noreferrer" style={{ fontSize: 12, fontWeight: 700, color: 'var(--purple)' }}>Ver en {RED[k].nombre} ↗</a>
-                    : !r.ok ? <span key={k} style={{ fontSize: 12, color: 'var(--orange)' }}>{RED[k].nombre}: {r.error}</span> : null))}
+                  {Object.entries(p.resultado || {}).filter(([k]) => RED[redDe(k)]).map(([k, r]) => {
+                    const nombre = `${RED[redDe(k)].nombre}${cuentas.length > 1 && nombreCuenta(k, cuentas, r) ? ` de ${nombreCuenta(k, cuentas, r)}` : ''}`;
+                    return r.ok && r.url
+                      ? <a key={k} href={r.url} target="_blank" rel="noreferrer" style={{ fontSize: 12, fontWeight: 700, color: 'var(--purple)' }}>Ver en {nombre} ↗</a>
+                      : !r.ok ? <span key={k} style={{ fontSize: 12, color: 'var(--orange)' }}>{nombre}: {r.error}</span> : null;
+                  })}
                   <div style={{ flex: 1 }} />
                   <button className="btn btn-sm btn-outline" onClick={() => onAbrir(p)}>{['publicada', 'parcial', 'publicando'].includes(p.estado) ? 'Ver' : 'Editar'}</button>
                   <button className="btn btn-sm btn-ghost" onClick={() => duplicar(p)} title="Hacer otra igual">Duplicar</button>
@@ -864,18 +906,28 @@ function Lista({ lista, onAbrir, onCambio, showToast }) {
 }
 
 // ── Estadísticas ────────────────────────────────────────────────────────────
-function Estadisticas() {
+function Estadisticas({ cuentas = [] }) {
   const [d, setD] = useState(null);
   const [error, setError] = useState(null);
   const [orden, setOrden] = useState('recientes');
+  const [cuentaId, setCuentaId] = useState(null);   // null: la principal (#651)
   const cargar = useCallback((forzar) => {
     setError(null);
-    api(`/api/admin/publicaciones/estadisticas${forzar ? '?forzar=1' : ''}`).then(setD).catch(e => setError(e.message));
-  }, []);
-  useEffect(() => { cargar(false); }, [cargar]);
-  if (error) return <p style={{ color: 'var(--orange)', fontSize: 14 }}>{error}</p>;
-  if (!d) return <p style={suave}>Pidiendo los números a Facebook e Instagram…</p>;
-  if (!d.cuenta?.conectado) return <p style={suave}>Sin conexión con Meta: no hay estadísticas que enseñar.</p>;
+    const q = new URLSearchParams({ ...(forzar ? { forzar: '1' } : {}), ...(cuentaId ? { cuenta: String(cuentaId) } : {}) });
+    api(`/api/admin/publicaciones/estadisticas${q.toString() ? `?${q}` : ''}`).then(setD).catch(e => setError(e.message));
+  }, [cuentaId]);
+  useEffect(() => { setD(null); cargar(false); }, [cargar]);
+  const elegirCuenta = cuentas.length > 1 && (
+    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+      {cuentas.map(c => {
+        const activa = cuentaId ? cuentaId === c.id : c.principal;
+        return <button key={c.id} className={`filter-pill ${activa ? 'is-active' : ''}`} onClick={() => setCuentaId(c.principal ? null : c.id)}>{c.nombre}</button>;
+      })}
+    </div>
+  );
+  if (error) return <div style={{ display: 'grid', gap: 10 }}>{elegirCuenta}<p style={{ color: 'var(--orange)', fontSize: 14 }}>{error}</p></div>;
+  if (!d) return <div style={{ display: 'grid', gap: 10 }}>{elegirCuenta}<p style={suave}>Pidiendo los números a Facebook e Instagram…</p></div>;
+  if (!d.cuenta?.conectado) return <div style={{ display: 'grid', gap: 10 }}>{elegirCuenta}<p style={suave}>{d.cuenta?.motivo || 'Sin conexión con Meta: no hay estadísticas que enseñar.'}</p></div>;
   const hace30 = (red) => {
     const lista = (d.seguidores || []).filter(x => x[red] != null);
     if (lista.length < 2) return null;
@@ -887,6 +939,7 @@ function Estadisticas() {
   const ordenar = (l) => (orden === 'interaccion' ? [...l].sort((a, b) => interaccion(b) - interaccion(a)) : l);
   return (
     <div style={{ display: 'grid', gap: 14 }}>
+      {elegirCuenta}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
         <Tarjeta red="facebook" titulo={d.cuenta.facebook.nombre} valor={d.cuenta.facebook.seguidores} cambio={hace30('facebook')} serie={(d.seguidores || []).map(x => x.facebook)} />
         {d.cuenta.instagram && <Tarjeta red="instagram" titulo={`@${d.cuenta.instagram.usuario}`} valor={d.cuenta.instagram.seguidores} cambio={hace30('instagram')} serie={(d.seguidores || []).map(x => x.instagram)} extra={`${num(d.cuenta.instagram.publicaciones)} publicaciones`} />}

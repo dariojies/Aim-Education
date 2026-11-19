@@ -27,7 +27,7 @@ import { crearEvaluacion, crearTablasEvaluacion, sembrarCategoriasIngles } from 
 import { crearReportes, pendienteAhora, SQL_MOVIMIENTOS } from './reportes.js';
 import { enviarZipFotos, nombreArchivo as nombreEnZip, crearZip, cabeceraAdjunto } from './zip.js';
 import { crearPublicaciones, crearTablasPublicaciones, efemeridesSinPublicar } from './publicaciones.js';
-import { crearConexionMeta, cargarConexionMeta, tokenPagina, conexionMeta } from './meta-conexion.js';
+import { crearConexionMeta, cargarConexionMeta, tokenPagina, conexionMeta, crearTablasCuentasMeta } from './meta-conexion.js';
 import { crearAula, crearTablasAula, entregasPorCorregir, tareasCorregidas, dudasPorResponder, dudasContestadas, avisosAulaDe, avisosAulaPendientes, marcarAvisoAula, soltarAvisoAula, anunciosAulaDe } from './aula.js';
 import { crearTienda, crearTablasTienda, pedidosPorAtender, pedidosEnMarcha } from './tienda.js';
 import { limpiarHtml, htmlParaFuera, textoDeHtml } from './noticias-html.js';
@@ -1989,6 +1989,8 @@ async function initDb() {
         await crearTablasRedes(client);
         // Publicaciones en redes (#410): lo programado y sus fotos o vídeos.
         await crearTablasPublicaciones(client);
+        // Las cuentas de Facebook e Instagram conectadas (#651): varias a la vez.
+        await crearTablasCuentasMeta(client);
         // Tamaño de cada segmento guardado, una foto al día (#341).
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_segmentos_historial (

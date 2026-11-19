@@ -18,7 +18,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import express from 'express';
 import crypto from 'crypto';
-import { tokenPagina } from './meta-conexion.js';
+import { tokenPagina, cuentasMeta, cuentaMetaPorId, cuentaPrincipalMeta } from './meta-conexion.js';
 import { historiasPrevistas, programarHistoriaYa, imagenPrevista } from './disenos-automaticos.js';
 
 const REDES = ['facebook', 'instagram'];
@@ -106,6 +106,9 @@ export async function crearTablasPublicaciones(client) {
     await client.query(`CREATE INDEX IF NOT EXISTS ix_social_pub_estado ON aim_social_publicaciones (estado, programada_at)`);
     // De qué noticia salió (#491): para no repetirla y para quitarla si la noticia se despublica.
     await client.query(`ALTER TABLE aim_social_publicaciones ADD COLUMN IF NOT EXISTS noticia TEXT`);
+    // A qué cuentas va (#651): «red:cuenta», como «instagram:3». Vacío: a las redes
+    // de «redes» en la cuenta principal, como siempre (las de antes y las automáticas).
+    await client.query(`ALTER TABLE aim_social_publicaciones ADD COLUMN IF NOT EXISTS destinos TEXT[]`);
     await client.query(`
         CREATE TABLE IF NOT EXISTS aim_social_medios (
             id SERIAL PRIMARY KEY,
@@ -151,12 +154,13 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
     const TOKEN = () => tokenPagina();
     const BASE_MEDIOS = () => (process.env.URL_MEDIOS_PUBLICA || urlPublica).replace(/\/+$/, '');
 
-    // Una llamada a la API de Meta, con su error en claro.
-    async function graph(ruta, { method = 'GET', body } = {}) {
+    // Una llamada a la API de Meta, con su error en claro. Con el token de la
+    // cuenta que toca (#651) o, si no se dice, el de la principal.
+    async function graph(ruta, { method = 'GET', body, token = TOKEN() } = {}) {
         const sep = ruta.includes('?') ? '&' : '?';
-        const r = await fetchImpl(`${GRAPH()}${ruta}${method === 'GET' ? `${sep}access_token=${encodeURIComponent(TOKEN())}` : ''}`, {
+        const r = await fetchImpl(`${GRAPH()}${ruta}${method === 'GET' ? `${sep}access_token=${encodeURIComponent(token)}` : ''}`, {
             method,
-            headers: { ...(method !== 'GET' ? { Authorization: `Bearer ${TOKEN()}`, 'Content-Type': 'application/json' } : {}) },
+            headers: { ...(method !== 'GET' ? { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } : {}) },
             body: body ? JSON.stringify(body) : undefined,
             signal: AbortSignal.timeout(60_000),
         });
@@ -169,29 +173,37 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
         return d;
     }
 
+    const graphBase = (ruta, o) => graph(ruta, o);
+
     // ── La cuenta: la página, su Instagram y los permisos del token ──
-    let cuentaCache = null;
-    async function cuentaMeta(forzar = false) {
-        if (!TOKEN()) return { conectado: false, motivo: 'No está conectado: pulsa «Conectar con Facebook».' };
-        if (!forzar && cuentaCache && Date.now() - cuentaCache.t < 10 * 60_000) return cuentaCache.v;
+    // Sin decir cuál, la principal (#651).
+    const cuentaCache = new Map();
+    async function cuentaMeta(forzar = false, cuentaId = null) {
+        const c = cuentaId ? cuentaMetaPorId(cuentaId) : cuentaPrincipalMeta();
+        const token = c?.token || (cuentaId ? '' : TOKEN());
+        if (!token) return { conectado: false, motivo: cuentaId ? 'Esa cuenta ya no está conectada.' : 'No está conectado: pulsa «Conectar con Facebook».' };
+        const clave = c?.id || 'heroku';
+        const enCache = cuentaCache.get(clave);
+        if (!forzar && enCache && Date.now() - enCache.t < 10 * 60_000) return enCache.v;
+        const graphC = (ruta, o = {}) => graph(ruta, { ...o, token });
         let v;
         try {
-            const pag = await graph('/me?fields=id,name,link,followers_count,fan_count,picture{url}');
+            const pag = await graphC('/me?fields=id,name,link,followers_count,fan_count,picture{url}');
             let ig = null;
             try {
-                const x = await graph(`/${pag.id}?fields=instagram_business_account{id,username,followers_count,media_count,profile_picture_url}`);
+                const x = await graphC(`/${pag.id}?fields=instagram_business_account{id,username,followers_count,media_count,profile_picture_url}`);
                 const a = x.instagram_business_account;
                 if (a) ig = { id: a.id, usuario: a.username || null, seguidores: a.followers_count ?? null, publicaciones: a.media_count ?? null, foto: a.profile_picture_url || null };
             } catch { /* sin Instagram vinculado o sin permiso */ }
             let permisos = null;
             try {
-                const d = await graph(`/debug_token?input_token=${encodeURIComponent(TOKEN())}`);
+                const d = await graphC(`/debug_token?input_token=${encodeURIComponent(token)}`);
                 permisos = Array.isArray(d.data?.scopes) ? d.data.scopes : null;
             } catch { /* si no se pueden leer, no se dice nada */ }
             const necesarios = ['pages_manage_posts', 'pages_read_engagement', ...(ig ? ['instagram_basic', 'instagram_content_publish'] : [])];
             const estadisticas = ['read_insights', ...(ig ? ['instagram_manage_insights'] : [])];
             v = {
-                conectado: true,
+                conectado: true, cuentaId: c?.id || null, principal: !c || !!c.principal, token,
                 facebook: { id: pag.id, nombre: pag.name, enlace: pag.link || `https://www.facebook.com/${pag.id}`, seguidores: pag.followers_count ?? pag.fan_count ?? null, foto: pag.picture?.data?.url || null },
                 instagram: ig,
                 permisos,
@@ -201,9 +213,11 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
         } catch (err) {
             v = { conectado: false, motivo: `Meta no acepta el token de la página: ${err.message}` };
         }
-        cuentaCache = { t: Date.now(), v };
+        cuentaCache.set(clave, { t: Date.now(), v });
         return v;
     }
+    // Lo que sale hacia la pantalla: sin el token.
+    const sinToken = (v) => { const { token: _t, ...resto } = v || {}; return resto; };
 
     // ── Publicar ──
     const urlMedio = (m) => `${BASE_MEDIOS()}/publico/medios/${m.token}.${m.mime.startsWith('video/') ? 'mp4' : 'jpg'}`;
@@ -211,10 +225,11 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
     // Una historia en la página de Facebook (#470). La foto se sube sin publicar y se
     // publica como historia; el vídeo, en tres pasos (empezar, que Meta lo coja de
     // nuestra dirección, terminar). Las historias no tienen enlace propio.
-    async function historiaFacebook(page, m) {
+    async function historiaFacebook(page, m, token) {
+        const graph = (ruta, o = {}) => graphBase(ruta, { ...o, token });
         if (m.mime.startsWith('video/')) {
             const ini = await graph(`/${page}/video_stories`, { method: 'POST', body: { upload_phase: 'start' } });
-            const r = await fetchImpl(ini.upload_url, { method: 'POST', headers: { Authorization: `OAuth ${TOKEN()}`, file_url: urlMedio(m) }, signal: AbortSignal.timeout(120_000) });
+            const r = await fetchImpl(ini.upload_url, { method: 'POST', headers: { Authorization: `OAuth ${token}`, file_url: urlMedio(m) }, signal: AbortSignal.timeout(120_000) });
             const d = await r.json().catch(() => ({}));
             if (!r.ok || d.success === false) throw new Error(d.error?.message || d.debug_info?.message || `Facebook no ha cogido el vídeo (${r.status}).`);
             const fin = await graph(`/${page}/video_stories`, { method: 'POST', body: { video_id: ini.video_id, upload_phase: 'finish' } });
@@ -225,8 +240,9 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
         return { id: r.post_id || foto.id, url: `https://www.facebook.com/${page}` };
     }
     async function publicarFacebook(p, medios, cuenta) {
+        const graph = (ruta, o = {}) => graphBase(ruta, { ...o, token: cuenta.token });
         const page = cuenta.facebook.id;
-        if (p.tipo === 'story') return historiaFacebook(page, medios[0]);
+        if (p.tipo === 'story') return historiaFacebook(page, medios[0], cuenta.token);
         const imgs = medios.filter(m => m.mime.startsWith('image/')), vids = medios.filter(m => m.mime.startsWith('video/'));
         let id;
         if (vids.length) {
@@ -247,7 +263,8 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
     }
 
     // Instagram procesa los vídeos un rato antes de dejar publicarlos.
-    async function esperarContenedor(id) {
+    async function esperarContenedor(id, token) {
+        const graph = (ruta, o = {}) => graphBase(ruta, { ...o, token });
         for (let i = 0; i < 60; i++) {
             const s = await graph(`/${id}?fields=status_code,status`);
             if (s.status_code === 'FINISHED' || s.status_code === 'PUBLISHED') return;
@@ -257,6 +274,8 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
         throw new Error('Instagram tarda demasiado en procesar el vídeo. Prueba a reintentarlo.');
     }
     async function publicarInstagram(p, medios, cuenta) {
+        const graph = (ruta, o = {}) => graphBase(ruta, { ...o, token: cuenta.token });
+        const esperarContenedorC = (id) => esperarContenedor(id, cuenta.token);
         const ig = cuenta.instagram?.id;
         if (!ig) throw new Error('La página no tiene una cuenta de Instagram profesional vinculada.');
         const esVideo = (m) => m.mime.startsWith('video/');
@@ -273,35 +292,45 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
             const hijos = [];
             for (const m of medios) {
                 const h = await contenedor({ is_carousel_item: true, ...(esVideo(m) ? { media_type: 'VIDEO', video_url: urlMedio(m) } : { image_url: urlMedio(m) }) });
-                if (esVideo(m)) await esperarContenedor(h);
+                if (esVideo(m)) await esperarContenedorC(h);
                 hijos.push(h);
             }
             creacion = await contenedor({ media_type: 'CAROUSEL', children: hijos.join(','), caption: p.texto });
         }
-        await esperarContenedor(creacion);
+        await esperarContenedorC(creacion);
         const id = (await graph(`/${ig}/media_publish`, { method: 'POST', body: { creation_id: creacion } })).id;
         let url = null;
         try { url = (await graph(`/${id}?fields=permalink`)).permalink || null; } catch { /* sin enlace */ }
         return { id, url };
     }
 
+    // A dónde va una publicación (#651): [{ clave, red, cuentaId }]. Las de antes y
+    // las automáticas (sin destinos): sus redes en la principal, con la clave de
+    // siempre («facebook», «instagram») en el resultado.
+    const destinosDe = (p) => (p.destinos?.length
+        ? p.destinos.map(d => { const [red, id] = String(d).split(':'); return { clave: d, red, cuentaId: Number(id) || null }; })
+        : (p.redes || []).map(red => ({ clave: red, red, cuentaId: null })));
+
     async function publicarUna(p) {
-        const cuenta = await cuentaMeta(true);
         const medios = (await pool.query(
             `SELECT id, mime, token FROM aim_social_medios WHERE publicacion_id = $1 AND datos IS NOT NULL ORDER BY orden, id`, [p.id])).rows;
         const resultado = { ...(p.resultado || {}) };
-        for (const red of p.redes) {
-            if (resultado[red]?.ok) continue;     // al reintentar, lo que ya salió no se repite
+        const destinos = destinosDe(p);
+        const cuentasVistas = new Map();
+        for (const d of destinos) {
+            if (resultado[d.clave]?.ok) continue;     // al reintentar, lo que ya salió no se repite
             try {
+                if (!cuentasVistas.has(d.cuentaId)) cuentasVistas.set(d.cuentaId, await cuentaMeta(true, d.cuentaId));
+                const cuenta = cuentasVistas.get(d.cuentaId);
                 if (!cuenta.conectado) throw new Error(cuenta.motivo);
-                const r = red === 'facebook' ? await publicarFacebook(p, medios, cuenta) : await publicarInstagram(p, medios, cuenta);
-                resultado[red] = { ok: true, ...r, at: new Date().toISOString() };
+                const r = d.red === 'facebook' ? await publicarFacebook(p, medios, cuenta) : await publicarInstagram(p, medios, cuenta);
+                resultado[d.clave] = { ok: true, ...r, cuenta: cuenta.facebook?.nombre || null, at: new Date().toISOString() };
             } catch (err) {
-                resultado[red] = { ok: false, error: String(err?.message || err).slice(0, 500), at: new Date().toISOString() };
+                resultado[d.clave] = { ok: false, error: String(err?.message || err).slice(0, 500), at: new Date().toISOString() };
             }
         }
-        const bien = p.redes.filter(r => resultado[r]?.ok).length;
-        const estado = bien === p.redes.length ? 'publicada' : bien ? 'parcial' : 'error';
+        const bien = destinos.filter(d => resultado[d.clave]?.ok).length;
+        const estado = bien === destinos.length ? 'publicada' : bien ? 'parcial' : 'error';
         await pool.query(
             `UPDATE aim_social_publicaciones SET estado = $2, resultado = $3::jsonb, updated_at = NOW(),
                     publicada_at = CASE WHEN $4 THEN COALESCE(publicada_at, NOW()) ELSE publicada_at END
@@ -343,6 +372,8 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
 
     // ── Estadísticas ──
     const CLAVE_SEGUIDORES = 'social_seguidores';
+    // La principal, en la de siempre; las demás, cada una en la suya (#651).
+    const claveSeguidores = (cuenta) => (cuenta.principal ? CLAVE_SEGUIDORES : `${CLAVE_SEGUIDORES}:${cuenta.cuentaId}`);
     async function apuntarSeguidores(cuenta) {
         if (!cuenta?.conectado) return;
         const hoy = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Madrid' });
@@ -356,19 +387,24 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
                          SELECT x FROM jsonb_array_elements(aim_ajustes.valor) x WHERE x->>'fecha' <> $3
                          UNION ALL SELECT $2::jsonb) u
                      ORDER BY x->>'fecha' DESC LIMIT 400) t)`,
-            [CLAVE_SEGUIDORES, JSON.stringify(fila), hoy]);
+            [claveSeguidores(cuenta), JSON.stringify(fila), hoy]);
     }
     async function fotoSeguidores() {
-        try { await apuntarSeguidores(await cuentaMeta(true)); } catch (err) { console.warn('[publicaciones] seguidores:', err.message); }
+        const lista = cuentasMeta();
+        for (const c of (lista.length ? lista.map(x => x.id) : [null])) {
+            try { await apuntarSeguidores(await cuentaMeta(true, c)); } catch (err) { console.warn('[publicaciones] seguidores:', err.message); }
+        }
     }
 
     // Las últimas publicaciones de cada red (también las hechas desde el móvil),
     // con sus números. Lo que Meta no dé (según permisos), queda en blanco.
-    let statsCache = null;
-    async function estadisticas(forzar = false) {
-        if (!forzar && statsCache && Date.now() - statsCache.t < 15 * 60_000) return statsCache.v;
-        const cuenta = await cuentaMeta(true);
-        if (!cuenta.conectado) return { cuenta, facebook: [], instagram: [], seguidores: [] };
+    const statsCache = new Map();
+    async function estadisticas(forzar = false, cuentaId = null) {
+        const enCache = statsCache.get(cuentaId || 0);
+        if (!forzar && enCache && Date.now() - enCache.t < 15 * 60_000) return enCache.v;
+        const cuenta = await cuentaMeta(true, cuentaId);
+        if (!cuenta.conectado) return { cuenta: sinToken(cuenta), facebook: [], instagram: [], seguidores: [] };
+        const graph = (ruta, o = {}) => graphBase(ruta, { ...o, token: cuenta.token });
         await apuntarSeguidores(cuenta).catch(() => {});
         const errores = {};
         let facebook = [], instagram = [];
@@ -411,15 +447,20 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
         const nuestras = (await pool.query(
             `SELECT id, resultado FROM aim_social_publicaciones WHERE estado IN ('publicada', 'parcial') AND publicada_at > NOW() - INTERVAL '120 days'`)).rows;
         const deAqui = {};
-        for (const p of nuestras) for (const red of REDES) if (p.resultado?.[red]?.id) deAqui[`${red}:${p.resultado[red].id}`] = p.id;
-        const seg = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = $1`, [CLAVE_SEGUIDORES])).rows[0]?.valor || [];
+        for (const p of nuestras) {
+            for (const [k, x] of Object.entries(p.resultado || {})) {
+                const red = k.split(':')[0];
+                if (REDES.includes(red) && x?.id) deAqui[`${red}:${x.id}`] = p.id;
+            }
+        }
+        const seg = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = $1`, [claveSeguidores(cuenta)])).rows[0]?.valor || [];
         const v = {
-            cuenta, errores, seguidores: seg,
+            cuenta: sinToken(cuenta), errores, seguidores: seg,
             facebook: facebook.map(p => ({ ...p, deAqui: deAqui[`facebook:${p.id}`] || null })),
             instagram: instagram.map(p => ({ ...p, deAqui: deAqui[`instagram:${p.id}`] || null })),
             actualizado: new Date().toISOString(),
         };
-        statsCache = { t: Date.now(), v };
+        statsCache.set(cuentaId || 0, { t: Date.now(), v });
         return v;
     }
 
@@ -448,7 +489,7 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
         return m;
     }
     const salida = (p, medios) => ({
-        id: p.id, texto: p.texto, redes: p.redes, tipo: p.tipo, estado: p.estado,
+        id: p.id, texto: p.texto, redes: p.redes, destinos: p.destinos || [], tipo: p.tipo, estado: p.estado,
         programadaAt: p.programada_at, publicadaAt: p.publicada_at, resultado: p.resultado || {},
         autor: p.autor || null, actualizada: p.updated_at, medios: medios || [],
         // La programó sola la web (la historia de un festivo, #471): si se cambia, deja de serlo.
@@ -494,7 +535,7 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
     });
 
     router.get('/api/admin/publicaciones/cuenta', ...ver, async (req, res) => {
-        try { res.set('Cache-Control', 'no-store'); res.json(await cuentaMeta(req.query.forzar === '1')); } catch (err) { fallo(res, err); }
+        try { res.set('Cache-Control', 'no-store'); res.json(sinToken(await cuentaMeta(req.query.forzar === '1', Number(req.query.cuenta) || null))); } catch (err) { fallo(res, err); }
     });
 
     router.get('/api/admin/publicaciones', ...ver, async (req, res) => {
@@ -526,7 +567,17 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
     // Los datos de una publicación (y qué se hace con ella: borrador, programar, publicar ya).
     async function guardarDatos(req, id) {
         const texto = String(req.body?.texto ?? '').replace(/\r\n/g, '\n').slice(0, 5000);
-        const redes = [...new Set((Array.isArray(req.body?.redes) ? req.body.redes : []).filter(r => REDES.includes(r)))];
+        let redes = [...new Set((Array.isArray(req.body?.redes) ? req.body.redes : []).filter(r => REDES.includes(r)))];
+        // Las cuentas a las que va (#651). Sin destinos, como siempre: la principal.
+        let destinos = null;
+        if (Array.isArray(req.body?.destinos)) {
+            destinos = [...new Set(req.body.destinos.map(String))].filter(d => {
+                const [red, id] = d.split(':');
+                const c = cuentaMetaPorId(id);
+                return REDES.includes(red) && c && (red !== 'instagram' || c.instagram);
+            });
+            redes = [...new Set(destinos.map(d => d.split(':')[0]))];
+        }
         const tipo = TIPOS.includes(req.body?.tipo) ? req.body.tipo : 'post';
         const accion = ['borrador', 'programar', 'publicar'].includes(req.body?.accion) ? req.body.accion : 'borrador';
         let programada = null;
@@ -542,15 +593,15 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
             const prob = problemaPublicacion({ texto, redes, tipo, medios });
             if (prob) corta(400, prob);
         }
-        return { texto, redes, tipo, accion, programada: accion === 'publicar' ? new Date().toISOString() : programada };
+        return { texto, redes, destinos, tipo, accion, programada: accion === 'publicar' ? new Date().toISOString() : programada };
     }
 
     router.post('/api/admin/publicaciones', ...ver, async (req, res) => {
         try {
             const d = await guardarDatos({ body: { ...req.body, accion: 'borrador' } }, null);
             const r = await pool.query(
-                `INSERT INTO aim_social_publicaciones (texto, redes, tipo, estado, creado_por, actualizado_por)
-                 VALUES ($1, $2::text[], $3, 'borrador', $4, $4) RETURNING id`, [d.texto, d.redes, d.tipo, req.userSession.userId]);
+                `INSERT INTO aim_social_publicaciones (texto, redes, destinos, tipo, estado, creado_por, actualizado_por)
+                 VALUES ($1, $2::text[], $3::text[], $4, 'borrador', $5, $5) RETURNING id`, [d.texto, d.redes, d.destinos, d.tipo, req.userSession.userId]);
             res.status(201).json({ success: true, id: r.rows[0].id });
         } catch (err) { fallo(res, err); }
     });
@@ -566,8 +617,9 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
             await pool.query(
                 `UPDATE aim_social_publicaciones SET texto = $2, redes = $3::text[], tipo = $4, estado = $5,
                         programada_at = CASE WHEN $8 THEN NOW() ELSE $6::timestamptz END,
+                        destinos = CASE WHEN $9 THEN $10::text[] ELSE destinos END,
                         resultado = '{}'::jsonb, actualizado_por = $7, updated_at = NOW() WHERE id = $1`,
-                [id, d.texto, d.redes, d.tipo, estado, estado === 'borrador' ? null : d.programada, req.userSession.userId, d.accion === 'publicar']);
+                [id, d.texto, d.redes, d.tipo, estado, estado === 'borrador' ? null : d.programada, req.userSession.userId, d.accion === 'publicar', d.destinos !== null, d.destinos]);
             // «Publicar ya»: se lanza en el momento, sin esperar a que acabe (un vídeo
             // de Instagram puede tardar minutos); la pantalla va mirando cómo va.
             if (d.accion === 'publicar') await lanzarYEsperarUnPoco();
@@ -609,8 +661,8 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
             const p = await leer(id, client);
             await client.query('BEGIN');
             const n = (await client.query(
-                `INSERT INTO aim_social_publicaciones (texto, redes, tipo, estado, creado_por, actualizado_por)
-                 VALUES ($1, $2::text[], $3, 'borrador', $4, $4) RETURNING id`, [p.texto, p.redes, p.tipo, req.userSession.userId])).rows[0].id;
+                `INSERT INTO aim_social_publicaciones (texto, redes, destinos, tipo, estado, creado_por, actualizado_por)
+                 VALUES ($1, $2::text[], $3::text[], $4, 'borrador', $5, $5) RETURNING id`, [p.texto, p.redes, p.destinos, p.tipo, req.userSession.userId])).rows[0].id;
             await client.query(
                 `INSERT INTO aim_social_medios (publicacion_id, orden, mime, datos, miniatura, bytes, ancho, alto, token)
                  SELECT $2, orden, mime, datos, miniatura, bytes, ancho, alto, md5(random()::text || id::text || clock_timestamp()::text)
@@ -699,8 +751,8 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
     });
 
     router.get('/api/admin/publicaciones/estadisticas', ...ver, async (req, res) => {
-        try { res.set('Cache-Control', 'no-store'); res.json(await estadisticas(req.query.forzar === '1')); } catch (err) { fallo(res, err); }
+        try { res.set('Cache-Control', 'no-store'); res.json(await estadisticas(req.query.forzar === '1', Number(req.query.cuenta) || null)); } catch (err) { fallo(res, err); }
     });
 
-    return { router, publicarPendientes, publicarUna, fotoSeguidores, cuentaMeta, olvidarCuenta: () => { cuentaCache = null; } };
+    return { router, publicarPendientes, publicarUna, fotoSeguidores, cuentaMeta: async (forzar, id) => sinToken(await cuentaMeta(forzar, id)), olvidarCuenta: () => { cuentaCache.clear(); statsCache.clear(); } };
 }

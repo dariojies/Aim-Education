@@ -105,6 +105,8 @@ function Hilo({ id, companeros, onCambio, onAbrirFicha, showToast, onVolver }) {
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <h2 style={{ margin: 0, fontSize: 18 }}>{c.nombre}</h2>
           <Canal c={c.canal} />
+          {/* De qué cuenta es, si hay varias (#651). */}
+          {c.cuenta && <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--purple)' }}>a {c.cuenta}</span>}
           {c.usuario && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>@{c.usuario}</span>}
           {c.telefono && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{c.telefono}</span>}
         </div>
@@ -216,6 +218,7 @@ export default function AdminRedes({ showToast, onAbrirFicha }) {
                   <span style={{ fontSize: 13, fontWeight: c.noLeidos ? 700 : 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--ink-2)' }}>{c.ultimoTexto}</span>
                   <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <Canal c={c.canal} chico />
+                    {c.cuenta && <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--purple)' }}>{c.cuenta}</span>}
                     {c.noLeidos > 1 && <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--purple)' }}>{c.noLeidos} sin leer</span>}
                     {c.persona && <span style={{ fontSize: 11, color: 'var(--teal)', fontWeight: 700 }}>✓ {c.persona.nombre.split(' ')[0]}</span>}
                     {c.asignado && <span style={{ fontSize: 11, color: 'var(--purple)', fontWeight: 700 }}>→ {c.asignado.nombre.split(' ')[0]}</span>}

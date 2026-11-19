@@ -17,7 +17,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import express from 'express';
 import crypto from 'crypto';
-import { tokenPagina } from './meta-conexion.js';
+import { tokenPagina, cuentaMetaDeExterno, cuentaMetaPorId, cuentasMeta } from './meta-conexion.js';
 
 const GRAPH = 'https://graph.facebook.com/v21.0';
 export const CANALES = { messenger: 'Messenger', instagram: 'Instagram', whatsapp: 'WhatsApp' };
@@ -68,7 +68,11 @@ export async function crearTablasRedes(client) {
         )
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS ix_social_msg_conv ON aim_social_mensajes (conversacion_id, created_at)`);
+    // De qué cuenta es la conversación (#651): la página (o su Instagram) que recibió el mensaje.
+    await client.query(`ALTER TABLE aim_social_conversaciones ADD COLUMN IF NOT EXISTS cuenta_id INTEGER`);
 }
+// El token con el que se contesta: el de la cuenta de la conversación o, si no se sabe, el de la principal.
+const tokenDe = (conv) => (conv?.cuenta_id && cuentaMetaPorId(conv.cuenta_id)?.token) || tokenPagina();
 
 // Una llamada a la API de Meta. Devuelve el JSON o lanza su error, en claro.
 async function graph(ruta, { method = 'GET', token, body } = {}) {
@@ -98,14 +102,15 @@ export function firmaValida(req) {
 
 export function crearRedes({ pool, companeros, fichaPorTelefono, clubId }) {
     // ── Guardar lo que llega (y lo que sale) ──
-    async function guardar({ canal, externo, entrante, texto, adjuntos, mid, fecha, nombre, telefono, enviadoPor = null }) {
+    async function guardar({ canal, externo, entrante, texto, adjuntos, mid, fecha, nombre, telefono, enviadoPor = null, cuentaId = null }) {
         const f = fecha && !Number.isNaN(fecha.getTime()) ? fecha : new Date();
         const resumen = String(texto || (adjuntos?.length ? `[${adjuntos[0].tipo}]` : '')).slice(0, 300);
         const c = await pool.query(
-            `INSERT INTO aim_social_conversaciones (canal, externo_id, nombre, telefono, ultimo_at, ultimo_texto, ultimo_entrante_at, no_leidos)
-             VALUES ($1, $2, $3, $4, $5::timestamptz, $6, CASE WHEN $7::boolean THEN $5::timestamptz END, CASE WHEN $7::boolean THEN 1 ELSE 0 END)
+            `INSERT INTO aim_social_conversaciones (canal, externo_id, nombre, telefono, ultimo_at, ultimo_texto, ultimo_entrante_at, no_leidos, cuenta_id)
+             VALUES ($1, $2, $3, $4, $5::timestamptz, $6, CASE WHEN $7::boolean THEN $5::timestamptz END, CASE WHEN $7::boolean THEN 1 ELSE 0 END, $8)
              ON CONFLICT (canal, externo_id) DO UPDATE SET
                 nombre = COALESCE(aim_social_conversaciones.nombre, EXCLUDED.nombre),
+                cuenta_id = COALESCE(aim_social_conversaciones.cuenta_id, EXCLUDED.cuenta_id),
                 telefono = COALESCE(aim_social_conversaciones.telefono, EXCLUDED.telefono),
                 ultimo_at = GREATEST(aim_social_conversaciones.ultimo_at, EXCLUDED.ultimo_at),
                 ultimo_texto = EXCLUDED.ultimo_texto,
@@ -113,7 +118,7 @@ export function crearRedes({ pool, companeros, fichaPorTelefono, clubId }) {
                 no_leidos = aim_social_conversaciones.no_leidos + CASE WHEN $7::boolean THEN 1 ELSE 0 END,
                 estado = CASE WHEN $7::boolean THEN 'abierta' ELSE aim_social_conversaciones.estado END
              RETURNING id, (xmax = 0) AS nueva, persona_id`,
-            [canal, String(externo).slice(0, 80), nombre || null, telefono || null, f, resumen, !!entrante]);
+            [canal, String(externo).slice(0, 80), nombre || null, telefono || null, f, resumen, !!entrante, cuentaId]);
         const conv = c.rows[0];
         const m = await pool.query(
             `INSERT INTO aim_social_mensajes (conversacion_id, entrante, texto, adjuntos, externo_id, enviado_por, created_at)
@@ -121,14 +126,14 @@ export function crearRedes({ pool, companeros, fichaPorTelefono, clubId }) {
             [conv.id, !!entrante, texto || null, adjuntos?.length ? JSON.stringify(adjuntos) : null, mid || null, enviadoPor, f]);
         // Repetido (Meta reintenta, o es el eco de uno nuestro): no cuenta dos veces.
         if (!m.rowCount && entrante) await pool.query(`UPDATE aim_social_conversaciones SET no_leidos = GREATEST(0, no_leidos - 1) WHERE id = $1`, [conv.id]);
-        if (conv.nueva) completar(conv.id, canal, externo, telefono).catch(e => console.error('[redes] datos del perfil:', e.message));
+        if (conv.nueva) completar(conv.id, canal, externo, telefono, cuentaId).catch(e => console.error('[redes] datos del perfil:', e.message));
         return conv.id;
     }
     // La primera vez: su nombre (Messenger e Instagram no lo mandan) y, por el
     // teléfono, su ficha si ya es del club.
-    async function completar(id, canal, externo, telefono) {
+    async function completar(id, canal, externo, telefono, cuentaId = null) {
         let nombre = null, usuario = null;
-        const token = tokenPagina();
+        const token = tokenDe({ cuenta_id: cuentaId });
         if (canal === 'messenger' && token) {
             const p = await graph(`/${externo}?fields=first_name,last_name`, { token }).catch(() => null);
             if (p) nombre = [p.first_name, p.last_name].filter(Boolean).join(' ') || null;
@@ -147,6 +152,8 @@ export function crearRedes({ pool, companeros, fichaPorTelefono, clubId }) {
         if (body?.object === 'page' || body?.object === 'instagram') {
             const canal = body.object === 'page' ? 'messenger' : 'instagram';
             for (const e of body.entry || []) {
+                // La página (o el Instagram) que lo recibe: así se sabe de qué cuenta es (#651).
+                const cuentaId = cuentaMetaDeExterno(e.id)?.id || null;
                 for (const ev of e.messaging || []) {
                     const msg = ev.message || (ev.postback ? { mid: `pb-${ev.timestamp}-${ev.sender?.id}`, text: ev.postback.title } : null);
                     if (!msg || msg.is_deleted) continue;
@@ -154,7 +161,7 @@ export function crearRedes({ pool, companeros, fichaPorTelefono, clubId }) {
                     const externo = eco ? ev.recipient?.id : ev.sender?.id;
                     if (!externo) continue;
                     const adjuntos = (msg.attachments || []).map(a => ({ tipo: a.type, url: a.payload?.url || null }));
-                    await guardar({ canal, externo, entrante: !eco, texto: msg.text || '', adjuntos, mid: msg.mid, fecha: new Date(ev.timestamp) });
+                    await guardar({ canal, externo, entrante: !eco, texto: msg.text || '', adjuntos, mid: msg.mid, fecha: new Date(ev.timestamp), cuentaId });
                 }
             }
         } else if (body?.object === 'whatsapp_business_account') {
@@ -194,9 +201,9 @@ export function crearRedes({ pool, companeros, fichaPorTelefono, clubId }) {
             });
             return d.messages?.[0]?.id || null;
         }
-        if (!tokenPagina()) throw new Error(`${CANALES[conv.canal]} no está conectado todavía: «Conectar con Facebook», arriba.`);
+        if (!tokenDe(conv)) throw new Error(`${CANALES[conv.canal]} no está conectado todavía: «Conectar con Facebook», arriba.`);
         const d = await graph('/me/messages', {
-            method: 'POST', token: tokenPagina(),
+            method: 'POST', token: tokenDe(conv),
             body: { recipient: { id: conv.externo_id }, messaging_type: 'RESPONSE', message: { text: texto } },
         });
         return d.message_id || null;
@@ -211,6 +218,8 @@ export function crearRedes({ pool, companeros, fichaPorTelefono, clubId }) {
         estado: x.estado, noLeidos: x.no_leidos, ultimoAt: x.ultimo_at, ultimoTexto: x.ultimo_texto,
         puedeContestar: !!x.ultimo_entrante_at && Date.now() - new Date(x.ultimo_entrante_at).getTime() < VENTANA_MS,
         ultimoEntranteAt: x.ultimo_entrante_at,
+        // De qué cuenta es (#651): solo se dice si hay más de una.
+        cuenta: cuentasMeta().length > 1 && x.cuenta_id ? (cuentasMeta().find(c => c.id === x.cuenta_id)?.pagina.nombre || null) : null,
     });
     const SELECT_CONV = `SELECT c.*, TRIM(CONCAT(p.name, ' ', COALESCE(p.surname, ''))) AS persona_nombre,
                                 TRIM(CONCAT(a.name, ' ', COALESCE(a.surname, ''))) AS asignado_nombre
@@ -221,7 +230,8 @@ export function crearRedes({ pool, companeros, fichaPorTelefono, clubId }) {
     router.get('/estado', async (req, res) => {
         try {
             const n = await pool.query(`SELECT canal, COUNT(*)::int AS n, COALESCE(SUM(no_leidos), 0)::int AS sin_leer FROM aim_social_conversaciones GROUP BY canal`);
-            res.json({ canales: canalesActivos(), webhook: !!(process.env.META_VERIFY_TOKEN && process.env.META_APP_SECRET), cuentas: n.rows, companeros: await companeros() });
+            res.json({ canales: canalesActivos(), webhook: !!(process.env.META_VERIFY_TOKEN && process.env.META_APP_SECRET), cuentas: n.rows, companeros: await companeros(),
+                cuentasMeta: cuentasMeta().map(c => ({ id: c.id, nombre: c.pagina.nombre, principal: !!c.principal })) });
         } catch (e) { error(res, e); }
     });
 
@@ -235,6 +245,7 @@ export function crearRedes({ pool, companeros, fichaPorTelefono, clubId }) {
         if (vista === 'mias') w.push(`c.asignado_a = ${p(req.userSession.userId)}`);
         if (vista === 'sin_asignar') w.push(`c.asignado_a IS NULL`);
         if (canal) w.push(`c.canal = ${p(canal)}`);
+        if (Number(req.query.cuenta) > 0) w.push(`c.cuenta_id = ${p(Number(req.query.cuenta))}`);
         if (q) w.push(`(c.nombre ILIKE ${p(`%${q}%`)} OR c.usuario ILIKE $${vals.length} OR c.telefono ILIKE $${vals.length})`);
         try {
             const r = await pool.query(`${SELECT_CONV} WHERE ${w.join(' AND ')} ORDER BY c.ultimo_at DESC NULLS LAST LIMIT 100`, vals);
@@ -271,7 +282,7 @@ export function crearRedes({ pool, companeros, fichaPorTelefono, clubId }) {
             let mid;
             try { mid = await enviar(c, texto); }
             catch (e) { return res.status(502).json({ error: `${CANALES[c.canal]} no lo ha aceptado: ${e.message}` }); }
-            await guardar({ canal: c.canal, externo: c.externo_id, entrante: false, texto, mid: mid || `local-${Date.now()}`, enviadoPor: req.userSession.userId });
+            await guardar({ canal: c.canal, externo: c.externo_id, entrante: false, texto, mid: mid || `local-${Date.now()}`, enviadoPor: req.userSession.userId, cuentaId: c.cuenta_id });
             res.json({ success: true });
         } catch (e) { error(res, e); }
     });
