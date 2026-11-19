@@ -22,6 +22,8 @@ import { tokenPagina, cuentasMeta, cuentaMetaPorId, cuentaPrincipalMeta } from '
 import { historiasPrevistas, programarHistoriaYa, imagenPrevista } from './disenos-automaticos.js';
 
 const REDES = ['facebook', 'instagram'];
+// YouTube (#651, fase 2): solo vídeos, con sus canales aparte (youtube.js).
+const REDES_TODAS = [...REDES, 'youtube'];
 const TIPOS = ['post', 'reel', 'story'];
 const MAX_IMAGEN = 8 * 1024 * 1024;
 const MAX_VIDEO = 100 * 1024 * 1024;
@@ -142,11 +144,16 @@ export function problemaPublicacion({ texto, redes, tipo, medios }) {
         if (!texto.trim() && !medios.length) return 'Escribe algo o añade una foto.';
         if (vids.length && medios.length > 1) return 'En Facebook un vídeo va solo, sin más fotos ni vídeos.';
     }
+    if (redes.includes('youtube')) {
+        if (tipo === 'story') return 'YouTube no tiene historias: quita YouTube o cámbiala a publicación o reel.';
+        if (vids.length !== 1 || imgs.length) return 'A YouTube va un solo vídeo, sin fotos.';
+        if (!texto.trim()) return 'Para YouTube escribe el texto: la primera línea es el título del vídeo.';
+    }
     if (medios.length > MAX_MEDIOS) return `Como mucho ${MAX_MEDIOS} fotos o vídeos.`;
     return null;
 }
 
-export function crearPublicaciones({ pool, authenticateSession, requireSeccion, urlPublica, fetch: fetchImpl = (...a) => globalThis.fetch(...a) }) {
+export function crearPublicaciones({ pool, authenticateSession, requireSeccion, urlPublica, youtube = null, fetch: fetchImpl = (...a) => globalThis.fetch(...a) }) {
     const router = express.Router();
     const ver = [authenticateSession, requireSeccion('comunicaciones')];
     const GRAPH = () => (process.env.META_GRAPH_URL || 'https://graph.facebook.com/v21.0').replace(/\/+$/, '');
@@ -320,6 +327,17 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
         for (const d of destinos) {
             if (resultado[d.clave]?.ok) continue;     // al reintentar, lo que ya salió no se repite
             try {
+                if (d.red === 'youtube') {
+                    if (!youtube) throw new Error('YouTube no está preparado en el servidor.');
+                    const v = medios.find(m => m.mime.startsWith('video/'));
+                    if (!v) throw new Error('A YouTube va un vídeo.');
+                    const datos = (await pool.query(`SELECT datos FROM aim_social_medios WHERE id = $1`, [v.id])).rows[0]?.datos;
+                    if (!datos) throw new Error('El vídeo ya no está guardado: súbelo otra vez.');
+                    const r = await youtube.subirVideo(d.cuentaId, { texto: p.texto, mime: v.mime === 'video/quicktime' ? 'video/quicktime' : 'video/mp4', datos });
+                    const canal = (await youtube.canales()).find(c => c.id === d.cuentaId);
+                    resultado[d.clave] = { ok: true, ...r, cuenta: canal?.nombre || null, at: new Date().toISOString() };
+                    continue;
+                }
                 if (!cuentasVistas.has(d.cuentaId)) cuentasVistas.set(d.cuentaId, await cuentaMeta(true, d.cuentaId));
                 const cuenta = cuentasVistas.get(d.cuentaId);
                 if (!cuenta.conectado) throw new Error(cuenta.motivo);
@@ -571,12 +589,15 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
         // Las cuentas a las que va (#651). Sin destinos, como siempre: la principal.
         let destinos = null;
         if (Array.isArray(req.body?.destinos)) {
-            destinos = [...new Set(req.body.destinos.map(String))].filter(d => {
+            const pedidos = [...new Set(req.body.destinos.map(String))];
+            destinos = [];
+            for (const d of pedidos) {
                 const [red, id] = d.split(':');
+                if (red === 'youtube') { if (youtube && await youtube.existe(id)) destinos.push(d); continue; }
                 const c = cuentaMetaPorId(id);
-                return REDES.includes(red) && c && (red !== 'instagram' || c.instagram);
-            });
-            redes = [...new Set(destinos.map(d => d.split(':')[0]))];
+                if (REDES.includes(red) && c && (red !== 'instagram' || c.instagram)) destinos.push(d);
+            }
+            redes = [...new Set(destinos.map(d => d.split(':')[0]))].filter(r => REDES_TODAS.includes(r));
         }
         const tipo = TIPOS.includes(req.body?.tipo) ? req.body.tipo : 'post';
         const accion = ['borrador', 'programar', 'publicar'].includes(req.body?.accion) ? req.body.accion : 'borrador';

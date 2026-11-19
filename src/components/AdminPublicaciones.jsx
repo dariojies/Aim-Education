@@ -18,7 +18,10 @@ import ConexionMeta from './ConexionMeta.jsx';
 const RED = {
   facebook: { nombre: 'Facebook', color: '#1877F2', letra: 'f' },
   instagram: { nombre: 'Instagram', color: '#D6249F', letra: 'IG' },
+  youtube: { nombre: 'YouTube', color: '#FF0000', letra: '▶' },
 };
+// Las redes con vista previa (YouTube no tiene).
+const CON_VISTA = ['facebook', 'instagram'];
 const TIPO = { post: 'Publicación', reel: 'Reel', story: 'Historia' };
 const ESTADO = {
   borrador: { t: 'Borrador', c: 'var(--ink-3)' },
@@ -134,6 +137,7 @@ function Marca({ red, tam = 18 }) {
 export default function AdminPublicaciones({ showToast }) {
   const [cuenta, setCuenta] = useState(null);
   const [cuentas, setCuentas] = useState([]);   // todas las conectadas (#651)
+  const [canales, setCanales] = useState([]);   // los canales de YouTube (#651, fase 2)
   const [vista, setVista] = useState('calendario');
   const [lista, setLista] = useState(null);
   const [editando, setEditando] = useState(null);   // publicación (o {} para una nueva)
@@ -153,7 +157,12 @@ export default function AdminPublicaciones({ showToast }) {
     try { const d = await api(`/api/admin/publicaciones/previstas/${p.fecha}`, { method: 'POST' }); await cargar(); setEditando(d.publicacion); }
     catch (e) { alert(e.message); }
   }
-  const cargarCuentas = useCallback(() => api('/api/admin/meta/cuentas').then(d => setCuentas(d.cuentas || [])).catch(() => setCuentas([])), []);
+  const cargarCuentas = useCallback(() => {
+    api('/api/admin/meta/cuentas').then(d => setCuentas(d.cuentas || [])).catch(() => setCuentas([]));
+    api('/api/admin/youtube/cuentas').then(d => setCanales(d.canales || [])).catch(() => setCanales([]));
+  }, []);
+  // Para poner nombre a cualquier destino («youtube:7» también).
+  const todasCuentas = [...cuentas, ...canales.map(c => ({ id: c.id, nombre: c.nombre }))];
   useEffect(() => { cargar(); cargarCuentas(); api('/api/admin/publicaciones/cuenta').then(setCuenta).catch(() => setCuenta({ conectado: false, motivo: 'No se ha podido comprobar la conexión con Meta.' })); }, [cargar, cargarCuentas]);
   // /admin/publicaciones?dia=AAAA-MM-DD (el aviso de una efeméride, #479): una nueva para ese día.
   useEffect(() => {
@@ -192,10 +201,10 @@ export default function AdminPublicaciones({ showToast }) {
         onAbrir={setEditando} onNueva={(dia) => setEditando({ dia })} onMovida={cargar} showToast={showToast} />}
       {verEfemerides && <Efemerides onCerrar={(cambio) => { setVerEfemerides(false); if (cambio) cargar(); }} showToast={showToast} />}
       {verAuto && <Automaticas onCerrar={() => { setVerAuto(false); cargar(); }} showToast={showToast} />}
-      {vista === 'lista' && <Lista lista={lista} cuentas={cuentas} onAbrir={setEditando} onCambio={cargar} showToast={showToast} />}
+      {vista === 'lista' && <Lista lista={lista} cuentas={todasCuentas} onAbrir={setEditando} onCambio={cargar} showToast={showToast} />}
       {vista === 'estadisticas' && <Estadisticas cuentas={cuentas} />}
       {editando && (
-        <Editor inicial={editando} cuenta={cuenta} cuentas={cuentas} showToast={showToast}
+        <Editor inicial={editando} cuenta={cuenta} cuentas={cuentas} canales={canales} showToast={showToast}
           onCerrar={(cambio) => { setEditando(null); if (cambio) cargar(); }} />
       )}
     </div>
@@ -238,7 +247,7 @@ function Conexion({ cuenta, cuentas = [], onRecargar }) {
 }
 
 // ── Editor ──────────────────────────────────────────────────────────────────
-function Editor({ inicial, cuenta, cuentas = [], onCerrar, showToast }) {
+function Editor({ inicial, cuenta, cuentas = [], canales = [], onCerrar, showToast }) {
   const nueva = !inicial.id;
   const soloVer = ['publicada', 'parcial', 'publicando'].includes(inicial.estado);
   const [id, setId] = useState(inicial.id || null);
@@ -247,7 +256,8 @@ function Editor({ inicial, cuenta, cuentas = [], onCerrar, showToast }) {
   // Con varias cuentas (#651): a cuáles va, como «instagram:3». Las de antes (sin
   // destinos) van a la principal.
   const principal = cuentas.find(c => c.principal) || cuentas[0] || null;
-  const multi = cuentas.length > 1;
+  const multi = cuentas.length > 1 || canales.length > 0;
+  const todas = [...cuentas, ...canales.map(c => ({ id: c.id, nombre: c.nombre }))];
   const [destinos, setDestinos] = useState(() => (inicial.destinos?.length ? inicial.destinos
     : principal ? (inicial.redes?.length ? inicial.redes : ['facebook', ...(principal.conInstagram ? ['instagram'] : [])]).map(r => `${r}:${principal.id}`) : []));
   const redesEf = multi ? [...new Set(destinos.map(redDe))] : redes;
@@ -352,7 +362,7 @@ function Editor({ inicial, cuenta, cuentas = [], onCerrar, showToast }) {
           <div style={{ display: 'grid', gap: 6 }}>
             {Object.entries(res).filter(([k]) => RED[redDe(k)]).map(([k, r]) => (
               <div key={k} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, flexWrap: 'wrap' }}>
-                <Marca red={redDe(k)} /> {multi && nombreCuenta(k, cuentas, r) && <b>{nombreCuenta(k, cuentas, r)}:</b>} {r.ok
+                <Marca red={redDe(k)} /> {multi && nombreCuenta(k, todas, r) && <b>{nombreCuenta(k, todas, r)}:</b>} {r.ok
                   ? <>Publicada{r.url && <> · <a href={r.url} target="_blank" rel="noreferrer" style={{ color: 'var(--purple)', fontWeight: 700 }}>verla en {RED[redDe(k)].nombre} ↗</a></>}</>
                   : <span style={{ color: 'var(--orange)' }}>No ha salido: {r.error}</span>}
               </div>
@@ -382,6 +392,20 @@ function Editor({ inicial, cuenta, cuentas = [], onCerrar, showToast }) {
                     })}
                   </div>
                 ))}
+                {canales.map(c => {
+                  const clave = `youtube:${c.id}`, on = destinos.includes(clave);
+                  return (
+                    <div key={clave} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <b style={{ fontSize: 13, minWidth: 130 }}>{c.nombre}</b>
+                      <button type="button" disabled={soloVer} onClick={() => setDestinos(ds => (on ? ds.filter(x => x !== clave) : [...ds, clave]))}
+                        style={{ display: 'inline-flex', gap: 6, alignItems: 'center', padding: '5px 10px', borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 700, fontSize: 12.5,
+                          border: `1.5px solid ${on ? RED.youtube.color : 'var(--line)'}`, background: on ? `color-mix(in oklab, ${RED.youtube.color} 10%, var(--bg-2))` : 'var(--bg-2)', color: 'var(--ink)', opacity: on ? 1 : 0.55 }}>
+                        <Marca red="youtube" tam={16} /> YouTube
+                      </button>
+                    </div>
+                  );
+                })}
+                {destinos.some(d => redDe(d) === 'youtube') && <span style={suave}>En YouTube va un solo vídeo; la primera línea del texto es su título y el texto entero, la descripción.</span>}
               </div>
             )}
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -463,7 +487,9 @@ function Editor({ inicial, cuenta, cuentas = [], onCerrar, showToast }) {
             {soloVer && <div style={{ display: 'flex', justifyContent: 'flex-end' }}><button type="button" className="btn btn-sm btn-ghost" style={{ color: 'var(--orange)' }} onClick={borrar}><I.Trash width={14} height={14} /> Quitar de aquí</button></div>}
           </div>
 
-          <VistaPrevia redes={redesEf} tipo={tipo} texto={texto} medios={medios} cuenta={cuenta} />
+          {redesEf.includes('youtube') && !redesEf.some(r => CON_VISTA.includes(r))
+            ? <div style={{ ...caja, ...suave }}>YouTube no tiene vista previa aquí: se sube el vídeo con la primera línea del texto como título y el texto entero como descripción.</div>
+            : <VistaPrevia redes={redesEf.filter(r => CON_VISTA.includes(r))} tipo={tipo} texto={texto} medios={medios} cuenta={cuenta} />}
         </div>
       </div>
     </div>

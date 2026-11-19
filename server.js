@@ -44,6 +44,7 @@ import { crearChats, crearTablasChats, avisosChats, achicarFoto } from './chats.
 import { crearAulasClase, crearTablasAulasClase, avisosAulaClaseFamilia, avisosAulaClasePersonal } from './aulas-clase.js';
 import { crearListas, crearTablasListas, listasComoSegmentos, resolverLista, correosDeLista } from './listas.js';
 import { crearColegios, crearTablasColegios, colegiosPorContestar } from './colegios.js';
+import { crearYouTube } from './youtube.js';
 import { crearPersonal, crearTablasPersonal, avisosEspacio, recordarCertificados } from './personal.js';
 import { redesDeNoticia, configRedesAuto, guardarRedesAuto, programarHistoriasActividades, prepararHistoriaActividad, plazasPocas, guardarPlazasPocas, resumenVuelta } from './redes-auto.js';
 import { programarHistoriasFestivos, felicitacionCumple, automaticosElegidos } from './disenos-automaticos.js';
@@ -5554,7 +5555,10 @@ const cambios = crearCambios({ pool, authenticateSession, requireSeccion, requir
 app.use(cambios.router);
 // Publicaciones en Facebook e Instagram (#410), dentro de Comunicación. Cada
 // minuto sale lo programado; cada 6 horas se apuntan los seguidores.
-const publicacionesRedes = crearPublicaciones({ pool, authenticateSession, requireSeccion, urlPublica: URL_PUBLICA_WEB });
+// YouTube (#651, fase 2): sus canales y la subida de vídeos (youtube.js).
+const youtubeRedes = crearYouTube({ pool, authenticateSession, requireAdmin, urlPublica: URL_PUBLICA_WEB });
+app.use(youtubeRedes.router);
+const publicacionesRedes = crearPublicaciones({ pool, authenticateSession, requireSeccion, urlPublica: URL_PUBLICA_WEB, youtube: youtubeRedes });
 app.use(publicacionesRedes.router);
 // «Conectar con Facebook» (#468): el token de la página sin pasar por Heroku.
 app.use(crearConexionMeta({ pool, authenticateSession, requireAdmin, urlPublica: URL_PUBLICA_WEB, alCambiar: () => publicacionesRedes.olvidarCuenta() }).router);
