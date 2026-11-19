@@ -62,8 +62,8 @@ export default function AdminColegios({ showToast }) {
   return (
     <div style={{ display: 'grid', gap: 16 }}>
       <p className="sub" style={{ margin: 0 }}>
-        Las actividades que ofrecéis a los colegios. Cada colegio tiene su enlace: ve la oferta y los huecos en los que podéis ir
-        {d.ajustes.personas.length > 1 ? ` (${d.ajustes.personas.map(p => p.nombre.split(' ')[0]).join(' y ')} a la vez)` : ''}, y pide día y hora.
+        Las actividades que ofrecéis a los colegios. Cada colegio tiene su enlace: ve la oferta y los huecos en los que puede ir
+        {d.ajustes.personas.length > 1 ? ' alguno de vosotros (sin decir quién)' : ' quien va'}, y pide día y hora.
       </p>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {pestanas.map(([id, txt]) => (
@@ -125,6 +125,13 @@ function Citas({ d, recargar, showToast, onProponer }) {
       </div>
       <span>{c.actividad}</span>
       <span style={{ fontWeight: 700 }}>{conMayuscula(fechaLarga(c.fecha))} · {c.desde} a {c.hasta}</span>
+      {Array.isArray(c.pueden) && (
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: c.pueden.length ? 'var(--teal)' : 'var(--orange)' }}>
+          {!c.pueden.length ? 'Ahora mismo no puede ir nadie: mirad el horario'
+            : c.pueden.length === d.ajustes.personas.length && c.pueden.length > 1 ? (c.pueden.length === 2 ? 'Podéis ir los dos' : 'Podéis ir todos')
+            : `Puede ir ${c.pueden.join(' y ')}`}
+        </span>
+      )}
       {c.mensaje && <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>{c.origen === 'colegio' ? 'El colegio: ' : 'Les dijisteis: '}«{c.mensaje}»</span>}
       {c.respuesta && <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>Nota: «{c.respuesta}»</span>}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
@@ -225,7 +232,7 @@ function Proponer({ d, inicial, onCerrar, onHecho }) {
       <div style={{ display: 'grid', gap: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <b style={{ fontSize: 14 }}>Día y horas</b>
-          <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>En verde, los días en los que estáis libres todos.</span>
+          <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>En verde, los días en los que puede ir alguno de vosotros.</span>
           <label style={{ marginLeft: 'auto', fontSize: 12.5, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
             <input type="checkbox" checked={libre} onChange={e => setLibre(e.target.checked)} /> Poner otra hora a mano
           </label>
@@ -379,9 +386,9 @@ function MiHorario({ d, recargar, showToast }) {
     <div style={{ display: 'grid', gap: 20 }}>
       <div className="panel" style={{ margin: 0, padding: 14, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <div style={{ flex: '1 1 300px', display: 'grid', gap: 3 }}>
-          <b>Tienen que ir: {d.ajustes.personas.length ? d.ajustes.personas.map(p => p.nombre).join(', ') : 'nadie todavía'}</b>
+          <b>Van a los colegios: {d.ajustes.personas.length ? d.ajustes.personas.map(p => p.nombre).join(', ') : 'nadie todavía'}</b>
           <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>
-            A los colegios solo les salen los huecos en los que estáis libres todos, desde dentro de {d.ajustes.antelacion} {d.ajustes.antelacion === 1 ? 'día' : 'días'} y hasta {d.ajustes.semanas} semanas, con {d.ajustes.margen} min entre una cita y otra.
+            A los colegios les salen los huecos en los que está libre al menos uno de vosotros (sin decir quién), desde dentro de {d.ajustes.antelacion} {d.ajustes.antelacion === 1 ? 'día' : 'días'} y hasta {d.ajustes.semanas} semanas, con {d.ajustes.margen} min entre una cita y otra.
           </span>
           {!d.voy && <span style={{ fontSize: 12.5, color: 'var(--orange)', fontWeight: 700 }}>Tú no estás en la lista: tu horario no cuenta hasta que te añadan.</span>}
         </div>
@@ -448,20 +455,20 @@ function MiHorario({ d, recargar, showToast }) {
 
       <section style={{ display: 'grid', gap: 8 }}>
         <h3 style={{ margin: 0, fontSize: 16 }}>Lo que ven los colegios</h3>
-        <span style={{ fontSize: 12.5, color: 'var(--ink-3)', marginTop: -4 }}>Los próximos huecos en los que estáis libres todos (sin decir de quién es cada uno).</span>
+        <span style={{ fontSize: 12.5, color: 'var(--ink-3)', marginTop: -4 }}>Los próximos huecos en los que puede ir al menos uno de vosotros (sin decir quién).</span>
         {huecos === null ? <span style={{ color: 'var(--ink-3)' }}>Cargando…</span> : proximos.length ? (
           <div style={{ display: 'grid', gap: 4 }}>
             {proximos.map(([f, xs]) => (
               <div key={f} style={{ fontSize: 13.5 }}><b>{conMayuscula(fechaLarga(f))}</b> · {xs.map(x => `${x.desde} a ${x.hasta}`).join(', ')}</div>
             ))}
           </div>
-        ) : <span style={{ fontSize: 13.5, color: 'var(--orange)' }}>Ningún hueco: o falta el horario de alguien, o no coincidís ningún día.</span>}
+        ) : <span style={{ fontSize: 13.5, color: 'var(--orange)' }}>Ningún hueco: falta poner el horario (cada uno, el suyo).</span>}
       </section>
 
       {aj && (
         <Ventana titulo="Quién va a los colegios" onCerrar={() => setAj(null)}>
           <div style={{ display: 'grid', gap: 6 }}>
-            <b style={{ fontSize: 14 }}>Tienen que estar todos estos (los huecos son los que tienen libres todos a la vez):</b>
+            <b style={{ fontSize: 14 }}>Los que van a los colegios. A los colegios les sale cualquier hueco en el que esté libre al menos uno:</b>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               {aj.personas.map(p => (
                 <span key={p.id} style={{ display: 'inline-flex', gap: 6, alignItems: 'center', padding: '4px 6px 4px 12px', borderRadius: 999, background: 'var(--bg-3)', fontWeight: 700, fontSize: 13 }}>

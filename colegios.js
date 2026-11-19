@@ -7,12 +7,13 @@
 // acepta, rechaza o propone otro día; y al revés, el club puede proponer una
 // cita y el colegio la acepta o propone otro día. Todo avisa por correo.
 //
-// Los huecos libres: van varias personas a la vez (Juan Manuel y Darío), así que
-// un hueco es libre solo si lo están TODAS. Cada una pone su horario semanal
-// (aim_colegios_horario) y los días que no puede (aim_colegios_bloqueos). Al
-// colegio se le enseña solo la intersección, sin decir de quién es cada cosa,
+// Los huecos libres: van varias personas (Juan Manuel y Darío). Cada una pone su
+// horario semanal (aim_colegios_horario) y los días que no puede
+// (aim_colegios_bloqueos). Al colegio le sale cualquier hueco en el que esté
+// libre AL MENOS UNA (antes, solo los de todas a la vez), sin decir quién,
 // quitando las citas ya pedidas, propuestas o confirmadas (de cualquier colegio)
-// con un margen entre una y otra para el viaje.
+// con un margen entre una y otra para el viaje: una cita ocupa ese rato a todos.
+// En el panel, cada cita dice quién puede ir.
 //
 // Ajustes (aim_ajustes 'colegios'): { personas: [user_id], semanas, antelacion
 // (días), margen (minutos) }.
@@ -153,7 +154,25 @@ export function crearColegios({ pool, authenticateSession, requireSeccion, urlPu
         };
     }
 
-    // ── Los huecos libres de todos a la vez, día a día ──
+    // El tiempo libre de cada persona un día (su horario menos lo que no puede), sin contar citas.
+    async function libresPorPersona({ ini, fin, db = pool }) {
+        const aj = await ajustes(db);
+        if (!aj.personas.length) return { aj, porDia: {} };
+        const horario = (await db.query(`SELECT user_id, dia, desde, hasta FROM aim_colegios_horario WHERE user_id = ANY($1::uuid[])`, [aj.personas])).rows;
+        const bloqueos = (await db.query(`SELECT user_id, fecha, desde, hasta FROM aim_colegios_bloqueos WHERE user_id = ANY($1::uuid[]) AND fecha BETWEEN $2 AND $3`, [aj.personas, ini, fin])).rows;
+        const porDia = {};
+        for (let f = ini; f <= fin; f = sumarDias(f, 1)) {
+            const ds = diaSemana(f);
+            porDia[f] = {};
+            for (const p of aj.personas) {
+                const suyo = unir(horario.filter(h => String(h.user_id) === p && h.dia === ds).map(h => [aMin(h.desde), aMin(h.hasta)]));
+                porDia[f][p] = restar(suyo, bloqueos.filter(b => String(b.user_id) === p && fechaDe(b.fecha) === f).map(b => (b.desde && b.hasta ? [aMin(b.desde), aMin(b.hasta)] : [0, 24 * 60])));
+            }
+        }
+        return { aj, porDia };
+    }
+
+    // ── Los huecos libres (de al menos una persona), día a día ──
     // { 'AAAA-MM-DD': [[desdeMin, hastaMin], …] }. sinCita: la cita que se está
     // cambiando (su hueco cuenta como libre para ella misma).
     async function huecos({ desde, hasta, sinCita = null, db = pool } = {}) {
@@ -162,27 +181,35 @@ export function crearColegios({ pool, authenticateSession, requireSeccion, urlPu
         const ini = desde || sumarDias(hoy, aj.antelacion);
         const fin = hasta || sumarDias(hoy, aj.semanas * 7);
         if (!aj.personas.length) return { dias: {}, ini, fin, sinPersonas: true };
-        const horario = (await db.query(`SELECT user_id, dia, desde, hasta FROM aim_colegios_horario WHERE user_id = ANY($1::uuid[])`, [aj.personas])).rows;
-        const bloqueos = (await db.query(`SELECT user_id, fecha, desde, hasta FROM aim_colegios_bloqueos WHERE user_id = ANY($1::uuid[]) AND fecha BETWEEN $2 AND $3`, [aj.personas, ini, fin])).rows;
+        const { porDia } = await libresPorPersona({ ini, fin, db });
         const citas = (await db.query(
             `SELECT fecha, desde, hasta FROM aim_colegios_citas WHERE estado = ANY($1::text[]) AND fecha BETWEEN $2 AND $3 AND ($4::int IS NULL OR id <> $4)`,
             [ACTIVAS, ini, fin, sinCita])).rows;
         const dias = {};
         for (let f = ini; f <= fin; f = sumarDias(f, 1)) {
-            const ds = diaSemana(f);
-            let libre = null;
-            for (const p of aj.personas) {
-                let suyo = unir(horario.filter(h => String(h.user_id) === p && h.dia === ds).map(h => [aMin(h.desde), aMin(h.hasta)]));
-                suyo = restar(suyo, bloqueos.filter(b => String(b.user_id) === p && fechaDe(b.fecha) === f).map(b => (b.desde && b.hasta ? [aMin(b.desde), aMin(b.hasta)] : [0, 24 * 60])));
-                libre = libre === null ? suyo : intersecar(libre, suyo);
-                if (!libre.length) break;
-            }
-            libre = restar(libre || [], citas.filter(c => fechaDe(c.fecha) === f).map(c => [aMin(c.desde) - aj.margen, aMin(c.hasta) + aj.margen]));
+            // Libre si lo está alguno de los que van.
+            let libre = unir(Object.values(porDia[f] || {}).flat());
+            libre = restar(libre, citas.filter(c => fechaDe(c.fecha) === f).map(c => [aMin(c.desde) - aj.margen, aMin(c.hasta) + aj.margen]));
             // Huecos de menos de media hora no sirven para nada.
             libre = libre.filter(([a, b]) => b - a >= 30);
             if (libre.length) dias[f] = libre;
         }
         return { dias, ini, fin, sinPersonas: false };
+    }
+    // Quién puede ir a unas citas: los que tienen libre todo su rato (por su
+    // horario y sus días que no pueden). { citaId: ['Nombre', …] }.
+    async function quienesPueden(citas) {
+        if (!citas.length) return {};
+        const fechas = citas.map(c => fechaDe(c.fecha)).sort();
+        const { aj, porDia } = await libresPorPersona({ ini: fechas[0], fin: fechas[fechas.length - 1] });
+        if (!aj.personas.length) return {};
+        const nombres = Object.fromEntries((await pool.query(`SELECT user_id, name FROM users WHERE user_id = ANY($1::uuid[])`, [aj.personas])).rows.map(u => [String(u.user_id), u.name || 'Alguien']));
+        const r = {};
+        for (const c of citas) {
+            const dia = porDia[fechaDe(c.fecha)] || {};
+            r[c.id] = aj.personas.filter(p => (dia[p] || []).some(([a, b2]) => aMin(c.desde) >= a && aMin(c.hasta) <= b2)).map(p => nombres[p] || 'Alguien');
+        }
+        return r;
     }
     const cabe = (dias, fecha, desde, hasta) => (dias[fecha] || []).some(([a, b]) => aMin(desde) >= a && aMin(hasta) <= b);
     const huecosParaVer = (dias) => Object.fromEntries(Object.entries(dias).map(([f, xs]) => [f, xs.map(([a, b]) => ({ desde: aHora(a), hasta: aHora(b) }))]));
@@ -319,10 +346,12 @@ export function crearColegios({ pool, authenticateSession, requireSeccion, urlPu
                 ajustes(),
             ]);
             const personas = aj.personas.length ? (await pool.query(`SELECT user_id, name, surname FROM users WHERE user_id = ANY($1::uuid[])`, [aj.personas])).rows : [];
+            // Quién puede ir a las que siguen en pie (solo lo ve el club).
+            const quienes = await quienesPueden(citas.rows.filter(x => ACTIVAS.includes(x.estado) && fechaDe(x.fecha) >= hoyMadrid())).catch(() => ({}));
             res.set('Cache-Control', 'no-store');
             res.json({
                 colegios: cols.rows.map(c => ({ id: c.id, nombre: c.nombre, contacto: c.contacto || '', email: c.email || '', telefono: c.telefono || '', direccion: c.direccion || '', notas: c.notas || '', activo: c.activo, enlace: enlaceDe(c.token), proximas: c.proximas })),
-                citas: citas.rows.map(x => ({ ...mapCita(x), colegioId: x.colegio_id, colegio: x.colegio })),
+                citas: citas.rows.map(x => ({ ...mapCita(x), colegioId: x.colegio_id, colegio: x.colegio, pueden: quienes[x.id] || null })),
                 oferta: ofs.rows.map(o => ({ id: o.id, titulo: o.titulo, descripcion: o.descripcion || '', duracion: o.duracion_min, activa: o.activa, orden: o.orden })),
                 ajustes: { ...aj, personas: aj.personas.map(id => { const u = personas.find(p => String(p.user_id) === id); return { id, nombre: u ? `${u.name || ''} ${u.surname || ''}`.trim() : 'Persona borrada' }; }) },
                 yo: String(req.userSession.userId), voy: aj.personas.includes(String(req.userSession.userId)),
@@ -535,7 +564,7 @@ export function crearColegios({ pool, authenticateSession, requireSeccion, urlPu
             const h = await huecos({ sinCita: anterior && ACTIVAS.includes(anterior.estado) ? anterior.id : null, db: client, desde: hoyMadrid() });
             if (!cabe(h.dias, fecha, desde, hasta) && !b.forzar) {
                 await client.query('ROLLBACK');
-                return res.status(409).json({ error: 'Ese día y esa hora no estáis libres todos (o choca con otra cita). ¿La propones igualmente?', fueraDeHueco: true });
+                return res.status(409).json({ error: 'Ese día y a esa hora no está libre ninguno de los que vais (o choca con otra cita). ¿La propones igualmente?', fueraDeHueco: true });
             }
             if (anterior) await client.query(`UPDATE aim_colegios_citas SET estado = 'cambiada', respondida_at = COALESCE(respondida_at, NOW()), respondida_por = $2 WHERE id = $1`, [anterior.id, req.userSession.userId]);
             const n = (await client.query(
