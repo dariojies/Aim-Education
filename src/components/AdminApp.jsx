@@ -7528,9 +7528,12 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
               );
             })()}
 
-            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10 }}>
+            {/* Las acciones de la ficha a la izquierda y Cancelar/Guardar juntos a la
+                derecha: si no caben, pasan a otra línea en vez de salirse por el lado. */}
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', marginTop: 10 }}>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
               {activeModal === 'edit-student' && (
-                <button type="button" className="btn btn-outline" style={{ border: '1px solid red', color: 'red', marginRight: 'auto' }} onClick={handleUserDelete}>
+                <button type="button" className="btn btn-outline btn-sm" style={{ border: '1px solid red', color: 'red' }} onClick={handleUserDelete}>
                   Eliminar
                 </button>
               )}
@@ -7559,8 +7562,11 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                   Enviar enlace de contraseña
                 </button>
               )}
-              <button type="button" className="btn btn-outline btn-sm" onClick={() => setActiveModal(null)}>Cancelar</button>
-              {permisos.editarAlumnos && <button type="submit" className="btn btn-primary btn-sm">Guardar</button>}
+              </div>
+              <div style={{ display: 'flex', gap: 10, marginLeft: 'auto' }}>
+                <button type="button" className="btn btn-outline btn-sm" onClick={() => setActiveModal(null)}>Cancelar</button>
+                {permisos.editarAlumnos && <button type="submit" className="btn btn-primary btn-sm">Guardar</button>}
+              </div>
             </div>
           </form>
         </div>
