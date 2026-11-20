@@ -57,6 +57,7 @@ import { generarResumenAnualPdf } from './resumen-anual-pdf.js';
 import { generarInformeJornadaPdf, generarResumenMensualPdf } from './fichaje-pdf.js';
 import { generarPendientesPdf } from './pendientes-pdf.js';
 import * as verifactu from './verifactu.js';
+import { subsanarUnRegistro as subsanarUnRegistroDe, MAX_SUBSANACIONES } from './verifactu-subsanar.js';
 import { plazasConBono, reservarPlazaBono, cancelarReservaBono, anularReservasPorCierre, ventanaReservas, hoyMadridISO } from './bonos-clases.js';
 import { CLAVE_INDIVIDUALES, sqlEsIndividual, sqlGruposIndividuales, gruposIndividuales, olvidarGruposIndividuales } from './clases-individuales.js';
 import { filtroNombreSQL } from './buscar.js';
@@ -2274,7 +2275,12 @@ async function initDb() {
         await client.query(`ALTER TABLE aim_factura_registro ADD COLUMN IF NOT EXISTS ejercicio INTEGER`);
         await client.query(`UPDATE aim_factura_registro SET ejercicio = EXTRACT(YEAR FROM fecha_expedicion)::int WHERE ejercicio IS NULL`);
         await client.query(`ALTER TABLE aim_factura_registro DROP CONSTRAINT IF EXISTS aim_factura_registro_serie_numero_key`);
-        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_factura_registro_serie_ej_numero ON aim_factura_registro (serie, ejercicio, numero)`);
+        // Subsanaciones de VERI*FACTU (#657): un registro nuevo de la MISMA factura
+        // que corrige a otro (subsana_id = el registro original). El número sigue
+        // siendo único, pero solo entre los registros originales.
+        await client.query(`ALTER TABLE aim_factura_registro ADD COLUMN IF NOT EXISTS subsana_id INTEGER`);
+        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_factura_registro_original ON aim_factura_registro (serie, ejercicio, numero) WHERE subsana_id IS NULL`);
+        await client.query(`DROP INDEX IF EXISTS uq_factura_registro_serie_ej_numero`);
         // Contador de cada serie. Se incrementa DENTRO de la transacción que emite
         // la factura: si el cobro se cae, el número se devuelve solo y la serie no
         // queda con un hueco que luego no se sabe explicar (antes venía de una
@@ -9814,6 +9820,9 @@ app.get('/api/admin/billing/recibos/:id', authenticateSession, requireAdmin, asy
 
 // Anular: el recibo se marca (nunca se borra) y sus cargos vuelven a pendientes.
 // ── Registro de facturación encadenado ──────────────────────────────────────
+// Una factura puede tener varios registros: el original y sus subsanaciones
+// (#657). Para saber cómo está una factura vale el último.
+const SQL_ULTIMO_REGISTRO = (a) => `NOT EXISTS (SELECT 1 FROM aim_factura_registro s_ WHERE s_.subsana_id = COALESCE(${a}.subsana_id, ${a}.id) AND s_.id > ${a}.id)`;
 const SOFTWARE_FACTURACION = { nombre: 'Aim Education', version: '1.0' };
 
 // Huella del registro: SHA-256 sobre los campos que identifican la factura más la
@@ -9978,29 +9987,41 @@ async function cargarAjustesVerifactu() {
             sif,
             declaracion: v.declaracion || {},
         };
+        if (!process.env.DYNO && process.env.VERIFACTU_FORZAR === 'pruebas') {
+            AJUSTES_VERIFACTU = { ...AJUSTES_VERIFACTU, modo: 'verifactu', entorno: 'pruebas' };
+            console.log('[verifactu] FORZADO en local: VERI*FACTU encendido en pruebas (solo en memoria)');
+        }
     } catch (e) { console.error('[verifactu ajustes]', e.message); }
     return AJUSTES_VERIFACTU;
 }
 const hayCertificadoVerifactu = () => !!(process.env.VERIFACTU_CERT_P12 && process.env.VERIFACTU_CERT_PASS);
+// Para probar en local (nunca en Heroku): VERIFACTU_URL apunta a un servicio de
+// la AEAT falso y VERIFACTU_FORZAR=pruebas enciende VERI*FACTU en pruebas solo en
+// la memoria de este servidor, sin tocar los ajustes de la base.
+const enHeroku = () => !!process.env.DYNO;
+const urlServicioAeat = () => (!enHeroku() && process.env.VERIFACTU_URL) || verifactu.ENDPOINTS[AJUSTES_VERIFACTU.entorno];
 
 app.get('/api/admin/billing/verifactu', authenticateSession, requireAdmin, async (req, res) => {
     try {
         const r = await pool.query(
             `SELECT COUNT(*) FILTER (WHERE estado_envio = 'pendiente')::int AS pendientes,
                     COUNT(*) FILTER (WHERE estado_envio IN ('enviado', 'aceptado_errores'))::int AS enviados,
-                    COUNT(*) FILTER (WHERE estado_envio = 'aceptado_errores')::int AS con_avisos,
-                    COUNT(*) FILTER (WHERE estado_envio IN ('error', 'rechazado'))::int AS errores,
+                    COUNT(*) FILTER (WHERE estado_envio = 'aceptado_errores' AND ${SQL_ULTIMO_REGISTRO('fr')})::int AS con_avisos,
+                    COUNT(*) FILTER (WHERE estado_envio IN ('error', 'rechazado') AND ${SQL_ULTIMO_REGISTRO('fr')})::int AS errores,
+                    COUNT(*) FILTER (WHERE subsana_id IS NOT NULL)::int AS subsanaciones,
                     COUNT(*)::int AS registros
-             FROM aim_factura_registro WHERE huella_aeat IS NOT NULL`);
+             FROM aim_factura_registro fr WHERE huella_aeat IS NOT NULL`);
         const ultimas = await pool.query(
-            `SELECT id, num_serie, fecha_expedicion::text AS fecha, total, estado_envio, aeat_respuesta, aeat_csv, huella_aeat
-             FROM aim_factura_registro WHERE huella_aeat IS NOT NULL ORDER BY id DESC LIMIT 10`);
+            `SELECT id, num_serie, fecha_expedicion::text AS fecha, total, estado_envio, aeat_respuesta, aeat_csv, huella_aeat, subsana_id,
+                    NOT ${SQL_ULTIMO_REGISTRO('fr')} AS corregido
+             FROM aim_factura_registro fr WHERE huella_aeat IS NOT NULL ORDER BY id DESC LIMIT 10`);
         res.set('Cache-Control', 'no-store');
         res.json({
             ...AJUSTES_VERIFACTU, certificado: hayCertificadoVerifactu(), ...r.rows[0],
             ultimas: ultimas.rows.map(x => ({
                 id: x.id, numero: x.num_serie, fecha: x.fecha, total: Number(x.total),
                 estado: x.estado_envio, respuesta: x.aeat_respuesta, csv: x.aeat_csv, huella: x.huella_aeat,
+                subsanacion: x.subsana_id != null, corregido: !!x.corregido,
             })),
         });
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -10084,7 +10105,7 @@ async function enviarRegistrosVerifactu({ forzar = false } = {}) {
         });
         let texto = '', status = 0;
         try {
-            const r = await fetch(verifactu.ENDPOINTS[AJUSTES_VERIFACTU.entorno], {
+            const r = await fetch(urlServicioAeat(), {
                 method: 'POST', headers: { 'Content-Type': 'text/xml; charset=utf-8' }, body: sobre, dispatcher: agente,
                 signal: AbortSignal.timeout(120_000),
             });
@@ -10191,9 +10212,49 @@ ${d.firmante ? `<p class="firma">Por ${e(sif.nombreRazon)}: ${e(d.firmante)}</p>
 </body></html>`);
 });
 
+// ── Subsanación automática (#657) ──
+// Si la AEAT rechaza un registro o lo acepta con errores, la web lo rehace con
+// los datos de hoy (los de la ficha del cliente y el formato del programa actual)
+// y, si sale distinto de lo que se mandó, lo manda como subsanación: un registro
+// nuevo de la misma factura, encadenado como los demás. Si sale igual, mandarlo
+// otra vez no arreglaría nada: se queda avisado para que alguien lo mire (por
+// ejemplo, un DNI que no cuadra hasta que se corrija en la ficha; al corregirlo,
+// sale distinto y se manda solo). Indicadores según la AEAT:
+//   · la factura no está en la AEAT (se rechazó todo lo mandado): Subsanacion=S, RechazoPrevio=X
+//   · está en la AEAT y se aceptó con errores: Subsanacion=S
+//   · está en la AEAT y se rechazó una subsanación: Subsanacion=S, RechazoPrevio=S
+const subsanarUnRegistro = (client, r) => subsanarUnRegistroDe(client, r, {
+    sif: AJUSTES_VERIFACTU.sif, receptorDeFactura, numeroVisible, huellaRegistro, software: SOFTWARE_FACTURACION,
+});
+let subsanandoVerifactu = false;
+async function subsanarRegistrosVerifactu() {
+    if (subsanandoVerifactu || AJUSTES_VERIFACTU.modo !== 'verifactu') return { hechas: 0, iguales: 0 };
+    subsanandoVerifactu = true;
+    let hechas = 0, iguales = 0;
+    try {
+        const cand = (await pool.query(
+            `SELECT fr.* FROM aim_factura_registro fr
+             WHERE fr.modo = 'verifactu' AND fr.entorno = $1 AND fr.estado_envio IN ('rechazado', 'aceptado_errores')
+               AND ${SQL_ULTIMO_REGISTRO('fr')}
+               AND (SELECT COUNT(*) FROM aim_factura_registro s WHERE s.subsana_id = COALESCE(fr.subsana_id, fr.id)) < ${MAX_SUBSANACIONES}
+             ORDER BY fr.id LIMIT 50`, [AJUSTES_VERIFACTU.entorno])).rows;
+        for (const r of cand) {
+            const client = await pool.connect();
+            try {
+                await client.query('BEGIN');
+                if (await subsanarUnRegistro(client, r)) hechas++; else iguales++;
+                await client.query('COMMIT');
+            } catch (e) { await client.query('ROLLBACK').catch(() => {}); console.error('[verifactu subsanar]', r.id, e.message); }
+            finally { client.release(); }
+        }
+    } finally { subsanandoVerifactu = false; }
+    return { hechas, iguales };
+}
+
 app.post('/api/admin/billing/verifactu/enviar', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
     try {
-        res.json({ success: true, ...(await enviarRegistrosVerifactu({ forzar: true })) });
+        const sub = await subsanarRegistrosVerifactu().catch(() => ({ hechas: 0 }));
+        res.json({ success: true, subsanaciones: sub.hechas, ...(await enviarRegistrosVerifactu({ forzar: true })) });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -10533,7 +10594,7 @@ async function registrosEntre(desde, hasta) {
         `SELECT fr.id, fr.serie, fr.ejercicio, fr.numero, fr.num_serie, fr.fecha_expedicion::text AS fecha,
                 fr.tipo_factura, fr.nif_receptor, fr.nombre_receptor, fr.base, fr.cuota, fr.total, fr.desglose
          FROM aim_factura_registro fr
-         WHERE fr.fecha_expedicion BETWEEN $1::date AND $2::date
+         WHERE fr.fecha_expedicion BETWEEN $1::date AND $2::date AND ${SQL_ULTIMO_REGISTRO('fr')}
          ORDER BY fr.fecha_expedicion, fr.serie, fr.ejercicio, fr.numero, fr.id`, [desde, hasta]);
     // Las de antes de VERI*FACTU no guardaban el número tal y como sale impreso.
     return r.rows.map(x => ({
@@ -10569,7 +10630,7 @@ app.get('/api/admin/billing/libro-registro', authenticateSession, requireAdmin, 
             `SELECT fr.id, COALESCE(fr.num_serie, fr.serie || '-' || fr.numero) AS numero, fr.nombre_receptor, fr.estado_envio,
                     rc.pagador_id, NULLIF(TRIM(u.dni), '') AS dni_ficha
              FROM aim_factura_registro fr JOIN aim_recibos rc ON rc.id = fr.recibo_id LEFT JOIN users u ON u.user_id = rc.pagador_id
-             WHERE fr.fecha_expedicion BETWEEN $1::date AND $2::date AND COALESCE(fr.nif_receptor, '') = ''
+             WHERE fr.fecha_expedicion BETWEEN $1::date AND $2::date AND COALESCE(fr.nif_receptor, '') = '' AND ${SQL_ULTIMO_REGISTRO('fr')}
              ORDER BY fr.fecha_expedicion, fr.id`, [rango.desde, rango.hasta])).rows.map(x => ({
                 id: x.id, numero: x.numero, nombre: x.nombre_receptor, pagadorId: x.pagador_id, dniFicha: x.dni_ficha,
                 completable: !!x.dni_ficha && x.estado_envio === 'no_aplica' && AJUSTES_VERIFACTU.modo !== 'verifactu',
@@ -17669,8 +17730,8 @@ async function resumenIT(yo, conEmpresa = false) {
                     WHERE p.fecha BETWEEN $1::date AND $1::date + 6 ORDER BY p.fecha, p.inicio`, [lunesIso]),
         pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'rebotes_imap'`),
         pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'rebotes_imap_error'`),
-        pool.query(`SELECT COUNT(*) FILTER (WHERE estado_envio = 'pendiente')::int pendientes, COUNT(*) FILTER (WHERE estado_envio IN ('error', 'rechazado'))::int errores
-                    FROM aim_factura_registro WHERE huella_aeat IS NOT NULL`),
+        pool.query(`SELECT COUNT(*) FILTER (WHERE estado_envio = 'pendiente')::int pendientes, COUNT(*) FILTER (WHERE estado_envio IN ('error', 'rechazado') AND ${SQL_ULTIMO_REGISTRO('fr')})::int errores
+                    FROM aim_factura_registro fr WHERE huella_aeat IS NOT NULL`),
         pool.query(`SELECT COUNT(*)::int n FROM aim_tpv_pagos WHERE estado = 'revisar'`),
         pool.query(`SELECT COUNT(*)::int n FROM aim_correos_rebotados WHERE resuelto_at IS NULL`),
         pool.query(`SELECT COUNT(*)::int n FROM aim_campana_envios e JOIN aim_campana_correos k ON k.id = e.correo_id WHERE e.estado = 'pendiente' AND k.estado = 'enviando'`),
@@ -17977,7 +18038,7 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                             COUNT(*) FILTER (WHERE fr.fecha_expedicion < date_trunc('quarter', (now() AT TIME ZONE 'Europe/Madrid')::date))::int anterior,
                             MAX(fr.fecha_expedicion)::text AS ultima
                      FROM aim_factura_registro fr JOIN aim_recibos rc ON rc.id = fr.recibo_id LEFT JOIN users u ON u.user_id = rc.pagador_id, d
-                     WHERE fr.fecha_expedicion >= d.desde AND COALESCE(fr.nif_receptor, '') = ''`))).rows[0];
+                     WHERE fr.fecha_expedicion >= d.desde AND COALESCE(fr.nif_receptor, '') = '' AND ${SQL_ULTIMO_REGISTRO('fr')}`))).rows[0];
                 if (!f.n) return [];
                 const detalle = [
                     f.anterior ? `${f.anterior} del trimestre pasado` : null,
@@ -21823,9 +21884,9 @@ const COMPROBACIONES = [
         if (!hayCertificadoVerifactu()) return { estado: 'error', detalle: 'Encendido, pero sin certificado' };
         const r = (await pool.query(
             `SELECT COUNT(*) FILTER (WHERE estado_envio = 'pendiente' AND emitido_at < NOW() - INTERVAL '1 hour')::int AS atascadas,
-                    COUNT(*) FILTER (WHERE estado_envio IN ('error', 'rechazado'))::int AS mal,
-                    COUNT(*) FILTER (WHERE estado_envio = 'aceptado_errores')::int AS avisos
-             FROM aim_factura_registro WHERE modo = 'verifactu' AND entorno = $1`, [AJUSTES_VERIFACTU.entorno])).rows[0];
+                    COUNT(*) FILTER (WHERE estado_envio IN ('error', 'rechazado') AND ${SQL_ULTIMO_REGISTRO('fr')})::int AS mal,
+                    COUNT(*) FILTER (WHERE estado_envio = 'aceptado_errores' AND ${SQL_ULTIMO_REGISTRO('fr')})::int AS avisos
+             FROM aim_factura_registro fr WHERE modo = 'verifactu' AND entorno = $1`, [AJUSTES_VERIFACTU.entorno])).rows[0];
         return {
             estado: r.mal ? 'error' : (r.atascadas || r.avisos) ? 'aviso' : 'ok',
             detalle: `Encendido · ${AJUSTES_VERIFACTU.entorno}${r.atascadas ? ` · ${r.atascadas} sin mandar hace más de una hora` : ''}${r.mal ? ` · ${r.mal} rechazadas por la AEAT` : ''}${r.avisos ? ` · ${r.avisos} aceptadas con avisos` : ''}`,
@@ -24485,7 +24546,8 @@ const servidor = app.listen(port, () => {
     // VERI*FACTU (ticket #232): ajustes y reintento de los envíos pendientes.
     cargarAjustesVerifactu().then(() => {
         setTimeout(() => enviarRegistrosVerifactu().catch(() => {}), 90 * 1000);
-        setInterval(() => enviarRegistrosVerifactu().catch(() => {}), 60 * 1000);
+        setInterval(() => subsanarRegistrosVerifactu().catch(e => console.error('[verifactu subsanar]', e.message))
+            .then(() => enviarRegistrosVerifactu()).catch(() => {}), 60 * 1000);
     });
     console.log(`Server is running at http://localhost:${port}`);
     // Los cargos del mes se generan solos cada poco, sin darle a ningún botón.

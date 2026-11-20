@@ -224,6 +224,19 @@ export default function BillingAjustes({ showToast }) {
             <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
               La exige la ley para un programa de facturación propio y tiene que poder consultarse aquí. La firma quien representa a {vf.sif?.nombreRazon || 'la sociedad'}, sin firma electrónica. Si cambia la versión del sistema, se vuelve a firmar.
             </p>
+            {/* El productor del programa (#657): será Aim Soluciones Digitales cuando esté dada de alta. */}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', fontSize: 12 }}>
+              <b style={{ flexBasis: '100%', fontSize: 12 }}>Productor del programa <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}>(va también en cada registro que se manda a Hacienda)</span></b>
+              <label>Razón social <input defaultValue={vf.sif?.nombreRazon || ''} id="vf-prod-nombre" style={{ width: 230 }} /></label>
+              <label>NIF <input defaultValue={vf.sif?.nif || ''} id="vf-prod-nif" style={{ width: 110 }} /></label>
+              <label style={{ flexBasis: '100%' }}>Dirección <input defaultValue={vf.declaracion?.direccion || ''} id="vf-prod-dir" placeholder="Vacía: la de la empresa que factura" style={{ width: 'min(100%, 460px)' }} /></label>
+              <button className="btn btn-sm btn-outline" disabled={guardandoVf} onClick={() => {
+                const nombre = document.getElementById('vf-prod-nombre').value.trim(), nif = document.getElementById('vf-prod-nif').value.trim().toUpperCase();
+                if (!nombre || !/^[A-Z0-9]{9}$/.test(nif)) return alert('Pon la razón social y un NIF de 9 caracteres.');
+                if (!window.confirm(`El productor pasa a ser ${nombre} (${nif}). La declaración responsable hay que volver a firmarla con sus datos. ¿Seguro?`)) return;
+                guardarVf({ sif: { ...(vf.sif || {}), nombreRazon: nombre, nif }, declaracion: { ...(vf.declaracion || {}), direccion: document.getElementById('vf-prod-dir').value.trim() || null, fecha: null, lugar: null, firmante: null } });
+              }}>Cambiar productor</button>
+            </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', fontSize: 12 }}>
               <label>Fecha <input type="date" defaultValue={vf.declaracion?.fecha || ''} id="vf-decl-fecha" /></label>
               <label>Lugar <input defaultValue={vf.declaracion?.lugar || ''} id="vf-decl-lugar" placeholder="Algeciras" /></label>
@@ -250,7 +263,9 @@ export default function BillingAjustes({ showToast }) {
                   <span title={u.respuesta || ''} style={{ fontWeight: 700, color: u.estado === 'enviado' ? 'var(--teal)' : ['error', 'rechazado'].includes(u.estado) ? 'var(--orange)' : u.estado === 'aceptado_errores' ? 'var(--yellow, #b58900)' : 'var(--ink-3)' }}>
                     {{ enviado: 'enviado', aceptado_errores: 'aceptado con avisos', rechazado: 'rechazado', error: 'error', pendiente: 'en cola', no_aplica: 'solo guardado' }[u.estado] || u.estado}
                   </span>
-                  {['rechazado', 'aceptado_errores', 'pendiente'].includes(u.estado) && u.respuesta && (
+                  {u.subsanacion && <span style={{ fontSize: 11, color: 'var(--purple)', fontWeight: 700 }}>corrección</span>}
+                  {u.corregido && <span style={{ fontSize: 11, color: 'var(--teal)', fontWeight: 700 }}>ya corregido</span>}
+                  {!u.corregido && ['rechazado', 'aceptado_errores', 'pendiente'].includes(u.estado) && u.respuesta && (
                     <span style={{ flexBasis: '100%', color: 'var(--ink-3)', fontSize: 11 }}>{String(u.respuesta).slice(0, 220)}</span>
                   )}
                   <div style={{ flex: 1 }} />

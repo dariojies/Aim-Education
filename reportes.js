@@ -383,7 +383,7 @@ export function crearReportes({ pool, clubId, authenticateSession, requirePermis
                         GROUP BY 1`, [rango.inicio]),
             // El IVA de las facturas (el que se ingresa a Hacienda), por trimestre.
             pool.query(`SELECT EXTRACT(YEAR FROM fecha_expedicion)::int AS ano, EXTRACT(QUARTER FROM fecha_expedicion)::int AS t, SUM(cuota)::numeric AS iva, SUM(base)::numeric AS base
-                        FROM aim_factura_registro WHERE fecha_expedicion >= date_trunc('quarter', ${HOY}) - INTERVAL '3 months'
+                        FROM aim_factura_registro WHERE subsana_id IS NULL AND fecha_expedicion >= date_trunc('quarter', ${HOY}) - INTERVAL '3 months'
                         GROUP BY 1, 2 ORDER BY 1, 2`),
         ]);
         const C = Object.fromEntries(cobrado.rows.map(x => [x.mes, x])), P = Object.fromEntries(pendiente.rows.map(x => [x.mes, x]));
