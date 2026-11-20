@@ -9833,9 +9833,15 @@ async function registrarFactura(client, { recibo, receptor, descripcion, base, c
     const numSerie = numeroVisible(recibo);
     const fechaExp = verifactu.fechaAEAT(recibo.fecha);
     const fechaHuso = verifactu.fechaHoraHusoAEAT();
+    // Una cadena por modo y entorno (#654): al encender VERI*FACTU (y al pasar
+    // de pruebas a producción) el primer registro va como PrimerRegistro, en vez
+    // de colgarse de registros que la AEAT nunca ha recibido (los guardados con
+    // el modo apagado, o los mandados al entorno de pruebas).
     const prevAeat = await client.query(
         `SELECT num_serie, fecha_expedicion::text AS fecha, huella_aeat, nif_emisor
-         FROM aim_factura_registro WHERE huella_aeat IS NOT NULL ORDER BY id DESC LIMIT 1`);
+         FROM aim_factura_registro
+         WHERE huella_aeat IS NOT NULL AND COALESCE(modo, 'apagado') = $1 AND COALESCE(entorno, 'pruebas') = $2
+         ORDER BY id DESC LIMIT 1`, [cfg.modo, cfg.entorno]);
     const ant = prevAeat.rows[0] || null;
     const { huella: huellaAeat } = verifactu.huellaAlta({
         nifEmisor: fila.nif_emisor, numSerie, fechaExpedicion: fechaExp, tipoFactura: fila.tipo_factura,
@@ -9863,6 +9869,7 @@ async function registrarFactura(client, { recibo, receptor, descripcion, base, c
             fecha: verifactu.fechaAEAT(original.fecha),
         } : null,
         tipoRectificativa: original?.metodo === 'sustitucion' ? 'S' : 'I',
+        importeRectificacion: original?.importe || null,
         sif: cfg.sif, fechaHoraHuso: fechaHuso, huella: huellaAeat,
     });
     const qrUrl = verifactu.urlQR({
@@ -9943,8 +9950,9 @@ app.get('/api/admin/billing/verifactu', authenticateSession, requireAdmin, async
     try {
         const r = await pool.query(
             `SELECT COUNT(*) FILTER (WHERE estado_envio = 'pendiente')::int AS pendientes,
-                    COUNT(*) FILTER (WHERE estado_envio = 'enviado')::int AS enviados,
-                    COUNT(*) FILTER (WHERE estado_envio = 'error')::int AS errores,
+                    COUNT(*) FILTER (WHERE estado_envio IN ('enviado', 'aceptado_errores'))::int AS enviados,
+                    COUNT(*) FILTER (WHERE estado_envio = 'aceptado_errores')::int AS con_avisos,
+                    COUNT(*) FILTER (WHERE estado_envio IN ('error', 'rechazado'))::int AS errores,
                     COUNT(*)::int AS registros
              FROM aim_factura_registro WHERE huella_aeat IS NOT NULL`);
         const ultimas = await pool.query(
@@ -9963,6 +9971,13 @@ app.get('/api/admin/billing/verifactu', authenticateSession, requireAdmin, async
 
 app.put('/api/admin/billing/verifactu', authenticateSession, requireAdmin, requireRol('club_owner'), async (req, res) => {
     const v = req.body || {};
+    // Una vez encendido en producción no se apaga ni vuelve a pruebas (#654):
+    // el sistema se declara «solo VERI*FACTU», y apagado las facturas saldrían
+    // sin registro remitido, que es justo lo que la ley no permite.
+    if (AJUSTES_VERIFACTU.modo === 'verifactu' && AJUSTES_VERIFACTU.entorno === 'produccion'
+        && (v.modo !== 'verifactu' || v.entorno !== 'produccion')) {
+        return res.status(409).json({ error: 'VERI*FACTU ya está encendido en producción y no se puede apagar ni volver a pruebas.' });
+    }
     const limpio = {
         modo: v.modo === 'verifactu' ? 'verifactu' : 'apagado',
         entorno: v.entorno === 'produccion' ? 'produccion' : 'pruebas',
@@ -9989,16 +10004,27 @@ app.put('/api/admin/billing/verifactu', authenticateSession, requireAdmin, requi
 // Remite a la AEAT los registros pendientes. Sin certificado no hace nada: se
 // quedan en cola, ya generados y encadenados, listos para cuando lo haya.
 let envioVerifactuEnCurso = false;
+// La AEAT dice en cada respuesta cuánto esperar antes del siguiente envío
+// (TiempoEsperaEnvio, 60 s de normal). Hasta entonces no se manda nada.
+let proximoEnvioVerifactu = 0;
 async function enviarRegistrosVerifactu({ forzar = false } = {}) {
     if (envioVerifactuEnCurso) return { enviados: 0, motivo: 'ya hay un envío en curso' };
     if (AJUSTES_VERIFACTU.modo !== 'verifactu') return { enviados: 0, motivo: 'VERI*FACTU está apagado' };
     if (!forzar && !AJUSTES_VERIFACTU.envioAutomatico) return { enviados: 0, motivo: 'el envío automático está apagado' };
     if (!hayCertificadoVerifactu()) return { enviados: 0, motivo: 'falta el certificado (VERIFACTU_CERT_P12)' };
+    if (Date.now() < proximoEnvioVerifactu) {
+        return { enviados: 0, motivo: `la AEAT pide esperar ${Math.ceil((proximoEnvioVerifactu - Date.now()) / 1000)} s más antes del siguiente envío` };
+    }
     envioVerifactuEnCurso = true;
     try {
+        // Solo los de este entorno: lo generado en pruebas no se manda nunca a
+        // producción (ni al revés). Como mucho 1000 por envío (lo que admite la AEAT).
         const pend = await pool.query(
-            `SELECT id, xml FROM aim_factura_registro WHERE estado_envio = 'pendiente' AND xml IS NOT NULL ORDER BY id LIMIT 100`);
+            `SELECT id, xml, num_serie, fecha_expedicion::text AS fecha FROM aim_factura_registro
+             WHERE estado_envio = 'pendiente' AND xml IS NOT NULL AND modo = 'verifactu' AND entorno = $1
+             ORDER BY id LIMIT 1000`, [AJUSTES_VERIFACTU.entorno]);
         if (!pend.rowCount) return { enviados: 0, motivo: 'no hay nada pendiente' };
+        const ids = pend.rows.map(x => x.id);
         const sobre = verifactu.xmlEnvio({
             emisor: { nombre: EMPRESA_TICKET.nombre, nif: EMPRESA_TICKET.nif },
             registros: pend.rows.map(x => x.xml),
@@ -10007,18 +10033,60 @@ async function enviarRegistrosVerifactu({ forzar = false } = {}) {
         const agente = new Agent({
             connect: { pfx: Buffer.from(process.env.VERIFACTU_CERT_P12, 'base64'), passphrase: process.env.VERIFACTU_CERT_PASS },
         });
-        const r = await fetch(verifactu.ENDPOINTS[AJUSTES_VERIFACTU.entorno], {
-            method: 'POST', headers: { 'Content-Type': 'text/xml; charset=utf-8' }, body: sobre, dispatcher: agente,
-        });
-        const texto = await r.text();
-        const ok = r.ok && /Correcto|AceptadoConErrores/i.test(texto);
-        const csv = (texto.match(/<CSV>([^<]+)<\/CSV>/i) || [])[1] || null;
-        await pool.query(
-            `UPDATE aim_factura_registro SET estado_envio = $2, aeat_respuesta = $3, aeat_csv = $4,
-                    aeat_enviado_at = CASE WHEN $2 = 'enviado' THEN NOW() ELSE aeat_enviado_at END
-             WHERE id = ANY($1::int[])`,
-            [pend.rows.map(x => x.id), ok ? 'enviado' : 'error', texto.slice(0, 4000), csv]);
-        return { enviados: ok ? pend.rowCount : 0, errores: ok ? 0 : pend.rowCount, respuesta: texto.slice(0, 400) };
+        let texto = '', status = 0;
+        try {
+            const r = await fetch(verifactu.ENDPOINTS[AJUSTES_VERIFACTU.entorno], {
+                method: 'POST', headers: { 'Content-Type': 'text/xml; charset=utf-8' }, body: sobre, dispatcher: agente,
+                signal: AbortSignal.timeout(120_000),
+            });
+            status = r.status;
+            texto = await r.text();
+        } catch (e) {
+            // Sin conexión o servicio caído: siguen en cola y se reintenta.
+            proximoEnvioVerifactu = Date.now() + 60_000;
+            await pool.query(`UPDATE aim_factura_registro SET aeat_respuesta = $2 WHERE id = ANY($1::int[])`,
+                [ids, `Sin respuesta de la AEAT (${new Date().toISOString()}): ${e.message}`.slice(0, 4000)]);
+            return { enviados: 0, error: `Sin respuesta de la AEAT: ${e.message}` };
+        }
+        const res = verifactu.leerRespuesta(texto);
+        proximoEnvioVerifactu = Date.now() + res.tiempoEspera * 1000;
+        if (res.fallo || !res.estadoEnvio) {
+            // El envío entero no se ha admitido (estructura, certificado, cabecera…):
+            // ningún registro ha llegado. Siguen en cola, con el motivo a la vista.
+            const motivo = `Envío no admitido (HTTP ${status}): ${res.fallo || texto.slice(0, 600)}`;
+            await pool.query(`UPDATE aim_factura_registro SET aeat_respuesta = $2 WHERE id = ANY($1::int[])`, [ids, motivo.slice(0, 4000)]);
+            await pool.query(`INSERT INTO aim_factura_eventos (tipo, detalle) VALUES ('envio_no_admitido', $1)`, [motivo.slice(0, 1000)]);
+            return { enviados: 0, error: motivo.slice(0, 400) };
+        }
+        // Cada registro con lo suyo: las líneas de la respuesta se casan por
+        // número y fecha de la factura.
+        const porFactura = new Map(res.lineas.map(l => [`${l.numSerie}|${l.fecha}`, l]));
+        const cuenta = { enviado: 0, aceptado_errores: 0, rechazado: 0, pendiente: 0 };
+        for (const x of pend.rows) {
+            const l = porFactura.get(`${x.num_serie}|${verifactu.fechaAEAT(x.fecha)}`);
+            let estado;
+            if (!l) estado = res.estadoEnvio === 'Correcto' ? 'enviado' : 'pendiente';
+            else if (l.estado === 'Correcto') estado = 'enviado';
+            else if (l.estado === 'AceptadoConErrores') estado = 'aceptado_errores';
+            // Ya lo tenía la AEAT (un reenvío tras cortarse la respuesta): cuenta como enviado.
+            else if (l.duplicado) estado = 'enviado';
+            else estado = 'rechazado';
+            cuenta[estado]++;
+            const nota = l
+                ? `${l.estado}${l.codigo != null ? ` · ${l.codigo}` : ''}${l.descripcion ? ` · ${l.descripcion}` : ''}${l.duplicado ? ' · ya registrado en la AEAT' : ''}`
+                : `Envío ${res.estadoEnvio} sin línea para esta factura`;
+            await pool.query(
+                `UPDATE aim_factura_registro SET estado_envio = $2, aeat_respuesta = $3, aeat_csv = COALESCE($4, aeat_csv),
+                        aeat_enviado_at = CASE WHEN $2 IN ('enviado', 'aceptado_errores') THEN NOW() ELSE aeat_enviado_at END
+                 WHERE id = $1`,
+                [x.id, estado, nota.slice(0, 4000), estado === 'pendiente' ? null : res.csv]);
+        }
+        await pool.query(`INSERT INTO aim_factura_eventos (tipo, detalle) VALUES ('envio_aeat', $1)`,
+            [`${res.estadoEnvio} · CSV ${res.csv || '—'} · ${cuenta.enviado} correctos, ${cuenta.aceptado_errores} con avisos, ${cuenta.rechazado} rechazados${cuenta.pendiente ? `, ${cuenta.pendiente} sin respuesta` : ''}`]);
+        return {
+            enviados: cuenta.enviado + cuenta.aceptado_errores, conAvisos: cuenta.aceptado_errores,
+            rechazados: cuenta.rechazado, estadoEnvio: res.estadoEnvio, csv: res.csv,
+        };
     } catch (e) {
         console.error('[verifactu envío]', e.message);
         return { enviados: 0, error: e.message };
@@ -10142,8 +10210,9 @@ async function emitirRectificativa(client, { orig, quitadas, quedan, metodo, mot
     const receptor = await receptorDeFactura(client, orig.pagador_id);
     // Una rectificativa hereda el tipo de la que corrige: si la original salió
     // simplificada (F2), esta tiene que ser R5 y no R1.
+    // (Y su base y cuota: una rectificativa por sustitución las lleva al registro.)
     const tipoOrig = await client.query(
-        `SELECT tipo_factura FROM aim_factura_registro WHERE recibo_id = $1 ORDER BY id LIMIT 1`, [orig.id]);
+        `SELECT tipo_factura, base, cuota FROM aim_factura_registro WHERE recibo_id = $1 ORDER BY id LIMIT 1`, [orig.id]);
     const numOrig = numeroVisible({ serie: orig.serie, numero: orig.numero, ejercicio: orig.ejercicio, fecha: orig.fecha });
     await registrarFactura(client, {
         recibo: { ...nuevo.rows[0], tipo: 'rectificativo' },
@@ -10154,6 +10223,7 @@ async function emitirRectificativa(client, { orig, quitadas, quedan, metodo, mot
         original: {
             serie: orig.serie || 'A', numero: orig.numero, ejercicio: orig.ejercicio,
             fecha: orig.fecha, metodo, tipoFactura: tipoOrig.rows[0]?.tipo_factura || 'F1',
+            importe: tipoOrig.rowCount ? { base: Number(tipoOrig.rows[0].base), cuota: Number(tipoOrig.rows[0].cuota) } : null,
         },
         userId,
     });
@@ -17499,7 +17569,7 @@ async function resumenIT(yo, conEmpresa = false) {
                     WHERE p.fecha BETWEEN $1::date AND $1::date + 6 ORDER BY p.fecha, p.inicio`, [lunesIso]),
         pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'rebotes_imap'`),
         pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'rebotes_imap_error'`),
-        pool.query(`SELECT COUNT(*) FILTER (WHERE estado_envio = 'pendiente')::int pendientes, COUNT(*) FILTER (WHERE estado_envio = 'error')::int errores
+        pool.query(`SELECT COUNT(*) FILTER (WHERE estado_envio = 'pendiente')::int pendientes, COUNT(*) FILTER (WHERE estado_envio IN ('error', 'rechazado'))::int errores
                     FROM aim_factura_registro WHERE huella_aeat IS NOT NULL`),
         pool.query(`SELECT COUNT(*)::int n FROM aim_tpv_pagos WHERE estado = 'revisar'`),
         pool.query(`SELECT COUNT(*)::int n FROM aim_correos_rebotados WHERE resuelto_at IS NULL`),
@@ -21652,12 +21722,13 @@ const COMPROBACIONES = [
         if (AJUSTES_VERIFACTU.modo !== 'verifactu') return { estado: 'apagado', detalle: 'Apagado: las facturas no se mandan a Hacienda' };
         if (!hayCertificadoVerifactu()) return { estado: 'error', detalle: 'Encendido, pero sin certificado' };
         const r = (await pool.query(
-            `SELECT COUNT(*) FILTER (WHERE estado_envio = 'pendiente' AND created_at < NOW() - INTERVAL '1 hour')::int AS atascadas,
-                    COUNT(*) FILTER (WHERE estado_envio NOT IN ('pendiente', 'enviado', 'no_aplica'))::int AS mal
-             FROM aim_factura_registro`)).rows[0];
+            `SELECT COUNT(*) FILTER (WHERE estado_envio = 'pendiente' AND emitido_at < NOW() - INTERVAL '1 hour')::int AS atascadas,
+                    COUNT(*) FILTER (WHERE estado_envio IN ('error', 'rechazado'))::int AS mal,
+                    COUNT(*) FILTER (WHERE estado_envio = 'aceptado_errores')::int AS avisos
+             FROM aim_factura_registro WHERE modo = 'verifactu' AND entorno = $1`, [AJUSTES_VERIFACTU.entorno])).rows[0];
         return {
-            estado: r.mal ? 'error' : r.atascadas ? 'aviso' : 'ok',
-            detalle: `Encendido · ${AJUSTES_VERIFACTU.entorno}${r.atascadas ? ` · ${r.atascadas} sin mandar hace más de una hora` : ''}${r.mal ? ` · ${r.mal} con error` : ''}`,
+            estado: r.mal ? 'error' : (r.atascadas || r.avisos) ? 'aviso' : 'ok',
+            detalle: `Encendido · ${AJUSTES_VERIFACTU.entorno}${r.atascadas ? ` · ${r.atascadas} sin mandar hace más de una hora` : ''}${r.mal ? ` · ${r.mal} rechazadas por la AEAT` : ''}${r.avisos ? ` · ${r.avisos} aceptadas con avisos` : ''}`,
         };
     } },
     { id: 'google', grupo: 'Integraciones', nombre: 'Entrar con Google', cadaMin: 360, fn: async () =>
@@ -24314,7 +24385,7 @@ const servidor = app.listen(port, () => {
     // VERI*FACTU (ticket #232): ajustes y reintento de los envíos pendientes.
     cargarAjustesVerifactu().then(() => {
         setTimeout(() => enviarRegistrosVerifactu().catch(() => {}), 90 * 1000);
-        setInterval(() => enviarRegistrosVerifactu().catch(() => {}), 10 * 60 * 1000);
+        setInterval(() => enviarRegistrosVerifactu().catch(() => {}), 60 * 1000);
     });
     console.log(`Server is running at http://localhost:${port}`);
     // Los cargos del mes se generan solos cada poco, sin darle a ningún botón.

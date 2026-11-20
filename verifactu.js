@@ -106,12 +106,13 @@ const esc = (v) => String(v == null ? '' : v)
 
 // Una línea del desglose por tipo impositivo. Las clases van exentas (art. 20.1.9
 // de la Ley del IVA: enseñanza), el material al 21 %.
+// En el esquema de la AEAT, CalificacionOperacion (S1…) y OperacionExenta (E1…)
+// son una elección: una línea exenta lleva solo OperacionExenta (#654).
 export function lineaDesglose({ ivaPct, base, cuota, exenta, causaExencion = 'E1' }) {
     if (exenta) {
         return `      <DetalleDesglose>
         <Impuesto>01</Impuesto>
         <ClaveRegimen>01</ClaveRegimen>
-        <CalificacionOperacion>S1</CalificacionOperacion>
         <OperacionExenta>${esc(causaExencion)}</OperacionExenta>
         <BaseImponibleOimporteNoSujeto>${importeAEAT(base)}</BaseImponibleOimporteNoSujeto>
       </DetalleDesglose>`;
@@ -145,15 +146,28 @@ export function xmlRegistroAlta(r) {
         : '';
     // Una rectificativa (R1..R5) tiene que decir por qué método rectifica y a qué
     // factura corrige; sin esto la AEAT la rechaza.
+    // Por sustitución (S), la AEAT pide además la base y la cuota de la factura
+    // que se sustituye (ImporteRectificacion); sin ellas rechaza el registro.
+    const tipoRect = r.tipoRectificativa || 'I';
+    const importeRect = (r.rectificaA && tipoRect === 'S')
+        ? `    <ImporteRectificacion>
+      <BaseRectificada>${importeAEAT(r.importeRectificacion?.base)}</BaseRectificada>
+      <CuotaRectificada>${importeAEAT(r.importeRectificacion?.cuota)}</CuotaRectificada>
+    </ImporteRectificacion>\n`
+        : '';
     const rectificada = r.rectificaA
-        ? `    <TipoRectificativa>${esc(r.tipoRectificativa || 'I')}</TipoRectificativa>
+        ? `    <TipoRectificativa>${esc(tipoRect)}</TipoRectificativa>
     <FacturasRectificadas>
       <IDFacturaRectificada>
         <IDEmisorFactura>${esc(r.rectificaA.nif)}</IDEmisorFactura>
         <NumSerieFactura>${esc(r.rectificaA.numSerie)}</NumSerieFactura>
         <FechaExpedicionFactura>${esc(r.rectificaA.fecha)}</FechaExpedicionFactura>
       </IDFacturaRectificada>
-    </FacturasRectificadas>\n`
+    </FacturasRectificadas>\n${importeRect}`
+        : '';
+    // Un registro que vuelve a mandarse corregido tras un rechazo (subsanación).
+    const subsanacion = r.subsanacion
+        ? `    <Subsanacion>S</Subsanacion>\n${r.rechazoPrevio ? `    <RechazoPrevio>${esc(r.rechazoPrevio)}</RechazoPrevio>\n` : ''}`
         : '';
     return `  <RegistroAlta>
     <IDVersion>1.0</IDVersion>
@@ -163,7 +177,7 @@ export function xmlRegistroAlta(r) {
       <FechaExpedicionFactura>${esc(r.fechaExpedicion)}</FechaExpedicionFactura>
     </IDFactura>
     <NombreRazonEmisor>${esc(r.nombreEmisor)}</NombreRazonEmisor>
-    <TipoFactura>${esc(r.tipoFactura)}</TipoFactura>
+${subsanacion}    <TipoFactura>${esc(r.tipoFactura)}</TipoFactura>
 ${rectificada}    <DescripcionOperacion>${esc(r.descripcion)}</DescripcionOperacion>
 ${sinDestinatario}${destinatario}    <Desglose>
 ${r.desglose.map(lineaDesglose).join('\n')}
@@ -234,24 +248,72 @@ ${r.huellaAnterior
 }
 
 // El sobre completo que se envía al servicio de remisión de la AEAT.
+// Espacios de nombres tal y como los fija el esquema (SuministroLR.xsd): el
+// sobre, la Cabecera y cada RegistroFactura van en el de SuministroLR; lo de
+// dentro (ObligadoEmision, RegistroAlta y todos sus campos) en el de
+// SuministroInformacion. Los registros se guardan sin prefijo (es lo que se
+// enseña en «XML») y se les pone al montar el envío; la huella no depende de
+// esto. Hasta el #654 el sobre iba con la Cabecera en el espacio equivocado y
+// los registros sin espacio ni RegistroFactura: la AEAT lo habría rechazado.
+export const NS_LR = 'https://www2.agenciatributaria.gob.es/static_files/common/internet/dep/aplicaciones/es/aeat/tike/cont/ws/SuministroLR.xsd';
+export const NS_INFO = 'https://www2.agenciatributaria.gob.es/static_files/common/internet/dep/aplicaciones/es/aeat/tike/cont/ws/SuministroInformacion.xsd';
+// <Campo> → <sum1:Campo>, </Campo> → </sum1:Campo>. En el XML guardado no hay
+// más «<» que los de las etiquetas: los textos van escapados.
+export const conPrefijo = (xml) => String(xml).trim().replace(/<(\/?)([A-Za-z])/g, '<$1sum1:$2');
 export function xmlEnvio({ emisor, registros }) {
     return `<?xml version="1.0" encoding="UTF-8"?>
-<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
-    xmlns:sf="https://www2.agenciatributaria.gob.es/static_files/common/internet/dep/aplicaciones/es/aeat/tike/cont/ws/SuministroLR.xsd"
-    xmlns:sfLR="https://www2.agenciatributaria.gob.es/static_files/common/internet/dep/aplicaciones/es/aeat/tike/cont/ws/SuministroInformacion.xsd">
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:sum="${NS_LR}" xmlns:sum1="${NS_INFO}">
   <soapenv:Header/>
   <soapenv:Body>
-    <sf:RegFactuSistemaFacturacion>
-      <sfLR:Cabecera>
-        <sfLR:ObligadoEmision>
-          <sfLR:NombreRazon>${esc(emisor.nombre)}</sfLR:NombreRazon>
-          <sfLR:NIF>${esc(emisor.nif)}</sfLR:NIF>
-        </sfLR:ObligadoEmision>
-      </sfLR:Cabecera>
-${registros.join('\n')}
-    </sf:RegFactuSistemaFacturacion>
+    <sum:RegFactuSistemaFacturacion>
+      <sum:Cabecera>
+        <sum1:ObligadoEmision>
+          <sum1:NombreRazon>${esc(emisor.nombre)}</sum1:NombreRazon>
+          <sum1:NIF>${esc(emisor.nif)}</sum1:NIF>
+        </sum1:ObligadoEmision>
+      </sum:Cabecera>
+${registros.map(x => `      <sum:RegistroFactura>\n${conPrefijo(x)}\n      </sum:RegistroFactura>`).join('\n')}
+    </sum:RegFactuSistemaFacturacion>
   </soapenv:Body>
 </soapenv:Envelope>`;
+}
+
+// Lee la respuesta de la AEAT (RespuestaSuministro.xsd), con o sin prefijos:
+// el estado del envío, cuánto hay que esperar para el siguiente, el CSV y el
+// resultado de cada registro. Si es un error SOAP (el envío entero no se ha
+// admitido), lo dice en «fallo» y no hay líneas.
+const sinPrefijo = '(?:[A-Za-z0-9_-]+:)?';
+const etiqueta = (xml, nombre) => {
+    const m = String(xml).match(new RegExp(`<${sinPrefijo}${nombre}(?:\\s[^>]*)?>([\\s\\S]*?)</${sinPrefijo}${nombre}>`));
+    return m ? m[1].trim() : null;
+};
+const desescapar = (v) => v == null ? v : String(v).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+export function leerRespuesta(xml) {
+    const texto = String(xml || '');
+    const fallo = etiqueta(texto, 'Fault') != null
+        ? (desescapar(etiqueta(texto, 'faultstring')) || 'Error SOAP sin detalle') : null;
+    const estadoEnvio = etiqueta(texto, 'EstadoEnvio');
+    const espera = Number(etiqueta(texto, 'TiempoEsperaEnvio'));
+    const lineas = [];
+    const re = new RegExp(`<${sinPrefijo}RespuestaLinea(?:\\s[^>]*)?>([\\s\\S]*?)</${sinPrefijo}RespuestaLinea>`, 'g');
+    for (const m of texto.matchAll(re)) {
+        const l = m[1];
+        const codigo = etiqueta(l, 'CodigoErrorRegistro');
+        lineas.push({
+            numSerie: desescapar(etiqueta(l, 'NumSerieFactura')),
+            fecha: etiqueta(l, 'FechaExpedicionFactura'),
+            operacion: etiqueta(l, 'TipoOperacion'),
+            estado: etiqueta(l, 'EstadoRegistro'),
+            codigo: codigo == null ? null : Number(codigo),
+            descripcion: desescapar(etiqueta(l, 'DescripcionErrorRegistro')),
+            duplicado: etiqueta(l, 'RegistroDuplicado') != null,
+        });
+    }
+    return {
+        fallo, estadoEnvio, lineas,
+        csv: etiqueta(texto, 'CSV'),
+        tiempoEspera: Number.isFinite(espera) && espera > 0 ? espera : 60,
+    };
 }
 
 // Servicio de remisión (hace falta certificado del obligado o representante).

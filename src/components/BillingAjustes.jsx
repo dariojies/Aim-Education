@@ -170,14 +170,25 @@ export default function BillingAjustes({ showToast }) {
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
             {[['apagado', 'Apagado'], ['verifactu', 'VERI*FACTU encendido']].map(([v, l]) => (
               <button key={v} className={`filter-pill ${vf.modo === v ? 'is-active' : ''}`} disabled={guardandoVf}
-                onClick={() => guardarVf({ modo: v })}>{l}</button>
+                onClick={() => {
+                  if (v === 'verifactu' && vf.modo !== 'verifactu' && vf.entorno === 'produccion' && !window.confirm('En producción, con VERI*FACTU encendido, cada factura se manda a Hacienda de verdad y ya no se puede apagar ni volver a pruebas. ¿Seguro?')) return;
+                  guardarVf({ modo: v });
+                }}>{l}</button>
             ))}
             <span style={{ width: 12 }} />
             {[['pruebas', 'Entorno de pruebas'], ['produccion', 'Producción']].map(([v, l]) => (
               <button key={v} className={`filter-pill ${vf.entorno === v ? 'is-active' : ''}`} disabled={guardandoVf}
-                onClick={() => guardarVf({ entorno: v })}>{l}</button>
+                onClick={() => {
+                  if (v === 'produccion' && vf.entorno !== 'produccion' && !window.confirm('En producción, con VERI*FACTU encendido, cada factura se manda a Hacienda de verdad y ya no se puede apagar ni volver a pruebas. ¿Seguro?')) return;
+                  guardarVf({ entorno: v });
+                }}>{l}</button>
             ))}
           </div>
+          {vf.modo === 'verifactu' && vf.entorno === 'produccion' && (
+            <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
+              Encendido en producción: ya no se puede apagar ni volver a pruebas.
+            </p>
+          )}
 
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             {[['Registros', vf.registros], ['Pendientes de enviar', vf.pendientes], ['Enviados', vf.enviados], ['Con error', vf.errores]].map(([t, v]) => (
@@ -209,9 +220,12 @@ export default function BillingAjustes({ showToast }) {
                   <b style={{ minWidth: 90 }}>{u.numero}</b>
                   <span style={{ color: 'var(--ink-3)' }}>{u.fecha}</span>
                   <span>{Number(u.total).toFixed(2)} €</span>
-                  <span style={{ fontWeight: 700, color: u.estado === 'enviado' ? 'var(--teal)' : u.estado === 'error' ? 'var(--orange)' : 'var(--ink-3)' }}>
-                    {{ enviado: 'enviado', error: 'error', pendiente: 'en cola', no_aplica: 'solo guardado' }[u.estado] || u.estado}
+                  <span title={u.respuesta || ''} style={{ fontWeight: 700, color: u.estado === 'enviado' ? 'var(--teal)' : ['error', 'rechazado'].includes(u.estado) ? 'var(--orange)' : u.estado === 'aceptado_errores' ? 'var(--yellow, #b58900)' : 'var(--ink-3)' }}>
+                    {{ enviado: 'enviado', aceptado_errores: 'aceptado con avisos', rechazado: 'rechazado', error: 'error', pendiente: 'en cola', no_aplica: 'solo guardado' }[u.estado] || u.estado}
                   </span>
+                  {['rechazado', 'aceptado_errores', 'pendiente'].includes(u.estado) && u.respuesta && (
+                    <span style={{ flexBasis: '100%', color: 'var(--ink-3)', fontSize: 11 }}>{String(u.respuesta).slice(0, 220)}</span>
+                  )}
                   <div style={{ flex: 1 }} />
                   <span title={u.huella} style={{ fontFamily: 'monospace', fontSize: 10, color: 'var(--ink-3)' }}>{String(u.huella || '').slice(0, 12)}…</span>
                   <a className="btn btn-sm btn-outline" style={{ fontSize: 10, padding: '2px 6px' }}
