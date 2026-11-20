@@ -15880,8 +15880,10 @@ app.get('/api/admin/posts', authenticateSession, async (req, res) => {
             .map(x => [x.clave.slice('medios-post:'.length), x.valor]));
         // Y si va a redes o ya fue (#491): la última publicación de cada una.
         const redes = new Map((await pool.query(
-            `SELECT DISTINCT ON (noticia) noticia, id, estado, programada_at, publicada_at FROM aim_social_publicaciones WHERE noticia IS NOT NULL ORDER BY noticia, id DESC`)).rows
-            .map(x => [x.noticia, { id: x.id, estado: x.estado, programadaAt: x.programada_at, publicadaAt: x.publicada_at }]));
+            `SELECT DISTINCT ON (noticia) noticia, id, estado, programada_at, publicada_at,
+                    (resultado->'auto' IS NULL OR resultado->'auto' ? 'amano') AS amano
+             FROM aim_social_publicaciones WHERE noticia IS NOT NULL ORDER BY noticia, id DESC`)).rows
+            .map(x => [x.noticia, { id: x.id, estado: x.estado, programadaAt: x.programada_at, publicadaAt: x.publicada_at, amano: x.amano }]));
         res.json(result.rows.map(p => ({ ...p, medios: medios.get(p.id) || null, redes: redes.get(p.id) || null })));
     } catch (err) {
         res.status(500).json({ error: err.message });

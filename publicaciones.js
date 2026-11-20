@@ -39,6 +39,11 @@ const espera = (ms) => new Promise(r => setTimeout(r, ms));
 // año), «AAAA-MM-DD» (un día concreto) o «N-dom-MM» (el N.º domingo de un mes,
 // como el Día de la Madre).
 const CLAVE_EFEMERIDES = 'efemerides';
+// Al retocar a mano una publicación hecha sola (#491), se queda su marca «auto»
+// (las historias la usan para no repetirse) con «amano»: así, al volver a
+// guardar la noticia, no se rehace ni se pierde lo retocado.
+const SQL_RETOCADA = `(CASE WHEN resultado ? 'auto' THEN jsonb_build_object('auto', (resultado->'auto') || '{"amano": true}'::jsonb) ELSE '{}'::jsonb END)`;
+
 export const EFEMERIDES_DE_FABRICA = [
     ['01-01', 'Año Nuevo'], ['01-06', 'Día de Reyes'], ['01-24', 'Día Internacional de la Educación'], ['01-30', 'Día Escolar de la No Violencia y la Paz'],
     ['02-14', 'San Valentín'], ['02-28', 'Día de Andalucía'], ['03-08', 'Día Internacional de la Mujer'], ['03-19', 'Día del Padre'],
@@ -657,7 +662,7 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
                 `UPDATE aim_social_publicaciones SET texto = $2, redes = $3::text[], tipo = $4, estado = $5,
                         programada_at = CASE WHEN $8 THEN NOW() ELSE $6::timestamptz END,
                         destinos = CASE WHEN $9 THEN $10::text[] ELSE destinos END,
-                        resultado = '{}'::jsonb, actualizado_por = $7, updated_at = NOW() WHERE id = $1`,
+                        resultado = ${SQL_RETOCADA}, actualizado_por = $7, updated_at = NOW() WHERE id = $1`,
                 [id, d.texto, d.redes, d.tipo, estado, estado === 'borrador' ? null : d.programada, req.userSession.userId, d.accion === 'publicar', d.destinos !== null, d.destinos]);
             // «Publicar ya»: se lanza en el momento, sin esperar a que acabe (un vídeo
             // de Instagram puede tardar minutos); la pantalla va mirando cómo va.
@@ -716,6 +721,8 @@ export function crearPublicaciones({ pool, authenticateSession, requireSeccion, 
     async function editable(id) {
         const p = await leer(id);
         if (!['borrador', 'programada', 'error'].includes(p.estado)) corta(409, 'Ya se ha publicado: no se pueden cambiar sus fotos.');
+        // Tocar sus fotos es retocarla a mano: la noticia ya no la rehace.
+        await pool.query(`UPDATE aim_social_publicaciones SET resultado = ${SQL_RETOCADA} WHERE id = $1`, [id]);
         return p;
     }
     router.post('/api/admin/publicaciones/:id/medios', ...ver, crudo, async (req, res) => {

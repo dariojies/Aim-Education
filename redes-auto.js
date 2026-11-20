@@ -135,13 +135,32 @@ export function textoNoticia(post, { urlPublica, hashtags }) {
 // Deja programada (o la rehace, o la quita) la publicación de una noticia.
 // publicar: lo que dice la casilla. Devuelve { id, programada_at } o null.
 export async function redesDeNoticia(pool, post, publicar, { urlPublica, userId }) {
-    const ya = (await pool.query(`SELECT id, estado FROM aim_social_publicaciones WHERE noticia = $1 ORDER BY id DESC LIMIT 1`, [post.id])).rows[0];
+    let ya = (await pool.query(`SELECT id, estado, programada_at, redes, resultado FROM aim_social_publicaciones WHERE noticia = $1 ORDER BY id DESC LIMIT 1`, [post.id])).rows[0];
     const visible = ['published', 'scheduled'].includes(post.status);
+    // Una publicación hecha a mano en Publicaciones con el enlace de esta noticia
+    // es la suya: se engancha a la noticia en vez de hacer otra (saldría repetida).
+    if (!ya && publicar && visible && post.slug) {
+        const ruta = post.tipo === 'blog' ? 'blog' : 'noticias';
+        const slug = String(post.slug).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const suya = (await pool.query(
+            `SELECT id, estado, programada_at, redes, resultado FROM aim_social_publicaciones
+             WHERE noticia IS NULL AND tipo = 'post' AND estado <> 'error' AND texto ~ $1
+             ORDER BY id DESC LIMIT 1`, [`/${ruta}/${slug}([^A-Za-z0-9-]|$)`])).rows[0];
+        if (suya) {
+            await pool.query(`UPDATE aim_social_publicaciones SET noticia = $2 WHERE id = $1`, [suya.id, post.id]);
+            ya = suya;
+        }
+    }
     if (!publicar || !visible) {
         if (ya && ['programada', 'borrador'].includes(ya.estado)) await pool.query(`DELETE FROM aim_social_publicaciones WHERE id = $1`, [ya.id]);
         return null;
     }
     if (ya && !['programada', 'borrador'].includes(ya.estado)) return null;   // ya salió: no se repite
+    // Hecha o retocada a mano (sin marca «auto», o con «amano»): no se rehace,
+    // para no perder lo que se haya cambiado (texto, foto u hora).
+    if (ya && (!ya.resultado?.auto || ya.resultado.auto.amano)) {
+        return { id: ya.id, programadaAt: ya.programada_at ? new Date(ya.programada_at).toISOString() : null, redes: ya.redes, amano: true };
+    }
     const cfg = await configRedesAuto(pool);
     const d = await plantilla(pool, 'noticia');
     let foto = null;

@@ -87,7 +87,7 @@ export function PublicarEnRedes({ item, onCambio }) {
       <span>
         <b>Publicar también en redes sociales</b> (Instagram y Facebook)
         <span style={{ display: 'block', fontSize: 12, color: 'var(--ink-3)' }}>
-          {r?.estado === 'programada' ? `Programada para el ${new Date(r.programadaAt).toLocaleString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}: al guardar se rehace con lo que cambies. ` : ''}
+          {r?.estado === 'programada' ? `Programada para el ${new Date(r.programadaAt).toLocaleString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}: ${r.amano ? 'está hecha o retocada a mano en Publicaciones, así que al guardar no se toca (se cambia allí). ' : 'al guardar se rehace con lo que cambies. '}` : ''}
           Con la foto de portada en la plantilla de las noticias y el texto hecho solo (título, resumen, enlace y hashtags). Se programa {item.status === 'scheduled' ? 'para la hora de la noticia' : 'para 10 minutos después'} y se puede ver o cambiar en Publicaciones.
         </span>
       </span>
