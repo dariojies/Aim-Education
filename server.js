@@ -990,6 +990,9 @@ async function initDb() {
                 UNIQUE (user_id, clase_ref, temporada_id)
             )
         `);
+        // #655: hasta cuándo vale el descuento de la ficha (incluido el mes de
+        // esa fecha). Vacío = sin fin. No es la baja: el alumno sigue en la clase.
+        await client.query(`ALTER TABLE aim_matriculas ADD COLUMN IF NOT EXISTS descuento_hasta DATE`);
         // Parentescos por persona (mismo modelo que la tabla familias actual).
         await client.query(`
             CREATE TABLE IF NOT EXISTS aim_familias (
@@ -7998,13 +8001,14 @@ app.get('/api/admin/billing/matriculas', authenticateSession, requireAdmin, asyn
         res.json(r.rows.map(m => ({
             id: m.id, userId: m.user_id, nombre: m.name, apellidos: m.surname, email: m.email,
             claseRef: m.clase_ref, claseOrigen: m.clase_origen, claseNombre: m.clase_nombre, actividad: m.actividad,
-            temporadaId: m.temporada_id, descuentoPct: Number(m.descuento_pct), alta: m.alta, baja: m.baja,
+            temporadaId: m.temporada_id, descuentoPct: Number(m.descuento_pct), descuentoHasta: m.descuento_hasta, alta: m.alta, baja: m.baja,
         })));
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/admin/billing/matriculas', authenticateSession, requireAdmin, async (req, res) => {
     const { userId, claseRef, claseOrigen, temporadaId, descuentoPct, alta, baja } = req.body;
+    const descuentoHasta = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.descuentoHasta || '')) ? req.body.descuentoHasta : null;
     if (!userId || !claseRef || !temporadaId) return res.status(400).json({ error: 'Alumno, clase y temporada son obligatorios.' });
     if (!['aimtul', 'custom'].includes(claseOrigen)) return res.status(400).json({ error: 'Origen de clase no válido.' });
     const dto = Number(descuentoPct) || 0;
@@ -8018,15 +8022,15 @@ app.post('/api/admin/billing/matriculas', authenticateSession, requireAdmin, asy
             `SELECT 1 FROM aim_matriculas WHERE user_id = $1 AND (baja IS NULL OR baja >= (now() AT TIME ZONE 'Europe/Madrid')::date) LIMIT 1`, [userId]);
         const tocaInscripcion = !yaTeniaFicha.rowCount && (await debeInscripcion(userId)).debe;
         const r = await pool.query(
-            `INSERT INTO aim_matriculas (user_id, clase_ref, clase_origen, clase_nombre, actividad, temporada_id, descuento_pct, alta, baja)
-             VALUES ($1,$2,$3,$4,$5,$6,$7, COALESCE($8::date, (now() AT TIME ZONE 'Europe/Madrid')::date), $9::date) RETURNING id`,
-            [userId, claseRef, claseOrigen, cl.nombre, cl.actividad, temporadaId, dto, alta || null, baja || null]
+            `INSERT INTO aim_matriculas (user_id, clase_ref, clase_origen, clase_nombre, actividad, temporada_id, descuento_pct, alta, baja, descuento_hasta)
+             VALUES ($1,$2,$3,$4,$5,$6,$7, COALESCE($8::date, (now() AT TIME ZONE 'Europe/Madrid')::date), $9::date, $10::date) RETURNING id`,
+            [userId, claseRef, claseOrigen, cl.nombre, cl.actividad, temporadaId, dto, alta || null, baja || null, descuentoHasta]
         );
         // #231: al crear la ficha, su cobro de este mes queda ya pendiente (si el
         // concepto está definido en "Qué se cobra"), sin esperar al "generar".
         let cargosCreados = 0;
         try {
-            cargosCreados = await generarCargosDeMatricula({ userId, claseRef, actividad: cl.actividad, temporadaId, descuentoPct: dto });
+            cargosCreados = await generarCargosDeMatricula({ userId, claseRef, actividad: cl.actividad, temporadaId, descuentoPct: dto, descuentoHasta });
         } catch (e) { console.error('[#231 cargo ficha]', e.message); }
         // Y la matrícula/inscripción, si es de los que la pagan (#231 y #290).
         let inscripcionCreada = false;
@@ -8043,13 +8047,16 @@ app.post('/api/admin/billing/matriculas', authenticateSession, requireAdmin, asy
 
 app.put('/api/admin/billing/matriculas/:id', authenticateSession, requireAdmin, async (req, res) => {
     const { descuentoPct, alta, baja } = req.body;
+    const descuentoHasta = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.descuentoHasta || '')) ? req.body.descuentoHasta : null;
     const dto = Number(descuentoPct) || 0;
     if (dto < 0 || dto > 100) return res.status(400).json({ error: 'El descuento debe estar entre 0 y 100.' });
     try {
+        const antes = (await pool.query(`SELECT descuento_pct, descuento_hasta FROM aim_matriculas WHERE id = $1`, [req.params.id])).rows[0];
+        if (!antes) return res.status(404).json({ error: 'Ficha no encontrada.' });
         const r = await pool.query(
-            `UPDATE aim_matriculas SET descuento_pct = $1, alta = COALESCE($2::date, alta), baja = $3::date
+            `UPDATE aim_matriculas SET descuento_pct = $1, alta = COALESCE($2::date, alta), baja = $3::date, descuento_hasta = $5::date
              WHERE id = $4 RETURNING id`,
-            [dto, alta || null, baja || null, req.params.id]
+            [dto, alta || null, baja || null, req.params.id, descuentoHasta]
         );
         if (r.rowCount === 0) return res.status(404).json({ error: 'Ficha no encontrada.' });
         // Si pasa a 100% de descuento (#320), los cargos que esa ficha ya tenía
@@ -8060,11 +8067,31 @@ app.put('/api/admin/billing/matriculas/:id', authenticateSession, requireAdmin, 
                 `DELETE FROM aim_cargos c USING aim_matriculas m
                  WHERE m.id = $1 AND c.cliente_id = m.user_id AND c.estado = 'pendiente' AND c.recibo_id IS NULL
                    AND c.origen = 'generado' AND ${SQL_NO_RESERVADO}
+                   AND (m.descuento_hasta IS NULL OR c.mes <= m.descuento_hasta)
                    AND ((m.clase_ref IS NOT NULL AND c.target_ref = m.clase_ref)
                         OR (c.target_ref IS NULL AND c.actividad IS NOT DISTINCT FROM m.actividad))`,
                 [req.params.id])).rowCount;
         }
-        res.json({ success: true, cargosQuitados: quitados });
+        // #655: si cambia hasta cuándo vale el descuento, los cargos de esta
+        // ficha aún sin cobrar se ponen al día: los meses de después, sin
+        // descuento; los de antes, con el de la ficha. Solo los que llevaban el
+        // descuento de la ficha (o ninguno): uno puesto a mano en el TPV se respeta.
+        let recalculados = 0;
+        if ((antes.descuento_hasta || null) !== descuentoHasta) {
+            recalculados = (await pool.query(
+                `UPDATE aim_cargos c
+                    SET descuento_pct = (CASE WHEN m.descuento_hasta IS NULL OR c.mes <= m.descuento_hasta THEN m.descuento_pct ELSE 0 END)
+                 FROM aim_matriculas m
+                 WHERE m.id = $1 AND c.cliente_id = m.user_id AND c.estado = 'pendiente' AND c.recibo_id IS NULL
+                   AND c.origen = 'generado' AND c.mes IS NOT NULL AND ${SQL_NO_RESERVADO}
+                   AND c.descuento_pct IN ($2::numeric, 0, m.descuento_pct)
+                   AND c.descuento_pct <> (CASE WHEN m.descuento_hasta IS NULL OR c.mes <= m.descuento_hasta THEN m.descuento_pct ELSE 0 END)
+                   AND (CASE WHEN m.descuento_hasta IS NULL OR c.mes <= m.descuento_hasta THEN m.descuento_pct ELSE 0 END) < 100
+                   AND ((m.clase_ref IS NOT NULL AND c.target_ref = m.clase_ref)
+                        OR (c.target_ref IS NULL AND c.actividad IS NOT DISTINCT FROM m.actividad))`,
+                [req.params.id, Number(antes.descuento_pct) || 0])).rowCount;
+        }
+        res.json({ success: true, cargosQuitados: quitados, cargosRecalculados: recalculados });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -8104,6 +8131,9 @@ const SQL_JOIN_FICHA = `JOIN aim_matriculas m ON m.temporada_id = ct.temporada_i
    OR (ct.target_tipo = 'actividad' AND m.actividad = ct.target_actividad)
  )`;
 const SQL_FILTRO_VIGENTE = `m.alta <= ($2::date + INTERVAL '1 month - 1 day') AND (m.baja IS NULL OR m.baja >= $2::date)`;
+// El descuento de la ficha para el mes $2 (#655): vale hasta su «descuento
+// hasta», incluido el mes de esa fecha; los meses siguientes, sin descuento.
+const SQL_DTO_FICHA = `(CASE WHEN m.descuento_hasta IS NULL OR $2::date <= m.descuento_hasta THEN m.descuento_pct ELSE 0 END)`;
 
 async function candidatosGeneracion(temporadaId, mes) {
     // DISTINCT ON (alumno, concepto, destino): un cargo por cada destino; si una
@@ -8111,7 +8141,7 @@ async function candidatosGeneracion(temporadaId, mes) {
     const r = await pool.query(
         `SELECT DISTINCT ON (m.user_id, ct.concepto, ${SQL_TARGET_REF})
                 m.user_id, u.name, u.surname, ct.concepto, ${SQL_TARGET_REF} AS target_ref,
-                p.descripcion, p.tipo, p.precio, p.iva_pct, m.descuento_pct,
+                p.descripcion, p.tipo, p.precio, p.iva_pct, ${SQL_DTO_FICHA} AS descuento_pct,
                 EXISTS (SELECT 1 FROM aim_cargos c WHERE c.cliente_id = m.user_id AND c.concepto = ct.concepto
                         AND c.mes = $2::date AND c.estado <> 'anulado') AS ya_existe
          FROM aim_conceptos_temporada ct
@@ -8119,7 +8149,7 @@ async function candidatosGeneracion(temporadaId, mes) {
          ${SQL_JOIN_FICHA}
          JOIN users u ON u.user_id = m.user_id
          WHERE ct.temporada_id = $1 AND ${SQL_FILTRO_VIGENTE}
-         ORDER BY m.user_id, ct.concepto, ${SQL_TARGET_REF}, m.descuento_pct DESC`,
+         ORDER BY m.user_id, ct.concepto, ${SQL_TARGET_REF}, ${SQL_DTO_FICHA} DESC`,
         [temporadaId, mes]
     );
     return r.rows;
@@ -8298,14 +8328,14 @@ async function ejecutarGeneracionCargos(mesPedido) {
     const r = await pool.query(
         `INSERT INTO aim_cargos (cliente_id, concepto, mes, descripcion, tipo, precio, iva_pct, descuento_pct, target_ref, target_nombre, actividad, estado)
          SELECT DISTINCT ON (m.user_id, ct.concepto, ${SQL_TARGET_REF})
-                m.user_id, ct.concepto, $2::date, p.descripcion, p.tipo, p.precio, p.iva_pct, m.descuento_pct,
+                m.user_id, ct.concepto, $2::date, p.descripcion, p.tipo, p.precio, p.iva_pct, ${SQL_DTO_FICHA},
                 ${SQL_TARGET_REF}, ct.target_nombre, m.actividad, 'pendiente'
          FROM aim_conceptos_temporada ct
          JOIN aim_precios p ON p.concepto = ct.concepto AND p.activo = true
          ${SQL_JOIN_FICHA}
          WHERE ct.temporada_id = $1 AND ${SQL_FILTRO_VIGENTE}
            -- Con un 100% de descuento no paga nada: no se genera cargo (#320).
-           AND COALESCE(m.descuento_pct, 0) < 100
+           AND COALESCE(${SQL_DTO_FICHA}, 0) < 100
            -- No duplicar lo ya cobrado por adelantado: si el alumno ya tiene
            -- un cargo vivo de ese concepto y mes (p. ej. una mensualidad que
            -- pagó adelantada en el TPV), no se genera otro (ticket #220).
@@ -8314,7 +8344,7 @@ async function ejecutarGeneracionCargos(mesPedido) {
                WHERE c2.cliente_id = m.user_id AND c2.concepto = ct.concepto
                  AND c2.mes = $2::date AND c2.estado <> 'anulado'
            )
-         ORDER BY m.user_id, ct.concepto, ${SQL_TARGET_REF}, m.descuento_pct DESC
+         ORDER BY m.user_id, ct.concepto, ${SQL_TARGET_REF}, ${SQL_DTO_FICHA} DESC
          ON CONFLICT DO NOTHING
          RETURNING id`,
         [temp.rows[0].id, mes]
@@ -8367,12 +8397,15 @@ async function generacionAutomatica() {
 // toca facturar (ticket #231): al apuntar a alguien a una actividad, su cobro
 // aparece pendiente al momento, sin esperar al "generar" mensual. Idempotente:
 // no duplica lo que ya exista de ese concepto y mes. Devuelve cuántos creó.
-async function generarCargosDeMatricula({ userId, claseRef, actividad, temporadaId, descuentoPct = 0, mes }, cliente = pool) {
-    // Con un 100% de descuento no paga nada: no se genera cargo (#320).
-    if (!userId || !temporadaId || cargosEnPausa() || Number(descuentoPct) >= 100) return 0;
+async function generarCargosDeMatricula({ userId, claseRef, actividad, temporadaId, descuentoPct = 0, descuentoHasta = null, mes }, cliente = pool) {
+    if (!userId || !temporadaId || cargosEnPausa()) return 0;
     // Ticket #289: al apuntarse, la mensualidad es la del mes en curso si aún no
     // se ha pasado el día de corte; a partir de ese día, la del mes siguiente.
     const m = normalizaMes(mes || mesParaAlta());
+    // #655: pasado su «descuento hasta», ese mes va sin descuento.
+    if (descuentoHasta && m > String(descuentoHasta).slice(0, 10)) descuentoPct = 0;
+    // Con un 100% de descuento no paga nada: no se genera cargo (#320).
+    if (Number(descuentoPct) >= 100) return 0;
     // Ticket #389: si ese mes se le quitó la mensualidad a mano (estado
     // 'quitado') y ahora se le vuelve a apuntar, vuelve a estar pendiente, ya
     // con el descuento de la nueva ficha. Lo de abajo ya no la duplica.
@@ -8684,7 +8717,7 @@ app.post('/api/admin/billing/cargos/extra', authenticateSession, requireAdmin, a
         let deMatricula = false;
         if (descuentoPct === undefined || descuentoPct === null || descuentoPct === '') {
             const dm = await pool.query(
-                `SELECT MAX(m.descuento_pct)::numeric AS d FROM aim_conceptos_temporada ct
+                `SELECT MAX(${SQL_DTO_FICHA})::numeric AS d FROM aim_conceptos_temporada ct
                  ${SQL_JOIN_FICHA}
                  WHERE ct.concepto = $1 AND m.user_id = $3 AND ${SQL_FILTRO_VIGENTE}`, [concepto, mesCargo, clienteId]);
             const v = Number(dm.rows[0]?.d || 0);

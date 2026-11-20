@@ -5387,7 +5387,7 @@ function AdminBilling({ showToast, enlace }) {
       {!loading && tab === 'fichas' && activa && (
         <div style={{ display: 'grid', gap: 14 }}>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-            <button className="btn btn-sm btn-primary" onClick={() => setEditFicha({ userId: '', clase: '', descuentoPct: 0, alta: '', baja: '', esNueva: true })}>
+            <button className="btn btn-sm btn-primary" onClick={() => setEditFicha({ userId: '', clase: '', descuentoPct: 0, descuentoHasta: '', alta: '', baja: '', esNueva: true })}>
               <I.Plus /> Nueva ficha
             </button>
             <div className="search-input" style={{ flex: '1 1 200px', maxWidth: 300 }}>
@@ -5415,12 +5415,15 @@ function AdminBilling({ showToast, enlace }) {
                     <div style={{ fontSize: 13, fontWeight: 700 }}>{m.claseNombre || '—'}</div>
                     <div className="sec">{m.actividad || ''}{m.claseOrigen === 'custom' ? ' · propia' : ''}</div>
                   </div>
-                  <span style={{ fontWeight: 700, color: m.descuentoPct > 0 ? 'var(--teal)' : 'var(--ink-3)' }}>{m.descuentoPct}%</span>
+                  <span style={{ fontWeight: 700, color: m.descuentoPct > 0 && !(m.descuentoHasta && String(m.descuentoHasta).slice(0, 7) < new Date().toLocaleDateString('sv-SE').slice(0, 7)) ? 'var(--teal)' : 'var(--ink-3)' }}>
+                    {m.descuentoPct}%
+                    {m.descuentoPct > 0 && m.descuentoHasta && <div className="sec" style={{ fontWeight: 400 }}>hasta {new Date(String(m.descuentoHasta).slice(0, 10) + 'T12:00:00').toLocaleDateString('es-ES')}</div>}
+                  </span>
                   <span className="sec">
                     {m.alta ? String(m.alta).slice(0, 10) : '—'}{m.baja ? ` → baja ${String(m.baja).slice(0, 10)}` : ''}
                   </span>
                   <div className="row-actions">
-                    <button className="icon-btn" onClick={() => setEditFicha({ ...m, alta: m.alta ? String(m.alta).slice(0, 10) : '', baja: m.baja ? String(m.baja).slice(0, 10) : '' })} aria-label="Editar"><I.Edit /></button>
+                    <button className="icon-btn" onClick={() => setEditFicha({ ...m, alta: m.alta ? String(m.alta).slice(0, 10) : '', baja: m.baja ? String(m.baja).slice(0, 10) : '', descuentoHasta: m.descuentoHasta ? String(m.descuentoHasta).slice(0, 10) : '' })} aria-label="Editar"><I.Edit /></button>
                     <button className="icon-btn danger" onClick={async () => {
                       if (!window.confirm(`¿Borrar la ficha de ${m.nombre}?`)) return;
                       await api(`/api/admin/billing/matriculas/${m.id}`, { method: 'DELETE' }, 'Ficha borrada.');
@@ -5592,7 +5595,7 @@ function AdminBilling({ showToast, enlace }) {
               if (editFicha.esNueva) {
                 if (!editFicha.clase) { alert('Elige una clase.'); return; }
                 const [origen, ref] = editFicha.clase.split(/:(.+)/);
-                const body = { userId: editFicha.userId, claseRef: ref, claseOrigen: origen, descuentoPct: editFicha.descuentoPct, alta: editFicha.alta, temporadaId: activa.id };
+                const body = { userId: editFicha.userId, claseRef: ref, claseOrigen: origen, descuentoPct: editFicha.descuentoPct, descuentoHasta: editFicha.descuentoHasta, alta: editFicha.alta, temporadaId: activa.id };
                 if (await api('/api/admin/billing/matriculas', { method: 'POST', body: JSON.stringify(body) }, 'Ficha creada.')) setEditFicha(null);
               } else {
                 if (await api(`/api/admin/billing/matriculas/${editFicha.id}`, { method: 'PUT', body: JSON.stringify(editFicha) }, 'Ficha actualizada.')) setEditFicha(null);
@@ -5625,17 +5628,28 @@ function AdminBilling({ showToast, enlace }) {
                   <b>{editFicha.claseNombre}</b>{editFicha.actividad ? ` · ${editFicha.actividad}` : ''}
                 </div>
               )}
-              <div className="field">
-                <label>Descuento manual (%)</label>
-                <input type="number" step="0.01" min="0" max="100" value={editFicha.descuentoPct} onChange={e => setEditFicha(f => ({ ...f, descuentoPct: e.target.value }))} />
+              <div className="field-row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div className="field">
+                  <label>Descuento manual (%)</label>
+                  <input type="number" step="0.01" min="0" max="100" value={editFicha.descuentoPct} onChange={e => setEditFicha(f => ({ ...f, descuentoPct: e.target.value }))} />
+                </div>
+                <div className="field">
+                  <label>Descuento hasta (vacío = siempre)</label>
+                  <input type="date" value={editFicha.descuentoHasta || ''} onChange={e => setEditFicha(f => ({ ...f, descuentoHasta: e.target.value }))} />
+                </div>
               </div>
               <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
-                Este descuento se congela en cada cargo al generarlo. El de hermanos/varias mensualidades se calcula solo al cobrar.
+                El descuento vale hasta el mes de esa fecha, incluido; los meses siguientes se cobran sin él. Se congela en cada cargo al generarlo. El de hermanos/varias mensualidades se calcula solo al cobrar.
               </p>
               <div className="field-row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                 <div className="field"><label>Alta</label><input type="date" value={editFicha.alta || ''} onChange={e => setEditFicha(f => ({ ...f, alta: e.target.value }))} /></div>
                 <div className="field"><label>Baja (vacío = activa)</label><input type="date" value={editFicha.baja || ''} onChange={e => setEditFicha(f => ({ ...f, baja: e.target.value }))} /></div>
               </div>
+              {editFicha.claseOrigen === 'aimtul' && (
+                <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
+                  La baja de esta clase la pone sola la web cuando el alumno sale de su grupo en Clases y horarios. Para que deje de tener descuento, usa «Descuento hasta».
+                </p>
+              )}
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                 <button type="button" className="btn btn-outline" onClick={() => setEditFicha(null)}>Cancelar</button>
                 <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Guardando...' : 'Guardar'}</button>
