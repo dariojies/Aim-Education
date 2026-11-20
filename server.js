@@ -14987,10 +14987,12 @@ app.get('/api/admin/alumnos/:id/ficha360', authenticateSession, requirePermiso('
             descripcion: d.descripcion, mes: d.mes, actividad: pend.rows.find(c => c.id === d.id)?.actividad || null, total: d.total,
         }));
         // Lo que no se le va a cobrar (#393): impagados tras la baja (deuda
-        // interna, la familia ya no los ve) y meses exentos, cada uno con su motivo.
+        // interna, la familia ya no los ve), meses exentos y lo quitado a mano (por
+        // ejemplo, la mensualidad del mes de la baja), cada uno con su motivo: que
+        // en la ficha conste todo lo que se le llegó a cargar, aunque no se cobrara.
         const cerr = await pool.query(
             `SELECT c.* FROM aim_cargos c
-             WHERE c.cliente_id = $1 AND c.estado IN ('impagado', 'exento') AND c.recibo_id IS NULL
+             WHERE c.cliente_id = $1 AND c.estado IN ('impagado', 'exento', 'quitado') AND c.recibo_id IS NULL
              ORDER BY c.mes DESC, c.id DESC LIMIT 100`, [id]);
         const noCobrados = (estado) => {
             const filas = cerr.rows.filter(c => c.estado === estado);
@@ -15005,6 +15007,7 @@ app.get('/api/admin/alumnos/:id/ficha360', authenticateSession, requirePermiso('
         };
         const impagados = noCobrados('impagado');
         const exentos = noCobrados('exento');
+        const quitados = noCobrados('quitado');
 
         const rq = await pool.query(
             `SELECT rc.id, rc.numero, rc.serie, rc.tipo, rc.fecha, rc.importe, rc.estado, rc.medio_pago,
@@ -15037,6 +15040,7 @@ app.get('/api/admin/alumnos/:id/ficha360', authenticateSession, requirePermiso('
                 pendientes, totalPendiente: calcP.total,
                 impagados: impagados.lista, totalImpagado: impagados.total,
                 exentos: exentos.lista, totalExento: exentos.total,
+                quitados: quitados.lista, totalQuitado: quitados.total,
                 facturas,
             },
             pagadores: await pagadoresDe(id),
