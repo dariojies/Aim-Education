@@ -6,7 +6,8 @@
 //    después (o para su hora, si la noticia está programada), para poder verla
 //    o retocarla antes. La imagen sale de la plantilla «Publicación de las
 //    noticias» de Aim Design con la foto de portada en su marco vacío (sin
-//    plantilla, la foto tal cual); el texto, con reglas: el título, un resumen,
+//    plantilla, la foto ajustada a lo que admite Instagram: ver
+//    ajustarParaInstagram); el texto, con reglas: el título, un resumen,
 //    el enlace y los hashtags (los fijos del club y los del tema). Sin foto, solo
 //    a Facebook (Instagram la pide).
 // 2. Las historias diarias, a las horas que se elijan, de una CLASE cada una.
@@ -89,14 +90,63 @@ function conFoto(datos, url) {
     else d.fondo = { ...(d.fondo || {}), tipo: 'imagen', url };
     return d;
 }
+// Sin plantilla, la foto tiene que caber en lo que admite Instagram: de 4:5
+// (vertical) a 1,91:1 (apaisada). Si se sale (una portada de noticia suele ser
+// 2:1), va ENTERA en un 4:5 (1080 × 1350), y el hueco se rellena según el borde
+// que lo toca: si es liso (una portada diseñada), con el color de ese borde,
+// para que empalme; si es una foto, con la misma foto desenfocada detrás.
+const IG_MIN = 4 / 5, IG_MAX = 1.91;
+export async function ajustarParaInstagram(entrada) {
+    const base = await sharp(entrada).rotate().toBuffer();
+    const m = await sharp(base).metadata();
+    const prop = m.width / m.height;
+    if (prop >= IG_MIN - 0.005 && prop <= IG_MAX + 0.005) {
+        const buf = await sharp(base).resize({ width: 1440, height: 1800, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 88 }).toBuffer();
+        const mm = await sharp(buf).metadata();
+        return { buf, mime: 'image/jpeg', ancho: mm.width, alto: mm.height, relleno: null };
+    }
+    const W = 1080, H = 1350;
+    const entera = await sharp(base).resize(W, H, { fit: 'inside' }).toBuffer();
+    const e = await sharp(entera).metadata();
+    const apaisada = prop > IG_MAX;            // si no, es demasiado alta: el hueco va a los lados
+    const izq = Math.round((W - e.width) / 2), arr = Math.round((H - e.height) / 2);
+    // Los dos bordes que tocan el hueco (una franja del 1,5 %), su color medio y
+    // lo que varían. Medido con portadas y fotos reales: las portadas diseñadas
+    // dan 1-6 y las fotos, casi siempre, 10-60.
+    const grosor = Math.max(2, Math.round((apaisada ? e.height : e.width) * 0.015));
+    const zonas = apaisada
+        ? [{ left: 0, top: 0, width: e.width, height: grosor }, { left: 0, top: e.height - grosor, width: e.width, height: grosor }]
+        : [{ left: 0, top: 0, width: grosor, height: e.height }, { left: e.width - grosor, top: 0, width: grosor, height: e.height }];
+    const bordes = await Promise.all(zonas.map(async z => {
+        // (La franja se saca primero a una imagen: stats() sobre un extract mide la foto entera.)
+        const st = await sharp(await sharp(entera).extract(z).removeAlpha().png().toBuffer()).stats();
+        return { color: { r: Math.round(st.channels[0].mean), g: Math.round(st.channels[1].mean), b: Math.round(st.channels[2].mean) }, varia: Math.max(...st.channels.slice(0, 3).map(c => c.stdev)) };
+    }));
+    const liso = bordes.every(b => b.varia < 10);
+    let lienzo;
+    if (liso) {
+        // Cada mitad del hueco con el color de su borde.
+        const [a, b] = bordes;
+        const otra = apaisada ? { width: W, height: H - arr - e.height, left: 0, top: arr + e.height } : { width: W - izq - e.width, height: H, left: izq + e.width, top: 0 };
+        lienzo = sharp({ create: { width: W, height: H, channels: 3, background: a.color } }).composite([
+            { input: await sharp({ create: { width: otra.width, height: otra.height, channels: 3, background: b.color } }).png().toBuffer(), left: otra.left, top: otra.top },
+            { input: entera, left: izq, top: arr },
+        ]);
+    } else {
+        const fondo = await sharp(base).resize(W, H, { fit: 'cover' }).blur(40).modulate({ brightness: 0.85 }).toBuffer();
+        lienzo = sharp(fondo).composite([{ input: entera, left: izq, top: arr }]);
+    }
+    const buf = await lienzo.jpeg({ quality: 88 }).toBuffer();
+    return { buf, mime: 'image/jpeg', ancho: W, alto: H, relleno: liso ? 'color' : 'desenfocada' };
+}
+
 // Lo que se publica: la plantilla con su foto (vídeo si se mueve) o, sin
-// plantilla, la foto tal cual. null si no hay nada que enseñar.
+// plantilla, la foto ajustada a lo que admite Instagram. null si no hay nada que enseñar.
 async function medioDe(d, foto, variables) {
     if (!d) {
         if (!foto?.buf) return null;
-        const buf = await sharp(foto.buf).rotate().resize({ width: 1440, height: 1800, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 88 }).toBuffer();
-        const m = await sharp(buf).metadata();
-        return { buf, mime: 'image/jpeg', ancho: m.width, alto: m.height };
+        const { relleno, ...m } = await ajustarParaInstagram(foto.buf);
+        return m;
     }
     const datos = conFoto(d.datos, foto?.url);
     const img = await pintarEnServidor(datos, { variables });
