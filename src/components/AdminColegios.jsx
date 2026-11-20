@@ -190,6 +190,16 @@ function Citas({ d, recargar, showToast, onProponer }) {
 function Proponer({ d, inicial, onCerrar, onHecho }) {
   const cita = inicial.cambia ? d.citas.find(c => c.id === inicial.cambia) : null;
   const [f, setF] = useState({ colegioId: inicial.colegioId || '', actividadId: inicial.actividadId || d.oferta.find(o => o.activa)?.id || '', fecha: '', desde: '', hasta: '', mensaje: '' });
+  // Varias citas de una vez (en un solo correo): las que se van añadiendo.
+  const [lista, setLista] = useState([]);
+  const tituloDe = (id) => d.oferta.find(o => o.id === Number(id))?.titulo || 'Actividad';
+  function anadir() {
+    setError('');
+    if (!f.fecha || !f.desde || !f.hasta) return setError('Elige el día y las horas de la cita antes de añadir otra.');
+    if (lista.some(x => x.fecha === f.fecha && x.desde < f.hasta && f.desde < x.hasta)) return setError('Esa ya choca con otra de la lista.');
+    setLista(l => [...l, { actividadId: Number(f.actividadId), fecha: f.fecha, desde: f.desde, hasta: f.hasta }].sort((a, b) => `${a.fecha}${a.desde}`.localeCompare(`${b.fecha}${b.desde}`)));
+    setF(x => ({ ...x, fecha: '', desde: '', hasta: '' }));
+  }
   const [huecos, setHuecos] = useState(null);
   const [libre, setLibre] = useState(false);
   const [error, setError] = useState('');
@@ -202,6 +212,18 @@ function Proponer({ d, inicial, onCerrar, onHecho }) {
   async function enviar(forzar = false) {
     setError('');
     if (!f.colegioId) return setError('Elige el colegio.');
+    // Con lista: todas (más la que esté elegida ahora) en un solo correo.
+    const actual = f.fecha && f.desde && f.hasta ? [{ actividadId: Number(f.actividadId), fecha: f.fecha, desde: f.desde, hasta: f.hasta }] : [];
+    if (lista.length) {
+      setEnviando(true);
+      try {
+        const r = await api('/api/admin/colegios/citas/varias', { method: 'POST', body: { colegioId: Number(f.colegioId), citas: [...lista, ...actual], mensaje: f.mensaje, forzar } });
+        return onHecho(`${r.citas.length} citas propuestas.${r.correo ? ` Un solo correo a ${r.correo}.` : ' (El colegio no tiene correo: avisadle vosotros.)'}`);
+      } catch (e) {
+        if (e.datos?.fueraDeHueco && window.confirm(e.message)) { setEnviando(false); return enviar(true); }
+        return setError(e.message);
+      } finally { setEnviando(false); }
+    }
     if (!f.fecha || !f.desde || !f.hasta) return setError('Elige el día y las horas.');
     setEnviando(true);
     try {
@@ -247,13 +269,35 @@ function Proponer({ d, inicial, onCerrar, onHecho }) {
           <ElegirHueco huecos={huecos} valor={f} duracion={act?.duracion || 60} onCambio={v => setF(x => ({ ...x, ...v }))} />
         )}
       </div>
+      {/* Varias de una vez (no al cambiar una cita): un solo correo con todas. */}
+      {!cita && (
+        <div style={{ display: 'grid', gap: 6 }}>
+          {lista.length > 0 && (
+            <div style={{ ...aviso('--teal'), display: 'grid', gap: 4 }}>
+              <b>{lista.length} {lista.length === 1 ? 'cita en la lista' : 'citas en la lista'}{f.fecha && f.desde ? ' (más la que tienes elegida)' : ''}:</b>
+              {lista.map((x, i) => (
+                <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span style={{ flex: 1 }}>{tituloDe(x.actividadId)} · {conMayuscula(fechaLarga(x.fecha))}, de {x.desde} a {x.hasta}</span>
+                  <button type="button" className="icon-btn" aria-label="Quitar de la lista" onClick={() => setLista(l => l.filter((_, j) => j !== i))}><I.X width={14} height={14} /></button>
+                </div>
+              ))}
+            </div>
+          )}
+          <button type="button" className="btn btn-outline btn-sm" style={{ justifySelf: 'start' }} disabled={!f.fecha || !f.desde || !f.hasta || lista.length >= 11} onClick={anadir}>
+            <I.Plus width={14} height={14} /> Añadir otra cita
+          </button>
+          <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Para proponer varias en un solo correo: elige una, «Añadir otra cita», y así con las demás.</span>
+        </div>
+      )}
       <label className="field" style={{ margin: 0 }}><span>Mensaje para el colegio (opcional)</span>
         <textarea rows={2} maxLength={2000} value={f.mensaje} onChange={e => setF({ ...f, mensaje: e.target.value })} placeholder="Va en el correo. Por ejemplo: «Llevamos todo el material.»" />
       </label>
       {error && <p role="alert" style={{ margin: 0, color: 'var(--orange)', fontWeight: 700 }}>{error}</p>}
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
         <button type="button" className="btn btn-outline btn-sm" onClick={onCerrar}>Cancelar</button>
-        <button type="button" className="btn btn-primary btn-sm" disabled={enviando} onClick={() => enviar(false)}>{enviando ? 'Enviando…' : 'Proponer y mandar el correo'}</button>
+        <button type="button" className="btn btn-primary btn-sm" disabled={enviando} onClick={() => enviar(false)}>
+          {enviando ? 'Enviando…' : lista.length ? `Proponer ${lista.length + (f.fecha && f.desde && f.hasta ? 1 : 0)} citas en un correo` : 'Proponer y mandar el correo'}
+        </button>
       </div>
     </Ventana>
   );

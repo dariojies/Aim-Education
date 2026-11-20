@@ -697,6 +697,20 @@ export const CORREOS_SISTEMA = {
             BTN([{ texto: 'Aceptar o cambiar la cita', url: '{enlace}', fondo: '', color: '#ffffff' }]),
         ]),
     },
+    colegio_propuestas: {
+        grupo: 'colegios', nombre: 'Os proponemos varias citas', cuando: 'Cuando el club propone varias citas a la vez a un colegio (un solo correo con todas).',
+        asunto: 'Os proponemos {n} citas · {colegio}',
+        variables: { colegio: { que: 'El colegio', ejemplo: 'CEIP Andalucía' }, contacto: { que: 'La persona de contacto', ejemplo: 'Ana' }, n: { que: 'Cuántas citas', ejemplo: '3' }, lista: { que: 'Las citas, una por línea', ejemplo: '• **Taller de robótica**: martes, 1 de diciembre, de 10:00 a 11:30\n• **Iniciación al Taekwon-Do**: jueves, 3 de diciembre, de 12:00 a 13:00' }, mensaje: { que: 'Lo que escribe el club', ejemplo: 'Llevamos todo el material.' }, enlace: { que: 'Su página', ejemplo: 'https://www.aimeducation.es/colegio/x' } },
+        obligatorio: ['enlace', 'lista'],
+        diseno: () => d([
+            T('Hola, {contacto}:'),
+            T('Para **{colegio}** os proponemos estas citas:'),
+            T('{lista}'),
+            T('{mensaje}', { siHay: 'mensaje' }),
+            T('Podéis aceptar las que os vengan bien y, para las demás, proponernos otro día, todo desde el mismo sitio:'),
+            BTN([{ texto: 'Ver y aceptar las citas', url: '{enlace}', fondo: '', color: '#ffffff' }]),
+        ]),
+    },
     colegio_confirmada: {
         grupo: 'colegios', nombre: 'Cita confirmada', cuando: 'Cuando el club acepta lo que pide un colegio, o el colegio acepta la propuesta del club.',
         asunto: 'Cita confirmada · {actividad} · {dia}',

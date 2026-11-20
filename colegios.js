@@ -695,6 +695,54 @@ export function crearColegios({ pool, authenticateSession, requireSeccion, urlPu
             res.status(201).json({ success: true, cita: mapCita(n), correo: enviado ? col.email : null });
         } catch (err) { await client.query('ROLLBACK').catch(() => {}); fallo(res, err); } finally { client.release(); }
     });
+    // Varias citas a la vez para un colegio, en UN solo correo. O todas o
+    // ninguna: si alguna no cabe en los huecos (ni entre ellas mismas), se dice
+    // cuáles y se pueden proponer igualmente con «forzar».
+    router.post('/api/admin/colegios/citas/varias', ...gestion, async (req, res) => {
+        const client = await pool.connect();
+        try {
+            const b = req.body || {};
+            const lista = Array.isArray(b.citas) ? b.citas : [];
+            if (!lista.length) corta(400, 'Añade al menos una cita.');
+            if (lista.length > 12) corta(400, 'Como mucho 12 citas de una vez.');
+            await client.query('BEGIN');
+            await client.query(`SELECT pg_advisory_xact_lock(652, 0)`);
+            const col = (await client.query(`SELECT * FROM aim_colegios WHERE id = $1`, [Number(b.colegioId) || 0])).rows[0];
+            if (!col) corta(400, 'Elige el colegio.');
+            if (!col.activo) corta(400, 'Ese colegio está desactivado.');
+            const nuevas = [], fuera = [];
+            for (const [i, x] of lista.entries()) {
+                const { fecha, desde, hasta } = validarTramo(x);
+                const act = (await client.query(`SELECT id, titulo FROM aim_colegios_oferta WHERE id = $1`, [Number(x.actividadId) || 0])).rows[0];
+                if (!act) corta(400, `Elige la actividad de la cita ${i + 1}.`);
+                // Los huecos, con las de esta misma tanda ya dentro: dos a la misma hora no caben.
+                const h = await huecos({ db: client, desde: hoyMadrid() });
+                if (!cabe(h.dias, fecha, desde, hasta)) fuera.push(i);
+                nuevas.push((await client.query(
+                    `INSERT INTO aim_colegios_citas (colegio_id, actividad_id, actividad, fecha, desde, hasta, estado, origen, mensaje, creado_por)
+                     VALUES ($1,$2,$3,$4,$5,$6,'propuesta','club',$7,$8) RETURNING *`,
+                    [col.id, act.id, act.titulo, fecha, desde, hasta, txt(b.mensaje, 2000), req.userSession.userId])).rows[0]);
+            }
+            if (fuera.length && !b.forzar) {
+                await client.query('ROLLBACK');
+                const cuales = fuera.map(i => `la ${i + 1}.ª (${fechaLarga(fechaDe(nuevas[i].fecha))}, ${nuevas[i].desde})`).join(', ');
+                return res.status(409).json({ error: `${fuera.length === 1 ? 'Una cita no cabe' : `${fuera.length} citas no caben`} en los huecos libres (o chocan con otra cita o entre ellas): ${cuales}. ¿Las propones igualmente?`, fueraDeHueco: true, fuera });
+            }
+            await client.query('COMMIT');
+            // Un solo correo con todas, por orden de día.
+            const orden = [...nuevas].sort((a, z) => `${fechaDe(a.fecha)}${a.desde}`.localeCompare(`${fechaDe(z.fecha)}${z.desde}`));
+            let enviado = false;
+            if (col.email) {
+                try {
+                    enviado = await mandar('colegio_propuestas', col.email, {
+                        colegio: col.nombre, contacto: col.contacto || col.nombre, n: String(nuevas.length), enlace: enlaceDe(col.token), mensaje: txt(b.mensaje, 2000) || '',
+                        lista: orden.map(c => `• **${c.actividad}**: ${fechaLarga(fechaDe(c.fecha))}, de ${c.desde} a ${c.hasta}`).join('\n'),
+                    });
+                } catch (e) { console.error('[colegios] correo:', e.message); }
+            }
+            res.status(201).json({ success: true, citas: nuevas.map(mapCita), correo: enviado ? col.email : null });
+        } catch (err) { await client.query('ROLLBACK').catch(() => {}); fallo(res, err); } finally { client.release(); }
+    });
     router.post('/api/admin/colegios/citas/:id/aceptar', ...gestion, async (req, res) => {
         const client = await pool.connect();
         try {
