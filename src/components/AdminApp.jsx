@@ -7301,7 +7301,7 @@ export default function AdminApp({ user, onLogout, subroute = "overview", ticket
                 ['Rol', etiquetaRol(editingItem)],
                 editingItem.belt && ['Cinturón', editingItem.belt],
                 editingItem.phone && ['Teléfono', editingItem.phone],
-                editingItem.usuario && !/\s/.test(editingItem.usuario) && ['Usuario', editingItem.usuario],
+                editingItem.usuario && ['Usuario', editingItem.usuario],
                 editingItem.poblacion && ['Población', editingItem.poblacion],
                 editingItem.fotosRedes !== undefined && ['Fotos', editingItem.fotosRedes ? '📷 Sí, en redes' : '🚫 No'],
               ].filter(Boolean) : [];

@@ -2812,15 +2812,13 @@ async function usuarioLibre(nombre, apellidos) {
     }
     return `${base}.${crypto.randomBytes(3).toString('hex')}`;
 }
-// Que tenga un nombre de usuario de verdad con el que entrar. Learning Dungeon
-// rellena los que faltan con «Learning Dungeon_xxxxxxxx» (con espacio: no sirve
-// para entrar ni se enseña). Con correo del club, la parte de antes de la @
-// (manuel.castaneda); si no (o con un correo personal), nombre.apellido, como al
-// darle de alta sin correo.
-// Devuelve el que queda. LD también deja entrar con él (en minúsculas). Solo se
-// cambia el de relleno de LD (o si no hay): uno escrito a mano, aunque lleve
-// espacios («abel coca»), puede ser con el que entra y se respeta.
-const usuarioValido = (u) => !!u && !/^Learning Dungeon_/.test(u);
+// Que tenga un nombre de usuario con el que entrar. El que ya tenga se respeta
+// siempre, también los de Learning Dungeon («Learning Dungeon_ba37362c», con su
+// espacio): son su usuario de allí y con él se entra también en la web. Solo a
+// quien no tiene ninguno se le pone: con correo del club, la parte de antes de
+// la @ (manuel.castaneda); si no, nombre.apellido, como al darle de alta sin
+// correo. Devuelve el que queda.
+const usuarioValido = (u) => !!u && String(u).trim() !== '';
 async function asegurarUsuario(userId) {
     const u = (await pool.query(`SELECT name, surname, email, username FROM users WHERE user_id = $1`, [userId])).rows[0];
     if (!u) return null;
@@ -3915,9 +3913,11 @@ app.put('/api/users/:id', authenticateSession, requirePermiso('editarAlumnos'), 
         const a = act.rows[0];
         if (a && esCorreoInterno(a.email)) emailLower = a.email;
         else {
+            // El correo interno necesita un usuario sin espacios; el que tenga
+            // (el de Learning Dungeon, con espacio) se queda: es con el que entra.
             const u = a?.username && !/\s/.test(a.username) ? a.username.toLowerCase() : await usuarioLibre(firstName, lastName);
             emailLower = `${u}@${DOMINIO_SIN_CORREO}`;
-            if (!a?.username || /\s/.test(a.username)) await pool.query(`UPDATE users SET username = $1 WHERE user_id = $2`, [u, id]);
+            if (!usuarioValido(a?.username)) await pool.query(`UPDATE users SET username = $1 WHERE user_id = $2`, [u, id]);
         }
     }
     try {
