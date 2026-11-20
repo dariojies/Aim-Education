@@ -260,7 +260,9 @@ export const NS_INFO = 'https://www2.agenciatributaria.gob.es/static_files/commo
 // <Campo> → <sum1:Campo>, </Campo> → </sum1:Campo>. En el XML guardado no hay
 // más «<» que los de las etiquetas: los textos van escapados.
 export const conPrefijo = (xml) => String(xml).trim().replace(/<(\/?)([A-Za-z])/g, '<$1sum1:$2');
-export function xmlEnvio({ emisor, registros }) {
+// incidencia: se reenvían registros que no pudieron mandarse antes por un
+// fallo técnico (caída de la AEAT o sin conexión); la Orden pide marcarlo.
+export function xmlEnvio({ emisor, registros, incidencia = false }) {
     return `<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:sum="${NS_LR}" xmlns:sum1="${NS_INFO}">
   <soapenv:Header/>
@@ -271,7 +273,9 @@ export function xmlEnvio({ emisor, registros }) {
           <sum1:NombreRazon>${esc(emisor.nombre)}</sum1:NombreRazon>
           <sum1:NIF>${esc(emisor.nif)}</sum1:NIF>
         </sum1:ObligadoEmision>
-      </sum:Cabecera>
+${incidencia ? `        <sum1:RemisionVoluntaria>
+          <sum1:Incidencia>S</sum1:Incidencia>
+        </sum1:RemisionVoluntaria>\n` : ''}      </sum:Cabecera>
 ${registros.map(x => `      <sum:RegistroFactura>\n${conPrefijo(x)}\n      </sum:RegistroFactura>`).join('\n')}
     </sum:RegFactuSistemaFacturacion>
   </soapenv:Body>
@@ -292,6 +296,9 @@ export function leerRespuesta(xml) {
     const texto = String(xml || '');
     const fallo = etiqueta(texto, 'Fault') != null
         ? (desescapar(etiqueta(texto, 'faultstring')) || 'Error SOAP sin detalle') : null;
+    // soapenv:Client = el envío está mal y hay que corregirlo antes de repetirlo;
+    // soapenv:Server = fallo de la AEAT, se puede reintentar tal cual.
+    const falloCliente = fallo != null && /Client/i.test(etiqueta(texto, 'faultcode') || '');
     const estadoEnvio = etiqueta(texto, 'EstadoEnvio');
     const espera = Number(etiqueta(texto, 'TiempoEsperaEnvio'));
     const lineas = [];
@@ -310,7 +317,7 @@ export function leerRespuesta(xml) {
         });
     }
     return {
-        fallo, estadoEnvio, lineas,
+        fallo, falloCliente, estadoEnvio, lineas,
         csv: etiqueta(texto, 'CSV'),
         tiempoEspera: Number.isFinite(espera) && espera > 0 ? espera : 60,
     };

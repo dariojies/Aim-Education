@@ -9855,9 +9855,11 @@ async function registrarFactura(client, { recibo, receptor, descripcion, base, c
         nifEmisor: fila.nif_emisor, nombreEmisor: EMPRESA_TICKET.nombre, numSerie, fechaExpedicion: fechaExp,
         tipoFactura: fila.tipo_factura, descripcion: (descripcion || 'Servicios y material del club').slice(0, 500),
         receptorNombre: receptor?.nombre || null, receptorNif: receptor?.nif || null,
-        // Marca de "factura sin identificación del destinatario": la AEAT solo la
-        // admite en F2 y R5, y es la que evita el tope de 3.000 € (error 1150).
-        sinDestinatario: ['F2', 'R5'].includes(tipoFactura),
+        // Sin la marca FacturaSinIdentifDestinatarioArt61d (#654): lo único que
+        // hace es saltarse el control de la AEAT de que una simplificada no pase
+        // de 3.000 €, y el TPV ya no deja emitir una simplificada por encima del
+        // tope. Ponerla en todas era decir algo que no es.
+        sinDestinatario: false,
         desglose, cuotaTotal: cuota, importeTotal: total,
         huellaAnterior: ant?.huella_aeat || null, anteriorNif: ant?.nif_emisor || null,
         anteriorNumSerie: ant?.num_serie || null, anteriorFecha: ant ? verifactu.fechaAEAT(ant.fecha) : null,
@@ -9940,6 +9942,7 @@ async function cargarAjustesVerifactu() {
             entorno: v.entorno === 'produccion' ? 'produccion' : 'pruebas',
             envioAutomatico: v.envioAutomatico !== false,
             sif,
+            declaracion: v.declaracion || {},
         };
     } catch (e) { console.error('[verifactu ajustes]', e.message); }
     return AJUSTES_VERIFACTU;
@@ -9990,6 +9993,13 @@ app.put('/api/admin/billing/verifactu', authenticateSession, requireAdmin, requi
             version: String(v.sif?.version || SOFTWARE_FACTURACION.version).slice(0, 20),
             instalacion: String(v.sif?.instalacion || 'AIM-01').slice(0, 60),
         },
+        // Fecha, lugar y dirección del productor para la declaración responsable.
+        declaracion: {
+            fecha: /^\d{4}-\d{2}-\d{2}$/.test(String(v.declaracion?.fecha || '')) ? v.declaracion.fecha : null,
+            lugar: String(v.declaracion?.lugar || '').slice(0, 120) || null,
+            direccion: String(v.declaracion?.direccion || '').slice(0, 300) || null,
+            firmante: String(v.declaracion?.firmante || '').slice(0, 120) || null,
+        },
     };
     try {
         await pool.query(
@@ -10025,9 +10035,14 @@ async function enviarRegistrosVerifactu({ forzar = false } = {}) {
              ORDER BY id LIMIT 1000`, [AJUSTES_VERIFACTU.entorno]);
         if (!pend.rowCount) return { enviados: 0, motivo: 'no hay nada pendiente' };
         const ids = pend.rows.map(x => x.id);
+        // Si alguno ya intentó salir y la AEAT no respondió o estaba caída, el
+        // envío va marcado como «Incidencia» (art. 16.4 de la Orden HAC/1177/2024).
+        const incidencia = (await pool.query(
+            `SELECT 1 FROM aim_factura_registro WHERE id = ANY($1::int[])
+               AND (aeat_respuesta LIKE 'Sin respuesta de la AEAT%' OR aeat_respuesta LIKE 'Envío no admitido (HTTP 5%') LIMIT 1`, [ids])).rowCount > 0;
         const sobre = verifactu.xmlEnvio({
             emisor: { nombre: EMPRESA_TICKET.nombre, nif: EMPRESA_TICKET.nif },
-            registros: pend.rows.map(x => x.xml),
+            registros: pend.rows.map(x => x.xml), incidencia,
         });
         const { Agent } = await import('undici');
         const agente = new Agent({
@@ -10053,7 +10068,10 @@ async function enviarRegistrosVerifactu({ forzar = false } = {}) {
         if (res.fallo || !res.estadoEnvio) {
             // El envío entero no se ha admitido (estructura, certificado, cabecera…):
             // ningún registro ha llegado. Siguen en cola, con el motivo a la vista.
-            const motivo = `Envío no admitido (HTTP ${status}): ${res.fallo || texto.slice(0, 600)}`;
+            // Si es culpa del envío (soapenv:Client), repetirlo igual no sirve:
+            // se espera una hora (o a que se corrija) en vez de insistir cada minuto.
+            if (res.falloCliente) proximoEnvioVerifactu = Date.now() + 60 * 60_000;
+            const motivo = `Envío no admitido (HTTP ${status}${res.falloCliente ? ', hay que corregirlo' : ''}): ${res.fallo || texto.slice(0, 600)}`;
             await pool.query(`UPDATE aim_factura_registro SET aeat_respuesta = $2 WHERE id = ANY($1::int[])`, [ids, motivo.slice(0, 4000)]);
             await pool.query(`INSERT INTO aim_factura_eventos (tipo, detalle) VALUES ('envio_no_admitido', $1)`, [motivo.slice(0, 1000)]);
             return { enviados: 0, error: motivo.slice(0, 400) };
@@ -10092,6 +10110,52 @@ async function enviarRegistrosVerifactu({ forzar = false } = {}) {
         return { enviados: 0, error: e.message };
     } finally { envioVerifactuEnCurso = false; }
 }
+
+// La declaración responsable del sistema (#654): tiene que estar en el propio
+// sistema, legible y a mano, y poder sacarse en papel o PDF (art. 15.3 de la
+// Orden HAC/1177/2024). El productor es quien figura en «SistemaInformatico»
+// de los registros. Una por versión: si cambia la versión, se vuelve a firmar.
+app.get('/api/admin/billing/verifactu/declaracion', authenticateSession, requireAdmin, (req, res) => {
+    const sif = AJUSTES_VERIFACTU.sif;
+    const d = AJUSTES_VERIFACTU.declaracion || {};
+    const e = (v) => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const direccion = d.direccion || `${EMPRESA_TICKET.direccion}, ${EMPRESA_TICKET.cp}, España`;
+    const fecha = d.fecha ? new Date(`${d.fecha}T12:00:00`).toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' }) : null;
+    const fila = (t, v) => `<tr><th>${t}</th><td>${v}</td></tr>`;
+    res.set('Cache-Control', 'no-store');
+    res.type('html').send(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">
+<title>Declaración responsable · ${e(sif.nombre)} ${e(sif.version)}</title>
+<style>
+  body { font-family: Georgia, 'Times New Roman', serif; max-width: 760px; margin: 40px auto; padding: 0 24px; color: #111; line-height: 1.5; }
+  h1 { font-size: 20px; text-align: center; letter-spacing: .02em; }
+  table { width: 100%; border-collapse: collapse; margin: 18px 0; }
+  th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid #ddd; font-size: 14px; }
+  th { width: 44%; font-weight: normal; color: #444; }
+  .pend { color: #b45309; font-style: italic; }
+  .firma { margin-top: 36px; font-size: 14px; }
+  .nota { margin-top: 28px; font-size: 12px; color: #555; }
+  @media print { .noimp { display: none; } body { margin: 0 auto; } }
+</style></head><body>
+<p class="noimp" style="text-align:right"><button onclick="window.print()">Imprimir o guardar en PDF</button></p>
+<h1>DECLARACIÓN RESPONSABLE DEL SISTEMA INFORMÁTICO DE FACTURACIÓN</h1>
+<table>
+${fila('a) Nombre del sistema informático', e(sif.nombre))}
+${fila('b) Código identificador del sistema informático', e(sif.id))}
+${fila('c) Identificador completo de la versión', e(sif.version))}
+${fila('d) Componentes, hardware y software, y funcionalidades', 'Aplicación web propia que se usa desde el navegador (servidor Node.js alojado en Heroku y base de datos PostgreSQL), con impresora de tickets opcional. Funcionalidades: cobro en el punto de venta (TPV) y pago en línea; expedición de facturas completas, simplificadas y rectificativas por series; generación de los registros de facturación de alta encadenados con huella SHA-256; código QR tributario en cada factura; remisión automática de los registros a la AEAT en la modalidad VERI*FACTU; consulta del estado de cada remisión y libro registro de facturas expedidas.')}
+${fila('e) Tipo de funcionamiento', 'Solo puede funcionar exclusivamente como sistema VERI*FACTU: <b>Sí</b>')}
+${fila('f) Uso por varios obligados tributarios', 'Permite ser usado por varios obligados tributarios: <b>No</b>. Se usa para un único obligado tributario.')}
+${fila('g) Tipos de firma utilizados (modalidad NO VERI*FACTU)', 'No aplica: el sistema solo funciona como VERI*FACTU.')}
+${fila('h) Razón social del productor', e(sif.nombreRazon))}
+${fila('i) NIF del productor', e(sif.nif))}
+${fila('j) Dirección postal completa de contacto del productor', e(direccion))}
+</table>
+<p><b>k)</b> El productor declara que este sistema informático de facturación, en la versión indicada, cumple con lo dispuesto en el artículo 29.2.j) de la Ley 58/2003, de 17 de diciembre, General Tributaria; en el Reglamento que establece los requisitos que deben adoptar los sistemas y programas informáticos o electrónicos que soporten los procesos de facturación de empresarios y profesionales, y la estandarización de formatos de los registros de facturación, aprobado por el Real Decreto 1007/2023, de 5 de diciembre; en la Orden HAC/1177/2024, de 17 de octubre; y en las especificaciones técnicas publicadas en la sede electrónica de la Agencia Estatal de Administración Tributaria.</p>
+<p class="firma"><b>l)</b> En ${d.lugar ? e(d.lugar) : '<span class="pend">[lugar pendiente]</span>'}, España, a ${fecha ? e(fecha) : '<span class="pend">[fecha pendiente]</span>'}.</p>
+${d.firmante ? `<p class="firma">Por ${e(sif.nombreRazon)}: ${e(d.firmante)}</p>` : ''}
+<p class="nota">Anexo. Contacto: ${e(EMPRESA_TICKET.email)} · ${e(EMPRESA_TICKET.tel)} · ${e(EMPRESA_TICKET.web)}. Los registros de facturación identifican este sistema con el nombre «${e(sif.nombre)}», el código «${e(sif.id)}», la versión «${e(sif.version)}» y el número de instalación «${e(sif.instalacion)}».</p>
+</body></html>`);
+});
 
 app.post('/api/admin/billing/verifactu/enviar', authenticateSession, requireAdmin, requireRol('secretaria'), async (req, res) => {
     try {

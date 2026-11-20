@@ -212,6 +212,33 @@ export default function BillingAjustes({ showToast }) {
             </button>
           </div>
 
+          <div style={{ display: 'grid', gap: 8, background: 'var(--bg-3)', borderRadius: 10, padding: '10px 12px' }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <b style={{ fontSize: 13 }}>Declaración responsable</b>
+              <span style={{ fontSize: 12, color: vf.declaracion?.fecha && vf.declaracion?.lugar ? 'var(--teal)' : 'var(--orange)', fontWeight: 700 }}>
+                {vf.declaracion?.fecha && vf.declaracion?.lugar ? `✓ firmada (versión ${vf.sif?.version})` : '⚠ falta la fecha y el lugar'}
+              </span>
+              <div style={{ flex: 1 }} />
+              <a className="btn btn-sm btn-outline" href="/api/admin/billing/verifactu/declaracion" target="_blank" rel="noopener noreferrer">Ver e imprimir</a>
+            </div>
+            <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
+              La exige la ley para un programa de facturación propio y tiene que poder consultarse aquí. La firma quien representa a {vf.sif?.nombreRazon || 'la sociedad'}, sin firma electrónica. Si cambia la versión del sistema, se vuelve a firmar.
+            </p>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', fontSize: 12 }}>
+              <label>Fecha <input type="date" defaultValue={vf.declaracion?.fecha || ''} id="vf-decl-fecha" /></label>
+              <label>Lugar <input defaultValue={vf.declaracion?.lugar || ''} id="vf-decl-lugar" placeholder="Algeciras" /></label>
+              <label>Firma <input defaultValue={vf.declaracion?.firmante || ''} id="vf-decl-firmante" placeholder="Nombre de quien firma" /></label>
+              <button className="btn btn-sm btn-primary" disabled={guardandoVf} onClick={() => guardarVf({
+                declaracion: {
+                  ...(vf.declaracion || {}),
+                  fecha: document.getElementById('vf-decl-fecha').value || null,
+                  lugar: document.getElementById('vf-decl-lugar').value.trim() || null,
+                  firmante: document.getElementById('vf-decl-firmante').value.trim() || null,
+                },
+              })}>Guardar</button>
+            </div>
+          </div>
+
           {vf.ultimas?.length > 0 && (
             <div style={{ display: 'grid', gap: 3 }}>
               <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--ink-2)' }}>Últimos registros</div>
