@@ -261,8 +261,71 @@ function Proponer({ d, inicial, onCerrar, onHecho }) {
 
 // ── Colegios ──
 const COLEGIO_VACIO = { nombre: '', contacto: '', email: '', telefono: '', direccion: '', notas: '', activo: true };
+// Importar colegios de un Excel: primero se ve lo que hará; luego se importa.
+function Importar({ onCerrar, onHecho }) {
+  const [archivo, setArchivo] = useState(null);
+  const [vista, setVista] = useState(null);
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState('');
+  async function subir(f, ver) {
+    setCargando(true); setError('');
+    try {
+      const r = await fetch(`/api/admin/colegios/importar${ver ? '?vista=1' : ''}`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/octet-stream' }, body: f });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || 'No se ha podido leer.');
+      if (ver) setVista(d); else onHecho(d);
+    } catch (e) { setError(e.message); } finally { setCargando(false); }
+  }
+  const ETIQ = { nuevo: ['nuevo', 'var(--teal)'], completa: ['ya está: se completan sus datos', 'var(--purple)'], igual: ['ya está, igual', 'var(--ink-3)'], repetido: ['repetido en el archivo', 'var(--orange)'] };
+  return (
+    <Ventana titulo="Importar colegios de un Excel" onCerrar={onCerrar} ancho={860}>
+      <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-2)' }}>
+        Un Excel (.xlsx) o un CSV con una fila de títulos: <b>Nombre</b> y, si las tiene, <b>Dirección</b>, <b>Teléfono</b>, <b>Email</b> (o Correo), Contacto y Notas.
+        Los colegios que ya estén no se repiten: solo se les rellena lo que tengan vacío. Antes de importar, ves lo que se va a hacer.
+      </p>
+      <input type="file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={cargando}
+        onChange={e => { const f = e.target.files?.[0]; setArchivo(f || null); setVista(null); if (f) subir(f, true); }} />
+      {cargando && <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-3)' }}>Leyendo…</p>}
+      {error && <p role="alert" style={{ ...aviso('--orange'), margin: 0 }}>{error}</p>}
+      {vista && (
+        <>
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 13 }}>
+            <span><b style={{ color: 'var(--teal)' }}>{vista.nuevos}</b> nuevos</span>
+            <span><b style={{ color: 'var(--purple)' }}>{vista.completados}</b> ya estaban (se completan)</span>
+            <span><b>{vista.iguales}</b> ya estaban igual</span>
+            {vista.repetidos > 0 && <span><b style={{ color: 'var(--orange)' }}>{vista.repetidos}</b> repetidos en el archivo (se usa el primero)</span>}
+          </div>
+          <div style={{ maxHeight: 380, overflow: 'auto', border: '1px solid var(--line)', borderRadius: 10 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead><tr style={{ position: 'sticky', top: 0, background: 'var(--bg-3)' }}>
+                {['Colegio', 'Dirección', 'Teléfono', 'Correo', ''].map(t => <th key={t} style={{ textAlign: 'left', padding: '6px 8px' }}>{t}</th>)}
+              </tr></thead>
+              <tbody>{vista.filas.map((f, i) => (
+                <tr key={i} style={{ borderTop: '1px solid var(--line)', opacity: ['igual', 'repetido'].includes(f.estado) ? 0.6 : 1 }}>
+                  <td style={{ padding: '6px 8px', fontWeight: 700 }}>{f.nombre}{f.avisos?.length > 0 && <div style={{ fontWeight: 400, color: 'var(--orange)' }}>{f.avisos.join(' · ')}</div>}</td>
+                  <td style={{ padding: '6px 8px' }}>{f.direccion || '—'}</td>
+                  <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>{f.telefono || '—'}</td>
+                  <td style={{ padding: '6px 8px' }}>{f.email || '—'}</td>
+                  <td style={{ padding: '6px 8px', whiteSpace: 'nowrap', color: ETIQ[f.estado]?.[1], fontWeight: 700 }}>{ETIQ[f.estado]?.[0]}{f.completa?.length ? ` (${f.completa.join(', ')})` : ''}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <button type="button" className="btn btn-outline btn-sm" onClick={onCerrar}>Cancelar</button>
+            <button type="button" className="btn btn-primary btn-sm" disabled={cargando || !(vista.nuevos + vista.completados)} onClick={() => subir(archivo, false)}>
+              {cargando ? 'Importando…' : `Importar ${vista.nuevos} ${vista.nuevos === 1 ? 'colegio' : 'colegios'}${vista.completados ? ` y completar ${vista.completados}` : ''}`}
+            </button>
+          </div>
+        </>
+      )}
+    </Ventana>
+  );
+}
+
 function Colegios({ d, recargar, showToast, onProponer }) {
   const [editar, setEditar] = useState(null);
+  const [importar, setImportar] = useState(false);
   const [buscar, setBuscar] = useState('');
   const lista = d.colegios.filter(c => !buscar || `${c.nombre} ${c.contacto} ${c.email}`.toLowerCase().includes(buscar.toLowerCase()));
 
@@ -297,8 +360,10 @@ function Colegios({ d, recargar, showToast, onProponer }) {
           <I.Search /><input placeholder="Buscar colegio…" value={buscar} onChange={e => setBuscar(e.target.value)} />
         </div>
         <div style={{ flex: 1 }} />
+        <button type="button" className="btn btn-outline btn-sm" onClick={() => setImportar(true)}>Importar Excel</button>
         <button type="button" className="btn btn-primary btn-sm" onClick={() => setEditar({ ...COLEGIO_VACIO })}><I.Plus /> Nuevo colegio</button>
       </div>
+      {importar && <Importar onCerrar={() => setImportar(false)} onHecho={r => { setImportar(false); recargar(); showToast?.(`${r.nuevos} ${r.nuevos === 1 ? 'colegio importado' : 'colegios importados'}${r.completados ? ` y ${r.completados} completados` : ''}.`); }} />}
       {!lista.length && <p style={{ color: 'var(--ink-3)', fontSize: 14 }}>{d.colegios.length ? 'Ninguno con esa búsqueda.' : 'Aún no hay colegios. Da de alta el primero y mándale su enlace.'}</p>}
       <div style={{ display: 'grid', gap: 10 }}>
         {lista.map(c => (

@@ -25,6 +25,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import express from 'express';
 import crypto from 'crypto';
+import ExcelJS from 'exceljs';
 
 export async function crearTablasColegios(client) {
     await client.query(`
@@ -103,6 +104,79 @@ const fallo = (res, err) => {
 };
 const txt = (v, n) => { const t = String(v ?? '').trim().slice(0, n); return t || null; };
 const ES_CORREO = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
+
+// ── Importar colegios de un Excel (o CSV) ──
+// Las columnas se buscan por su título, en cualquier orden y en cualquier fila
+// (los listados suelen traer filas vacías arriba, o el título repetido en cada
+// página): Nombre, Dirección, Teléfono, Email/Correo y, si están, Contacto y
+// Notas. Las filas sin nombre (huecos, correos sueltos) se saltan.
+const normTxt = (v) => String(v ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+const COLUMNAS = {
+    nombre: ['nombre', 'centro', 'colegio', 'nombredelcentro', 'denominacion', 'nombrecentro'],
+    direccion: ['direccion', 'domicilio', 'direccionpostal'],
+    telefono: ['telefono', 'telefonos', 'tlf', 'tfno', 'tel', 'movil'],
+    email: ['email', 'correo', 'correoelectronico', 'mail', 'emails'],
+    contacto: ['contacto', 'personadecontacto', 'director', 'directora', 'responsable'],
+    notas: ['notas', 'observaciones', 'comentarios'],
+};
+const columnaDe = (t) => { const k = normTxt(t).replace(/[^a-z]/g, ''); return Object.keys(COLUMNAS).find(c => COLUMNAS[c].includes(k)) || null; };
+// Las filas del archivo, como listas de textos.
+async function filasDeArchivo(buf) {
+    if (!Buffer.isBuffer(buf) || !buf.length) corta(400, 'No ha llegado el archivo.');
+    if (buf[0] === 0xD0 && buf[1] === 0xCF) corta(400, 'Es un Excel antiguo (.xls): ábrelo y guárdalo como .xlsx, y súbelo otra vez.');
+    if (buf[0] === 0x50 && buf[1] === 0x4B) {
+        const libro = new ExcelJS.Workbook();
+        try { await libro.xlsx.load(buf); } catch { corta(400, 'No se puede leer ese Excel.'); }
+        const filas = [];
+        libro.eachSheet(hoja => hoja.eachRow({ includeEmpty: false }, fila => {
+            const v = [];
+            for (let i = 1; i <= fila.cellCount; i++) v.push(String(fila.getCell(i).text ?? '').trim());
+            filas.push(v);
+        }));
+        return filas;
+    }
+    // CSV (o texto con tabuladores): el separador, el que más salga en la primera línea.
+    const texto = buf.toString('utf8').replace(/^\uFEFF/, '');
+    const primera = texto.split(/\r?\n/)[0] || '';
+    const sep = [';', ',', '\t'].sort((a, b) => primera.split(b).length - primera.split(a).length)[0];
+    const filas = []; let fila = [], campo = '', comillas = false;
+    for (let i = 0; i < texto.length; i++) {
+        const ch = texto[i];
+        if (comillas) { if (ch === '"' && texto[i + 1] === '"') { campo += '"'; i++; } else if (ch === '"') comillas = false; else campo += ch; }
+        else if (ch === '"') comillas = true;
+        else if (ch === sep) { fila.push(campo.trim()); campo = ''; }
+        else if (ch === '\n' || ch === '\r') { if (ch === '\r' && texto[i + 1] === '\n') i++; fila.push(campo.trim()); filas.push(fila); fila = []; campo = ''; }
+        else campo += ch;
+    }
+    if (campo || fila.length) { fila.push(campo.trim()); filas.push(fila); }
+    return filas;
+}
+function colegiosDeFilas(filas) {
+    let mapa = null; const out = [];
+    for (const f of filas) {
+        const cols = f.map(columnaDe);
+        // Una fila de títulos: la que tiene «Nombre» y alguna columna más que se reconoce.
+        if (cols.includes('nombre') && cols.filter(Boolean).length >= 2) { mapa = cols; continue; }
+        if (!mapa) continue;
+        const d = {};
+        mapa.forEach((c, i) => { if (c && f[i] && !d[c]) d[c] = f[i]; });
+        const nombre = String(d.nombre || '').replace(/\s+/g, ' ').trim();
+        if (!nombre || ES_CORREO.test(nombre)) continue;
+        const correos = String(d.email || '').toLowerCase().split(/[\s;,/]+/).filter(Boolean);
+        const email = correos.find(e => ES_CORREO.test(e)) || null;
+        out.push({
+            nombre: nombre.slice(0, 160),
+            direccion: txt(String(d.direccion || '').replace(/\s+/g, ' '), 255),
+            telefono: txt(String(d.telefono || '').replace(/\s+/g, ' '), 40),
+            email: email ? email.slice(0, 200) : null,
+            contacto: txt(d.contacto, 160), notas: txt(d.notas, 4000),
+            correoMalo: correos.length > 0 && !email ? d.email : null,
+        });
+    }
+    return out;
+}
+// Para reconocer el mismo colegio aunque se escriba distinto (mayúsculas, acentos, puntos).
+const claveColegio = (n) => normTxt(n).replace(/[^a-z0-9]+/g, ' ').trim();
 const ES_HORA = /^([01]\d|2[0-3]):[0-5]\d$/;
 const ES_FECHA = /^\d{4}-\d{2}-\d{2}$/;
 const aMin = (h) => { const [a, b] = String(h).split(':').map(Number); return a * 60 + b; };
@@ -390,6 +464,51 @@ export function crearColegios({ pool, authenticateSession, requireSeccion, urlPu
             if (!r.rowCount) corta(404, 'Ese colegio no existe.');
             res.json({ success: true });
         } catch (err) { fallo(res, err); }
+    });
+    // Importar de un Excel: con ?vista=1 solo dice lo que haría, sin guardar nada.
+    // Los colegios que ya están (por el nombre) no se repiten: solo se les
+    // rellenan los datos que tengan vacíos; lo que ya tienen no se toca.
+    router.post('/api/admin/colegios/importar', ...gestion, express.raw({ type: () => true, limit: '10mb' }), async (req, res) => {
+        const vista = req.query.vista === '1';
+        const client = await pool.connect();
+        try {
+            const leidos = colegiosDeFilas(await filasDeArchivo(req.body));
+            if (!leidos.length) corta(400, 'No encuentro colegios en ese archivo: hace falta una fila con los títulos de las columnas (Nombre, y Dirección, Teléfono, Email…).');
+            if (leidos.length > 2000) corta(400, 'Son demasiadas filas (más de 2.000).');
+            const hay = (await client.query(`SELECT id, nombre, contacto, email, telefono, direccion, notas FROM aim_colegios`)).rows;
+            const porClave = new Map(hay.map(c => [claveColegio(c.nombre), c]));
+            const vistos = new Set(), correos = new Map();
+            const filas = leidos.map(c => {
+                const k = claveColegio(c.nombre);
+                const avisos = [];
+                if (c.correoMalo) avisos.push(`correo no válido («${String(c.correoMalo).slice(0, 60)}»): va sin correo`);
+                if (c.email) { const otro = correos.get(c.email); if (otro) avisos.push(`mismo correo que ${otro}`); else correos.set(c.email, c.nombre); }
+                if (vistos.has(k)) return { ...c, estado: 'repetido', avisos };
+                vistos.add(k);
+                const ya = porClave.get(k);
+                if (!ya) return { ...c, estado: 'nuevo', avisos };
+                const completa = ['contacto', 'email', 'telefono', 'direccion', 'notas'].filter(x => c[x] && !ya[x]);
+                return { ...c, estado: completa.length ? 'completa' : 'igual', completa, id: ya.id, avisos };
+            });
+            const cuenta = (e) => filas.filter(f => f.estado === e).length;
+            if (!vista) {
+                await client.query('BEGIN');
+                for (const f of filas) {
+                    if (f.estado === 'nuevo') {
+                        await client.query(
+                            `INSERT INTO aim_colegios (nombre, contacto, email, telefono, direccion, notas, token, creado_por) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+                            [f.nombre, f.contacto, f.email, f.telefono, f.direccion, f.notas, crypto.randomBytes(24).toString('base64url'), req.userSession.userId]);
+                    } else if (f.estado === 'completa') {
+                        await client.query(
+                            `UPDATE aim_colegios SET contacto = COALESCE(NULLIF(contacto, ''), $2), email = COALESCE(NULLIF(email, ''), $3), telefono = COALESCE(NULLIF(telefono, ''), $4),
+                                    direccion = COALESCE(NULLIF(direccion, ''), $5), notas = COALESCE(NULLIF(notas, ''), $6), updated_at = NOW() WHERE id = $1`,
+                            [f.id, f.contacto, f.email, f.telefono, f.direccion, f.notas]);
+                    }
+                }
+                await client.query('COMMIT');
+            }
+            res.json({ vista, filas: filas.map(({ correoMalo, ...f }) => f), nuevos: cuenta('nuevo'), completados: cuenta('completa'), iguales: cuenta('igual'), repetidos: cuenta('repetido') });
+        } catch (err) { if (!vista) await client.query('ROLLBACK').catch(() => {}); fallo(res, err); } finally { client.release(); }
     });
     // Un enlace nuevo (el viejo deja de valer): por si se ha pasado a quien no era.
     router.post('/api/admin/colegios/:id(\\d+)/enlace-nuevo', ...gestion, async (req, res) => {
