@@ -133,7 +133,8 @@ export function PasswordProvisional({ persona, onCerrar, showToast }) {
           <>
             <p className="sub" style={{ margin: '0 0 12px' }}>Apúntala o imprime la carta: después ya no se puede volver a ver.</p>
             <div style={{ background: 'var(--bg-3)', borderRadius: 12, padding: 14, display: 'grid', gap: 6, fontSize: 14, marginBottom: 12 }}>
-              <div><span style={{ color: 'var(--ink-3)' }}>Usuario: </span><b>{hecho.usuario || 'su usuario o su teléfono'}</b></div>
+              <div><span style={{ color: 'var(--ink-3)' }}>Usuario: </span><b>{hecho.usuario || 'su usuario o su teléfono'}</b>
+                {hecho.nombreUsuario && hecho.nombreUsuario !== hecho.usuario && <span style={{ color: 'var(--ink-3)' }}> (o también <b style={{ color: 'var(--ink)' }}>{hecho.nombreUsuario}</b>)</span>}</div>
               <div><span style={{ color: 'var(--ink-3)' }}>Contraseña: </span><b style={{ fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 16 }}>{hecho.password}</b></div>
             </div>
             {hecho.google && <p style={{ ...aviso('--teal'), margin: '0 0 12px' }}>Cuenta de Google {hecho.google === 'creada' ? 'creada' : 'actualizada'} con la misma contraseña.</p>}

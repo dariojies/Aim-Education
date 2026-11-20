@@ -2812,6 +2812,35 @@ async function usuarioLibre(nombre, apellidos) {
     }
     return `${base}.${crypto.randomBytes(3).toString('hex')}`;
 }
+// Que tenga un nombre de usuario de verdad con el que entrar. Learning Dungeon
+// rellena los que faltan con «Learning Dungeon_xxxxxxxx» (con espacio: no sirve
+// para entrar ni se enseña). Con correo del club, la parte de antes de la @
+// (manuel.castaneda); si no, nombre.apellido (como al darle de alta sin correo).
+// Devuelve el que queda. LD también deja entrar con él (en minúsculas). Solo se
+// cambia el de relleno de LD (o si no hay): uno escrito a mano, aunque lleve
+// espacios («abel coca»), puede ser con el que entra y se respeta.
+const usuarioValido = (u) => !!u && !/^Learning Dungeon_/.test(u);
+async function asegurarUsuario(userId) {
+    const u = (await pool.query(`SELECT name, surname, email, username FROM users WHERE user_id = $1`, [userId])).rows[0];
+    if (!u) return null;
+    if (usuarioValido(u.username)) return u.username;
+    const email = String(u.email || '').toLowerCase();
+    const delCorreo = !esCorreoInterno(email) && email.includes('@')
+        ? email.split('@')[0].normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9._-]+/g, '').replace(/^[._-]+|[._-]+$/g, '') : '';
+    for (let intento = 0; intento < 3; intento++) {
+        let nuevo = null;
+        if (delCorreo.length >= 3 && intento === 0) {
+            const r = await pool.query(`SELECT 1 FROM users WHERE LOWER(username) = $1 OR LOWER(email) = $2`, [delCorreo, `${delCorreo}@${DOMINIO_SIN_CORREO}`]);
+            if (!r.rowCount) nuevo = delCorreo;
+        }
+        nuevo = nuevo || await usuarioLibre(u.name, u.surname);
+        try {
+            await pool.query(`UPDATE users SET username = $1 WHERE user_id = $2`, [nuevo, userId]);
+            return nuevo;
+        } catch (e) { if (e.code !== '23505') throw e; }   // lo ha cogido otro a la vez: otro intento
+    }
+    return null;
+}
 const soloDigitos = (t) => {
     let d = String(t || '').replace(/\D/g, '');
     if (d.startsWith('0034')) d = d.slice(4); else if (d.startsWith('34') && d.length === 11) d = d.slice(2);
@@ -3096,6 +3125,8 @@ function puedePonerPassword(rolActor, u) {
 }
 const passwordValida = (p) => typeof p === 'string' && p.length >= 8 && p.length <= 200;
 async function ponerPasswordProvisional(userId, password) {
+    // Sin usuario de verdad, se le pone uno: así sale en su ficha y puede entrar con él.
+    await asegurarUsuario(userId).catch(e => console.error('[usuario]', e.message));
     const hash = await bcrypt.hash(password, 12);
     await pool.query(`UPDATE users SET password = $1, requires_password_change = true WHERE user_id = $2`, [hash, userId]);
     // Los enlaces de «poner contraseña» que tuviera pedidos ya no valen, y fuera
@@ -3122,7 +3153,8 @@ app.post('/api/admin/usuarios/:id/password-provisional', authenticateSession, re
             catch (e) { errorGoogle = e.message; }
         }
         await ponerPasswordProvisional(u.user_id, password);
-        res.json({ success: true, password, usuario: correoVisible(u.email) || null, google, errorGoogle });
+        const nombreUsuario = (await pool.query(`SELECT username FROM users WHERE user_id = $1`, [u.user_id])).rows[0]?.username || null;
+        res.json({ success: true, password, usuario: correoVisible(u.email) || nombreUsuario, nombreUsuario: usuarioValido(nombreUsuario) ? nombreUsuario : null, google, errorGoogle });
     } catch (err) {
         console.error('[contraseña provisional]', err.message);
         res.status(500).json({ error: 'No se ha podido poner la contraseña.' });
@@ -3876,6 +3908,7 @@ app.put('/api/users/:id', authenticateSession, requirePermiso('editarAlumnos'), 
         const antes = (await pool.query(`SELECT LOWER(email) AS email FROM users WHERE user_id = $1`, [id])).rows[0]?.email;
         if (antes !== emailLower) return res.status(403).json({ error: `Un correo @${dominioCorreo()} da acceso a ese buzón: solo lo puede poner la dirección.` });
     }
+    if (emailLower) await asegurarUsuario(id).catch(e => console.error('[usuario]', e.message));
     if (!emailLower) {
         const act = await pool.query(`SELECT email, username FROM users WHERE user_id = $1`, [id]);
         const a = act.rows[0];
