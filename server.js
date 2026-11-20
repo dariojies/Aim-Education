@@ -2815,7 +2815,8 @@ async function usuarioLibre(nombre, apellidos) {
 // Que tenga un nombre de usuario de verdad con el que entrar. Learning Dungeon
 // rellena los que faltan con «Learning Dungeon_xxxxxxxx» (con espacio: no sirve
 // para entrar ni se enseña). Con correo del club, la parte de antes de la @
-// (manuel.castaneda); si no, nombre.apellido (como al darle de alta sin correo).
+// (manuel.castaneda); si no (o con un correo personal), nombre.apellido, como al
+// darle de alta sin correo.
 // Devuelve el que queda. LD también deja entrar con él (en minúsculas). Solo se
 // cambia el de relleno de LD (o si no hay): uno escrito a mano, aunque lleve
 // espacios («abel coca»), puede ser con el que entra y se respeta.
@@ -2825,7 +2826,7 @@ async function asegurarUsuario(userId) {
     if (!u) return null;
     if (usuarioValido(u.username)) return u.username;
     const email = String(u.email || '').toLowerCase();
-    const delCorreo = !esCorreoInterno(email) && email.includes('@')
+    const delCorreo = esDelDominio(email)
         ? email.split('@')[0].normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9._-]+/g, '').replace(/^[._-]+|[._-]+$/g, '') : '';
     for (let intento = 0; intento < 3; intento++) {
         let nuevo = null;
