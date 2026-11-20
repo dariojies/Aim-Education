@@ -2806,39 +2806,38 @@ if (mailTransporter) {
     };
 }
 
-// Un nombre de usuario sencillo y único (ana.garcia, ana.garcia2…) para quien se
-// da de alta sin correo: con él entra en la web.
-const limpiaUsuario = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '');
-async function usuarioLibre(nombre, apellidos) {
-    const base = [limpiaUsuario(nombre), limpiaUsuario(String(apellidos || '').split(' ')[0])].filter(Boolean).join('.') || 'usuario';
-    for (let i = 1; i < 500; i++) {
-        const u = i === 1 ? base : `${base}${i}`;
-        const r = await pool.query(`SELECT 1 FROM users WHERE LOWER(username) = $1 OR LOWER(email) = $2`, [u, `${u}@${DOMINIO_SIN_CORREO}`]);
-        if (!r.rowCount) return u;
+// El nombre de usuario, como lo hace Learning Dungeon (así es el mismo en las dos
+// apps): las 2 primeras letras del nombre, las 2 del primer apellido ('al' si no
+// hay) y el día y el mes del cumpleaños (juma0509; '0000' sin cumpleaños), sin
+// acentos y en minúsculas. Si ya existe, 4 cifras al azar detrás, como en LD.
+// Con él se entra en las dos apps (en LD se puede cambiar luego).
+const sinAcentosMin = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+async function usuarioLibre(nombre, apellidos, cumple) {
+    const n = sinAcentosMin(String(nombre || '').trim().split(/\s+/)[0]).substring(0, 2);
+    const a = String(apellidos || '').trim() ? sinAcentosMin(String(apellidos).trim().split(/\s+/)[0]).substring(0, 2) : 'al';
+    const f = cumple instanceof Date && !Number.isNaN(cumple.getTime())
+        ? `${cumple.getFullYear()}-${String(cumple.getMonth() + 1).padStart(2, '0')}-${String(cumple.getDate()).padStart(2, '0')}`
+        : String(cumple || '').slice(0, 10);
+    const base = `${n}${a}${/^\d{4}-\d{2}-\d{2}$/.test(f) ? f.slice(8, 10) + f.slice(5, 7) : '0000'}`;
+    const libre = async (u) => !(await pool.query(`SELECT 1 FROM users WHERE LOWER(username) = $1 OR LOWER(email) = $2`, [u, `${u}@${DOMINIO_SIN_CORREO}`])).rowCount;
+    if (await libre(base)) return base;
+    for (let i = 0; i < 50; i++) {
+        const u = `${base}${Math.floor(1000 + Math.random() * 9000)}`;
+        if (await libre(u)) return u;
     }
-    return `${base}.${crypto.randomBytes(3).toString('hex')}`;
+    return `${base}${crypto.randomBytes(3).toString('hex')}`;
 }
-// Que tenga un nombre de usuario con el que entrar. El que ya tenga se respeta
-// siempre, también los de Learning Dungeon («Learning Dungeon_ba37362c», con su
-// espacio): son su usuario de allí y con él se entra también en la web. Solo a
-// quien no tiene ninguno se le pone: con correo del club, la parte de antes de
-// la @ (manuel.castaneda); si no, nombre.apellido, como al darle de alta sin
-// correo. Devuelve el que queda.
-const usuarioValido = (u) => !!u && String(u).trim() !== '';
+// Que tenga un nombre de usuario con el que entrar. Learning Dungeon rellena los
+// que faltan con «Learning Dungeon_xxxxxxxx» (no es un usuario de verdad): a esos
+// y a quien no tiene, se le pone uno como lo haría LD (usuarioLibre). Uno de
+// verdad no se toca nunca. Devuelve el que queda.
+const usuarioValido = (u) => !!u && String(u).trim() !== '' && !/^Learning Dungeon_/.test(u);
 async function asegurarUsuario(userId) {
-    const u = (await pool.query(`SELECT name, surname, email, username FROM users WHERE user_id = $1`, [userId])).rows[0];
+    const u = (await pool.query(`SELECT name, surname, birthday, username FROM users WHERE user_id = $1`, [userId])).rows[0];
     if (!u) return null;
     if (usuarioValido(u.username)) return u.username;
-    const email = String(u.email || '').toLowerCase();
-    const delCorreo = esDelDominio(email)
-        ? email.split('@')[0].normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9._-]+/g, '').replace(/^[._-]+|[._-]+$/g, '') : '';
     for (let intento = 0; intento < 3; intento++) {
-        let nuevo = null;
-        if (delCorreo.length >= 3 && intento === 0) {
-            const r = await pool.query(`SELECT 1 FROM users WHERE LOWER(username) = $1 OR LOWER(email) = $2`, [delCorreo, `${delCorreo}@${DOMINIO_SIN_CORREO}`]);
-            if (!r.rowCount) nuevo = delCorreo;
-        }
-        nuevo = nuevo || await usuarioLibre(u.name, u.surname);
+        const nuevo = await usuarioLibre(u.name, u.surname, u.birthday);
         try {
             await pool.query(`UPDATE users SET username = $1 WHERE user_id = $2`, [nuevo, userId]);
             return nuevo;
@@ -3797,9 +3796,9 @@ app.post('/api/users', authenticateSession, requirePermiso('editarAlumnos'), asy
     // forma de contactar ni de que entre.
     if (!firstName?.trim()) return res.status(400).json({ error: 'El nombre es obligatorio.' });
     if (!email?.trim() && !phone?.trim()) return res.status(400).json({ error: 'Pon al menos el correo o el teléfono.' });
-    let usuarioNuevo = null;
-    if (!email?.trim()) usuarioNuevo = await usuarioLibre(firstName, lastName);
-    const emailLower = usuarioNuevo ? `${usuarioNuevo}@${DOMINIO_SIN_CORREO}` : email.toLowerCase().trim();
+    // Todas con su usuario, como en Learning Dungeon; sin correo, entra con él.
+    const usuarioNuevo = await usuarioLibre(firstName, lastName, birthday);
+    const emailLower = email?.trim() ? email.toLowerCase().trim() : `${usuarioNuevo}@${DOMINIO_SIN_CORREO}`;
 
     // Qué rango se le pone. Subir a alguien a secretaría, dirección o equipo IT
     // es cosa de la dirección: si no, cualquiera con acceso al panel podría
@@ -3913,7 +3912,8 @@ app.put('/api/users/:id', authenticateSession, requirePermiso('editarAlumnos'), 
         const antes = (await pool.query(`SELECT LOWER(email) AS email FROM users WHERE user_id = $1`, [id])).rows[0]?.email;
         if (antes !== emailLower) return res.status(403).json({ error: `Un correo @${dominioCorreo()} da acceso a ese buzón: solo lo puede poner la dirección.` });
     }
-    if (emailLower) await asegurarUsuario(id).catch(e => console.error('[usuario]', e.message));
+    // Que tenga un usuario de verdad (el relleno de LD no cuenta), con correo o sin él.
+    await asegurarUsuario(id).catch(e => console.error('[usuario]', e.message));
     if (!emailLower) {
         const act = await pool.query(`SELECT email, username FROM users WHERE user_id = $1`, [id]);
         const a = act.rows[0];
@@ -3921,7 +3921,7 @@ app.put('/api/users/:id', authenticateSession, requirePermiso('editarAlumnos'), 
         else {
             // El correo interno necesita un usuario sin espacios; el que tenga
             // (el de Learning Dungeon, con espacio) se queda: es con el que entra.
-            const u = a?.username && !/\s/.test(a.username) ? a.username.toLowerCase() : await usuarioLibre(firstName, lastName);
+            const u = usuarioValido(a?.username) && !/\s/.test(a.username) ? a.username.toLowerCase() : await usuarioLibre(firstName, lastName, birthday);
             emailLower = `${u}@${DOMINIO_SIN_CORREO}`;
             if (!usuarioValido(a?.username)) await pool.query(`UPDATE users SET username = $1 WHERE user_id = $2`, [u, id]);
         }
