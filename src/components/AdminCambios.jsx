@@ -12,9 +12,11 @@ import { novedadesDe, tituloDe } from '../novedades.js';
 // mano; secretaría y dirección lo leen (el servidor lo comprueba). Solo personal.
 // Se enseña como un historial por días: cada publicación con sus «Novedades»
 // (redactadas de los commits, src/novedades.js) y, al pie, sus tickets y sus
-// commits, plegados. Las otras apps (Learning Dungeon, Brickslab, KidsNGrow,
-// Aim Training) salen en cada día en su subapartado, con su color, y arriba se
-// puede elegir qué app ver.
+// commits, plegados. Todas las apps van en la misma línea de cada día, por
+// orden de hora, y en «Todas las apps» cada publicación lleva la etiqueta de su
+// app con su color (Learning Dungeon, Brickslab, KidsNGrow, Aim Training y Aim
+// Education). Arriba se puede elegir qué app ver. Una publicación que repite el
+// mismo commit sin nada nuevo (volver a desplegar lo mismo) no se enseña.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const PRINCIPAL = 'Aim Education';
@@ -167,9 +169,12 @@ export default function AdminCambios({ showToast }) {
     </form>
   );
 
-  // Las entradas, por días.
+  // Las entradas, por días. Fuera las que repiten el mismo commit de la misma
+  // app sin nada nuevo (volver a desplegar lo mismo): no aportan y parecían vacías.
+  const sinRepetidas = lista.filter((e, i) => !(e.origen === 'deploy' && !e.titulo && !e.texto && !e.tickets.length
+    && !novedadesDe(e.commits).length && lista.slice(i + 1).some(o => appDe(o) === appDe(e) && o.commit && o.commit === e.commit)));
   const dias = [];
-  for (const e of lista) {
+  for (const e of sinRepetidas) {
     const k = fmtFecha(e.publicado);
     if (dias[dias.length - 1]?.k !== k) dias.push({ k, fecha: e.publicado, entradas: [] });
     dias[dias.length - 1].entradas.push(e);
@@ -192,7 +197,7 @@ export default function AdminCambios({ showToast }) {
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12, color: 'var(--ink-3)', minHeight: 30 }}>
             <span style={{ fontWeight: 800, color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums' }}>{fmtHora(e.publicado)}</span>
             {manual && <span style={chip('var(--teal)')}>Nota a mano</span>}
-            {e.app && <span style={chip(color)}>{e.app}</span>}
+            {!manual && (e.app || verApp === 'todas') && <span style={chip(e.app ? color : 'var(--purple)')}>{appDe(e)}</span>}
             {e.release && <span style={chip('var(--ink-3)')}>v{e.release}</span>}
             <div style={{ flex: 1 }} />
             {puede && !enEdicion && (
@@ -303,7 +308,7 @@ export default function AdminCambios({ showToast }) {
   return (
     <div style={{ display: 'grid', gap: 18, maxWidth: 860 }}>
       <p style={{ margin: 0, fontSize: 14, color: 'var(--ink-3)', lineHeight: 1.5 }}>
-        Cada vez que se publica la web, aquí queda lo nuevo: qué cambia y qué tickets resuelve. Lo de las otras apps sale aparte, en su subapartado de cada día.
+        Cada vez que se publica la web, aquí queda lo nuevo: qué cambia y qué tickets resuelve. Lo de las otras apps va en el mismo día, por orden de hora, con la etiqueta de su app.
       </p>
       {appsConEntradas.length > 1 && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} role="group" aria-label="Qué app ver">
@@ -339,29 +344,10 @@ export default function AdminCambios({ showToast }) {
           <h2 style={{ margin: 0, fontSize: 13.5, fontWeight: 800, color: 'var(--ink)', display: 'flex', gap: 8, alignItems: 'baseline' }}>
             {etiquetaDia(d.fecha)}
           </h2>
-          {(() => {
-            const principales = d.entradas.filter(e => !e.app);
-            const otras = [...new Set(d.entradas.filter(e => e.app).map(e => e.app))];
-            const linea = (lista) => (
-              <div style={{ position: 'relative', display: 'grid', gap: 14, paddingLeft: 28 }}>
-                <span aria-hidden="true" style={{ position: 'absolute', left: 6, top: 8, bottom: 8, width: 2, borderRadius: 2, background: 'var(--line)' }} />
-                {lista.map(tarjeta)}
-              </div>
-            );
-            return (
-              <>
-                {principales.length > 0 && linea(principales)}
-                {otras.map(a => (
-                  <div key={a} style={{ display: 'grid', gap: 10, marginLeft: principales.length ? 28 : 0 }}>
-                    <h3 style={{ margin: 0, fontSize: 12, fontWeight: 800, letterSpacing: '.05em', textTransform: 'uppercase', color: legible(COLOR_APP[a] || 'var(--ink-3)'), display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 3, background: COLOR_APP[a] || 'var(--ink-3)' }} />{a}
-                    </h3>
-                    {linea(d.entradas.filter(e => e.app === a))}
-                  </div>
-                ))}
-              </>
-            );
-          })()}
+          <div style={{ position: 'relative', display: 'grid', gap: 14, paddingLeft: 28 }}>
+            <span aria-hidden="true" style={{ position: 'absolute', left: 6, top: 8, bottom: 8, width: 2, borderRadius: 2, background: 'var(--line)' }} />
+            {d.entradas.map(tarjeta)}
+          </div>
         </section>
       ))}
     </div>
