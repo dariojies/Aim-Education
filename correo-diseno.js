@@ -1045,14 +1045,28 @@ export const CORREOS_SISTEMA = {
     ticket_resuelto: {
         grupo: 'familias', nombre: 'Soporte: tu consulta está resuelta', cuando: 'Cuando se resuelve o se cierra un ticket, a quien lo abrió (familia o personal), si no es quien lo cierra.',
         asunto: 'Resuelto: {asunto}',
-        variables: { nombre: { que: 'Su nombre', ejemplo: 'Lucía' }, numero: { que: 'Número', ejemplo: '366' }, asunto: { que: 'Asunto', ejemplo: 'No puedo ver los recibos' }, estado: { que: 'Resuelto o cerrado', ejemplo: 'resuelto' }, quien: { que: 'Quién lo resuelve', ejemplo: 'Juan Manuel' }, enlace: { que: 'Enlace', ejemplo: 'https://www.aimeducation.es/dashboard/soporte' } },
-        automaticos: {},
+        variables: { nombre: { que: 'Su nombre', ejemplo: 'Lucía' }, numero: { que: 'Referencia', ejemplo: 'AE-366' }, asunto: { que: 'Asunto', ejemplo: 'No puedo ver los recibos' }, estado: { que: 'Resuelto o cerrado', ejemplo: 'resuelto' }, quien: { que: 'Quién lo resuelve', ejemplo: 'Juan Manuel' }, enlace: { que: 'Enlace', ejemplo: 'https://www.aimeducation.es/dashboard/soporte' } },
+        // La encuesta de un clic: cinco caras, cada una un enlace (solo a las familias).
+        automaticos: { valorar: { nombre: 'La encuesta («¿Qué tal te hemos atendido?»)', ejemplo: '<p><b>¿Qué tal te hemos atendido?</b></p><p style="font-size:28px">😞 🙁 😐 🙂 😄</p>' } },
         obligatorio: [],
         diseno: () => d([
             T('Hola {nombre},'),
             T('Tu consulta **«{asunto}»** ({numero}) se ha **{estado}**.'),
             T('Si necesitas algo más, escríbenos en ella y la volvemos a mirar.'),
             BTN([{ texto: 'Ver la consulta', url: '{enlace}', fondo: '', color: '#ffffff' }]),
+            AUTO('valorar'),
+        ]),
+    },
+    ticket_plazo: {
+        grupo: 'personal', nombre: 'Soporte: un ticket se acerca a su plazo o lo ha pasado', cuando: 'Cuando un ticket de una familia, de Learning Dungeon o de una guardería está a punto de pasar (o ha pasado) el plazo de primera respuesta o de resolución de su prioridad. A sus encargados (o al Equipo IT si no tiene). Una vez por aviso.',
+        asunto: '{que}: ticket {numero} · {asunto}',
+        variables: { nombre: { que: 'Su nombre', ejemplo: 'Juan Manuel' }, que: { que: 'Qué pasa', ejemplo: 'Plazo de respuesta a punto de pasar' }, numero: { que: 'Referencia', ejemplo: 'AE-366' }, asunto: { que: 'Asunto', ejemplo: 'No puedo ver los recibos' }, situacion: { que: 'La explicación', ejemplo: 'tiene que tener una primera respuesta antes del 24/11 a las 14:30' }, enlace: { que: 'Enlace al ticket', ejemplo: 'https://www.aimeducation.es/admin/soporte/366' } },
+        automaticos: {},
+        obligatorio: [],
+        diseno: () => d([
+            T('Hola {nombre},'),
+            T('El ticket **{numero} · {asunto}** {situacion}.'),
+            BTN([{ texto: 'Abrir el ticket', url: '{enlace}', fondo: '', color: '#ffffff' }]),
         ]),
     },
     tickets_vencidos: {

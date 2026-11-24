@@ -608,6 +608,126 @@ async function initDb() {
             )
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS ix_ticket_historial ON aim_ticket_historial (ticket_id, created_at)`);
+        // Desde qué app se hizo un cambio que no pasa por la web (lo apunta el trigger de abajo).
+        await client.query(`ALTER TABLE aim_ticket_historial ADD COLUMN IF NOT EXISTS origen VARCHAR(40)`);
+
+        // ── Soporte: mejoras de noviembre de 2026 ──
+        // Los de la empresa, renumerados una vez: ASD-1, ASD-2… por orden de
+        // creación (antes llevaban el número compartido). La referencia de antes
+        // queda en el historial de cada uno. Se hace bloqueando su contador, así
+        // que un ticket que entre a la vez no se queda con un número repetido.
+        if (!(await client.query(`SELECT 1 FROM aim_ajustes WHERE clave = 'soporte_asd_renumerado'`)).rowCount) {
+            try {
+                await client.query('BEGIN');
+                await client.query(`SELECT ultimo FROM aim_ticket_contador WHERE espacio = 'empresa' FOR UPDATE`);
+                const viejos = (await client.query(
+                    `SELECT id, ref_numero, ROW_NUMBER() OVER (ORDER BY created_at, id)::int AS nuevo
+                     FROM tickets_registrosoporte WHERE espacio = 'empresa' ORDER BY created_at, id`)).rows;
+                // Primero a negativo, para no chocar con el índice único mientras se reparten.
+                await client.query(`UPDATE tickets_registrosoporte SET ref_numero = -ref_numero WHERE espacio = 'empresa'`);
+                for (const v of viejos) {
+                    await client.query(`UPDATE tickets_registrosoporte SET ref_numero = $2 WHERE id = $1`, [v.id, v.nuevo]);
+                    if (v.ref_numero !== v.nuevo) {
+                        await client.query(`INSERT INTO aim_ticket_historial (ticket_id, campo, antes, despues) VALUES ($1, 'referencia', $2, $3)`,
+                            [v.id, `ASD-${v.ref_numero}`, `ASD-${v.nuevo}`]);
+                    }
+                }
+                await client.query(`INSERT INTO aim_ticket_contador (espacio, ultimo) VALUES ('empresa', $1) ON CONFLICT (espacio) DO UPDATE SET ultimo = EXCLUDED.ultimo`, [viejos.length]);
+                await client.query(`INSERT INTO aim_ajustes (clave, valor, actualizado_at) VALUES ('soporte_asd_renumerado', $1::jsonb, NOW())`, [JSON.stringify({ cuantos: viejos.length, fecha: new Date().toISOString() })]);
+                await client.query('COMMIT');
+            } catch (e) { await client.query('ROLLBACK').catch(() => {}); console.error('[soporte] renumerar ASD:', e.message); }
+        }
+        // Nunca dos tickets con la misma referencia en el mismo apartado.
+        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS ux_tickets_referencia ON tickets_registrosoporte (espacio, ref_numero)`);
+        // Plazos (qué avisos se han mandado ya) y la encuesta de satisfacción.
+        await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS sla_avisos TEXT[] NOT NULL DEFAULT '{}'`);
+        await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS valoracion SMALLINT`);
+        await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS valoracion_nota TEXT`);
+        await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS valoracion_at TIMESTAMPTZ`);
+        // Índices para la lista por partes.
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_asignado ON tickets_registrosoporte (assigned_to)`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_asignados_extra ON tickets_registrosoporte USING GIN (asignados_extra)`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_resuelto ON tickets_registrosoporte (resolved_at)`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_creador ON tickets_registrosoporte (user_id)`);
+        // Búsqueda por trozos de palabra (pg_trgm): asunto, descripción y mensajes.
+        try {
+            await client.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm`);
+            await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_asunto_trgm ON tickets_registrosoporte USING GIN (subject gin_trgm_ops)`);
+            await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_desc_trgm ON tickets_registrosoporte USING GIN (description gin_trgm_ops)`);
+            await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_mensajes_trgm ON tickets_mensajes USING GIN (cuerpo gin_trgm_ops)`);
+        } catch (e) { console.error('[soporte] pg_trgm:', e.message); }
+        // Historial completo: lo que cambian las otras apps (Learning Dungeon,
+        // Brickslab, KidsNGrow…) sin pasar por la web queda apuntado igual, con
+        // la app de origen. Lo de la web ya lo apunta ella (con quién lo hizo).
+        // Si el apunte fallara, el cambio sigue adelante: el historial nunca
+        // puede romper a las otras apps.
+        await client.query(`
+            CREATE OR REPLACE FUNCTION aim_ticket_estado_nombre(s TEXT, e TEXT) RETURNS TEXT LANGUAGE sql IMMUTABLE AS $f$
+                SELECT CASE WHEN s = 'open' THEN CASE e WHEN 'en_curso' THEN 'En curso' WHEN 'esperando' THEN 'Esperando respuesta'
+                                                      WHEN 'espera_deploy' THEN 'Espera de deploy' WHEN 'pausa' THEN 'En pausa' ELSE 'Abierto' END
+                            WHEN s = 'resolved' THEN 'Resuelto' WHEN s = 'closed' THEN 'Cerrado' ELSE s END
+            $f$`);
+        await client.query(`
+            CREATE OR REPLACE FUNCTION aim_ticket_nombres(ids UUID[]) RETURNS TEXT LANGUAGE sql STABLE AS $f$
+                SELECT string_agg(TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))), ', ' ORDER BY a.o)
+                FROM unnest(ids) WITH ORDINALITY a(id, o) JOIN users u ON u.user_id = a.id
+            $f$`);
+        await client.query(`
+            CREATE OR REPLACE FUNCTION aim_ticket_auditoria() RETURNS trigger AS $f$
+            DECLARE
+                app TEXT := COALESCE(current_setting('application_name', true), '');
+                org TEXT;
+                prio TEXT[] := ARRAY['high', 'Alta', 'medium', 'Media', 'low', 'Baja'];
+            BEGIN
+                IF app LIKE 'aim-education%' THEN RETURN NEW; END IF;
+                org := CASE WHEN app LIKE 'learning-dungeon%' THEN 'Learning Dungeon' WHEN app LIKE 'brickslab%' THEN 'Brickslab'
+                            WHEN app LIKE 'kidsngrow%' THEN 'KidsNGrow' WHEN app LIKE 'aim-training%' THEN 'Aim Training'
+                            WHEN app = '' THEN 'otra conexión' ELSE left(app, 40) END;
+                BEGIN
+                    IF TG_OP = 'INSERT' THEN
+                        INSERT INTO aim_ticket_historial (ticket_id, campo, antes, despues, origen) VALUES (NEW.id, 'creado', NULL, 'Ticket abierto desde ' || org, org);
+                        RETURN NEW;
+                    END IF;
+                    IF NEW.status IS DISTINCT FROM OLD.status OR NEW.etapa IS DISTINCT FROM OLD.etapa THEN
+                        INSERT INTO aim_ticket_historial (ticket_id, campo, antes, despues, origen)
+                        VALUES (NEW.id, 'estado', aim_ticket_estado_nombre(OLD.status, OLD.etapa), aim_ticket_estado_nombre(NEW.status, NEW.etapa), org);
+                    END IF;
+                    IF NEW.priority IS DISTINCT FROM OLD.priority THEN
+                        INSERT INTO aim_ticket_historial (ticket_id, campo, antes, despues, origen)
+                        VALUES (NEW.id, 'prioridad', COALESCE(prio[array_position(prio, OLD.priority) + 1], OLD.priority), COALESCE(prio[array_position(prio, NEW.priority) + 1], NEW.priority), org);
+                    END IF;
+                    IF NEW.due_date IS DISTINCT FROM OLD.due_date THEN
+                        INSERT INTO aim_ticket_historial (ticket_id, campo, antes, despues, origen)
+                        VALUES (NEW.id, 'fecha límite', to_char(OLD.due_date, 'DD/MM/YYYY'), to_char(NEW.due_date, 'DD/MM/YYYY'), org);
+                    END IF;
+                    IF NEW.assigned_to IS DISTINCT FROM OLD.assigned_to OR NEW.asignados_extra IS DISTINCT FROM OLD.asignados_extra THEN
+                        INSERT INTO aim_ticket_historial (ticket_id, campo, antes, despues, origen)
+                        VALUES (NEW.id, 'encargados', aim_ticket_nombres(array_prepend(OLD.assigned_to, COALESCE(OLD.asignados_extra, '{}'))),
+                                aim_ticket_nombres(array_prepend(NEW.assigned_to, COALESCE(NEW.asignados_extra, '{}'))), org);
+                    END IF;
+                    IF NEW.app_label IS DISTINCT FROM OLD.app_label THEN
+                        INSERT INTO aim_ticket_historial (ticket_id, campo, antes, despues, origen)
+                        VALUES (NEW.id, 'apps', array_to_string(OLD.app_label, ', '), array_to_string(NEW.app_label, ', '), org);
+                    END IF;
+                    IF NEW.subject IS DISTINCT FROM OLD.subject THEN
+                        INSERT INTO aim_ticket_historial (ticket_id, campo, antes, despues, origen) VALUES (NEW.id, 'asunto', left(OLD.subject, 500), left(NEW.subject, 500), org);
+                    END IF;
+                    IF NEW.dev_response IS DISTINCT FROM OLD.dev_response THEN
+                        INSERT INTO aim_ticket_historial (ticket_id, campo, antes, despues, origen) VALUES (NEW.id, 'respuesta', left(OLD.dev_response, 500), left(NEW.dev_response, 500), org);
+                    END IF;
+                    IF NEW.categoria IS DISTINCT FROM OLD.categoria THEN
+                        INSERT INTO aim_ticket_historial (ticket_id, campo, antes, despues, origen) VALUES (NEW.id, 'categoría', OLD.categoria, NEW.categoria, org);
+                    END IF;
+                    IF NEW.espacio IS DISTINCT FROM OLD.espacio THEN
+                        INSERT INTO aim_ticket_historial (ticket_id, campo, antes, despues, origen) VALUES (NEW.id, 'apartado', OLD.espacio, NEW.espacio, org);
+                    END IF;
+                EXCEPTION WHEN OTHERS THEN
+                    RAISE WARNING 'aim_ticket_auditoria: %', SQLERRM;
+                END;
+                RETURN NEW;
+            END $f$ LANGUAGE plpgsql`);
+        await client.query(`DROP TRIGGER IF EXISTS tr_ticket_auditoria ON tickets_registrosoporte`);
+        await client.query(`CREATE TRIGGER tr_ticket_auditoria AFTER INSERT OR UPDATE ON tickets_registrosoporte FOR EACH ROW EXECUTE FUNCTION aim_ticket_auditoria()`);
         await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS dev_role VARCHAR(50) DEFAULT 'student'`);
 
         // Eventos y talleres del club (propio de aim-education).
@@ -5466,11 +5586,12 @@ async function ticketEnlazable(req, ticketId, coger, para = null) {
         catch { throw { httP: 400, msg: 'Ese ticket es de Aim Soluciones Digitales y esa persona no lleva esos tickets.' }; }
     }
     if (coger && !r.rows[0].assigned_to && !r.rows[0].asignados_extra?.length) {
-        await pool.query(
-            `UPDATE tickets_registrosoporte SET assigned_to = $1
+        const cogido = await pool.query(
+            `UPDATE tickets_registrosoporte SET assigned_to = $1, updated_at = NOW()
              WHERE id = $2 AND assigned_to IS NULL AND cardinality(asignados_extra) = 0`,
             [yo, id]
         );
+        if (cogido.rowCount) await anotarHistorial(pool, id, yo, [{ campo: 'encargados', antes: '—', despues: `${await nombresDe(pool, [yo])} (lo cogió desde una tarea)` }]);
     }
     return id;
 }
@@ -16537,6 +16658,71 @@ async function ticketDeEmpresa(id) {
     return r.rows[0]?.espacio === 'empresa';
 }
 const NOMBRE_ESPACIO = { aim: 'Aim Education', empresa: 'Aim Soluciones Digitales' };
+
+// «Espera de deploy» solo vale para lo que se publica y avisa de su deploy: la
+// web y las apps de Cambios. Lo demás (Artemis, Eventos, General, la empresa)
+// se quedaría esperando para siempre.
+const APPS_CON_DEPLOY = ['Aim Education', ...Object.values(APPS_CAMBIOS).map(a => a.etiqueta)];
+
+// Plazos por prioridad (horas): [primera respuesta, resolución], para cada
+// apartado. Solo cuentan para lo que abre alguien de fuera (una familia, un
+// usuario de Learning Dungeon, una guardería): las tareas internas ya tienen su
+// fecha límite. Y solo desde que existen (no se avisa de lo antiguo). Mientras
+// el ticket está esperando respuesta, en pausa o esperando el deploy, no se avisa.
+const PLAZOS_POR_DEFECTO = { high: [4, 24], medium: [24, 72], low: [48, 168] };
+let plazosCache = null;
+async function plazosSoporte() {
+    if (plazosCache && Date.now() - plazosCache.t < 60 * 1000) return plazosCache.v;
+    let v = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'soporte_plazos'`)).rows[0]?.valor;
+    if (!v?.desde) {
+        v = { desde: new Date().toISOString(), aim: PLAZOS_POR_DEFECTO, empresa: PLAZOS_POR_DEFECTO, ...(v || {}) };
+        await pool.query(`INSERT INTO aim_ajustes (clave, valor, actualizado_at) VALUES ('soporte_plazos', $1::jsonb, NOW())
+                          ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor WHERE aim_ajustes.valor->>'desde' IS NULL`, [JSON.stringify(v)]);
+        v = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'soporte_plazos'`)).rows[0].valor;
+    }
+    plazosCache = { t: Date.now(), v };
+    return v;
+}
+// created_at se guarda sin zona horaria (en la de la base de datos) y este
+// servidor va con la de Madrid: leído tal cual, un ticket parecería una hora más
+// viejo. Para los plazos, la hora de verdad la da la base de datos.
+const SQL_CREADO_REAL = (a) => `(${a}.created_at AT TIME ZONE current_setting('TimeZone'))`;
+// La primera respuesta: el primer mensaje de alguien de la web que no es quien lo abrió.
+const SQL_PRIMERA_RESPUESTA = (a) => `(SELECT MIN(m.created_at) FROM tickets_mensajes m
+    WHERE m.ticket_id = ${a}.id AND m.autor_id IS DISTINCT FROM ${a}.user_id AND EXISTS (SELECT 1 FROM users ux WHERE ux.user_id = m.autor_id))`;
+// Si a un ticket le cuentan plazos: de fuera (no del personal), desde que existen.
+const SQL_CON_PLAZO = (a) => `(${a}.created_at >= $PLAZOS_DESDE::timestamptz AND (
+    EXISTS (SELECT 1 FROM kng_tickets kp WHERE kp.ticket_id = ${a}.id)
+    OR EXISTS (SELECT 1 FROM users up WHERE up.user_id = ${a}.user_id AND NOT COALESCE(${SQL_ES_PERSONAL('up')}, false))))`;
+// Cómo va un ticket con sus plazos: { respuesta, resolucion } con { vence, pronto, pasado }.
+function estadoPlazos(t, plazos, ahora = Date.now()) {
+    const h = (plazos?.[t.espacio === 'empresa' ? 'empresa' : 'aim'] || PLAZOS_POR_DEFECTO)[t.priority] || PLAZOS_POR_DEFECTO[t.priority] || PLAZOS_POR_DEFECTO.medium;
+    const inicio = new Date(t.creado_real || t.created_at).getTime();
+    const uno = (horas, hecho) => {
+        if (hecho || !horas) return null;
+        const vence = inicio + horas * 3600e3;
+        const margen = Math.max(3600e3, horas * 3600e3 * 0.2);
+        return { vence: new Date(vence), pasado: ahora > vence, pronto: ahora <= vence && ahora > vence - margen };
+    };
+    return { respuesta: uno(h[0], !!t.primera_respuesta_at), resolucion: uno(h[1], t.status !== 'open') };
+}
+const fechaHoraCorta = (d) => new Date(d).toLocaleString('es-ES', { timeZone: 'Europe/Madrid', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' }).replace(',', ' a las');
+
+// La encuesta de satisfacción: cada ticket lleva su firma, así el enlace del
+// correo vale sin entrar y no sirve para otro ticket.
+async function firmaValorar(id) { return firmaPreferencias(await secretoPreferencias(), `valorar:${id}`); }
+const CARAS = ['😞', '🙁', '😐', '🙂', '😄'];
+const NOMBRE_NOTA = ['Muy mal', 'Mal', 'Regular', 'Bien', 'Muy bien'];
+async function bloqueValorar(id) {
+    const f = await firmaValorar(id);
+    const url = (n) => `${URL_PUBLICA_WEB}/api/support/valorar/${id}/${f}?n=${n}`;
+    return {
+        html: `<div style="text-align:center;padding:8px 0 4px"><p style="margin:0 0 8px;font-weight:700">¿Qué tal te hemos atendido?</p>
+               <div>${CARAS.map((c, i) => `<a href="${url(i + 1)}" title="${NOMBRE_NOTA[i]}" style="display:inline-block;margin:0 4px;font-size:30px;line-height:1;text-decoration:none">${c}</a>`).join('')}</div>
+               <p style="margin:6px 0 0;font-size:12px;color:#888">Un clic basta. Nos ayuda a mejorar.</p></div>`,
+        texto: `¿Qué tal te hemos atendido? Puntúa del 1 al 5:\n${CARAS.map((c, i) => `${i + 1} (${NOMBRE_NOTA[i]}): ${url(i + 1)}`).join('\n')}`,
+    };
+}
 // La referencia que se enseña: AE-123 o ASD-45 (la de siempre, #id, si no la hay).
 const refTicket = (t) => (t?.ref_numero ? `${t.espacio === 'empresa' ? 'ASD' : 'AE'}-${t.ref_numero}` : `#${t?.id}`);
 async function refDe(id, db = pool) {
@@ -16652,6 +16838,10 @@ async function aplicarCambiosTicket(cliente, id, c, userId) {
     }
     if (c.appLabel !== undefined) n.app_label = etiquetasDeEspacio(c.appLabel, p.espacio);
     if (c.recurrencia !== undefined) n.recurrencia = RECURRENCIAS.includes(c.recurrencia) ? c.recurrencia : null;
+    if (n.status === 'open' && n.etapa === 'espera_deploy' && p.etapa !== 'espera_deploy'
+        && !(n.app_label?.length ? n.app_label : ['Aim Education']).some(l => APPS_CON_DEPLOY.includes(l))) {
+        throw { httP: 400, msg: `«Espera de deploy» solo vale para lo que avisa de sus deploys (${APPS_CON_DEPLOY.join(', ')}): este se quedaría esperando para siempre. Márcalo como resuelto cuando esté publicado.` };
+    }
     const esFinal = ['resolved', 'closed'].includes(n.status);
     // Al resolver/cerrar uno recurrente se genera el siguiente y este deja de serlo.
     const generar = esFinal && c.status !== undefined && p.status === 'open' && !!n.recurrencia;
@@ -16868,12 +17058,24 @@ app.delete('/api/admin/cuentas-baja/:userId', authenticateSession, requireAdmin,
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Lo que ya está resuelto hace más de estos días no se carga de entrada: se pide
+// por partes («Ver resueltos más antiguos») o sale al buscarlo.
+const DIAS_TICKETS_RECIENTES = 60;
 app.get('/api/support', authenticateSession, async (req, res) => {
     if (!req.userSession.isSuperAdmin && !req.userSession.canAccessAdmin)
         return res.status(403).json({ error: 'Sin permisos.' });
     // Un instructor ve sus tickets y nada más, igual que cualquiera desde su
     // perfil: los de las familias y los del club no son asunto suyo.
     const soloMios = !permisos(req).soporteCompleto;
+    // Qué parte: la de siempre (abiertos y lo resuelto en los últimos días), los
+    // resueltos anteriores a una fecha (de 100 en 100) o unos concretos (?ids=).
+    const antes = req.query.antes && !Number.isNaN(Date.parse(req.query.antes)) ? new Date(req.query.antes).toISOString() : null;
+    const ids = req.query.ids ? String(req.query.ids).split(',').map(Number).filter(Number.isInteger).slice(0, 200) : null;
+    const cerradoEn = `COALESCE(s.resolved_at, s.updated_at, s.created_at)`;
+    const parte = ids ? `AND s.id = ANY($2::int[])`
+        : antes ? `AND s.status <> 'open' AND ${cerradoEn} < $2::timestamptz`
+        : `AND (s.status = 'open' OR ${cerradoEn} > NOW() - INTERVAL '${DIAS_TICKETS_RECIENTES} days')`;
+    const filtroQuien = `${soloMios ? 'AND (s.user_id = $1 OR s.assigned_to = $1 OR $1 = ANY(s.asignados_extra))' : 'AND $1::uuid IS NOT NULL'} ${sinEmpresaSi(req)}`;
     try {
         // Columnas explícitas a propósito: 'adjunto' guarda la imagen en base64 y con
         // s.* el listado entero se llevaría todas las capturas por delante.
@@ -16897,8 +17099,10 @@ app.get('/api/support', authenticateSession, async (req, res) => {
                      WHERE m.ticket_id = s.id AND m.autor_id IS DISTINCT FROM $1::uuid
                        AND m.created_at > COALESCE((SELECT v.visto_at FROM aim_avisos_vistos v WHERE v.user_id = $1::uuid AND v.clave = 'ticket:' || s.id),
                                                    NOW() - INTERVAL '7 days'))::int AS sin_leer,
-                   -- Primera respuesta: el primer mensaje de alguien que no es quien lo abrió.
-                   (SELECT MIN(m.created_at) FROM tickets_mensajes m WHERE m.ticket_id = s.id AND m.autor_id IS DISTINCT FROM s.user_id) AS primera_respuesta_at,
+                   -- Primera respuesta: el primer mensaje de alguien de la web que no es quien lo abrió.
+                   ${SQL_PRIMERA_RESPUESTA('s')} AS primera_respuesta_at,
+                   s.sla_avisos, s.valoracion, s.valoracion_nota, s.valoracion_at, ${SQL_CREADO_REAL('s')} AS creado_real,
+                   (kt.ticket_id IS NOT NULL OR (s.user_id IS NOT NULL AND u.user_id IS NOT NULL AND NOT COALESCE(${SQL_ES_PERSONAL('u')}, false))) AS de_fuera,
                    -- Todos los encargados, el principal primero.
                    COALESCE((SELECT json_agg(json_build_object('id', e.user_id, 'name', e.name, 'surname', e.surname) ORDER BY a.o)
                              FROM unnest(array_prepend(s.assigned_to, s.asignados_extra)) WITH ORDINALITY a(id, o)
@@ -16907,9 +17111,14 @@ app.get('/api/support', authenticateSession, async (req, res) => {
             LEFT JOIN users u ON s.user_id = u.user_id
             LEFT JOIN users assignee ON s.assigned_to = assignee.user_id
             LEFT JOIN kng_tickets kt ON kt.ticket_id = s.id
-            WHERE TRUE ${soloMios ? 'AND (s.user_id = $1 OR s.assigned_to = $1 OR $1 = ANY(s.asignados_extra))' : ''} ${sinEmpresaSi(req)}
-            ORDER BY s.created_at DESC
-        `, [req.userSession.userId]);
+            WHERE TRUE ${filtroQuien} ${parte}
+            ORDER BY ${antes ? `${cerradoEn} DESC LIMIT 100` : 's.created_at DESC'}
+        `, ids ? [req.userSession.userId, ids] : antes ? [req.userSession.userId, antes] : [req.userSession.userId]);
+        // Cuántos resueltos quedan fuera (para el botón de «más antiguos»).
+        const fuera = ids ? 0 : Number((await pool.query(
+            `SELECT COUNT(*)::int n FROM tickets_registrosoporte s WHERE s.status <> 'open' ${filtroQuien}
+               AND ${cerradoEn} ${antes ? '< $2::timestamptz' : `<= NOW() - INTERVAL '${DIAS_TICKETS_RECIENTES} days'`}`,
+            antes ? [req.userSession.userId, antes] : [req.userSession.userId])).rows[0].n) - (antes ? result.rowCount : 0);
         // Aim-Tul solo cambia assigned_to: si pone de principal a quien ya
         // estaba entre los demás, que no salga dos veces.
         for (const t of result.rows) {
@@ -16918,7 +17127,10 @@ app.get('/api/support', authenticateSession, async (req, res) => {
             t.ref = refTicket(t);
         }
         res.set('Cache-Control', 'no-store');
-        res.json({ success: true, tickets: result.rows, soloMios, diasParado: await diasParadoTicket(), empresa: !!permisos(req).soporteEmpresa });
+        res.json({
+            success: true, tickets: result.rows, soloMios, diasParado: await diasParadoTicket(), empresa: !!permisos(req).soporteEmpresa,
+            antiguos: Math.max(0, fuera), diasRecientes: DIAS_TICKETS_RECIENTES, plazos: await plazosSoporte(),
+        });
     } catch (err) {
         console.error('[SUPPORT] Fetch error:', err);
         res.status(500).json({ error: 'Error al obtener tickets.' });
@@ -16949,7 +17161,12 @@ async function avisosTrasCambio(req, id, r) {
         }).catch(() => {});
     }
     if (r.prev.status === 'open' && ['resolved', 'closed'].includes(r.nuevo.status)) {
-        avisarTicket('ticket_resuelto', await correosDePersonas([r.prev.user_id], { excluir: yo }), { ...vars, estado: r.nuevo.status === 'closed' ? 'cerrado' : 'resuelto' }, { sinFreno: true }).catch(() => {});
+        const para = await correosDePersonas([r.prev.user_id], { excluir: yo });
+        // La encuesta, solo a quien es de fuera (una familia, un usuario de LD).
+        const v = para.length && !para[0].personal ? await bloqueValorar(id) : null;
+        avisarTicket('ticket_resuelto', para, { ...vars, estado: r.nuevo.status === 'closed' ? 'cerrado' : 'resuelto' }, {
+            sinFreno: true, ...(v ? { automaticos: { valorar: v.html }, automaticosTexto: { valorar: v.texto } } : {}),
+        }).catch(() => {});
     }
 }
 
@@ -17177,11 +17394,11 @@ app.get('/api/support/:id/historial', authenticateSession, async (req, res) => {
     if (!Number.isInteger(id) || !(await puedeTocarTicket(req, id))) return res.status(403).json({ error: 'Sin permisos.' });
     try {
         const r = await pool.query(
-            `SELECT h.campo, h.antes, h.despues, h.created_at, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS quien
+            `SELECT h.campo, h.antes, h.despues, h.created_at, h.origen, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS quien
              FROM aim_ticket_historial h LEFT JOIN users u ON u.user_id = h.user_id
              WHERE h.ticket_id = $1 ORDER BY h.created_at DESC, h.id DESC LIMIT 200`, [id]);
         res.set('Cache-Control', 'no-store');
-        res.json({ historial: r.rows.map(x => ({ campo: x.campo, antes: x.antes, despues: x.despues, fecha: x.created_at, quien: x.quien || null })) });
+        res.json({ historial: r.rows.map(x => ({ campo: x.campo, antes: x.antes, despues: x.despues, fecha: x.created_at, quien: x.quien || null, origen: x.origen || null })) });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -17192,13 +17409,115 @@ app.get('/api/support/buscar', authenticateSession, async (req, res) => {
     if (q.length < 3) return res.json({ ids: [] });
     const soloMios = !permisos(req).soporteCompleto;
     try {
+        // En los mensajes y, de todos los tiempos, en el asunto y la descripción
+        // (lo resuelto hace mucho no está cargado en la pantalla). Con pg_trgm,
+        // estos ILIKE van por índice.
+        const quien = soloMios ? 'AND (s.user_id = $2 OR s.assigned_to = $2 OR $2 = ANY(s.asignados_extra))' : '';
+        const p = soloMios ? [q.replace(/[%_\\]/g, '\\$&'), req.userSession.userId] : [q.replace(/[%_\\]/g, '\\$&')];
         const r = await pool.query(
             `SELECT DISTINCT m.ticket_id FROM tickets_mensajes m JOIN tickets_registrosoporte s ON s.id = m.ticket_id
-             WHERE m.cuerpo ILIKE '%' || $1 || '%'
-               ${soloMios ? 'AND (s.user_id = $2 OR s.assigned_to = $2 OR $2 = ANY(s.asignados_extra))' : ''} ${sinEmpresaSi(req)}
-             LIMIT 300`, soloMios ? [q.replace(/[%_\\]/g, '\\$&'), req.userSession.userId] : [q.replace(/[%_\\]/g, '\\$&')]);
-        res.json({ ids: r.rows.map(x => x.ticket_id) });
+             WHERE m.cuerpo ILIKE '%' || $1 || '%' ${quien} ${sinEmpresaSi(req)}
+             LIMIT 300`, p);
+        const t = await pool.query(
+            `SELECT s.id FROM tickets_registrosoporte s
+             WHERE (s.subject ILIKE '%' || $1 || '%' OR s.description ILIKE '%' || $1 || '%') ${quien} ${sinEmpresaSi(req)}
+             ORDER BY s.created_at DESC LIMIT 300`, p);
+        res.json({ ids: r.rows.map(x => x.ticket_id), todos: [...new Set([...r.rows.map(x => x.ticket_id), ...t.rows.map(x => x.id)])] });
     } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// La encuesta del correo de «resuelto»: un clic en una cara la guarda (se
+// puede cambiar pinchando otra) y la página deja añadir un comentario.
+function paginaValorar(id, firma, n, { gracias = false } = {}) {
+    const caras = CARAS.map((c, i) => `<a href="/api/support/valorar/${id}/${firma}?n=${i + 1}" title="${NOMBRE_NOTA[i]}" style="display:inline-block;margin:0 3px;font-size:34px;text-decoration:none;opacity:${n === i + 1 ? 1 : 0.35}">${c}</a>`).join('');
+    const extra = `<div style="margin:16px 0 6px">${caras}</div>
+        ${gracias ? '<p style="color:#0a7d55;font-weight:700;margin:12px 0 0">¡Gracias por tu comentario!</p>' : `
+        <form method="post" action="/api/support/valorar/${id}/${firma}" style="margin-top:14px;text-align:left">
+          <input type="hidden" name="n" value="${n}">
+          <label style="font-size:14px;color:#444">¿Quieres contarnos algo más? (opcional)</label>
+          <textarea name="nota" rows="4" maxlength="1000" style="width:100%;box-sizing:border-box;margin-top:6px;padding:10px;border:1px solid #ddd;border-radius:10px;font:inherit"></textarea>
+          <button type="submit" style="margin-top:10px;width:100%;padding:12px;border:0;border-radius:999px;background:#5233A8;color:#fff;font-weight:700;font-size:15px;cursor:pointer">Enviar</button>
+        </form>`}`;
+    return paginaCorreo('¡Gracias por tu valoración!', `Has puntuado la atención con <b>${NOMBRE_NOTA[n - 1].toLowerCase()}</b>. Si quieres cambiarla, pincha otra cara.`, extra);
+}
+async function guardarValoracion(id, n, nota) {
+    const r = await pool.query(
+        `UPDATE tickets_registrosoporte SET valoracion = $2, valoracion_nota = COALESCE($3, valoracion_nota), valoracion_at = NOW()
+         WHERE id = $1 AND status IN ('resolved', 'closed') RETURNING id`, [id, n, nota]);
+    if (r.rowCount) await anotarHistorial(pool, id, null, [{ campo: 'valoración', antes: null, despues: `${n}/5 · ${NOMBRE_NOTA[n - 1]}${nota ? ` · «${nota.slice(0, 200)}»` : ''}` }]);
+    return r.rowCount > 0;
+}
+async function valorarDesdeCorreo(req, res) {
+    const id = Number(req.params.id), n = Number(req.body?.n ?? req.query.n);
+    const malo = (t) => res.status(400).type('html').send(paginaCorreo('Este enlace no vale', t));
+    if (!Number.isInteger(id) || !/^[A-Za-z0-9_-]{24}$/.test(req.params.firma || '')) return malo('Comprueba que lo has copiado entero.');
+    if (!crypto.timingSafeEqual(Buffer.from(await firmaValorar(id)), Buffer.from(req.params.firma))) return malo('Comprueba que lo has copiado entero.');
+    if (!(n >= 1 && n <= 5 && Number.isInteger(n))) return malo('Elige una de las caras del correo.');
+    const nota = req.method === 'POST' ? String(req.body?.nota || '').trim().slice(0, 1000) || null : null;
+    try {
+        if (!(await guardarValoracion(id, n, nota))) return res.status(409).type('html').send(paginaCorreo('Esta consulta está abierta', 'La volvimos a abrir: cuando esté resuelta te mandaremos otra vez la encuesta.'));
+        res.set('Cache-Control', 'no-store').type('html').send(paginaValorar(id, req.params.firma, n, { gracias: !!nota }));
+    } catch { res.status(500).type('html').send(paginaCorreo('No se ha podido guardar', 'Inténtalo de nuevo en un rato.')); }
+}
+app.get('/api/support/valorar/:id/:firma', valorarDesdeCorreo);
+app.post('/api/support/valorar/:id/:firma', valorarDesdeCorreo);
+// Desde «Mis consultas» (quien lo abrió, con su sesión).
+app.post('/api/support/:id/valoracion', authenticateSession, async (req, res) => {
+    const id = Number(req.params.id), n = Number(req.body?.n);
+    if (!Number.isInteger(id) || !(n >= 1 && n <= 5 && Number.isInteger(n))) return res.status(400).json({ error: 'Elige del 1 al 5.' });
+    try {
+        const t = (await pool.query(`SELECT user_id FROM tickets_registrosoporte WHERE id = $1`, [id])).rows[0];
+        if (!t || String(t.user_id) !== String(req.userSession.userId)) return res.status(403).json({ error: 'Solo la puede valorar quien la abrió.' });
+        if (!(await guardarValoracion(id, n, String(req.body?.nota || '').trim().slice(0, 1000) || null))) return res.status(409).json({ error: 'Se puede valorar cuando esté resuelta.' });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Los plazos de respuesta y resolución (horas por prioridad, en cada apartado).
+app.get('/api/support/plazos', authenticateSession, async (req, res) => {
+    if (!req.userSession.isSuperAdmin && !req.userSession.canAccessAdmin) return res.status(403).json({ error: 'Sin permisos.' });
+    try { res.json({ plazos: await plazosSoporte(), puedeEditar: !!permisos(req).soporteCompleto, empresa: !!permisos(req).soporteEmpresa }); }
+    catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.put('/api/support/plazos', authenticateSession, async (req, res) => {
+    if (!permisos(req).soporteCompleto || !req.userSession.canAccessAdmin) return res.status(403).json({ error: 'Los plazos los cambia quien lleva el soporte.' });
+    try {
+        const v = { ...(await plazosSoporte()) };
+        const limpiar = (x) => Object.fromEntries(['high', 'medium', 'low'].map(k => {
+            const [a, b] = Array.isArray(x?.[k]) ? x[k].map(Number) : [];
+            if (!(a > 0 && a <= 720 && b > 0 && b <= 2160 && b >= a)) throw { httP: 400, msg: 'Cada plazo, en horas: la respuesta entre 1 y 720, y la resolución, igual o mayor que la respuesta (máximo 2160).' };
+            return [k, [Math.round(a), Math.round(b)]];
+        }));
+        if (req.body?.aim) v.aim = limpiar(req.body.aim);
+        if (req.body?.empresa) {
+            if (!permisos(req).soporteEmpresa) return res.status(403).json({ error: 'Los de Aim Soluciones Digitales, solo el Equipo IT.' });
+            v.empresa = limpiar(req.body.empresa);
+        }
+        await pool.query(`UPDATE aim_ajustes SET valor = $1::jsonb, actualizado_at = NOW(), actualizado_por = $2 WHERE clave = 'soporte_plazos'`, [JSON.stringify(v), req.userSession.userId]);
+        plazosCache = null;
+        res.json({ success: true, plazos: v });
+    } catch (err) { if (err?.httP) return res.status(err.httP).json({ error: err.msg }); res.status(500).json({ error: err.message }); }
+});
+
+// Al escribir el asunto de un ticket nuevo: los parecidos de ese apartado
+// (abiertos o resueltos hace poco), por si ya está pedido.
+app.get('/api/support/parecidos', authenticateSession, async (req, res) => {
+    if (!req.userSession.isSuperAdmin && !req.userSession.canAccessAdmin) return res.status(403).json({ error: 'Sin permisos.' });
+    const q = String(req.query.q || '').trim().slice(0, 200);
+    const espacio = req.query.espacio === 'empresa' && permisos(req).soporteEmpresa ? 'empresa' : 'aim';
+    if (q.length < 4) return res.json({ tickets: [] });
+    const soloMios = !permisos(req).soporteCompleto;
+    try {
+        const r = await pool.query(
+            `SELECT s.id, s.espacio, s.ref_numero, s.subject, s.status, s.etapa,
+                    GREATEST(similarity(s.subject, $1), word_similarity($1, s.subject)) AS parecido
+             FROM tickets_registrosoporte s
+             WHERE s.espacio = $2 AND (s.status = 'open' OR COALESCE(s.resolved_at, s.updated_at) > NOW() - INTERVAL '30 days')
+               AND (s.subject % $1 OR $1 <% s.subject)
+               ${soloMios ? 'AND (s.user_id = $3 OR s.assigned_to = $3 OR $3 = ANY(s.asignados_extra))' : ''}
+             ORDER BY parecido DESC LIMIT 5`, soloMios ? [q, espacio, req.userSession.userId] : [q, espacio]);
+        res.json({ tickets: r.rows.filter(x => x.parecido >= 0.35).map(x => ({ id: x.id, ref: refTicket(x), asunto: x.subject, estado: nombreEstadoTicket(x.status, x.etapa) })) });
+    } catch (e) { console.error('[soporte] parecidos:', e.message); res.json({ tickets: [] }); } // sin pg_trgm, simplemente no hay sugerencias
 });
 
 // Resumen de cómo va el soporte en los últimos días (también va por correo cada semana).
@@ -17206,6 +17525,9 @@ async function resumenSoporte(dias = 7, espacio = null) {
     const parado = await diasParadoTicket();
     // Para cada consulta: solo los de ese espacio (sin espacio, todos).
     const de = (a) => (espacio === 'empresa' ? `AND ${SQL_TICKET_EMPRESA(a)}` : espacio === 'aim' ? `AND NOT ${SQL_TICKET_EMPRESA(a)}` : '');
+    const val = (await pool.query(
+        `SELECT COUNT(*)::int AS n, ROUND(AVG(valoracion)::numeric, 1)::float AS media
+         FROM tickets_registrosoporte WHERE valoracion IS NOT NULL AND valoracion_at > NOW() - $1 * INTERVAL '1 day' ${de('tickets_registrosoporte')}`, [dias])).rows[0];
     const [n, porPersona, porCategoria, parados] = await Promise.all([
         pool.query(
             `SELECT COUNT(*) FILTER (WHERE created_at > NOW() - $1 * INTERVAL '1 day')::int AS entraron,
@@ -17254,6 +17576,7 @@ async function resumenSoporte(dias = 7, espacio = null) {
         entraron: x.entraron, resueltos: x.resueltos, abiertos: x.abiertos, sinAsignar: x.sin_asignar,
         vencidos: x.vencidos, parados: x.parados, enPausa: x.en_pausa, esperaDeploy: x.espera_deploy,
         sinEncargado: { abiertos: x.abiertos_sin_encargado, resueltos: x.resueltos_sin_encargado }, horasResolver: h(x.horas_resolver), horasResponder: h(x.horas_responder),
+        valoracion: { n: val.n, media: val.media },
         porPersona: porPersona.rows.map(p => ({ id: p.user_id, nombre: p.nombre, abiertos: p.abiertos, vencidos: p.vencidos, resueltos: p.resueltos })),
         porCategoria: porCategoria.rows.map(c => ({ categoria: c.categoria, nombre: CATEGORIAS_TICKET[c.categoria] || 'Sin categoría', n: c.n })),
         listaParados: parados.rows.map(p => ({ id: p.id, asunto: p.subject, dias: p.dias })),
@@ -17347,14 +17670,20 @@ app.post('/api/support/:id/mensajes', authenticateSession, async (req, res) => {
             [req.params.id, canal, yo, cuerpo?.trim() || null,
              archivo || null, archivoNombre ? String(archivoNombre).slice(0, 255) : null, archivoMime || null]
         );
-        // Si estaba «Esperando respuesta» y contesta quien lo abrió, vuelve a estar por atender.
-        const antes = (await pool.query(`SELECT etapa, user_id FROM tickets_registrosoporte WHERE id = $1`, [req.params.id])).rows[0];
-        if (antes?.etapa === 'esperando' && String(antes.user_id) === String(yo) && canal === 'creador') {
+        // Si estaba «Esperando respuesta» y contesta quien lo abrió, vuelve a estar
+        // por atender; si estaba resuelto o cerrado, se reabre (como en KidsNGrow).
+        const antes = (await pool.query(`SELECT etapa, status, user_id FROM tickets_registrosoporte WHERE id = $1`, [req.params.id])).rows[0];
+        const esCreador = String(antes?.user_id) === String(yo) && canal === 'creador';
+        if (esCreador && antes.status !== 'open') {
+            await anotarHistorial(pool, req.params.id, yo, [{ campo: 'estado', antes: nombreEstadoTicket(antes.status, antes.etapa), despues: 'Abierto (ha vuelto a escribir)' }]);
+        } else if (esCreador && antes.etapa === 'esperando') {
             await anotarHistorial(pool, req.params.id, yo, [{ campo: 'estado', antes: 'Esperando respuesta', despues: 'Abierto (ha contestado)' }]);
         }
         const t = (await pool.query(
             `UPDATE tickets_registrosoporte SET updated_at = NOW(),
-                    etapa = CASE WHEN etapa = 'esperando' AND user_id = $2 AND $3 = 'creador' THEN NULL ELSE etapa END
+                    etapa = CASE WHEN user_id = $2 AND $3 = 'creador' AND (etapa = 'esperando' OR status <> 'open') THEN NULL ELSE etapa END,
+                    resolved_at = CASE WHEN user_id = $2 AND $3 = 'creador' THEN NULL ELSE resolved_at END,
+                    status = CASE WHEN user_id = $2 AND $3 = 'creador' THEN 'open' ELSE status END
              WHERE id = $1
              RETURNING id, user_id, subject, status, assigned_to, asignados_extra,
                        (SELECT ${SQL_ES_PERSONAL('u')} FROM users u WHERE u.user_id = tickets_registrosoporte.user_id) AS creador_personal`,
@@ -17420,7 +17749,7 @@ app.get('/api/support/mios', authenticateSession, async (req, res) => {
     try {
         const r = await pool.query(
             `SELECT s.id, s.subject, s.description, s.status, s.etapa, s.created_at, s.espacio, s.ref_numero,
-                    s.updated_at, s.resolved_at,
+                    s.updated_at, s.resolved_at, s.valoracion, s.valoracion_nota,
                     (s.adjunto IS NOT NULL) AS tiene_adjunto, s.adjunto_nombre, s.adjunto_mime,
                     (SELECT COUNT(*) FROM tickets_mensajes m WHERE m.ticket_id = s.id AND m.canal = 'creador')::int AS mensajes,
                     (SELECT COUNT(*) FROM tickets_mensajes m
@@ -17438,6 +17767,109 @@ app.get('/api/support/mios', authenticateSession, async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+
+// ── Plazos: avisar antes de que se pasen y cuando se pasan ─────────────────
+// A los encargados (o al Equipo IT si no tiene). Cada aviso, una sola vez: se
+// apunta en sla_avisos antes de mandarlo.
+let plazosEnCurso = false;
+async function vigilarPlazosTickets() {
+    if (plazosEnCurso) return;
+    plazosEnCurso = true;
+    try {
+        const pl = await plazosSoporte();
+        const r = await pool.query(
+            `SELECT s.id, s.espacio, s.ref_numero, s.subject, s.priority, s.status, s.created_at, ${SQL_CREADO_REAL('s')} AS creado_real,
+                    s.assigned_to, s.asignados_extra, s.sla_avisos, ${SQL_PRIMERA_RESPUESTA('s')} AS primera_respuesta_at
+             FROM tickets_registrosoporte s
+             WHERE s.status = 'open' AND COALESCE(s.etapa, '') NOT IN ('pausa', 'esperando', 'espera_deploy')
+               AND ${SQL_CON_PLAZO('s').replace('$PLAZOS_DESDE', '$1')}`, [pl.desde]);
+        const equipo = (await pool.query(`SELECT user_id FROM aim_rangos WHERE rango = 'equipo_it'`)).rows.map(x => x.user_id);
+        for (const t of r.rows) {
+            const e = estadoPlazos(t, pl);
+            const nuevos = [];
+            for (const tipo of ['respuesta', 'resolucion']) {
+                const x = e[tipo];
+                if (!x) continue;
+                const k = x.pasado ? `${tipo}_pasado` : x.pronto ? `${tipo}_pronto` : null;
+                if (k && !(t.sla_avisos || []).includes(k)) nuevos.push({ k, tipo, ...x });
+            }
+            if (!nuevos.length) continue;
+            const marcado = await pool.query(
+                `UPDATE tickets_registrosoporte SET sla_avisos = (SELECT ARRAY(SELECT DISTINCT unnest(sla_avisos || $2::text[]))) WHERE id = $1 AND NOT (sla_avisos @> $2::text[]) RETURNING id`,
+                [t.id, nuevos.map(x => x.k)]);
+            if (!marcado.rowCount || !mailTransporter) continue;
+            const encargados = [t.assigned_to, ...(t.asignados_extra || [])].filter(Boolean);
+            const para = await correosDePersonas(encargados.length ? encargados : equipo);
+            for (const x of nuevos) {
+                const que = x.tipo === 'respuesta'
+                    ? (x.pasado ? 'Plazo de respuesta pasado' : 'Plazo de respuesta a punto de pasar')
+                    : (x.pasado ? 'Plazo de resolución pasado' : 'Plazo de resolución a punto de pasar');
+                const situacion = x.tipo === 'respuesta'
+                    ? (x.pasado ? `ya ha pasado su plazo de primera respuesta (era el ${fechaHoraCorta(x.vence)}) y nadie le ha contestado` : `tiene que tener una primera respuesta antes del ${fechaHoraCorta(x.vence)}`)
+                    : (x.pasado ? `ya ha pasado su plazo de resolución (era el ${fechaHoraCorta(x.vence)})` : `tiene que estar resuelto antes del ${fechaHoraCorta(x.vence)}`);
+                await avisarTicket('ticket_plazo', para, { numero: refTicket(t), id: t.id, asunto: t.subject, que, situacion }, { sinFreno: true });
+            }
+        }
+    } catch (e) { console.error('[soporte] plazos:', e.message); }
+    finally { plazosEnCurso = false; }
+}
+
+// ── KidsNGrow: avisar al equipo de lo que escriben las guarderías ──────────
+// Las guarderías abren y contestan desde su app, que escribe directamente en
+// la base compartida; aquí se ve lo nuevo cada poco y se avisa como si lo
+// hubieran hecho desde la web: un ticket nuevo, al Equipo IT; un mensaje, a
+// sus encargados (o al Equipo IT si no tiene). Se apunta hasta dónde se ha
+// mirado; la primera vez, desde ahora (no se avisa de lo antiguo).
+let kngAvisosEnCurso = false;
+async function avisarTicketsKidsNGrow() {
+    if (kngAvisosEnCurso) return;
+    kngAvisosEnCurso = true;
+    try {
+        const marca = (await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'kng_avisos_soporte'`)).rows[0]?.valor;
+        const max = (await pool.query(
+            `SELECT COALESCE((SELECT MAX(ticket_id) FROM kng_tickets), 0)::int AS ticket, COALESCE((SELECT MAX(id) FROM tickets_mensajes), 0)::int AS mensaje`)).rows[0];
+        if (!marca) {
+            await pool.query(`INSERT INTO aim_ajustes (clave, valor, actualizado_at) VALUES ('kng_avisos_soporte', $1::jsonb, NOW()) ON CONFLICT (clave) DO NOTHING`, [JSON.stringify(max)]);
+            return;
+        }
+        // Primero se avanza la marca: si algo falla luego, no se repite el aviso.
+        const sigue = await pool.query(
+            `UPDATE aim_ajustes SET valor = $1::jsonb, actualizado_at = NOW() WHERE clave = 'kng_avisos_soporte' AND valor = $2::jsonb RETURNING clave`,
+            [JSON.stringify(max), JSON.stringify(marca)]);
+        if (!sigue.rowCount || !mailTransporter) return;
+        const equipo = (await pool.query(`SELECT user_id FROM aim_rangos WHERE rango = 'equipo_it'`)).rows.map(x => x.user_id);
+        const nuevos = (await pool.query(
+            `SELECT t.id, t.espacio, t.ref_numero, t.subject, t.description, t.assigned_to, t.asignados_extra, k.usuario_nombre, k.usuario_email, k.centro_nombre
+             FROM kng_tickets k JOIN tickets_registrosoporte t ON t.id = k.ticket_id
+             WHERE k.ticket_id > $1 AND k.ticket_id <= $2 ORDER BY k.ticket_id`, [marca.ticket || 0, max.ticket])).rows;
+        for (const t of nuevos) {
+            const para = (await correosDePersonas([t.assigned_to, ...(t.asignados_extra || [])].filter(Boolean).length ? [t.assigned_to, ...(t.asignados_extra || [])] : equipo)).map(p => p.email);
+            if (!para.length) continue;
+            const c = await correoSistema('aviso_ticket', {
+                numero: refTicket(t), apartado: NOMBRE_ESPACIO[t.espacio] || 'Aim Soluciones Digitales', asunto: t.subject,
+                autor: `${t.usuario_nombre || ''} (${t.centro_nombre || 'KidsNGrow'})`, email: t.usuario_email || '',
+            }, {
+                automaticos: { descripcion: `<div style="white-space:pre-wrap">${escHtml(String(t.description || '').slice(0, 3000))}</div>` },
+                automaticosTexto: { descripcion: `Descripción:\n${String(t.description || '').slice(0, 3000)}` },
+            }).catch(e => { if (!e.apagado) throw e; return null; });
+            if (c) await mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: para.join(', '), ...c }).catch(e => console.error('[soporte] kng ticket:', e.message));
+        }
+        // Mensajes de las guarderías (su autor es de kng_usuarios) en los tickets de siempre.
+        const mensajes = (await pool.query(
+            `SELECT m.id, m.ticket_id, m.cuerpo, t.espacio, t.ref_numero, t.subject, t.assigned_to, t.asignados_extra,
+                    TRIM(CONCAT(u.nombre, ' ', COALESCE(u.apellidos, ''))) AS quien
+             FROM tickets_mensajes m JOIN kng_usuarios u ON u.id = m.autor_id
+             JOIN tickets_registrosoporte t ON t.id = m.ticket_id
+             WHERE m.id > $1 AND m.id <= $2 AND m.canal = 'creador' ORDER BY m.id`,
+            [marca.mensaje || 0, max.mensaje])).rows;
+        for (const m of mensajes) {
+            const enc = [m.assigned_to, ...(m.asignados_extra || [])].filter(Boolean);
+            await avisarTicket('ticket_mensaje', await correosDePersonas(enc.length ? enc : equipo),
+                { numero: refTicket(m), id: m.ticket_id, asunto: m.subject, quien: m.quien || 'La guardería' }, textoMensaje(m.cuerpo));
+        }
+    } catch (e) { console.error('[soporte] avisos de KidsNGrow:', e.message); }
+    finally { kngAvisosEnCurso = false; }
+}
 
 // ── Avisos diarios y resumen semanal ────────────────────────────────────────
 // Cada mañana, a cada encargado, sus tickets vencidos y los que llevan días sin
@@ -17529,6 +17961,7 @@ async function avisosSoportePeriodicos() {
                         ['Entraron', s.entraron], ['Resueltos', s.resueltos], ['Abiertos ahora', s.abiertos], ['Sin asignar', s.sinAsignar],
                         ['Vencidos', s.vencidos], [`Parados (más de ${s.diasParado} días)`, s.parados],
                         ['Primera respuesta (mediana)', horas(s.horasResponder)], ['Resolver (mediana)', horas(s.horasResolver)],
+                        ['Valoración de quien los abrió', s.valoracion?.n ? `${s.valoracion.media} de 5 (${s.valoracion.n} ${s.valoracion.n === 1 ? 'respuesta' : 'respuestas'})` : '—'],
                     ];
                     const personas = s.porPersona.map(p => `${p.nombre}: ${p.abiertos} abiertos${p.vencidos ? ` (${p.vencidos} vencidos)` : ''}, ${p.resueltos} resueltos`);
                     bloques.push({ titulo: NOMBRE_ESPACIO[e], filas, personas });
@@ -18065,7 +18498,7 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         if (recibe('tickets_sin_asignar') || recibe('tickets_mios')) {
           // Los de Aim Education y, aparte, los de Aim Soluciones Digitales (a quien los ve).
           for (const emp of permisosYo.soporteEmpresa ? [false, true] : [false]) {
-            const CLAVES = ['tickets_sin_asignar', 'tickets_mios', 'tickets_vencidos', 'tickets_parados'];
+            const CLAVES = ['tickets_sin_asignar', 'tickets_mios', 'tickets_vencidos', 'tickets_parados', 'tickets_plazo'];
             fuente(emp ? 'Soporte de la empresa' : 'Soporte', emp ? CLAVES.map(k => `${k}_empresa`) : CLAVES, async () => {
                 const dias = await diasParadoTicket();
                 const t = (await pool.query(
@@ -18080,6 +18513,19 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                      FROM tickets_registrosoporte WHERE status = 'open' AND etapa IS DISTINCT FROM 'pausa'
                        AND ${emp ? '' : 'NOT '}${SQL_TICKET_EMPRESA('tickets_registrosoporte')}`, [yo, dias])).rows[0];
                 const l = [];
+                // Los suyos (o, con soporte completo, los sin dueño) fuera de plazo.
+                if (recibe('tickets_mios')) {
+                    const pl = await plazosSoporte();
+                    const fp = (await pool.query(
+                        `SELECT s.id, s.espacio, s.priority, s.status, s.created_at, ${SQL_CREADO_REAL('s')} AS creado_real, ${SQL_PRIMERA_RESPUESTA('s')} AS primera_respuesta_at
+                         FROM tickets_registrosoporte s
+                         WHERE s.status = 'open' AND COALESCE(s.etapa, '') NOT IN ('pausa', 'esperando', 'espera_deploy')
+                           AND (s.assigned_to = $1 OR $1 = ANY(s.asignados_extra) OR ($3::boolean AND s.assigned_to IS NULL AND cardinality(s.asignados_extra) = 0))
+                           AND ${emp ? '' : 'NOT '}${SQL_TICKET_EMPRESA('s')} AND ${SQL_CON_PLAZO('s').replace('$PLAZOS_DESDE', '$2')}`,
+                        [yo, pl.desde, !!permisosYo.soporteCompleto])).rows
+                        .filter(t => { const e = estadoPlazos(t, pl); return e.respuesta?.pasado || e.resolucion?.pasado; }).length;
+                    if (fp) l.push({ tipo: 'tickets', clave: 'tickets_plazo', n: fp, prioridad: 1, texto: `${fp} ${plural(fp, 'ticket fuera de plazo', 'tickets fuera de plazo')}`, detalle: 'ha pasado su plazo de respuesta o de resolución', destino: '/admin/soporte?filtro=plazo' });
+                }
                 // Cada aviso lleva a lo suyo (#360): la lista filtrada, no Soporte a secas.
                 if (t.sin_asignar && recibe('tickets_sin_asignar')) l.push({ tipo: 'tickets', clave: 'tickets_sin_asignar', n: t.sin_asignar, prioridad: t.urgentes ? 1 : 2, texto: `${t.sin_asignar} ${plural(t.sin_asignar, 'ticket', 'tickets')} sin asignar`, detalle: t.urgentes ? `${t.urgentes} de prioridad alta` : null, destino: '/admin/soporte?filtro=sin_asignar' });
                 if (recibe('tickets_mios')) {
@@ -24561,6 +25007,9 @@ app.post('/api/support/:id/vincular', authenticateSession, requireAdmin, async (
              WHERE id = ANY($2::int[]) OR (vinculo_id IS NOT NULL AND vinculo_id = ANY($3::uuid[]))`,
             [destino, [propio, otro], grupos]
         );
+        const refs = Object.fromEntries((await client.query(`SELECT id, espacio, ref_numero FROM tickets_registrosoporte WHERE id = ANY($1::int[])`, [[propio, otro]])).rows.map(x => [x.id, refTicket(x)]));
+        await anotarHistorial(client, propio, req.userSession.userId, [{ campo: 'unido', antes: null, despues: `con el ${refs[otro]}` }]);
+        await anotarHistorial(client, otro, req.userSession.userId, [{ campo: 'unido', antes: null, despues: `con el ${refs[propio]}` }]);
         await client.query('COMMIT');
         res.json({ success: true, vinculoId: destino });
     } catch (err) {
@@ -24577,6 +25026,7 @@ app.delete('/api/support/:id/vincular', authenticateSession, requireAdmin, async
         const r = await pool.query('SELECT vinculo_id FROM tickets_registrosoporte WHERE id = $1', [req.params.id]);
         const grupo = r.rows[0]?.vinculo_id;
         await pool.query('UPDATE tickets_registrosoporte SET vinculo_id = NULL WHERE id = $1', [req.params.id]);
+        if (grupo) await anotarHistorial(pool, Number(req.params.id), req.userSession.userId, [{ campo: 'unido', antes: 'en un grupo', despues: 'fuera del grupo' }]);
         if (grupo) {
             await pool.query(
                 `UPDATE tickets_registrosoporte SET vinculo_id = NULL
@@ -24756,6 +25206,11 @@ const servidor = app.listen(port, () => {
     // Soporte: aviso diario de tickets vencidos o parados y resumen semanal.
     setTimeout(avisosSoportePeriodicos, 90 * 1000);
     setInterval(avisosSoportePeriodicos, 15 * 60 * 1000);
+    // Plazos de los tickets (cada 10 min) y lo que escriben las guarderías (cada 2).
+    setTimeout(vigilarPlazosTickets, 2 * 60 * 1000);
+    setInterval(vigilarPlazosTickets, 10 * 60 * 1000);
+    setTimeout(avisarTicketsKidsNGrow, 60 * 1000);
+    setInterval(avisarTicketsKidsNGrow, 2 * 60 * 1000);
     // Recordatorios de fichaje (ticket #233): se revisa cada 5 min quién tiene que
     // fichar entrada/salida según su horario. Solo manda una vez por tipo y día.
     setTimeout(recordatoriosFichaje, 45 * 1000);

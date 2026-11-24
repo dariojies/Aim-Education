@@ -112,6 +112,41 @@ const hoyISO = () => new Date().toLocaleDateString('sv-SE');
 const esVencido = (t) => t.status === 'open' && t.etapa !== 'pausa' && t.due_date && String(t.due_date).slice(0, 10) < hoyISO();
 const diasSinMoverse = (t) => Math.floor((Date.now() - new Date(t.updated_at || t.created_at).getTime()) / 86400000);
 // Lo que espera al deploy no está parado: ya está hecho. Lo que está en pausa, tampoco.
+// Plazos de primera respuesta y de resolución (horas por prioridad, en cada
+// apartado; los pone el servidor). Solo para lo que abre alguien de fuera y desde
+// que existen; mientras espera respuesta, en pausa o el deploy, no cuentan.
+const PLAZOS_DEF = { high: [4, 24], medium: [24, 72], low: [48, 168] };
+function plazosDe(t, plazos) {
+  // La hora de verdad (created_at viene sin zona horaria).
+  const creado = new Date(t.creado_real || t.created_at).getTime();
+  if (!plazos?.desde || !t?.de_fuera || t.status !== 'open' || creado < new Date(plazos.desde).getTime()) return null;
+  if (['pausa', 'esperando', 'espera_deploy'].includes(t.etapa)) return null;
+  const h = (plazos[esEmpresa(t) ? 'empresa' : 'aim'] || PLAZOS_DEF)[t.priority] || PLAZOS_DEF.medium;
+  const ini = creado, ahora = Date.now();
+  const uno = (horas, hecho) => {
+    if (hecho) return null;
+    const vence = ini + horas * 3600e3, margen = Math.max(3600e3, horas * 3600e3 * 0.2);
+    return { vence, pasado: ahora > vence, pronto: ahora <= vence && ahora > vence - margen };
+  };
+  return { respuesta: uno(h[0], !!t.primera_respuesta_at), resolucion: uno(h[1], false) };
+}
+const fueraDePlazo = (t, pl) => { const e = plazosDe(t, pl); return !!(e && (e.respuesta?.pasado || e.resolucion?.pasado)); };
+const horaCorta = (ms) => new Date(ms).toLocaleString('es-ES', { day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' }).replace(',', '');
+// La etiqueta del plazo en una tarjeta: lo más urgente.
+function avisoPlazo(t, pl) {
+  const e = plazosDe(t, pl);
+  if (!e) return null;
+  if (e.respuesta?.pasado) return { texto: 'Sin responder · plazo pasado', color: '#E5484D', titulo: `Tenía que tener respuesta antes del ${horaCorta(e.respuesta.vence)}` };
+  if (e.resolucion?.pasado) return { texto: 'Fuera de plazo', color: '#E5484D', titulo: `Tenía que estar resuelto antes del ${horaCorta(e.resolucion.vence)}` };
+  if (e.respuesta?.pronto) return { texto: `Responder antes de ${horaCorta(e.respuesta.vence)}`, color: 'var(--orange)', titulo: 'Plazo de primera respuesta' };
+  if (e.resolucion?.pronto) return { texto: `Resolver antes de ${horaCorta(e.resolucion.vence)}`, color: 'var(--orange)', titulo: 'Plazo de resolución' };
+  return null;
+}
+// «Espera de deploy» solo donde hay deploy que lo resuelva.
+const APPS_CON_DEPLOY = ['Aim Education', 'Learning Dungeon', 'Aim Brickslab', 'KidsNGrow', 'Aim Training'];
+const conDeploy = (t) => appsDe(t).some(a => APPS_CON_DEPLOY.includes(a));
+const CARAS = ['😞', '🙁', '😐', '🙂', '😄'];
+const NOMBRE_NOTA = ['Muy mal', 'Mal', 'Regular', 'Bien', 'Muy bien'];
 const esParado = (t, dias) => t.status === 'open' && t.etapa !== 'espera_deploy' && t.etapa !== 'pausa' && diasSinMoverse(t) >= dias;
 
 // Encargados (pueden ser varios; el principal va primero).
@@ -375,7 +410,7 @@ function RespuestasGuardadas({ onUsar, onCerrar, espacio = 'aim' }) {
 // Dos canales separados: 'equipo' (entre el personal) y 'creador' (con quien
 // abrió el ticket). Refresca cada 5 s pidiendo solo lo nuevo. Al verla, el
 // ticket queda leído para quien mira (y la campanita lo quita).
-function TicketChat({ ticketId, canal, alto = 260, staff = false, onLeido, espacio = 'aim' }) {
+function TicketChat({ ticketId, canal, alto = 260, staff = false, onLeido, onEnviado, espacio = 'aim' }) {
   const [mensajes, setMensajes] = useState([]);
   const [texto, setTexto] = useState('');
   const [archivos, setArchivos] = useState([]);
@@ -453,6 +488,7 @@ function TicketChat({ ticketId, canal, alto = 260, staff = false, onLeido, espac
         setTexto(''); setArchivos(prev => prev.slice(Math.max(0, hechos - (archivos.length ? 0 : 1))));
         const rr = await fetch(`/api/support/${ticketId}/mensajes?canal=${canal}&desde=${ultimoId.current}`, { credentials: 'include', cache: 'no-store' });
         if (rr.ok) añadir((await rr.json()).mensajes || []);
+        onEnviado?.();
       }
       if (fallo) setError(fallo);
     } catch { setError('Error de conexión.'); }
@@ -544,13 +580,59 @@ function Historial({ ticketId, recarga }) {
       {lista.map((h, i) => (
         <div key={i} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: 12, padding: '6px 10px', borderRadius: 8, background: 'var(--bg-3)' }}>
           <span style={{ color: 'var(--ink-3)', minWidth: 112 }}>{fmtDateTime(h.fecha)}</span>
-          <b>{h.quien || 'Automático'}</b>
+          <b>{h.quien || (h.origen ? `Desde ${h.origen}` : 'Automático')}</b>
           <span style={{ color: 'var(--ink-2)', minWidth: 0 }}>
             {h.campo === 'creado' ? h.despues
+              : h.antes == null ? <><b>{h.campo}</b>: {h.despues || '—'}</>
               : <>cambió <b>{h.campo}</b>: {h.antes || '—'} → <b>{h.despues || '—'}</b></>}
           </span>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── Plazos de respuesta y resolución ─────────────────────────────────────────
+// Horas por prioridad. Los cambia quien lleva el soporte (los de la empresa,
+// solo el Equipo IT). Sin tabla: una fila por prioridad.
+function EditarPlazos({ espacio = 'aim' }) {
+  const [d, setD] = useState(null);
+  const [valores, setValores] = useState(null);
+  const [aviso, setAviso] = useState('');
+  const esp = espacio === 'empresa' ? 'empresa' : 'aim';
+  useEffect(() => {
+    fetch('/api/support/plazos', { credentials: 'include', cache: 'no-store' }).then(r => (r.ok ? r.json() : null))
+      .then(x => { if (x) { setD(x); setValores(x.plazos[esp] || PLAZOS_DEF); } }).catch(() => {});
+  }, [esp]);
+  if (!d || !valores) return null;
+  const puede = d.puedeEditar && (esp === 'aim' || d.empresa);
+  const cambiar = (k, i, v) => setValores(x => ({ ...x, [k]: x[k].map((n, j) => (j === i ? v : n)) }));
+  async function guardar() {
+    setAviso('');
+    const r = await fetch('/api/support/plazos', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ [esp]: valores }) });
+    const x = await r.json().catch(() => ({}));
+    setAviso(r.ok ? 'Guardado.' : (x.error || 'No se pudo guardar.'));
+  }
+  const inp = { width: 74, fontFamily: 'inherit', fontSize: 14, padding: '6px 8px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg-3)', color: 'var(--ink)' };
+  return (
+    <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 14, padding: 16, marginTop: 14 }}>
+      <b style={{ fontSize: 14 }}>Plazos de {esp === 'empresa' ? 'Aim Soluciones Digitales' : 'Aim Education'}</b>
+      <p style={{ fontSize: 12, color: 'var(--ink-3)', margin: '4px 0 10px' }}>
+        En horas desde que se abre. Cuentan para lo que abre alguien de fuera (familias, Learning Dungeon, guarderías); no mientras espera respuesta, está en pausa o espera el deploy. Avisa por correo a sus encargados un poco antes de pasarse y cuando se pasa.
+      </p>
+      <div style={{ display: 'grid', gap: 8 }}>
+        {['high', 'medium', 'low'].map(k => (
+          <div key={k} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', fontSize: 13 }}>
+            <span style={{ ...chip(PRIORITY_COLOR[k], { textTransform: 'uppercase' }), minWidth: 54, textAlign: 'center' }}>{PRIORITY_LABEL[k]}</span>
+            <label>Responder en <input type="number" min={1} max={720} value={valores[k][0]} disabled={!puede} onChange={e => cambiar(k, 0, Number(e.target.value))} style={inp} /> h</label>
+            <label>Resolver en <input type="number" min={1} max={2160} value={valores[k][1]} disabled={!puede} onChange={e => cambiar(k, 1, Number(e.target.value))} style={inp} /> h</label>
+          </div>
+        ))}
+      </div>
+      {puede && <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 10 }}>
+        <button className="btn btn-sm btn-primary" onClick={guardar}>Guardar plazos</button>
+        {aviso && <span style={{ fontSize: 12, color: aviso === 'Guardado.' ? 'var(--teal)' : '#E5484D' }}>{aviso}</span>}
+      </div>}
     </div>
   );
 }
@@ -586,6 +668,8 @@ function ResumenSoporte({ onAbrir, espacio = 'aim' }) {
               ['Vencidos', d.vencidos, '#E5484D', 'su fecha límite ya pasó (sin pausa)'],
               [`Parados (+${d.diasParado} días)`, d.parados, 'var(--orange)', 'sin moverse; no cuentan pausa ni deploy'],
               ['1ª respuesta (mediana)', horas(d.horasResponder), 'var(--ink)', null], ['Resolver (mediana)', horas(d.horasResolver), 'var(--ink)', null],
+              ['Valoración', d.valoracion?.n ? `${CARAS[Math.round(d.valoracion.media) - 1] || ''} ${String(d.valoracion.media).replace('.', ',')}` : '—', 'var(--teal)',
+                d.valoracion?.n ? `de 5 · ${d.valoracion.n} ${d.valoracion.n === 1 ? 'respuesta' : 'respuestas'} en ${d.dias} días` : 'nadie ha valorado todavía'],
             ].map(([k, v, c, nota]) => (
               <div key={k} style={tarjeta}>
                 <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--ink-3)' }}>{k}</div>
@@ -659,8 +743,9 @@ function ResumenSoporte({ onAbrir, espacio = 'aim' }) {
 }
 
 // ── Una tarjeta de ticket (lista y tablero) ─────────────────────────────────
-function TarjetaTicket({ t, diasParado, compacta = false, marcado, onMarcar, onAbrir, onPointerDown, fantasma = false, oculto = false }) {
+function TarjetaTicket({ t, diasParado, plazos, compacta = false, marcado, onMarcar, onAbrir, onPointerDown, fantasma = false, oculto = false }) {
   const est = ESTADOS[estadoDe(t)];
+  const plazo = avisoPlazo(t, plazos);
   const prioColor = PRIORITY_COLOR[t.priority] || PRIORITY_COLOR.low;
   const cat = CATEGORIAS[t.categoria];
   const vencido = esVencido(t), parado = esParado(t, diasParado);
@@ -710,6 +795,7 @@ function TarjetaTicket({ t, diasParado, compacta = false, marcado, onMarcar, onA
         {cat && <span style={chip(cat.color)}>{cat.label}</span>}
         <span style={chip(prioColor, { textTransform: 'uppercase' })}>{PRIORITY_LABEL[t.priority] || t.priority}</span>
         {t.sin_leer > 0 && <span style={chip('var(--purple)', { background: 'var(--purple)', color: '#fff' })} title="Mensajes que no has leído">● {t.sin_leer} sin leer</span>}
+        {plazo && <span style={chip(plazo.color)} title={plazo.titulo}>⏱ {plazo.texto}</span>}
         {vencido && <span style={chip('#E5484D')}>Vencido</span>}
         {!vencido && parado && <span style={chip('var(--orange)')} title="Sin cambios ni mensajes">Parado {diasSinMoverse(t)} días</span>}
         {t.recurrencia && <span style={chip('var(--purple)')} title={`Se repite: ${RECUR_LABEL[t.recurrencia] || t.recurrencia}`}>🔁 {RECUR_LABEL[t.recurrencia] || t.recurrencia}</span>}
@@ -771,7 +857,20 @@ function leerPrefs(user) {
 export function AdminSupport({ user, ticketId = null, enlace = null }) {
   const prefs = useMemo(() => leerPrefs(user), [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   // Todos los que manda el servidor; «tickets» son los del apartado que se mira.
-  const [todos, setTickets] = useState([]);
+  // Lo que manda el servidor de entrada (abiertos y lo resuelto hace poco) y lo
+  // que se pide aparte: resueltos más antiguos o los que salen al buscar.
+  const [cargados, setTickets] = useState([]);
+  const [antiguos, setAntiguos] = useState([]);
+  const [hayAntiguos, setHayAntiguos] = useState(0);
+  const [diasRecientes, setDiasRecientes] = useState(60);
+  const [cargandoAntiguos, setCargandoAntiguos] = useState(false);
+  const [plazos, setPlazos] = useState(null);
+  const todos = useMemo(() => {
+    const ya = new Set(cargados.map(t => t.id));
+    return [...cargados, ...antiguos.filter(t => !ya.has(t.id))];
+  }, [cargados, antiguos]);
+  const idsCargados = useRef(new Set());
+  useEffect(() => { idsCargados.current = new Set(todos.map(t => t.id)); }, [todos]);
   const [puedeEmpresa, setPuedeEmpresa] = useState(false);
   const [espacio, setEspacio] = useState(() => { try { return new URLSearchParams(window.location.search).get('espacio') === 'empresa' ? 'empresa' : 'aim'; } catch { return 'aim'; } });
   const tickets = useMemo(() => (puedeEmpresa ? todos.filter(t => esEmpresa(t) === (espacio === 'empresa')) : todos), [todos, puedeEmpresa, espacio]);
@@ -799,6 +898,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
 
   // Alta.
   const [subject, setSubject] = useState('');
+  const [parecidos, setParecidos] = useState([]);
   const [description, setDescription] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submitMsg, setSubmitMsg] = useState('');
@@ -842,6 +942,8 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
       .then(r => (r.ok ? r.json() : { tickets: [] }))
       .then(d => {
         setTickets(d.tickets || []); setSoloMios(!!d.soloMios); setPuedeEmpresa(!!d.empresa); if (d.diasParado) setDiasParado(d.diasParado);
+        setPlazos(d.plazos || null); if (d.diasRecientes) setDiasRecientes(d.diasRecientes);
+        setAntiguos(a => { setHayAntiguos(Math.max(0, (d.antiguos || 0) - a.filter(t => t.status !== 'open').length)); return a; });
         setLoading(false);
         return d.tickets || [];
       })
@@ -872,13 +974,34 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
     } catch { /* sin almacenamiento: no pasa nada */ }
   }, [activeTab, vista, fEstado, fCategoria, fPrioridad, fApp, fQuien, fRapido, orden, user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Al escribir el asunto de uno nuevo: los parecidos de este apartado, por si ya está.
+  useEffect(() => {
+    const q = subject.trim();
+    if (activeTab !== 'create' || q.length < 4) { setParecidos([]); return; }
+    const t = setTimeout(() => {
+      fetch(`/api/support/parecidos?q=${encodeURIComponent(q)}&espacio=${puedeEmpresa && espacio === 'empresa' ? 'empresa' : 'aim'}`, { credentials: 'include', cache: 'no-store' })
+        .then(r => (r.ok ? r.json() : { tickets: [] })).then(d => setParecidos(d.tickets || [])).catch(() => {});
+    }, 450);
+    return () => clearTimeout(t);
+  }, [subject, activeTab, espacio, puedeEmpresa]);
+
   // Buscar también dentro de las conversaciones (a partir de 3 letras).
   useEffect(() => {
     const q = busqueda.trim();
     if (q.length < 3 || /^(?:#|(?:ae|asd)\s*-?\s*)?\d+$/i.test(q)) { setIdsEnMensajes([]); return; }
     const t = setTimeout(() => {
       fetch(`/api/support/buscar?q=${encodeURIComponent(q)}`, { credentials: 'include' })
-        .then(r => (r.ok ? r.json() : { ids: [] })).then(d => setIdsEnMensajes(d.ids || [])).catch(() => {});
+        .then(r => (r.ok ? r.json() : { ids: [] })).then(d => {
+          setIdsEnMensajes(d.ids || []);
+          // Lo que casa y no está cargado (resuelto hace mucho): se trae.
+          const faltan = (d.todos || []).filter(id => !idsCargados.current.has(id)).slice(0, 200);
+          if (faltan.length) {
+            fetch(`/api/support?ids=${faltan.join(',')}`, { credentials: 'include', cache: 'no-store' })
+              .then(r => (r.ok ? r.json() : { tickets: [] }))
+              .then(x => setAntiguos(a => [...a, ...(x.tickets || []).filter(t => !a.some(y => y.id === t.id))]))
+              .catch(() => {});
+          }
+        }).catch(() => {});
     }, 300);
     return () => clearTimeout(t);
   }, [busqueda]);
@@ -911,6 +1034,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
     if (f === 'mensajes') setFRapido('sinLeer');
     if (f === 'vencidos') { setFQuien('mios'); setFRapido('vencidos'); }
     if (f === 'parados') { setFQuien('mios'); setFRapido('parados'); }
+    if (f === 'plazo') setFRapido('plazo');
   }, [enlace?.ruta]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function avisar(texto) {
@@ -1023,6 +1147,21 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
       avisar(`Ahora es ${d.ref}, en ${NOMBRE_ESPACIO[a]}.`);
     } catch { avisar('Error de conexión.'); }
   }
+  // Los resueltos de antes de los últimos días, de 100 en 100.
+  async function cargarAntiguos() {
+    if (cargandoAntiguos) return;
+    setCargandoAntiguos(true);
+    try {
+      const cerrado = (t) => new Date(t.resolved_at || t.updated_at || t.created_at).getTime();
+      const viejos = antiguos.filter(t => t.status !== 'open');
+      const desde = viejos.length ? Math.min(...viejos.map(cerrado)) : Date.now() - diasRecientes * 86400e3;
+      const r = await fetch(`/api/support?antes=${encodeURIComponent(new Date(desde).toISOString())}`, { credentials: 'include', cache: 'no-store' });
+      const d = r.ok ? await r.json() : { tickets: [] };
+      setAntiguos(a => [...a, ...(d.tickets || []).filter(t => !a.some(y => y.id === t.id))]);
+      setHayAntiguos(d.antiguos || 0);
+    } catch { avisar('Error de conexión.'); }
+    finally { setCargandoAntiguos(false); }
+  }
   async function desvincular(t) {
     if (!window.confirm(`¿Sacar el ticket ${refDe(t)} de su grupo?`)) return;
     try {
@@ -1096,7 +1235,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
         && (fPrioridad === 'todas' || t.priority === fPrioridad)
         && (fApp === 'todas' || appsDe(t).includes(fApp))
         && (fQuien === 'todos' || (fQuien === 'mios' ? esEncargado(t, user?.id) : fQuien === 'sin' ? sinEncargado(t) : esEncargado(t, fQuien)))
-        && (!fRapido || (fRapido === 'sinLeer' ? t.sin_leer > 0 : fRapido === 'vencidos' ? esVencido(t) : esParado(t, diasParado))))
+        && (!fRapido || (fRapido === 'sinLeer' ? t.sin_leer > 0 : fRapido === 'vencidos' ? esVencido(t) : fRapido === 'plazo' ? fueraDePlazo(t, plazos) : esParado(t, diasParado))))
       .sort((a, b) => {
         const porPrioridad = () => (peso[b.priority] || 0) - (peso[a.priority] || 0);
         const cuando = (t) => (t.due_date ? new Date(t.due_date).getTime() : Infinity);
@@ -1106,7 +1245,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
         if (orden === 'antiguos') return a.id - b.id;
         return b.id - a.id;
       });
-  }, [busqueda, idsEnMensajes, fEstado, fCategoria, fPrioridad, fApp, fQuien, fRapido, orden, diasParado, user?.id]);
+  }, [busqueda, idsEnMensajes, fEstado, fCategoria, fPrioridad, fApp, fQuien, fRapido, orden, diasParado, plazos, user?.id]);
 
   const filtered = useMemo(() => filtrar(tickets), [filtrar, tickets]);
   const abiertos = tickets.filter(t => t.status === 'open');
@@ -1115,6 +1254,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
     vencidos: abiertos.filter(esVencido).length,
     parados: abiertos.filter(t => esParado(t, diasParado)).length,
     urgentes: abiertos.filter(t => t.priority === 'high').length,
+    plazo: abiertos.filter(t => fueraDePlazo(t, plazos)).length,
   };
   const hayFiltros = fEstado !== 'activos' || fCategoria !== 'todas' || fPrioridad !== 'todas' || fApp !== 'todas' || fQuien !== 'todos' || fRapido || busqueda;
   function limpiarFiltros() {
@@ -1380,7 +1520,10 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
         <button className={`btn btn-sm ${activeTab === 'create' ? 'btn-primary' : 'btn-gradient'}`} onClick={() => setActiveTab('create')}><I.Plus width={14} height={14} /> Nuevo ticket</button>
       </div>
 
-      {activeTab === 'resumen' && <ResumenSoporte espacio={puedeEmpresa ? espacio : 'aim'} onAbrir={(id) => { setActiveTab('list'); abrirPorId(id); }} />}
+      {activeTab === 'resumen' && <>
+        <ResumenSoporte espacio={puedeEmpresa ? espacio : 'aim'} onAbrir={(id) => { setActiveTab('list'); abrirPorId(id); }} />
+        <EditarPlazos espacio={puedeEmpresa ? espacio : 'aim'} />
+      </>}
 
       {activeTab === 'create' && (
         <div className="panel" style={{maxWidth: 680}}>
@@ -1390,6 +1533,17 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
             <div className="field" style={{marginTop: 16}}>
               <label>Asunto</label>
               <input placeholder="Ej. No se puede pasar lista desde el móvil" value={subject} onChange={e => setSubject(e.target.value)} required maxLength={255} />
+              {parecidos.length > 0 && (
+                <div style={{marginTop: 8, padding: "10px 12px", borderRadius: 10, background: "color-mix(in oklab, var(--orange) 8%, var(--bg-3))", border: "1px solid color-mix(in oklab, var(--orange) 30%, var(--line))", display: "grid", gap: 4}}>
+                  <span style={{fontSize: 12, fontWeight: 800, color: "var(--orange)"}}>¿Ya está pedido? Se parecen:</span>
+                  {parecidos.map(p => (
+                    <button key={p.id} type="button" onClick={() => { setActiveTab('list'); abrirPorId(p.id); }}
+                      style={{textAlign: "left", background: "none", border: 0, padding: "2px 0", cursor: "pointer", fontFamily: "inherit", fontSize: 13, color: "var(--ink)"}}>
+                      <b style={{color: "var(--purple)"}}>{p.ref}</b> {p.asunto} <span style={{color: "var(--ink-3)"}}>· {p.estado}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="field">
               <label>Descripción</label>
@@ -1499,6 +1653,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
               ['sinLeer', `Sin leer · ${cuenta.sinLeer}`, 'var(--purple)'],
               ['vencidos', `Vencidos · ${cuenta.vencidos}`, '#E5484D'],
               ['parados', `Parados +${diasParado} días · ${cuenta.parados}`, 'var(--orange)'],
+              ...(cuenta.plazo || fRapido === 'plazo' ? [['plazo', `Fuera de plazo · ${cuenta.plazo}`, '#E5484D']] : []),
             ].map(([k, l, c]) => (
               <button key={k} className={`filter-pill ${fRapido === k ? 'is-active' : ''}`} onClick={() => setFRapido(f => (f === k ? '' : k))}
                 style={fRapido === k ? undefined : { color: c, borderColor: `color-mix(in oklab, ${c} 35%, var(--line))` }}>{l}</button>
@@ -1605,8 +1760,16 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
                 </div>
               )}
               <div style={{display: "grid", gap: 10}}>
-                {filtered.map(t => <TarjetaTicket key={t.id} t={t} diasParado={diasParado} marcado={marcados.has(t.id)} onMarcar={alternarMarcado} onAbrir={openTicket} />)}
+                {filtered.map(t => <TarjetaTicket key={t.id} t={t} diasParado={diasParado} plazos={plazos} marcado={marcados.has(t.id)} onMarcar={alternarMarcado} onAbrir={openTicket} />)}
               </div>
+              {hayAntiguos > 0 && ['todos', 'resolved', 'closed'].includes(fEstado) && (
+                <div style={{textAlign: "center", marginTop: 14}}>
+                  <button className="btn btn-sm btn-outline" disabled={cargandoAntiguos} onClick={cargarAntiguos}>
+                    {cargandoAntiguos ? 'Cargando…' : `Ver resueltos más antiguos (quedan ${hayAntiguos})`}
+                  </button>
+                  <p style={{margin: "6px 0 0", fontSize: 11.5, color: "var(--ink-3)"}}>De entrada se cargan los abiertos y lo resuelto en los últimos {diasRecientes} días. Al buscar, sale todo.</p>
+                </div>
+              )}
             </>
           )}
 
@@ -1657,7 +1820,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
                         </div>
                       ) : (
                         <div key={t.id} data-tablero={t.id} style={col.id === 'pausa' ? {opacity: 0.6} : undefined}>
-                          <TarjetaTicket t={t} diasParado={diasParado} compacta onAbrir={abrirDesdeTablero}
+                          <TarjetaTicket t={t} diasParado={diasParado} plazos={plazos} compacta onAbrir={abrirDesdeTablero}
                             onPointerDown={e => empezarArrastre(e, t)}
                             fantasma={arrastrando?.id === t.id && aterrizando !== t.id} oculto={aterrizando === t.id} />
                         </div>
@@ -1738,7 +1901,8 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
                 <p style={cabecillaCss}>Estado</p>
                 <div style={{display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 6}}>
                   {Object.entries(ESTADOS).map(([k, v]) => (
-                    <button key={k} type="button" disabled={updating} onClick={() => k !== estSel && cambiarEstado(selected, k)} aria-pressed={k === estSel}
+                    <button key={k} type="button" disabled={updating || (k === 'espera_deploy' && k !== estSel && !conDeploy(selected))} onClick={() => k !== estSel && cambiarEstado(selected, k)} aria-pressed={k === estSel}
+                      title={k === 'espera_deploy' && !conDeploy(selected) ? 'Solo para lo que avisa de sus deploys: Aim Education, Learning Dungeon, Brickslab, KidsNGrow y Aim Training' : undefined}
                       style={{padding: "9px 6px", borderRadius: 10, cursor: k === estSel ? "default" : "pointer", fontWeight: 800, fontSize: 12, fontFamily: "inherit",
                         border: `1.5px solid ${k === estSel ? v.color : 'var(--line)'}`,
                         background: k === estSel ? `color-mix(in oklab, ${v.color} 16%, var(--bg-2))` : "var(--bg-3)",
@@ -1761,6 +1925,13 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
                   <span>Último movimiento: <b>{selected.updated_at ? fmtDateTime(selected.updated_at) : 'ninguno'}</b></span>
                   <span>Primera respuesta: <b>{primeraRespuesta(selected) ? `en ${primeraRespuesta(selected)}` : 'todavía no'}</b></span>
                   {selected.resolved_at && <span style={{color: "var(--teal)"}}>Resuelto: <b>{fmtDateTime(selected.resolved_at)}</b>{tardanza(selected) ? ` · tardó ${tardanza(selected)}` : ''}</span>}
+                  {(() => {
+                    const e = plazosDe(selected, plazos);
+                    if (!e) return null;
+                    const uno = (x, que) => x && <span style={{color: x.pasado ? '#E5484D' : x.pronto ? 'var(--orange)' : 'var(--ink-3)'}}>{que}: <b>{x.pasado ? `pasó el ${horaCorta(x.vence)}` : `antes del ${horaCorta(x.vence)}`}</b></span>;
+                    return <>{uno(e.respuesta, 'Plazo de respuesta')}{uno(e.resolucion, 'Plazo de resolución')}</>;
+                  })()}
+                  {selected.valoracion && <span>Valoración: <b>{CARAS[selected.valoracion - 1]} {NOMBRE_NOTA[selected.valoracion - 1]}</b>{selected.valoracion_nota ? ` · «${selected.valoracion_nota}»` : ''}</span>}
                 </div>
               </div>
 
@@ -1911,6 +2082,7 @@ const ESTADO_FAMILIA = {
 
 export function UserSupport() {
   const [subject, setSubject] = useState('');
+  const [parecidos, setParecidos] = useState([]);
   const [description, setDescription] = useState('');
   const [archivos, setArchivos] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -2003,8 +2175,22 @@ export function UserSupport() {
                         {t.description}
                         {t.tiene_adjunto && <div style={{ marginTop: 8 }}><Adjunto url={`/api/support/${t.id}/adjunto`} nombre={t.adjunto_nombre} mime={t.adjunto_mime || 'image/png'} alto={160} /></div>}
                       </div>
-                      <TicketChat ticketId={t.id} canal="creador" alto={260}
+                      {t.status !== 'open' && <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>Está resuelta. Si nos escribes, la volvemos a abrir.</p>}
+                      <TicketChat ticketId={t.id} canal="creador" alto={260} onEnviado={t.status !== 'open' ? cargar : undefined}
                         onLeido={() => setMisTickets(l => l.map(x => (x.id === t.id ? { ...x, sin_leer: 0 } : x)))} />
+                    </div>
+                  )}
+                  {t.status !== 'open' && (
+                    <div style={{ marginTop: 10, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 13, color: 'var(--ink-2)', fontWeight: 700 }}>{t.valoracion ? 'Tu valoración:' : '¿Qué tal te hemos atendido?'}</span>
+                      {CARAS.map((c, i) => (
+                        <button key={i} type="button" title={NOMBRE_NOTA[i]} aria-label={NOMBRE_NOTA[i]} aria-pressed={t.valoracion === i + 1}
+                          onClick={async () => {
+                            const r = await fetch(`/api/support/${t.id}/valoracion`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ n: i + 1 }) });
+                            if (r.ok) setMisTickets(l => l.map(x => (x.id === t.id ? { ...x, valoracion: i + 1 } : x)));
+                          }}
+                          style={{ fontSize: 24, lineHeight: 1, background: 'none', border: 0, padding: 2, cursor: 'pointer', opacity: !t.valoracion || t.valoracion === i + 1 ? 1 : 0.3, filter: t.valoracion && t.valoracion !== i + 1 ? 'grayscale(1)' : 'none' }}>{c}</button>
+                      ))}
                     </div>
                   )}
                 </div>
