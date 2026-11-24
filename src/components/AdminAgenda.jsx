@@ -54,7 +54,7 @@ function ElegirTicket({ valor, onElegir, coger, onCoger, yo }) {
             .filter(t => ambito === 'todos'
                 || (ambito === 'mios' && (t.assigned_to === yo || t.user_id === yo || t.asignados?.some(a => a.id === yo)))
                 || (ambito === 'sinDuenio' && !t.assigned_to && !t.asignados?.length))
-            .filter(t => !q || `${t.id} ${t.subject}`.toLowerCase().includes(q))
+            .filter(t => !q || `${t.id} ${t.ref || ''} ${t.subject}`.toLowerCase().includes(q))
             .slice(0, 40);
     }, [tickets, ambito, busca, yo]);
 
@@ -64,7 +64,7 @@ function ElegirTicket({ valor, onElegir, coger, onCoger, yo }) {
         return (
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 13, fontWeight: 700 }}>
-                    #{valor}{elegido ? ` · ${elegido.subject}` : ''}
+                    {elegido?.ref || `#${valor}`}{elegido ? ` · ${elegido.subject}` : ''}
                 </span>
                 <button type="button" className="btn btn-sm btn-outline" onClick={() => setAbierto(true)}>Cambiar</button>
                 <button type="button" className="btn btn-sm btn-outline" onClick={() => onElegir(null)}>Quitar</button>
@@ -84,12 +84,12 @@ function ElegirTicket({ valor, onElegir, coger, onCoger, yo }) {
             <div style={{ maxHeight: 190, overflowY: 'auto', display: 'grid', gap: 5 }}>
                 {lista.map(t => (
                     <button key={t.id} type="button"
-                        onClick={() => { onElegir(t.id); setAbierto(false); }}
+                        onClick={() => { onElegir(t.id, t.ref); setAbierto(false); }}
                         style={{
                             textAlign: 'left', padding: '7px 10px', borderRadius: 8, cursor: 'pointer',
                             border: '1px solid var(--line)', background: 'var(--bg-2)', fontFamily: 'inherit', fontSize: 12,
                         }}>
-                        <b>#{t.id}</b> {t.subject}
+                        <b>{t.ref || `#${t.id}`}</b> {t.subject}
                         <span style={{ color: 'var(--ink-3)' }}>
                             {' · '}{t.priority === 'high' ? 'alta' : t.priority === 'medium' ? 'media' : 'baja'}
                             {!t.assigned_to && !t.asignados?.length ? ' · sin dueño' : ''}
@@ -537,10 +537,10 @@ export default function AdminAgenda({ showToast, user, puedePasarLista = false }
                             <label>Ticket de soporte</label>
                             <ElegirTicket
                                 valor={editando.ticketId || null}
-                                onElegir={(id) => setEditando(e => ({
+                                onElegir={(id, ref) => setEditando(e => ({
                                     ...e, ticketId: id,
                                     // Si la tarea no tiene nombre todavía, se le pone el del ticket.
-                                    titulo: e.titulo?.trim() ? e.titulo : (id ? `Ticket #${id}` : ''),
+                                    titulo: e.titulo?.trim() ? e.titulo : (id ? `Ticket ${ref || `#${id}`}` : ''),
                                 }))}
                                 coger={editando.cogerTicket !== false && !editando.para}
                                 onCoger={(v) => setEditando(e => ({ ...e, cogerTicket: v }))}
@@ -607,7 +607,7 @@ function TareaFila({ t, onMarcar, onEditar, onBorrar, onIrTicket }) {
                             fontFamily: 'inherit', fontSize: 10, fontWeight: 800, color: 'var(--purple)',
                             maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                         }}>
-                        #{t.ticket.id} · {t.ticket.asunto}
+                        {t.ticket.ref || `#${t.ticket.id}`} · {t.ticket.asunto}
                     </button>
                 )}
             </div>

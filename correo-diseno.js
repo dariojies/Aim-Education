@@ -880,8 +880,8 @@ export const CORREOS_SISTEMA = {
     },
     aviso_ticket: {
         grupo: 'club', nombre: 'Ticket de soporte nuevo', cuando: 'Cuando alguien abre un ticket de soporte. Le llega a sus encargados o, si no tiene, al Equipo IT; nunca a quien lo abre ni a info@.',
-        asunto: '[Soporte Aim Education] Ticket #{numero}: {asunto}',
-        variables: { numero: { que: 'Número del ticket', ejemplo: '330' }, asunto: { que: 'Asunto del ticket', ejemplo: 'No me deja pasar lista' }, autor: { que: 'Quién lo abre', ejemplo: 'Marta López' }, email: { que: 'Su correo', ejemplo: 'marta@example.com' } },
+        asunto: '[Soporte {apartado}] Ticket {numero}: {asunto}',
+        variables: { numero: { que: 'Referencia del ticket', ejemplo: 'AE-330' }, apartado: { que: 'De qué apartado es', ejemplo: 'Aim Education' }, asunto: { que: 'Asunto del ticket', ejemplo: 'No me deja pasar lista' }, autor: { que: 'Quién lo abre', ejemplo: 'Marta López' }, email: { que: 'Su correo', ejemplo: 'marta@example.com' } },
         automaticos: { descripcion: { nombre: 'La descripción del ticket', ejemplo: 'Al pulsar «Pasar lista» se queda cargando.' } },
         obligatorio: ['descripcion'],
         diseno: () => d([
@@ -907,26 +907,26 @@ export const CORREOS_SISTEMA = {
     // Soporte: avisos de los tickets (se apagan y se ajustan en Automatismos).
     ticket_asignado: {
         grupo: 'personal', nombre: 'Soporte: te han asignado un ticket', cuando: 'Cuando alguien te pone de encargado de un ticket.',
-        asunto: 'Te han asignado el ticket #{numero}: {asunto}',
-        variables: { nombre: { que: 'Su nombre', ejemplo: 'Juan Manuel' }, numero: { que: 'Número del ticket', ejemplo: '366' }, asunto: { que: 'Asunto', ejemplo: 'No me deja pasar lista' }, quien: { que: 'Quién te lo asigna', ejemplo: 'Darío' }, enlace: { que: 'Enlace al ticket', ejemplo: 'https://www.aimeducation.es/admin/soporte/366' } },
+        asunto: 'Te han asignado el ticket {numero}: {asunto}',
+        variables: { nombre: { que: 'Su nombre', ejemplo: 'Juan Manuel' }, numero: { que: 'Referencia del ticket', ejemplo: 'AE-366' }, asunto: { que: 'Asunto', ejemplo: 'No me deja pasar lista' }, quien: { que: 'Quién te lo asigna', ejemplo: 'Darío' }, enlace: { que: 'Enlace al ticket', ejemplo: 'https://www.aimeducation.es/admin/soporte/366' } },
         automaticos: { descripcion: { nombre: 'La descripción del ticket', ejemplo: 'Al pulsar «Pasar lista» se queda cargando.' } },
         obligatorio: [],
         diseno: () => d([
             T('Hola {nombre},'),
-            T('**{quien}** te ha puesto de encargado del ticket **#{numero} · {asunto}**.'),
+            T('**{quien}** te ha puesto de encargado del ticket **{numero} · {asunto}**.'),
             AUTO('descripcion'),
             BTN([{ texto: 'Abrir el ticket', url: '{enlace}', fondo: '', color: '#ffffff' }]),
         ]),
     },
     ticket_mensaje: {
         grupo: 'personal', nombre: 'Soporte: mensaje nuevo en un ticket', cuando: 'Cuando alguien escribe en un ticket que llevas (o que abriste tú). Como mucho uno cada 15 minutos por ticket.',
-        asunto: 'Mensaje nuevo en el ticket #{numero}: {asunto}',
-        variables: { nombre: { que: 'Su nombre', ejemplo: 'Juan Manuel' }, numero: { que: 'Número del ticket', ejemplo: '366' }, asunto: { que: 'Asunto', ejemplo: 'No me deja pasar lista' }, quien: { que: 'Quién escribe', ejemplo: 'Patricia' }, enlace: { que: 'Enlace al ticket', ejemplo: 'https://www.aimeducation.es/admin/soporte/366' } },
+        asunto: 'Mensaje nuevo en el ticket {numero}: {asunto}',
+        variables: { nombre: { que: 'Su nombre', ejemplo: 'Juan Manuel' }, numero: { que: 'Referencia del ticket', ejemplo: 'AE-366' }, asunto: { que: 'Asunto', ejemplo: 'No me deja pasar lista' }, quien: { que: 'Quién escribe', ejemplo: 'Patricia' }, enlace: { que: 'Enlace al ticket', ejemplo: 'https://www.aimeducation.es/admin/soporte/366' } },
         automaticos: { mensaje: { nombre: 'El mensaje', ejemplo: 'Ya me deja, gracias.' } },
         obligatorio: [],
         diseno: () => d([
             T('Hola {nombre},'),
-            T('**{quien}** ha escrito en el ticket **#{numero} · {asunto}**:'),
+            T('**{quien}** ha escrito en el ticket **{numero} · {asunto}**:'),
             AUTO('mensaje'),
             BTN([{ texto: 'Contestar', url: '{enlace}', fondo: '', color: '#ffffff' }]),
         ]),
@@ -1050,7 +1050,7 @@ export const CORREOS_SISTEMA = {
         obligatorio: [],
         diseno: () => d([
             T('Hola {nombre},'),
-            T('Tu consulta **«{asunto}»** (#{numero}) se ha **{estado}**.'),
+            T('Tu consulta **«{asunto}»** ({numero}) se ha **{estado}**.'),
             T('Si necesitas algo más, escríbenos en ella y la volvemos a mirar.'),
             BTN([{ texto: 'Ver la consulta', url: '{enlace}', fondo: '', color: '#ffffff' }]),
         ]),

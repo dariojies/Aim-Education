@@ -114,7 +114,7 @@ export default function AdminCambios({ showToast }) {
     if (!n) return deApp;
     return deApp.filter(e => [appDe(e),
       e.titulo, e.texto, e.commit, e.release ? `v${e.release}` : '',
-      ...e.tickets.flatMap(t => [`#${t.id}`, t.asunto]),
+      ...e.tickets.flatMap(t => [`#${t.id}`, t.ref || '', t.asunto]),
       ...e.commits.flatMap(c => [c.mensaje, ...(c.novedades || [])]),
     ].some(v => String(v || '').toLowerCase().includes(n)));
   }, [datos, q, verApp]);
@@ -267,7 +267,7 @@ export default function AdminCambios({ showToast }) {
                     <a key={t.id} href={`/admin/soporte/${t.id}`} onClick={(ev) => { ev.preventDefault(); abrirTicket(t.id); }}
                       title={`${t.grupo[1]} · ${t.asunto || 'Sin asunto'}`}
                       style={{ ...chip(t.grupo[2], { fontWeight: 600, fontSize: 12, padding: '3px 10px', borderRadius: 999 }), textDecoration: 'none', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', display: 'inline-block' }}>
-                      <b>#{t.id}</b> {t.asunto || 'Sin asunto'}
+                      <b>{t.ref || `#${t.id}`}</b> {t.asunto || 'Sin asunto'}
                     </a>
                   ))}
                 </div>

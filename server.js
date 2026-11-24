@@ -346,6 +346,36 @@ async function initDb() {
             'adjunto TEXT', 'adjunto_nombre VARCHAR(255)', 'adjunto_mime VARCHAR(100)']) {
             await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS ${col}`);
         }
+        // Dos apartados que no se mezclan: 'aim' (Aim Education y sus apps) y
+        // 'empresa' (Aim Soluciones Digitales y KidsNGrow). Cada ticket tiene el suyo
+        // y su referencia propia dentro de él (AE-123, ASD-45). Los que ya había
+        // conservan su número de siempre; los nuevos siguen la cuenta de su
+        // apartado. Lo pone un trigger, así vale también para los tickets que
+        // crean las otras apps (Learning Dungeon, Brickslab, KidsNGrow) sin saberlo.
+        await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS espacio VARCHAR(10)`);
+        await client.query(`ALTER TABLE tickets_registrosoporte ADD COLUMN IF NOT EXISTS ref_numero INTEGER`);
+        await client.query(`UPDATE tickets_registrosoporte SET espacio = CASE WHEN COALESCE(app_label, '{}') && ARRAY['Aim Soluciones Digitales', 'KidsNGrow']::text[] THEN 'empresa' ELSE 'aim' END WHERE espacio IS NULL`);
+        await client.query(`UPDATE tickets_registrosoporte SET ref_numero = id WHERE ref_numero IS NULL`);
+        await client.query(`CREATE TABLE IF NOT EXISTS aim_ticket_contador (espacio VARCHAR(10) PRIMARY KEY, ultimo INTEGER NOT NULL)`);
+        await client.query(`INSERT INTO aim_ticket_contador (espacio, ultimo)
+                            SELECT espacio, MAX(ref_numero) FROM tickets_registrosoporte WHERE espacio IS NOT NULL GROUP BY espacio
+                            ON CONFLICT (espacio) DO NOTHING`);
+        await client.query(`
+            CREATE OR REPLACE FUNCTION aim_ticket_espacio() RETURNS trigger AS $f$
+            BEGIN
+                IF TG_OP = 'INSERT' AND NEW.espacio IS NULL THEN
+                    NEW.espacio := CASE WHEN COALESCE(NEW.app_label, '{}') && ARRAY['Aim Soluciones Digitales', 'KidsNGrow']::text[] THEN 'empresa' ELSE 'aim' END;
+                END IF;
+                IF TG_OP = 'INSERT' OR (OLD.espacio IS NOT NULL AND NEW.espacio IS DISTINCT FROM OLD.espacio) THEN
+                    INSERT INTO aim_ticket_contador (espacio, ultimo) VALUES (NEW.espacio, 1)
+                    ON CONFLICT (espacio) DO UPDATE SET ultimo = aim_ticket_contador.ultimo + 1
+                    RETURNING ultimo INTO NEW.ref_numero;
+                END IF;
+                RETURN NEW;
+            END $f$ LANGUAGE plpgsql`);
+        await client.query(`DROP TRIGGER IF EXISTS tr_ticket_espacio ON tickets_registrosoporte`);
+        await client.query(`CREATE TRIGGER tr_ticket_espacio BEFORE INSERT OR UPDATE OF espacio ON tickets_registrosoporte FOR EACH ROW EXECUTE FUNCTION aim_ticket_espacio()`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_espacio_estado ON tickets_registrosoporte(espacio, status)`);
         // Hilos de conversación del ticket. Hay dos canales separados: 'equipo' (entre
         // desarrolladores, no lo ve quien abrió el ticket) y 'creador' (con quien lo abrió).
         await client.query(`
@@ -5140,7 +5170,7 @@ app.get('/api/me/agenda', authenticateSession, requireAdmin, async (req, res) =>
             `SELECT id, to_char(inicio, 'HH24:MI') AS inicio, to_char(fin, 'HH24:MI') AS fin, nota
              FROM aim_it_planificacion WHERE user_id = $1 AND fecha = $2::date ORDER BY inicio`, [yo, fecha]
         );
-        const SEL_TAREA = `t.*, s.subject AS ticket_asunto, s.status AS ticket_estado, s.priority AS ticket_prioridad,
+        const SEL_TAREA = `t.*, s.subject AS ticket_asunto, s.status AS ticket_estado, s.priority AS ticket_prioridad, s.espacio AS ticket_espacio, s.ref_numero AS ticket_ref,
                     COALESCE(NULLIF(TRIM(CONCAT(ap.name, ' ', COALESCE(ap.surname, ''))), ''), ap.email) AS asignada_por_nombre,
                     COALESCE(NULLIF(TRIM(CONCAT(pa.name, ' ', COALESCE(pa.surname, ''))), ''), pa.email) AS para_nombre
              FROM aim_tareas t
@@ -5175,7 +5205,7 @@ app.get('/api/me/agenda', authenticateSession, requireAdmin, async (req, res) =>
             hechaAt: t.hecha_at || null,
             ticketId: t.ticket_id,
             ticket: t.ticket_id ? {
-                id: t.ticket_id, asunto: t.ticket_asunto,
+                id: t.ticket_id, ref: refTicket({ id: t.ticket_id, espacio: t.ticket_espacio, ref_numero: t.ticket_ref }), asunto: t.ticket_asunto,
                 estado: t.ticket_estado, prioridad: t.ticket_prioridad,
             } : null,
         });
@@ -5283,7 +5313,7 @@ app.post('/api/me/tareas', authenticateSession, requireAdmin, async (req, res) =
                 : `Esa hora queda fuera de tu horario de trabajo (${horaBonita(jornada.horaInicio)}–${horaBonita(jornada.horaFin)}). Cámbialo en tu día si quieres ampliarlo.` });
         }
         // El ticket, sin quedárselo nadie: a otro no se le asigna desde aquí.
-        const ticket = await ticketEnlazable(req, req.body.ticketId, para ? false : req.body.cogerTicket);
+        const ticket = await ticketEnlazable(req, req.body.ticketId, para ? false : req.body.cogerTicket, para);
         const r = await pool.query(
             `INSERT INTO aim_tareas (user_id, fecha, hora, hora_fin, titulo, notas, ticket_id, recurrencia, asignada_por)
              VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
@@ -5418,7 +5448,7 @@ async function avisosTareas(userId) {
 // instructor, cualquiera si lleva el soporte. Si se pide 'cogerlo' y no tiene
 // dueño, se lo queda quien lo enlaza — que es lo que se hace al ponérselo en el
 // día. Nunca se le quita a otro: si ya tiene dueño, se deja como está.
-async function ticketEnlazable(req, ticketId, coger) {
+async function ticketEnlazable(req, ticketId, coger, para = null) {
     if (ticketId == null || ticketId === '') return null;
     const id = Number(ticketId);
     if (!Number.isInteger(id)) throw { httP: 400, msg: 'Ese ticket no vale.' };
@@ -5430,6 +5460,11 @@ async function ticketEnlazable(req, ticketId, coger) {
         suyos ? [id, yo] : [id]
     );
     if (!r.rowCount) throw { httP: 404, msg: 'Ese ticket no existe o no es tuyo.' };
+    // Una tarea para otra persona con un ticket de la empresa: solo si esa persona la lleva.
+    if (para && await ticketDeEmpresa(id)) {
+        try { await comprobarEncargados(pool, [para], 'empresa'); }
+        catch { throw { httP: 400, msg: 'Ese ticket es de Aim Soluciones Digitales y esa persona no lleva esos tickets.' }; }
+    }
     if (coger && !r.rows[0].assigned_to && !r.rows[0].asignados_extra?.length) {
         await pool.query(
             `UPDATE tickets_registrosoporte SET assigned_to = $1
@@ -16488,14 +16523,55 @@ const PRIORIDADES_TICKET = { low: 'Baja', medium: 'Media', high: 'Alta' };
 // KidsNGrow. Van en su propio apartado de Soporte y solo los ve quien tiene
 // soporteEmpresa (permisos.js). Un ticket es de la empresa si lleva alguna de
 // estas etiquetas.
+// Desde el #657 cada ticket lleva su apartado en la columna «espacio» (la pone
+// un trigger al crearlo) y no se mezcla: las etiquetas de un apartado no valen
+// en el otro, y pasar un ticket al otro apartado es una acción aparte («Mover»).
 const APPS_EMPRESA = ['Aim Soluciones Digitales', 'KidsNGrow'];
-const SQL_TICKET_EMPRESA = (a) => `(COALESCE(${a}.app_label, '{}') && ARRAY['Aim Soluciones Digitales', 'KidsNGrow']::text[])`;
+const APPS_AIM = ['Aim Education', 'Learning Dungeon', 'Aim Training', 'Aim Brickslab', 'Aim Artemis', 'Aim Eventos', 'General/A Futuro'];
+const SQL_TICKET_EMPRESA = (a) => `(COALESCE(${a}.espacio, 'aim') = 'empresa')`;
 // El trozo de WHERE que deja fuera los de la empresa a quien no puede verlos.
 const sinEmpresaSi = (req, a = 's') => (permisos(req).soporteEmpresa ? '' : `AND NOT ${SQL_TICKET_EMPRESA(a)}`);
 const esTicketEmpresa = (labels) => (labels || []).some(l => APPS_EMPRESA.includes(l));
 async function ticketDeEmpresa(id) {
-    const r = await pool.query(`SELECT app_label FROM tickets_registrosoporte WHERE id = $1`, [id]);
-    return esTicketEmpresa(r.rows[0]?.app_label);
+    const r = await pool.query(`SELECT espacio FROM tickets_registrosoporte WHERE id = $1`, [id]);
+    return r.rows[0]?.espacio === 'empresa';
+}
+const NOMBRE_ESPACIO = { aim: 'Aim Education', empresa: 'Aim Soluciones Digitales' };
+// La referencia que se enseña: AE-123 o ASD-45 (la de siempre, #id, si no la hay).
+const refTicket = (t) => (t?.ref_numero ? `${t.espacio === 'empresa' ? 'ASD' : 'AE'}-${t.ref_numero}` : `#${t?.id}`);
+async function refDe(id, db = pool) {
+    const r = (await db.query(`SELECT id, espacio, ref_numero FROM tickets_registrosoporte WHERE id = $1`, [id])).rows[0];
+    return r ? refTicket(r) : `#${id}`;
+}
+// Las etiquetas de un ticket, solo las de su apartado. Si llega alguna del otro,
+// es un error: para eso está «Mover al otro apartado».
+function etiquetasDeEspacio(labels, espacio) {
+    const l = [...new Set((Array.isArray(labels) ? labels : [labels]).map(String).filter(Boolean))].slice(0, 10);
+    const validas = espacio === 'empresa' ? APPS_EMPRESA : APPS_AIM;
+    const fuera = l.filter(x => !validas.includes(x));
+    if (fuera.length) throw { httP: 400, msg: `«${fuera.join('», «')}» no es de este apartado. Para pasar el ticket al otro, usa «Mover al otro apartado».` };
+    return l.length ? l : [espacio === 'empresa' ? 'Aim Soluciones Digitales' : 'Aim Education'];
+}
+// Quién puede llevar tickets de un apartado: de Aim, el personal del club; de la
+// empresa, solo el Equipo IT y los superadmin (los que tienen soporteEmpresa).
+async function comprobarEncargados(db, ids, espacio) {
+    const l = [...new Set((ids || []).filter(Boolean).map(String))];
+    if (!l.length) return;
+    const r = await db.query(
+        `SELECT u.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre, u.role, u.dev_role, ar.rango
+         FROM users u LEFT JOIN aim_rangos ar ON ar.user_id = u.user_id WHERE u.user_id = ANY($1::uuid[])`, [l]);
+    const malos = l.filter(id => {
+        const u = r.rows.find(x => String(x.user_id) === id);
+        if (!u) return true;
+        const rol = rolEfectivo(u.role, u.dev_role, u.rango);
+        return espacio === 'empresa' ? !['equipo_it', 'superadmin'].includes(rol) : !rol;
+    });
+    if (malos.length) {
+        const nombres = malos.map(id => r.rows.find(x => String(x.user_id) === id)?.nombre || 'alguien').join(', ');
+        throw { httP: 400, msg: espacio === 'empresa'
+            ? `${nombres} no puede llevar tickets de Aim Soluciones Digitales: solo el Equipo IT y los superadmin.`
+            : `${nombres} no es del personal del club: no puede llevar tickets.` };
+    }
 }
 // Adjuntos: imágenes, PDF, Office, texto y zip; hasta 4 MB (en base64 ocupa más).
 const ADJUNTO_TICKET_RE = /^data:(image\/(png|jpe?g|gif|webp)|application\/pdf|application\/msword|application\/vnd\.ms-excel|application\/vnd\.openxmlformats-officedocument\.(wordprocessingml\.document|spreadsheetml\.sheet|presentationml\.presentation)|text\/plain|text\/csv|application\/zip|application\/x-zip-compressed);base64,/;
@@ -16545,7 +16621,7 @@ const fechaTicket = (f) => (f ? new Date(f).toLocaleDateString('es-ES', { timeZo
 async function aplicarCambiosTicket(cliente, id, c, userId) {
     const r = await cliente.query(
         `SELECT id, user_id, subject, description, status, etapa, priority, due_date, assigned_to, asignados_extra,
-                app_label, recurrencia, categoria
+                app_label, recurrencia, categoria, espacio, ref_numero
          FROM tickets_registrosoporte WHERE id = $1 FOR UPDATE`, [id]);
     if (!r.rowCount) throw { httP: 404, msg: 'Ese ticket no existe.' };
     const p = r.rows[0];
@@ -16568,12 +16644,13 @@ async function aplicarCambiosTicket(cliente, id, c, userId) {
     }
     if (c.assignedIds !== undefined || c.assignedTo !== undefined) {
         const e = encargadosDe(c);
+        // Solo quien puede llevar tickets de su apartado (y solo los nuevos: a
+        // quien ya estaba no se le quita por esto).
+        const antes = [p.assigned_to, ...(p.asignados_extra || [])].filter(Boolean).map(String);
+        await comprobarEncargados(cliente, [e.principal, ...e.extra].filter(x => x && !antes.includes(String(x))), p.espacio);
         n.assigned_to = e.principal; n.asignados_extra = e.extra;
     }
-    if (c.appLabel !== undefined) {
-        const l = (Array.isArray(c.appLabel) ? c.appLabel : [c.appLabel]).map(String).filter(Boolean).slice(0, 10);
-        n.app_label = l.length ? l : ['Aim Education'];
-    }
+    if (c.appLabel !== undefined) n.app_label = etiquetasDeEspacio(c.appLabel, p.espacio);
     if (c.recurrencia !== undefined) n.recurrencia = RECURRENCIAS.includes(c.recurrencia) ? c.recurrencia : null;
     const esFinal = ['resolved', 'closed'].includes(n.status);
     // Al resolver/cerrar uno recurrente se genera el siguiente y este deja de serlo.
@@ -16605,12 +16682,12 @@ async function aplicarCambiosTicket(cliente, id, c, userId) {
         const sig = siguienteFechaRecurrente(n.due_date, n.recurrencia);
         const nuevo = await cliente.query(
             `INSERT INTO tickets_registrosoporte
-               (user_id, subject, description, app_label, priority, assigned_to, due_date, recurrencia, asignados_extra, categoria)
-             VALUES ($1,$2,$3,$4::TEXT[],$5,$6,$7,$8,$9::uuid[],$10) RETURNING id`,
+               (user_id, subject, description, app_label, priority, assigned_to, due_date, recurrencia, asignados_extra, categoria, espacio)
+             VALUES ($1,$2,$3,$4::TEXT[],$5,$6,$7,$8,$9::uuid[],$10,$11) RETURNING id`,
             [p.user_id, p.subject, p.description, n.app_label, n.priority, n.assigned_to, sig ? sig.toISOString() : null,
-             n.recurrencia, n.asignados_extra || [], n.categoria]);
+             n.recurrencia, n.asignados_extra || [], n.categoria, p.espacio]);
         siguienteId = nuevo.rows[0].id;
-        await anotarHistorial(cliente, siguienteId, userId, [{ campo: 'creado', antes: null, despues: `Repetición del #${id}` }]);
+        await anotarHistorial(cliente, siguienteId, userId, [{ campo: 'creado', antes: null, despues: `Repetición del ${refTicket(p)}` }]);
     }
     return { prev: p, nuevo: n, siguienteId, nuevosEncargados: encDespues.filter(x => !encAntes.includes(x)) };
 }
@@ -16639,7 +16716,7 @@ async function avisarTicket(clave, personas, vars, { automaticos = {}, automatic
         try {
             const c = await correoSistema(clave, {
                 ...vars, nombre: p.name || '',
-                enlace: p.personal ? `${URL_PUBLICA_WEB}/admin/soporte/${vars.numero}` : `${URL_PUBLICA_WEB}/dashboard/soporte`,
+                enlace: p.personal ? `${URL_PUBLICA_WEB}/admin/soporte/${vars.id ?? vars.numero}` : `${URL_PUBLICA_WEB}/dashboard/soporte`,
             }, { automaticos, automaticosTexto });
             await mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: p.email, ...c });
         } catch (e) { if (!e.apagado) console.error(`[soporte] ${clave}:`, e.message); }
@@ -16665,25 +16742,30 @@ app.post('/api/support', authenticateSession, async (req, res) => {
     const priority = staff && PRIORIDADES_TICKET[b.priority] ? b.priority : 'low';
     const enc = staff ? encargadosDe(b) : { principal: null, extra: [] };
     const dueDate = staff && /^\d{4}-\d{2}-\d{2}$/.test(b.dueDate || '') ? b.dueDate : null;
-    const appLabel = staff && Array.isArray(b.appLabel) && b.appLabel.length ? b.appLabel : ['Aim Education'];
-    if (esTicketEmpresa(appLabel) && !permisos(req).soporteEmpresa) return res.status(403).json({ error: 'Los tickets de Aim Soluciones Digitales los lleva el Equipo IT.' });
+    // El apartado: el que se pide (la empresa, solo quien la lleva) o, si no se
+    // dice, el que marquen las etiquetas. Una familia, siempre Aim Education.
+    const espacio = staff && (b.espacio === 'empresa' || (b.espacio === undefined && esTicketEmpresa(b.appLabel))) ? 'empresa' : 'aim';
+    if (espacio === 'empresa' && !permisos(req).soporteEmpresa) return res.status(403).json({ error: 'Los tickets de Aim Soluciones Digitales los lleva el Equipo IT.' });
     const recurrencia = staff && RECURRENCIAS.includes(b.recurrencia) ? b.recurrencia : null;
     const categoria = staff ? (CATEGORIAS_TICKET[b.categoria] ? b.categoria : null) : 'familia';
     try {
+        const appLabel = staff && Array.isArray(b.appLabel) && b.appLabel.length ? etiquetasDeEspacio(b.appLabel, espacio) : [NOMBRE_ESPACIO[espacio]];
+        await comprobarEncargados(pool, [enc.principal, ...enc.extra], espacio);
         const result = await pool.query(
             `INSERT INTO tickets_registrosoporte
                (user_id, subject, description, app_label, adjunto, adjunto_nombre, adjunto_mime,
-                priority, assigned_to, due_date, recurrencia, asignados_extra, categoria)
-             VALUES ($1,$2,$3,$4::TEXT[],$5,$6,$7,$8,$9,$10::date,$11,$12::uuid[],$13) RETURNING id`,
+                priority, assigned_to, due_date, recurrencia, asignados_extra, categoria, espacio)
+             VALUES ($1,$2,$3,$4::TEXT[],$5,$6,$7,$8,$9,$10::date,$11,$12::uuid[],$13,$14) RETURNING id, espacio, ref_numero`,
             [userId, String(subject).trim().slice(0, 255), description, appLabel, adjunto || null, adjuntoNombre || null, adjuntoMime || null,
-             priority, enc.principal, dueDate, recurrencia, enc.extra, categoria]
+             priority, enc.principal, dueDate, recurrencia, enc.extra, categoria, espacio]
         );
         const ticketId = result.rows[0].id;
+        const ref = refTicket(result.rows[0]);
         await anotarHistorial(pool, ticketId, userId, [{ campo: 'creado', antes: null, despues: 'Ticket abierto' }]);
         const para = mailTransporter ? await destinatariosTicket({ creador: userId, encargados: [enc.principal, ...enc.extra] }).catch(() => []) : [];
         if (para.length) {
             correoSistema('aviso_ticket', {
-                numero: ticketId, asunto: subject,
+                numero: ref, apartado: NOMBRE_ESPACIO[espacio], asunto: subject,
                 autor: `${req.userSession.firstName || ''} ${req.userSession.lastName || ''}`.trim(), email: req.userSession.email || '',
             }, {
                 automaticos: { descripcion: `<div style="white-space:pre-wrap">${escHtml(description)}</div>` },
@@ -16692,8 +16774,9 @@ app.post('/api/support', authenticateSession, async (req, res) => {
                 pool.query('UPDATE tickets_registrosoporte SET email_sent = true WHERE id = $1', [ticketId]).catch(() => {});
             }).catch(err => { if (!err.apagado) console.error('[SMTP ERROR]', err.message); });
         }
-        res.json({ success: true, ticketId });
+        res.json({ success: true, ticketId, ref });
     } catch (err) {
+        if (err?.httP) return res.status(err.httP).json({ error: err.msg });
         console.error('[SUPPORT] Create error:', err);
         res.status(500).json({ error: 'Error al crear el ticket.' });
     }
@@ -16795,7 +16878,7 @@ app.get('/api/support', authenticateSession, async (req, res) => {
         // Columnas explícitas a propósito: 'adjunto' guarda la imagen en base64 y con
         // s.* el listado entero se llevaría todas las capturas por delante.
         const result = await pool.query(`
-            SELECT s.id, s.user_id, s.subject, s.description, s.status, s.etapa, s.categoria, s.priority,
+            SELECT s.id, s.user_id, s.subject, s.description, s.status, s.etapa, s.categoria, s.priority, s.espacio, s.ref_numero,
                    s.due_date, s.assigned_to, s.asignados_extra, s.app_label, s.dev_response, s.email_sent, s.recurrencia,
                    s.created_at, s.updated_at, s.resolved_at, s.vinculo_id,
                    (s.adjunto IS NOT NULL) AS tiene_adjunto, s.adjunto_nombre, s.adjunto_mime,
@@ -16832,6 +16915,7 @@ app.get('/api/support', authenticateSession, async (req, res) => {
         for (const t of result.rows) {
             const vistos = new Set();
             t.asignados = t.asignados.filter(a => !vistos.has(a.id) && vistos.add(a.id));
+            t.ref = refTicket(t);
         }
         res.set('Cache-Control', 'no-store');
         res.json({ success: true, tickets: result.rows, soloMios, diasParado: await diasParadoTicket(), empresa: !!permisos(req).soporteEmpresa });
@@ -16856,7 +16940,7 @@ async function puedeTocarTicket(req, id) {
 async function avisosTrasCambio(req, id, r) {
     const yo = req.userSession.userId;
     const quien = `${req.userSession.firstName || ''} ${req.userSession.lastName || ''}`.trim() || 'Alguien';
-    const vars = { numero: id, asunto: r.prev.subject, quien };
+    const vars = { numero: refTicket(r.prev), id, asunto: r.prev.subject, quien };
     if (r.nuevosEncargados.length) {
         avisarTicket('ticket_asignado', await correosDePersonas(r.nuevosEncargados, { excluir: yo }), vars, {
             sinFreno: true,
@@ -16913,7 +16997,7 @@ async function resolverEsperaDeploy() {
 async function resolverTicketsEnEspera(etiqueta, fecha) {
     const resueltos = [];
     const r = await pool.query(
-        `SELECT s.id, s.subject, s.categoria, s.app_label, h.user_id AS quien
+        `SELECT s.id, s.subject, s.categoria, s.app_label, s.espacio, s.ref_numero, h.user_id AS quien
          FROM tickets_registrosoporte s
          LEFT JOIN LATERAL (SELECT h.user_id, h.created_at FROM aim_ticket_historial h
                             WHERE h.ticket_id = s.id AND h.campo = 'estado' AND h.despues = $1
@@ -16928,7 +17012,7 @@ async function resolverTicketsEnEspera(etiqueta, fecha) {
             await client.query('BEGIN');
             const hecho = await aplicarCambiosTicket(client, t.id, { status: 'resolved' }, null);
             await client.query('COMMIT');
-            resueltos.push({ id: t.id, asunto: t.subject, categoria: t.categoria, empresa: esTicketEmpresa(t.app_label) });
+            resueltos.push({ id: t.id, ref: refTicket(t), asunto: t.subject, categoria: t.categoria, empresa: t.espacio === 'empresa' });
             // El aviso sale como de quien lo dejó esperando al deploy.
             const u = t.quien ? (await pool.query(`SELECT name, surname FROM users WHERE user_id = $1`, [t.quien])).rows[0] : null;
             const req = { userSession: { userId: t.quien, firstName: u?.name || 'Aim Education', lastName: u?.surname || '' } };
@@ -16972,35 +17056,40 @@ async function procesarDeploysDeOtrasApps() {
 }
 
 // Respuestas guardadas, para lo que se contesta a menudo.
+// Cada apartado tiene las suyas (las de la empresa, solo quien la lleva).
+const claveRespuestas = (req) => {
+    if (req.query?.espacio === 'empresa') {
+        if (!permisos(req).soporteEmpresa) throw { httP: 403, msg: 'Sin permisos.' };
+        return 'soporte_respuestas_empresa';
+    }
+    return 'soporte_respuestas';
+};
 app.get('/api/support/respuestas', authenticateSession, async (req, res) => {
     if (!req.userSession.canAccessAdmin) return res.status(403).json({ error: 'Sin permisos.' });
     try {
-        const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = 'soporte_respuestas'`);
+        const r = await pool.query(`SELECT valor FROM aim_ajustes WHERE clave = $1`, [claveRespuestas(req)]);
         res.set('Cache-Control', 'no-store');
         res.json({ respuestas: Array.isArray(r.rows[0]?.valor) ? r.rows[0].valor : [] });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { if (err?.httP) return res.status(err.httP).json({ error: err.msg }); res.status(500).json({ error: err.message }); }
 });
 app.put('/api/support/respuestas', authenticateSession, async (req, res) => {
-    if (!req.userSession.canAccessAdmin) return res.status(403).json({ error: 'Sin permisos.' });
+    if (!req.userSession.canAccessAdmin || !permisos(req).soporteCompleto) return res.status(403).json({ error: 'Las respuestas guardadas las cambia quien lleva el soporte.' });
     const lista = (Array.isArray(req.body?.respuestas) ? req.body.respuestas : []).slice(0, 60)
         .map(x => ({ id: String(x?.id || crypto.randomUUID()).slice(0, 40), titulo: String(x?.titulo || '').trim().slice(0, 80), texto: String(x?.texto || '').trim().slice(0, 3000) }))
         .filter(x => x.titulo && x.texto);
     try {
         await pool.query(
-            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ('soporte_respuestas', $1::jsonb, NOW(), $2)
+            `INSERT INTO aim_ajustes (clave, valor, actualizado_at, actualizado_por) VALUES ($3, $1::jsonb, NOW(), $2)
              ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_at = NOW(), actualizado_por = EXCLUDED.actualizado_por`,
-            [JSON.stringify(lista), req.userSession.userId]);
+            [JSON.stringify(lista), req.userSession.userId, claveRespuestas(req)]);
         res.json({ success: true, respuestas: lista });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { if (err?.httP) return res.status(err.httP).json({ error: err.msg }); res.status(500).json({ error: err.message }); }
 });
 
 app.put('/api/support/:id', authenticateSession, async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) return res.status(400).json({ error: 'Ticket no válido.' });
     if (!(await puedeTocarTicket(req, id))) return res.status(403).json({ error: 'Ese ticket no es tuyo.' });
-    if (req.body?.appLabel !== undefined && esTicketEmpresa([].concat(req.body.appLabel)) && !permisos(req).soporteEmpresa) {
-        return res.status(403).json({ error: 'Los tickets de Aim Soluciones Digitales los lleva el Equipo IT.' });
-    }
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
@@ -17023,7 +17112,9 @@ app.post('/api/support/lote', authenticateSession, async (req, res) => {
     const permitidos = ['status', 'etapa', 'priority', 'categoria', 'assignedIds'];
     const c = Object.fromEntries(Object.entries(cambios).filter(([k]) => permitidos.includes(k)));
     if (!ids.length || !Object.keys(c).length) return res.status(400).json({ error: 'Elige tickets y qué cambiar.' });
-    for (const id of ids) if (!(await puedeTocarTicket(req, id))) return res.status(403).json({ error: `El ticket #${id} no es tuyo.` });
+    for (const id of ids) if (!(await puedeTocarTicket(req, id))) return res.status(403).json({ error: `El ticket ${await refDe(id)} no es tuyo.` });
+    const esp = (await pool.query(`SELECT DISTINCT espacio FROM tickets_registrosoporte WHERE id = ANY($1::int[])`, [ids])).rows;
+    if (esp.length > 1) return res.status(400).json({ error: 'Hay tickets de los dos apartados: cámbialos por separado.' });
     const client = await pool.connect();
     const hechos = [];
     try {
@@ -17032,6 +17123,47 @@ app.post('/api/support/lote', authenticateSession, async (req, res) => {
         await client.query('COMMIT');
         for (const [id, r] of hechos) avisosTrasCambio(req, id, r).catch(() => {});
         res.json({ success: true, cambiados: hechos.length });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        if (err?.httP) return res.status(err.httP).json({ error: err.msg });
+        res.status(500).json({ error: err.message });
+    } finally { client.release(); }
+});
+
+// Pasar un ticket al otro apartado: solo quien lleva los dos, a propósito y
+// quedando en el historial. Recibe una referencia nueva en su apartado (la de
+// antes queda en el historial) y las etiquetas del nuevo. Los encargados que no
+// pueden llevar tickets de la empresa se quitan. Uno de KidsNGrow no puede
+// pasar a Aim: está unido a una guardería, que vería lo que se le contestara.
+app.post('/api/support/:id/mover', authenticateSession, async (req, res) => {
+    const id = Number(req.params.id);
+    const a = req.body?.espacio === 'empresa' ? 'empresa' : req.body?.espacio === 'aim' ? 'aim' : null;
+    if (!Number.isInteger(id) || !a) return res.status(400).json({ error: 'Dime a qué apartado.' });
+    if (!permisos(req).soporteEmpresa) return res.status(403).json({ error: 'Solo el Equipo IT puede pasar tickets de un apartado a otro.' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const t = (await client.query(`SELECT id, espacio, ref_numero, assigned_to, asignados_extra FROM tickets_registrosoporte WHERE id = $1 FOR UPDATE`, [id])).rows[0];
+        if (!t) throw { httP: 404, msg: 'Ese ticket no existe.' };
+        if (t.espacio === a) throw { httP: 400, msg: 'Ya está en ese apartado.' };
+        if (a === 'aim' && (await client.query(`SELECT 1 FROM kng_tickets WHERE ticket_id = $1`, [id]).catch(() => ({ rowCount: 0 }))).rowCount) {
+            throw { httP: 409, msg: 'Es de una guardería de KidsNGrow: no puede pasar a Aim Education.' };
+        }
+        const refAntes = refTicket(t);
+        // Los encargados que no pueden llevar tickets del apartado nuevo, fuera.
+        let enc = [t.assigned_to, ...(t.asignados_extra || [])].filter(Boolean).map(String);
+        const validos = [];
+        for (const u of enc) { try { await comprobarEncargados(client, [u], a); validos.push(u); } catch { /* no vale en el nuevo */ } }
+        const n = (await client.query(
+            `UPDATE tickets_registrosoporte SET espacio = $2, app_label = $3::text[], assigned_to = $4, asignados_extra = $5::uuid[], updated_at = NOW()
+             WHERE id = $1 RETURNING id, espacio, ref_numero`,
+            [id, a, [NOMBRE_ESPACIO[a]], validos[0] || null, validos.slice(1)])).rows[0];
+        await anotarHistorial(client, id, req.userSession.userId, [
+            { campo: 'apartado', antes: `${NOMBRE_ESPACIO[t.espacio]} (${refAntes})`, despues: `${NOMBRE_ESPACIO[a]} (${refTicket(n)})` },
+            ...(validos.length !== enc.length ? [{ campo: 'encargados', antes: await nombresDe(client, enc), despues: await nombresDe(client, validos) }] : []),
+        ]);
+        await client.query('COMMIT');
+        res.json({ success: true, espacio: a, ref: refTicket(n) });
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
         if (err?.httP) return res.status(err.httP).json({ error: err.msg });
@@ -17140,18 +17272,22 @@ app.get('/api/support/resumen', authenticateSession, async (req, res) => {
 // Dos canales: 'equipo' (solo desarrolladores) y 'creador' (con quien lo abrió).
 // Quien abrió el ticket solo alcanza su propio ticket y solo el canal 'creador'.
 async function accesoTicket(req, ticketId, canal) {
-    const t = await pool.query('SELECT id, user_id FROM tickets_registrosoporte WHERE id = $1', [ticketId]);
+    const t = await pool.query('SELECT id, user_id, assigned_to, asignados_extra, espacio FROM tickets_registrosoporte WHERE id = $1', [ticketId]);
     if (!t.rowCount) return { error: 'Ticket no encontrado.', code: 404 };
+    const x = t.rows[0], yo = String(req.userSession.userId);
     const esStaff = req.userSession.isSuperAdmin || req.userSession.canAccessAdmin;
-    if (esStaff && !permisos(req).soporteEmpresa && String(t.rows[0].user_id) !== String(req.userSession.userId) && await ticketDeEmpresa(ticketId)) {
-        return { error: 'Sin permisos.', code: 403 };
+    const veApartado = x.espacio !== 'empresa' || permisos(req).soporteEmpresa;
+    const esEncargado = String(x.assigned_to) === yo || (x.asignados_extra || []).map(String).includes(yo);
+    // Como el equipo (los dos canales): quien tiene el soporte completo de ese
+    // apartado o lo lleva. Antes cualquiera del personal leía el canal interno
+    // de cualquier ticket escribiendo su número.
+    if (esStaff && veApartado && (permisos(req).soporteCompleto || esEncargado)) return { ticket: x, esStaff: true };
+    // Quien lo abrió: solo su conversación con el club.
+    if (String(x.user_id) === yo) {
+        if (canal && canal !== 'creador') return { error: 'Sin permisos.', code: 403 };
+        return { ticket: x, esStaff: false };
     }
-    if (esStaff) return { ticket: t.rows[0], esStaff: true };
-    if (String(t.rows[0].user_id) !== String(req.userSession.userId)) {
-        return { error: 'Sin permisos.', code: 403 };
-    }
-    if (canal && canal !== 'creador') return { error: 'Sin permisos.', code: 403 };
-    return { ticket: t.rows[0], esStaff: false };
+    return { error: 'Sin permisos.', code: 403 };
 }
 
 app.get('/api/support/:id/mensajes', authenticateSession, async (req, res) => {
@@ -17233,7 +17369,7 @@ app.post('/api/support/:id/mensajes', authenticateSession, async (req, res) => {
         // no tiene) y, si el club contesta en el canal del creador, a quien lo abrió.
         (async () => {
             const quien = `${req.userSession.firstName || ''} ${req.userSession.lastName || ''}`.trim() || 'Alguien';
-            const vars = { numero: t.id, asunto: t.subject, quien };
+            const vars = { numero: await refDe(t.id), id: t.id, asunto: t.subject, quien };
             const txt = textoMensaje(cuerpo);
             let encargados = [t.assigned_to, ...(t.asignados_extra || [])].filter(Boolean);
             if (!encargados.length && String(t.user_id) === String(yo)) {
@@ -17283,7 +17419,7 @@ app.get('/api/support/:id/adjunto', authenticateSession, async (req, res) => {
 app.get('/api/support/mios', authenticateSession, async (req, res) => {
     try {
         const r = await pool.query(
-            `SELECT s.id, s.subject, s.description, s.status, s.etapa, s.created_at,
+            `SELECT s.id, s.subject, s.description, s.status, s.etapa, s.created_at, s.espacio, s.ref_numero,
                     s.updated_at, s.resolved_at,
                     (s.adjunto IS NOT NULL) AS tiene_adjunto, s.adjunto_nombre, s.adjunto_mime,
                     (SELECT COUNT(*) FROM tickets_mensajes m WHERE m.ticket_id = s.id AND m.canal = 'creador')::int AS mensajes,
@@ -17296,7 +17432,7 @@ app.get('/api/support/mios', authenticateSession, async (req, res) => {
             [req.userSession.userId]
         );
         res.set('Cache-Control', 'no-store');
-        res.json({ success: true, tickets: r.rows });
+        res.json({ success: true, tickets: r.rows.map(t => ({ ...t, ref: refTicket(t) })) });
     } catch (err) {
         console.error('[SUPPORT] Mis tickets error:', err);
         res.status(500).json({ error: err.message });
@@ -17324,7 +17460,7 @@ async function avisosSoportePeriodicos() {
             if (hechos.fecha !== hoy) {
                 const dias = await diasParadoTicket();
                 const r = await pool.query(
-                    `SELECT e.user_id, s.id, s.subject, s.due_date,
+                    `SELECT e.user_id, s.id, s.subject, s.due_date, s.espacio, s.ref_numero,
                             (s.due_date IS NOT NULL AND s.due_date::date < $1::date) AS vencido,
                             EXTRACT(DAY FROM NOW() - COALESCE(s.updated_at, s.created_at))::int AS dias
                      FROM tickets_registrosoporte s
@@ -17335,14 +17471,25 @@ async function avisosSoportePeriodicos() {
                      ORDER BY s.due_date NULLS LAST, s.id`, [hoy, dias]);
                 const porPersona = new Map();
                 for (const x of r.rows) { if (!porPersona.has(x.user_id)) porPersona.set(x.user_id, []); porPersona.get(x.user_id).push(x); }
-                for (const [uid, lista] of porPersona) {
+                // Quién lleva la empresa: a los demás no se les cuenta nada de ella.
+                const conEmpresa = new Set((await pool.query(
+                    `SELECT u.user_id FROM users u LEFT JOIN aim_rangos ar ON ar.user_id = u.user_id
+                     WHERE ar.rango = 'equipo_it' OR u.dev_role = 'superadmin' OR LOWER(COALESCE(u.role, '')) = 'superadmin'`)).rows.map(x => String(x.user_id)));
+                for (const [uid, todos] of porPersona) {
+                    const lista = todos.filter(t => t.espacio !== 'empresa' || conEmpresa.has(String(uid)));
+                    if (!lista.length) continue;
                     const [p] = await correosDePersonas([uid]);
                     if (!p) continue;
-                    const fila = (t) => `#${t.id} ${t.subject}${t.vencido ? ` · venció el ${fechaTicket(t.due_date)}` : ''}${t.dias >= dias ? ` · ${t.dias} días sin moverse` : ''}`;
+                    const fila = (t) => `${refTicket(t)} ${t.subject}${t.vencido ? ` · venció el ${fechaTicket(t.due_date)}` : ''}${t.dias >= dias ? ` · ${t.dias} días sin moverse` : ''}`;
+                    // Separados por apartado, cada uno con su título.
+                    const grupos = ['aim', 'empresa'].map(e => [e, lista.filter(t => (t.espacio || 'aim') === e)]).filter(([, l]) => l.length);
+                    const varios = grupos.length > 1;
+                    const html = grupos.map(([e, l]) => `${varios ? `<p style="margin:12px 0 2px;font-weight:700">${escHtml(NOMBRE_ESPACIO[e])}</p>` : ''}<ul style="margin:6px 0;padding-left:18px">${l.map(t => `<li style="margin:4px 0"><a href="${URL_PUBLICA_WEB}/admin/soporte/${t.id}" style="color:#5233A8">${escHtml(fila(t))}</a></li>`).join('')}</ul>`).join('');
+                    const texto = grupos.map(([e, l]) => `${varios ? `${NOMBRE_ESPACIO[e]}\n` : ''}${l.map(t => `- ${fila(t)}`).join('\n')}`).join('\n\n');
                     try {
                         const c = await correoSistema('tickets_vencidos', { nombre: p.name || '', cuantos: String(lista.length), enlace: `${URL_PUBLICA_WEB}/admin/soporte` }, {
-                            automaticos: { lista: `<ul style="margin:6px 0;padding-left:18px">${lista.map(t => `<li style="margin:4px 0"><a href="${URL_PUBLICA_WEB}/admin/soporte/${t.id}" style="color:#5233A8">${escHtml(fila(t))}</a></li>`).join('')}</ul>` },
-                            automaticosTexto: { lista: lista.map(t => `- ${fila(t)}`).join('\n') },
+                            automaticos: { lista: html },
+                            automaticosTexto: { lista: texto },
                         });
                         await mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: p.email, ...c });
                     } catch (e) { if (!e.apagado) console.error('[soporte] aviso diario:', e.message); }
@@ -17370,22 +17517,31 @@ async function avisosSoportePeriodicos() {
             && hora >= await ajusteSistema('tickets_resumen_semanal', 'hora')) {
             const hecho = await leer('soporte_resumen_semanal');
             if (hecho.fecha !== hoy) {
-                const s = await resumenSoporte(7);
+                // Un bloque por apartado: los dos van al Equipo IT, que lleva los dos.
                 const ids = (await pool.query(`SELECT user_id FROM aim_rangos WHERE rango = 'equipo_it'`)).rows.map(x => x.user_id);
                 const para = await correosDePersonas(ids);
                 const horas = (v) => (v == null ? '—' : v < 48 ? `${v} h` : `${Math.round(v / 24)} días`);
-                const filas = [
-                    ['Entraron', s.entraron], ['Resueltos', s.resueltos], ['Abiertos ahora', s.abiertos], ['Sin asignar', s.sinAsignar],
-                    ['Vencidos', s.vencidos], [`Parados (más de ${s.diasParado} días)`, s.parados],
-                    ['Primera respuesta (mediana)', horas(s.horasResponder)], ['Resolver (mediana)', horas(s.horasResolver)],
-                ];
-                const personas = s.porPersona.map(p => `${p.nombre}: ${p.abiertos} abiertos${p.vencidos ? ` (${p.vencidos} vencidos)` : ''}, ${p.resueltos} resueltos`);
+                const bloques = [];
+                for (const e of ['aim', 'empresa']) {
+                    const s = await resumenSoporte(7, e);
+                    if (e === 'empresa' && !s.entraron && !s.abiertos && !s.resueltos) continue;
+                    const filas = [
+                        ['Entraron', s.entraron], ['Resueltos', s.resueltos], ['Abiertos ahora', s.abiertos], ['Sin asignar', s.sinAsignar],
+                        ['Vencidos', s.vencidos], [`Parados (más de ${s.diasParado} días)`, s.parados],
+                        ['Primera respuesta (mediana)', horas(s.horasResponder)], ['Resolver (mediana)', horas(s.horasResolver)],
+                    ];
+                    const personas = s.porPersona.map(p => `${p.nombre}: ${p.abiertos} abiertos${p.vencidos ? ` (${p.vencidos} vencidos)` : ''}, ${p.resueltos} resueltos`);
+                    bloques.push({ titulo: NOMBRE_ESPACIO[e], filas, personas });
+                }
+                const conTitulos = bloques.length > 1;
+                const resumenHtml = bloques.map(b => `${conTitulos ? `<p style="margin:14px 0 4px;font-weight:800;font-size:15px">${escHtml(b.titulo)}</p>` : ''}<table role="presentation" style="border-collapse:collapse;font-size:14px;margin:6px 0">${b.filas.map(([k, v]) => `<tr><td style="padding:3px 14px 3px 0;color:#666">${escHtml(k)}</td><td style="font-weight:700">${escHtml(String(v))}</td></tr>`).join('')}</table>`
+                    + (b.personas.length ? `<p style="margin:10px 0 4px;font-weight:700">Por persona</p><ul style="margin:0;padding-left:18px">${b.personas.map(x => `<li>${escHtml(x)}</li>`).join('')}</ul>` : '')).join('');
+                const resumenTexto = bloques.map(b => [...(conTitulos ? [b.titulo.toUpperCase()] : []), ...b.filas.map(([k, v]) => `${k}: ${v}`), '', ...b.personas].join('\n')).join('\n\n');
                 for (const p of para) {
                     try {
                         const c = await correoSistema('tickets_resumen_semanal', { nombre: p.name || '', enlace: `${URL_PUBLICA_WEB}/admin/soporte` }, {
-                            automaticos: { resumen: `<table role="presentation" style="border-collapse:collapse;font-size:14px;margin:6px 0">${filas.map(([k, v]) => `<tr><td style="padding:3px 14px 3px 0;color:#666">${escHtml(k)}</td><td style="font-weight:700">${escHtml(String(v))}</td></tr>`).join('')}</table>`
-                                + (personas.length ? `<p style="margin:10px 0 4px;font-weight:700">Por persona</p><ul style="margin:0;padding-left:18px">${personas.map(x => `<li>${escHtml(x)}</li>`).join('')}</ul>` : '') },
-                            automaticosTexto: { resumen: [...filas.map(([k, v]) => `${k}: ${v}`), '', ...personas].join('\n') },
+                            automaticos: { resumen: resumenHtml },
+                            automaticosTexto: { resumen: resumenTexto },
                         });
                         await mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: p.email, ...c });
                     } catch (e) { if (!e.apagado) console.error('[soporte] resumen semanal:', e.message); }
@@ -17523,7 +17679,8 @@ async function resumenMiDia(yo) {
                     FROM aim_tareas WHERE user_id = $1`, [yo]),
         pool.query(`SELECT id, titulo, hora FROM aim_tareas WHERE user_id = $1 AND fecha = ${HOY_SQL} AND NOT hecha
                     ORDER BY hora NULLS LAST, id LIMIT 5`, [yo]),
-        pool.query(`SELECT COUNT(*)::int n FROM tickets_registrosoporte WHERE status = 'open' AND etapa IS DISTINCT FROM 'pausa' AND (assigned_to = $1 OR $1 = ANY(asignados_extra))`, [yo]),
+        pool.query(`SELECT COUNT(*) FILTER (WHERE espacio IS DISTINCT FROM 'empresa')::int n, COUNT(*) FILTER (WHERE espacio = 'empresa')::int n_empresa
+                    FROM tickets_registrosoporte WHERE status = 'open' AND etapa IS DISTINCT FROM 'pausa' AND (assigned_to = $1 OR $1 = ANY(asignados_extra))`, [yo]),
         pool.query(`SELECT tipo, desde::text, hasta::text, estado FROM aim_ausencias
                     WHERE user_id = $1 AND hasta >= ${HOY_SQL} AND estado IN ('pendiente', 'aprobada') ORDER BY desde LIMIT 3`, [yo]),
     ]);
@@ -17531,6 +17688,7 @@ async function resumenMiDia(yo) {
         fichaje: { estado: fich.estado, ultimo: fich.ultimo?.ts || null, desde: entrada.rows[0]?.desde || null },
         tareas: { ...tareas.rows[0], proximas: lista.rows },
         ticketsMios: tickets.rows[0].n,
+        ticketsMiosEmpresa: tickets.rows[0].n_empresa,
         ausencias: ausencias.rows.map(a => ({ ...a, nombre: TIPOS_AUSENCIA[a.tipo]?.nombre || a.tipo })),
     };
 }
@@ -17723,10 +17881,10 @@ async function resumenIT(yo, conEmpresa = false) {
                            COUNT(*) FILTER (WHERE NOT ${SQL_TICKET_EMPRESA('t')} AND etapa IS DISTINCT FROM 'pausa' AND priority = 'high')::int urgentes,
                            (SELECT COUNT(*) FROM tickets_registrosoporte r WHERE r.status IN ('resolved', 'closed') AND r.resolved_at > now() - INTERVAL '7 days' AND NOT ${SQL_TICKET_EMPRESA('r')})::int resueltos_semana
                     FROM tickets_registrosoporte t WHERE status = 'open'`, [yo]),
-        pool.query(`SELECT id, subject, priority, due_date, created_at FROM tickets_registrosoporte t
+        pool.query(`SELECT id, espacio, ref_numero, subject, priority, due_date, created_at FROM tickets_registrosoporte t
                     WHERE status = 'open' AND etapa IS DISTINCT FROM 'pausa' AND NOT ${SQL_TICKET_EMPRESA('t')} AND (assigned_to = $1 OR $1 = ANY(asignados_extra))
                     ORDER BY (priority = 'high') DESC, due_date NULLS LAST, created_at LIMIT 8`, [yo]),
-        pool.query(`SELECT id, subject, priority, created_at FROM tickets_registrosoporte t
+        pool.query(`SELECT id, espacio, ref_numero, subject, priority, created_at FROM tickets_registrosoporte t
                     WHERE status = 'open' AND etapa IS DISTINCT FROM 'pausa' AND NOT ${SQL_TICKET_EMPRESA('t')} AND assigned_to IS NULL AND cardinality(asignados_extra) = 0
                     ORDER BY (priority = 'high') DESC, created_at LIMIT 5`),
         pool.query(`SELECT p.user_id, TRIM(CONCAT(u.name, ' ', COALESCE(u.surname, ''))) AS nombre, p.fecha::text, to_char(p.inicio, 'HH24:MI') inicio, to_char(p.fin, 'HH24:MI') fin, p.nota
@@ -17742,7 +17900,7 @@ async function resumenIT(yo, conEmpresa = false) {
     ]);
     const im = imap.rows[0]?.valor || null, ie = imapErr.rows[0]?.valor || null;
     const errorImap = ie?.error && (!im?.revisadoAt || new Date(ie.at) > new Date(im.revisadoAt)) ? ie : null;
-    const mapT = (t) => ({ id: t.id, asunto: t.subject, prioridad: t.priority, vence: t.due_date, fecha: t.created_at });
+    const mapT = (t) => ({ id: t.id, ref: refTicket(t), asunto: t.subject, prioridad: t.priority, vence: t.due_date, fecha: t.created_at });
     const mem = process.memoryUsage();
     return {
         tickets: { ...cuentas.rows[0], abiertos_empresa: conEmpresa ? cuentas.rows[0].abiertos_empresa : 0, miosLista: mios.rows.map(mapT), sinAsignarLista: sinAsignar.rows.map(mapT) },
@@ -17954,7 +18112,7 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
         if (recibe('tickets_mensajes')) {
             fuente('Mensajes de soporte', ['tickets_mensajes_resto'], async () => {
                 const filas = (await pool.query(
-                    `SELECT t.id, t.subject, COUNT(*)::int n, MAX(m.created_at) AS ultimo,
+                    `SELECT t.id, t.espacio, t.ref_numero, t.subject, COUNT(*)::int n, MAX(m.created_at) AS ultimo,
                             (SELECT COALESCE(NULLIF(TRIM(CONCAT(u.name, ' ', u.surname)), ''), u.email,
                                              (SELECT k.usuario_nombre || ' (' || k.centro_nombre || ')' FROM kng_tickets k WHERE k.ticket_id = t.id))
                              FROM tickets_mensajes m2 LEFT JOIN users u ON u.user_id = m2.autor_id
@@ -17966,13 +18124,13 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                        AND COALESCE(m.autor_id::text, '') <> $1 AND t.status = 'open'
                        AND (t.user_id::text = $1 OR t.assigned_to::text = $1 OR $1 = ANY(t.asignados_extra::text[])
                             OR ($2::boolean AND t.assigned_to IS NULL AND cardinality(COALESCE(t.asignados_extra, '{}')) = 0))
-                     GROUP BY t.id, t.subject
+                     GROUP BY t.id, t.espacio, t.ref_numero, t.subject
                      ORDER BY MAX(m.created_at) DESC`, [String(yo), !!permisosYo.soporteCompleto])).rows;
                 const TOPE = 5;
                 const l = filas.slice(0, TOPE).map(t => ({
                     tipo: 'tickets', destino: `/admin/soporte/${t.id}`, n: t.n,
-                    texto: `${t.n} ${plural(t.n, 'mensaje', 'mensajes')} en «${t.subject || `Ticket #${t.id}`}»`,
-                    detalle: [t.quien ? `de ${t.quien}` : null, `ticket #${t.id}`].filter(Boolean).join(' · '),
+                    texto: `${t.n} ${plural(t.n, 'mensaje', 'mensajes')} en «${t.subject || `Ticket ${refTicket(t)}`}»`,
+                    detalle: [t.quien ? `de ${t.quien}` : null, `ticket ${refTicket(t)}`].filter(Boolean).join(' · '),
                     // Visto al entrar en el ticket; vuelve a ser nuevo con otro mensaje.
                     clave: `ticket:${t.id}`, marca: t.ultimo, fecha: t.ultimo,
                 }));
@@ -17993,7 +18151,7 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                 const s = (await pool.query(
                     `SELECT COUNT(*)::int n, COUNT(*) FILTER (WHERE t.priority = 'high')::int urgentes
                      FROM tickets_registrosoporte t
-                     WHERE t.status = 'open' AND EXISTS (
+                     WHERE t.status = 'open' AND t.espacio IS DISTINCT FROM 'empresa' AND EXISTS (
                          SELECT 1 FROM users u WHERE LOWER(u.email) = $1
                             AND (u.user_id = t.assigned_to OR u.user_id = ANY(t.asignados_extra)))`, [CUENTA_SOPORTE])).rows[0];
                 return s.n ? [{
@@ -24385,13 +24543,16 @@ app.post('/api/support/:id/vincular', authenticateSession, requireAdmin, async (
     const otro = Number(req.body?.ticketId);
     const propio = Number(req.params.id);
     if (!Number.isInteger(otro) || otro === propio) return res.status(400).json({ error: 'Indica otro ticket distinto.' });
+    // Solo quien puede tocar los dos (y así no se averigua qué números existen).
+    if (!(await puedeTocarTicket(req, propio)) || !(await puedeTocarTicket(req, otro))) return res.status(404).json({ error: 'Alguno de los tickets no existe o no es tuyo.' });
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
         const r = await client.query(
-            'SELECT id, vinculo_id FROM tickets_registrosoporte WHERE id = ANY($1::int[])', [[propio, otro]]
+            'SELECT id, vinculo_id, espacio FROM tickets_registrosoporte WHERE id = ANY($1::int[])', [[propio, otro]]
         );
         if (r.rowCount !== 2) throw { httP: 404, msg: 'Alguno de los tickets no existe.' };
+        if (r.rows[0].espacio !== r.rows[1].espacio) throw { httP: 400, msg: 'No se pueden unir tickets de Aim Education con los de Aim Soluciones Digitales.' };
         const grupos = r.rows.map(x => x.vinculo_id).filter(Boolean);
         // Si alguno ya estaba en un grupo se reutiliza; si había dos, se fusionan.
         const destino = grupos[0] || crypto.randomUUID();
@@ -24411,6 +24572,7 @@ app.post('/api/support/:id/vincular', authenticateSession, requireAdmin, async (
 
 // Sacar un ticket de su grupo. Si se queda uno solo, deja de tener sentido.
 app.delete('/api/support/:id/vincular', authenticateSession, requireAdmin, async (req, res) => {
+    if (!(await puedeTocarTicket(req, Number(req.params.id)))) return res.status(403).json({ error: 'Ese ticket no es tuyo.' });
     try {
         const r = await pool.query('SELECT vinculo_id FROM tickets_registrosoporte WHERE id = $1', [req.params.id]);
         const grupo = r.rows[0]?.vinculo_id;
@@ -24430,14 +24592,17 @@ app.get('/api/admin/superadmins', authenticateSession, async (req, res) => {
     if (!req.userSession.isSuperAdmin && !req.userSession.canAccessAdmin)
         return res.status(403).json({ error: 'Sin permisos.' });
     try {
+        // ?espacio=empresa: solo quien puede llevar los de Aim Soluciones Digitales
+        // (el Equipo IT y los superadmin, sin los IT Junior).
+        const rangos = req.query.espacio === 'empresa' ? ['equipo_it'] : ['equipo_it', 'it_junior'];
         const result = await pool.query(`
             SELECT user_id as id, name, surname, email
             FROM users u
             WHERE role = 'superadmin' OR dev_role = 'superadmin' OR role = 'SuperAdmin'
                -- Y el Equipo IT, también los IT Junior: llevan tickets.
-               OR EXISTS (SELECT 1 FROM aim_rangos ar WHERE ar.user_id = u.user_id AND ar.rango IN ('equipo_it', 'it_junior'))
+               OR EXISTS (SELECT 1 FROM aim_rangos ar WHERE ar.user_id = u.user_id AND ar.rango = ANY($1::text[]))
             ORDER BY name ASC
-        `);
+        `, [rangos]);
         res.json({ success: true, superadmins: result.rows });
     } catch (err) {
         res.status(500).json({ error: err.message });

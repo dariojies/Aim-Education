@@ -110,6 +110,7 @@ function TuDia({ mi, ir, permisos, conTickets, como }) {
       {conTickets && permisos.secciones.support && (
         <Pill tipo={mi.ticketsMios ? 'pending' : 'ok'} onClick={() => ir('support')}>
           {mi.ticketsMios ? `${plural(mi.ticketsMios, 'ticket abierto', 'tickets abiertos')} ${como ? (mi.ticketsMios === 1 ? 'suyo' : 'suyos') : (mi.ticketsMios === 1 ? 'tuyo' : 'tuyos')}` : 'Ningún ticket pendiente'}
+          {mi.ticketsMiosEmpresa ? ` · +${mi.ticketsMiosEmpresa} de Aim Soluciones Digitales` : ''}
         </Pill>
       )}
       {a && <Pill tipo="upcoming" onClick={() => ir('fichaje')}>{a.nombre}: {fechaCorta(a.desde)}{a.hasta !== a.desde ? ` – ${fechaCorta(a.hasta)}` : ''}{a.estado === 'pendiente' ? ' (por aprobar)' : ''}</Pill>}
@@ -342,7 +343,7 @@ function vistaIT({ d, ir, irRuta }) {
   const t = d.tickets, s = d.sistema;
   const prio = { high: ['mal', 'Alta'], medium: ['aviso', 'Media'], low: ['info', 'Baja'] };
   const ticket = (x) => (
-    <Fila key={x.id} izq={`#${x.id}`} centro={x.asunto} onClick={() => irRuta(`/admin/soporte/${x.id}`)}
+    <Fila key={x.id} izq={x.ref || `#${x.id}`} centro={x.asunto} onClick={() => irRuta(`/admin/soporte/${x.id}`)}
       der={x.vence && new Date(x.vence) < new Date() ? <Estado tipo="mal">Vencido</Estado> : <Estado tipo={(prio[x.prioridad] || prio.low)[0]}>{(prio[x.prioridad] || prio.low)[1]}</Estado>} />
   );
   const imap = s.imap.error ? ['mal', 'Falla'] : s.imap.revisado ? ['ok', `Leído a las ${hora(s.imap.revisado)}`] : ['aviso', 'Sin leer aún'];
@@ -407,7 +408,7 @@ function vistaTrabajador({ mi, ir }) {
     cifras: [
       <Cifra key="1" etiqueta="Tareas hoy" valor={t.pendientes} detalle={t.hechas ? `${t.hechas} hechas` : null} onClick={() => ir('agenda')} />,
       <Cifra key="2" etiqueta="Atrasadas" valor={t.vencidas} tono={t.vencidas ? 'aviso' : 'bien'} detalle={t.vencidas ? 'de días anteriores' : 'ninguna'} onClick={() => ir('agenda')} />,
-      <Cifra key="3" etiqueta="Tickets" valor={mi.ticketsMios} detalle="abiertos asignados" onClick={() => ir('support')} />,
+      <Cifra key="3" etiqueta="Tickets" valor={mi.ticketsMios} detalle={mi.ticketsMiosEmpresa ? `abiertos asignados · +${mi.ticketsMiosEmpresa} de Aim Soluciones Digitales` : 'abiertos asignados'} onClick={() => ir('support')} />,
       <Cifra key="4" etiqueta="Ausencias" valor={mi.ausencias.length} detalle="próximas" onClick={() => ir('fichaje')} />,
     ],
     columnas: [

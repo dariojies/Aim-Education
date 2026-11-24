@@ -26,7 +26,22 @@ const APPS = ['Aim Education', 'Learning Dungeon', 'Aim Training', 'Aim Bricksla
 // KidsNGrow) van en su propio apartado y solo los ve el Equipo IT (y los
 // superadmin): el servidor ni se los manda a los demás.
 const APPS_EMPRESA = ['Aim Soluciones Digitales', 'KidsNGrow'];
-const esEmpresa = (t) => (t.app_label || []).some(a => APPS_EMPRESA.includes(a));
+const APPS_AIM = APPS.filter(a => !APPS_EMPRESA.includes(a));
+// El apartado lo dice el servidor (columna «espacio»); las etiquetas, solo si falta.
+const esEmpresa = (t) => (t.espacio ? t.espacio === 'empresa' : (t.app_label || []).some(a => APPS_EMPRESA.includes(a)));
+const NOMBRE_ESPACIO = { aim: 'Aim Education', empresa: 'Aim Soluciones Digitales' };
+// Cada apartado cuenta los suyos: AE-123, ASD-45. La dirección sigue usando el
+// número interno (t.id), que es el que entiende el servidor.
+const refDe = (t) => (t ? (t.ref || (t.ref_numero ? `${esEmpresa(t) ? 'ASD' : 'AE'}-${t.ref_numero}` : `#${t.id}`)) : '');
+// Lo que se escribe a mano («AE-12», «ASD 3», «#12», «12»): el ticket de esa
+// referencia. Sin letras, en el apartado que se está mirando.
+function ticketPorRef(lista, texto, espacio) {
+  const m = String(texto || '').trim().match(/^(?:(AE|ASD)\s*-?\s*)?#?\s*(\d+)$/i);
+  if (!m) return null;
+  const n = Number(m[2]);
+  const esp = m[1] ? (m[1].toUpperCase() === 'ASD' ? 'empresa' : 'aim') : espacio;
+  return lista.find(t => (esEmpresa(t) ? 'empresa' : 'aim') === esp && Number(t.ref_numero ?? t.id) === n) || null;
+}
 
 const PRIORITY_COLOR = { high: 'var(--orange)', medium: '#FFD526', low: 'var(--teal)' };
 const PRIORITY_LABEL = { high: 'Alta', medium: 'Media', low: 'Baja' };
@@ -110,7 +125,7 @@ const appsDe = (t) => (Array.isArray(t.app_label) && t.app_label.length ? t.app_
 
 // Texto de un ticket (para «copiar este ticket» y el listado completo).
 function ticketATexto(t) {
-  let s = `[#${t.id}] ${(t.subject || '').toUpperCase()}\n`;
+  let s = `[${refDe(t)}] ${(t.subject || '').toUpperCase()}\n`;
   s += `Estado: ${ESTADOS[estadoDe(t)].label} | Prioridad: ${PRIORITY_LABEL[t.priority] || t.priority || ''}${t.categoria ? ` | ${CATEGORIAS[t.categoria]?.label || t.categoria}` : ''}\n`;
   s += `Apps: ${appsDe(t).join(', ')}\n`;
   s += `Creado: ${fmtDateTime(t.created_at)}${hace(t.created_at) ? ` (${hace(t.created_at)})` : ''}\n`;
@@ -295,16 +310,19 @@ function fmtHora(str) {
 
 // ── Respuestas guardadas ────────────────────────────────────────────────────
 // Para lo que se contesta a menudo. Se eligen desde el chat y se gestionan ahí.
-function RespuestasGuardadas({ onUsar, onCerrar }) {
+function RespuestasGuardadas({ onUsar, onCerrar, espacio = 'aim' }) {
   const [lista, setLista] = useState(null);
   const [editando, setEditando] = useState(null); // { id?, titulo, texto }
   const [error, setError] = useState('');
+  // Cada apartado tiene las suyas: lo que se contesta a un club no es lo que se
+  // contesta a una academia cliente o a una guardería.
+  const url = `/api/support/respuestas?espacio=${espacio === 'empresa' ? 'empresa' : 'aim'}`;
   useEffect(() => {
-    fetch('/api/support/respuestas', { credentials: 'include', cache: 'no-store' })
+    fetch(url, { credentials: 'include', cache: 'no-store' })
       .then(r => (r.ok ? r.json() : { respuestas: [] })).then(d => setLista(d.respuestas || [])).catch(() => setLista([]));
-  }, []);
+  }, [url]);
   async function guardarLista(nueva) {
-    const r = await fetch('/api/support/respuestas', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ respuestas: nueva }) });
+    const r = await fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ respuestas: nueva }) });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) { setError(d.error || 'No se pudo guardar.'); return false; }
     setLista(d.respuestas || []); setError(''); return true;
@@ -357,7 +375,7 @@ function RespuestasGuardadas({ onUsar, onCerrar }) {
 // Dos canales separados: 'equipo' (entre el personal) y 'creador' (con quien
 // abrió el ticket). Refresca cada 5 s pidiendo solo lo nuevo. Al verla, el
 // ticket queda leído para quien mira (y la campanita lo quita).
-function TicketChat({ ticketId, canal, alto = 260, staff = false, onLeido }) {
+function TicketChat({ ticketId, canal, alto = 260, staff = false, onLeido, espacio = 'aim' }) {
   const [mensajes, setMensajes] = useState([]);
   const [texto, setTexto] = useState('');
   const [archivos, setArchivos] = useState([]);
@@ -484,7 +502,7 @@ function TicketChat({ ticketId, canal, alto = 260, staff = false, onLeido }) {
       </div>
 
       <form onSubmit={enviar} style={{ marginTop: 10 }}>
-        {verRespuestas && <RespuestasGuardadas onUsar={usarRespuesta} onCerrar={() => setVerRespuestas(false)} />}
+        {verRespuestas && <RespuestasGuardadas espacio={espacio} onUsar={usarRespuesta} onCerrar={() => setVerRespuestas(false)} />}
         {archivos.length > 0 && <div style={{ marginBottom: 8, color: 'var(--ink-2)' }}><ListaAdjuntos mini archivos={archivos} onQuitar={i => setArchivos(prev => prev.filter((_, j) => j !== i))} /></div>}
         <textarea ref={textoRef} value={texto} onChange={e => setTexto(e.target.value)} rows={3} onPaste={pegar}
           onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent?.isComposing && (enterEnvia || e.ctrlKey || e.metaKey)) enviar(e); }}
@@ -687,7 +705,7 @@ function TarjetaTicket({ t, diasParado, compacta = false, marcado, onMarcar, onA
             {marcado && <I.Check width={12} height={12} />}
           </button>
         )}
-        <span style={{ fontWeight: 800, color: "var(--purple)", fontSize: 13 }}>#{t.id}</span>
+        <span style={{ fontWeight: 800, color: "var(--purple)", fontSize: 13 }}>{refDe(t)}</span>
         {!compacta && <span style={chip(est.color, { textTransform: 'uppercase', letterSpacing: '.04em' })}>{est.label}</span>}
         {cat && <span style={chip(cat.color)}>{cat.label}</span>}
         <span style={chip(prioColor, { textTransform: 'uppercase' })}>{PRIORITY_LABEL[t.priority] || t.priority}</span>
@@ -830,13 +848,15 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
       .catch(() => { setLoading(false); return []; });
   }, []);
 
+  useEffect(() => { fetchTickets(); }, [fetchTickets]);
+  // Quién puede llevar tickets de este apartado (los de la empresa, solo el
+  // Equipo IT y los superadmin).
   useEffect(() => {
-    fetchTickets();
-    fetch('/api/admin/superadmins', { credentials: 'include' })
+    fetch(`/api/admin/superadmins?espacio=${puedeEmpresa && espacio === 'empresa' ? 'empresa' : 'aim'}`, { credentials: 'include' })
       .then(r => (r.ok ? r.json() : { superadmins: [] }))
       .then(d => setSuperadmins(d.superadmins || []))
       .catch(() => {});
-  }, [fetchTickets]);
+  }, [espacio, puedeEmpresa]);
   // Al volver a la pestaña, al día (por si alguien ha escrito o cambiado algo).
   useEffect(() => {
     const f = () => { if (!document.hidden) fetchTickets(true); };
@@ -855,7 +875,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
   // Buscar también dentro de las conversaciones (a partir de 3 letras).
   useEffect(() => {
     const q = busqueda.trim();
-    if (q.length < 3 || /^#?\d+$/.test(q)) { setIdsEnMensajes([]); return; }
+    if (q.length < 3 || /^(?:#|(?:ae|asd)\s*-?\s*)?\d+$/i.test(q)) { setIdsEnMensajes([]); return; }
     const t = setTimeout(() => {
       fetch(`/api/support/buscar?q=${encodeURIComponent(q)}`, { credentials: 'include' })
         .then(r => (r.ok ? r.json() : { ids: [] })).then(d => setIdsEnMensajes(d.ids || [])).catch(() => {});
@@ -901,7 +921,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
   // Cambiar de apartado: Aim Education o Aim Soluciones Digitales.
   function cambiarEspacio(id) {
     if (id === espacio) return;
-    setEspacio(id); setSelected(null); setFApp('todas');
+    setEspacio(id); setSelected(null); setFApp('todas'); setMarcados(new Set());
     setNuevasApps([id === 'empresa' ? 'Aim Soluciones Digitales' : 'Aim Education']);
   }
 
@@ -932,12 +952,12 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
       const nuevo = lista.find(x => x.id === id);
       if (nuevo && selected?.id === id) setSelected(nuevo);
       setRecargaHist(x => x + 1);
-      avisar(d.siguienteId ? `${texto} Se ha creado el siguiente: #${d.siguienteId}.` : texto);
+      avisar(d.siguienteId ? `${texto} Se ha creado el siguiente.` : texto);
       return true;
     } catch { setUpdateMsg('Error de conexión.'); return false; }
     finally { setUpdating(false); }
   }
-  const cambiarEstado = (t, clave) => guardar(t.id, ESTADOS[clave].cambio, `#${t.id}: ${ESTADOS[clave].label}.`);
+  const cambiarEstado = (t, clave) => guardar(t.id, ESTADOS[clave].cambio, `${refDe(t)}: ${ESTADOS[clave].label}.`);
 
   // Lo que ha cambiado en la gestión interna respecto a lo guardado.
   const cambiosInternos = useMemo(() => {
@@ -965,23 +985,46 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
   }, [selected, chatCanal, hayCambios]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function vincular(t) {
-    const n = Number(String(vinculando).replace('#', '').trim());
-    if (!Number.isInteger(n)) { avisar('Escribe el número del ticket.'); return; }
+    const esp = esEmpresa(t) ? 'empresa' : 'aim';
+    const otro = ticketPorRef(todos, vinculando, esp);
+    if (!String(vinculando).trim()) { avisar('Escribe la referencia del ticket (por ejemplo, AE-123).'); return; }
+    if (!otro) { avisar(`No encuentro el ticket ${String(vinculando).trim()}.`); return; }
+    if ((esEmpresa(otro) ? 'empresa' : 'aim') !== esp) { avisar('Solo se unen tickets del mismo apartado.'); return; }
     try {
       const r = await fetch(`/api/support/${t.id}/vincular`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-        body: JSON.stringify({ ticketId: n }),
+        body: JSON.stringify({ ticketId: otro.id }),
       });
       const d = await r.json().catch(() => ({}));
       if (r.ok) {
-        setVinculando(''); avisar(`Vinculado con el #${n}.`);
+        setVinculando(''); avisar(`Vinculado con el ${refDe(otro)}.`);
         const lista = await fetchTickets(true);
         const nuevo = lista.find(x => x.id === t.id); if (nuevo) setSelected(nuevo);
       } else avisar(d.error || 'No se pudo vincular.');
     } catch { avisar('Error de conexión.'); }
   }
+  // Pasar un ticket al otro apartado. Recibe referencia nueva y las etiquetas del
+  // otro; los encargados que no pueden llevarlo allí se quitan (lo dice el historial).
+  async function moverDeApartado(t) {
+    const a = esEmpresa(t) ? 'aim' : 'empresa';
+    if (hayCambios && !window.confirm('Tienes cambios sin guardar en este ticket y se perderán. ¿Seguir?')) return;
+    if (!window.confirm(`¿Pasar ${refDe(t)} a ${NOMBRE_ESPACIO[a]}? Tendrá una referencia nueva.`)) return;
+    try {
+      const r = await fetch(`/api/support/${t.id}/mover`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ espacio: a }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { avisar(d.error || 'No se pudo mover.'); return; }
+      const lista = await fetchTickets(true);
+      setEspacio(a); setFApp('todas'); setMarcados(new Set());
+      const nuevo = lista.find(x => x.id === t.id);
+      if (nuevo) openTicket(nuevo); else setSelected(null);
+      avisar(`Ahora es ${d.ref}, en ${NOMBRE_ESPACIO[a]}.`);
+    } catch { avisar('Error de conexión.'); }
+  }
   async function desvincular(t) {
-    if (!window.confirm(`¿Sacar el ticket #${t.id} de su grupo?`)) return;
+    if (!window.confirm(`¿Sacar el ticket ${refDe(t)} de su grupo?`)) return;
     try {
       const r = await fetch(`/api/support/${t.id}/vincular`, { method: 'DELETE', credentials: 'include' });
       if (r.ok) {
@@ -995,7 +1038,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
     avisar(await copiarAlPortapapeles(`${window.location.origin}/admin/soporte/${t.id}`) ? 'Enlace copiado.' : 'No se pudo copiar.');
   }
   async function copiarTicket(t) {
-    avisar(await copiarAlPortapapeles(ticketATexto(t)) ? `Ticket #${t.id} copiado.` : 'No se pudo copiar.');
+    avisar(await copiarAlPortapapeles(ticketATexto(t)) ? `Ticket ${refDe(t)} copiado.` : 'No se pudo copiar.');
   }
 
   async function submitTicket(e) {
@@ -1008,8 +1051,8 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
           subject, description,
           adjunto: archivosAlta[0]?.data || null, adjuntoNombre: archivosAlta[0]?.nombre || null, adjuntoMime: archivosAlta[0]?.mime || null,
           priority: nuevaPrioridad, categoria: nuevaCategoria || null, assignedIds: nuevosAsignados,
-          dueDate: nuevaFecha || null, appLabel: nuevasApps.length ? nuevasApps : ['Aim Education'],
-          recurrencia: nuevaRecurrencia || null,
+          dueDate: nuevaFecha || null, appLabel: nuevasApps.length ? nuevasApps : [NOMBRE_ESPACIO[espacioAlta]],
+          recurrencia: nuevaRecurrencia || null, espacio: espacioAlta,
         }),
       });
       const d = await r.json().catch(() => ({}));
@@ -1020,7 +1063,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
         setNuevaPrioridad('low'); setNuevaCategoria(''); setNuevosAsignados([]); setNuevaFecha(''); setNuevasApps([espacio === 'empresa' ? 'Aim Soluciones Digitales' : 'Aim Education']); setNuevaRecurrencia('');
         await fetchTickets(true);
         setActiveTab('list');
-        avisar(`Ticket #${d.ticketId} creado.`);
+        avisar(`Ticket ${d.ref || `#${d.ticketId}`} creado.`);
       } else setSubmitMsg(d.error || 'Error al crear el ticket.');
     } catch { setSubmitMsg('Error de conexión.'); }
     finally { setSubmitting(false); }
@@ -1040,7 +1083,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
     const enMensajes = new Set(idsEnMensajes);
     const casa = t => {
       if (!q) return true;
-      if (q.replace('#', '') === String(t.id)) return true;
+      if (q.replace('#', '') === String(t.id) || q.replace(/\s+/g, '') === refDe(t).toLowerCase()) return true;
       if (enMensajes.has(t.id)) return true;
       return [t.subject, t.description, t.dev_response, t.name, t.surname, t.email, nombresEncargados(t)]
         .some(v => (v || '').toString().toLowerCase().includes(q));
@@ -1114,11 +1157,11 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
       #support-print-root .subject{font-size:17px;font-weight:bold;margin:8px 0}
       #support-print-root .meta{font-size:12px;color:#666;display:grid;grid-template-columns:1fr 1fr;gap:8px;background:#f9f9f9;padding:10px;border-radius:4px;margin-top:10px}
     </style>
-    <h1>Reporte de Soporte — Aim Education</h1>
+    <h1>Reporte de Soporte — ${NOMBRE_ESPACIO[puedeEmpresa && espacio === 'empresa' ? 'empresa' : 'aim']}</h1>
     <p style="color:#666;font-size:13px">Generado: ${fmtFechaHora(new Date())} · ${filtered.length} tickets</p>
     ${filtered.map(t => `
       <div class="ticket">
-        <div><strong style="color:#5233A8">#${t.id}</strong> · ${esc(ESTADOS[estadoDe(t)].label)} · Prioridad ${esc(PRIORITY_LABEL[t.priority] || t.priority)}${t.categoria ? ` · ${esc(CATEGORIAS[t.categoria]?.label)}` : ''}</div>
+        <div><strong style="color:#5233A8">${esc(refDe(t))}</strong> · ${esc(ESTADOS[estadoDe(t)].label)} · Prioridad ${esc(PRIORITY_LABEL[t.priority] || t.priority)}${t.categoria ? ` · ${esc(CATEGORIAS[t.categoria]?.label)}` : ''}</div>
         <div class="subject">${esc(t.subject)}</div>
         <div style="font-size:14px;line-height:1.6;white-space:pre-wrap">${esc(t.description)}</div>
         <div class="meta">
@@ -1267,7 +1310,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
       .then(async r => {
         const d = await r.json().catch(() => ({}));
         if (!r.ok) { avisar(d.error || 'No se ha podido cambiar.'); fetchTickets(true); return; }
-        avisar(d.siguienteId ? `#${t.id}: ${ESTADOS[destino].label}. Se ha creado el siguiente: #${d.siguienteId}.` : `#${t.id}: ${ESTADOS[destino].label}.`);
+        avisar(d.siguienteId ? `${refDe(t)}: ${ESTADOS[destino].label}. Se ha creado el siguiente.` : `${refDe(t)}: ${ESTADOS[destino].label}.`);
         fetchTickets(true);
       })
       .catch(() => { avisar('Error de conexión: no se ha guardado.'); fetchTickets(true); });
@@ -1286,11 +1329,13 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
   const abrirDesdeTablero = (t) => { if (!recienArrastrado.current) openTicket(t); };
 
   const vinculoId = selected ? (todos.find(t => t.id === selected.id)?.vinculo_id ?? selected.vinculo_id) : null;
-  const hermanos = vinculoId ? todos.filter(t => t.vinculo_id === vinculoId && t.id !== selected.id) : [];
-  // Las apps que se pueden poner a un ticket (las de la empresa, solo quien las lleva)
-  // y las del filtro, las del apartado que se mira.
-  const appsPoner = puedeEmpresa ? APPS : APPS.filter(a => !APPS_EMPRESA.includes(a));
-  const appsFiltro = puedeEmpresa && espacio === 'empresa' ? APPS_EMPRESA : APPS.filter(a => !APPS_EMPRESA.includes(a));
+  const hermanos = vinculoId ? todos.filter(t => t.vinculo_id === vinculoId && t.id !== selected.id && esEmpresa(t) === esEmpresa(selected)) : [];
+  // El apartado en el que se crea un ticket nuevo: el que se mira (la empresa,
+  // solo quien la lleva). Las etiquetas que se pueden poner y las del filtro,
+  // las de ese apartado: para pasar un ticket al otro está «Mover a…».
+  const espacioAlta = puedeEmpresa && espacio === 'empresa' ? 'empresa' : 'aim';
+  const appsPoner = espacioAlta === 'empresa' ? APPS_EMPRESA : APPS_AIM;
+  const appsFiltro = appsPoner;
   // Un filtro de app guardado que no es de este apartado no dejaría ver nada.
   useEffect(() => { if (fApp !== 'todas' && !appsFiltro.includes(fApp)) setFApp('todas'); }, [espacio, puedeEmpresa]); // eslint-disable-line react-hooks/exhaustive-deps
   const estSel = selected ? estadoDe(selected) : null;
@@ -1430,7 +1475,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
               <div key={t.id} onClick={() => openTicket(t)} role="button" tabIndex={0} onKeyDown={e => { if (e.key === 'Enter') openTicket(t); }}
                 style={{background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 14, padding: "14px 18px", cursor: "pointer", borderLeft: `5px solid ${ESTADOS[estadoDe(t)].color}`}}>
                 <div style={{display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6}}>
-                  <span style={{fontWeight: 800, color: "var(--purple)", fontSize: 13}}>#{t.id}</span>
+                  <span style={{fontWeight: 800, color: "var(--purple)", fontSize: 13}}>{refDe(t)}</span>
                   <span style={chip(ESTADOS[estadoDe(t)].color, { textTransform: 'uppercase' })}>{ESTADOS[estadoDe(t)].label}</span>
                   {CATEGORIAS[t.categoria] && <span style={chip(CATEGORIAS[t.categoria].color)}>{CATEGORIAS[t.categoria].label}</span>}
                   <div style={{flex: 1}} />
@@ -1608,7 +1653,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
                         <div key={t.id} data-tablero={t.id} onPointerDown={e => empezarArrastre(e, t)} onClick={() => abrirDesdeTablero(t)} title={t.subject}
                           style={{fontSize: 12, color: "var(--ink-3)", padding: "5px 6px", borderRadius: 8, border: "1px dashed var(--line)", cursor: "grab", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                             opacity: arrastrando?.id === t.id && aterrizando !== t.id ? 0.35 : aterrizando === t.id ? 0 : 0.75, touchAction: "none"}}>
-                          <b>#{t.id}</b> {t.subject}
+                          <b>{refDe(t)}</b> {t.subject}
                         </div>
                       ) : (
                         <div key={t.id} data-tablero={t.id} style={col.id === 'pausa' ? {opacity: 0.6} : undefined}>
@@ -1653,7 +1698,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
             <div style={{display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, padding: "18px 20px 14px", borderBottom: "1px solid var(--line)"}}>
               <div style={{minWidth: 0, flex: 1}}>
                 <div style={{display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap"}}>
-                  <span style={{fontSize: 12, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".1em", color: "var(--purple)"}}>Ticket #{selected.id}</span>
+                  <span style={{fontSize: 12, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".1em", color: "var(--purple)"}}>Ticket {refDe(selected)}</span>
                   <span style={chip(ESTADOS[estSel].color, { textTransform: 'uppercase' })}>{ESTADOS[estSel].label}</span>
                   {esVencido(selected) && <span style={chip('#E5484D')}>Vencido</span>}
                   {!esVencido(selected) && esParado(selected, diasParado) && <span style={chip('var(--orange)')}>Parado {diasSinMoverse(selected)} días</span>}
@@ -1683,7 +1728,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
                   <p style={{margin: 0, fontSize: 13, fontWeight: 800}}>{chatCanal === 'equipo' ? 'Equipo' : `Con ${selected.name} ${selected.surname || ''}`}</p>
                   <span style={{fontSize: 11, color: "var(--ink-3)"}}>{chatCanal === 'equipo' ? 'Privado: quien abrió el ticket no lo ve.' : 'Lo ve quien abrió el ticket, y le llega un aviso.'}</span>
                 </div>
-                <TicketChat ticketId={selected.id} canal={chatCanal} alto={360} staff
+                <TicketChat ticketId={selected.id} canal={chatCanal} alto={360} staff espacio={esEmpresa(selected) ? 'empresa' : 'aim'}
                   onLeido={() => setTickets(l => l.map(x => (x.id === selected.id ? { ...x, sin_leer: 0 } : x)))} />
               </>
             ) : (
@@ -1818,10 +1863,18 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
                 )}
                 <div style={{display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap"}}>
                   <input value={vinculando} onChange={e => setVinculando(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') vincular(selected); }}
-                    placeholder="Nº de ticket" aria-label="Número del ticket a vincular" style={{width: 120, fontFamily: "inherit", fontSize: 13, padding: "6px 10px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--bg-3)", color: "var(--ink)"}} />
+                    placeholder={esEmpresa(selected) ? 'ASD-…' : 'AE-…'} aria-label="Referencia del ticket a vincular" style={{width: 120, fontFamily: "inherit", fontSize: 13, padding: "6px 10px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--bg-3)", color: "var(--ink)"}} />
                   <button className="btn btn-sm btn-outline" onClick={() => vincular(selected)}>Vincular</button>
                   {vinculoId && <button className="btn btn-sm btn-outline" style={{color: "var(--orange)"}} onClick={() => desvincular(selected)}>Sacar de este grupo</button>}
                 </div>
+                {puedeEmpresa && (
+                  <div style={{display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 10}}>
+                    <button className="btn btn-sm btn-outline" onClick={() => moverDeApartado(selected)}>
+                      Mover a {NOMBRE_ESPACIO[esEmpresa(selected) ? 'aim' : 'empresa']}
+                    </button>
+                    <span style={{fontSize: 11, color: "var(--ink-3)"}}>Se abrió en el apartado equivocado: pasa al otro con una referencia nueva.</span>
+                  </div>
+                )}
               </div>
 
               {/* Historial */}

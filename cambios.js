@@ -93,7 +93,7 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
 
     // Los tickets que ha resuelto el deploy: [{ id, asunto, categoria }].
     async function anotarTickets(deployId, tickets) {
-        const lista = (tickets || []).map(t => ({ id: Number(t.id), asunto: limpio(t.asunto, 200), categoria: t.categoria || null, ...(t.empresa ? { empresa: true } : {}) }))
+        const lista = (tickets || []).map(t => ({ id: Number(t.id), ...(t.ref ? { ref: limpio(t.ref, 20) } : {}), asunto: limpio(t.asunto, 200), categoria: t.categoria || null, ...(t.empresa ? { empresa: true } : {}) }))
             .filter(t => Number.isInteger(t.id));
         await pool.query(
             `UPDATE aim_ajustes SET valor = jsonb_set(valor, '{tickets}', $2::jsonb) WHERE clave = $1`,
@@ -167,8 +167,11 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
                  WHERE a.clave LIKE 'cambios:%'
                  ORDER BY (a.valor->>'publicado')::timestamptz DESC NULLS LAST LIMIT 300`);
             res.set('Cache-Control', 'no-store');
+            // KidsNGrow es de Aim Soluciones Digitales: sus publicaciones, solo
+            // para quien lleva ese apartado.
+            const conEmpresa = !!permisos(req).soporteEmpresa;
             res.json({
-                entradas: r.rows.map(x => ({
+                entradas: r.rows.filter(x => conEmpresa || x.valor.app !== 'KidsNGrow').map(x => ({
                     ...x.valor,
                     id: x.clave.slice(PREFIJO.length),
                     app: x.valor.app || null,
@@ -184,7 +187,7 @@ export function crearCambios({ pool, authenticateSession, requireSeccion, requir
                 conGithub: true,
                 conToken: !!token(),
                 repo: REPO_GITHUB,
-                apps: Object.keys(APPS_CAMBIOS),
+                apps: Object.keys(APPS_CAMBIOS).filter(a => conEmpresa || a !== 'KidsNGrow'),
             });
         } catch (err) { res.status(500).json({ error: err.message }); }
     });
