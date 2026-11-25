@@ -908,7 +908,7 @@ export const CORREOS_SISTEMA = {
     ticket_asignado: {
         grupo: 'personal', nombre: 'Soporte: te han asignado un ticket', cuando: 'Cuando alguien te pone de encargado de un ticket.',
         asunto: 'Te han asignado el ticket {numero}: {asunto}',
-        variables: { nombre: { que: 'Su nombre', ejemplo: 'Juan Manuel' }, numero: { que: 'Referencia del ticket', ejemplo: 'AE-366' }, asunto: { que: 'Asunto', ejemplo: 'No me deja pasar lista' }, quien: { que: 'Quién te lo asigna', ejemplo: 'Darío' }, enlace: { que: 'Enlace al ticket', ejemplo: 'https://www.aimeducation.es/admin/soporte/366' } },
+        variables: { nombre: { que: 'Su nombre', ejemplo: 'Juan Manuel' }, numero: { que: 'Referencia del ticket', ejemplo: 'AE-366' }, asunto: { que: 'Asunto', ejemplo: 'No me deja pasar lista' }, quien: { que: 'Quién te lo asigna', ejemplo: 'Darío' }, enlace: { que: 'Enlace al ticket', ejemplo: 'https://www.aimeducation.es/admin/soporte/AE-366' } },
         automaticos: { descripcion: { nombre: 'La descripción del ticket', ejemplo: 'Al pulsar «Pasar lista» se queda cargando.' } },
         obligatorio: [],
         diseno: () => d([
@@ -921,7 +921,7 @@ export const CORREOS_SISTEMA = {
     ticket_mensaje: {
         grupo: 'personal', nombre: 'Soporte: mensaje nuevo en un ticket', cuando: 'Cuando alguien escribe en un ticket que llevas (o que abriste tú). Como mucho uno cada 15 minutos por ticket.',
         asunto: 'Mensaje nuevo en el ticket {numero}: {asunto}',
-        variables: { nombre: { que: 'Su nombre', ejemplo: 'Juan Manuel' }, numero: { que: 'Referencia del ticket', ejemplo: 'AE-366' }, asunto: { que: 'Asunto', ejemplo: 'No me deja pasar lista' }, quien: { que: 'Quién escribe', ejemplo: 'Patricia' }, enlace: { que: 'Enlace al ticket', ejemplo: 'https://www.aimeducation.es/admin/soporte/366' } },
+        variables: { nombre: { que: 'Su nombre', ejemplo: 'Juan Manuel' }, numero: { que: 'Referencia del ticket', ejemplo: 'AE-366' }, asunto: { que: 'Asunto', ejemplo: 'No me deja pasar lista' }, quien: { que: 'Quién escribe', ejemplo: 'Patricia' }, enlace: { que: 'Enlace al ticket', ejemplo: 'https://www.aimeducation.es/admin/soporte/AE-366' } },
         automaticos: { mensaje: { nombre: 'El mensaje', ejemplo: 'Ya me deja, gracias.' } },
         obligatorio: [],
         diseno: () => d([
@@ -1060,7 +1060,7 @@ export const CORREOS_SISTEMA = {
     ticket_plazo: {
         grupo: 'personal', nombre: 'Soporte: un ticket se acerca a su plazo o lo ha pasado', cuando: 'Cuando un ticket de una familia, de Learning Dungeon o de una guardería está a punto de pasar (o ha pasado) el plazo de primera respuesta o de resolución de su prioridad. A sus encargados (o al Equipo IT si no tiene). Una vez por aviso.',
         asunto: '{que}: ticket {numero} · {asunto}',
-        variables: { nombre: { que: 'Su nombre', ejemplo: 'Juan Manuel' }, que: { que: 'Qué pasa', ejemplo: 'Plazo de respuesta a punto de pasar' }, numero: { que: 'Referencia', ejemplo: 'AE-366' }, asunto: { que: 'Asunto', ejemplo: 'No puedo ver los recibos' }, situacion: { que: 'La explicación', ejemplo: 'tiene que tener una primera respuesta antes del 24/11 a las 14:30' }, enlace: { que: 'Enlace al ticket', ejemplo: 'https://www.aimeducation.es/admin/soporte/366' } },
+        variables: { nombre: { que: 'Su nombre', ejemplo: 'Juan Manuel' }, que: { que: 'Qué pasa', ejemplo: 'Plazo de respuesta a punto de pasar' }, numero: { que: 'Referencia', ejemplo: 'AE-366' }, asunto: { que: 'Asunto', ejemplo: 'No puedo ver los recibos' }, situacion: { que: 'La explicación', ejemplo: 'tiene que tener una primera respuesta antes del 24/11 a las 14:30' }, enlace: { que: 'Enlace al ticket', ejemplo: 'https://www.aimeducation.es/admin/soporte/AE-366' } },
         automaticos: {},
         obligatorio: [],
         diseno: () => d([

@@ -30,9 +30,10 @@ const APPS_AIM = APPS.filter(a => !APPS_EMPRESA.includes(a));
 // El apartado lo dice el servidor (columna «espacio»); las etiquetas, solo si falta.
 const esEmpresa = (t) => (t.espacio ? t.espacio === 'empresa' : (t.app_label || []).some(a => APPS_EMPRESA.includes(a)));
 const NOMBRE_ESPACIO = { aim: 'Aim Education', empresa: 'Aim Soluciones Digitales' };
-// Cada apartado cuenta los suyos: AE-123, ASD-45. La dirección sigue usando el
-// número interno (t.id), que es el que entiende el servidor.
+// Cada apartado cuenta los suyos: AE-123, ASD-45. La API sigue usando el número
+// interno (t.id); la dirección que se ve y se comparte, la referencia.
 const refDe = (t) => (t ? (t.ref || (t.ref_numero ? `${esEmpresa(t) ? 'ASD' : 'AE'}-${t.ref_numero}` : `#${t.id}`)) : '');
+const rutaDe = (t) => `/admin/soporte/${/^(AE|ASD)-\d+$/.test(refDe(t)) ? refDe(t) : t.id}`;
 // Lo que se escribe a mano («AE-12», «ASD 3», «#12», «12»): el ticket de esa
 // referencia. Sin letras, en el apartado que se está mirando.
 function ticketPorRef(lista, texto, espacio) {
@@ -1006,18 +1007,29 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
     return () => clearTimeout(t);
   }, [busqueda]);
 
-  // /admin/soporte/180 abre ese ticket en cuanto cargue y vuelve a /admin/soporte
-  // (si no, al volver a Soporte se abría otra vez, ticket #335).
+  // /admin/soporte/ASD-20 (o el número interno, de enlaces viejos) abre ese ticket
+  // en cuanto cargue y vuelve a /admin/soporte (si no, al volver a Soporte se abría
+  // otra vez, ticket #335). Si no está en la lista (uno resuelto hace tiempo), se pide.
   const { go } = useRouter() || {};
   const abiertoPorEnlace = useRef(null);
   useEffect(() => {
     if (!ticketId) { abiertoPorEnlace.current = null; return; }
     if (abiertoPorEnlace.current === ticketId || loading) return;
     abiertoPorEnlace.current = ticketId;
-    const t = todos.find(x => x.id === ticketId);
-    if (t) openTicket(t);
-    else avisar(`El ticket #${ticketId} no existe o no es tuyo.`);
+    const porRef = typeof ticketId === 'string';
+    const esEste = (x) => (porRef ? refDe(x) === ticketId : x.id === ticketId);
     go?.('/admin/soporte', { replace: true });
+    const t = todos.find(esEste);
+    if (t) { openTicket(t); return; }
+    fetch(`/api/support?${porRef ? `ref=${encodeURIComponent(ticketId)}` : `ids=${ticketId}`}`, { credentials: 'include', cache: 'no-store' })
+      .then(r => (r.ok ? r.json() : { tickets: [] }))
+      .then(x => {
+        const u = (x.tickets || []).find(esEste);
+        if (!u) { avisar(`El ticket ${porRef ? ticketId : `#${ticketId}`} no existe o no es tuyo.`); return; }
+        setAntiguos(a => (a.some(y => y.id === u.id) ? a : [...a, u]));
+        openTicket(u);
+      })
+      .catch(() => avisar('No se pudo abrir el ticket.'));
   }, [ticketId, todos, loading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Desde un aviso de la campanita: la lista ya filtrada.
@@ -1174,7 +1186,7 @@ export function AdminSupport({ user, ticketId = null, enlace = null }) {
     } catch { avisar('Error de conexión.'); }
   }
   async function copiarEnlace(t) {
-    avisar(await copiarAlPortapapeles(`${window.location.origin}/admin/soporte/${t.id}`) ? 'Enlace copiado.' : 'No se pudo copiar.');
+    avisar(await copiarAlPortapapeles(`${window.location.origin}${rutaDe(t)}`) ? 'Enlace copiado.' : 'No se pudo copiar.');
   }
   async function copiarTicket(t) {
     avisar(await copiarAlPortapapeles(ticketATexto(t)) ? `Ticket ${refDe(t)} copiado.` : 'No se pudo copiar.');

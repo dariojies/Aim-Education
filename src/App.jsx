@@ -295,8 +295,12 @@ export default function App() {
     // Qué sección abre cada dirección (y los nombres antiguos que siguen
     // valiendo) está en rutasAdmin.js, junto a la que pone el menú.
     const { view: adminSub } = seccionDeRuta(seg, Object.fromEntries(params));
-    // /admin/soporte/180 (o /admin/tickets/180) abre ese ticket directamente, para poder pasar el enlace.
-    const ticketId = (seg[1] === 'soporte' || seg[1] === 'tickets') && /^\d+$/.test(seg[2] || '') ? Number(seg[2]) : null;
+    // /admin/soporte/ASD-20 (o AE-660) abre ese ticket directamente, para poder pasar
+    // el enlace. Los enlaces viejos con el número interno (/admin/soporte/180) siguen valiendo.
+    const enTickets = seg[1] === 'soporte' || seg[1] === 'tickets';
+    const ticketId = !enTickets ? null
+      : /^\d+$/.test(seg[2] || '') ? Number(seg[2])
+      : /^(AE|ASD)-\d+$/i.test(seg[2] || '') ? seg[2].toUpperCase() : null;
     // La ruta entera va al panel (#360) para abrir lo concreto: una clase en
     // «Pasar lista» (/admin/clases/lista/<grupo>), un filtro de Soporte
     // (?filtro=mios), una pestaña (?pestana=pendientes)…

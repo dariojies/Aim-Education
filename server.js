@@ -16725,6 +16725,10 @@ async function bloqueValorar(id) {
 }
 // La referencia que se enseña: AE-123 o ASD-45 (la de siempre, #id, si no la hay).
 const refTicket = (t) => (t?.ref_numero ? `${t.espacio === 'empresa' ? 'ASD' : 'AE'}-${t.ref_numero}` : `#${t?.id}`);
+// La dirección de un ticket lleva su referencia (/admin/soporte/ASD-20), que es
+// la que ve todo el mundo; sin ella, el número interno (los enlaces viejos con
+// número siguen abriendo el ticket).
+const rutaTicket = (ref, id) => `/admin/soporte/${/^(AE|ASD)-\d+$/.test(String(ref || '')) ? ref : id}`;
 async function refDe(id, db = pool) {
     const r = (await db.query(`SELECT id, espacio, ref_numero FROM tickets_registrosoporte WHERE id = $1`, [id])).rows[0];
     return r ? refTicket(r) : `#${id}`;
@@ -16906,7 +16910,7 @@ async function avisarTicket(clave, personas, vars, { automaticos = {}, automatic
         try {
             const c = await correoSistema(clave, {
                 ...vars, nombre: p.name || '',
-                enlace: p.personal ? `${URL_PUBLICA_WEB}/admin/soporte/${vars.id ?? vars.numero}` : `${URL_PUBLICA_WEB}/dashboard/soporte`,
+                enlace: p.personal ? `${URL_PUBLICA_WEB}${rutaTicket(vars.numero, vars.id ?? vars.numero)}` : `${URL_PUBLICA_WEB}/dashboard/soporte`,
             }, { automaticos, automaticosTexto });
             await mailTransporter.sendMail({ from: process.env.EMAIL_USER, to: p.email, ...c });
         } catch (e) { if (!e.apagado) console.error(`[soporte] ${clave}:`, e.message); }
@@ -17071,8 +17075,12 @@ app.get('/api/support', authenticateSession, async (req, res) => {
     // resueltos anteriores a una fecha (de 100 en 100) o unos concretos (?ids=).
     const antes = req.query.antes && !Number.isNaN(Date.parse(req.query.antes)) ? new Date(req.query.antes).toISOString() : null;
     const ids = req.query.ids ? String(req.query.ids).split(',').map(Number).filter(Number.isInteger).slice(0, 200) : null;
+    // ?ref=ASD-20: el de esa referencia (para abrir un enlace a uno que no está en la lista).
+    const refM = !ids && req.query.ref ? String(req.query.ref).trim().match(/^(AE|ASD)-(\d+)$/i) : null;
+    const porRef = refM ? [refM[1].toUpperCase() === 'ASD' ? 'empresa' : 'aim', Number(refM[2])] : null;
     const cerradoEn = `COALESCE(s.resolved_at, s.updated_at, s.created_at)`;
     const parte = ids ? `AND s.id = ANY($2::int[])`
+        : porRef ? `AND COALESCE(s.espacio, 'aim') = $2 AND s.ref_numero = $3::int`
         : antes ? `AND s.status <> 'open' AND ${cerradoEn} < $2::timestamptz`
         : `AND (s.status = 'open' OR ${cerradoEn} > NOW() - INTERVAL '${DIAS_TICKETS_RECIENTES} days')`;
     const filtroQuien = `${soloMios ? 'AND (s.user_id = $1 OR s.assigned_to = $1 OR $1 = ANY(s.asignados_extra))' : 'AND $1::uuid IS NOT NULL'} ${sinEmpresaSi(req)}`;
@@ -17113,9 +17121,9 @@ app.get('/api/support', authenticateSession, async (req, res) => {
             LEFT JOIN kng_tickets kt ON kt.ticket_id = s.id
             WHERE TRUE ${filtroQuien} ${parte}
             ORDER BY ${antes ? `${cerradoEn} DESC LIMIT 100` : 's.created_at DESC'}
-        `, ids ? [req.userSession.userId, ids] : antes ? [req.userSession.userId, antes] : [req.userSession.userId]);
+        `, ids ? [req.userSession.userId, ids] : porRef ? [req.userSession.userId, ...porRef] : antes ? [req.userSession.userId, antes] : [req.userSession.userId]);
         // Cuántos resueltos quedan fuera (para el botón de «más antiguos»).
-        const fuera = ids ? 0 : Number((await pool.query(
+        const fuera = ids || porRef ? 0 : Number((await pool.query(
             `SELECT COUNT(*)::int n FROM tickets_registrosoporte s WHERE s.status <> 'open' ${filtroQuien}
                AND ${cerradoEn} ${antes ? '< $2::timestamptz' : `<= NOW() - INTERVAL '${DIAS_TICKETS_RECIENTES} days'`}`,
             antes ? [req.userSession.userId, antes] : [req.userSession.userId])).rows[0].n) - (antes ? result.rowCount : 0);
@@ -17916,7 +17924,7 @@ async function avisosSoportePeriodicos() {
                     // Separados por apartado, cada uno con su título.
                     const grupos = ['aim', 'empresa'].map(e => [e, lista.filter(t => (t.espacio || 'aim') === e)]).filter(([, l]) => l.length);
                     const varios = grupos.length > 1;
-                    const html = grupos.map(([e, l]) => `${varios ? `<p style="margin:12px 0 2px;font-weight:700">${escHtml(NOMBRE_ESPACIO[e])}</p>` : ''}<ul style="margin:6px 0;padding-left:18px">${l.map(t => `<li style="margin:4px 0"><a href="${URL_PUBLICA_WEB}/admin/soporte/${t.id}" style="color:#5233A8">${escHtml(fila(t))}</a></li>`).join('')}</ul>`).join('');
+                    const html = grupos.map(([e, l]) => `${varios ? `<p style="margin:12px 0 2px;font-weight:700">${escHtml(NOMBRE_ESPACIO[e])}</p>` : ''}<ul style="margin:6px 0;padding-left:18px">${l.map(t => `<li style="margin:4px 0"><a href="${URL_PUBLICA_WEB}${rutaTicket(refTicket(t), t.id)}" style="color:#5233A8">${escHtml(fila(t))}</a></li>`).join('')}</ul>`).join('');
                     const texto = grupos.map(([e, l]) => `${varios ? `${NOMBRE_ESPACIO[e]}\n` : ''}${l.map(t => `- ${fila(t)}`).join('\n')}`).join('\n\n');
                     try {
                         const c = await correoSistema('tickets_vencidos', { nombre: p.name || '', cuantos: String(lista.length), enlace: `${URL_PUBLICA_WEB}/admin/soporte` }, {
@@ -18574,7 +18582,7 @@ app.get('/api/admin/notificaciones', authenticateSession, requireAdmin, async (r
                      ORDER BY MAX(m.created_at) DESC`, [String(yo), !!permisosYo.soporteCompleto])).rows;
                 const TOPE = 5;
                 const l = filas.slice(0, TOPE).map(t => ({
-                    tipo: 'tickets', destino: `/admin/soporte/${t.id}`, n: t.n,
+                    tipo: 'tickets', destino: rutaTicket(refTicket(t), t.id), n: t.n,
                     texto: `${t.n} ${plural(t.n, 'mensaje', 'mensajes')} en «${t.subject || `Ticket ${refTicket(t)}`}»`,
                     detalle: [t.quien ? `de ${t.quien}` : null, `ticket ${refTicket(t)}`].filter(Boolean).join(' · '),
                     // Visto al entrar en el ticket; vuelve a ser nuevo con otro mensaje.
